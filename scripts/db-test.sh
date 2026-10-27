@@ -36,7 +36,7 @@ DIESEL_CONFIG="$ROOT/crates/storage/diesel.toml"
 SCHEMA_RS="$ROOT/crates/storage/src/schema.rs"
 STATE_MACHINE="$ROOT/docs/architecture/state-machine.json"
 
-SUITES="migrations statuses ledger tenancy terminal_rows plans audit webhook_delivery lease outbox approvals tokens privileges contracts"
+SUITES="migrations statuses ledger tenancy rls terminal_rows plans audit webhook_delivery lease outbox approvals tokens privileges contracts"
 
 RUN_ID="$$_$(date +%s)"
 WORK=""
@@ -75,9 +75,13 @@ statuses         every status column rejects an unknown value; allowed values, t
                  and event names equal state-machine.json
 ledger           the evidence ledger refuses UPDATE, DELETE, TRUNCATE and gapped, forked or forged inserts;
                  concurrent appends to one job leave one winner and a sound chain
-tenancy          a foreign key into another tenant is rejected; unique keys carry the tenant; the
-                 row-level security candidate is tried and rolled back
-terminal_rows    terminal stage runs cannot be edited except PASSED to SUPERSEDED; illegal transitions fail
+tenancy          a foreign key into another tenant is rejected, also for a session under row-level security;
+                 unique keys carry the tenant
+rls              every tenant-owned table, found from the catalog, is isolated by row-level security: another
+                 tenant's rows cannot be read, added, changed or deleted, and no tenant setting sees nothing;
+                 the roles, the system scope and the two lookup functions; real logins and a reused connection
+terminal_rows    terminal stage runs cannot be edited except to become SUPERSEDED from PASSED or SKIPPED;
+                 every other move out of a terminal state fails
 plans            claim, sweep, timeline and ledger-tail queries use index scans on 10,000 generated rows
 audit            the application role can only INSERT and SELECT audit events; the chain is built by the
                  server, survives concurrent writers and verifies outside PostgreSQL
@@ -543,6 +547,14 @@ EOF
 }
 
 suite_tenancy() { simple_suite tenancy tenancy.sql; }
+
+suite_rls() {
+  clone_begin rls || return 1
+  local rc=0
+  sql_in_clone rls rls.sql || rc=$?
+  clone_end
+  return "$rc"
+}
 
 suite_terminal_rows() {
   ensure_template || return 1
