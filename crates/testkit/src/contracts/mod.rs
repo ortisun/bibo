@@ -32,7 +32,12 @@ use std::fmt::Debug;
 use std::future::Future;
 use std::pin::Pin;
 
+pub mod artifact;
+pub mod sandbox;
 pub mod store;
+
+/// A check that returns an error starting with this text is recorded as skipped, not failed.
+pub const SKIPPED_PREFIX: &str = "skipped: ";
 
 /// A boxed future, so a check can be stored in a list.
 pub type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
@@ -52,6 +57,9 @@ pub struct Report {
     pub passed: Vec<&'static str>,
     /// The checks that failed, each with what went wrong.
     pub failed: Vec<(&'static str, String)>,
+    /// The checks the subject cannot support, each with why. A skipped check is not a pass: an
+    /// adapter that skips one must cover it in a test of its own.
+    pub skipped: Vec<(&'static str, String)>,
 }
 
 impl Report {
@@ -107,6 +115,7 @@ where
         let subject = make().await;
         match (check.run)(&*subject).await {
             Ok(()) => report.passed.push(check.name),
+            Err(why) if why.starts_with(SKIPPED_PREFIX) => report.skipped.push((check.name, why)),
             Err(why) => report.failed.push((check.name, why)),
         }
     }
@@ -176,7 +185,14 @@ macro_rules! ensure_err {
     };
 }
 
-pub(crate) use {ensure, ensure_eq, ensure_err};
+/// Returns early from a check, recording it as skipped with the reason.
+macro_rules! skip {
+    ($($message:tt)+) => {
+        return Err(format!("{}{}", $crate::contracts::SKIPPED_PREFIX, format!($($message)+)))
+    };
+}
+
+pub(crate) use {ensure, ensure_eq, ensure_err, skip};
 
 /// Builds a [`Check`] list from async functions that take `&D`.
 macro_rules! check_list {
