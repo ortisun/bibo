@@ -30,6 +30,13 @@
 //! * **A size limit.** `put` refuses more than the limit, and `get` refuses to read a file that is
 //!   larger than the limit.
 //!
+//! # Whose blob is it
+//!
+//! The blob store itself is not tenant-aware: a blob is shared by hash, and its `get` and `exists`
+//! (the `ArtifactStore` port) answer for anyone who holds a reference. Code that acts for a tenant
+//! uses [`TenantArtifacts`], which asks the tenant's artifact index first and answers "not found"
+//! for a blob that only another tenant holds (architecture review F-15).
+//!
 //! Losing the disk loses the blobs. Backups of the directory are an `sre` item (ADR 0008).
 #![allow(clippy::disallowed_methods, clippy::disallowed_types)]
 
@@ -47,6 +54,10 @@ use factory_domain::vocabulary::Fidelity;
 use factory_ports::artifact::{ArtifactBackend, ArtifactError, ArtifactStore};
 use rustix::fs::{AtFlags, FileType, Mode, OFlags};
 use rustix::io::Errno;
+
+mod scoped;
+
+pub use scoped::TenantArtifacts;
 
 /// A limit that fits the logs and reports of a gate run. A caller that stores larger objects
 /// passes its own.
