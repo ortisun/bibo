@@ -11,6 +11,7 @@ pub mod docker;
 pub mod encoding;
 pub mod github;
 pub mod http;
+pub mod registry;
 pub mod rng;
 pub mod sinks;
 #[cfg(unix)]
