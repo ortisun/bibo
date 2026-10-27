@@ -121,6 +121,8 @@ def build_cases(provider_url: str) -> list[Case]:
              [*CODEX_EXEC, *codex_provider(), "say hello"], key_env="FAKE_PROVIDER_KEY", timeout_s=30))
     add(Case("codex-auth-command", "Codex: key from a provider auth command that reads the secret file", [5], "codex",
              [*CODEX_EXEC, *codex_provider('auth={command="cat", args=["/run/secrets/job_token"]}'), *codex_quiet, "say hello"], timeout_s=30))
+    add(Case("codex-auth-command-no-discovery", "Codex: auth command plus --disable api_key_model_discovery (no model list requests)", [3, 5], "codex",
+             [*CODEX_EXEC, *codex_provider('auth={command="cat", args=["/run/secrets/job_token"]}'), *codex_quiet, "--disable", "api_key_model_discovery", "say hello"], timeout_s=30))
     add(Case("codex-auth-json", "Codex: key stored by codex login --with-api-key in auth.json under the home directory", [5], "codex",
              ["-c", 'cat /run/secrets/job_token | /opt/codex/bin/codex login --with-api-key; echo "--- auth.json keys"; sed "s/\\"OPENAI_API_KEY\\": *\\"[^\\"]*\\"/OPENAI_API_KEY=<hidden>/" /home/agent/.codex/auth.json; echo; '
               f'exec /opt/codex/bin/codex exec --json --ephemeral --skip-git-repo-check -C /workspace -c openai_base_url="{provider_url}/v1" {" ".join(codex_quiet_features)} {" ".join(codex_quiet_config)} "say hello"'],
@@ -187,6 +189,11 @@ def build_cases(provider_url: str) -> list[Case]:
              env={**quiet, "CLAUDE_CODE_DISABLE_BUNDLED_SKILLS": "1"}, key_env="ANTHROPIC_API_KEY", ws=speckit))
     add(claude_skill_case("claude-skills-overlay-spec-stage", "Claude Code skill list with the six denied Spec Kit skills hidden by read-only empty overlays", [], overlays(".claude/skills", SPEC_STAGE_DENIED)))
     add(claude_skill_case("claude-skills-bare-overlay-spec-stage", "Claude Code --bare with the six denied skills hidden by overlays", ["--bare"], overlays(".claude/skills", SPEC_STAGE_DENIED)))
+    user_root = [f"type=bind,src={{run}}/plugin/skills/speckit-{n},dst=/home/agent/.claude/skills/speckit-{n},readonly" for n in ("constitution", "specify", "clarify", "checklist")]
+    add(claude_skill_case("claude-skills-user-root", "Claude Code --setting-sources user with the four allowed skills mounted read-only in the user skill root", ["--setting-sources", "user", "--strict-mcp-config"], user_root))
+    add(claude_skill_case("claude-skills-user-root-bare", "Claude Code --bare with the four allowed skills mounted read-only in the user skill root", ["--bare"], user_root))
+    add(claude_skill_case("claude-skills-user-root-slash", "Claude Code --setting-sources user, user-root skills: the prompt starts with /speckit-specify", ["--setting-sources", "user", "--strict-mcp-config"], user_root,
+                          prompt="/speckit-specify Add a tiny login page"))
     plugin_mount = ["type=bind,src={run}/plugin,dst=/factory/plugin,readonly"]
     add(claude_skill_case("claude-skills-bare-plugin", "Claude Code --bare with the four allowed skills supplied by a factory plugin directory", ["--bare", "--plugin-dir=/factory/plugin"], plugin_mount))
     add(claude_skill_case("claude-skills-bare-plugin-hidden-project", "Claude Code --bare, factory plugin, and the project skill roots hidden by overlays", ["--bare", "--plugin-dir=/factory/plugin"],
@@ -212,8 +219,32 @@ def build_cases(provider_url: str) -> list[Case]:
     add(codex_skill_case("codex-skills-overlay-spec-stage", "Codex skill list with the six denied skills hidden by overlays", [], overlays(".agents/skills", SPEC_STAGE_DENIED)))
     add(codex_skill_case("codex-skills-overlay-all", "Codex skill list with .agents/skills hidden by an overlay", [], ["type=bind,src={run}/empty,dst=/workspace/.agents/skills,readonly"]))
     add(codex_skill_case("codex-skills-config-disable", "Codex skill list with skills.config entries that disable two skills", ["-c", 'skills.config=[{path="/workspace/.agents/skills/speckit-plan/SKILL.md", enabled=false},{path="/workspace/.agents/skills/speckit-tasks/SKILL.md", enabled=false}]']))
+    codex_user_root = [f"type=bind,src={{run}}/plugin/skills/speckit-{n},dst=/home/agent/.codex/skills/speckit-{n},readonly" for n in ("constitution", "specify", "clarify", "checklist")]
+    add(codex_skill_case("codex-skills-user-root", "Codex when the four allowed skills are bind-mounted inside its home: the mount parents belong to root and the tool fails", [],
+                         [*codex_user_root, "type=bind,src={run}/empty,dst=/workspace/.agents/skills,readonly"]))
     add(codex_skill_case("codex-skills-bundled-off", "Codex skill list with skills.bundled.enabled=false", ["-c", "skills.bundled.enabled=false"]))
-    add(codex_skill_case("codex-skills-ignore-user-config", "Codex skill list with --ignore-user-config", ["--ignore-user-config"]))
+
+    # ------------------------------------------------------------------ the combined flag sets proposed for the adapters
+    add(claude_skill_case("claude-skills-sources-user", "Claude Code skill list with --setting-sources user and --strict-mcp-config", ["--setting-sources", "user", "--strict-mcp-config"]))
+    claude_factory = ["--setting-sources", "user", "--strict-mcp-config", "--settings", json.dumps({"apiKeyHelper": "cat /run/secrets/job_token"}), "--max-turns", "4", "--max-budget-usd", "1"]
+    claude_factory_env = {**quiet, "CLAUDE_CODE_MAX_RETRIES": "2"}
+    add(Case("claude-factory-profile", "Claude Code with the proposed non-specification flag set, in a hostile workspace, asked to run a command", [3, 4, 5, 6, 8], "claude",
+             [*CLAUDE_STREAM, *claude_factory, "--disable-slash-commands", "--dangerously-skip-permissions", "FAKE:TOOL Bash " + json.dumps({"command": "id; touch /workspace/made-by-agent", "description": "probe"})],
+             env=claude_factory_env, ws="hostile"))
+    add(Case("claude-factory-profile-spec", "Claude Code with the proposed specification-stage flag set: four Spec Kit skills visible, hostile configuration ignored", [3, 4, 5, 6], "claude",
+             [*CLAUDE_STREAM, *claude_factory, "--dangerously-skip-permissions", "/speckit-specify Add a tiny login page"],
+             env=claude_factory_env, ws="hostile-speckit", mounts=user_root))
+    codex_factory = [
+        "--ignore-user-config", "--ignore-rules", "--disable", "unbounded_connection_retries", "-c", "project_doc_max_bytes=0", "-c", "skills.bundled.enabled=false",
+        "--dangerously-bypass-approvals-and-sandbox",
+    ]
+    add(Case("codex-factory-profile", "Codex with the proposed non-specification flag set, in a hostile workspace, asked to run a command", [3, 4, 5, 6, 8], "codex",
+             [*CODEX_EXEC, *codex_factory, *codex_provider('auth={command="cat", args=["/run/secrets/job_token"]}'), *codex_quiet, "-c", "skills.config=[{path=\"/workspace/.agents/skills/speckit-specify/SKILL.md\", enabled=false}]",
+              "FAKE:TOOL exec text(JSON.stringify(await tools.exec_command({cmd: \"id; touch /workspace/made-by-agent\"})))"],
+             ws="hostile", timeout_s=60))
+    add(Case("codex-factory-profile-spec", "Codex with the proposed specification-stage flag set: four Spec Kit skills visible, hostile configuration ignored", [3, 4, 5, 6], "codex",
+             [*CODEX_EXEC, *codex_factory, *codex_provider('auth={command="cat", args=["/run/secrets/job_token"]}'), *codex_quiet, "$speckit-specify Add a tiny login page"],
+             ws="hostile-speckit", mounts=overlays(".agents/skills", SPEC_STAGE_DENIED), timeout_s=60))
 
     # ------------------------------------------------------------------ question 7: the headless contract
     read_loop = 'FAKE:LOOP {n} Read {{"file_path":"/workspace/README.md"}}'
@@ -262,6 +293,8 @@ def build_cases(provider_url: str) -> list[Case]:
         env = {**quiet, "CLAUDE_CODE_MAX_RETRIES": retries} if retries else quiet
         add(Case(f"claude-http-{status}", f"Claude Code when the provider answers {status}" + (f", retries bounded to {retries}" if retries else ", default retries"), [7], "claude",
                  [*CLAUDE_STREAM, f"FAKE:HTTP {status}"], env=env, key_env="ANTHROPIC_API_KEY", timeout_s=25 if not retries else 40))
+    for status in ("400", "402", "403"):
+        add(Case(f"claude-http-{status}", f"Claude Code when the provider answers {status}", [7], "claude", [*CLAUDE_STREAM, f"FAKE:HTTP {status}"], env=quiet, key_env="ANTHROPIC_API_KEY", timeout_s=25))
     add(Case("claude-cancel-term", "Claude Code receives SIGTERM while waiting for the model", [7], "claude", [*CLAUDE_STREAM, "FAKE:SLEEP 60"], env=quiet, key_env="ANTHROPIC_API_KEY", kill_after=(4, "TERM"), wrap=False, timeout_s=30))
     add(Case("claude-cancel-int", "Claude Code receives SIGINT while waiting for the model", [7], "claude", [*CLAUDE_STREAM, "FAKE:SLEEP 60"], env=quiet, key_env="ANTHROPIC_API_KEY", kill_after=(4, "INT"), wrap=False, timeout_s=30))
 
@@ -282,6 +315,8 @@ def build_cases(provider_url: str) -> list[Case]:
              key_env="FAKE_PROVIDER_KEY", mounts=["type=bind,src={run}/fake/gate-report.schema.json,dst=/fixture/gate-report.schema.json,readonly"], keep_out=["last-message.json"], timeout_s=40))
     for status in ("429", "500"):
         add(Case(f"codex-http-{status}", f"Codex when the provider answers {status}", [7], "codex", [*CODEX_EXEC, *codex_provider(), *codex_quiet, f"FAKE:HTTP {status}"], key_env="FAKE_PROVIDER_KEY", timeout_s=60))
+    for status in ("400", "402", "403"):
+        add(Case(f"codex-http-{status}", f"Codex when the provider answers {status}", [7], "codex", [*CODEX_EXEC, *codex_provider(), *codex_quiet, f"FAKE:HTTP {status}"], key_env="FAKE_PROVIDER_KEY", timeout_s=40))
     add(Case("codex-unreachable-bounded", "Codex when the provider cannot be reached, with unbounded_connection_retries disabled", [4, 7], "codex",
              [*CODEX_EXEC, *codex_provider('env_key="FAKE_PROVIDER_KEY", request_max_retries=1, stream_max_retries=1'), *codex_quiet, "--disable", "unbounded_connection_retries", "say hello"],
              key_env="FAKE_PROVIDER_KEY", net="none", timeout_s=60))
@@ -302,6 +337,9 @@ def build_cases(provider_url: str) -> list[Case]:
     add(claude_perm("claude-perm-read-default", "Claude Code, default mode: the model reads a file in the workspace", ["--permission-prompts", "none"], 'FAKE:TOOL Read {"file_path":"/workspace/README.md"}'))
     add(claude_perm("claude-perm-bash-dontask", "Claude Code, permission mode dontAsk: the model asks to run Bash", ["--permission-mode", "dontAsk"], bash_probe))
     add(claude_perm("claude-perm-allow-prefix-chain", "Claude Code with --allowedTools Bash(touch:*): a chained command", ["--permission-prompts", "none", "--allowedTools=Bash(touch:*)"], chained))
+    add(claude_perm("claude-perm-acceptedits-chain", "Claude Code acceptEdits with --allowedTools Bash(mkdir:*): a chained command, as in the Spec Kit guide",
+                    ["--permission-mode", "acceptEdits", "--permission-prompts", "none", "--allowedTools=Bash(mkdir:*)"],
+                    "FAKE:TOOL Bash " + json.dumps({"command": "mkdir -p /workspace/made && printf CHAINED-SECOND-COMMAND-RAN > /workspace/made/second.txt && id", "description": "chained"})))
     add(claude_perm("claude-perm-write-inside-acceptedits", "Claude Code acceptEdits: Write inside the workspace", ["--permission-mode", "acceptEdits", "--permission-prompts", "none"],
                     'FAKE:TOOL Write {"file_path":"/workspace/new-file.txt","content":"written by the tool"}'))
     add(claude_perm("claude-perm-write-outside-acceptedits", "Claude Code acceptEdits: Write outside the workspace", ["--permission-mode", "acceptEdits", "--permission-prompts", "none"],
@@ -360,6 +398,7 @@ def build_cases(provider_url: str) -> list[Case]:
     add(claude_hostile("claude-hostile-default", "Claude Code in a hostile workspace, default flags", []))
     add(claude_hostile("claude-hostile-bare", "Claude Code in a hostile workspace, --bare", ["--bare"]))
     add(claude_hostile("claude-hostile-sources-user", "Claude Code in a hostile workspace, --setting-sources user", ["--setting-sources", "user"]))
+    add(claude_hostile("claude-hostile-sources-project-local", "Claude Code in a hostile workspace, --setting-sources project,local (the route of the Spec Kit guide)", ["--setting-sources", "project,local"]))
     add(claude_hostile("claude-hostile-safe-mode", "Claude Code in a hostile workspace, --safe-mode", ["--safe-mode"]))
     add(claude_hostile("claude-hostile-factory-flags", "Claude Code in a hostile workspace, --bare --setting-sources user --strict-mcp-config", ["--bare", "--setting-sources", "user", "--strict-mcp-config"]))
     for suffix, extra in (("default", []), ("bare", ["--bare"]), ("sources-user", ["--setting-sources", "user"])):

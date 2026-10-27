@@ -110,7 +110,7 @@ def cut(text: str) -> str:
 def summarize(value: Any, key: str = "") -> Any:
     """Copy a JSON value, cutting long strings and hiding the per-install identifiers."""
     if isinstance(value, str):
-        if key in {"user_id", "device_id", "account_uuid", "organization_id"}:
+        if key in {"user_id", "device_id", "account_uuid", "organization_id"} or key.endswith(("_key", "_token", "_secret")):
             return "<scrubbed>"
         return cut(value)
     if isinstance(value, list):
@@ -323,7 +323,7 @@ class Handler(BaseHTTPRequestHandler):
         headers: dict[str, str] = {}
         for name, value in self.headers.items():
             lowered = name.lower()
-            if lowered in {"x-api-key", "authorization", "cookie", "proxy-authorization"}:
+            if lowered in {"x-api-key", "authorization", "cookie", "proxy-authorization", "sec-websocket-key"}:
                 headers[lowered] = "<credential-removed>"
             else:
                 headers[lowered] = cut(value)

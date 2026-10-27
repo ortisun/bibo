@@ -6,11 +6,15 @@ sinkhole), runs Claude Code and Codex inside the hardened container profile of
 docs/security/sandbox-policy.md, and records what happened under fixtures/recordings/agent-cli/runs/.
 
 usage:
-  ARS_RUN_DIR=<empty scratch dir outside the repository> python3 -I harness/spike.py <command>
+  ARS_RUN_DIR=<empty scratch dir outside the repository> python3 harness/spike.py <command>
+  (without -I: the harness imports its sibling modules cases.py and model.py)
 
 commands:
-  world-up          create the network, generate the run-time fake key, start fake provider and sinkhole
+  world-up          create the network, generate the run-time fake key, start fake provider, sinkhole and bridge
   world-down        remove every container, network and file this harness created
+  extract-binaries  copy the two tools out of their images, and fetch the vendor responses proxy by checksum
+  image-facts       record the layers and size of the two scratch images
+  rescrub           run every recorded file through the scrubber again and refresh the manifest hashes
   list              list the case ids
   run ID [ID...]    run the named cases (or "all", or a prefix ending in "*")
   summary           print one line per recorded case
@@ -59,6 +63,7 @@ VERSIONS = {"claude": "2.1.311", "codex": "0.163.0"}
 PROVIDER_URL = "http://fakeprov:8080"
 PROXY_URL = "https://github.com/openai/codex/releases/download/rust-v0.163.0/codex-responses-api-proxy-aarch64-unknown-linux-musl.tar.gz"
 PROXY_SHA256 = "691a67ee4bcc387f74a152ac4f79c0862392e4cd38b112a70971b215a7de9698"  # the digest the release lists for that asset
+FIELD_SHAPE = re.compile(r'("[A-Za-z_-]*(?:[_-]key|[_-]token|[_-]secret)"\s*:\s*")[^"\\]+(")')  # JSON fields such as prompt_cache_key
 SCRUB_SHAPES = [
     re.compile(r"(?i)bearer\s+[A-Za-z0-9._\-]{16,}"),
     re.compile(r"sk-[A-Za-z0-9_\-]{20,}"),
@@ -288,7 +293,7 @@ def scrub(text: str, key: str, canary: str = "") -> str:
         text = text.replace(canary, "<planted-canary>")
     for shape in SCRUB_SHAPES:
         text = shape.sub("<token-shaped-removed>", text)
-    return text
+    return FIELD_SHAPE.sub(r"\1<scrubbed>\2", text)
 
 
 def docker_argv(case: Case, ws: Path, out: Path, key: str) -> list[str]:
@@ -430,6 +435,24 @@ def run_case(case: Case) -> dict[str, Any]:
     return entry
 
 
+def rescrub() -> None:
+    """Run every recorded file through scrub() again and refresh the hashes in the manifest."""
+    path = ROOT / "manifest.json"
+    manifest: dict[str, Any] = json.loads(path.read_text(encoding="utf-8"))
+    changed = 0
+    for rec in manifest["recordings"]:
+        for rel in list(rec["files"]):
+            file_path = ROOT / rel
+            before = file_path.read_text(encoding="utf-8")
+            after = scrub(before, "\0unused")
+            if after != before:
+                file_path.write_text(after, encoding="utf-8")
+                changed += 1
+            rec["files"][rel] = sha256_file(file_path)
+    path.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    print(f"rescrubbed; {changed} files changed")
+
+
 def image_facts() -> None:
     """Record the size and layers of the two scratch images, for question 1 (install)."""
     for tool, image in IMAGES.items():
@@ -489,7 +512,7 @@ def load_cases() -> list[Case]:
 
 def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("command", choices=["world-up", "world-down", "extract-binaries", "image-facts", "list", "run", "summary"])
+    parser.add_argument("command", choices=["world-up", "world-down", "extract-binaries", "image-facts", "rescrub", "list", "run", "summary"])
     parser.add_argument("ids", nargs="*")
     args = parser.parse_args(argv)
     if args.command == "world-up":
@@ -500,6 +523,8 @@ def main(argv: list[str]) -> int:
         extract_binaries()
     elif args.command == "image-facts":
         image_facts()
+    elif args.command == "rescrub":
+        rescrub()
     elif args.command == "list":
         for case in load_cases():
             print(case.id, "-", case.title)
