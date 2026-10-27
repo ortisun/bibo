@@ -215,6 +215,8 @@ Behavior:
 
 Detection beyond the factory's own output: the `secrets.patterns` are also used by the secret-scan gate on diffs and on target repositories (gitleaks-class scanners remain in the quality gate list). Pre-commit and CI scanning for this repository follow the security specialist's secrets standard: scan full history, pin actions to commit SHAs, justify every allowlist entry.
 
+For this repository, `.gitleaks.toml` carries the `secrets.patterns` whose action is `block` as gitleaks rules (id `policy_` plus the pattern id, regex copied unchanged) next to the tool's default rules, and `scripts/ci.sh` step `secret-scan` runs it over the full history (negative-test-catalog ST-08). The patterns with the action `flag` (`generic_assignment`, the entropy heuristic) are not ported, because gitleaks cannot flag without failing. Two allowlist entries exist, both for made-up values in the observability crate's scrubber tests and doc comment; each needs the file path and the exact text, and each carries a reason and a review-by date in the file. The policy file stays the source of truth: a change to a pattern there needs the matching change in `.gitleaks.toml` in the same pull request. Dependency licenses, advisories and sources are checked by `deny.toml` under the rule in `supply_chain.licenses`.
+
 ## 8. Storage and handling in the control plane
 
 * Secrets come from the secret manager at process start, or from short-lived dynamic credentials where the manager supports them (database credentials with a TTL are preferred over static passwords). The choice of manager is an open decision (threat model Q4).
