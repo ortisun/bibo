@@ -1,0 +1,9 @@
+exit_code=0
+--- files under /home/agent (bytes path)
+--- files under /tmp (bytes path)
+--- sockets and fifos under /tmp and /home/agent
+--- cgroup counters
+memory.peak=60121088
+pids.peak=6
+memory.max=4294967296
+pids.max=256

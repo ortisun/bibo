@@ -1,0 +1,14 @@
+exit_code=0
+--- files under /home/agent (bytes path)
+719 /home/agent/.claude.json
+22761 /home/agent/.claude/skills/speckit-checklist/SKILL.md
+19811 /home/agent/.claude/skills/speckit-clarify/SKILL.md
+10634 /home/agent/.claude/skills/speckit-constitution/SKILL.md
+18749 /home/agent/.claude/skills/speckit-specify/SKILL.md
+--- files under /tmp (bytes path)
+--- sockets and fifos under /tmp and /home/agent
+--- cgroup counters
+memory.peak=116310016
+pids.peak=9
+memory.max=4294967296
+pids.max=256

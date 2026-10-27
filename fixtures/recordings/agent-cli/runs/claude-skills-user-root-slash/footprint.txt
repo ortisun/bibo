@@ -1,0 +1,15 @@
+exit_code=0
+--- files under /home/agent (bytes path)
+830 /home/agent/.claude.json
+22761 /home/agent/.claude/skills/speckit-checklist/SKILL.md
+19811 /home/agent/.claude/skills/speckit-clarify/SKILL.md
+10634 /home/agent/.claude/skills/speckit-constitution/SKILL.md
+18749 /home/agent/.claude/skills/speckit-specify/SKILL.md
+--- files under /tmp (bytes path)
+1 /tmp/claude-10001/fswatch-probe-GoOMao/probe
+--- sockets and fifos under /tmp and /home/agent
+--- cgroup counters
+memory.peak=128716800
+pids.peak=13
+memory.max=4294967296
+pids.max=256

@@ -1,0 +1,6 @@
+{"type":"thread.started","thread_id":"01a17d92-8fc3-7b63-bd1e-b25b01fb7d02"}
+{"type":"item.completed","item":{"id":"item_0","type":"error","message":"Codex is ignoring 1 unrecognized configuration setting. Check for typos or deprecated settings.\n  session-flags: `include_apply_patch_tool` is ignored."}}
+{"type":"item.completed","item":{"id":"item_1","type":"error","message":"Codex is ignoring 1 unrecognized configuration setting. Check for typos or deprecated settings.\n  session-flags: `include_apply_patch_tool` is ignored."}}
+{"type":"turn.started"}
+{"type":"item.completed","item":{"id":"item_2","type":"agent_message","text":"FAKE-PROVIDER-REPLY: canned answer, no model was called."}}
+{"type":"turn.completed","usage":{"input_tokens":1234,"cached_input_tokens":89,"cache_write_input_tokens":0,"output_tokens":56,"reasoning_output_tokens":0}}

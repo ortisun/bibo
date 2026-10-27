@@ -1,0 +1,6 @@
+{"type":"thread.started","thread_id":"01a17d8e-42f6-7380-aeeb-f2dd5c89e203"}
+{"type":"turn.started"}
+{"type":"item.started","item":{"id":"item_0","type":"command_execution","command":"/bin/sh -lc \"env | grep -c -E '\"'^(ANTHROPIC_API_KEY|ANTHROPIC_AUTH_TOKEN|FAKE_PROVIDER_KEY)='\"'; tr '\\\\0' '\\\\n' < /proc/\"'$PPID/environ | grep -c -E '\"'\"'^(ANTHROPIC_API_KEY|ANTHROPIC_AUTH_TOKEN|FAKE_PROVIDER_KEY)='\"'; true\"","aggregated_output":"","exit_code":null,"status":"in_progress"}}
+{"type":"item.completed","item":{"id":"item_0","type":"command_execution","command":"/bin/sh -lc \"env | grep -c -E '\"'^(ANTHROPIC_API_KEY|ANTHROPIC_AUTH_TOKEN|FAKE_PROVIDER_KEY)='\"'; tr '\\\\0' '\\\\n' < /proc/\"'$PPID/environ | grep -c -E '\"'\"'^(ANTHROPIC_API_KEY|ANTHROPIC_AUTH_TOKEN|FAKE_PROVIDER_KEY)='\"'; true\"","aggregated_output":"1\n1\n","exit_code":0,"status":"completed"}}
+{"type":"item.completed","item":{"id":"item_1","type":"agent_message","text":"FAKE-PROVIDER: tool output received content='Script completed\\nWall time 0.0 seconds\\nOutput:\\n {\"chunk_id\":\"41001e\",\"wall_time_seconds\":0.000002292,\"exit_code\":0,\"original_token_count\":1,\"output\":\"1\\\\n1\\\\n\"}'"}}
+{"type":"turn.completed","usage":{"input_tokens":2468,"cached_input_tokens":178,"cache_write_input_tokens":0,"output_tokens":112,"reasoning_output_tokens":0}}

@@ -1,0 +1,10 @@
+Reading API key from stdin...
+Successfully logged in
+Reading additional input from stdin...
+2026-10-27T13:30:01.271512Z ERROR codex_api::endpoint::responses_websocket: failed to connect to websocket: HTTP error: 404 Not Found, url: ws://fakeprov:8080/v1/responses
+2026-10-27T13:30:01.276614Z ERROR codex_api::endpoint::responses_websocket: failed to connect to websocket: HTTP error: 404 Not Found, url: ws://fakeprov:8080/v1/responses
+2026-10-27T13:30:01.472399Z ERROR codex_api::endpoint::responses_websocket: failed to connect to websocket: HTTP error: 404 Not Found, url: ws://fakeprov:8080/v1/responses
+2026-10-27T13:30:01.913601Z ERROR codex_api::endpoint::responses_websocket: failed to connect to websocket: HTTP error: 404 Not Found, url: ws://fakeprov:8080/v1/responses
+2026-10-27T13:30:02.770307Z ERROR codex_api::endpoint::responses_websocket: failed to connect to websocket: HTTP error: 404 Not Found, url: ws://fakeprov:8080/v1/responses
+2026-10-27T13:30:04.273321Z ERROR codex_api::endpoint::responses_websocket: failed to connect to websocket: HTTP error: 404 Not Found, url: ws://fakeprov:8080/v1/responses
+2026-10-27T13:30:07.635146Z ERROR codex_api::endpoint::responses_websocket: failed to connect to websocket: HTTP error: 404 Not Found, url: ws://fakeprov:8080/v1/responses

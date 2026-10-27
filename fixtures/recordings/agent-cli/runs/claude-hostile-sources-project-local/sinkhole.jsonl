@@ -1,0 +1,41 @@
+{"client": "10.77.55.4", "kind": "dns", "name": "api.anthropic.com", "qtype": 28, "t_ms": 728418}
+{"client": "10.77.55.4", "kind": "dns", "name": "api.anthropic.com", "qtype": 1, "t_ms": 728419}
+{"client": "10.77.55.4", "first_bytes": 1508, "kind": "tcp", "port": 443, "protocol": "tls", "sni": "api.anthropic.com", "t_ms": 728420}
+{"client": "10.77.55.4", "kind": "dns", "name": "api.anthropic.com", "qtype": 1, "t_ms": 728454}
+{"client": "10.77.55.4", "kind": "dns", "name": "api.anthropic.com", "qtype": 28, "t_ms": 728456}
+{"client": "10.77.55.4", "first_bytes": 1482, "kind": "tcp", "port": 443, "protocol": "tls", "sni": "api.anthropic.com", "t_ms": 728475}
+{"client": "10.77.55.4", "kind": "dns", "name": "attacker.invalid", "qtype": 28, "t_ms": 728544}
+{"client": "10.77.55.4", "kind": "dns", "name": "attacker.invalid", "qtype": 1, "t_ms": 728545}
+{"client": "10.77.55.4", "kind": "dns", "name": "attacker.invalid", "qtype": 28, "t_ms": 729150}
+{"client": "10.77.55.4", "kind": "dns", "name": "attacker.invalid", "qtype": 1, "t_ms": 729151}
+{"client": "10.77.55.4", "kind": "dns", "name": "attacker.invalid", "qtype": 28, "t_ms": 730220}
+{"client": "10.77.55.4", "kind": "dns", "name": "attacker.invalid", "qtype": 1, "t_ms": 730221}
+{"client": "10.77.55.4", "kind": "dns", "name": "attacker.invalid", "qtype": 28, "t_ms": 732348}
+{"client": "10.77.55.4", "kind": "dns", "name": "attacker.invalid", "qtype": 1, "t_ms": 732349}
+{"client": "10.77.55.4", "kind": "dns", "name": "attacker.invalid", "qtype": 28, "t_ms": 736648}
+{"client": "10.77.55.4", "kind": "dns", "name": "attacker.invalid", "qtype": 1, "t_ms": 736649}
+{"client": "10.77.55.4", "kind": "dns", "name": "api.anthropic.com", "qtype": 28, "t_ms": 738379}
+{"client": "10.77.55.4", "kind": "dns", "name": "api.anthropic.com", "qtype": 1, "t_ms": 738379}
+{"client": "10.77.55.4", "first_bytes": 1482, "kind": "tcp", "port": 443, "protocol": "tls", "sni": "api.anthropic.com", "t_ms": 738380}
+{"client": "10.77.55.4", "kind": "dns", "name": "api.anthropic.com", "qtype": 28, "t_ms": 738887}
+{"client": "10.77.55.4", "kind": "dns", "name": "api.anthropic.com", "qtype": 1, "t_ms": 738888}
+{"client": "10.77.55.4", "first_bytes": 1482, "kind": "tcp", "port": 443, "protocol": "tls", "sni": "api.anthropic.com", "t_ms": 738889}
+{"client": "10.77.55.4", "kind": "dns", "name": "api.anthropic.com", "qtype": 28, "t_ms": 740896}
+{"client": "10.77.55.4", "kind": "dns", "name": "api.anthropic.com", "qtype": 1, "t_ms": 740896}
+{"client": "10.77.55.4", "first_bytes": 1482, "kind": "tcp", "port": 443, "protocol": "tls", "sni": "api.anthropic.com", "t_ms": 740897}
+{"client": "10.77.55.4", "kind": "dns", "name": "api.anthropic.com", "qtype": 28, "t_ms": 745406}
+{"client": "10.77.55.4", "kind": "dns", "name": "api.anthropic.com", "qtype": 1, "t_ms": 745409}
+{"client": "10.77.55.4", "first_bytes": 1482, "kind": "tcp", "port": 443, "protocol": "tls", "sni": "api.anthropic.com", "t_ms": 745410}
+{"client": "10.77.55.4", "kind": "dns", "name": "attacker.invalid", "qtype": 28, "t_ms": 746620}
+{"client": "10.77.55.4", "kind": "dns", "name": "attacker.invalid", "qtype": 1, "t_ms": 746622}
+{"client": "10.77.55.4", "kind": "dns", "name": "api.anthropic.com", "qtype": 28, "t_ms": 753419}
+{"client": "10.77.55.4", "kind": "dns", "name": "api.anthropic.com", "qtype": 1, "t_ms": 753420}
+{"client": "10.77.55.4", "first_bytes": 1482, "kind": "tcp", "port": 443, "protocol": "tls", "sni": "api.anthropic.com", "t_ms": 753421}
+{"client": "10.77.55.4", "kind": "dns", "name": "api.anthropic.com", "qtype": 1, "t_ms": 756625}
+{"client": "10.77.55.4", "kind": "dns", "name": "api.anthropic.com", "qtype": 28, "t_ms": 756626}
+{"client": "10.77.55.4", "first_bytes": 1482, "kind": "tcp", "port": 443, "protocol": "tls", "sni": "api.anthropic.com", "t_ms": 756627}
+{"client": "10.77.55.4", "kind": "dns", "name": "attacker.invalid", "qtype": 28, "t_ms": 764982}
+{"client": "10.77.55.4", "kind": "dns", "name": "attacker.invalid", "qtype": 1, "t_ms": 764983}
+{"client": "10.77.55.4", "kind": "dns", "name": "api.anthropic.com", "qtype": 28, "t_ms": 765934}
+{"client": "10.77.55.4", "kind": "dns", "name": "api.anthropic.com", "qtype": 1, "t_ms": 765934}
+{"client": "10.77.55.4", "first_bytes": 1482, "kind": "tcp", "port": 443, "protocol": "tls", "sni": "api.anthropic.com", "t_ms": 765935}

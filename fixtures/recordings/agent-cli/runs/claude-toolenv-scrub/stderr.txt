@@ -1,0 +1,13 @@
+ 6 | // and may be used to improve Anthropic's products, including training models.
+ 7 | // You are responsible for reviewing any code suggestions before use.
+ 8 | 
+ 9 | // (c) Anthropic PBC. All rights reserved. Use is subject to the Legal Agreements outlined here: https://code.claude.com/docs/en/legal-and-compliance.
+10 | 
+11 | import{Le,ms}from"/$bunfs/root/chunk-sdewq0rc.js";import{W}from"/$bunfs/root/chunk-aeg42rkz.js";import{yN,i}from"/$bunfs/root/chunk-e7g6jda6.js";import{B,Ee,Y}from"/$bunfs/root/chunk-6dr0rh23.js";import{te,t}from"/$bunfs/root/chunk-936avtaj.js";import{I}from"/$bunfs/root/chunk-hmp3fhxa.js";import{qQo}from"/$bunfs/root/chunk-rznd7c2x.js";import{Gs}from"/$bunfs/root/chunk-xykg23gb.js";import{cN}from"/$bunfs/root/chunk-2gvc6ep3.js";import{jV,GM,GO,kCt,Aes,ETn,xes,vCt,yJr,Vgi,iit,Oes,Afe,r6t,RTn,ZSe,CTn,acr,Ygi,ATn,qO,em}from"/$bunfs/root/chunk-vrqg311n.js";import{vv}from"/$bunfs/root/chunk-ew83y7k9.js";import{ui}from"/$bunfs/root/chunk-qgan9tvz.js";import{jo}from"/$bunfs/root/chunk-a6k8qbe2.js";import{dOe}from"/$bunfs/root/chunk-v1dde9tf.js";import{V$e,fRn,Ait,qH}from"/$bunfs/root/chunk-3dhebj7x.js";import{UQr}from"/$bunfs/root/chunk-x0zdkhw1.js";import{Sss}from"/$bunfs/root/chunk-mpwbq66c.js";import{ye}from"/$bunfs/root/chunk-tmjqa12x.js";var HRt=["CLAUDE_BG_DISPATCHER_SUBSCRIPTION_TYPE","CLAUDE_BG_DISPATCHER_R
+
+error: bubblewrap is required for subprocess env scrubbing and isolation. Install with: sudo apt-get install -y bubblewrap, set sandbox.bwrapPath in managed settings, or set CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=0 to disable (loses subprocess isolation).
+      at UQo (/$bunfs/root/chunk-vecsr7ja.js:11:7298)
+      at Q (/$bunfs/root/chunk-v73tj2va.js:11:7528)
+      at async <anonymous> (/$bunfs/root/chunk-g9tythbg.js:26:11066)
+
+Bun v1.4.4 (Linux arm64)

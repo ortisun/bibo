@@ -1,0 +1,14 @@
+exit_code=0
+--- files under /home/agent (bytes path)
+3214 /home/agent/.cache/claude-cli-nodejs/-workspace/mcp-logs-bridge/2026-10-27T13-35-17-890Z.jsonl
+719 /home/agent/.claude.json
+84 /home/agent/.claude/backups/.claude.json.backup.1793108117805
+92 /home/agent/.claude/plugins/store/cc-plugin-agents-md_builtin-b049b47b3618.json
+--- files under /tmp (bytes path)
+1 /tmp/claude-10001/fswatch-probe-lkmiFa/probe
+--- sockets and fifos under /tmp and /home/agent
+--- cgroup counters
+memory.peak=160153600
+pids.peak=13
+memory.max=4294967296
+pids.max=256

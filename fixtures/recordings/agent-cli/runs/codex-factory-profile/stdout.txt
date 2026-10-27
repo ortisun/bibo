@@ -1,0 +1,6 @@
+{"type":"thread.started","thread_id":"01a17d95-1dbf-7e73-a914-3a302c12c358"}
+{"type":"turn.started"}
+{"type":"item.started","item":{"id":"item_0","type":"command_execution","command":"/bin/sh -lc 'id; touch /workspace/made-by-agent'","aggregated_output":"","exit_code":null,"status":"in_progress"}}
+{"type":"item.completed","item":{"id":"item_0","type":"command_execution","command":"/bin/sh -lc 'id; touch /workspace/made-by-agent'","aggregated_output":"uid=10001(agent) gid=10001(agent) groups=10001(agent)\n","exit_code":0,"status":"completed"}}
+{"type":"item.completed","item":{"id":"item_1","type":"agent_message","text":"FAKE-PROVIDER: tool output received content='Script completed\\nWall time 0.0 seconds\\nOutput:\\n {\"chunk_id\":\"343bfd\",\"wall_time_seconds\":0.000002625,\"exit_code\":0,\"original_token_count\":14,\"output\":\"uid=10001(agent) gid=10001(agent) groups=10001(agent)\\\\n\"}'"}}
+{"type":"turn.completed","usage":{"input_tokens":2468,"cached_input_tokens":178,"cache_write_input_tokens":0,"output_tokens":112,"reasoning_output_tokens":0}}
