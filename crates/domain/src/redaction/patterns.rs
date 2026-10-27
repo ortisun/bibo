@@ -3,14 +3,16 @@
 //! The regular expressions are compiled exactly as the policy writes them. Nothing here knows a
 //! vendor format.
 //!
-//! They are compiled for bytes and with Unicode switched off. That has three effects, and all of
-//! them make the redactor stricter, never looser:
+//! They are compiled for bytes and with Unicode switched off. That has three effects:
 //!
 //! * a pattern can match inside text that is not valid UTF-8, and a class such as `[^\s@/]`
-//!   takes any byte that is not ASCII white space;
-//! * `(?i)` folds ASCII letters only, which keeps the crate free of the Unicode case tables;
+//!   takes any byte that is not ASCII white space (stricter than the default);
 //! * `\b` is a boundary between an ASCII word character and anything else, so a token that sits
-//!   right behind a non-ASCII letter is still found.
+//!   right behind a non-ASCII letter is still found (stricter than the default);
+//! * `(?i)` folds ASCII letters only. This keeps the crate free of the Unicode case tables, which
+//!   the production build of this crate does not enable and without which a `(?i)` pattern does
+//!   not compile in the default mode. It is looser in one corner: the Kelvin sign and the long s
+//!   no longer stand for `k` and `s` inside the three case-insensitive policy patterns.
 
 use std::sync::Arc;
 
