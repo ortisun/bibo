@@ -467,12 +467,22 @@ impl Sim {
     /// Starts the rework a plan describes. The failing run has already taken its event.
     fn start_rework(
         &mut self,
-        failing: StageRunId,
+        index: usize,
+        event: StageRunEvent,
         target: StageKind,
         track: ReworkTrack,
         ledger_after: ReworkLedger,
     ) -> Result<(), TestCaseError> {
+        let failing = self.runs[index].id;
+        // Plan first, while the failing run is still in its gate. The plan must leave the failing
+        // run out, because that run takes the rework transition and a run has one outcome.
         let planned = plan_for_rework(&self.runs, target, failing);
+        prop_assert!(
+            !planned.contains(&failing),
+            "the failing run was planned for supersession"
+        );
+        let accepted = self.runs[index].status.advance(event);
+        prop_assert!(accepted.is_ok(), "{event} is not legal for the failing run");
         self.supersede(&planned)?;
         self.start_new_run(target);
         self.ledger = ledger_after;
@@ -578,11 +588,17 @@ impl Sim {
                     failing_set_differs: *differs,
                     budget_remains: *budget,
                 });
-                let accepted = self.runs[index].status.advance(decision.event());
-                prop_assert!(accepted.is_ok(), "{decision:?} is not legal from GATING");
                 if let GateReworkDecision::Rework(plan) = decision {
-                    self.start_rework(failing.id, plan.target, plan.track, plan.ledger_after)?;
+                    self.start_rework(
+                        index,
+                        decision.event(),
+                        plan.target,
+                        plan.track,
+                        plan.ledger_after,
+                    )?;
                 } else {
+                    let accepted = self.runs[index].status.advance(decision.event());
+                    prop_assert!(accepted.is_ok(), "{decision:?} is not legal from GATING");
                     prop_assert_eq!(self.ledger, ledger_before);
                 }
             }
@@ -609,11 +625,13 @@ impl Sim {
                 });
                 match decision {
                     HumanReworkDecision::Rework(plan) => {
-                        let accepted = self.runs[index]
-                            .status
-                            .advance(StageRunEvent::HumanRequestedRework);
-                        prop_assert!(accepted.is_ok(), "S15 refused a waiting or blocked run");
-                        self.start_rework(failing.id, plan.target, plan.track, plan.ledger_after)?;
+                        self.start_rework(
+                            index,
+                            StageRunEvent::HumanRequestedRework,
+                            plan.target,
+                            plan.track,
+                            plan.ledger_after,
+                        )?;
                     }
                     HumanReworkDecision::Refused(_) | HumanReworkDecision::NoRoute(_) => {
                         prop_assert_eq!(self.ledger, ledger_before);
@@ -1109,10 +1127,21 @@ fn stamp(second: u32, millis: u32, spell_zero_fraction: bool) -> (Timestamp, (u3
 
 #[test]
 fn time_guards_compare_the_instant_whatever_the_spelling() {
-    let moment = (0u32..120, 0u32..1000, any::<bool>());
-    let strategy = (moment.clone(), moment);
+    // Zero milliseconds are common and the second moment is often the same instant as the first,
+    // written the other way. That is the case where comparing the stored values goes wrong.
+    let millis = prop_oneof![Just(0u32), 0u32..1000];
+    let strategy = (
+        0u32..120,
+        millis.clone(),
+        any::<bool>(),
+        any::<bool>(),
+        0u32..120,
+        millis,
+        any::<bool>(),
+    );
     runner(SEQUENCES)
-        .run(&strategy, |((s1, m1, z1), (s2, m2, z2))| {
+        .run(&strategy, |(s1, m1, z1, same_instant, s2, m2, z2)| {
+            let (s2, m2) = if same_instant { (s1, m1) } else { (s2, m2) };
             let (now, now_instant) = stamp(s1, m1, z1);
             let (other, other_instant) = stamp(s2, m2, z2);
 
