@@ -100,6 +100,27 @@ fn check_status_names<S: Status>(doc: &Value) {
         );
         // Every documented spelling reads back to the same value.
         assert_eq!(S::parse_name(&state.to_string()), Some(*state));
+        // A terminal status leaves only through `supersede`, and only where the file says it is
+        // supersedable (PASSED and SKIPPED of a stage run).
+        if state.is_terminal() {
+            let exits: Vec<String> = S::EVENTS
+                .iter()
+                .filter(|event| state.apply(**event).is_ok())
+                .map(ToString::to_string)
+                .collect();
+            let supersedable = flags["supersedable"].as_bool().unwrap_or(false);
+            assert_eq!(
+                exits == ["supersede"],
+                supersedable,
+                "{}.{state}: the supersedable flag differs from the file",
+                S::MACHINE
+            );
+            assert!(
+                supersedable || exits.is_empty(),
+                "{}.{state} is terminal and not supersedable but exits on {exits:?}",
+                S::MACHINE
+            );
+        }
     }
 }
 
@@ -399,17 +420,35 @@ fn only_the_heartbeat_emits_no_event() {
 // ---- the documented exceptions to "terminal means no exit" -----------------------------------
 
 #[test]
-fn a_passed_stage_run_can_only_be_superseded() {
-    assert!(StageRunStatus::Passed.is_terminal());
-    let exits: Vec<StageRunEvent> = StageRunStatus::EVENTS
+fn a_passed_or_skipped_stage_run_can_only_be_superseded() {
+    // ADR 0010 decision 2: a skipped run was decided on recorded inputs, so it goes stale like a
+    // passed one. These two are the only terminal statuses with an exit.
+    for status in [StageRunStatus::Passed, StageRunStatus::Skipped] {
+        assert!(status.is_terminal());
+        let exits: Vec<StageRunEvent> = StageRunStatus::EVENTS
+            .iter()
+            .copied()
+            .filter(|event| status.apply(*event).is_ok())
+            .collect();
+        assert_eq!(exits, [StageRunEvent::Supersede], "{status}");
+        assert_eq!(
+            status.apply(StageRunEvent::Supersede),
+            Ok(StageRunStatus::Superseded)
+        );
+    }
+    let with_an_exit: Vec<StageRunStatus> = StageRunStatus::STATES
         .iter()
         .copied()
-        .filter(|event| StageRunStatus::Passed.apply(*event).is_ok())
+        .filter(|status| status.is_terminal())
+        .filter(|status| {
+            StageRunStatus::EVENTS
+                .iter()
+                .any(|event| status.apply(*event).is_ok())
+        })
         .collect();
-    assert_eq!(exits, [StageRunEvent::Supersede]);
     assert_eq!(
-        StageRunStatus::Passed.apply(StageRunEvent::Supersede),
-        Ok(StageRunStatus::Superseded)
+        with_an_exit,
+        [StageRunStatus::Passed, StageRunStatus::Skipped]
     );
 }
 
@@ -1082,6 +1121,23 @@ fn conformance_detects_a_changed_table() {
             "a terminal flag flipped",
             |doc| doc["machines"]["task_node"]["states"]["FAILED"]["terminal"] = json!(true),
             "terminal flag differs",
+        ),
+        (
+            "a settled status made supersedable in the file only",
+            |doc| {
+                doc["machines"]["stage_run"]["states"]["CANCELLED"]["supersedable"] = json!(true);
+            },
+            "the supersedable flag differs from the file",
+        ),
+        (
+            "the supersedable flag removed from SKIPPED",
+            |doc| {
+                doc["machines"]["stage_run"]["states"]["SKIPPED"]
+                    .as_object_mut()
+                    .unwrap()
+                    .remove("supersedable");
+            },
+            "the supersedable flag differs from the file",
         ),
         (
             "a guard added to the file",

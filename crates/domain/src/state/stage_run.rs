@@ -31,7 +31,7 @@ string_enum! {
         ReworkRequested = "REWORK_REQUESTED",
         /// Retries or rework exhausted, or the failure is not retryable, or a human rejected.
         Failed = "FAILED",
-        /// NOT_APPLICABLE by deterministic rule, profile or policy, with the rule recorded.
+        /// NOT_APPLICABLE by deterministic rule, profile or policy, with the rule recorded. Counts as satisfied for the stages that require it and for completion, never as passed, and never as evidence for an assurance level. Becomes SUPERSEDED when an input of the decision changes.
         Skipped = "SKIPPED",
         /// Replaced because an upstream input changed.
         Superseded = "SUPERSEDED",
@@ -261,6 +261,7 @@ pub static STAGE_RUN_TRANSITIONS: &[Transition<StageRunStatus, StageRunEvent>] =
             StageRunStatus::WaitingForHuman,
             StageRunStatus::Blocked,
             StageRunStatus::Passed,
+            StageRunStatus::Skipped,
         ],
         event: StageRunEvent::Supersede,
         guard: Guard::UpstreamInvalidated,

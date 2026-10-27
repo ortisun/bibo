@@ -80,7 +80,7 @@ pub trait Status: Copy + Eq + Hash + Debug + Display + 'static {
     const TRANSITIONS: &'static [Transition<Self, Self::Event>];
 
     /// True when the status is terminal. A terminal status has no exit, with one documented
-    /// exception: a passed stage run can still be superseded.
+    /// exception: a passed or a skipped stage run can still be superseded.
     fn is_terminal(self) -> bool;
 
     /// Reads a status name, or returns `None` for text that is not a status of this machine.

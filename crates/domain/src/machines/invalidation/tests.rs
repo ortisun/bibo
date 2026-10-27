@@ -149,8 +149,39 @@ fn only_runs_that_can_still_be_superseded_are_picked() {
     ];
     assert_eq!(
         plan_for_change(&runs, ArtifactChange::ImplementationCommit),
-        [id(2), id(3), id(7)]
+        [id(2), id(3), id(4), id(7)]
     );
+}
+
+#[test]
+fn skipped_stage_is_superseded_by_an_upstream_change() {
+    // ADR 0010 decision 2: the skip decision was made on recorded inputs. When an upstream
+    // artifact changes, the decision must be made again, so the old skipped run goes stale. If it
+    // stayed, it would still satisfy the guard of the stage after it.
+    let runs = [
+        run(1, StageKind::Documenting, StageRunStatus::Skipped),
+        run(2, StageKind::DocumentationReview, StageRunStatus::Skipped),
+        run(3, StageKind::Implementation, StageRunStatus::Passed),
+    ];
+    let planned = plan_for_change(&runs, ArtifactChange::ImplementationCommit);
+    assert_eq!(planned, [id(1), id(2)]);
+
+    // Applying the plan really takes the skipped runs to SUPERSEDED, and a second plan is empty.
+    let mut applied = runs;
+    for run in &mut applied {
+        if planned.contains(&run.id) {
+            assert_eq!(
+                run.status.advance(StageRunEvent::Supersede).map(|t| t.id),
+                Ok("S20")
+            );
+            assert_eq!(run.status, StageRunStatus::Superseded);
+        }
+    }
+    assert!(plan_for_change(&applied, ArtifactChange::ImplementationCommit).is_empty());
+
+    // Rework to an earlier stage replaces a skipped run of a later one for the same reason.
+    let by_rework = plan_for_rework(&runs, StageKind::Implementation, id(3));
+    assert_eq!(by_rework, [id(1), id(2)]);
 }
 
 #[test]

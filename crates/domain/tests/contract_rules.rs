@@ -844,6 +844,46 @@ fn every_case_changes_its_base_example() {
     }
 }
 
+// ---- a skipped stage creates no assurance level -----------------------------------------------------
+
+#[test]
+fn a_skipped_stage_creates_no_assurance_level() {
+    // ADR 0010 decision 2: a skipped stage run satisfies the stages after it and is still never
+    // evidence. It has no gate report, no artifact and no trace, so a claim made on its behalf has
+    // an empty evidence list. The domain has no function that turns a stage run into an assurance
+    // level; the one place that decides is the rule on a ledger entry, and it refuses such a claim
+    // for every kind of claim that can carry a level.
+    let (schema, original) =
+        base_document("evidence-ledger-entry/sandbox-verification-first-entry.json");
+    assert!(round_trip_value(schema, &original).is_ok());
+    for kind in ["measured_fact", "simulation_result", "expert_judgment"] {
+        let mut claim_without_evidence = original.clone();
+        put(&mut claim_without_evidence, "/claim/kind", json!(kind));
+        put(&mut claim_without_evidence, "/evidence", json!([]));
+        let message = round_trip_value(schema, &claim_without_evidence)
+            .expect_err(kind)
+            .to_string();
+        assert!(
+            message.contains(
+                "a claim that supports an assurance level needs at least one piece of evidence"
+            ),
+            "{kind}: {message}"
+        );
+    }
+    // Only an assumption or a hypothesis could be written without evidence, and those cannot
+    // carry a level at all.
+    for kind in ["assumption", "hypothesis"] {
+        let mut weak = original.clone();
+        put(&mut weak, "/claim/kind", json!(kind));
+        put(&mut weak, "/evidence", json!([]));
+        let message = round_trip_value(schema, &weak).expect_err(kind).to_string();
+        assert!(
+            message.contains("cannot support an assurance level"),
+            "{kind}: {message}"
+        );
+    }
+}
+
 // ---- the validating path is the only one ------------------------------------------------------------
 
 #[test]

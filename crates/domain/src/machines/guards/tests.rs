@@ -435,6 +435,48 @@ fn a_superseded_or_missing_run_does_not_count_as_passed() {
 }
 
 #[test]
+fn skipped_stage_satisfies_dependants_through_the_completion_check() {
+    // ADR 0010 decision 2: a stage in scope that a recorded rule skipped does not stop the job
+    // from completing.
+    let mut runs = scope_runs();
+    runs[1].status = StageRunStatus::Skipped;
+    let facts = PipelineScopeFacts {
+        scope: &SCOPE,
+        stage_runs: &runs,
+        approval_decision_is_approve: true,
+        ledger_chain_verifies: true,
+    };
+    assert_holds(job::pipeline_scope_complete(&facts));
+
+    // Every status except the two settled ones leaves the stage unsatisfied.
+    for status in StageRunStatus::STATES {
+        let mut runs = scope_runs();
+        runs[1].status = *status;
+        assert_eq!(
+            job::pipeline_scope_complete(&PipelineScopeFacts {
+                stage_runs: &runs,
+                ..facts
+            })
+            .is_ok(),
+            matches!(status, StageRunStatus::Passed | StageRunStatus::Skipped),
+            "{status}"
+        );
+    }
+
+    // A skipped run that was superseded is a superseded run, and a stage with no live run at all
+    // is not complete.
+    let mut runs = scope_runs();
+    runs[1].status = StageRunStatus::Superseded;
+    assert_unmet(
+        job::pipeline_scope_complete(&PipelineScopeFacts {
+            stage_runs: &runs,
+            ..facts
+        }),
+        "passed",
+    );
+}
+
+#[test]
 fn completion_also_needs_an_approve_decision_and_a_verified_ledger() {
     let runs = scope_runs();
     let facts = PipelineScopeFacts {
@@ -489,7 +531,7 @@ fn a_stage_run_is_ready_when_every_stage_it_requires_has_a_passed_run() {
 }
 
 #[test]
-fn a_required_stage_that_is_not_passed_holds_the_run_back() {
+fn a_required_stage_that_is_neither_passed_nor_skipped_holds_the_run_back() {
     for status in StageRunStatus::STATES {
         let runs = [
             run(1, StageKind::Specification, StageRunStatus::Passed),
@@ -503,10 +545,57 @@ fn a_required_stage_that_is_not_passed_holds_the_run_back() {
         };
         assert_eq!(
             stage_run::upstream_passed(&facts).is_ok(),
-            *status == StageRunStatus::Passed,
+            matches!(status, StageRunStatus::Passed | StageRunStatus::Skipped),
             "{status}"
         );
     }
+}
+
+#[test]
+fn skipped_stage_satisfies_dependants_through_the_upstream_guard() {
+    // ADR 0010 decision 2: a stage that a recorded rule skipped does not hold back the stages
+    // that require it. Without this, every skip would leave its dependants in PENDING for good.
+    let runs = [
+        run(1, StageKind::Specification, StageRunStatus::Passed),
+        run(2, StageKind::DomainDiscovery, StageRunStatus::Skipped),
+    ];
+    let facts = UpstreamFacts {
+        stage: StageKind::Architecture,
+        stage_runs: &runs,
+        consumed_artifact_hashes_current: true,
+        stage_contract_resolved_and_valid: true,
+    };
+    assert_holds(stage_run::upstream_passed(&facts));
+
+    // A skipped run that was superseded no longer counts. The run that replaced it decides.
+    let superseded = [
+        run(1, StageKind::Specification, StageRunStatus::Passed),
+        run(2, StageKind::DomainDiscovery, StageRunStatus::Superseded),
+        run(3, StageKind::DomainDiscovery, StageRunStatus::Pending),
+    ];
+    assert_unmet(
+        stage_run::upstream_passed(&UpstreamFacts {
+            stage_runs: &superseded,
+            ..facts
+        }),
+        "upstream",
+    );
+
+    // Skipping does not excuse the other two conditions of the guard.
+    assert_unmet(
+        stage_run::upstream_passed(&UpstreamFacts {
+            consumed_artifact_hashes_current: false,
+            ..facts
+        }),
+        "hash",
+    );
+    assert_unmet(
+        stage_run::upstream_passed(&UpstreamFacts {
+            stage_contract_resolved_and_valid: false,
+            ..facts
+        }),
+        "contract",
+    );
 }
 
 #[test]

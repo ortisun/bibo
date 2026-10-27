@@ -27,24 +27,37 @@ pub struct UpstreamFacts<'a> {
     pub stage_contract_resolved_and_valid: bool,
 }
 
+/// True when a run of a stage satisfies the stages that require it and the completion of the
+/// job (ADR 0010 decision 2): it is `PASSED`, or it is `SKIPPED` because a recorded rule says
+/// the stage does not apply. A run in any other status, a superseded one included, does not.
+///
+/// A skipped run satisfies the dependency and is still not a pass. It produced no artifact and
+/// no evidence, so no assurance level comes from it.
+#[must_use]
+pub const fn satisfies_dependants(status: StageRunStatus) -> bool {
+    matches!(status, StageRunStatus::Passed | StageRunStatus::Skipped)
+}
+
 /// `G_UPSTREAM_PASSED`.
 ///
-/// Read as written: each stage in [`StageKind::requires`] must have a run whose status is
-/// `PASSED`. A run that was `SKIPPED` as not applicable does not satisfy it.
+/// Each stage in [`StageKind::requires`] must have a run that is `PASSED`, or `SKIPPED` because
+/// a recorded rule says the stage does not apply (see [`satisfies_dependants`]). A superseded
+/// run does not count. A skipped stage produced no artifact, so "every consumed artifact hash is
+/// current" holds for it as for any stage whose artifacts are all current.
 ///
 /// # Errors
 /// Returns the conditions that are not met.
 pub fn upstream_passed(facts: &UpstreamFacts<'_>) -> GuardResult {
-    let every_required_stage_passed = facts.stage.requires().iter().all(|required| {
+    let every_required_stage_satisfied = facts.stage.requires().iter().all(|required| {
         facts
             .stage_runs
             .iter()
-            .any(|run| run.kind == *required && run.status == StageRunStatus::Passed)
+            .any(|run| run.kind == *required && satisfies_dependants(run.status))
     });
     Check::new(Guard::UpstreamPassed)
         .require(
-            every_required_stage_passed,
-            "a required upstream stage has no passed run that is still current",
+            every_required_stage_satisfied,
+            "a required upstream stage has no passed or skipped run that is still current",
         )
         .require(
             facts.consumed_artifact_hashes_current,

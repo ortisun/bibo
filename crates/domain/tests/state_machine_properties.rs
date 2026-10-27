@@ -297,7 +297,6 @@ fn a_superseded_or_reworked_stage_run_never_comes_back() {
         StageRunStatus::Superseded,
         StageRunStatus::ReworkRequested,
         StageRunStatus::Failed,
-        StageRunStatus::Skipped,
         StageRunStatus::Cancelled,
     ] {
         assert!(dead.is_terminal());
@@ -308,11 +307,10 @@ fn a_superseded_or_reworked_stage_run_never_comes_back() {
             );
         }
     }
-    assert!(
-        StageRunStatus::Passed
-            .apply(StageRunEvent::Supersede)
-            .is_ok()
-    );
+    // A passed run and a skipped run can still go stale (ADR 0010).
+    for settled in [StageRunStatus::Passed, StageRunStatus::Skipped] {
+        assert!(settled.apply(StageRunEvent::Supersede).is_ok());
+    }
 }
 
 // =================================================================================================
@@ -658,11 +656,12 @@ impl Sim {
                 .find(|r| r.id == *id)
                 .map(|r| r.status)
                 .expect("a run is never deleted");
-            // Terminal means no exit, except that a passed run can be superseded.
+            // Terminal means no exit, except that a passed or a skipped run can be superseded.
             if was.is_terminal() {
                 prop_assert!(
                     now == *was
-                        || (*was == StageRunStatus::Passed && now == StageRunStatus::Superseded),
+                        || (matches!(*was, StageRunStatus::Passed | StageRunStatus::Skipped)
+                            && now == StageRunStatus::Superseded),
                     "{was} became {now}"
                 );
             }
@@ -1186,7 +1185,7 @@ fn admission_is_always_exactly_one_of_ok_and_denied() {
 }
 
 #[test]
-fn a_job_completes_only_when_every_stage_in_scope_has_a_passed_run() {
+fn a_job_completes_only_when_every_stage_in_scope_has_a_passed_or_skipped_run() {
     let strategy = (
         vec(0..StageKind::ALL.len(), 0..6),
         vec(
@@ -1220,10 +1219,8 @@ fn a_job_completes_only_when_every_stage_in_scope_has_a_passed_run() {
             if complete {
                 prop_assert!(approve && verified && !scope.is_empty());
                 for kind in &scope {
-                    prop_assert!(
-                        runs.iter()
-                            .any(|r| r.kind == *kind && r.status == StageRunStatus::Passed)
-                    );
+                    prop_assert!(runs.iter().any(|r| r.kind == *kind
+                        && matches!(r.status, StageRunStatus::Passed | StageRunStatus::Skipped)));
                 }
             }
             Ok(())
