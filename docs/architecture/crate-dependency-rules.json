@@ -406,6 +406,18 @@
   ],
   "source_scans": {
     "description": "The lists that the source scans of xtask check-architecture use. They were constants in the xtask sources; a reviewer now changes them here. Every crate named below must be in crates or apps, or the check stops. Crate names are the names in this file, without the package prefix.",
+    "generated_artifacts": [
+      {
+        "name": "the schema and example index of the domain tests",
+        "check": ["python3", "-I", "crates/domain/tests/tools/gen_example_index.py", "--check"],
+        "regenerate": "python3 -I crates/domain/tests/tools/gen_example_index.py"
+      },
+      {
+        "name": "the ledger chain fixture, against the independent Python oracle",
+        "check": ["python3", "-I", "crates/domain/tests/oracle/ledger_chain_oracle.py", "--check"],
+        "regenerate": "python3 -I crates/domain/tests/oracle/ledger_chain_oracle.py"
+      }
+    ],
     "st_01": {
       "skipped_directories": [".git", "target", "node_modules"],
       "prose_extensions": ["md", "txt", "rst", "lock"]

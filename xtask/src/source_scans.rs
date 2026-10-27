@@ -10,6 +10,7 @@ use std::collections::BTreeSet;
 
 #[derive(Debug, Clone)]
 pub struct SourceScans {
+    pub generated_artifacts: Vec<GeneratedArtifact>,
     pub st_01: St01,
     pub dep_04: Dep04,
     pub dep_05: Dep05,
@@ -23,6 +24,17 @@ pub struct SourceScans {
     pub st_14: St14,
     /// Every crate or binary named anywhere in the section, for the existence check.
     pub named_crates: BTreeSet<String>,
+}
+
+/// A file that a script generates from other files, and the command that proves it is current.
+/// `cargo xtask check-generated` runs each command from the repository root.
+#[derive(Debug, Clone)]
+pub struct GeneratedArtifact {
+    pub name: String,
+    /// The program and its arguments. No shell.
+    pub check: Vec<String>,
+    /// What to run to bring the artifact up to date, shown when the check fails.
+    pub regenerate: String,
 }
 
 /// DEP-04 also covers where an external package comes from. A path or git dependency named like
@@ -172,6 +184,19 @@ impl SourceScans {
             krate.to_string()
         };
 
+        let mut generated_artifacts = Vec::new();
+        for entry in scans
+            .get("generated_artifacts")
+            .and_then(Value::as_array)
+            .ok_or("rules file: `generated_artifacts` in source_scans must be a list")?
+        {
+            generated_artifacts.push(GeneratedArtifact {
+                name: text(entry, "name", "a generated_artifacts entry")?,
+                check: strings(entry, "check", "a generated_artifacts entry")?,
+                regenerate: text(entry, "regenerate", "a generated_artifacts entry")?,
+            });
+        }
+
         let d = object(scans, "st_01", "source_scans")?;
         let st_01 = St01 {
             skipped_directories: strings(d, "skipped_directories", "source_scans.st_01")?,
@@ -300,6 +325,7 @@ impl SourceScans {
         };
 
         Ok(Self {
+            generated_artifacts,
             st_01,
             dep_04,
             dep_05,

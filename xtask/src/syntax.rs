@@ -515,6 +515,41 @@ impl Syntax {
         i.min(limit).min(self.tokens.len()).max(from)
     }
 
+    /// The names of the functions marked `#[test]`, `#[tokio::test]` or another `...::test`.
+    /// `#[cfg(test)]` does not make a function a test.
+    pub fn test_function_names(&self) -> Vec<String> {
+        let mut names = Vec::new();
+        let mut i = 0;
+        while i < self.tokens.len() {
+            let Some((false, content, after)) = self.attribute_at(i) else {
+                i += 1;
+                continue;
+            };
+            // The attribute path: `test`, or `tokio::test`, followed by `(` or the end.
+            let (path, next) = self.plain_path(content);
+            let marks_a_test = path.last().is_some_and(|last| last == "test")
+                && (self.is_punct(next, "]") || self.is_punct(next, "("));
+            i = after;
+            if !marks_a_test {
+                continue;
+            }
+            let mut j = after;
+            while let Some((_, _, further)) = self.attribute_at(j) {
+                j = further;
+            }
+            for _ in 0..8 {
+                if self.is_word(j, "fn") {
+                    if let Some(name) = self.ident_at(j + 1) {
+                        names.push(name.to_string());
+                    }
+                    break;
+                }
+                j += 1;
+            }
+        }
+        names
+    }
+
     // -----------------------------------------------------------------------------------------
     // Modules
 
