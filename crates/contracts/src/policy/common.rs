@@ -2,7 +2,6 @@
 
 use std::fmt;
 
-use regex::Regex;
 use serde::de::{self, Deserializer, Visitor};
 use serde::{Deserialize, Serialize, Serializer};
 
@@ -159,12 +158,21 @@ closed_set! {
 pub struct RegexText(pub String);
 
 impl RegexText {
-    /// Compiles the expression, with a size limit so a huge pattern cannot be built.
+    /// Compiles the expression for bytes, without Unicode mode, with a size limit so a huge pattern
+    /// cannot be built.
+    ///
+    /// This is the way the redactor compiles the same patterns, so the loader accepts exactly what
+    /// the redactor will run. It matters for two reasons. A case-insensitive pattern then needs no
+    /// `unicode-case` feature: a test build gets that feature by accident through a development
+    /// dependency, a production build does not, and the real policy used to fail to load there.
+    /// And a negated class such as `[^\s@]` may match bytes outside UTF-8, which only the byte
+    /// matcher allows.
     ///
     /// # Errors
     /// The compiler's message.
-    pub fn compile(&self) -> Result<Regex, String> {
-        regex::RegexBuilder::new(&self.0)
+    pub fn compile(&self) -> Result<regex::bytes::Regex, String> {
+        regex::bytes::RegexBuilder::new(&self.0)
+            .unicode(false)
             .size_limit(1 << 20)
             .build()
             .map_err(|e| e.to_string())
