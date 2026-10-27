@@ -1,0 +1,8 @@
+{
+  "name": "factory-ci-pyright",
+  "private": true,
+  "description": "Pins the Pyright version that CI installs. The workflow runs 'npm ci' on this file and its lockfile.",
+  "devDependencies": {
+    "pyright": "1.1.413"
+  }
+}

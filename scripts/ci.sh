@@ -275,6 +275,7 @@ internal_step() {
 register_builtin_steps() {
   internal_step no-secrets-in-config "Example env file and Compose files hold no secret-looking values" "python3"
   internal_step workflow-policy "Workflows: actions pinned to commit SHAs, no pull_request_target, least privilege (ST-10)" "python3"
+  internal_step tool-pins "Tool versions agree between scripts/ci.sh, the workflow and the pyright lockfile" "python3"
   internal_step policy-yaml "policies/*.yaml follow the parser contract and name only real threats (ST-06)" "uv python3"
   step readability-corpus "Readability corpus is well formed and matches the master prompt" "python3" "" -- \
     python3 -I fixtures/readability/check_corpus.py --prompt-examples
@@ -978,6 +979,70 @@ int_workflow_policy() {
   esac
 }
 
+# ----- tool versions agree everywhere they are written -------------------------------------------
+# Tool versions are written in three places: PIN_* in this script (install hints), the workflow
+# (what CI installs) and the pyright lockfile. A version changed in one place only would leave
+# people and CI testing with different tools, which is exactly the drift this script exists to stop.
+py_tool_pins() {
+  python3 -I - "$@" <<'PY'
+import json
+import pathlib
+import re
+import sys
+
+ci_path, workflow_path, package_path, lock_path = (pathlib.Path(arg) for arg in sys.argv[1:5])
+try:
+    ci = ci_path.read_text(encoding="utf-8")
+    workflow = workflow_path.read_text(encoding="utf-8")
+    package = json.loads(package_path.read_text(encoding="utf-8"))
+    lock = json.loads(lock_path.read_text(encoding="utf-8"))
+except (OSError, ValueError) as exc:
+    print(f"BLOCKED: cannot read one of the files that name tool versions: {exc}")
+    sys.exit(3)
+
+pins = dict(re.findall(r'^PIN_([A-Z]+)="([^"]+)"$', ci, re.M))
+problems = []
+
+
+def expect(label, pin, actual):
+    want = pins.get(pin)
+    if want is None:
+        problems.append(f"{ci_path} has no PIN_{pin} line")
+    elif actual != want:
+        problems.append(f"{label}: the workflow or lockfile says {actual!r}, but PIN_{pin} in {ci_path} says {want!r}")
+    else:
+        print(f"ok    {label} {want}")
+
+
+tool_line = re.search(r"^\s*tool:\s*(\S+)\s*$", workflow, re.M)
+action_tools = dict(item.split("@", 1) for item in tool_line.group(1).split(",") if "@" in item) if tool_line else {}
+for tool, pin in (("cargo-nextest", "NEXTEST"), ("cargo-deny", "DENY"), ("cargo-audit", "AUDIT"), ("shellcheck", "SHELLCHECK")):
+    expect(tool, pin, action_tools.get(tool))
+for tool, pin in (("gitleaks", "GITLEAKS"), ("actionlint", "ACTIONLINT")):
+    found = {v for pair in re.findall(rf"/{tool}/releases/download/v([0-9.]+)/{tool}_([0-9.]+)_", workflow) for v in pair}
+    expect(tool, pin, next(iter(found)) if len(found) == 1 else f"{sorted(found)} (the release tag and the file name must agree)")
+expect("pyright (package.json)", "PYRIGHT", (package.get("devDependencies") or {}).get("pyright"))
+expect("pyright (lockfile)", "PYRIGHT", ((lock.get("packages") or {}).get("node_modules/pyright") or {}).get("version"))
+for problem in problems:
+    print(f"FAIL  {problem}")
+sys.exit(1 if problems else 0)
+PY
+}
+
+int_tool_pins() {
+  need_tool python3
+  local ci=${1:-scripts/ci.sh} workflow=${2:-.github/workflows/ci.yml}
+  local package=${3:-.github/tools/pyright/package.json} lock=${4:-.github/tools/pyright/package-lock.json}
+  show_cmd python3 -I - "$ci" "$workflow" "$package" "$lock"
+  py_tool_pins "$ci" "$workflow" "$package" "$lock"
+  RC=$?
+  case $RC in
+    0) ;;
+    3) int_blocked "a file that names tool versions could not be read (see above)" ;;
+    *) int_failed "a tool version differs between scripts/ci.sh, the workflow and the pyright lockfile" ;;
+  esac
+}
+
 # ----- secret-looking values in example and Compose files ---------------------------------------
 py_no_secrets() {
   python3 -I - "$@" <<'PY'
@@ -1296,6 +1361,7 @@ run_internal() {
       py_no_secrets selftest
       ;;
     workflow-policy) int_workflow_policy "$@" ;;
+    tool-pins) int_tool_pins "$@" ;;
     policy-yaml) int_policy_yaml "$@" ;;
     schemas) int_schemas "$@" ;;
     pyright) int_pyright "$@" ;;
@@ -1721,6 +1787,27 @@ st_pinning() {
   sed -i.bak '/persist-credentials/d;/with:/d' "$ST_TMP/pin/workflows/ci.yml"
   sub_ci --internal workflow-policy "$ST_TMP/pin"
   st_equal "checkout without persist-credentials: false is rejected" "$SUB_CODE" 1
+
+  # Tool versions must agree between this script, the workflow and the pyright lockfile.
+  sub_ci --internal tool-pins
+  printf '%s\n' "$SUB_OUT" | sed 's/^/        | /'
+  st_equal "the real tool versions agree everywhere" "$SUB_CODE" 0
+  mkdir -p "$ST_TMP/pins"
+  cp .github/workflows/ci.yml "$ST_TMP/pins/ci.yml"
+  cp .github/tools/pyright/package.json "$ST_TMP/pins/package.json"
+  cp .github/tools/pyright/package-lock.json "$ST_TMP/pins/package-lock.json"
+  sub_ci --internal tool-pins scripts/ci.sh "$ST_TMP/pins/ci.yml" "$ST_TMP/pins/package.json" "$ST_TMP/pins/package-lock.json"
+  st_equal "control: an unchanged copy of the three files agrees" "$SUB_CODE" 0
+  sed 's/cargo-deny@0\.19\.9/cargo-deny@0.19.8/' .github/workflows/ci.yml >"$ST_TMP/pins/ci.yml"
+  sub_ci --internal tool-pins scripts/ci.sh "$ST_TMP/pins/ci.yml" "$ST_TMP/pins/package.json" "$ST_TMP/pins/package-lock.json"
+  st_equal "a cargo-deny version changed only in the workflow is rejected" "$SUB_CODE" 1
+  sed 's|/download/v8\.30\.1/|/download/v8.30.2/|' .github/workflows/ci.yml >"$ST_TMP/pins/ci.yml"
+  sub_ci --internal tool-pins scripts/ci.sh "$ST_TMP/pins/ci.yml" "$ST_TMP/pins/package.json" "$ST_TMP/pins/package-lock.json"
+  st_equal "a gitleaks release tag that disagrees with its file name is rejected" "$SUB_CODE" 1
+  cp .github/workflows/ci.yml "$ST_TMP/pins/ci.yml"
+  sed 's/"pyright": "1\.1\.413"/"pyright": "1.1.412"/' .github/tools/pyright/package.json >"$ST_TMP/pins/package.json"
+  sub_ci --internal tool-pins scripts/ci.sh "$ST_TMP/pins/ci.yml" "$ST_TMP/pins/package.json" "$ST_TMP/pins/package-lock.json"
+  st_equal "a pyright version changed only in package.json is rejected" "$SUB_CODE" 1
 
   # The history scan. First: the scanner is hidden, so the result must be BLOCKED.
   git_path=$(type -P git 2>/dev/null || true)

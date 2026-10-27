@@ -15,8 +15,9 @@
 # Why the install steps are here and not in scripts/ci.sh: installing a tool changes the
 # machine, and running a check must not. A missing tool is reported by scripts/ci.sh as BLOCKED.
 #
-# Tool versions are pinned here, and scripts/ci.sh shows the same numbers in its install hints.
-# Change a version in both places, in one pull request.
+# Tool versions are pinned here, in .github/tools/pyright/, and as PIN_* lines in scripts/ci.sh
+# (which shows them in its install hints). Change a version in every place, in one pull request.
+# The "tool-pins" step of scripts/ci.sh fails if the places disagree.
 
 name: ci
 
@@ -89,20 +90,16 @@ jobs:
           tar -xzf "$RUNNER_TEMP/actionlint.tar.gz" -C "$bin_dir" actionlint
           echo "$bin_dir" >> "$GITHUB_PATH"
 
-      # npm checks the downloaded file against the hash the registry publishes. That hash is
-      # compared here with the one recorded in this file, so a replaced package is refused.
-      # pyright 1.1.413 has no install scripts; they are switched off anyway.
-      - name: Install pyright with a checked hash
+      # "npm ci" installs exactly what .github/tools/pyright/package-lock.json lists and refuses a
+      # package whose hash differs. The install happens in a temporary folder, so no node_modules
+      # appears in the repository. Install scripts are switched off.
+      - name: Install pyright from its lockfile
         run: |
           set -euo pipefail
-          expected='sha512-1lpxKrh0DHHpfAQOfciZo2ojua2jase3wwO9at8kldc+F/p1PBscxA5CQ3G1qg5lMOMhXo6ZaiMLMXEAqADIAg=='
-          actual="$(npm view pyright@1.1.413 dist.integrity)"
-          if [ "$actual" != "$expected" ]; then
-            echo "pyright 1.1.413 does not have the expected hash: $actual" >&2
-            exit 1
-          fi
-          npm install --global --ignore-scripts --no-audit --no-fund --prefix "$RUNNER_TEMP/tools" pyright@1.1.413
-          echo "$RUNNER_TEMP/tools/bin" >> "$GITHUB_PATH"
+          mkdir -p "$RUNNER_TEMP/pyright"
+          cp .github/tools/pyright/package.json .github/tools/pyright/package-lock.json "$RUNNER_TEMP/pyright/"
+          (cd "$RUNNER_TEMP/pyright" && npm ci --ignore-scripts --no-audit --no-fund)
+          echo "$RUNNER_TEMP/pyright/node_modules/.bin" >> "$GITHUB_PATH"
 
       # The one command that matters. It exits 0 only if every step passed, 1 if a step failed,
       # and 3 if a step was BLOCKED (for example a missing tool). The summary is also saved.
