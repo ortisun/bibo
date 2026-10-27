@@ -1,2 +1,5 @@
-//! Labelled fakes for the tests of other crates. Every fake reports fidelity `fake`. This crate may
-//! appear only as a dev-dependency.
+//! Labelled fakes for the tests of other crates (work in progress).
+pub mod clock;
+pub mod contracts;
+pub mod fixtures;
+pub mod store;

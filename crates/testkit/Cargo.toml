@@ -7,3 +7,24 @@ publish.workspace = true
 
 [lints]
 workspace = true
+
+# Test support. Every other crate may depend on this one in `[dev-dependencies]` only (rule
+# DEP-03, checked by `cargo xtask check-architecture`). The external crates below are the three on
+# the `testkit` allow list in docs/architecture/crate-dependency-rules.json. Versions are the
+# releases checked with `cargo info` on 2026-10-27.
+[dependencies]
+factory-domain.workspace = true
+factory-ports.workspace = true
+# Implements the port traits, which are declared with `#[async_trait]`. Maintained by dtolnay.
+async-trait = "0.1.92"
+# Builds the JSON documents the fakes return (agent output, ledger entries, domain events).
+serde_json = { version = "1.0.154", default-features = false, features = ["std"] }
+# `sync` for the cancellation signal and the wake-up between tasks, `time` for the fake sandbox
+# command that sleeps and for the timeouts in the contract suites, `rt` for `spawn` in the
+# concurrency checks and `macros` for `select!`. None of these opens a socket or a file.
+tokio = { version = "1.54.1", default-features = false, features = ["sync", "time", "rt", "macros"] }
+
+[dev-dependencies]
+# `#[tokio::test(start_paused = true)]` makes `sleep` instant when every task is idle, so the
+# fake sandbox's slow commands and the timeout checks run without waiting. Dev only.
+tokio = { version = "1.54.1", default-features = false, features = ["sync", "time", "rt", "macros", "test-util"] }

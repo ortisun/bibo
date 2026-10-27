@@ -9,7 +9,9 @@ use std::time::Duration;
 use async_trait::async_trait;
 use factory_domain::values::Timestamp;
 use factory_domain::vocabulary::Fidelity;
-use uuid::Uuid;
+/// The identifier type [`IdGenerator`] returns, re-exported so an implementation (the testkit's
+/// fake, or the real generator in the apps) can name it without a `uuid` dependency of its own.
+pub use uuid::Uuid;
 
 /// The source of the current time for everything except lease and deadline checks.
 ///
