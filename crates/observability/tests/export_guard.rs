@@ -186,6 +186,36 @@ fn attributes_off_the_allowlist_are_dropped_and_counted() {
 }
 
 #[test]
+fn span_events_keep_their_level_and_target_but_a_span_may_not_carry_them() {
+    let harness = Harness::new();
+    harness.run(|| {
+        let span = info_span!(
+            "factory.job",
+            { attr::JOB_ID } = JOB,
+            level = "debug",
+            target = "x"
+        );
+        let _entered = span.enter();
+        tracing::warn!("slow stage");
+    });
+    let exported = harness.finished();
+    assert_eq!(
+        keys_of(&exported[0]),
+        [attr::JOB_ID],
+        "level and target are not span attributes"
+    );
+    let event = &exported[0].events.events[0];
+    let mut event_keys: Vec<&str> = event.attributes.iter().map(|kv| kv.key.as_str()).collect();
+    event_keys.sort_unstable();
+    assert_eq!(event_keys, ["level", "target"]);
+    assert_eq!(
+        harness.stats().dropped_attributes,
+        2,
+        "only the two span attributes were dropped; the event's own two were kept"
+    );
+}
+
+#[test]
 fn a_long_value_is_cut_and_marked() {
     let harness = Harness::new();
     harness.run(|| {

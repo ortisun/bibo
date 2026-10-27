@@ -6,6 +6,7 @@
 
 pub mod guard;
 pub mod logging;
+pub mod metrics;
 pub mod names;
 pub mod redact;
 pub mod spans;

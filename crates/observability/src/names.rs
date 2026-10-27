@@ -348,6 +348,25 @@ pub const ATTRIBUTES: &[AttributeSpec] = &[
     },
 ];
 
+/// Attributes that the tracing layer adds to every span event, and that are allowed on events
+/// only: the severity of the event and the module path of the code that logged it. Neither holds
+/// user content.
+pub const EVENT_ATTRIBUTES: &[&str] = &["level", "target"];
+
+/// Whether an attribute key may appear on a span event.
+pub fn is_allowed_event_attribute(key: &str) -> bool {
+    is_allowed_attribute(key) || EVENT_ATTRIBUTES.contains(&key)
+}
+
+/// Fields a log line may carry besides the span attributes: the message, and the correlation id
+/// that the log layer adds.
+pub const LOG_FIELDS: &[&str] = &["message", CORRELATION_LOG_FIELD];
+
+/// Whether a log field name is on the allowlist (check ST-07).
+pub fn is_allowed_log_field(key: &str) -> bool {
+    LOG_FIELDS.contains(&key) || is_allowed_attribute(key)
+}
+
 /// The declaration of a span kind, or `None` for a name this crate does not know.
 pub fn span_spec(name: &str) -> Option<&'static SpanSpec> {
     SPANS.iter().find(|s| s.name == name)

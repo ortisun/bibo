@@ -2,6 +2,42 @@
 #![allow(dead_code)]
 
 use std::collections::BTreeSet;
+use std::io;
+use std::sync::{Arc, Mutex};
+use tracing_subscriber::fmt::MakeWriter;
+
+/// Collects everything a log layer writes, so a test can read the lines.
+#[derive(Clone, Default)]
+pub struct Capture(Arc<Mutex<Vec<u8>>>);
+
+pub struct CaptureWriter(Arc<Mutex<Vec<u8>>>);
+
+impl io::Write for CaptureWriter {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        self.0.lock().unwrap().extend_from_slice(buf);
+        Ok(buf.len())
+    }
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+impl<'a> MakeWriter<'a> for Capture {
+    type Writer = CaptureWriter;
+    fn make_writer(&'a self) -> Self::Writer {
+        CaptureWriter(Arc::clone(&self.0))
+    }
+}
+
+impl Capture {
+    pub fn lines(&self) -> Vec<String> {
+        String::from_utf8(self.0.lock().unwrap().clone())
+            .expect("log output is UTF-8")
+            .lines()
+            .map(str::to_string)
+            .collect()
+    }
+}
 
 /// The conventions page. The tests compare its tables with the constants in the crate, so the
 /// page and the code cannot drift apart without a test failing.

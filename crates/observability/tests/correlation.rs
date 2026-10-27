@@ -2,53 +2,18 @@
 
 mod common;
 
-use common::is_valid_json;
+use common::{Capture, is_valid_json};
 use factory_observability::logging::{self, CorrelationId, CorrelationLayer, InvalidCorrelationId};
 use factory_observability::names::{self, attr};
 use factory_observability::redact::{PolicyPatternScrubber, Scrub, ScrubError};
 use factory_observability::spans::{self, Job, StageRun};
 use std::borrow::Cow;
-use std::io;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use tracing::field::Empty;
-use tracing_subscriber::fmt::MakeWriter;
 use tracing_subscriber::prelude::*;
 
 const CORRELATION: &str = "0192f3a4-7b1c-7d3e-9a52-1c8f0e4b6a77";
 const JOB: &str = "0192f3a4-7b1c-7d3e-9a52-1c8f0e4b6a78";
-
-/// Collects everything the log layer writes.
-#[derive(Clone, Default)]
-struct Capture(Arc<Mutex<Vec<u8>>>);
-
-struct CaptureWriter(Arc<Mutex<Vec<u8>>>);
-
-impl io::Write for CaptureWriter {
-    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        self.0.lock().unwrap().extend_from_slice(buf);
-        Ok(buf.len())
-    }
-    fn flush(&mut self) -> io::Result<()> {
-        Ok(())
-    }
-}
-
-impl<'a> MakeWriter<'a> for Capture {
-    type Writer = CaptureWriter;
-    fn make_writer(&'a self) -> Self::Writer {
-        CaptureWriter(Arc::clone(&self.0))
-    }
-}
-
-impl Capture {
-    fn lines(&self) -> Vec<String> {
-        String::from_utf8(self.0.lock().unwrap().clone())
-            .expect("log output is UTF-8")
-            .lines()
-            .map(str::to_string)
-            .collect()
-    }
-}
 
 fn with_logging<T>(capture: &Capture, body: impl FnOnce() -> T) -> T {
     let subscriber = tracing_subscriber::registry()

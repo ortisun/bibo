@@ -67,6 +67,153 @@ An attribute is a key and a value on a span. Only the keys in this table are exp
 | `error.type` | string | bounded | `factory.job`, `factory.stage_run`, `factory.attempt`, `factory.agent`, `factory.tool_call`, `factory.gate` | The standard error.type key. A short error kind, never a message. |
 <!-- /table:attributes -->
 
+### Event attributes
+
+A span can carry events, which are the `tracing` events logged inside it. The tracing layer adds two attributes to every span event. They are allowed on events and nowhere else.
+
+<!-- table:event-attributes -->
+| Key | Meaning |
+|---|---|
+| `level` | The severity of the event, such as WARN. |
+| `target` | The module path of the code that logged the event. |
+<!-- /table:event-attributes -->
+
 ### Outcome values
 
-`factory.outcome` and the metric label `outcome` take one of these values, each the lower case form of a state in the state machine file or of a gate outcome in the gate report schema: `passed`, `failed`, `blocked`, `not_applicable`, `succeeded`, `timed_out`, `lease_lost`, `cancelled`, `denied` and `rework_requested`. `denied` is for a tool call that policy refused.
+`factory.outcome` and the metric label `outcome` take one of these values. Each is the lower case form of a state in the state machine file or of a gate outcome in the gate report schema.
+
+<!-- table:outcomes -->
+| Value | Used for |
+|---|---|
+| `passed` | A gate or stage run that passed. |
+| `failed` | A gate, stage run or attempt that failed. |
+| `blocked` | A gate or stage run that could not run or was stopped by policy and waits for a person. |
+| `not_applicable` | A gate with nothing to check on this change. |
+| `succeeded` | An attempt or agent invocation that finished its work. |
+| `timed_out` | An attempt that ran past its deadline. |
+| `lease_lost` | An attempt whose worker lost its lease. |
+| `cancelled` | Work that was cancelled. |
+| `denied` | A tool call that policy refused. |
+| `rework_requested` | A stage run that sent the job back for rework. |
+<!-- /table:outcomes -->
+
+### Recording attributes
+
+- Record integers as `i64`. The `tracing-opentelemetry` layer used here (version 0.34) turns an unsigned field such as a `u64` into a string. A test in `crates/observability` pins that behavior, so an upgrade that fixes it will say so.
+- Declare a field that is only known at the end with `tracing::field::Empty` when the span is created, and fill it in with `Span::record`. `tracing` cannot add a field that was not declared at creation.
+- Do not record free text. Section 8 lists what is left out on purpose.
+
+## 5. Metrics
+
+Metrics are for questions about the whole system over time: how deep is the queue, how long do stages take, how often do gates fail, what did we spend. They go to VictoriaMetrics.
+
+<!-- table:metrics -->
+| Name | Type | Unit | Labels | Meaning |
+|---|---|---|---|---|
+| `factory_queue_depth` | gauge | {stage_run} | `queue` | Stage runs that are ready and waiting for a worker, by queue. |
+| `factory_stage_duration_seconds` | histogram | s | `stage`, `outcome` | Wall-clock time from the start of a stage run to its end, by stage kind and outcome. |
+| `factory_stage_runs_total` | counter | {stage_run} | `stage`, `outcome` | Stage runs that ended, by stage kind and outcome. The error rate is the share with outcome failed. |
+| `factory_gate_failures_total` | counter | {gate_failure} | `gate`, `outcome` | Gate evaluations that ended failed or blocked, by gate and outcome. |
+| `factory_retries_total` | counter | {retry} | `stage` | Retries scheduled after a retryable attempt failure, by stage kind. |
+| `factory_spend_usd_total` | counter | {USD} | `provider`, `stage` | Model spend in US dollars as metered by the broker, by provider and stage kind. |
+<!-- /table:metrics -->
+
+The stage duration histogram has these upper bounds in seconds: 1, 5, 15, 30, 60, 120, 300, 600, 1200, 1800 and 3600. A longer stage lands in the overflow bucket.
+
+Two queries that answer common questions:
+
+- Error rate of a stage over five minutes: the rate of `factory_stage_runs_total` with `outcome="failed"` divided by the rate of the same metric without that filter.
+- Spend per hour by provider: the increase of `factory_spend_usd_total` over one hour, summed by `provider`.
+
+### How to record a metric
+
+Write a `tracing` event whose field name starts with the instrument kind and ends with the metric name. Every other field of the event is a label. Do not add a `target:` argument, because the `tracing` macros cannot parse a dotted field name after one.
+
+```rust
+tracing::info!(monotonic_counter.factory_retries_total = 1u64, stage = "IMPLEMENTATION");
+tracing::info!(histogram.factory_stage_duration_seconds = 42.5f64, stage = "VALIDATION", outcome = "passed");
+tracing::info!(gauge.factory_queue_depth = 3i64, queue = "ready_stage_runs");
+```
+
+Use `monotonic_counter.` for counters, `histogram.` for histograms and `gauge.` for gauges. Crates that may only depend on `tracing` can record metrics this way.
+
+The pipeline does not trust the call site. It checks each event against the table above:
+
+- A metric name that is not in the table is dropped. So is a name recorded with the wrong kind, such as a histogram named like a counter.
+- The unit, the description and the histogram buckets come from the table, not from the call site.
+- Only the labels listed for that metric are kept. Any other field on the event is removed before the values are added up.
+
+A metric event is not a log line and not a span event. The log layer and the span layer skip it.
+
+### Labels
+
+<!-- table:labels -->
+| Label | Max values | Meaning |
+|---|---|---|
+| `stage` | 16 | The stage kind, spelled as in the state machine file, such as INTAKE. |
+| `outcome` | 12 | One of the outcome values on the conventions page. |
+| `gate` | 48 | The gate identifier from the gate catalog. |
+| `provider` | 8 | The model provider the broker reports, such as anthropic. |
+| `queue` | 4 | The name of a work queue, such as ready_stage_runs. |
+<!-- /table:labels -->
+
+"Max values" is the size of the closed set the label draws from, with some room to grow. It is not a count of values in use today.
+
+## 6. Cardinality rules
+
+Cardinality is the number of different label combinations a metric holds. A metrics database stores one time series for each combination. A label that takes a new value for every job, such as a job identifier, creates a new series for every job. The series count grows without limit, memory and disk grow with it, and queries slow down until the database fails. That is why identifiers never go on metrics.
+
+The rules:
+
+1. **Identifiers go on spans and in logs, never on metrics.** The correlation id, the tenant, job, stage run and attempt identifiers, digests and measurements such as token counts are "unbounded" in the attribute table. A trace or a log search finds them. A metric does not carry them.
+2. **A metric label draws from a small closed set.** Each label in the label table has a maximum size, and no label may allow more than 64 values. A label that needs more belongs on a span.
+3. **Each metric states how many label combinations it may hold**, and that number may not exceed the product of its labels' sizes or 500. The six metrics together fit in 5,000 time series, counting each histogram bucket as one.
+4. **Spend and queue questions per job are answered from the ledger and from traces.** The master prompt asks for cost per task, job, agent, repository, model and organization. Those views come from the evidence ledger in PostgreSQL and from span attributes such as `factory.cost_usd`. The metric holds spend by provider and stage only.
+5. **The pipeline enforces the rules even when a call site breaks them.** Unlisted labels are removed. A metric that still grows past its limit has the excess folded into one overflow series, marked with the label `otel.metric.overflow`, and no count is lost. An overflow series on a dashboard is a defect to fix at the call site.
+
+## 7. Logs, domain events and the correlation id
+
+The factory writes two different things and keeps them apart.
+
+| | Diagnostic logs | Domain events |
+|---|---|---|
+| Purpose | Help a person understand what a process was doing | Record that a state change happened, for other components |
+| Where they go | Standard error of each process, as JSON lines | The `outbox` table in the same transaction as the change, later NATS JetStream |
+| Guarantee | None. Lines may be dropped, sampled or rotated away | At least once delivery, ordered per aggregate, kept long term |
+| Who may depend on them | Nobody. No code reads logs to decide anything | Consumers, the dashboard and the audit trail |
+| Contents | Free text and `factory.` fields, redacted | Identifiers and hashes under the event schema, blocked if a secret matches |
+
+[ADR 0004](../adr/0004-event-model.md) describes domain events. Nothing in this crate writes one.
+
+A log line is one JSON object. When a line is written inside a job span, or inside a span below it, the line starts with the field `correlation_id`. The value is the same one that domain events carry in their `correlation_id` field and that spans carry as `factory.correlation_id`, so one search finds a job in the logs, the events and the traces. Lines written outside a job, such as start-up messages, have no such field.
+
+```json
+{"correlation_id":"0192f3a4-7b1c-7d3e-9a52-1c8f0e4b6a77","timestamp":"2026-10-27T08:15:14.502266Z","level":"INFO","fields":{"message":"stage run started","factory.stage_kind":"INTAKE"},"target":"factory_workflow::engine"}
+```
+
+The id must be a lower case UUID. A value in any other form is ignored and never written, so a log line cannot be forged through a bad id.
+
+Log fields use the same names as span attributes, plus `message` and `correlation_id`. Any other field name is outside the allowlist.
+
+## 8. What is deliberately not recorded
+
+Telemetry leaves the process and is kept by other systems. The default is to record identifiers and hashes and nothing that a person typed or a model produced.
+
+| Not recorded | Why | What is recorded instead |
+|---|---|---|
+| Secrets and credentials: tokens, keys, passwords, connection strings | A leak in telemetry spreads to every system that stores traces and logs | Nothing. A match is replaced by a placeholder that names the pattern |
+| Issue text and pull request text | It is untrusted input and may hold private details | The issue number and the job identifier |
+| Model prompts and model output | Large, private and may hold secrets | `factory.prompt_sha256`, a digest. The text is an artifact in the artifact store |
+| Tool arguments and tool output | They can hold file contents and credentials | `factory.tool_args_sha256`, a digest |
+| Source code and diffs | Private to the customer | The path count and byte count, where useful, as numbers |
+| Error messages and stack traces | They hold file paths, query text and internals | `factory.error_class` and `error.type`, short kinds from a closed set |
+| Request headers and cookies | They carry credentials | Nothing |
+
+Four mechanisms enforce this, each tested:
+
+1. **An allowlist of names.** Only the attribute keys in the table in section 4 leave the process. The exporter drops any other key and counts the drop. A first drop of each key is noted in the diagnostic log, by key name only. Check ST-07 in the [negative test catalog](../security/negative-test-catalog.md) is this rule.
+2. **A scrubber.** Every string that remains, and every span name, event name and log line, passes through a scrubber that removes the secret patterns listed under `secrets.patterns` in [`policies/security.yaml`](../../policies/security.yaml). Each match is replaced by `[REDACTED:` followed by the pattern id and a closing bracket. A test reads the policy file and fails if the scrubber and the policy list different patterns. The entropy heuristic and the registry of the factory's own secret values are not applied here; the redaction work package adds them.
+3. **A length limit.** A string attribute longer than 256 bytes is cut and ends with `[TRUNCATED]`. Identifiers and digests fit. A prompt or an issue body does not. The scrubber runs first, so a secret that straddles the cut is removed whole.
+4. **Fail closed.** If the scrubber cannot run, the value is replaced and the original is never written. The text of an error status is always blanked.
+
+These mechanisms are a second line of defense. The first line is not putting the secret in the call in the first place.

@@ -21,6 +21,7 @@ use std::io;
 use std::sync::Arc;
 use tracing::span::{Attributes, Id, Record};
 use tracing::{Event, Subscriber, field::Visit};
+use tracing_subscriber::filter::filter_fn;
 use tracing_subscriber::fmt::format::{
     Format, FormatEvent, FormatFields, Json, JsonFields, Writer,
 };
@@ -203,6 +204,8 @@ where
             inner: make_writer,
             scrubber,
         })
+        // A metric update is not a log line.
+        .with_filter(filter_fn(|metadata| !crate::metrics::is_metric_event(metadata)))
 }
 
 /// What is written in place of a line when the scrubber is not available.

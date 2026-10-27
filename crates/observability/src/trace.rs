@@ -11,6 +11,8 @@ use opentelemetry_sdk::Resource;
 use opentelemetry_sdk::trace::{SdkTracer, SdkTracerProvider, SpanExporter};
 use tracing::Subscriber;
 use tracing_opentelemetry::OpenTelemetryLayer;
+use tracing_subscriber::filter::filter_fn;
+use tracing_subscriber::layer::Layer;
 use tracing_subscriber::registry::LookupSpan;
 
 /// The name of the instrumentation scope on every span this crate produces.
@@ -62,11 +64,11 @@ where
 /// level, target or exception fields. Those would be attributes outside the allowlist, and the
 /// guard would drop them, so it is cheaper not to create them. Errors still mark the span as
 /// failed. Their text does not travel (see [`AttributeGuard`]).
-pub fn otel_layer<S>(provider: &SdkTracerProvider) -> OpenTelemetryLayer<S, SdkTracer>
+pub fn otel_layer<S>(provider: &SdkTracerProvider) -> impl Layer<S> + use<S>
 where
     S: Subscriber + for<'span> LookupSpan<'span>,
 {
-    tracing_opentelemetry::layer()
+    let layer: OpenTelemetryLayer<S, SdkTracer> = tracing_opentelemetry::layer()
         .with_tracer(provider.tracer(INSTRUMENTATION_SCOPE))
         .with_location(false)
         .with_tracked_inactivity(false)
@@ -76,5 +78,9 @@ where
         .with_error_fields_to_exceptions(false)
         .with_error_records_to_exceptions(false)
         .with_error_events_to_exceptions(false)
-        .with_error_events_to_status(true)
+        .with_error_events_to_status(true);
+    // A metric update is not a span event.
+    layer.with_filter(filter_fn(|metadata| {
+        !crate::metrics::is_metric_event(metadata)
+    }))
 }

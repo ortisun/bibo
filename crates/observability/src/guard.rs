@@ -106,7 +106,7 @@ impl AttributeGuard {
             Cow::Owned(cleaned) => Cow::Owned(cleaned),
         };
         let attributes = std::mem::take(&mut span.attributes);
-        let (kept, dropped) = self.clean_attributes(attributes);
+        let (kept, dropped) = self.clean_attributes(attributes, names::is_allowed_attribute);
         span.attributes = kept;
         span.dropped_attributes_count = span.dropped_attributes_count.saturating_add(dropped);
 
@@ -130,24 +130,34 @@ impl AttributeGuard {
             Cow::Borrowed(_) => event.name,
             Cow::Owned(cleaned) => Cow::Owned(cleaned),
         };
-        let (kept, dropped) = self.clean_attributes(std::mem::take(&mut event.attributes));
+        let (kept, dropped) = self.clean_attributes(
+            std::mem::take(&mut event.attributes),
+            names::is_allowed_event_attribute,
+        );
         event.attributes = kept;
         event.dropped_attributes_count = event.dropped_attributes_count.saturating_add(dropped);
         event
     }
 
     fn clean_link(&self, mut link: Link) -> Link {
-        let (kept, dropped) = self.clean_attributes(std::mem::take(&mut link.attributes));
+        let (kept, dropped) = self.clean_attributes(
+            std::mem::take(&mut link.attributes),
+            names::is_allowed_attribute,
+        );
         link.attributes = kept;
         link.dropped_attributes_count = link.dropped_attributes_count.saturating_add(dropped);
         link
     }
 
-    fn clean_attributes(&self, attributes: Vec<KeyValue>) -> (Vec<KeyValue>, u32) {
+    fn clean_attributes(
+        &self,
+        attributes: Vec<KeyValue>,
+        is_allowed: fn(&str) -> bool,
+    ) -> (Vec<KeyValue>, u32) {
         let mut kept = Vec::with_capacity(attributes.len());
         let mut dropped = 0u32;
         for KeyValue { key, value, .. } in attributes {
-            if !names::is_allowed_attribute(key.as_str()) {
+            if !is_allowed(key.as_str()) {
                 self.note_dropped(key.as_str());
                 dropped += 1;
                 continue;
