@@ -174,11 +174,11 @@ DECLARE
   tj text := dbtest.u(3)::text;
 BEGIN
   -- Claim: READY runs of ACTIVE jobs, oldest first, locked without waiting.
-  PERFORM dbtest.expect_plan('claim: READY stage runs whose back-off has passed, FOR UPDATE SKIP LOCKED',
+  PERFORM dbtest.expect_plan('claim: READY stage runs whose back-off has passed, FOR NO KEY UPDATE SKIP LOCKED',
     $q$SELECT s.tenant_id, s.id FROM stage_runs s
          JOIN jobs j ON j.tenant_id = s.tenant_id AND j.id = s.job_id AND j.status = 'ACTIVE'
         WHERE s.status = 'READY' AND s.not_before <= now()
-        ORDER BY s.not_before LIMIT 10 FOR UPDATE OF s SKIP LOCKED$q$,
+        ORDER BY s.not_before LIMIT 10 FOR NO KEY UPDATE OF s SKIP LOCKED$q$,
     'stage_runs_claim_idx', 'stage_runs');
 
   -- Sweep: expired leases, passed deadlines, overdue teardowns.
@@ -243,7 +243,7 @@ BEGIN
     $q$SELECT s.tenant_id, s.id FROM stage_runs s
          JOIN jobs j ON j.tenant_id = s.tenant_id AND j.id = s.job_id AND j.status = 'ACTIVE'
         WHERE s.status = 'READY' AND s.not_before <= now()
-        ORDER BY s.not_before LIMIT 10 FOR UPDATE OF s SKIP LOCKED$q$,
+        ORDER BY s.not_before LIMIT 10 FOR NO KEY UPDATE OF s SKIP LOCKED$q$,
     'jobs_(open_idx|pkey|tenant_id_id_execution_mode_key)', 'jobs');
 END
 $$;

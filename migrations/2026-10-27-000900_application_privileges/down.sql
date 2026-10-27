@@ -1,3 +1,11 @@
+DO $$
+BEGIN
+  IF to_regclass('public.__diesel_schema_migrations') IS NOT NULL THEN
+    REVOKE ALL ON public.__diesel_schema_migrations FROM factory_app;
+  END IF;
+END
+$$;
+
 REVOKE ALL ON
   state_machine_states, state_machine_transitions, state_machine_edges,
   tenants, repositories, principals, api_tokens, active_api_tokens,

@@ -615,7 +615,49 @@ suite_lease() {
   local rc=0
   sql_in_clone lease lease.sql || rc=$?
   if [ "$rc" -eq 0 ]; then lease_races || rc=$?; fi
+  if [ "$rc" -eq 0 ]; then lease_lock_modes || rc=$?; fi
   clone_end
+  return "$rc"
+}
+
+# Why the claim locks with FOR NO KEY UPDATE. Appending a ledger entry takes a KEY SHARE lock on the
+# stage run it names (the foreign key). FOR UPDATE conflicts with that lock, FOR NO KEY UPDATE does not.
+# Two claimers hold a lock on a run each for two seconds; a writer then appends a ledger entry for each
+# run with a 500 ms lock timeout.
+lease_lock_modes() {
+  local rc=0 i
+  psql_db "$CLONE" >/dev/null 2>"$WORK/lock-modes.err" <<'EOF' || { cat "$WORK/lock-modes.err" >&2; return 1; }
+SELECT dbtest.mk_tenant(7);
+SELECT dbtest.mk_job(7, 1);
+SELECT dbtest.mk_job(7, 2);
+SELECT dbtest.mk_stage_run(7, 1, 1);
+SELECT dbtest.mk_stage_run(7, 2, 2);
+EOF
+  psql_db "$CLONE" -At -c "BEGIN; SELECT 1 FROM stage_runs WHERE id = dbtest.u(7201) FOR NO KEY UPDATE; SELECT pg_sleep(2); COMMIT" >/dev/null 2>&1 &
+  local holder_a=$!
+  psql_db "$CLONE" -At -c "BEGIN; SELECT 1 FROM stage_runs WHERE id = dbtest.u(7202) FOR UPDATE; SELECT pg_sleep(2); COMMIT" >/dev/null 2>&1 &
+  local holder_b=$!
+  for i in $(seq 1 100); do
+    [ "$(psql_scalar "$CLONE" -c "SELECT count(*) FROM pg_stat_activity WHERE wait_event = 'PgSleep' AND datname = current_database()")" = 2 ] && break
+    sleep 0.05
+  done
+  if psql_db "$CLONE" -At -c "SET lock_timeout = '500ms'" -c "SELECT dbtest.append_entry(7, dbtest.u(7101), dbtest.u(7201), 1)" >/dev/null 2>"$WORK/lock-a.err"; then
+    ok "lock modes: a ledger append is not blocked while a claimer holds the stage run FOR NO KEY UPDATE"
+  else
+    not_ok "lock modes: a ledger append was blocked by FOR NO KEY UPDATE: $(cat "$WORK/lock-a.err")"
+    rc=1
+  fi
+  if psql_db "$CLONE" -At -c "SET lock_timeout = '500ms'" -c "SELECT dbtest.append_entry(7, dbtest.u(7102), dbtest.u(7202), 1)" >/dev/null 2>"$WORK/lock-b.err"; then
+    not_ok "lock modes: FOR UPDATE was expected to block the ledger append, so the reason for FOR NO KEY UPDATE is gone"
+    rc=1
+  elif grep -q 'lock timeout' "$WORK/lock-b.err"; then
+    ok "lock modes: the same append IS blocked while the stage run is held FOR UPDATE (lock timeout), which is why claims use FOR NO KEY UPDATE"
+  else
+    not_ok "lock modes: the append failed for another reason: $(cat "$WORK/lock-b.err")"
+    rc=1
+  fi
+  wait "$holder_a" || true
+  wait "$holder_b" || true
   return "$rc"
 }
 

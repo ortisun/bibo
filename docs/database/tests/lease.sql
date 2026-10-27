@@ -6,8 +6,9 @@
 -- after this file.
 --
 -- dbtest.claim and dbtest.renew are the reference SQL for the storage layer's claim and renewal. They
--- follow ADR 0007: SELECT ... FOR UPDATE SKIP LOCKED, compare and swap on version, lease expiry
--- computed from now() in the statement.
+-- follow ADR 0007: SELECT ... SKIP LOCKED, compare and swap on version, lease expiry computed from
+-- now() in the statement. The claim locks with FOR NO KEY UPDATE, which excludes other claimers but
+-- not the writers of ledger, audit and outbox rows that point at the stage run through a foreign key.
 
 DO $$
 BEGIN
@@ -32,7 +33,7 @@ BEGIN
    WHERE s.status = 'READY' AND s.not_before <= now()
    ORDER BY s.not_before
    LIMIT 1
-   FOR UPDATE OF s SKIP LOCKED;
+   FOR NO KEY UPDATE OF s SKIP LOCKED;   -- not FOR UPDATE: see the lock mode check in scripts/db-test.sh
   IF NOT FOUND THEN
     RETURN NULL;
   END IF;

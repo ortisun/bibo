@@ -15,6 +15,16 @@
 -- Reference data.
 GRANT SELECT ON state_machine_states, state_machine_transitions, state_machine_edges TO factory_app;
 
+-- The application checks the schema version at start-up and refuses to become ready when it is behind
+-- (ADR 0007, rule 1). Diesel creates this table before the first migration runs; a psql-only run may not.
+DO $$
+BEGIN
+  IF to_regclass('public.__diesel_schema_migrations') IS NOT NULL THEN
+    GRANT SELECT ON public.__diesel_schema_migrations TO factory_app;
+  END IF;
+END
+$$;
+
 GRANT SELECT ON tenants TO factory_app;
 
 GRANT SELECT, INSERT ON repositories TO factory_app;

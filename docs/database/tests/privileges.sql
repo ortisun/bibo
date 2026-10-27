@@ -36,6 +36,7 @@ $$;
 CREATE TEMP TABLE expected_table_grants (tbl text, privilege text);
 INSERT INTO expected_table_grants VALUES
   ('state_machine_states', 'SELECT'), ('state_machine_transitions', 'SELECT'), ('state_machine_edges', 'SELECT'),
+  ('__diesel_schema_migrations', 'SELECT'),
   ('tenants', 'SELECT'),
   ('repositories', 'SELECT'), ('repositories', 'INSERT'),
   ('principals', 'SELECT'), ('principals', 'INSERT'),
@@ -146,13 +147,15 @@ $$;
 DO $$
 BEGIN
   PERFORM dbtest.expect_error('factory_app cannot create a role', 'CREATE ROLE sneaky', '42501', 'factory_app');
-  PERFORM dbtest.expect_error('factory_app cannot grant itself a privilege on a table it has none on',
-    'GRANT SELECT ON __diesel_schema_migrations TO factory_app', '42501', 'factory_app');
-  -- On a table where it holds some privilege PostgreSQL only warns, and grants nothing.
+  -- Where it holds some privilege on a table, PostgreSQL only warns about a GRANT it may not make, and grants nothing.
   PERFORM dbtest.exec('GRANT DELETE ON jobs TO factory_app', 'factory_app');
-  PERFORM dbtest.expect_true('a GRANT run by factory_app on a table it can read changes nothing', NOT has_table_privilege('factory_app', 'jobs', 'DELETE'));
+  PERFORM dbtest.expect_true('a GRANT of DELETE run by factory_app on jobs changes nothing', NOT has_table_privilege('factory_app', 'jobs', 'DELETE'));
+  PERFORM dbtest.exec('GRANT SELECT ON tenants TO PUBLIC', 'factory_app');
+  PERFORM dbtest.expect_true('a GRANT to PUBLIC run by factory_app changes nothing',
+    NOT EXISTS (SELECT 1 FROM pg_class c, aclexplode(c.relacl) a WHERE c.relname = 'tenants' AND a.grantee = 0));
   PERFORM dbtest.expect_error('factory_app cannot turn row-level security on or off', 'ALTER TABLE jobs DISABLE ROW LEVEL SECURITY', '42501', 'factory_app');
-  PERFORM dbtest.expect_error('factory_app cannot read the diesel migration table (it has no grant)', 'SELECT * FROM __diesel_schema_migrations', '42501', 'factory_app');
+  PERFORM dbtest.expect_ok('factory_app can read the migration version table for the start-up schema check', 'SELECT max(version) FROM __diesel_schema_migrations', 'factory_app');
+  PERFORM dbtest.expect_error('factory_app cannot change the migration version table', 'DELETE FROM __diesel_schema_migrations', '42501', 'factory_app');
   PERFORM dbtest.expect_error('factory_app cannot change the state machine reference data',
     'UPDATE state_machine_edges SET from_status = from_status', '42501', 'factory_app');
   PERFORM dbtest.expect_error('factory_app cannot insert into the state machine reference data',
@@ -168,7 +171,7 @@ BEGIN;
 CREATE ROLE privilege_test_login LOGIN IN ROLE factory_app;
 SELECT dbtest.expect_error('a login that is a member of factory_app cannot switch to the owner role',
   'SET LOCAL SESSION AUTHORIZATION privilege_test_login; SET ROLE postgres', '42501');
-SELECT dbtest.expect_error('and it cannot switch to a superuser by any name',
+SELECT dbtest.expect_error('and it cannot switch to a predefined role with broad read rights',
   'SET LOCAL SESSION AUTHORIZATION privilege_test_login; SET ROLE pg_read_all_data', '42501');
 ROLLBACK;
 SELECT dbtest.expect_eq('the test login was rolled back', (SELECT count(*) FROM pg_roles WHERE rolname = 'privilege_test_login'), 0::bigint);
