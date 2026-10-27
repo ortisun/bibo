@@ -105,6 +105,8 @@ def validate_negative(doc, wps):
                 errors.append(f"{e['id']}: unknown also work package {a}")
         if e.get("scope") == "partial" and not e.get("reduced_scope_reason"):
             errors.append(f"{e['id']}: a partial entry needs reduced_scope_reason")
+        if e.get("blocked_part") and e.get("scope") != "full":
+            errors.append(f"{e['id']}: a part that is blocked until a spike has run belongs to an entry with full scope")
     for k in [x["id"] for x in nt["static_checks"]]:
         if k not in cat:
             errors.append(f"static check {k} is not in the catalog")
@@ -393,11 +395,15 @@ def render(doc, analysis):
     cat = read_catalog()
     nt = doc["negative_tests"]
     p0 = [k for k, v in cat.items() if v["priority"] == "P0"]
-    full = sum(1 for e in nt["entries"] if e.get("scope") == "full")
-    part = sum(1 for e in nt["entries"] if e.get("scope") == "partial")
+    p0_entries = [e for e in nt["entries"] if cat[e["id"]]["priority"] == "P0"]
+    full = sum(1 for e in p0_entries if e.get("scope") == "full")
+    part = sum(1 for e in p0_entries if e.get("scope") == "partial")
+    blocked = sum(1 for e in p0_entries if e.get("blocked_part"))
     other = {pr: sum(1 for v in cat.values() if v["priority"] == pr) for pr in ("P1", "P2")}
-    sections["negative-test-summary"] = (f"The catalog has {len(p0)} P0 tests. {len(nt['entries'])} are mapped to a work package and a crate: {full} with full scope and {part} with reduced scope, listed under gaps. "
-                                         f"{len(p0) - len({e['id'] for e in nt['entries']} & set(p0))} have no owner. The catalog also has {other['P1']} P1 and {other['P2']} P2 tests, which it requires before Slice 2 and later, and {len(nt['static_checks'])} static checks, all mapped.")
+    p1_mapped = sum(1 for e in nt["entries"] if cat[e["id"]]["priority"] == "P1")
+    sections["negative-test-summary"] = (f"The catalog has {len(p0)} P0 tests. {len(p0_entries)} are mapped to a work package and a crate: {full} with full scope and {part} with reduced scope, listed under gaps. "
+                                         f"{blocked} of the full ones have a part that stays BLOCKED until a spike has run. "
+                                         f"{len(p0) - len({e['id'] for e in p0_entries})} have no owner. The catalog also has {other['P1']} P1 and {other['P2']} P2 tests, which it requires before Slice 2 and later ({p1_mapped} P1 mapped so far), and {len(nt['static_checks'])} static checks, all mapped.")
     sections["negative-test-map"] = table(["Test", "Title", "Catalog level", "Catalog owner", "Work package", "Crate", "Also", "Scope"], [
         (code(e["id"]), cat[e["id"]]["title"], cat[e["id"]]["level"], cat[e["id"]]["owners"], code(e["wp"]), code(e["crate"]), ", ".join(code(a) for a in e.get("also", [])) or "", e["scope"])
         for e in nt["entries"] if cat[e["id"]]["priority"] == "P0"])
@@ -405,7 +411,7 @@ def render(doc, analysis):
         (code(e["id"]), cat[e["id"]]["title"], code(e["wp"]), code(e["location"])) for e in nt["static_checks"]])
     sections["negative-test-gaps"] = table(["Test", "Not covered in Slice 1", "Why", "Resolved in"], [
         (g["test"], g["uncovered"], g["reason"], g["resolves_in"]) for g in nt["gaps"]])
-    sections["negative-test-reduced-scope"] = table(["Test", "Reduced scope"], [(code(e["id"]), e["reduced_scope_reason"]) for e in nt["entries"] if e.get("reduced_scope_reason") and e["scope"] == "full"])
+    sections["negative-test-blocked-parts"] = table(["Test", "Part that reports BLOCKED, with the reason"], [(code(e["id"]), e["blocked_part"]) for e in nt["entries"] if e.get("blocked_part")])
     return sections
 
 

@@ -84,7 +84,13 @@
             "properties": { "path": { "type": "string", "minLength": 1 }, "purpose": { "$ref": "#/$defs/humanText" } }
           }
         },
-        "changelog_path": { "type": "string", "minLength": 1 }
+        "changelog_path": { "type": "string", "minLength": 1 },
+        "disabled_readability_rules": {
+          "description": "Readability rules that this repository switches off. Only rules that warn can be listed. A rule that blocks cannot be switched off from here.",
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "enum": ["title-type-tag"] }
+        }
       }
     }
   },

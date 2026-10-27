@@ -95,11 +95,64 @@ def validate(doc):
         for k in rule["supersedes"]:
             if k not in position:
                 errors.append(f"invalidation rule references unknown stage {k}")
+        ordered = [position[k] for k in rule["supersedes"] if k in position]
+        if ordered != sorted(ordered) or len(set(ordered)) != len(ordered):
+            errors.append(f"invalidation rule {rule['when']!r} must list its stages once each, in pipeline order")
+    errors += validate_routing(doc, position)
     # DOCUMENTING and DOCUMENTATION_REVIEW must sit after REVIEW and before DELIVERY and APPROVAL (INV-11).
     for a, b in (("REVIEW", "DOCUMENTING"), ("DOCUMENTING", "DOCUMENTATION_REVIEW"),
                  ("DOCUMENTATION_REVIEW", "DELIVERY"), ("DELIVERY", "APPROVAL")):
         if position[a] >= position[b]:
             errors.append(f"pipeline order: {a} must come before {b}")
+    return errors
+
+
+def validate_routing(doc, position):
+    """The defect routing matrix and the human rework routes must agree with the rework routes."""
+    errors = []
+    pipeline = doc["pipeline"]
+    routes_from = {r["from_stage"] for r in pipeline["rework_routes"]}
+    routing = pipeline["defect_routing"]
+    classes = set(routing["precedence"])
+    if len(classes) != len(routing["precedence"]):
+        errors.append("defect_routing: precedence lists a class twice")
+    for stage, row in routing["stages"].items():
+        if stage not in position:
+            errors.append(f"defect_routing references unknown stage {stage}")
+            continue
+        if set(row) != classes:
+            errors.append(f"defect_routing/{stage}: must give an outcome for exactly {sorted(classes)}")
+        for defect, outcome in row.items():
+            if outcome not in ("rework", "human"):
+                errors.append(f"defect_routing/{stage}/{defect}: outcome must be rework or human, not {outcome}")
+            if outcome == "rework" and stage not in routes_from:
+                errors.append(f"defect_routing/{stage}/{defect}: says rework, but rework_routes has no route from {stage}")
+    agent_targets = {"SPECIFICATION", "ARCHITECTURE", "TASK_PLANNING", "IMPLEMENTATION", "DOCUMENTING"}
+    seen = set()
+    for row in pipeline["human_rework_routes"]["routes"]:
+        stage = row["from_stage"]
+        if stage in seen:
+            errors.append(f"human_rework_routes: {stage} appears twice")
+        seen.add(stage)
+        if stage not in position:
+            errors.append(f"human_rework_routes references unknown stage {stage}")
+            continue
+        if not row["targets"] or len(set(row["targets"])) != len(row["targets"]):
+            errors.append(f"human_rework_routes/{stage}: targets must be a non-empty list without repeats")
+        for target in row["targets"]:
+            if target not in position:
+                errors.append(f"human_rework_routes/{stage}: unknown target {target}")
+            elif target not in agent_targets:
+                errors.append(f"human_rework_routes/{stage}: {target} is not an agent-produced stage")
+            elif position[target] > position[stage]:
+                errors.append(f"human_rework_routes/{stage}: {target} comes later in the pipeline")
+            elif target == "SPECIFICATION" and stage != "SPECIFICATION":
+                errors.append(f"human_rework_routes/{stage}: a frozen specification is not a human rework target in Slice 1")
+    for baseline in pipeline["rework_routes"]:
+        if baseline["trigger"] == "human requests rework":
+            row = next((r for r in pipeline["human_rework_routes"]["routes"] if r["from_stage"] == baseline["from_stage"]), None)
+            if row is None or baseline["target_stage"] not in row["targets"]:
+                errors.append(f"the human rework route from {baseline['from_stage']} in rework_routes is missing from human_rework_routes")
     return errors
 
 
@@ -144,8 +197,13 @@ def render(doc):
         for i, s in enumerate(doc["pipeline"]["stages"])])
     sections["rework-routes"] = table(["Failing stage", "Trigger", "New run of", "Note"], [
         (f"`{r['from_stage']}`", r["trigger"], f"`{r['target_stage']}`", r["note"] or "") for r in doc["pipeline"]["rework_routes"]])
-    sections["invalidation"] = table(["When", "These runs become SUPERSEDED"], [
-        (r["when"], ", ".join(f"`{k}`" for k in r["supersedes"])) for r in doc["pipeline"]["invalidation_rules"]])
+    sections["invalidation"] = table(["When", "These runs become SUPERSEDED", "Note"], [
+        (r["when"], ", ".join(f"`{k}`" for k in r["supersedes"]), r.get("note", "")) for r in doc["pipeline"]["invalidation_rules"]])
+    routing = doc["pipeline"]["defect_routing"]
+    sections["defect-routing"] = table(["Stage with a reviewer", *[f"`{c}`" for c in routing["precedence"]]], [
+        (f"`{stage}`", *[row[c] for c in routing["precedence"]]) for stage, row in routing["stages"].items()])
+    sections["human-rework-routes"] = table(["Waiting or blocked stage", "A person may send rework to"], [
+        (f"`{r['from_stage']}`", ", ".join(f"`{t}`" for t in r["targets"])) for r in doc["pipeline"]["human_rework_routes"]["routes"]])
     sections["assurance-levels"] = table(["Level", "Minimum evidence", "Slice", "Note"], [
         (f"`{l['level']}`", "; ".join(l["requires_evidence"]), l["slice"], l.get("note", "")) for l in doc["assurance_levels"]["levels"]])
     sections["release-states"] = ", ".join(f"`{v}`" for v in doc["assurance_levels"]["release_states"]["values"])

@@ -1,9 +1,9 @@
 # State machines and legal transitions
 
-- Status: Accepted for Slice 0. Nothing described here is implemented yet.
+- Status: Accepted for Slice 0, revised on 2026-10-27 by [ADR 0010](../adr/0010-failure-escalation-routing-and-invalidation.md). The domain crate implements the version before the revision. The revision is a set of pending changes that the work package `s1-domain-revision` carries into the Rust code, and the conformance tests fail until it lands.
 - Date: 2026-10-27
 - Source of truth: [`state-machine.json`](state-machine.json). The tables and diagrams below are generated from it by `docs/architecture/tools/render_state_machine.py`. Do not edit text between the `GENERATED` markers by hand.
-- Related decisions: [ADR 0001](../adr/0001-orchestration-engine.md), [ADR 0004](../adr/0004-event-model.md), [ADR 0008](../adr/0008-artifact-store-and-evidence-ledger.md).
+- Related decisions: [ADR 0001](../adr/0001-orchestration-engine.md), [ADR 0004](../adr/0004-event-model.md), [ADR 0008](../adr/0008-artifact-store-and-evidence-ledger.md), [ADR 0010](../adr/0010-failure-escalation-routing-and-invalidation.md).
 
 ## What this document fixes
 
@@ -22,8 +22,8 @@ Four machines are defined: Job, StageRun, Attempt, and a minimal TaskNode. Their
 2. **Compare-and-swap.** Every status change is `UPDATE ... WHERE id = $1 AND version = $2`. A stale version is a typed conflict, not a silent overwrite.
 3. **Evidence in the same transaction.** The status change, the ledger entries that justify it and the outbox events it emits commit together or not at all.
 4. **Agent text carries no authority.** A stage passes only when its gate finds evidence. "Tests pass" in an agent summary changes nothing.
-5. **Terminal runs are immutable.** `PASSED` is settled but can become `SUPERSEDED` when an input changes. Nothing else leaves a terminal state.
-6. **Bounded loops.** Attempts, repairs and rework rounds have limits. Reaching a limit sends the stage to a human. It does not loop again.
+5. **Terminal runs are immutable.** `PASSED` and `SKIPPED` are settled but can become `SUPERSEDED` when an input changes. Nothing else leaves a terminal state.
+6. **Bounded loops.** Attempts, repairs and rework rounds have limits. Reaching a limit, or a budget limit, sends the stage to a human. It does not loop again, and it does not fail the stage ([ADR 0010](../adr/0010-failure-escalation-routing-and-invalidation.md)).
 7. **Late and duplicate commands are safe.** A command for a terminal attempt, or with an old lease epoch, is rejected and audited. A repeated command with the same idempotency key returns the first result.
 
 ## Actors
@@ -83,25 +83,79 @@ The cost is a longer path before the first pull request exists. The master promp
 | `TASK_PLANNING` | validator FAILED | `TASK_PLANNING` | bounded replan |
 | `IMPLEMENTATION` | scope check FAILED | `IMPLEMENTATION` |  |
 | `VALIDATION` | any mandatory gate FAILED | `IMPLEMENTATION` | the builder receives the gate reports, not a summary |
-| `REVIEW` | verdict CHANGES_REQUIRED | `IMPLEMENTATION` | findings are deduplicated before the builder sees them |
+| `REVIEW` | verdict CHANGES_REQUIRED | `IMPLEMENTATION` | findings are deduplicated before the builder sees them; applies to defect classes code_behavior and documentation, see defect_routing |
 | `DOCUMENTATION_REVIEW` | CHANGES_REQUIRED with defect_class documentation | `DOCUMENTING` |  |
 | `DOCUMENTATION_REVIEW` | CHANGES_REQUIRED with defect_class code_behavior | `IMPLEMENTATION` | the documentation exposed a code or behavior mismatch |
-| `APPROVAL` | human requests rework | `IMPLEMENTATION` | human instructions are authorized input but still untrusted text |
+| `APPROVAL` | human requests rework | `IMPLEMENTATION` | human instructions are authorized input but still untrusted text; the baseline route, see human_rework_routes for the full set |
 <!-- GENERATED:end rework-routes -->
+
+#### Which defect class sends the work where
+
+A reviewer's finding names a defect class: `code_behavior`, `documentation`, `specification` or `policy`. The builder can fix the first two. The last two are decisions for a person, so the gate asks one (`S10`) instead of sending the work back or failing the job. The specification stage is the exception for its own artifact. The class is taken from the findings that justify the verdict, which are those of severity blocker, high or medium. When they differ, the first class in this order wins: specification, policy, code behavior, documentation.
+
+<!-- GENERATED:begin defect-routing -->
+| Stage with a reviewer | `specification` | `policy` | `code_behavior` | `documentation` |
+|---|---|---|---|---|
+| `SPECIFICATION` | rework | human | rework | rework |
+| `ARCHITECTURE` | human | human | rework | rework |
+| `REVIEW` | human | human | rework | rework |
+| `DOCUMENTATION_REVIEW` | human | human | rework | rework |
+<!-- GENERATED:end defect-routing -->
+
+`rework` follows the row of the table above (the documentation review picks its row by class). `human` is the gate outcome `gate_needs_human`. A deterministic failure at `DOCUMENTATION_REVIEW`, such as a broken link, has no reviewer class and counts as `documentation`. The other gates are deterministic and use their single route.
+
+#### Where a person may send rework
+
+A person who answers a waiting or blocked stage run can also send the work back (`S15`). They name the target from this table.
+
+<!-- GENERATED:begin human-rework-routes -->
+| Waiting or blocked stage | A person may send rework to |
+|---|---|
+| `SPECIFICATION` | `SPECIFICATION` |
+| `ARCHITECTURE` | `ARCHITECTURE` |
+| `TASK_PLANNING` | `ARCHITECTURE`, `TASK_PLANNING` |
+| `IMPLEMENTATION` | `ARCHITECTURE`, `TASK_PLANNING`, `IMPLEMENTATION` |
+| `VALIDATION` | `ARCHITECTURE`, `TASK_PLANNING`, `IMPLEMENTATION` |
+| `REVIEW` | `ARCHITECTURE`, `TASK_PLANNING`, `IMPLEMENTATION` |
+| `DOCUMENTING` | `ARCHITECTURE`, `TASK_PLANNING`, `IMPLEMENTATION`, `DOCUMENTING` |
+| `DOCUMENTATION_REVIEW` | `ARCHITECTURE`, `TASK_PLANNING`, `IMPLEMENTATION`, `DOCUMENTING` |
+| `DELIVERY` | `ARCHITECTURE`, `TASK_PLANNING`, `IMPLEMENTATION`, `DOCUMENTING` |
+| `APPROVAL` | `ARCHITECTURE`, `TASK_PLANNING`, `IMPLEMENTATION`, `DOCUMENTING` |
+<!-- GENERATED:end human-rework-routes -->
+
+A frozen specification is not a target from a later stage in Slice 1, because the revision method of [ADR 0006](../adr/0006-spec-kit-boundary.md) is not proven. A person who finds a wrong specification at `REVIEW` answers the question, approves with a recorded reason, or rejects the job and starts a new request.
 
 ### Invalidation
 
-An artifact that a later stage consumed by content hash can change. When it does, every run that consumed it is superseded and a new run starts from `PENDING`.
+An artifact that a later stage consumed by content hash can change. When it does, every run that consumed it is superseded and a new run starts from `PENDING`. A change that comes from outside the pipeline (the source request, or a value that gate evidence is bound to) has no producing stage, so every listed run is superseded, including the first.
 
 <!-- GENERATED:begin invalidation -->
-| When | These runs become SUPERSEDED |
-|---|---|
-| SPECIFICATION produces a new approved spec version | `DOMAIN_DISCOVERY`, `ARCHITECTURE`, `TASK_PLANNING`, `IMPLEMENTATION`, `VALIDATION`, `REVIEW`, `DOCUMENTING`, `DOCUMENTATION_REVIEW`, `DELIVERY`, `APPROVAL` |
-| ARCHITECTURE produces a new version | `TASK_PLANNING`, `IMPLEMENTATION`, `VALIDATION`, `REVIEW`, `DOCUMENTING`, `DOCUMENTATION_REVIEW`, `DELIVERY`, `APPROVAL` |
-| TASK_PLANNING produces a new plan version | `IMPLEMENTATION`, `VALIDATION`, `REVIEW`, `DOCUMENTING`, `DOCUMENTATION_REVIEW`, `DELIVERY`, `APPROVAL` |
-| IMPLEMENTATION produces a new commit | `VALIDATION`, `REVIEW`, `DOCUMENTING`, `DOCUMENTATION_REVIEW`, `DELIVERY`, `APPROVAL` |
-| DOCUMENTING produces a new documentation commit | `DOCUMENTATION_REVIEW`, `DELIVERY`, `APPROVAL` |
+| When | These runs become SUPERSEDED | Note |
+|---|---|---|
+| SPECIFICATION produces a new approved spec version | `DOMAIN_DISCOVERY`, `ARCHITECTURE`, `TASK_PLANNING`, `IMPLEMENTATION`, `VALIDATION`, `REVIEW`, `DOCUMENTING`, `DOCUMENTATION_REVIEW`, `DELIVERY`, `APPROVAL` | gate_integrity.invalidated_by: spec_revision. |
+| ARCHITECTURE produces a new version | `TASK_PLANNING`, `IMPLEMENTATION`, `VALIDATION`, `REVIEW`, `DOCUMENTING`, `DOCUMENTATION_REVIEW`, `DELIVERY`, `APPROVAL` |  |
+| TASK_PLANNING produces a new plan version | `IMPLEMENTATION`, `VALIDATION`, `REVIEW`, `DOCUMENTING`, `DOCUMENTATION_REVIEW`, `DELIVERY`, `APPROVAL` |  |
+| IMPLEMENTATION produces a new commit | `VALIDATION`, `REVIEW`, `DOCUMENTING`, `DOCUMENTATION_REVIEW`, `DELIVERY`, `APPROVAL` | gate_integrity.invalidated_by: new_commit and rebase. A rebase writes new commits, so it counts as a new commit. |
+| DOCUMENTING produces a new documentation commit | `DOCUMENTATION_REVIEW`, `DELIVERY`, `APPROVAL` | gate_integrity.invalidated_by: new_commit. |
+| The source request is edited after the intake snapshot | `INTAKE`, `REPOSITORY_INTELLIGENCE`, `SPECIFICATION`, `DOMAIN_DISCOVERY`, `ARCHITECTURE`, `TASK_PLANNING`, `IMPLEMENTATION`, `VALIDATION`, `REVIEW`, `DOCUMENTING`, `DOCUMENTATION_REVIEW`, `DELIVERY`, `APPROVAL` | An external change, so the intake run is superseded too. The new intake run asks for re-authorization before any agent reads the new text (NT-AUTHZ-05). |
+| REPOSITORY_INTELLIGENCE produces a new repository map | `SPECIFICATION`, `DOMAIN_DISCOVERY`, `ARCHITECTURE`, `TASK_PLANNING`, `IMPLEMENTATION`, `VALIDATION`, `REVIEW`, `DOCUMENTING`, `DOCUMENTATION_REVIEW`, `DELIVERY`, `APPROVAL` | The specification consumed the map and the baseline. |
+| A value bound to gate evidence changes | `VALIDATION`, `REVIEW`, `DOCUMENTATION_REVIEW`, `DELIVERY`, `APPROVAL` | The values are the base commit, the gate definition hash, the policy hash and the sandbox image digest (gate_integrity.evidence_binding). gate_integrity.invalidated_by: base_moved, policy_change and image_change. Checked at two points, before DELIVERY pushes and when an approval is recorded. DOCUMENTING is not superseded, because the documentation text did not change. |
 <!-- GENERATED:end invalidation -->
+
+#### How each item of `gate_integrity.invalidated_by` maps to a row
+
+| Policy item | Row | When it is checked |
+|---|---|---|
+| `new_commit` | `IMPLEMENTATION produces a new commit`, or `DOCUMENTING produces a new documentation commit` | When the commit is made |
+| `rebase` | `IMPLEMENTATION produces a new commit` | When the rebase is made. A rebase writes new commits. |
+| `spec_revision` | `SPECIFICATION produces a new approved spec version` | When the new version is frozen |
+| `base_moved` | `A value bound to gate evidence changes` | Before `DELIVERY` pushes, and when an approval is recorded. Not continuously. |
+| `policy_change` | `A value bound to gate evidence changes` | Same two points |
+| `image_change` | `A value bound to gate evidence changes` | Same two points |
+
+A human answer (`S13`) supersedes nothing. It is a new input of the stage run that waited, so the stage contract is resolved again with the new input hash before the next attempt. No later run exists to become stale, because a stage run that waits for a person has produced nothing yet.
+
+An evidence check that finds a changed value supersedes the runs of the last row, creates new runs, and leaves the code and the documentation alone. The engine compares the bound values with the ones recorded in the evidence manifest. It does not watch the base branch, the policy files or the image registry between those two points, so a change in between is noticed at the next check. A merge, when it exists (Slice 4), adds a third check right before it.
 
 ## Job
 
@@ -208,9 +262,9 @@ stateDiagram-v2
   WAITING_FOR_HUMAN --> SUPERSEDED: supersede
   BLOCKED --> SUPERSEDED: supersede
   PASSED --> SUPERSEDED: supersede
+  SKIPPED --> SUPERSEDED: supersede
   REWORK_REQUESTED --> [*]
   FAILED --> [*]
-  SKIPPED --> [*]
   SUPERSEDED --> [*]
   CANCELLED --> [*]
 ```
@@ -228,7 +282,7 @@ stateDiagram-v2
 | `PASSED` | yes (can be superseded) | The gate decision is PASS with evidence. Settled, but becomes SUPERSEDED if its inputs are invalidated. |
 | `REWORK_REQUESTED` | yes | The gate sent the work back. A new run of the route target stage replaces this one. |
 | `FAILED` | yes | Retries or rework exhausted, or the failure is not retryable, or a human rejected. |
-| `SKIPPED` | yes | NOT_APPLICABLE by deterministic rule, profile or policy, with the rule recorded. |
+| `SKIPPED` | yes (can be superseded) | NOT_APPLICABLE by deterministic rule, profile or policy, with the rule recorded. Counts as satisfied for the stages that require it and for completion, never as passed, and never as evidence for an assurance level. Becomes SUPERSEDED when an input of the decision changes. |
 | `SUPERSEDED` | yes | Replaced because an upstream input changed. |
 | `CANCELLED` | yes | Cancelled with the job. |
 <!-- GENERATED:end stage-run-states -->
@@ -241,22 +295,35 @@ stateDiagram-v2
 | S03 | `READY` | `start` | `G_LEASE_ACQUIRED` | `RUNNING` | worker | `stage_run.started` |
 | S04 | `RUNNING` | `attempt_succeeded` | `G_OUTPUT_SCHEMA_VALID` | `GATING` | engine | `stage_run.gating` |
 | S05 | `RUNNING` | `attempt_failed_retryable` | `G_RETRY_ALLOWED` | `READY` | engine | `stage_run.retry_scheduled` |
-| S06 | `RUNNING` | `attempt_failed_final` | `G_RETRY_EXHAUSTED_OR_NONRETRYABLE` | `FAILED` | engine | `stage_run.failed` |
+| S06 | `RUNNING` | `attempt_failed_final` | `G_FAILURE_NONRETRYABLE` | `FAILED` | engine | `stage_run.failed` |
 | S07 | `RUNNING` | `escalate_to_human` | `G_ESCALATION_REQUIRED` | `WAITING_FOR_HUMAN` | engine | `stage_run.waiting_for_human` |
 | S08 | `GATING` | `gate_passed` | `G_GATE_PASS_EVIDENCED` | `PASSED` | gate | `stage_run.passed` |
 | S09 | `GATING` | `gate_requires_rework` | `G_REWORK_ALLOWED` | `REWORK_REQUESTED` | gate | `stage_run.rework_requested` |
 | S10 | `GATING` | `gate_needs_human` | `G_NEEDS_HUMAN_VERDICT` | `WAITING_FOR_HUMAN` | gate | `stage_run.waiting_for_human` |
 | S11 | `GATING` | `gate_blocks` | `G_BLOCKING_CONDITION` | `BLOCKED` | gate | `stage_run.blocked` |
 | S12 | `GATING` | `gate_failed_final` | `G_GATE_FAILED_NO_REWORK` | `FAILED` | gate | `stage_run.failed` |
-| S13 | `WAITING_FOR_HUMAN` | `human_answered` | `G_ANSWER_RECORDED` | `READY` | requester, operator, approver | `stage_run.ready` |
+| S13 | `WAITING_FOR_HUMAN` | `human_answered` | `G_ANSWER_RECORDED` | `READY` | requester, operator, approver, org_admin | `stage_run.ready` |
 | S14 | `WAITING_FOR_HUMAN` | `human_approved` | `G_APPROVER_AUTHORIZED` | `PASSED` | approver | `stage_run.passed` |
 | S15 | `WAITING_FOR_HUMAN`, `BLOCKED` | `human_requested_rework` | `G_HUMAN_REWORK_ALLOWED` | `REWORK_REQUESTED` | approver, operator | `stage_run.rework_requested` |
 | S16 | `WAITING_FOR_HUMAN` | `human_rejected` | `G_HUMAN_REJECTED` | `FAILED` | approver | `stage_run.failed` |
 | S17 | `BLOCKED` | `unblocked_rerun` | `G_BLOCK_CLEARED_RERUN` | `READY` | operator | `stage_run.ready` |
 | S18 | `BLOCKED` | `override_accepted` | `G_OVERRIDE_PERMITTED` | `PASSED` | approver, security_approver | `stage_run.passed` |
 | S19 | `PENDING`, `READY`, `RUNNING`, `GATING`, `WAITING_FOR_HUMAN`, `BLOCKED` | `cancel` | `G_NO_ACTIVE_ATTEMPT` | `CANCELLED` | engine | `stage_run.cancelled` |
-| S20 | `PENDING`, `READY`, `RUNNING`, `GATING`, `WAITING_FOR_HUMAN`, `BLOCKED`, `PASSED` | `supersede` | `G_UPSTREAM_INVALIDATED` | `SUPERSEDED` | engine | `stage_run.superseded` |
+| S20 | `PENDING`, `READY`, `RUNNING`, `GATING`, `WAITING_FOR_HUMAN`, `BLOCKED`, `PASSED`, `SKIPPED` | `supersede` | `G_UPSTREAM_INVALIDATED` | `SUPERSEDED` | engine | `stage_run.superseded` |
 <!-- GENERATED:end stage-run-transitions -->
+
+### When a failed attempt could take more than one move
+
+The guards of `S05`, `S06` and `S07` overlap, so the order matters. The engine takes the first row that applies. The rule behind the order is that a limit never fails a stage run: reaching a limit asks a person, and only a failure that retrying cannot fix fails it.
+
+| Order | The attempt failed with | Move |
+|---|---|---|
+| 1 | `BUDGET_EXHAUSTED` | `S07`, and the job's broker token is revoked |
+| 2 | A class the contract lists in `retry_on`, with attempts left, repairs left and budget | `S05` |
+| 3 | `POLICY_DENIED`, `INTERNAL`, or a class not in `retry_on` | `S06` |
+| 4 | A class in `retry_on`, but no attempt or repair is left, or the budget has no room | `S07` |
+
+Attempts and repairs are counted from the last human answer (`S13`). A person who answers a stage run that stopped at its attempt limit therefore gets a new window of attempts, and the total stays bounded because a person is in the loop each time. A skipped stage run (`S02`) counts as satisfied for the stages that require it, so skipping a stage does not stall the pipeline. It never counts as passed: no assurance level comes from it, and the decision is made again if an input of the rule changes (`S20` applies to `SKIPPED` as it does to `PASSED`).
 
 How the four gate outcomes in the master prompt map to stage run states:
 
@@ -393,27 +460,27 @@ Each guard is a named predicate in the `domain` crate. A transition test fails i
 | `G_ALL_ATTEMPTS_TERMINAL` | Every attempt of the job is in a terminal state and every sandbox has been torn down or flagged as leaked. |
 | `G_UNRECOVERABLE` | A stage run is FAILED and no rework route or retry budget remains, or a job-level hard limit was reached under a policy that says fail. |
 | `G_REJECTION_RECORDED` | The intake decision is decline, or an authorized approver recorded a reject decision. |
-| `G_PIPELINE_SCOPE_COMPLETE` | Every stage kind in the job's configured scope has a PASSED run that is not superseded, the approval decision is approve, and the evidence ledger hash chain verifies. |
-| `G_UPSTREAM_PASSED` | Every required upstream stage run is PASSED and not superseded, every consumed artifact hash equals the current version, and the stage contract resolved and validated against its schema. |
+| `G_PIPELINE_SCOPE_COMPLETE` | Every stage kind in the job's configured scope has a run that is PASSED, or SKIPPED because a recorded rule says the stage does not apply, and that run is not superseded; the approval decision is approve; and the evidence ledger hash chain verifies. |
+| `G_UPSTREAM_PASSED` | Every required upstream stage run is PASSED, or SKIPPED because a recorded rule says the stage does not apply, and is not superseded. Every consumed artifact hash equals the current version (a skipped stage produced none, and the stage contract records the skip rule instead of a hash). The stage contract resolved and validated against its schema. |
 | `G_NOT_APPLICABLE_DECIDED` | A deterministic rule, a domain profile or a policy states that the stage does not apply. The rule and its inputs are recorded in the ledger. An agent opinion is never sufficient. |
 | `G_LEASE_ACQUIRED` | The lease compare-and-swap succeeded, the job is ACTIVE, not_before has passed, the concurrency quota allows it, and the runtime capability check passed. |
 | `G_OUTPUT_SCHEMA_VALID` | The attempt succeeded and its output validates against the stage outputs schema, and the output artifact hash is stored. |
-| `G_RETRY_ALLOWED` | The failure class is retryable, attempts used is below max_attempts, and the budget has room for another attempt. |
-| `G_RETRY_EXHAUSTED_OR_NONRETRYABLE` | The failure class is not retryable, or max_attempts is reached. |
-| `G_ESCALATION_REQUIRED` | A budget limit was hit, the agent returned a structured needs_human request, the stagnation detector fired, or policy requires a human decision here. |
+| `G_RETRY_ALLOWED` | The failure class is retryable under the stage contract, the attempts used since the last human answer are below max_attempts, the budget has room for another attempt, and, after INVALID_OUTPUT, no more than two repairs have been made (a repair is a retry that follows an invalid-output failure; the cap comes from policy and can only be lowered). |
+| `G_FAILURE_NONRETRYABLE` | Retrying cannot help: the failure class is POLICY_DENIED or INTERNAL, or the stage contract does not list it in retry_on. BUDGET_EXHAUSTED is not covered here, because a budget limit asks a human (S07). Reaching the attempt limit is not covered either, because an attempt limit asks a human (S07). |
+| `G_ESCALATION_REQUIRED` | A budget limit was hit (the failure class is BUDGET_EXHAUSTED, or a retry would be allowed in every other way but the budget has no room), the attempt limit or the repair cap was reached on a failure class the stage contract lists as retryable, the agent returned a structured needs_human request, the stagnation detector fired, or policy requires a human decision here. |
 | `G_GATE_PASS_EVIDENCED` | The gate decision is PASS and is persisted, every acceptance criterion of the stage contract has a ledger entry, and every mandatory gate report is PASSED or NOT_APPLICABLE with a recorded reason. No gate report is BLOCKED. |
 | `G_REWORK_ALLOWED` | The verdict is CHANGES_REQUIRED or a deterministic gate FAILED, rework rounds used are below the cap of two (code and documentation each have their own count), the failing set differs from the previous round, and budget remains. After the second round a human decides. |
-| `G_NEEDS_HUMAN_VERDICT` | The verdict is NEEDS_HUMAN, or the rework limit, the stagnation detector or a budget limit was reached, or the gate itself is a human gate. |
-| `G_BLOCKING_CONDITION` | The verdict is BLOCK, a mandatory gate could not run (tool unavailable or probe failed), or a policy violation was detected. |
+| `G_NEEDS_HUMAN_VERDICT` | The verdict is NEEDS_HUMAN, or the rework limit, the stagnation detector or a budget limit was reached, or the gate itself is a human gate, or a finding that justifies the verdict has a defect class that only a person can decide (specification, or policy; see defect_routing). |
+| `G_BLOCKING_CONDITION` | The verdict is BLOCK, a mandatory gate could not run (tool unavailable or probe failed), or a deterministic check detected a policy violation. A reviewer's finding with defect class policy asks a person instead (S10). |
 | `G_GATE_FAILED_NO_REWORK` | The gate FAILED and the stage has no rework route, for example an intake record that is still invalid after bounded repair. |
-| `G_ANSWER_RECORDED` | A human answer, clarification, approval of residual input or budget extension is recorded with the principal and becomes a new input hash for the stage. |
-| `G_APPROVER_AUTHORIZED` | The decision is approve, the principal holds the role the approval policy requires for this stage and risk tier, and the evidence digest the human saw equals the current evidence digest. |
+| `G_ANSWER_RECORDED` | A human answer, clarification, approval of residual input or budget extension is recorded with the principal and becomes a new input hash for the stage. It also starts a new attempt window: attempts and repairs are counted from the answer. A budget extension that raises a ceiling is accepted only from an org_admin. |
+| `G_APPROVER_AUTHORIZED` | The decision is approve, the principal holds the role the approval policy requires for this stage and risk tier, the evidence digest the human saw equals the current evidence digest, and every warning of the rule translation-unfaithful in the gate reports of that evidence has a recorded human decision. |
 | `G_HUMAN_REWORK_ALLOWED` | The principal holds the approver or operator role and the rework rounds used are below the cap of two. The stagnation detector does not apply to human requests. After the second round a human must choose to continue, with the decision recorded. |
 | `G_HUMAN_REJECTED` | An authorized approver recorded a reject decision with a reason. |
 | `G_BLOCK_CLEARED_RERUN` | The capability re-probe passed or the missing dependency is now available, so the stage can run again. |
 | `G_OVERRIDE_PERMITTED` | Policy permits an override for this block code, the principal holds the required role (security_approver for security-class blocks), a justification is recorded, and the blocked gate is not a mandatory gate of an active domain profile. An override records accepted residual risk. It never creates an assurance level claim. |
 | `G_NO_ACTIVE_ATTEMPT` | The stage run has no attempt in STARTING, RUNNING or CANCELLING. |
-| `G_UPSTREAM_INVALIDATED` | A consumed upstream artifact was superseded by a newer version, or an upstream stage run was reworked. |
+| `G_UPSTREAM_INVALIDATED` | A consumed upstream artifact was superseded by a newer version, an upstream stage run was reworked, or an external change listed in the invalidation table happened (the source request was edited after the intake snapshot, or a value bound to gate evidence changed). |
 | `G_SANDBOX_PROVISIONED` | The sandbox started within its limits, the policy-approved tool grants are in place, the runtime capability probe satisfies the stage needs, and the lease epoch is current. |
 | `G_LEASE_EPOCH_CURRENT` | The epoch sent by the worker equals the stored epoch and now is not past lease_expires_at. |
 | `G_EPOCH_CURRENT` | The epoch sent by the worker equals the stored epoch. |
@@ -480,7 +547,7 @@ Rules that follow from this:
 | INV-07 | An override of a BLOCK never creates an assurance level claim and is never allowed for a mandatory gate of an active domain profile. | guard G_OVERRIDE_PERMITTED | engine test with a profile whose mandatory tool is absent |
 | INV-08 | Evidence recorded by a fake adapter is accepted only when the job execution mode is test, and never supports an assurance level. | evidence ledger entry schema; engine | schema invalid example; engine test in production mode with a fake adapter |
 | INV-09 | Superseding a stage run invalidates its ledger entries by appending new entries. Existing entries are never changed. | append-only ledger with no UPDATE or DELETE privilege | database test: UPDATE and DELETE on the ledger fail |
-| INV-10 | The number of attempts per stage run and rework rounds per job are bounded by policy (default: three attempts, two rework rounds for code and two for documentation). Exhaustion escalates to a human; it does not loop. | guards G_RETRY_ALLOWED and G_REWORK_ALLOWED | engine test with an always-failing fake runtime reaches WAITING_FOR_HUMAN in a bounded number of steps |
+| INV-10 | The number of attempts per stage run (counted since the last human answer) and rework rounds per job are bounded by policy (default: three attempts, two rework rounds for code and two for documentation, and two repairs after an invalid output). Exhaustion, including a budget limit, escalates to a human; it does not loop, and it does not fail the stage run. | guards G_RETRY_ALLOWED, G_ESCALATION_REQUIRED and G_REWORK_ALLOWED | engine test with an always-failing fake runtime reaches WAITING_FOR_HUMAN in a bounded number of steps; domain test: BUDGET_EXHAUSTED and an exhausted attempt limit choose S07, never S06 |
 | INV-11 | DOCUMENTING and DOCUMENTATION_REVIEW run after REVIEW has passed and before DELIVERY and APPROVAL. A new implementation commit supersedes them. | pipeline requires and invalidation_rules in this file | engine test: a rework after DOCUMENTATION_REVIEW supersedes both documentation runs |
 <!-- GENERATED:end invariants -->
 
@@ -490,9 +557,9 @@ These are starting values for the policy files, not measured results. The values
 
 | Bound | Starting value | Applies to |
 |---|---|---|
-| Attempts per stage run | 3 | `S05`, `S06` |
-| Structured-output repairs per stage run | 2, counted inside the attempt limit | `A05` with `INVALID_OUTPUT` |
-| Rework rounds, code (`IMPLEMENTATION` re-runs) | 2, then a human decides. Decided by default, pending human confirmation (ADR 0009). `policies/security.yaml` `per_job.max_rework_iterations` currently says 3 and its owner must lower it | `S09`, `S15` |
+| Attempts per stage run, counted from the last human answer | 3. At the limit a person decides (`S07`) | `S05`, `S07` |
+| Structured-output repairs, counted from the last human answer | 2. A repair is a retry after `INVALID_OUTPUT`, so it also counts as an attempt. The value is `untrusted_content.structured_output.bounded_repair_attempts` in `policies/security.yaml`, and a policy may lower it and never raise it | `A05` with `INVALID_OUTPUT`, `S05`, `S07` |
+| Rework rounds, code (`IMPLEMENTATION` re-runs) | 2, then a human decides. Decided by default, pending human confirmation (ADR 0009). `policies/security.yaml` `per_job.max_rework_iterations` is 2, and the engine takes the lower of the policy value and 2 | `S09`, `S15` |
 | Rework rounds, documentation (`DOCUMENTING` re-runs) | 2, then a human decides. Same default | `S09`, `S15` |
 | Lease time to live | 60 seconds, heartbeat every 15 seconds | `A03`, `A07` |
 | Teardown grace period | 30 seconds | `A10` |
