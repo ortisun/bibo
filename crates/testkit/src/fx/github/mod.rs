@@ -5,7 +5,8 @@
 //!
 //! 1. **Serve a REST subset** that the factory uses, with GitHub's own response shapes, status
 //!    codes and error messages: the App and its installations, installation tokens narrowed to
-//!    repositories and permissions, issues and comments, collaborator permission, branches and
+//!    repositories and permissions, issues, their comments and their event list (the only place
+//!    that says who applied a label), entity tags with `If-None-Match`, collaborator permission, branches and
 //!    protection, refs, pull requests (draft, idempotent by head branch, merge with a `sha` check),
 //!    reviews, check runs and commit statuses. Run it over HTTP with [`FakeGithub::serve`], or
 //!    call [`FakeGithub::handle`] directly.
@@ -436,6 +437,19 @@ pub(crate) struct Issue {
     pub created_at: i64,
     pub updated_at: i64,
     pub comments: Vec<Comment>,
+    /// The timeline GitHub serves at `/issues/{n}/events`: who labelled, unlabelled or closed.
+    pub events: Vec<IssueEvent>,
+}
+
+/// One entry of an issue's event list. The `labeled` event is the only place the API says who
+/// applied a label.
+#[derive(Debug, Clone)]
+pub(crate) struct IssueEvent {
+    pub id: u64,
+    pub event: String,
+    pub actor: String,
+    pub label: Option<String>,
+    pub created_at: i64,
 }
 
 #[derive(Debug, Clone)]
@@ -705,6 +719,17 @@ impl FakeGithub {
         let now = self.now();
         let mut state = self.lock();
         assert!(state.users.contains_key(author), "unknown user {author}");
+        // Labels given at creation are applied by the author, and GitHub records that.
+        let events: Vec<IssueEvent> = labels
+            .iter()
+            .map(|label| IssueEvent {
+                id: state.new_id(),
+                event: "labeled".to_owned(),
+                actor: author.to_owned(),
+                label: Some((*label).to_owned()),
+                created_at: now,
+            })
+            .collect();
         let repo = state.repos.get_mut(repo).expect("a known repository");
         let number = repo.next_number;
         repo.next_number += 1;
@@ -721,6 +746,7 @@ impl FakeGithub {
                 created_at: now,
                 updated_at: now,
                 comments: Vec::new(),
+                events,
             },
         );
         number
@@ -743,49 +769,99 @@ impl FakeGithub {
         issue.updated_at = now;
     }
 
-    /// Adds a label to an issue.
+    /// Adds a label to an issue, applied by `actor`. The issue's event list records who did it,
+    /// which is the only way the API says (`GET /issues/{n}/events`, event `labeled`). The
+    /// webhook's `sender` can say something else, and the factory must trust the events.
+    ///
+    /// # Panics
+    /// Panics when the issue or the actor is not known.
+    pub fn label_issue(&self, repo: &str, number: u64, label: &str, actor: &str) {
+        self.change_issue(repo, number, actor, |issue| {
+            if !issue.labels.iter().any(|l| l == label) {
+                issue.labels.push(label.to_owned());
+            }
+            ("labeled", Some(label.to_owned()))
+        });
+    }
+
+    /// Adds a label to an issue, applied by the issue's author.
     ///
     /// # Panics
     /// Panics when the issue is not known.
     pub fn add_label(&self, repo: &str, number: u64, label: &str) {
-        let mut state = self.lock();
-        let issue = state
-            .repos
-            .get_mut(repo)
-            .and_then(|r| r.issues.get_mut(&number))
-            .expect("a known issue");
-        if !issue.labels.iter().any(|l| l == label) {
-            issue.labels.push(label.to_owned());
-        }
+        let author = self.issue_author(repo, number);
+        self.label_issue(repo, number, label, &author);
+    }
+
+    /// Removes a label from an issue, taken off by `actor`.
+    ///
+    /// # Panics
+    /// Panics when the issue or the actor is not known.
+    pub fn unlabel_issue(&self, repo: &str, number: u64, label: &str, actor: &str) {
+        self.change_issue(repo, number, actor, |issue| {
+            issue.labels.retain(|l| l != label);
+            ("unlabeled", Some(label.to_owned()))
+        });
     }
 
     /// Removes a label from an issue, so that the live state disagrees with a webhook payload
-    /// that still says the label is there (NT-WH-06).
+    /// that still says the label is there (NT-WH-06). The issue's author takes it off.
     ///
     /// # Panics
     /// Panics when the issue is not known.
     pub fn remove_label(&self, repo: &str, number: u64, label: &str) {
-        let mut state = self.lock();
-        let issue = state
-            .repos
-            .get_mut(repo)
-            .and_then(|r| r.issues.get_mut(&number))
-            .expect("a known issue");
-        issue.labels.retain(|l| l != label);
+        let author = self.issue_author(repo, number);
+        self.unlabel_issue(repo, number, label, &author);
     }
 
-    /// Closes an issue.
+    /// Closes an issue, closed by its author.
     ///
     /// # Panics
     /// Panics when the issue is not known.
     pub fn close_issue(&self, repo: &str, number: u64) {
+        let author = self.issue_author(repo, number);
+        self.change_issue(repo, number, &author, |issue| {
+            "closed".clone_into(&mut issue.state);
+            ("closed", None)
+        });
+    }
+
+    fn issue_author(&self, repo: &str, number: u64) -> String {
+        self.lock()
+            .repos
+            .get(repo)
+            .and_then(|r| r.issues.get(&number))
+            .expect("a known issue")
+            .author
+            .clone()
+    }
+
+    /// Applies a change to an issue and records it in the issue's event list.
+    fn change_issue(
+        &self,
+        repo: &str,
+        number: u64,
+        actor: &str,
+        change: impl FnOnce(&mut Issue) -> (&'static str, Option<String>),
+    ) {
+        let now = self.now();
         let mut state = self.lock();
+        assert!(state.users.contains_key(actor), "unknown user {actor}");
+        let id = state.new_id();
         let issue = state
             .repos
             .get_mut(repo)
             .and_then(|r| r.issues.get_mut(&number))
             .expect("a known issue");
-        "closed".clone_into(&mut issue.state);
+        let (event, label) = change(issue);
+        issue.updated_at = now;
+        issue.events.push(IssueEvent {
+            id,
+            event: event.to_owned(),
+            actor: actor.to_owned(),
+            label,
+            created_at: now,
+        });
     }
 
     /// Protects a branch.

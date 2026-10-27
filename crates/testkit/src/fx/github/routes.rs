@@ -85,6 +85,7 @@ pub(crate) enum Route {
     Repo,
     Issue,
     IssueComments,
+    IssueEvents,
     CreateComment,
     Collaborator,
     Branch,
@@ -116,6 +117,7 @@ impl Route {
             Route::Repo => "GET /repos/{owner}/{repo}",
             Route::Issue => "GET /repos/{owner}/{repo}/issues/{number}",
             Route::IssueComments => "GET /repos/{owner}/{repo}/issues/{number}/comments",
+            Route::IssueEvents => "GET /repos/{owner}/{repo}/issues/{number}/events",
             Route::CreateComment => "POST /repos/{owner}/{repo}/issues/{number}/comments",
             Route::Collaborator => "GET /repos/{owner}/{repo}/collaborators/{username}/permission",
             Route::Branch => "GET /repos/{owner}/{repo}/branches/{branch}",
@@ -159,6 +161,7 @@ pub(crate) fn match_route(method: &str, path: &str) -> Option<(Route, Vec<String
         ("GET", ["repos", o, r, "issues", n, "comments"]) => {
             (Route::IssueComments, params(&[o, r, n]))
         }
+        ("GET", ["repos", o, r, "issues", n, "events"]) => (Route::IssueEvents, params(&[o, r, n])),
         ("POST", ["repos", o, r, "issues", n, "comments"]) => {
             (Route::CreateComment, params(&[o, r, n]))
         }
@@ -777,7 +780,34 @@ fn dispatch_repo(
                 .issues
                 .get(&parse_number(&params[2])?)
                 .ok_or_else(not_found)?;
-            Ok(HttpResponse::json(200, &issue_json(state, repo, issue)))
+            Ok(with_etag(request, 200, &issue_json(state, repo, issue)))
+        }
+        Route::IssueEvents => {
+            require(token, "issues", "read")?;
+            let repo = &state.repos[&full];
+            let issue = repo
+                .issues
+                .get(&parse_number(&params[2])?)
+                .ok_or_else(not_found)?;
+            let events: Vec<Value> = issue
+                .events
+                .iter()
+                .map(|event| {
+                    let actor = state.users.get(&event.actor);
+                    let mut value = json!({
+                        "id": event.id,
+                        "node_id": format!("E_fake_{}", event.id),
+                        "event": event.event,
+                        "actor": actor.map_or_else(|| json!({"login": event.actor}), super::User::json),
+                        "created_at": iso(event.created_at),
+                    });
+                    if let Some(label) = &event.label {
+                        value["label"] = json!({"name": label});
+                    }
+                    value
+                })
+                .collect();
+            Ok(HttpResponse::json(200, &Value::Array(events)))
         }
         Route::IssueComments => {
             require(token, "issues", "read")?;
@@ -1017,7 +1047,8 @@ fn dispatch_repo(
                 .pulls
                 .get(&parse_number(&params[2])?)
                 .ok_or_else(not_found)?;
-            Ok(HttpResponse::json(
+            Ok(with_etag(
+                request,
                 200,
                 &pull_json(state, repo, pull).ok_or_else(not_found)?,
             ))
@@ -1151,6 +1182,28 @@ fn dispatch_repo(
     }
 }
 
+/// A weak entity tag for a JSON document: the first eight bytes of its SHA-256. It changes when
+/// the content changes, which is all `PullRequestState::body_etag` needs.
+fn etag_of(value: &Value) -> String {
+    format!(
+        "W/\"{}\"",
+        crate::fx::encoding::hex_encode(
+            &crate::fx::digest::sha256(value.to_string().as_bytes())[..8],
+            false
+        )
+    )
+}
+
+/// A JSON answer with an `ETag`, or 304 with no body when the caller already has this version
+/// (`If-None-Match`), as GitHub answers.
+fn with_etag(request: &HttpRequest, status: u16, value: &Value) -> HttpResponse {
+    let etag = etag_of(value);
+    if request.header("if-none-match") == Some(etag.as_str()) {
+        return HttpResponse::empty(304).with_header("ETag", &etag);
+    }
+    HttpResponse::json(status, value).with_header("ETag", &etag)
+}
+
 fn is_sha(text: &str) -> bool {
     text.len() == 40 && text.bytes().all(|b| b.is_ascii_hexdigit())
 }
@@ -1260,6 +1313,7 @@ fn create_pull(
             created_at: now,
             updated_at: now,
             comments: Vec::new(),
+            events: Vec::new(),
         },
     );
     let repo = &state.repos[full];

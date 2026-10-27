@@ -190,6 +190,87 @@ fn each_control_of_the_harness_has_a_control_off_proof() {
 }
 
 #[test]
+fn every_fake_server_labels_the_data_it_records() {
+    use crate::fx::dns::{DnsAnswer, FlippingDns, ScriptedHttp};
+    use crate::fx::http::send_request;
+    use crate::fx::registry::{FakeRegistry, PackageSpec};
+
+    // Each server answers with the label on the wire, and the JSON of what it recorded carries
+    // the label on the document and on every record.
+    let wire = |server_addr, path: &str| {
+        let response = send_request(server_addr, "GET", path, &[], b"").unwrap();
+        assert_eq!(
+            response.header("X-Factory-Fidelity"),
+            Some("fake"),
+            "{path}"
+        );
+        assert!(
+            response
+                .header("Server")
+                .unwrap()
+                .contains("factory-testkit-fake"),
+            "{path}"
+        );
+    };
+
+    let github = FakeGithub::new();
+    let github_server = github.serve().unwrap();
+    wire(github_server.addr(), "/app");
+    let json = github.to_json();
+    assert_eq!(json["fidelity"], "fake");
+    assert!(!json["requests"].as_array().unwrap().is_empty());
+    for record in json["requests"].as_array().unwrap() {
+        assert_eq!(record["fidelity"], "fake");
+    }
+
+    let registry = FakeRegistry::new();
+    registry.publish(PackageSpec::npm_named("pkg", 0));
+    let registry_server = registry.serve().unwrap();
+    wire(registry_server.addr(), "/pkg");
+    let json = registry.to_json();
+    assert_eq!(json["fidelity"], "fake");
+    for record in json["requests"].as_array().unwrap() {
+        assert_eq!(record["fidelity"], "fake");
+    }
+
+    let web = ScriptedHttp::start("upstream").unwrap();
+    wire(web.addr(), "/anything");
+
+    let dns = FlippingDns::start().unwrap();
+    dns.always("a.test", DnsAnswer::NxDomain);
+    let socket = std::net::UdpSocket::bind(("127.0.0.1", 0)).unwrap();
+    socket
+        .set_read_timeout(Some(std::time::Duration::from_millis(500)))
+        .unwrap();
+    let mut query = vec![0, 1, 1, 0, 0, 1, 0, 0, 0, 0, 0, 0, 1, b'a', 4];
+    query.extend_from_slice(b"test");
+    query.extend_from_slice(&[0, 0, 1, 0, 1]);
+    socket.send_to(&query, dns.addr()).unwrap();
+    let mut buffer = [0u8; 512];
+    socket.recv_from(&mut buffer).unwrap();
+    let json = dns.to_json();
+    assert_eq!(json["fidelity"], "fake");
+    assert_eq!(json["queries"][0]["fidelity"], "fake");
+
+    // The recorders that are not servers say the same of what they hold.
+    let mut recorder = SpawnRecorder::new(SpawnPolicy::docker_and_git()).unwrap();
+    recorder.install("docker", &Behavior::Record).unwrap();
+    Command::new("docker")
+        .env_clear()
+        .env("PATH", recorder.path_env())
+        .status()
+        .unwrap();
+    let json = recorder.to_json();
+    assert_eq!(json["fidelity"], "fake");
+    assert_eq!(json["records"][0]["fidelity"], "fake");
+    let collector = SinkCollector::new();
+    collector.ingest_spawns(&recorder);
+    let json = collector.to_json();
+    assert_eq!(json["fidelity"], "fake");
+    assert_eq!(json["entries"][0]["fidelity"], "fake");
+}
+
+#[test]
 fn a_scenario_that_ignores_its_control_is_rejected_by_the_same_ledger() {
     // Deliberate break: the check that counts the sweeper's forms is only worth something if the
     // ledger can refuse a scenario that never asks about its control.

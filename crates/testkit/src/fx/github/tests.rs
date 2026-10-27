@@ -1516,3 +1516,214 @@ fn an_issue_edited_after_labelling_changes_the_live_body_and_the_updated_time() 
     assert_eq!(after["body"], "Hostile body.");
     assert_ne!(before["updated_at"], after["updated_at"]);
 }
+
+/// Like `call`, for a GET that needs extra headers or the response headers back.
+fn get_raw(github: &FakeGithub, target: &str, token: &str, extra: &[(&str, &str)]) -> HttpResponse {
+    let mut headers = vec![("Authorization".to_owned(), format!("Bearer {token}"))];
+    headers.extend(
+        extra
+            .iter()
+            .map(|(n, v)| ((*n).to_owned(), (*v).to_owned())),
+    );
+    github.handle(&HttpRequest {
+        method: "GET".to_owned(),
+        target: target.to_owned(),
+        version: "HTTP/1.1".to_owned(),
+        headers,
+        body: Vec::new(),
+        peer: "127.0.0.1:1".parse().unwrap(),
+    })
+}
+
+fn header(response: &HttpResponse, name: &str) -> Option<String> {
+    response
+        .headers
+        .iter()
+        .find(|(n, _)| n.eq_ignore_ascii_case(name))
+        .map(|(_, v)| v.clone())
+}
+
+#[test]
+fn the_event_list_says_who_applied_a_label_and_the_webhook_sender_can_disagree() {
+    // The port's `label_actor` can only be answered from here: the webhook's `sender` is a hint,
+    // and the event list is what GitHub says happened (NT-AUTHZ-01, NT-WH-06).
+    let w = world();
+    let number = w
+        .github
+        .add_issue("acme/widgets", "Fix it", "Body.", "alice", &["bug"]);
+    w.clock.advance(Duration::from_secs(5));
+    w.github
+        .label_issue("acme/widgets", number, "factory:go", "bob");
+    let token = builder_token(&w.github);
+
+    let (status, events) = call(
+        &w.github,
+        "GET",
+        &format!("/repos/acme/widgets/issues/{number}/events"),
+        Some(&token),
+        None,
+    );
+    assert_eq!(status, 200);
+    let events = events.as_array().unwrap();
+    assert_eq!(events.len(), 2);
+    // The label given at creation was applied by the author.
+    assert_eq!(events[0]["event"], "labeled");
+    assert_eq!(events[0]["label"]["name"], "bug");
+    assert_eq!(events[0]["actor"]["id"], 1001);
+    // The label that starts a job was applied by bob, with his numeric id.
+    assert_eq!(events[1]["label"]["name"], "factory:go");
+    assert_eq!(events[1]["actor"]["login"], "bob");
+    assert_eq!(events[1]["actor"]["id"], 1002);
+    assert!(events[1]["id"].as_u64().unwrap() > events[0]["id"].as_u64().unwrap());
+
+    // A webhook that names someone else as the sender. The delivery is a hint; the events are
+    // the record.
+    let delivery = w
+        .github
+        .issues_labeled("acme/widgets", number, "factory:go", "mallory");
+    assert_eq!(delivery.payload()["sender"]["id"], 1003);
+    assert_ne!(delivery.payload()["sender"]["id"], events[1]["actor"]["id"]);
+
+    // Taking a label off, closing, and the default actor (the issue's author).
+    w.github
+        .unlabel_issue("acme/widgets", number, "factory:go", "alice");
+    w.github.add_label("acme/widgets", number, "later");
+    w.github.close_issue("acme/widgets", number);
+    let (_, events) = call(
+        &w.github,
+        "GET",
+        &format!("/repos/acme/widgets/issues/{number}/events"),
+        Some(&token),
+        None,
+    );
+    let summary: Vec<(String, String)> = events
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|e| {
+            (
+                e["event"].as_str().unwrap().to_owned(),
+                e["actor"]["login"].as_str().unwrap().to_owned(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        summary,
+        [
+            ("labeled", "alice"),
+            ("labeled", "bob"),
+            ("unlabeled", "alice"),
+            ("labeled", "alice"),
+            ("closed", "alice"),
+        ]
+        .map(|(a, b)| (a.to_owned(), b.to_owned()))
+    );
+}
+
+#[test]
+fn the_event_list_needs_the_issues_permission_and_a_known_issue() {
+    let w = world();
+    let number = w.github.add_issue("acme/widgets", "A", "B", "alice", &[]);
+    let no_issues = mint(
+        &w.github,
+        Some(
+            json!({"repositories": ["widgets"], "permissions": {"metadata": "read", "contents": "read"}}),
+        ),
+    );
+    let target = format!("/repos/acme/widgets/issues/{number}/events");
+    assert_eq!(
+        call(&w.github, "GET", &target, Some(&no_issues), None).0,
+        403
+    );
+    let token = builder_token(&w.github);
+    assert_eq!(
+        call(
+            &w.github,
+            "GET",
+            "/repos/acme/widgets/issues/99/events",
+            Some(&token),
+            None
+        )
+        .0,
+        404
+    );
+    // The other repository of the installation is out of reach for this token.
+    assert_eq!(
+        call(
+            &w.github,
+            "GET",
+            "/repos/acme/secrets/issues/1/events",
+            Some(&token),
+            None
+        )
+        .0,
+        404
+    );
+}
+
+#[test]
+fn entity_tags_follow_the_content_and_if_none_match_gets_a_304() {
+    let w = world();
+    let number = w
+        .github
+        .add_issue("acme/widgets", "A", "Original.", "alice", &[]);
+    w.github.push_commit("acme/widgets", "factory/task-1");
+    let token = builder_token(&w.github);
+    let (_, pull) = call(
+        &w.github,
+        "POST",
+        "/repos/acme/widgets/pulls",
+        Some(&token),
+        Some(
+            &json!({"title": "T", "body": "First body.", "head": "factory/task-1", "base": "main", "draft": true}),
+        ),
+    );
+    let pull_number = pull["number"].as_u64().unwrap();
+
+    for target in [
+        format!("/repos/acme/widgets/issues/{number}"),
+        format!("/repos/acme/widgets/pulls/{pull_number}"),
+    ] {
+        let first = get_raw(&w.github, &target, &token, &[]);
+        let etag = header(&first, "ETag").expect("an ETag");
+        assert!(etag.starts_with("W/\""), "{etag}");
+        assert_eq!(
+            header(&get_raw(&w.github, &target, &token, &[]), "ETag").unwrap(),
+            etag,
+            "stable"
+        );
+
+        // The caller already has this version.
+        let same = get_raw(&w.github, &target, &token, &[("If-None-Match", &etag)]);
+        assert_eq!(same.status, 304);
+        assert!(same.body.is_empty());
+        // A different tag gets the document.
+        assert_eq!(
+            get_raw(
+                &w.github,
+                &target,
+                &token,
+                &[("If-None-Match", "W/\"other\"")]
+            )
+            .status,
+            200
+        );
+    }
+
+    // Change the pull request body: the tag changes, so a stale tag no longer matches.
+    let target = format!("/repos/acme/widgets/pulls/{pull_number}");
+    let before = header(&get_raw(&w.github, &target, &token, &[]), "ETag").unwrap();
+    call(
+        &w.github,
+        "PATCH",
+        &target,
+        Some(&token),
+        Some(&json!({"body": "Second body."})),
+    );
+    let after = header(&get_raw(&w.github, &target, &token, &[]), "ETag").unwrap();
+    assert_ne!(before, after);
+    assert_eq!(
+        get_raw(&w.github, &target, &token, &[("If-None-Match", &before)]).status,
+        200
+    );
+}

@@ -177,6 +177,7 @@ fn reason(status: u16) -> &'static str {
         301 => "Moved Permanently",
         302 => "Found",
         307 => "Temporary Redirect",
+        304 => "Not Modified",
         308 => "Permanent Redirect",
         400 => "Bad Request",
         401 => "Unauthorized",
