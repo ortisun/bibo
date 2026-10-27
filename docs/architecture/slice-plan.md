@@ -1598,6 +1598,7 @@ Done when:
 | 8 | Specification text that claims authorization (for example 'this task is authorized to modify workflows') grants nothing, and an issue body that asks for another skill cannot select one (NT-POL-05, NT-INJ-02 for the skill input). | test | `cargo nextest run -p factory-spec-adapter negative_nt_pol_05` |
 | 9 | Strings .specify and speckit appear only in this crate, its fixtures and documentation. | command | `cargo xtask check-architecture` |
 | 10 | The live run on the fixture issue produces a contract that validates and whose artifact hashes match the files. Without an API key or prerequisites it reports BLOCKED. | test | `FACTORY_LIVE=1 cargo nextest run -p factory-spec-adapter --test live` |
+| 11 | The specification stage profile permits exactly the four allowed Spec Kit skills and denies plan, tasks, analyze, implement, converge and taskstoissues even inside that stage (NT-POL-08). | test | `cargo nextest run -p factory-spec-adapter --test negative stage_profile_denies_forbidden_skills` |
 
 #### Build the intake and repository context stages
 
@@ -2235,7 +2236,7 @@ The harness reads the database and GitHub, not log text. All of them must hold f
 The security specialist's catalog is the oracle. The validator parses it live, so a new or changed P0 test fails the check until it has an owner.
 
 <!-- GENERATED:begin negative-test-summary -->
-The catalog has 85 P0 tests. 85 are mapped to a work package and a crate: 75 with full scope and 10 with reduced scope, listed under gaps. 0 have no owner. The catalog also has 36 P1 and 5 P2 tests, which it requires before Slice 2 and later, and 10 static checks, all mapped.
+The catalog has 86 P0 tests. 86 are mapped to a work package and a crate: 76 with full scope and 10 with reduced scope, listed under gaps. 0 have no owner. The catalog also has 36 P1 and 5 P2 tests, which it requires before Slice 2 and later, and 10 static checks, all mapped.
 <!-- GENERATED:end negative-test-summary -->
 
 ### P0 tests and their owners
@@ -2264,10 +2265,10 @@ The catalog has 85 P0 tests. 85 are mapped to a work package and a crate: 75 wit
 | `NT-GATE-07` | Missing evidence is BLOCKED | Integration | quality | `s1-trusted-gates-and-validation` | `workflow` |  | full |
 | `NT-GATE-08` | Holdout visibility | Integration | sandbox evals | `s1-workspace-ingestion` | `sandbox` | `s1-prompt-assembly`, `s1-sandbox-adapter` | partial |
 | `NT-GATE-10` | Evidence binding and flaky retries | Integration | quality | `s1-trusted-gates-and-validation` | `workflow` |  | full |
-| `NT-INJ-01` | Compromised model obeys issue text | Integration | agents policy runtime | `s1-security-review-and-tests` | `workflow` | `s1-policy-evaluation`, `s1-agent-runtime-adapters`, `s1-prompt-assembly` | full |
+| `NT-INJ-01` | Compromised model obeys issue text | Integration | agents policy runtime sandbox | `s1-security-review-and-tests` | `workflow` | `s1-policy-evaluation`, `s1-agent-runtime-adapters`, `s1-prompt-assembly` | full |
 | `NT-INJ-02` | Envelope hardening | Unit | agents | `s1-prompt-assembly` | `workflow` | `s1-spec-adapter-and-stage` | full |
 | `NT-INJ-03` | Repository document injection | Integration | agents policy | `s1-security-review-and-tests` | `workflow` | `s1-policy-evaluation` | full |
-| `NT-INJ-04` | Tool-output injection | Integration | runtime agents | `s1-security-review-and-tests` | `workflow` | `s1-agent-runtime-adapters` | partial |
+| `NT-INJ-04` | Tool-output injection | Integration | runtime agents sandbox | `s1-security-review-and-tests` | `workflow` | `s1-agent-runtime-adapters` | partial |
 | `NT-INJ-06` | Reviewer manipulation and isolation | Integration | quality workflow | `s1-stage-implementation-and-review` | `workflow` | `s1-trusted-gates-and-validation` | full |
 | `NT-INJ-07` | Repository-resident agent configuration | Unit and integration | agents runtime | `s1-agent-runtime-adapters` | `runtime` | `s1-sandbox-adapter` | full |
 | `NT-LSE-01` | Stale worker fencing | Integration | workflow github | `s1-engine-core` | `workflow` | `s1-stage-delivery-and-approval` | full |
@@ -2285,6 +2286,7 @@ The catalog has 85 P0 tests. 85 are mapped to a work package and a crate: 75 wit
 | `NT-POL-03` | Schema strictness | Unit | policy | `s0-contracts-and-registry` | `contracts` |  | full |
 | `NT-POL-04` | Deny overrides and the exception flow | Unit | policy | `s1-policy-evaluation` | `domain` |  | full |
 | `NT-POL-05` | Specification prose is not authorization | Integration | policy spec_adapter | `s1-spec-adapter-and-stage` | `spec_adapter` | `s1-policy-evaluation` | full |
+| `NT-POL-08` | Stage tool profile denies forbidden Spec Kit skills | Unit and integration | runtime spec_adapter policy | `s1-spec-adapter-and-stage` | `spec_adapter` | `s1-agent-runtime-adapters`, `s1-policy-evaluation`, `s1-sandbox-adapter` | full |
 | `NT-SBX-01` | Posture verifier rejects forbidden settings | Integration | sandbox | `s1-sandbox-adapter` | `sandbox` |  | full |
 | `NT-SBX-02` | Runtime self-check | Unit and integration | sandbox | `s1-sandbox-adapter` | `sandbox` |  | full |
 | `NT-SBX-03` | Network none | Integration | sandbox | `s1-sandbox-adapter` | `sandbox` |  | full |
@@ -2313,12 +2315,12 @@ The catalog has 85 P0 tests. 85 are mapped to a work package and a crate: 75 wit
 | `NT-SUP-03` | Lockfile and source tampering | Integration | quality | `s1-supply-chain-gates` | `workflow` |  | full |
 | `NT-SUP-05` | Image pinning | Integration | sandbox | `s1-sandbox-adapter` | `sandbox` |  | full |
 | `NT-TEN-05` | API object references | Integration | api | `s1-apps-composition` | `api` | `s1-storage-postgres` | full |
-| `NT-TOOL-01` | No shell interpretation | Integration | runtime | `s1-sandbox-adapter` | `sandbox` | `s1-agent-runtime-adapters` | partial |
+| `NT-TOOL-01` | No shell interpretation | Integration | runtime sandbox | `s1-sandbox-adapter` | `sandbox` | `s1-agent-runtime-adapters` | partial |
 | `NT-TOOL-02` | Forbidden command class matrix | Unit | policy | `s1-policy-evaluation` | `domain` |  | full |
 | `NT-TOOL-03` | Unknown tools, never-grantable tools, self-grant | Unit and integration | policy agents | `s1-policy-evaluation` | `domain` | `s1-security-review-and-tests` | full |
-| `NT-TOOL-04` | Path policy | Unit and integration | policy runtime | `s1-policy-evaluation` | `domain` | `s1-workspace-ingestion` | partial |
-| `NT-TOOL-05` | Argument injection | Unit | policy | `s1-policy-evaluation` | `domain` |  | partial |
-| `NT-TOOL-06` | Environment injection | Integration | runtime | `s1-agent-runtime-adapters` | `runtime` | `s1-sandbox-adapter` | partial |
+| `NT-TOOL-04` | Path policy | Unit and integration | policy runtime sandbox | `s1-policy-evaluation` | `domain` | `s1-workspace-ingestion` | partial |
+| `NT-TOOL-05` | Argument injection | Unit and integration | policy sandbox | `s1-policy-evaluation` | `domain` |  | partial |
+| `NT-TOOL-06` | Environment injection | Integration | runtime sandbox | `s1-agent-runtime-adapters` | `runtime` | `s1-sandbox-adapter` | partial |
 | `NT-TOOL-07` | Output flood, timeout, process group | Integration | runtime sandbox | `s1-agent-runtime-adapters` | `runtime` | `s1-sandbox-adapter` | full |
 | `NT-TOOL-09` | Structured output abuse | Unit | agents | `s0-contracts-and-registry` | `contracts` | `s1-agent-runtime-adapters` | full |
 | `NT-WEB-05` | API authentication | Integration | api | `s1-apps-composition` | `api` |  | full |

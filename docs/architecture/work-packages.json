@@ -1836,6 +1836,11 @@
           "check": "The live run on the fixture issue produces a contract that validates and whose artifact hashes match the files. Without an API key or prerequisites it reports BLOCKED.",
           "kind": "test",
           "command": "FACTORY_LIVE=1 cargo nextest run -p factory-spec-adapter --test live"
+        },
+        {
+          "check": "The specification stage profile permits exactly the four allowed Spec Kit skills and denies plan, tasks, analyze, implement, converge and taskstoissues even inside that stage (NT-POL-08).",
+          "kind": "test",
+          "command": "cargo nextest run -p factory-spec-adapter --test negative stage_profile_denies_forbidden_skills"
         }
       ]
     },
@@ -3509,6 +3514,18 @@
         "location": "crates/spec_adapter/tests/negative.rs",
         "also": [
           "s1-policy-evaluation"
+        ],
+        "scope": "full"
+      },
+      {
+        "id": "NT-POL-08",
+        "wp": "s1-spec-adapter-and-stage",
+        "crate": "spec_adapter",
+        "location": "crates/spec_adapter/tests/negative.rs",
+        "also": [
+          "s1-agent-runtime-adapters",
+          "s1-policy-evaluation",
+          "s1-sandbox-adapter"
         ],
         "scope": "full"
       },
