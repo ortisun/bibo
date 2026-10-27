@@ -37,8 +37,14 @@ time = { version = "0.3.55", default-features = false }
 # Semantic versions of contracts, agents and gates.
 semver = "1.0.28"
 # The exact patterns the schemas declare for identifiers, titles and hashes, so the Rust checks
-# and the schemas cannot drift apart.
-regex = { version = "1.13.1", default-features = false, features = ["std", "unicode-perl"] }
+# and the schemas cannot drift apart. Also the engine of the secret redactor
+# (`redaction`), which runs about twenty policy patterns over every log line and artifact. The
+# `perf` feature switches on the lazy DFA and the literal prefilters. Without it the crate
+# matches with its slowest engine: measured on 4 MB of log text in a release build, 5.7 MB/s per
+# pattern without `perf` and 1355 MB/s with it. Case-insensitive patterns are compiled with
+# Unicode off (ASCII case folding), so the redactor does not need the `unicode-case` feature,
+# which the production build of this crate does not enable.
+regex = { version = "1.13.1", default-features = false, features = ["std", "unicode-perl", "perf"] }
 
 [dev-dependencies]
 # Property-based tests for the state machines and the ledger chain. Dev only, so DEP-04 does not
