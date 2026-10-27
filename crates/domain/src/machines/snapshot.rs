@@ -6,8 +6,40 @@
 
 use crate::ids::StageRunId;
 use crate::macros::string_enum;
-use crate::state::StageRunStatus;
-use crate::vocabulary::StageKind;
+use crate::state::{AttemptStatus, StageRunStatus};
+use crate::vocabulary::{GateOutcome, StageKind};
+
+string_enum! {
+    /// Whether the sandbox of an attempt still exists.
+    pub enum SandboxState("sandbox state") {
+        /// The attempt ended before a sandbox was made.
+        NeverCreated = "never_created",
+        /// The sandbox exists.
+        Up = "up",
+        /// The sandbox was removed and the provider confirmed it.
+        TornDown = "torn_down",
+        /// The sandbox could not be confirmed gone and a leaked-resources alert was raised.
+        Leaked = "leaked",
+    }
+}
+
+/// One attempt of a job and its sandbox.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AttemptSnapshot {
+    /// Where the attempt stands.
+    pub status: AttemptStatus,
+    /// Whether its sandbox still exists.
+    pub sandbox: SandboxState,
+}
+
+/// The result of one mandatory gate, as the stage gate reads it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct GateReportSnapshot {
+    /// What the gate found.
+    pub outcome: GateOutcome,
+    /// For `NOT_APPLICABLE`: whether the reason is recorded.
+    pub not_applicable_reason_recorded: bool,
+}
 
 string_enum! {
     /// What was recorded to clear a `BLOCKED` stage run (guard `G_BLOCK_DISPOSITIONS_RECORDED`).

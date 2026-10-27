@@ -11,8 +11,10 @@
 //! | [`limits`] | The rework cap (ADR 0009) and the count of rounds used |
 //! | [`failure`] | The failure classes of an attempt and the attempt event for each |
 //! | [`invalidation`] | Which runs become stale when an upstream artifact changes |
+//! | [`guards`] | The named guard predicates, evaluated against facts |
 
 pub mod failure;
+pub mod guards;
 pub mod invalidation;
 pub mod limits;
 pub mod snapshot;
