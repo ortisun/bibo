@@ -1,0 +1,4 @@
+{"type":"thread.started","thread_id":"01a17d92-94eb-7a32-b41c-b0b46d81f4ef"}
+{"type":"turn.started"}
+{"type":"item.completed","item":{"id":"item_0","type":"agent_message","text":"FAKE-PROVIDER: tool output received content='Script failed\\nWall time 0.0 seconds\\nOutput:\\n Script error:\\nTypeError: tools.exec_command is not a function\\n    at exec_main.mjs:1:33'"}}
+{"type":"turn.completed","usage":{"input_tokens":2468,"cached_input_tokens":178,"cache_write_input_tokens":0,"output_tokens":112,"reasoning_output_tokens":0}}

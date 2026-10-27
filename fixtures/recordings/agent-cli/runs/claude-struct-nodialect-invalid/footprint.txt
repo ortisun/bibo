@@ -1,0 +1,12 @@
+exit_code=1
+--- files under /home/agent (bytes path)
+343 /home/agent/.claude.json
+84 /home/agent/.claude/backups/.claude.json.backup.1793107978778
+--- files under /tmp (bytes path)
+--- sockets and fifos under /tmp and /home/agent
+/tmp/cc-socks/7.sock
+--- cgroup counters
+memory.peak=91410432
+pids.peak=8
+memory.max=4294967296
+pids.max=256

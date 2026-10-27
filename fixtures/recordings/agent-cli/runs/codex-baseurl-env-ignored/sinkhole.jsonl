@@ -1,0 +1,60 @@
+{"client": "10.77.55.4", "kind": "dns", "name": "api.github.com", "qtype": 28, "t_ms": 56467}
+{"client": "10.77.55.4", "kind": "dns", "name": "api.github.com", "qtype": 1, "t_ms": 56469}
+{"client": "10.77.55.4", "kind": "dns", "name": "chatgpt.com", "qtype": 28, "t_ms": 56469}
+{"client": "10.77.55.4", "first_bytes": 1545, "kind": "tcp", "port": 443, "protocol": "tls", "sni": "api.github.com", "t_ms": 56470}
+{"client": "10.77.55.4", "kind": "dns", "name": "chatgpt.com", "qtype": 1, "t_ms": 56472}
+{"client": "10.77.55.4", "kind": "dns", "name": "api.openai.com", "qtype": 1, "t_ms": 56474}
+{"client": "10.77.55.4", "kind": "dns", "name": "api.openai.com", "qtype": 28, "t_ms": 56474}
+{"client": "10.77.55.4", "first_bytes": 1542, "kind": "tcp", "port": 443, "protocol": "tls", "sni": "chatgpt.com", "t_ms": 56475}
+{"client": "10.77.55.4", "first_bytes": 1471, "kind": "tcp", "port": 443, "protocol": "tls", "sni": "api.openai.com", "t_ms": 56475}
+{"client": "10.77.55.4", "kind": "dns", "name": "chatgpt.com", "qtype": 1, "t_ms": 56478}
+{"client": "10.77.55.4", "kind": "dns", "name": "chatgpt.com", "qtype": 28, "t_ms": 56479}
+{"client": "10.77.55.4", "first_bytes": 1542, "kind": "tcp", "port": 443, "protocol": "tls", "sni": "chatgpt.com", "t_ms": 56481}
+{"client": "10.77.55.4", "kind": "dns", "name": "api.openai.com", "qtype": 28, "t_ms": 56484}
+{"client": "10.77.55.4", "kind": "dns", "name": "api.openai.com", "qtype": 1, "t_ms": 56484}
+{"client": "10.77.55.4", "first_bytes": 1471, "kind": "tcp", "port": 443, "protocol": "tls", "sni": "api.openai.com", "t_ms": 56485}
+{"client": "10.77.55.4", "kind": "dns", "name": "api.openai.com", "qtype": 28, "t_ms": 56704}
+{"client": "10.77.55.4", "kind": "dns", "name": "api.openai.com", "qtype": 1, "t_ms": 56706}
+{"client": "10.77.55.4", "first_bytes": 1471, "kind": "tcp", "port": 443, "protocol": "tls", "sni": "api.openai.com", "t_ms": 56706}
+{"client": "10.77.55.4", "kind": "dns", "name": "api.openai.com", "qtype": 28, "t_ms": 57106}
+{"client": "10.77.55.4", "kind": "dns", "name": "api.openai.com", "qtype": 1, "t_ms": 57106}
+{"client": "10.77.55.4", "first_bytes": 1471, "kind": "tcp", "port": 443, "protocol": "tls", "sni": "api.openai.com", "t_ms": 57107}
+{"client": "10.77.55.4", "kind": "dns", "name": "api.openai.com", "qtype": 1, "t_ms": 57985}
+{"client": "10.77.55.4", "kind": "dns", "name": "api.openai.com", "qtype": 28, "t_ms": 57987}
+{"client": "10.77.55.4", "first_bytes": 1471, "kind": "tcp", "port": 443, "protocol": "tls", "sni": "api.openai.com", "t_ms": 57988}
+{"client": "10.77.55.4", "kind": "dns", "name": "api.openai.com", "qtype": 28, "t_ms": 59525}
+{"client": "10.77.55.4", "kind": "dns", "name": "api.openai.com", "qtype": 1, "t_ms": 59527}
+{"client": "10.77.55.4", "first_bytes": 1471, "kind": "tcp", "port": 443, "protocol": "tls", "sni": "api.openai.com", "t_ms": 59527}
+{"client": "10.77.55.4", "kind": "dns", "name": "api.openai.com", "qtype": 28, "t_ms": 62786}
+{"client": "10.77.55.4", "kind": "dns", "name": "api.openai.com", "qtype": 1, "t_ms": 62788}
+{"client": "10.77.55.4", "first_bytes": 1471, "kind": "tcp", "port": 443, "protocol": "tls", "sni": "api.openai.com", "t_ms": 62788}
+{"client": "10.77.55.4", "kind": "dns", "name": "api.openai.com", "qtype": 1, "t_ms": 62792}
+{"client": "10.77.55.4", "kind": "dns", "name": "api.openai.com", "qtype": 28, "t_ms": 62793}
+{"client": "10.77.55.4", "first_bytes": 1545, "kind": "tcp", "port": 443, "protocol": "tls", "sni": "api.openai.com", "t_ms": 62793}
+{"client": "10.77.55.4", "kind": "dns", "name": "api.openai.com", "qtype": 28, "t_ms": 63006}
+{"client": "10.77.55.4", "kind": "dns", "name": "api.openai.com", "qtype": 1, "t_ms": 63006}
+{"client": "10.77.55.4", "first_bytes": 1545, "kind": "tcp", "port": 443, "protocol": "tls", "sni": "api.openai.com", "t_ms": 63007}
+{"client": "10.77.55.4", "kind": "dns", "name": "api.openai.com", "qtype": 28, "t_ms": 63411}
+{"client": "10.77.55.4", "kind": "dns", "name": "api.openai.com", "qtype": 1, "t_ms": 63412}
+{"client": "10.77.55.4", "first_bytes": 1545, "kind": "tcp", "port": 443, "protocol": "tls", "sni": "api.openai.com", "t_ms": 63413}
+{"client": "10.77.55.4", "kind": "dns", "name": "api.openai.com", "qtype": 1, "t_ms": 64160}
+{"client": "10.77.55.4", "kind": "dns", "name": "api.openai.com", "qtype": 28, "t_ms": 64160}
+{"client": "10.77.55.4", "first_bytes": 1545, "kind": "tcp", "port": 443, "protocol": "tls", "sni": "api.openai.com", "t_ms": 64161}
+{"client": "10.77.55.4", "kind": "dns", "name": "api.openai.com", "qtype": 28, "t_ms": 65692}
+{"client": "10.77.55.4", "kind": "dns", "name": "api.openai.com", "qtype": 1, "t_ms": 65693}
+{"client": "10.77.55.4", "first_bytes": 1545, "kind": "tcp", "port": 443, "protocol": "tls", "sni": "api.openai.com", "t_ms": 65694}
+{"client": "10.77.55.4", "kind": "dns", "name": "api.openai.com", "qtype": 1, "t_ms": 70703}
+{"client": "10.77.55.4", "kind": "dns", "name": "api.openai.com", "qtype": 28, "t_ms": 70705}
+{"client": "10.77.55.4", "first_bytes": 1545, "kind": "tcp", "port": 443, "protocol": "tls", "sni": "api.openai.com", "t_ms": 70706}
+{"client": "10.77.55.4", "kind": "dns", "name": "api.openai.com", "qtype": 28, "t_ms": 70904}
+{"client": "10.77.55.4", "kind": "dns", "name": "api.openai.com", "qtype": 1, "t_ms": 70906}
+{"client": "10.77.55.4", "first_bytes": 1545, "kind": "tcp", "port": 443, "protocol": "tls", "sni": "api.openai.com", "t_ms": 70907}
+{"client": "10.77.55.4", "kind": "dns", "name": "api.openai.com", "qtype": 28, "t_ms": 71330}
+{"client": "10.77.55.4", "kind": "dns", "name": "api.openai.com", "qtype": 1, "t_ms": 71331}
+{"client": "10.77.55.4", "first_bytes": 1545, "kind": "tcp", "port": 443, "protocol": "tls", "sni": "api.openai.com", "t_ms": 71332}
+{"client": "10.77.55.4", "kind": "dns", "name": "api.openai.com", "qtype": 28, "t_ms": 72150}
+{"client": "10.77.55.4", "kind": "dns", "name": "api.openai.com", "qtype": 1, "t_ms": 72151}
+{"client": "10.77.55.4", "first_bytes": 1545, "kind": "tcp", "port": 443, "protocol": "tls", "sni": "api.openai.com", "t_ms": 72152}
+{"client": "10.77.55.4", "kind": "dns", "name": "api.openai.com", "qtype": 28, "t_ms": 73594}
+{"client": "10.77.55.4", "kind": "dns", "name": "api.openai.com", "qtype": 1, "t_ms": 73596}
+{"client": "10.77.55.4", "first_bytes": 1545, "kind": "tcp", "port": 443, "protocol": "tls", "sni": "api.openai.com", "t_ms": 73598}

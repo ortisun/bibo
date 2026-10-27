@@ -1,0 +1,4 @@
+{"method": "server/discover", "params": {"_meta": {"io.modelcontextprotocol/clientCapabilities": {"elicitation": {"form": {}, "url": {}}, "roots": {"listChanged": true}}, "io.modelcontextprotocol/clientInfo": {"description": "Anthropic's agentic coding tool", "name": "claude-code", "title": "Claude Code", "version": "2.1.311", "websiteUrl": "https://claude.com/claude-code"}, "io.modelcontextprotocol/protocolVersion": "2026-07-28"}}, "path": "/mcp"}
+{"method": "initialize", "params": {"capabilities": {"elicitation": {"form": {}, "url": {}}, "roots": {"listChanged": true}}, "clientInfo": {"description": "Anthropic's agentic coding tool", "name": "claude-code", "title": "Claude Code", "version": "2.1.311", "websiteUrl": "https://claude.com/claude-code"}, "protocolVersion": "2025-11-25"}, "path": "/mcp"}
+{"method": "notifications/initialized", "params": null, "path": "/mcp"}
+{"method": "tools/list", "params": null, "path": "/mcp"}

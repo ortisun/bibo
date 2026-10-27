@@ -1,0 +1,14 @@
+exit_code=0
+--- files under /home/agent (bytes path)
+852 /home/agent/.claude.json
+84 /home/agent/.claude/backups/.claude.json.backup.1793107717832
+92 /home/agent/.claude/plugins/store/cc-plugin-agents-md_builtin-b049b47b3618.json
+223351 /home/agent/.claude/telemetry/1p_failed_events.51624c03-b20b-4faa-adfa-0b2529c50ef0.5eb2629f-5168-4d67-b912-713b52c6413e.json
+--- files under /tmp (bytes path)
+1 /tmp/claude-10001/fswatch-probe-mAbEKc/probe
+--- sockets and fifos under /tmp and /home/agent
+--- cgroup counters
+memory.peak=141586432
+pids.peak=14
+memory.max=4294967296
+pids.max=256

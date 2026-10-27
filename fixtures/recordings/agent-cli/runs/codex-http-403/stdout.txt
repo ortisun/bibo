@@ -1,0 +1,9 @@
+{"type":"thread.started","thread_id":"01a17d95-b7a2-7171-b69e-7e0564462c91"}
+{"type":"turn.started"}
+{"type":"error","message":"Reconnecting... 1/5 (unexpected status 403 Forbidden: FAKE-PROVIDER (fidelity: fake, not a real model): injected 403, url: http://fakeprov:8080/v1/responses)"}
+{"type":"error","message":"Reconnecting... 2/5 (unexpected status 403 Forbidden: FAKE-PROVIDER (fidelity: fake, not a real model): injected 403, url: http://fakeprov:8080/v1/responses)"}
+{"type":"error","message":"Reconnecting... 3/5 (unexpected status 403 Forbidden: FAKE-PROVIDER (fidelity: fake, not a real model): injected 403, url: http://fakeprov:8080/v1/responses)"}
+{"type":"error","message":"Reconnecting... 4/5 (unexpected status 403 Forbidden: FAKE-PROVIDER (fidelity: fake, not a real model): injected 403, url: http://fakeprov:8080/v1/responses)"}
+{"type":"error","message":"Reconnecting... 5/5 (unexpected status 403 Forbidden: FAKE-PROVIDER (fidelity: fake, not a real model): injected 403, url: http://fakeprov:8080/v1/responses)"}
+{"type":"error","message":"unexpected status 403 Forbidden: FAKE-PROVIDER (fidelity: fake, not a real model): injected 403, url: http://fakeprov:8080/v1/responses"}
+{"type":"turn.failed","error":{"message":"unexpected status 403 Forbidden: FAKE-PROVIDER (fidelity: fake, not a real model): injected 403, url: http://fakeprov:8080/v1/responses"}}

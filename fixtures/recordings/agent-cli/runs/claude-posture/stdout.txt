@@ -1,0 +1,47 @@
+uid=10001(agent) gid=10001(agent) groups=10001(agent)
+CapPrm:	0000000000000000
+CapEff:	0000000000000000
+CapBnd:	0000000000000000
+NoNewPrivs:	1
+Seccomp:	2
+--- apparmor
+docker-default (enforce)
+--- mounts
+overlay / overlay ro,relatime,lowerdir=/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/454/fs:/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/15/fs:/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/14/fs:/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/13/fs:/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/3/fs,upperdir=/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/455/fs,workdir=/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/455/work,nouserxattr 0 0
+tmpfs /tmp tmpfs rw,nosuid,nodev,noexec,relatime,size=524288k,inode64 0 0
+lima-9fe13dd9e42a8e3d /workspace virtiofs rw,relatime 0 0
+lima-9fe13dd9e42a8e3d /out virtiofs rw,relatime 0 0
+tmpfs /home/agent tmpfs rw,nosuid,nodev,noexec,relatime,size=65536k,mode=700,uid=10001,gid=10001,inode64 0 0
+devtmpfs /workspace/.git devtmpfs ro,nosuid,noexec,relatime,size=3003532k,nr_inodes=750883,mode=755,inode64 0 0
+lima-9fe13dd9e42a8e3d /run/secrets/job_token virtiofs ro,relatime 0 0
+--- masked git
+crw-rw-rw-    1 root     root        1,   3 Oct 27 12:47 /workspace/.git
+0
+--- write tests
+touch: /usr/x: Read-only file system
+touch: /etc/x: Read-only file system
+workspace-writable
+home-writable
+tmp-writable
+--- tools present
+git: absent
+/bin/bash
+/bin/sh
+python3: absent
+node: absent
+rg: absent
+curl: absent
+/usr/bin/wget
+/bin/ps
+/usr/bin/ldd
+--- binaries
+ls: /opt/codex/bin/*: No such file or directory
+ls: /opt/codex/codex-path/*: No such file or directory
+ls: /opt/codex/codex-resources/*: No such file or directory
+-rwxr-xr-x    1 root     root     285822152 Oct 27 12:52 /usr/local/bin/claude
+172150e3f9ea07e8e2e2e29862d7d9a25f5c234d8e909e4063df237665bf09b9  /usr/local/bin/claude
+sha256sum: can't open '/opt/codex/bin/codex': No such file or directory
+--- shared libraries
+	/lib/ld-musl-aarch64.so.1 (0xf82fb5fb0000)
+	libc.musl-aarch64.so.1 => /lib/ld-musl-aarch64.so.1 (0xf82fb5fb0000)
+/lib/ld-musl-aarch64.so.1: cannot load /opt/codex/bin/codex: No such file or directory

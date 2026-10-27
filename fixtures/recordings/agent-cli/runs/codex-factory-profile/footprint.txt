@@ -1,0 +1,23 @@
+exit_code=0
+--- files under /home/agent (bytes path)
+48 /home/agent/.codex/config.toml
+4096 /home/agent/.codex/goals_1.sqlite
+32768 /home/agent/.codex/goals_1.sqlite-shm
+74192 /home/agent/.codex/goals_1.sqlite-wal
+36 /home/agent/.codex/installation_id
+49152 /home/agent/.codex/logs_2.sqlite
+4096 /home/agent/.codex/memories_1.sqlite
+32768 /home/agent/.codex/memories_1.sqlite-shm
+86552 /home/agent/.codex/memories_1.sqlite-wal
+181 /home/agent/.codex/models_cache.json
+40960 /home/agent/.codex/queue_1.sqlite
+4096 /home/agent/.codex/state_5.sqlite
+32768 /home/agent/.codex/state_5.sqlite-shm
+2117712 /home/agent/.codex/state_5.sqlite-wal
+--- files under /tmp (bytes path)
+--- sockets and fifos under /tmp and /home/agent
+--- cgroup counters
+memory.peak=28348416
+pids.peak=32
+memory.max=4294967296
+pids.max=256

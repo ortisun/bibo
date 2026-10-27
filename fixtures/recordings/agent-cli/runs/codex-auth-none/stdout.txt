@@ -1,0 +1,4 @@
+{"type":"thread.started","thread_id":"01a17d8d-ce84-70f0-96f3-2f8a4f2e3cc5"}
+{"type":"turn.started"}
+{"type":"error","message":"Missing environment variable: `FAKE_PROVIDER_KEY`."}
+{"type":"turn.failed","error":{"message":"Missing environment variable: `FAKE_PROVIDER_KEY`."}}
