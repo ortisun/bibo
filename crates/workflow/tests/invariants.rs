@@ -181,7 +181,7 @@ mod claim_loop {
     }
 
     proptest! {
-        #![proptest_config(ProptestConfig { cases: 24, ..ProptestConfig::default() })]
+        #![proptest_config(ProptestConfig { cases: 48, ..ProptestConfig::default() })]
 
         #[test]
         fn no_double_claim_and_no_lost_work(sequence in ops()) {
@@ -485,6 +485,121 @@ mod named {
             );
         }
         assert!(faulted > 5, "the faults did hit writes ({faulted} of 120)");
+    }
+
+    /// Polls a future once and drops it if it has not finished. Every call of the in-memory store
+    /// finishes at once, so a future that is still pending after its first poll is one whose store
+    /// call hung (`stall_next_call`). Dropping it is a crash of the engine at that call.
+    async fn crashing<F: std::future::Future>(work: F) -> Option<F::Output> {
+        let mut work = std::pin::pin!(work);
+        tokio::select! {
+            biased;
+            output = &mut work => Some(output),
+            () = std::future::ready(()) => None,
+        }
+    }
+
+    /// Runs a job to its approval the way a worker would, with every engine call crashing when its
+    /// store call hangs. Returns whether any call crashed.
+    async fn drive_to_the_approval(world: &World) -> bool {
+        let mut crashed = false;
+        for _ in 0..60 {
+            world.advance(400);
+            let Some(swept) = crashing(world.engine.sweep()).await else {
+                crashed = true;
+                world.ids.disarm();
+                continue;
+            };
+            let Some(claimed) = crashing(world.engine.claim_next(&World::worker("worker-1"))).await
+            else {
+                crashed = true;
+                world.ids.disarm();
+                continue;
+            };
+            let (Ok(swept), Ok(claimed)) = (swept, claimed) else {
+                world.ids.disarm();
+                continue;
+            };
+            if swept.lease_lost.is_empty()
+                && swept.timed_out.is_empty()
+                && claimed.started.is_empty()
+                && claimed.deferred.is_empty()
+            {
+                break;
+            }
+            for ticket in &claimed.started {
+                if crashing(world.engine.run_attempt(ticket)).await.is_none() {
+                    crashed = true;
+                    world.ids.disarm();
+                }
+            }
+        }
+        crashed
+    }
+
+    #[tokio::test]
+    async fn inv_03_a_crash_at_any_write_boundary_leaves_the_job_consistent_and_it_resumes() {
+        // A crash, where the test above makes a write fail. For every identifier the engine makes
+        // while it runs a job, the store call that follows it hangs and the engine's future is
+        // dropped there, in the middle of a transaction. Ports v1.1 added writes (the audit
+        // record, the guard on every event, the start of an attempt as one step, the gate record),
+        // so there are more boundaries than before and this test visits every one of them.
+        let probe = World::new().await;
+        probe
+            .script(StageKind::Approval)
+            .evals_otherwise(Eval::HumanGate);
+        probe.admitted_job().await;
+        let first = probe.ids.used();
+        assert!(!drive_to_the_approval(&probe).await);
+        let boundaries = probe.ids.used() - first;
+        assert!(boundaries > 100, "{boundaries} boundaries");
+
+        let mut crashed = 0;
+        for n in 1..=boundaries {
+            let world = World::new().await;
+            world
+                .script(StageKind::Approval)
+                .evals_otherwise(Eval::HumanGate);
+            let job = world.admitted_job().await;
+            let store = world.store.clone();
+            world.ids.arm_hook(n, move || store.stall_next_call());
+            let broke = drive_to_the_approval(&world).await;
+            crashed += usize::from(broke);
+            world.ids.disarm();
+            // Whatever was dropped, the record is consistent and the job reaches the same place.
+            assert!(
+                !drive_to_the_approval(&world).await,
+                "boundary {n}: a crash after the fault was disarmed"
+            );
+            let report = world
+                .engine
+                .verify_job(world.tenant, job)
+                .await
+                .expect("verifies");
+            assert!(report.is_clean(), "boundary {n}: {:?}", report.findings);
+            chains_are_legal(&world.events(job).await)
+                .unwrap_or_else(|why| panic!("boundary {n}: {why}"));
+            let view = world.view(job).await;
+            assert_eq!(
+                view.newest(StageKind::Approval).map(|r| r.status),
+                Some(StageRunStatus::WaitingForHuman),
+                "boundary {n}: the job did not resume to the approval"
+            );
+            let passed = world
+                .events(job)
+                .await
+                .iter()
+                .filter(|e| e.event_type.as_str() == "stage_run.passed")
+                .count();
+            assert_eq!(
+                passed, 12,
+                "boundary {n}: a stage run passed twice or not at all"
+            );
+        }
+        assert!(
+            crashed * 3 > usize::try_from(boundaries).unwrap_or(usize::MAX),
+            "the crashes did hit writes ({crashed} of {boundaries})"
+        );
     }
 
     #[tokio::test]
