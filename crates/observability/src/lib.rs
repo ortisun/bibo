@@ -5,3 +5,4 @@
 //! checked against each other by the tests.
 
 pub mod names;
+pub mod redact;
