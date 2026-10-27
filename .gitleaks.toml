@@ -193,3 +193,21 @@ condition = "AND"
 paths = ['''^crates/observability/tests/redaction\.rs$''']
 regexTarget = "match"
 regexes = ['''-----BEGIN NATS USER NKEY SEED-----''']
+
+# Made-up canaries in test code, found by the full-history scan on 2026-10-27 (118 commits).
+# They are the AWS documentation example key and a token with an obvious pattern, used to check
+# that redaction and leak sweeps work. Neither is a credential. The allowlist is global because one
+# of the three findings comes from a default gitleaks rule, which a per-rule block cannot reach.
+# It needs BOTH the file path and the exact text, so a different token in the same file, or the
+# same text anywhere else, is still reported. Review by 2027-01-31, or remove it once these tests
+# build their canaries at run time.
+[[allowlists]]
+description = "Made-up canaries in the schema engine tests and the testkit contract suites"
+condition = "AND"
+targetRules = ["policy_aws_access_key_id", "policy_github_token_prefixed", "github-app-token"]
+paths = ['''^crates/(?:contracts/src/schema_engine|testkit/src/contracts/(?:githost|workspace))\.rs$''']
+regexTarget = "match"
+regexes = [
+    '''AKIAIOSFODNN7EXAMPLE''',
+    '''ghs_a1B2c3D4e5a1B2c3D4e5a1B2c3D4e5a1B2c3''',
+]
