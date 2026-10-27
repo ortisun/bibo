@@ -3250,7 +3250,7 @@
         "software_architect"
       ],
       "size": "L",
-      "summary": "Make the Rust code of the domain crate follow the changes made to state-machine.json and the schemas on 2026-10-27 (ADR 0010, ADR 0011 and ADR 0013): the renamed retry guard and the repair cap, the attempt limit as an escalation condition, skipped stages that satisfy their dependants, the defect routing matrix and the human rework routes, three new invalidation rows, a timestamp that compares by instant, warnings in the gate report, the manifest field, the integer bounds and the derived trace context of a job. This package must land in the same branch as the JSON and schema changes, because the conformance and example tests of the domain crate fail until it does. docs/architecture/domain-revision-checklist.md maps every JSON change to the function and the test, and this package deletes that file when every row is true. It is test-first: the failing conformance run is the first commit.",
+      "summary": "Make the Rust code of the domain crate follow the changes made to state-machine.json and the schemas on 2026-10-27 (ADR 0010, ADR 0011 and ADR 0013): the renamed retry guard and the repair cap, the attempt limit as an escalation condition, skipped stages that satisfy their dependants, the defect routing matrix and the human rework routes, three new invalidation rows, a timestamp that compares by instant, warnings in the gate report, the manifest field, the integer bounds and the derived trace context of a job. This package must land in the same branch as the JSON and schema changes, because the conformance and example tests of the domain crate fail until it does. A temporary checklist, docs/architecture/domain-revision-checklist.md, mapped every JSON change to the function and the test; it was deleted when the work landed when every row is true. It is test-first: the failing conformance run is the first commit.",
       "owns": [
         "crates/domain/src/machines/**",
         "crates/domain/src/state/**",
@@ -3267,7 +3267,6 @@
         "crates/domain/tests/tools/**"
       ],
       "inputs": [
-        "docs/architecture/domain-revision-checklist.md",
         "docs/architecture/state-machine.json",
         "ADR 0010",
         "ADR 0011",

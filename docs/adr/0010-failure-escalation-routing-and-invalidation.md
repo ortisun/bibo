@@ -118,7 +118,7 @@ Two decisions keep this affordable.
 - Good: a skipped stage no longer stalls the pipeline, and the old run cannot satisfy a new run's condition.
 - Good: the routing table is a matrix that a test can compare cell by cell.
 - Bad: more escalations to a person, which is the cost ADR 0009 already accepts for rework.
-- Bad: the edge `SKIPPED` to `SUPERSEDED` and the new guard names reach into three places: the JSON, the Rust code, and the database migrations. The work packages `s1-domain-revision` and `s1-database-tenancy-and-state-sync` carry them, and the first lists every test that must change in [`domain-revision-checklist.md`](../architecture/domain-revision-checklist.md).
+- Bad: the edge `SKIPPED` to `SUPERSEDED` and the new guard names reach into three places: the JSON, the Rust code, and the database migrations. The work packages `s1-domain-revision` and `s1-database-tenancy-and-state-sync` carry them, and the first lists every test that must change in `domain-revision-checklist.md` (deleted when the work landed).
 - Bad: the rule that the engine "takes the first row that applies" is a priority order that the guards do not express by themselves. It lives in the retry function of `domain` and in the stage run machine's description, and a property test covers it.
 - Neutral: the catalog's NT-TOOL-09 and NT-AUTHZ-05 need small wording changes from the security specialist.
 

@@ -27,8 +27,8 @@ string_enum! {
 }
 
 impl StageKind {
-    /// The stage kinds whose passed, non-superseded run must exist before a run of this kind can
-    /// leave `PENDING`. Guard `G_UPSTREAM_PASSED` applies it.
+    /// The stage kinds whose passed or skipped, non-superseded run must exist before a run of this
+    /// kind can leave `PENDING`. Guard `G_UPSTREAM_PASSED` applies it.
     #[must_use]
     pub const fn requires(self) -> &'static [StageKind] {
         match self {
