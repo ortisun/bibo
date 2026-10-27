@@ -9,6 +9,7 @@
 mod support;
 
 use factory_domain::contracts::{Contract, GateReport, StageContract};
+use factory_domain::values::LARGEST_EXACT_INTEGER;
 use serde::Deserialize;
 use serde_json::{Value, json};
 use support::example_index::EXAMPLES;
@@ -132,6 +133,195 @@ fn cases() -> Vec<Case> {
                 put(d, "/metadata/execution_mode", json!("test"));
             },
             expect: Accepted,
+        },
+        // ---- ledger entry integers (ADR 0011) ------------------------------------------------
+        Case {
+            name: "a seed at the largest exact integer",
+            base: "evidence-ledger-entry/sandbox-verification-first-entry.json",
+            change: |d| {
+                put(
+                    d,
+                    "/evidence",
+                    json!([{ "type": "experiment", "experiment_id": "replay-fit", "run_ids": [GOOD_UUID], "seeds": [9_007_199_254_740_991_i64, -9_007_199_254_740_991_i64] }]),
+                );
+                put(d, "/claim/kind", json!("simulation_result"));
+                remove(d, "/claim/assurance_level");
+            },
+            expect: Accepted,
+        },
+        Case {
+            name: "a seed one above the largest exact integer",
+            base: "evidence-ledger-entry/sandbox-verification-first-entry.json",
+            change: |d| {
+                put(
+                    d,
+                    "/evidence",
+                    json!([{ "type": "experiment", "experiment_id": "replay-fit", "run_ids": [GOOD_UUID], "seeds": [9_007_199_254_740_992_i64] }]),
+                );
+                put(d, "/claim/kind", json!("simulation_result"));
+                remove(d, "/claim/assurance_level");
+            },
+            expect: Rejected("use a whole number from -9007199254740991 to 9007199254740991"),
+        },
+        Case {
+            name: "a seed one below the smallest exact integer",
+            base: "evidence-ledger-entry/sandbox-verification-first-entry.json",
+            change: |d| {
+                put(
+                    d,
+                    "/evidence",
+                    json!([{ "type": "experiment", "experiment_id": "replay-fit", "run_ids": [GOOD_UUID], "seeds": [-9_007_199_254_740_992_i64] }]),
+                );
+                put(d, "/claim/kind", json!("simulation_result"));
+                remove(d, "/claim/assurance_level");
+            },
+            expect: Rejected("use a whole number from -9007199254740991 to 9007199254740991"),
+        },
+        Case {
+            name: "a sequence one above the largest exact integer",
+            base: "evidence-ledger-entry/approver-accepts-residual-risk.json",
+            change: |d| put(d, "/metadata/sequence", json!(9_007_199_254_740_992_i64)),
+            expect: Rejected("use a whole number from 1 to 9007199254740991"),
+        },
+        Case {
+            name: "a sequence at the largest exact integer",
+            base: "evidence-ledger-entry/approver-accepts-residual-risk.json",
+            change: |d| put(d, "/metadata/sequence", json!(9_007_199_254_740_991_i64)),
+            expect: Accepted,
+        },
+        Case {
+            name: "a line number one above the largest exact integer",
+            base: "evidence-ledger-entry/sandbox-verification-first-entry.json",
+            change: |d| put(d, "/evidence/2/line_end", json!(9_007_199_254_740_992_i64)),
+            expect: Rejected("use a whole number from 1 to 9007199254740991"),
+        },
+        Case {
+            name: "the first line number one above the largest exact integer",
+            base: "evidence-ledger-entry/sandbox-verification-first-entry.json",
+            change: |d| {
+                put(
+                    d,
+                    "/evidence/2/line_start",
+                    json!(9_007_199_254_740_992_i64),
+                )
+            },
+            expect: Rejected("use a whole number from 1 to 9007199254740991"),
+        },
+        // ---- gate report warnings ----------------------------------------------------------------
+        Case {
+            name: "a passed report with a warning",
+            base: "gate-report/build-and-test-passed.json",
+            change: |d| {
+                put(
+                    d,
+                    "/warnings",
+                    json!([{ "check_id": "text-long-sentence", "message": "One sentence has 41 words, which is more than the limit of 35 words.", "suggested_fix": "Split the sentence so each part states one idea." }]),
+                );
+            },
+            expect: Accepted,
+        },
+        Case {
+            name: "a passed report with an empty warnings list",
+            base: "gate-report/build-and-test-passed.json",
+            change: |d| put(d, "/warnings", json!([])),
+            expect: Accepted,
+        },
+        Case {
+            name: "a blocked report with an empty warnings list",
+            base: "gate-report/security-scan-blocked-tool-missing.json",
+            change: |d| put(d, "/warnings", json!([])),
+            expect: Accepted,
+        },
+        Case {
+            name: "a blocked report with a warning",
+            base: "gate-report/security-scan-blocked-tool-missing.json",
+            change: |d| {
+                put(
+                    d,
+                    "/warnings",
+                    json!([{ "check_id": "text-long-sentence", "message": "One sentence has 41 words, which is more than the limit of 35 words.", "suggested_fix": "Split the sentence so each part states one idea." }]),
+                );
+            },
+            expect: Rejected("a BLOCKED report carries no warnings"),
+        },
+        Case {
+            name: "a warning with an unknown field",
+            base: "gate-report/build-and-test-passed.json",
+            change: |d| {
+                put(
+                    d,
+                    "/warnings",
+                    json!([{ "check_id": "text-long-sentence", "message": "One sentence has 41 words, which is more than the limit of 35 words.", "suggested_fix": "Split the sentence so each part states one idea.", "severity": "warn" }]),
+                );
+            },
+            expect: Rejected("unknown field `severity`"),
+        },
+        Case {
+            name: "a warning with a location on line zero",
+            base: "gate-report/build-and-test-passed.json",
+            change: |d| {
+                put(
+                    d,
+                    "/warnings",
+                    json!([{ "check_id": "text-long-sentence", "message": "One sentence has 41 words, which is more than the limit of 35 words.", "suggested_fix": "Split the sentence so each part states one idea.", "location": { "path": "description", "line": 0 } }]),
+                );
+            },
+            expect: Rejected("use a whole number of at least 1"),
+        },
+        Case {
+            name: "a warning whose check id is not a slug",
+            base: "gate-report/build-and-test-passed.json",
+            change: |d| {
+                put(
+                    d,
+                    "/warnings",
+                    json!([{ "check_id": "Text Long Sentence", "message": "One sentence has 41 words, which is more than the limit of 35 words.", "suggested_fix": "Split the sentence so each part states one idea." }]),
+                );
+            },
+            expect: Rejected("is not a valid slug"),
+        },
+        // ---- project manifest: readability rules --------------------------------------------------
+        Case {
+            name: "the type tag rule switched off",
+            base: "project-manifest/word-count-minimal.json",
+            change: |d| {
+                put(
+                    d,
+                    "/documentation/disabled_readability_rules",
+                    json!(["title-type-tag"]),
+                );
+            },
+            expect: Accepted,
+        },
+        Case {
+            name: "no readability rule switched off",
+            base: "project-manifest/word-count-conventional-commit-titles.json",
+            change: |d| put(d, "/documentation/disabled_readability_rules", json!([])),
+            expect: Accepted,
+        },
+        Case {
+            name: "the same readability rule listed twice",
+            base: "project-manifest/word-count-conventional-commit-titles.json",
+            change: |d| {
+                put(
+                    d,
+                    "/documentation/disabled_readability_rules",
+                    json!(["title-type-tag", "title-type-tag"]),
+                );
+            },
+            expect: Rejected("an item appears more than once"),
+        },
+        Case {
+            name: "a rule that blocks switched off",
+            base: "project-manifest/word-count-conventional-commit-titles.json",
+            change: |d| {
+                put(
+                    d,
+                    "/documentation/disabled_readability_rules",
+                    json!(["title-opaque-prefix"]),
+                );
+            },
+            expect: Rejected("expected one of: title-type-tag"),
         },
         // ---- stage contract ---------------------------------------------------------------------
         Case {
@@ -841,6 +1031,186 @@ fn every_case_changes_its_base_example() {
         let mut changed = original.clone();
         (case.change)(&mut changed);
         assert_ne!(original, changed, "{}: the change does nothing", case.name);
+    }
+}
+
+// ---- the integer bound in the schema and in the hash ---------------------------------------------------
+
+#[test]
+fn schema_integer_maximum_equals_ledger_limit() {
+    // ADR 0011: the schema bounds every integer of a ledger entry by the same number that the hash
+    // function refuses to go over. One number, written in three places, must stay one number.
+    let schema = schema_text("evidence-ledger-entry");
+    let schema: Value = serde_json::from_str(schema).unwrap();
+    let limit = i64::try_from(factory_domain::ledger::LARGEST_EXACT_INTEGER).unwrap();
+    assert_eq!(limit, LARGEST_EXACT_INTEGER);
+    assert_eq!(limit, 9_007_199_254_740_991);
+
+    let seeds = &schema["$defs"]["evidenceExperiment"]["properties"]["seeds"]["items"];
+    let sequence = &schema["properties"]["metadata"]["properties"]["sequence"];
+    let code = &schema["$defs"]["evidenceCodeLocation"]["properties"];
+    let found: Vec<(&str, &Value, &Value)> = vec![
+        ("seeds", &seeds["maximum"], &seeds["minimum"]),
+        ("sequence", &sequence["maximum"], &sequence["minimum"]),
+        (
+            "line_start",
+            &code["line_start"]["maximum"],
+            &code["line_start"]["minimum"],
+        ),
+        (
+            "line_end",
+            &code["line_end"]["maximum"],
+            &code["line_end"]["minimum"],
+        ),
+    ];
+    for (name, maximum, minimum) in found {
+        assert_eq!(maximum.as_i64(), Some(limit), "the maximum of {name}");
+        let expected_minimum = if name == "seeds" { -limit } else { 1 };
+        assert_eq!(
+            minimum.as_i64(),
+            Some(expected_minimum),
+            "the minimum of {name}"
+        );
+    }
+}
+
+#[test]
+fn every_integer_in_the_ledger_entry_schema_is_bounded_by_the_largest_exact_integer() {
+    // A new integer field added to the schema without a bound would let a number through that
+    // the hash would round. This walks the whole schema and names any integer with no maximum.
+    let schema: Value = serde_json::from_str(schema_text("evidence-ledger-entry")).unwrap();
+    let mut unbounded = Vec::new();
+    collect_unbounded_integers(&schema, "#", &mut unbounded);
+    assert!(
+        unbounded.is_empty(),
+        "integers with no maximum of 2^53 - 1: {unbounded:?}"
+    );
+}
+
+fn collect_unbounded_integers(node: &Value, path: &str, out: &mut Vec<String>) {
+    match node {
+        Value::Object(map) => {
+            if map.get("type").and_then(Value::as_str) == Some("integer")
+                && map.get("maximum").and_then(Value::as_i64) != Some(LARGEST_EXACT_INTEGER)
+            {
+                out.push(path.to_owned());
+            }
+            for (key, child) in map {
+                collect_unbounded_integers(child, &format!("{path}/{key}"), out);
+            }
+        }
+        Value::Array(items) => {
+            for (index, child) in items.iter().enumerate() {
+                collect_unbounded_integers(child, &format!("{path}/{index}"), out);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn schema_text(name: &str) -> &'static str {
+    support::example_index::SCHEMAS
+        .iter()
+        .find(|(schema, _)| *schema == name)
+        .unwrap_or_else(|| panic!("no schema named {name}"))
+        .1
+}
+
+// ---- gate report warnings ---------------------------------------------------------------------------------
+
+#[test]
+fn an_empty_warnings_list_survives_a_round_trip_and_an_absent_one_stays_absent() {
+    let (schema, mut document) = base_document("gate-report/build-and-test-passed.json");
+    assert!(document.get("warnings").is_none());
+    let written = round_trip_value(schema, &document).unwrap();
+    assert!(
+        written.get("warnings").is_none(),
+        "an absent list stays absent"
+    );
+
+    put(&mut document, "/warnings", json!([]));
+    let written = round_trip_value(schema, &document).unwrap();
+    assert_eq!(written["warnings"], json!([]), "an empty list stays empty");
+    assert_eq!(written, document);
+}
+
+#[test]
+fn a_warning_keeps_its_location_and_reads_back_as_written() {
+    let (schema, document) = base_document("gate-report/readability-passed-with-warnings.json");
+    let written = round_trip_value(schema, &document).unwrap();
+    assert_eq!(written, document);
+    let report = GateReport::from_json_value(document).unwrap();
+    let warnings = report.warnings.as_ref().expect("the example has warnings");
+    assert_eq!(warnings.len(), 2);
+    assert_eq!(warnings[0].check_id.as_str(), "text-long-sentence");
+    assert_eq!(
+        warnings[0].location.as_ref().map(|l| l.path.as_str()),
+        Some("description")
+    );
+    assert!(warnings[1].location.is_none());
+    // A warning never changes the outcome: the report passed and lists no failure.
+    assert_eq!(
+        report.outcome,
+        factory_domain::vocabulary::GateOutcome::Passed
+    );
+    assert!(report.failures.is_none());
+}
+
+#[test]
+fn a_report_built_in_code_with_a_warning_on_a_blocked_gate_is_found_by_validate() {
+    let (_, document) = base_document("gate-report/security-scan-blocked-tool-missing.json");
+    let mut report = GateReport::from_json_value(document).unwrap();
+    assert_eq!(report.validate(), Ok(()));
+    let (_, passed) = base_document("gate-report/readability-passed-with-warnings.json");
+    let warnings = GateReport::from_json_value(passed).unwrap().warnings;
+    report.warnings = warnings;
+    let text = report.validate().unwrap_err().to_string();
+    assert!(
+        text.contains("warnings: a BLOCKED report carries no warnings"),
+        "{text}"
+    );
+    // An empty list is fine: there is nothing to warn about, and nothing was said.
+    report.warnings = Some(Vec::new());
+    assert_eq!(report.validate(), Ok(()));
+}
+
+// ---- a skipped stage creates no assurance level -----------------------------------------------------
+
+#[test]
+fn a_skipped_stage_creates_no_assurance_level() {
+    // ADR 0010 decision 2: a skipped stage run satisfies the stages after it and is still never
+    // evidence. It has no gate report, no artifact and no trace, so a claim made on its behalf has
+    // an empty evidence list. The domain has no function that turns a stage run into an assurance
+    // level; the one place that decides is the rule on a ledger entry, and it refuses such a claim
+    // for every kind of claim that can carry a level.
+    let (schema, original) =
+        base_document("evidence-ledger-entry/sandbox-verification-first-entry.json");
+    assert!(round_trip_value(schema, &original).is_ok());
+    for kind in ["measured_fact", "simulation_result", "expert_judgment"] {
+        let mut claim_without_evidence = original.clone();
+        put(&mut claim_without_evidence, "/claim/kind", json!(kind));
+        put(&mut claim_without_evidence, "/evidence", json!([]));
+        let message = round_trip_value(schema, &claim_without_evidence)
+            .expect_err(kind)
+            .to_string();
+        assert!(
+            message.contains(
+                "a claim that supports an assurance level needs at least one piece of evidence"
+            ),
+            "{kind}: {message}"
+        );
+    }
+    // Only an assumption or a hypothesis could be written without evidence, and those cannot
+    // carry a level at all.
+    for kind in ["assumption", "hypothesis"] {
+        let mut weak = original.clone();
+        put(&mut weak, "/claim/kind", json!(kind));
+        put(&mut weak, "/evidence", json!([]));
+        let message = round_trip_value(schema, &weak).expect_err(kind).to_string();
+        assert!(
+            message.contains("cannot support an assurance level"),
+            "{kind}: {message}"
+        );
     }
 }
 

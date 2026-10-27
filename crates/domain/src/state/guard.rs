@@ -61,9 +61,9 @@ string_enum! {
         Unrecoverable = "G_UNRECOVERABLE",
         /// The intake decision is decline, or an authorized approver recorded a reject decision.
         RejectionRecorded = "G_REJECTION_RECORDED",
-        /// Every stage kind in the job's configured scope has a PASSED run that is not superseded, the approval decision is approve, and the evidence ledger hash chain verifies.
+        /// Every stage kind in the job's configured scope has a run that is PASSED, or SKIPPED because a recorded rule says the stage does not apply, and that run is not superseded; the approval decision is approve; and the evidence ledger hash chain verifies.
         PipelineScopeComplete = "G_PIPELINE_SCOPE_COMPLETE",
-        /// Every required upstream stage run is PASSED and not superseded, every consumed artifact hash equals the current version, and the stage contract resolved and validated against its schema.
+        /// Every required upstream stage run is PASSED, or SKIPPED because a recorded rule says the stage does not apply, and is not superseded. Every consumed artifact hash equals the current version (a skipped stage produced none, and the stage contract records the skip rule instead of a hash). The stage contract resolved and validated against its schema.
         UpstreamPassed = "G_UPSTREAM_PASSED",
         /// A deterministic rule, a domain profile or a policy states that the stage does not apply. The rule and its inputs are recorded in the ledger. An agent opinion is never sufficient.
         NotApplicableDecided = "G_NOT_APPLICABLE_DECIDED",
@@ -71,25 +71,25 @@ string_enum! {
         LeaseAcquired = "G_LEASE_ACQUIRED",
         /// The attempt succeeded and its output validates against the stage outputs schema, and the output artifact hash is stored.
         OutputSchemaValid = "G_OUTPUT_SCHEMA_VALID",
-        /// The failure class is retryable, attempts used is below max_attempts, and the budget has room for another attempt.
+        /// The failure class is retryable under the stage contract, the attempts used since the last human answer are below max_attempts, the budget has room for another attempt, and, after INVALID_OUTPUT, no more than two repairs have been made (a repair is a retry that follows an invalid-output failure; the cap comes from policy and can only be lowered).
         RetryAllowed = "G_RETRY_ALLOWED",
-        /// The failure class is not retryable, or max_attempts is reached.
-        RetryExhaustedOrNonretryable = "G_RETRY_EXHAUSTED_OR_NONRETRYABLE",
-        /// A budget limit was hit, the agent returned a structured needs_human request, the stagnation detector fired, or policy requires a human decision here.
+        /// Retrying cannot help: the failure class is POLICY_DENIED or INTERNAL, or the stage contract does not list it in retry_on. BUDGET_EXHAUSTED is not covered here, because a budget limit asks a human (S07). Reaching the attempt limit is not covered either, because an attempt limit asks a human (S07).
+        FailureNonretryable = "G_FAILURE_NONRETRYABLE",
+        /// A budget limit was hit (the failure class is BUDGET_EXHAUSTED, or a retry would be allowed in every other way but the budget has no room), the attempt limit or the repair cap was reached on a failure class the stage contract lists as retryable, the agent returned a structured needs_human request, the stagnation detector fired, or policy requires a human decision here.
         EscalationRequired = "G_ESCALATION_REQUIRED",
         /// The gate decision is PASS and is persisted, every acceptance criterion of the stage contract has a ledger entry, and every mandatory gate report is PASSED or NOT_APPLICABLE with a recorded reason. No gate report is BLOCKED.
         GatePassEvidenced = "G_GATE_PASS_EVIDENCED",
         /// The verdict is CHANGES_REQUIRED or a deterministic gate FAILED, rework rounds used are below the cap of two (code and documentation each have their own count), the failing set differs from the previous round, and budget remains. After the second round a human decides.
         ReworkAllowed = "G_REWORK_ALLOWED",
-        /// The verdict is NEEDS_HUMAN, or the rework limit, the stagnation detector or a budget limit was reached, or the gate itself is a human gate.
+        /// The verdict is NEEDS_HUMAN, or the rework limit, the stagnation detector or a budget limit was reached, or the gate itself is a human gate, or a finding that justifies the verdict has a defect class that only a person can decide (specification, or policy; see defect_routing).
         NeedsHumanVerdict = "G_NEEDS_HUMAN_VERDICT",
-        /// The verdict is BLOCK, a mandatory gate could not run (tool unavailable or probe failed), or a policy violation was detected.
+        /// The verdict is BLOCK, a mandatory gate could not run (tool unavailable or probe failed), or a deterministic check detected a policy violation. A reviewer's finding with defect class policy asks a person instead (S10).
         BlockingCondition = "G_BLOCKING_CONDITION",
         /// The gate FAILED and the stage has no rework route, for example an intake record that is still invalid after bounded repair.
         GateFailedNoRework = "G_GATE_FAILED_NO_REWORK",
-        /// A human answer, clarification, approval of residual input or budget extension is recorded with the principal and becomes a new input hash for the stage.
+        /// A human answer, clarification, approval of residual input or budget extension is recorded with the principal and becomes a new input hash for the stage. It also starts a new attempt window: attempts and repairs are counted from the answer. A budget extension that raises a ceiling is accepted only from an org_admin.
         AnswerRecorded = "G_ANSWER_RECORDED",
-        /// The decision is approve, the principal holds the role the approval policy requires for this stage and risk tier, and the evidence digest the human saw equals the current evidence digest.
+        /// The decision is approve, the principal holds the role the approval policy requires for this stage and risk tier, the evidence digest the human saw equals the current evidence digest, and every warning of the rule translation-unfaithful in the gate reports of that evidence has a recorded human decision.
         ApproverAuthorized = "G_APPROVER_AUTHORIZED",
         /// The principal holds the approver or operator role and the rework rounds used are below the cap of two. The stagnation detector does not apply to human requests. After the second round a human must choose to continue, with the decision recorded.
         HumanReworkAllowed = "G_HUMAN_REWORK_ALLOWED",
@@ -101,7 +101,7 @@ string_enum! {
         OverridePermitted = "G_OVERRIDE_PERMITTED",
         /// The stage run has no attempt in STARTING, RUNNING or CANCELLING.
         NoActiveAttempt = "G_NO_ACTIVE_ATTEMPT",
-        /// A consumed upstream artifact was superseded by a newer version, or an upstream stage run was reworked.
+        /// A consumed upstream artifact was superseded by a newer version, an upstream stage run was reworked, or an external change listed in the invalidation table happened (the source request was edited after the intake snapshot, or a value bound to gate evidence changed).
         UpstreamInvalidated = "G_UPSTREAM_INVALIDATED",
         /// The sandbox started within its limits, the policy-approved tool grants are in place, the runtime capability probe satisfies the stage needs, and the lease epoch is current.
         SandboxProvisioned = "G_SANDBOX_PROVISIONED",

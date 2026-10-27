@@ -216,6 +216,30 @@ const REJECTED_FOR: &[(&str, &str)] = &[
         "\"CHANGES_REQUIRED\" is not a valid review verdict",
     ),
     (
+        "evidence-ledger-entry/seed-above-the-largest-exact-integer.json",
+        "use a whole number from -9007199254740991 to 9007199254740991",
+    ),
+    (
+        "gate-report/blocked-report-with-warnings.json",
+        "warnings: a BLOCKED report carries no warnings",
+    ),
+    (
+        "gate-report/not-applicable-report-with-warnings.json",
+        "warnings: a NOT_APPLICABLE report carries no warnings",
+    ),
+    (
+        "gate-report/passed-with-failures.json",
+        "failures: a PASSED report lists no failures",
+    ),
+    (
+        "gate-report/warning-with-a-severity-field.json",
+        "unknown field `severity`",
+    ),
+    (
+        "gate-report/warning-without-suggested-fix.json",
+        "missing field `suggested_fix`",
+    ),
+    (
         "gate-report/blocked-without-reason.json",
         "blocked_reason: a BLOCKED report must say what was missing",
     ),
@@ -234,6 +258,10 @@ const REJECTED_FOR: &[(&str, &str)] = &[
     (
         "gate-report/title-with-machine-prefix.json",
         "\"GATE-17 | BUILD | P1: run tests\" is not a valid title",
+    ),
+    (
+        "project-manifest/blocking-readability-rule-switched-off.json",
+        "\"title-opaque-prefix\" is not a valid readability rule",
     ),
     (
         "project-manifest/gate-command-as-a-shell-string.json",

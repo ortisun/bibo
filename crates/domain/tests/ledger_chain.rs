@@ -8,7 +8,7 @@ use factory_domain::contracts::evidence_ledger_entry::Evidence;
 use factory_domain::contracts::{Contract, EvidenceLedgerEntry};
 use factory_domain::ids::LedgerEntryId;
 use factory_domain::ledger::{
-    ChainError, ChainHead, LedgerError, canonical_form, chain_hash, head_of, verify_chain,
+    ChainError, ChainHead, canonical_form, chain_hash, head_of, verify_chain,
     verify_chain_against_head,
 };
 use factory_domain::values::{HumanText, Sha256Digest, Timestamp};
@@ -121,23 +121,34 @@ fn the_canonical_form_follows_rfc_8785_for_awkward_text() {
 }
 
 #[test]
-fn an_integer_that_a_float_cannot_hold_exactly_is_refused_rather_than_rounded() {
-    // Entry 4 holds the seed 2^53 - 1, which hashes. A seed of 2^53 is a valid document (the
-    // schema says "integer") but RFC 8785 would write it as a rounded float, so it is not hashed.
+fn an_integer_that_a_float_cannot_hold_exactly_is_refused_when_the_entry_is_built() {
+    // ADR 0011: entry 4 holds the seed 2^53 - 1, which hashes. A seed of 2^53 would be written as
+    // a rounded float by RFC 8785, so the schema and the type refuse it when the entry is built.
+    // `LedgerError::IntegerNotRepresentable` stays as a second layer behind that, and is tested
+    // where the private check is, in `src/ledger.rs`.
     let entry = fixture().remove(3);
     assert!(canonical_form(&entry).is_ok());
     let mut value = entry.to_json_value().unwrap();
     assert_eq!(value["evidence"][0]["seeds"][1], 9_007_199_254_740_991_u64);
     value["evidence"][0]["seeds"][1] = serde_json::json!(9_007_199_254_740_992_u64);
-    let too_big = EvidenceLedgerEntry::from_json_value(value).expect("the schema allows it");
-    assert!(matches!(
-        canonical_form(&too_big),
-        Err(LedgerError::IntegerNotRepresentable { .. })
-    ));
-    assert!(matches!(
-        too_big.sealed(),
-        Err(LedgerError::IntegerNotRepresentable { .. })
-    ));
+    let error = EvidenceLedgerEntry::from_json_value(value)
+        .expect_err("a seed above the largest exact integer is refused")
+        .to_string();
+    assert!(
+        error.contains("use a whole number from -9007199254740991 to 9007199254740991"),
+        "{error}"
+    );
+}
+
+#[test]
+fn the_seeds_at_both_ends_of_the_exact_range_hash() {
+    let entry = fixture().remove(3);
+    let mut value = entry.to_json_value().unwrap();
+    value["evidence"][0]["seeds"] =
+        serde_json::json!([9_007_199_254_740_991_i64, -9_007_199_254_740_991_i64]);
+    let extreme = EvidenceLedgerEntry::from_json_value(value).expect("both ends are exact");
+    assert!(canonical_form(&extreme).is_ok());
+    assert!(extreme.sealed().is_ok());
 }
 
 // ---- tampering ------------------------------------------------------------------------------------
@@ -330,7 +341,7 @@ fn seal_chain(drafts: &[Draft]) -> Vec<EvidenceLedgerEntry> {
     for (index, draft) in drafts.iter().enumerate() {
         let mut entry = template();
         entry.metadata.sequence =
-            factory_domain::values::PositiveInt::new(index as i64 + 1).unwrap();
+            factory_domain::values::ExactPositiveInt::new(index as i64 + 1).unwrap();
         entry.metadata.entry_id = LedgerEntryId::from_uuid(uuid::Uuid::from_u128(draft.id));
         entry.metadata.recorded_at = Timestamp::parse(&format!(
             "2026-10-27T{:02}:{:02}:{:02}Z",

@@ -1,6 +1,8 @@
 //! A UTC instant that keeps the exact spelling of the document it came from.
 
+use std::cmp::Ordering;
 use std::fmt;
+use std::hash::{Hash, Hasher};
 use std::str::FromStr;
 use std::sync::LazyLock;
 
@@ -25,7 +27,17 @@ const RULE: &str =
 ///
 /// The schema pattern lets impossible dates such as `2026-02-30` through, because it checks
 /// digits only. This type also checks the calendar and the clock, and refuses leap seconds.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+///
+/// # Equality, hashing and order
+///
+/// `PartialEq`, `Eq`, `Hash`, `PartialOrd` and `Ord` look at the instant only (ADR 0011), so
+/// `10:00:00Z` equals `10:00:00.000Z`, the two hash alike, and neither sorts before the other.
+/// The spelling is not part of the comparison. `Serialize` and [`as_text`](Self::as_text) do use
+/// the spelling, so two equal values can serialize differently. Code that needs a byte-identical
+/// document check compares `as_text()`, and the ledger hash is always taken over the stored text.
+/// A value built by [`from_utc`](Self::from_utc) uses the shortest spelling, so two such values
+/// for one instant are byte-identical too.
+#[derive(Debug, Clone, Copy)]
 pub struct Timestamp {
     instant: PrimitiveDateTime,
     fraction_digits: u8,
@@ -118,6 +130,34 @@ impl Timestamp {
     #[must_use]
     pub fn as_text(&self) -> String {
         self.to_string()
+    }
+}
+
+impl PartialEq for Timestamp {
+    fn eq(&self, other: &Self) -> bool {
+        self.instant == other.instant
+    }
+}
+
+impl Eq for Timestamp {}
+
+impl Hash for Timestamp {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        // The same fields as the comparison, so values that are equal hash alike. The number of
+        // fraction digits is left out on purpose.
+        self.instant.hash(state);
+    }
+}
+
+impl PartialOrd for Timestamp {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for Timestamp {
+    fn cmp(&self, other: &Self) -> Ordering {
+        self.instant.cmp(&other.instant)
     }
 }
 

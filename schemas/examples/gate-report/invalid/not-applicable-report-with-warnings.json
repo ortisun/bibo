@@ -1,0 +1,52 @@
+{
+  "schema_version": 1,
+  "metadata": {
+    "gate_report_id": "018f3a80-3e44-7c66-9d77-8e9fa0b1c2d5",
+    "gate_id": "readability-gate",
+    "gate_version": "1.0.0",
+    "job_id": "018f3a7e-5c1b-7d2e-9a4f-3b6c8d1e2f40",
+    "stage_run_id": "018f3a7e-b033-7d21-9f6e-5b8c0d1e2f32",
+    "execution_mode": "production",
+    "trusted_definition": {
+      "source": "central_config",
+      "commit_sha": "1405df66cbe219b0bf6355bc3d60361a8376b6b4",
+      "definition_sha256": "sha256:7213deba6679af6e40e563ab1f32e3b161e652335fe18463eb3b9447c222dcca"
+    }
+  },
+  "title": "The readability gate has nothing to check on this change",
+  "outcome": "NOT_APPLICABLE",
+  "reason": "The change adds no human-facing text, so there is nothing for the readability rules to read.",
+  "started_at": "2026-10-27T09:20:00Z",
+  "finished_at": "2026-10-27T09:20:01.5Z",
+  "environment": {
+    "fidelity": "real",
+    "executor_kind": "in_process",
+    "tool_versions": [
+      {
+        "tool": "factory-readability-rules",
+        "version": "1.0.0"
+      }
+    ]
+  },
+  "commands": [],
+  "warnings": [
+    {
+      "check_id": "text-long-sentence",
+      "message": "One sentence in the description has 41 words, which is more than the limit of 35 words.",
+      "suggested_fix": "Split the sentence after the list of flags so each part states one idea.",
+      "location": {
+        "path": "description",
+        "line": 3
+      }
+    }
+  ],
+  "evidence_hash": "sha256:7d2f9b0c4e6a81f35c7d9e0b2a4c6e8f1031527496b8d0a2c4e6f8091a3b5c7d",
+  "baseline_comparison": {
+    "delta": "not_compared"
+  },
+  "not_applicable_reason": {
+    "code": "no_matching_files",
+    "justification": "The change touches only generated lock files, and the policy lists no readability rule for them.",
+    "decided_by": "deterministic_rule"
+  }
+}

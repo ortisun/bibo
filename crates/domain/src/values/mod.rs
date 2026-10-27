@@ -18,8 +18,8 @@ use crate::patterns;
 
 pub use collections::{NonEmptyVec, UniqueVec};
 pub use numbers::{
-    AggregateVersion, Bounded, Integer, NonNegativeInt, NonNegativeNumber, PositiveFraction,
-    PositiveInt, PositiveNumber, UnitInterval,
+    AggregateVersion, Bounded, ExactInteger, ExactPositiveInt, Integer, LARGEST_EXACT_INTEGER,
+    NonNegativeInt, NonNegativeNumber, PositiveFraction, PositiveInt, PositiveNumber, UnitInterval,
 };
 pub use text::{
     BoundedString, EventType, GitSha, HumanText, HumanTitle, MediaType, NonEmptyString,

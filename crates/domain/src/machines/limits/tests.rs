@@ -22,6 +22,21 @@ fn a_policy_value_can_lower_the_cap_but_never_raise_it_above_two() {
 }
 
 #[test]
+fn repair_cap_is_at_most_two() {
+    // ADR 0010: two repairs after an invalid output, and a policy may only lower that.
+    assert_eq!(DEFAULT_REPAIR_CAP, 2);
+    assert_eq!(RepairCap::default().get(), 2);
+    assert_eq!(RepairCap::DEFAULT, RepairCap::default());
+    for configured in 0..=u8::MAX {
+        assert_eq!(
+            RepairCap::from_policy(configured).get(),
+            configured.min(2),
+            "policy value {configured}"
+        );
+    }
+}
+
+#[test]
 fn only_a_documenting_target_is_counted_as_documentation_rework() {
     for kind in StageKind::ALL {
         let expected = if *kind == StageKind::Documenting {

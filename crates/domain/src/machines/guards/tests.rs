@@ -6,7 +6,7 @@ use super::*;
 use crate::contracts::stage_contract::RetryClass;
 use crate::ids::{StageRunId, TaskNodeId};
 use crate::machines::failure::FailureClass;
-use crate::machines::limits::ReworkCap;
+use crate::machines::limits::{RepairCap, ReworkCap};
 use crate::machines::snapshot::{
     AttemptSnapshot, BlockDisposition, GateReportSnapshot, SandboxState, StageRunSnapshot,
 };
@@ -435,6 +435,48 @@ fn a_superseded_or_missing_run_does_not_count_as_passed() {
 }
 
 #[test]
+fn skipped_stage_satisfies_dependants_through_the_completion_check() {
+    // ADR 0010 decision 2: a stage in scope that a recorded rule skipped does not stop the job
+    // from completing.
+    let mut runs = scope_runs();
+    runs[1].status = StageRunStatus::Skipped;
+    let facts = PipelineScopeFacts {
+        scope: &SCOPE,
+        stage_runs: &runs,
+        approval_decision_is_approve: true,
+        ledger_chain_verifies: true,
+    };
+    assert_holds(job::pipeline_scope_complete(&facts));
+
+    // Every status except the two settled ones leaves the stage unsatisfied.
+    for status in StageRunStatus::STATES {
+        let mut runs = scope_runs();
+        runs[1].status = *status;
+        assert_eq!(
+            job::pipeline_scope_complete(&PipelineScopeFacts {
+                stage_runs: &runs,
+                ..facts
+            })
+            .is_ok(),
+            matches!(status, StageRunStatus::Passed | StageRunStatus::Skipped),
+            "{status}"
+        );
+    }
+
+    // A skipped run that was superseded is a superseded run, and a stage with no live run at all
+    // is not complete.
+    let mut runs = scope_runs();
+    runs[1].status = StageRunStatus::Superseded;
+    assert_unmet(
+        job::pipeline_scope_complete(&PipelineScopeFacts {
+            stage_runs: &runs,
+            ..facts
+        }),
+        "passed",
+    );
+}
+
+#[test]
 fn completion_also_needs_an_approve_decision_and_a_verified_ledger() {
     let runs = scope_runs();
     let facts = PipelineScopeFacts {
@@ -489,7 +531,7 @@ fn a_stage_run_is_ready_when_every_stage_it_requires_has_a_passed_run() {
 }
 
 #[test]
-fn a_required_stage_that_is_not_passed_holds_the_run_back() {
+fn a_required_stage_that_is_neither_passed_nor_skipped_holds_the_run_back() {
     for status in StageRunStatus::STATES {
         let runs = [
             run(1, StageKind::Specification, StageRunStatus::Passed),
@@ -503,10 +545,57 @@ fn a_required_stage_that_is_not_passed_holds_the_run_back() {
         };
         assert_eq!(
             stage_run::upstream_passed(&facts).is_ok(),
-            *status == StageRunStatus::Passed,
+            matches!(status, StageRunStatus::Passed | StageRunStatus::Skipped),
             "{status}"
         );
     }
+}
+
+#[test]
+fn skipped_stage_satisfies_dependants_through_the_upstream_guard() {
+    // ADR 0010 decision 2: a stage that a recorded rule skipped does not hold back the stages
+    // that require it. Without this, every skip would leave its dependants in PENDING for good.
+    let runs = [
+        run(1, StageKind::Specification, StageRunStatus::Passed),
+        run(2, StageKind::DomainDiscovery, StageRunStatus::Skipped),
+    ];
+    let facts = UpstreamFacts {
+        stage: StageKind::Architecture,
+        stage_runs: &runs,
+        consumed_artifact_hashes_current: true,
+        stage_contract_resolved_and_valid: true,
+    };
+    assert_holds(stage_run::upstream_passed(&facts));
+
+    // A skipped run that was superseded no longer counts. The run that replaced it decides.
+    let superseded = [
+        run(1, StageKind::Specification, StageRunStatus::Passed),
+        run(2, StageKind::DomainDiscovery, StageRunStatus::Superseded),
+        run(3, StageKind::DomainDiscovery, StageRunStatus::Pending),
+    ];
+    assert_unmet(
+        stage_run::upstream_passed(&UpstreamFacts {
+            stage_runs: &superseded,
+            ..facts
+        }),
+        "upstream",
+    );
+
+    // Skipping does not excuse the other two conditions of the guard.
+    assert_unmet(
+        stage_run::upstream_passed(&UpstreamFacts {
+            consumed_artifact_hashes_current: false,
+            ..facts
+        }),
+        "hash",
+    );
+    assert_unmet(
+        stage_run::upstream_passed(&UpstreamFacts {
+            stage_contract_resolved_and_valid: false,
+            ..facts
+        }),
+        "contract",
+    );
 }
 
 #[test]
@@ -677,6 +766,21 @@ fn retry<'a>(
         attempts_used: used,
         max_attempts: max,
         budget_has_room: budget,
+        invalid_output_failures: 0,
+        repair_cap: RepairCap::DEFAULT,
+    }
+}
+
+/// An `INVALID_OUTPUT` failure that is the `failures`-th in its window, with plenty of attempts.
+fn invalid_output(failures: u32, cap: RepairCap) -> RetryFacts<'static> {
+    RetryFacts {
+        class: FailureClass::InvalidOutput,
+        retry_on: &[RetryClass::InvalidOutput],
+        attempts_used: failures,
+        max_attempts: 10,
+        budget_has_room: true,
+        invalid_output_failures: failures,
+        repair_cap: cap,
     }
 }
 
@@ -685,7 +789,7 @@ fn a_listed_failure_with_attempts_and_budget_left_is_retried() {
     let on = [RetryClass::ProviderError];
     let facts = retry(FailureClass::ProviderError, &on, 1, 3, true);
     assert_holds(stage_run::retry_allowed(&facts));
-    assert!(stage_run::retry_exhausted_or_nonretryable(&facts).is_err());
+    assert!(stage_run::failure_nonretryable(&facts).is_err());
 }
 
 #[test]
@@ -700,7 +804,8 @@ fn the_last_allowed_attempt_is_the_third_of_three() {
     )));
     let spent = retry(FailureClass::ToolError, &on, 3, 3, true);
     assert_unmet(stage_run::retry_allowed(&spent), "attempts");
-    assert_holds(stage_run::retry_exhausted_or_nonretryable(&spent));
+    // The attempt limit asks a human (S07). It does not fail the stage run (S06).
+    assert_unmet(stage_run::failure_nonretryable(&spent), "asks a human");
 }
 
 #[test]
@@ -708,11 +813,11 @@ fn an_unlisted_failure_is_not_retried_and_is_final() {
     let on = [RetryClass::ProviderError];
     let facts = retry(FailureClass::ToolError, &on, 1, 3, true);
     assert_unmet(stage_run::retry_allowed(&facts), "retryable");
-    assert_holds(stage_run::retry_exhausted_or_nonretryable(&facts));
+    assert_holds(stage_run::failure_nonretryable(&facts));
 }
 
 #[test]
-fn budget_policy_and_internal_failures_are_never_retried() {
+fn a_policy_denial_and_an_internal_fault_are_final_and_never_retried() {
     let everything = [
         RetryClass::ToolError,
         RetryClass::InvalidOutput,
@@ -721,14 +826,40 @@ fn budget_policy_and_internal_failures_are_never_retried() {
         RetryClass::TimedOut,
         RetryClass::LeaseLost,
     ];
-    for class in [
-        FailureClass::BudgetExhausted,
-        FailureClass::PolicyDenied,
-        FailureClass::Internal,
-    ] {
+    for class in [FailureClass::PolicyDenied, FailureClass::Internal] {
         let facts = retry(class, &everything, 0, 10, true);
         assert!(stage_run::retry_allowed(&facts).is_err(), "{class}");
-        assert_holds(stage_run::retry_exhausted_or_nonretryable(&facts));
+        assert_holds(stage_run::failure_nonretryable(&facts));
+    }
+}
+
+#[test]
+fn an_exhausted_budget_is_never_final_because_it_asks_a_human() {
+    // G_FAILURE_NONRETRYABLE excludes BUDGET_EXHAUSTED (ADR 0010): S07 takes it, never S06.
+    let everything = [
+        RetryClass::ToolError,
+        RetryClass::InvalidOutput,
+        RetryClass::ProviderError,
+        RetryClass::SandboxError,
+        RetryClass::TimedOut,
+        RetryClass::LeaseLost,
+    ];
+    for retry_on in [&everything[..], &[][..]] {
+        for (used, max, budget) in [(0, 10, true), (3, 3, true), (1, 3, false)] {
+            let facts = retry(FailureClass::BudgetExhausted, retry_on, used, max, budget);
+            assert!(stage_run::retry_allowed(&facts).is_err());
+            assert_unmet(stage_run::failure_nonretryable(&facts), "BUDGET_EXHAUSTED");
+        }
+    }
+}
+
+#[test]
+fn a_retryable_class_with_no_attempt_left_is_not_final() {
+    let on = [RetryClass::ProviderError];
+    for used in [3, 4, 100] {
+        let facts = retry(FailureClass::ProviderError, &on, used, 3, true);
+        assert!(stage_run::retry_allowed(&facts).is_err());
+        assert!(stage_run::failure_nonretryable(&facts).is_err(), "{used}");
     }
 }
 
@@ -739,13 +870,59 @@ fn a_retryable_failure_with_no_budget_left_is_neither_retried_nor_final() {
     let on = [RetryClass::ProviderError];
     let facts = retry(FailureClass::ProviderError, &on, 1, 3, false);
     assert_unmet(stage_run::retry_allowed(&facts), "budget");
-    assert!(stage_run::retry_exhausted_or_nonretryable(&facts).is_err());
+    assert!(stage_run::failure_nonretryable(&facts).is_err());
+}
+
+#[test]
+fn the_first_two_repairs_after_an_invalid_output_are_allowed_and_the_third_is_not() {
+    let cap = RepairCap::DEFAULT;
+    // The first failure is not a repair yet. The retry that follows it is repair 1.
+    assert_holds(stage_run::retry_allowed(&invalid_output(1, cap)));
+    assert_holds(stage_run::retry_allowed(&invalid_output(2, cap)));
+    let third = invalid_output(3, cap);
+    assert_unmet(stage_run::retry_allowed(&third), "repair");
+    // The repair cap asks a human (S07). It does not fail the stage run (S06).
+    assert!(stage_run::failure_nonretryable(&third).is_err());
+}
+
+#[test]
+fn a_lower_repair_cap_stops_repairs_sooner() {
+    let one = RepairCap::from_policy(1);
+    assert_holds(stage_run::retry_allowed(&invalid_output(1, one)));
+    assert_unmet(stage_run::retry_allowed(&invalid_output(2, one)), "repair");
+    let none = RepairCap::from_policy(0);
+    assert_unmet(stage_run::retry_allowed(&invalid_output(1, none)), "repair");
+    // A policy value above two does not buy a third repair.
+    let raised = RepairCap::from_policy(9);
+    assert_unmet(
+        stage_run::retry_allowed(&invalid_output(3, raised)),
+        "repair",
+    );
+}
+
+#[test]
+fn the_repair_cap_applies_to_invalid_output_only() {
+    let on = [RetryClass::ToolError];
+    let mut facts = retry(FailureClass::ToolError, &on, 2, 5, true);
+    // Earlier invalid outputs in the window do not stop a retry of some other failure.
+    facts.invalid_output_failures = 9;
+    assert_holds(stage_run::retry_allowed(&facts));
+}
+
+#[test]
+fn a_repair_also_counts_as_an_attempt() {
+    // Repairs left, attempts not: the attempt limit still stops the retry.
+    let mut facts = invalid_output(1, RepairCap::DEFAULT);
+    facts.attempts_used = 3;
+    facts.max_attempts = 3;
+    assert_unmet(stage_run::retry_allowed(&facts), "attempts");
 }
 
 #[test]
 fn a_human_is_asked_when_any_one_reason_applies() {
     let none = EscalationFacts {
         budget_limit_hit: false,
+        attempt_limit_reached: false,
         agent_requested_a_human: false,
         stagnation_detected: false,
         policy_requires_human_decision: false,
@@ -754,6 +931,10 @@ fn a_human_is_asked_when_any_one_reason_applies() {
     for facts in [
         EscalationFacts {
             budget_limit_hit: true,
+            ..none
+        },
+        EscalationFacts {
+            attempt_limit_reached: true,
             ..none
         },
         EscalationFacts {
@@ -771,6 +952,30 @@ fn a_human_is_asked_when_any_one_reason_applies() {
     ] {
         assert_holds(stage_run::escalation_required(&facts));
     }
+}
+
+#[test]
+fn reaching_the_attempt_limit_is_its_own_reason_and_not_a_policy_decision() {
+    let only_the_limit = EscalationFacts {
+        budget_limit_hit: false,
+        attempt_limit_reached: true,
+        agent_requested_a_human: false,
+        stagnation_detected: false,
+        policy_requires_human_decision: false,
+    };
+    assert_holds(stage_run::escalation_required(&only_the_limit));
+    let failure = stage_run::escalation_required(&EscalationFacts {
+        attempt_limit_reached: false,
+        ..only_the_limit
+    })
+    .unwrap_err();
+    assert!(
+        failure
+            .unmet
+            .iter()
+            .any(|text| text.contains("attempt limit")),
+        "the failure names the attempt limit among the alternatives: {failure}"
+    );
 }
 
 // ---- stage run: the gate --------------------------------------------------------------------------------------------------
@@ -927,6 +1132,7 @@ fn a_human_is_asked_at_a_gate_when_any_one_reason_applies() {
         stagnation_detected: false,
         budget_limit_reached: false,
         gate_is_a_human_gate: false,
+        defect_needs_a_person: false,
     };
     assert!(stage_run::needs_human_verdict(&none).is_err());
     for facts in [
@@ -950,9 +1156,40 @@ fn a_human_is_asked_at_a_gate_when_any_one_reason_applies() {
             gate_is_a_human_gate: true,
             ..none
         },
+        NeedsHumanFacts {
+            defect_needs_a_person: true,
+            ..none
+        },
     ] {
         assert_holds(stage_run::needs_human_verdict(&facts));
     }
+}
+
+#[test]
+fn a_defect_only_a_person_can_decide_is_a_reason_of_its_own() {
+    // ADR 0010 decision 3: a `specification` or `policy` finding asks a person even when the
+    // rework cap has room, the findings are new and the budget remains.
+    let only_the_defect = NeedsHumanFacts {
+        verdict_is_needs_human: false,
+        rework_limit_reached: false,
+        stagnation_detected: false,
+        budget_limit_reached: false,
+        gate_is_a_human_gate: false,
+        defect_needs_a_person: true,
+    };
+    assert_holds(stage_run::needs_human_verdict(&only_the_defect));
+    let failure = stage_run::needs_human_verdict(&NeedsHumanFacts {
+        defect_needs_a_person: false,
+        ..only_the_defect
+    })
+    .unwrap_err();
+    assert!(
+        failure
+            .unmet
+            .iter()
+            .any(|text| text.contains("only a person can decide")),
+        "the failure names the defect among the alternatives: {failure}"
+    );
 }
 
 #[test]
@@ -1006,12 +1243,18 @@ fn a_gate_fails_for_good_only_when_it_failed_and_no_route_exists() {
 
 // ---- stage run: humans -----------------------------------------------------------------------------------------------------
 
-#[test]
-fn an_answer_counts_when_it_is_recorded_with_the_principal_and_hashed() {
-    let facts = AnswerFacts {
+fn answer() -> AnswerFacts {
+    AnswerFacts {
         answer_recorded_with_principal: true,
         answer_became_a_new_input_hash: true,
-    };
+        raises_a_ceiling: false,
+        principal_is_org_admin: false,
+    }
+}
+
+#[test]
+fn an_answer_counts_when_it_is_recorded_with_the_principal_and_hashed() {
+    let facts = answer();
     assert_holds(stage_run::answer_recorded(&facts));
     assert!(
         stage_run::answer_recorded(&AnswerFacts {
@@ -1030,11 +1273,32 @@ fn an_answer_counts_when_it_is_recorded_with_the_principal_and_hashed() {
 }
 
 #[test]
+fn an_answer_that_raises_a_ceiling_needs_an_org_admin() {
+    // `raise_budget_ceiling` is an org_admin decision in the approval policy (ADR 0010).
+    let raises = AnswerFacts {
+        raises_a_ceiling: true,
+        ..answer()
+    };
+    assert_unmet(stage_run::answer_recorded(&raises), "ceiling");
+    assert_holds(stage_run::answer_recorded(&AnswerFacts {
+        principal_is_org_admin: true,
+        ..raises
+    }));
+    // An org_admin who raises nothing is an ordinary answer, and any other answer stays open to
+    // the requester, the operator and the approver.
+    assert_holds(stage_run::answer_recorded(&AnswerFacts {
+        principal_is_org_admin: true,
+        ..answer()
+    }));
+}
+
+#[test]
 fn an_approval_needs_the_role_and_the_evidence_the_human_actually_saw() {
     let facts = ApprovalFacts {
         decision_is_approve: true,
         principal_holds_required_role: true,
         evidence_digest_seen_equals_current: true,
+        translation_warnings_decided: true,
     };
     assert_holds(stage_run::approver_authorized(&facts));
     assert_unmet(
@@ -1057,6 +1321,34 @@ fn an_approval_needs_the_role_and_the_evidence_the_human_actually_saw() {
             ..facts
         }),
         "digest",
+    );
+}
+
+#[test]
+fn an_approval_needs_a_decision_for_every_open_translation_warning() {
+    let facts = ApprovalFacts {
+        decision_is_approve: true,
+        principal_holds_required_role: true,
+        evidence_digest_seen_equals_current: true,
+        translation_warnings_decided: true,
+    };
+    assert_holds(stage_run::approver_authorized(&facts));
+    assert_unmet(
+        stage_run::approver_authorized(&ApprovalFacts {
+            translation_warnings_decided: false,
+            ..facts
+        }),
+        "translation",
+    );
+    // The role and the digest do not make up for it.
+    assert!(
+        stage_run::approver_authorized(&ApprovalFacts {
+            translation_warnings_decided: false,
+            principal_holds_required_role: true,
+            evidence_digest_seen_equals_current: true,
+            decision_is_approve: true,
+        })
+        .is_err()
     );
 }
 
@@ -1211,6 +1503,7 @@ fn a_run_is_superseded_when_an_input_changed_or_an_upstream_run_was_reworked() {
     let neither = SupersedeFacts {
         consumed_artifact_superseded_by_newer_version: false,
         upstream_stage_run_was_reworked: false,
+        external_change_recorded: false,
     };
     assert!(stage_run::upstream_invalidated(&neither).is_err());
     assert_holds(stage_run::upstream_invalidated(&SupersedeFacts {
@@ -1219,6 +1512,12 @@ fn a_run_is_superseded_when_an_input_changed_or_an_upstream_run_was_reworked() {
     }));
     assert_holds(stage_run::upstream_invalidated(&SupersedeFacts {
         upstream_stage_run_was_reworked: true,
+        ..neither
+    }));
+    // An external change from the invalidation table: the request was edited, or a value bound
+    // to gate evidence changed.
+    assert_holds(stage_run::upstream_invalidated(&SupersedeFacts {
+        external_change_recorded: true,
         ..neither
     }));
 }
@@ -1577,8 +1876,10 @@ fn two_guards_may_share_facts_but_each_has_its_own_name_in_a_failure() {
         GuardError::Unmet(failure) => assert_eq!(failure.guard, Guard::RetryAllowed),
         other @ GuardError::WrongFacts { .. } => panic!("{other}"),
     }
-    assert_eq!(
-        evaluate(Guard::RetryExhaustedOrNonretryable, &facts),
-        Ok(())
-    );
+    // The attempt limit is reached, which asks a human. The failure guard does not hold.
+    let nonretryable = evaluate(Guard::FailureNonretryable, &facts).unwrap_err();
+    match nonretryable {
+        GuardError::Unmet(failure) => assert_eq!(failure.guard, Guard::FailureNonretryable),
+        other @ GuardError::WrongFacts { .. } => panic!("{other}"),
+    }
 }

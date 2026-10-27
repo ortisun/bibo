@@ -12,7 +12,8 @@ use factory_domain::contracts::stage_contract::RetryClass;
 use factory_domain::ids::StageRunId;
 use factory_domain::machines::failure::FailureClass;
 use factory_domain::machines::guards::stage_run::{
-    gate_pass_evidenced, override_permitted, retry_allowed, rework_allowed,
+    escalation_required, failure_nonretryable, gate_pass_evidenced, override_permitted,
+    retry_allowed, rework_allowed,
 };
 use factory_domain::machines::guards::{
     AdmissionFacts, DeadlineFacts, GatePassFacts, LeaseExpiryFacts, OverrideFacts,
@@ -21,12 +22,14 @@ use factory_domain::machines::guards::{
 use factory_domain::machines::guards::{attempt, job};
 use factory_domain::machines::invalidation::{ArtifactChange, plan_for_change, plan_for_rework};
 use factory_domain::machines::limits::{
-    DEFAULT_REWORK_CAP, ReworkCap, ReworkLedger, ReworkLimits, ReworkTrack,
+    DEFAULT_REWORK_CAP, RepairCap, ReworkCap, ReworkLedger, ReworkLimits, ReworkTrack,
 };
-use factory_domain::machines::retry::{AttemptDisposition, decide_after_failure};
+use factory_domain::machines::retry::{
+    AttemptDisposition, AttemptWindow, EscalationCause, WindowEvent, decide_after_failure,
+};
 use factory_domain::machines::rework::{
     GateFinding, GateReworkDecision, GateReworkRequest, HumanReworkDecision, HumanReworkRequest,
-    decide_gate_rework, decide_human_rework,
+    decide_gate_rework, decide_human_rework, human_targets,
 };
 use factory_domain::machines::snapshot::{GateReportSnapshot, StageRunSnapshot};
 use factory_domain::state::{
@@ -294,7 +297,6 @@ fn a_superseded_or_reworked_stage_run_never_comes_back() {
         StageRunStatus::Superseded,
         StageRunStatus::ReworkRequested,
         StageRunStatus::Failed,
-        StageRunStatus::Skipped,
         StageRunStatus::Cancelled,
     ] {
         assert!(dead.is_terminal());
@@ -305,11 +307,10 @@ fn a_superseded_or_reworked_stage_run_never_comes_back() {
             );
         }
     }
-    assert!(
-        StageRunStatus::Passed
-            .apply(StageRunEvent::Supersede)
-            .is_ok()
-    );
+    // A passed run and a skipped run can still go stale (ADR 0010).
+    for settled in [StageRunStatus::Passed, StageRunStatus::Skipped] {
+        assert!(settled.apply(StageRunEvent::Supersede).is_ok());
+    }
 }
 
 // =================================================================================================
@@ -352,8 +353,12 @@ enum Action {
         differs: bool,
         budget: bool,
     },
-    /// A human asks for rework on a run that is waiting or blocked.
-    HumanRework { run: usize, roles: u8 },
+    /// A human asks for rework on a run that is waiting or blocked, naming a target stage.
+    HumanRework {
+        run: usize,
+        roles: u8,
+        target: usize,
+    },
 }
 
 fn action() -> impl Strategy<Value = Action> {
@@ -376,8 +381,8 @@ fn action() -> impl Strategy<Value = Action> {
                 differs,
                 budget,
             }),
-        1 => (any::<usize>(), any::<u8>())
-            .prop_map(|(run, roles)| Action::HumanRework { run, roles }),
+        2 => (any::<usize>(), any::<u8>(), any::<usize>())
+            .prop_map(|(run, roles, target)| Action::HumanRework { run, roles, target }),
     ]
 }
 
@@ -541,7 +546,7 @@ impl Sim {
                 let producer_before: Vec<_> = self
                     .runs
                     .iter()
-                    .filter(|r| r.kind == change.producer())
+                    .filter(|r| Some(r.kind) == change.producer())
                     .map(|r| r.status)
                     .collect();
                 let planned = plan_for_change(&self.runs, change);
@@ -551,11 +556,12 @@ impl Sim {
                     plan_for_change(&self.runs, change).is_empty(),
                     "a stale run is still live after {change}"
                 );
-                // The stage that produced the artifact is never made stale by it.
+                // The stage that produced the artifact is never made stale by it. A change that no
+                // stage produces (an edited request, a moved base branch) spares nobody.
                 let producer_after: Vec<_> = self
                     .runs
                     .iter()
-                    .filter(|r| r.kind == change.producer())
+                    .filter(|r| Some(r.kind) == change.producer())
                     .map(|r| r.status)
                     .collect();
                 prop_assert_eq!(producer_before, producer_after);
@@ -602,7 +608,7 @@ impl Sim {
                     prop_assert_eq!(self.ledger, ledger_before);
                 }
             }
-            Action::HumanRework { run, roles } => {
+            Action::HumanRework { run, roles, target } => {
                 let waiting: Vec<usize> = (0..self.runs.len())
                     .filter(|i| {
                         matches!(
@@ -617,14 +623,19 @@ impl Sim {
                 let index = waiting[run % waiting.len()];
                 let failing = self.runs[index];
                 let roles = roles_from(*roles);
+                let target = StageKind::ALL[target % StageKind::ALL.len()];
                 let decision = decide_human_rework(&HumanReworkRequest {
                     from: failing.kind,
+                    target,
                     principal_roles: &roles,
                     ledger: self.ledger,
                     limits: self.limits,
                 });
                 match decision {
                     HumanReworkDecision::Rework(plan) => {
+                        // Only a target that the file lists for the waiting stage is accepted.
+                        prop_assert_eq!(plan.target, target);
+                        prop_assert!(human_targets(failing.kind).contains(&target));
                         self.start_rework(
                             index,
                             StageRunEvent::HumanRequestedRework,
@@ -655,11 +666,12 @@ impl Sim {
                 .find(|r| r.id == *id)
                 .map(|r| r.status)
                 .expect("a run is never deleted");
-            // Terminal means no exit, except that a passed run can be superseded.
+            // Terminal means no exit, except that a passed or a skipped run can be superseded.
             if was.is_terminal() {
                 prop_assert!(
                     now == *was
-                        || (*was == StageRunStatus::Passed && now == StageRunStatus::Superseded),
+                        || (matches!(*was, StageRunStatus::Passed | StageRunStatus::Skipped)
+                            && now == StageRunStatus::Superseded),
                     "{was} became {now}"
                 );
             }
@@ -851,47 +863,158 @@ fn an_always_failing_runtime_ends_in_a_human_or_a_failure_within_max_attempts() 
         any::<u8>(),
         1u32..=10,
         vec(any::<bool>(), 1..12),
+        any::<u8>(),
     );
     runner(SEQUENCES)
-        .run(&strategy, |(class, mask, max_attempts, budget)| {
-            let class = FailureClass::ALL[class];
-            let retry_on = retry_classes_from(mask);
-            let mut stage = StageRunStatus::Running;
-            let mut used = 0;
-            loop {
-                used += 1;
-                prop_assert!(
-                    used <= max_attempts,
-                    "still going after {max_attempts} attempts"
-                );
-                let decision = decide_after_failure(&RetryFacts {
-                    class,
-                    retry_on: &retry_on,
-                    attempts_used: used,
-                    max_attempts,
-                    budget_has_room: budget[(used as usize - 1) % budget.len()],
-                });
-                prop_assert!(stage.advance(decision.stage_run_event()).is_ok());
-                match decision {
-                    AttemptDisposition::Retry => {
-                        prop_assert_eq!(stage, StageRunStatus::Ready);
-                        prop_assert!(used < max_attempts, "retried on the last attempt");
-                        prop_assert!(stage.advance(StageRunEvent::Start).is_ok());
-                    }
-                    AttemptDisposition::Escalate(_) => {
-                        prop_assert_eq!(stage, StageRunStatus::WaitingForHuman);
-                        break;
-                    }
-                    AttemptDisposition::Fail => {
-                        prop_assert_eq!(stage, StageRunStatus::Failed);
-                        // FAILED is terminal: nothing leaves it.
-                        for event in StageRunStatus::EVENTS {
-                            prop_assert!(stage.apply(*event).is_err());
+        .run(
+            &strategy,
+            |(class, mask, max_attempts, budget, repair_cap)| {
+                let class = FailureClass::ALL[class];
+                let retry_on = retry_classes_from(mask);
+                let mut stage = StageRunStatus::Running;
+                let mut used = 0;
+                loop {
+                    used += 1;
+                    prop_assert!(
+                        used <= max_attempts,
+                        "still going after {max_attempts} attempts"
+                    );
+                    let decision = decide_after_failure(&RetryFacts {
+                        class,
+                        retry_on: &retry_on,
+                        attempts_used: used,
+                        max_attempts,
+                        budget_has_room: budget[(used as usize - 1) % budget.len()],
+                        invalid_output_failures: if class == FailureClass::InvalidOutput {
+                            used
+                        } else {
+                            0
+                        },
+                        repair_cap: RepairCap::from_policy(repair_cap),
+                    });
+                    prop_assert!(stage.advance(decision.stage_run_event()).is_ok());
+                    match decision {
+                        AttemptDisposition::Retry => {
+                            prop_assert_eq!(stage, StageRunStatus::Ready);
+                            prop_assert!(used < max_attempts, "retried on the last attempt");
+                            prop_assert!(stage.advance(StageRunEvent::Start).is_ok());
                         }
-                        break;
+                        AttemptDisposition::Escalate(_) => {
+                            prop_assert_eq!(stage, StageRunStatus::WaitingForHuman);
+                            break;
+                        }
+                        AttemptDisposition::Fail => {
+                            prop_assert_eq!(stage, StageRunStatus::Failed);
+                            // FAILED is terminal: nothing leaves it.
+                            for event in StageRunStatus::EVENTS {
+                                prop_assert!(stage.apply(*event).is_err());
+                            }
+                            break;
+                        }
                     }
                 }
-            }
+                Ok(())
+            },
+        )
+        .unwrap_or_else(|failure| panic!("{failure}"));
+}
+
+#[test]
+fn budget_and_attempt_limit_escalate_over_generated_facts() {
+    // ADR 0010 and INV-10: BUDGET_EXHAUSTED, an exhausted attempt limit and an exhausted repair
+    // cap choose S07 and never S06, whatever the other facts are. S06 is for a failure that
+    // retrying cannot fix, and S05 and S06 never hold together.
+    let strategy = (
+        0..FailureClass::ALL.len(),
+        any::<u8>(),
+        0u32..14,
+        1u32..12,
+        any::<bool>(),
+        0u32..14,
+        any::<u8>(),
+    );
+    runner(SEQUENCES)
+        .run(
+            &strategy,
+            |(class, mask, used, max, budget, invalid, repair_cap)| {
+                let retry_on = retry_classes_from(mask);
+                let facts = RetryFacts {
+                    class: FailureClass::ALL[class],
+                    retry_on: &retry_on,
+                    attempts_used: used,
+                    max_attempts: max,
+                    budget_has_room: budget,
+                    invalid_output_failures: invalid,
+                    repair_cap: RepairCap::from_policy(repair_cap),
+                };
+                let decision = decide_after_failure(&facts);
+                let escalates = matches!(decision, AttemptDisposition::Escalate(_));
+
+                if facts.class == FailureClass::BudgetExhausted {
+                    prop_assert_eq!(
+                        decision,
+                        AttemptDisposition::Escalate(EscalationCause::BudgetLimit)
+                    );
+                    prop_assert!(failure_nonretryable(&facts).is_err());
+                }
+                if facts.class_is_retryable() && used >= max {
+                    prop_assert!(escalates);
+                    prop_assert!(failure_nonretryable(&facts).is_err());
+                }
+                if facts.class == FailureClass::InvalidOutput
+                    && facts.class_is_retryable()
+                    && invalid > u32::from(repair_cap.min(2))
+                {
+                    prop_assert!(escalates);
+                    prop_assert!(failure_nonretryable(&facts).is_err());
+                }
+                // The stage run fails exactly when the guard of S06 holds, and S05 and S06 never
+                // hold together.
+                prop_assert_eq!(
+                    decision == AttemptDisposition::Fail,
+                    failure_nonretryable(&facts).is_ok()
+                );
+                prop_assert!(
+                    retry_allowed(&facts).is_err() || failure_nonretryable(&facts).is_err()
+                );
+                // Every escalation names a cause whose facts satisfy the guard of S07.
+                if let AttemptDisposition::Escalate(cause) = decision {
+                    prop_assert!(escalation_required(&cause.facts()).is_ok());
+                }
+                Ok(())
+            },
+        )
+        .unwrap_or_else(|failure| panic!("{failure}"));
+}
+
+#[test]
+fn an_attempt_window_counts_only_what_follows_the_last_human_answer() {
+    // A reference that slices the history at the last answer and counts, compared with the
+    // function that folds over it.
+    let event = prop_oneof![
+        3 => (0..FailureClass::ALL.len()).prop_map(|i| WindowEvent::AttemptFailed(FailureClass::ALL[i])),
+        1 => Just(WindowEvent::HumanAnswered),
+    ];
+    runner(SEQUENCES)
+        .run(&vec(event, 0..40), |history| {
+            let after_last_answer = match history
+                .iter()
+                .rposition(|e| *e == WindowEvent::HumanAnswered)
+            {
+                Some(index) => &history[index + 1..],
+                None => &history[..],
+            };
+            let window = AttemptWindow::from_history(&history);
+            prop_assert_eq!(window.attempts_used() as usize, after_last_answer.len());
+            prop_assert_eq!(
+                window.invalid_output_failures() as usize,
+                after_last_answer
+                    .iter()
+                    .filter(|e| **e == WindowEvent::AttemptFailed(FailureClass::InvalidOutput))
+                    .count()
+            );
+            // The window of the tail alone is the same window: nothing before the answer matters.
+            prop_assert_eq!(window, AttemptWindow::from_history(after_last_answer));
             Ok(())
         })
         .unwrap_or_else(|failure| panic!("{failure}"));
@@ -1002,11 +1125,13 @@ fn retry_and_rework_guards_never_allow_more_than_the_limits() {
         any::<bool>(),
         any::<u8>(),
         any::<u8>(),
+        0u32..12,
+        any::<u8>(),
     );
     runner(SEQUENCES)
         .run(
             &strategy,
-            |(class, mask, used, max, budget, rounds, policy_cap)| {
+            |(class, mask, used, max, budget, rounds, policy_cap, invalid, repair_cap)| {
                 let retry_on = retry_classes_from(mask);
                 let retry = RetryFacts {
                     class: FailureClass::ALL[class],
@@ -1014,11 +1139,18 @@ fn retry_and_rework_guards_never_allow_more_than_the_limits() {
                     attempts_used: used,
                     max_attempts: max,
                     budget_has_room: budget,
+                    invalid_output_failures: invalid,
+                    repair_cap: RepairCap::from_policy(repair_cap),
                 };
                 if retry_allowed(&retry).is_ok() {
                     prop_assert!(used < max);
                     prop_assert!(budget);
                     prop_assert!(retry.class_is_retryable());
+                    // A repair is allowed only up to the cap, and the cap is at most two.
+                    if retry.class == FailureClass::InvalidOutput {
+                        prop_assert!(invalid <= u32::from(repair_cap.min(2)));
+                        prop_assert!(invalid <= 2);
+                    }
                 }
                 let rework = ReworkFacts {
                     verdict_is_changes_required: true,
@@ -1063,7 +1195,7 @@ fn admission_is_always_exactly_one_of_ok_and_denied() {
 }
 
 #[test]
-fn a_job_completes_only_when_every_stage_in_scope_has_a_passed_run() {
+fn a_job_completes_only_when_every_stage_in_scope_has_a_passed_or_skipped_run() {
     let strategy = (
         vec(0..StageKind::ALL.len(), 0..6),
         vec(
@@ -1097,10 +1229,8 @@ fn a_job_completes_only_when_every_stage_in_scope_has_a_passed_run() {
             if complete {
                 prop_assert!(approve && verified && !scope.is_empty());
                 for kind in &scope {
-                    prop_assert!(
-                        runs.iter()
-                            .any(|r| r.kind == *kind && r.status == StageRunStatus::Passed)
-                    );
+                    prop_assert!(runs.iter().any(|r| r.kind == *kind
+                        && matches!(r.status, StageRunStatus::Passed | StageRunStatus::Skipped)));
                 }
             }
             Ok(())

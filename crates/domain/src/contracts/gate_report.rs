@@ -208,7 +208,7 @@ pub struct GateCommand {
     pub stderr: ArtifactRef,
 }
 
-/// Where in a file a failure is.
+/// Where in a file a failure or a warning is.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct FailureLocation {
@@ -227,6 +227,24 @@ pub struct Failure {
     pub check_id: Slug,
     /// What went wrong, in plain English.
     pub message: HumanText,
+    /// Where.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub location: Option<FailureLocation>,
+}
+
+/// One finding that does not stop the gate.
+///
+/// A warning says what to improve and never changes the outcome, so it has no severity: it is
+/// always a warning. The `check_id` is the rule id of the gate, in the same form as in a failure.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct GateWarning {
+    /// The rule that found it.
+    pub check_id: Slug,
+    /// What was found, in plain English.
+    pub message: HumanText,
+    /// What to do about it, in plain English.
+    pub suggested_fix: HumanText,
     /// Where.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub location: Option<FailureLocation>,
@@ -294,6 +312,11 @@ contract! {
         /// Failures, for a `FAILED` outcome.
         #[serde(skip_serializing_if = "Option::is_none")]
         pub failures: Option<Vec<Failure>>,
+        /// Findings that do not stop the gate. A `PASSED` report may carry them and still lists no
+        /// failure. A report of a gate that did not run (`BLOCKED` or `NOT_APPLICABLE`) carries
+        /// none. An empty list is kept as written, and an absent one stays absent.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        pub warnings: Option<Vec<GateWarning>>,
         /// Why it could not run, for a `BLOCKED` outcome.
         #[serde(skip_serializing_if = "Option::is_none")]
         pub blocked_reason: Option<BlockedReason>,
@@ -359,11 +382,18 @@ impl GateReport {
                 "failures",
                 "a FAILED report must list at least one failure",
             ),
-            GateOutcome::Blocked => found.require(
-                self.blocked_reason.is_some(),
-                "blocked_reason",
-                "a BLOCKED report must say what was missing",
-            ),
+            GateOutcome::Blocked => {
+                found.require(
+                    self.blocked_reason.is_some(),
+                    "blocked_reason",
+                    "a BLOCKED report must say what was missing",
+                );
+                found.require(
+                    self.has_no_warnings(),
+                    "warnings",
+                    "a BLOCKED report carries no warnings, because the gate did not run",
+                );
+            }
             GateOutcome::NotApplicable => {
                 found.require(
                     self.not_applicable_reason.is_some(),
@@ -375,8 +405,18 @@ impl GateReport {
                     "commands",
                     "a gate that does not apply runs no commands",
                 );
+                found.require(
+                    self.has_no_warnings(),
+                    "warnings",
+                    "a NOT_APPLICABLE report carries no warnings, because the gate does not apply",
+                );
             }
         }
+    }
+
+    /// True when the report lists no warning. An empty list counts: nothing was said.
+    fn has_no_warnings(&self) -> bool {
+        self.warnings.as_ref().is_none_or(Vec::is_empty)
     }
 
     fn check_passed(&self, found: &mut Violations) {
