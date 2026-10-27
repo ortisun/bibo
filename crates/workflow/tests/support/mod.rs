@@ -6,6 +6,7 @@
 
 pub mod authority;
 pub mod handler;
+pub mod ids;
 pub mod world;
 
 pub use authority::StaticAuthority;

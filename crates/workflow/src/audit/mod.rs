@@ -4,5 +4,7 @@
 //! (`policies/security.yaml`, `audit.must_record`). [`action`] names the required types.
 
 mod action;
+mod verifier;
 
 pub use action::{AuditAction, AuditDecision, AuditKind};
+pub use verifier::{AuditReport, Finding, RunOutcomes, check_job};

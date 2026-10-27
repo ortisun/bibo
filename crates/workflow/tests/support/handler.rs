@@ -13,8 +13,9 @@ use factory_domain::contracts::{Contract, GateReport, ReviewVerdict, StageContra
 use factory_domain::values::{HumanText, MediaType, Slug};
 use factory_domain::vocabulary::RiskTier;
 use factory_domain::vocabulary::{Fidelity, StageKind};
-use factory_ports::agent::{CostMicroUsd, RoutingNeed, Usage};
+use factory_ports::agent::{CostMicroUsd, Denial, RoutingNeed, Usage};
 use factory_ports::registry::ContractKind;
+use factory_workflow::audit::AuditAction;
 use factory_workflow::gates::framework::GateDecision;
 use factory_workflow::handlers::{
     Applicability, ContractContext, GateContext, NeedsHumanRequest, OutputDocument, SandboxReady,
@@ -113,6 +114,10 @@ pub struct Script {
     pub broker: Option<std::sync::Arc<factory_testkit::broker::FakeModelBroker>>,
     /// The token each call of `execute` was given.
     pub tokens: Vec<Option<factory_ports::agent::JobTokenId>>,
+    /// Audit actions that `execute` notes, as a stage that runs commands and sandboxes would.
+    pub notes: Vec<AuditAction>,
+    /// Tool calls that policy denied during `execute`.
+    pub denials: u32,
     /// What the next calls to `evaluate` hand over, in order.
     pub evals: VecDeque<Eval>,
     /// What `evaluate` hands over once the queue is empty.
@@ -136,6 +141,8 @@ impl Default for Script {
             tweaks: Tweaks::default(),
             executed: Vec::new(),
             agent: false,
+            notes: Vec::new(),
+            denials: 0,
             spend_micro_usd: 0,
             broker: None,
             tokens: Vec::new(),
@@ -178,6 +185,16 @@ impl ScriptHandle {
                     .expect("a text"),
             });
         });
+    }
+
+    /// Makes the stage note these audit actions, as a handler does for what only it sees.
+    pub fn notes(&self, actions: &[AuditAction]) {
+        self.with(|script| script.notes = actions.to_vec());
+    }
+
+    /// Makes the stage report this many denied tool calls.
+    pub fn denials(&self, count: u32) {
+        self.with(|script| script.denials = count);
     }
 
     /// Makes the stage run an agent that spends this much through its job token.
@@ -297,11 +314,12 @@ impl StageHandler for ScriptedHandler {
     }
 
     async fn execute(&self, ctx: &mut StageContext<'_>) -> Result<StageOutput, StageError> {
-        let (report, extra, omit) = self.script.with(|script| {
+        let (report, extra, omit, denials) = self.script.with(|script| {
             (
                 script.report_sandbox,
                 script.extra_document,
                 script.omit_deliverable,
+                script.denials,
             )
         });
         if report {
@@ -312,6 +330,9 @@ impl StageHandler for ScriptedHandler {
             });
         }
         self.script.with(|script| {
+            for action in &script.notes {
+                ctx.note_audit(*action);
+            }
             script.tokens.push(ctx.job_token.map(|token| token.id));
             if let (Some(broker), Some(token)) = (&script.broker, ctx.job_token)
                 && script.spend_micro_usd > 0
@@ -357,6 +378,12 @@ impl StageHandler for ScriptedHandler {
             Step::Succeed => Ok(StageOutput {
                 documents: documents(json!({ "stage": ctx.identity.kind.as_str() })),
                 usage: Usage::default(),
+                permission_denials: (0..denials)
+                    .map(|_| Denial {
+                        tool: "write-file".to_owned(),
+                        reason: "the path is protected".to_owned(),
+                    })
+                    .collect(),
                 ..StageOutput::default()
             }),
             Step::Fail(error) => Err(error),

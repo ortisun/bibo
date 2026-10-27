@@ -139,6 +139,7 @@ impl Engine {
     ) -> Result<AttemptOutcome, EngineError> {
         let span = tracing::info_span!(
             "factory.attempt",
+            factory.correlation_id = %claimed.correlation,
             factory.job_id = %claimed.job,
             factory.stage_run_id = %claimed.stage_run,
             factory.attempt_id = %claimed.attempt,

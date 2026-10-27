@@ -6,7 +6,7 @@ use std::time::Duration;
 
 use factory_domain::contracts::agent_manifest::RecommendedTier;
 use factory_domain::contracts::{DomainEvent, EvidenceLedgerEntry, Violation};
-use factory_domain::ids::{CausationId, JobId, PrincipalId, TenantId};
+use factory_domain::ids::{CausationId, JobId, PrincipalId, StageRunId, TenantId};
 use factory_domain::scope::TenantScope;
 use factory_domain::values::{NonEmptyString, Sha256Digest};
 use factory_domain::vocabulary::{ExecutionMode, HumanRole, StageKind};
@@ -18,14 +18,14 @@ use factory_ports::store::{AuditEvent, NewPrincipal, OutboxSeq, Store, SystemSco
 use factory_testkit::agent::FakeAgentRuntime;
 use factory_testkit::artifact::InMemoryArtifactStore;
 use factory_testkit::broker::FakeModelBroker;
-use factory_testkit::clock::{FakeClock, SequentialIdGenerator};
+use factory_testkit::clock::FakeClock;
 use factory_testkit::fixtures::sandbox_policy;
 use factory_testkit::registry::InMemoryAgentRegistry;
 use factory_testkit::router::{RouteRule, StaticModelRouter};
 use factory_testkit::sandbox::FakeSandbox;
-use factory_testkit::store::InMemoryStore;
+use factory_testkit::store::{InMemoryStore, StoreDefect};
 use factory_testkit::workspace::FakeWorkspaceProvider;
-use factory_workflow::commands::Actor;
+use factory_workflow::commands::{Actor, Decision, Subject};
 use factory_workflow::engine::{
     Admission, AttemptOutcome, Engine, EngineConfig, EngineDeps, JobView,
 };
@@ -34,6 +34,7 @@ use factory_workflow::scheduler::ClaimedAttempt;
 
 use super::authority::StaticAuthority;
 use super::handler::{ScriptHandle, ScriptedHandler};
+use super::ids::FaultyIds;
 
 /// Accepts every document except one that says `"invalid": true`.
 pub struct ScriptedValidator;
@@ -59,7 +60,7 @@ impl OutputValidator for ScriptedValidator {
 /// The pieces of a test engine.
 pub struct World {
     pub clock: Arc<FakeClock>,
-    pub ids: Arc<SequentialIdGenerator>,
+    pub ids: Arc<FaultyIds>,
     pub store: Arc<InMemoryStore>,
     pub artifacts: Arc<InMemoryArtifactStore>,
     pub broker: Arc<FakeModelBroker>,
@@ -81,9 +82,21 @@ impl World {
 
     /// The same, after `tune` changed the configuration.
     pub async fn with_config(tune: impl FnOnce(&mut EngineConfig)) -> Self {
+        Self::build(None, tune).await
+    }
+
+    /// The same, over a store that breaks one rule of the `Store` contract on purpose.
+    pub async fn with_store_defect(defect: StoreDefect) -> Self {
+        Self::build(Some(defect), |_| {}).await
+    }
+
+    async fn build(defect: Option<StoreDefect>, tune: impl FnOnce(&mut EngineConfig)) -> Self {
         let clock = Arc::new(FakeClock::new());
-        let ids = Arc::new(SequentialIdGenerator::new());
-        let store = Arc::new(InMemoryStore::new(clock.clone()));
+        let ids = Arc::new(FaultyIds::new());
+        let store = Arc::new(match defect {
+            Some(defect) => InMemoryStore::with_defect(clock.clone(), defect),
+            None => InMemoryStore::new(clock.clone()),
+        });
         let artifacts = Arc::new(InMemoryArtifactStore::new());
         let authority = Arc::new(StaticAuthority::new());
         let broker = Arc::new(FakeModelBroker::new(clock.clone(), ids.clone()));
@@ -257,6 +270,61 @@ impl World {
             principal,
             command: CausationId::from_uuid(self.ids.new_uuid()),
         }
+    }
+
+    /// Runs `count` stage runs one after another, moving the clock past every lease and back-off
+    /// in between. Each must succeed.
+    pub async fn run_stages(&self, count: usize) {
+        for _ in 0..count {
+            self.advance(400);
+            let (_, outcome) = self.run_next("worker-1").await;
+            assert_eq!(outcome, AttemptOutcome::Succeeded);
+        }
+    }
+
+    /// A job whose stages ran to the approval, which waits for a person.
+    pub async fn at_approval(&self) -> (JobId, StageRunId) {
+        self.script(StageKind::Approval)
+            .evals_otherwise(super::handler::Eval::HumanGate);
+        let job = self.admitted_job().await;
+        self.run_stages(13).await;
+        let run = self
+            .view(job)
+            .await
+            .newest(StageKind::Approval)
+            .expect("an approval run")
+            .id;
+        (job, run)
+    }
+
+    /// The hash of the last ledger entry of a job: the evidence digest an approver sees.
+    pub async fn head(&self, job: JobId) -> Sha256Digest {
+        self.ledger(job)
+            .await
+            .last()
+            .expect("an entry")
+            .entry_hash
+            .clone()
+    }
+
+    /// Approves a stage run as a new approver who is not the requester.
+    pub async fn approve(&self, job: JobId, run: StageRunId) {
+        let approver = self.person("approver-x", &[HumanRole::Approver]).await;
+        let seen = self.head(job).await;
+        self.engine
+            .decide(
+                &self.actor(approver),
+                Subject {
+                    job,
+                    stage_run: run,
+                },
+                Decision::Approve {
+                    evidence_seen: seen,
+                    warnings_decided: true,
+                },
+            )
+            .await
+            .expect("the approval applies");
     }
 
     /// A system transaction, as the engine opens to find work.

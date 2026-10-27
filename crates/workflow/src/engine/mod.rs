@@ -52,6 +52,8 @@ use factory_ports::sandbox::SandboxProvider;
 use factory_ports::store::{Store, SystemScope, Tx};
 use factory_ports::workspace::WorkspaceProvider;
 
+pub(crate) use ledger::read_all_ledger;
+
 pub use admission::Admission;
 pub use attempt::AttemptOutcome;
 pub use changes::ChangeApplied;
@@ -98,6 +100,52 @@ impl std::fmt::Debug for EngineDeps {
     }
 }
 
+/// Every component the engine works through, with the fidelity it reports: the adapters, the
+/// authority, and each stage handler.
+#[must_use]
+pub fn components_of(deps: &EngineDeps, handlers: &HandlerRegistry) -> Vec<(String, Fidelity)> {
+    let mut components = vec![
+        ("store".to_owned(), deps.store.fidelity()),
+        ("clock".to_owned(), deps.clock.fidelity()),
+        ("id generator".to_owned(), deps.ids.fidelity()),
+        ("artifact store".to_owned(), deps.artifacts.fidelity()),
+        ("sandbox provider".to_owned(), deps.sandbox.fidelity()),
+        ("workspace provider".to_owned(), deps.workspaces.fidelity()),
+        ("agent runtime".to_owned(), deps.runtime.fidelity()),
+        ("model router".to_owned(), deps.router.fidelity()),
+        ("agent registry".to_owned(), deps.registry.fidelity()),
+        ("model broker".to_owned(), deps.broker.fidelity()),
+        ("authority".to_owned(), deps.authority.fidelity()),
+    ];
+    for handler in handlers.all() {
+        components.push((
+            format!("stage handler {}", handler.kind()),
+            handler.fidelity(),
+        ));
+    }
+    components
+}
+
+/// Refuses a fake in a production run (invariant INV-08). Returns the lowest fidelity among the
+/// components, which is the fidelity of every record the engine makes.
+///
+/// # Errors
+/// [`EngineError::FakeRefused`], naming the first fake component, in production mode. In test mode
+/// every fidelity is allowed.
+pub fn refuse_fakes(
+    mode: factory_domain::vocabulary::ExecutionMode,
+    components: &[(String, Fidelity)],
+) -> Result<Fidelity, EngineError> {
+    let mut lowest = Fidelity::Real;
+    for (component, fidelity) in components {
+        require_permitted(mode, component, *fidelity)?;
+        if *fidelity == Fidelity::Fake {
+            lowest = Fidelity::Fake;
+        }
+    }
+    Ok(lowest)
+}
+
 /// The workflow engine.
 ///
 /// An engine holds no state of its own about any job. Two engines on the same store, in the same
@@ -133,32 +181,8 @@ impl Engine {
         handlers: HandlerRegistry,
     ) -> Result<Self, EngineError> {
         config.validate()?;
-        let mode = config.mode;
-        let mut lowest = Fidelity::Real;
-        let mut check = |component: &str, fidelity: Fidelity| -> Result<(), EngineError> {
-            require_permitted(mode, component, fidelity)?;
-            if fidelity == Fidelity::Fake {
-                lowest = Fidelity::Fake;
-            }
-            Ok(())
-        };
-        check("store", deps.store.fidelity())?;
-        check("clock", deps.clock.fidelity())?;
-        check("id generator", deps.ids.fidelity())?;
-        check("artifact store", deps.artifacts.fidelity())?;
-        check("sandbox provider", deps.sandbox.fidelity())?;
-        check("workspace provider", deps.workspaces.fidelity())?;
-        check("agent runtime", deps.runtime.fidelity())?;
-        check("model router", deps.router.fidelity())?;
-        check("agent registry", deps.registry.fidelity())?;
-        check("model broker", deps.broker.fidelity())?;
-        check("authority", deps.authority.fidelity())?;
-        for handler in handlers.all() {
-            check(
-                &format!("stage handler {}", handler.kind()),
-                handler.fidelity(),
-            )?;
-        }
+        let components = components_of(&deps, &handlers);
+        let lowest = refuse_fakes(config.mode, &components)?;
         Ok(Self {
             deps,
             config,

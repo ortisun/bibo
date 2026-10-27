@@ -14,7 +14,7 @@
 //! twice: the attempt that did not start has no worker, and a worker that did start holds an
 //! epoch that the store checks on every write (INV-05).
 
-use factory_domain::ids::{AttemptId, JobId, StageRunId, TenantId};
+use factory_domain::ids::{AttemptId, CorrelationId, JobId, StageRunId, TenantId};
 use factory_domain::machines::guards::{GuardFacts, LeaseGrantFacts, evaluate};
 use factory_domain::state::{Guard, StageRunEvent, StageRunStatus};
 use factory_domain::values::Timestamp;
@@ -23,6 +23,7 @@ use factory_ports::clock::timestamp_after;
 use factory_ports::store::{ClaimedWork, LeaseEpoch, NewAttempt, StoreError, WorkerId};
 use std::time::Duration;
 
+use crate::audit::{AuditAction, AuditDecision, AuditKind};
 use crate::engine::payload::attempt_started;
 use crate::engine::progress::{Board, upstream_runs};
 use crate::engine::record::Cx;
@@ -37,6 +38,8 @@ pub struct ClaimedAttempt {
     pub tenant: TenantId,
     /// The job.
     pub job: JobId,
+    /// Shared by every event, log line and span of the job.
+    pub correlation: CorrelationId,
     /// The stage run.
     pub stage_run: StageRunId,
     /// Which stage it is a run of.
@@ -212,10 +215,17 @@ impl Engine {
         );
         cx.move_stage_run(&mut *tx, &run, StageRunEvent::Start, None, payload)
             .await?;
+        // The tools that policy granted to this run are the ones in its contract.
+        cx.audit_engine(
+            &mut *tx,
+            AuditAction::new(AuditKind::ToolGrantIssued, AuditDecision::Granted),
+        )
+        .await?;
         tx.commit().await?;
         Ok(Ok(ClaimedAttempt {
             tenant,
             job: job_id,
+            correlation: job.value.correlation_id,
             stage_run: run_id,
             kind: run.value.kind,
             attempt: attempt_id,

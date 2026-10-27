@@ -664,7 +664,7 @@ async fn a_lease_lost_attempt_is_retried_like_any_other_failure() {
 // ---- a worker that lost its lease ---------------------------------------------------------
 
 #[tokio::test]
-async fn a_stale_worker_that_comes_back_changes_nothing() {
+async fn negative_nt_lse_01_a_stale_worker_that_comes_back_changes_nothing() {
     // NT-LSE-01: worker A loses its lease and worker B takes over. A finishes and reports. The
     // report is refused and every state change comes from B's epoch.
     let world = World::new().await;
@@ -2281,5 +2281,203 @@ async fn a_job_that_spent_its_budget_starts_no_new_stage() {
     assert_eq!(
         status_of(&world.view(job).await, StageKind::RepositoryIntelligence),
         StageRunStatus::Ready
+    );
+}
+
+// ---- start-up, traces and restarts ---------------------------------------------------------
+
+use factory_domain::values::Traceparent;
+use factory_domain::vocabulary::{ExecutionMode, Fidelity};
+use factory_ports::FakeRefused;
+use factory_workflow::engine::{Engine, components_of, refuse_fakes};
+
+#[tokio::test]
+async fn production_mode_refuses_fakes() {
+    // INV-08. Every adapter and every stage handler here is a fake, so a production engine does
+    // not start, and the error names the first.
+    let world = World::new().await;
+    let mut config = world.config.clone();
+    config.mode = ExecutionMode::Production;
+    let refused = Engine::new(world.deps.clone(), config, world.handlers.clone());
+    assert_eq!(
+        refused.err(),
+        Some(EngineError::FakeRefused(FakeRefused {
+            component: "store".to_owned()
+        }))
+    );
+    // Test mode takes the same parts, and the engine knows its records are fake.
+    assert!(
+        Engine::new(
+            world.deps.clone(),
+            world.config.clone(),
+            world.handlers.clone()
+        )
+        .is_ok()
+    );
+
+    // Each of the eleven adapters and the thirteen handlers is on the list that is checked, and
+    // any one of them alone is enough to refuse the run.
+    let components = components_of(&world.deps, &world.handlers);
+    assert_eq!(components.len(), 11 + 13);
+    for expected in [
+        "store",
+        "clock",
+        "id generator",
+        "artifact store",
+        "sandbox provider",
+        "workspace provider",
+        "agent runtime",
+        "model router",
+        "agent registry",
+        "model broker",
+        "authority",
+        "stage handler INTAKE",
+        "stage handler APPROVAL",
+    ] {
+        assert!(
+            components.iter().any(|(name, _)| name == expected),
+            "{expected} is not checked"
+        );
+    }
+    for index in 0..components.len() {
+        let mut list: Vec<(String, Fidelity)> = components
+            .iter()
+            .map(|(name, _)| (name.clone(), Fidelity::Real))
+            .collect();
+        assert_eq!(
+            refuse_fakes(ExecutionMode::Production, &list),
+            Ok(Fidelity::Real)
+        );
+        list[index].1 = Fidelity::Fake;
+        assert_eq!(
+            refuse_fakes(ExecutionMode::Production, &list),
+            Err(EngineError::FakeRefused(FakeRefused {
+                component: list[index].0.clone()
+            }))
+        );
+        assert_eq!(refuse_fakes(ExecutionMode::Test, &list), Ok(Fidelity::Fake));
+    }
+}
+
+#[tokio::test]
+async fn events_carry_the_job_traceparent() {
+    // ADR 0013: one trace for one job, found from the job id alone, whichever engine worked.
+    let world = World::new().await;
+    let job = world.admitted_job().await;
+    let other = world.restarted_engine();
+    world.run_next("worker-1").await;
+    world.advance(400);
+    let claimed = other
+        .claim_next(&World::worker("worker-2"))
+        .await
+        .expect("claim")
+        .started
+        .remove(0);
+    other.run_attempt(&claimed).await.expect("runs");
+
+    let expected = Traceparent::for_job(job);
+    let events = world.events(job).await;
+    assert!(events.len() > 10);
+    for event in &events {
+        assert_eq!(
+            event.traceparent.as_ref(),
+            Some(&expected),
+            "{}",
+            event.event_type
+        );
+    }
+    // The trace id is the job's id, so two engines on one job cannot disagree about it.
+    let trace_id = expected.as_str().split('-').nth(1).expect("a trace id");
+    assert_eq!(trace_id, job.as_uuid().simple().to_string());
+}
+
+#[tokio::test(start_paused = true)]
+async fn restart_resumes_without_duplication() {
+    // Engine A works on the job and is dropped while a stage is running. Engine B finds the job
+    // as the store holds it, takes the work after the lease lapses, and finishes the job.
+    let world = World::new().await;
+    world
+        .script(StageKind::Approval)
+        .evals_otherwise(Eval::HumanGate);
+    let job = world.admitted_job().await;
+    world.run_stages(2).await;
+
+    let release = std::sync::Arc::new(tokio::sync::Notify::new());
+    world
+        .script(StageKind::Specification)
+        .queue([Step::Hang(release)]);
+    world.advance(400);
+    let claimed = world.claim_one("worker-a").await;
+    {
+        // Engine A starts the attempt and is dropped before it finishes: the future is dropped
+        // at its first wait, with the handler still running.
+        let work = world.engine.run_attempt(&claimed);
+        let _ = tokio::time::timeout(std::time::Duration::from_millis(10), work).await;
+    }
+    let view = world.view(job).await;
+    assert_eq!(
+        status_of(&view, StageKind::Specification),
+        StageRunStatus::Running,
+        "the stage run is as engine A left it"
+    );
+
+    // Engine B starts from the store alone.
+    let engine_b = world.restarted_engine();
+    world.advance(61);
+    let swept = engine_b.sweep().await.expect("sweep");
+    assert_eq!(swept.lease_lost, vec![claimed.attempt]);
+    for _ in 0..16 {
+        world.advance(400);
+        let claimed = engine_b
+            .claim_next(&World::worker("worker-b"))
+            .await
+            .expect("claim");
+        if claimed.started.is_empty() {
+            break;
+        }
+        for ticket in &claimed.started {
+            engine_b.run_attempt(ticket).await.expect("runs");
+        }
+    }
+
+    let view = world.view(job).await;
+    for kind in &world.config.scope {
+        let expected = if *kind == StageKind::Approval {
+            StageRunStatus::WaitingForHuman
+        } else {
+            StageRunStatus::Passed
+        };
+        assert_eq!(status_of(&view, *kind), expected, "{kind}");
+    }
+    // Nothing was done twice: each stage run passed once, and each aggregate's events rise.
+    let events = world.events(job).await;
+    let mut passed = std::collections::HashMap::new();
+    let mut last: std::collections::HashMap<_, i64> = std::collections::HashMap::new();
+    for event in &events {
+        if event.event_type.as_str() == "stage_run.passed" {
+            *passed.entry(event.aggregate.id).or_insert(0) += 1;
+        }
+        let key = (event.aggregate.kind, event.aggregate.id);
+        let version = event.aggregate.version.get();
+        if let Some(previous) = last.insert(key, version) {
+            assert!(
+                version > previous,
+                "{} repeated a version",
+                event.event_type
+            );
+        }
+    }
+    assert!(passed.values().all(|count| *count == 1));
+    assert_eq!(
+        factory_domain::ledger::verify_chain(&world.ledger(job).await),
+        Ok(())
+    );
+    assert_eq!(
+        view.newest(StageKind::Specification)
+            .expect("run")
+            .attempts
+            .len(),
+        2,
+        "the lost attempt and its replacement"
     );
 }

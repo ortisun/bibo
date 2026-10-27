@@ -33,7 +33,7 @@ use factory_domain::machines::rework::{
 use factory_domain::machines::snapshot::StageRunSnapshot;
 use factory_domain::state::{Guard, StageRunEvent, StageRunStatus};
 use factory_domain::values::{HumanText, MediaType, Sha256Digest};
-use factory_domain::vocabulary::{ConfidenceLevel, GateOutcome, StageKind, Verdict};
+use factory_domain::vocabulary::{ConfidenceLevel, GateOutcome, Verdict};
 use factory_ports::store::{StageRun, Tx, Versioned};
 use serde_json::{Value, json};
 
@@ -121,9 +121,17 @@ impl Engine {
         if judged.problem.is_none() {
             self.record_gate_evidence(tx, cx, &gating, judged).await?;
         }
+        // What the metrics will say. A pass whose guard does not hold is a block, and says so.
+        let mut metric_outcome = match &resolution {
+            Resolution::Pass => "passed",
+            Resolution::Blocked(_) => "blocked",
+            Resolution::Failed { .. } | Resolution::ChangesRequired { .. } => "failed",
+            Resolution::ReviewerNeedsHuman | Resolution::HumanGate => "",
+        };
         let audit = |decision| AuditAction::new(AuditKind::GateResult, decision);
         let span = tracing::info_span!(
             "factory.gate",
+            factory.correlation_id = %cx.correlation,
             factory.job_id = %cx.job,
             factory.stage_run_id = %gating.value.id,
             factory.gate_id = gate_label(contract),
@@ -159,6 +167,7 @@ impl Engine {
                         .await?;
                     cx.audit_engine(tx, audit(AuditDecision::Granted)).await?;
                 } else {
+                    metric_outcome = "blocked";
                     self.block(tx, cx, &gating, &BlockCause::MissingEvidence)
                         .await?;
                     cx.audit_engine(tx, audit(AuditDecision::Denied)).await?;
@@ -218,6 +227,20 @@ impl Engine {
                     .await?;
                 cx.audit_engine(tx, audit(AuditDecision::Noted)).await?;
             }
+        }
+        let gate = gate_label(contract);
+        match metric_outcome {
+            "passed" => tracing::info!(
+                monotonic_counter.factory_stage_runs_total = 1_u64,
+                stage = gating.value.kind.as_str(),
+                outcome = "passed"
+            ),
+            "blocked" | "failed" => tracing::info!(
+                monotonic_counter.factory_gate_failures_total = 1_u64,
+                gate = gate,
+                outcome = metric_outcome
+            ),
+            _ => {}
         }
         self.settle(tx, cx).await
     }
@@ -404,11 +427,6 @@ impl Engine {
             payload,
         )
         .await?;
-        tracing::info!(
-            monotonic_counter.factory_gate_failures_total = 1_u64,
-            gate = gate_label_of(gating.value.kind),
-            outcome = "blocked"
-        );
         Ok(())
     }
 
@@ -481,11 +499,6 @@ impl Engine {
                     StageRunEvent::GateRequiresRework,
                 )
                 .await?;
-                tracing::info!(
-                    monotonic_counter.factory_gate_failures_total = 1_u64,
-                    gate = gate_label_of(gating.value.kind),
-                    outcome = "failed"
-                );
             }
             GateReworkDecision::NeedsHuman(cause) => {
                 let (facts, code) = needs_human_facts(cause);
@@ -613,10 +626,6 @@ fn gate_label(contract: &StageContract) -> &str {
         .as_ref()
         .and_then(|ids| ids.iter().next())
         .map_or("none", factory_domain::values::Slug::as_str)
-}
-
-fn gate_label_of(kind: StageKind) -> &'static str {
-    kind.as_str()
 }
 
 fn outcome_label(resolution: &Resolution) -> &'static str {

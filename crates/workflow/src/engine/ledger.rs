@@ -106,6 +106,27 @@ fn uuid_text(uuid: uuid::Uuid) -> String {
     uuid.hyphenated().to_string()
 }
 
+/// Reads the whole ledger of a job, oldest entry first.
+///
+/// # Errors
+/// The store errors of the read.
+pub(crate) async fn read_all_ledger(
+    tx: &mut dyn Tx,
+    job: factory_domain::ids::JobId,
+) -> Result<Vec<EvidenceLedgerEntry>, EngineError> {
+    let mut entries = Vec::new();
+    let mut from = 1_u64;
+    loop {
+        let page = tx.read_ledger(job, from, PAGE).await?;
+        let count = page.len();
+        entries.extend(page);
+        if count < PAGE as usize {
+            return Ok(entries);
+        }
+        from = from.saturating_add(u64::from(PAGE));
+    }
+}
+
 /// Reads the whole ledger of a job and checks its hash chain.
 ///
 /// # Errors
@@ -115,16 +136,6 @@ pub(crate) async fn ledger_verifies(
     tx: &mut dyn Tx,
     job: factory_domain::ids::JobId,
 ) -> Result<bool, EngineError> {
-    let mut entries = Vec::new();
-    let mut from = 1_u64;
-    loop {
-        let page = tx.read_ledger(job, from, PAGE).await?;
-        let count = page.len();
-        entries.extend(page);
-        if count < PAGE as usize {
-            break;
-        }
-        from = from.saturating_add(u64::from(PAGE));
-    }
+    let entries = read_all_ledger(tx, job).await?;
     Ok(verify_chain(&entries).is_ok())
 }
