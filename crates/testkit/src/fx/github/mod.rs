@@ -59,7 +59,7 @@ use super::timeutil::format_rfc3339;
 
 pub use webhook::{
     Attack, Delivery, Expect, Reason, ReceiveOutcome, ReferenceReceiver, ReferenceVerifier,
-    Rejection, Verdict, sign_sha1, sign_sha256,
+    Rejection, Verdict, sign_sha1, sign_sha256, verdict_matches,
 };
 
 /// The documentation link GitHub puts in an error body.
