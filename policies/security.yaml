@@ -143,7 +143,8 @@ protected_paths:
         - ".config/nextest.toml"
         - "Makefile"
         - "justfile"
-        - "scripts/ci/**"
+        - "scripts/ci.sh"                # the one entry point every check runs through
+        - "scripts/ci/**"                # step files that scripts/ci.sh loads
         - "scripts/gates/**"
         - "tox.ini"
         - "noxfile.py"
@@ -166,7 +167,7 @@ protected_paths:
         - ".eslintrc*"
         - "eslint.config.*"
         - "tsconfig*.json"
-      reason: "Lint, type, coverage and scanner settings decide what a PASS means."
+      reason: "Lint, type, coverage and scanner settings, and the CI entry point (scripts/ci.sh and scripts/ci/), decide what a PASS means."
       threats: [T-12, T-13]
 
     - id: factory_config
@@ -1265,6 +1266,13 @@ output_hygiene:
 supply_chain:
   registries_allowed_ref: egress.profiles.fetch_deps
   lockfiles: { required: true, frozen_in_gates: true }      # --locked / --frozen-lockfile equivalents
+  # License rule for dependencies. The allow list itself is in deny.toml (a protected path), so there
+  # is one place to read it and one place to change it. A license that is not on that list is denied.
+  # GPL, LGPL, AGPL and unknown licenses are always denied. An "OR" expression passes only through
+  # an alternative that is on the list: r-efi ("MIT OR Apache-2.0 OR LGPL-2.1-or-later") is used under
+  # MIT or Apache-2.0, never under the LGPL option. Adding a license is a change to deny.toml, so it
+  # needs spec authorization, independent policy review and a human, like any protected-path change.
+  licenses: { default: deny_unlisted, always_denied: [GPL, LGPL, AGPL, unknown], allow_list_in: deny.toml }
   install_scripts: disabled_in_fetch
   # A new direct dependency ALWAYS needs a human (ADR 0009 item 4). There is no
   # automatic approval condition: no organization allowlist, no popularity or age
