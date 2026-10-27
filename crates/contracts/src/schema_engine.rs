@@ -1496,6 +1496,24 @@ mod tests {
     }
 
     #[test]
+    fn a_property_that_tells_shapes_apart_through_a_reference_is_found() {
+        let s = schema(json!({
+            "$defs": {"is_a": {"const": "a"}, "is_b": {"const": "b"}},
+            "oneOf": [
+                {"properties": {"kind": {"$ref": "#/$defs/is_a"}, "p": {"type": "string"}}},
+                {"properties": {"kind": {"$ref": "#/$defs/is_b"}, "q": {"type": "string"}}}
+            ]
+        }));
+        assert_eq!(
+            keywords(&s, &json!({"kind": "b", "q": 1})),
+            [
+                ("$".to_owned(), Keyword::OneOf),
+                ("q".to_owned(), Keyword::Type)
+            ]
+        );
+    }
+
+    #[test]
     fn when_no_shape_can_be_told_apart_the_first_one_explains_what_is_missing() {
         // Neither shape sees its `type`, so both are still candidates and both miss two properties.
         // The tie goes to the first, whose list starts with the property that tells shapes apart.
