@@ -227,32 +227,34 @@ pub struct Finding {
     pub defect_class: DefectClass,
 }
 
-/// The structured result of one independent review.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields, remote = "Self")]
-pub struct ReviewVerdict {
-    /// Always 1.
-    pub schema_version: SchemaVersion,
-    /// Ids and the reviewer.
-    pub metadata: ReviewMetadata,
-    /// A plain-English title.
-    pub title: HumanTitle,
-    /// The verdict.
-    pub verdict: Verdict,
-    /// A short summary.
-    pub summary: HumanText,
-    /// What the reviewer was given.
-    pub inputs_reviewed: InputsReviewed,
-    /// What the reviewer found.
-    pub findings: Vec<Finding>,
-    /// How sure the reviewer is overall, from 0 to 1.
-    pub confidence_overall: UnitInterval,
-    /// One focused question. Required when the verdict is `NEEDS_HUMAN`.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub human_question: Option<HumanText>,
-    /// Risks that remain.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub residual_risks: Option<Vec<HumanText>>,
+contract! {
+    "review-verdict";
+    /// The structured result of one independent review.
+    #[derive(Debug, Clone, PartialEq, Serialize)]
+    pub struct ReviewVerdict {
+        /// Always 1.
+        pub schema_version: SchemaVersion,
+        /// Ids and the reviewer.
+        pub metadata: ReviewMetadata,
+        /// A plain-English title.
+        pub title: HumanTitle,
+        /// The verdict.
+        pub verdict: Verdict,
+        /// A short summary.
+        pub summary: HumanText,
+        /// What the reviewer was given.
+        pub inputs_reviewed: InputsReviewed,
+        /// What the reviewer found.
+        pub findings: Vec<Finding>,
+        /// How sure the reviewer is overall, from 0 to 1.
+        pub confidence_overall: UnitInterval,
+        /// One focused question. Required when the verdict is `NEEDS_HUMAN`.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        pub human_question: Option<HumanText>,
+        /// Risks that remain.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        pub residual_risks: Option<Vec<HumanText>>,
+    }
 }
 
 impl ReviewVerdict {
@@ -294,5 +296,3 @@ impl ReviewVerdict {
         }
     }
 }
-
-contract!(ReviewVerdict, "review-verdict");

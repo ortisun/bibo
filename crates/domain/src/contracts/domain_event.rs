@@ -50,46 +50,48 @@ pub struct PayloadSchema {
     pub version: PositiveInt,
 }
 
-/// The envelope of one domain event.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields, remote = "Self")]
-pub struct DomainEvent {
-    /// Always 1.
-    pub schema_version: SchemaVersion,
-    /// Unique per event. The stream message id and the consumer idempotency key.
-    pub event_id: EventId,
-    /// `aggregate.past_tense_verb`, from the emits column of `state-machine.json`.
-    pub event_type: EventType,
-    /// The version of the payload shape for this event type.
-    pub event_version: PositiveInt,
-    /// The tenant.
-    pub tenant_id: TenantId,
-    /// The job.
-    pub job_id: JobId,
-    /// The aggregate that changed.
-    pub aggregate: Aggregate,
-    /// The transition that produced the event. The machine-readable reason.
-    pub transition_id: TransitionId,
-    /// A finer reason.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub reason_code: Option<Slug>,
-    /// Shared by every event and log line that belongs to one job.
-    pub correlation_id: CorrelationId,
-    /// The event or command that caused this one. `null` for the first event of a job.
-    #[serde(deserialize_with = "required_nullable")]
-    pub causation_id: Option<CausationId>,
-    /// When the change happened.
-    pub occurred_at: Timestamp,
-    /// The component that produced it.
-    pub producer: Slug,
-    /// Lets a consumer continue the trace.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub traceparent: Option<Traceparent>,
-    /// Event-specific data. Its shape is named by `payload_schema`.
-    pub payload: Map<String, Value>,
-    /// The schema the payload follows.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub payload_schema: Option<PayloadSchema>,
+contract! {
+    "domain-event";
+    /// The envelope of one domain event.
+    #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+    pub struct DomainEvent {
+        /// Always 1.
+        pub schema_version: SchemaVersion,
+        /// Unique per event. The stream message id and the consumer idempotency key.
+        pub event_id: EventId,
+        /// `aggregate.past_tense_verb`, from the emits column of `state-machine.json`.
+        pub event_type: EventType,
+        /// The version of the payload shape for this event type.
+        pub event_version: PositiveInt,
+        /// The tenant.
+        pub tenant_id: TenantId,
+        /// The job.
+        pub job_id: JobId,
+        /// The aggregate that changed.
+        pub aggregate: Aggregate,
+        /// The transition that produced the event. The machine-readable reason.
+        pub transition_id: TransitionId,
+        /// A finer reason.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        pub reason_code: Option<Slug>,
+        /// Shared by every event and log line that belongs to one job.
+        pub correlation_id: CorrelationId,
+        /// The event or command that caused this one. `null` for the first event of a job.
+        #[serde(deserialize_with = "required_nullable")]
+        pub causation_id: Option<CausationId>,
+        /// When the change happened.
+        pub occurred_at: Timestamp,
+        /// The component that produced it.
+        pub producer: Slug,
+        /// Lets a consumer continue the trace.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        pub traceparent: Option<Traceparent>,
+        /// Event-specific data. Its shape is named by `payload_schema`.
+        pub payload: Map<String, Value>,
+        /// The schema the payload follows.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        pub payload_schema: Option<PayloadSchema>,
+    }
 }
 
 impl DomainEvent {
@@ -98,5 +100,3 @@ impl DomainEvent {
         // types already enforce it. `EventType` refuses the heartbeat.
     }
 }
-
-contract!(DomainEvent, "domain-event");

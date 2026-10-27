@@ -160,46 +160,48 @@ pub struct PromptTemplate {
     pub template_sha256: Sha256Digest,
 }
 
-/// The declaration of one specialist agent.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields, remote = "Self")]
-pub struct AgentManifest {
-    /// Always 1.
-    pub schema_version: SchemaVersion,
-    /// The agent.
-    pub id: Slug,
-    /// Its version.
-    pub version: SemanticVersion,
-    /// A plain-English title.
-    pub title: HumanTitle,
-    /// What the agent does.
-    pub description: HumanText,
-    /// A role such as architect or builder. Roles are open-ended so new domains can add their own.
-    pub role: Slug,
-    /// The domains it works in.
-    pub domains: UniqueVec<Slug, 1>,
-    /// Its skills.
-    pub skills: UniqueVec<VersionedRef>,
-    /// The tools it may be granted.
-    pub allowed_tools: NonEmptyVec<AllowedTool>,
-    /// The evidence it must leave behind.
-    pub required_evidence: Vec<Slug>,
-    /// The schema of its input.
-    pub inputs_schema: SchemaRef,
-    /// The schema of its output.
-    pub outputs_schema: SchemaRef,
-    /// Its limits.
-    pub resource_limits: ResourceLimits,
-    /// What it may do.
-    pub permissions: AgentPermissions,
-    /// Where it may run.
-    pub permitted_placements: UniqueVec<AgentPlacement, 1>,
-    /// Models it works well with.
-    pub recommended_models: NonEmptyVec<RecommendedModel>,
-    /// The suite that evaluates it.
-    pub evaluation_suite: EvaluationSuite,
-    /// Its prompt.
-    pub prompt: PromptTemplate,
+contract! {
+    "agent-manifest";
+    /// The declaration of one specialist agent.
+    #[derive(Debug, Clone, PartialEq, Serialize)]
+    pub struct AgentManifest {
+        /// Always 1.
+        pub schema_version: SchemaVersion,
+        /// The agent.
+        pub id: Slug,
+        /// Its version.
+        pub version: SemanticVersion,
+        /// A plain-English title.
+        pub title: HumanTitle,
+        /// What the agent does.
+        pub description: HumanText,
+        /// A role such as architect or builder. Roles are open-ended so new domains can add their own.
+        pub role: Slug,
+        /// The domains it works in.
+        pub domains: UniqueVec<Slug, 1>,
+        /// Its skills.
+        pub skills: UniqueVec<VersionedRef>,
+        /// The tools it may be granted.
+        pub allowed_tools: NonEmptyVec<AllowedTool>,
+        /// The evidence it must leave behind.
+        pub required_evidence: Vec<Slug>,
+        /// The schema of its input.
+        pub inputs_schema: SchemaRef,
+        /// The schema of its output.
+        pub outputs_schema: SchemaRef,
+        /// Its limits.
+        pub resource_limits: ResourceLimits,
+        /// What it may do.
+        pub permissions: AgentPermissions,
+        /// Where it may run.
+        pub permitted_placements: UniqueVec<AgentPlacement, 1>,
+        /// Models it works well with.
+        pub recommended_models: NonEmptyVec<RecommendedModel>,
+        /// The suite that evaluates it.
+        pub evaluation_suite: EvaluationSuite,
+        /// Its prompt.
+        pub prompt: PromptTemplate,
+    }
 }
 
 impl AgentManifest {
@@ -246,5 +248,3 @@ impl AgentManifest {
         }
     }
 }
-
-contract!(AgentManifest, "agent-manifest");

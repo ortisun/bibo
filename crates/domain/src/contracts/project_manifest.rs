@@ -132,24 +132,26 @@ pub struct DocumentationRules {
     pub changelog_path: NonEmptyString,
 }
 
-/// The project-local configuration a repository keeps in `.factory/project.yaml`.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(deny_unknown_fields, remote = "Self")]
-pub struct ProjectManifest {
-    /// Always 1.
-    pub schema_version: SchemaVersion,
-    /// What the project is.
-    pub project: Project,
-    /// The sandbox.
-    pub sandbox: SandboxSpec,
-    /// The gate commands. At least one is mandatory.
-    pub gates: NonEmptyVec<GateCommandSpec>,
-    /// Paths a builder may not change. Must include `.factory/**`.
-    pub protected_paths: UniqueVec<NonEmptyString, 1>,
-    /// The pinned Spec Kit.
-    pub spec_kit: SpecToolPin,
-    /// Documentation rules.
-    pub documentation: DocumentationRules,
+contract! {
+    "project-manifest";
+    /// The project-local configuration a repository keeps in `.factory/project.yaml`.
+    #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize)]
+    pub struct ProjectManifest {
+        /// Always 1.
+        pub schema_version: SchemaVersion,
+        /// What the project is.
+        pub project: Project,
+        /// The sandbox.
+        pub sandbox: SandboxSpec,
+        /// The gate commands. At least one is mandatory.
+        pub gates: NonEmptyVec<GateCommandSpec>,
+        /// Paths a builder may not change. Must include `.factory/**`.
+        pub protected_paths: UniqueVec<NonEmptyString, 1>,
+        /// The pinned Spec Kit.
+        pub spec_kit: SpecToolPin,
+        /// Documentation rules.
+        pub documentation: DocumentationRules,
+    }
 }
 
 impl ProjectManifest {
@@ -179,8 +181,6 @@ impl ProjectManifest {
         );
     }
 }
-
-contract!(ProjectManifest, "project-manifest");
 
 #[cfg(test)]
 mod tests {

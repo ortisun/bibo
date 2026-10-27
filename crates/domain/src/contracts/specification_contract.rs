@@ -412,34 +412,36 @@ pub struct SpecProvenance {
     pub revision: Option<Revision>,
 }
 
-/// The typed form of an approved feature specification.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields, remote = "Self")]
-pub struct SpecificationContract {
-    /// Always 1.
-    pub schema_version: SchemaVersion,
-    /// Ids, version, status and approval.
-    pub metadata: SpecMetadata,
-    /// The feature in a few words.
-    pub title: HumanTitle,
-    /// A short summary.
-    pub summary: HumanText,
-    /// What the system must do.
-    pub requirements: NonEmptyVec<Requirement>,
-    /// How to tell it does.
-    pub acceptance_scenarios: NonEmptyVec<AcceptanceScenario>,
-    /// Quality targets.
-    pub nonfunctional_requirements: Vec<NonFunctionalRequirement>,
-    /// What could go wrong.
-    pub risks: Vec<SpecRisk>,
-    /// Questions still open or answered.
-    pub open_questions: Vec<OpenQuestion>,
-    /// Limits on the solution.
-    pub constraints: Vec<Constraint>,
-    /// What this feature does not cover.
-    pub out_of_scope: Vec<HumanText>,
-    /// Where it came from.
-    pub provenance: SpecProvenance,
+contract! {
+    "specification-contract";
+    /// The typed form of an approved feature specification.
+    #[derive(Debug, Clone, PartialEq, Serialize)]
+    pub struct SpecificationContract {
+        /// Always 1.
+        pub schema_version: SchemaVersion,
+        /// Ids, version, status and approval.
+        pub metadata: SpecMetadata,
+        /// The feature in a few words.
+        pub title: HumanTitle,
+        /// A short summary.
+        pub summary: HumanText,
+        /// What the system must do.
+        pub requirements: NonEmptyVec<Requirement>,
+        /// How to tell it does.
+        pub acceptance_scenarios: NonEmptyVec<AcceptanceScenario>,
+        /// Quality targets.
+        pub nonfunctional_requirements: Vec<NonFunctionalRequirement>,
+        /// What could go wrong.
+        pub risks: Vec<SpecRisk>,
+        /// Questions still open or answered.
+        pub open_questions: Vec<OpenQuestion>,
+        /// Limits on the solution.
+        pub constraints: Vec<Constraint>,
+        /// What this feature does not cover.
+        pub out_of_scope: Vec<HumanText>,
+        /// Where it came from.
+        pub provenance: SpecProvenance,
+    }
 }
 
 impl SpecificationContract {
@@ -504,5 +506,3 @@ impl SpecificationContract {
         );
     }
 }
-
-contract!(SpecificationContract, "specification-contract");

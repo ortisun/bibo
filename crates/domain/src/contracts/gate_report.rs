@@ -268,41 +268,43 @@ pub struct BaselineComparison {
     pub notes: Option<HumanText>,
 }
 
-/// The machine-readable result of one deterministic gate run against one stage run.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(deny_unknown_fields, remote = "Self")]
-pub struct GateReport {
-    /// Always 1.
-    pub schema_version: SchemaVersion,
-    /// Ids and the trusted definition.
-    pub metadata: GateMetadata,
-    /// A plain-English title.
-    pub title: HumanTitle,
-    /// The outcome.
-    pub outcome: GateOutcome,
-    /// Why the outcome is what it is.
-    pub reason: HumanText,
-    /// When the gate started.
-    pub started_at: Timestamp,
-    /// When it finished.
-    pub finished_at: Timestamp,
-    /// Where and with what it ran.
-    pub environment: GateEnvironment,
-    /// What was run.
-    pub commands: Vec<GateCommand>,
-    /// Failures, for a `FAILED` outcome.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub failures: Option<Vec<Failure>>,
-    /// Why it could not run, for a `BLOCKED` outcome.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub blocked_reason: Option<BlockedReason>,
-    /// Why it does not apply, for a `NOT_APPLICABLE` outcome.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub not_applicable_reason: Option<NotApplicableReason>,
-    /// A hash over the canonical form of commands, logs and failures.
-    pub evidence_hash: Sha256Digest,
-    /// How the result compares with the baseline.
-    pub baseline_comparison: BaselineComparison,
+contract! {
+    "gate-report";
+    /// The machine-readable result of one deterministic gate run against one stage run.
+    #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize)]
+    pub struct GateReport {
+        /// Always 1.
+        pub schema_version: SchemaVersion,
+        /// Ids and the trusted definition.
+        pub metadata: GateMetadata,
+        /// A plain-English title.
+        pub title: HumanTitle,
+        /// The outcome.
+        pub outcome: GateOutcome,
+        /// Why the outcome is what it is.
+        pub reason: HumanText,
+        /// When the gate started.
+        pub started_at: Timestamp,
+        /// When it finished.
+        pub finished_at: Timestamp,
+        /// Where and with what it ran.
+        pub environment: GateEnvironment,
+        /// What was run.
+        pub commands: Vec<GateCommand>,
+        /// Failures, for a `FAILED` outcome.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        pub failures: Option<Vec<Failure>>,
+        /// Why it could not run, for a `BLOCKED` outcome.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        pub blocked_reason: Option<BlockedReason>,
+        /// Why it does not apply, for a `NOT_APPLICABLE` outcome.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        pub not_applicable_reason: Option<NotApplicableReason>,
+        /// A hash over the canonical form of commands, logs and failures.
+        pub evidence_hash: Sha256Digest,
+        /// How the result compares with the baseline.
+        pub baseline_comparison: BaselineComparison,
+    }
 }
 
 impl GateReport {
@@ -420,5 +422,3 @@ impl GateReport {
         );
     }
 }
-
-contract!(GateReport, "gate-report");

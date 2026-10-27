@@ -52,52 +52,54 @@ pub struct ProfileReview {
     pub reviewed_at: Timestamp,
 }
 
-/// A versioned description of what a kind of software needs.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(deny_unknown_fields, remote = "Self")]
-pub struct DomainCapabilityProfile {
-    /// Optional. A missing value means 1.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub schema_version: Option<SchemaVersion>,
-    /// The profile.
-    pub id: Slug,
-    /// Its version.
-    pub version: PositiveInt,
-    /// A plain-English title.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub title: Option<HumanTitle>,
-    /// What the profile is for.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub description: Option<HumanText>,
-    /// A missing value means draft.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub status: Option<ProfileStatus>,
-    /// Domain tags this profile applies to. A job may match several profiles.
-    pub matches: UniqueVec<Slug, 1>,
-    /// Skills the work needs.
-    pub required_skills: UniqueVec<Slug>,
-    /// Skills that help.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub optional_skills: Option<UniqueVec<Slug>>,
-    /// Tools the work needs.
-    pub required_tools: UniqueVec<Slug>,
-    /// Evidence the work must leave behind.
-    pub required_evidence: UniqueVec<Slug>,
-    /// Gates that must pass. If one cannot run, promotion is blocked.
-    pub mandatory_gates: UniqueVec<Slug, 1>,
-    /// Gates that run when they apply.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub conditional_gates: Option<UniqueVec<Slug>>,
-    /// Actions that always need a human, such as placing live orders. May be empty.
-    pub forbidden_autonomous_actions: UniqueVec<Slug>,
-    /// The approval policy, by name.
-    pub approval_policy: Slug,
-    /// How each tool is probed. Required for an active profile.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub tool_probes: Option<Vec<ToolProbe>>,
-    /// The review. Required for an active profile.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub review: Option<ProfileReview>,
+contract! {
+    "domain-capability-profile";
+    /// A versioned description of what a kind of software needs.
+    #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize)]
+    pub struct DomainCapabilityProfile {
+        /// Optional. A missing value means 1.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        pub schema_version: Option<SchemaVersion>,
+        /// The profile.
+        pub id: Slug,
+        /// Its version.
+        pub version: PositiveInt,
+        /// A plain-English title.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        pub title: Option<HumanTitle>,
+        /// What the profile is for.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        pub description: Option<HumanText>,
+        /// A missing value means draft.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        pub status: Option<ProfileStatus>,
+        /// Domain tags this profile applies to. A job may match several profiles.
+        pub matches: UniqueVec<Slug, 1>,
+        /// Skills the work needs.
+        pub required_skills: UniqueVec<Slug>,
+        /// Skills that help.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        pub optional_skills: Option<UniqueVec<Slug>>,
+        /// Tools the work needs.
+        pub required_tools: UniqueVec<Slug>,
+        /// Evidence the work must leave behind.
+        pub required_evidence: UniqueVec<Slug>,
+        /// Gates that must pass. If one cannot run, promotion is blocked.
+        pub mandatory_gates: UniqueVec<Slug, 1>,
+        /// Gates that run when they apply.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        pub conditional_gates: Option<UniqueVec<Slug>>,
+        /// Actions that always need a human, such as placing live orders. May be empty.
+        pub forbidden_autonomous_actions: UniqueVec<Slug>,
+        /// The approval policy, by name.
+        pub approval_policy: Slug,
+        /// How each tool is probed. Required for an active profile.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        pub tool_probes: Option<Vec<ToolProbe>>,
+        /// The review. Required for an active profile.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        pub review: Option<ProfileReview>,
+    }
 }
 
 impl DomainCapabilityProfile {
@@ -122,5 +124,3 @@ impl DomainCapabilityProfile {
         }
     }
 }
-
-contract!(DomainCapabilityProfile, "domain-capability-profile");

@@ -259,30 +259,32 @@ pub struct Task {
     pub evidence_required: UniqueVec<RequiredEvidence, 1>,
 }
 
-/// A directed acyclic graph of tasks derived from a frozen specification and an approved
-/// architecture.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields, remote = "Self")]
-pub struct TaskDag {
-    /// Always 1.
-    pub schema_version: SchemaVersion,
-    /// Ids and references.
-    pub metadata: PlanMetadata,
-    /// The plan in a few words.
-    pub title: HumanTitle,
-    /// A short summary.
-    pub summary: HumanText,
-    /// Task ids on the longest dependency chain, in order.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub critical_path: Option<UniqueVec<Slug>>,
-    /// Points at which the work is checked.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub checkpoints: Option<Vec<Checkpoint>>,
-    /// How to roll the plan back.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub rollback_note: Option<HumanText>,
-    /// The tasks, at most [`MAX_TASKS`].
-    pub tasks: NonEmptyVec<Task>,
+contract! {
+    "task-dag";
+    /// A directed acyclic graph of tasks derived from a frozen specification and an approved
+    /// architecture.
+    #[derive(Debug, Clone, PartialEq, Serialize)]
+    pub struct TaskDag {
+        /// Always 1.
+        pub schema_version: SchemaVersion,
+        /// Ids and references.
+        pub metadata: PlanMetadata,
+        /// The plan in a few words.
+        pub title: HumanTitle,
+        /// A short summary.
+        pub summary: HumanText,
+        /// Task ids on the longest dependency chain, in order.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        pub critical_path: Option<UniqueVec<Slug>>,
+        /// Points at which the work is checked.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        pub checkpoints: Option<Vec<Checkpoint>>,
+        /// How to roll the plan back.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        pub rollback_note: Option<HumanText>,
+        /// The tasks, at most [`MAX_TASKS`].
+        pub tasks: NonEmptyVec<Task>,
+    }
 }
 
 impl TaskDag {
@@ -309,5 +311,3 @@ impl TaskDag {
         }
     }
 }
-
-contract!(TaskDag, "task-dag");

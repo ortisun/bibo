@@ -526,52 +526,54 @@ pub struct Telemetry {
     pub metrics: UniqueVec<Slug>,
 }
 
-/// The resolved, versioned contract for one stage run.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields, remote = "Self")]
-pub struct StageContract {
-    /// Always 1.
-    pub schema_version: SchemaVersion,
-    /// Ids and timing.
-    pub metadata: StageMetadata,
-    /// A short plain-English title. Machine ids live in the metadata.
-    pub title: HumanTitle,
-    /// Why the stage exists.
-    pub purpose: HumanText,
-    /// The problem it solves.
-    pub problem_statement: HumanText,
-    /// The typed inputs.
-    pub inputs: NonEmptyVec<StageInput>,
-    /// Conditions before the stage starts.
-    pub preconditions: Vec<Precondition>,
-    /// The risk tier.
-    pub risk: Risk,
-    /// The methods chosen and the alternatives rejected.
-    pub methods: NonEmptyVec<Method>,
-    /// Least-privilege capabilities.
-    pub capabilities: Capabilities,
-    /// What the stage must produce.
-    pub deliverables: NonEmptyVec<Deliverable>,
-    /// How success is judged. At least one criterion is machine-verifiable.
-    pub acceptance_criteria: NonEmptyVec<AcceptanceCriterion>,
-    /// Who judges.
-    pub evaluator: Evaluator,
-    /// Ledger entries consumed as evidence.
-    pub evidence_refs: Vec<EvidenceRef>,
-    /// How sure the author is.
-    pub confidence: StageConfidence,
-    /// Stated assumptions.
-    pub assumptions: Vec<Assumption>,
-    /// What the stage may spend.
-    pub budget: Budget,
-    /// Time and retry limits.
-    pub timeout_and_retries: TimeoutAndRetries,
-    /// Safe repetition.
-    pub idempotency: Idempotency,
-    /// What happens when the stage cannot continue.
-    pub escalation: Escalation,
-    /// Span and metric names.
-    pub telemetry: Telemetry,
+contract! {
+    "stage-contract";
+    /// The resolved, versioned contract for one stage run.
+    #[derive(Debug, Clone, PartialEq, Serialize)]
+    pub struct StageContract {
+        /// Always 1.
+        pub schema_version: SchemaVersion,
+        /// Ids and timing.
+        pub metadata: StageMetadata,
+        /// A short plain-English title. Machine ids live in the metadata.
+        pub title: HumanTitle,
+        /// Why the stage exists.
+        pub purpose: HumanText,
+        /// The problem it solves.
+        pub problem_statement: HumanText,
+        /// The typed inputs.
+        pub inputs: NonEmptyVec<StageInput>,
+        /// Conditions before the stage starts.
+        pub preconditions: Vec<Precondition>,
+        /// The risk tier.
+        pub risk: Risk,
+        /// The methods chosen and the alternatives rejected.
+        pub methods: NonEmptyVec<Method>,
+        /// Least-privilege capabilities.
+        pub capabilities: Capabilities,
+        /// What the stage must produce.
+        pub deliverables: NonEmptyVec<Deliverable>,
+        /// How success is judged. At least one criterion is machine-verifiable.
+        pub acceptance_criteria: NonEmptyVec<AcceptanceCriterion>,
+        /// Who judges.
+        pub evaluator: Evaluator,
+        /// Ledger entries consumed as evidence.
+        pub evidence_refs: Vec<EvidenceRef>,
+        /// How sure the author is.
+        pub confidence: StageConfidence,
+        /// Stated assumptions.
+        pub assumptions: Vec<Assumption>,
+        /// What the stage may spend.
+        pub budget: Budget,
+        /// Time and retry limits.
+        pub timeout_and_retries: TimeoutAndRetries,
+        /// Safe repetition.
+        pub idempotency: Idempotency,
+        /// What happens when the stage cannot continue.
+        pub escalation: Escalation,
+        /// Span and metric names.
+        pub telemetry: Telemetry,
+    }
 }
 
 impl StageContract {
@@ -664,5 +666,3 @@ impl StageContract {
         }
     }
 }
-
-contract!(StageContract, "stage-contract");

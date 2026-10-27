@@ -253,44 +253,46 @@ pub struct ManifestRisk {
     pub rationale: HumanText,
 }
 
-/// The summary that the delivery stage attaches to a draft pull request.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(deny_unknown_fields, remote = "Self")]
-pub struct EvidenceManifest {
-    /// Always 1.
-    pub schema_version: SchemaVersion,
-    /// Ids and mode.
-    pub metadata: ManifestMetadata,
-    /// A plain-English title.
-    pub title: HumanTitle,
-    /// A short summary.
-    pub summary: HumanText,
-    /// The head of the evidence ledger.
-    pub ledger: LedgerHead,
-    /// The specification.
-    pub specification: SpecificationRef,
-    /// The architecture.
-    pub architecture: HashRef,
-    /// The plan.
-    pub plan: PlanRef,
-    /// The change.
-    pub change: ChangeSummary,
-    /// The gate reports.
-    pub gate_reports: NonEmptyVec<GateEntry>,
-    /// The reviews, all passed.
-    pub reviews: NonEmptyVec<ReviewEntry>,
-    /// The documentation checks.
-    pub documentation: DocumentationRefs,
-    /// What was verified and what was not.
-    pub assurance: Assurance,
-    /// The adapters that took part.
-    pub adapters: NonEmptyVec<AdapterUse>,
-    /// The risk.
-    pub risk: ManifestRisk,
-    /// The approvals still needed.
-    pub approvals_required: UniqueVec<RequiredApproval, 1>,
-    /// What was not verified, mocked, skipped or left to a human. Never empty.
-    pub limitations: NonEmptyVec<HumanText>,
+contract! {
+    "evidence-manifest";
+    /// The summary that the delivery stage attaches to a draft pull request.
+    #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize)]
+    pub struct EvidenceManifest {
+        /// Always 1.
+        pub schema_version: SchemaVersion,
+        /// Ids and mode.
+        pub metadata: ManifestMetadata,
+        /// A plain-English title.
+        pub title: HumanTitle,
+        /// A short summary.
+        pub summary: HumanText,
+        /// The head of the evidence ledger.
+        pub ledger: LedgerHead,
+        /// The specification.
+        pub specification: SpecificationRef,
+        /// The architecture.
+        pub architecture: HashRef,
+        /// The plan.
+        pub plan: PlanRef,
+        /// The change.
+        pub change: ChangeSummary,
+        /// The gate reports.
+        pub gate_reports: NonEmptyVec<GateEntry>,
+        /// The reviews, all passed.
+        pub reviews: NonEmptyVec<ReviewEntry>,
+        /// The documentation checks.
+        pub documentation: DocumentationRefs,
+        /// What was verified and what was not.
+        pub assurance: Assurance,
+        /// The adapters that took part.
+        pub adapters: NonEmptyVec<AdapterUse>,
+        /// The risk.
+        pub risk: ManifestRisk,
+        /// The approvals still needed.
+        pub approvals_required: UniqueVec<RequiredApproval, 1>,
+        /// What was not verified, mocked, skipped or left to a human. Never empty.
+        pub limitations: NonEmptyVec<HumanText>,
+    }
 }
 
 impl EvidenceManifest {
@@ -335,5 +337,3 @@ impl EvidenceManifest {
         );
     }
 }
-
-contract!(EvidenceManifest, "evidence-manifest");

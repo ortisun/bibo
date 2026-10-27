@@ -92,31 +92,48 @@ pub trait Contract: Serialize + DeserializeOwned + Sized {
     }
 }
 
-/// Makes a struct a contract document: `Serialize` and `Deserialize` that check the rules, and
-/// the [`Contract`] impl.
+/// Defines a contract document: the public struct, a `Serialize` that writes it, a `Deserialize`
+/// that reads it and checks its rules, and the [`Contract`] impl.
 ///
-/// The struct must derive `Serialize` and `Deserialize` with `#[serde(remote = "Self")]`, which
-/// turns the derived code into plain methods named `serialize` and `deserialize`. The impls
-/// written here call them, and `Deserialize` then checks the rules the derive cannot see. The
-/// struct must also have `fn check(&self, &mut Violations)`.
+/// The struct is written once, between the braces, with serde attributes on its fields. The macro
+/// copies the fields into a private "wire" struct that derives `Deserialize` with
+/// `deny_unknown_fields`, reads that, moves the fields into the public struct and calls
+/// [`Contract::validate`]. The only public `Deserialize` is therefore the validating one. (A
+/// shortcut with `#[serde(remote = "Self")]` was tried and dropped: it adds a public inherent
+/// `deserialize` that skips the check and that a call like `Document::deserialize(d)` picks
+/// first.) The struct needs `fn check(&self, &mut Violations)`.
 macro_rules! contract {
-    ($name:ident, $schema:literal) => {
-        impl ::serde::Serialize for $name {
-            fn serialize<S: ::serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-                <$name>::serialize(self, serializer)
-            }
+    (
+        $schema:literal;
+        $(#[$meta:meta])*
+        $vis:vis struct $name:ident {
+            $( $(#[$fmeta:meta])* $fvis:vis $field:ident : $ty:ty ),* $(,)?
+        }
+    ) => {
+        $(#[$meta])*
+        $vis struct $name {
+            $( $(#[$fmeta])* $fvis $field : $ty ),*
         }
 
-        impl<'de> ::serde::Deserialize<'de> for $name {
-            fn deserialize<D: ::serde::Deserializer<'de>>(
-                deserializer: D,
-            ) -> Result<Self, D::Error> {
-                let document = <$name>::deserialize(deserializer)?;
-                $crate::contracts::Contract::validate(&document)
-                    .map_err(::serde::de::Error::custom)?;
-                Ok(document)
+        const _: () = {
+            #[derive(::serde::Deserialize)]
+            #[serde(deny_unknown_fields)]
+            struct Wire {
+                $( $(#[$fmeta])* $field : $ty ),*
             }
-        }
+
+            impl<'de> ::serde::Deserialize<'de> for $name {
+                fn deserialize<D: ::serde::Deserializer<'de>>(
+                    deserializer: D,
+                ) -> Result<Self, D::Error> {
+                    let wire = <Wire as ::serde::Deserialize>::deserialize(deserializer)?;
+                    let document = $name { $( $field : wire.$field ),* };
+                    $crate::contracts::Contract::validate(&document)
+                        .map_err(::serde::de::Error::custom)?;
+                    Ok(document)
+                }
+            }
+        };
 
         impl $crate::contracts::Contract for $name {
             const SCHEMA: &'static str = $schema;

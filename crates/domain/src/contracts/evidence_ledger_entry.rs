@@ -283,32 +283,34 @@ pub struct Confidence {
     pub rationale: HumanText,
 }
 
-/// One append-only record that binds a claim to the evidence behind it.
-///
-/// The entry hash is checked by [`crate::ledger`], not here: the examples in `schemas/examples`
-/// carry made-up hashes, and the hash of an entry says nothing about whether its fields are
-/// valid.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(deny_unknown_fields, remote = "Self")]
-pub struct EvidenceLedgerEntry {
-    /// Always 1.
-    pub schema_version: SchemaVersion,
-    /// Position, time, producer and mode.
-    pub metadata: LedgerMetadata,
-    /// The claim.
-    pub claim: Claim,
-    /// What backs it.
-    pub evidence: Vec<Evidence>,
-    /// How sure the writer is.
-    pub confidence: Confidence,
-    /// Earlier entries this one withdraws.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub invalidates: Option<UniqueVec<LedgerEntryId>>,
-    /// The hash of the previous entry. `null` only for sequence 1.
-    #[serde(deserialize_with = "required_nullable")]
-    pub prev_entry_hash: Option<Sha256Digest>,
-    /// The hash of this entry (see [`crate::ledger`]).
-    pub entry_hash: Sha256Digest,
+contract! {
+    "evidence-ledger-entry";
+    /// One append-only record that binds a claim to the evidence behind it.
+    ///
+    /// The entry hash is checked by [`crate::ledger`], not here: the examples in `schemas/examples`
+    /// carry made-up hashes, and the hash of an entry says nothing about whether its fields are
+    /// valid.
+    #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize)]
+    pub struct EvidenceLedgerEntry {
+        /// Always 1.
+        pub schema_version: SchemaVersion,
+        /// Position, time, producer and mode.
+        pub metadata: LedgerMetadata,
+        /// The claim.
+        pub claim: Claim,
+        /// What backs it.
+        pub evidence: Vec<Evidence>,
+        /// How sure the writer is.
+        pub confidence: Confidence,
+        /// Earlier entries this one withdraws.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        pub invalidates: Option<UniqueVec<LedgerEntryId>>,
+        /// The hash of the previous entry. `null` only for sequence 1.
+        #[serde(deserialize_with = "required_nullable")]
+        pub prev_entry_hash: Option<Sha256Digest>,
+        /// The hash of this entry (see [`crate::ledger`]).
+        pub entry_hash: Sha256Digest,
+    }
 }
 
 impl EvidenceLedgerEntry {
@@ -397,5 +399,3 @@ impl EvidenceLedgerEntry {
         }
     }
 }
-
-contract!(EvidenceLedgerEntry, "evidence-ledger-entry");
