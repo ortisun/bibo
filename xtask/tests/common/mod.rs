@@ -292,6 +292,12 @@ impl Fixture {
             fixture.depend("api", lib);
         }
         fixture.dev_depend("api", "testkit");
+        // ST-07 reads the tables of the real conventions page.
+        let conventions = fs::read_to_string(
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../docs/observability/conventions.md"),
+        )
+        .expect("read the real conventions page");
+        fixture.file("docs/observability/conventions.md", &conventions);
         fixture
     }
 

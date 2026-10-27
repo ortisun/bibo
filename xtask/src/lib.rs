@@ -13,6 +13,7 @@ pub mod metadata;
 pub mod rules;
 pub mod scan;
 pub mod source_scans;
+pub mod st07;
 pub mod static_checks;
 pub mod syntax;
 pub mod topology;

@@ -15,6 +15,7 @@ use crate::metadata::Workspace;
 use crate::rules::{Role, Rules};
 use crate::scan::{self, Source, brace_block, find_word, is_ident, next_ident};
 use crate::source_scans::SourceScans;
+use crate::st07;
 use crate::syntax::{Kind, Resolver, ends_with, is_under};
 use std::fs;
 use std::path::Path;
@@ -44,9 +45,22 @@ pub fn check(rules: &Rules, ws: &Workspace) -> Result<Vec<Finding>, String> {
         });
     }
 
+    let conventions_path = ws.root.join(&scans.st_07.conventions);
+    let conventions =
+        st07::Conventions::parse(&fs::read_to_string(&conventions_path).map_err(|e| {
+            format!(
+                "cannot read the conventions page {}: {e}",
+                conventions_path.display()
+            )
+        })?)
+        .map_err(|e| format!("{}: {e}", conventions_path.display()))?;
+
     let mut findings = Vec::new();
     for krate in &scanned {
         for source in &krate.sources {
+            if !scans.st_07.skip_crates.contains(&krate.name) {
+                findings.extend(st07::check(&conventions, &krate.name, source));
+            }
             let resolver = Resolver::new(&source.syntax);
             begin_system_only_in_workflow(scans, krate, source, &mut findings);
             spec_kit_layout_only_in_spec_adapter(scans, krate, source, &mut findings);

@@ -738,5 +738,361 @@ mod static_checks {
             )
             .assert_passes();
         }
+
+        #[test]
+        fn a_read_through_an_import_alias_fails() {
+            let code = "use std::fs as f;\npub fn r() { let _ = f::read(\"x\"); }\n";
+            run_with_source("runtime", "src/lib.rs", code).assert_violation("ST-09");
+        }
+
+        #[test]
+        fn a_read_through_a_function_import_fails() {
+            let code =
+                "use std::fs::read_to_string;\npub fn r() { let _ = read_to_string(\"x\"); }\n";
+            run_with_source("workflow", "src/lib.rs", code).assert_violation("ST-09");
+        }
+
+        #[test]
+        fn try_exists_and_is_symlink_fail() {
+            for call in ["p.try_exists()", "p.is_symlink()"] {
+                let code = format!("pub fn r(p: &std::path::Path) {{ let _ = {call}; }}\n");
+                run_with_source("spec_adapter", "src/lib.rs", &code).assert_violation("ST-09");
+            }
+        }
+    }
+
+    mod dep_09_change_host_method_names {
+        use super::*;
+
+        #[test]
+        fn a_ready_for_review_method_fails() {
+            let code = "pub trait ChangeHost {\n    fn mark_ready_for_review(&self);\n    fn ready_pull_request(&self);\n}\n";
+            run_with_source("ports", "src/change_host.rs", code)
+                .assert_violation_mentions("DEP-09", "ready_pull_request");
+        }
+
+        #[test]
+        fn an_undraft_method_fails() {
+            let code = "pub trait ChangeHost {\n    fn undraft_pull_request(&self);\n}\n";
+            run_with_source("ports", "src/change_host.rs", code)
+                .assert_violation_mentions("DEP-09", "undraft_pull_request");
+        }
+
+        #[test]
+        fn reading_a_pull_request_passes() {
+            let code = "pub trait ChangeHost {\n    fn read_checks(&self);\n    fn open_draft_pull_request(&self);\n}\n";
+            run_with_source("ports", "src/change_host.rs", code).assert_passes();
+        }
+    }
+
+    mod st_13_constructors_only_where_allowed {
+        use super::*;
+
+        #[test]
+        fn tenant_scope_new_in_a_crate_that_may_not_fails() {
+            let code = "pub fn f() { let _ = TenantScope::new(id); }\n";
+            run_with_source("sandbox", "src/lib.rs", code)
+                .assert_violation_mentions("ST-13", "sandbox constructs TenantScope::new");
+        }
+
+        #[test]
+        fn tenant_scope_new_in_each_crate_that_may_passes() {
+            let code = "pub fn f() { let _ = TenantScope::new(id); }\n";
+            for (member, file) in [
+                ("workflow", "src/lib.rs"),
+                ("storage", "src/lib.rs"),
+                ("api", "src/main.rs"),
+                ("worker", "src/main.rs"),
+            ] {
+                run_with_source(member, file, code).assert_no_violation("ST-13");
+            }
+        }
+
+        #[test]
+        fn the_call_is_found_through_an_alias_and_a_full_path() {
+            for code in [
+                "use factory_domain::scope::TenantScope as T;\npub fn f() { let _ = T::new(id); }\n",
+                "pub fn f() { let _ = factory_domain::scope::TenantScope::new(id); }\n",
+                "use factory_domain::scope::*;\npub fn f() { let _ = TenantScope::new(id); }\n",
+            ] {
+                run_with_source("github", "src/lib.rs", code).assert_violation("ST-13");
+            }
+        }
+
+        #[test]
+        fn system_scope_engine_outside_workflow_fails() {
+            let code = "pub fn f() { let _ = SystemScope::engine(); }\n";
+            run_with_source("storage", "src/lib.rs", code).assert_violation("ST-13");
+            run_with_source("workflow", "src/lib.rs", code).assert_no_violation("ST-13");
+        }
+
+        #[test]
+        fn platform_scope_receiver_outside_the_api_fails() {
+            let code = "pub fn f() { let _ = PlatformScope::receiver(); }\n";
+            run_with_source("worker", "src/main.rs", code).assert_violation("ST-13");
+            run_with_source("api", "src/main.rs", code).assert_no_violation("ST-13");
+        }
+
+        #[test]
+        fn an_ingested_change_outside_sandbox_fails() {
+            let code = "pub fn f() { let _ = IngestedChange::new(a, b); }\n";
+            run_with_source("workflow", "src/lib.rs", code).assert_violation("ST-13");
+            run_with_source("sandbox", "src/workspace/mod.rs", code).assert_no_violation("ST-13");
+        }
+
+        #[test]
+        fn a_struct_literal_of_resolved_principal_outside_storage_fails() {
+            let code = "pub fn f() -> u8 { let _ = ResolvedPrincipal { id: 1 }; 0 }\n";
+            run_with_source("workflow", "src/lib.rs", code)
+                .assert_violation_mentions("ST-13", "workflow constructs ResolvedPrincipal");
+            run_with_source("storage", "src/lib.rs", code).assert_no_violation("ST-13");
+        }
+
+        #[test]
+        fn the_type_declaration_and_its_impl_are_not_constructions() {
+            let code = "pub struct ResolvedRepository { pub id: u8 }\nimpl ResolvedRepository { pub fn id(&self) -> u8 { self.id } }\nimpl Clone for ResolvedRepository { fn clone(&self) -> ResolvedRepository { todo() } }\n";
+            run_with_source("ports", "src/lib.rs", code).assert_no_violation("ST-13");
+        }
+
+        #[test]
+        fn a_construction_in_test_code_passes() {
+            let code =
+                "#[cfg(test)]\nmod tests {\n    fn t() { let _ = TenantScope::new(id); }\n}\n";
+            run_with_source("sandbox", "src/lib.rs", code).assert_passes();
+        }
+    }
+
+    mod st_14_workflow_does_not_mention_metering {
+        use super::*;
+
+        #[test]
+        fn a_mention_in_workflow_fails() {
+            let code = "use factory_ports::agent::MeteringOps;\n";
+            run_with_source("workflow", "src/lib.rs", code)
+                .assert_violation_mentions("ST-14", "workflow mentions MeteringOps");
+        }
+
+        #[test]
+        fn a_mention_in_another_crate_passes() {
+            run_with_source("runtime", "src/lib.rs", "pub trait MeteringOps {}\n").assert_passes();
+        }
+
+        #[test]
+        fn a_mention_in_a_comment_or_in_test_code_passes() {
+            run_with_source(
+                "workflow",
+                "src/lib.rs",
+                "// MeteringOps belongs to the broker\n",
+            )
+            .assert_passes();
+            let code = "#[cfg(test)]\nmod tests {\n    use factory_ports::agent::MeteringOps;\n}\n";
+            run_with_source("workflow", "src/lib.rs", code).assert_passes();
+        }
+    }
+
+    mod st_07_span_and_attribute_names_across_the_repository {
+        use super::*;
+
+        fn in_workflow(code: &str) -> Run {
+            run_with_source("workflow", "src/lib.rs", code)
+        }
+
+        #[test]
+        fn an_unknown_span_name_in_a_peer_crate_fails() {
+            in_workflow("pub fn f() { let _s = tracing::info_span!(\"factory.stage_runn\", factory.job_id = 1i64); }\n")
+                .assert_violation_mentions("ST-07", "span name \"factory.stage_runn\"");
+        }
+
+        #[test]
+        fn a_span_name_without_the_factory_prefix_fails() {
+            in_workflow("pub fn f() { let _s = tracing::info_span!(\"stage_run\"); }\n")
+                .assert_violation("ST-07");
+        }
+
+        #[test]
+        fn the_name_in_span_with_a_level_is_read_as_the_second_argument() {
+            in_workflow(
+                "pub fn f() { let _s = tracing::span!(tracing::Level::INFO, \"factory.nope\"); }\n",
+            )
+            .assert_violation_mentions("ST-07", "factory.nope");
+            in_workflow(
+                "pub fn f() { let _s = tracing::span!(tracing::Level::INFO, \"factory.gate\"); }\n",
+            )
+            .assert_passes();
+        }
+
+        #[test]
+        fn a_span_name_that_is_not_a_literal_fails() {
+            in_workflow("const NAME: &str = \"factory.job\";\npub fn f() { let _s = tracing::info_span!(NAME); }\n")
+                .assert_violation_mentions("ST-07", "not a string literal");
+        }
+
+        #[test]
+        fn every_name_in_the_span_table_passes() {
+            let spans = [
+                "factory.job",
+                "factory.stage_run",
+                "factory.attempt",
+                "factory.agent",
+                "factory.tool_call",
+                "factory.gate",
+            ];
+            for span in spans {
+                in_workflow(&format!(
+                    "pub fn f() {{ let _s = tracing::info_span!(\"{span}\"); }}\n"
+                ))
+                .assert_passes();
+            }
+        }
+
+        #[test]
+        fn an_unknown_factory_field_fails() {
+            in_workflow(
+                "pub fn f() { tracing::info!(factory.stage_rn_id = 1i64, \"started\"); }\n",
+            )
+            .assert_violation_mentions("ST-07", "field \"factory.stage_rn_id\"");
+        }
+
+        #[test]
+        fn an_unknown_factory_field_in_a_span_macro_fails() {
+            in_workflow("pub fn f() { let _s = tracing::info_span!(\"factory.job\", factory.tenant = 1i64); }\n")
+                .assert_violation_mentions("ST-07", "factory.tenant");
+        }
+
+        #[test]
+        fn a_quoted_field_name_is_read_too() {
+            in_workflow(
+                "pub fn f() { tracing::info!(\"factory.made_up\" = 1i64, \"started\"); }\n",
+            )
+            .assert_violation("ST-07");
+        }
+
+        #[test]
+        fn known_fields_and_error_type_pass() {
+            in_workflow("pub fn f() { tracing::warn!(factory.job_id = 1i64, error.type = \"io\", \"failed\"); }\n")
+                .assert_passes();
+        }
+
+        #[test]
+        fn a_field_after_the_message_is_a_format_argument_not_a_field() {
+            in_workflow("pub fn f(a: u8) { tracing::info!(\"value {}\", a.b.c); }\n")
+                .assert_passes();
+        }
+
+        #[test]
+        fn an_instrument_attribute_is_read() {
+            in_workflow("#[tracing::instrument(name = \"factory.nope\")]\npub fn f() {}\n")
+                .assert_violation_mentions("ST-07", "factory.nope");
+            in_workflow("#[instrument(name = \"factory.gate\", fields(factory.gate_id = %id))]\npub fn f() {}\n")
+                .assert_passes();
+            in_workflow("#[instrument(name = \"factory.gate\", fields(factory.gate_idd = %id))]\npub fn f() {}\n")
+                .assert_violation("ST-07");
+        }
+
+        #[test]
+        fn an_instrument_attribute_without_a_name_fails() {
+            in_workflow("#[instrument(skip(self))]\npub fn f() {}\n")
+                .assert_violation_mentions("ST-07", "name the span after the function");
+            in_workflow("#[tracing::instrument]\npub fn f() {}\n").assert_violation("ST-07");
+        }
+
+        #[test]
+        fn a_metric_recorded_with_the_wrong_kind_fails() {
+            in_workflow("pub fn f() { tracing::info!(histogram.factory_retries_total = 1.0f64, stage = \"X\"); }\n")
+                .assert_violation_mentions("ST-07", "recorded as a histogram but the metric table says it is a counter");
+        }
+
+        #[test]
+        fn an_unknown_metric_name_fails() {
+            in_workflow(
+                "pub fn f() { tracing::info!(monotonic_counter.factory_made_up_total = 1u64); }\n",
+            )
+            .assert_violation_mentions("ST-07", "factory_made_up_total");
+        }
+
+        #[test]
+        fn a_label_that_is_not_listed_for_its_metric_fails() {
+            in_workflow("pub fn f() { tracing::info!(monotonic_counter.factory_retries_total = 1u64, stage = \"X\", job_id = 7u64); }\n")
+                .assert_violation_mentions("ST-07", "label \"job_id\" is not listed for the metric");
+        }
+
+        #[test]
+        fn a_label_of_another_metric_is_still_not_listed_here() {
+            in_workflow("pub fn f() { tracing::info!(monotonic_counter.factory_retries_total = 1u64, outcome = \"passed\"); }\n")
+                .assert_violation_mentions("ST-07", "label \"outcome\"");
+        }
+
+        #[test]
+        fn the_three_examples_of_the_conventions_page_pass() {
+            in_workflow(
+                "pub fn f() {\n    tracing::info!(monotonic_counter.factory_retries_total = 1u64, stage = \"IMPLEMENTATION\");\n    tracing::info!(histogram.factory_stage_duration_seconds = 42.5f64, stage = \"VALIDATION\", outcome = \"passed\");\n    tracing::info!(gauge.factory_queue_depth = 3i64, queue = \"ready_stage_runs\");\n}\n",
+            )
+            .assert_passes();
+        }
+
+        #[test]
+        fn an_unknown_factory_literal_anywhere_fails() {
+            in_workflow("pub const KEY: &str = \"factory.secret_key\";\n")
+                .assert_violation_mentions("ST-07", "factory.secret_key");
+            in_workflow("pub const NAME: &str = \"factory_spend_total\";\n")
+                .assert_violation_mentions("ST-07", "factory_spend_total");
+        }
+
+        #[test]
+        fn a_known_factory_literal_passes() {
+            in_workflow("pub const KEY: &str = \"factory.job_id\";\npub const M: &str = \"factory_queue_depth\";\n")
+                .assert_passes();
+        }
+
+        #[test]
+        fn names_that_only_start_with_factory_are_not_telemetry_names() {
+            in_workflow("pub const A: &str = \"factory-workflow\";\npub const B: &str = \"factory.yaml\";\n")
+                .assert_violation_mentions("ST-07", "factory.yaml");
+            in_workflow("pub const A: &str = \"factory-workflow\";\npub const B: &str = \"Factory.Thing\";\n")
+                .assert_passes();
+        }
+
+        #[test]
+        fn every_crate_and_binary_is_scanned_except_the_one_that_defines_the_names() {
+            let code = "pub const KEY: &str = \"factory.invented\";\n";
+            run_with_source("runtime", "src/lib.rs", code).assert_violation("ST-07");
+            run_with_source("api", "src/main.rs", code).assert_violation("ST-07");
+            run_with_source("observability", "src/lib.rs", code).assert_no_violation("ST-07");
+        }
+
+        #[test]
+        fn test_code_and_comments_are_not_scanned() {
+            in_workflow("// \"factory.invented\" in a comment\n").assert_passes();
+            in_workflow("#[cfg(test)]\nmod tests { const K: &str = \"factory.invented\"; }\n")
+                .assert_passes();
+        }
+
+        #[test]
+        fn the_tables_are_read_from_the_conventions_page() {
+            // Remove the gate span from the page. The code that used to pass now fails.
+            let code = "pub fn f() { let _s = tracing::info_span!(\"factory.gate\"); }\n";
+            let mut fx = Fixture::baseline("st07-page");
+            fx.source("workflow", "src/lib.rs", code);
+            fx.run().assert_passes();
+            let page = std::fs::read_to_string(
+                std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .join("../docs/observability/conventions.md"),
+            )
+            .unwrap();
+            let without_gate: String = page
+                .lines()
+                .filter(|l| !l.starts_with("| `factory.gate` |"))
+                .collect::<Vec<_>>()
+                .join("\n");
+            fx.file("docs/observability/conventions.md", &without_gate);
+            fx.run().assert_violation_mentions("ST-07", "factory.gate");
+        }
+
+        #[test]
+        fn a_missing_or_broken_conventions_page_is_an_error_not_a_pass() {
+            let mut fx = Fixture::baseline("st07-missing");
+            fx.file("docs/observability/conventions.md", "# nothing here\n");
+            fx.run().assert_error("conventions page");
+        }
     }
 }
