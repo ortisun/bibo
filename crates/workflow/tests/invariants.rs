@@ -520,6 +520,25 @@ mod named {
     }
 
     #[tokio::test]
+    async fn a_store_that_grants_the_lease_twice_cannot_make_two_attempts() {
+        // The claim is guarded in three places: the store's exclusion, the engine's re-read of
+        // the stage run before it starts, and the compare-and-swap of the move. Here the first is
+        // broken on purpose, so one stage run goes to two engines at once, and the others hold.
+        let world = World::with_store_defect(StoreDefect::DoubleGrantsLease).await;
+        let job = world.admitted_job().await;
+        let other = world.restarted_engine();
+        let (first, second) = (World::worker("worker-1"), World::worker("worker-2"));
+        let (a, b) = tokio::join!(world.engine.claim_next(&first), other.claim_next(&second));
+        let started = a.expect("claim").started.len() + b.expect("claim").started.len();
+        assert_eq!(started, 1, "one stage run starts once");
+        let view = world.view(job).await;
+        assert_eq!(
+            view.newest(StageKind::Intake).expect("run").attempts.len(),
+            1
+        );
+    }
+
+    #[tokio::test]
     async fn inv_06_a_mandatory_gate_that_did_not_run_is_blocked() {
         for eval in [
             Eval::NoEvidence,
