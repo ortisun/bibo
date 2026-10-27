@@ -6,6 +6,7 @@
 pub mod canary;
 pub mod control;
 pub mod digest;
+pub mod docker;
 pub mod encoding;
 pub mod rng;
 pub mod sinks;
