@@ -4,6 +4,7 @@
 //! top of it.
 
 pub mod archive;
+pub mod auth;
 pub mod canary;
 pub mod control;
 pub mod digest;
