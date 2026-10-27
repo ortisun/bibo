@@ -111,6 +111,10 @@ pub struct SchemaViolation {
     pub property: Option<String>,
     /// Plain English: what is wrong and what would make it right.
     pub message: String,
+    /// How many segments the path has, which is how deep in the document the problem is.
+    pub(crate) segments: usize,
+    /// The last segment, when it is a property name.
+    pub(crate) leaf: Option<String>,
 }
 
 /// Why a schema could not be compiled. The set is closed.
@@ -403,7 +407,136 @@ impl<'s> Run<'s> {
                 (shown != UNPRINTABLE_NAME).then_some(shown)
             }),
             message,
+            segments: self.path.len(),
+            leaf: match self.path.last() {
+                Some(Segment::Key(key)) => Some(key.clone()),
+                _ => None,
+            },
         });
+    }
+
+    /// Runs `schema` on `instance` and returns what it found, leaving this run's own list alone.
+    fn collect(&mut self, schema: &Value, instance: &Value, depth: usize) -> Attempt {
+        let outer_found = std::mem::take(&mut self.found);
+        let outer_dropped = std::mem::replace(&mut self.dropped, 0);
+        self.check(schema, instance, depth);
+        Attempt {
+            violations: std::mem::replace(&mut self.found, outer_found),
+            dropped: std::mem::replace(&mut self.dropped, outer_dropped),
+        }
+    }
+
+    /// Tries the shapes of a `oneOf` or `anyOf` and returns how many matched and what each one
+    /// that did not match found. An `anyOf` stops at the first match, because nothing more is
+    /// needed. A `oneOf` tries every shape, because a second match is an error too.
+    fn try_shapes(
+        &mut self,
+        shapes: &[Value],
+        instance: &Value,
+        depth: usize,
+        stop_at_first_match: bool,
+    ) -> (usize, Vec<Attempt>) {
+        let mut matching = 0usize;
+        let mut failed = Vec::new();
+        for shape in shapes {
+            let attempt = self.collect(shape, instance, depth);
+            if attempt.violations.is_empty() && attempt.dropped == 0 {
+                matching += 1;
+                if stop_at_first_match {
+                    break;
+                }
+            } else {
+                failed.push(attempt);
+            }
+        }
+        (matching, failed)
+    }
+
+    /// The properties that two or more shapes constrain with `const` or `enum`: how the schemas tell
+    /// shapes apart. The empty name stands for a `const` or `enum` on the instance itself.
+    fn discriminating_properties(&self, shapes: &[Value]) -> HashSet<String> {
+        let mut shapes_constraining: HashMap<String, usize> = HashMap::new();
+        for shape in shapes {
+            let mut names = HashSet::new();
+            self.collect_constrained(shape, &mut names, 0);
+            for name in names {
+                *shapes_constraining.entry(name).or_default() += 1;
+            }
+        }
+        shapes_constraining
+            .into_iter()
+            .filter(|(_, count)| *count >= 2)
+            .map(|(name, _)| name)
+            .collect()
+    }
+
+    /// Adds the names of the properties `shape` constrains with `const` or `enum`, following local
+    /// references and `allOf`.
+    fn collect_constrained(&self, shape: &Value, names: &mut HashSet<String>, hops: usize) {
+        const MAX_HOPS: usize = 8;
+        let Some(map) = shape.as_object() else { return };
+        if hops > MAX_HOPS {
+            return;
+        }
+        if let Some(target) = map
+            .get("$ref")
+            .and_then(Value::as_str)
+            .and_then(|reference| resolve(&self.schema.root, reference))
+        {
+            self.collect_constrained(target, names, hops + 1);
+        }
+        if map.contains_key("const") || map.contains_key("enum") {
+            names.insert(String::new());
+        }
+        if let Some(properties) = map.get("properties").and_then(Value::as_object) {
+            for (name, property) in properties {
+                let resolved = property
+                    .get("$ref")
+                    .and_then(Value::as_str)
+                    .and_then(|reference| resolve(&self.schema.root, reference))
+                    .unwrap_or(property);
+                if resolved.get("const").is_some() || resolved.get("enum").is_some() {
+                    names.insert(name.clone());
+                }
+            }
+        }
+        for part in map
+            .get("allOf")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+        {
+            self.collect_constrained(part, names, hops + 1);
+        }
+    }
+
+    /// Reports a `oneOf` or `anyOf` that no shape matched.
+    ///
+    /// The generic violation always comes first. When one shape got past the keyword that tells
+    /// the shapes apart, that shape's own violations follow, because they say what to change.
+    /// See [`closest_shape`] for the choice.
+    fn report_no_shape(&mut self, keyword: Keyword, shapes: &[Value], failed: Vec<Attempt>) {
+        let base = self.path.len();
+        let discriminators = self.discriminating_properties(shapes);
+        let closest = closest_shape(&failed, base, &discriminators);
+        let message = if closest.is_some() {
+            "does not match any of the allowed shapes; the closest shape fails as listed next"
+        } else {
+            "does not match any of the allowed shapes"
+        };
+        self.report(keyword, None, message.to_owned());
+        if let Some(index) = closest
+            && let Some(attempt) = failed.into_iter().nth(index)
+        {
+            self.dropped += attempt.dropped;
+            for violation in attempt.violations {
+                if self.found.len() >= MAX_VIOLATIONS {
+                    self.dropped += 1;
+                } else {
+                    self.found.push(violation);
+                }
+            }
+        }
     }
 
     /// Runs `schema` on `instance` and returns how many violations it added. The violations stay
@@ -646,32 +779,18 @@ impl<'s> Run<'s> {
                 }
             }
             "anyOf" => {
-                if let Some(list) = value.as_array()
-                    && !list
-                        .iter()
-                        .any(|sub| self.accepts(sub, instance, depth + 1))
-                {
-                    self.report(
-                        Keyword::AnyOf,
-                        None,
-                        "does not match any of the allowed shapes".to_owned(),
-                    );
+                if let Some(list) = value.as_array() {
+                    let (matching, failed) = self.try_shapes(list, instance, depth + 1, true);
+                    if matching == 0 {
+                        self.report_no_shape(Keyword::AnyOf, list, failed);
+                    }
                 }
             }
             "oneOf" => {
                 if let Some(list) = value.as_array() {
-                    let mut matching = 0usize;
-                    for sub in list {
-                        if self.accepts(sub, instance, depth + 1) {
-                            matching += 1;
-                        }
-                    }
+                    let (matching, failed) = self.try_shapes(list, instance, depth + 1, false);
                     if matching == 0 {
-                        self.report(
-                            Keyword::OneOf,
-                            None,
-                            "does not match any of the allowed shapes".to_owned(),
-                        );
+                        self.report_no_shape(Keyword::OneOf, list, failed);
                     } else if matching > 1 {
                         self.report(
                             Keyword::OneOf,
@@ -764,6 +883,73 @@ impl<'s> Run<'s> {
             self.report(keyword, None, format!("must be {wording} {limit}"));
         }
     }
+}
+
+/// What one shape of a `oneOf` or `anyOf` found when it did not match.
+struct Attempt {
+    violations: Vec<SchemaViolation>,
+    dropped: usize,
+}
+
+/// Chooses the shape whose violations best explain why the instance does not fit, or `None` when
+/// no shape got past the keyword that tells the shapes apart.
+///
+/// This is the reference validator's "best deep match", with one safeguard. `check-jsonschema`
+/// prints the generic error, its "best match" and its "best deep match". The deep match is the
+/// deepest error among all the shapes, whichever shape it came from, and when several errors are
+/// equally deep it takes the first, which is often a `type` mismatch from a shape that was never
+/// meant. The safeguard keeps the choice to a shape that got past its discriminator.
+///
+/// 1. A shape is **out** when it fails on the instance's own type, or when it fails a `const` or
+///    `enum` on the instance itself or on a direct property that tells shapes apart. A property
+///    tells shapes apart when two or more shapes constrain it with `const` or `enum`
+///    (`discriminators`, from the schema): that is how the schemas pick a shape, as in
+///    `type: const "experiment"`. A shape that fails it is not the one the author meant. A `const`
+///    or `enum` that only one shape checks (a `result` value, say) does not tell shapes apart, so a
+///    shape that fails only that is still a candidate. If every shape is out, nothing is chosen
+///    and the generic violation stands alone.
+/// 2. Of the shapes left, the one with the **deepest** violation wins: the one that failed furthest
+///    down into the instance, which is the one that matched best on the way. Ties go to the shape
+///    with the **fewest** violations, then to the **first** in the schema.
+///
+/// `base` is the number of path segments of the instance the `oneOf` or `anyOf` applies to.
+fn closest_shape(
+    failed: &[Attempt],
+    base: usize,
+    discriminators: &HashSet<String>,
+) -> Option<usize> {
+    let relative = |violation: &SchemaViolation| violation.segments.saturating_sub(base);
+    let fails_its_discriminator = |violation: &SchemaViolation| {
+        if !matches!(violation.keyword, Keyword::Const | Keyword::Enum) {
+            return false;
+        }
+        match relative(violation) {
+            0 => discriminators.contains(""),
+            1 => violation
+                .leaf
+                .as_deref()
+                .is_some_and(|name| discriminators.contains(name)),
+            _ => false,
+        }
+    };
+    failed
+        .iter()
+        .enumerate()
+        .filter(|(_, attempt)| {
+            !attempt.violations.iter().any(|violation| {
+                fails_its_discriminator(violation)
+                    || (violation.keyword == Keyword::Type && relative(violation) == 0)
+            })
+        })
+        .min_by_key(|(index, attempt)| {
+            let deepest = attempt.violations.iter().map(relative).max().unwrap_or(0);
+            (
+                std::cmp::Reverse(deepest),
+                attempt.violations.len() + attempt.dropped,
+                *index,
+            )
+        })
+        .map(|(index, _)| index)
 }
 
 // ------------------------------------------------------------------------------------------
@@ -1192,6 +1378,226 @@ mod tests {
         ] {
             assert_eq!(safe_name(unusual), UNPRINTABLE_NAME, "{unusual:?}");
         }
+    }
+
+    /// Two shapes told apart by `type`, as the evidence items in the ledger schema are.
+    fn shapes() -> Schema {
+        schema(json!({
+            "oneOf": [
+                {
+                    "required": ["type", "values"],
+                    "properties": {
+                        "type": {"const": "a"},
+                        "values": {"type": "array", "items": {"type": "integer", "maximum": 5}}
+                    }
+                },
+                {
+                    "required": ["type", "name"],
+                    "properties": {"type": {"const": "b"}, "name": {"type": "string", "minLength": 3}}
+                }
+            ]
+        }))
+    }
+
+    fn keywords(schema: &Schema, instance: &Value) -> Vec<(String, Keyword)> {
+        found(schema, instance)
+    }
+
+    #[test]
+    fn a_one_of_with_no_match_reports_the_generic_violation_then_the_closest_shape() {
+        let s = shapes();
+        // Shape "a" is the closest: its `type` matches and its failure is two levels down.
+        assert_eq!(
+            keywords(&s, &json!({"type": "a", "values": [1, 9]})),
+            [
+                ("$".to_owned(), Keyword::OneOf),
+                ("values[1]".to_owned(), Keyword::Maximum)
+            ]
+        );
+        // Shape "b" is the closest here.
+        assert_eq!(
+            keywords(&s, &json!({"type": "b", "name": "x"})),
+            [
+                ("$".to_owned(), Keyword::OneOf),
+                ("name".to_owned(), Keyword::MinLength)
+            ]
+        );
+    }
+
+    #[test]
+    fn a_missing_property_of_the_shape_that_matches_its_type_is_reported() {
+        let s = shapes();
+        let (violations, _) = s.validate(&json!({"type": "a"}));
+        let kinds: Vec<(&str, Keyword)> = violations
+            .iter()
+            .map(|v| (v.path.as_str(), v.keyword))
+            .collect();
+        assert_eq!(kinds, [("$", Keyword::OneOf), ("$", Keyword::Required)]);
+        assert_eq!(violations[1].property.as_deref(), Some("values"));
+    }
+
+    #[test]
+    fn a_one_of_where_no_shape_gets_past_its_type_keeps_only_the_generic_violation() {
+        let s = shapes();
+        for instance in [
+            json!({"type": "c", "values": [1], "name": "abc"}),
+            json!("a string"),
+            json!(null),
+            json!([1, 2]),
+        ] {
+            assert_eq!(
+                keywords(&s, &instance),
+                [("$".to_owned(), Keyword::OneOf)],
+                "{instance}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_bad_value_in_every_shape_of_the_property_that_tells_them_apart_keeps_only_the_generic_violation()
+     {
+        // `kind` fails in both shapes, so it is what tells them apart and neither shape was chosen.
+        let s = schema(json!({
+            "oneOf": [
+                {"properties": {"kind": {"enum": ["x"]}, "p": {"type": "string"}}},
+                {"properties": {"kind": {"enum": ["y"]}, "q": {"type": "string"}}}
+            ]
+        }));
+        assert_eq!(
+            keywords(&s, &json!({"kind": "z", "p": 1})),
+            [("$".to_owned(), Keyword::OneOf)]
+        );
+        // `p` is checked by one shape only, so a bad `p` does not hide which shape was meant.
+        let s = schema(json!({
+            "oneOf": [
+                {"properties": {"kind": {"const": "x"}, "p": {"enum": ["ok"]}}},
+                {"properties": {"kind": {"const": "y"}}}
+            ]
+        }));
+        assert_eq!(
+            keywords(&s, &json!({"kind": "x", "p": "bad"})),
+            [
+                ("$".to_owned(), Keyword::OneOf),
+                ("p".to_owned(), Keyword::Enum)
+            ]
+        );
+    }
+
+    #[test]
+    fn a_value_that_equals_none_of_the_constants_keeps_only_the_generic_violation() {
+        // The constant is on the instance itself, so it is what tells the shapes apart.
+        let s = schema(json!({"oneOf": [{"const": 1}, {"const": 2}]}));
+        assert_eq!(keywords(&s, &json!(3)), [("$".to_owned(), Keyword::OneOf)]);
+        let s = schema(json!({"anyOf": [{"enum": ["a"]}, {"enum": ["b"]}]}));
+        assert_eq!(
+            keywords(&s, &json!("c")),
+            [("$".to_owned(), Keyword::AnyOf)]
+        );
+    }
+
+    #[test]
+    fn when_no_shape_can_be_told_apart_the_first_one_explains_what_is_missing() {
+        // Neither shape sees its `type`, so both are still candidates and both miss two properties.
+        // The tie goes to the first, whose list starts with the property that tells shapes apart.
+        let s = shapes();
+        let (violations, _) = s.validate(&json!({}));
+        let at: Vec<(&str, Keyword, Option<&str>)> = violations
+            .iter()
+            .map(|v| (v.path.as_str(), v.keyword, v.property.as_deref()))
+            .collect();
+        assert_eq!(
+            at,
+            [
+                ("$", Keyword::OneOf, None),
+                ("$", Keyword::Required, Some("type")),
+                ("$", Keyword::Required, Some("values"))
+            ]
+        );
+    }
+
+    #[test]
+    fn a_one_of_that_matches_two_shapes_keeps_only_the_generic_violation() {
+        let s = schema(json!({"oneOf": [{"type": "object"}, {"required": ["a"]}]}));
+        assert_eq!(
+            keywords(&s, &json!({"a": 1})),
+            [("$".to_owned(), Keyword::OneOf)]
+        );
+        // And the details of the branches that did not fail are not invented.
+        let (violations, _) = s.validate(&json!({"a": 1}));
+        assert_eq!(violations.len(), 1);
+        assert!(
+            violations[0].message.contains("more than one"),
+            "{violations:?}"
+        );
+    }
+
+    #[test]
+    fn the_closest_shape_is_the_deepest_then_the_one_with_fewest_violations_then_the_first() {
+        // Three shapes that all pass their `kind`. The instance fails them at depth 1, 2 and 2.
+        let s = schema(json!({
+            "anyOf": [
+                {"properties": {"kind": {"const": "x"}, "p": {"type": "string"}}},
+                {"properties": {"kind": {"const": "x"}, "q": {"properties": {"r": {"type": "string"}, "s": {"type": "string"}}}}},
+                {"properties": {"kind": {"const": "x"}, "q": {"properties": {"r": {"type": "string"}}}}}
+            ]
+        }));
+        let instance = json!({"kind": "x", "p": 1, "q": {"r": 1, "s": 2}});
+        // Shape 2 fails twice at depth 2 and shape 3 fails once at depth 2: shape 3 has fewer.
+        let (violations, _) = s.validate(&instance);
+        let at: Vec<&str> = violations.iter().map(|v| v.path.as_str()).collect();
+        assert_eq!(at, ["$", "q.r"]);
+        // Equal depth and equal counts: the first wins.
+        let s = schema(json!({
+            "anyOf": [
+                {"properties": {"kind": {"const": "x"}, "first": {"type": "string"}}},
+                {"properties": {"kind": {"const": "x"}, "second": {"type": "string"}}}
+            ]
+        }));
+        let (violations, _) = s.validate(&json!({"kind": "x", "first": 1, "second": 1}));
+        let at: Vec<&str> = violations.iter().map(|v| v.path.as_str()).collect();
+        assert_eq!(at, ["$", "first"]);
+    }
+
+    #[test]
+    fn an_any_of_with_a_matching_shape_reports_nothing() {
+        let s = shapes();
+        assert!(found(&s, &json!({"type": "a", "values": [1, 2]})).is_empty());
+        let any = schema(json!({"anyOf": [{"type": "string"}, {"type": "integer"}]}));
+        assert!(found(&any, &json!(5)).is_empty());
+    }
+
+    #[test]
+    fn the_details_of_the_closest_shape_count_against_the_violation_cap() {
+        let s = schema(json!({
+            "oneOf": [
+                {"properties": {"kind": {"const": "x"}, "items": {"items": {"type": "string"}}}},
+                {"properties": {"kind": {"const": "y"}}}
+            ]
+        }));
+        let many = Value::Array((0..(MAX_VIOLATIONS + 20)).map(|n| json!(n)).collect());
+        let (violations, dropped) = s.validate(&json!({"kind": "x", "items": many}));
+        assert_eq!(violations.len(), MAX_VIOLATIONS);
+        assert!(dropped >= 20, "{dropped}");
+        assert_eq!(violations[0].keyword, Keyword::OneOf);
+    }
+
+    #[test]
+    fn a_nested_one_of_reports_its_closest_shape_too() {
+        let s = schema(json!({
+            "properties": {"list": {"items": {"oneOf": [
+                {"properties": {"type": {"const": "a"}, "n": {"maximum": 5}}},
+                {"properties": {"type": {"const": "b"}}}
+            ]}}}
+        }));
+        let (violations, _) = s.validate(&json!({"list": [{"type": "b"}, {"type": "a", "n": 9}]}));
+        let at: Vec<(&str, Keyword)> = violations
+            .iter()
+            .map(|v| (v.path.as_str(), v.keyword))
+            .collect();
+        assert_eq!(
+            at,
+            [("list[1]", Keyword::OneOf), ("list[1].n", Keyword::Maximum)]
+        );
     }
 
     #[test]

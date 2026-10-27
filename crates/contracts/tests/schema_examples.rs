@@ -108,6 +108,14 @@ fn parse_expectation(line: &str) -> Expectation {
         vec![Keyword::Not]
     } else if message.contains("is not of type") {
         vec![Keyword::Type]
+    } else if message.contains("is greater than or equal to the maximum of") {
+        vec![Keyword::ExclusiveMaximum]
+    } else if message.contains("is greater than the maximum of") {
+        vec![Keyword::Maximum]
+    } else if message.contains("is less than or equal to the minimum of") {
+        vec![Keyword::ExclusiveMinimum]
+    } else if message.contains("is less than the minimum of") {
+        vec![Keyword::Minimum]
     } else {
         Vec::new()
     };
