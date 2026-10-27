@@ -4,8 +4,9 @@
 use factory_domain::ids::{JobId, TenantId};
 use factory_domain::scope::{CrossTenantAccess, TenantScope};
 use factory_domain::values::{
-    AggregateVersion, Bounded, GitSha, HumanText, HumanTitle, MediaType, NonEmptyVec,
-    SemanticVersion, Sha256Digest, Slug, Timestamp, UniqueVec, UnitInterval,
+    AggregateVersion, Bounded, ExactInteger, ExactPositiveInt, GitSha, HumanText, HumanTitle,
+    LARGEST_EXACT_INTEGER, MediaType, NonEmptyVec, SemanticVersion, Sha256Digest, Slug, Timestamp,
+    Traceparent, UniqueVec, UnitInterval,
 };
 
 fn json_error_text<T: serde::de::DeserializeOwned + std::fmt::Debug>(json: &str) -> String {
@@ -263,6 +264,286 @@ fn timestamps_order_by_instant() {
     let latest = Timestamp::parse("2026-10-28T00:00:00Z").unwrap();
     assert!(early < later && later < latest);
     assert_eq!(early.unix_seconds(), 1_793_089_801);
+}
+
+fn hash_of(value: &Timestamp) -> u64 {
+    use std::hash::{BuildHasher, BuildHasherDefault, DefaultHasher};
+    BuildHasherDefault::<DefaultHasher>::default().hash_one(value)
+}
+
+#[test]
+fn timestamp_equality_ignores_spelling() {
+    // ADR 0011: `10:00:00Z` and `10:00:00.000Z` are one instant written two ways.
+    let spellings = [
+        "2026-10-27T10:00:00Z",
+        "2026-10-27T10:00:00.0Z",
+        "2026-10-27T10:00:00.000Z",
+        "2026-10-27T10:00:00.000000000Z",
+    ];
+    let parsed: Vec<Timestamp> = spellings
+        .iter()
+        .map(|text| Timestamp::parse(text).unwrap())
+        .collect();
+    for (left, left_text) in parsed.iter().zip(spellings) {
+        for (right, right_text) in parsed.iter().zip(spellings) {
+            assert_eq!(left, right, "{left_text} and {right_text}");
+            assert_eq!(
+                hash_of(left),
+                hash_of(right),
+                "{left_text} and {right_text} hash differently"
+            );
+            // Neither sorts before the other, and the order is consistent with equality.
+            assert_eq!(left.cmp(right), std::cmp::Ordering::Equal);
+            assert_eq!(left.partial_cmp(right), Some(std::cmp::Ordering::Equal));
+        }
+    }
+    // The spelling is still kept: only the comparison ignores it.
+    assert_eq!(parsed[0].as_text(), "2026-10-27T10:00:00Z");
+    assert_eq!(parsed[2].as_text(), "2026-10-27T10:00:00.000Z");
+    assert_ne!(parsed[0].as_text(), parsed[2].as_text());
+
+    // A set holds one of them, and a sorted list does not depend on the spelling.
+    let set: std::collections::HashSet<Timestamp> = parsed.iter().copied().collect();
+    assert_eq!(set.len(), 1);
+    let ordered: std::collections::BTreeSet<Timestamp> = parsed.iter().copied().collect();
+    assert_eq!(ordered.len(), 1);
+}
+
+#[test]
+fn timestamps_with_different_instants_stay_different_whatever_the_spelling() {
+    // The same digits at different lengths are different instants: `.5` is half a second and
+    // `.05` is a twentieth of one.
+    let half = Timestamp::parse("2026-10-27T10:00:00.5Z").unwrap();
+    let half_long = Timestamp::parse("2026-10-27T10:00:00.500Z").unwrap();
+    let twentieth = Timestamp::parse("2026-10-27T10:00:00.05Z").unwrap();
+    assert!(
+        Timestamp::parse("2026-10-27T10:00:00.5000000001Z").is_err(),
+        "ten fraction digits are not allowed"
+    );
+    let just_over = Timestamp::parse("2026-10-27T10:00:00.500000001Z").unwrap();
+
+    assert_eq!(half, half_long);
+    assert!(twentieth < half && twentieth < half_long);
+    assert!(half < just_over && half_long < just_over);
+    assert_ne!(hash_of(&half), hash_of(&twentieth));
+
+    // Sorting looks at the instant only: the shorter spelling does not always go first.
+    let mut stamps = vec![just_over, half_long, twentieth, half];
+    stamps.sort();
+    assert_eq!(stamps, [twentieth, half_long, half, just_over]);
+    assert_eq!(stamps[1].as_text(), "2026-10-27T10:00:00.500Z");
+    assert_eq!(stamps[2].as_text(), "2026-10-27T10:00:00.5Z");
+}
+
+#[test]
+fn equal_timestamps_hash_alike_and_order_alike_over_many_spellings() {
+    // Every nanosecond count that has trailing zeros can be written at several lengths.
+    for nanos in [
+        0_u32,
+        500_000_000,
+        250_000_000,
+        120_000_000,
+        100_000_000,
+        10_000_000,
+        1_000_000,
+        100_000,
+        10,
+        1,
+        999_999_999,
+    ] {
+        let full = format!("{nanos:09}");
+        let shortest = full.trim_end_matches('0');
+        let mut spellings = Vec::new();
+        for digits in shortest.len().max(1)..=9 {
+            let fraction = &full[..digits];
+            spellings.push(format!("2026-10-27T10:00:01.{fraction}Z"));
+        }
+        if nanos == 0 {
+            spellings.push("2026-10-27T10:00:01Z".to_owned());
+        }
+        let parsed: Vec<Timestamp> = spellings
+            .iter()
+            .map(|text| Timestamp::parse(text).unwrap())
+            .collect();
+        for window in parsed.windows(2) {
+            assert_eq!(window[0], window[1], "{spellings:?}");
+            assert_eq!(hash_of(&window[0]), hash_of(&window[1]), "{spellings:?}");
+            assert_eq!(window[0].cmp(&window[1]), std::cmp::Ordering::Equal);
+        }
+    }
+}
+
+#[test]
+fn from_utc_is_the_shortest_spelling() {
+    use time::OffsetDateTime;
+    let base = OffsetDateTime::from_unix_timestamp(1_793_095_200).unwrap(); // 2026-10-27T10:00:00Z
+    for (nanos, expected) in [
+        (0_i128, "2026-10-27T10:00:00Z"),
+        (500_000_000, "2026-10-27T10:00:00.5Z"),
+        (120_000_000, "2026-10-27T10:00:00.12Z"),
+        (1_000_000, "2026-10-27T10:00:00.001Z"),
+        (1_000, "2026-10-27T10:00:00.000001Z"),
+        (1, "2026-10-27T10:00:00.000000001Z"),
+        (999_999_999, "2026-10-27T10:00:00.999999999Z"),
+    ] {
+        let instant = base + time::Duration::nanoseconds(i64::try_from(nanos).unwrap());
+        let stamp = Timestamp::from_utc(instant);
+        assert_eq!(stamp.as_text(), expected);
+        // No value the factory builds ends in a zero digit of the fraction.
+        let text = stamp.as_text();
+        let without_zone = text.strip_suffix('Z').unwrap();
+        if let Some((_, fraction)) = without_zone.split_once('.') {
+            assert!(!fraction.ends_with('0'), "{text} has a trailing zero");
+        }
+    }
+    // Two values for the same instant that the factory built are byte-identical.
+    let once = Timestamp::from_utc(base + time::Duration::milliseconds(250));
+    let twice = Timestamp::from_utc(base + time::Duration::microseconds(250_000));
+    assert_eq!(once.as_text(), twice.as_text());
+}
+
+#[test]
+fn from_utc_agrees_with_a_parsed_timestamp_of_the_same_instant() {
+    // A timestamp from a document with a long spelling equals the one the factory builds.
+    let parsed = Timestamp::parse("2026-10-27T10:00:00.250000Z").unwrap();
+    let built = Timestamp::from_utc(parsed.to_utc());
+    assert_eq!(parsed, built);
+    assert_eq!(hash_of(&parsed), hash_of(&built));
+    assert_ne!(parsed.as_text(), built.as_text());
+    assert_eq!(built.as_text(), "2026-10-27T10:00:00.25Z");
+}
+
+// ---- integers that a ledger hash can hold ---------------------------------------------------------
+
+#[test]
+fn the_largest_exact_integer_is_two_to_the_53_minus_one() {
+    // ADR 0011: RFC 8785 writes every number as a 64-bit float, which holds this one exactly and
+    // rounds the next.
+    assert_eq!(LARGEST_EXACT_INTEGER, 9_007_199_254_740_991);
+    assert_eq!(LARGEST_EXACT_INTEGER, (1_i64 << 53) - 1);
+    #[allow(clippy::cast_precision_loss)]
+    let as_float = LARGEST_EXACT_INTEGER as f64;
+    assert_eq!(as_float as i64, LARGEST_EXACT_INTEGER);
+    assert_eq!((as_float + 1.0) as i64, LARGEST_EXACT_INTEGER + 1);
+    // One more is where a float starts to skip: 2^53 + 1 is not a float.
+    #[allow(clippy::cast_precision_loss)]
+    let skipped = (LARGEST_EXACT_INTEGER + 2) as f64;
+    assert_eq!(skipped as i64, LARGEST_EXACT_INTEGER + 1);
+}
+
+#[test]
+fn an_exact_integer_accepts_the_whole_range_and_refuses_the_next_number() {
+    for ok in [-LARGEST_EXACT_INTEGER, -1, 0, 1, 42, LARGEST_EXACT_INTEGER] {
+        assert_eq!(ExactInteger::new(ok).unwrap().get(), ok);
+    }
+    for bad in [
+        LARGEST_EXACT_INTEGER + 1,
+        -LARGEST_EXACT_INTEGER - 1,
+        i64::MAX,
+        i64::MIN,
+    ] {
+        let error = ExactInteger::new(bad).unwrap_err().to_string();
+        assert!(
+            error.contains("use a whole number from -9007199254740991 to 9007199254740991"),
+            "{bad}: {error}"
+        );
+    }
+}
+
+#[test]
+fn an_exact_positive_integer_starts_at_one_and_stops_at_the_largest_exact_integer() {
+    assert!(ExactPositiveInt::new(0).is_err());
+    assert!(ExactPositiveInt::new(-1).is_err());
+    assert_eq!(ExactPositiveInt::new(1).unwrap().get(), 1);
+    assert_eq!(
+        ExactPositiveInt::new(LARGEST_EXACT_INTEGER).unwrap().get(),
+        LARGEST_EXACT_INTEGER
+    );
+    let error = ExactPositiveInt::new(LARGEST_EXACT_INTEGER + 1)
+        .unwrap_err()
+        .to_string();
+    assert!(
+        error.contains("use a whole number from 1 to 9007199254740991"),
+        "{error}"
+    );
+}
+
+#[test]
+fn an_exact_integer_is_refused_when_a_document_is_read() {
+    // The value is checked when it is built from a document, so a number that a hash would round
+    // never gets as far as the hash.
+    assert_eq!(
+        serde_json::from_str::<ExactInteger>("9007199254740991")
+            .unwrap()
+            .get(),
+        LARGEST_EXACT_INTEGER
+    );
+    let error = json_error_text::<ExactInteger>("9007199254740992");
+    assert!(error.contains("9007199254740992"), "{error}");
+    let error = json_error_text::<ExactInteger>("-9007199254740992");
+    assert!(error.contains("-9007199254740992"), "{error}");
+    // A fraction is not a whole number, whatever its size.
+    assert!(serde_json::from_str::<ExactInteger>("5.0").is_err());
+    assert!(serde_json::from_str::<ExactInteger>("1e3").is_err());
+    // It writes back as the number it was.
+    let written = serde_json::to_string(&ExactInteger::new(-7).unwrap()).unwrap();
+    assert_eq!(written, "-7");
+}
+
+// ---- the trace context of a job ---------------------------------------------------------------
+
+#[test]
+fn traceparent_for_job_uses_the_job_uuid_as_trace_id_and_the_documented_span_id() {
+    // ADR 0013: the trace id is the 32 hex characters of the job's UUID, the span id is the first
+    // 16 hex characters of SHA-256("factory.job" + the job id), and the flags are `01`. The
+    // expected text was computed with `printf 'factory.job<job id>' | shasum -a 256`, not with
+    // this crate.
+    let job = JobId::parse("018f3a7e-5c1b-7d2e-9a4f-3b6c8d1e2f40").unwrap();
+    assert_eq!(
+        Traceparent::for_job(job).as_str(),
+        "00-018f3a7e5c1b7d2e9a4f3b6c8d1e2f40-f7e4b2ec5e23fd8a-01"
+    );
+    let other = JobId::parse("018f3a7e-b033-7d21-9f6e-5b8c0d1e2f32").unwrap();
+    assert_eq!(
+        Traceparent::for_job(other).as_str(),
+        "00-018f3a7eb0337d219f6e5b8c0d1e2f32-15f80c3cc8af35f0-01"
+    );
+}
+
+#[test]
+fn traceparent_for_job_matches_the_w3c_pattern_and_reads_back() {
+    let pattern = regex::Regex::new(Traceparent::PATTERN).unwrap();
+    for n in [
+        1_u128,
+        2,
+        0xabcd,
+        u128::MAX,
+        0x018f_3a7e_5c1b_7d2e_9a4f_3b6c_8d1e_2f40,
+    ] {
+        let job = JobId::from_uuid(uuid::Uuid::from_u128(n));
+        let made = Traceparent::for_job(job);
+        assert!(pattern.is_match(made.as_str()), "{made}");
+        assert_eq!(Traceparent::parse(made.as_str()).as_ref(), Ok(&made));
+        // The pieces: version 00, a trace id that is the job's UUID without hyphens, sampled.
+        let parts: Vec<&str> = made.as_str().split('-').collect();
+        assert_eq!(parts[0], "00");
+        assert_eq!(parts[1], job.as_uuid().simple().to_string());
+        assert_eq!(parts[2].len(), 16);
+        assert_eq!(parts[3], "01");
+    }
+}
+
+#[test]
+fn traceparent_for_job_is_the_same_for_the_same_job_and_differs_between_jobs() {
+    let a = JobId::from_uuid(uuid::Uuid::from_u128(7));
+    let b = JobId::from_uuid(uuid::Uuid::from_u128(8));
+    assert_eq!(Traceparent::for_job(a), Traceparent::for_job(a));
+    assert_ne!(Traceparent::for_job(a), Traceparent::for_job(b));
+    // Both the trace id and the span id depend on the job.
+    let (left, right) = (Traceparent::for_job(a), Traceparent::for_job(b));
+    let part = |t: &Traceparent, i: usize| t.as_str().split('-').nth(i).unwrap().to_owned();
+    assert_ne!(part(&left, 1), part(&right, 1));
+    assert_ne!(part(&left, 2), part(&right, 2));
 }
 
 // ---- identifiers ------------------------------------------------------------------------------

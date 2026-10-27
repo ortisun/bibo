@@ -262,6 +262,13 @@ pub const EXAMPLES: &[Example] = &[
         expect: include_str!("../../../../schemas/examples/evidence-ledger-entry/invalid/measured-fact-without-evidence.expect"),
     },
     Example {
+        schema: "evidence-ledger-entry",
+        valid: false,
+        file: "seed-above-the-largest-exact-integer.json",
+        text: include_str!("../../../../schemas/examples/evidence-ledger-entry/invalid/seed-above-the-largest-exact-integer.json"),
+        expect: include_str!("../../../../schemas/examples/evidence-ledger-entry/invalid/seed-above-the-largest-exact-integer.expect"),
+    },
+    Example {
         schema: "evidence-manifest",
         valid: true,
         file: "json-output-flag-draft-pr.json",
@@ -327,9 +334,23 @@ pub const EXAMPLES: &[Example] = &[
     Example {
         schema: "gate-report",
         valid: true,
+        file: "readability-passed-with-warnings.json",
+        text: include_str!("../../../../schemas/examples/gate-report/valid/readability-passed-with-warnings.json"),
+        expect: "",
+    },
+    Example {
+        schema: "gate-report",
+        valid: true,
         file: "security-scan-blocked-tool-missing.json",
         text: include_str!("../../../../schemas/examples/gate-report/valid/security-scan-blocked-tool-missing.json"),
         expect: "",
+    },
+    Example {
+        schema: "gate-report",
+        valid: false,
+        file: "blocked-report-with-warnings.json",
+        text: include_str!("../../../../schemas/examples/gate-report/invalid/blocked-report-with-warnings.json"),
+        expect: include_str!("../../../../schemas/examples/gate-report/invalid/blocked-report-with-warnings.expect"),
     },
     Example {
         schema: "gate-report",
@@ -348,6 +369,13 @@ pub const EXAMPLES: &[Example] = &[
     Example {
         schema: "gate-report",
         valid: false,
+        file: "not-applicable-report-with-warnings.json",
+        text: include_str!("../../../../schemas/examples/gate-report/invalid/not-applicable-report-with-warnings.json"),
+        expect: include_str!("../../../../schemas/examples/gate-report/invalid/not-applicable-report-with-warnings.expect"),
+    },
+    Example {
+        schema: "gate-report",
+        valid: false,
         file: "passed-with-command-that-never-ran.json",
         text: include_str!("../../../../schemas/examples/gate-report/invalid/passed-with-command-that-never-ran.json"),
         expect: include_str!("../../../../schemas/examples/gate-report/invalid/passed-with-command-that-never-ran.expect"),
@@ -362,9 +390,37 @@ pub const EXAMPLES: &[Example] = &[
     Example {
         schema: "gate-report",
         valid: false,
+        file: "passed-with-failures.json",
+        text: include_str!("../../../../schemas/examples/gate-report/invalid/passed-with-failures.json"),
+        expect: include_str!("../../../../schemas/examples/gate-report/invalid/passed-with-failures.expect"),
+    },
+    Example {
+        schema: "gate-report",
+        valid: false,
         file: "title-with-machine-prefix.json",
         text: include_str!("../../../../schemas/examples/gate-report/invalid/title-with-machine-prefix.json"),
         expect: include_str!("../../../../schemas/examples/gate-report/invalid/title-with-machine-prefix.expect"),
+    },
+    Example {
+        schema: "gate-report",
+        valid: false,
+        file: "warning-with-a-severity-field.json",
+        text: include_str!("../../../../schemas/examples/gate-report/invalid/warning-with-a-severity-field.json"),
+        expect: include_str!("../../../../schemas/examples/gate-report/invalid/warning-with-a-severity-field.expect"),
+    },
+    Example {
+        schema: "gate-report",
+        valid: false,
+        file: "warning-without-suggested-fix.json",
+        text: include_str!("../../../../schemas/examples/gate-report/invalid/warning-without-suggested-fix.json"),
+        expect: include_str!("../../../../schemas/examples/gate-report/invalid/warning-without-suggested-fix.expect"),
+    },
+    Example {
+        schema: "project-manifest",
+        valid: true,
+        file: "word-count-conventional-commit-titles.json",
+        text: include_str!("../../../../schemas/examples/project-manifest/valid/word-count-conventional-commit-titles.json"),
+        expect: "",
     },
     Example {
         schema: "project-manifest",
@@ -379,6 +435,13 @@ pub const EXAMPLES: &[Example] = &[
         file: "word-count-minimal.json",
         text: include_str!("../../../../schemas/examples/project-manifest/valid/word-count-minimal.json"),
         expect: "",
+    },
+    Example {
+        schema: "project-manifest",
+        valid: false,
+        file: "blocking-readability-rule-switched-off.json",
+        text: include_str!("../../../../schemas/examples/project-manifest/invalid/blocking-readability-rule-switched-off.json"),
+        expect: include_str!("../../../../schemas/examples/project-manifest/invalid/blocking-readability-rule-switched-off.expect"),
     },
     Example {
         schema: "project-manifest",

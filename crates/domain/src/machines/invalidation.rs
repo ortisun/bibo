@@ -1,27 +1,40 @@
-//! When an upstream artifact changes, which later work becomes stale.
+//! When something that later work was built on changes, which later work becomes stale.
 //!
 //! A later stage consumes an artifact by its content hash. If that artifact changes, every run
-//! that consumed the old one is out of date. The `invalidation_rules` of `state-machine.json`
-//! list, for each artifact, the stages whose runs become `SUPERSEDED` (guard
-//! `G_UPSTREAM_INVALIDATED`, transition `S20`).
+//! that consumed the old one is out of date. Some changes do not come from a stage at all: a
+//! person edits the request, or the base branch moves. The `invalidation_rules` of
+//! `state-machine.json` list, for each change, the stages whose runs become `SUPERSEDED` (guard
+//! `G_UPSTREAM_INVALIDATED`, transition `S20`). There are eight rows (ADR 0010 decision 4).
 //!
-//! Read the table in terms of the artifacts of the pipeline:
-//!
-//! | Artifact that changes | Produced by | What goes stale |
+//! | Change | Produced by | What goes stale |
 //! |---|---|---|
 //! | A new approved spec version (the requirements) | `SPECIFICATION` | domain discovery, architecture, the plan, the tasks, validation, both reviews, documentation, delivery and approval |
 //! | A new architecture version | `ARCHITECTURE` | the plan, the tasks and everything after them |
 //! | A new plan version | `TASK_PLANNING` | the tasks (`IMPLEMENTATION`) and everything after them |
 //! | A new implementation commit | `IMPLEMENTATION` | validation, both reviews, documentation, delivery and approval |
 //! | A new documentation commit | `DOCUMENTING` | the documentation review, delivery and approval |
+//! | The source request is edited after the intake snapshot | no stage | **every** stage, the intake included |
+//! | A new repository map | `REPOSITORY_INTELLIGENCE` | the specification and everything after it |
+//! | A value bound to gate evidence changes | no stage | validation, the code review, the documentation review, delivery and approval, but not `DOCUMENTING` |
+//!
+//! The last row covers the base commit, the gate definition hash, the policy hash and the sandbox
+//! image digest. The engine checks them at two points, before `DELIVERY` pushes and when an
+//! approval is recorded, so a busy base branch does not restart a job on every move. A rebase
+//! writes new commits, so it is a new implementation commit.
 //!
 //! Two rules keep this safe.
 //!
-//! * **Only live work is touched.** A run that is already terminal (failed, skipped, cancelled,
-//!   superseded, or sent back for rework) is left alone. A `PASSED` run is terminal but can still
-//!   be superseded, which is the one exception the state table allows. A superseded run can
-//!   never become live again, so stale work only ever grows.
-//! * **The producer is never stale.** A change does not supersede the stage that made it.
+//! * **Only live work is touched.** A run that is already terminal (failed, cancelled,
+//!   superseded, or sent back for rework) is left alone. A `PASSED` run and a `SKIPPED` run are
+//!   terminal but can still be superseded, which is the one exception the state table allows.
+//!   A skip decision was made on recorded inputs, so when they change it must be made again. A
+//!   superseded run can never become live again, so stale work only ever grows.
+//! * **The producer is never stale.** A change does not supersede the stage that made it. A
+//!   change that no stage makes has no producer to spare, so every listed run is superseded, the
+//!   first one too.
+//!
+//! A human answer (`S13`) is not a change in this table. The stage run that waits for a person
+//! has produced nothing yet, so no later run exists to become stale.
 //!
 //! Rework uses the same machinery. When a stage sends the work back to an earlier stage, the old
 //! run of that stage and every run after it is out of date for the same reason: the target stage
@@ -47,6 +60,16 @@ string_enum! {
         ImplementationCommit = "IMPLEMENTATION produces a new commit",
         /// The documentation changed: the job branch has a new documentation commit.
         DocumentationCommit = "DOCUMENTING produces a new documentation commit",
+        /// A person edited the source request after the intake snapshot. Nothing in the pipeline
+        /// produces this, and the intake run goes stale with all the others: the text every later
+        /// stage read is no longer the text a person authorized.
+        RequestEdited = "The source request is edited after the intake snapshot",
+        /// The repository map changed. The specification consumed the map and the baseline.
+        RepositoryMapVersion = "REPOSITORY_INTELLIGENCE produces a new repository map",
+        /// A value that the gate evidence is bound to changed: the base commit, the gate
+        /// definition hash, the policy hash or the sandbox image digest. Nothing in the pipeline
+        /// produces this. The documentation text did not change, so `DOCUMENTING` stays.
+        GateEvidenceBinding = "A value bound to gate evidence changes",
     }
 }
 
@@ -99,16 +122,61 @@ const AFTER_DOCUMENTING: &[StageKind] = &[
     StageKind::Approval,
 ];
 
+/// Every stage, the intake first: the edited request is the input of all of them.
+const AFTER_REQUEST_EDIT: &[StageKind] = &[
+    StageKind::Intake,
+    StageKind::RepositoryIntelligence,
+    StageKind::Specification,
+    StageKind::DomainDiscovery,
+    StageKind::Architecture,
+    StageKind::TaskPlanning,
+    StageKind::Implementation,
+    StageKind::Validation,
+    StageKind::Review,
+    StageKind::Documenting,
+    StageKind::DocumentationReview,
+    StageKind::Delivery,
+    StageKind::Approval,
+];
+
+const AFTER_REPOSITORY_MAP: &[StageKind] = &[
+    StageKind::Specification,
+    StageKind::DomainDiscovery,
+    StageKind::Architecture,
+    StageKind::TaskPlanning,
+    StageKind::Implementation,
+    StageKind::Validation,
+    StageKind::Review,
+    StageKind::Documenting,
+    StageKind::DocumentationReview,
+    StageKind::Delivery,
+    StageKind::Approval,
+];
+
+/// The stages whose evidence is bound to the base commit, the gate definition, the policy and the
+/// image. `DOCUMENTING` is not one of them.
+const AFTER_EVIDENCE_BINDING: &[StageKind] = &[
+    StageKind::Validation,
+    StageKind::Review,
+    StageKind::DocumentationReview,
+    StageKind::Delivery,
+    StageKind::Approval,
+];
+
 impl ArtifactChange {
-    /// The stage whose run produces this artifact.
+    /// The stage whose run produces this change, or `None` for a change that comes from outside
+    /// the pipeline (an edited request, a moved base branch). A change with no producer
+    /// supersedes every stage it lists, the first one included.
     #[must_use]
-    pub const fn producer(self) -> StageKind {
+    pub const fn producer(self) -> Option<StageKind> {
         match self {
-            ArtifactChange::SpecificationApproved => StageKind::Specification,
-            ArtifactChange::ArchitectureVersion => StageKind::Architecture,
-            ArtifactChange::PlanVersion => StageKind::TaskPlanning,
-            ArtifactChange::ImplementationCommit => StageKind::Implementation,
-            ArtifactChange::DocumentationCommit => StageKind::Documenting,
+            ArtifactChange::SpecificationApproved => Some(StageKind::Specification),
+            ArtifactChange::ArchitectureVersion => Some(StageKind::Architecture),
+            ArtifactChange::PlanVersion => Some(StageKind::TaskPlanning),
+            ArtifactChange::ImplementationCommit => Some(StageKind::Implementation),
+            ArtifactChange::DocumentationCommit => Some(StageKind::Documenting),
+            ArtifactChange::RepositoryMapVersion => Some(StageKind::RepositoryIntelligence),
+            ArtifactChange::RequestEdited | ArtifactChange::GateEvidenceBinding => None,
         }
     }
 
@@ -122,6 +190,7 @@ impl ArtifactChange {
             StageKind::TaskPlanning => Some(ArtifactChange::PlanVersion),
             StageKind::Implementation => Some(ArtifactChange::ImplementationCommit),
             StageKind::Documenting => Some(ArtifactChange::DocumentationCommit),
+            StageKind::RepositoryIntelligence => Some(ArtifactChange::RepositoryMapVersion),
             _ => None,
         }
     }
@@ -135,6 +204,9 @@ impl ArtifactChange {
             ArtifactChange::PlanVersion => AFTER_PLAN,
             ArtifactChange::ImplementationCommit => AFTER_IMPLEMENTATION,
             ArtifactChange::DocumentationCommit => AFTER_DOCUMENTING,
+            ArtifactChange::RequestEdited => AFTER_REQUEST_EDIT,
+            ArtifactChange::RepositoryMapVersion => AFTER_REPOSITORY_MAP,
+            ArtifactChange::GateEvidenceBinding => AFTER_EVIDENCE_BINDING,
         }
     }
 }
@@ -170,6 +242,18 @@ pub static INVALIDATION_RULES: &[InvalidationRule] = &[
         change: ArtifactChange::DocumentationCommit,
         supersedes: AFTER_DOCUMENTING,
     },
+    InvalidationRule {
+        change: ArtifactChange::RequestEdited,
+        supersedes: AFTER_REQUEST_EDIT,
+    },
+    InvalidationRule {
+        change: ArtifactChange::RepositoryMapVersion,
+        supersedes: AFTER_REPOSITORY_MAP,
+    },
+    InvalidationRule {
+        change: ArtifactChange::GateEvidenceBinding,
+        supersedes: AFTER_EVIDENCE_BINDING,
+    },
 ];
 
 /// The runs, in the order given, that are of one of `stages` and can still be superseded.
@@ -181,7 +265,8 @@ fn supersedable(runs: &[StageRunSnapshot], stages: &[StageKind]) -> Vec<StageRun
         .collect()
 }
 
-/// The runs that `change` makes stale: every live run of a stale stage, old or new.
+/// The runs that `change` makes stale: every live run of a stale stage, old or new. A skipped
+/// run is live in this sense, because the decision to skip it can be made again.
 ///
 /// Each returned run takes the `supersede` event. The result is empty once the plan has been
 /// applied, so applying a plan twice does nothing.

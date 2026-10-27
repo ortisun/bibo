@@ -643,6 +643,11 @@
           "command": "cargo nextest run -p factory-contracts --test schema_examples"
         },
         {
+          "check": "The two YAML example files are loaded directly through the YAML loader, validated against their schemas, and equal to the JSON transcriptions that the domain crate tests: schemas/examples/domain-capability-profile/valid/quant-trading-from-master-prompt.yaml and schemas/examples/project-manifest/valid/word-count-fixture.yaml. The domain crate only reads the JSON transcriptions.",
+          "kind": "test",
+          "command": "cargo nextest run -p factory-contracts --test yaml_examples"
+        },
+        {
           "check": "Every keyword used by the schemas (if/then/else, dependentSchemas, contains, oneOf, not) behaves as in check-jsonschema, proven by the same examples.",
           "kind": "test",
           "command": "cargo nextest run -p factory-contracts --test schema_examples"
@@ -1179,6 +1184,11 @@
           "check": "The janitor removes labelled containers, networks and sidecars whose attempt is terminal.",
           "kind": "test",
           "command": "cargo nextest run -p factory-sandbox janitor_removes_orphans"
+        },
+        {
+          "check": "Shell metacharacters in an argument run as literals, and a shell interpreter is denied (NT-TOOL-01, S part). Inside the agent sandbox the same payload runs as a non-root user without capabilities, writes only to the allowed mounts, and leaves no host marker (B part). Paths that leave the workspace, hidden paths and writes outside the writable mounts are refused (NT-TOOL-04, B part). Argument-injection commands run inside the sandbox without effect on evidence or the network (NT-TOOL-05, B part).",
+          "kind": "test",
+          "command": "cargo nextest run -p factory-sandbox negative_nt_tool_01 negative_nt_tool_04 negative_nt_tool_05"
         }
       ]
     },
@@ -1192,7 +1202,7 @@
         "software_architect"
       ],
       "size": "L",
-      "summary": "Implement Store and Tx over Diesel with diesel-async, claim and lease operations, outbox writes, the ledger with chain verification, and LocalFsArtifactStore. The shared contract suite from testkit runs against it.",
+      "summary": "Implement Store and Tx over Diesel with diesel-async, claim and lease operations, outbox writes, the ledger with chain verification, and LocalFsArtifactStore. The shared contract suite from testkit runs against it. Follow the notes in docs/database/for-the-storage-crate.md and ADR 0012. Claims lock with FOR NO KEY UPDATE SKIP LOCKED. Store::begin makes the tenant setting as its first statement, the system scope uses its own role and pool, and the two lookups outside a transaction use the narrow functions. The isolation tests run as the application login. No database message or detail text ever reaches an API client.",
       "owns": [
         "crates/storage/Cargo.toml",
         "crates/storage/clippy.toml",
@@ -1206,7 +1216,10 @@
         "ADR 0004",
         "ADR 0007",
         "ADR 0008",
-        "migrations/"
+        "ADR 0012",
+        "migrations/",
+        "docs/database/for-the-storage-crate.md",
+        "docs/database/ledger-and-audit.md (the hash vectors)"
       ],
       "exposes_ports": [],
       "implements_ports": [
@@ -1219,7 +1232,8 @@
       ],
       "depends_on": [
         "s0-ports-and-testkit",
-        "s0-database-baseline"
+        "s0-database-baseline",
+        "s1-database-tenancy-and-state-sync"
       ],
       "done": [
         {
@@ -1248,9 +1262,14 @@
           "command": "cargo nextest run -p factory-storage --test tenant_isolation"
         },
         {
-          "check": "Concurrent appends to one job give a continuous, verifiable chain, and flipping one byte makes the verifier fail.",
+          "check": "Concurrent appends to one job give a continuous, verifiable chain. The test that flips one byte of a stored entry does it as the table owner with the ledger trigger disabled (ALTER TABLE ... DISABLE TRIGGER), and the verifier then fails.",
           "kind": "test",
           "command": "cargo nextest run -p factory-storage --test ledger_chain"
+        },
+        {
+          "check": "The first append test reproduces the two published hash vectors of docs/database/ledger-and-audit.md, so the database check and the domain function agree.",
+          "kind": "test",
+          "command": "cargo nextest run -p factory-storage ledger_vectors_from_the_database_docs"
         },
         {
           "check": "The artifact store is idempotent, verifies hashes on read, detects a corrupted blob and writes read-only files.",
@@ -1271,6 +1290,26 @@
           "check": "The application role cannot UPDATE, DELETE, TRUNCATE or DROP the audit tables (NT-AUD-01), and the audit events carry actor, policy hash and correlation id.",
           "kind": "test",
           "command": "cargo nextest run -p factory-storage negative_nt_aud_01"
+        },
+        {
+          "check": "Claims use FOR NO KEY UPDATE SKIP LOCKED, shown by a ledger append that is not blocked while a claimer holds the stage run.",
+          "kind": "test",
+          "command": "cargo nextest run -p factory-storage claim_does_not_block_ledger_appends"
+        },
+        {
+          "check": "Every tenant transaction makes the tenant setting first. Run as the application login with two tenants, a call for tenant A never reads or changes tenant B's rows and a call with no tenant sees nothing (NT-TEN-01, Rust part). The store refuses to become ready when its role can bypass row-level security or owns the tables.",
+          "kind": "test",
+          "command": "cargo nextest run -p factory-storage negative_nt_ten_01 refuses_a_role_that_bypasses_rls"
+        },
+        {
+          "check": "The two lookups outside a transaction answer None for every miss reason, so a caller cannot tell an unknown token from an expired one.",
+          "kind": "test",
+          "command": "cargo nextest run -p factory-storage lookups_hide_the_reason"
+        },
+        {
+          "check": "Every database error maps to the closed StoreError. The message and detail text of the database, which can name another tenant's key value, never reach a caller and are logged only after redaction.",
+          "kind": "test",
+          "command": "cargo nextest run -p factory-storage database_text_never_reaches_a_caller"
         }
       ]
     },
@@ -1330,7 +1369,8 @@
       ],
       "depends_on": [
         "s0-state-machines",
-        "s0-ports-and-testkit"
+        "s0-ports-and-testkit",
+        "s1-domain-revision"
       ],
       "done": [
         {
@@ -1349,9 +1389,24 @@
           "command": "cargo nextest run -p factory-workflow bounded_failure_escalates"
         },
         {
+          "check": "A human answer starts a new attempt window, so the failure after an answer retries before it escalates again, and the total stays bounded (ADR 0010).",
+          "kind": "test",
+          "command": "cargo nextest run -p factory-workflow human_answer_starts_a_new_window"
+        },
+        {
           "check": "A rework after documentation supersedes the documentation runs, driven by the JSON invalidation table.",
           "kind": "test",
           "command": "cargo nextest run -p factory-workflow invalidation_follows_the_table"
+        },
+        {
+          "check": "An external change (the source request edited, or a value bound to gate evidence changed) supersedes exactly the runs the invalidation table lists, the first one included, cancels their active attempts and creates new runs.",
+          "kind": "test",
+          "command": "cargo nextest run -p factory-workflow external_changes_follow_the_table"
+        },
+        {
+          "check": "A stage skipped by a recorded rule does not stall the pipeline or the completion of the job.",
+          "kind": "test",
+          "command": "cargo nextest run -p factory-workflow skipped_stage_does_not_stall_the_pipeline"
         },
         {
           "check": "Dropping the engine mid-transaction and starting a new one resumes the job without loss or duplication.",
@@ -1387,6 +1442,11 @@
           "check": "Every audit event type the policy requires is emitted with actor, policy hash and correlation id, shown by a scripted scenario per type (NT-AUD-03, engine part).",
           "kind": "test",
           "command": "cargo nextest run -p factory-workflow --test audit every_required_event_type"
+        },
+        {
+          "check": "Every outbox event carries the traceparent derived from its job id, and two engine instances working on one job produce events with one trace id (ADR 0013).",
+          "kind": "test",
+          "command": "cargo nextest run -p factory-workflow events_carry_the_job_traceparent"
         }
       ]
     },
@@ -1416,7 +1476,8 @@
       "depends_on": [
         "s0-state-machines",
         "s0-security-baseline",
-        "s0-contracts-and-registry"
+        "s0-contracts-and-registry",
+        "s1-domain-revision"
       ],
       "done": [
         {
@@ -1453,6 +1514,11 @@
           "check": "The rework cap in the policy file is at most two. A larger value fails the test (ADR 0009).",
           "kind": "test",
           "command": "cargo nextest run -p factory-domain rework_cap_matches_the_default"
+        },
+        {
+          "check": "The structured-output repair cap in the policy file is at most two. A larger value fails the test (ADR 0010).",
+          "kind": "test",
+          "command": "cargo nextest run -p factory-domain repair_cap_matches_the_default"
         }
       ]
     },
@@ -1505,7 +1571,7 @@
           "command": "cargo nextest run -p factory-runtime negative_nt_inj_07"
         },
         {
-          "check": "The environment of the spawned tool is fixed by the supervisor, and an env parameter or an LD_PRELOAD-style value from the agent has no effect (NT-TOOL-06).",
+          "check": "The environment of the spawned tool is fixed by the supervisor, and an env parameter or an LD_PRELOAD-style value from the agent has no effect. The created container has only allowlisted names in Config.Env, and the posture verifier rejects one created with LD_PRELOAD or RUSTFLAGS (NT-TOOL-06, S and B parts).",
           "kind": "test",
           "command": "cargo nextest run -p factory-runtime negative_nt_tool_06"
         },
@@ -1736,7 +1802,7 @@
           "command": "cargo nextest run -p factory-workflow --test readability"
         },
         {
-          "check": "The gate never alters its input and reports warnings separately from blocking violations.",
+          "check": "The gate never alters its input and reports warnings separately from blocking violations, in the warnings field of the gate report. A report with only warnings is PASSED with an empty failures list.",
           "kind": "test",
           "command": "cargo nextest run -p factory-workflow readability_never_edits_and_separates_severity"
         },
@@ -1754,6 +1820,11 @@
           "check": "Its reports validate against the gate-report schema.",
           "kind": "test",
           "command": "cargo nextest run -p factory-workflow readability_reports_match_the_schema"
+        },
+        {
+          "check": "A repository's disabled_readability_rules switches off title-type-tag and no other rule, and a rule that blocks stays on whatever the manifest says (ADR 0009 item 19).",
+          "kind": "test",
+          "command": "cargo nextest run -p factory-workflow readability_manifest_switches_off_only_warning_rules"
         }
       ]
     },
@@ -1767,7 +1838,7 @@
         "software_architect"
       ],
       "size": "L",
-      "summary": "Implement SpecKitProvider in the spec_adapter crate, the pure parser that turns Spec Kit files into a SpecificationContract, the specification stage handler and the deterministic gate with freeze and revision. Follows ADR 0006 and the spike verdict: invocation syntax read from integration.json, no init on an initialised repository, an explicit feature directory per job in its own worktree, the seven post-conditions after every skill, the question detector, the checklist pre-run, the revision method, and issue text kept out of the instruction channel.",
+      "summary": "Implement SpecKitProvider in the spec_adapter crate, the pure parser that turns Spec Kit files into a SpecificationContract, the specification stage handler and the deterministic gate with freeze and revision. Follows ADR 0006 and the spike verdict: invocation syntax read from integration.json, no init on an initialised repository, an explicit feature directory per job in its own worktree, the seven post-conditions after every skill, the question detector, the checklist pre-run, the revision method, and issue text kept out of the instruction channel. The stage profile check is a gate of this stage and cannot be waived: a forbidden Spec Kit artifact after the run, or a denied skill in the event stream, makes it FAILED, the stage BLOCKED and the output discarded.",
       "owns": [
         "crates/spec_adapter/**",
         "crates/workflow/src/stages/specification/**",
@@ -1825,7 +1896,7 @@
           "command": "cargo nextest run -p factory-workflow --test specification self_ticked_checklist_is_not_evidence"
         },
         {
-          "check": "Each deterministic specification gate rule has a failing fixture: required sections, status and date, story priorities and scenarios, identifier uniqueness, requirement keywords, remaining markers and placeholders, technology names, and the committed artifact set with matching hashes.",
+          "check": "Each deterministic specification gate rule has a failing fixture: required sections, status and date, story priorities and scenarios, identifier uniqueness, requirement keywords, remaining markers and placeholders, technology names, the committed artifact set with matching hashes, and the stage profile check (stage_profile_check, which cannot be waived).",
           "kind": "test",
           "command": "cargo nextest run -p factory-workflow --test specification"
         },
@@ -1853,6 +1924,11 @@
           "check": "The specification stage profile permits exactly the four allowed Spec Kit skills and denies plan, tasks, analyze, implement, converge and taskstoissues even inside that stage (NT-POL-08).",
           "kind": "test",
           "command": "cargo nextest run -p factory-spec-adapter --test negative stage_profile_denies_forbidden_skills"
+        },
+        {
+          "check": "The stage profile check is FAILED and the stage BLOCKED, with the output discarded and a forbidden_skill_invoked audit event, when plan.md, tasks.md, research.md, data-model.md, quickstart.md or contracts/ appear after the specification attempt, and the check is on the list of gates that cannot be waived (NT-POL-08, B part).",
+          "kind": "test",
+          "command": "cargo nextest run -p factory-workflow --test specification stage_profile_check_blocks_forbidden_artifacts"
         }
       ]
     },
@@ -1903,7 +1979,7 @@
           "command": "cargo nextest run -p factory-workflow negative_nt_authz_01"
         },
         {
-          "check": "An issue edited by someone without authorization after the intake snapshot stops processing on a hash mismatch (NT-AUTHZ-05).",
+          "check": "An issue edited by someone without authorization after the intake snapshot is detected by a hash mismatch. The job's runs from INTAKE on are superseded, no agent reads the new text, and the new intake run waits for re-authorization with the job WAITING_FOR_HUMAN (NT-AUTHZ-05; the catalog's name awaiting_reauthorization is this condition, ADR 0010).",
           "kind": "test",
           "command": "cargo nextest run -p factory-workflow negative_nt_authz_05"
         },
@@ -2068,9 +2144,14 @@
           "command": "cargo nextest run -p factory-workflow --test documentation reviewer_independence"
         },
         {
-          "check": "Defects route by defect class: documentation back to DOCUMENTING, code behavior back to IMPLEMENTATION.",
+          "check": "Defects route by defect class: documentation back to DOCUMENTING, code behavior back to IMPLEMENTATION, and specification or policy to a person. A deterministic failure of the documentation gate counts as a documentation defect (ADR 0010).",
           "kind": "test",
           "command": "cargo nextest run -p factory-workflow --test documentation defects_route_by_class"
+        },
+        {
+          "check": "External links are not fetched. The report says how many it did not check and never calls one valid, and internal links and anchors are checked (ADR 0009 item 18).",
+          "kind": "test",
+          "command": "cargo nextest run -p factory-workflow --test documentation external_links_are_not_reported_valid"
         }
       ]
     },
@@ -2156,6 +2237,21 @@
           "check": "No code path merges or deploys.",
           "kind": "command",
           "command": "cargo xtask check-architecture"
+        },
+        {
+          "check": "Before the branch is pushed and when an approval is recorded, the base commit, the gate definition hash, the policy hash and the image digest are compared with the evidence manifest, and a difference supersedes the validation, review, documentation review, delivery and approval runs (ADR 0010).",
+          "kind": "test",
+          "command": "cargo nextest run -p factory-workflow --test delivery evidence_binding_is_rechecked"
+        },
+        {
+          "check": "An approval is refused while a translation-unfaithful warning in the evidence has no recorded human decision (ADR 0009 item 17).",
+          "kind": "test",
+          "command": "cargo nextest run -p factory-workflow --test delivery translation_warnings_need_a_decision"
+        },
+        {
+          "check": "A person can send rework from a waiting or blocked stage only to the targets of the human rework table, and the cap of two rounds applies to each count.",
+          "kind": "test",
+          "command": "cargo nextest run -p factory-workflow --test delivery human_rework_targets"
         }
       ]
     },
@@ -2207,7 +2303,8 @@
         "s1-stage-documentation",
         "s1-stage-delivery-and-approval",
         "s1-agent-definitions",
-        "s1-security-test-harness"
+        "s1-security-test-harness",
+        "s1-telemetry-wiring"
       ],
       "done": [
         {
@@ -2264,6 +2361,16 @@
           "check": "A webhook for an unknown installation or a transferred repository is dropped and audited (NT-AUTHZ-08).",
           "kind": "test",
           "command": "cargo nextest run -p factory-api negative_nt_authz_08"
+        },
+        {
+          "check": "Every binary builds the redactor from the loaded policy and the registry of the factory's secret values and passes it to the telemetry setup. The worker and the API run each stretch of work on a job inside a factory.job span with the derived trace context.",
+          "kind": "test",
+          "command": "cargo nextest run -p factory-worker telemetry_gets_the_real_redactor job_work_runs_in_a_job_span"
+        },
+        {
+          "check": "The worker holds two connection pools with two different login roles, one for tenant transactions and one for the system scope, and the configuration is refused if both name the same role (ADR 0012).",
+          "kind": "test",
+          "command": "cargo nextest run -p factory-worker two_pools_two_roles"
         }
       ]
     },
@@ -2367,6 +2474,11 @@
           "check": "The metric names for queue depth, duration, gate failures, retries and spend exist in the registry.",
           "kind": "test",
           "command": "cargo nextest run --test metric_names"
+        },
+        {
+          "check": "Two engine instances that work on one job, one after the other, produce spans with one trace id (ADR 0013).",
+          "kind": "test",
+          "command": "cargo nextest run --test one_trace_across_restarts"
         }
       ]
     },
@@ -2431,7 +2543,7 @@
         "software_architect"
       ],
       "size": "M",
-      "summary": "Measure the hot queries at 100,000 rows, propose retention and partitioning for the outbox, ledger and artifact metadata, check that version N-1 code runs on version N schema, and draft the row-level security proposal for Slice 4.",
+      "summary": "Measure the hot queries at 100,000 rows with row-level security on, propose retention and partitioning for the outbox, ledger and artifact metadata, and check that version N-1 code runs on version N schema.",
       "owns": [
         "docs/database/**",
         "migrations/**"
@@ -2465,7 +2577,7 @@
           "command": "scripts/db-test.sh compat"
         },
         {
-          "check": "A row-level security proposal is drafted as an ADR for Slice 4.",
+          "check": "The cost of row-level security is measured at 100,000 rows (the extra statement per transaction, the claim and sweep plans) and recorded, and the result of each item ADR 0012 listed as not verified is in docs/database.",
           "kind": "review",
           "command": null
         }
@@ -2513,7 +2625,7 @@
       ],
       "done": [
         {
-          "check": "With a runtime scripted to obey each injected instruction, policy still denies the effect, the protected path stays unchanged, there is no network and no secret read, shown by ledger and sandbox logs (NT-INJ-01, NT-INJ-03, NT-INJ-04).",
+          "check": "With a runtime scripted to obey each injected instruction, policy still denies the effect, the protected path stays unchanged, there is no network and no secret read, shown by ledger and sandbox logs (NT-INJ-01, NT-INJ-03). Tool-output injection (NT-INJ-04) has its B and S parts in full: every control-plane endpoint but the broker rejects the job token, no approval or grant appears, the posture at the end equals the posture at the start, and supervisor-run output sits in a data envelope. The C part is BLOCKED until s0-agent-runtime-spike has run.",
           "kind": "test",
           "command": "cargo nextest run -p factory-workflow negative_nt_inj_01 negative_nt_inj_03 negative_nt_inj_04"
         },
@@ -2839,7 +2951,7 @@
         "security"
       ],
       "size": "M",
-      "summary": "Implement the pure redactor and secret check described in docs/security/secrets-and-credentials.md: an in-memory exact-value registry matched in raw, base64, hex, percent-encoded and JSON-escaped forms, the vendor patterns from the policy, and matching across chunk boundaries. Logs, artifacts, GitHub-bound text and traces all call it.",
+      "summary": "Implement the pure redactor and secret check described in docs/security/secrets-and-credentials.md: an in-memory exact-value registry matched in raw, base64, hex, percent-encoded and JSON-escaped forms, the vendor patterns from the policy, and matching across chunk boundaries. Logs, artifacts, GitHub-bound text and traces all call it. The telemetry crate wraps this redactor (s1-telemetry-wiring), so it must be built from the loaded policy without I/O and be shared between threads.",
       "owns": [
         "crates/domain/src/redaction/**",
         "crates/domain/tests/redaction.rs"
@@ -2868,6 +2980,11 @@
           "check": "The redactor is pure: it makes no clock, file or network call.",
           "kind": "command",
           "command": "cargo clippy -p factory-domain -- -D warnings"
+        },
+        {
+          "check": "The redactor is built from the policy's pattern list without any I/O, can be shared between threads, and its patterns are not a second copy of the policy.",
+          "kind": "test",
+          "command": "cargo nextest run -p factory-domain --test redaction redactor_is_built_from_the_policy_and_is_shareable"
         }
       ],
       "implements_ports": [],
@@ -2982,7 +3099,7 @@
         "software_architect"
       ],
       "size": "L",
-      "summary": "Run validation in a fresh verify container from the commit, using gate definitions read from the protected base commit, never from the builder's branch. Evaluate the scope, protected-path, test-protection, secret and evidence-binding rules on the host-side tree diff. Missing evidence is BLOCKED. The supervisor's observation of the exit code is the evidence, not a file the builder could write.",
+      "summary": "Run validation in a fresh verify container from the commit, using gate definitions read from the protected base commit, never from the builder's branch. Evaluate the scope, protected-path, test-protection, secret and evidence-binding rules on the host-side tree diff. Missing evidence is BLOCKED. The supervisor's observation of the exit code is the evidence, not a file the builder could write. The stage profile check belongs to the specification stage package, which owns the gate that runs after a specification attempt.",
       "owns": [
         "crates/workflow/src/stages/validation/**",
         "crates/workflow/src/gates/command/**",
@@ -3123,6 +3240,363 @@
         "SandboxSession",
         "Workspace"
       ]
+    },
+    {
+      "id": "s1-domain-revision",
+      "title": "Bring the domain crate in line with the revised state machine and contracts",
+      "slice": 1,
+      "owner_role": "software_engineer",
+      "reviewers": [
+        "software_architect"
+      ],
+      "size": "L",
+      "summary": "Make the Rust code of the domain crate follow the changes made to state-machine.json and the schemas on 2026-10-27 (ADR 0010, ADR 0011 and ADR 0013): the renamed retry guard and the repair cap, the attempt limit as an escalation condition, skipped stages that satisfy their dependants, the defect routing matrix and the human rework routes, three new invalidation rows, a timestamp that compares by instant, warnings in the gate report, the manifest field, the integer bounds and the derived trace context of a job. This package must land in the same branch as the JSON and schema changes, because the conformance and example tests of the domain crate fail until it does. A temporary checklist, docs/architecture/domain-revision-checklist.md, mapped every JSON change to the function and the test; it was deleted when the work landed when every row is true. It is test-first: the failing conformance run is the first commit.",
+      "owns": [
+        "crates/domain/src/machines/**",
+        "crates/domain/src/state/**",
+        "crates/domain/src/values/**",
+        "crates/domain/src/contracts/**",
+        "crates/domain/src/ledger.rs",
+        "crates/domain/tests/state_machine_conformance.rs",
+        "crates/domain/tests/state_machine_properties.rs",
+        "crates/domain/tests/contract_examples.rs",
+        "crates/domain/tests/contract_rules.rs",
+        "crates/domain/tests/ledger_chain.rs",
+        "crates/domain/tests/values.rs",
+        "crates/domain/tests/support/**",
+        "crates/domain/tests/tools/**"
+      ],
+      "inputs": [
+        "docs/architecture/state-machine.json",
+        "ADR 0010",
+        "ADR 0011",
+        "ADR 0013",
+        "schemas/"
+      ],
+      "exposes_ports": [],
+      "implements_ports": [],
+      "consumes_ports": [],
+      "depends_on": [
+        "s0-domain-vocabulary",
+        "s0-state-machines"
+      ],
+      "done": [
+        {
+          "check": "This package merges together with the changes to state-machine.json and the schemas, so no branch has a red conformance test. The reviewer checks the order of the commits: the failing run first, then the code.",
+          "kind": "review",
+          "command": null
+        },
+        {
+          "check": "The whole conformance file passes against the revised JSON, including the guard rename, the new edge of SKIPPED, the new actor of S13 and the eight invalidation rows.",
+          "kind": "test",
+          "command": "cargo nextest run -p factory-domain --test state_machine_conformance"
+        },
+        {
+          "check": "The defect routing matrix and the human rework routes are tested cell by cell against the JSON, and a verdict with mixed defect classes picks the class by precedence.",
+          "kind": "test",
+          "command": "cargo nextest run -p factory-domain defect_routing_matches_json human_rework_routes_match_json mixed_defect_classes_follow_precedence"
+        },
+        {
+          "check": "BUDGET_EXHAUSTED, an exhausted attempt limit and an exhausted repair cap choose S07 and never S06, over generated facts, and an attempt window restarts at a human answer.",
+          "kind": "test",
+          "command": "cargo nextest run -p factory-domain budget_and_attempt_limit_escalate repair_cap_is_at_most_two"
+        },
+        {
+          "check": "A skipped run satisfies the upstream and the completion guards, is planned for supersession by an upstream change, and creates no assurance level.",
+          "kind": "test",
+          "command": "cargo nextest run -p factory-domain skipped_stage_satisfies_dependants skipped_stage_is_superseded"
+        },
+        {
+          "check": "Timestamps with the same instant are equal, hash alike and order alike whatever their spelling, and the factory's own values have no trailing zero in the fraction.",
+          "kind": "test",
+          "command": "cargo nextest run -p factory-domain --test values timestamp_equality_ignores_spelling from_utc_is_the_shortest_spelling"
+        },
+        {
+          "check": "The gate report has warnings, the project manifest has the disabled readability rules, and a BLOCKED or NOT_APPLICABLE report with warnings is refused. The generated example index is regenerated.",
+          "kind": "test",
+          "command": "python3 -I crates/domain/tests/tools/gen_example_index.py --check && cargo nextest run -p factory-domain --test contract_examples --test contract_rules"
+        },
+        {
+          "check": "The integer limit of a ledger entry in the schema equals the limit the hash function enforces, and an out-of-range seed is refused when the value is built.",
+          "kind": "test",
+          "command": "cargo nextest run -p factory-domain schema_integer_maximum_equals_ledger_limit"
+        },
+        {
+          "check": "The traceparent derived from a job id has the job's UUID as trace id, the documented span id and the sampled flag, and matches the W3C pattern.",
+          "kind": "test",
+          "command": "cargo nextest run -p factory-domain --test values traceparent_for_job"
+        },
+        {
+          "check": "The state machine document, the schemas, the independent ledger oracle and the lints are still clean.",
+          "kind": "command",
+          "command": "python3 -I docs/architecture/tools/render_state_machine.py --check && schemas/validate.sh && python3 -I crates/domain/tests/oracle/ledger_chain_oracle.py --check && cargo clippy -p factory-domain --all-targets -- -D warnings"
+        },
+        {
+          "check": "docs/architecture/domain-revision-checklist.md is deleted in the same pull request, with architect review, because every row is true.",
+          "kind": "review",
+          "command": null
+        }
+      ]
+    },
+    {
+      "id": "s1-database-tenancy-and-state-sync",
+      "title": "Add row-level security and bring the state tables in line with the revised state machine",
+      "slice": 1,
+      "owner_role": "dba",
+      "reviewers": [
+        "software_architect",
+        "security"
+      ],
+      "size": "L",
+      "summary": "Implement the design of ADR 0012 before the storage crate exists: row-level security on every tenant table with the transaction-local tenant setting and NULLIF, the group roles factory_app and factory_system with their own policies, the two narrow lookup functions for tokens and installations, and a catalog-driven rls suite with a control-off check. In the same package, add the migration that the revised state machine needs (the edge SKIPPED to SUPERSEDED, its terminal-row trigger and the reference rows) and bring the status and terminal-row suites in line. Rewrite docs/database/tenancy.md and add the recipe for setting the tenant to the storage notes. Record the result of each item that ADR 0012 lists as not verified.",
+      "owns": [
+        "migrations/**",
+        "docs/database/**",
+        "scripts/db-test.sh"
+      ],
+      "inputs": [
+        "ADR 0007",
+        "ADR 0010",
+        "ADR 0012",
+        "docs/database/tenancy.md",
+        "docs/architecture/state-machine.json",
+        "policies/security.yaml tenancy",
+        "docs/security/negative-test-catalog.md NT-TEN-01"
+      ],
+      "exposes_ports": [],
+      "implements_ports": [],
+      "consumes_ports": [],
+      "depends_on": [
+        "s0-database-baseline"
+      ],
+      "done": [
+        {
+          "check": "The status and terminal-row suites pass against the revised state-machine.json: the edge SKIPPED to SUPERSEDED exists in the reference rows and the terminal-row trigger allows it, and nothing else leaves a terminal state.",
+          "kind": "command",
+          "command": "scripts/db-test.sh statuses terminal_rows"
+        },
+        {
+          "check": "The new rls suite finds every table with a tenant column from the catalog and shows that a session for tenant A cannot select, insert, update or delete tenant B's rows, that a session with no tenant sees nothing, and that a second transaction on a reused connection sees nothing and raises no error (NT-TEN-01, database part).",
+          "kind": "command",
+          "command": "scripts/db-test.sh rls"
+        },
+        {
+          "check": "The rls suite checks the roles: no application role has BYPASSRLS, owns a table or is a superuser, and no login is a member of both factory_app and factory_system. Switching row-level security off on one table makes the suite fail, so the suite is not vacuous.",
+          "kind": "command",
+          "command": "scripts/db-test.sh rls"
+        },
+        {
+          "check": "The two lookup functions return the tenant and principal for a valid token and the tenant and repository for an installation, return no row for every miss reason, are not executable by PUBLIC, and pin their search path.",
+          "kind": "command",
+          "command": "scripts/db-test.sh tokens rls"
+        },
+        {
+          "check": "The claim, sweep, relay, webhook and approval suites still pass when run as the application and system roles under row-level security, and composite foreign keys still reject another tenant's parent.",
+          "kind": "command",
+          "command": "scripts/db-test.sh lease outbox webhook_delivery approvals tenancy"
+        },
+        {
+          "check": "The claim and sweep plans still use their indexes with row-level security on, on 10,000 rows.",
+          "kind": "command",
+          "command": "scripts/db-test.sh plans"
+        },
+        {
+          "check": "Migrations still run up, redo and up on an empty database, and the committed schema.rs equals the output of diesel print-schema.",
+          "kind": "command",
+          "command": "scripts/db-test.sh migrations"
+        },
+        {
+          "check": "docs/database/tenancy.md, the storage notes and the not-covered page describe the design as built, and each item that ADR 0012 lists as not verified has a recorded result.",
+          "kind": "review",
+          "command": null
+        }
+      ]
+    },
+    {
+      "id": "s1-xtask-extensions",
+      "title": "Extend the architecture check with the repository-wide span name scan and the adapter allow lists",
+      "slice": 1,
+      "owner_role": "software_engineer",
+      "reviewers": [
+        "software_architect",
+        "security"
+      ],
+      "size": "M",
+      "summary": "Add to the xtask architecture check: the repository-wide static check ST-07 that compares every span name, attribute key and metric field written in a tracing call with the tables of the observability conventions page (ADR 0013); the external crate and feature check for adapter crates, which today returns early so their allow lists are enforced by review only; and a structured source_scans section in docs/architecture/crate-dependency-rules.json that holds the lists the source scans use today as constants (shells, spawn permissions, dangerous container flags, ingestion paths, crate names), so that a reviewer changes them in one reviewed file. The structure of that section is proposed in the pull request and reviewed by the architect, who owns the file. The domain crate's uuid and time feature limits are already in the rules file; this package adds the failing fixtures for them.",
+      "owns": [
+        "xtask/**"
+      ],
+      "inputs": [
+        "ADR 0002",
+        "ADR 0013",
+        "docs/architecture/crate-dependency-rules.json",
+        "docs/observability/conventions.md",
+        "docs/security/negative-test-catalog.md ST-07"
+      ],
+      "exposes_ports": [],
+      "implements_ports": [],
+      "consumes_ports": [],
+      "depends_on": [
+        "s0-workspace-skeleton",
+        "s0-telemetry-baseline"
+      ],
+      "done": [
+        {
+          "check": "ST-07 over the whole workspace has a failing fixture each for an unknown span name in a peer crate, an unknown factory. field, a metric recorded with the wrong kind and a label that is not listed for its metric. The tables are read from the conventions page.",
+          "kind": "test",
+          "command": "cargo nextest run -p xtask static_checks st_07"
+        },
+        {
+          "check": "The check passes on the real workspace with ST-07 switched on.",
+          "kind": "command",
+          "command": "cargo xtask check-architecture"
+        },
+        {
+          "check": "Adapter crates are checked for external crates and features against their allow lists. A fixture adapter with a crate that is not listed fails, and one that enables a tokio feature that is not listed fails.",
+          "kind": "test",
+          "command": "cargo nextest run -p xtask dependency_rules dep_04_adapters"
+        },
+        {
+          "check": "The domain crate fails the check if it enables a uuid feature other than std or any feature of time, shown by one fixture for each.",
+          "kind": "test",
+          "command": "cargo nextest run -p xtask dependency_rules dep_04_domain_features"
+        },
+        {
+          "check": "The source scans read their lists from the source_scans section of the rules file, a test fails if a list is still a constant in the xtask sources, and a named crate that does not exist fails the check.",
+          "kind": "test",
+          "command": "cargo nextest run -p xtask source_scans_come_from_the_rules_file"
+        },
+        {
+          "check": "The architect reviews the structure of the source_scans section, and the rules file and its generated overview are in sync.",
+          "kind": "review",
+          "command": null
+        },
+        {
+          "check": "Lints and formatting are clean, and the rules checker still passes.",
+          "kind": "command",
+          "command": "cargo clippy -p xtask --all-targets -- -D warnings && python3 -I docs/architecture/tools/check_crate_rules.py --check"
+        }
+      ]
+    },
+    {
+      "id": "s1-ci-database-and-generated-checks",
+      "title": "Move the local database to PostgreSQL 18 and test it, with the generated files, in CI",
+      "slice": 1,
+      "owner_role": "sre",
+      "reviewers": [
+        "security"
+      ],
+      "size": "M",
+      "summary": "Move the local Compose database from PostgreSQL 17 to PostgreSQL 18, pinned by digest (infra/compose/postgres.yml pins 17 today, while scripts/db-test.sh and ADR 0007 as revised use 18; the data directory of the 18 image is /var/lib/postgresql). Add step files under scripts/ci/steps.d/ that run scripts/db-test.sh against a postgres:18 service container with the diesel command line tool pinned to 2.3.11, and that run the two generated file checks: the example index (crates/domain/tests/tools/gen_example_index.py --check) and the ledger oracle fixture (crates/domain/tests/oracle/ledger_chain_oracle.py --check). The workflow already fails on any non-zero exit of scripts/ci.sh, which includes the exit code 3 that means BLOCKED (read in ci.yml on 2026-10-27). This package makes sure the database step cannot be BLOCKED in CI by giving it the service container, and proves that a missing database still fails the job. How the diesel tool is installed on the runner (it needs libpq) is not verified.",
+      "owns": [
+        ".github/**",
+        "scripts/ci/**",
+        "infra/compose/**"
+      ],
+      "inputs": [
+        "scripts/ci.sh header (step file format)",
+        ".github/workflows/ci.yml",
+        "scripts/db-test.sh",
+        "ADR 0007",
+        "ADR 0012",
+        "infra/compose/postgres.yml"
+      ],
+      "exposes_ports": [],
+      "implements_ports": [],
+      "consumes_ports": [],
+      "depends_on": [
+        "s0-ci-pipeline",
+        "s1-database-tenancy-and-state-sync",
+        "s1-domain-revision"
+      ],
+      "done": [
+        {
+          "check": "The local Compose database runs PostgreSQL 18 pinned by digest, keeps its data in a named volume at the path the 18 image uses, and reports healthy.",
+          "kind": "command",
+          "command": "docker compose -f infra/compose/docker-compose.yml up -d --wait"
+        },
+        {
+          "check": "A step file runs scripts/db-test.sh with the service container's admin URL and the pinned diesel tool, and all suites pass in CI.",
+          "kind": "command",
+          "command": "scripts/ci.sh --only db-tests"
+        },
+        {
+          "check": "With no database available the database step ends with exit code 3, scripts/ci.sh exits 3, and the workflow step that runs it fails. BLOCKED is never a pass in CI.",
+          "kind": "test",
+          "command": "scripts/ci.sh --self-test-blocked"
+        },
+        {
+          "check": "The example index and the ledger oracle fixture are checked as steps, and a stale file makes the step fail.",
+          "kind": "command",
+          "command": "scripts/ci.sh --only generated-files"
+        },
+        {
+          "check": "The workflow still passes the pinning and policy checks: actions pinned to commit SHAs, no pull_request_target, read-only token.",
+          "kind": "command",
+          "command": "scripts/ci.sh --self-test-pinning"
+        },
+        {
+          "check": "The security specialist reviews the new service container and the way the tool is installed.",
+          "kind": "review",
+          "command": null
+        }
+      ]
+    },
+    {
+      "id": "s1-telemetry-wiring",
+      "title": "Connect the real redactor to telemetry and add the job trace context",
+      "slice": 1,
+      "owner_role": "observability",
+      "reviewers": [
+        "software_architect",
+        "security"
+      ],
+      "size": "M",
+      "summary": "Finish the telemetry baseline as ADR 0013 decides: implement the Scrub seam over domain::redaction::Redactor, delete the stopgap PolicyPatternScrubber and the test that keeps it equal to the policy, make the scrubber a required argument of TelemetryConfig::new so that a binary cannot start telemetry without it, add a helper that builds the factory.job span of one stretch of work with the remote parent derived from the job id, and update section 12 of the conventions page. The composition roots pass the redactor and open the stretch spans in s1-apps-composition.",
+      "owns": [
+        "crates/observability/**",
+        "docs/observability/conventions.md"
+      ],
+      "inputs": [
+        "ADR 0013",
+        "docs/observability/conventions.md",
+        "crates/domain/src/redaction/"
+      ],
+      "exposes_ports": [],
+      "implements_ports": [],
+      "consumes_ports": [],
+      "depends_on": [
+        "s0-telemetry-baseline",
+        "s1-redaction",
+        "s1-domain-revision"
+      ],
+      "done": [
+        {
+          "check": "TelemetryConfig::new takes the scrubber, and nothing in the workspace refers to PolicyPatternScrubber any more.",
+          "kind": "command",
+          "command": "cargo build --workspace --locked && ! git grep -q PolicyPatternScrubber -- crates apps"
+        },
+        {
+          "check": "A canary secret in a span attribute, a span event and a log line is replaced by the real redactor before export, and a redactor that fails drops the value (NT-SEC-01, telemetry sinks).",
+          "kind": "test",
+          "command": "cargo nextest run -p factory-observability canary_is_redacted_in_spans_events_and_logs"
+        },
+        {
+          "check": "The job stretch helper gives a span whose trace id is the job's derived trace id, so two processes that work on one job produce one trace.",
+          "kind": "test",
+          "command": "cargo nextest run -p factory-observability job_stretch_uses_the_derived_trace_id"
+        },
+        {
+          "check": "The existing telemetry tests, the name tables and the conventions page still agree.",
+          "kind": "command",
+          "command": "cargo nextest run -p factory-observability"
+        },
+        {
+          "check": "Section 12 of the conventions page no longer lists the redactor, the peer-crate names and the trace context as open, and says what was decided.",
+          "kind": "review",
+          "command": null
+        }
+      ]
     }
   ],
   "negative_tests": {
@@ -3168,8 +3642,7 @@
         "also": [
           "s1-github-adapter"
         ],
-        "scope": "full",
-        "reduced_scope_reason": "The catalog sets up a user whose GitHub permission was revoked. Under the named allowlist the equivalent is a user removed from the list. The expected result is the same."
+        "scope": "full"
       },
       {
         "id": "NT-AUTHZ-05",
@@ -3370,8 +3843,8 @@
         "also": [
           "s1-agent-runtime-adapters"
         ],
-        "scope": "partial",
-        "reduced_scope_reason": "The catalog assumes factory-mediated tool calls (exec.shell, approval.grant). With the agent inside the sandbox its own tools are contained by the container, not parsed by the factory. The test asserts that no factory-level effect or grant is reachable from the agent."
+        "scope": "full",
+        "blocked_part": "[C] The request the broker forwards after the injection keeps the command output in a tool-result part and not in the instruction part. BLOCKED until s0-agent-runtime-spike has shown the event fields. The [T] part applies only if the host tool bridge is chosen."
       },
       {
         "id": "NT-INJ-06",
@@ -3668,7 +4141,8 @@
           "s1-redaction",
           "s1-github-adapter",
           "s1-sandbox-adapter",
-          "s1-egress-and-broker"
+          "s1-egress-and-broker",
+          "s1-telemetry-wiring"
         ],
         "scope": "partial",
         "reduced_scope_reason": "The sink collector includes NATS messages and memory stores. Neither exists before Slice 2 and Slice 4."
@@ -3785,6 +4259,16 @@
         "scope": "full"
       },
       {
+        "id": "NT-TEN-01",
+        "wp": "s1-storage-postgres",
+        "crate": "storage",
+        "location": "crates/storage/tests/negative.rs",
+        "also": [
+          "s1-database-tenancy-and-state-sync"
+        ],
+        "scope": "full"
+      },
+      {
         "id": "NT-TEN-05",
         "wp": "s1-apps-composition",
         "crate": "api",
@@ -3802,8 +4286,7 @@
         "also": [
           "s1-agent-runtime-adapters"
         ],
-        "scope": "partial",
-        "reduced_scope_reason": "Covers commands the supervisor runs (gates, dependency fetch, ingestion). The agent's own in-container shell is covered by NT-SBX-* instead."
+        "scope": "full"
       },
       {
         "id": "NT-TOOL-02",
@@ -3829,19 +4312,22 @@
         "crate": "domain",
         "location": "crates/domain/tests/policy.rs",
         "also": [
-          "s1-workspace-ingestion"
+          "s1-workspace-ingestion",
+          "s1-sandbox-adapter"
         ],
-        "scope": "partial",
-        "reduced_scope_reason": "Path policy is tested on the pure function and on ingestion. The agent's in-container file tools are contained by the sandbox."
+        "scope": "full",
+        "blocked_part": "[C] CLI deny rules generated from the path policy block a read of .env and the CLI reports the denial. BLOCKED until s0-agent-runtime-spike has shown whether the CLI supports deny rules."
       },
       {
         "id": "NT-TOOL-05",
         "wp": "s1-policy-evaluation",
         "crate": "domain",
         "location": "crates/domain/tests/policy.rs",
-        "also": [],
-        "scope": "partial",
-        "reduced_scope_reason": "Argument injection is tested on the command classifier used by supervisor-run commands. The agent's own commands are contained by the sandbox."
+        "also": [
+          "s1-sandbox-adapter"
+        ],
+        "scope": "full",
+        "blocked_part": "[C] CLI deny rules generated from forbidden_args block the call and the CLI reports it. BLOCKED until s0-agent-runtime-spike has shown whether the CLI supports deny rules."
       },
       {
         "id": "NT-TOOL-06",
@@ -3851,8 +4337,7 @@
         "also": [
           "s1-sandbox-adapter"
         ],
-        "scope": "partial",
-        "reduced_scope_reason": "Tests the environment the supervisor gives the tool and the commands it runs. The agent's own env parameter does not exist as a factory tool."
+        "scope": "full"
       },
       {
         "id": "NT-TOOL-07",
@@ -3992,10 +4477,12 @@
       },
       {
         "id": "ST-07",
-        "wp": "s0-telemetry-baseline",
-        "crate": "observability",
-        "location": "crates/observability/tests/static_checks.rs",
-        "also": []
+        "wp": "s1-xtask-extensions",
+        "crate": "xtask",
+        "location": "xtask/tests/static_checks.rs",
+        "also": [
+          "s0-telemetry-baseline"
+        ]
       },
       {
         "id": "ST-08",
@@ -4045,12 +4532,6 @@
         "uncovered": "A turn cap on the agent tool",
         "reason": "Claude Code 2.1.311 has no --max-turns flag and Codex exec shows no budget flag. Only stagnation detection and the broker ceiling bound the run.",
         "resolves_in": "needs a decision: broker request counting, or a tool that supports a cap"
-      },
-      {
-        "test": "NT-INJ-04, NT-TOOL-01, NT-TOOL-04, NT-TOOL-05, NT-TOOL-06",
-        "uncovered": "Factory-mediated tool calls by the agent (exec.run, fs.read, fs.write, exec.shell, approval.grant)",
-        "reason": "With the agent tool inside the sandbox its own tools are not mediated by the factory. The container, the broker and the ingestion pipeline contain it instead. The catalog's setups assume mediation (the host tool bridge).",
-        "resolves_in": "If a human chooses the host tool bridge, these tests apply in full to the bridge tools"
       },
       {
         "test": "NT-AUD-03",

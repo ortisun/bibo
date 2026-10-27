@@ -1,7 +1,7 @@
 //! Guards of the Attempt machine (transitions `A01` to `A10`), and the two guards about attempts
 //! that the Job and StageRun machines use (`G_ALL_ATTEMPTS_TERMINAL`, `G_NO_ACTIVE_ATTEMPT`).
 
-use super::{Check, GuardResult, instant};
+use super::{Check, GuardResult};
 use crate::machines::snapshot::{AttemptSnapshot, SandboxState};
 use crate::state::{AttemptStatus, Guard, JobStatus, Status};
 use crate::values::Timestamp;
@@ -99,7 +99,7 @@ pub fn lease_epoch_current(facts: &LeaseEpochFacts) -> GuardResult {
             "the epoch sent by the worker is not the stored epoch",
         )
         .require(
-            instant(facts.now) <= instant(facts.lease_expires_at),
+            facts.now <= facts.lease_expires_at,
             "the lease has already run out",
         )
         .finish()
@@ -160,7 +160,7 @@ pub struct DeadlineFacts {
 pub fn deadline_passed(facts: &DeadlineFacts) -> GuardResult {
     Check::new(Guard::DeadlinePassed)
         .require(
-            instant(facts.now) > instant(facts.attempt_deadline),
+            facts.now > facts.attempt_deadline,
             "the attempt deadline has not passed yet",
         )
         .finish()
@@ -184,7 +184,7 @@ pub struct LeaseExpiryFacts {
 pub fn lease_expired(facts: &LeaseExpiryFacts) -> GuardResult {
     Check::new(Guard::LeaseExpired)
         .require(
-            instant(facts.now) > instant(facts.lease_expires_at),
+            facts.now > facts.lease_expires_at,
             "the lease has not expired yet",
         )
         .require(!facts.heartbeat_arrived, "a heartbeat arrived")
@@ -259,10 +259,10 @@ pub struct TeardownFacts {
 /// Returns the unmet condition.
 pub fn teardown_deadline_passed(facts: &TeardownFacts) -> GuardResult {
     const NANOS: i128 = 1_000_000_000;
-    let (now_s, now_n) = instant(facts.now);
-    let (start_s, start_n) = instant(facts.cancel_requested_at);
-    let elapsed =
-        (i128::from(now_s) - i128::from(start_s)) * NANOS + i128::from(now_n) - i128::from(start_n);
+    let (now, start) = (facts.now, facts.cancel_requested_at);
+    let elapsed = (i128::from(now.unix_seconds()) - i128::from(start.unix_seconds())) * NANOS
+        + i128::from(now.subsecond_nanos())
+        - i128::from(start.subsecond_nanos());
     Check::new(Guard::TeardownDeadlinePassed)
         .require(
             elapsed >= i128::from(facts.grace_seconds) * NANOS,

@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "urn:ortisun:factory:schema:gate-report:1",
   "title": "Gate report",
-  "description": "The machine-readable result of one deterministic gate run against one stage run. A gate report records what was executed, with which tools, and why the outcome is what it is. A report with outcome PASSED must show that every command ran and exited with code 0. A gate that did not run is BLOCKED, never PASSED.",
+  "description": "The machine-readable result of one deterministic gate run against one stage run. A gate report records what was executed, with which tools, and why the outcome is what it is. A report with outcome PASSED must show that every command ran and exited with code 0. A gate that did not run is BLOCKED, never PASSED. A report that ran may also list warnings, which say what to improve and never change the outcome.",
   "type": "object",
   "additionalProperties": false,
   "required": ["schema_version", "metadata", "title", "outcome", "reason", "started_at", "finished_at", "environment", "commands", "evidence_hash", "baseline_comparison"],
@@ -112,6 +112,26 @@
         }
       }
     },
+    "warnings": {
+      "description": "Findings that do not stop the gate. Their severity is always warn, so a warning never changes the outcome and the schema has no severity field. A PASSED report may carry warnings, and its failures stay empty. A gate that did not run (BLOCKED or NOT_APPLICABLE) has nothing to warn about, so it carries none. The check_id is the rule id of the gate, in the same form as in failures.",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["check_id", "message", "suggested_fix"],
+        "properties": {
+          "check_id": { "$ref": "#/$defs/slug" },
+          "message": { "$ref": "#/$defs/humanText" },
+          "suggested_fix": { "$ref": "#/$defs/humanText" },
+          "location": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["path"],
+            "properties": { "path": { "type": "string" }, "line": { "type": "integer", "minimum": 1 } }
+          }
+        }
+      }
+    },
     "blocked_reason": {
       "type": "object",
       "additionalProperties": false,
@@ -160,8 +180,8 @@
       }
     },
     { "if": { "properties": { "outcome": { "const": "FAILED" } }, "required": ["outcome"] }, "then": { "required": ["failures"], "properties": { "failures": { "minItems": 1 } } } },
-    { "if": { "properties": { "outcome": { "const": "BLOCKED" } }, "required": ["outcome"] }, "then": { "required": ["blocked_reason"] } },
-    { "if": { "properties": { "outcome": { "const": "NOT_APPLICABLE" } }, "required": ["outcome"] }, "then": { "required": ["not_applicable_reason"], "properties": { "commands": { "maxItems": 0 } } } },
+    { "if": { "properties": { "outcome": { "const": "BLOCKED" } }, "required": ["outcome"] }, "then": { "required": ["blocked_reason"], "properties": { "warnings": { "maxItems": 0 } } } },
+    { "if": { "properties": { "outcome": { "const": "NOT_APPLICABLE" } }, "required": ["outcome"] }, "then": { "required": ["not_applicable_reason"], "properties": { "commands": { "maxItems": 0 }, "warnings": { "maxItems": 0 } } } },
     { "if": { "properties": { "metadata": { "properties": { "execution_mode": { "const": "production" } } } }, "required": ["metadata"] }, "then": { "properties": { "environment": { "properties": { "fidelity": { "const": "real" } } } } } }
   ],
   "dependentSchemas": {

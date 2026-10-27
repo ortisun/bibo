@@ -5,6 +5,7 @@ use std::sync::LazyLock;
 use regex::Regex;
 
 use crate::error::ValueError;
+use crate::ids::JobId;
 use crate::macros::{patterned_string, string_traits};
 use crate::patterns;
 
@@ -115,6 +116,34 @@ impl Sha256Digest {
     #[must_use]
     pub fn hex(&self) -> &str {
         self.0.strip_prefix("sha256:").unwrap_or(&self.0)
+    }
+}
+
+/// The text that the root span id of a job is derived from, placed in front of the job id.
+const JOB_SPAN_SEED: &str = "factory.job";
+
+impl Traceparent {
+    /// The trace context of a job (ADR 0013). A job is one trace, and any process can find it
+    /// from the job id alone, so nothing is stored and a restart needs no restoration.
+    ///
+    /// * The **trace id** is the 32 lowercase hex characters of the job's UUID.
+    /// * The **root span id** is the first 16 hex characters of the SHA-256 of the text
+    ///   `factory.job` followed directly by the job id in its usual form (36 characters,
+    ///   lowercase, hyphenated), with nothing in between.
+    /// * The **flags** are `01`, sampled.
+    ///
+    /// The result is the parent of the `factory.job` span that each process opens for its stretch
+    /// of work. The root span itself is never exported. The function is pure: the same job always
+    /// gives the same value. A job id of all zeros would give a trace id that the W3C
+    /// specification calls invalid. The `IdGenerator` port never makes one, so the function has
+    /// no failure case.
+    #[must_use]
+    pub fn for_job(job: JobId) -> Self {
+        let trace_id = job.as_uuid().simple().to_string();
+        let seed = format!("{JOB_SPAN_SEED}{job}");
+        let digest = Sha256Digest::of(seed.as_bytes());
+        let span_id: String = digest.hex().chars().take(16).collect();
+        Self(format!("00-{trace_id}-{span_id}-01"))
     }
 }
 

@@ -1,16 +1,20 @@
-//! The rework cap and the count of rework rounds already used.
+//! The rework cap, the repair cap, and the count of rework rounds already used.
 //!
-//! ADR 0009 item 6 sets the default: two rounds, then a human decides. Code and documentation
-//! each have their own count. A project policy may lower a cap and may never raise it, because
-//! raising it is a widening that needs a recorded human decision. So the cap is built with
-//! [`ReworkCap::from_policy`], which takes the lower of the policy value and the default, and no
-//! other constructor exists.
+//! ADR 0009 item 6 sets the default for rework: two rounds, then a human decides. Code and
+//! documentation each have their own count. ADR 0010 sets the same default for repairs after an
+//! invalid output. A project policy may lower a cap and may never raise it, because raising it is
+//! a widening that needs a recorded human decision. So a cap is built with
+//! [`ReworkCap::from_policy`] or [`RepairCap::from_policy`], which take the lower of the policy
+//! value and the default, and no other constructor exists.
 
 use crate::macros::string_enum;
 use crate::vocabulary::StageKind;
 
 /// The rework cap that applies when no policy lowers it (ADR 0009 item 6).
 pub const DEFAULT_REWORK_CAP: u8 = 2;
+
+/// The repair cap that applies when no policy lowers it (ADR 0010 decision 1).
+pub const DEFAULT_REPAIR_CAP: u8 = 2;
 
 string_enum! {
     /// Which count a rework round is charged to.
@@ -64,6 +68,43 @@ impl ReworkCap {
 }
 
 impl Default for ReworkCap {
+    fn default() -> Self {
+        Self::DEFAULT
+    }
+}
+
+/// How many repairs one attempt window allows after an invalid output. Never above
+/// [`DEFAULT_REPAIR_CAP`].
+///
+/// A repair is a retry that follows an `INVALID_OUTPUT` failure, so it also counts as an attempt.
+/// The policy value is `untrusted_content.structured_output.bounded_repair_attempts`. Like
+/// [`ReworkCap`], a policy can lower it, down to zero, and cannot raise it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct RepairCap(u8);
+
+impl RepairCap {
+    /// The cap with no policy override.
+    pub const DEFAULT: Self = Self(DEFAULT_REPAIR_CAP);
+
+    /// The lower of the configured value and the default. A policy can tighten the cap and
+    /// cannot loosen it.
+    #[must_use]
+    pub const fn from_policy(configured: u8) -> Self {
+        if configured < DEFAULT_REPAIR_CAP {
+            Self(configured)
+        } else {
+            Self(DEFAULT_REPAIR_CAP)
+        }
+    }
+
+    /// The number of repairs.
+    #[must_use]
+    pub const fn get(self) -> u8 {
+        self.0
+    }
+}
+
+impl Default for RepairCap {
     fn default() -> Self {
         Self::DEFAULT
     }

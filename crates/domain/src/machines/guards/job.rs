@@ -1,5 +1,6 @@
 //! Guards of the Job machine (transitions `J01` to `J13`).
 
+use super::stage_run::satisfies_dependants;
 use super::{Check, GuardResult, any_of};
 use crate::machines::snapshot::StageRunSnapshot;
 use crate::state::{Guard, StageRunStatus};
@@ -288,25 +289,26 @@ pub struct PipelineScopeFacts<'a> {
 
 /// `G_PIPELINE_SCOPE_COMPLETE`.
 ///
-/// A run counts as passed only while its status is `PASSED`. A run that was superseded has
-/// another status, so it never counts. A scope that lists no stage never completes: the
-/// definition says "every stage kind in the scope", and a job with nothing in scope would
-/// otherwise finish with no work done.
+/// A stage in scope is done when it has a run that is `PASSED`, or `SKIPPED` because a recorded
+/// rule says the stage does not apply (ADR 0010 decision 2, see [`satisfies_dependants`]). A run
+/// that was superseded has another status, so it never counts. A scope that lists no stage never
+/// completes: the definition says "every stage kind in the scope", and a job with nothing in
+/// scope would otherwise finish with no work done.
 ///
 /// # Errors
 /// Returns the conditions that are not met.
 pub fn pipeline_scope_complete(facts: &PipelineScopeFacts<'_>) -> GuardResult {
-    let every_stage_in_scope_passed = facts.scope.iter().all(|kind| {
+    let every_stage_in_scope_done = facts.scope.iter().all(|kind| {
         facts
             .stage_runs
             .iter()
-            .any(|run| run.kind == *kind && run.status == StageRunStatus::Passed)
+            .any(|run| run.kind == *kind && satisfies_dependants(run.status))
     });
     Check::new(Guard::PipelineScopeComplete)
         .require(!facts.scope.is_empty(), "the job's scope lists no stage")
         .require(
-            every_stage_in_scope_passed,
-            "a stage in the job's scope has no passed run that is still current",
+            every_stage_in_scope_done,
+            "a stage in the job's scope has no passed or skipped run that is still current",
         )
         .require(
             facts.approval_decision_is_approve,

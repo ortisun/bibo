@@ -12,15 +12,19 @@ This directory is `docs/adr/`, as the master prompt's workspace layout (section 
 | [0004](0004-event-model.md) | Transactional outbox to NATS JetStream, at-least-once, idempotent consumers. Outbox written in Slice 1, relay in Slice 2. | Accepted |
 | [0005](0005-agent-runtime-adapter-boundary.md) | `AgentRuntime` port with probed Claude Code and Codex adapters that run inside the sandbox behind a model broker. API keys, not subscription logins. | Accepted; location and credentials decided by default, pending confirmation; open spike |
 | [0006](0006-spec-kit-boundary.md) | Spec Kit only in the specification stage, behind the `spec_adapter` anti-corruption layer. Revision, checklist and argument handling need a spike. | Accepted, revised 2026-10-27; open spike |
-| [0007](0007-persistence-access-and-tenancy.md) | Diesel with `diesel-async`; tenant on every row and every call. | Accepted |
+| [0007](0007-persistence-access-and-tenancy.md) | Diesel with `diesel-async`; tenant on every row and every call. | Accepted, revised 2026-10-27 by 0012 |
 | [0008](0008-artifact-store-and-evidence-ledger.md) | Content-addressed artifacts and a hash-chained, append-only evidence ledger. | Accepted |
-| [0009](0009-operating-defaults-pending-confirmation.md) | Six operating defaults: agent in the sandbox, API keys behind a broker, L0 without rulesets, human approval for new dependencies, named requester allowlist, two rework rounds. | Decided by default, pending human confirmation |
+| [0009](0009-operating-defaults-pending-confirmation.md) | Nineteen operating defaults: the six security defaults (agent in the sandbox, API keys behind a broker, L0 without rulesets, human approval for new dependencies, named requester allowlist, two rework rounds), then those of records 0010 to 0013 and the documenter's five. | Decided by default, pending human confirmation |
+| [0010](0010-failure-escalation-routing-and-invalidation.md) | A limit asks a person, a skipped stage satisfies its dependants, unfixable findings go to a person, and every outside change has a row in the invalidation table. | Accepted by the architect, defaults pending confirmation |
+| [0011](0011-canonical-time-and-numbers.md) | Timestamps compare by instant and are written in the shortest form. Ledger integers stay within 2^53 - 1. | Accepted by the architect, defaults pending confirmation |
+| [0012](0012-row-level-security-in-slice-1.md) | Row-level security in Slice 1: a tenant setting per transaction, a separate role and pool for the system scope, two narrow lookup functions. Replaces four statements of 0007. | Accepted by the architect, default pending confirmation |
+| [0013](0013-telemetry-wiring.md) | Telemetry names as literals with a repository scan, one redactor injected by the composition root, and a job traced by an id derived from it. | Accepted by the architect, defaults pending confirmation |
 
 ## Rules for this directory
 
 1. Write an ADR for a choice that is costly to reverse or that a future maintainer will ask about. Skip naming and library micro-choices.
 2. A record needs at least two real options, the reason each lost, and at least one cost of the chosen one.
-3. Accepted records are not edited in substance. To change a decision, write a new record and set the old status to `Superseded by NNNN`. Fixing a typo or a broken link is fine.
+3. Accepted records are not edited in substance. To change a decision, write a new record and set the old status to `Superseded by NNNN`. Fixing a typo or a broken link is fine. Records 0001, 0003, 0006 and 0007 each carry a revision note where a measurement or a review corrected a statement. A revision note says what changed and why, and points to the record that carries the evidence.
 4. State what was checked, with dates and sources, and what was not. Mark every external claim as verified or unverified.
 5. A record changes in the same pull request as the code it governs.
 6. Keep the numbers monotonic and the file names `NNNN-kebab-title.md`.

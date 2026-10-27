@@ -11,8 +11,8 @@ use crate::ids::{
 };
 use crate::macros::string_enum;
 use crate::values::{
-    GitSha, HumanText, Integer, MediaType, NonEmptyString, NonEmptyVec, PositiveInt, Sha256Digest,
-    Slug, SpanId, Timestamp, TraceId, UniqueVec, Uri,
+    ExactInteger, ExactPositiveInt, GitSha, HumanText, MediaType, NonEmptyString, NonEmptyVec,
+    Sha256Digest, Slug, SpanId, Timestamp, TraceId, UniqueVec, Uri,
 };
 use crate::vocabulary::{
     AssuranceLevel, ConfidenceLevel, ExecutionMode, HumanRole, RecorderFidelity,
@@ -146,8 +146,10 @@ pub struct ExperimentEvidence {
     pub experiment_id: Slug,
     /// Its runs.
     pub run_ids: NonEmptyVec<ExperimentRunId>,
-    /// The random seeds, so the runs can be repeated.
-    pub seeds: NonEmptyVec<Integer>,
+    /// The random seeds, so the runs can be repeated. Each is a whole number from -(2^53 - 1) to
+    /// 2^53 - 1, because the entry hash is taken over RFC 8785 canonical JSON, which would round
+    /// a larger one (ADR 0011). A larger seed belongs in the experiment's own stored artifact.
+    pub seeds: NonEmptyVec<ExactInteger>,
 }
 
 /// A place in the code at a commit.
@@ -156,12 +158,12 @@ pub struct ExperimentEvidence {
 pub struct CodeLocationEvidence {
     /// The repository-relative path.
     pub path: NonEmptyString,
-    /// First line, from 1.
+    /// First line, from 1 to 2^53 - 1.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub line_start: Option<PositiveInt>,
-    /// Last line, from 1.
+    pub line_start: Option<ExactPositiveInt>,
+    /// Last line, from 1 to 2^53 - 1.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub line_end: Option<PositiveInt>,
+    pub line_end: Option<ExactPositiveInt>,
     /// The commit the path and lines refer to.
     pub commit_sha: GitSha,
 }
@@ -250,8 +252,8 @@ pub struct LedgerMetadata {
     /// The attempt, when one is meant.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub attempt_id: Option<AttemptId>,
-    /// Position in the job's chain, from 1 with no gaps.
-    pub sequence: PositiveInt,
+    /// Position in the job's chain, from 1 with no gaps, up to 2^53 - 1.
+    pub sequence: ExactPositiveInt,
     /// When it was recorded.
     pub recorded_at: Timestamp,
     /// Production or test.

@@ -17,7 +17,7 @@ use std::sync::LazyLock;
 use regex::Regex;
 
 use crate::error::ValueError;
-use crate::macros::string_traits;
+use crate::macros::{string_enum, string_traits};
 use crate::patterns;
 use crate::values::{Bounded, HumanText, HumanTitle, NonEmptyString, NonEmptyVec, Slug, UniqueVec};
 
@@ -212,6 +212,17 @@ pub struct RequiredDocument {
     pub purpose: HumanText,
 }
 
+string_enum! {
+    /// A readability rule that only warns, which a repository may switch off. A rule that blocks
+    /// is not in this list, so a manifest cannot name one.
+    pub enum ReadabilityRule("readability rule") {
+        /// A title starts with a type tag and a colon, such as `feat(auth):` or `URGENT:`. Many
+        /// teams write conventional-commit titles by habit, and the tag does not make the title
+        /// unclear (ADR 0009 item 19).
+        TitleTypeTag = "title-type-tag",
+    }
+}
+
 /// The project's documentation rules.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -220,6 +231,9 @@ pub struct DocumentationRules {
     pub required_documents: Vec<RequiredDocument>,
     /// The changelog.
     pub changelog_path: NonEmptyString,
+    /// Readability rules that this repository switches off. Only rules that warn can be listed.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub disabled_readability_rules: Option<UniqueVec<ReadabilityRule>>,
 }
 
 contract! {

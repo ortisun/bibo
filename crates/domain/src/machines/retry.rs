@@ -7,24 +7,31 @@
 //! * **Ask a human** (`S07`, `escalate_to_human`): the stage run goes to `WAITING_FOR_HUMAN`.
 //! * **Fail** (`S06`, `attempt_failed_final`): the stage run goes to `FAILED`.
 //!
-//! The guards of those three transitions are not mutually exclusive, and the file does not say
-//! which wins when more than one holds. [`decide_after_failure`] settles it with one rule:
-//! **retry when allowed, otherwise ask a human when a limit was hit, otherwise fail.**
+//! The guards of `S05` and `S06` exclude each other, because the class is retryable for one and
+//! not for the other. `S07` is legal whenever neither of them is, and also for
+//! `BUDGET_EXHAUSTED`, which `G_FAILURE_NONRETRYABLE` leaves out on purpose. So the file lets a
+//! failed attempt reach more than one move only through `S07`, and the order in which
+//! [`decide_after_failure`] takes them follows `state-machine.json` and ADR 0010: a limit never
+//! fails a stage run, it asks a person, and only a failure that retrying cannot fix fails it.
 //!
-//! | Failure | Attempts and budget | Result |
+//! | Order | The attempt failed with | Move |
 //! |---|---|---|
-//! | Listed in the contract's `retry_on` | attempts left and budget has room | retry |
-//! | Listed in `retry_on` | attempts used up | ask a human (invariant INV-10) |
-//! | Listed in `retry_on` | attempts left, budget gone | ask a human (a budget limit was hit) |
-//! | `BUDGET_EXHAUSTED` | any | ask a human (a budget limit was hit) |
-//! | `POLICY_DENIED`, `INTERNAL`, or not in `retry_on` | any | fail |
+//! | 1 | `BUDGET_EXHAUSTED` | `S07`, and the job's broker token is revoked |
+//! | 2 | A class the contract lists in `retry_on`, with attempts, repairs and budget left | `S05` |
+//! | 3 | `POLICY_DENIED`, `INTERNAL`, or a class not in `retry_on` | `S06` |
+//! | 4 | A class in `retry_on`, with no attempt or repair left, or with no budget | `S07` |
 //!
-//! The rows that ask a human are where the file disagrees with itself. Guard
-//! `G_RETRY_EXHAUSTED_OR_NONRETRYABLE` is true when `max_attempts` is reached, which would let
-//! `S06` fail the stage. Invariant INV-10 and the ground rule "reaching a limit sends the stage
-//! to a human" say a human decides. `S06` stays legal in those rows, because its guard holds. This
-//! function chooses `S07`, because failing a stage on a transient provider outage is hard to
-//! undo and asking a human is not. The choice is in this one function so it is cheap to change.
+//! # The attempt window
+//!
+//! Attempts and repairs are counted from the last human answer (`S13`). A person who answers a
+//! stage run that stopped at its limit gets a new window, so the first failure after the answer
+//! does not escalate again at once, and the total stays bounded because a person is in the loop
+//! each time. [`AttemptWindow`] derives the two counts that [`RetryFacts`] carries from the
+//! history of a stage run, so the restart at an answer is one rule in one place.
+//!
+//! A **repair** is a retry that follows an `INVALID_OUTPUT` failure. It also counts as an
+//! attempt, so the attempt limit and the repair cap both apply, and the first to be reached
+//! sends the stage run to a person.
 
 use crate::machines::failure::FailureClass;
 use crate::machines::guards::stage_run::retry_allowed;
@@ -36,7 +43,8 @@ use crate::state::StageRunEvent;
 pub enum EscalationCause {
     /// A budget limit was hit.
     BudgetLimit,
-    /// The attempt limit was reached, and policy sends the decision to a human (INV-10).
+    /// The attempt limit or the repair cap was reached on a class the contract lists as
+    /// retryable (INV-10).
     AttemptLimit,
 }
 
@@ -48,15 +56,17 @@ impl EscalationCause {
         match self {
             EscalationCause::BudgetLimit => EscalationFacts {
                 budget_limit_hit: true,
+                attempt_limit_reached: false,
                 agent_requested_a_human: false,
                 stagnation_detected: false,
                 policy_requires_human_decision: false,
             },
             EscalationCause::AttemptLimit => EscalationFacts {
                 budget_limit_hit: false,
+                attempt_limit_reached: true,
                 agent_requested_a_human: false,
                 stagnation_detected: false,
-                policy_requires_human_decision: true,
+                policy_requires_human_decision: false,
             },
         }
     }
@@ -86,25 +96,83 @@ impl AttemptDisposition {
 }
 
 /// Decides what a failed attempt does to its stage run. See the module documentation for the
-/// rule and the table.
+/// order and the table.
 ///
-/// `facts.attempts_used` counts the attempt that just failed.
+/// `facts.attempts_used` and `facts.invalid_output_failures` count the attempt that just failed
+/// and only the attempts since the last human answer (see [`AttemptWindow`]).
 #[must_use]
 pub fn decide_after_failure(facts: &RetryFacts<'_>) -> AttemptDisposition {
+    // 1. A budget limit asks a person, whatever else holds.
     if facts.class == FailureClass::BudgetExhausted {
         return AttemptDisposition::Escalate(EscalationCause::BudgetLimit);
     }
+    // 2. A retry, when the class, the attempts, the repairs and the budget all allow it.
     if retry_allowed(facts).is_ok() {
         return AttemptDisposition::Retry;
     }
+    // 3. A failure that retrying cannot fix.
     if !facts.class_is_retryable() {
         return AttemptDisposition::Fail;
     }
-    // The class is worth retrying, so either the attempts or the budget ran out.
-    if facts.attempts_remain() {
+    // 4. The class is worth retrying, so a limit stopped it: the attempts, the repair cap, or
+    // the budget. The attempt limit and the repair cap are one cause, because a repair is an
+    // attempt.
+    if facts.attempts_remain() && facts.repairs_remain() {
         AttemptDisposition::Escalate(EscalationCause::BudgetLimit)
     } else {
         AttemptDisposition::Escalate(EscalationCause::AttemptLimit)
+    }
+}
+
+/// One thing that happened to a stage run, as far as the attempt window counts it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WindowEvent {
+    /// An attempt ended with this failure class.
+    AttemptFailed(FailureClass),
+    /// A person answered the stage run (`S13`). The window starts again.
+    HumanAnswered,
+}
+
+/// The attempts and the invalid outputs counted since the last human answer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct AttemptWindow {
+    attempts_used: u32,
+    invalid_output_failures: u32,
+}
+
+impl AttemptWindow {
+    /// The window after `history`, oldest event first. Include the failure that has just
+    /// happened, because [`RetryFacts`] counts it.
+    ///
+    /// A retry only follows a failure, and a stage run that did not fail waits for a person
+    /// before it can try again. So every attempt in a window except the last one failed, and
+    /// counting failures counts attempts.
+    #[must_use]
+    pub fn from_history(history: &[WindowEvent]) -> Self {
+        history
+            .iter()
+            .fold(Self::default(), |window, event| match event {
+                WindowEvent::HumanAnswered => Self::default(),
+                WindowEvent::AttemptFailed(class) => Self {
+                    attempts_used: window.attempts_used.saturating_add(1),
+                    invalid_output_failures: window
+                        .invalid_output_failures
+                        .saturating_add(u32::from(*class == FailureClass::InvalidOutput)),
+                },
+            })
+    }
+
+    /// Attempts used since the last human answer. Goes into [`RetryFacts::attempts_used`].
+    #[must_use]
+    pub const fn attempts_used(self) -> u32 {
+        self.attempts_used
+    }
+
+    /// Attempts since the last human answer that failed with `INVALID_OUTPUT`. Goes into
+    /// [`RetryFacts::invalid_output_failures`].
+    #[must_use]
+    pub const fn invalid_output_failures(self) -> u32 {
+        self.invalid_output_failures
     }
 }
 

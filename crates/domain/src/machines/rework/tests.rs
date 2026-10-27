@@ -1,5 +1,5 @@
 use super::*;
-use crate::contracts::review_verdict::DefectClass;
+use crate::contracts::review_verdict::{DefectClass, Finding, Severity};
 use crate::machines::guards::stage_run::needs_human_verdict;
 use crate::machines::invalidation::ArtifactChange;
 use crate::machines::limits::{ReworkLedger, ReworkLimits, ReworkTrack};
@@ -139,11 +139,25 @@ fn the_documentation_review_routes_by_defect_class() {
 }
 
 #[test]
-fn a_documentation_review_finding_the_file_does_not_route_has_no_route() {
+fn a_documentation_review_finding_with_no_class_counts_as_documentation() {
+    // A deterministic failure at DOCUMENTATION_REVIEW has no reviewer class (ADR 0010).
     assert_eq!(
         route_of(StageKind::DocumentationReview, gate(None)),
-        Err(NoReworkRoute::DefectNeeded(StageKind::DocumentationReview))
+        Ok(StageKind::Documenting)
     );
+    assert_eq!(
+        route_of(
+            StageKind::DocumentationReview,
+            gate(Some(DefectClass::Documentation))
+        ),
+        route_of(StageKind::DocumentationReview, gate(None))
+    );
+}
+
+#[test]
+fn the_route_table_alone_has_no_route_for_a_class_only_a_person_decides_there() {
+    // `route` reads `rework_routes` and nothing else. The decision consults the defect matrix
+    // first, so these two classes never get this far at DOCUMENTATION_REVIEW.
     for defect in [DefectClass::Specification, DefectClass::Policy] {
         assert_eq!(
             route_of(StageKind::DocumentationReview, gate(Some(defect))),
@@ -210,8 +224,12 @@ fn a_no_route_error_explains_itself_in_plain_english() {
         "the DOCUMENTATION_REVIEW stage has no rework route for a policy defect"
     );
     assert_eq!(
-        NoReworkRoute::DefectNeeded(StageKind::DocumentationReview).to_string(),
-        "the DOCUMENTATION_REVIEW stage routes rework by defect class, and the finding names none"
+        NoReworkRoute::HumanTarget {
+            from: StageKind::Review,
+            target: StageKind::Specification
+        }
+        .to_string(),
+        "a human request for rework from the REVIEW stage cannot go to the SPECIFICATION stage"
     );
 }
 
@@ -233,6 +251,15 @@ fn every_rework_target_produces_an_artifact_that_makes_later_work_stale() {
             r.from,
             r.target
         );
+    }
+    for route in HUMAN_REWORK_ROUTES {
+        for target in route.targets {
+            assert!(
+                ArtifactChange::produced_by(*target).is_some(),
+                "{} -> {target}",
+                route.from
+            );
+        }
     }
 }
 
@@ -389,13 +416,25 @@ fn a_stage_with_no_route_fails_for_good_and_a_human_is_not_asked() {
 
 #[test]
 fn the_facts_a_human_cause_stands_for_satisfy_the_needs_human_guard() {
-    for cause in [
+    let mut causes = vec![
         NeedsHumanCause::ReworkLimit,
         NeedsHumanCause::Stagnation,
         NeedsHumanCause::BudgetLimit,
-    ] {
+    ];
+    causes.extend(
+        DefectClass::ALL
+            .iter()
+            .map(|class| NeedsHumanCause::DefectNeedsDecision(*class)),
+    );
+    for cause in causes {
         assert!(needs_human_verdict(&cause.facts()).is_ok(), "{cause:?}");
     }
+    // The defect cause names itself and nothing else.
+    let facts = NeedsHumanCause::DefectNeedsDecision(DefectClass::Policy).facts();
+    assert!(facts.defect_needs_a_person);
+    assert!(
+        !facts.rework_limit_reached && !facts.stagnation_detected && !facts.budget_limit_reached
+    );
 }
 
 #[test]
@@ -440,15 +479,248 @@ fn repeated_findings_use_exactly_the_cap_and_then_stop() {
     }
 }
 
+// ---- the defect matrix ----------------------------------------------------------------------------------------------
+
+fn finding(severity: Severity, defect: DefectClass) -> Finding {
+    serde_json::from_value(serde_json::json!({
+        "finding_id": "finding-1",
+        "severity": severity.as_str(),
+        "category": "correctness",
+        "title": "The totals are wrong",
+        "description": "The total does not add the last line, so the output is short.",
+        "confidence": 0.9,
+        "proposed_next_action": "fix",
+        "defect_class": defect.as_str(),
+    }))
+    .expect("a finding")
+}
+
+fn reviewed(from: StageKind, defect: DefectClass) -> GateReworkDecision {
+    decide_gate_rework(&GateReworkRequest {
+        from,
+        defect: Some(defect),
+        finding: GateFinding::VerdictChangesRequired,
+        ledger: ReworkLedger::default(),
+        limits: ReworkLimits::default(),
+        failing_set_differs: true,
+        budget_remains: true,
+    })
+}
+
+#[test]
+fn the_four_reviewed_stages_are_the_ones_with_a_matrix_and_no_other_stage_has_one() {
+    assert_eq!(
+        DEFECT_ROUTED_STAGES,
+        [
+            StageKind::Specification,
+            StageKind::Architecture,
+            StageKind::Review,
+            StageKind::DocumentationReview,
+        ]
+    );
+    for stage in StageKind::ALL {
+        for defect in DefectClass::ALL {
+            assert_eq!(
+                defect_outcome(*stage, *defect).is_some(),
+                DEFECT_ROUTED_STAGES.contains(stage),
+                "{stage} / {defect}"
+            );
+        }
+    }
+}
+
+#[test]
+fn a_policy_finding_asks_a_person_at_every_reviewed_stage() {
+    for stage in DEFECT_ROUTED_STAGES {
+        assert_eq!(
+            defect_outcome(stage, DefectClass::Policy),
+            Some(DefectOutcome::Human),
+            "{stage}"
+        );
+        let decision = reviewed(stage, DefectClass::Policy);
+        assert_eq!(
+            decision,
+            GateReworkDecision::NeedsHuman(NeedsHumanCause::DefectNeedsDecision(
+                DefectClass::Policy
+            )),
+            "{stage}"
+        );
+        assert_eq!(decision.event(), StageRunEvent::GateNeedsHuman);
+    }
+}
+
+#[test]
+fn a_specification_finding_asks_a_person_except_where_the_specification_is_made() {
+    for stage in [
+        StageKind::Architecture,
+        StageKind::Review,
+        StageKind::DocumentationReview,
+    ] {
+        assert_eq!(
+            reviewed(stage, DefectClass::Specification),
+            GateReworkDecision::NeedsHuman(NeedsHumanCause::DefectNeedsDecision(
+                DefectClass::Specification
+            )),
+            "{stage}"
+        );
+    }
+    // At SPECIFICATION the stage reworks its own artifact.
+    let GateReworkDecision::Rework(plan) =
+        reviewed(StageKind::Specification, DefectClass::Specification)
+    else {
+        panic!("a specification defect at SPECIFICATION is reworked");
+    };
+    assert_eq!(plan.target, StageKind::Specification);
+    assert_eq!(plan.track, ReworkTrack::Code);
+}
+
+#[test]
+fn the_classes_the_builder_can_fix_are_reworked_at_every_reviewed_stage() {
+    for stage in DEFECT_ROUTED_STAGES {
+        for defect in [DefectClass::CodeBehavior, DefectClass::Documentation] {
+            assert!(
+                matches!(reviewed(stage, defect), GateReworkDecision::Rework(_)),
+                "{stage} / {defect}"
+            );
+        }
+    }
+    // The documentation review still picks its row by class.
+    let GateReworkDecision::Rework(plan) =
+        reviewed(StageKind::DocumentationReview, DefectClass::CodeBehavior)
+    else {
+        panic!("rework");
+    };
+    assert_eq!(plan.target, StageKind::Implementation);
+    let GateReworkDecision::Rework(plan) =
+        reviewed(StageKind::DocumentationReview, DefectClass::Documentation)
+    else {
+        panic!("rework");
+    };
+    assert_eq!(plan.target, StageKind::Documenting);
+    assert_eq!(plan.track, ReworkTrack::Documentation);
+}
+
+#[test]
+fn a_class_only_a_person_decides_does_not_use_up_a_round() {
+    // Asking a person is not rework: the ledger the caller holds stays as it was, and the cap
+    // does not matter.
+    let mut request = GateReworkRequest {
+        from: StageKind::Review,
+        defect: Some(DefectClass::Policy),
+        finding: GateFinding::VerdictChangesRequired,
+        ledger: ReworkLedger::new(2, 2),
+        limits: ReworkLimits::default(),
+        failing_set_differs: false,
+        budget_remains: false,
+    };
+    assert_eq!(
+        decide_gate_rework(&request),
+        GateReworkDecision::NeedsHuman(NeedsHumanCause::DefectNeedsDecision(DefectClass::Policy))
+    );
+    request.ledger = ReworkLedger::default();
+    request.failing_set_differs = true;
+    request.budget_remains = true;
+    assert!(matches!(
+        decide_gate_rework(&request),
+        GateReworkDecision::NeedsHuman(NeedsHumanCause::DefectNeedsDecision(_))
+    ));
+}
+
+#[test]
+fn a_deterministic_failure_at_the_documentation_review_counts_as_documentation() {
+    let request = GateReworkRequest {
+        from: StageKind::DocumentationReview,
+        defect: None,
+        finding: GateFinding::DeterministicGateFailed,
+        ledger: ReworkLedger::default(),
+        limits: ReworkLimits::default(),
+        failing_set_differs: true,
+        budget_remains: true,
+    };
+    let GateReworkDecision::Rework(plan) = decide_gate_rework(&request) else {
+        panic!("a broken link is reworked, and does not fail the job");
+    };
+    assert_eq!(plan.target, StageKind::Documenting);
+    assert_eq!(plan.track, ReworkTrack::Documentation);
+}
+
+#[test]
+fn mixed_defect_classes_follow_precedence() {
+    use DefectClass::{CodeBehavior, Documentation, Policy, Specification};
+    use Severity::{Blocker, High, Medium};
+    assert_eq!(
+        DEFECT_PRECEDENCE,
+        [Specification, Policy, CodeBehavior, Documentation]
+    );
+
+    // Whatever order the findings come in, the first class in the precedence wins.
+    let all = [
+        finding(High, Documentation),
+        finding(Medium, CodeBehavior),
+        finding(Blocker, Policy),
+        finding(High, Specification),
+    ];
+    for start in 0..all.len() {
+        let mut rotated = all.to_vec();
+        rotated.rotate_left(start);
+        assert_eq!(routing_defect(&rotated), Some(Specification), "{start}");
+        rotated.reverse();
+        assert_eq!(routing_defect(&rotated), Some(Specification), "{start}");
+    }
+    let without_specification = &all[..3];
+    assert_eq!(routing_defect(without_specification), Some(Policy));
+    let without_policy = [finding(High, Documentation), finding(Medium, CodeBehavior)];
+    assert_eq!(routing_defect(&without_policy), Some(CodeBehavior));
+    assert_eq!(routing_defect(&without_policy[..1]), Some(Documentation));
+
+    // A decision that needs a person is not hidden behind an easy fix: the same findings that
+    // include a policy defect ask a person at REVIEW, and without it they are reworked.
+    let class = routing_defect(&[finding(High, Documentation), finding(Medium, Policy)]).unwrap();
+    assert_eq!(
+        reviewed(StageKind::Review, class),
+        GateReworkDecision::NeedsHuman(NeedsHumanCause::DefectNeedsDecision(Policy))
+    );
+    let class =
+        routing_defect(&[finding(High, Documentation), finding(Medium, CodeBehavior)]).unwrap();
+    assert!(matches!(
+        reviewed(StageKind::Review, class),
+        GateReworkDecision::Rework(_)
+    ));
+}
+
+#[test]
+fn only_findings_of_medium_severity_or_above_decide_the_class() {
+    use DefectClass::{CodeBehavior, Documentation, Policy, Specification};
+    use Severity::{Blocker, High, Info, Low, Medium};
+    // A low or informational finding never wins, even with a class that outranks the rest.
+    assert_eq!(
+        routing_defect(&[finding(Low, Specification), finding(Medium, Documentation)]),
+        Some(Documentation)
+    );
+    assert_eq!(
+        routing_defect(&[finding(Info, Policy), finding(High, CodeBehavior)]),
+        Some(CodeBehavior)
+    );
+    for severity in [Blocker, High, Medium] {
+        assert_eq!(routing_defect(&[finding(severity, Policy)]), Some(Policy));
+    }
+    for severity in [Low, Info] {
+        assert_eq!(routing_defect(&[finding(severity, Policy)]), None);
+    }
+    assert_eq!(routing_defect(&[]), None);
+}
+
 // ---- human rework decisions -------------------------------------------------------------------------------------------
 
 fn human_request<'a>(
     from: StageKind,
+    target: StageKind,
     roles: &'a [HumanRole],
     ledger: ReworkLedger,
 ) -> HumanReworkRequest<'a> {
     HumanReworkRequest {
         from,
+        target,
         principal_roles: roles,
         ledger,
         limits: ReworkLimits::default(),
@@ -460,6 +732,7 @@ fn an_approver_can_send_the_approval_back_to_implementation() {
     let roles = [HumanRole::Approver];
     let decision = decide_human_rework(&human_request(
         StageKind::Approval,
+        StageKind::Implementation,
         &roles,
         ReworkLedger::default(),
     ));
@@ -480,6 +753,7 @@ fn a_human_without_the_role_is_refused() {
     let roles = [HumanRole::Requester];
     let decision = decide_human_rework(&human_request(
         StageKind::Approval,
+        StageKind::Implementation,
         &roles,
         ReworkLedger::default(),
     ));
@@ -495,6 +769,7 @@ fn a_human_request_after_the_cap_is_refused_until_a_human_chooses_to_go_on() {
     let roles = [HumanRole::Operator];
     let decision = decide_human_rework(&human_request(
         StageKind::Approval,
+        StageKind::Implementation,
         &roles,
         ReworkLedger::new(2, 0),
     ));
@@ -507,15 +782,204 @@ fn a_human_request_after_the_cap_is_refused_until_a_human_chooses_to_go_on() {
 
 #[test]
 fn a_human_request_from_a_stage_without_a_human_route_has_no_route() {
+    // INTAKE, REPOSITORY_INTELLIGENCE and DOMAIN_DISCOVERY have no human rework route: a person
+    // answers, approves or rejects there.
     let roles = [HumanRole::Approver];
-    let decision = decide_human_rework(&human_request(
-        StageKind::Review,
+    for from in [
+        StageKind::Intake,
+        StageKind::RepositoryIntelligence,
+        StageKind::DomainDiscovery,
+        StageKind::Merge,
+    ] {
+        let decision = decide_human_rework(&human_request(
+            from,
+            StageKind::Implementation,
+            &roles,
+            ReworkLedger::default(),
+        ));
+        assert_eq!(
+            decision,
+            HumanReworkDecision::NoRoute(NoReworkRoute::Human(from)),
+            "{from}"
+        );
+        assert_eq!(decision.event(), None);
+    }
+}
+
+// ---- where a person may send rework -------------------------------------------------------------------------------
+
+fn approver_sends(from: StageKind, target: StageKind) -> HumanReworkDecision {
+    let roles = [HumanRole::Approver];
+    decide_human_rework(&human_request(
+        from,
+        target,
         &roles,
         ReworkLedger::default(),
-    ));
+    ))
+}
+
+#[test]
+fn a_person_may_send_rework_to_every_target_the_file_lists_for_the_stage() {
+    // One case for each row of the table, and for each target in it.
+    assert_eq!(HUMAN_REWORK_ROUTES.len(), 10);
+    for route in HUMAN_REWORK_ROUTES {
+        assert!(!route.targets.is_empty(), "{}", route.from);
+        for target in route.targets {
+            let decision = approver_sends(route.from, *target);
+            let HumanReworkDecision::Rework(plan) = &decision else {
+                panic!("{} -> {target}: {decision:?}", route.from);
+            };
+            assert_eq!(plan.target, *target);
+            assert_eq!(decision.event(), Some(StageRunEvent::HumanRequestedRework));
+        }
+    }
+}
+
+#[test]
+fn a_later_stage_is_refused_as_a_target() {
+    for route in HUMAN_REWORK_ROUTES {
+        for target in StageKind::ALL {
+            if route.targets.contains(target) {
+                continue;
+            }
+            assert_eq!(
+                approver_sends(route.from, *target),
+                HumanReworkDecision::NoRoute(NoReworkRoute::HumanTarget {
+                    from: route.from,
+                    target: *target
+                }),
+                "{} -> {target}",
+                route.from
+            );
+        }
+        // No target is ever later than the stage that waits.
+        assert!(
+            route.targets.iter().all(|t| *t <= route.from),
+            "{}",
+            route.from
+        );
+    }
     assert_eq!(
-        decision,
-        HumanReworkDecision::NoRoute(NoReworkRoute::Human(StageKind::Review))
+        approver_sends(StageKind::Review, StageKind::Documenting),
+        HumanReworkDecision::NoRoute(NoReworkRoute::HumanTarget {
+            from: StageKind::Review,
+            target: StageKind::Documenting
+        })
     );
-    assert_eq!(decision.event(), None);
+}
+
+#[test]
+fn the_specification_is_a_target_only_from_the_specification() {
+    // Revising a frozen specification needs the method of ADR 0006, which is not proven yet.
+    for route in HUMAN_REWORK_ROUTES {
+        assert_eq!(
+            route.targets.contains(&StageKind::Specification),
+            route.from == StageKind::Specification,
+            "{}",
+            route.from
+        );
+    }
+    for from in [
+        StageKind::Architecture,
+        StageKind::Review,
+        StageKind::Approval,
+    ] {
+        assert_eq!(
+            approver_sends(from, StageKind::Specification),
+            HumanReworkDecision::NoRoute(NoReworkRoute::HumanTarget {
+                from,
+                target: StageKind::Specification
+            })
+        );
+    }
+    assert!(matches!(
+        approver_sends(StageKind::Specification, StageKind::Specification),
+        HumanReworkDecision::Rework(_)
+    ));
+}
+
+#[test]
+fn only_agent_produced_stages_are_targets() {
+    let agent_produced = [
+        StageKind::Specification,
+        StageKind::Architecture,
+        StageKind::TaskPlanning,
+        StageKind::Implementation,
+        StageKind::Documenting,
+    ];
+    for route in HUMAN_REWORK_ROUTES {
+        for target in route.targets {
+            assert!(
+                agent_produced.contains(target),
+                "{} -> {target}",
+                route.from
+            );
+        }
+    }
+}
+
+#[test]
+fn the_cap_and_the_counts_follow_the_target_a_person_names() {
+    // Rework to DOCUMENTING is charged to the documentation count, any other to the code count.
+    let to_documenting = approver_sends(StageKind::Approval, StageKind::Documenting);
+    let HumanReworkDecision::Rework(plan) = &to_documenting else {
+        panic!("{to_documenting:?}");
+    };
+    assert_eq!(plan.track, ReworkTrack::Documentation);
+    assert_eq!(plan.ledger_after, ReworkLedger::new(0, 1));
+
+    let to_architecture = approver_sends(StageKind::Approval, StageKind::Architecture);
+    let HumanReworkDecision::Rework(plan) = &to_architecture else {
+        panic!("{to_architecture:?}");
+    };
+    assert_eq!(plan.track, ReworkTrack::Code);
+    assert_eq!(plan.ledger_after, ReworkLedger::new(1, 0));
+
+    // A full code count does not stop a documentation round, and the other way round.
+    let roles = [HumanRole::Approver];
+    let request = |target, ledger| {
+        decide_human_rework(&human_request(StageKind::Approval, target, &roles, ledger))
+    };
+    assert!(matches!(
+        request(StageKind::Documenting, ReworkLedger::new(2, 0)),
+        HumanReworkDecision::Rework(_)
+    ));
+    assert!(matches!(
+        request(StageKind::Implementation, ReworkLedger::new(0, 2)),
+        HumanReworkDecision::Rework(_)
+    ));
+    for target in [
+        StageKind::Architecture,
+        StageKind::TaskPlanning,
+        StageKind::Implementation,
+    ] {
+        assert!(
+            matches!(
+                request(target, ReworkLedger::new(2, 0)),
+                HumanReworkDecision::Refused(_)
+            ),
+            "{target}"
+        );
+    }
+    assert!(matches!(
+        request(StageKind::Documenting, ReworkLedger::new(0, 2)),
+        HumanReworkDecision::Refused(_)
+    ));
+}
+
+#[test]
+fn a_refused_target_is_reported_before_the_role_and_the_cap_are_looked_at() {
+    // The route comes first: a person with no role who names a stage that is not a target hears
+    // about the target, and nothing changes in the ledger.
+    let roles: [HumanRole; 0] = [];
+    let decision = decide_human_rework(&human_request(
+        StageKind::Review,
+        StageKind::Documenting,
+        &roles,
+        ReworkLedger::new(2, 2),
+    ));
+    assert!(matches!(
+        decision,
+        HumanReworkDecision::NoRoute(NoReworkRoute::HumanTarget { .. })
+    ));
 }
