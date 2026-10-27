@@ -1,0 +1,291 @@
+# =============================================================================
+# policies/approval.yaml  -  autonomy levels and human gates
+# =============================================================================
+# STATUS: DESIGNED. No product code reads or enforces this file yet.
+#
+# Defaults required by the master prompt:
+#   * start in human-approval mode
+#   * auto-merge is OFF
+#   * deployment is a separate opt-in workflow and is OFF
+#   * approve, reject, pause, rework and cancel are supported from the dashboard,
+#     the CLI and GitHub comments, each with authorization validation
+#
+# This file shares the parser contract of policies/security.yaml: YAML 1.2
+# subset, no anchors or merge keys, `deny_unknown_fields`, `schema_version`
+# check, deny_overrides, tighten-only project overrides, and a policy hash on
+# every approval record. Read the header of security.yaml first.
+#
+# Vocabulary
+#   requires: none            the policy engine alone decides from gate evidence
+#   requires: human           a named, authorized human decision is mandatory
+#   requires: human_and_policy  both must agree; the human cannot override a
+#                              failed non-waivable gate (see security.yaml
+#                              gate_integrity.nonwaivable_gates)
+#   requires_by_level         map from autonomy level to one of: forbidden | none |
+#                             human | policy | human_and_policy. Used when the
+#                             answer changes with the level. Exactly one of
+#                             `requires` and `requires_by_level` is present.
+#   min_level                 lowest autonomy level at which the action exists
+#   role                      authorization role, resolved live (see `roles`)
+# =============================================================================
+
+schema_version: 1
+
+policy:
+  id: approval
+  version: 1
+  status: designed                    # enum: designed | enforced
+  default_action: require_human       # anything not listed in `actions` needs a human
+  conflict_resolution: deny_overrides
+  project_overrides: tighten_only
+  config_source: protected_default_branch
+  threats: [T-14, T-23, T-24]
+
+# -----------------------------------------------------------------------------
+# 1. Autonomy levels
+# -----------------------------------------------------------------------------
+# A repository runs at exactly one level. Raising a level is an `always_human`
+# action with an org_admin approver and an audit event. Lowering is allowed for
+# any repo_admin. A repository that fails the checks in
+# security.yaml credentials.repository_requirements is capped at L0.
+autonomy:
+  default_level: L1
+  levels:
+    - id: L0
+      name: observe_only
+      description: "Reads issues and repository, posts comments and status. No branches, no pull requests."
+      github_writes: [comment, status, check_run]
+    - id: L1
+      name: human_approval
+      description: "DEFAULT. Creates factory branches and DRAFT pull requests. Every promotion step needs a human."
+      github_writes: [comment, status, check_run, push_factory_branch, open_draft_pr, update_draft_pr]
+      human_required_for: [spec_freeze_when_risk_at_least_medium, mark_pr_ready, merge_pr]
+    - id: L2
+      name: assisted_ready
+      description: "May mark a pull request ready for review when all gates pass. A human still merges."
+      github_writes: [comment, status, check_run, push_factory_branch, open_draft_pr, update_draft_pr, mark_pr_ready]
+      human_required_for: [merge_pr]
+      preconditions: [all_gates_PASSED, no_protected_path_change, risk_tier_at_most_medium, security_review_PASS]
+    - id: L3
+      name: auto_merge_low_risk
+      description: "OFF. Documented so the shape is fixed. Needs explicit per-repo opt-in."
+      enabled: false
+      github_writes: [comment, status, check_run, push_factory_branch, open_draft_pr, update_draft_pr, mark_pr_ready, merge_pr]
+      human_required_for: []
+      opt_in_requires: [human_approval_by_org_admin, written_justification]
+      eligibility_all_of:
+        - risk_tier_is_low
+        - no_protected_path_change
+        - no_sensitive_file_change
+        - no_new_dependency
+        - all_gates_PASSED_on_final_head_sha
+        - independent_review_PASS_with_no_open_findings
+        - security_review_PASS
+        - documentation_gate_PASSED_or_NOT_APPLICABLE
+        - branch_protection_and_required_checks_intact
+        - final_validation_after_rebase_or_sync
+        - authorized_identity_recorded
+        - audit_event_written_before_merge
+      revoke_automatically_on: [escaped_defect_in_repo, nonwaivable_gate_failure, policy_change, security_incident]
+  deploy:
+    enabled: false                    # deployment is a separate opt-in workflow, never part of the default loop
+    autonomous: never
+    requires: human
+    approver_roles: [org_admin]
+  auto_merge:
+    enabled: false
+    per_repo_opt_in_only: true
+
+# -----------------------------------------------------------------------------
+# 2. Roles (resolved live; never cached past a single decision)
+# -----------------------------------------------------------------------------
+# GitHub repository permission is the source of truth for human identity and
+# access. `author_association` in a webhook payload is a hint, not proof.
+roles:
+  - id: requester
+    description: "A human whose action created or labeled a request."
+    github_permission_at_least: triage
+  - id: operator
+    description: "May pause, resume, cancel and view jobs."
+    github_permission_at_least: write
+  - id: approver
+    description: "May approve, reject and request rework."
+    github_permission_at_least: write
+    must_be_human_user: true          # sender.type == User; bots never approve
+  - id: security_approver
+    description: "May approve changes to protected paths, egress, tool grants and sandbox settings."
+    github_permission_at_least: maintain
+    must_be_listed_in: security_approvers   # an explicit list kept in central configuration
+  - id: repo_admin
+    description: "May lower autonomy and change repository settings in the factory."
+    github_permission_at_least: admin
+  - id: org_admin
+    description: "May raise autonomy, enable auto-merge or deploy, change budgets above ceilings."
+    organization_role: owner
+separation_of_duties:
+  approver_must_differ_from_requester_when:
+    - risk_tier_at_least_high
+    - protected_path_change
+    - sensitive_file_change
+    - new_dependency
+  approver_may_equal_requester_when_low_risk: true      # single-maintainer repositories
+  factory_app_may_approve: false
+  security_approver_must_differ_from_requester: true
+
+# -----------------------------------------------------------------------------
+# 3. Risk tiers (inputs to routing and to the checks above)
+# -----------------------------------------------------------------------------
+risk_tiers:
+  - id: low
+    criteria_any: [docs_only, tests_only_new_files, single_module_change_without_sensitive_or_protected_paths]
+    required_reviews: [code_reviewer]
+    required_approvals: 1
+  - id: medium
+    criteria_any: [multi_module_change, public_api_change, schema_migration_without_data_loss]
+    required_reviews: [code_reviewer, qa]
+    required_approvals: 1
+  - id: high
+    criteria_any: [authn_authz_change, secret_handling_change, new_dependency, sensitive_file_change, data_migration, concurrency_or_locking_change, infra_change]
+    required_reviews: [code_reviewer, qa, security_reviewer, adversarial_reviewer]
+    required_approvals: 1
+    approver_must_differ_from_requester: true
+  - id: critical
+    criteria_any: [protected_path_change, policy_or_sandbox_change, money_movement, physical_actuation, regulated_workflow, production_data_access]
+    required_reviews: [code_reviewer, qa, security_reviewer, adversarial_reviewer]
+    required_approvals: 2
+    approver_roles: [security_approver]
+    approver_must_differ_from_requester: true
+
+risk_classification:
+  computed_by: policy_engine_from_trusted_diff_and_spec   # never self-reported by an agent
+  agent_may_lower_tier: false
+  agent_may_raise_tier: true
+
+# -----------------------------------------------------------------------------
+# 4. Action table
+# -----------------------------------------------------------------------------
+# Every factory-initiated side effect has a row. A missing row means
+# `requires: human` (the policy default_action).
+#   min_level  lowest autonomy level at which the factory may attempt it
+actions:
+  - { id: accept_issue_for_intake,        min_level: L0, requires: none,             when: "label `factory` applied by a user with permission at least triage, verified live", threats: [T-23] }
+  - { id: post_comment,                   min_level: L0, requires: none,             when: "text passes output_hygiene and secret checks", threats: [T-18] }
+  - { id: set_status_or_check,            min_level: L0, requires: none,             when: "result derived from supervisor-observed gate evidence", threats: [T-13] }
+  - { id: push_factory_branch,            min_level: L1, requires: none,             when: "branch matches factory/*, diff passes protected_path_check and secret_scan", threats: [T-12, T-24] }
+  - { id: open_draft_pr,                  min_level: L1, requires: none,             when: "branch pushed; body passes output_hygiene", threats: [T-18] }
+  - { id: freeze_specification,           min_level: L1, requires: human,            when: "risk tier at least medium or open questions remain; below that the spec gate decides", approver_roles: [approver], threats: [T-01, T-23] }
+  - { id: mark_pr_ready,                  min_level: L1, requires_by_level: { L0: forbidden, L1: human, L2: policy, L3: policy }, approver_roles: [approver], when: "policy means the L2 preconditions are satisfied", threats: [T-14] }
+  - { id: merge_pr,                       min_level: L1, requires_by_level: { L0: forbidden, L1: human, L2: human, L3: policy }, approver_roles: [approver], when: "L3 is disabled; a human merge still passes the policy checks and is bound to the head SHA", threats: [T-14] }
+  - { id: approve_pr,                     min_level: L1, requires: human,            approver_roles: [approver], threats: [T-23] }
+  - { id: reject_or_request_rework,       min_level: L1, requires: human,            approver_roles: [approver], threats: [T-23] }
+  - { id: pause_or_resume_job,            min_level: L1, requires: human,            approver_roles: [operator], threats: [T-23] }
+  - { id: cancel_job,                     min_level: L1, requires: human,            approver_roles: [operator], threats: [T-23] }
+  - { id: close_or_label_issue,           min_level: L1, requires: none,             when: "limited to labels in the factory namespace" }
+  - { id: add_new_direct_dependency,      min_level: L1, requires: human,            approver_roles: [approver], when: "unless name already in lockfile or on organization allowlist", threats: [T-29] }
+  - { id: run_fetch_deps,                 min_level: L1, requires: none,             when: "after dependency policy decision; allowlisted registries only", threats: [T-29] }
+  - { id: change_protected_path,          min_level: L1, requires: human_and_policy, approver_roles: [security_approver], when: "needs spec_authorization AND independent_policy_review AND human_approval", threats: [T-12] }
+  - { id: grant_tool_outside_manifest,    min_level: L1, requires: human,            approver_roles: [security_approver], threats: [T-06] }
+  - { id: use_exec_shell_breakglass,      min_level: L1, requires: human,            approver_roles: [security_approver], when: "per call, single task, recorded", threats: [T-06] }
+  - { id: widen_egress_allowlist,         min_level: L1, requires: human,            approver_roles: [security_approver], threats: [T-17] }
+  - { id: raise_budget_ceiling,           min_level: L1, requires: human,            approver_roles: [org_admin], threats: [T-26] }
+  - { id: install_spec_kit_or_tooling,    min_level: L1, requires: human,            approver_roles: [repo_admin], when: "the master prompt forbids running installation scripts without authorization" }
+  - { id: waive_failed_gate,              min_level: L1, requires: human,            approver_roles: [security_approver], when: "only gates NOT listed in security.yaml gate_integrity.nonwaivable_gates; waiver has an owner and an expiry", threats: [T-13] }
+  - { id: accept_residual_risk,           min_level: L1, requires: human,            approver_roles: [security_approver], when: "owner and expiry recorded", threats: [T-31] }
+  - { id: send_code_to_new_model_provider, min_level: L1, requires: human,           approver_roles: [org_admin], threats: [T-20, T-28] }
+  - { id: write_to_additional_repository, min_level: L1, requires: human,            approver_roles: [org_admin], when: "a job is bound to exactly one repository; cross-repository writes are a new job", threats: [T-24] }
+
+# -----------------------------------------------------------------------------
+# 5. Actions that ALWAYS require a human, at every level, for every repo
+# -----------------------------------------------------------------------------
+# No setting in this file or in a project policy can move one of these to
+# `none`. A request to do so is itself recorded as a human decision.
+always_human:
+  - merge_to_default_branch_unless_L3_explicitly_enabled
+  - enable_auto_merge_for_a_repository
+  - raise_autonomy_level
+  - any_deployment_or_release_publication
+  - publish_package_or_container_image
+  - create_or_push_tags
+  - change_protected_path
+  - modify_ci_workflows_or_gate_configuration
+  - modify_security_or_approval_policy
+  - add_new_direct_dependency_not_on_allowlist
+  - widen_egress_allowlist
+  - grant_tool_outside_agent_manifest
+  - enable_exec_shell_breakglass
+  - raise_budget_ceiling
+  - waive_any_gate
+  - accept_residual_risk
+  - freeze_specification_with_risk_at_least_medium
+  - access_additional_repository_or_organization
+  - send_code_to_additional_model_provider
+  - install_or_update_spec_kit_or_other_tooling
+  - delete_branch_repository_release_or_data
+  - force_push_or_rewrite_history
+  - money_movement_live_orders_or_capital_transfer
+  - physical_actuation
+  - regulated_or_compliance_sign_off
+  - restore_or_rotate_credentials_after_incident
+never_allowed_even_with_human_via_the_factory:
+  - force_push_to_default_branch
+  - bypass_branch_protection
+  - disable_audit_logging
+  - read_secret_values_into_agent_context
+  - run_agent_with_unsandboxed_host_execution
+
+# -----------------------------------------------------------------------------
+# 6. What an approval is bound to, and when it stops being valid
+# -----------------------------------------------------------------------------
+approval_binding:
+  binds_to: [pr_head_sha, tree_hash, evidence_manifest_hash, policy_hash, spec_version, base_sha]
+  github_merge_must_pass_expected_head_sha: true
+  expires_after_hours: 72
+  invalidated_by:
+    - new_commit_on_head
+    - rebase_or_force_push
+    - base_branch_moved_requiring_resync
+    - policy_change
+    - specification_revision
+    - any_gate_result_changed
+    - approver_permission_revoked
+  step_up_authentication_required_for: [change_protected_path, widen_egress_allowlist, raise_budget_ceiling, raise_autonomy_level, accept_residual_risk, waive_any_gate]
+  record_fields: [approval_id, tenant_id, job_id, action, approver_id, approver_role, permission_checked_at, decision, binds_to, reason, channel, created_at]
+
+# -----------------------------------------------------------------------------
+# 7. Commands (dashboard, CLI, GitHub comments)
+# -----------------------------------------------------------------------------
+# One command set, three channels. The authorization rules are identical.
+commands:
+  verbs: [approve, reject, pause, resume, rework, cancel]
+  channels: [dashboard, cli, github_comment]
+  github_comment:
+    prefix: "/factory"
+    syntax: "/factory <verb> [free text reason]"
+    accept_event: issue_comment.created      # edits never trigger a command
+    first_line_only: true
+    ignore_inside: [code_blocks, block_quotes, html_comments]
+    ignore_if_sender_type_not: User
+    ignore_senders: [self_app_bot, other_bots]
+    authorization: resolve_role_live_via_collaborator_permission_api
+    unauthorized_response: silent_audit_only       # no oracle for outsiders; event is audited, nothing posted
+    one_command_per_comment: true
+  dashboard_and_cli:
+    authentication: required
+    csrf_protection: required_for_dashboard
+    session_binding: tenant_scoped
+  rate_limit: { per_user_per_minute: 20 }
+  threats: [T-23, T-32]
+
+# -----------------------------------------------------------------------------
+# 8. Intake authorization
+# -----------------------------------------------------------------------------
+intake:
+  trigger_label: factory
+  authorizing_actor: label_sender            # the person who applied the label, not the issue author
+  authorizing_actor_requires_role: requester
+  label_presence_alone_is_authorization: false   # templates and automation can apply labels for low-privilege authors
+  snapshot_content_hash_at_authorization: true
+  reauthorize_on_edit_by_actor_other_than_authorizer: true
+  on_unauthorized: comment_once_with_reason_and_audit
+  on_out_of_policy_request: reject_with_concise_explanation   # master prompt section 3
+  threats: [T-23, T-01]

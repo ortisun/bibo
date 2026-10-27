@@ -1,0 +1,1157 @@
+# =============================================================================
+# policies/security.yaml  -  default-deny security policy for the factory
+# =============================================================================
+# STATUS: DESIGNED. No product code reads or enforces this file yet. Flip
+# `policy.status` to `enforced` only when the policy crate, its tests and the
+# negative tests in docs/security/negative-test-catalog.md exist and pass.
+#
+# Companion documents (the "why" behind each key):
+#   docs/security/threat-model.md              threat IDs (T-nn) and control IDs (C-nn)
+#   docs/security/sandbox-policy.md            container flags, verified against Docker 29.9.2
+#   docs/security/secrets-and-credentials.md   credential handling and redaction
+#   docs/security/negative-test-catalog.md     tests that prove these rules (NT-*)
+#   policies/approval.yaml                     autonomy levels and human gates
+#
+# -----------------------------------------------------------------------------
+# PARSER CONTRACT (for the future Rust policy crate)
+# -----------------------------------------------------------------------------
+# * Plain YAML 1.2 subset: block style, scalars, lists, maps. No anchors, no
+#   aliases, no merge keys (<<), no custom tags, a single document.
+# * Deserialize into typed structs with serde and `#[serde(deny_unknown_fields)]`.
+#   An unknown key is a load error, never silently ignored.
+# * `schema_version` must equal the version the binary supports, otherwise the
+#   factory refuses to start (fail closed).
+# * Every list that grants something is an allowlist. Absence means deny.
+#   Every list that forbids something is a denylist used as a backstop only;
+#   the primary controls are the allowlists and the sandbox itself.
+# * Evaluation order: any matching deny wins over any allow (deny_overrides).
+# * Regex fields use the Rust `regex` crate dialect (RE2-like: no lookaround, no
+#   backreferences). This also bounds matching time (no catastrophic backtracking).
+# * Glob fields use the Rust `globset` crate dialect: `**` crosses directories,
+#   `*` and `?` do not cross `/`, `{a,b}` alternation is allowed.
+# * Durations are integer seconds (`*_s`), sizes are integer megabytes (`*_mb`)
+#   or bytes (`*_bytes`), money is USD as a decimal number (`*_usd`).
+# * The loader computes a SHA-256 over the canonical form of the merged policy.
+#   That `policy_hash` is stored on every job, approval and audit event.
+# * Loading rules: this file is read only from the protected default branch of
+#   the factory configuration source (or a signed release artifact). It is never
+#   read from a feature branch, from a builder workspace, or from the target
+#   repository's working tree. See `policy.project_overrides`.
+# -----------------------------------------------------------------------------
+
+schema_version: 1
+
+policy:
+  id: security
+  version: 1
+  status: designed                  # enum: designed | enforced
+  default_action: deny              # enum: deny   (no other value is valid)
+  conflict_resolution: deny_overrides
+  # Project-local policy (`.factory/` in a target repo, read from the protected
+  # base commit only) may ADD protected paths, ADD forbidden commands, REMOVE
+  # egress hosts and LOWER limits. It may never widen anything. A key that would
+  # widen the central policy is a load error. Widening needs a human decision
+  # recorded under policies/approval.yaml `always_human`.
+  project_overrides: tighten_only   # enum: tighten_only
+  config_source: protected_default_branch   # enum: protected_default_branch | signed_release
+  threats: [T-15, T-04, T-12]
+
+# -----------------------------------------------------------------------------
+# 1. Path matching rules (applies to every path comparison in this file)
+# -----------------------------------------------------------------------------
+matching:
+  # Compare repository-relative POSIX paths after: Unicode NFC normalization,
+  # removal of `.` segments, rejection of `..` segments and of absolute paths,
+  # and rejection of NUL and backslash. Matching is case-insensitive so that
+  # `.GitHub/Workflows` cannot dodge `.github/**` on case-insensitive filesystems.
+  normalization: nfc
+  case_insensitive: true
+  reject_dotdot: true
+  reject_absolute: true
+  reject_nul_and_backslash: true
+  # The decision is taken on the final tree diff computed by trusted git outside
+  # the sandbox (base tree vs head tree), never on a list of files the agent
+  # reports. Renames and copies count as two paths (source and destination).
+  # Mode changes (for example chmod +x) and type changes (file to symlink) count
+  # as modifications. Deletions count.
+  evaluate_on: trusted_tree_diff
+  count_rename_source_and_destination: true
+  mode_and_type_changes_are_modifications: true
+  # Any path component equal to `.git` (case-insensitive, after NFC) is rejected
+  # outright. Gitlink entries (mode 160000) and `.gitmodules` changes are rejected.
+  reject_dot_git_components: true
+  reject_gitlinks: true
+  # Symlinks are allowed in a diff only when the target resolves inside the
+  # workspace after canonicalization. Otherwise the diff is rejected.
+  symlinks: reject_if_target_outside_workspace
+  threats: [T-12, T-15, T-10]
+
+# -----------------------------------------------------------------------------
+# 2. Protected paths (builders cannot change these to make checks pass)
+# -----------------------------------------------------------------------------
+# mode:
+#   deny_write     any add, modify, delete, rename or mode change blocks the job
+#   append_only    new files are allowed; modify, delete, rename of existing files block
+#   additions_only new files are allowed; an existing file may only GAIN lines (its
+#                  diff contains no removed or changed lines); delete and rename block
+#   hidden         not in the checkout at all (sparse exclusion); also denied for read
+#   sensitive      allowed, but triggers the listed semantic checks and extra review
+# When several groups match one path, the most restrictive mode wins, in this
+# order: hidden > deny_write > append_only > additions_only > sensitive.
+# Rust inline tests (`#[cfg(test)]` inside source files) cannot be protected by
+# path; they are covered by `gate_integrity.test_regression`.
+# applies_to: target_repo | factory_repo | both
+# change_requires: all must hold before a change to a deny_write/append_only
+#   path can be accepted. This mirrors the master prompt: the approved
+#   specification explicitly authorizes it AND independent policy review
+#   approves it. `human_approval` is added by this baseline.
+#   `spec_authorization` is a structured field written only by an authenticated
+#   human through the approval flow. It is never parsed from specification prose.
+protected_paths:
+  default_change_requires: [spec_authorization, independent_policy_review, human_approval]
+  groups:
+    - id: ci_workflows
+      mode: deny_write
+      applies_to: both
+      globs:
+        - ".github/**"
+        - ".gitlab-ci.yml"
+        - ".circleci/**"
+        - ".buildkite/**"
+        - "azure-pipelines.yml"
+        - "Jenkinsfile"
+        - ".drone.yml"
+        - "bitbucket-pipelines.yml"
+        - "CODEOWNERS"
+        - "docs/CODEOWNERS"
+      reason: "CI definitions and code ownership decide what runs and who reviews."
+      threats: [T-12, T-14]
+
+    - id: gate_and_toolchain_config
+      mode: deny_write
+      applies_to: both
+      globs:
+        - ".cargo/**"                    # target runners, rustc wrappers, alternative registries
+        - "rust-toolchain"
+        - "rust-toolchain.toml"
+        - "clippy.toml"
+        - ".clippy.toml"
+        - "rustfmt.toml"
+        - ".rustfmt.toml"
+        - "deny.toml"
+        - "audit.toml"
+        - ".config/nextest.toml"
+        - "Makefile"
+        - "justfile"
+        - "scripts/ci/**"
+        - "scripts/gates/**"
+        - "tox.ini"
+        - "noxfile.py"
+        - "pytest.ini"
+        - "jest.config.*"
+        - "vitest.config.*"
+        - "playwright.config.*"
+        - ".coveragerc"
+        - "codecov.yml"
+        - ".codecov.yml"
+        - "sonar-project.properties"
+        - ".pre-commit-config.yaml"
+        - ".gitleaks.toml"
+        - ".gitleaksignore"
+        - ".semgrep/**"
+        - ".semgrepignore"
+        - ".npmrc"
+        - ".yarnrc*"
+        - "pip.conf"
+        - ".eslintrc*"
+        - "eslint.config.*"
+        - "tsconfig*.json"
+      reason: "Lint, type, coverage and scanner settings decide what a PASS means."
+      threats: [T-12, T-13]
+
+    - id: factory_config
+      mode: deny_write
+      applies_to: both
+      globs:
+        - ".factory/**"
+        - ".specify/**"
+      reason: "Project-local factory configuration and Spec Kit state. Changed only through the specification and configuration stages."
+      threats: [T-12, T-15, T-04]
+
+    - id: agent_instruction_files
+      mode: deny_write
+      applies_to: both
+      globs:
+        - "AGENTS.md"
+        - "CLAUDE.md"
+        - "GEMINI.md"
+        - ".claude/**"
+        - ".codex/**"
+        - ".gemini/**"
+        - ".agents/**"
+        - ".cursor/**"
+        - ".cursorrules"
+        - ".mcp.json"
+        - ".github/copilot-instructions.md"
+      reason: "Files that steer future agent runs. A builder editing them is persistent prompt injection."
+      threats: [T-02, T-04]
+
+    - id: vcs_internals_and_hooks
+      mode: deny_write
+      applies_to: both
+      globs:
+        - ".git"
+        - ".git/**"
+        - ".gitmodules"
+        - ".githooks/**"
+        - ".husky/**"
+      reason: "Hooks and submodule pointers run or fetch code on developer machines and on the control plane."
+      threats: [T-10]
+
+    - id: test_fixtures_and_goldens
+      mode: append_only
+      applies_to: both
+      globs:
+        - "tests/fixtures/**"
+        - "tests/golden/**"
+        - "**/__snapshots__/**"
+        - "**/*.snap"
+        - "**/testdata/**"
+        - "**/golden/**"
+      reason: "Existing fixtures and golden files may be added to but not edited or removed to force a pass."
+      threats: [T-12, T-13]
+
+    - id: test_code
+      mode: additions_only
+      applies_to: both
+      globs:
+        - "tests/**"
+        - "**/tests/**"
+        - "**/__tests__/**"
+        - "**/*_test.*"
+        - "**/*.test.*"
+        - "**/*.spec.*"
+        - "**/test_*.py"
+      reason: "Builders add tests; they do not weaken or remove existing ones. Rewrites need spec authorization and independent policy review."
+      threats: [T-12, T-13]
+
+    - id: evaluation_holdouts
+      mode: hidden
+      applies_to: both
+      globs:
+        - "evals/**"
+        - "tests/evals/**"
+        - "tests/holdout/**"
+        - "**/holdout/**"
+        - "**/heldout/**"
+      reason: "Held-out evaluation data must never be visible to builders or reach model context."
+      threats: [T-12, T-13, T-35]
+
+    - id: secret_bearing_files
+      mode: hidden
+      applies_to: both
+      globs:
+        - ".env"
+        - ".env.*"
+        - "!.env.example"                # a leading "!" re-includes; the loader applies it last
+        - "**/*.pem"
+        - "**/*.key"
+        - "**/*.p12"
+        - "**/*.pfx"
+        - "**/id_rsa*"
+        - "**/id_ed25519*"
+        - ".netrc"
+        - ".pypirc"
+        - ".git-credentials"
+        - ".aws/**"
+        - ".ssh/**"
+        - ".docker/config.json"
+        - "**/credentials*.json"
+      reason: "Never mounted, never read into context, never allowed in a diff."
+      threats: [T-16, T-19, T-20]
+
+    - id: factory_self_protection
+      mode: deny_write
+      applies_to: factory_repo
+      globs:
+        - "policies/**"
+        - "docs/security/**"
+        - "agents/**"
+        - "workflows/**"
+      reason: "When the factory works on its own repository, its policies, security documents and agent manifests are protected."
+      threats: [T-15, T-12]
+
+  # Allowed to change, but every change runs the listed semantic checks (see
+  # `gate_integrity.semantic_checks`) and requires the listed extra reviewer.
+  sensitive_files:
+    - id: dependency_manifests
+      globs:
+        - "Cargo.toml"
+        - "**/Cargo.toml"
+        - "Cargo.lock"
+        - "package.json"
+        - "**/package.json"
+        - "package-lock.json"
+        - "pnpm-lock.yaml"
+        - "yarn.lock"
+        - "pyproject.toml"
+        - "requirements*.txt"
+        - "uv.lock"
+        - "poetry.lock"
+        - "go.mod"
+        - "go.sum"
+        - "Gemfile"
+        - "Gemfile.lock"
+        - "pom.xml"
+        - "build.gradle*"
+        - "**/*.csproj"
+      checks: [new_dependency, lint_relaxation, test_harness_disabled, build_script_added, registry_or_source_changed]
+      extra_review: [security_reviewer]
+    - id: container_and_infrastructure
+      globs:
+        - "Dockerfile*"
+        - "**/Dockerfile*"
+        - "docker-compose*.yml"
+        - "infra/**"
+        - "**/*.tf"
+        - "k8s/**"
+        - "helm/**"
+      checks: [privilege_or_network_widening, secret_in_diff]
+      extra_review: [security_reviewer]
+    - id: security_critical_code
+      globs:
+        - "crates/policy/**"
+        - "crates/sandbox/**"
+        - "crates/github/**"
+        - "crates/runtime/**"
+      checks: [secret_in_diff]
+      extra_review: [security_reviewer]
+      applies_to: factory_repo
+    - id: attributes_and_build_scripts
+      globs:
+        - ".gitattributes"
+        - "**/build.rs"
+        - "**/setup.py"
+        - "**/conftest.py"
+      checks: [build_script_added, test_harness_disabled]
+      extra_review: [security_reviewer]
+
+# -----------------------------------------------------------------------------
+# 3. Workspace path access for file tools
+# -----------------------------------------------------------------------------
+path_access:
+  workspace_root: /workspace          # inside the sandbox
+  # A path is writable only if it matches write_allow, matches no deny_write
+  # or append_only-protected existing file, and is not hidden.
+  write_allow: ["**"]                 # tightened per task by the planner (`owned_files`)
+  write_scope_source: task_owned_files    # the Task DAG `owned files/interfaces` narrows write_allow
+  deny_read_globs_ref: protected_paths.groups[secret_bearing_files,evaluation_holdouts]
+  resolve_with: openat2_resolve_beneath    # or O_NOFOLLOW walk; never string checks only
+  follow_symlinks_on_host: false           # control plane readers use NOFOLLOW (verified risk: NT-SBX-09)
+  max_file_bytes: 5242880                  # largest single file the agent may write through tools
+  max_files_changed_per_task: 200
+  max_diff_bytes: 5242880
+  # Filesystem audit walk run by the control plane on the workspace BEFORE any
+  # diff is computed or any file is read. The tree diff alone is not enough:
+  # experiment W3 showed that git silently omits a file written into a
+  # sparse-excluded (hidden) path and ignores a nested `.git` directory.
+  workspace_audit:
+    run: before_ingest
+    walk: no_follow                        # lstat and openat2 RESOLVE_BENEATH style; never follow links
+    reject_any_of:
+      - dot_git_entry_other_than_the_masked_root_entry
+      - non_empty_hidden_path                # any file under a `hidden` protected group
+      - special_files                        # fifo, socket, block device, character device
+      - symlink_with_target_outside_workspace
+      - regular_file_with_link_count_over_1  # possible hardlink to a file outside the job
+      - file_larger_than_max_file_bytes
+      - entry_count_over_200000
+      - path_longer_than_4096_bytes
+      - name_longer_than_255_bytes
+      - name_with_control_characters_or_invalid_utf8
+      - setuid_or_setgid_mode_bits
+    on_reject: fail_job_with_BLOCK_and_audit
+  threats: [T-06, T-10, T-12]
+
+# -----------------------------------------------------------------------------
+# 4. Forbidden command classes (backstop; the sandbox is the primary control)
+# -----------------------------------------------------------------------------
+# Applied by the typed command wrapper to the argv array BEFORE execution.
+# match.executables : basenames (no path separators). Resolution of the real
+#                     binary happens inside the sandbox by absolute path from a
+#                     fixed, read-only PATH.
+# match.argv_any    : exact argv tokens; a rule matches when any token is present.
+# match.argv_regex  : Rust regex applied to the argv joined with single spaces.
+# action            : deny (hard) | require_human (routes to policies/approval.yaml)
+# except_profiles   : optional list of sandbox profiles where the rule does not apply
+# breakglass_tool   : optional id of a tool that is the only sanctioned way around the rule
+forbidden_command_classes:
+  - id: shell_interpreters
+    description: "Shell strings defeat argv-level policy. Use typed commands instead."
+    match: { executables: [sh, bash, zsh, dash, ash, fish, ksh, csh, tcsh, busybox, eval, source] }
+    action: deny
+    breakglass_tool: exec.shell        # disabled; see tools
+  - id: remote_fetch_and_execute
+    description: "Download and run, or pipe a download into an interpreter."
+    match:
+      executables: [curl, wget, fetch, aria2c]
+      argv_regex: ['(?i)\|\s*(sh|bash|zsh|python[0-9.]*|perl|ruby|node)\b']
+    action: deny
+  - id: privilege_escalation
+    match: { executables: [sudo, su, doas, pkexec, setcap, capsh, nsenter, unshare, chroot, mount, umount, pivot_root] }
+    action: deny
+  - id: container_and_orchestrator_tooling
+    match: { executables: [docker, podman, nerdctl, ctr, runc, crictl, kubectl, helm, buildah, skopeo] }
+    action: deny
+  - id: credential_access
+    match:
+      executables: [env, printenv, security, gh, gpg, ssh-add, ssh-keygen, keyctl]
+      argv_regex:
+        - '(?i)/proc/[^ ]*/(environ|mem|maps)'
+        - '(?i)(\.ssh|\.aws|\.config/gh|\.git-credentials|\.netrc|\.docker/config\.json|\.npmrc|\.pypirc|\.cargo/credentials)'
+        - '(?i)credential[.]helper'
+    action: deny
+  - id: network_tools
+    description: "Raw network clients, tunnels and DNS tools. Network is denied anyway; this catches attempts early."
+    match: { executables: [nc, ncat, netcat, socat, telnet, ssh, scp, sftp, rsync, ftp, tftp, nmap, masscan, dig, nslookup, host, ping, traceroute, tcpdump, iptables, nft, ip, ifconfig] }
+    action: deny
+  - id: destructive_filesystem
+    match:
+      executables: [mkfs, shred, wipefs, fdisk, parted, losetup]
+      argv_regex:
+        - '(?i)\brm\b.*\s-[a-z]*r[a-z]*f?\s+(/|~|\$HOME|\*)(\s|$)'
+        - '(?i)\bdd\b.*\bof=/dev/'
+        - '(?i)\bfind\b\s+/\s.*-delete'
+        - '(?i)\bchmod\b\s+-R\s+[0-7]*7[0-7]*\s+/'
+    action: deny
+  - id: vcs_publish_and_history_rewrite
+    description: "Agents never push or rewrite history. The control plane owns every push."
+    match:
+      executables: [git-filter-repo]
+      argv_regex:
+        - '(?i)\bgit\b.*\b(push|remote|filter-branch|filter-repo|reflog\s+expire|gc\s+--prune|clone|fetch|pull|submodule|config|credential|worktree|update-ref|symbolic-ref)\b'
+    action: deny
+  - id: package_publish_and_auth
+    match:
+      argv_regex:
+        - '(?i)\bcargo\b.*\b(publish|login|logout|owner|yank)\b'
+        - '(?i)\b(npm|pnpm|yarn)\b.*\b(publish|login|adduser|token|dist-tag|deprecate|unpublish)\b'
+        - '(?i)\b(twine|poetry)\b.*\b(upload|publish)\b'
+        - '(?i)\b(gem)\b.*\bpush\b'
+      executables: [twine]
+    action: deny
+  - id: process_debug_and_injection
+    match: { executables: [gdb, lldb, strace, ltrace, ptrace, perf, bpftrace, bpftool] }
+    action: deny
+  - id: kernel_and_system_state
+    match: { executables: [insmod, rmmod, modprobe, sysctl, mknod, systemctl, service, crontab, at, batch, reboot, shutdown, halt] }
+    action: deny
+  - id: detached_persistence
+    description: "Processes that outlive the tool call. The wrapper also kills the whole process group at call end."
+    match:
+      executables: [nohup, setsid, disown, daemonize, screen, tmux]
+    action: deny
+  - id: install_scripts_outside_fetch
+    description: "Package installs may run only in the fetch_deps profile with scripts disabled."
+    match:
+      argv_regex:
+        - '(?i)\b(npm|pnpm|yarn)\b\s+(install|i|add|ci)\b'
+        - '(?i)\bpip[0-9.]*\b\s+(install|download)\b'
+        - '(?i)\bcargo\b\s+(install|add|update|fetch|vendor)\b'
+        - '(?i)\bgo\b\s+(get|install)\b'
+    action: deny
+    except_profiles: [fetch_deps]
+
+# -----------------------------------------------------------------------------
+# 5. Tool allowlist (typed tools only; no ambient authority)
+# -----------------------------------------------------------------------------
+# An agent receives a tool only if (a) its manifest lists it in `allowed_tools`
+# AND (b) the policy engine issues a grant for the current stage and task.
+# Agents cannot request or create grants. Grants expire with the task.
+#   risk          low | medium | high
+#   profiles      sandbox profiles in which the tool may run
+#   roles         agent roles (from the agents/ manifests) that may hold it
+#   limits        per-task caps; exceeding a cap fails the call, not the policy
+#   human_gate    none | per_call | per_task (see approval.yaml)
+tools:
+  default_action: deny
+  grant_authority: policy_engine
+  agents_may_self_grant: false
+  never_grantable:
+    - github.write         # the control plane owns every GitHub write
+    - vcs.push
+    - merge
+    - approval.grant
+    - policy.write
+    - tool.grant
+    - secrets.read
+    - docker.any
+    - audit.write
+  entries:
+    - id: fs.read
+      risk: low
+      profiles: [agent, verify]
+      roles: [builder, integrator, qa, code_reviewer, security_reviewer, reliability_reviewer, ux_reviewer, adversarial_reviewer, architect, architecture_critic, planner, documentation_planner, technical_writer, api_documentation, architecture_documentation, operations_writer, documentation_reviewer, repository_analyst]
+      args: { path: { kind: workspace_path, access: read } }
+      limits: { max_calls_per_task: 3000, max_result_bytes: 262144, timeout_s: 10 }
+      human_gate: none
+    - id: fs.list
+      risk: low
+      profiles: [agent, verify]
+      roles: [builder, integrator, qa, code_reviewer, security_reviewer, reliability_reviewer, ux_reviewer, adversarial_reviewer, architect, architecture_critic, planner, documentation_planner, technical_writer, api_documentation, architecture_documentation, operations_writer, documentation_reviewer, repository_analyst]
+      args: { path: { kind: workspace_path, access: read } }
+      limits: { max_calls_per_task: 1000, max_result_bytes: 131072, timeout_s: 10 }
+      human_gate: none
+    - id: fs.search
+      risk: low
+      profiles: [agent, verify]
+      roles: [builder, integrator, qa, code_reviewer, security_reviewer, reliability_reviewer, ux_reviewer, adversarial_reviewer, architect, architecture_critic, planner, repository_analyst]
+      args: { pattern: { kind: bounded_string, max_len: 512 }, path: { kind: workspace_path, access: read } }
+      limits: { max_calls_per_task: 1000, max_result_bytes: 131072, timeout_s: 20 }
+      human_gate: none
+    - id: fs.write
+      risk: medium
+      profiles: [agent]
+      roles: [builder, integrator, technical_writer, api_documentation, architecture_documentation, operations_writer]
+      args: { path: { kind: workspace_path, access: write }, content: { kind: bounded_string, max_len: 5242880 } }
+      limits: { max_calls_per_task: 500, max_result_bytes: 4096, timeout_s: 10 }
+      human_gate: none
+      notes: "Writes go through path_access and protected_paths. Atomic temp-file plus rename."
+    - id: fs.delete
+      risk: medium
+      profiles: [agent]
+      roles: [builder, integrator]
+      args: { path: { kind: workspace_path, access: write } }
+      limits: { max_calls_per_task: 100, max_result_bytes: 1024, timeout_s: 10 }
+      human_gate: none
+    - id: exec.run
+      risk: high
+      profiles: [agent, verify, fetch_deps]
+      roles: [builder, integrator, qa, adversarial_reviewer]
+      args:
+        argv: { kind: argv_array, policy: command_sets }   # array of strings, never one shell string
+        cwd: { kind: workspace_path, access: read }
+        env: { kind: fixed_by_supervisor }                 # agent cannot add environment variables
+      limits: { max_calls_per_task: 300, max_result_bytes: 262144, timeout_s: 600, kill_process_group: true }
+      human_gate: none
+      notes: "In fetch_deps the commands are chosen by the supervisor after the dependency decision, not requested by an agent. The same wrapper and command_sets apply."
+    - id: exec.shell
+      risk: high
+      enabled: false                                       # breakglass only; enabling is an always_human decision
+      profiles: []
+      roles: []
+      human_gate: per_call
+    - id: vcs.read
+      risk: low
+      description: "status, diff, log, show against the host-side trusted git directory."
+      profiles: [agent]
+      roles: [builder, integrator, qa, code_reviewer, security_reviewer, reliability_reviewer, adversarial_reviewer]
+      limits: { max_calls_per_task: 200, max_result_bytes: 262144, timeout_s: 20 }
+      human_gate: none
+    - id: vcs.commit
+      risk: medium
+      description: "Control plane commits the workspace to the job branch with a hardened git environment."
+      profiles: [agent]
+      roles: [builder, integrator]
+      limits: { max_calls_per_task: 20, max_result_bytes: 4096, timeout_s: 60 }
+      human_gate: none
+    - id: deps.request
+      risk: medium
+      description: "Typed dependency request. The policy engine decides; a fetch_deps run follows on approval."
+      profiles: [agent]
+      roles: [builder, integrator]
+      args: { ecosystem: { kind: enum, values: [cargo, npm, pip, go] }, name: { kind: bounded_string, max_len: 214 }, version_req: { kind: bounded_string, max_len: 64 }, justification: { kind: bounded_string, max_len: 1000 } }
+      limits: { max_calls_per_task: 10, max_result_bytes: 4096, timeout_s: 10 }
+      human_gate: per_call             # default; policy may auto-approve names already in the lockfile
+    - id: net.fetch
+      risk: high
+      description: "Factory-side fetch through the SSRF guard (see untrusted_content.web_fetch). Never available to builders."
+      profiles: []                     # runs in the control plane gateway, not in a sandbox
+      roles: [research, intake]
+      args: { url: { kind: url, schemes: [https] } }
+      limits: { max_calls_per_task: 30, max_result_bytes: 524288, timeout_s: 20 }
+      human_gate: none
+    - id: spec.read
+      risk: low
+      profiles: [agent, verify]
+      roles: [architect, architecture_critic, planner, builder, qa, code_reviewer, security_reviewer, reliability_reviewer, ux_reviewer, adversarial_reviewer, documentation_planner, technical_writer, documentation_reviewer]
+      limits: { max_calls_per_task: 200, max_result_bytes: 262144, timeout_s: 5 }
+      human_gate: none
+    - id: report.submit
+      risk: low
+      description: "Structured, schema-validated output channel. The only way an agent returns results."
+      profiles: [agent, verify]
+      roles: ["*"]                     # every role; output schema comes from its manifest
+      limits: { max_calls_per_task: 20, max_result_bytes: 524288, timeout_s: 5 }
+      human_gate: none
+  threats: [T-06, T-07, T-13]
+
+# -----------------------------------------------------------------------------
+# 6. Typed command wrappers: executables and subcommands agents may run
+# -----------------------------------------------------------------------------
+# Used by `exec.run`. Anything not listed is denied. New toolchains arrive with
+# a domain capability profile that security reviews; the core never hard-codes
+# a language. Rules below are examples for the first supported toolchains.
+#   forced_args     appended by the wrapper regardless of the agent's argv
+#   forbidden_args  any occurrence denies the call
+#   env             the supervisor sets these; the agent cannot override them
+command_sets:
+  default_action: deny
+  executable_match: basename_only     # the field is a bare name; the wrapper resolves it from a fixed read-only PATH
+  sets:
+    - id: rust
+      executables:
+        cargo:
+          allowed_subcommands: [build, check, test, clippy, fmt, doc, tree, metadata, nextest, deny, audit]
+          forbidden_args: ["--config", "--manifest-path=/", "-Z", "--registry", "--index"]
+          forced_args: { agent: ["--offline", "--locked"], verify: ["--offline", "--locked"], fetch_deps: ["--locked"] }
+        rustc: { allowed_subcommands: [], forbidden_args: ["-C", "--codegen", "-Z"] }
+        rustfmt: { allowed_subcommands: [] }
+      env: { CARGO_TERM_COLOR: never, CARGO_NET_OFFLINE: "true", RUST_BACKTRACE: "1" }
+    - id: node
+      executables:
+        node: { allowed_subcommands: [], forbidden_args: ["--require", "-r", "--import", "--eval", "-e", "--inspect", "--inspect-brk"] }
+        npm: { allowed_subcommands: [test, run, ls, pack], forbidden_args: ["--registry", "--userconfig", "--globalconfig"] }
+        pnpm: { allowed_subcommands: [test, run, ls], forbidden_args: ["--registry"] }
+        npx: { allowed_subcommands: [], forbidden_args: [] }
+      env: { NPM_CONFIG_IGNORE_SCRIPTS: "true", NPM_CONFIG_AUDIT: "false", NPM_CONFIG_FUND: "false", CI: "true" }
+      notes: "npm run is allowed because scripts are repository code running inside the sandbox. Install scripts stay disabled and installs only happen in fetch_deps."
+    - id: python
+      executables:
+        python: { allowed_subcommands: [], forbidden_args: ["-c", "-m pip", "-m ensurepip"] }
+        pytest: { allowed_subcommands: [], forbidden_args: ["-p"] }
+        ruff: { allowed_subcommands: [check, format] }
+        mypy: { allowed_subcommands: [] }
+      env: { PYTHONDONTWRITEBYTECODE: "1", PIP_NO_INDEX: "1", PIP_DISABLE_PIP_VERSION_CHECK: "1" }
+    - id: go
+      executables:
+        go: { allowed_subcommands: [build, test, vet, fmt, list], forbidden_args: ["-toolexec", "-exec", "-overlay"] }
+      env: { GOFLAGS: "-mod=readonly", GOPROXY: "off", GONOSUMDB: "", GOTOOLCHAIN: "local" }
+  threats: [T-06, T-13, T-29]
+
+# -----------------------------------------------------------------------------
+# 7. Sandbox requirements (full rationale and experiments: sandbox-policy.md)
+# -----------------------------------------------------------------------------
+# `required` is checked against the CREATED container (docker inspect) before
+# start. Any mismatch aborts the job (fail closed). There is no host-execution
+# fallback if the sandbox cannot start.
+sandbox:
+  runtime: docker                      # enum: docker | podman | gvisor | kata ; only docker was exercised
+  fail_closed: true
+  host_execution_fallback: never
+  required:
+    privileged: false
+    user: numeric_non_root             # uid and gid both >= 10000
+    read_only_rootfs: true
+    cap_drop: [ALL]
+    cap_add: []
+    no_new_privileges: true
+    seccomp: runtime_default_or_stricter   # never "unconfined"
+    apparmor: runtime_default_or_stricter_where_available   # inactive on Docker Desktop; required on the Linux production host
+    pid_mode: private                  # never host
+    ipc_mode: none                     # none or private
+    uts_mode: private
+    network_mode: [none, job_internal] # never host, never default bridge, never container:<id>
+    devices: []
+    extra_sysctls: {}
+    docker_socket_mounted: false
+    log_driver: none                   # supervisor streams stdout and stderr through the redactor
+    init: true
+    image_reference: digest_pinned     # name@sha256:...
+    pull_policy: never                 # images are pre-pulled and verified; a missing image fails the job
+    restart_policy: "no"
+    remove_with_rm_flag: false         # supervisor removes after reading exit code and OOM state
+  forbidden_mount_sources:
+    - /var/run/docker.sock
+    - /run/docker.sock
+    - /
+    - /etc
+    - /root
+    - /home
+    - /var
+    - /usr
+    - /proc
+    - /sys
+    - /dev                             # except the single /dev/null mask mount below
+  allowed_special_mounts:
+    - { source: /dev/null, target: /workspace/.git, readonly: true, purpose: mask_gitdir_pointer }
+  workspace:
+    mount: plain_worktree_directory    # a directory under the job root; see sandbox-policy.md section 6
+    mask_dot_git: true
+    protected_overlay_readonly: true   # protected_paths with mode deny_write or append_only are re-mounted read-only
+    hidden_paths_strategy: sparse_checkout_exclusion   # hidden files never exist in the worktree (verified, experiment W1)
+    hidden_paths_not_mounted: true
+    vcs_operations_run_on_host: true   # status, diff, commit use a trusted git directory outside every mount
+    host_git_environment:              # required for every host-side git invocation
+      GIT_CONFIG_NOSYSTEM: "1"
+      GIT_CONFIG_GLOBAL: /dev/null
+      GIT_TERMINAL_PROMPT: "0"
+      core_hooksPath: /dev/null
+      core_fsmonitor: "false"
+      safe_directory_wildcard: forbidden   # never set safe.directory=* to silence ownership errors
+      submodule_recursion: never
+    caches: read_only                  # toolchain and dependency caches; written only by fetch_deps
+    cross_job_writable_volumes: false
+    cross_tenant_shared_paths: false
+  profiles:
+    # Limits are DEFAULTS. Projects may lower them. Raising any value above
+    # these numbers is an always_human decision (approval.yaml).
+    fetch_deps:
+      purpose: "Download dependencies with install scripts disabled. Runs no repository code."
+      network: proxied_allowlist       # enum: none | proxied_allowlist | model_broker_only
+      egress_profile: fetch_deps
+      secrets: none
+      workspace: { mode: rw, scope: dependency_directories_only }
+      limits: { cpus: 1.0, memory_mb: 1024, memory_swap_mb: 1024, pids: 128, wall_clock_s: 600, workspace_disk_mb: 4096, tmpfs_mb: 256, nofile: 2048, max_file_mb: 512 }
+      tmpfs_exec: false
+    agent:
+      purpose: "Agent CLI and its tool execution. Reaches only the model broker."
+      network: model_broker_only
+      egress_profile: agent
+      secrets: broker_job_token
+      workspace: { mode: rw, scope: task_owned_files }
+      limits: { cpus: 2.0, memory_mb: 4096, memory_swap_mb: 4096, pids: 256, wall_clock_s: 3600, workspace_disk_mb: 2048, tmpfs_mb: 512, nofile: 4096, max_file_mb: 512 }
+      tmpfs_exec: false
+    verify:
+      purpose: "Trusted build, test and scan gates. Fresh container per gate run."
+      network: none
+      egress_profile: none
+      secrets: none
+      workspace: { mode: rw, scope: build_output_directory_only }   # source tree is mounted read-only
+      limits: { cpus: 4.0, memory_mb: 8192, memory_swap_mb: 8192, pids: 512, wall_clock_s: 1800, workspace_disk_mb: 4096, tmpfs_mb: 512, nofile: 8192, max_file_mb: 1024 }
+      tmpfs_exec: false
+      gate_definitions_from: base_commit_or_central
+      holdouts_mounted: true           # only here, only read-only, never in agent
+  watchdog:
+    wall_clock_kill: supervisor        # Docker has no run-time limit flag (verified); supervisor sends kill at the deadline
+    disk_poll_interval_s: 5
+    on_breach: kill_and_mark_failed
+    record_oom_killed: true
+  threats: [T-08, T-09, T-10, T-11, T-19, T-27]
+
+# -----------------------------------------------------------------------------
+# 8. Egress allowlist (default deny)
+# -----------------------------------------------------------------------------
+# The sandbox has no route to the internet. Allowed traffic goes through the
+# factory egress proxy or the model broker, both on a per-job internal network.
+# Each entry needs an `id`, `host`, `ports`, a `justification` and a `review_by`
+# date. Wildcards are off. Hostnames below are the public endpoints known at
+# design time and MUST be re-verified at integration.
+egress:
+  default_action: deny
+  enforcement: proxy_on_internal_network
+  sandbox_dns: blocked                 # embedded resolver returns SERVFAIL for external names on an internal network (verified)
+  allow_wildcards: false
+  resolve_in_proxy_only: true
+  proxy_rules:
+    reject_resolved_ip_ranges:         # DNS rebinding and internal pivot defense; checked after resolution, on the pinned IP
+      - 127.0.0.0/8
+      - 10.0.0.0/8
+      - 172.16.0.0/12
+      - 192.168.0.0/16
+      - 169.254.0.0/16                 # link-local, cloud metadata
+      - 100.64.0.0/10
+      - "::1/128"
+      - "fc00::/7"
+      - "fe80::/10"
+    tls: passthrough                   # no interception for package hosts
+    methods_default: [GET, HEAD]
+    max_bytes_per_job: 2147483648      # per-job transfer cap; also the exfiltration rate limit
+    log_every_request: true            # host, port, bytes, job id, to the audit stream
+  never_allow_from_sandbox:            # explicit denials with reasons
+    - { host: github.com, reason: "git push, gist and repository creation are exfiltration channels; the control plane clones and pushes" }
+    - { host: api.github.com, reason: "token theft would become repository write access" }
+    - { host: gist.github.com, reason: "anonymous-style paste channel" }
+    - { host: raw.githubusercontent.com, reason: "arbitrary content fetch; not needed" }
+    - { host: pastebin.com, reason: "paste channel" }
+    - { host: transfer.sh, reason: "file drop channel" }
+  profiles:
+    none:
+      allow: []
+    fetch_deps:
+      allow:
+        - { id: crates_index,    host: index.crates.io,        ports: [443], methods: [GET, HEAD], ecosystem: cargo, justification: "sparse registry index", review_by: "2027-01-31" }
+        - { id: crates_files,    host: static.crates.io,       ports: [443], methods: [GET, HEAD], ecosystem: cargo, justification: "crate downloads", review_by: "2027-01-31" }
+        - { id: npm_registry,    host: registry.npmjs.org,     ports: [443], methods: [GET, HEAD], ecosystem: npm,   justification: "package metadata and tarballs", review_by: "2027-01-31" }
+        - { id: pypi_index,      host: pypi.org,               ports: [443], methods: [GET, HEAD], ecosystem: pip,   justification: "package index", review_by: "2027-01-31" }
+        - { id: pypi_files,      host: files.pythonhosted.org, ports: [443], methods: [GET, HEAD], ecosystem: pip,   justification: "package files", review_by: "2027-01-31" }
+        - { id: go_proxy,        host: proxy.golang.org,       ports: [443], methods: [GET, HEAD], ecosystem: go,    justification: "module proxy", review_by: "2027-01-31" }
+        - { id: go_sum,          host: sum.golang.org,         ports: [443], methods: [GET, HEAD], ecosystem: go,    justification: "checksum database", review_by: "2027-01-31" }
+    agent:
+      # The agent talks to the factory model broker, not to the provider. The
+      # broker holds the real key and forwards only the listed API paths.
+      allow:
+        # `host` is a placeholder internal name for the per-job sidecar's address; the real name is set by the sandbox crate.
+        - { id: model_broker, host: model-broker.sandbox.internal, ports: [8443], methods: [POST], justification: "credential-injecting model API relay", review_by: "2027-01-31", terminates_tls: true }
+  broker_upstreams:                    # hosts the BROKER (not the sandbox) may call
+    - { id: anthropic_api, host: api.anthropic.com, paths: ["/v1/messages", "/v1/messages/count_tokens"], justification: "Claude models", review_by: "2027-01-31" }
+    - { id: openai_api,    host: api.openai.com,    paths: ["/v1/responses", "/v1/chat/completions"],    justification: "Codex and OpenAI models", review_by: "2027-01-31" }
+  widening_requires: [human_approval, security_review]
+  threats: [T-11, T-17, T-18]
+
+# -----------------------------------------------------------------------------
+# 9. Secret patterns, redaction and sinks
+# -----------------------------------------------------------------------------
+# `patterns` find unknown secrets. `exact_values` is a runtime registry of the
+# secrets the factory itself issued or loaded (job tokens, webhook secret,
+# database passwords, API keys); it is stronger than any pattern.
+secrets:
+  scanner_regex_dialect: rust_regex
+  patterns:
+    - { id: github_token_classic,   regex: '\bghp_[A-Za-z0-9]{36}\b',                                     action: block }
+    - { id: github_token_prefixed,  regex: '\bgh[ousr]_[A-Za-z0-9]{36,255}\b',                            action: block }
+    - { id: github_fine_grained,    regex: '\bgithub_pat_[A-Za-z0-9_]{22,255}\b',                         action: block }
+    - { id: private_key_block,      regex: '-----BEGIN (?:[A-Z0-9]+ )?PRIVATE KEY(?: BLOCK)?-----',       action: block }
+    - { id: anthropic_api_key,      regex: '\bsk-ant-[A-Za-z0-9_-]{20,}\b',                               action: block }
+    - { id: openai_api_key,         regex: '\bsk-(?:proj-|svcacct-|admin-)?[A-Za-z0-9_-]{32,}\b',         action: block }
+    - { id: aws_access_key_id,      regex: '\b(?:AKIA|ASIA|AGPA|AIDA|AROA|ANPA|ANVA)[A-Z0-9]{16}\b',      action: block }
+    - { id: aws_secret_access_key,  regex: '(?i)aws_?secret_?access_?key["''\s:=]+[A-Za-z0-9/+=]{40}',     action: block }
+    - { id: gcp_api_key,            regex: '\bAIza[0-9A-Za-z_-]{35}\b',                                   action: block }
+    - { id: slack_token,            regex: '\bxox[abprs]-[A-Za-z0-9-]{10,}\b',                            action: block }
+    - { id: stripe_live_key,        regex: '\b[rs]k_live_[0-9A-Za-z]{20,}\b',                             action: block }
+    - { id: npm_token,              regex: '\bnpm_[A-Za-z0-9]{36}\b',                                     action: block }
+    - { id: pypi_token,             regex: '\bpypi-AgE[A-Za-z0-9_-]{50,}\b',                              action: block }
+    - { id: crates_io_token,        regex: '\bcio[A-Za-z0-9]{32}\b',                                      action: block, format_status: unverified }
+    - { id: jwt,                    regex: '\beyJ[A-Za-z0-9_-]{8,}\.eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b', action: block }
+    - { id: authorization_header,   regex: '(?i)\bauthorization:\s*(?:bearer|token|basic)\s+[A-Za-z0-9._~+/=-]{16,}', action: block }
+    - { id: url_with_credentials,   regex: '\b[a-z][a-z0-9+.-]*://[^\s:/@]+:[^\s@/]{3,}@[^\s/]+',         action: block }
+    - { id: factory_job_token,      regex: '\bsfjt_[A-Za-z0-9_-]{32,}\b',                                 action: block }
+    - { id: nats_credentials,       regex: '-----BEGIN (?:NATS )?USER (?:JWT|NKEY SEED)-----',            action: block, format_status: unverified }
+    - { id: generic_assignment,     regex: '(?i)\b(?:password|passwd|secret|api[_-]?key|access[_-]?key|token)\b\s*[:=]\s*["'']?[^\s"'']{12,}', action: flag }
+  entropy_heuristic:
+    enabled: true
+    min_length: 32
+    min_shannon_bits_per_char: 4.2
+    action: flag                       # flag only; blocking on entropy alone causes false positives
+  exact_values:
+    register_from: [job_tokens, webhook_secret, app_private_key, database_credentials, broker_keys, object_store_keys]
+    min_length: 8
+    encodings: [raw, base64_std, base64_url, base64_no_pad, hex_lower, hex_upper, url_percent, json_escaped]
+    split_detection: sliding_window    # matches across chunk boundaries of streamed output
+  sinks:
+    # What happens when a match is found on each sink class.
+    #   redact : replace with [REDACTED:<id>] and emit a `secret_redacted` audit event
+    #   block  : refuse to write/send; fail the step with BLOCK and emit an audit event
+    logs_and_traces:       { on_match: redact, applies_to: [stdout, stderr, tracing_events, otel_span_attributes, otel_log_records] }
+    domain_events:         { on_match: block,  applies_to: [outbox_payloads, jetstream_messages] }
+    artifacts:             { on_match: block,  applies_to: [content_addressed_artifacts, evidence_manifests] }
+    github_bound_text:     { on_match: block,  applies_to: [pr_title, pr_body, issue_comment, review_comment, commit_message, branch_name, check_run_output, status_description] }
+    diffs_and_files:       { on_match: block,  applies_to: [workspace_diff] }
+    model_context:         { on_match: redact, applies_to: [prompts, tool_results, retrieved_context] }
+    dashboard_and_api:     { on_match: redact, applies_to: [api_responses, dashboard_payloads] }
+  redactor_failure: drop_content_and_fail_step   # never write raw content because the redactor errored
+  never_in_model_context: [github_tokens, app_private_key, webhook_secret, broker_keys, job_tokens, database_credentials, evaluation_holdouts, other_tenant_data, builder_self_justification_for_reviewers]
+  threats: [T-16, T-17, T-18, T-19, T-20]
+
+# -----------------------------------------------------------------------------
+# 10. Credentials (full treatment: secrets-and-credentials.md)
+# -----------------------------------------------------------------------------
+credentials:
+  github_app:
+    # Checked when the App is registered and on every job start. Names follow
+    # GitHub's repository permission names.
+    permissions_required:
+      metadata: read
+      contents: write
+      pull_requests: write
+      issues: write
+      checks: write
+      statuses: write
+      actions: read
+    permissions_forbidden:
+      - administration
+      - workflows                      # the App must not be able to edit workflow files
+      - secrets
+      - environments
+      - deployments
+      - pages
+      - packages
+      - repository_hooks
+      - organization_administration
+      - members
+    installation_token:
+      mint: per_job
+      repositories: exactly_one        # narrowed with the `repositories` body parameter
+      permissions: narrowed_per_stage  # read-only for analysis stages
+      lifetime_s: 3600                 # fixed by GitHub (documented); factory revokes earlier
+      revoke_on_job_end: true          # DELETE /installation/token
+      holders: [control_plane_only]
+      persisted_to_disk: false
+      visible_to_sandbox: false
+      logged: false
+  app_private_key:
+    store: secret_manager
+    consumers: [token_minter]
+    rotation_days: 90
+    overlapping_keys_during_rotation: true
+  webhook_secret:
+    store: secret_manager
+    rotation_days: 180
+    overlapping_secrets_during_rotation: true
+  model_providers:
+    delivery: broker_injected          # real key stays in the broker; sandbox gets a per-job token
+    job_token:
+      prefix: sfjt_
+      entropy_bits: 256
+      bound_to: [tenant_id, job_id, stage_run_id]
+      ttl: job_wall_clock_plus_300s
+      scope: [provider, model_allowlist, max_tokens, max_usd]
+      revoked_on: [job_end, budget_exhausted, posture_violation]
+    real_keys:
+      store: secret_manager
+      dedicated_per_deployment: true
+      hard_spend_limit_required: true
+      rotation_days: 180
+    fallback_if_cli_cannot_use_broker: documented_residual_risk   # see secrets-and-credentials.md section 4.4
+  rotation_slas:
+    leaked_or_suspected_hours: 1
+    high_privilege_days: 90
+    standard_days: 180
+  repository_requirements:             # verified at onboarding and at each job start; failure caps the repo at autonomy L0
+    default_branch_protected: true
+    require_pull_request: true
+    required_status_checks_pinned_to_app_id: true
+    app_in_bypass_list: false
+    force_push_disabled: true
+    branch_deletion_disabled: true
+    require_code_owner_review_for_protected_paths: true
+    dismiss_stale_approvals_on_new_commits: true
+    factory_branch_pattern: "factory/*"
+    push_only_to_factory_branch_pattern: true
+  threats: [T-19, T-24, T-14]
+
+# -----------------------------------------------------------------------------
+# 11. Webhook intake
+# -----------------------------------------------------------------------------
+webhook:
+  signature:
+    header: X-Hub-Signature-256
+    algorithm: hmac-sha256
+    prefix: "sha256="
+    input: raw_request_body            # computed before any parsing or re-serialization
+    compare: constant_time
+    legacy_sha1_header: ignore         # X-Hub-Signature (SHA-1) is never accepted alone
+  required_headers: [X-GitHub-Event, X-GitHub-Delivery, X-Hub-Signature-256]
+  content_types: [application/json]
+  max_body_bytes: 1048576
+  verify_before_parse: true
+  verify_before_db_access: true
+  dedupe:
+    key: X-GitHub-Delivery
+    store: postgres_unique_constraint
+    retention_days: 30
+    on_duplicate: ack_and_ignore
+  semantic_idempotency:
+    key_fields: [event, action, installation_id, repository_id, subject_node_id, subject_updated_at, sender_id]
+    retention_days: 30
+  payload_is_hint_only: true           # authoritative state is re-fetched from GitHub before acting
+  refetch_before_acting: [issue_state, labels, sender_permission, pr_head_sha, branch_protection]
+  tenant_binding: [installation_id, repository_id]   # unknown binding: drop and audit
+  accepted_events:
+    - { event: issues,                 actions: [labeled, edited, closed, reopened, transferred, deleted] }
+    - { event: issue_comment,          actions: [created] }
+    - { event: pull_request,           actions: [synchronize, closed, reopened, edited] }
+    - { event: pull_request_review,    actions: [submitted, dismissed] }
+    - { event: installation,           actions: [created, deleted, suspend, unsuspend] }
+    - { event: installation_repositories, actions: [added, removed] }
+    - { event: ping,                   actions: [] }
+  ignore_senders: [self_app_bot, other_bots_not_on_allowlist]
+  rate_limit: { per_installation_per_minute: 120, per_source_ip_per_minute: 600, on_exceed: reject_429 }
+  respond_within_s: 10                 # acknowledge fast; process asynchronously from the outbox
+  threats: [T-21, T-22, T-23]
+
+# -----------------------------------------------------------------------------
+# 12. Hard budget ceilings (token and cost exhaustion)
+# -----------------------------------------------------------------------------
+# Enforced by the model broker and the scheduler, outside the agent process.
+# Starting values only; tune with measured data. Raising a ceiling is an
+# always_human decision.
+budgets:
+  enforced_by: [model_broker, scheduler]
+  hard_ceilings:
+    per_task:     { max_usd: 8,   max_input_tokens: 4000000,  max_output_tokens: 400000,  max_turns: 60,  max_tool_calls: 1500, max_wall_clock_s: 3600 }
+    per_job:      { max_usd: 25,  max_rework_iterations: 3, max_wall_clock_s: 14400, max_delegation_depth: 2 }
+    per_repo_day: { max_usd: 100, max_jobs_started: 40 }
+    per_org_day:  { max_usd: 500 }
+  concurrency:
+    max_running_jobs_per_repo: 2
+    max_queued_jobs_per_repo: 20
+    max_running_sandboxes_per_host: 8
+  stagnation:
+    window_iterations: 3
+    action_on_no_new_passing_evidence: escalate_needs_human
+  thresholds: { warn_at_fraction: 0.8, stop_at_fraction: 1.0 }
+  on_exhaustion: stop_job_revoke_job_token_mark_BLOCKED
+  per_request_caps: { max_input_tokens: 200000, max_output_tokens: 32000 }
+  threats: [T-26]
+
+# -----------------------------------------------------------------------------
+# 13. Gate integrity (no forced passes)
+# -----------------------------------------------------------------------------
+gate_integrity:
+  gate_definition_source: base_commit_or_central   # never the head commit or the builder workspace
+  gate_runner: fresh_verify_container
+  evidence_source: supervisor_observed             # exit code, logs and timing captured by the supervisor, not read from builder-writable files
+  gate_status_values: [PASSED, FAILED, BLOCKED, NOT_APPLICABLE]   # names from the master prompt 10.4
+  review_verdict_values: [PASS, CHANGES_REQUIRED, BLOCK, NEEDS_HUMAN]
+  missing_evidence_is: BLOCKED
+  tool_absent_is: BLOCKED
+  skipped_gate_is: BLOCKED
+  reviewer_verdict_can_override_gate: false
+  reviewer_sees_builder_self_justification: false
+  nonwaivable_gates: [protected_path_check, secret_scan, sandbox_posture, evidence_binding, test_regression_check, signature_verification]
+  evidence_binding: [head_sha, tree_hash, gate_definition_hash, policy_hash, image_digest, base_sha]
+  invalidated_by: [new_commit, rebase, base_moved, policy_change, spec_revision, image_change]
+  test_regression:
+    baseline_from: trusted_run_on_base_commit
+    forbid_removed_tests: true
+    forbid_newly_ignored_tests: true
+    forbid_newly_skipped_tests: true
+    forbid_assertion_count_drop: true  # where the framework reports it
+    new_tests_allowed: true
+  flaky_tests:
+    retries_allowed: 1
+    only_for: central_flaky_registry
+    record_every_retry: true
+  semantic_checks:                     # ids referenced by protected_paths.sensitive_files
+    - { id: new_dependency,            blocks_until: dependency_policy_decision }
+    - { id: lint_relaxation,           description: "lint level lowered, allow attributes added, ignore lists grown", blocks_until: human_approval }
+    - { id: test_harness_disabled,     description: "harness=false, test targets removed, ignore or skip markers, conftest hooks that deselect", blocks_until: human_approval }
+    - { id: build_script_added,        description: "new build.rs, setup.py, postinstall or similar", blocks_until: security_review }
+    - { id: registry_or_source_changed, description: "alternate registry, git or path dependency, patch or replace section", blocks_until: human_approval }
+    - { id: privilege_or_network_widening, description: "privileged, host network, new capabilities, exposed ports in container or IaC changes", blocks_until: security_review }
+    - { id: secret_in_diff,            description: "secrets.patterns match in the diff", blocks_until: never }   # never: always BLOCK
+  merge:
+    require_expected_head_sha: true    # GitHub merge API `sha` parameter
+    rerun_critical_gates_after_sync: true
+    required_checks_pinned_to_app_id: true
+  threats: [T-12, T-13, T-14]
+
+# -----------------------------------------------------------------------------
+# 14. Untrusted content handling and agent runtime hardening
+# -----------------------------------------------------------------------------
+untrusted_content:
+  classes: [issue_text, issue_comment, pr_text, repo_file, commit_message, tool_output, web_content, dependency_text, model_output, specification_text, retrieved_memory]
+  authority_from_content: never        # no text, from any class, grants a tool, a permission or an approval
+  prompt_assembly:
+    untrusted_in_instruction_channel: forbidden
+    wrap_in_data_envelope: true        # typed field with provenance: source, class, hash, fetched_at
+    envelope_delimiter_collision_check: true
+  structured_output:
+    schema_validated: true
+    unknown_fields: reject
+    bounded_repair_attempts: 2
+    max_output_bytes: 524288
+  injection_signal_detector:
+    enabled: true
+    role: telemetry_and_escalation_only   # never the sole control
+    on_signal: raise_to_needs_human_when_stage_has_write_tools
+  web_fetch:
+    runs_in: control_plane_gateway
+    schemes: [https]
+    resolve_then_pin_ip: true
+    reject_resolved_ip_ranges_ref: egress.proxy_rules.reject_resolved_ip_ranges
+    revalidate_on_redirect: true
+    max_redirects: 3
+    max_bytes: 524288
+    allowed_content_types: [text/html, text/plain, text/markdown, application/json, application/pdf]
+    cookies_and_auth_headers: never
+  specification_authorization:
+    source: structured_field_written_by_authenticated_human
+    parsed_from_prose: never
+  agent_runtimes:
+    # Verified against `claude --help` (2.1.311) and `codex exec --help` (0.163.0)
+    # on 2026-10-27: these flags exist. Whether each one fully neutralizes
+    # repo-resident configuration MUST be proven by the adapter capability probe
+    # and by NT-INJ-07 before the adapter is enabled.
+    claude_code:
+      required_flags: [--bare, --strict-mcp-config, --no-session-persistence, --disable-slash-commands]
+      settings_source: factory_generated_file_via_--settings
+      tools_flag: "--tools / --allowedTools / --disallowedTools from the manifest"
+      per_run_budget_flag: --max-budget-usd
+      forbidden_flags_outside_verified_sandbox: [--dangerously-skip-permissions, --allow-dangerously-skip-permissions]
+      auth: ANTHROPIC_API_KEY_or_apiKeyHelper_pointing_at_job_token   # --bare never reads OAuth or keychain (documented in --help)
+    codex_cli:
+      required_flags: [--ignore-user-config, --ignore-rules, --ephemeral, "--sandbox read-only|workspace-write"]
+      forbidden_flags_outside_verified_sandbox: [--dangerously-bypass-approvals-and-sandbox, --dangerously-bypass-hook-trust]
+      env_policy: "shell_environment_policy.inherit=none plus explicit allowlist (key exists per --help example; exact syntax to confirm)"
+    probe_required_before_enable: true
+    repo_config_files_never_honored: [".claude/settings.json", ".claude/settings.local.json", ".mcp.json", ".codex/config.toml", "CLAUDE.md", "AGENTS.md"]
+    instruction_files_are_data: true   # factory-authored instructions are passed explicitly; repo copies are data
+  threats: [T-01, T-02, T-03, T-04, T-05, T-07, T-33]
+
+# -----------------------------------------------------------------------------
+# 15. Outbound content hygiene (text the factory writes to GitHub)
+# -----------------------------------------------------------------------------
+output_hygiene:
+  applies_to: [pr_title, pr_body, issue_comment, review_comment, commit_message, check_run_output]
+  allow_raw_html: false
+  allow_images_from_domains: []        # none; model-generated image URLs are an exfiltration channel when GitHub fetches them
+  allow_link_domains: [github.com]     # factory-authored links to the same repository only
+  neutralize_user_mentions: true       # write @name as `@name` in code spans unless the mention is factory-generated
+  neutralize_cross_repo_references: true
+  strip_hidden_content: [html_comments, zero_width_characters, bidi_controls]
+  max_body_bytes: 60000
+  secrets_check: secrets.sinks.github_bound_text
+  threats: [T-18]
+
+# -----------------------------------------------------------------------------
+# 16. Supply chain
+# -----------------------------------------------------------------------------
+supply_chain:
+  registries_allowed_ref: egress.profiles.fetch_deps
+  lockfiles: { required: true, frozen_in_gates: true }      # --locked / --frozen-lockfile equivalents
+  install_scripts: disabled_in_fetch
+  new_direct_dependency:
+    default: require_human                                  # see approval.yaml
+    auto_approve_when: [name_already_in_lockfile, name_on_org_allowlist]
+    heuristics_recorded: [registry_existence, first_publish_age_days, download_count, repository_link, typosquat_distance_to_popular_names, license]
+    min_first_publish_age_days: 30                          # younger packages escalate to a human, never auto-approve
+  scanners: [cargo-deny, cargo-audit, osv-scanner, gitleaks, semgrep]   # applicable subset per ecosystem; tool absence is BLOCKED
+  sbom: { format: cyclonedx, required_for: [release, high_risk_jobs] }
+  images: { pinned_by_digest: true, built_from_source_by_factory: true, rebuild_interval_days: 14, vulnerability_scan: required }
+  ci_actions_pinned_to_commit_sha: true
+  threats: [T-29, T-30]
+
+# -----------------------------------------------------------------------------
+# 17. Tenancy
+# -----------------------------------------------------------------------------
+tenancy:
+  tenant_id_on_every_row: true
+  database_row_level_security: required
+  object_store: { prefix_per_tenant: true, key_per_tenant: recommended }
+  messaging: { subject_prefix_per_tenant: true, per_tenant_publish_subscribe_permissions: true }
+  sandbox: { shared_between_tenants: never, warm_pool_across_tenants: never, writable_cache_shared: never }
+  model_context: { cross_tenant_retrieval: never }
+  memory_stores: { access_boundary: tenant_and_repository }
+  threats: [T-28]
+
+# -----------------------------------------------------------------------------
+# 18. Audit
+# -----------------------------------------------------------------------------
+audit:
+  append_only: true
+  application_db_role_privileges: [INSERT, SELECT]      # no UPDATE, no DELETE, no TRUNCATE
+  hash_chain: { algorithm: sha256, scope: per_tenant, fields: [prev_hash, canonical_event_json] }
+  server_assigned_timestamp: true                       # database clock, never client time
+  external_anchor: { store: object_store_with_object_lock, interval_minutes: 60, what: chain_head_hash }
+  verification_job_interval_minutes: 60
+  required_event_fields: [event_id, tenant_id, actor_type, actor_id, action, subject, decision, reason, policy_hash, job_id, stage_run_id, correlation_id, created_at, prev_hash, hash]
+  must_record:
+    - webhook_accepted_or_rejected
+    - authorization_decision
+    - tool_grant_issued
+    - tool_call_denied
+    - command_executed
+    - sandbox_created_posture_result_destroyed
+    - egress_request
+    - secret_redacted_or_blocked
+    - protected_path_decision
+    - gate_result
+    - approval_granted_or_rejected
+    - human_override
+    - credential_minted_and_revoked
+    - budget_threshold_crossed
+  separate_from_diagnostic_logs: true
+  sandbox_can_write: false
+  threats: [T-31]
