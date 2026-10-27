@@ -49,6 +49,11 @@ fn every_schema_has_a_rust_type_and_both_kinds_of_example() {
         );
         // Panics with the schema name if no type is registered.
         let _ = round_trip(schema, "{}");
+        assert_eq!(
+            support::registry::declared_schema(schema),
+            *schema,
+            "the Rust type for {schema} declares a different schema name"
+        );
     }
 }
 

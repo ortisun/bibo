@@ -256,6 +256,10 @@ pub struct ManifestRisk {
 contract! {
     "evidence-manifest";
     /// The summary that the delivery stage attaches to a draft pull request.
+    ///
+    /// Stricter than the schema in one place: `PRODUCTION_READY` must appear in exactly one of
+    /// `assurance.attained` and `assurance.not_attained`. The schema's description says so, but its
+    /// `anyOf` also accepts a manifest that lists the level in both.
     #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize)]
     pub struct EvidenceManifest {
         /// Always 1.

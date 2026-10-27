@@ -29,6 +29,24 @@ pub fn round_trip(schema: &str, text: &str) -> Result<Value, String> {
     }
 }
 
+/// The schema name that the type registered for `schema` declares in `Contract::SCHEMA`.
+pub fn declared_schema(schema: &str) -> &'static str {
+    match schema {
+        "agent-manifest" => AgentManifest::SCHEMA,
+        "domain-capability-profile" => DomainCapabilityProfile::SCHEMA,
+        "domain-event" => DomainEvent::SCHEMA,
+        "evidence-ledger-entry" => EvidenceLedgerEntry::SCHEMA,
+        "evidence-manifest" => EvidenceManifest::SCHEMA,
+        "gate-report" => GateReport::SCHEMA,
+        "project-manifest" => ProjectManifest::SCHEMA,
+        "review-verdict" => ReviewVerdict::SCHEMA,
+        "specification-contract" => SpecificationContract::SCHEMA,
+        "stage-contract" => StageContract::SCHEMA,
+        "task-dag" => TaskDag::SCHEMA,
+        other => panic!("no Rust type is registered for the schema {other}"),
+    }
+}
+
 /// Like [`round_trip`], for a document that is already a JSON value.
 pub fn round_trip_value(schema: &str, value: &Value) -> Result<Value, String> {
     round_trip(schema, &value.to_string())
