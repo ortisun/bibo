@@ -8,7 +8,7 @@ The names of the spans, attributes and metrics are in [docs/observability/conven
 
 | File | Purpose |
 |---|---|
-| `collector.yaml` | The collector pipelines: OTLP in, metrics to VictoriaMetrics, traces to Jaeger, a short count of what arrived in the collector log. |
+| `collector.yaml` | The collector pipelines: data in the OpenTelemetry Protocol (OTLP) in, metrics to VictoriaMetrics, traces to Jaeger, a short count of what arrived in the collector log. |
 | `compose.yaml` | Runs the collector, VictoriaMetrics and Jaeger with pinned image versions. |
 | `validate.sh` | Checks `collector.yaml` with the exact collector image that `compose.yaml` pins. |
 

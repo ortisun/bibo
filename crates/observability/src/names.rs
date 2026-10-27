@@ -337,7 +337,7 @@ pub const ATTRIBUTES: &[AttributeSpec] = &[
         value_type: ValueType::Double,
         cardinality: Cardinality::Unbounded,
         spans: &[span::AGENT],
-        meaning: "Cost in US dollars the broker metered for this invocation.",
+        meaning: "Cost in United States dollars the broker metered for this invocation.",
     },
     AttributeSpec {
         key: attr::ERROR_TYPE,

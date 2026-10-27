@@ -205,7 +205,7 @@ pub const METRICS: &[MetricSpec] = &[
         labels: &[label::PROVIDER, label::STAGE],
         max_label_sets: 128,
         buckets: &[],
-        meaning: "Model spend in US dollars as metered by the broker, by provider and stage kind.",
+        meaning: "Model spend in United States dollars as metered by the broker, by provider and stage kind.",
     },
 ];
 

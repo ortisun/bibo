@@ -3,11 +3,11 @@
 - Status: Slice 0 baseline. The names and tables below are checked by tests in `crates/observability`. No factory service records them yet; the call sites arrive in Slice 1.
 - Owner: observability. Reviewer: software architect.
 - Package: `s0-telemetry-baseline`. The Slice 1 package `s1-observability-instrumentation` verifies the call sites against this page.
-- Related: [ADR 0004](../adr/0004-event-model.md) for domain events, [secrets and credentials](../security/secrets-and-credentials.md) for redaction, [`policies/security.yaml`](../../policies/security.yaml) for the secret patterns.
+- Related: architecture decision record (ADR) [0004](../adr/0004-event-model.md) for domain events, [secrets and credentials](../security/secrets-and-credentials.md) for redaction, [`policies/security.yaml`](../../policies/security.yaml) for the secret patterns.
 
 ## 1. What this page fixes
 
-The factory exposes two kinds of telemetry: traces, and metrics that VictoriaMetrics can store. It also writes diagnostic logs. This page fixes the names, the types and the rules for all three, so that a person reading a trace and a dashboard sees the same words.
+The factory exposes two kinds of telemetry: traces, and metrics that VictoriaMetrics can store. It also writes diagnostic logs. This page fixes the names, the types and the rules for all three, so that a person reading a trace and a dashboard sees the same words. Spans and metrics travel from a program to a collector in the OpenTelemetry Protocol (OTLP).
 
 The tables on this page are the contract. The tests in `crates/observability` read this file and fail when a table and the code disagree. If you change a name, change both in one commit.
 
@@ -63,7 +63,7 @@ An attribute is a key and a value on a span. Only the keys in this table are exp
 | `factory.tool_args_sha256` | string | unbounded | `factory.tool_call` | Hex digest of the tool arguments. |
 | `factory.tokens_input` | int | unbounded | `factory.agent` | Input tokens the broker metered for this invocation. |
 | `factory.tokens_output` | int | unbounded | `factory.agent` | Output tokens the broker metered for this invocation. |
-| `factory.cost_usd` | double | unbounded | `factory.agent` | Cost in US dollars the broker metered for this invocation. |
+| `factory.cost_usd` | double | unbounded | `factory.agent` | Cost in United States dollars the broker metered for this invocation. |
 | `error.type` | string | bounded | `factory.job`, `factory.stage_run`, `factory.attempt`, `factory.agent`, `factory.tool_call`, `factory.gate` | The standard error.type key. A short error kind, never a message. |
 <!-- /table:attributes -->
 
@@ -74,7 +74,7 @@ A span can carry events, which are the `tracing` events logged inside it. The tr
 <!-- table:event-attributes -->
 | Key | Meaning |
 |---|---|
-| `level` | The severity of the event, such as WARN. |
+| `level` | The severity of the event, such as `WARN`. |
 | `target` | The module path of the code that logged the event. |
 <!-- /table:event-attributes -->
 
@@ -115,7 +115,7 @@ Metrics are for questions about the whole system over time: how deep is the queu
 | `factory_stage_runs_total` | counter | {stage_run} | `stage`, `outcome` | Stage runs that ended, by stage kind and outcome. The error rate is the share with outcome failed. |
 | `factory_gate_failures_total` | counter | {gate_failure} | `gate`, `outcome` | Gate evaluations that ended failed or blocked, by gate and outcome. |
 | `factory_retries_total` | counter | {retry} | `stage` | Retries scheduled after a retryable attempt failure, by stage kind. |
-| `factory_spend_usd_total` | counter | {USD} | `provider`, `stage` | Model spend in US dollars as metered by the broker, by provider and stage kind. |
+| `factory_spend_usd_total` | counter | {USD} | `provider`, `stage` | Model spend in United States dollars as metered by the broker, by provider and stage kind. |
 <!-- /table:metrics -->
 
 The stage duration histogram has these upper bounds in seconds: 1, 5, 15, 30, 60, 120, 300, 600, 1200, 1800 and 3600. A longer stage lands in the overflow bucket.
@@ -178,7 +178,7 @@ The factory writes two different things and keeps them apart.
 | | Diagnostic logs | Domain events |
 |---|---|---|
 | Purpose | Help a person understand what a process was doing | Record that a state change happened, for other components |
-| Where they go | Standard error of each process, as JSON lines | The `outbox` table in the same transaction as the change, later NATS JetStream |
+| Where they go | Standard error of each process, as JSON lines | The `outbox` table in the same transaction as the change, later a JetStream message stream |
 | Guarantee | None. Lines may be dropped, sampled or rotated away | At least once delivery, ordered per aggregate, kept long term |
 | Who may depend on them | Nobody. No code reads logs to decide anything | Consumers, the dashboard and the audit trail |
 | Contents | Free text and `factory.` fields, redacted | Identifiers and hashes under the event schema, blocked if a secret matches |
