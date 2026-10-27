@@ -19,6 +19,10 @@
 //! Logins are created with the shape the deployment creates (`docs/database/for-the-storage-crate.md`):
 //! a worker login in `factory_app`, an API login in `factory_app` and `factory_resolver`, and an
 //! engine login in `factory_system`. The migrations run as a superuser, like the deploy step.
+//!
+//! This support code makes and removes the directories of a private cluster and reads the
+//! migration files, so it allows the file system calls that `clippy.toml` bans for the crate.
+#![allow(clippy::disallowed_methods, clippy::disallowed_types)]
 
 use std::collections::hash_map::RandomState;
 use std::hash::{BuildHasher, Hasher};
