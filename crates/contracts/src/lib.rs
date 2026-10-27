@@ -2,6 +2,7 @@
 //! profiles and policy files.
 
 pub mod loader;
+pub mod policy;
 pub mod registry;
 pub mod schema_engine;
 pub mod schemas;
