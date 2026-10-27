@@ -70,21 +70,54 @@ fn the_canonical_form_follows_rfc_8785_for_awkward_text() {
     let entries = fixture();
 
     let first = String::from_utf8(canonical_form(&entries[0]).unwrap()).unwrap();
-    assert!(first.starts_with("{\"claim\":{\"assurance_level\":\"IMPLEMENTED\","), "{first}");
-    assert!(!first.contains("entry_hash"), "the hash itself is not part of the input");
+    assert!(
+        first.starts_with("{\"claim\":{\"assurance_level\":\"IMPLEMENTED\","),
+        "{first}"
+    );
+    // `prev_entry_hash` is part of the input and contains the letters `entry_hash`, so look for
+    // the quoted key itself.
+    assert!(
+        !first.contains("\"entry_hash\":"),
+        "the hash itself is not part of the input"
+    );
     assert!(first.contains("\"prev_entry_hash\":null"), "{first}");
-    assert!(first.contains("a tab\\tinside"), "tab is escaped as \\t: {first}");
-    assert!(first.contains("a back\\\\slash"), "backslash is doubled: {first}");
+    assert!(
+        first.contains("a tab\\tinside"),
+        "tab is escaped as \\t: {first}"
+    );
+    assert!(
+        first.contains("a back\\\\slash"),
+        "backslash is doubled: {first}"
+    );
     assert!(first.contains("“quoted”") && first.contains('🚀') && first.contains("Résumé"));
-    assert!(first.contains("a slash / too"), "slash is not escaped: {first}");
-    assert!(!first.contains(": ") && !first.contains(", "), "no insignificant whitespace");
+    assert!(
+        first.contains("a slash / too"),
+        "slash is not escaped: {first}"
+    );
+    // Keys are sorted and nothing separates tokens. (Commas and colons inside the statement text
+    // are string content, so the check looks at a structural stretch instead.)
+    assert!(
+        first.contains(
+            "\"line_end\":64,\"line_start\":1,\"path\":\"src/output.rs\",\"type\":\"code_location\"}"
+        ),
+        "keys must be sorted with no whitespace between tokens: {first}"
+    );
 
     let second = String::from_utf8(canonical_form(&entries[1]).unwrap()).unwrap();
-    assert!(second.contains("assumption.\\nLine two"), "newline is escaped as \\n: {second}");
-    assert!(second.contains("x=1&y=2"), "ampersand is not escaped: {second}");
+    assert!(
+        second.contains("assumption.\\nLine two"),
+        "newline is escaped as \\n: {second}"
+    );
+    assert!(
+        second.contains("x=1&y=2"),
+        "ampersand is not escaped: {second}"
+    );
 
     let last = String::from_utf8(canonical_form(&entries[4]).unwrap()).unwrap();
-    assert!(last.contains("person.\\u001fThe separator"), "control characters use lower-case \\u00xx: {last}");
+    assert!(
+        last.contains("person.\\u001fThe separator"),
+        "control characters use lower-case \\u00xx: {last}"
+    );
 }
 
 #[test]
@@ -114,11 +147,16 @@ fn changing_any_field_of_any_past_entry_is_detected() {
     let chain = fixture();
     for index in 0..chain.len() {
         let mut tampered = chain.clone();
-        tampered[index].claim.statement = HumanText::parse("A quietly rewritten statement.").unwrap();
-        let sequence = tampered[index].metadata.sequence.get();
+        tampered[index].claim.statement =
+            HumanText::parse("A quietly rewritten statement.").unwrap();
+        let sequence = tampered[index].sequence();
         match verify_chain(&tampered) {
-            Err(ChainError::HashMismatch { sequence: found, .. }) => assert_eq!(found, sequence),
-            other => panic!("editing entry {sequence} was not reported as a hash mismatch: {other:?}"),
+            Err(ChainError::HashMismatch {
+                sequence: found, ..
+            }) => assert_eq!(found, sequence),
+            other => {
+                panic!("editing entry {sequence} was not reported as a hash mismatch: {other:?}")
+            }
         }
     }
 }
@@ -128,11 +166,17 @@ fn rewriting_a_past_entry_and_its_own_hash_breaks_the_link_from_the_next_one() {
     let chain = fixture();
     for index in 0..chain.len() - 1 {
         let mut tampered = chain.clone();
-        tampered[index].confidence.level = ConfidenceLevel::Low;
+        // A change that always changes the entry (one fixture entry is already low confidence).
+        let rewritten = format!("{} (rewritten)", tampered[index].claim.statement);
+        tampered[index].claim.statement = HumanText::parse(&rewritten).unwrap();
+        assert_ne!(
+            tampered[index], chain[index],
+            "the edit must change the entry"
+        );
         tampered[index] = tampered[index].clone().sealed().unwrap();
         match verify_chain(&tampered) {
             Err(ChainError::BrokenLink { sequence, .. }) => {
-                assert_eq!(sequence, tampered[index + 1].metadata.sequence.get());
+                assert_eq!(sequence, tampered[index + 1].sequence());
             }
             other => panic!("a resealed entry {index} was not caught by its successor: {other:?}"),
         }
@@ -147,10 +191,19 @@ fn rewriting_the_last_entry_and_its_hash_is_caught_only_against_a_known_head() {
     let known_head = head_of(&chain).expect("the chain has entries");
     let mut tampered = chain.clone();
     let last = tampered.len() - 1;
-    tampered[last].confidence.level = ConfidenceLevel::Low;
+    let rewritten = format!("{} (rewritten)", tampered[last].claim.statement);
+    tampered[last].claim.statement = HumanText::parse(&rewritten).unwrap();
+    assert_ne!(
+        tampered[last], chain[last],
+        "the edit must change the entry"
+    );
     tampered[last] = tampered[last].clone().sealed().unwrap();
 
-    assert_eq!(verify_chain(&tampered), Ok(()), "the chain alone cannot see this");
+    assert_eq!(
+        verify_chain(&tampered),
+        Ok(()),
+        "the chain alone cannot see this"
+    );
     assert!(matches!(
         verify_chain_against_head(&tampered, &known_head),
         Err(ChainError::HeadMismatch { .. })
@@ -176,11 +229,17 @@ fn removing_reordering_or_repeating_an_entry_is_detected() {
 
     let mut removed = chain.clone();
     removed.remove(2);
-    assert!(matches!(verify_chain(&removed), Err(ChainError::WrongSequence { .. })));
+    assert!(matches!(
+        verify_chain(&removed),
+        Err(ChainError::WrongSequence { .. })
+    ));
 
     let mut swapped = chain.clone();
     swapped.swap(1, 2);
-    assert!(matches!(verify_chain(&swapped), Err(ChainError::WrongSequence { .. })));
+    assert!(matches!(
+        verify_chain(&swapped),
+        Err(ChainError::WrongSequence { .. })
+    ));
 
     let mut repeated = chain.clone();
     repeated.insert(2, chain[1].clone());
@@ -188,7 +247,10 @@ fn removing_reordering_or_repeating_an_entry_is_detected() {
 
     let mut without_first = chain.clone();
     without_first.remove(0);
-    assert!(matches!(verify_chain(&without_first), Err(ChainError::WrongSequence { .. })));
+    assert!(matches!(
+        verify_chain(&without_first),
+        Err(ChainError::WrongSequence { .. })
+    ));
 }
 
 #[test]
@@ -201,7 +263,10 @@ fn an_entry_from_another_job_cannot_join_the_chain() {
     // Re-link the entry after it so only the job id is wrong.
     chain[4].prev_entry_hash = Some(chain[3].entry_hash.clone());
     chain[4] = chain[4].clone().sealed().unwrap();
-    assert!(matches!(verify_chain(&chain), Err(ChainError::WrongJob { .. })));
+    assert!(matches!(
+        verify_chain(&chain),
+        Err(ChainError::WrongJob { .. })
+    ));
 }
 
 #[test]
@@ -247,14 +312,16 @@ fn drafts() -> impl Strategy<Value = Vec<Draft>> {
         proptest::collection::vec(any::<u8>(), 0..32),
         0u8..3,
     )
-        .prop_map(|(statement, rationale, seconds, id, evidence_bytes, level)| Draft {
-            statement,
-            rationale,
-            seconds,
-            id,
-            evidence_bytes,
-            level,
-        });
+        .prop_map(
+            |(statement, rationale, seconds, id, evidence_bytes, level)| Draft {
+                statement,
+                rationale,
+                seconds,
+                id,
+                evidence_bytes,
+                level,
+            },
+        );
     proptest::collection::vec(draft, 1..9)
 }
 
@@ -262,7 +329,8 @@ fn seal_chain(drafts: &[Draft]) -> Vec<EvidenceLedgerEntry> {
     let mut chain: Vec<EvidenceLedgerEntry> = Vec::new();
     for (index, draft) in drafts.iter().enumerate() {
         let mut entry = template();
-        entry.metadata.sequence = factory_domain::values::PositiveInt::new(index as i64 + 1).unwrap();
+        entry.metadata.sequence =
+            factory_domain::values::PositiveInt::new(index as i64 + 1).unwrap();
         entry.metadata.entry_id = LedgerEntryId::from_uuid(uuid::Uuid::from_u128(draft.id));
         entry.metadata.recorded_at = Timestamp::parse(&format!(
             "2026-10-27T{:02}:{:02}:{:02}Z",
@@ -277,7 +345,8 @@ fn seal_chain(drafts: &[Draft]) -> Vec<EvidenceLedgerEntry> {
         entry.evidence = vec![Evidence::Artifact(
             factory_domain::contracts::evidence_ledger_entry::ArtifactEvidence {
                 sha256: Sha256Digest::of(&draft.evidence_bytes),
-                media_type: factory_domain::values::MediaType::parse("application/octet-stream").unwrap(),
+                media_type: factory_domain::values::MediaType::parse("application/octet-stream")
+                    .unwrap(),
                 description: None,
             },
         )];
@@ -309,7 +378,8 @@ fn edit(entry: &mut EvidenceLedgerEntry, kind: u8) {
             entry.metadata.recorded_at = Timestamp::parse("2031-01-01T00:00:00Z").unwrap();
         }
         4 => {
-            entry.metadata.entry_id = LedgerEntryId::parse("018f3a00-0000-7000-8000-00000000dead").unwrap();
+            entry.metadata.entry_id =
+                LedgerEntryId::parse("018f3a00-0000-7000-8000-00000000dead").unwrap();
         }
         _ => {
             let extra = entry.evidence[0].clone();

@@ -11,6 +11,7 @@ mod macros;
 pub mod contracts;
 pub mod error;
 pub mod ids;
+pub mod ledger;
 pub mod patterns;
 pub mod scope;
 pub mod state;
