@@ -7,8 +7,10 @@
 pub mod authority;
 pub mod handler;
 pub mod ids;
+pub mod ticker;
 pub mod world;
 
 pub use authority::StaticAuthority;
 pub use handler::{Eval, ScriptHandle, ScriptedHandler, Step, Tweaks};
+pub use ticker::ManualTicker;
 pub use world::{ScriptedValidator, World};

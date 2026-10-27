@@ -134,9 +134,9 @@ struct Watched {
 impl Engine {
     /// Runs the attempt a worker holds, and records the result.
     ///
-    /// The call needs a Tokio runtime with the time driver enabled: the heartbeat of the lease and
-    /// the teardown grace period are timers of that runtime. The lease itself is judged by the
-    /// database clock, not by these timers.
+    /// The heartbeat of the lease and the teardown grace period wait through the engine's
+    /// [`Ticker`](crate::scheduler::Ticker), so the composition root decides how the wait is made.
+    /// The lease itself is judged by the database clock, not by these waits.
     ///
     /// # Errors
     /// The store errors. A handler failure is an [`AttemptOutcome`], not an error.
@@ -365,14 +365,14 @@ impl Engine {
     {
         let mut work = std::pin::pin!(work);
         let mut watched = Watched::default();
-        let mut grace: Option<Pin<Box<tokio::time::Sleep>>> = None;
+        let mut grace: Option<Pin<Box<dyn Future<Output = ()> + Send + '_>>> = None;
         loop {
             tokio::select! {
                 outcome = &mut work => {
                     watched.result = Some(outcome);
                     break;
                 }
-                () = tokio::time::sleep(self.config.heartbeat_interval) => {
+                () = self.deps.ticker.sleep(self.config.heartbeat_interval) => {
                     match self.heartbeat(claimed).await {
                         Ok(Pulse::Alive) => {
                             if let Some(ready) = notes.sandbox_ready() {
@@ -533,9 +533,11 @@ impl Engine {
         Ok(())
     }
 
-    fn teardown_timer(&self) -> Pin<Box<tokio::time::Sleep>> {
-        let grace: Duration = self.config.teardown_grace;
-        Box::pin(tokio::time::sleep(grace))
+    /// The wait for a cancelled handler to stop, asked of the ticker. The store's own teardown
+    /// deadline (`A10`) is what ends a teardown that never finishes; this wait only stops the
+    /// worker from holding on to a handler that ignores the cancel.
+    fn teardown_timer(&self) -> Pin<Box<dyn Future<Output = ()> + Send + '_>> {
+        self.deps.ticker.sleep(self.config.teardown_grace)
     }
 
     /// Moves the attempt from `STARTING` to `RUNNING` (`A01`) once the sandbox is ready. Does

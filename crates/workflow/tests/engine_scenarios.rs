@@ -736,7 +736,7 @@ async fn negative_nt_lse_01_a_stale_worker_that_comes_back_changes_nothing() {
     assert_eq!(succeeded, 1);
 }
 
-#[tokio::test(start_paused = true)]
+#[tokio::test]
 async fn heartbeats_during_a_long_stage_keep_the_lease() {
     let world = World::new().await;
     world.admitted_job().await;
@@ -752,7 +752,8 @@ async fn heartbeats_during_a_long_stage_keep_the_lease() {
         // every 15 seconds keeps the lease, so the sweeper finds nothing to take.
         for _ in 0..6 {
             world.advance(20);
-            tokio::time::sleep(std::time::Duration::from_secs(16)).await;
+            // The engine's ticker moves past the 15 second heartbeat interval.
+            world.tick(16).await;
             let swept = world.engine.sweep().await.expect("sweep");
             assert!(swept.lease_lost.is_empty(), "the lease was kept alive");
         }
@@ -765,7 +766,7 @@ async fn heartbeats_during_a_long_stage_keep_the_lease() {
     );
 }
 
-#[tokio::test(start_paused = true)]
+#[tokio::test]
 async fn an_attempt_past_its_deadline_is_stopped_and_timed_out() {
     let world = World::new().await;
     let job = world.admitted_job().await;
@@ -779,7 +780,7 @@ async fn an_attempt_past_its_deadline_is_stopped_and_timed_out() {
     let driver = async {
         world.advance(40);
         // The next heartbeat sees the passed deadline and trips the signal. The handler stops.
-        tokio::time::sleep(std::time::Duration::from_secs(16)).await;
+        world.tick(16).await;
     };
     let (outcome, ()) = tokio::join!(work, driver);
     assert_eq!(
@@ -2072,7 +2073,7 @@ async fn cancelling_a_job_with_no_running_attempt_ends_it_at_once() {
     );
 }
 
-#[tokio::test(start_paused = true)]
+#[tokio::test]
 async fn cancelling_stops_the_running_attempt_and_tears_it_down() {
     let world = World::new().await;
     let job = world.admitted_job().await;
@@ -2096,7 +2097,7 @@ async fn cancelling_stops_the_running_attempt_and_tears_it_down() {
             "the attempt is still tearing down"
         );
         // The next heartbeat tells the worker to stop.
-        tokio::time::sleep(std::time::Duration::from_secs(16)).await;
+        world.tick(16).await;
     };
     let (outcome, ()) = tokio::join!(work, driver);
     assert_eq!(outcome.expect("runs"), AttemptOutcome::Cancelled);
@@ -2343,10 +2344,10 @@ async fn production_mode_refuses_fakes() {
         .is_ok()
     );
 
-    // Each of the eleven adapters and the thirteen handlers is on the list that is checked, and
-    // any one of them alone is enough to refuse the run.
+    // Each of the twelve adapters (the ticker is new with ports v1.1) and the thirteen handlers
+    // is on the list that is checked, and any one of them alone is enough to refuse the run.
     let components = components_of(&world.deps, &world.handlers);
-    assert_eq!(components.len(), 11 + 13);
+    assert_eq!(components.len(), 12 + 13);
     for expected in [
         "store",
         "clock",
@@ -2359,6 +2360,7 @@ async fn production_mode_refuses_fakes() {
         "agent registry",
         "model broker",
         "authority",
+        "ticker",
         "stage handler INTAKE",
         "stage handler APPROVAL",
     ] {
@@ -2419,7 +2421,7 @@ async fn events_carry_the_job_traceparent() {
     assert_eq!(trace_id, job.as_uuid().simple().to_string());
 }
 
-#[tokio::test(start_paused = true)]
+#[tokio::test]
 async fn restart_resumes_without_duplication() {
     // Engine A works on the job and is dropped while a stage is running. Engine B finds the job
     // as the store holds it, takes the work after the lease lapses, and finishes the job.
@@ -2437,10 +2439,14 @@ async fn restart_resumes_without_duplication() {
     world.advance(400);
     let claimed = world.claim_one("worker-a").await;
     {
-        // Engine A starts the attempt and is dropped before it finishes: the future is dropped
-        // at its first wait, with the handler still running.
-        let work = world.engine.run_attempt(&claimed);
-        let _ = tokio::time::timeout(std::time::Duration::from_millis(10), work).await;
+        // Engine A starts the attempt and is dropped before it finishes: the future is polled
+        // once, runs to its first wait with the handler still running, and is dropped there.
+        let mut work = std::pin::pin!(world.engine.run_attempt(&claimed));
+        tokio::select! {
+            biased;
+            _ = &mut work => {}
+            () = std::future::ready(()) => {}
+        }
     }
     let view = world.view(job).await;
     assert_eq!(

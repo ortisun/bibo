@@ -39,6 +39,7 @@ use factory_workflow::scheduler::ClaimedAttempt;
 use super::authority::StaticAuthority;
 use super::handler::{ScriptHandle, ScriptedHandler};
 use super::ids::FaultyIds;
+use super::ticker::ManualTicker;
 
 /// Accepts every document except one that says `"invalid": true`.
 pub struct ScriptedValidator;
@@ -97,6 +98,7 @@ pub struct World {
     pub tenant: TenantId,
     pub requester: PrincipalId,
     pub repository: RepositoryId,
+    pub ticker: Arc<ManualTicker>,
     next_github_user: std::sync::atomic::AtomicU64,
 }
 
@@ -125,6 +127,7 @@ impl World {
         });
         let artifacts = Arc::new(InMemoryArtifactStore::new());
         let authority = Arc::new(StaticAuthority::new());
+        let ticker = Arc::new(ManualTicker::new());
         let broker = Arc::new(FakeModelBroker::new(clock.clone(), ids.clone()));
         let routes: Vec<RouteRule> = StageKind::ALL
             .iter()
@@ -161,6 +164,7 @@ impl World {
             validator: Arc::new(ScriptedValidator),
             broker: broker.clone(),
             authority: authority.clone(),
+            ticker: ticker.clone(),
         };
         let mut config = EngineConfig::new(ExecutionMode::Test, Sha256Digest::of(b"test policy"));
         tune(&mut config);
@@ -207,6 +211,7 @@ impl World {
             tenant,
             requester,
             repository,
+            ticker,
             // The requester holds 1001.
             next_github_user: std::sync::atomic::AtomicU64::new(2000),
         }
@@ -235,6 +240,13 @@ impl World {
     /// Moves the clock, which is also the database clock.
     pub fn advance(&self, seconds: u64) {
         self.clock.advance(Duration::from_secs(seconds));
+    }
+
+    /// Moves the engine's ticker, which ends the heartbeat and teardown waits that are due, and
+    /// lets the engine run until it waits again. The database clock does not move.
+    pub async fn tick(&self, seconds: u64) {
+        self.ticker.advance(Duration::from_secs(seconds));
+        tokio::task::yield_now().await;
     }
 
     /// Stores a request and admits it.

@@ -63,6 +63,7 @@ pub use view::{AttemptView, JobView, StageRunView};
 
 use crate::commands::Authority;
 use crate::handlers::{HandlerRegistry, StagePorts};
+use crate::scheduler::Ticker;
 
 /// The adapters an engine works through. Each is chosen by the composition root. In a production
 /// run every one of them must report fidelity `real` (invariant INV-08).
@@ -92,6 +93,8 @@ pub struct EngineDeps {
     pub broker: Arc<dyn ModelBroker>,
     /// Says who may do what.
     pub authority: Arc<dyn Authority>,
+    /// Waits between heartbeats and during a teardown. The engine has no timer of its own.
+    pub ticker: Arc<dyn Ticker>,
 }
 
 impl std::fmt::Debug for EngineDeps {
@@ -116,6 +119,7 @@ pub fn components_of(deps: &EngineDeps, handlers: &HandlerRegistry) -> Vec<(Stri
         ("agent registry".to_owned(), deps.registry.fidelity()),
         ("model broker".to_owned(), deps.broker.fidelity()),
         ("authority".to_owned(), deps.authority.fidelity()),
+        ("ticker".to_owned(), deps.ticker.fidelity()),
     ];
     for handler in handlers.all() {
         components.push((

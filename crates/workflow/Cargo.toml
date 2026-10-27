@@ -32,9 +32,10 @@ tracing = { version = "0.1.44", default-features = false, features = ["std", "at
 # Identifiers come from the `IdGenerator` port and are wrapped in typed ids. The generator
 # features (`v4`, `v7`) stay off, so this crate cannot make one.
 uuid = { version = "1.29.0", default-features = false, features = ["std"] }
-# `time` for the heartbeat cadence of a running attempt and `macros` for `select!`, which runs the
-# handler next to its heartbeat and its cancellation. `sync` is the only other feature on. No I/O.
-tokio = { version = "1.54.1", default-features = false, features = ["sync", "time", "macros"] }
+# `macros` for `select!`, which runs the handler next to its heartbeat and its cancellation. `sync`
+# is the only other feature on. There is no `time` feature: the engine waits through the `Ticker`
+# port and cannot sleep by itself. No I/O.
+tokio = { version = "1.54.1", default-features = false, features = ["sync", "macros"] }
 
 [dev-dependencies]
 # The in-memory store and the scripted fakes. Dev only (rule DEP-03).

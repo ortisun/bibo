@@ -9,8 +9,10 @@ mod backoff;
 mod claim;
 mod lease;
 mod sweeper;
+mod ticker;
 
 pub use backoff::retry_delay;
 pub use claim::{Claimed, ClaimedAttempt, Deferral};
 pub use lease::Pulse;
 pub use sweeper::Swept;
+pub use ticker::Ticker;
