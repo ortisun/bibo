@@ -1,0 +1,9 @@
+{"type":"thread.started","thread_id":"01a17d91-7dc1-71a3-af50-1ad2854bbe42"}
+{"type":"turn.started"}
+{"type":"error","message":"Reconnecting... 1/5 (We’re currently experiencing high demand, which may cause temporary errors.)"}
+{"type":"error","message":"Reconnecting... 2/5 (We’re currently experiencing high demand, which may cause temporary errors.)"}
+{"type":"error","message":"Reconnecting... 3/5 (We’re currently experiencing high demand, which may cause temporary errors.)"}
+{"type":"error","message":"Reconnecting... 4/5 (We’re currently experiencing high demand, which may cause temporary errors.)"}
+{"type":"error","message":"Reconnecting... 5/5 (We’re currently experiencing high demand, which may cause temporary errors.)"}
+{"type":"error","message":"We’re currently experiencing high demand, which may cause temporary errors."}
+{"type":"turn.failed","error":{"message":"We’re currently experiencing high demand, which may cause temporary errors."}}

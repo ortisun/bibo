@@ -1,0 +1,14 @@
+{"type":"thread.started","thread_id":"01a17d8d-66f1-7b61-af1f-8a1660d75b6c"}
+{"type":"turn.started"}
+{"type":"error","message":"Reconnecting... 2/5 (unexpected status 404 Not Found: FAKE-PROVIDER (fidelity: fake, not a real model): no route for GET /v1/responses, url: ws://fakeprov:8080/v1/responses)"}
+{"type":"error","message":"Reconnecting... 3/5 (unexpected status 404 Not Found: Unknown error, url: ws://fakeprov:8080/v1/responses)"}
+{"type":"error","message":"Reconnecting... 4/5 (unexpected status 404 Not Found: FAKE-PROVIDER (fidelity: fake, not a real model): no route for GET /v1/responses, url: ws://fakeprov:8080/v1/responses)"}
+{"type":"error","message":"Reconnecting... 5/5 (unexpected status 404 Not Found: FAKE-PROVIDER (fidelity: fake, not a real model): no route for GET /v1/responses, url: ws://fakeprov:8080/v1/responses)"}
+{"type":"item.completed","item":{"id":"item_0","type":"error","message":"Falling back from WebSockets to HTTPS transport. unexpected status 404 Not Found: FAKE-PROVIDER (fidelity: fake, not a real model): no route for GET /v1/responses, url: ws://fakeprov:8080/v1/responses"}}
+{"type":"error","message":"Reconnecting... 1/5 (unexpected status 401 Unauthorized: Incorrect API key provided, url: http://fakeprov:8080/v1/responses)"}
+{"type":"error","message":"Reconnecting... 2/5 (unexpected status 401 Unauthorized: Incorrect API key provided, url: http://fakeprov:8080/v1/responses)"}
+{"type":"error","message":"Reconnecting... 3/5 (unexpected status 401 Unauthorized: Incorrect API key provided, url: http://fakeprov:8080/v1/responses)"}
+{"type":"error","message":"Reconnecting... 4/5 (unexpected status 401 Unauthorized: Incorrect API key provided, url: http://fakeprov:8080/v1/responses)"}
+{"type":"error","message":"Reconnecting... 5/5 (unexpected status 401 Unauthorized: Incorrect API key provided, url: http://fakeprov:8080/v1/responses)"}
+{"type":"error","message":"unexpected status 401 Unauthorized: Incorrect API key provided, url: http://fakeprov:8080/v1/responses"}
+{"type":"turn.failed","error":{"message":"unexpected status 401 Unauthorized: Incorrect API key provided, url: http://fakeprov:8080/v1/responses"}}

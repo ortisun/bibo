@@ -1,0 +1,4 @@
+{"type":"thread.started","thread_id":"01a17d95-9ced-7eb3-a480-765460af5ec9"}
+{"type":"turn.started"}
+{"type":"error","message":"{\"error\": {\"message\": \"FAKE-PROVIDER (fidelity: fake, not a real model): injected 400\", \"type\": \"server_error\", \"code\": null}}"}
+{"type":"turn.failed","error":{"message":"{\"error\": {\"message\": \"FAKE-PROVIDER (fidelity: fake, not a real model): injected 400\", \"type\": \"server_error\", \"code\": null}}"}}

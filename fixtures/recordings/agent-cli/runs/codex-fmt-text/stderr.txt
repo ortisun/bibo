@@ -1,0 +1,19 @@
+Reading additional input from stdin...
+OpenAI Codex v0.163.0
+--------
+workdir: /workspace
+model: gpt-6.1-sol
+provider: fake
+approval: never
+sandbox: read-only
+reasoning effort: none
+reasoning summaries: none
+session id: 01a17d91-47e9-7820-a176-fa5056aed7fb
+--------
+user
+say hello
+warning: Codex could not find bubblewrap on PATH. Install bubblewrap with your OS package manager. See the sandbox prerequisites: https://developers.openai.com/codex/concepts/sandboxing#prerequisites. Codex will use the bundled bubblewrap in the meantime.
+codex
+FAKE-PROVIDER-REPLY: canned answer, no model was called.
+tokens used
+1,201

@@ -1,0 +1,12 @@
+{
+  "architecture": "arm64",
+  "entrypoint": [
+    "/usr/local/bin/claude"
+  ],
+  "id": "sha256:7425522db58fd9e8d41ec5db75a0eceb8e86eb2b9e93dd6058e91e77afd24eba",
+  "image": "ars-claude:2.1.311",
+  "layers": 4,
+  "os": "linux",
+  "size_bytes_reported_by_engine": 138290060,
+  "user": "10001:10001"
+}

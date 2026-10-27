@@ -1,0 +1,12 @@
+{
+  "architecture": "arm64",
+  "entrypoint": [
+    "/opt/codex/bin/codex"
+  ],
+  "id": "sha256:1ae85ba318f201f31de5ee1c4a9fa5b96dfcb6b863336133ecc56420380b7c65",
+  "image": "ars-codex:0.163.0",
+  "layers": 4,
+  "os": "linux",
+  "size_bytes_reported_by_engine": 144541806,
+  "user": "10001:10001"
+}

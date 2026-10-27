@@ -1,0 +1,5 @@
+{"type":"thread.started","thread_id":"01a17d91-f12c-70a2-b591-831c16df5872"}
+{"type":"turn.started"}
+{"type":"error","message":"Reconnecting... 1/1 (Connection failed: error sending request)"}
+{"type":"error","message":"Connection failed: error sending request"}
+{"type":"turn.failed","error":{"message":"Connection failed: error sending request"}}

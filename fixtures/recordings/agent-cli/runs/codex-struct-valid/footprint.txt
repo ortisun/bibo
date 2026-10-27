@@ -1,0 +1,67 @@
+exit_code=0
+--- files under /home/agent (bytes path)
+3 /home/agent/.codex/.sandbox_migration
+4096 /home/agent/.codex/goals_1.sqlite
+32768 /home/agent/.codex/goals_1.sqlite-shm
+74192 /home/agent/.codex/goals_1.sqlite-wal
+36 /home/agent/.codex/installation_id
+49152 /home/agent/.codex/logs_2.sqlite
+45056 /home/agent/.codex/memories_1.sqlite
+40960 /home/agent/.codex/queue_1.sqlite
+17 /home/agent/.codex/skills/.system/.codex-system-skills.marker
+10776 /home/agent/.codex/skills/.system/imagegen/LICENSE.txt
+19201 /home/agent/.codex/skills/.system/imagegen/SKILL.md
+275 /home/agent/.codex/skills/.system/imagegen/agents/openai.yaml
+2889 /home/agent/.codex/skills/.system/imagegen/assets/imagegen-small.svg
+1711 /home/agent/.codex/skills/.system/imagegen/assets/imagegen.png
+9655 /home/agent/.codex/skills/.system/imagegen/references/cli.md
+1779 /home/agent/.codex/skills/.system/imagegen/references/codex-network.md
+6072 /home/agent/.codex/skills/.system/imagegen/references/image-api.md
+8282 /home/agent/.codex/skills/.system/imagegen/references/prompting.md
+17617 /home/agent/.codex/skills/.system/imagegen/references/sample-prompts.md
+34667 /home/agent/.codex/skills/.system/imagegen/scripts/image_gen.py
+13905 /home/agent/.codex/skills/.system/imagegen/scripts/remove_chroma_key.py
+10776 /home/agent/.codex/skills/.system/openai-docs/LICENSE.txt
+5437 /home/agent/.codex/skills/.system/openai-docs/SKILL.md
+370 /home/agent/.codex/skills/.system/openai-docs/agents/openai.yaml
+1091 /home/agent/.codex/skills/.system/openai-docs/assets/openai-small.svg
+1429 /home/agent/.codex/skills/.system/openai-docs/assets/openai.png
+7417 /home/agent/.codex/skills/.system/openai-docs/references/codex-self-knowledge.md
+1339 /home/agent/.codex/skills/.system/openai-docs/references/latest-model.md
+2318 /home/agent/.codex/skills/.system/openai-docs/references/mcp-diagnostics.md
+5631 /home/agent/.codex/skills/.system/openai-docs/references/model-migration.md
+1344 /home/agent/.codex/skills/.system/openai-docs/references/model-selection.md
+3337 /home/agent/.codex/skills/.system/openai-docs/references/official-docs.md
+10128 /home/agent/.codex/skills/.system/openai-docs/references/prompting-guide.md
+1503 /home/agent/.codex/skills/.system/openai-docs/references/upgrade-guide.md
+19676 /home/agent/.codex/skills/.system/openai-docs/references/upgrading-to-gpt-6-astra.md
+16112 /home/agent/.codex/skills/.system/openai-docs/scripts/fetch-codex-manual.mjs
+1038 /home/agent/.codex/skills/.system/openai-docs/scripts/resolve-latest-model-info
+3958 /home/agent/.codex/skills/.system/openai-docs/scripts/resolve-latest-model-info.cjs
+2661 /home/agent/.codex/skills/.system/review-agent/SKILL.md
+252 /home/agent/.codex/skills/.system/review-agent/agents/openai.yaml
+15311 /home/agent/.codex/skills/.system/skill-creator/SKILL.md
+183 /home/agent/.codex/skills/.system/skill-creator/agents/openai.yaml
+1319 /home/agent/.codex/skills/.system/skill-creator/assets/skill-creator-small.svg
+1563 /home/agent/.codex/skills/.system/skill-creator/assets/skill-creator.png
+11358 /home/agent/.codex/skills/.system/skill-creator/license.txt
+2356 /home/agent/.codex/skills/.system/skill-creator/references/openai_yaml.md
+6669 /home/agent/.codex/skills/.system/skill-creator/scripts/generate_openai_yaml.py
+10314 /home/agent/.codex/skills/.system/skill-creator/scripts/init_skill.py
+4249 /home/agent/.codex/skills/.system/skill-creator/scripts/quick_validate.py
+11358 /home/agent/.codex/skills/.system/skill-installer/LICENSE.txt
+3367 /home/agent/.codex/skills/.system/skill-installer/SKILL.md
+221 /home/agent/.codex/skills/.system/skill-installer/agents/openai.yaml
+923 /home/agent/.codex/skills/.system/skill-installer/assets/skill-installer-small.svg
+1086 /home/agent/.codex/skills/.system/skill-installer/assets/skill-installer.png
+659 /home/agent/.codex/skills/.system/skill-installer/scripts/github_utils.py
+11917 /home/agent/.codex/skills/.system/skill-installer/scripts/install-skill-from-github.py
+2948 /home/agent/.codex/skills/.system/skill-installer/scripts/list-skills.py
+278528 /home/agent/.codex/state_5.sqlite
+--- files under /tmp (bytes path)
+--- sockets and fifos under /tmp and /home/agent
+--- cgroup counters
+memory.peak=24133632
+pids.peak=36
+memory.max=4294967296
+pids.max=256
