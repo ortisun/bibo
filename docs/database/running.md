@@ -9,7 +9,7 @@
 | Tool | Version used | Needed for |
 |---|---|---|
 | PostgreSQL server | 18.6 (Homebrew, local cluster) and 18.6 in Docker (`postgres:18`); 16.15 in Docker (`postgres:16-alpine`) is listed in the results. 17 was not run. | The tests need a server and the superuser role. |
-| `psql` | 18.6 | Every suite. |
+| `psql` | 18.6 (16 or later for the `rls` suite, which uses `\bind`; older gives BLOCKED) | Every suite. |
 | Diesel CLI | 2.3.11 | Running migrations and `diesel print-schema`. |
 | Python 3 | 3.15.0 (standard library only) | Generating the expected values from `state-machine.json` and the outside check of the audit chain. |
 | Docker | 29.9.2 | Only when no local PostgreSQL binaries exist or `FACTORY_DB_PROVISION=docker` is set. |

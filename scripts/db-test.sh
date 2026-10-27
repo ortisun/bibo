@@ -589,6 +589,10 @@ EOF
 suite_tenancy() { simple_suite tenancy tenancy.sql; }
 
 suite_rls() {
+  # The session checks send the tenant as a bound parameter with \bind, which psql has from version 16.
+  local psql_major
+  psql_major="$(psql --version | sed -n 's/^psql (PostgreSQL) \([0-9][0-9]*\).*/\1/p')"
+  [ -n "$psql_major" ] && [ "$psql_major" -ge 16 ] || blocked "the rls suite needs psql 16 or later (it uses \\bind); found: $(psql --version)"
   clone_begin rls || return 1
   local rc=0
   sql_in_clone rls rls.sql || rc=$?
