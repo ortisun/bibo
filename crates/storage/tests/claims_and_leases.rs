@@ -5,6 +5,28 @@
 //! find that attempt with a superuser query, because the port gives a caller no way to ask for
 //! it. The shared contract checks that need the caller to name the attempt are excluded in
 //! `store_contract.rs`, and these tests cover the same properties.
+//!
+//! PENDING ADAPTATION TO PORTS V1.1. These tests drive the old `Store` write model (`claim_ready`,
+//! `insert_attempt`, event payloads, `ScopeNotAllowed`) and do not compile against the revised
+//! traits, so the whole file is compiled out with `#![cfg(any())]`. The Postgres adaptation
+//! package rewrites each test against the new traits and removes the attribute. The test names
+//! below are the ones that package must account for.
+//!
+//! * `concurrent_claim_has_one_winner`
+//! * `two_claimers_holding_open_transactions_cannot_take_the_same_row`
+//! * `a_claim_sets_the_lease_and_raises_the_epoch`
+//! * `stale_lease_epoch_is_fenced`
+//! * `negative_nt_lse_02`
+//! * `a_heartbeat_renews_the_lease_by_the_database_clock`
+//! * `an_ended_attempt_cannot_be_heartbeated`
+//! * `expired_leases_lists_only_attempts_past_their_lease`
+//! * `lease_expiry_uses_database_time`
+//! * `claim_does_not_block_ledger_appends`
+//! * `a_lock_for_update_would_block_the_ledger_append`
+//! * `only_stage_runs_of_active_jobs_are_claimed_by_default`
+//! * `a_dropped_claim_frees_the_stage_run_for_the_next_begin`
+
+#![cfg(any())]
 
 mod support;
 

@@ -11,7 +11,7 @@
 //! safe form of redaction until it is).
 
 use diesel::result::{DatabaseErrorKind, Error as DieselError};
-use factory_ports::store::StoreError;
+use factory_ports::store::{FaultCode, StoreError};
 
 /// What kind of failure the database reported, with the names of the schema objects involved.
 ///
@@ -101,10 +101,15 @@ pub(super) fn constraint(kind: &'static str, name: Option<&str>) -> StoreError {
     if name.is_some_and(|name| GLOBAL_KEYS.contains(&name)) {
         return StoreError::NotFound;
     }
-    match name {
-        Some(name) => StoreError::Constraint(format!("{kind} {name}")),
-        None => StoreError::Constraint(kind.to_owned()),
-    }
+    // The port's `ConstraintRule` is a closed list of store rules, and a database constraint name
+    // does not map onto it until the Postgres adaptation (ports v1.1). The name is logged, never
+    // returned.
+    tracing::warn!(
+        kind,
+        constraint = name,
+        "a database constraint refused a write"
+    );
+    StoreError::Internal(FaultCode::Unmapped)
 }
 
 /// The generic mapping, used when a call site has no rule of its own for a failure.
@@ -235,11 +240,11 @@ mod tests {
     }
 
     #[test]
-    fn only_the_constraint_name_comes_through() {
+    fn nothing_from_the_database_comes_through_in_the_error() {
         let error = generic("insert", &unique(Some("jobs_pkey")));
         let shown = format!("{error} {error:?}");
-        assert!(shown.contains("jobs_pkey"));
         for text in [
+            "jobs_pkey",
             "424242",
             "already exists",
             "duplicate key",
@@ -251,10 +256,10 @@ mod tests {
     }
 
     #[test]
-    fn a_failure_with_no_constraint_name_says_only_what_kind_it_was() {
+    fn a_failure_with_no_constraint_name_is_an_unmapped_fault_for_now() {
         assert_eq!(
             generic("insert", &unique(None)),
-            StoreError::Constraint("unique violation".to_owned())
+            StoreError::Internal(FaultCode::Unmapped)
         );
     }
 

@@ -13,6 +13,7 @@ use factory_contracts::schemas::SCHEMA_VERSION;
 use factory_contracts::validator::{
     Issue, IssueKind, OutputLimits, SchemaOutputValidator, prescan,
 };
+use factory_domain::values::Sha256Digest;
 use factory_ports::registry::{ContractKind, OutputValidator};
 use proptest::prelude::*;
 use serde_json::{Value, json};
@@ -246,7 +247,7 @@ fn negative_nt_tool_09_a_value_that_is_too_deep_is_refused_by_the_port_without_r
         value = json!({ "a": value });
     }
     let violations = validator()
-        .validate(ContractKind::ReviewVerdict, SCHEMA_VERSION, &value)
+        .validate_value(ContractKind::ReviewVerdict, SCHEMA_VERSION, &value)
         .expect_err("too deep");
     assert_eq!(violations.len(), 1);
     assert!(violations[0].message.contains("deeper than 32 levels"));
@@ -256,7 +257,7 @@ fn negative_nt_tool_09_a_value_that_is_too_deep_is_refused_by_the_port_without_r
 fn negative_nt_tool_09_the_port_refuses_a_large_value() {
     let value = json!({ "title": "a".repeat(OutputLimits::AGENT_OUTPUT.max_bytes() + 1) });
     let violations = validator()
-        .validate(ContractKind::ReviewVerdict, SCHEMA_VERSION, &value)
+        .validate_value(ContractKind::ReviewVerdict, SCHEMA_VERSION, &value)
         .expect_err("too large");
     assert_eq!(violations.len(), 1);
     assert!(violations[0].message.contains("larger than"));
@@ -381,4 +382,106 @@ proptest! {
             }
         }
     }
+}
+
+// ---- ports v1.1: the port takes bytes ------------------------------------------------------------------
+
+#[test]
+fn the_port_returns_the_hash_and_the_size_of_the_exact_bytes() {
+    // Extra white space and keys out of order: a parse and re-write would change the bytes.
+    let pretty = serde_json::to_vec_pretty(&review_verdict()).expect("serialize");
+    let compact = serde_json::to_vec(&review_verdict()).expect("serialize");
+    assert_ne!(pretty, compact);
+    let out = validator()
+        .validate_bytes(ContractKind::ReviewVerdict, SCHEMA_VERSION, &pretty)
+        .expect("a valid verdict");
+    assert_eq!(out.sha256, Sha256Digest::of(&pretty));
+    assert_eq!(out.size_bytes, pretty.len() as u64);
+    assert_eq!(out.value, review_verdict());
+    let other = validator()
+        .validate_bytes(ContractKind::ReviewVerdict, SCHEMA_VERSION, &compact)
+        .expect("the same document written compactly");
+    assert_ne!(
+        out.sha256, other.sha256,
+        "the hash covers the bytes, not the value"
+    );
+}
+
+#[test]
+fn the_port_refuses_the_hostile_bytes_before_any_value_exists() {
+    let validator = validator();
+    let kind = ContractKind::ReviewVerdict;
+    let too_large = vec![b' '; OutputLimits::AGENT_OUTPUT.max_bytes() + 1];
+    let not_utf8 = [0xff, 0xfe, b'{', b'}'];
+    let deep = format!("{}1{}", "[".repeat(10_000), "]".repeat(10_000));
+    let repeated = br#"{"verdict":"PASS","verdict":"BLOCK"}"#;
+    for (what, bytes) in [
+        ("a body over the size limit", too_large.as_slice()),
+        ("bytes that are not UTF-8", not_utf8.as_slice()),
+        ("nesting 10,000 deep", deep.as_bytes()),
+        ("an object that repeats a key", repeated.as_slice()),
+    ] {
+        let violations = validator
+            .validate_bytes(kind, SCHEMA_VERSION, bytes)
+            .expect_err(what);
+        assert_eq!(violations.len(), 1, "{what}: one violation, not a list");
+        assert!(
+            violations[0].message.len() < 400,
+            "{what}: the message does not repeat the input"
+        );
+    }
+}
+
+#[test]
+fn the_value_path_and_the_bytes_path_apply_the_same_schema() {
+    let validator = validator();
+    let mut document = review_verdict();
+    document["approved"] = Value::Bool(true);
+    let bytes = serde_json::to_vec(&document).expect("serialize");
+    let from_bytes = validator
+        .validate_bytes(ContractKind::ReviewVerdict, SCHEMA_VERSION, &bytes)
+        .expect_err("an unknown field");
+    let from_value = validator
+        .validate_value(ContractKind::ReviewVerdict, SCHEMA_VERSION, &document)
+        .expect_err("an unknown field");
+    assert_eq!(
+        from_bytes
+            .iter()
+            .map(|v| (&v.path, &v.message))
+            .collect::<Vec<_>>(),
+        from_value
+            .iter()
+            .map(|v| (&v.path, &v.message))
+            .collect::<Vec<_>>()
+    );
+    // And a valid document passes by both.
+    assert!(
+        validator
+            .validate_value(
+                ContractKind::ReviewVerdict,
+                SCHEMA_VERSION,
+                &review_verdict()
+            )
+            .is_ok()
+    );
+}
+
+#[test]
+fn the_port_reports_an_unknown_schema_version_for_bytes_and_for_values() {
+    let validator = validator();
+    let bytes = serde_json::to_vec(&review_verdict()).expect("serialize");
+    assert!(
+        validator
+            .validate_bytes(ContractKind::ReviewVerdict, SCHEMA_VERSION + 1, &bytes)
+            .is_err()
+    );
+    assert!(
+        validator
+            .validate_value(
+                ContractKind::ReviewVerdict,
+                SCHEMA_VERSION + 1,
+                &review_verdict()
+            )
+            .is_err()
+    );
 }
