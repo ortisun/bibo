@@ -544,7 +544,15 @@ EOF
 
 suite_tenancy() { simple_suite tenancy tenancy.sql; }
 
-suite_terminal_rows() { simple_suite terminal_rows terminal_rows.sql; }
+suite_terminal_rows() {
+  ensure_template || return 1
+  local expected="$WORK/expected_from_json.sql" rc=0
+  python3 -I "$TOOLS/state_machine_sql.py" expected "$STATE_MACHINE" >"$expected" || return 1
+  clone_begin terminal_rows || return 1
+  sql_in_clone terminal_rows "$expected" terminal_rows.sql || rc=$?
+  clone_end
+  return "$rc"
+}
 
 suite_audit() {
   clone_begin audit || return 1

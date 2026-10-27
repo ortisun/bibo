@@ -1,5 +1,7 @@
 -- Suite: terminal_rows
--- Proves invariant INV-04: a terminal stage run is never edited, except PASSED to SUPERSEDED.
+-- Proves invariant INV-04: a terminal stage run is never edited, except that a supersedable one
+-- (PASSED, or SKIPPED since ADR 0010) can become SUPERSEDED. Which states are supersedable is read from
+-- state-machine.json through the edges (the supersede transition S20), not written down here.
 -- Also covers the rules that sit next to it: only legal moves, new rows start in the initial state,
 -- every update raises the version by exactly one, the lease epoch moves only with a claim, and a
 -- finished attempt keeps its result (INV-05).
@@ -18,6 +20,7 @@ BEGIN
   PERFORM dbtest.mk_stage_run(1, 1, 7, 'REVIEW');
   PERFORM dbtest.mk_stage_run(1, 1, 8, 'DOCUMENTING');
   PERFORM dbtest.mk_stage_run(1, 1, 9, 'VALIDATION');
+  PERFORM dbtest.mk_stage_run(1, 1, 10, 'DELIVERY');
 END
 $$;
 
@@ -54,11 +57,13 @@ BEGIN
   PERFORM dbtest.set_status('stage_runs', 1, dbtest.u(1206), 'SUPERSEDED', fin || ', superseded_at = now()');
   -- 1208 stays PENDING and moves to READY: a live run for the positive controls.
   PERFORM dbtest.set_status('stage_runs', 1, dbtest.u(1208), 'READY');
+  -- 1210 SKIPPED too, kept for the supersede cases (1203 is used up by the edit tests).
+  PERFORM dbtest.set_status('stage_runs', 1, dbtest.u(1210), 'SKIPPED', fin || ', gate_outcome = ''NOT_APPLICABLE''');
   -- 1209 is a live run in GATING, to test a PASSED move that has no gate outcome.
   PERFORM dbtest.set_status('stage_runs', 1, dbtest.u(1209), 'READY');
   PERFORM dbtest.set_status('stage_runs', 1, dbtest.u(1209), 'RUNNING', claim);
   PERFORM dbtest.set_status('stage_runs', 1, dbtest.u(1209), 'GATING');
-  PERFORM dbtest.pass('the owner walked eight runs through legal moves (PASSED x2, CANCELLED, SKIPPED, FAILED, REWORK_REQUESTED, SUPERSEDED, READY)');
+  PERFORM dbtest.pass('the owner walked nine runs through legal moves (PASSED x2, CANCELLED, SKIPPED x2, FAILED, REWORK_REQUESTED, SUPERSEDED, READY)');
 END
 $$;
 
@@ -94,7 +99,8 @@ END
 $$;
 
 -- ---------------------------------------------------------------------------------------------
--- 2. The one exception: PASSED to SUPERSEDED, with nothing else changed.
+-- 2. The one exception: a supersedable terminal run (PASSED or SKIPPED) becomes SUPERSEDED, with
+-- nothing else changed.
 
 DO $$
 BEGIN
@@ -116,9 +122,85 @@ BEGIN
   PERFORM dbtest.expect_error('and the superseded run is then frozen like any other terminal run',
     format('UPDATE stage_runs SET max_attempts = 2, version = version + 1 WHERE id = %L', dbtest.u(1207)),
     '23514', 'factory_app', 'stage_runs_terminal_is_immutable');
-  PERFORM dbtest.expect_error('only PASSED may be superseded after it is terminal: FAILED to SUPERSEDED is refused',
+  PERFORM dbtest.expect_error('FAILED is terminal and not supersedable: FAILED to SUPERSEDED is refused',
     format('UPDATE stage_runs SET status = ''SUPERSEDED'', superseded_at = now(), version = version + 1 WHERE id = %L', dbtest.u(1204)),
     '23514', 'factory_app', 'stage_runs_terminal_is_immutable');
+END
+$$;
+
+-- SKIPPED is supersedable too (ADR 0010, decision 2): the skip was decided on recorded inputs, and when an
+-- input changes the decision is made again in a new run. The old SKIPPED run must not stay in place, or it
+-- would go on satisfying the stages that require it.
+DO $$
+BEGIN
+  PERFORM dbtest.expect_error('SKIPPED to SUPERSEDED is refused when it also changes another column (max_attempts)',
+    format('UPDATE stage_runs SET status = ''SUPERSEDED'', superseded_at = now(), max_attempts = 7, version = version + 1 WHERE id = %L', dbtest.u(1210)),
+    '23514', 'factory_app', 'stage_runs_terminal_is_immutable');
+  PERFORM dbtest.expect_error('SKIPPED to SUPERSEDED is refused when it also rewrites the gate outcome',
+    format('UPDATE stage_runs SET status = ''SUPERSEDED'', superseded_at = now(), gate_outcome = ''PASSED'', version = version + 1 WHERE id = %L', dbtest.u(1210)),
+    '23514', 'factory_app', 'stage_runs_terminal_is_immutable');
+  PERFORM dbtest.expect_error('SKIPPED to SUPERSEDED is refused without superseded_at (the row would be inconsistent)',
+    format('UPDATE stage_runs SET status = ''SUPERSEDED'', version = version + 1 WHERE id = %L', dbtest.u(1210)),
+    '23514', 'factory_app', 'stage_runs_superseded_check');
+  PERFORM dbtest.exec(
+    format('UPDATE stage_runs SET status = ''SUPERSEDED'', superseded_at = now(), version = version + 1 WHERE id = %L', dbtest.u(1210)), 'factory_app');
+  PERFORM dbtest.expect_eq('SKIPPED to SUPERSEDED with nothing else changed is accepted for the application role',
+    (SELECT status FROM stage_runs WHERE id = dbtest.u(1210)), 'SUPERSEDED');
+  PERFORM dbtest.expect_true('the supersede of a skipped run kept its NOT_APPLICABLE outcome and finish time',
+    (SELECT gate_outcome = 'NOT_APPLICABLE' AND finished_at IS NOT NULL AND superseded_at IS NOT NULL FROM stage_runs WHERE id = dbtest.u(1210)));
+  PERFORM dbtest.expect_error('and the superseded skipped run is then frozen like any other terminal run',
+    format('UPDATE stage_runs SET max_attempts = 2, version = version + 1 WHERE id = %L', dbtest.u(1210)),
+    '23514', 'factory_app', 'stage_runs_terminal_is_immutable');
+END
+$$;
+
+-- Nothing else leaves a terminal state. For every terminal state and every other status, the move is
+-- accepted exactly when state-machine.json has an edge for it, and it is refused with the terminal-row
+-- constraint otherwise. The edges come from the JSON through dbtest.expected_edges, so a new supersedable
+-- state in the file fails here until a migration follows.
+CREATE TEMP TABLE terminal_fixture (status text PRIMARY KEY, run_id uuid);
+INSERT INTO terminal_fixture VALUES
+  ('PASSED', dbtest.u(1201)), ('CANCELLED', dbtest.u(1202)), ('SKIPPED', dbtest.u(1203)),
+  ('FAILED', dbtest.u(1204)), ('REWORK_REQUESTED', dbtest.u(1205)), ('SUPERSEDED', dbtest.u(1206));
+
+DO $$
+DECLARE
+  f record;
+  target record;
+  stmt text;
+  got text;
+  expected_allowed boolean;
+  mismatches text := '';
+  pairs int := 0;
+  allowed_pairs text;
+BEGIN
+  PERFORM dbtest.expect_eq('the fixture holds one run for every terminal state of the stage run machine',
+    (SELECT array_agg(status ORDER BY status) FROM terminal_fixture),
+    (SELECT array_agg(status ORDER BY status) FROM dbtest.expected_states WHERE machine = 'stage_run' AND is_terminal));
+
+  FOR f IN SELECT * FROM terminal_fixture ORDER BY status LOOP
+    FOR target IN SELECT status FROM dbtest.expected_states WHERE machine = 'stage_run' AND status <> f.status ORDER BY status LOOP
+      stmt := format('UPDATE stage_runs SET status = %L, %s version = version + 1 WHERE id = %L',
+                     target.status, CASE WHEN target.status = 'SUPERSEDED' THEN 'superseded_at = now(),' ELSE '' END, f.run_id);
+      got := dbtest.try_stmt(stmt, 'factory_app');
+      SELECT EXISTS (
+        SELECT 1 FROM dbtest.expected_edges e JOIN dbtest.expected_transitions t USING (machine, transition_id)
+         WHERE e.machine = 'stage_run' AND e.from_status = f.status AND t.to_status = target.status) INTO expected_allowed;
+      pairs := pairs + 1;
+      IF expected_allowed AND got <> 'ok' THEN
+        mismatches := mismatches || format(' %s->%s is in the JSON but was refused (%s);', f.status, target.status, got);
+      ELSIF NOT expected_allowed AND got <> '23514:stage_runs_terminal_is_immutable' THEN
+        mismatches := mismatches || format(' %s->%s is not in the JSON but gave %s;', f.status, target.status, got);
+      END IF;
+    END LOOP;
+  END LOOP;
+  PERFORM dbtest.expect_eq(format('all %s moves out of a terminal state follow state-machine.json: the application role is refused every move the file lacks', pairs), mismatches, '');
+
+  SELECT string_agg(e.from_status || '->' || t.to_status, ', ' ORDER BY e.from_status) INTO allowed_pairs
+    FROM dbtest.expected_edges e JOIN dbtest.expected_transitions t USING (machine, transition_id)
+    JOIN dbtest.expected_states s ON s.machine = e.machine AND s.status = e.from_status
+   WHERE e.machine = 'stage_run' AND s.is_terminal;
+  PERFORM dbtest.expect_eq('the only moves out of a terminal state in the file are PASSED and SKIPPED to SUPERSEDED', allowed_pairs, 'PASSED->SUPERSEDED, SKIPPED->SUPERSEDED');
 END
 $$;
 
