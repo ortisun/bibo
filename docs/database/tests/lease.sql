@@ -5,10 +5,14 @@
 -- and lease time is judged by the database clock. The concurrent races run from scripts/db-test.sh
 -- after this file.
 --
--- dbtest.claim and dbtest.renew are the reference SQL for the storage layer's claim and renewal. They
--- follow ADR 0007: SELECT ... SKIP LOCKED, compare and swap on version, lease expiry computed from
--- now() in the statement. The claim locks with FOR NO KEY UPDATE, which excludes other claimers but
--- not the writers of ledger, audit and outbox rows that point at the stage run through a foreign key.
+-- Since ADR 0012 the claim and the sweep are two steps with two roles. The system role FINDS work across
+-- tenants (SELECT ... FOR NO KEY UPDATE SKIP LOCKED over the columns it may read) and returns identifiers.
+-- The tenant role then makes the change for the tenant it found: a compare and swap on version, the
+-- lease epoch raised by one, the attempt inserted. dbtest.claim, dbtest.renew and the sweep below are the
+-- reference SQL for the storage layer. The claim locks with FOR NO KEY UPDATE, which excludes other
+-- claimers but not the writers of ledger, audit and outbox rows that point at the stage run through a
+-- foreign key. Here both steps run in one transaction; in the engine they are two, and the compare and
+-- swap and the unique index of one live attempt per stage run decide the winner (the shell races below).
 
 DO $$
 BEGIN
@@ -20,13 +24,15 @@ END
 $$;
 
 -- Claim one READY stage run of an ACTIVE job. Returns the new attempt id, or NULL when there is
--- nothing to claim or another claimer got there first.
+-- nothing to claim or another claimer got there first. Step 1 runs as the system role, step 2 as the
+-- tenant role with the setting for the tenant that step 1 found.
 CREATE FUNCTION dbtest.claim(p_worker text) RETURNS uuid LANGUAGE plpgsql AS $$
 DECLARE
   c record;
   a uuid := gen_random_uuid();
   n bigint;
 BEGIN
+  SET LOCAL ROLE factory_system;
   SELECT s.tenant_id, s.id, s.job_id, s.version INTO c
     FROM stage_runs s
     JOIN jobs j ON j.tenant_id = s.tenant_id AND j.id = s.job_id AND j.status = 'ACTIVE'
@@ -34,13 +40,18 @@ BEGIN
    ORDER BY s.not_before
    LIMIT 1
    FOR NO KEY UPDATE OF s SKIP LOCKED;   -- not FOR UPDATE: see the lock mode check in scripts/db-test.sh
+  RESET ROLE;
   IF NOT FOUND THEN
     RETURN NULL;
   END IF;
+
+  SET LOCAL ROLE factory_app;
+  PERFORM set_config('factory.tenant_id', c.tenant_id::text, true);
   UPDATE stage_runs SET status = 'RUNNING', lease_epoch = lease_epoch + 1, version = version + 1
    WHERE tenant_id = c.tenant_id AND id = c.id AND version = c.version AND status = 'READY';
   GET DIAGNOSTICS n = ROW_COUNT;
   IF n <> 1 THEN
+    RESET ROLE;
     RETURN NULL;
   END IF;
   INSERT INTO attempts (tenant_id, id, job_id, stage_run_id, attempt_number, lease_owner, lease_epoch, lease_expires_at, deadline_at)
@@ -48,7 +59,11 @@ BEGIN
          (SELECT coalesce(max(x.attempt_number), 0) + 1 FROM attempts x WHERE x.tenant_id = s.tenant_id AND x.stage_run_id = s.id),
          p_worker, s.lease_epoch, now() + interval '30 seconds', now() + interval '1 hour'
     FROM stage_runs s WHERE s.tenant_id = c.tenant_id AND s.id = c.id;
+  RESET ROLE;
   RETURN a;
+EXCEPTION WHEN OTHERS THEN
+  RESET ROLE;
+  RAISE;
 END
 $$;
 
@@ -66,15 +81,37 @@ BEGIN
 END
 $$;
 
--- Run claim as the application role, so the grants it has are the grants the claim needs.
-CREATE FUNCTION dbtest.claim_as_app(p_worker text) RETURNS uuid LANGUAGE plpgsql AS $$
+-- The sweep, in two steps. Step 1 (system role): the tenant, id and version of every attempt whose lease
+-- expired, locked FOR NO KEY UPDATE SKIP LOCKED (FOR UPDATE would block a ledger append that points at the
+-- attempt). Step 2 (tenant role, once per attempt found): the compare and swap that marks it lost.
+-- Returns the ids that were swept.
+CREATE FUNCTION dbtest.sweep() RETURNS uuid[] LANGUAGE plpgsql AS $$
 DECLARE
-  a uuid;
+  c record;
+  found jsonb;
+  swept uuid[] := '{}';
+  n bigint;
 BEGIN
-  SET LOCAL ROLE factory_app;
-  a := dbtest.claim(p_worker);
+  SET LOCAL ROLE factory_system;
+  SELECT coalesce(jsonb_agg(to_jsonb(x)), '[]'::jsonb) INTO found
+    FROM (SELECT tenant_id, id, version FROM attempts
+           WHERE status IN ('STARTING', 'RUNNING') AND lease_expires_at < now()
+           ORDER BY lease_expires_at LIMIT 100 FOR NO KEY UPDATE SKIP LOCKED) x;
   RESET ROLE;
-  RETURN a;
+  FOR c IN SELECT (e ->> 'tenant_id')::uuid AS tenant_id, (e ->> 'id')::uuid AS id, (e ->> 'version')::bigint AS version
+             FROM jsonb_array_elements(found) e LOOP
+    SET LOCAL ROLE factory_app;
+    PERFORM set_config('factory.tenant_id', c.tenant_id::text, true);
+    UPDATE attempts SET status = 'LEASE_LOST', ended_at = now(), version = version + 1
+     WHERE tenant_id = c.tenant_id AND id = c.id AND version = c.version
+       AND status IN ('STARTING', 'RUNNING') AND lease_expires_at < now();
+    GET DIAGNOSTICS n = ROW_COUNT;
+    RESET ROLE;
+    IF n = 1 THEN
+      swept := swept || c.id;
+    END IF;
+  END LOOP;
+  RETURN swept;
 EXCEPTION WHEN OTHERS THEN
   RESET ROLE;
   RAISE;
@@ -102,10 +139,10 @@ DECLARE
   a1 uuid;
 BEGIN
   PERFORM dbtest.mk_ready_run(1);
-  a1 := dbtest.claim_as_app('worker-a');
+  a1 := dbtest.claim('worker-a');
   INSERT INTO ctx VALUES ('a1', a1);
   PERFORM dbtest.expect_true('the first claimer, running as the application role, gets an attempt', a1 IS NOT NULL);
-  PERFORM dbtest.expect_true('a second claimer finds nothing to claim', dbtest.claim_as_app('worker-b') IS NULL);
+  PERFORM dbtest.expect_true('a second claimer finds nothing to claim', dbtest.claim('worker-b') IS NULL);
   PERFORM dbtest.expect_eq('the stage run is RUNNING at lease epoch 1 with one attempt',
     (SELECT s.status || ':' || s.lease_epoch || ':' || (SELECT count(*) FROM attempts WHERE stage_run_id = s.id) FROM stage_runs s WHERE s.id = dbtest.u(1701)), 'RUNNING:1:1');
   PERFORM dbtest.expect_eq('the attempt holds epoch 1, is owned by worker-a and is STARTING',
@@ -120,6 +157,24 @@ BEGIN
     format($q$INSERT INTO attempts (tenant_id, id, job_id, stage_run_id, attempt_number, lease_owner, lease_epoch, lease_expires_at, deadline_at)
               VALUES (%L, gen_random_uuid(), %L, %L, 2, 'worker-b', 1, now() + interval '30 seconds', now() + interval '1 hour')$q$,
            dbtest.u(1), dbtest.u(1101), dbtest.u(1701)), '23505', 'factory_app', 'attempts_one_active_per_stage_run');
+END
+$$;
+
+-- The claim crosses tenants: the system role finds a READY run of tenant 2, and the attempt is written
+-- under the setting for tenant 2, so it belongs to tenant 2 and tenant 1's session cannot see it.
+DO $$
+DECLARE
+  a uuid;
+BEGIN
+  PERFORM dbtest.mk_job(2, 1);
+  PERFORM dbtest.set_status('jobs', 2, dbtest.u(2101), 'ACTIVE');
+  INSERT INTO stage_runs (tenant_id, id, job_id, stage_kind, run_number) VALUES (dbtest.u(2), dbtest.u(2701), dbtest.u(2101), 'INTAKE', 1);
+  PERFORM dbtest.set_status('stage_runs', 2, dbtest.u(2701), 'READY');
+  a := dbtest.claim('worker-t2');
+  PERFORM dbtest.expect_true('the system role found the READY run of tenant 2 and the claim wrote its attempt', a IS NOT NULL);
+  PERFORM dbtest.expect_eq('the attempt belongs to tenant 2, at lease epoch 1', (SELECT tenant_id::text || ':' || lease_epoch FROM attempts WHERE id = a), dbtest.u(2)::text || ':1');
+  PERFORM dbtest.expect_eq('a tenant-1 session cannot see the attempt of tenant 2', dbtest.run_as(format('SELECT 1 FROM attempts WHERE id = %L', a), 'factory_app', 1), 'rows=0');
+  PERFORM dbtest.expect_eq('and a tenant-2 session can', dbtest.run_as(format('SELECT 1 FROM attempts WHERE id = %L', a), 'factory_app', 2), 'rows=1');
 END
 $$;
 
@@ -207,25 +262,19 @@ DECLARE
 BEGIN
   -- A live lease on another run must survive the sweep: claim run 1705 now, with a fresh lease.
   PERFORM dbtest.mk_ready_run(5);
-  PERFORM dbtest.expect_true('worker-c claims run 1705', dbtest.claim_as_app('worker-c') IS NOT NULL);
+  PERFORM dbtest.expect_true('worker-c claims run 1705', dbtest.claim('worker-c') IS NOT NULL);
 
-  -- Only A1 has an expired lease.
-  SET LOCAL ROLE factory_app;
-  WITH s AS (
-    UPDATE attempts SET status = 'LEASE_LOST', ended_at = now(), version = version + 1
-     WHERE status IN ('STARTING', 'RUNNING') AND lease_expires_at < now()
-     RETURNING id)
-  SELECT array_agg(id) INTO swept FROM s;
-  RESET ROLE;
-  PERFORM dbtest.expect_eq('the sweep, run as the application role, took exactly the expired attempt', swept, ARRAY[a1]);
+  -- Only A1 has an expired lease. The sweep finds it as the system role and marks it lost as the tenant role.
+  swept := dbtest.sweep();
+  PERFORM dbtest.expect_eq('the sweep (system role finds, tenant role marks) took exactly the expired attempt', swept, ARRAY[a1]);
   PERFORM dbtest.expect_eq('the live lease of worker-c was left alone',
     (SELECT count(*) FROM attempts WHERE status = 'STARTING' AND lease_owner = 'worker-c' AND lease_expires_at > now()), 1::bigint);
 
   -- Schedule the retry with a back-off (S05), as the engine would.
   UPDATE stage_runs SET status = 'READY', not_before = now() + interval '1 hour', version = version + 1 WHERE tenant_id = dbtest.u(1) AND id = dbtest.u(1701);
-  PERFORM dbtest.expect_true('during the back-off nobody can claim the run', dbtest.claim_as_app('worker-b') IS NULL);
+  PERFORM dbtest.expect_true('during the back-off nobody can claim the run', dbtest.claim('worker-b') IS NULL);
   UPDATE stage_runs SET not_before = now() - interval '1 second', version = version + 1 WHERE tenant_id = dbtest.u(1) AND id = dbtest.u(1701);
-  a2 := dbtest.claim_as_app('worker-b');
+  a2 := dbtest.claim('worker-b');
   INSERT INTO ctx VALUES ('a2', a2);
   PERFORM dbtest.expect_true('after the back-off worker-b claims the run', a2 IS NOT NULL);
   PERFORM dbtest.expect_eq('the new attempt is number 2 at lease epoch 2',
@@ -256,7 +305,7 @@ BEGIN
            dbtest.u(1), dbtest.u(1101), dbtest.u(1701)), '23505', 'factory_app', 'attempts_one_active_per_stage_run');
 
   -- A compare-and-swap on the stage run with the version the zombie last saw changes no row.
-  SET LOCAL ROLE factory_app;
+  PERFORM dbtest.become('factory_app');
   UPDATE stage_runs SET status = 'GATING', version = version + 1 WHERE tenant_id = dbtest.u(1) AND id = dbtest.u(1701) AND version = 2;
   GET DIAGNOSTICS n = ROW_COUNT;
   RESET ROLE;

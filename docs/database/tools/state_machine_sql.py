@@ -8,7 +8,7 @@ pasted into migrations/2026-10-27-000100_foundation/up.sql. A later change to th
 needs a new migration that applies the difference; do not edit the foundation migration.
 
 `expected` prints CREATE TABLE and INSERT statements for the dbtest schema, which the `statuses`
-database test compares with the live tables. It also prints the required fields of two schemas, so
+and `terminal_rows` database tests compare with the live tables. It also prints the required fields of two schemas, so
 the tests can check that the rows are able to carry the contracts.
 
 The script reads files and prints text. It writes nothing and needs only the standard library.
@@ -48,6 +48,14 @@ def edges(doc):
         for t in doc["machines"][machine]["transitions"]:
             for origin in t["from"]:
                 yield machine, origin, t["id"]
+
+
+def supersedable(doc):
+    """Terminal states the file marks as able to become SUPERSEDED (ADR 0010: PASSED and SKIPPED)."""
+    for machine in MACHINES:
+        for status, info in doc["machines"][machine]["states"].items():
+            if info.get("supersedable"):
+                yield machine, status
 
 
 def values(rows, fmt):
@@ -127,6 +135,9 @@ def expected(doc, schema_dir):
     out.append("CREATE TABLE dbtest.expected_edges (machine text, from_status text, transition_id text);")
     out.append("INSERT INTO dbtest.expected_edges VALUES")
     out.append(values(edges(doc), lambda r: "%s, %s, %s" % (q(r[0]), q(r[1]), q(r[2]))))
+    out.append("CREATE TABLE dbtest.expected_supersedable (machine text, status text);")
+    out.append("INSERT INTO dbtest.expected_supersedable VALUES")
+    out.append(values(list(supersedable(doc)), lambda r: "%s, %s" % (q(r[0]), q(r[1]))))
     out.append("CREATE TABLE dbtest.expected_stage_kinds (stage_kind text);")
     out.append("INSERT INTO dbtest.expected_stage_kinds VALUES")
     out.append(values([(s["kind"],) for s in doc["pipeline"]["stages"]], lambda r: q(r[0])))

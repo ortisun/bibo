@@ -115,7 +115,7 @@ erDiagram
 
 | Table | Holds | Written by |
 |---|---|---|
-| `tenants` | One row per customer, plus one `platform` row for audit events that belong to no tenant (a webhook with a bad signature, an unknown installation). | The owner role, during onboarding. The application role can only read. |
+| `tenants` | One row per customer, plus one `platform` row for audit events that belong to no tenant (a webhook with a bad signature, an unknown installation). | The owner role, during onboarding. The application role can only read, and only its own row (row-level security, see [tenancy.md](tenancy.md)). |
 | `state_machine_states` | Every state of the four machines (job, stage run, attempt, task node), with `is_initial` and `is_terminal`. | A migration, from `state-machine.json`. |
 | `state_machine_transitions` | Every transition: id (`J01`, `S08`, ...), event name, target state and the event it emits. | A migration. |
 | `state_machine_edges` | Which states each transition can start from. | A migration. |
@@ -174,11 +174,15 @@ Foreign keys and deferred checks mean the order of the statements does not matte
 
 ### A claim
 
-The engine selects `READY` stage runs of `ACTIVE` jobs whose `not_before` has passed, with `FOR NO KEY UPDATE SKIP LOCKED`, moves the run to `RUNNING` with `lease_epoch + 1`, and inserts the attempt at that epoch. A partial unique index allows one live attempt per stage run, and a trigger lets the epoch rise only with that move. The `lease` suite runs 25 rounds of four workers on each of three claim styles, and each round has exactly one winner.
+The engine's system pool selects `READY` stage runs of `ACTIVE` jobs whose `not_before` has passed, with `FOR NO KEY UPDATE SKIP LOCKED`, and returns the identifiers. A tenant transaction for the tenant it found then moves the run to `RUNNING` with `lease_epoch + 1`, by compare and swap on `version`, and inserts the attempt at that epoch. A partial unique index allows one live attempt per stage run, and a trigger lets the epoch rise only with that move. The `lease` suite runs 25 rounds of four workers on each of three claim styles, and each round has exactly one winner; the `rls` suite does the same through two real logins, where several workers hold the same candidate.
 
 ### A lease is fenced
 
 Every write by a worker names its attempt, its owner and its epoch, and runs only while the attempt is live and `lease_expires_at > now()`, with `now()` read by the database. A worker that lost its lease finds its attempt terminal, and a trigger refuses any later write to a terminal attempt except the sandbox teardown facts.
+
+### Who can see what
+
+Four group roles share the tables ([tenancy.md](tenancy.md)). `factory_app` sees one tenant at a time. `factory_system` reads the few columns the claim, sweep and relay need. `factory_resolver` runs two lookup functions and reads no table. `factory_lookup` owns those functions. The state machine tables are readable by `factory_app` and have no policy.
 
 ## What the database does not know
 

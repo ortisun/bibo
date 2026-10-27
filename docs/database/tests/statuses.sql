@@ -31,6 +31,23 @@ BEGIN
 END
 $$;
 
+-- The file marks the terminal states that can still become SUPERSEDED (ADR 0010: PASSED and, since the
+-- revision, SKIPPED). The database does not store that flag. It stores the supersede edge, and the
+-- terminal-row trigger follows the edge, so the two must agree.
+DO $$
+BEGIN
+  PERFORM dbtest.expect_eq('the terminal states with a supersede edge are exactly the states state-machine.json marks supersedable',
+    (SELECT coalesce(array_agg(e.machine || ':' || e.from_status ORDER BY e.machine, e.from_status), '{}')
+       FROM state_machine_edges e
+       JOIN state_machine_transitions t ON t.machine = e.machine AND t.transition_id = e.transition_id
+       JOIN state_machine_states s ON s.machine = e.machine AND s.status = e.from_status
+      WHERE t.event = 'supersede' AND s.is_terminal),
+    (SELECT coalesce(array_agg(machine || ':' || status ORDER BY machine, status), '{}') FROM dbtest.expected_supersedable));
+  PERFORM dbtest.expect_eq('the edge SKIPPED to SUPERSEDED exists (ADR 0010, decision 2)',
+    (SELECT count(*) FROM state_machine_edges WHERE machine = 'stage_run' AND from_status = 'SKIPPED' AND transition_id = 'S20'), 1::bigint);
+END
+$$;
+
 -- ---------------------------------------------------------------------------------------------
 -- 2. Every status column carries a CHECK whose list equals the JSON.
 

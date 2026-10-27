@@ -18,7 +18,7 @@
 
 A record that its own writers can change proves little. Four layers apply to both tables:
 
-1. **No grant.** The application role has `SELECT` and `INSERT` on both tables and nothing else, at table and column level. The `privileges` suite compares the full grant list with the expected one in both directions.
+1. **No grant.** The application role has `SELECT` and `INSERT` on both tables and nothing else, at table and column level, and sees only its own tenant's rows (row-level security). The system role has no access to either table. The `privileges` suite compares the full grant list with the expected one in both directions.
 2. **A trigger.** `BEFORE UPDATE OR DELETE` and `BEFORE TRUNCATE` triggers raise SQLSTATE 42501 for every role, the owner included. This is the second layer behind the grant. The suites run `UPDATE`, `DELETE` and `TRUNCATE` as the application role (permission denied) and as the owner (the trigger).
 3. **No change to the table.** The application role cannot `DROP`, `ALTER`, `DISABLE TRIGGER`, create a trigger, or create objects in the schema. It owns nothing.
 4. **A chain.** Each row names its predecessor, so an edit, a deletion or a reordering by someone who got past the first three layers can be found afterwards.
@@ -111,6 +111,7 @@ The tests use the default `READ COMMITTED` isolation, as ADR 0007 sets. I did no
 
 - **A superuser, or anyone who can disable triggers, can rewrite a whole chain.** Setting `session_replication_role = replica` turns the triggers and the foreign keys off. The `ledger` and `audit` suites do exactly this to prove the verifiers notice partial tampering. Rewriting every row from the point of the edit forward, with fresh hashes, makes a consistent chain that passes both verifiers. Only a copy of the head outside the database exposes it.
 - **Deleting rows from the end is not found by `audit_verify_chain`.** The remaining prefix is a sound chain. The `audit` suite has a test that states this limit. The external anchor (an hourly copy of the head hash to an object store with a retention lock, `audit.external_anchor` in the policy) is what catches it. It is not built.
+- **The verifiers read under the caller's row-level security policy.** `audit_verify_chain(tenant)` and `ledger_verify_chain(tenant, job)` run with the rights of the caller. A session set to tenant 1 that asks about tenant 2 reads no row, and the audit verifier answers NULL, which is also the answer for a sound chain (the `rls` suite shows it). The verification job must run in a transaction that made the setting for the tenant it checks, or as a role with a policy of its own, and must treat a NULL from a session set to another tenant as no answer. Under `FORCE ROW LEVEL SECURITY` the owner role sees no row either, so a check run as the owner reads nothing.
 - **The owner can `DROP TABLE`.** An event trigger could prevent that, but creating one needs superuser rights, and it would interfere with migrations. The mitigation is operational: nobody uses the owner role at run time, and migrations run from a deploy step.
 - **Nothing here stops the application from recording false claims.** The ledger makes a claim durable and checkable. Whether the claim is true is for the gates and the reviewers.
 

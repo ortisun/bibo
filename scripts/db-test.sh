@@ -17,6 +17,7 @@
 #   3. Docker, image FACTORY_DB_IMAGE (default postgres:18), on a random loopback port.
 # FACTORY_DB_PROVISION=local|docker|none forces one of the last two or turns provisioning off.
 # FACTORY_DB_LEASE_ROUNDS (default 25) sets how many contested claims the lease suite makes.
+# FACTORY_DB_PLANS_SCALE (default 1) sets the size of the plans suite: 1 is 10,000 rows in each large table, 10 is 100,000.
 #
 # Needs: psql, python3, and the pinned diesel CLI (see PINNED_DIESEL) for the migrations suite.
 
@@ -36,7 +37,7 @@ DIESEL_CONFIG="$ROOT/crates/storage/diesel.toml"
 SCHEMA_RS="$ROOT/crates/storage/src/schema.rs"
 STATE_MACHINE="$ROOT/docs/architecture/state-machine.json"
 
-SUITES="migrations statuses ledger tenancy terminal_rows plans audit webhook_delivery lease outbox approvals tokens privileges contracts"
+SUITES="migrations statuses ledger tenancy rls terminal_rows plans audit webhook_delivery lease outbox approvals tokens privileges contracts"
 
 RUN_ID="$$_$(date +%s)"
 WORK=""
@@ -48,6 +49,8 @@ URL_QUERY=""
 PROVISIONED=""
 KEEP=0
 TEMPLATE_DB=""
+RLS_LOGINS=()
+RLS_PASS=""
 SERVER_VERSION=""
 CLONE=""
 TOTAL_OK=0
@@ -64,28 +67,37 @@ blocked() {
 }
 
 usage() {
-  sed -n '2,23p' "$0" | sed 's/^# \{0,1\}//'
+  sed -n '2,22p' "$0" | sed 's/^# \{0,1\}//'
 }
 
 list_suites() {
   cat <<'EOF'
-migrations       up, revert all, up again, redo on an empty database; the catalog is identical afterwards;
-                 the committed schema.rs equals diesel print-schema
+migrations       up, revert all, up again, redo on an empty database; the catalog (tables, policies, grants,
+                 function owners) is identical afterwards, also after reverting only the newest j migrations,
+                 for every j; the committed schema.rs equals diesel print-schema
 statuses         every status column rejects an unknown value; allowed values, terminal flags, transitions
                  and event names equal state-machine.json
 ledger           the evidence ledger refuses UPDATE, DELETE, TRUNCATE and gapped, forked or forged inserts;
                  concurrent appends to one job leave one winner and a sound chain
-tenancy          a foreign key into another tenant is rejected; unique keys carry the tenant; the
-                 row-level security candidate is tried and rolled back
-terminal_rows    terminal stage runs cannot be edited except PASSED to SUPERSEDED; illegal transitions fail
-plans            claim, sweep, timeline and ledger-tail queries use index scans on 10,000 generated rows
+tenancy          a foreign key into another tenant is rejected, also for a session under row-level security;
+                 unique keys carry the tenant
+rls              every tenant-owned table, found from the catalog, is isolated by row-level security: another
+                 tenant's rows cannot be read, added, changed or deleted, and no tenant setting sees nothing;
+                 the roles, the system scope and the two lookup functions; real logins and a reused connection
+terminal_rows    terminal stage runs cannot be edited except to become SUPERSEDED from PASSED or SKIPPED;
+                 every other move out of a terminal state fails
+plans            claim, sweep, timeline and ledger-tail queries use index scans on 10,000 generated rows (100,000
+                 with FACTORY_DB_PLANS_SCALE=10), run as the roles that run them, with row-level security on
 audit            the application role can only INSERT and SELECT audit events; the chain is built by the
                  server, survives concurrent writers and verifies outside PostgreSQL
 webhook_delivery a duplicate delivery id cannot create a second job or outbox row, also under 50 concurrent replays
-lease            concurrent claims give exactly one winner; stale epochs and forged renewals are refused
-outbox           the outbox is atomic with the state change, immutable, and consumer idempotent
+lease            concurrent claims (system role finds, tenant role swaps) give exactly one winner; stale epochs
+                 and forged renewals are refused; a claimer does not block the ledger
+outbox           the outbox is atomic with the state change, immutable, and consumer idempotent; the relay
+                 runs as the system role
 approvals        approvals bind a head SHA and only a human principal can approve
-tokens           API tokens are stored hashed, expire, are audience bound and cannot be un-revoked
+tokens           API tokens are stored hashed, expire, are audience bound and cannot be un-revoked; resolve_token
+                 agrees with the view on every case
 privileges       the application role has exactly the grants the design lists
 contracts        the rows can carry the fields the domain-event and evidence-ledger-entry schemas require
 EOF
@@ -104,6 +116,11 @@ cleanup() {
   if [ -n "$URL_PREFIX" ]; then
     [ -n "$CLONE" ] && drop_db "$CLONE"
     [ -n "$TEMPLATE_DB" ] && drop_db "$TEMPLATE_DB"
+    # Login roles are cluster wide. The rls suite makes a few; drop them whatever happened.
+    local login
+    for login in ${RLS_LOGINS[@]+"${RLS_LOGINS[@]}"}; do
+      psql "$(db_url postgres)" -X -q -At -c "DROP ROLE IF EXISTS \"$login\"" >/dev/null 2>&1
+    done
   fi
   case "$PROVISIONED" in
     local)
@@ -486,6 +503,33 @@ suite_migrations() {
   fi
   ok "the catalog fingerprint is identical after up, down-up and redo (${fp_first:0:16}...)"
 
+  # A full revert hides a down script that leaves something behind when a later down drops the table anyway (a
+  # policy on a table, for example). So revert only the newest j migrations, run them again, and compare, for
+  # every j. A leftover then makes the run fail ("already exists") or changes the fingerprint.
+  local j
+  for j in $(seq 1 "$expected"); do
+    for _ in $(seq 1 "$j"); do
+      if ! diesel_run "$db" --config-file "$cfg" migration revert >"$out" 2>&1; then
+        not_ok "reverting the newest migration failed while reverting the $j newest"
+        cat "$out" >&2
+        drop_db "$db"
+        return 1
+      fi
+    done
+    if ! diesel_run "$db" --config-file "$cfg" migration run >"$out" 2>&1; then
+      not_ok "running the $j newest migrations again after reverting them failed (a down script left something behind?)"
+      cat "$out" >&2
+      drop_db "$db"
+      return 1
+    fi
+    if [ "$(psql_scalar "$db" -f "$TESTS/catalog_fingerprint.sql")" != "$fp_first" ]; then
+      not_ok "reverting the $j newest migrations and running them again changed the catalog"
+      drop_db "$db"
+      return 1
+    fi
+  done
+  ok "reverting the j newest migrations and running them again leaves the catalog unchanged, for every j from 1 to $expected"
+
   local printed="$WORK/print-schema.rs"
   if ! diesel_run "$db" --config-file "$DIESEL_CONFIG" print-schema >"$printed" 2>"$out"; then
     not_ok "diesel print-schema failed"
@@ -532,7 +576,7 @@ SELECT dbtest.mk_stage_run(5, 1, 1);
 SELECT dbtest.append_entry(5, dbtest.u(5101), dbtest.u(5201), 1);
 SELECT dbtest.append_entry(5, dbtest.u(5101), dbtest.u(5201), 2);
 EOF
-  race 8 "SELECT 'appended-' || length(dbtest.append_entry(5, dbtest.u(5101), dbtest.u(5201), 3))" || rc=1
+  race 8 "SET LOCAL ROLE factory_app; SELECT set_config('factory.tenant_id', dbtest.u(5)::text, true); SELECT 'appended-' || length(dbtest.append_entry(5, dbtest.u(5101), dbtest.u(5201), 3))" || rc=1
   expect_count "ledger race: eight concurrent appends of entry 3 give exactly one winner" "$(race_count_output 'appended-71')" 1 || rc=1
   expect_count "ledger race: the seven losers were refused by a unique constraint on the position" "$(race_errors_mention 'duplicate key value violates unique constraint')" 7 || rc=1
   expect_count "ledger race: the job holds entries 1 to 3" "$(psql_scalar "$CLONE" -c "SELECT count(*) FROM ledger_entries WHERE job_id = dbtest.u(5101)")" 3 || rc=1
@@ -544,7 +588,284 @@ EOF
 
 suite_tenancy() { simple_suite tenancy tenancy.sql; }
 
-suite_terminal_rows() { simple_suite terminal_rows terminal_rows.sql; }
+suite_rls() {
+  # The session checks send the tenant as a bound parameter with \bind, which psql has from version 16.
+  local psql_major
+  psql_major="$(psql --version | sed -n 's/^psql (PostgreSQL) \([0-9][0-9]*\).*/\1/p')"
+  [ -n "$psql_major" ] && [ "$psql_major" -ge 16 ] || blocked "the rls suite needs psql 16 or later (it uses \\bind); found: $(psql --version)"
+  clone_begin rls || return 1
+  local rc=0
+  sql_in_clone rls rls.sql || rc=$?
+  if [ "$rc" -eq 0 ]; then rls_sessions || rc=$?; fi
+  if [ "$rc" -eq 0 ]; then rls_claim_race || rc=$?; fi
+  clone_end
+  return "$rc"
+}
+
+# The same server as another user. A password goes in PGPASSWORD so that a server that asks for one (the
+# Docker image does) is satisfied; the private cluster trusts its socket and ignores it.
+login_url() { # login, database
+  local prefix
+  case "$URL_PREFIX" in
+    *@*) prefix="$(printf '%s' "$URL_PREFIX" | sed -E "s#^([A-Za-z0-9+.-]+://)[^@/]*@#\\1$1@#")" ;;
+    *) prefix="$(printf '%s' "$URL_PREFIX" | sed -E "s#^([A-Za-z0-9+.-]+://)#\\1$1@#")" ;;
+  esac
+  printf '%s/%s%s' "$prefix" "$2" "$URL_QUERY"
+}
+
+# A session as a real login to the clone, with psql arguments after the login name. A script can go in on
+# standard input.
+psql_as() {
+  local login=$1
+  shift
+  PGPASSWORD="$RLS_PASS" psql "$(login_url "$login" "$CLONE")" -X -q -v ON_ERROR_STOP=1 -P pager=off "$@"
+}
+
+# A login role that is a member of the groups named. Roles are cluster wide, so cleanup drops them.
+make_login() { # name, groups (comma separated)
+  psql_scalar postgres -c "CREATE ROLE \"$1\" LOGIN PASSWORD '$RLS_PASS' IN ROLE $2" >/dev/null || return 1
+  RLS_LOGINS+=("$1")
+}
+
+# The output of a script run as a login, errors included, one string. The script is the second argument.
+session_output() { # login, script
+  psql_as "$1" -At 2>&1 <<<"$2" || true
+}
+
+# True when the script, run as the login, fails and the error text contains the pattern.
+session_refused() { # login, script, pattern
+  local out
+  if out="$(psql_as "$1" -At 2>&1 <<<"$2")"; then
+    return 1
+  fi
+  printf '%s' "$out" | grep -q -- "$3"
+}
+
+# What the sessions of real logins prove, which a SET ROLE inside one superuser session cannot: a reused
+# connection, a poisoned one, the login's own limits, the extended protocol with a bound parameter.
+rls_sessions() {
+  local rc=0 app sys api t1 t2 out expected
+  RLS_PASS="$(LC_ALL=C tr -dc 'a-f0-9' </dev/urandom | head -c 24)"
+  app="dbtest_app_${RUN_ID}"
+  sys="dbtest_system_${RUN_ID}"
+  api="dbtest_api_${RUN_ID}"
+  make_login "$app" factory_app || return 1
+  make_login "$sys" factory_system || return 1
+  make_login "$api" "factory_app, factory_resolver" || return 1
+  t1="$(psql_scalar "$CLONE" -c "SELECT dbtest.u(1)")"
+  t2="$(psql_scalar "$CLONE" -c "SELECT dbtest.u(2)")"
+
+  expect_count "logins: the three logins are members of the groups they were given and the membership check finds no conflict" \
+    "$(psql_scalar "$CLONE" -c "SELECT count(*) || ':' || dbtest.membership_conflicts() FROM dbtest.group_members() WHERE member LIKE 'dbtest_%_${RUN_ID}'")" "4:" || rc=1
+
+  # The start-up check a pool runs on its own role (docs/database/tests/role_readiness.sql, quoted in the storage notes).
+  expect_count "readiness query as the tenant login: not a superuser, no bypass, owns nothing, in factory_app only" \
+    "$(psql_as "$app" -At -f "$TESTS/role_readiness.sql")" "f|f|f|t|f|f|f" || rc=1
+  expect_count "readiness query as the system login: in factory_system only" \
+    "$(psql_as "$sys" -At -f "$TESTS/role_readiness.sql")" "f|f|f|f|t|f|f" || rc=1
+  expect_count "readiness query as the API login: in factory_app and factory_resolver" \
+    "$(psql_as "$api" -At -f "$TESTS/role_readiness.sql")" "f|f|f|t|f|t|f" || rc=1
+  expect_count "control: the readiness query as a superuser starts with true, so a pool that connects as one refuses to start" \
+    "$(psql_db "$CLONE" -At -f "$TESTS/role_readiness.sql" | cut -c1-2)" "t|" || rc=1
+
+  # --- A tenant login (the application role) --------------------------------------------------------
+  out="$(session_output "$app" "SELECT count(*) FROM jobs;
+SELECT current_setting('factory.tenant_id', true) IS NULL;")"
+  expect_count "a session that never made the setting sees zero rows and gets no error, and the setting is NULL" "$out" "$(printf '0\nt')" || rc=1
+
+  # The ADR 0012 probe: after a transaction that made the setting has ended, the NEXT transaction on the
+  # same connection reads an empty string, not NULL. The policy has NULLIF, so it sees nothing and raises nothing.
+  out="$(session_output "$app" "BEGIN;
+SELECT set_config('factory.tenant_id', '$t1', true) AS x \\gset
+SELECT 'first:' || count(*) FROM jobs;
+COMMIT;
+SELECT 'second:' || count(*) FROM jobs;
+SELECT 'setting:' || CASE WHEN current_setting('factory.tenant_id', true) = '' THEN 'empty' WHEN current_setting('factory.tenant_id', true) IS NULL THEN 'null' ELSE 'other' END;")"
+  expect_count "a second transaction on the reused connection sees zero rows with no error, and the setting reads as an empty string, not NULL" \
+    "$out" "$(printf 'first:1\nsecond:0\nsetting:empty')" || rc=1
+
+  out="$(session_output "$app" "BEGIN;
+SELECT set_config('factory.tenant_id', '$t1', true) AS x \\gset
+RESET factory.tenant_id;
+SELECT 'after_reset:' || count(*) FROM jobs;
+COMMIT;")"
+  expect_count "RESET of the setting inside a transaction leaves the session with no tenant: zero rows, no error" "$out" "after_reset:0" || rc=1
+
+  out="$(session_output "$app" "BEGIN;
+SELECT set_config('factory.tenant_id', '$t1', true) AS x \\gset
+SAVEPOINT inner_point;
+SELECT set_config('factory.tenant_id', '$t2', true) AS x \\gset
+SELECT 'in_savepoint:' || string_agg(DISTINCT tenant_id::text, ',') FROM jobs;
+ROLLBACK TO inner_point;
+SELECT 'after_rollback_to:' || string_agg(DISTINCT tenant_id::text, ',') FROM jobs;
+COMMIT;")"
+  expect_count "inside a savepoint the setting can be changed, and rolling the savepoint back restores the tenant of the outer transaction" \
+    "$out" "$(printf 'in_savepoint:%s\nafter_rollback_to:%s' "$t2" "$t1")" || rc=1
+
+  # A prepared statement is planned once and run for many tenants on a pooled connection (diesel-async keeps a
+  # statement cache per connection). The policy reads the setting when the statement runs, not when it is
+  # planned, so a generic plan made under one tenant must give the next tenant its own rows.
+  out="$(session_output "$app" "SET plan_cache_mode = force_generic_plan;
+PREPARE who AS SELECT coalesce(string_agg(DISTINCT tenant_id::text, ','), 'nobody') FROM jobs;
+BEGIN;
+SELECT set_config('factory.tenant_id', '$t1', true) AS x \\gset
+EXECUTE who;
+COMMIT;
+BEGIN;
+SELECT set_config('factory.tenant_id', '$t2', true) AS x \\gset
+EXECUTE who;
+COMMIT;
+EXECUTE who;")"
+  expect_count "a prepared statement with a generic plan, reused on one connection for tenant 1, tenant 2 and no tenant, gives each its own rows" \
+    "$out" "$(printf '%s\n%s\nnobody' "$t1" "$t2")" || rc=1
+
+  # COPY ... FROM is not supported on a table with row-level security. COPY ... TO obeys the policy.
+  session_refused "$app" "COPY jobs FROM STDIN" 'COPY FROM not supported with row-level security' && ok "COPY FROM into a tenant table is refused: bulk loads must use INSERT" || { not_ok "COPY FROM into a tenant table was not refused"; rc=1; }
+  out="$(session_output "$app" "BEGIN;
+SELECT set_config('factory.tenant_id', '$t1', true) AS x \\gset
+COPY jobs (tenant_id) TO STDOUT;
+COMMIT;")"
+  expect_count "COPY TO from a tenant table returns the rows of the session's tenant only" "$out" "$t1" || rc=1
+
+  # The extended protocol with a typed, bound parameter, which is how Store::begin sends it. psql 16 and
+  # later have \bind. diesel-async itself was not run (there is no Rust here).
+  out="$(session_output "$app" "BEGIN;
+SELECT set_config('factory.tenant_id', \$1, true) \\bind '$t1' \\g
+SELECT 'rows:' || count(*) FROM jobs;
+COMMIT;")"
+  expect_count "set_config with the tenant as a bound parameter of the extended protocol works as the first statement of a transaction" \
+    "$out" "$(printf '%s\nrows:1' "$t1")" || rc=1
+
+  # A pool that returns a connection that someone SET at session level hands the next borrower another
+  # tenant. The local setting of Store::begin hides it inside a transaction and gives it back at the end.
+  out="$(session_output "$app" "SELECT set_config('factory.tenant_id', '$t2', false) AS x \\gset
+BEGIN;
+SELECT set_config('factory.tenant_id', '$t1', true) AS x \\gset
+SELECT 'inside:' || string_agg(DISTINCT tenant_id::text, ',') FROM jobs;
+COMMIT;
+SELECT 'poisoned:' || string_agg(DISTINCT tenant_id::text, ',') FROM jobs;
+RESET factory.tenant_id;
+SELECT 'reset:' || count(*) FROM jobs;
+SELECT set_config('factory.tenant_id', '$t2', false) AS x \\gset
+DISCARD ALL;
+SELECT 'discarded:' || count(*) FROM jobs;")"
+  expect_count "KNOWN LIMIT: a session-level SET survives the transaction and shows its tenant to the next borrower; RESET of the setting, or DISCARD ALL, ends it" \
+    "$out" "$(printf 'inside:%s\npoisoned:%s\nreset:0\ndiscarded:0' "$t1" "$t2")" || rc=1
+
+  # What the login cannot do to the rules themselves.
+  session_refused "$app" "SET ROLE factory_system" 'permission denied to set role "factory_system"' && ok "the tenant login cannot become the system role (SET ROLE)" || { not_ok "the tenant login could become the system role"; rc=1; }
+  session_refused "$app" "SET ROLE factory_lookup" 'permission denied to set role "factory_lookup"' && ok "the tenant login cannot become the lookup owner" || { not_ok "the tenant login could become the lookup owner"; rc=1; }
+  session_refused "$app" "SET SESSION AUTHORIZATION postgres" 'permission denied to set session authorization' && ok "the tenant login cannot switch session authorization" || { not_ok "the tenant login could switch session authorization"; rc=1; }
+  session_refused "$app" "SET row_security = off; SELECT count(*) FROM jobs" 'query would be affected by row-level security policy' && ok "SET row_security = off does not bypass the policies: the query fails instead of returning every row" || { not_ok "row_security = off did not make the query fail"; rc=1; }
+  session_refused "$app" "ALTER TABLE jobs DISABLE ROW LEVEL SECURITY" 'must be owner of table jobs' && ok "the tenant login cannot disable row-level security" || { not_ok "the tenant login could disable row-level security"; rc=1; }
+  session_refused "$app" "ALTER TABLE jobs NO FORCE ROW LEVEL SECURITY" 'must be owner of table jobs' && ok "the tenant login cannot remove FORCE" || { not_ok "the tenant login could remove FORCE"; rc=1; }
+  session_refused "$app" "DROP POLICY tenant_isolation ON jobs" 'must be owner of' && ok "the tenant login cannot drop a policy" || { not_ok "the tenant login could drop a policy"; rc=1; }
+  session_refused "$app" "CREATE POLICY open ON jobs USING (true)" 'must be owner of table jobs' && ok "the tenant login cannot add a policy" || { not_ok "the tenant login could add a policy"; rc=1; }
+  session_refused "$app" "SELECT * FROM resolve_token('\\x00'::bytea, 'factory-api')" 'permission denied for function resolve_token' && ok "the tenant login cannot run resolve_token" || { not_ok "the tenant login could run resolve_token"; rc=1; }
+
+  # --- A system login ----------------------------------------------------------------------------------
+  expected="$(psql_scalar "$CLONE" -c "SELECT count(*) FROM stage_runs")"
+  out="$(session_output "$sys" "SELECT count(*) FROM (SELECT tenant_id, id FROM stage_runs) x;")"
+  expect_count "the system login sees the stage runs of every tenant, with no tenant setting" "$out" "$expected" || rc=1
+  expected="$(psql_scalar "$CLONE" -c "SELECT count(*) FROM stage_runs WHERE status = 'READY'")"
+  out="$(session_output "$sys" "BEGIN;
+SELECT count(*) FROM (SELECT s.tenant_id, s.id, s.version FROM stage_runs s JOIN jobs j ON j.tenant_id = s.tenant_id AND j.id = s.job_id AND j.status = 'ACTIVE'
+  WHERE s.status = 'READY' AND s.not_before <= now() ORDER BY s.not_before FOR NO KEY UPDATE OF s SKIP LOCKED) x;
+COMMIT;")"
+  expect_count "the claim query (FOR NO KEY UPDATE SKIP LOCKED) runs for the system login and finds the READY runs of every tenant" "$out" "$expected" || rc=1
+  session_refused "$sys" "SELECT * FROM stage_runs" 'permission denied for table stage_runs' && ok "the system login cannot read whole stage run rows" || { not_ok "the system login read whole stage run rows"; rc=1; }
+  session_refused "$sys" "SELECT 1 FROM ledger_entries" 'permission denied for table ledger_entries' && ok "the system login cannot read the evidence ledger" || { not_ok "the system login read the ledger"; rc=1; }
+  session_refused "$sys" "UPDATE stage_runs SET updated_at = now()" 'version must rise by exactly one' && ok "the system login can lock stage runs but an update of one fails" || { not_ok "the system login updated a stage run"; rc=1; }
+  session_refused "$sys" "UPDATE stage_runs SET status = 'RUNNING'" 'permission denied for table stage_runs' && ok "the system login cannot change a status" || { not_ok "the system login changed a status"; rc=1; }
+  session_refused "$sys" "SET ROLE factory_app" 'permission denied to set role "factory_app"' && ok "the system login cannot become the tenant role" || { not_ok "the system login could become the tenant role"; rc=1; }
+  session_refused "$sys" "SELECT * FROM resolve_token('\\x00'::bytea, 'factory-api')" 'permission denied for function resolve_token' && ok "the system login cannot run resolve_token" || { not_ok "the system login could run resolve_token"; rc=1; }
+  # Even with a tenant setting chosen by the caller, a system login sees the same rows: the setting means nothing to it.
+  out="$(session_output "$sys" "SELECT set_config('factory.tenant_id', '$t1', false) AS x \\gset
+SELECT count(*) FROM (SELECT tenant_id, id FROM stage_runs) x;")"
+  expect_count "a tenant setting made by the system login changes nothing it sees" "$out" "$(psql_scalar "$CLONE" -c "SELECT count(*) FROM stage_runs")" || rc=1
+
+  # --- The login of the API: tenant role and resolver ---------------------------------------------------
+  out="$(session_output "$api" "SELECT tenant_id, principal_id FROM resolve_token(sha256(convert_to('token-1', 'UTF8')), 'factory-api');")"
+  expect_count "the API login resolves a token to its tenant and principal before any tenant is known" "$out" "$(psql_scalar "$CLONE" -c "SELECT dbtest.u(1) || '|' || dbtest.u(1002)")" || rc=1
+  out="$(session_output "$api" "SELECT count(*) FROM resolve_installation(9002, 8002);")"
+  expect_count "the API login resolves an installation and repository to a tenant" "$out" "1" || rc=1
+  out="$(session_output "$api" "SELECT count(*) FROM api_tokens;")"
+  expect_count "and with no tenant setting it still sees no token row directly" "$out" "0" || rc=1
+  session_refused "$api" "SET ROLE factory_system" 'permission denied to set role "factory_system"' && ok "the API login cannot become the system role" || { not_ok "the API login could become the system role"; rc=1; }
+
+  # --- Control: a login that belongs to both groups is a finding, and the policies would combine -------
+  local both="dbtest_both_${RUN_ID}"
+  make_login "$both" "factory_app, factory_system" || return 1
+  expect_count "control: a login in both factory_app and factory_system is reported by the membership check" \
+    "$(psql_scalar "$CLONE" -c "SELECT dbtest.membership_conflicts() LIKE '%${both} is a member of both factory_app and factory_system%'")" "t" || rc=1
+  out="$(session_output "$both" "SELECT count(*) FROM jobs;")"
+  expect_count "control: such a login reads every tenant's jobs, whole rows, with no tenant setting: permissive policies are combined with OR, which is why the membership check exists" \
+    "$out" "$(psql_scalar "$CLONE" -c "SELECT count(*) FROM jobs")" || rc=1
+  psql_scalar postgres -c "DROP ROLE \"$both\"" >/dev/null 2>&1 || true
+  return "$rc"
+}
+
+# The claim as the engine makes it: two transactions with two logins (ADR 0012). Several workers find the same
+# READY run through the system login at the same moment; each then tries the compare and swap through the tenant
+# login, in its own transaction. The version check and the unique index of one live attempt per stage run must
+# leave exactly one winner. Every worker's find holds FOR NO KEY UPDATE SKIP LOCKED only until its transaction ends,
+# which is before the swap, so more than one worker can hold the same candidate: that is the case being tried.
+rls_claim_race() {
+  local rounds="${FACTORY_DB_LEASE_ROUNDS:-25}" workers=4 r i rc=0 wins=0 bad=0 multi=0 candidates winners live line tid sid ver
+  local app="dbtest_app_${RUN_ID}" pids
+  [ "$rounds" -gt 12 ] && rounds=12
+  psql_db "$CLONE" -c "SELECT dbtest.mk_tenant(8)" -c "SELECT dbtest.mk_job(8, 1)" -c "SELECT dbtest.set_status('jobs', 8, dbtest.u(8101), 'ACTIVE')" >/dev/null 2>"$WORK/claim-race.err" || { cat "$WORK/claim-race.err" >&2; return 1; }
+  for r in $(seq 1 "$rounds"); do
+    psql_db "$CLONE" -c "SELECT dbtest.mk_stage_run(8, 1, $r, 'INTAKE', $r)" -c "SELECT dbtest.set_status('stage_runs', 8, dbtest.u($((8200 + r))), 'READY')" >/dev/null 2>"$WORK/claim-race.err" || { cat "$WORK/claim-race.err" >&2; return 1; }
+    # Step 1, released together: the system role finds the candidate (tenant 8 only, so the READY runs of the
+    # other tenants in this database do not get in the way).
+    race "$workers" "SET LOCAL ROLE factory_system; SELECT s.tenant_id || ' ' || s.id || ' ' || s.version FROM stage_runs s JOIN jobs j ON j.tenant_id = s.tenant_id AND j.id = s.job_id AND j.status = 'ACTIVE' WHERE s.tenant_id = dbtest.u(8) AND s.status = 'READY' ORDER BY s.not_before FOR NO KEY UPDATE OF s SKIP LOCKED" || bad=$((bad + 1))
+    candidates=0
+    pids=()
+    rm -f "$WORK"/cas.*
+    for i in $(seq 1 "$workers"); do
+      line="$(grep -E '^[0-9a-f-]{36} [0-9a-f-]{36} [0-9]+$' "$WORK/race.$i.out" 2>/dev/null | head -n1 || true)"
+      [ -n "$line" ] || continue
+      candidates=$((candidates + 1))
+      read -r tid sid ver <<<"$line"
+      # Step 2, in its own transaction as the tenant login: swap on version, raise the epoch, write the attempt.
+      (
+        psql_as "$app" -At >"$WORK/cas.$i.out" 2>&1 <<EOF || true
+BEGIN;
+SELECT set_config('factory.tenant_id', '$tid', true) AS x \\gset
+WITH c AS (
+  UPDATE stage_runs SET status = 'RUNNING', lease_epoch = lease_epoch + 1, version = version + 1
+   WHERE tenant_id = '$tid' AND id = '$sid' AND version = $ver AND status = 'READY'
+   RETURNING tenant_id, id, job_id, lease_epoch)
+INSERT INTO attempts (tenant_id, id, job_id, stage_run_id, attempt_number, lease_owner, lease_epoch, lease_expires_at, deadline_at)
+SELECT c.tenant_id, gen_random_uuid(), c.job_id, c.id, 1, 'worker-$i', c.lease_epoch, now() + interval '30 seconds', now() + interval '1 hour' FROM c
+RETURNING 'won';
+COMMIT;
+EOF
+      ) &
+      pids+=("$!")
+    done
+    for i in ${pids[@]+"${pids[@]}"}; do wait "$i" || true; done
+    winners="$( (grep -lx 'won' "$WORK"/cas.*.out 2>/dev/null || true) | wc -l | tr -d ' ')"
+    live="$(psql_scalar "$CLONE" -c "SELECT count(*) || ':' || coalesce(max(a.lease_epoch), 0) FROM attempts a WHERE a.stage_run_id = dbtest.u($((8200 + r))) AND a.status IN ('STARTING','RUNNING')")"
+    [ "$winners" = 1 ] && wins=$((wins + 1)) || bad=$((bad + 1))
+    [ "$live" = "1:1" ] || { not_ok "claim race round $r: expected one live attempt at epoch 1, found $live"; bad=$((bad + 1)); }
+    [ "$candidates" -gt 1 ] && multi=$((multi + 1))
+  done
+  expect_count "claim race through two logins: $rounds rounds of $workers workers each ended with exactly one winner and one live attempt" "$wins:$bad" "$rounds:0" || rc=1
+  say "info - in $multi of $rounds rounds more than one worker had found the same candidate before the swap"
+  return "$rc"
+}
+
+suite_terminal_rows() {
+  ensure_template || return 1
+  local expected="$WORK/expected_from_json.sql" rc=0
+  python3 -I "$TOOLS/state_machine_sql.py" expected "$STATE_MACHINE" >"$expected" || return 1
+  clone_begin terminal_rows || return 1
+  sql_in_clone terminal_rows "$expected" terminal_rows.sql || rc=$?
+  clone_end
+  return "$rc"
+}
 
 suite_audit() {
   clone_begin audit || return 1
@@ -559,7 +880,7 @@ suite_audit() {
 audit_concurrent_and_external() {
   local rc=0 events
   psql_db "$CLONE" -c "SELECT dbtest.mk_tenant(3)" >/dev/null 2>&1 || return 1
-  race 8 "SELECT dbtest.audit(3, __N__ * 100 + 1); SELECT dbtest.audit(3, __N__ * 100 + 2); SELECT dbtest.audit(3, __N__ * 100 + 3); SELECT dbtest.audit(3, __N__ * 100 + 4); SELECT dbtest.audit(3, __N__ * 100 + 5)" || rc=1
+  race 8 "SET LOCAL ROLE factory_app; SELECT set_config('factory.tenant_id', dbtest.u(3)::text, true); SELECT dbtest.audit(3, __N__ * 100 + 1); SELECT dbtest.audit(3, __N__ * 100 + 2); SELECT dbtest.audit(3, __N__ * 100 + 3); SELECT dbtest.audit(3, __N__ * 100 + 4); SELECT dbtest.audit(3, __N__ * 100 + 5)" || rc=1
   expect_count "audit race: no writer failed" "$(race_count_failed)" 0 || rc=1
   expect_count "audit race: 40 events from 8 concurrent writers" "$(psql_scalar "$CLONE" -c "SELECT count(*) FROM audit_events WHERE tenant_id = dbtest.u(3)")" 40 || rc=1
   expect_count "audit race: the sequence is 1 to 40 with no gap and no duplicate" \
@@ -596,14 +917,15 @@ suite_webhook_delivery() {
 # NT-WH-04: the same delivery sent 50 times at once, and a captured body replayed under 50 fresh ids.
 webhook_race() {
   local rc=0
-  race 50 "SELECT dbtest.receive_delivery(1, 'concurrent-delivery-1', 'concurrent body one')" || rc=1
+  local as_tenant_1="SET LOCAL ROLE factory_app; SELECT set_config('factory.tenant_id', dbtest.u(1)::text, true); "
+  race 50 "${as_tenant_1}SELECT dbtest.receive_delivery(1, 'concurrent-delivery-1', 'concurrent body one')" || rc=1
   expect_count "webhook race: 50 concurrent copies of one delivery id give exactly one new delivery" "$(race_count_output t)" 1 || rc=1
   expect_count "webhook race: the other 49 are acknowledged as repeats" "$(race_count_output f)" 49 || rc=1
   expect_count "webhook race: no copy failed with an error (the unique violation is absorbed)" "$(race_count_failed)" 0 || rc=1
   expect_count "webhook race: exactly one delivery, one job and one outbox row were added" \
     "$(psql_scalar "$CLONE" -c "SELECT dbtest.totals()")" "deliveries=4 jobs=4 outbox=4" || rc=1
 
-  race 50 "SELECT dbtest.receive_delivery(1, 'replay-under-fresh-id-__N__', 'concurrent body two')" || rc=1
+  race 50 "${as_tenant_1}SELECT dbtest.receive_delivery(1, 'replay-under-fresh-id-__N__', 'concurrent body two')" || rc=1
   expect_count "webhook race: a body replayed under 50 fresh delivery ids is accepted once" "$(race_count_output t)" 1 || rc=1
   expect_count "webhook race: after the replay there is one more delivery, job and outbox row" \
     "$(psql_scalar "$CLONE" -c "SELECT dbtest.totals()")" "deliveries=5 jobs=5 outbox=5" || rc=1
@@ -633,25 +955,27 @@ SELECT dbtest.mk_job(7, 2);
 SELECT dbtest.mk_stage_run(7, 1, 1);
 SELECT dbtest.mk_stage_run(7, 2, 2);
 EOF
-  psql_db "$CLONE" -At -c "BEGIN; SELECT 1 FROM stage_runs WHERE id = dbtest.u(7201) FOR NO KEY UPDATE; SELECT pg_sleep(2); COMMIT" >/dev/null 2>&1 &
+  # The claimers are the system role; the writer is the tenant role for tenant 7 (ADR 0012).
+  psql_db "$CLONE" -At -c "BEGIN; SET LOCAL ROLE factory_system; SELECT 1 FROM stage_runs WHERE id = dbtest.u(7201) FOR NO KEY UPDATE; SELECT pg_sleep(2); COMMIT" >/dev/null 2>&1 &
   local holder_a=$!
-  psql_db "$CLONE" -At -c "BEGIN; SELECT 1 FROM stage_runs WHERE id = dbtest.u(7202) FOR UPDATE; SELECT pg_sleep(2); COMMIT" >/dev/null 2>&1 &
+  psql_db "$CLONE" -At -c "BEGIN; SET LOCAL ROLE factory_system; SELECT 1 FROM stage_runs WHERE id = dbtest.u(7202) FOR UPDATE; SELECT pg_sleep(2); COMMIT" >/dev/null 2>&1 &
   local holder_b=$!
   for i in $(seq 1 100); do
     [ "$(psql_scalar "$CLONE" -c "SELECT count(*) FROM pg_stat_activity WHERE wait_event = 'PgSleep' AND datname = current_database()")" = 2 ] && break
     sleep 0.05
   done
-  if psql_db "$CLONE" -At -c "SET lock_timeout = '500ms'" -c "SELECT dbtest.append_entry(7, dbtest.u(7101), dbtest.u(7201), 1)" >/dev/null 2>"$WORK/lock-a.err"; then
-    ok "lock modes: a ledger append is not blocked while a claimer holds the stage run FOR NO KEY UPDATE"
+  local as_tenant_7="SET ROLE factory_app; SELECT set_config('factory.tenant_id', dbtest.u(7)::text, false)"
+  if psql_db "$CLONE" -At -c "SET lock_timeout = '500ms'" -c "$as_tenant_7" -c "SELECT dbtest.append_entry(7, dbtest.u(7101), dbtest.u(7201), 1)" >/dev/null 2>"$WORK/lock-a.err"; then
+    ok "lock modes: a ledger append by the tenant role is not blocked while the system role holds the stage run FOR NO KEY UPDATE"
   else
     not_ok "lock modes: a ledger append was blocked by FOR NO KEY UPDATE: $(cat "$WORK/lock-a.err")"
     rc=1
   fi
-  if psql_db "$CLONE" -At -c "SET lock_timeout = '500ms'" -c "SELECT dbtest.append_entry(7, dbtest.u(7102), dbtest.u(7202), 1)" >/dev/null 2>"$WORK/lock-b.err"; then
+  if psql_db "$CLONE" -At -c "SET lock_timeout = '500ms'" -c "$as_tenant_7" -c "SELECT dbtest.append_entry(7, dbtest.u(7102), dbtest.u(7202), 1)" >/dev/null 2>"$WORK/lock-b.err"; then
     not_ok "lock modes: FOR UPDATE was expected to block the ledger append, so the reason for FOR NO KEY UPDATE is gone"
     rc=1
   elif grep -q 'lock timeout' "$WORK/lock-b.err"; then
-    ok "lock modes: the same append IS blocked while the stage run is held FOR UPDATE (lock timeout), which is why claims use FOR NO KEY UPDATE"
+    ok "lock modes: the same append IS blocked while the stage run is held FOR UPDATE by the system role (lock timeout), which is why claims use FOR NO KEY UPDATE"
   else
     not_ok "lock modes: the append failed for another reason: $(cat "$WORK/lock-b.err")"
     rc=1
@@ -668,19 +992,19 @@ lease_races() {
   for r in $(seq 1 "$rounds"); do
     # 1. The claim query itself: only the winner gets an attempt back.
     psql_db "$CLONE" -c "SELECT dbtest.mk_ready_run($((100 + r)))" >/dev/null 2>&1 || return 1
-    race "$workers" "SELECT 'claimed' WHERE dbtest.claim_as_app('worker-__N__') IS NOT NULL" || bad=$((bad + 1))
+    race "$workers" "SELECT 'claimed' WHERE dbtest.claim('worker-__N__') IS NOT NULL" || bad=$((bad + 1))
     if [ "$(race_count_output claimed)" = 1 ]; then claim_wins=$((claim_wins + 1)); else bad=$((bad + 1)); fi
     live="$(psql_scalar "$CLONE" -c "SELECT count(*) || ':' || max(a.lease_epoch) FROM attempts a WHERE a.stage_run_id = dbtest.u($((1800 + r))) AND a.status IN ('STARTING','RUNNING')")"
     [ "$live" = "1:1" ] || { not_ok "round $r: expected one live attempt at epoch 1, found $live"; bad=$((bad + 1)); }
 
     # 2. A bare compare-and-swap on the stage run, with no SKIP LOCKED: one UPDATE matches.
     psql_db "$CLONE" -c "SELECT dbtest.mk_ready_run($((200 + r)))" >/dev/null 2>&1 || return 1
-    race "$workers" "UPDATE stage_runs SET status = 'RUNNING', lease_epoch = lease_epoch + 1, version = version + 1 WHERE tenant_id = dbtest.u(1) AND id = dbtest.u($((1900 + r))) AND version = 2 AND status = 'READY' RETURNING 'swapped'" || bad=$((bad + 1))
+    race "$workers" "SET LOCAL ROLE factory_app; SELECT set_config('factory.tenant_id', dbtest.u(1)::text, true); UPDATE stage_runs SET status = 'RUNNING', lease_epoch = lease_epoch + 1, version = version + 1 WHERE tenant_id = dbtest.u(1) AND id = dbtest.u($((1900 + r))) AND version = 2 AND status = 'READY' RETURNING 'swapped'" || bad=$((bad + 1))
     if [ "$(race_count_output swapped)" = 1 ]; then cas_wins=$((cas_wins + 1)); else bad=$((bad + 1)); fi
 
     # 3. No claim code at all: several sessions insert a live attempt for the same running run.
     psql_db "$CLONE" -c "SELECT dbtest.mk_ready_run($((300 + r)))" -c "SELECT dbtest.set_status('stage_runs', 1, dbtest.u($((2000 + r))), 'RUNNING', ', lease_epoch = lease_epoch + 1')" >/dev/null 2>&1 || return 1
-    race "$workers" "INSERT INTO attempts (tenant_id, id, job_id, stage_run_id, attempt_number, lease_owner, lease_epoch, lease_expires_at, deadline_at) VALUES (dbtest.u(1), gen_random_uuid(), dbtest.u(1101), dbtest.u($((2000 + r))), 1, 'worker-__N__', 1, now() + interval '30 seconds', now() + interval '1 hour') RETURNING 'inserted'" || bad=$((bad + 1))
+    race "$workers" "SET LOCAL ROLE factory_app; SELECT set_config('factory.tenant_id', dbtest.u(1)::text, true); INSERT INTO attempts (tenant_id, id, job_id, stage_run_id, attempt_number, lease_owner, lease_epoch, lease_expires_at, deadline_at) VALUES (dbtest.u(1), gen_random_uuid(), dbtest.u(1101), dbtest.u($((2000 + r))), 1, 'worker-__N__', 1, now() + interval '30 seconds', now() + interval '1 hour') RETURNING 'inserted'" || bad=$((bad + 1))
     if [ "$(race_count_output inserted)" = 1 ]; then insert_wins=$((insert_wins + 1)); else bad=$((bad + 1)); fi
   done
   expect_count "lease race: $rounds contested claims by $workers workers each had exactly one winner" "$claim_wins" "$rounds" || rc=1
@@ -692,7 +1016,18 @@ lease_races() {
   return "$rc"
 }
 
-suite_plans() { simple_suite plans plans.sql; }
+suite_plans() {
+  local scale="${FACTORY_DB_PLANS_SCALE:-1}" rc=0
+  case "$scale" in
+    '' | *[!0-9]*) err "FACTORY_DB_PLANS_SCALE must be a whole number, not '$scale'"; return 1 ;;
+  esac
+  clone_begin plans || return 1
+  # 1 gives 10,000 rows in each large table, 10 gives 100,000. The setting is read by dbtest.scale().
+  psql_db postgres -c "ALTER DATABASE \"$CLONE\" SET dbtest.plans_scale = '$scale'" >/dev/null || { clone_end; return 1; }
+  sql_in_clone plans plans.sql || rc=$?
+  clone_end
+  return "$rc"
+}
 
 suite_outbox() { simple_suite outbox outbox.sql; }
 
