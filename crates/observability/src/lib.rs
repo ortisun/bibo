@@ -5,6 +5,7 @@
 //! checked against each other by the tests.
 
 pub mod guard;
+pub mod logging;
 pub mod names;
 pub mod redact;
 pub mod spans;
