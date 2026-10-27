@@ -163,15 +163,15 @@ BEGIN
   IF p_reason = 'lease_expired' THEN
     RETURN QUERY SELECT a.tenant_id, a.job_id, a.stage_run_id, a.id, a.version, a.lease_epoch
       FROM attempts a WHERE a.status IN ('STARTING', 'RUNNING') AND a.lease_expires_at < now()
-      ORDER BY a.lease_expires_at, a.id LIMIT p_limit FOR NO KEY UPDATE SKIP LOCKED;
+      ORDER BY a.lease_expires_at LIMIT p_limit FOR NO KEY UPDATE SKIP LOCKED;
   ELSIF p_reason = 'deadline_passed' THEN
     RETURN QUERY SELECT a.tenant_id, a.job_id, a.stage_run_id, a.id, a.version, a.lease_epoch
       FROM attempts a WHERE a.status IN ('STARTING', 'RUNNING') AND a.deadline_at < now()
-      ORDER BY a.deadline_at, a.id LIMIT p_limit FOR NO KEY UPDATE SKIP LOCKED;
+      ORDER BY a.deadline_at LIMIT p_limit FOR NO KEY UPDATE SKIP LOCKED;
   ELSIF p_reason = 'teardown_deadline_passed' THEN
     RETURN QUERY SELECT a.tenant_id, a.job_id, a.stage_run_id, a.id, a.version, a.lease_epoch
       FROM attempts a WHERE a.status = 'CANCELLING' AND a.teardown_deadline_at < now()
-      ORDER BY a.teardown_deadline_at, a.id LIMIT p_limit FOR NO KEY UPDATE SKIP LOCKED;
+      ORDER BY a.teardown_deadline_at LIMIT p_limit FOR NO KEY UPDATE SKIP LOCKED;
   ELSE
     RAISE EXCEPTION 'unknown reason %', p_reason;
   END IF;

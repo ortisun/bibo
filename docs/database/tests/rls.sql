@@ -455,9 +455,9 @@ DECLARE
                      WHERE status IN ('STARTING', 'RUNNING') AND lease_expires_at < now() ORDER BY lease_expires_at LIMIT 100 FOR NO KEY UPDATE SKIP LOCKED$q$;
   relay text := $q$SELECT seq, event_id FROM outbox WHERE published_at IS NULL ORDER BY seq LIMIT 100 FOR NO KEY UPDATE SKIP LOCKED$q$;
   deadline text := $q$SELECT tenant_id, id, stage_run_id, version, lease_epoch FROM attempts
-                       WHERE status IN ('STARTING', 'RUNNING') AND deadline_at < now() ORDER BY deadline_at, id LIMIT 100 FOR NO KEY UPDATE SKIP LOCKED$q$;
+                       WHERE status IN ('STARTING', 'RUNNING') AND deadline_at < now() ORDER BY deadline_at LIMIT 100 FOR NO KEY UPDATE SKIP LOCKED$q$;
   teardown text := $q$SELECT tenant_id, id, stage_run_id, version, lease_epoch FROM attempts
-                       WHERE status = 'CANCELLING' AND teardown_deadline_at < now() ORDER BY teardown_deadline_at, id LIMIT 100 FOR NO KEY UPDATE SKIP LOCKED$q$;
+                       WHERE status = 'CANCELLING' AND teardown_deadline_at < now() ORDER BY teardown_deadline_at LIMIT 100 FOR NO KEY UPDATE SKIP LOCKED$q$;
   -- The fixture attempts are alive with an expired lease. These setups, run by the owner inside the check's own
   -- subtransaction and rolled back with it, put them past their deadline, or past their teardown deadline.
   past_deadline text := $q$UPDATE attempts SET created_at = now() - interval '2 hours', deadline_at = now() - interval '1 minute', version = version + 1$q$;

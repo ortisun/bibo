@@ -82,6 +82,10 @@ BEGIN
     (SELECT (bypass_attested_by_principal_id = human AND bypass_attested_at = now())::text FROM repositories WHERE id = repo), 'true');
   PERFORM dbtest.exec(format($q$UPDATE repositories SET bypass_attested_at = '2001-01-01T00:00:00Z', version = version + 1 WHERE tenant_id = %L AND id = %L$q$, dbtest.u(1), repo), 'factory_app');
   PERFORM dbtest.expect_eq('a time written by the caller is replaced by the stored one', (SELECT (bypass_attested_at = now())::text FROM repositories WHERE id = repo), 'true');
+  PERFORM dbtest.exec(format($q$UPDATE repositories SET bypass_attested_by_principal_id = NULL, bypass_attested_at = NULL, version = version + 1 WHERE tenant_id = %L AND id = %L$q$, dbtest.u(1), repo), 'factory_app');
+  PERFORM dbtest.exec(format($q$UPDATE repositories SET bypass_attested_by_principal_id = %L, bypass_attested_at = '2001-01-01T00:00:00Z', version = version + 1 WHERE tenant_id = %L AND id = %L$q$, human, dbtest.u(1), repo), 'factory_app');
+  PERFORM dbtest.expect_eq('attesting again after clearing stamps the database time, not the time the caller wrote',
+    (SELECT (bypass_attested_at = now())::text FROM repositories WHERE id = repo), 'true');
   PERFORM dbtest.exec(format($q$UPDATE repositories SET bypass_attested_by_principal_id = NULL, bypass_attested_at = now(), version = version + 1 WHERE tenant_id = %L AND id = %L$q$, dbtest.u(1), repo), 'factory_app');
   PERFORM dbtest.expect_eq('clearing the attestor clears the time, whatever the caller wrote for it',
     (SELECT (bypass_attested_by_principal_id IS NULL AND bypass_attested_at IS NULL)::text FROM repositories WHERE id = repo), 'true');
@@ -458,5 +462,18 @@ BEGIN
   -- The witness (Store::committed): a row of the outbox, or of the audit log, by id and tenant.
   PERFORM dbtest.expect_eq('committed: an audit record is found by its id for its tenant and not for another',
     (SELECT count(*) FROM audit_events WHERE tenant_id = tn AND event_id = dbtest.u(3701)) || ':' || dbtest.run_as(format('SELECT 1 FROM audit_events WHERE tenant_id = %L AND event_id = %L', dbtest.u(2), dbtest.u(3701)), 'factory_app', 2), '1:rows=0');
+END
+$$;
+
+-- ---------------------------------------------------------------------------------------------
+-- 11. How the system transaction is opened. A locking read is refused in a READ ONLY transaction, so
+-- begin_system must not ask for READ ONLY: the role has no write grant, and that is what keeps it from writing.
+
+DO $$
+BEGIN
+  PERFORM dbtest.expect_error('SELECT ... FOR NO KEY UPDATE SKIP LOCKED is refused in a READ ONLY transaction (SQLSTATE 25006)',
+    'SET LOCAL transaction_read_only = on; SELECT s.id FROM stage_runs s WHERE s.status = ''READY'' FOR NO KEY UPDATE SKIP LOCKED', '25006', 'factory_system');
+  PERFORM dbtest.expect_ok('and the same read is accepted in an ordinary transaction of the system role',
+    'SELECT s.id FROM stage_runs s WHERE s.status = ''READY'' FOR NO KEY UPDATE SKIP LOCKED', 'factory_system');
 END
 $$;

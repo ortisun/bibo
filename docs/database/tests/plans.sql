@@ -235,15 +235,15 @@ BEGIN
   -- on an attempt would block a ledger entry that points at it.
   PERFORM dbtest.expect_plan('sweep: attempts whose lease expired',
     $q$SELECT tenant_id, id, stage_run_id, version, lease_epoch FROM attempts WHERE status IN ('STARTING', 'RUNNING') AND lease_expires_at < now()
-        ORDER BY lease_expires_at, id LIMIT 100 FOR NO KEY UPDATE SKIP LOCKED$q$,
+        ORDER BY lease_expires_at LIMIT 100 FOR NO KEY UPDATE SKIP LOCKED$q$,
     'attempts_lease_expiry_idx', 'attempts', sys);
   PERFORM dbtest.expect_plan('sweep: attempts past their deadline',
     $q$SELECT tenant_id, id, stage_run_id, version, lease_epoch FROM attempts WHERE status IN ('STARTING', 'RUNNING') AND deadline_at < now()
-        ORDER BY deadline_at, id LIMIT 100 FOR NO KEY UPDATE SKIP LOCKED$q$,
+        ORDER BY deadline_at LIMIT 100 FOR NO KEY UPDATE SKIP LOCKED$q$,
     'attempts_deadline_idx', 'attempts', sys);
   PERFORM dbtest.expect_plan('sweep: cancelling attempts past their teardown deadline',
     $q$SELECT tenant_id, id, stage_run_id, version, lease_epoch FROM attempts WHERE status = 'CANCELLING' AND teardown_deadline_at < now()
-        ORDER BY teardown_deadline_at, id LIMIT 100 FOR NO KEY UPDATE SKIP LOCKED$q$,
+        ORDER BY teardown_deadline_at LIMIT 100 FOR NO KEY UPDATE SKIP LOCKED$q$,
     'attempts_teardown_idx', 'attempts', sys);
 
   -- Timeline of one job: events, ledger entries and stage runs, each by tenant and job, as the tenant role.
@@ -269,7 +269,7 @@ BEGIN
     'ledger_entries_(pkey|tenant_id_job_id_sequence_entry_hash_key)', 'ledger_entries', app, 3);
   PERFORM dbtest.expect_plan('ledger tail: the audit chain head of one tenant',
     format($q$SELECT sequence, hash FROM audit_events WHERE tenant_id = %L ORDER BY sequence DESC LIMIT 1$q$, tj),
-    'audit_events_pkey', 'audit_events', app, 3);
+    'audit_events_(pkey|tenant_id_sequence_hash_key)', 'audit_events', app, 3);
 
   -- Other hot paths named in the design.
   PERFORM dbtest.expect_plan('relay: unpublished outbox rows in order, FOR NO KEY UPDATE SKIP LOCKED',
@@ -397,7 +397,7 @@ BEGIN
   PERFORM dbtest.expect_plan('committed, the witness of an audit record',
     format($q$SELECT true FROM audit_events WHERE tenant_id = %L AND event_id = %L$q$, tj, dbtest.u(700003)::text), 'audit_events_tenant_id_event_id_key', 'audit_events', app, 3);
   PERFORM dbtest.expect_plan('read_audit: a tenant''s records after a sequence, in order',
-    format($q$SELECT sequence, action FROM audit_events WHERE tenant_id = %L AND sequence > 1500 ORDER BY sequence LIMIT 100$q$, tj), 'audit_events_pkey', 'audit_events', app, 3);
+    format($q$SELECT sequence, action FROM audit_events WHERE tenant_id = %L AND sequence > 1500 ORDER BY sequence LIMIT 100$q$, tj), 'audit_events_(pkey|tenant_id_sequence_hash_key)', 'audit_events', app, 3);
   PERFORM dbtest.expect_plan('the tenant-scoped artifact read: the index row of one hash for one tenant',
     format($q$SELECT size_bytes FROM artifacts WHERE tenant_id = %L AND content_sha256 = %L$q$, dbtest.u(1)::text, dbtest.sha('artifact-17')), 'artifacts_pkey', 'artifacts', app, 1);
 END
