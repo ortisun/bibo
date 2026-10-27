@@ -8,9 +8,11 @@
 use factory_domain::contracts::ArtifactRef;
 use factory_domain::contracts::gate_report::BlockedCode;
 use factory_domain::machines::failure::FailureClass;
+use factory_domain::machines::guards::EnvironmentCause;
 use factory_domain::values::{MediaType, Slug};
-use factory_ports::agent::{AgentRunError, Denial, Usage};
+use factory_ports::agent::{AgentRunError, Denial, ProbeError, Usage};
 use factory_ports::registry::ContractKind;
+use factory_ports::sandbox::SandboxError;
 
 /// An artifact with the name that the stage contract gives it.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -79,9 +81,16 @@ pub enum StageError {
     #[error("the output is not valid")]
     InvalidOutput,
     /// The stage could not run because a tool, service or capability is missing. At a gate this is
-    /// `BLOCKED`, never a pass (invariant INV-06).
+    /// `BLOCKED`, never a pass (invariant INV-06). When the stage itself was running, the stage run
+    /// is blocked (`S21`) with the environment cause that [`BlockedCode`] maps to.
     #[error("the stage cannot run: something it needs is missing")]
     Blocked(BlockedCode),
+    /// The environment is missing or unsafe: the container runtime is out of reach, the image is
+    /// absent, the posture differs from the spec, the spec is weaker than the policy, a tool is
+    /// absent, or the policy cannot be loaded. The stage run is blocked (`S21`) and nothing is
+    /// retried, with these settings or any other.
+    #[error("the environment is missing or unsafe")]
+    Environment(EnvironmentCause),
     /// The stage stopped because the engine cancelled it.
     #[error("the stage was cancelled")]
     Cancelled,
@@ -101,9 +110,81 @@ impl StageError {
             Self::Sandbox => Some(FailureClass::SandboxError),
             Self::BudgetExhausted => Some(FailureClass::BudgetExhausted),
             Self::PolicyDenied | Self::Blocked(_) => Some(FailureClass::PolicyDenied),
+            Self::Environment(cause) => Some(match cause {
+                EnvironmentCause::PolicyViolation | EnvironmentCause::PolicyUnloadable => {
+                    FailureClass::PolicyDenied
+                }
+                EnvironmentCause::ToolMissing => FailureClass::ToolError,
+                EnvironmentCause::DaemonUnavailable
+                | EnvironmentCause::ImageUnavailable
+                | EnvironmentCause::PostureMismatch => FailureClass::SandboxError,
+            }),
             Self::InvalidOutput => Some(FailureClass::InvalidOutput),
             Self::Internal => Some(FailureClass::Internal),
             Self::Cancelled => None,
+        }
+    }
+
+    /// The environment cause when the stage ended because something it cannot work without is
+    /// missing or unsafe, and `None` for every other failure. The engine takes `S21` first when
+    /// there is one, before it considers a retry or a person (`G_ENVIRONMENT_BLOCKED`).
+    #[must_use]
+    pub const fn environment(&self) -> Option<EnvironmentCause> {
+        match self {
+            Self::Environment(cause) => Some(*cause),
+            Self::Blocked(code) => Some(environment_of(*code)),
+            _ => None,
+        }
+    }
+}
+
+/// The environment cause a gate's blocked code stands for when it stops a stage from running.
+/// A missing dependency, a missing or unprobeable tool and an unsupported environment all mean a
+/// tool or capability the stage needs is absent.
+const fn environment_of(code: BlockedCode) -> EnvironmentCause {
+    match code {
+        BlockedCode::ToolUnavailable
+        | BlockedCode::ToolProbeFailed
+        | BlockedCode::DependencyUnavailable
+        | BlockedCode::EnvironmentUnsupported => EnvironmentCause::ToolMissing,
+        BlockedCode::PolicyUnresolvable => EnvironmentCause::PolicyUnloadable,
+    }
+}
+
+impl From<SandboxError> for StageError {
+    /// The mapping every stage that provisions a sandbox uses. An environment that is missing or
+    /// unsafe blocks the stage run. A provisioning failure, a timeout and a resource limit are
+    /// worth another try, so they are not environment causes.
+    fn from(error: SandboxError) -> Self {
+        match error {
+            SandboxError::DaemonUnavailable => {
+                Self::Environment(EnvironmentCause::DaemonUnavailable)
+            }
+            SandboxError::ImageUnavailable => Self::Environment(EnvironmentCause::ImageUnavailable),
+            SandboxError::PostureMismatch(_) => {
+                Self::Environment(EnvironmentCause::PostureMismatch)
+            }
+            SandboxError::PolicyViolation(_) => {
+                Self::Environment(EnvironmentCause::PolicyViolation)
+            }
+            SandboxError::Cancelled => Self::Cancelled,
+            SandboxError::ProvisionFailed(_)
+            | SandboxError::Timeout
+            | SandboxError::ResourceExceeded(_)
+            | SandboxError::TeardownFailed { .. } => Self::Sandbox,
+        }
+    }
+}
+
+impl From<ProbeError> for StageError {
+    /// A tool that is not installed, or in a version the factory does not accept, is an absent
+    /// capability and blocks the stage run. A probe command that failed is a tool error.
+    fn from(error: ProbeError) -> Self {
+        match error {
+            ProbeError::BinaryMissing | ProbeError::UnsupportedVersion { .. } => {
+                Self::Environment(EnvironmentCause::ToolMissing)
+            }
+            ProbeError::ProbeFailed(_) => Self::Tool,
         }
     }
 }
@@ -170,6 +251,93 @@ mod tests {
         for (from, expected) in table {
             assert_eq!(StageError::from(from.clone()), expected, "{from:?}");
         }
+    }
+
+    #[test]
+    fn a_sandbox_error_blocks_only_when_the_environment_is_the_cause() {
+        use factory_ports::sandbox::{
+            PolicyViolation, PostureDiff, ProvisionStage, Resource, SandboxError,
+        };
+        let blocks = [
+            (
+                SandboxError::DaemonUnavailable,
+                EnvironmentCause::DaemonUnavailable,
+            ),
+            (
+                SandboxError::ImageUnavailable,
+                EnvironmentCause::ImageUnavailable,
+            ),
+            (
+                SandboxError::PostureMismatch(PostureDiff {
+                    fields: vec!["image"],
+                }),
+                EnvironmentCause::PostureMismatch,
+            ),
+            (
+                SandboxError::PolicyViolation(PolicyViolation { rules: Vec::new() }),
+                EnvironmentCause::PolicyViolation,
+            ),
+        ];
+        for (error, cause) in blocks {
+            let stage = StageError::from(error.clone());
+            assert_eq!(stage, StageError::Environment(cause), "{error:?}");
+            assert_eq!(stage.environment(), Some(cause));
+        }
+        // A try that can succeed next time is not an environment cause.
+        for error in [
+            SandboxError::ProvisionFailed(ProvisionStage::Create),
+            SandboxError::Timeout,
+            SandboxError::ResourceExceeded(Resource::Memory),
+            SandboxError::TeardownFailed { leaked: false },
+        ] {
+            let stage = StageError::from(error.clone());
+            assert_eq!(stage, StageError::Sandbox, "{error:?}");
+            assert_eq!(stage.environment(), None);
+        }
+        assert_eq!(
+            StageError::from(SandboxError::Cancelled),
+            StageError::Cancelled
+        );
+    }
+
+    #[test]
+    fn a_probe_that_finds_no_tool_blocks_and_one_that_fails_is_a_tool_error() {
+        use factory_ports::agent::ProbeStep;
+        assert_eq!(
+            StageError::from(ProbeError::BinaryMissing),
+            StageError::Environment(EnvironmentCause::ToolMissing)
+        );
+        assert_eq!(
+            StageError::from(ProbeError::UnsupportedVersion {
+                found: "0.0.1".to_owned()
+            }),
+            StageError::Environment(EnvironmentCause::ToolMissing)
+        );
+        assert_eq!(
+            StageError::from(ProbeError::ProbeFailed(ProbeStep::Trial)),
+            StageError::Tool
+        );
+    }
+
+    #[test]
+    fn a_blocked_code_maps_to_the_cause_a_person_will_read() {
+        assert_eq!(
+            StageError::Blocked(BlockedCode::PolicyUnresolvable).environment(),
+            Some(EnvironmentCause::PolicyUnloadable)
+        );
+        for code in [
+            BlockedCode::ToolUnavailable,
+            BlockedCode::ToolProbeFailed,
+            BlockedCode::DependencyUnavailable,
+            BlockedCode::EnvironmentUnsupported,
+        ] {
+            assert_eq!(
+                StageError::Blocked(code).environment(),
+                Some(EnvironmentCause::ToolMissing),
+                "{code:?}"
+            );
+        }
+        assert_eq!(StageError::Tool.environment(), None);
     }
 
     #[test]

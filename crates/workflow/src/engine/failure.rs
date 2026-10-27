@@ -11,11 +11,14 @@
 
 use factory_domain::ids::{AttemptId, StageRunId};
 use factory_domain::machines::failure::FailureClass;
-use factory_domain::machines::guards::{EscalationFacts, GuardFacts, RetryFacts};
+use factory_domain::machines::guards::{
+    EnvironmentCause, EnvironmentFacts, EscalationFacts, GuardFacts, RetryFacts,
+};
 use factory_domain::machines::retry::{AttemptDisposition, EscalationCause, decide_after_failure};
 use factory_domain::state::{Guard, StageRunEvent, StageRunStatus};
+use factory_domain::vocabulary::GateOutcome;
 use factory_ports::clock::timestamp_after;
-use factory_ports::store::{StageRunEffects, Tx};
+use factory_ports::store::{GateRecord, StageRunEffects, Tx};
 use serde_json::json;
 
 use super::Engine;
@@ -26,20 +29,19 @@ use super::record::{Cx, Step};
 use super::timeline::Timeline;
 use crate::scheduler::retry_delay;
 
-/// Why a running stage run goes to a person when no failure class decides it.
+/// Why a running stage run goes to a person when no failure class decides it. The only reason
+/// left is that the agent asked: a stage that cannot run because its environment is missing no
+/// longer goes to a person, it is blocked (`S21`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum HumanReason {
     /// The agent returned a structured request for a person.
     AgentRequested,
-    /// The stage could not run because something it needs is missing, and it fails closed.
-    Blocked,
 }
 
 impl HumanReason {
     const fn code(self) -> &'static str {
         match self {
             Self::AgentRequested => "agent-requested-a-human",
-            Self::Blocked => "stage-blocked",
         }
     }
 
@@ -47,9 +49,9 @@ impl HumanReason {
         EscalationFacts {
             budget_limit_hit: false,
             attempt_limit_reached: false,
-            agent_requested_a_human: matches!(self, Self::AgentRequested),
+            agent_requested_a_human: true,
             stagnation_detected: false,
-            policy_requires_human_decision: matches!(self, Self::Blocked),
+            policy_requires_human_decision: false,
         }
     }
 }
@@ -70,6 +72,7 @@ impl Engine {
         run_id: StageRunId,
         attempt: AttemptId,
         class: FailureClass,
+        environment: Option<EnvironmentCause>,
     ) -> Result<Option<AttemptDisposition>, EngineError> {
         let timeline = Timeline::load(tx, cx.job).await?;
         let board = Board::load(tx, &timeline).await?;
@@ -99,7 +102,7 @@ impl Engine {
             budget_has_room: timeline.spent_micro_usd < self.config.job_budget_micro_usd,
             invalid_output_failures: window.invalid_output_failures(),
             repair_cap: self.config.repair_cap,
-            environment: None,
+            environment,
         };
         let disposition = decide_after_failure(&facts);
         let base = payload::attempt_event(
@@ -170,12 +173,35 @@ impl Engine {
                 )
                 .await?;
             }
-            AttemptDisposition::Block(_) => {
-                // `S21` is taken first when the environment is the cause. No failure class maps
-                // to it yet, so this arm is not reached; it is wired with the environment cause.
-                return Err(EngineError::Corrupt(
-                    "an environment block was decided before the engine builds environment causes",
-                ));
+            AttemptDisposition::Block(cause) => {
+                // The environment is missing or unsafe, so the stage run is blocked before any
+                // retry or person is considered (`S21`). The attempt was ended as failed in
+                // this transaction, which is what the guard asks.
+                let cleared = clear(
+                    Guard::EnvironmentBlocked,
+                    &GuardFacts::Environment(EnvironmentFacts {
+                        cause,
+                        attempt_ended_failed: true,
+                    }),
+                )?;
+                let code = cause.as_str();
+                let payload = payload::with(base, key::CAUSE, json!(code));
+                cx.move_stage_run(
+                    tx,
+                    run,
+                    Step::new(StageRunEvent::AttemptBlocked, cleared)
+                        .cause(code)
+                        .payload(payload),
+                    StageRunEffects {
+                        gate: Some(GateRecord {
+                            outcome: GateOutcome::Blocked,
+                            report_sha256: None,
+                            failing_set_sha256: None,
+                        }),
+                        ..StageRunEffects::default()
+                    },
+                )
+                .await?;
             }
         }
         self.settle(tx, cx).await?;

@@ -24,7 +24,7 @@ use factory_domain::contracts::stage_contract::Placement;
 use factory_domain::contracts::{ArtifactRef, StageContract};
 use factory_domain::machines::failure::FailureClass;
 use factory_domain::machines::guards::{
-    DeadlineFacts, EpochFacts, GuardFacts, OutputFacts, SandboxProvisionFacts,
+    DeadlineFacts, EnvironmentCause, EpochFacts, GuardFacts, OutputFacts, SandboxProvisionFacts,
 };
 use factory_domain::machines::retry::AttemptDisposition;
 use factory_domain::scope::TenantScope;
@@ -302,12 +302,12 @@ impl Engine {
                 self.teardown_complete(claimed).await?;
                 Ok(AttemptOutcome::Cancelled)
             }
-            Some(Err(PipelineError::Stage(StageError::Blocked(_)))) => {
-                self.commit_blocked(claimed, &notes).await
-            }
             Some(Err(PipelineError::Stage(error))) => {
+                // A stage that cannot run because its environment is missing or unsafe carries
+                // the cause, and the stage run is blocked (`S21`) instead of retried.
                 let class = error.failure_class().unwrap_or(FailureClass::Internal);
-                self.commit_failure(claimed, class, &notes).await
+                self.commit_failure_for(claimed, class, error.environment(), &notes)
+                    .await
             }
             None => {
                 self.commit_failure(claimed, FailureClass::Internal, &notes)
@@ -1019,6 +1019,19 @@ impl Engine {
         class: FailureClass,
         notes: &Notes,
     ) -> Result<AttemptOutcome, EngineError> {
+        self.commit_failure_for(claimed, class, None, notes).await
+    }
+
+    /// Fails the attempt with `class`. When `environment` names a cause, the stage run is blocked
+    /// before a retry or a person is considered (`S21`); otherwise the stage run retries, asks a
+    /// person or fails by the retry rules.
+    async fn commit_failure_for(
+        &self,
+        claimed: &ClaimedAttempt,
+        class: FailureClass,
+        environment: Option<EnvironmentCause>,
+        notes: &Notes,
+    ) -> Result<AttemptOutcome, EngineError> {
         let mut tx = self.tenant_tx(claimed.tenant).await?;
         let attempt = tx.get_attempt(claimed.attempt).await?;
         if attempt.value.status.is_terminal() {
@@ -1082,7 +1095,14 @@ impl Engine {
             self.record_handler_notes(&mut *tx, &cx, claimed, notes, &StageOutput::default())
                 .await?;
             let disposition = self
-                .after_attempt_failed(&mut *tx, &cx, claimed.stage_run, claimed.attempt, class)
+                .after_attempt_failed(
+                    &mut *tx,
+                    &cx,
+                    claimed.stage_run,
+                    claimed.attempt,
+                    class,
+                    environment,
+                )
                 .await?;
             Ok::<Option<AttemptDisposition>, EngineError>(disposition)
         }
@@ -1090,68 +1110,6 @@ impl Engine {
         Ok(match self.conclude(tx, &cx, recorded).await? {
             Ok(Some(then)) => AttemptOutcome::Failed { class, then },
             Ok(None) => AttemptOutcome::Cancelled,
-            Err(outcome) => outcome,
-        })
-    }
-
-    /// A stage that cannot run because something it needs is missing fails closed: the attempt
-    /// fails and the stage run waits for a person. It is never retried with other settings.
-    async fn commit_blocked(
-        &self,
-        claimed: &ClaimedAttempt,
-        notes: &Notes,
-    ) -> Result<AttemptOutcome, EngineError> {
-        let mut tx = self.tenant_tx(claimed.tenant).await?;
-        let attempt = tx.get_attempt(claimed.attempt).await?;
-        if attempt.value.status.is_terminal() {
-            return Ok(AttemptOutcome::LeaseLost);
-        }
-        let job = tx.get_job(claimed.job).await?;
-        let cx = Cx::new(self, &job.value, self.new_causation_id()).with_cost(notes.cost());
-        let class = FailureClass::PolicyDenied;
-        let from = attempt.value.status;
-        let recorded = async {
-            let facts = GuardFacts::Epoch(EpochFacts {
-                sent_epoch: claimed.epoch.get(),
-                stored_epoch: attempt.value.epoch.get(),
-            });
-            let cleared = clear(Guard::EpochCurrent, &facts)?;
-            cx.move_attempt(
-                &mut *tx,
-                &attempt,
-                claimed.epoch,
-                Step::new(
-                    class
-                        .attempt_event(from)
-                        .unwrap_or(AttemptEvent::ProvisionFailed),
-                    cleared,
-                )
-                .cause("stage-blocked")
-                .payload(payload::attempt_event(
-                    claimed.kind,
-                    claimed.stage_run,
-                    claimed.attempt_number,
-                    Some(class),
-                )),
-                AttemptEnd {
-                    failure_class: Some(class),
-                    ..AttemptEnd::default()
-                },
-            )
-            .await?;
-            self.record_handler_notes(&mut *tx, &cx, claimed, notes, &StageOutput::default())
-                .await?;
-            self.escalate_running(&mut *tx, &cx, claimed.stage_run, HumanReason::Blocked)
-                .await
-        }
-        .await;
-        Ok(match self.conclude(tx, &cx, recorded).await? {
-            Ok(()) => AttemptOutcome::Failed {
-                class,
-                then: AttemptDisposition::Escalate(
-                    factory_domain::machines::retry::EscalationCause::AttemptLimit,
-                ),
-            },
             Err(outcome) => outcome,
         })
     }

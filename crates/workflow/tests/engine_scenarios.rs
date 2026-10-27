@@ -647,8 +647,14 @@ async fn a_structured_request_for_a_person_is_escalated_and_not_retried() {
 }
 
 #[tokio::test]
-async fn a_blocked_stage_waits_for_a_person_and_is_never_retried() {
+async fn a_missing_tool_blocks_the_stage_run_and_is_never_retried() {
+    // Meaning changed with ports v1.1 and the domain's S21. A stage that cannot run because
+    // something it needs is missing used to fail the attempt and send the stage run to a person
+    // (`S07`). It now takes `S21` (`G_ENVIRONMENT_BLOCKED`): the stage run and the job are
+    // `BLOCKED`, the cause is recorded, and nothing is retried. The check that nothing is
+    // retried is kept.
     use factory_domain::contracts::gate_report::BlockedCode;
+    use factory_domain::machines::guards::EnvironmentCause;
     let world = World::new().await;
     let job = world.admitted_job().await;
     world
@@ -657,16 +663,118 @@ async fn a_blocked_stage_waits_for_a_person_and_is_never_retried() {
             BlockedCode::ToolUnavailable,
         ))]);
     let (_, outcome) = world.run_next("worker-1").await;
-    assert!(matches!(
+    assert_eq!(
         outcome,
         AttemptOutcome::Failed {
             class: FailureClass::PolicyDenied,
-            ..
+            then: AttemptDisposition::Block(EnvironmentCause::ToolMissing),
         }
-    ));
+    );
     let view = world.view(job).await;
-    assert_eq!(intake(&view).status, StageRunStatus::WaitingForHuman);
+    assert_eq!(intake(&view).status, StageRunStatus::Blocked);
+    assert_eq!(view.status, JobStatus::Blocked);
     assert_eq!(intake(&view).attempts.len(), 1);
+    assert_eq!(intake(&view).attempts[0].status, AttemptStatus::Failed);
+
+    // The event names the move, its guard and the cause.
+    let events = world.events(job).await;
+    let blocked = events
+        .iter()
+        .find(|event| event.transition_id.as_str() == "S21")
+        .expect("S21 was taken");
+    assert_eq!(blocked.event_type.as_str(), "stage_run.blocked");
+    assert_eq!(
+        blocked.payload.get("guard").and_then(|v| v.as_str()),
+        Some("G_ENVIRONMENT_BLOCKED")
+    );
+    assert_eq!(
+        blocked.payload.get("cause").and_then(|v| v.as_str()),
+        Some("tool_missing")
+    );
+
+    // A claim finds nothing: a blocked stage run is not offered, so no retry starts by itself.
+    world.advance(600);
+    let claimed = world
+        .engine
+        .claim_next(&World::worker("worker-2"))
+        .await
+        .expect("claim");
+    assert!(claimed.started.is_empty() && claimed.deferred.is_empty());
+
+    // An operator who has fixed the environment unblocks it, and the work goes on as attempt 2.
+    let operator = world.person("operator-1", &[HumanRole::Operator]).await;
+    world
+        .engine
+        .decide(
+            &world.actor(operator),
+            Subject {
+                job,
+                stage_run: intake(&view).id,
+            },
+            Decision::UnblockRerun {
+                capability_reprobe_passed: true,
+                dependency_now_available: true,
+            },
+        )
+        .await
+        .expect("unblocks");
+    let (second, outcome) = world.run_next("worker-2").await;
+    assert_eq!(outcome, AttemptOutcome::Succeeded);
+    assert_eq!(second.attempt_number, 2);
+}
+
+#[tokio::test]
+async fn every_environment_cause_blocks_the_stage_run_and_a_provisioning_failure_does_not() {
+    // New for S21. The sandbox and probe errors that mean the environment is missing or unsafe
+    // block the stage run before any retry is considered; a provisioning failure, which another
+    // try can fix, is retried as before.
+    use factory_domain::machines::guards::EnvironmentCause;
+    for cause in [
+        EnvironmentCause::DaemonUnavailable,
+        EnvironmentCause::ImageUnavailable,
+        EnvironmentCause::PostureMismatch,
+        EnvironmentCause::PolicyViolation,
+        EnvironmentCause::ToolMissing,
+        EnvironmentCause::PolicyUnloadable,
+    ] {
+        let world = World::new().await;
+        let job = world.admitted_job().await;
+        world
+            .script(StageKind::Intake)
+            .queue([Step::Fail(StageError::Environment(cause))]);
+        let (_, outcome) = world.run_next("worker-1").await;
+        assert!(
+            matches!(
+                outcome,
+                AttemptOutcome::Failed {
+                    then: AttemptDisposition::Block(found),
+                    ..
+                } if found == cause
+            ),
+            "{cause}: {outcome:?}"
+        );
+        let view = world.view(job).await;
+        assert_eq!(intake(&view).status, StageRunStatus::Blocked, "{cause}");
+        assert_eq!(view.status, JobStatus::Blocked, "{cause}");
+    }
+
+    let world = World::new().await;
+    let job = world.admitted_job().await;
+    world
+        .script(StageKind::Intake)
+        .queue([Step::Fail(StageError::Sandbox)]);
+    let (_, outcome) = world.run_next("worker-1").await;
+    assert!(
+        matches!(
+            outcome,
+            AttemptOutcome::Failed {
+                then: AttemptDisposition::Retry,
+                ..
+            }
+        ),
+        "{outcome:?}"
+    );
+    assert_eq!(intake(&world.view(job).await).status, StageRunStatus::Ready);
 }
 
 #[tokio::test]

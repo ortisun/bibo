@@ -187,7 +187,7 @@ impl Engine {
             // The lease ran out or the deadline passed, so the stage run decides: retry after a
             // back-off, ask a person or fail, by the same rules as for any other failed attempt.
             Some(class) => {
-                self.after_attempt_failed(&mut *tx, &cx, run.value.id, attempt_id, class)
+                self.after_attempt_failed(&mut *tx, &cx, run.value.id, attempt_id, class, None)
                     .await?;
             }
             // A forced teardown goes on with the cancellation.
