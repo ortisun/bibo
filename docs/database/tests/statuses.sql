@@ -257,3 +257,22 @@ BEGIN
     '23514', 'factory_app', 'stage_runs_initial_state');
 END
 $$;
+
+-- The transitions that ports v1.1 added (ADR 0014, decision 8): S22 READY to WAITING_FOR_HUMAN, and S21 RUNNING
+-- to BLOCKED. Run 1201 is PENDING here (the checks above were rolled back), so each statement first makes it READY. The trigger answers by the pair of states, so these moves were illegal
+-- before migration 15 and are legal now; every other pair is unchanged (section 4 compares all of them).
+DO $$
+BEGIN
+  PERFORM dbtest.expect_ok('stage_runs: READY to WAITING_FOR_HUMAN is legal (S22, require_reauthorization)',
+    format($q$UPDATE stage_runs SET status = 'READY', version = version + 1 WHERE id = %1$L;
+              UPDATE stage_runs SET status = 'WAITING_FOR_HUMAN', version = version + 1 WHERE id = %1$L$q$, dbtest.u(1201)), 'factory_app');
+  PERFORM dbtest.expect_ok('stage_runs: RUNNING to BLOCKED is legal (S21, attempt_blocked)',
+    format($q$UPDATE stage_runs SET status = 'READY', version = version + 1 WHERE id = %1$L;
+              UPDATE stage_runs SET status = 'RUNNING', lease_epoch = lease_epoch + 1, version = version + 1 WHERE id = %1$L;
+              UPDATE stage_runs SET status = 'BLOCKED', gate_outcome = 'BLOCKED', version = version + 1 WHERE id = %1$L$q$, dbtest.u(1201)), 'factory_app');
+  PERFORM dbtest.expect_error('stage_runs: READY to BLOCKED is still not a legal move',
+    format($q$UPDATE stage_runs SET status = 'READY', version = version + 1 WHERE id = %1$L;
+              UPDATE stage_runs SET status = 'BLOCKED', gate_outcome = 'BLOCKED', version = version + 1 WHERE id = %1$L$q$, dbtest.u(1201)),
+    '23514', 'factory_app', 'stage_runs_legal_transition');
+END
+$$;

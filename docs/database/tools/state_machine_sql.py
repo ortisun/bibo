@@ -99,7 +99,8 @@ def examples(schema_dir):
     Ledger entries are re-sequenced to be the first entry of their job, with entry_hash removed, and
     written as canonical JSON text (sorted keys, no spaces, no ASCII escaping). The example hashes in
     schemas/examples are placeholders, so the test computes a real one. The examples share one job id
-    and one stage run id although they mix execution modes, so each gets its own job and stage run.
+    and one stage run id (and some share an entry id and an attempt id) although they mix execution modes, so
+    each gets its own job, stage run, entry and attempt.
     Events are kept as they are.
     """
     def uuid_from(seed):
@@ -114,6 +115,10 @@ def examples(schema_dir):
         entry["metadata"]["sequence"] = 1
         entry["metadata"]["job_id"] = uuid_from("job:" + name)
         entry["metadata"]["stage_run_id"] = uuid_from("run:" + name)
+        # Examples may share an entry id or an attempt id (the file set grew); each needs its own row.
+        entry["metadata"]["entry_id"] = uuid_from("entry:" + name)
+        if entry["metadata"].get("attempt_id") is not None:
+            entry["metadata"]["attempt_id"] = uuid_from("attempt:" + name)
         entry["prev_entry_hash"] = None
         text = json.dumps(entry, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
         rows.append(("ledger", name, text))

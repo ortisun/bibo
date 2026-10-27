@@ -76,3 +76,17 @@ The tables below give the detail.
 | **The composite keys, triggers and policies add write cost.** | Every ledger, outbox and audit insert checks several keys, `jobs` has two indexes that start with `(tenant_id, id)`, and `ledger_entries` has two that start with `(tenant_id, job_id, sequence)` (the planner picks either). Not measured under load. |
 | **`UNIQUE (tenant_id, body_sha256)` on deliveries** rests on an assumption about GitHub payloads. | See [constraints-and-indexes.md](constraints-and-indexes.md). |
 | **Fixed limits** (a one-hour lease bound, a 16 KiB outbox payload, 1 MiB request text, 20 attempts per run) are my sanity bounds. | The policy gives no figure. Change them by migration. |
+
+## Added by `s1-database-port-alignment`
+
+| Not covered | Note |
+|---|---|
+| **An upper bound on `not_before`.** A back-off or a postponement can park a run far in the future. | The policy gives no figure, so none was invented (the one-hour bound on a lease exists for a skewed worker clock; a back-off has no such risk). The engine's retry delay is bounded in the domain. |
+| **Write-once job facts.** `policy_hash` and `normalized_request_sha256` can be changed by the tenant role. | The port says a changed fact is `Constraint(IdReusedWithDifferentContent)`. ADR 0010 re-runs `INTAKE` when the request changes, which may need a new normalized request, so a trigger was not added. The adapter checks. |
+| **Who may raise `autonomy_ceiling`.** The tenant role can raise it. | Whether the caller is an organization admin is the API's authority check (policy), not a database role. `record_protection_preflight` does not touch it; it writes the preflight flag only. |
+| **The platform tenant can be used like any tenant** by a tenant-pool session that sets its id. | As for every tenant, the setting is not a credential (point 1 above). The port gives the platform tenant one entry point and `cargo xtask` scans the callers (ST-13). |
+| **A decision with no head can repeat** (pause, cancel). | `approvals_one_decision_per_head` needs `pr_head_sha`. A pause, a resume and a pause is legitimate. |
+| **The approval invalidation reasons** are free text of 1 to 1,000 characters. | The port has five and the policy lists seven; the closed set belongs to whoever settles that difference. |
+| **A task plan has one hash per stage run.** The database does not refuse nodes of two plans in one run. | The port's `insert_task_graph` is atomic and compares the plan hash first; the adapter locks the stage run to serialize two writers. A trigger that takes the same lock was left out as more machinery than the risk calls for. |
+| **`artifacts.size_bytes` is required.** | A reference without a size cannot be indexed. The adapter takes the size from the blob it stored. |
+| **Nothing was run in Rust, and `FOR SHARE` on the job in `start_attempt` was not measured under load.** | The lock is held for the length of one transaction of a few statements; the order job, run, attempt, task node is documented, and a deadlock is retried. |

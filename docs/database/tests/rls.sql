@@ -450,15 +450,33 @@ DO $$
 DECLARE
   claim text := $q$SELECT s.tenant_id, s.id, s.job_id, s.version FROM stage_runs s
                     JOIN jobs j ON j.tenant_id = s.tenant_id AND j.id = s.job_id AND j.status = 'ACTIVE'
-                   WHERE s.status = 'READY' AND s.not_before <= now() ORDER BY s.not_before LIMIT 10 FOR NO KEY UPDATE OF s SKIP LOCKED$q$;
+                   WHERE s.status = 'READY' AND s.not_before <= now() ORDER BY s.not_before, s.id LIMIT 10 FOR NO KEY UPDATE OF s SKIP LOCKED$q$;
   sweep text := $q$SELECT tenant_id, id, stage_run_id, version, lease_epoch FROM attempts
                      WHERE status IN ('STARTING', 'RUNNING') AND lease_expires_at < now() ORDER BY lease_expires_at LIMIT 100 FOR NO KEY UPDATE SKIP LOCKED$q$;
-  relay text := $q$SELECT seq, event_id FROM outbox WHERE published_at IS NULL ORDER BY seq LIMIT 100 FOR UPDATE SKIP LOCKED$q$;
+  relay text := $q$SELECT seq, event_id FROM outbox WHERE published_at IS NULL ORDER BY seq LIMIT 100 FOR NO KEY UPDATE SKIP LOCKED$q$;
+  deadline text := $q$SELECT tenant_id, id, stage_run_id, version, lease_epoch FROM attempts
+                       WHERE status IN ('STARTING', 'RUNNING') AND deadline_at < now() ORDER BY deadline_at LIMIT 100 FOR NO KEY UPDATE SKIP LOCKED$q$;
+  teardown text := $q$SELECT tenant_id, id, stage_run_id, version, lease_epoch FROM attempts
+                       WHERE status = 'CANCELLING' AND teardown_deadline_at < now() ORDER BY teardown_deadline_at LIMIT 100 FOR NO KEY UPDATE SKIP LOCKED$q$;
+  -- The fixture attempts are alive with an expired lease. These setups, run by the owner inside the check's own
+  -- subtransaction and rolled back with it, put them past their deadline, or past their teardown deadline.
+  past_deadline text := $q$UPDATE attempts SET created_at = now() - interval '2 hours', deadline_at = now() - interval '1 minute', version = version + 1$q$;
+  past_teardown text := $q$UPDATE attempts SET status = 'CANCELLING', teardown_deadline_at = now() - interval '1 minute', version = version + 1$q$;
 BEGIN
   PERFORM dbtest.expect_eq('the claim query runs as the system role and finds the READY stage runs of both tenants (no tenant setting)',
     dbtest.run_as(claim, 'factory_system'), 'rows=2');
   PERFORM dbtest.expect_eq('the sweep query runs as the system role and finds the expired leases of both tenants',
     dbtest.run_as(sweep, 'factory_system'), 'rows=2');
+  PERFORM dbtest.expect_eq('the deadline query (find_due_attempts, DeadlinePassed) finds nothing while every deadline is ahead',
+    dbtest.run_as(deadline, 'factory_system'), 'rows=0');
+  PERFORM dbtest.expect_eq('the deadline query finds the attempts past their deadline in both tenants, whatever their lease says',
+    dbtest.run_as(deadline, 'factory_system', NULL, past_deadline), 'rows=2');
+  PERFORM dbtest.expect_eq('the teardown query (find_due_attempts, TeardownDeadlinePassed) finds nothing while no attempt is CANCELLING',
+    dbtest.run_as(teardown, 'factory_system'), 'rows=0');
+  PERFORM dbtest.expect_eq('the teardown query finds the CANCELLING attempts past their teardown deadline in both tenants',
+    dbtest.run_as(teardown, 'factory_system', NULL, past_teardown), 'rows=2');
+  PERFORM dbtest.expect_eq('a CANCELLING attempt is not a lease expiry: the lease query skips it',
+    dbtest.run_as(sweep, 'factory_system', NULL, past_teardown), 'rows=0');
   PERFORM dbtest.expect_eq('the relay query runs as the system role and finds the unpublished events of both tenants',
     dbtest.run_as(relay, 'factory_system'), 'rows=2');
   PERFORM dbtest.expect_eq('a tenant setting changes nothing for the system role: it was never scoped by it',

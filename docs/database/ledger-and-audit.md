@@ -59,7 +59,7 @@ It hashes the text it is given. It does not check that the text is RFC 8785 cano
 
 ### The job head
 
-`jobs.ledger_head_sequence` and `jobs.ledger_head_hash` hold the head, as ADR 0008 asks. A deferred foreign key makes the pair point at a real entry of that job. The engine moves the head in the same compare and swap as the rest of the job. A writer that appends without moving the head leaves the head behind, which the verifier reports.
+`jobs.ledger_head_sequence` and `jobs.ledger_head_hash` hold the head, as ADR 0008 asks. A deferred foreign key makes the pair point at a real entry of that job. The engine moves the head with the append. Since migration 17 a move of the head alone may leave the job's version where it is (a move together with any other change still raises the version by one), because `append_ledger_entry` returns no version and a later `transition_job` compares the one it read; the head never moves back. ADR 0008 says the head moves "with the same compare-and-swap as any other state"; the chain is linear without it, because the primary key of `ledger_entries` and the key to the predecessor allow one entry at each position. This is a decision for a person. A writer that appends without moving the head leaves the head behind, which the verifier reports.
 
 ### Appending concurrently
 

@@ -180,3 +180,27 @@ BEGIN
     off || format($q$DELETE FROM audit_events WHERE tenant_id = %L AND sequence = 6; $q$, t) || probe, 'P0001', NULL, NULL, 'verify=<NULL>%');
 END
 $$;
+
+-- ---------------------------------------------------------------------------------------------
+-- 9. Events with no job, and the platform tenant (ADR 0014, decision 2): Store::record_audit with no job, and
+-- Store::record_platform_audit, which writes under the platform tenant. The recipes are in store_model.sql, section 8.
+
+DO $$
+DECLARE
+  platform uuid := '00000000-0000-0000-0000-000000000001';
+  ins text := $q$INSERT INTO audit_events (tenant_id, event_id, actor_type, actor_id, action, subject, decision, reason, policy_hash, correlation_id)
+                  VALUES (%L, %L, %L, %L, 'webhook.rejected', 'delivery:x', 'deny', 'The signature did not verify.', %L, %L) ON CONFLICT (tenant_id, event_id) DO NOTHING RETURNING sequence$q$;
+BEGIN
+  PERFORM dbtest.exec(format(ins, dbtest.u(1), dbtest.u(9901), 'anonymous', 'webhook', dbtest.sha('policy'), dbtest.u(9801)), 'factory_app');
+  PERFORM dbtest.expect_eq('an event with no job is stored for a tenant, as an anonymous actor', (SELECT actor_type || ':' || (job_id IS NULL)::text FROM audit_events WHERE event_id = dbtest.u(9901)), 'anonymous:true');
+  PERFORM dbtest.expect_eq('a replay of the same event id takes no row and no sequence number',
+    dbtest.run_as(format(ins, dbtest.u(1), dbtest.u(9901), 'anonymous', 'webhook', dbtest.sha('policy'), dbtest.u(9801)), 'factory_app', 1), 'rows=0');
+  PERFORM dbtest.exec(format(ins, platform, dbtest.u(9902), 'anonymous', 'webhook', dbtest.sha('policy'), dbtest.u(9802)), 'factory_app', -1);
+  PERFORM dbtest.exec(format(ins, platform, dbtest.u(9903), 'anonymous', 'webhook', dbtest.sha('policy'), dbtest.u(9803)), 'factory_app', -1);
+  PERFORM dbtest.expect_eq('two platform events follow each other in the platform tenant''s own chain, and the chain verifies',
+    ((SELECT sequence FROM audit_events WHERE event_id = dbtest.u(9903)) - (SELECT sequence FROM audit_events WHERE event_id = dbtest.u(9902)))::text || ' ' || coalesce(audit_verify_chain(platform)::text, 'ok'), '1 ok');
+  PERFORM dbtest.expect_eq('a tenant 1 session sees none of the platform events', dbtest.run_as(format('SELECT 1 FROM audit_events WHERE tenant_id = %L', platform), 'factory_app', 1), 'rows=0');
+  PERFORM dbtest.expect_error('a tenant 1 session cannot write an event for the platform tenant (the policy)',
+    format(ins, platform, dbtest.u(9904), 'anonymous', 'webhook', dbtest.sha('policy'), dbtest.u(9804)), '42501', 'factory_app', NULL, NULL, 1);
+END
+$$;

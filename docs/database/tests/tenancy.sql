@@ -337,3 +337,31 @@ BEGIN
     LIKE 'ERR:42501:new row violates row-level security policy (USING expression)%');
 END
 $$;
+
+-- ---------------------------------------------------------------------------------------------
+-- 5. Two things ports v1.1 added (ADR 0014): the attestation of a repository, and the tenant-scoped artifact read.
+
+DO $$
+DECLARE
+  h text := dbtest.sha('tenancy artifact probe');
+BEGIN
+  -- The attestation key is composite like every other: (tenant_id, bypass_attested_by_principal_id). Section 1 counts it
+  -- among the foreign keys that join tenant_id to tenant_id. Here the behaviour: tenant 2's person cannot attest tenant 1's repository.
+  PERFORM dbtest.expect_error('a repository of tenant 1 cannot be attested by a principal of tenant 2',
+    format($q$UPDATE repositories SET bypass_attested_by_principal_id = %L, version = version + 1 WHERE tenant_id = %L AND id = %L$q$, dbtest.u(2002), dbtest.u(1), dbtest.u(1001)),
+    '23514', 'factory_app', 'repositories_attestor_is_an_active_human');
+  PERFORM dbtest.expect_ok('and by its own tenant''s human it can be',
+    format($q$UPDATE repositories SET bypass_attested_by_principal_id = %L, version = version + 1 WHERE tenant_id = %L AND id = %L$q$, dbtest.u(1002), dbtest.u(1), dbtest.u(1001)), 'factory_app');
+
+  -- ArtifactStore::get and exists consult the tenant's own index row. Tenant 1 indexes a hash; tenant 2 gets the answer it gets for a hash nobody holds.
+  INSERT INTO artifacts (tenant_id, content_sha256, size_bytes, media_type, backend) VALUES (dbtest.u(1), h, 5, 'text/plain', 'local-fs');
+  PERFORM dbtest.expect_eq('tenant 1 finds its indexed artifact', dbtest.run_as(format('SELECT 1 FROM artifacts WHERE tenant_id = %L AND content_sha256 = %L', dbtest.u(1), h), 'factory_app', 1), 'rows=1');
+  PERFORM dbtest.expect_eq('tenant 2 asking for that hash, naming its own tenant, finds nothing',
+    dbtest.run_as(format('SELECT 1 FROM artifacts WHERE tenant_id = %L AND content_sha256 = %L', dbtest.u(2), h), 'factory_app', 2), 'rows=0');
+  PERFORM dbtest.expect_eq('naming tenant 1 from a tenant 2 session finds nothing either',
+    dbtest.run_as(format('SELECT 1 FROM artifacts WHERE tenant_id = %L AND content_sha256 = %L', dbtest.u(1), h), 'factory_app', 2), 'rows=0');
+  PERFORM dbtest.expect_error('and tenant 2 cannot index a run''s artifact link to that hash: the composite key finds no artifact of tenant 2',
+    format($q$INSERT INTO stage_run_artifacts (tenant_id, job_id, stage_run_id, direction, role, content_sha256) VALUES (%L, %L, %L, 'input', 'probe', %L)$q$, dbtest.u(2), dbtest.u(2101), dbtest.u(2201), h),
+    '23503', 'factory_app', NULL, NULL, 2);
+END
+$$;

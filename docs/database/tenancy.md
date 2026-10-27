@@ -188,6 +188,8 @@ Audit events that belong to no tenant (a webhook with a bad signature, an unknow
 
 Under row-level security this has a consequence for the storage crate: writing such an event needs **a tenant transaction for the platform tenant**, since the audit table accepts nothing else. `TenantScope` is "built only from an authenticated principal" in the port sketch, and a rejected webhook has no principal. The ports need a constructor for the platform scope that only the receiver can reach. The `audit` suite does it with the setting `00000000-0000-0000-0000-000000000001`.
 
+The path, as tested in `store_model` section 8 (`Store::record_platform_audit`): the API login runs a tenant-shaped transaction with the setting `00000000-0000-0000-0000-000000000001` and inserts the event with `actor_type = 'anonymous'` and no job, `ON CONFLICT (tenant_id, event_id) DO NOTHING` so a repeat is a no-op that takes no sequence number. The platform chain verifies with `audit_verify_chain`; a tenant 1 or tenant 2 session sees none of it; a tenant session cannot write for the platform tenant and a platform session cannot write for a tenant (the policy); a platform event cannot name a job (the composite key, since the platform tenant has none). Reading the platform trail is an owner action.
+
 Nothing stops a job from being created under the platform tenant. A person should confirm this choice, or say that such events belong somewhere else.
 
 ## Decisions that need a person
