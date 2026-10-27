@@ -1,389 +1,455 @@
-//! Stage runs, and the claim of ready work.
+//! Stage runs.
 //!
-//! # Where the lease lives
+//! A stage run holds no lease: it holds `lease_epoch`, a counter that rises by one only when the
+//! run goes from `READY` to `RUNNING`, and only inside `start_attempt` (see [`super::attempts`]).
+//! `transition_stage_run` therefore refuses `S03`, and never writes the epoch.
 //!
-//! The port gives a stage run a lease (worker, epoch, expiry, ttl) and says a claim leaves the run
-//! `READY`. The schema keeps no lease on `stage_runs`. The lease owner and expiry are columns of
-//! `attempts`, and `lease_epoch` of a stage run may rise only together with `READY` to `RUNNING`
-//! (trigger `stage_runs_lease_epoch_moves_with_claim`). So a claim here does what the reference
-//! SQL of `docs/database/tests/lease.sql` does: in one tenant transaction it moves the run to
-//! `RUNNING` with `lease_epoch + 1` and creates the attempt that carries the lease. The lease of a
-//! stage run is read back from its newest attempt at the current epoch. The handover report lists
-//! what this means for the port.
+//! # Rules that ride on a transition
+//!
+//! The gate record, the contract hash and the back-off are checked here against
+//! [`stage_run_effects_rule`] before any statement runs, so a refusal leaves the transaction
+//! usable. The database enforces the same rules (`stage_runs_*_has_outcome`,
+//! `stage_runs_failing_set_*`, `stage_runs_not_before_only_when_ready`) as the last line.
+//!
+//! # Times
+//!
+//! `finished_at`, `superseded_at` and `not_before` come from `now()` in the statement. A move into
+//! `READY` sets `not_before` to `now()` plus the delay of the effects (zero when absent).
 
 use std::time::Duration;
 
-use diesel::prelude::*;
-use diesel::sql_query;
-use diesel::sql_types::{BigInt, Bool, Nullable, Text, Timestamptz, Uuid as SqlUuid};
+use async_trait::async_trait;
+use diesel::sql_types::{
+    BigInt, Bool, Integer, Nullable, SmallInt, Text, Timestamptz, Uuid as SqlUuid,
+};
+use diesel::{OptionalExtension, QueryableByName, sql_query};
 use diesel_async::{AsyncPgConnection, RunQueryDsl};
-use factory_domain::ids::{StageRunId, TenantId};
+use factory_domain::ids::{JobId, StageRunId, TenantId};
 use factory_domain::state::{StageRunStatus, Status};
-use factory_domain::vocabulary::StageKind;
+use factory_domain::vocabulary::{GateOutcome, StageKind};
 use factory_ports::store::{
-    AppliedTransition, ClaimedWork, Lease, LeaseEpoch, NewStageRun, StageRun, StoreError, Version,
-    Versioned, WorkerId,
+    AppliedTransition, ConstraintRule, GateRecord, Inserted, NewStageRun, StageRun,
+    StageRunEffects, StageRunOps, StoreError, Version, Versioned, stage_run_effects_rule,
 };
 use time::OffsetDateTime;
 use uuid::Uuid;
 
-use super::cas::{Locked, Machine, lock};
+use super::cas::{Table, exists, no_row_changed};
 use super::conv::{
-    corrupt, from_column, job_from_column, job_to_column, micros, stage_run_from_column,
-    stage_run_to_column, status_from_column, tenant_from_column, tenant_to_column, to_column,
+    corrupt, digest_from_column, epoch_from_column, from_column, micros, status_from_column,
     version_from_column,
 };
-use super::error::{Failure, constraint, generic};
-use super::jobs::job_exists;
-use super::store::Settings;
-use crate::schema::stage_runs;
+use super::error::database;
+use super::tx::{PgTx, call};
 
-type StageRunRow = (Uuid, Uuid, Uuid, String, String, i64, i64, OffsetDateTime);
-
-const STAGE_RUN_COLUMNS: (
-    stage_runs::tenant_id,
-    stage_runs::id,
-    stage_runs::job_id,
-    stage_runs::stage_kind,
-    stage_runs::status,
-    stage_runs::version,
-    stage_runs::lease_epoch,
-    stage_runs::created_at,
-) = (
-    stage_runs::tenant_id,
-    stage_runs::id,
-    stage_runs::job_id,
-    stage_runs::stage_kind,
-    stage_runs::status,
-    stage_runs::version,
-    stage_runs::lease_epoch,
-    stage_runs::created_at,
-);
+const COLUMNS: &str = "tenant_id, id, job_id, stage_kind, run_number, status, version, \
+    lease_epoch, max_attempts, not_before, rework_of_stage_run_id, stage_contract_sha256, \
+    gate_outcome, gate_report_sha256, failing_set_sha256, created_at, finished_at, superseded_at";
 
 #[derive(QueryableByName)]
-struct LeaseRow {
-    #[diesel(sql_type = Nullable<Text>)]
-    owner: Option<String>,
+pub(super) struct StageRunRow {
+    #[diesel(sql_type = SqlUuid)]
+    tenant_id: Uuid,
+    #[diesel(sql_type = SqlUuid)]
+    id: Uuid,
+    #[diesel(sql_type = SqlUuid)]
+    job_id: Uuid,
+    #[diesel(sql_type = Text)]
+    stage_kind: String,
+    #[diesel(sql_type = Integer)]
+    run_number: i32,
+    #[diesel(sql_type = Text)]
+    status: String,
     #[diesel(sql_type = BigInt)]
-    epoch: i64,
+    version: i64,
+    #[diesel(sql_type = BigInt)]
+    lease_epoch: i64,
+    #[diesel(sql_type = SmallInt)]
+    max_attempts: i16,
+    #[diesel(sql_type = Timestamptz)]
+    not_before: OffsetDateTime,
+    #[diesel(sql_type = Nullable<SqlUuid>)]
+    rework_of_stage_run_id: Option<Uuid>,
+    #[diesel(sql_type = Nullable<Text>)]
+    stage_contract_sha256: Option<String>,
+    #[diesel(sql_type = Nullable<Text>)]
+    gate_outcome: Option<String>,
+    #[diesel(sql_type = Nullable<Text>)]
+    gate_report_sha256: Option<String>,
+    #[diesel(sql_type = Nullable<Text>)]
+    failing_set_sha256: Option<String>,
+    #[diesel(sql_type = Timestamptz)]
+    created_at: OffsetDateTime,
     #[diesel(sql_type = Nullable<Timestamptz>)]
-    expires_at: Option<OffsetDateTime>,
-    #[diesel(sql_type = Nullable<BigInt>)]
-    ttl_micros: Option<i64>,
+    finished_at: Option<OffsetDateTime>,
+    #[diesel(sql_type = Nullable<Timestamptz>)]
+    superseded_at: Option<OffsetDateTime>,
 }
 
-/// Reads a stage run, with the lease of its newest attempt at the current epoch.
-pub(super) async fn get(
-    connection: &mut AsyncPgConnection,
-    tenant: TenantId,
-    id: StageRunId,
-) -> Result<Versioned<StageRun>, StoreError> {
-    let row: Option<StageRunRow> = stage_runs::table
-        .filter(stage_runs::tenant_id.eq(tenant_to_column(tenant)))
-        .filter(stage_runs::id.eq(stage_run_to_column(id)))
-        .select(STAGE_RUN_COLUMNS)
-        .first(connection)
-        .await
-        .optional()
-        .map_err(|error| generic("get_stage_run", &error))?;
-    let Some((tenant_id, id, job_id, kind, status, version, epoch, created_at)) = row else {
-        return Err(StoreError::NotFound);
+pub(super) fn stage_run_from_row(row: StageRunRow) -> Result<Versioned<StageRun>, StoreError> {
+    let gate = match row.gate_outcome.as_deref() {
+        Some(name) => Some(GateRecord {
+            outcome: GateOutcome::parse(name).map_err(|_| corrupt("gate outcome"))?,
+            report_sha256: row
+                .gate_report_sha256
+                .as_deref()
+                .map(digest_from_column)
+                .transpose()?,
+            failing_set_sha256: row
+                .failing_set_sha256
+                .as_deref()
+                .map(digest_from_column)
+                .transpose()?,
+        }),
+        None => None,
     };
-    let epoch = u64::try_from(epoch).map_err(|_| corrupt("lease epoch"))?;
-    let lease = read_lease(connection, tenant_id, id, epoch).await?;
     Ok(Versioned {
         value: StageRun {
-            id: stage_run_from_column(id),
-            tenant_id: tenant_from_column(tenant_id),
-            job_id: job_from_column(job_id),
-            kind: StageKind::parse(&kind).map_err(|_| corrupt("stage kind"))?,
-            status: status_from_column::<StageRunStatus>(&status)?,
-            lease_epoch: LeaseEpoch::new(epoch),
-            lease,
-            created_at: from_column(created_at),
+            id: StageRunId::from_uuid(row.id),
+            tenant_id: TenantId::from_uuid(row.tenant_id),
+            job_id: JobId::from_uuid(row.job_id),
+            kind: StageKind::parse(&row.stage_kind).map_err(|_| corrupt("stage kind"))?,
+            run_number: u32::try_from(row.run_number).map_err(|_| corrupt("run number"))?,
+            status: status_from_column::<StageRunStatus>(&row.status)?,
+            lease_epoch: epoch_from_column(row.lease_epoch)?,
+            max_attempts: u8::try_from(row.max_attempts).map_err(|_| corrupt("max attempts"))?,
+            not_before: from_column(row.not_before),
+            rework_of: row.rework_of_stage_run_id.map(StageRunId::from_uuid),
+            contract_sha256: row
+                .stage_contract_sha256
+                .as_deref()
+                .map(digest_from_column)
+                .transpose()?,
+            gate,
+            created_at: from_column(row.created_at),
+            finished_at: row.finished_at.map(from_column),
+            superseded_at: row.superseded_at.map(from_column),
         },
-        version: version_from_column(version)?,
+        version: version_from_column(row.version)?,
     })
 }
 
-async fn read_lease(
-    connection: &mut AsyncPgConnection,
-    tenant: Uuid,
-    stage_run: Uuid,
-    epoch: u64,
-) -> Result<Option<Lease>, StoreError> {
-    if epoch == 0 {
-        return Ok(None);
-    }
-    let row = sql_query(
-        "SELECT lease_owner AS owner, lease_epoch AS epoch, lease_expires_at AS expires_at, \
-                (extract(epoch FROM (lease_expires_at - coalesce(last_heartbeat_at, created_at))) \
-                 * 1000000)::bigint AS ttl_micros \
-           FROM attempts \
-          WHERE tenant_id = $1 AND stage_run_id = $2 AND lease_epoch = $3 \
-          ORDER BY attempt_number DESC LIMIT 1",
-    )
-    .bind::<SqlUuid, _>(tenant)
-    .bind::<SqlUuid, _>(stage_run)
-    .bind::<BigInt, _>(i64::try_from(epoch).map_err(|_| corrupt("lease epoch"))?)
-    .get_result::<LeaseRow>(connection)
-    .await
-    .optional()
-    .map_err(|error| generic("get_stage_run", &error))?;
-    let Some(row) = row else { return Ok(None) };
-    let (Some(owner), Some(expires_at)) = (row.owner, row.expires_at) else {
-        return Ok(None);
-    };
-    let ttl = row
-        .ttl_micros
-        .and_then(|micros| u64::try_from(micros).ok())
-        .map_or(Duration::ZERO, Duration::from_micros);
-    Ok(Some(Lease {
-        worker: WorkerId::new(&owner).map_err(|_| corrupt("lease owner"))?,
-        epoch: LeaseEpoch::new(u64::try_from(row.epoch).map_err(|_| corrupt("lease epoch"))?),
-        expires_at: from_column(expires_at),
-        ttl,
-    }))
-}
-
-pub(super) async fn insert(
-    connection: &mut AsyncPgConnection,
-    tenant: TenantId,
-    new: NewStageRun,
-) -> Result<Versioned<StageRun>, StoreError> {
-    if !job_exists(connection, tenant, new.job_id, "insert_stage_run").await? {
-        return Err(StoreError::NotFound);
-    }
-    let inserted = sql_query(
-        "INSERT INTO stage_runs (tenant_id, id, job_id, stage_kind, run_number, status, created_at) \
-         SELECT $1, $2, $3, $4, \
-                coalesce((SELECT max(run_number) FROM stage_runs \
-                           WHERE tenant_id = $1 AND job_id = $3 AND stage_kind = $4), 0) + 1, \
-                $5, $6",
-    )
-    .bind::<SqlUuid, _>(tenant_to_column(tenant))
-    .bind::<SqlUuid, _>(stage_run_to_column(new.id))
-    .bind::<SqlUuid, _>(job_to_column(new.job_id))
-    .bind::<Text, _>(new.kind.as_str())
-    .bind::<Text, _>(StageRunStatus::INITIAL.to_string())
-    .bind::<Timestamptz, _>(to_column(&new.created_at))
-    .execute(connection)
-    .await;
-    if let Err(error) = inserted {
-        return Err(match Failure::of(&error) {
-            Failure::Unique(Some(name)) if name.contains("run_number") => StoreError::Conflict,
-            Failure::Unique(name) => constraint("unique violation", name.as_deref()),
-            Failure::ForeignKey(name) => constraint("foreign key violation", name.as_deref()),
-            _ => generic("insert_stage_run", &error),
-        });
-    }
-    get(connection, tenant, new.id).await
-}
-
-/// The gate outcome that a move to `PASSED` or `SKIPPED` must record (`stage_runs_passed_has_outcome`
-/// and `stage_runs_skipped_has_outcome`). The port carries no gate report, so the outcome follows
-/// the transition: a gate that passed, a human approval and an accepted override.
-fn gate_outcome_for(transition_id: &str) -> Option<&'static str> {
-    match transition_id {
-        "S08" | "S14" => Some("PASSED"),
-        "S18" => Some("BLOCKED"),
-        "S02" => Some("NOT_APPLICABLE"),
-        _ => None,
-    }
-}
-
-pub(super) async fn transition(
+pub(super) async fn find(
     connection: &mut AsyncPgConnection,
     tenant: TenantId,
     id: StageRunId,
-    expected: Version,
-    plan: AppliedTransition<StageRunStatus>,
-) -> Result<Version, StoreError> {
-    let current = match lock(
-        connection,
-        Machine::StageRun,
-        tenant_to_column(tenant),
-        stage_run_to_column(id),
-        "transition_stage_run",
-    )
-    .await?
-    {
-        Locked::Missing => return Err(StoreError::NotFound),
-        Locked::Busy => return Err(StoreError::Conflict),
-        Locked::Row { status, version } => (status, version),
-    };
-    if current.1 != expected.get() || current.0 != plan.from_status().to_string() {
-        return Err(StoreError::Conflict);
-    }
-    let next = expected.next().map_err(|_| corrupt("version"))?;
-    let finishes = plan.to_status().is_terminal() && !plan.from_status().is_terminal();
-    // A move to RUNNING from READY is the claim of the schema: the epoch must rise with it.
-    let epoch_step = i64::from(plan.transition_id() == "S03");
-    let changed = sql_query(
-        "UPDATE stage_runs SET status = $4, version = $5, \
-                lease_epoch = lease_epoch + $6, \
-                finished_at = CASE WHEN $7 THEN $8 ELSE finished_at END, \
-                superseded_at = CASE WHEN $4 = 'SUPERSEDED' THEN $8 ELSE superseded_at END, \
-                gate_outcome = coalesce($9, gate_outcome) \
-          WHERE tenant_id = $1 AND id = $2 AND version = $3 AND status = $10",
-    )
-    .bind::<SqlUuid, _>(tenant_to_column(tenant))
-    .bind::<SqlUuid, _>(stage_run_to_column(id))
-    .bind::<BigInt, _>(expected.get())
-    .bind::<Text, _>(plan.to_status().to_string())
-    .bind::<BigInt, _>(next.get())
-    .bind::<BigInt, _>(epoch_step)
-    .bind::<Bool, _>(finishes)
-    .bind::<Timestamptz, _>(to_column(&plan.at()))
-    .bind::<Nullable<Text>, _>(gate_outcome_for(plan.transition_id()))
-    .bind::<Text, _>(plan.from_status().to_string())
-    .execute(connection)
+) -> Result<Option<Versioned<StageRun>>, StoreError> {
+    sql_query(format!(
+        "SELECT {COLUMNS} FROM stage_runs WHERE tenant_id = $1 AND id = $2"
+    ))
+    .bind::<SqlUuid, _>(tenant.as_uuid())
+    .bind::<SqlUuid, _>(id.as_uuid())
+    .get_result::<StageRunRow>(connection)
     .await
-    .map_err(|error| match Failure::of(&error) {
-        Failure::Check(name) => constraint("check violation", name.as_deref()),
-        _ => generic("transition_stage_run", &error),
-    })?;
-    if changed == 1 {
-        Ok(next)
-    } else {
-        Err(StoreError::Conflict)
+    .optional()
+    .map_err(|error| database("get_stage_run", &error))?
+    .map(stage_run_from_row)
+    .transpose()
+}
+
+fn same_run(stored: &StageRun, new: &NewStageRun) -> bool {
+    stored.job_id == new.job_id
+        && stored.kind == new.kind
+        && stored.run_number == new.run_number
+        && stored.max_attempts == new.max_attempts
+        && stored.rework_of == new.rework_of
+}
+
+async fn insert(
+    connection: &mut AsyncPgConnection,
+    tenant: TenantId,
+    new: NewStageRun,
+) -> Result<Inserted<StageRun>, StoreError> {
+    let run_number = i32::try_from(new.run_number)
+        .map_err(|_| StoreError::Constraint(ConstraintRule::TextBounds))?;
+    // No conflict target: a clash on the run number of the job, with another id, is absorbed too.
+    let inserted = sql_query(format!(
+        "INSERT INTO stage_runs (tenant_id, id, job_id, stage_kind, run_number, status, \
+                max_attempts, rework_of_stage_run_id) \
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8) \
+         ON CONFLICT DO NOTHING RETURNING {COLUMNS}"
+    ))
+    .bind::<SqlUuid, _>(tenant.as_uuid())
+    .bind::<SqlUuid, _>(new.id.as_uuid())
+    .bind::<SqlUuid, _>(new.job_id.as_uuid())
+    .bind::<Text, _>(new.kind.as_str())
+    .bind::<Integer, _>(run_number)
+    .bind::<Text, _>(StageRunStatus::INITIAL.to_string())
+    .bind::<SmallInt, _>(i16::from(new.max_attempts))
+    .bind::<Nullable<SqlUuid>, _>(new.rework_of.map(|run| run.as_uuid()))
+    .get_result::<StageRunRow>(connection)
+    .await
+    .optional()
+    .map_err(|error| database("insert_stage_run", &error))?;
+    if let Some(row) = inserted {
+        return Ok(Inserted {
+            row: stage_run_from_row(row)?,
+            created: true,
+        });
+    }
+    match find(connection, tenant, new.id).await? {
+        Some(found) if same_run(&found.value, &new) => Ok(Inserted {
+            row: found,
+            created: false,
+        }),
+        // The id holds other content, or the position of the run is taken by another id.
+        _ => Err(StoreError::Constraint(
+            ConstraintRule::IdReusedWithDifferentContent,
+        )),
     }
 }
 
+async fn list(
+    connection: &mut AsyncPgConnection,
+    tenant: TenantId,
+    job: JobId,
+) -> Result<Vec<Versioned<StageRun>>, StoreError> {
+    let rows = sql_query(format!(
+        "SELECT {COLUMNS} FROM stage_runs WHERE tenant_id = $1 AND job_id = $2 \
+          ORDER BY created_at, run_number, id"
+    ))
+    .bind::<SqlUuid, _>(tenant.as_uuid())
+    .bind::<SqlUuid, _>(job.as_uuid())
+    .load::<StageRunRow>(connection)
+    .await
+    .map_err(|error| database("list_stage_runs", &error))?;
+    if rows.is_empty()
+        && !exists(
+            connection,
+            Table::Jobs,
+            tenant,
+            job.as_uuid(),
+            "list_stage_runs",
+        )
+        .await?
+    {
+        return Err(StoreError::NotFound);
+    }
+    rows.into_iter().map(stage_run_from_row).collect()
+}
+
 #[derive(QueryableByName)]
-struct Claimable {
+struct NewVersion {
     #[diesel(sql_type = BigInt)]
     version: i64,
 }
 
-/// Claims one stage run for `worker` inside a tenant transaction.
-///
-/// Returns `None` when the run is no longer claimable: someone else holds or won it, it is not
-/// `READY`, it is not yet due, its job is not active, or it has used every attempt it may make.
-pub(super) async fn claim(
-    connection: &mut AsyncPgConnection,
-    tenant: TenantId,
-    id: StageRunId,
-    worker: &WorkerId,
-    ttl: Duration,
-    settings: &Settings,
-) -> Result<Option<ClaimedWork>, StoreError> {
-    let tenant_raw = tenant_to_column(tenant);
-    let id_raw = stage_run_to_column(id);
-    let candidate = sql_query(
-        "SELECT s.version FROM stage_runs s \
-          WHERE s.tenant_id = $1 AND s.id = $2 AND s.status = 'READY' AND s.not_before <= now() \
-            AND (NOT $3 OR EXISTS (SELECT 1 FROM jobs j WHERE j.tenant_id = s.tenant_id \
-                                    AND j.id = s.job_id AND j.status = 'ACTIVE')) \
-            AND (SELECT coalesce(max(a.attempt_number), 0) FROM attempts a \
-                  WHERE a.tenant_id = s.tenant_id AND a.stage_run_id = s.id) < s.max_attempts \
-          FOR NO KEY UPDATE OF s SKIP LOCKED",
-    )
-    .bind::<SqlUuid, _>(tenant_raw)
-    .bind::<SqlUuid, _>(id_raw)
-    .bind::<Bool, _>(settings.claim_only_active_jobs)
-    .get_result::<Claimable>(connection)
-    .await
-    .optional()
-    .map_err(|error| generic("claim_ready", &error))?;
-    let Some(candidate) = candidate else {
-        return Ok(None);
-    };
-
-    let moved = sql_query(
-        "UPDATE stage_runs SET status = 'RUNNING', lease_epoch = lease_epoch + 1, version = version + 1 \
-          WHERE tenant_id = $1 AND id = $2 AND version = $3 AND status = 'READY'",
-    )
-    .bind::<SqlUuid, _>(tenant_raw)
-    .bind::<SqlUuid, _>(id_raw)
-    .bind::<BigInt, _>(candidate.version)
-    .execute(connection)
-    .await
-    .map_err(|error| generic("claim_ready", &error))?;
-    if moved != 1 {
-        return Ok(None);
-    }
-
-    // The lease is written in SQL from the database clock, never from a worker clock.
-    sql_query(
-        "INSERT INTO attempts (tenant_id, id, job_id, stage_run_id, attempt_number, lease_owner, \
-                               lease_epoch, lease_expires_at, last_heartbeat_at, deadline_at) \
-         SELECT s.tenant_id, uuidv7(), s.job_id, s.id, \
-                coalesce((SELECT max(a.attempt_number) FROM attempts a \
-                           WHERE a.tenant_id = s.tenant_id AND a.stage_run_id = s.id), 0) + 1, \
-                $3, s.lease_epoch, \
-                now() + $4 * interval '1 microsecond', now(), \
-                now() + $5 * interval '1 microsecond' \
-           FROM stage_runs s WHERE s.tenant_id = $1 AND s.id = $2",
-    )
-    .bind::<SqlUuid, _>(tenant_raw)
-    .bind::<SqlUuid, _>(id_raw)
-    .bind::<Text, _>(worker.as_str())
-    .bind::<BigInt, _>(micros(ttl))
-    .bind::<BigInt, _>(micros(settings.attempt_timings.deadline))
-    .execute(connection)
-    .await
-    .map_err(|error| match Failure::of(&error) {
-        Failure::Unique(name) => constraint("unique violation", name.as_deref()),
-        Failure::Check(name) => constraint("check violation", name.as_deref()),
-        _ => generic("claim_ready", &error),
-    })?;
-
-    let stage_run = get(connection, tenant, id).await?;
-    let Some(lease) = stage_run.value.lease.clone() else {
-        return Err(corrupt("claimed stage run without a lease"));
-    };
-    Ok(Some(ClaimedWork { stage_run, lease }))
+#[derive(QueryableByName)]
+struct Current {
+    #[diesel(sql_type = Text)]
+    status: String,
+    #[diesel(sql_type = BigInt)]
+    version: i64,
 }
 
-/// Takes a stage run back from a worker whose lease ended, so it can be claimed again.
-///
-/// Inside one tenant transaction: the live attempts whose lease ended become `LEASE_LOST`
-/// (transition A07), and the run goes back to `READY` (S05). Returns `false` when the run has no
-/// live attempt with an ended lease, so nothing was changed.
-pub(super) async fn take_back_expired(
+/// Why a transition or a postponement cannot go ahead, when its own rules held: no such row, the
+/// row moved since it was read, or (when `rule` is given) the rule of the effects was broken.
+async fn refusal(
     connection: &mut AsyncPgConnection,
     tenant: TenantId,
     id: StageRunId,
-) -> Result<bool, StoreError> {
-    let tenant_raw = tenant_to_column(tenant);
-    let id_raw = stage_run_to_column(id);
-    let run = sql_query(
-        "SELECT s.version FROM stage_runs s \
-          WHERE s.tenant_id = $1 AND s.id = $2 AND s.status = 'RUNNING' \
-            AND EXISTS (SELECT 1 FROM attempts a WHERE a.tenant_id = s.tenant_id AND a.stage_run_id = s.id \
-                         AND a.status IN ('STARTING', 'RUNNING') AND a.lease_expires_at <= now()) \
-          FOR NO KEY UPDATE OF s SKIP LOCKED",
+    expected: Version,
+    from: &str,
+    rule: Option<StoreError>,
+) -> Result<StoreError, StoreError> {
+    let current =
+        sql_query("SELECT status, version FROM stage_runs WHERE tenant_id = $1 AND id = $2")
+            .bind::<SqlUuid, _>(tenant.as_uuid())
+            .bind::<SqlUuid, _>(id.as_uuid())
+            .get_result::<Current>(connection)
+            .await
+            .optional()
+            .map_err(|error| database("transition_stage_run", &error))?;
+    Ok(match current {
+        None => StoreError::NotFound,
+        Some(row) if row.version != expected.get() || row.status != from => StoreError::Conflict,
+        Some(_) => rule.unwrap_or(StoreError::Conflict),
+    })
+}
+
+/// The effects must be the ones the transition requires, and no others.
+fn check_effects(transition_id: &str, effects: &StageRunEffects) -> Result<(), StoreError> {
+    let broken = || StoreError::Constraint(ConstraintRule::GateRecordRule);
+    let rule = stage_run_effects_rule(transition_id);
+    match (rule.gate, &effects.gate) {
+        (Some(want), Some(have)) if have.outcome == want => {
+            // A report is stored for every outcome but NOT_APPLICABLE; a failing set belongs to
+            // FAILED only (`stage_runs_failing_set_needs_failed_outcome`).
+            if have.report_sha256.is_none() && want != GateOutcome::NotApplicable {
+                return Err(broken());
+            }
+            if have.failing_set_sha256.is_some() && want != GateOutcome::Failed {
+                return Err(broken());
+            }
+        }
+        (None, None) => {}
+        _ => return Err(broken()),
+    }
+    if rule.contract != effects.contract_sha256.is_some() {
+        return Err(broken());
+    }
+    Ok(())
+}
+
+async fn transition(
+    connection: &mut AsyncPgConnection,
+    tenant: TenantId,
+    id: StageRunId,
+    expected: Version,
+    t: AppliedTransition<StageRunStatus>,
+    effects: StageRunEffects,
+) -> Result<Version, StoreError> {
+    let from = t.from_status().to_string();
+    // `S03` creates the attempt that carries the epoch, so it is made by `start_attempt` only.
+    let rule = if t.transition_id() == "S03" {
+        Some(StoreError::Constraint(ConstraintRule::IllegalStatusMove))
+    } else {
+        check_effects(t.transition_id(), &effects).err()
+    };
+    if rule.is_some() {
+        return Err(refusal(connection, tenant, id, expected, &from, rule).await?);
+    }
+    let to = t.to_status();
+    let delay = effects.not_before_after.map_or(0, micros);
+    let gate = effects.gate.as_ref();
+    let updated = sql_query(
+        "UPDATE stage_runs SET status = $4, version = version + 1, \
+                finished_at = CASE WHEN $5 THEN coalesce(finished_at, now()) ELSE finished_at END, \
+                superseded_at = CASE WHEN $6 THEN now() ELSE superseded_at END, \
+                not_before = CASE WHEN $7 THEN now() + $8 * interval '1 microsecond' \
+                                  ELSE not_before END, \
+                stage_contract_sha256 = coalesce($9, stage_contract_sha256), \
+                gate_outcome = coalesce($10, gate_outcome), \
+                gate_report_sha256 = coalesce($11, gate_report_sha256), \
+                failing_set_sha256 = coalesce($12, failing_set_sha256) \
+          WHERE tenant_id = $1 AND id = $2 AND version = $3 AND status = $13 \
+          RETURNING version",
     )
-    .bind::<SqlUuid, _>(tenant_raw)
-    .bind::<SqlUuid, _>(id_raw)
-    .get_result::<Claimable>(connection)
+    .bind::<SqlUuid, _>(tenant.as_uuid())
+    .bind::<SqlUuid, _>(id.as_uuid())
+    .bind::<BigInt, _>(expected.get())
+    .bind::<Text, _>(to.to_string())
+    .bind::<Bool, _>(to.is_terminal())
+    .bind::<Bool, _>(to == StageRunStatus::Superseded)
+    .bind::<Bool, _>(to == StageRunStatus::Ready)
+    .bind::<BigInt, _>(delay)
+    .bind::<Nullable<Text>, _>(
+        effects
+            .contract_sha256
+            .as_ref()
+            .map(|hash| hash.as_str().to_owned()),
+    )
+    .bind::<Nullable<Text>, _>(gate.map(|gate| gate.outcome.as_str().to_owned()))
+    .bind::<Nullable<Text>, _>(
+        gate.and_then(|gate| gate.report_sha256.as_ref())
+            .map(|hash| hash.as_str().to_owned()),
+    )
+    .bind::<Nullable<Text>, _>(
+        gate.and_then(|gate| gate.failing_set_sha256.as_ref())
+            .map(|hash| hash.as_str().to_owned()),
+    )
+    .bind::<Text, _>(from)
+    .get_result::<NewVersion>(connection)
     .await
     .optional()
-    .map_err(|error| generic("claim_ready", &error))?;
-    let Some(run) = run else { return Ok(false) };
-    let lost = sql_query(
-        "UPDATE attempts SET status = 'LEASE_LOST', ended_at = now(), version = version + 1 \
-          WHERE tenant_id = $1 AND stage_run_id = $2 AND status IN ('STARTING', 'RUNNING') \
-            AND lease_expires_at <= now()",
-    )
-    .bind::<SqlUuid, _>(tenant_raw)
-    .bind::<SqlUuid, _>(id_raw)
-    .execute(connection)
-    .await
-    .map_err(|error| generic("claim_ready", &error))?;
-    if lost == 0 {
-        return Ok(false);
+    .map_err(|error| database("transition_stage_run", &error))?;
+    match updated {
+        Some(row) => version_from_column(row.version),
+        None => Err(no_row_changed(
+            connection,
+            Table::StageRuns,
+            tenant,
+            id.as_uuid(),
+            "transition_stage_run",
+        )
+        .await?),
     }
-    let ready = sql_query(
-        "UPDATE stage_runs SET status = 'READY', version = version + 1 \
-          WHERE tenant_id = $1 AND id = $2 AND version = $3 AND status = 'RUNNING'",
+}
+
+async fn postpone(
+    connection: &mut AsyncPgConnection,
+    tenant: TenantId,
+    id: StageRunId,
+    expected: Version,
+    delay: Duration,
+) -> Result<Version, StoreError> {
+    let current =
+        sql_query("SELECT status, version FROM stage_runs WHERE tenant_id = $1 AND id = $2")
+            .bind::<SqlUuid, _>(tenant.as_uuid())
+            .bind::<SqlUuid, _>(id.as_uuid())
+            .get_result::<Current>(connection)
+            .await
+            .optional()
+            .map_err(|error| database("postpone_stage_run", &error))?
+            .ok_or(StoreError::NotFound)?;
+    if current.version != expected.get() {
+        return Err(StoreError::Conflict);
+    }
+    let status = status_from_column::<StageRunStatus>(&current.status)?;
+    if status.is_terminal() {
+        return Err(StoreError::Constraint(ConstraintRule::TerminalRowImmutable));
+    }
+    // The only update of a stage run that is not a transition, and only while it waits to start.
+    let updated = sql_query(
+        "UPDATE stage_runs SET not_before = now() + $4 * interval '1 microsecond', \
+                version = version + 1 \
+          WHERE tenant_id = $1 AND id = $2 AND version = $3 AND status = 'READY' \
+          RETURNING version",
     )
-    .bind::<SqlUuid, _>(tenant_raw)
-    .bind::<SqlUuid, _>(id_raw)
-    .bind::<BigInt, _>(run.version)
-    .execute(connection)
+    .bind::<SqlUuid, _>(tenant.as_uuid())
+    .bind::<SqlUuid, _>(id.as_uuid())
+    .bind::<BigInt, _>(expected.get())
+    .bind::<BigInt, _>(micros(delay))
+    .get_result::<NewVersion>(connection)
     .await
-    .map_err(|error| generic("claim_ready", &error))?;
-    Ok(ready == 1)
+    .optional()
+    .map_err(|error| database("postpone_stage_run", &error))?;
+    match updated {
+        Some(row) => version_from_column(row.version),
+        None => Err(StoreError::Conflict),
+    }
+}
+
+#[async_trait]
+impl StageRunOps for PgTx {
+    async fn insert_stage_run(
+        &mut self,
+        new: NewStageRun,
+    ) -> Result<Inserted<StageRun>, StoreError> {
+        call!(self, connection, tenant => insert(connection, tenant, new))
+    }
+
+    async fn get_stage_run(&mut self, id: StageRunId) -> Result<Versioned<StageRun>, StoreError> {
+        call!(self, connection, tenant => async {
+            find(connection, tenant, id).await?.ok_or(StoreError::NotFound)
+        })
+    }
+
+    async fn list_stage_runs(
+        &mut self,
+        job: JobId,
+    ) -> Result<Vec<Versioned<StageRun>>, StoreError> {
+        call!(self, connection, tenant => list(connection, tenant, job))
+    }
+
+    async fn transition_stage_run(
+        &mut self,
+        id: StageRunId,
+        expected: Version,
+        t: AppliedTransition<StageRunStatus>,
+        effects: StageRunEffects,
+    ) -> Result<Version, StoreError> {
+        call!(self, connection, tenant => {
+            transition(connection, tenant, id, expected, t, effects)
+        })
+    }
+
+    async fn postpone_stage_run(
+        &mut self,
+        id: StageRunId,
+        expected: Version,
+        delay: Duration,
+    ) -> Result<Version, StoreError> {
+        call!(self, connection, tenant => postpone(connection, tenant, id, expected, delay))
+    }
 }

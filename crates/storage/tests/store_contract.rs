@@ -124,6 +124,7 @@ struct PgSubject {
 impl PgSubject {
     async fn new() -> Self {
         let db = Arc::new(server().clone_database().await);
+        db.run(support::COMPLETE_FIXTURES).await;
         let inner = PgStore::connect(config_for(&db).await)
             .await
             .expect("the store becomes ready");
@@ -163,9 +164,38 @@ impl StoreSubject for PgSubject {
         &self.store
     }
 
-    /// A real store waits. The database clock is the server's, so there is nothing to shift.
+    /// Moves the clock forward by at least `by`.
+    ///
+    /// A short step waits on the real clock, so the checks that read `database_time` see time
+    /// pass. A long step (the suite asks for ten minutes to pass an attempt deadline) moves every
+    /// stored time that a rule compares with the clock back by `by`, which is the same to every
+    /// comparison and costs no wait. Both are real to the database: the second is a repair by an
+    /// operator with the triggers off for one transaction.
     async fn advance_database_time(&self, by: Duration) {
-        tokio::time::sleep(by + Duration::from_millis(100)).await;
+        if by <= Duration::from_secs(150) {
+            tokio::time::sleep(by + Duration::from_millis(100)).await;
+            return;
+        }
+        let seconds = by.as_secs() + 1;
+        let shift = format!("make_interval(secs => {seconds})");
+        let mut admin = self.db.admin().await;
+        admin
+            .batch_execute(&format!(
+                "BEGIN; SET LOCAL session_replication_role = replica; \
+                 UPDATE attempts SET lease_expires_at = lease_expires_at - {shift}, \
+                        deadline_at = deadline_at - {shift}, \
+                        teardown_deadline_at = teardown_deadline_at - {shift}, \
+                        last_heartbeat_at = last_heartbeat_at - {shift}, \
+                        created_at = created_at - {shift}, ended_at = ended_at - {shift}; \
+                 UPDATE stage_runs SET not_before = not_before - {shift}, \
+                        created_at = created_at - {shift}, finished_at = finished_at - {shift}, \
+                        superseded_at = superseded_at - {shift}; \
+                 UPDATE approvals SET expires_at = expires_at - {shift}, \
+                        created_at = created_at - {shift}, invalidated_at = invalidated_at - {shift}; \
+                 COMMIT;"
+            ))
+            .await
+            .expect("move the stored times");
     }
 
     async fn seed_repository(&self, tenant: TenantId) -> RepositoryId {

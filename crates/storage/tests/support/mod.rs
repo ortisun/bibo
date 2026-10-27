@@ -295,3 +295,58 @@ pub async fn as_login(
         Err(error) => Err(error.to_string()),
     }
 }
+
+/// Completes what the shared contract fixtures leave out and the schema requires, in the
+/// throwaway database only. Both are preconditions of the checks, not rules under test; the
+/// final report lists them as disagreements between the suite and the schema, and they go when
+/// the suite creates what it names.
+///
+/// * A hash that a stage run, an attempt or a task node names (`stage_contract_sha256`,
+///   `gate_report_sha256`, `output_sha256`, `plan_sha256`) must be an artifact the tenant has
+///   indexed: the tables have a composite foreign key to `artifacts`. The suite names hashes of
+///   bytes it never stored. The trigger indexes the hash first, as the engine does.
+/// * A ledger entry names a stage run, and the table has a foreign key to `stage_runs`. The suite
+///   names runs it never created. The trigger creates the run first.
+///
+/// The functions run as the superuser that installs them, so they are not subject to the policy
+/// of the session that fires them.
+pub const COMPLETE_FIXTURES: &str = "
+CREATE FUNCTION dbtest_index_referenced() RETURNS trigger LANGUAGE plpgsql
+  SECURITY DEFINER SET search_path = public, pg_temp AS $$
+DECLARE
+  col text;
+  hash text;
+BEGIN
+  FOREACH col IN ARRAY TG_ARGV LOOP
+    hash := to_jsonb(NEW) ->> col;
+    IF hash IS NOT NULL THEN
+      INSERT INTO artifacts (tenant_id, content_sha256, size_bytes, media_type, backend)
+      VALUES (NEW.tenant_id, hash, 1, 'application/octet-stream', 'local-fs')
+      ON CONFLICT DO NOTHING;
+    END IF;
+  END LOOP;
+  RETURN NEW;
+END
+$$;
+CREATE TRIGGER dbtest_index_referenced BEFORE INSERT OR UPDATE ON stage_runs
+  FOR EACH ROW EXECUTE FUNCTION dbtest_index_referenced('stage_contract_sha256', 'gate_report_sha256');
+CREATE TRIGGER dbtest_index_referenced BEFORE INSERT OR UPDATE ON attempts
+  FOR EACH ROW EXECUTE FUNCTION dbtest_index_referenced('output_sha256');
+CREATE TRIGGER dbtest_index_referenced BEFORE INSERT OR UPDATE ON task_nodes
+  FOR EACH ROW EXECUTE FUNCTION dbtest_index_referenced('plan_sha256');
+
+CREATE FUNCTION dbtest_create_ledger_run() RETURNS trigger LANGUAGE plpgsql
+  SECURITY DEFINER SET search_path = public, pg_temp AS $$
+BEGIN
+  INSERT INTO stage_runs (tenant_id, id, job_id, stage_kind, run_number, status)
+  SELECT NEW.tenant_id, NEW.stage_run_id, NEW.job_id, 'INTAKE',
+         coalesce((SELECT max(run_number) FROM stage_runs
+                    WHERE tenant_id = NEW.tenant_id AND job_id = NEW.job_id AND stage_kind = 'INTAKE'), 0) + 1,
+         'PENDING'
+   WHERE NOT EXISTS (SELECT 1 FROM stage_runs WHERE tenant_id = NEW.tenant_id AND id = NEW.stage_run_id);
+  RETURN NEW;
+END
+$$;
+CREATE TRIGGER dbtest_create_ledger_run BEFORE INSERT ON ledger_entries
+  FOR EACH ROW EXECUTE FUNCTION dbtest_create_ledger_run();
+";

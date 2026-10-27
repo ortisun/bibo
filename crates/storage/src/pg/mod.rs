@@ -7,7 +7,6 @@
 
 #[cfg(any())]
 mod artifact_index;
-#[cfg(any())]
 mod attempts;
 #[cfg(any())]
 mod audit;
@@ -26,7 +25,6 @@ mod pending;
 mod pool;
 mod principals;
 mod readiness;
-#[cfg(any())]
 mod stage_runs;
 mod store;
 mod system;
