@@ -1,0 +1,12 @@
+# Local agent harness state
+.agents/
+
+# Build and tooling output
+target/
+node_modules/
+dist/
+.env
+.env.*
+!.env.example
+*.log
+.DS_Store
