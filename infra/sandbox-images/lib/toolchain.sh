@@ -38,7 +38,10 @@ if ! /opt/rust/bin/rustc --version | grep -q "^rustc $version "; then
 fi
 
 for component in clippy rustfmt; do
-    work=$(mktemp -d)
+    # A fixed directory name, not mktemp: the installer writes the path into
+    # lib/rustlib/install.log, and a random name would make every build differ.
+    work=/tmp/component-$component
+    mkdir "$work"
     tar -xzf "/tmp/dl/$component.tar.gz" -C "$work"
     "$work/$component-$version-$triple/install.sh" \
         --prefix=/opt/rust --components="$component-preview" --disable-ldconfig
