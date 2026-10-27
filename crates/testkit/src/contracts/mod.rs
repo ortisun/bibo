@@ -35,6 +35,7 @@ use std::pin::Pin;
 pub mod artifact;
 pub mod sandbox;
 pub mod store;
+pub mod workspace;
 
 /// A check that returns an error starting with this text is recorded as skipped, not failed.
 pub const SKIPPED_PREFIX: &str = "skipped: ";

@@ -185,9 +185,12 @@ pub enum WorkspaceError {
     /// A file or the whole change is larger than the limit.
     #[error("the file or change is larger than the limit")]
     TooLarge,
-    /// The path does not exist at the base commit.
+    /// The path does not exist at the base commit, or it is a hidden path.
     #[error("no such path at the base commit: {0}")]
     PathNotFound(RepoPath),
+    /// A push target is not under `factory/`. The factory pushes nowhere else.
+    #[error("the factory may push only to branches under `factory/`")]
+    BranchNotAllowed,
     /// A git command failed. The text never includes file content or a credential.
     #[error("git failed: {0}")]
     Git(String),
@@ -232,15 +235,18 @@ pub trait WorkspaceProvider: Send + Sync {
 ///
 /// # Postconditions
 /// `read_base_file` and `list_base` read the trusted object store at the base commit and never
-/// the sandbox-writable tree, so what the sandbox wrote cannot change what they return. A
-/// successful `ingest` means the no-follow audit walk found no hidden path, no escaping symlink,
-/// no gitlink and no nested git directory, no protected path changed, and no secret was found. A
-/// commit made by `commit` has the base commit as its only parent and the tree of the change.
+/// the sandbox-writable tree, so what the sandbox wrote cannot change what they return. A hidden
+/// path is neither listed nor readable: it is reported as not found. A successful `ingest` means
+/// the no-follow audit walk found no hidden path, no escaping symlink, no gitlink and no nested
+/// git directory, no protected path changed, and no secret was found. `commit` commits exactly
+/// the tree that `ingest` audited, and refuses a change this workspace never ingested. A commit
+/// made by `commit` has the base commit as its only parent. `push` sends only a commit this
+/// workspace made, and only to a branch under `factory/`.
 ///
 /// # Errors
 /// [`WorkspaceError`]: `PathNotFound`, `TooLarge`, `HiddenPathPresent`, `EscapingSymlink`,
 /// `Gitlink`, `NestedGit`, `ProtectedPathChanged` (with every changed protected path),
-/// `SecretFound`, `Git` and `Io`.
+/// `SecretFound`, `BranchNotAllowed`, `Git` and `Io`.
 ///
 /// # Idempotency
 /// `read_base_file`, `list_base` and `ingest` do not change the repository and give the same

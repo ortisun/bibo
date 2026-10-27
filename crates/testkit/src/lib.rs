@@ -5,3 +5,4 @@ pub mod contracts;
 pub mod fixtures;
 pub mod sandbox;
 pub mod store;
+pub mod workspace;
