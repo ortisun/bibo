@@ -1,7 +1,9 @@
 //! The security test harness (work package `s1-security-test-harness`).
 //!
-//! This commit holds the lowest layer: encoders, digests, a random source and calendar helpers.
+//! The lowest layer is encoders, digests, a random source and calendar helpers. FX-CANARY sits on
+//! top of it.
 
+pub mod canary;
 pub mod digest;
 pub mod encoding;
 pub mod rng;
