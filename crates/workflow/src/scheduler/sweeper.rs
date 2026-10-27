@@ -5,8 +5,9 @@
 //! interval. Two sweepers at once are safe: each move is a compare-and-swap, and the one that
 //! loses reads the new state and skips.
 //!
-//! This part of the sweeper ends attempts whose lease ran out without a heartbeat (`A07`). The
-//! consequence for the stage run follows from the failure handling in `crate::engine::failure`.
+//! The sweeper ends attempts whose lease ran out without a heartbeat (`A07`). The stage run then
+//! retries, asks a person or fails by the rules of `crate::engine::failure`, in the same
+//! transaction.
 
 use factory_domain::ids::{AttemptId, JobId, TenantId};
 use factory_domain::machines::failure::FailureClass;
@@ -106,6 +107,16 @@ impl Engine {
             AttemptEvent::LeaseExpired,
             Some("lease-expired"),
             payload,
+        )
+        .await?;
+        // The lease ran out, so the stage run decides: retry after a back-off, ask a person, or
+        // fail, by the same rules as for any other failed attempt.
+        self.after_attempt_failed(
+            &mut *tx,
+            &cx,
+            run.value.id,
+            attempt_id,
+            FailureClass::LeaseLost,
         )
         .await?;
         tx.commit().await?;

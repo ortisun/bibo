@@ -12,10 +12,11 @@ use factory_domain::contracts::{Contract, StageContract};
 use factory_domain::values::{HumanText, MediaType, Slug};
 use factory_domain::vocabulary::{Fidelity, StageKind};
 use factory_ports::agent::Usage;
+use factory_ports::registry::ContractKind;
 use factory_workflow::gates::framework::GateDecision;
 use factory_workflow::handlers::{
-    Applicability, ContractContext, GateContext, NeedsHumanRequest, OutputDocument, SkipBasis,
-    SkipRule, StageContext, StageError, StageHandler, StageOutput,
+    Applicability, ContractContext, GateContext, NeedsHumanRequest, OutputDocument, SandboxReady,
+    SkipBasis, SkipRule, StageContext, StageError, StageHandler, StageOutput,
 };
 use serde_json::{Value, json};
 
@@ -77,6 +78,12 @@ pub struct Script {
     pub skip: Option<SkipRule>,
     pub tweaks: Tweaks,
     pub executed: Vec<Executed>,
+    /// Whether `execute` says that its sandbox is ready. A stage that runs no sandbox may not.
+    pub report_sandbox: bool,
+    /// Whether the output carries a document the contract does not declare.
+    pub extra_document: bool,
+    /// Whether the output leaves out the required deliverable.
+    pub omit_deliverable: bool,
 }
 
 impl Default for Script {
@@ -87,6 +94,9 @@ impl Default for Script {
             skip: None,
             tweaks: Tweaks::default(),
             executed: Vec::new(),
+            report_sandbox: true,
+            extra_document: false,
+            omit_deliverable: false,
         }
     }
 }
@@ -200,6 +210,20 @@ impl StageHandler for ScriptedHandler {
     }
 
     async fn execute(&self, ctx: &mut StageContext<'_>) -> Result<StageOutput, StageError> {
+        let (report, extra, omit) = self.script.with(|script| {
+            (
+                script.report_sandbox,
+                script.extra_document,
+                script.omit_deliverable,
+            )
+        });
+        if report {
+            ctx.report_sandbox_ready(SandboxReady {
+                started_within_limits: true,
+                tool_grants_in_place: true,
+                capability_probe_satisfied: true,
+            });
+        }
         let step = self.script.with(|script| {
             script.executed.push(Executed {
                 attempt_number: ctx.attempt_number,
@@ -209,15 +233,27 @@ impl StageHandler for ScriptedHandler {
                 .pop_front()
                 .unwrap_or_else(|| script.otherwise.clone())
         });
+        let name = if extra {
+            "unlisted-output"
+        } else {
+            "scripted-output"
+        };
         let document = |value: Value| OutputDocument {
-            name: Slug::parse("scripted-output").expect("a slug"),
-            contract: None,
+            name: Slug::parse(name).expect("a slug"),
+            contract: Some((ContractKind::ReviewVerdict, 1)),
             media_type: MediaType::parse("application/json").expect("a media type"),
             value,
         };
+        let documents = |value: Value| {
+            if omit {
+                Vec::new()
+            } else {
+                vec![document(value)]
+            }
+        };
         match step {
             Step::Succeed => Ok(StageOutput {
-                documents: vec![document(json!({ "stage": ctx.identity.kind.as_str() }))],
+                documents: documents(json!({ "stage": ctx.identity.kind.as_str() })),
                 usage: Usage::default(),
                 ..StageOutput::default()
             }),
@@ -229,7 +265,7 @@ impl StageHandler for ScriptedHandler {
                 ..StageOutput::default()
             }),
             Step::InvalidDocument => Ok(StageOutput {
-                documents: vec![document(json!({ "invalid": true }))],
+                documents: documents(json!({ "invalid": true })),
                 ..StageOutput::default()
             }),
             Step::Hang(release) => {
@@ -238,7 +274,7 @@ impl StageHandler for ScriptedHandler {
                     () = ctx.cancel.cancelled() => return Err(StageError::Cancelled),
                 }
                 Ok(StageOutput {
-                    documents: vec![document(json!({ "stage": ctx.identity.kind.as_str() }))],
+                    documents: documents(json!({ "stage": ctx.identity.kind.as_str() })),
                     ..StageOutput::default()
                 })
             }

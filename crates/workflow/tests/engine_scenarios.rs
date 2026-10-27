@@ -319,3 +319,450 @@ async fn a_job_whose_scope_has_a_stage_without_a_handler_is_not_admitted() {
         Ok(JobStatus::Received)
     );
 }
+
+// ---- attempt results --------------------------------------------------------------------------
+
+use factory_domain::machines::failure::FailureClass;
+use factory_domain::machines::retry::{AttemptDisposition, EscalationCause};
+use factory_domain::values::Timestamp;
+use factory_workflow::engine::AttemptOutcome;
+use factory_workflow::handlers::StageError;
+use support::Step;
+
+fn intake(view: &factory_workflow::engine::JobView) -> &factory_workflow::engine::StageRunView {
+    view.newest(StageKind::Intake).expect("an intake run")
+}
+
+#[tokio::test]
+async fn a_valid_output_is_stored_by_hash_and_the_attempt_succeeds() {
+    let world = World::new().await;
+    let job = world.admitted_job().await;
+    let (claimed, outcome) = world.run_next("worker-1").await;
+    assert_eq!(outcome, AttemptOutcome::Succeeded);
+
+    let view = world.view(job).await;
+    let run = intake(&view);
+    assert_eq!(run.attempts[0].status, AttemptStatus::Succeeded);
+    assert_eq!(run.attempts[0].id, claimed.attempt);
+    // The stage run waits at its gate. The gate arrives in a later increment.
+    assert_eq!(run.status, StageRunStatus::Gating);
+
+    // The output is in the artifact store under its hash, and the event says which.
+    let events = world.events(job).await;
+    let gating = events
+        .iter()
+        .find(|event| event.event_type.as_str() == "stage_run.gating")
+        .expect("a gating event");
+    let outputs = gating.payload["outputs"].as_array().expect("a list");
+    assert_eq!(outputs.len(), 1);
+    assert_eq!(outputs[0]["name"], "scripted-output");
+}
+
+#[tokio::test]
+async fn an_output_that_breaks_its_schema_is_a_failure_and_never_a_pass() {
+    let world = World::new().await;
+    let job = world.admitted_job().await;
+    world
+        .script(StageKind::Intake)
+        .queue([Step::InvalidDocument]);
+    let (_, outcome) = world.run_next("worker-1").await;
+    assert_eq!(
+        outcome,
+        AttemptOutcome::Failed {
+            class: FailureClass::InvalidOutput,
+            then: AttemptDisposition::Retry
+        }
+    );
+    let view = world.view(job).await;
+    let run = intake(&view);
+    assert_eq!(run.attempts[0].status, AttemptStatus::Failed);
+    assert_eq!(run.status, StageRunStatus::Ready);
+}
+
+#[tokio::test]
+async fn a_document_the_contract_does_not_declare_is_refused() {
+    let world = World::new().await;
+    world.admitted_job().await;
+    world
+        .script(StageKind::Intake)
+        .with(|s| s.extra_document = true);
+    let (_, outcome) = world.run_next("worker-1").await;
+    assert!(matches!(
+        outcome,
+        AttemptOutcome::Failed {
+            class: FailureClass::InvalidOutput,
+            ..
+        }
+    ));
+}
+
+#[tokio::test]
+async fn a_missing_required_deliverable_is_an_invalid_output() {
+    let world = World::new().await;
+    world.admitted_job().await;
+    world
+        .script(StageKind::Intake)
+        .with(|s| s.omit_deliverable = true);
+    let (_, outcome) = world.run_next("worker-1").await;
+    assert!(matches!(
+        outcome,
+        AttemptOutcome::Failed {
+            class: FailureClass::InvalidOutput,
+            ..
+        }
+    ));
+}
+
+#[tokio::test]
+async fn a_stage_that_never_reports_its_sandbox_fails_closed() {
+    let world = World::new().await;
+    let job = world.admitted_job().await;
+    world
+        .script(StageKind::Intake)
+        .with(|s| s.report_sandbox = false);
+    let (_, outcome) = world.run_next("worker-1").await;
+    assert!(matches!(
+        outcome,
+        AttemptOutcome::Failed {
+            class: FailureClass::SandboxError,
+            ..
+        }
+    ));
+    let view = world.view(job).await;
+    assert_eq!(intake(&view).attempts[0].status, AttemptStatus::Failed);
+}
+
+// ---- failures: retry, back-off, escalation ------------------------------------------------
+
+#[tokio::test]
+async fn a_tool_error_is_retried_after_a_back_off_that_the_claim_honours() {
+    let world = World::new().await;
+    let job = world.admitted_job().await;
+    // A back-off longer than the lease, so the lease of the failed attempt is not what waits.
+    world.script(StageKind::Intake).with(|s| {
+        s.tweaks.backoff_initial_ms = 90_000;
+        s.steps.push_back(Step::Fail(StageError::Tool));
+    });
+    let (_, outcome) = world.run_next("worker-1").await;
+    assert_eq!(
+        outcome,
+        AttemptOutcome::Failed {
+            class: FailureClass::ToolError,
+            then: AttemptDisposition::Retry
+        }
+    );
+    let view = world.view(job).await;
+    let run = intake(&view);
+    assert_eq!(run.status, StageRunStatus::Ready);
+    let not_before = run.not_before.expect("a back-off");
+    assert_eq!(
+        not_before,
+        Timestamp::parse("2026-10-27T08:31:30Z").expect("an instant")
+    );
+
+    // The lease has lapsed and the back-off has not: the claim finds the run and leaves it.
+    world.advance(80);
+    let early = world
+        .engine
+        .claim_next(&World::worker("worker-2"))
+        .await
+        .expect("claim");
+    assert!(early.started.is_empty());
+    assert_eq!(early.deferred.len(), 1);
+    assert_eq!(early.deferred[0].1, Deferral::BackingOff);
+    // The deferred claim holds the lease until it lapses, because the Store port cannot give a
+    // lease back. Once it has lapsed and the back-off is over, the retry starts as attempt 2
+    // under a higher epoch.
+    world.advance(70);
+    let (second, outcome) = world.run_next("worker-2").await;
+    assert_eq!(outcome, AttemptOutcome::Succeeded);
+    assert_eq!(second.attempt_number, 2);
+    assert!(
+        second.epoch > LeaseEpoch::new(2),
+        "the deferred claim also raised the epoch"
+    );
+}
+
+#[tokio::test]
+async fn the_back_off_doubles_with_each_failure() {
+    let world = World::new().await;
+    let job = world.admitted_job().await;
+    world.script(StageKind::Intake).queue([
+        Step::Fail(StageError::Provider),
+        Step::Fail(StageError::Provider),
+    ]);
+    let wait_after_failure = |view: factory_workflow::engine::JobView| {
+        let not_before = intake(&view).not_before.expect("a back-off");
+        factory_ports::clock::duration_between(
+            &factory_ports::clock::Clock::now(world.clock.as_ref()),
+            &not_before,
+        )
+        .expect("in the future")
+    };
+    world.run_next("worker-1").await;
+    assert_eq!(
+        wait_after_failure(world.view(job).await),
+        std::time::Duration::from_secs(5)
+    );
+    // The lease of the first attempt lapses, then the second attempt fails in turn.
+    world.advance(61);
+    world.run_next("worker-1").await;
+    assert_eq!(
+        wait_after_failure(world.view(job).await),
+        std::time::Duration::from_secs(10)
+    );
+}
+
+#[tokio::test]
+async fn a_failure_that_retrying_cannot_fix_fails_the_stage_and_the_job() {
+    let world = World::new().await;
+    let job = world.admitted_job().await;
+    world
+        .script(StageKind::Intake)
+        .queue([Step::Fail(StageError::PolicyDenied)]);
+    let (_, outcome) = world.run_next("worker-1").await;
+    assert_eq!(
+        outcome,
+        AttemptOutcome::Failed {
+            class: FailureClass::PolicyDenied,
+            then: AttemptDisposition::Fail
+        }
+    );
+    let view = world.view(job).await;
+    assert_eq!(intake(&view).status, StageRunStatus::Failed);
+    assert_eq!(view.status, JobStatus::Failed);
+}
+
+#[tokio::test]
+async fn bounded_failure_escalates() {
+    // INV-10: a runtime that always fails reaches WAITING_FOR_HUMAN in a bounded number of
+    // steps, and the stage run does not fail.
+    let world = World::new().await;
+    let job = world.admitted_job().await;
+    world
+        .script(StageKind::Intake)
+        .otherwise(Step::Fail(StageError::Tool));
+    let mut attempts = 0;
+    loop {
+        let view = world.view(job).await;
+        if intake(&view).status == StageRunStatus::WaitingForHuman {
+            break;
+        }
+        attempts += 1;
+        assert!(attempts <= 3, "the loop must stop after the attempt limit");
+        world.advance(600);
+        world.run_next("worker-1").await;
+    }
+    let view = world.view(job).await;
+    assert_eq!(attempts, 3, "three attempts is the default limit");
+    assert_eq!(intake(&view).status, StageRunStatus::WaitingForHuman);
+    assert_eq!(intake(&view).attempts.len(), 3);
+    assert_eq!(view.status, JobStatus::WaitingForHuman);
+}
+
+#[tokio::test]
+async fn a_budget_limit_asks_a_person_at_once_and_does_not_fail_the_stage() {
+    let world = World::new().await;
+    let job = world.admitted_job().await;
+    world
+        .script(StageKind::Intake)
+        .queue([Step::Fail(StageError::BudgetExhausted)]);
+    let (_, outcome) = world.run_next("worker-1").await;
+    assert_eq!(
+        outcome,
+        AttemptOutcome::Failed {
+            class: FailureClass::BudgetExhausted,
+            then: AttemptDisposition::Escalate(EscalationCause::BudgetLimit)
+        }
+    );
+    let view = world.view(job).await;
+    assert_eq!(intake(&view).status, StageRunStatus::WaitingForHuman);
+    assert_eq!(view.status, JobStatus::WaitingForHuman);
+}
+
+#[tokio::test]
+async fn repairs_after_an_invalid_output_stop_at_the_cap_of_two() {
+    let world = World::new().await;
+    let job = world.admitted_job().await;
+    world
+        .script(StageKind::Intake)
+        .with(|s| s.tweaks.max_attempts = 10);
+    world
+        .script(StageKind::Intake)
+        .otherwise(Step::InvalidDocument);
+    let mut failures = 0;
+    loop {
+        let view = world.view(job).await;
+        if intake(&view).status == StageRunStatus::WaitingForHuman {
+            break;
+        }
+        failures += 1;
+        assert!(failures <= 3);
+        world.advance(600);
+        world.run_next("worker-1").await;
+    }
+    // Two repairs are allowed, so the third invalid output asks a person, long before the
+    // attempt limit of ten.
+    assert_eq!(failures, 3);
+}
+
+#[tokio::test]
+async fn a_structured_request_for_a_person_is_escalated_and_not_retried() {
+    let world = World::new().await;
+    let job = world.admitted_job().await;
+    world.script(StageKind::Intake).queue([Step::NeedsHuman]);
+    let (_, outcome) = world.run_next("worker-1").await;
+    assert_eq!(outcome, AttemptOutcome::NeedsHuman);
+    let view = world.view(job).await;
+    assert_eq!(intake(&view).status, StageRunStatus::WaitingForHuman);
+    assert_eq!(intake(&view).attempts[0].status, AttemptStatus::Succeeded);
+    assert_eq!(view.status, JobStatus::WaitingForHuman);
+}
+
+#[tokio::test]
+async fn a_blocked_stage_waits_for_a_person_and_is_never_retried() {
+    use factory_domain::contracts::gate_report::BlockedCode;
+    let world = World::new().await;
+    let job = world.admitted_job().await;
+    world
+        .script(StageKind::Intake)
+        .queue([Step::Fail(StageError::Blocked(
+            BlockedCode::ToolUnavailable,
+        ))]);
+    let (_, outcome) = world.run_next("worker-1").await;
+    assert!(matches!(
+        outcome,
+        AttemptOutcome::Failed {
+            class: FailureClass::PolicyDenied,
+            ..
+        }
+    ));
+    let view = world.view(job).await;
+    assert_eq!(intake(&view).status, StageRunStatus::WaitingForHuman);
+    assert_eq!(intake(&view).attempts.len(), 1);
+}
+
+#[tokio::test]
+async fn a_lease_lost_attempt_is_retried_like_any_other_failure() {
+    let world = World::new().await;
+    let job = world.admitted_job().await;
+    world.claim_one("worker-1").await;
+    world.advance(61);
+    world.engine.sweep().await.expect("sweep");
+    let view = world.view(job).await;
+    assert_eq!(intake(&view).status, StageRunStatus::Ready);
+    assert_eq!(intake(&view).attempts[0].status, AttemptStatus::LeaseLost);
+    assert!(intake(&view).not_before.is_some());
+}
+
+// ---- a worker that lost its lease ---------------------------------------------------------
+
+#[tokio::test]
+async fn a_stale_worker_that_comes_back_changes_nothing() {
+    // NT-LSE-01: worker A loses its lease and worker B takes over. A finishes and reports. The
+    // report is refused and every state change comes from B's epoch.
+    let world = World::new().await;
+    let job = world.admitted_job().await;
+    let release = std::sync::Arc::new(tokio::sync::Notify::new());
+    world
+        .script(StageKind::Intake)
+        .queue([Step::Hang(release.clone())]);
+    let claimed = world.claim_one("worker-a").await;
+
+    let stale = async { world.engine.run_attempt(&claimed).await };
+    let takeover = async {
+        // The lease runs out while A is still busy, the sweeper ends the attempt, and B claims
+        // the retry at a higher epoch.
+        world.advance(61);
+        world.engine.sweep().await.expect("sweep");
+        world.advance(5);
+        let second = world.claim_one("worker-b").await;
+        assert!(second.epoch > claimed.epoch);
+        // Only now does A finish.
+        release.notify_one();
+        second
+    };
+    let (outcome, second) = tokio::join!(stale, takeover);
+    assert_eq!(
+        outcome.expect("the attempt runs"),
+        AttemptOutcome::LeaseLost
+    );
+
+    // B carries on, and its result stands.
+    let finished = world
+        .engine
+        .run_attempt(&second)
+        .await
+        .expect("the second attempt runs");
+    assert_eq!(finished, AttemptOutcome::Succeeded);
+    let view = world.view(job).await;
+    let run = intake(&view);
+    assert_eq!(run.attempts.len(), 2);
+    assert_eq!(run.attempts[0].status, AttemptStatus::LeaseLost);
+    assert_eq!(run.attempts[1].status, AttemptStatus::Succeeded);
+    // No event carries the stale epoch's work: one attempt succeeded.
+    let events = world.events(job).await;
+    let succeeded = events
+        .iter()
+        .filter(|event| event.event_type.as_str() == "attempt.succeeded")
+        .count();
+    assert_eq!(succeeded, 1);
+}
+
+#[tokio::test(start_paused = true)]
+async fn heartbeats_during_a_long_stage_keep_the_lease() {
+    let world = World::new().await;
+    world.admitted_job().await;
+    let release = std::sync::Arc::new(tokio::sync::Notify::new());
+    world
+        .script(StageKind::Intake)
+        .queue([Step::Hang(release.clone())]);
+    let claimed = world.claim_one("worker-a").await;
+
+    let work = async { world.engine.run_attempt(&claimed).await };
+    let driver = async {
+        // The stage takes 120 seconds of database time, twice the lease. The runner's heartbeat
+        // every 15 seconds keeps the lease, so the sweeper finds nothing to take.
+        for _ in 0..6 {
+            world.advance(20);
+            tokio::time::sleep(std::time::Duration::from_secs(16)).await;
+            let swept = world.engine.sweep().await.expect("sweep");
+            assert!(swept.lease_lost.is_empty(), "the lease was kept alive");
+        }
+        release.notify_one();
+    };
+    let (outcome, ()) = tokio::join!(work, driver);
+    assert_eq!(
+        outcome.expect("the attempt runs"),
+        AttemptOutcome::Succeeded
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn an_attempt_past_its_deadline_is_stopped_and_timed_out() {
+    let world = World::new().await;
+    let job = world.admitted_job().await;
+    let release = std::sync::Arc::new(tokio::sync::Notify::new());
+    world.script(StageKind::Intake).with(|s| {
+        s.tweaks.attempt_timeout_seconds = 30;
+        s.steps.push_back(Step::Hang(release.clone()));
+    });
+    let claimed = world.claim_one("worker-a").await;
+    let work = async { world.engine.run_attempt(&claimed).await };
+    let driver = async {
+        world.advance(40);
+        // The next heartbeat sees the passed deadline and trips the signal. The handler stops.
+        tokio::time::sleep(std::time::Duration::from_secs(16)).await;
+    };
+    let (outcome, ()) = tokio::join!(work, driver);
+    assert_eq!(
+        outcome.expect("the attempt runs"),
+        AttemptOutcome::Failed {
+            class: FailureClass::TimedOut,
+            then: AttemptDisposition::Retry
+        }
+    );
+    let view = world.view(job).await;
+    assert_eq!(intake(&view).attempts[0].status, AttemptStatus::TimedOut);
+    assert_eq!(intake(&view).status, StageRunStatus::Ready);
+}

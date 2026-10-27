@@ -89,7 +89,6 @@ impl RunRecord {
     }
 
     /// The attempts and invalid outputs counted since the last human answer.
-    #[allow(dead_code)] // The failure handling of the next increment reads it.
     pub(crate) fn window(&self) -> AttemptWindow {
         AttemptWindow::from_history(&self.window)
     }

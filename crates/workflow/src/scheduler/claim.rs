@@ -28,7 +28,6 @@ use crate::engine::progress::{Board, upstream_runs};
 use crate::engine::record::Cx;
 use crate::engine::timeline::Timeline;
 use crate::engine::{Engine, EngineError};
-use crate::handlers::ContractContext;
 
 /// A stage run that was claimed and whose attempt has started. The worker runs the attempt with
 /// this and sends every write under its epoch.
@@ -154,14 +153,7 @@ impl Engine {
             .ok_or(EngineError::NoHandler(run.value.kind))?;
         let board = Board::load(&mut *tx, &timeline).await?;
         let upstream = upstream_runs(&timeline, &board);
-        let ccx = ContractContext {
-            identity: Engine::identity(&cx, &run.value),
-            mode: self.config.mode,
-            policy_hash: &self.config.policy_hash,
-            now: cx.now,
-            upstream: &upstream,
-            human_inputs: &record.human_inputs,
-        };
+        let ccx = self.contract_context(&cx, &run.value, record, &upstream);
         let Ok(contract) = handler.contract(&ccx) else {
             return Ok(Err(Deferral::NoContract));
         };

@@ -5,6 +5,8 @@
 //! open a transaction or reach another job. Whatever it learns about other stage runs comes in as
 //! [`UpstreamRun`] values that the engine built from stored state.
 
+use std::sync::{Arc, Mutex};
+
 use factory_domain::contracts::{ArtifactRef, StageContract};
 use factory_domain::ids::{AttemptId, CorrelationId, JobId, StageRunId, TenantId};
 use factory_domain::state::StageRunStatus;
@@ -117,6 +119,31 @@ pub(crate) struct AttemptNotes {
     pub(crate) sandbox_ready: Option<SandboxReady>,
 }
 
+/// The notes of one attempt, shared between the handler that writes them and the engine that
+/// reads them while the handler is still running.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct Notes(Arc<Mutex<AttemptNotes>>);
+
+impl Notes {
+    fn lock(&self) -> std::sync::MutexGuard<'_, AttemptNotes> {
+        // A panic in a handler must not hide what it noted before it, so a poisoned lock is read
+        // as it is.
+        self.0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// What the handler said about its sandbox, if it said anything yet.
+    pub(crate) fn sandbox_ready(&self) -> Option<SandboxReady> {
+        self.lock().sandbox_ready
+    }
+
+    /// Takes the audit actions the handler noted, leaving none behind.
+    pub(crate) fn take_audit(&self) -> Vec<AuditAction> {
+        std::mem::take(&mut self.lock().audit)
+    }
+}
+
 /// Everything `execute` receives.
 pub struct StageContext<'a> {
     /// Who the run is.
@@ -143,7 +170,7 @@ pub struct StageContext<'a> {
     pub human_inputs: &'a [ArtifactRef],
     /// The runs this one builds on.
     pub upstream: &'a [UpstreamRun],
-    pub(crate) notes: AttemptNotes,
+    pub(crate) notes: Notes,
 }
 
 impl std::fmt::Debug for StageContext<'_> {
@@ -186,22 +213,29 @@ impl<'a> StageContext<'a> {
             job_token,
             human_inputs,
             upstream,
-            notes: AttemptNotes::default(),
+            notes: Notes::default(),
         }
+    }
+
+    /// Shares the notes with the engine, which reads them while the handler runs.
+    #[must_use]
+    pub(crate) fn with_notes(mut self, notes: Notes) -> Self {
+        self.notes = notes;
+        self
     }
 
     /// Tells the engine that the sandbox is up and the preconditions of the agent run hold.
     /// The engine then moves the attempt from `STARTING` to `RUNNING` (`A01`). A stage that
     /// needs no sandbox never calls this.
     pub fn report_sandbox_ready(&mut self, ready: SandboxReady) {
-        self.notes.sandbox_ready = Some(ready);
+        self.notes.lock().sandbox_ready = Some(ready);
     }
 
     /// Asks the engine to record an audit event of a kind that only the handler sees, such as a
     /// command it ran. The engine writes it with the actor, the policy hash and the correlation
     /// id when it records the attempt result.
     pub fn note_audit(&mut self, action: AuditAction) {
-        self.notes.audit.push(action);
+        self.notes.lock().audit.push(action);
     }
 }
 

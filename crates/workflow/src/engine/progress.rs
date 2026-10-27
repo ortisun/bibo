@@ -118,6 +118,24 @@ impl Engine {
         }
     }
 
+    /// What a handler needs to resolve the contract of a run.
+    pub(crate) fn contract_context<'a>(
+        &'a self,
+        cx: &Cx<'_>,
+        run: &StageRun,
+        record: &'a RunRecord,
+        upstream: &'a [UpstreamRun],
+    ) -> ContractContext<'a> {
+        ContractContext {
+            identity: Self::identity(cx, run),
+            mode: self.config.mode,
+            policy_hash: &self.config.policy_hash,
+            now: cx.now,
+            upstream,
+            human_inputs: &record.human_inputs,
+        }
+    }
+
     /// Moves the job forward until nothing more can move, in the transaction of the decision that
     /// changed something.
     ///
@@ -307,14 +325,7 @@ impl Engine {
             let Some(handler) = self.handlers.get(run.value.kind) else {
                 continue;
             };
-            let ccx = ContractContext {
-                identity: Self::identity(cx, &run.value),
-                mode: self.config.mode,
-                policy_hash: &self.config.policy_hash,
-                now: cx.now,
-                upstream: &upstream,
-                human_inputs: &record.human_inputs,
-            };
+            let ccx = self.contract_context(cx, &run.value, record, &upstream);
             let contract_ok = handler
                 .contract(&ccx)
                 .is_ok_and(|contract| contract.validate().is_ok());

@@ -56,6 +56,9 @@ pub enum EngineError {
     /// The engine built a value that the domain refuses. This is a bug in the engine.
     #[error("the engine built an invalid value: {0}")]
     Invalid(String),
+    /// The artifact store failed. The text names the operation and never holds artifact content.
+    #[error("the artifact store failed: {0}")]
+    Artifacts(String),
     /// The store failed in a way the engine cannot repair.
     #[error("the store failed: {0}")]
     Store(StoreError),

@@ -18,6 +18,7 @@ use factory_domain::values::{HumanText, Slug};
 use factory_domain::vocabulary::{Fidelity, StageKind};
 use factory_ports::agent::RoutingNeed;
 
+pub(crate) use context::Notes;
 pub use context::{
     ContractContext, GateContext, RunIdentity, SandboxReady, StageContext, StagePorts, UpstreamRun,
 };

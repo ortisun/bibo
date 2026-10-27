@@ -8,7 +8,7 @@
 
 mod support;
 
-use factory_domain::state::AttemptStatus;
+use factory_domain::state::{AttemptStatus, StageRunStatus};
 use factory_domain::vocabulary::StageKind;
 use factory_ports::store::LeaseEpoch;
 use support::World;
@@ -139,16 +139,25 @@ mod claim_loop {
                 check_job(&world, *job).await?;
             }
         }
-        // No lost work: let every lease lapse, sweep, and claim until nothing is left. Every
-        // job's first stage run then has been given an attempt.
-        for _ in 0..8 {
-            world.advance(61);
+        // No lost work: let every lease lapse, sweep, and let a worker run what it claims, until
+        // nothing more happens. Every job's first stage run is then past the claim: it reached
+        // its gate, or it asked a person after three attempts. None is stuck ready or running
+        // with an attempt that nobody owns.
+        for _ in 0..24 {
+            world.advance(400);
             world.engine.sweep().await.map_err(|e| e.to_string())?;
             let claimed = world
                 .engine
                 .claim_next(&World::worker("drain"))
                 .await
                 .map_err(|e| e.to_string())?;
+            for ticket in &claimed.started {
+                world
+                    .engine
+                    .run_attempt(ticket)
+                    .await
+                    .map_err(|e| e.to_string())?;
+            }
             if claimed.started.is_empty() && claimed.deferred.is_empty() {
                 break;
             }
@@ -157,9 +166,13 @@ mod claim_loop {
             check_job(&world, *job).await?;
             let view = world.view(*job).await;
             let intake = view.newest(StageKind::Intake).ok_or("no intake run")?;
-            if intake.attempts.is_empty() {
+            if !matches!(
+                intake.status,
+                StageRunStatus::Gating | StageRunStatus::WaitingForHuman
+            ) {
                 return Err(format!(
-                    "the intake run of {job} was never given an attempt"
+                    "the intake run of {job} is {} after the drain: {:?}",
+                    intake.status, intake.attempts
                 ));
             }
         }

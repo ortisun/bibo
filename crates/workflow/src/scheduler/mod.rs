@@ -5,10 +5,12 @@
 //! None of them keeps a timer in memory: leases, deadlines and back-offs are values compared with
 //! the database clock.
 
+mod backoff;
 mod claim;
 mod lease;
 mod sweeper;
 
+pub use backoff::retry_delay;
 pub use claim::{Claimed, ClaimedAttempt, Deferral};
 pub use lease::Pulse;
 pub use sweeper::Swept;

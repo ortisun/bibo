@@ -23,7 +23,9 @@ use factory_testkit::router::StaticModelRouter;
 use factory_testkit::sandbox::FakeSandbox;
 use factory_testkit::store::InMemoryStore;
 use factory_testkit::workspace::FakeWorkspaceProvider;
-use factory_workflow::engine::{Admission, Engine, EngineConfig, EngineDeps, JobView};
+use factory_workflow::engine::{
+    Admission, AttemptOutcome, Engine, EngineConfig, EngineDeps, JobView,
+};
 use factory_workflow::handlers::HandlerRegistry;
 use factory_workflow::scheduler::ClaimedAttempt;
 
@@ -215,6 +217,17 @@ impl World {
             .begin_system(SystemScope::engine())
             .await
             .expect("a system tx")
+    }
+
+    /// Claims the next stage run with `worker` and runs its attempt. Returns what happened.
+    pub async fn run_next(&self, worker: &str) -> (ClaimedAttempt, AttemptOutcome) {
+        let claimed = self.claim_one(worker).await;
+        let outcome = self
+            .engine
+            .run_attempt(&claimed)
+            .await
+            .expect("the attempt runs");
+        (claimed, outcome)
     }
 
     /// The outbox events of a job, oldest first.

@@ -21,8 +21,11 @@
 //! reads the state again and decides again: the engine never overwrites a change it has not seen.
 
 mod admission;
+mod attempt;
+mod cancel;
 pub mod config;
 mod error;
+mod failure;
 mod ledger;
 pub(crate) mod payload;
 pub(crate) mod progress;
@@ -45,6 +48,7 @@ use factory_ports::store::{Store, SystemScope, Tx};
 use factory_ports::workspace::WorkspaceProvider;
 
 pub use admission::Admission;
+pub use attempt::AttemptOutcome;
 pub use config::EngineConfig;
 pub use error::EngineError;
 pub use view::{AttemptView, JobView, StageRunView};
@@ -190,7 +194,6 @@ impl Engine {
     }
 
     /// The ports a handler may use, as references into this engine.
-    #[allow(dead_code)] // The attempt runner of the next increment passes them to the handler.
     pub(crate) fn stage_ports(&self) -> StagePorts<'_> {
         StagePorts {
             artifacts: self.deps.artifacts.as_ref(),
