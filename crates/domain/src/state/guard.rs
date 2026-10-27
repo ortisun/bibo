@@ -57,7 +57,7 @@ string_enum! {
         ActorMayCancel = "G_ACTOR_MAY_CANCEL",
         /// Every attempt of the job is in a terminal state and every sandbox has been torn down or flagged as leaked.
         AllAttemptsTerminal = "G_ALL_ATTEMPTS_TERMINAL",
-        /// A stage run is FAILED and no rework route or retry budget remains, or a job-level hard limit was reached under a policy that says fail.
+        /// The newest run of a stage kind in the job's scope is FAILED (by S06, S12 or S16), no newer run replaces it, and no rework route or retry budget remains; or a job-level hard limit was reached under a policy that says fail. The engine builds the facts from the listing of the job's stage runs, so a rework that created a newer run first leaves the guard unmet.
         Unrecoverable = "G_UNRECOVERABLE",
         /// The intake decision is decline, or an authorized approver recorded a reject decision.
         RejectionRecorded = "G_REJECTION_RECORDED",
@@ -67,7 +67,7 @@ string_enum! {
         UpstreamPassed = "G_UPSTREAM_PASSED",
         /// A deterministic rule, a domain profile or a policy states that the stage does not apply. The rule and its inputs are recorded in the ledger. An agent opinion is never sufficient.
         NotApplicableDecided = "G_NOT_APPLICABLE_DECIDED",
-        /// The lease compare-and-swap succeeded, the job is ACTIVE, not_before has passed, the concurrency quota allows it, and the runtime capability check passed.
+        /// The stage run is READY at the version the claim read, the job is ACTIVE, not_before has passed by the database clock, the concurrency quota allows it, and the runtime capability check passed. The store makes the check and the move one atomic step (start_attempt), so two workers cannot both pass it.
         LeaseAcquired = "G_LEASE_ACQUIRED",
         /// The attempt succeeded and its output validates against the stage outputs schema, and the output artifact hash is stored.
         OutputSchemaValid = "G_OUTPUT_SCHEMA_VALID",
@@ -103,7 +103,7 @@ string_enum! {
         NoActiveAttempt = "G_NO_ACTIVE_ATTEMPT",
         /// A consumed upstream artifact was superseded by a newer version, an upstream stage run was reworked, or an external change listed in the invalidation table happened (the source request was edited after the intake snapshot, or a value bound to gate evidence changed).
         UpstreamInvalidated = "G_UPSTREAM_INVALIDATED",
-        /// The sandbox started within its limits, the policy-approved tool grants are in place, the runtime capability probe satisfies the stage needs, and the lease epoch is current.
+        /// The sandbox provider returned a session for this attempt, which means it created the container, read its posture back, found every part equal to the spec and the policy, started it and passed the runtime self-check. The tool grants that policy approved are recorded in the audit log, the runtime probe of this attempt supports every capability the stage needs, and the lease epoch is current.
         SandboxProvisioned = "G_SANDBOX_PROVISIONED",
         /// The epoch sent by the worker equals the stored epoch and now is not past lease_expires_at.
         LeaseEpochCurrent = "G_LEASE_EPOCH_CURRENT",
@@ -127,5 +127,9 @@ string_enum! {
         TaskEvidenceRecorded = "G_TASK_EVIDENCE_RECORDED",
         /// The task retry count is below the per-task limit and the stage budget has room.
         TaskRetryAllowed = "G_TASK_RETRY_ALLOWED",
+        /// The attempt ended because something the stage cannot work without is missing or unsafe, not because the work failed: the container runtime is unreachable, the image is not on the host, the posture check found a difference, the spec was weaker than the policy, a required tool or runtime capability is absent, or the policy file could not be loaded. The cause is recorded. Retrying with the same settings cannot help, and trying other settings is forbidden.
+        EnvironmentBlocked = "G_ENVIRONMENT_BLOCKED",
+        /// The stage run is an INTAKE run created after an external change to the source request, and the hash of the current original request differs from the hash the requester authorized; or policy asks the requester to confirm before any agent reads the text. No attempt starts and no agent reads the new text until a person answers.
+        ReauthorizationRequired = "G_REAUTHORIZATION_REQUIRED",
     }
 }

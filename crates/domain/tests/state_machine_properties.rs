@@ -16,8 +16,8 @@ use factory_domain::machines::guards::stage_run::{
     retry_allowed, rework_allowed,
 };
 use factory_domain::machines::guards::{
-    AdmissionFacts, DeadlineFacts, GatePassFacts, LeaseExpiryFacts, OverrideFacts,
-    PipelineScopeFacts, RetryFacts, ReworkFacts,
+    AdmissionFacts, DeadlineFacts, EnvironmentCause, GatePassFacts, LeaseExpiryFacts,
+    OverrideFacts, PipelineScopeFacts, RetryFacts, ReworkFacts,
 };
 use factory_domain::machines::guards::{attempt, job};
 use factory_domain::machines::invalidation::{ArtifactChange, plan_for_change, plan_for_rework};
@@ -891,6 +891,7 @@ fn an_always_failing_runtime_ends_in_a_human_or_a_failure_within_max_attempts() 
                             0
                         },
                         repair_cap: RepairCap::from_policy(repair_cap),
+                        environment: None,
                     });
                     prop_assert!(stage.advance(decision.stage_run_event()).is_ok());
                     match decision {
@@ -911,8 +912,53 @@ fn an_always_failing_runtime_ends_in_a_human_or_a_failure_within_max_attempts() 
                             }
                             break;
                         }
+                        AttemptDisposition::Block(_) => {
+                            prop_assert!(false, "no environment cause was set, yet it blocked");
+                        }
                     }
                 }
+                Ok(())
+            },
+        )
+        .unwrap_or_else(|failure| panic!("{failure}"));
+}
+
+#[test]
+fn an_environment_cause_blocks_whatever_the_other_facts_are() {
+    // S21 comes first in the order of ADR 0010: over generated facts, a cause always gives
+    // `Block`, never a retry, an escalation or a failure, and the move is legal from RUNNING.
+    let strategy = (
+        0..FailureClass::ALL.len(),
+        any::<u8>(),
+        0u32..14,
+        1u32..12,
+        any::<bool>(),
+        0u32..14,
+        any::<u8>(),
+        0..EnvironmentCause::ALL.len(),
+    );
+    runner(SEQUENCES)
+        .run(
+            &strategy,
+            |(class, mask, used, max, budget, invalid, repair_cap, cause)| {
+                let retry_on = retry_classes_from(mask);
+                let cause = EnvironmentCause::ALL[cause];
+                let facts = RetryFacts {
+                    class: FailureClass::ALL[class],
+                    retry_on: &retry_on,
+                    attempts_used: used,
+                    max_attempts: max,
+                    budget_has_room: budget,
+                    invalid_output_failures: invalid,
+                    repair_cap: RepairCap::from_policy(repair_cap),
+                    environment: Some(cause),
+                };
+                let decision = decide_after_failure(&facts);
+                prop_assert_eq!(decision, AttemptDisposition::Block(cause));
+                prop_assert_eq!(
+                    StageRunStatus::Running.apply(decision.stage_run_event()),
+                    Ok(StageRunStatus::Blocked)
+                );
                 Ok(())
             },
         )
@@ -946,6 +992,7 @@ fn budget_and_attempt_limit_escalate_over_generated_facts() {
                     budget_has_room: budget,
                     invalid_output_failures: invalid,
                     repair_cap: RepairCap::from_policy(repair_cap),
+                    environment: None,
                 };
                 let decision = decide_after_failure(&facts);
                 let escalates = matches!(decision, AttemptDisposition::Escalate(_));
@@ -1141,6 +1188,7 @@ fn retry_and_rework_guards_never_allow_more_than_the_limits() {
                     budget_has_room: budget,
                     invalid_output_failures: invalid,
                     repair_cap: RepairCap::from_policy(repair_cap),
+                    environment: None,
                 };
                 if retry_allowed(&retry).is_ok() {
                     prop_assert!(used < max);

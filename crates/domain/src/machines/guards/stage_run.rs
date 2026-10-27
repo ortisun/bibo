@@ -3,17 +3,20 @@
 //! `G_NO_ACTIVE_ATTEMPT` (`S19`) is in [`attempt`](super::attempt), next to the other guards that
 //! read attempts.
 
+use super::digest::facts;
 use super::{Check, GuardResult, any_of};
 use crate::contracts::stage_contract::RetryClass;
 use crate::machines::failure::FailureClass;
 use crate::machines::limits::{RepairCap, ReworkCap};
 use crate::machines::snapshot::{GateReportSnapshot, StageRunSnapshot};
+use crate::macros::string_enum;
 use crate::state::{Guard, JobStatus, StageRunStatus};
-use crate::values::Timestamp;
+use crate::values::{Sha256Digest, Timestamp};
 use crate::vocabulary::{GateOutcome, HumanRole, StageKind};
 
 // ---- becoming ready (S01, S02) ------------------------------------------------------------------------
 
+facts! {
 /// What decides whether a stage run can leave `PENDING`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct UpstreamFacts<'a> {
@@ -25,6 +28,7 @@ pub struct UpstreamFacts<'a> {
     pub consumed_artifact_hashes_current: bool,
     /// The stage contract was resolved and validated against its schema.
     pub stage_contract_resolved_and_valid: bool,
+}
 }
 
 /// True when a run of a stage satisfies the stages that require it and the completion of the
@@ -83,6 +87,7 @@ pub enum NotApplicableBasis {
     AgentOpinion,
 }
 
+facts! {
 /// What decides whether a stage may be skipped.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct NotApplicableFacts {
@@ -90,6 +95,7 @@ pub struct NotApplicableFacts {
     pub basis: Option<NotApplicableBasis>,
     /// The rule and its inputs are recorded in the ledger.
     pub rule_and_inputs_recorded: bool,
+}
 }
 
 /// `G_NOT_APPLICABLE_DECIDED`.
@@ -120,11 +126,14 @@ pub fn not_applicable_decided(facts: &NotApplicableFacts) -> GuardResult {
 
 // ---- starting and finishing an attempt (S03, S04) -------------------------------------------------------------
 
+facts! {
 /// What decides whether a worker may start a stage run.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct LeaseGrantFacts {
-    /// The lease compare-and-swap succeeded.
-    pub lease_compare_and_swap_succeeded: bool,
+    /// The stage run is `READY` at the version the claim read, in this transaction. The store
+    /// makes this check and the move to `RUNNING` one atomic step (`start_attempt`), so two
+    /// workers cannot both hold it.
+    pub claim_candidate_current: bool,
     /// The job's status.
     pub job_status: JobStatus,
     /// The moment of the request.
@@ -135,6 +144,7 @@ pub struct LeaseGrantFacts {
     pub concurrency_quota_allows: bool,
     /// The runtime capability check passed.
     pub runtime_capability_check_passed: bool,
+}
 }
 
 /// `G_LEASE_ACQUIRED`. The back-off is over at the not-before moment itself.
@@ -147,8 +157,8 @@ pub fn lease_acquired(facts: &LeaseGrantFacts) -> GuardResult {
         .is_none_or(|not_before| facts.now >= not_before);
     Check::new(Guard::LeaseAcquired)
         .require(
-            facts.lease_compare_and_swap_succeeded,
-            "the lease compare-and-swap did not succeed",
+            facts.claim_candidate_current,
+            "the stage run is not READY at the version the claim read",
         )
         .require(
             facts.job_status == JobStatus::Active,
@@ -169,6 +179,7 @@ pub fn lease_acquired(facts: &LeaseGrantFacts) -> GuardResult {
         .finish()
 }
 
+facts! {
 /// What decides whether an attempt's output is accepted.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct OutputFacts {
@@ -178,6 +189,7 @@ pub struct OutputFacts {
     pub output_validates_against_outputs_schema: bool,
     /// The output artifact hash is stored.
     pub output_artifact_hash_stored: bool,
+}
 }
 
 /// `G_OUTPUT_SCHEMA_VALID`.
@@ -200,6 +212,7 @@ pub fn output_schema_valid(facts: &OutputFacts) -> GuardResult {
 
 // ---- an attempt failed (S05, S06, S07) ----------------------------------------------------------------------------
 
+facts! {
 /// What decides whether a failed attempt is retried.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RetryFacts<'a> {
@@ -220,6 +233,13 @@ pub struct RetryFacts<'a> {
     pub invalid_output_failures: u32,
     /// The most repairs the policy allows. Never above two.
     pub repair_cap: RepairCap,
+    /// Set when the attempt ended because the environment is missing or unsafe (the container
+    /// runtime is unreachable, the image is absent, the posture differs, the spec is weaker than
+    /// the policy, a tool is absent, the policy file cannot be loaded). Then the stage run is
+    /// blocked (`S21`) before any retry or escalation is considered. A provisioning failure, a
+    /// timeout or a resource limit is not an environment cause and leaves this `None`.
+    pub environment: Option<EnvironmentCause>,
+}
 }
 
 impl RetryFacts<'_> {
@@ -294,6 +314,7 @@ pub fn failure_nonretryable(facts: &RetryFacts<'_>) -> GuardResult {
         .finish()
 }
 
+facts! {
 /// What decides whether a running stage run asks a human.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct EscalationFacts {
@@ -308,6 +329,7 @@ pub struct EscalationFacts {
     pub stagnation_detected: bool,
     /// Policy requires a human decision here.
     pub policy_requires_human_decision: bool,
+}
 }
 
 /// `G_ESCALATION_REQUIRED`.
@@ -338,6 +360,7 @@ pub fn escalation_required(facts: &EscalationFacts) -> GuardResult {
 
 // ---- the gate decides (S08 to S12) ------------------------------------------------------------------------------------
 
+facts! {
 /// What decides whether a stage passes its gate.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct GatePassFacts<'a> {
@@ -347,6 +370,7 @@ pub struct GatePassFacts<'a> {
     pub criteria_without_ledger_entry: usize,
     /// The report of every mandatory gate.
     pub mandatory_gate_reports: &'a [GateReportSnapshot],
+}
 }
 
 /// `G_GATE_PASS_EVIDENCED`. A gate that did not run is `BLOCKED` and never passes (INV-06).
@@ -378,6 +402,7 @@ pub fn gate_pass_evidenced(facts: &GatePassFacts<'_>) -> GuardResult {
         .finish()
 }
 
+facts! {
 /// What decides whether a gate sends the work back.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ReworkFacts {
@@ -393,6 +418,7 @@ pub struct ReworkFacts {
     pub failing_set_differs_from_previous_round: bool,
     /// Budget remains.
     pub budget_remains: bool,
+}
 }
 
 /// `G_REWORK_ALLOWED`.
@@ -417,6 +443,7 @@ pub fn rework_allowed(facts: &ReworkFacts) -> GuardResult {
         .finish()
 }
 
+facts! {
 /// What decides whether a gate hands the stage to a human.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct NeedsHumanFacts {
@@ -434,6 +461,7 @@ pub struct NeedsHumanFacts {
     /// (`specification`, or `policy`), at a stage whose defect routing sends that class to a
     /// person (`pipeline.defect_routing` in the file).
     pub defect_needs_a_person: bool,
+}
 }
 
 /// `G_NEEDS_HUMAN_VERDICT`.
@@ -460,6 +488,7 @@ pub fn needs_human_verdict(facts: &NeedsHumanFacts) -> GuardResult {
     )
 }
 
+facts! {
 /// What decides whether a gate blocks the stage.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct BlockingFacts {
@@ -472,6 +501,7 @@ pub struct BlockingFacts {
     /// because a reviewer's opinion can be wrong and a block with nobody asked is worse than a
     /// question (ADR 0010 decision 3).
     pub policy_violation_detected: bool,
+}
 }
 
 /// `G_BLOCKING_CONDITION`.
@@ -495,6 +525,7 @@ pub fn blocking_condition(facts: &BlockingFacts) -> GuardResult {
     )
 }
 
+facts! {
 /// What decides whether a failed gate has nowhere to send the work.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct NoReworkFacts {
@@ -502,6 +533,7 @@ pub struct NoReworkFacts {
     pub gate_failed: bool,
     /// A rework route exists for this stage and this failure.
     pub a_rework_route_exists: bool,
+}
 }
 
 /// `G_GATE_FAILED_NO_REWORK`.
@@ -520,6 +552,7 @@ pub fn gate_failed_no_rework(facts: &NoReworkFacts) -> GuardResult {
 
 // ---- humans (S13 to S18) ----------------------------------------------------------------------------------------------
 
+facts! {
 /// What decides whether a human answer unblocks a waiting stage run.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct AnswerFacts {
@@ -531,6 +564,7 @@ pub struct AnswerFacts {
     pub raises_a_ceiling: bool,
     /// The principal who gave the answer holds the `org_admin` role.
     pub principal_is_org_admin: bool,
+}
 }
 
 /// `G_ANSWER_RECORDED`.
@@ -554,6 +588,7 @@ pub fn answer_recorded(facts: &AnswerFacts) -> GuardResult {
         .finish()
 }
 
+facts! {
 /// What decides whether a human approval passes the stage.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ApprovalFacts {
@@ -566,6 +601,7 @@ pub struct ApprovalFacts {
     /// Every open warning of the rule `translation-unfaithful` in the gate reports of that
     /// evidence has a recorded human decision. True when there is no such warning.
     pub translation_warnings_decided: bool,
+}
 }
 
 /// `G_APPROVER_AUTHORIZED`.
@@ -590,6 +626,7 @@ pub fn approver_authorized(facts: &ApprovalFacts) -> GuardResult {
         .finish()
 }
 
+facts! {
 /// What decides whether a human may send a stage back for rework.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct HumanReworkFacts<'a> {
@@ -599,6 +636,7 @@ pub struct HumanReworkFacts<'a> {
     pub rounds_used: u8,
     /// The cap on that count. It cannot be above two.
     pub cap: ReworkCap,
+}
 }
 
 /// `G_HUMAN_REWORK_ALLOWED`. The stagnation detector does not apply to a human's request.
@@ -620,6 +658,7 @@ pub fn human_rework_allowed(facts: &HumanReworkFacts<'_>) -> GuardResult {
         .finish()
 }
 
+facts! {
 /// What decides whether a human rejection fails the stage.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct HumanRejectFacts {
@@ -629,6 +668,7 @@ pub struct HumanRejectFacts {
     pub reject_decision_recorded: bool,
     /// The reason is recorded.
     pub reason_recorded: bool,
+}
 }
 
 /// `G_HUMAN_REJECTED`.
@@ -649,6 +689,7 @@ pub fn human_rejected(facts: &HumanRejectFacts) -> GuardResult {
         .finish()
 }
 
+facts! {
 /// What decides whether a blocked stage can run again.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct UnblockFacts {
@@ -656,6 +697,7 @@ pub struct UnblockFacts {
     pub capability_reprobe_passed: bool,
     /// The missing dependency is now available.
     pub missing_dependency_now_available: bool,
+}
 }
 
 /// `G_BLOCK_CLEARED_RERUN`.
@@ -678,6 +720,7 @@ pub fn block_cleared_rerun(facts: &UnblockFacts) -> GuardResult {
     )
 }
 
+facts! {
 /// What decides whether a blocked stage may be passed by override.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct OverrideFacts<'a> {
@@ -693,6 +736,7 @@ pub struct OverrideFacts<'a> {
     pub justification_recorded: bool,
     /// The blocked gate is a mandatory gate of an active domain profile.
     pub blocked_gate_is_mandatory_of_active_profile: bool,
+}
 }
 
 /// `G_OVERRIDE_PERMITTED`. An override never applies to a mandatory gate of an active domain
@@ -729,6 +773,7 @@ pub fn override_permitted(facts: &OverrideFacts<'_>) -> GuardResult {
 
 // ---- supersession (S20) ----------------------------------------------------------------------------------------------------
 
+facts! {
 /// What decides whether a stage run is superseded.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SupersedeFacts {
@@ -739,6 +784,7 @@ pub struct SupersedeFacts {
     /// An external change listed in the invalidation table happened: the source request was
     /// edited after the intake snapshot, or a value bound to gate evidence changed.
     pub external_change_recorded: bool,
+}
 }
 
 /// `G_UPSTREAM_INVALIDATED`.
@@ -760,6 +806,89 @@ pub fn upstream_invalidated(facts: &SupersedeFacts) -> GuardResult {
             (
                 facts.external_change_recorded,
                 "an external change listed in the invalidation table happened",
+            ),
+        ],
+    )
+}
+
+// ---- the environment blocks the stage (S21) -----------------------------------------------------------------
+
+string_enum! {
+    /// Why an attempt ended because the environment is missing or unsafe, not because the work
+    /// failed. The cause is recorded with the block. Retrying with the same settings cannot
+    /// help, and trying other settings is forbidden.
+    pub enum EnvironmentCause("environment cause") {
+        /// The container runtime cannot be reached.
+        DaemonUnavailable = "daemon_unavailable",
+        /// The image the sandbox needs is not on the host.
+        ImageUnavailable = "image_unavailable",
+        /// The posture check found a difference between the container and the spec or the policy.
+        PostureMismatch = "posture_mismatch",
+        /// The spec is weaker than the policy.
+        PolicyViolation = "policy_violation",
+        /// A required tool or runtime capability is absent.
+        ToolMissing = "tool_missing",
+        /// The policy file could not be loaded.
+        PolicyUnloadable = "policy_unloadable",
+    }
+}
+
+facts! {
+/// What decides whether a failed attempt blocks its stage run instead of being retried.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct EnvironmentFacts {
+    /// Why the environment is not usable.
+    pub cause: EnvironmentCause,
+    /// The attempt was ended as `FAILED` in the same transaction as the move.
+    pub attempt_ended_failed: bool,
+}
+}
+
+/// `G_ENVIRONMENT_BLOCKED`. The cause is always one of the closed set, so the only condition that
+/// can fail is that the attempt was not ended in the same transaction.
+///
+/// # Errors
+/// Returns the condition that is not met.
+pub fn environment_blocked(facts: &EnvironmentFacts) -> GuardResult {
+    Check::new(Guard::EnvironmentBlocked)
+        .require(
+            facts.attempt_ended_failed,
+            "the attempt was not ended as FAILED in the same transaction",
+        )
+        .finish()
+}
+
+// ---- a changed request needs a person (S22) -------------------------------------------------------------------
+
+facts! {
+/// What decides whether a new `INTAKE` run must reach a person before any agent reads the text.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ReauthorizationFacts<'a> {
+    /// The hash of the original request the requester authorized, if one was authorized.
+    pub authorized_request: Option<&'a Sha256Digest>,
+    /// The hash of the current original request.
+    pub current_request: &'a Sha256Digest,
+    /// Policy asks the requester to confirm before any agent reads the text.
+    pub policy_asks_confirmation: bool,
+}
+}
+
+/// `G_REAUTHORIZATION_REQUIRED`. A request that was never authorized counts as different.
+///
+/// # Errors
+/// Returns the alternatives, none of which is true.
+pub fn reauthorization_required(facts: &ReauthorizationFacts<'_>) -> GuardResult {
+    let differs = facts.authorized_request != Some(facts.current_request);
+    any_of(
+        Guard::ReauthorizationRequired,
+        &[
+            (
+                differs,
+                "the current request differs from the one the requester authorized",
+            ),
+            (
+                facts.policy_asks_confirmation,
+                "policy asks the requester to confirm before any agent reads the text",
             ),
         ],
     )

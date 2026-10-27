@@ -1,5 +1,6 @@
 //! Guards of the Job machine (transitions `J01` to `J13`).
 
+use super::digest::facts;
 use super::stage_run::satisfies_dependants;
 use super::{Check, GuardResult, any_of};
 use crate::machines::snapshot::StageRunSnapshot;
@@ -8,6 +9,7 @@ use crate::vocabulary::{HumanRole, StageKind};
 
 // ---- admission (J01, J02) ----------------------------------------------------------------------------
 
+facts! {
 /// What admission looks at.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct AdmissionFacts {
@@ -23,6 +25,7 @@ pub struct AdmissionFacts {
     /// The repository passed the protection preflight. This does not decide admission. If it did
     /// not pass, the job is admitted but may only run at autonomy level L0.
     pub protection_preflight_passed: bool,
+}
 }
 
 impl AdmissionFacts {
@@ -88,11 +91,13 @@ pub fn admission_denied(facts: &AdmissionFacts) -> GuardResult {
 
 // ---- the board of stage runs (J03, J04, J07, J08) -------------------------------------------------------
 
+facts! {
 /// The stage runs of one job.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct StageBoardFacts<'a> {
     /// Every stage run of the job, old runs included.
     pub stage_runs: &'a [StageRunSnapshot],
+}
 }
 
 impl StageBoardFacts<'_> {
@@ -160,6 +165,7 @@ pub fn block_dispositions_recorded(facts: &StageBoardFacts<'_>) -> GuardResult {
 
 // ---- who may act (J05, J06, J09) ------------------------------------------------------------------------
 
+facts! {
 /// The principal who asks for a transition.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PrincipalFacts<'a> {
@@ -167,6 +173,7 @@ pub struct PrincipalFacts<'a> {
     pub roles: &'a [HumanRole],
     /// The principal is the person who submitted this job.
     pub is_job_requester: bool,
+}
 }
 
 /// `G_ACTOR_MAY_PAUSE`.
@@ -204,11 +211,16 @@ pub fn actor_may_cancel(facts: &PrincipalFacts<'_>) -> GuardResult {
 
 // ---- failure and rejection (J11, J12) -----------------------------------------------------------------------
 
+facts! {
 /// What decides whether a job can no longer go on.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct UnrecoverableFacts {
-    /// A stage run of the job is `FAILED`.
+    /// The newest run of a stage kind in the job's scope is `FAILED` (by `S06`, `S12` or `S16`).
     pub stage_run_failed: bool,
+    /// A newer run of the same stage kind exists, so the failed run is already replaced. The
+    /// engine builds this from the listing of the job's stage runs. A rework that created the
+    /// newer run first leaves the guard unmet.
+    pub newer_run_of_kind_exists: bool,
     /// A rework route is still open for the failed work.
     pub rework_route_remains: bool,
     /// Retry budget is left.
@@ -217,6 +229,7 @@ pub struct UnrecoverableFacts {
     pub hard_limit_reached: bool,
     /// The policy for that limit says the job fails (and does not ask a human).
     pub policy_says_fail: bool,
+}
 }
 
 /// `G_UNRECOVERABLE`.
@@ -229,9 +242,11 @@ pub fn unrecoverable(facts: &UnrecoverableFacts) -> GuardResult {
         &[
             (
                 facts.stage_run_failed
+                    && !facts.newer_run_of_kind_exists
                     && !facts.rework_route_remains
                     && !facts.retry_budget_remains,
-                "a stage run failed and no rework route or retry budget remains",
+                "the newest run of a stage kind failed, no newer run replaces it, and no rework \
+                 route or retry budget remains",
             ),
             (
                 facts.hard_limit_reached && facts.policy_says_fail,
@@ -241,6 +256,7 @@ pub fn unrecoverable(facts: &UnrecoverableFacts) -> GuardResult {
     )
 }
 
+facts! {
 /// What decides whether a job is rejected.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RejectionFacts {
@@ -250,6 +266,7 @@ pub struct RejectionFacts {
     pub reject_decision_recorded: bool,
     /// The person who recorded it is an authorized approver.
     pub decider_is_authorized_approver: bool,
+}
 }
 
 /// `G_REJECTION_RECORDED`.
@@ -274,6 +291,7 @@ pub fn rejection_recorded(facts: &RejectionFacts) -> GuardResult {
 
 // ---- completion (J13) ------------------------------------------------------------------------------------------
 
+facts! {
 /// What decides whether a job is complete.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PipelineScopeFacts<'a> {
@@ -285,6 +303,7 @@ pub struct PipelineScopeFacts<'a> {
     pub approval_decision_is_approve: bool,
     /// The evidence ledger hash chain verifies.
     pub ledger_chain_verifies: bool,
+}
 }
 
 /// `G_PIPELINE_SCOPE_COMPLETE`.
