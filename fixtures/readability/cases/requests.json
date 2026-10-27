@@ -1,0 +1,528 @@
+{
+  "corpus_format": 1,
+  "cases": [
+    {
+      "id": "request-language-body-in-portuguese",
+      "kind": "request",
+      "domain": "games",
+      "source": "authored",
+      "exercises": ["text-not-english"],
+      "breaks": ["text-not-english"],
+      "verdict": "block",
+      "reason": "The body is Portuguese prose outside any quotation, so the factory's own text is not English.",
+      "suggested_fix": "Write the explanation in English and keep the original sentences only as a marked quotation.",
+      "input": {
+        "title": "Save level progress without a connection",
+        "body": [
+          "O jogo deve salvar o progresso do jogador mesmo sem conexão.",
+          "Quando a conexão voltar, o progresso salvo deve ser enviado ao servidor."
+        ]
+      }
+    },
+    {
+      "id": "request-language-title-in-portuguese",
+      "kind": "request",
+      "domain": "games",
+      "source": "authored",
+      "exercises": ["text-not-english"],
+      "breaks": ["text-not-english"],
+      "verdict": "block",
+      "reason": "The body is English but the title is Portuguese, and a title is human-facing text too.",
+      "suggested_fix": "Add offline progress saving for the puzzle game",
+      "input": {
+        "title": "Adicionar salvamento de progresso offline ao jogo de quebra-cabeça",
+        "body": [
+          "The game should save a player's progress on the device after every level, even when there is no connection."
+        ]
+      }
+    },
+    {
+      "id": "request-language-mixed-sentences",
+      "kind": "request",
+      "domain": "web",
+      "source": "authored",
+      "exercises": ["text-not-english"],
+      "breaks": ["text-not-english"],
+      "verdict": "block",
+      "reason": "One English sentence does not excuse the unquoted Portuguese sentence next to it.",
+      "suggested_fix": "Translate the second sentence into English.",
+      "input": {
+        "title": "Reject oversized import files",
+        "body": [
+          "The importer must reject files larger than 10 MB. O importador deve mostrar uma mensagem clara quando o arquivo for rejeitado."
+        ]
+      }
+    },
+    {
+      "id": "request-language-near-miss-blockquote",
+      "kind": "request",
+      "domain": "games",
+      "source": "authored",
+      "exercises": ["text-not-english", "text-quotation-dominates"],
+      "breaks": [],
+      "verdict": "pass",
+      "reason": "Portuguese inside a marked quotation is evidence, and the English explanation sits beside it.",
+      "input": {
+        "title": "Keep progress when the app is closed",
+        "body": [
+          "The requester wrote the next sentence in Portuguese. It is kept here as evidence.",
+          "",
+          "> O jogador não deve perder o progresso quando o aplicativo for fechado.",
+          "",
+          "In English: the player must not lose progress when the app is closed."
+        ]
+      }
+    },
+    {
+      "id": "request-language-near-miss-localized-labels",
+      "kind": "request",
+      "domain": "web",
+      "source": "authored",
+      "tags": ["localization"],
+      "exercises": ["text-not-english"],
+      "breaks": [],
+      "verdict": "pass",
+      "reason": "Product text in the requested locale is allowed. The engineering explanation is English.",
+      "input": {
+        "title": "Add Brazilian Portuguese labels to the checkout screen",
+        "body": [
+          "The checkout button label becomes \"Finalizar compra\" and the cancel link becomes \"Cancelar pedido\". All other text on the screen stays as it is.",
+          "These labels are product text for Brazilian users. The engineering notes for this change stay in English."
+        ]
+      }
+    },
+    {
+      "id": "request-language-near-miss-domain-terms",
+      "kind": "request",
+      "domain": "trading",
+      "source": "authored",
+      "exercises": ["text-not-english", "text-abbreviation-unexpanded"],
+      "breaks": [],
+      "verdict": "pass",
+      "reason": "Domain terms stay in their original form, and the first mention of the abbreviation is explained.",
+      "input": {
+        "title": "Calculate the present value of the bond portfolio",
+        "body": [
+          "Adjust each cash flow with the IPCA (Brazil's official consumer price index) and discount it at the Selic rate (the Brazilian central bank's policy interest rate).",
+          "Keep the names IPCA and Selic as they are, because they are the terms the finance team uses."
+        ]
+      }
+    },
+    {
+      "id": "request-quotation-dominates-blockquote",
+      "kind": "request",
+      "domain": "web",
+      "source": "authored",
+      "exercises": ["text-not-english", "text-quotation-dominates"],
+      "breaks": ["text-quotation-dominates"],
+      "verdict": "warn",
+      "reason": "The Portuguese is correctly quoted, but nothing explains it in English, so the quotation is the whole request.",
+      "suggested_fix": "Add English sentences that state the request, and keep the quotation as evidence.",
+      "input": {
+        "title": "Add password reset support",
+        "body": [
+          "The requester's text is below.",
+          "",
+          "> Quem esquece a senha hoje precisa falar com o suporte.",
+          "> Quero um link na tela de login que envie um e-mail de redefinição.",
+          "> O link deve funcionar uma vez e expirar em 30 minutos."
+        ]
+      }
+    },
+    {
+      "id": "request-abbreviation-dcf-unexpanded",
+      "kind": "request",
+      "domain": "trading",
+      "source": "authored",
+      "tags": ["unexpanded-acronym"],
+      "exercises": ["text-abbreviation-unexpanded"],
+      "breaks": ["text-abbreviation-unexpanded"],
+      "verdict": "warn",
+      "reason": "DCF is not on the widely understood list and is never spelled out.",
+      "suggested_fix": "Write 'discounted cash flow (DCF)' the first time.",
+      "input": {
+        "title": "Estimate the intrinsic value of each holding",
+        "body": [
+          "Compute the DCF value of each holding from its forecast cash flows and the discount rate.",
+          "Show the result next to the market price."
+        ]
+      }
+    },
+    {
+      "id": "request-abbreviation-dcf-expanded",
+      "kind": "request",
+      "domain": "trading",
+      "source": "authored",
+      "exercises": ["text-abbreviation-unexpanded"],
+      "breaks": [],
+      "verdict": "pass",
+      "reason": "The first mention is spelled out, so later uses of DCF are fine.",
+      "input": {
+        "title": "Estimate the intrinsic value of each holding",
+        "body": [
+          "Compute the discounted cash flow (DCF) value of each holding from its forecast cash flows and the discount rate.",
+          "Show the DCF result next to the market price."
+        ]
+      }
+    },
+    {
+      "id": "request-abbreviation-allowlisted-terms",
+      "kind": "request",
+      "domain": "web",
+      "source": "authored",
+      "exercises": ["text-abbreviation-unexpanded"],
+      "breaks": [],
+      "verdict": "pass",
+      "reason": "API, HTTPS, JSON and OIDC are on the widely understood list.",
+      "input": {
+        "title": "Return JSON from the status endpoint",
+        "body": [
+          "The API must answer over HTTPS with JSON, and it must accept OIDC tokens from the sign-in service."
+        ]
+      }
+    },
+    {
+      "id": "request-abbreviation-title-excused-by-body",
+      "kind": "request",
+      "domain": "trading",
+      "source": "authored",
+      "exercises": ["text-abbreviation-unexpanded"],
+      "breaks": [],
+      "verdict": "pass",
+      "reason": "The title uses the short form and the body spells it out at its first mention.",
+      "input": {
+        "title": "Add DCF sensitivity table",
+        "body": [
+          "Show how the discounted cash flow (DCF) value changes when the discount rate moves up or down by one percentage point."
+        ]
+      }
+    },
+    {
+      "id": "request-abbreviation-title-only",
+      "kind": "request",
+      "domain": "trading",
+      "source": "authored",
+      "tags": ["unexpanded-acronym"],
+      "exercises": ["text-abbreviation-unexpanded"],
+      "breaks": ["text-abbreviation-unexpanded"],
+      "verdict": "warn",
+      "reason": "DCF appears in the title and the body never spells it out.",
+      "suggested_fix": "Spell out 'discounted cash flow (DCF)' in the body, or use the full name in the title.",
+      "input": {
+        "title": "Add DCF sensitivity table",
+        "body": [
+          "Show how the estimated value changes when the discount rate moves up or down by one percentage point."
+        ]
+      }
+    },
+    {
+      "id": "request-abbreviation-fps-unexpanded",
+      "kind": "request",
+      "domain": "games",
+      "source": "authored",
+      "tags": ["unexpanded-acronym"],
+      "exercises": ["text-abbreviation-unexpanded"],
+      "breaks": ["text-abbreviation-unexpanded"],
+      "verdict": "warn",
+      "reason": "FPS can also mean first-person shooter, so it needs to be spelled out.",
+      "suggested_fix": "Write '60 frames per second (FPS)'.",
+      "input": {
+        "title": "Keep the game smooth on older phones",
+        "body": ["The game must run at 60 FPS on the oldest phone we support."]
+      }
+    },
+    {
+      "id": "request-abbreviation-fps-expanded",
+      "kind": "request",
+      "domain": "games",
+      "source": "authored",
+      "exercises": ["text-abbreviation-unexpanded"],
+      "breaks": [],
+      "verdict": "pass",
+      "reason": "The abbreviation is spelled out at its first mention.",
+      "input": {
+        "title": "Keep the game smooth on older phones",
+        "body": ["The game must run at 60 frames per second (FPS) on the oldest phone we support."]
+      }
+    },
+    {
+      "id": "request-abbreviation-internal-dag",
+      "kind": "request",
+      "domain": "platform",
+      "source": "authored",
+      "tags": ["unexpanded-acronym"],
+      "exercises": ["text-abbreviation-unexpanded"],
+      "breaks": ["text-abbreviation-unexpanded"],
+      "verdict": "warn",
+      "reason": "DAG is common in engineering but is not on the widely understood list, so it needs a short expansion.",
+      "suggested_fix": "Write 'directed acyclic graph (DAG)' the first time.",
+      "input": {
+        "title": "Run independent tasks at the same time",
+        "body": [
+          "Planning produces a DAG of tasks, and the scheduler runs tasks that do not depend on each other in parallel."
+        ]
+      }
+    },
+    {
+      "id": "request-abbreviation-fcm-unexpanded",
+      "kind": "request",
+      "domain": "native-apps",
+      "source": "authored",
+      "tags": ["unexpanded-acronym"],
+      "exercises": ["text-abbreviation-unexpanded"],
+      "breaks": ["text-abbreviation-unexpanded"],
+      "verdict": "warn",
+      "reason": "FCM is a product abbreviation that a general reader may not know.",
+      "suggested_fix": "Write 'Firebase Cloud Messaging (FCM)' the first time.",
+      "input": {
+        "title": "Send a notification when a download finishes",
+        "body": ["Deliver the notification through FCM so that it also arrives when the app is closed."]
+      }
+    },
+    {
+      "id": "request-abbreviation-fcm-expanded",
+      "kind": "request",
+      "domain": "native-apps",
+      "source": "authored",
+      "exercises": ["text-abbreviation-unexpanded"],
+      "breaks": [],
+      "verdict": "pass",
+      "reason": "The product name is spelled out before the abbreviation is used.",
+      "input": {
+        "title": "Send a notification when a download finishes",
+        "body": [
+          "Deliver the notification through Firebase Cloud Messaging (FCM) so that it also arrives when the app is closed."
+        ]
+      }
+    },
+    {
+      "id": "request-raw-id-uuid-in-prose",
+      "kind": "request",
+      "domain": "general",
+      "source": "authored",
+      "exercises": ["text-raw-internal-id"],
+      "breaks": ["text-raw-internal-id"],
+      "verdict": "warn",
+      "reason": "A UUID in a sentence is bookkeeping a reader cannot use.",
+      "suggested_fix": "Link the work item instead of pasting its identifier.",
+      "input": {
+        "title": "Finish the export that was left half done",
+        "body": [
+          "This request continues work item 0198f3c2-7a41-7c3e-9b0d-2f6a8e4c1d55 and must not change its scope."
+        ]
+      }
+    },
+    {
+      "id": "request-raw-id-near-miss-link-and-code",
+      "kind": "request",
+      "domain": "general",
+      "source": "authored",
+      "exercises": ["text-raw-internal-id"],
+      "breaks": [],
+      "verdict": "pass",
+      "reason": "The same identifier is allowed inside a link target and a code span.",
+      "input": {
+        "title": "Finish the export that was left half done",
+        "body": [
+          "This request continues the export work. The work item is linked in the sidebar ([details](https://example.com/items/0198f3c2-7a41-7c3e-9b0d-2f6a8e4c1d55)) and recorded as `0198f3c2-7a41-7c3e-9b0d-2f6a8e4c1d55` for reference."
+        ]
+      }
+    },
+    {
+      "id": "request-metadata-lines-in-body",
+      "kind": "request",
+      "domain": "general",
+      "source": "authored",
+      "exercises": ["body-metadata-lines"],
+      "breaks": ["body-metadata-lines"],
+      "verdict": "warn",
+      "reason": "Agent assignment and retry counts are bookkeeping that belongs in structured fields.",
+      "suggested_fix": "Delete the two lines. Keep the values in metadata.",
+      "input": {
+        "title": "Finish the export that was left half done",
+        "body": [
+          "The export stops after the first page of results. It should continue until every row is written.",
+          "Assigned agent: backend-2",
+          "Retries: 2"
+        ]
+      }
+    },
+    {
+      "id": "request-metadata-lines-near-miss-sentence-and-code",
+      "kind": "request",
+      "domain": "general",
+      "source": "authored",
+      "exercises": ["body-metadata-lines"],
+      "breaks": [],
+      "verdict": "pass",
+      "reason": "The word retries in a sentence is prose, and a labelled line inside a code block is sample output.",
+      "input": {
+        "title": "Retry failed uploads automatically",
+        "body": [
+          "The client retries a failed upload up to three times before it shows an error.",
+          "",
+          "```",
+          "Retries: 2",
+          "```"
+        ]
+      }
+    },
+    {
+      "id": "request-metadata-lines-in-bullets",
+      "kind": "request",
+      "domain": "general",
+      "source": "authored",
+      "exercises": ["body-metadata-lines"],
+      "breaks": ["body-metadata-lines"],
+      "verdict": "warn",
+      "reason": "List bullets do not hide bookkeeping lines. The key and the value are still internal fields.",
+      "suggested_fix": "Delete the lines and keep the values in metadata.",
+      "input": {
+        "title": "Finish the export that was left half done",
+        "body": [
+          "The export stops after the first page of results. It should continue until every row is written.",
+          "- Retry count: 3",
+          "- Correlation id: export-0042"
+        ]
+      }
+    },
+    {
+      "id": "request-filler-reach-out",
+      "kind": "request",
+      "domain": "general",
+      "source": "authored",
+      "exercises": ["text-filler-phrase"],
+      "breaks": ["text-filler-phrase"],
+      "verdict": "warn",
+      "reason": "Three filler phrases and no fact about what is wrong or how success will be checked.",
+      "suggested_fix": "State the defect and how to check the fix: the export stops after the first page and must write all rows.",
+      "input": {
+        "title": "Make the export write every row",
+        "body": [
+          "Please fix the export so it writes every row. Feel free to reach out if anything is unclear, and rest assured that this is a game-changing improvement."
+        ]
+      }
+    },
+    {
+      "id": "request-metadata-prefix-near-miss-pipe-in-code",
+      "kind": "request",
+      "domain": "platform",
+      "source": "authored",
+      "exercises": ["body-metadata-prefix"],
+      "breaks": [],
+      "verdict": "pass",
+      "reason": "A pipe inside inline code is a shell example, not a stamp chain.",
+      "input": {
+        "title": "Compare the sorted output with the expected list",
+        "body": ["Run `sort names.txt | uniq` and compare the output with the expected list."]
+      }
+    },
+    {
+      "id": "request-sentence-35-words",
+      "kind": "request",
+      "domain": "general",
+      "source": "authored",
+      "tags": ["boundary"],
+      "exercises": ["text-long-sentence"],
+      "breaks": [],
+      "verdict": "pass",
+      "reason": "Exactly 35 words, the longest sentence that raises no warning.",
+      "input": {
+        "title": "Make the export write every row",
+        "body": [
+          "When the export reaches the end of the first page it must keep going until every row is written to the file, so the person who asked for the report never gets an incomplete file."
+        ]
+      }
+    },
+    {
+      "id": "request-sentence-36-words",
+      "kind": "request",
+      "domain": "general",
+      "source": "authored",
+      "tags": ["boundary"],
+      "exercises": ["text-long-sentence"],
+      "breaks": ["text-long-sentence"],
+      "verdict": "warn",
+      "reason": "36 words in one sentence is one word over the ceiling.",
+      "suggested_fix": "Split it after 'to the file': say what the export must do, then why it matters.",
+      "input": {
+        "title": "Make the export write every row",
+        "body": [
+          "When the export reaches the end of the first page it must keep going until every row has been written to the file, so the person who asked for the report never gets an incomplete file."
+        ]
+      }
+    },
+    {
+      "id": "request-sentence-near-miss-split",
+      "kind": "request",
+      "domain": "general",
+      "source": "authored",
+      "exercises": ["text-long-sentence"],
+      "breaks": [],
+      "verdict": "pass",
+      "reason": "The same content as the 36-word sentence, split into two short sentences.",
+      "input": {
+        "title": "Make the export write every row",
+        "body": [
+          "When the export reaches the end of the first page, it must keep going until every row has been written to the file.",
+          "The person who asked for the report should never get an incomplete file."
+        ]
+      }
+    },
+    {
+      "id": "request-jargon-heavy",
+      "kind": "request",
+      "domain": "platform",
+      "source": "authored",
+      "exercises": ["text-hard-to-follow"],
+      "breaks": ["text-hard-to-follow"],
+      "verdict": "warn",
+      "reason": "No acronyms, so the deterministic rules pass, but a new contributor cannot tell what is being asked.",
+      "suggested_fix": "Describe the behavior: when two workers claim the same job only one succeeds and the other waits and picks another job.",
+      "input": {
+        "title": "Make planning output usable by the scheduler",
+        "body": [
+          "Fan the gate outputs in through the barrier so that wave-three nodes re-enter the lease loop after the compare-and-swap losers back off.",
+          "Emit the outbox rows idempotently and keep the replay key stable across re-planning."
+        ]
+      }
+    },
+    {
+      "id": "request-jargon-near-miss-plain-wording",
+      "kind": "request",
+      "domain": "platform",
+      "source": "authored",
+      "exercises": ["text-hard-to-follow"],
+      "breaks": [],
+      "verdict": "pass",
+      "reason": "The same intent in plain words.",
+      "input": {
+        "title": "Make planning output usable by the scheduler",
+        "body": [
+          "When two workers try to claim the same job, only one succeeds. The other waits a moment and tries a different job.",
+          "Each event is written once, even if the job is retried."
+        ]
+      }
+    },
+    {
+      "id": "request-portuguese-source-published-unchanged",
+      "kind": "request",
+      "domain": "games",
+      "source": "authored",
+      "tags": ["source-as-output"],
+      "exercises": ["text-not-english"],
+      "breaks": ["text-not-english"],
+      "verdict": "block",
+      "reason": "If intake publishes the original Portuguese request instead of its English normalization, the gate must block it.",
+      "suggested_fix": "Publish the English normalization and keep the original only as a marked quotation.",
+      "input": {
+        "title": "Corrigir movimento do personagem em rampas",
+        "body": [
+          "Quando o personagem sobe uma rampa suave, ele perde velocidade e às vezes para.",
+          "Quero que ele mantenha a velocidade normal de caminhada em rampas de até 35 graus. Em rampas mais íngremes ele deve escorregar.",
+          "Não mexer no movimento dos inimigos. Usem o mesmo \"coyote time\" de 0,1 s que já existe."
+        ]
+      }
+    }
+  ]
+}

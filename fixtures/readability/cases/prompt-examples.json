@@ -1,0 +1,317 @@
+{
+  "corpus_format": 1,
+  "cases": [
+    {
+      "id": "prompt-bad-sf-feat-027-dcf-mod",
+      "kind": "title",
+      "domain": "trading",
+      "source": "master-prompt",
+      "prompt_ref": "communication-policy/bad-examples",
+      "exercises": ["title-opaque-prefix", "title-machine-label", "title-not-sentence-case"],
+      "breaks": ["title-opaque-prefix", "title-machine-label", "title-not-sentence-case"],
+      "verdict": "block",
+      "reason": "An identifier chain, pipes, role stamps and all capitals hide the outcome completely.",
+      "suggested_fix": "Calculate discounted cash flow estimates",
+      "input": {
+        "title": "SF-FEAT-027 | FIN-VAL | AGT-QNT: DCF MOD"
+      }
+    },
+    {
+      "id": "prompt-bad-t-028-ui-urgent",
+      "kind": "title",
+      "domain": "web",
+      "source": "master-prompt",
+      "prompt_ref": "communication-policy/bad-examples",
+      "exercises": ["title-opaque-prefix", "title-machine-label"],
+      "breaks": ["title-opaque-prefix", "title-machine-label"],
+      "verdict": "block",
+      "reason": "A ticket code, pipes and a priority stamp leave no human-readable outcome.",
+      "suggested_fix": "Name the screen and the change, for example 'Add a dark theme to the settings screen'.",
+      "input": {
+        "title": "T-028 | UI | URGENT"
+      }
+    },
+    {
+      "id": "prompt-bad-fix-stuff",
+      "kind": "title",
+      "domain": "general",
+      "source": "master-prompt",
+      "prompt_ref": "communication-policy/bad-examples",
+      "tags": ["vague-title"],
+      "exercises": ["title-vague"],
+      "breaks": ["title-vague"],
+      "verdict": "block",
+      "reason": "'stuff' names nothing, so the title promises no outcome.",
+      "suggested_fix": "Name the defect and where it happens, for example 'Fix the crash when saving an empty profile'.",
+      "input": {
+        "title": "Fix stuff"
+      }
+    },
+    {
+      "id": "prompt-bad-implement-part-3",
+      "kind": "title",
+      "domain": "general",
+      "source": "master-prompt",
+      "prompt_ref": "communication-policy/bad-examples",
+      "tags": ["vague-title"],
+      "exercises": ["title-vague"],
+      "breaks": ["title-vague"],
+      "verdict": "block",
+      "reason": "A part number points at a plan nobody can see from the title.",
+      "suggested_fix": "Say what part 3 delivers, for example 'Add the export step to the report builder'.",
+      "input": {
+        "title": "Implement part 3"
+      }
+    },
+    {
+      "id": "prompt-bad-agent-task-complete",
+      "kind": "title",
+      "domain": "general",
+      "source": "master-prompt",
+      "prompt_ref": "communication-policy/bad-examples",
+      "tags": ["vague-title"],
+      "exercises": ["title-vague"],
+      "breaks": ["title-vague"],
+      "verdict": "block",
+      "reason": "A status report is not a task outcome.",
+      "suggested_fix": "Describe the finished outcome instead of reporting status.",
+      "input": {
+        "title": "Agent task complete"
+      }
+    },
+    {
+      "id": "prompt-bad-feat-042-be-auth",
+      "kind": "title",
+      "domain": "web",
+      "source": "master-prompt",
+      "prompt_ref": "communication-policy/rule-3",
+      "exercises": ["title-opaque-prefix", "title-machine-label", "title-not-sentence-case"],
+      "breaks": ["title-opaque-prefix", "title-machine-label", "title-not-sentence-case"],
+      "verdict": "block",
+      "reason": "Ticket code, pipes and role labels in front of the only readable words.",
+      "suggested_fix": "Add OpenID Connect login",
+      "input": {
+        "title": "FEAT-042 | BE-AUTH | P1 | Implement OIDC"
+      }
+    },
+    {
+      "id": "prompt-bad-task-13-agent-backend",
+      "kind": "title",
+      "domain": "general",
+      "source": "master-prompt",
+      "prompt_ref": "communication-policy/rule-3",
+      "tags": ["vague-title"],
+      "exercises": ["title-opaque-prefix", "title-machine-label"],
+      "breaks": ["title-opaque-prefix", "title-machine-label"],
+      "verdict": "block",
+      "reason": "A task code and a bracketed agent tag come before a vague phrase.",
+      "suggested_fix": "Replace the whole title with a sentence that names the outcome.",
+      "input": {
+        "title": "TASK-13: [AGENT:BACKEND] Do work"
+      }
+    },
+    {
+      "id": "prompt-bad-doc-07-drl-runbook",
+      "kind": "title",
+      "domain": "ml-research",
+      "source": "master-prompt",
+      "prompt_ref": "section-10.5/avoid",
+      "exercises": ["title-opaque-prefix", "title-machine-label", "title-not-sentence-case"],
+      "breaks": ["title-opaque-prefix", "title-machine-label", "title-not-sentence-case"],
+      "verdict": "block",
+      "reason": "The title is a code with no ordinary word in it.",
+      "suggested_fix": "Document how to restore the workflow scheduler after a database outage",
+      "input": {
+        "title": "DOC-07: DRL-RUNBOOK-REV2"
+      }
+    },
+    {
+      "id": "prompt-bad-update-documentation",
+      "kind": "title",
+      "domain": "general",
+      "source": "master-prompt",
+      "prompt_ref": "section-10.5/avoid",
+      "tags": ["vague-title"],
+      "exercises": ["title-vague"],
+      "breaks": ["title-vague"],
+      "verdict": "block",
+      "reason": "It says nothing about which documentation or what changes.",
+      "suggested_fix": "Name the document and the change, for example 'Document the new --json flag'.",
+      "input": {
+        "title": "Update documentation"
+      }
+    },
+    {
+      "id": "prompt-bad-edit-file-a",
+      "kind": "title",
+      "domain": "general",
+      "source": "master-prompt",
+      "prompt_ref": "communication-policy/rule-6",
+      "tags": ["vague-title"],
+      "exercises": ["title-vague"],
+      "breaks": ["title-vague"],
+      "verdict": "block",
+      "reason": "A micro-task that points at a placeholder file instead of an outcome.",
+      "suggested_fix": "Describe the verifiable outcome of the edit, not the act of editing.",
+      "input": {
+        "title": "Edit file A"
+      }
+    },
+    {
+      "id": "prompt-bad-run-command-b",
+      "kind": "title",
+      "domain": "general",
+      "source": "master-prompt",
+      "prompt_ref": "communication-policy/rule-6",
+      "tags": ["vague-title"],
+      "exercises": ["title-vague"],
+      "breaks": ["title-vague"],
+      "verdict": "block",
+      "reason": "A micro-task that points at a placeholder command instead of an outcome.",
+      "suggested_fix": "Describe what the command proves, for example 'Confirm the migration applies to an empty database'.",
+      "input": {
+        "title": "Run command B"
+      }
+    },
+    {
+      "id": "prompt-good-add-password-reset-support",
+      "kind": "title",
+      "domain": "web",
+      "source": "master-prompt",
+      "prompt_ref": "communication-policy/rule-1",
+      "exercises": ["title-lacks-concrete-outcome"],
+      "breaks": [],
+      "verdict": "pass",
+      "reason": "A verb, an object and a clear outcome.",
+      "input": {
+        "title": "Add password reset support"
+      }
+    },
+    {
+      "id": "prompt-good-validate-trading-data",
+      "kind": "title",
+      "domain": "trading",
+      "source": "master-prompt",
+      "prompt_ref": "communication-policy/rule-1",
+      "exercises": ["title-lacks-concrete-outcome"],
+      "breaks": [],
+      "verdict": "pass",
+      "reason": "Names the action, the data and the moment it happens.",
+      "input": {
+        "title": "Validate trading data before backtesting"
+      }
+    },
+    {
+      "id": "prompt-good-improve-character-movement",
+      "kind": "title",
+      "domain": "games",
+      "source": "master-prompt",
+      "prompt_ref": "communication-policy/rule-1",
+      "exercises": ["title-lacks-concrete-outcome", "title-vague"],
+      "breaks": [],
+      "verdict": "pass",
+      "reason": "Starts with a generic verb but names the behavior and the condition, so it is not vague.",
+      "input": {
+        "title": "Improve character movement on slopes"
+      }
+    },
+    {
+      "id": "prompt-good-add-openid-connect-login",
+      "kind": "title",
+      "domain": "web",
+      "source": "master-prompt",
+      "prompt_ref": "communication-policy/rule-3",
+      "exercises": ["title-not-sentence-case"],
+      "breaks": [],
+      "verdict": "pass",
+      "reason": "Product names are capitalised but the title is still sentence case.",
+      "input": {
+        "title": "Add OpenID Connect login"
+      }
+    },
+    {
+      "id": "prompt-good-portfolio-valuation-dashboard",
+      "kind": "title",
+      "domain": "trading",
+      "source": "master-prompt",
+      "prompt_ref": "communication-policy/good-examples",
+      "exercises": ["title-vague"],
+      "breaks": [],
+      "verdict": "pass",
+      "reason": "A concrete user-facing outcome.",
+      "input": {
+        "title": "Add a portfolio valuation dashboard"
+      }
+    },
+    {
+      "id": "prompt-good-discounted-cash-flow-estimates",
+      "kind": "title",
+      "domain": "trading",
+      "source": "master-prompt",
+      "prompt_ref": "communication-policy/good-examples",
+      "exercises": ["text-abbreviation-unexpanded"],
+      "breaks": [],
+      "verdict": "pass",
+      "reason": "Spells out the method instead of using an abbreviation.",
+      "input": {
+        "title": "Calculate discounted cash flow estimates"
+      }
+    },
+    {
+      "id": "prompt-good-detect-invalid-market-data",
+      "kind": "title",
+      "domain": "trading",
+      "source": "master-prompt",
+      "prompt_ref": "communication-policy/good-examples",
+      "exercises": ["title-lacks-concrete-outcome"],
+      "breaks": [],
+      "verdict": "pass",
+      "reason": "Names the check, the data and the point in the pipeline.",
+      "input": {
+        "title": "Detect invalid market data before model training"
+      }
+    },
+    {
+      "id": "prompt-good-offline-progress-saving",
+      "kind": "title",
+      "domain": "games",
+      "source": "master-prompt",
+      "prompt_ref": "communication-policy/good-examples",
+      "exercises": ["title-lacks-concrete-outcome"],
+      "breaks": [],
+      "verdict": "pass",
+      "reason": "User-visible behavior in plain words.",
+      "input": {
+        "title": "Add offline progress saving for the puzzle game"
+      }
+    },
+    {
+      "id": "prompt-good-restore-scheduler-after-outage",
+      "kind": "title",
+      "domain": "platform",
+      "source": "master-prompt",
+      "prompt_ref": "section-10.5/preferred",
+      "exercises": ["title-too-long"],
+      "breaks": [],
+      "verdict": "pass",
+      "reason": "70 characters, under the 90-character warning line.",
+      "input": {
+        "title": "Document how to restore the workflow scheduler after a database outage"
+      }
+    },
+    {
+      "id": "prompt-good-reproducible-rl-guide",
+      "kind": "title",
+      "domain": "ml-research",
+      "source": "master-prompt",
+      "prompt_ref": "section-10.5/preferred",
+      "exercises": ["title-too-long"],
+      "breaks": [],
+      "verdict": "pass",
+      "reason": "86 characters, the longest title in the master prompt, still under the warning line.",
+      "input": {
+        "title": "Write a reproducible guide to training and evaluating the reinforcement learning agent"
+      }
+    }
+  ]
+}

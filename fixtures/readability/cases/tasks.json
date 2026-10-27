@@ -1,0 +1,336 @@
+{
+  "corpus_format": 1,
+  "cases": [
+    {
+      "id": "task-games-good-slope-movement",
+      "kind": "task",
+      "domain": "games",
+      "source": "authored",
+      "exercises": ["task-missing-section", "text-abbreviation-unexpanded"],
+      "breaks": [],
+      "verdict": "pass",
+      "reason": "All four sections are present and written as full sentences, and the criteria are measurable.",
+      "input": {
+        "title": "Improve character movement on slopes",
+        "body": [
+          "## Why this matters",
+          "Players report that the character slows down and sometimes stops on gentle slopes, which makes the first two levels feel unresponsive.",
+          "",
+          "## What needs to change",
+          "Make the character keep its walking speed on slopes up to 35 degrees. On steeper slopes the character should slide down instead of standing still. The change applies to the movement component only, not to enemy movement.",
+          "",
+          "## Acceptance criteria",
+          "- On a 30 degree slope the character walks uphill at the same speed as on flat ground, within 5 percent.",
+          "- On a 45 degree slope the character slides down and cannot walk up.",
+          "- The existing jump and ledge tests still pass.",
+          "",
+          "## Verification",
+          "Run the movement test suite and the new slope scenarios in the headless engine build. Record the measured speeds in the pull request."
+        ]
+      }
+    },
+    {
+      "id": "task-games-missing-verification",
+      "kind": "task",
+      "domain": "games",
+      "source": "authored",
+      "exercises": ["task-missing-section"],
+      "breaks": ["task-missing-section"],
+      "verdict": "block",
+      "reason": "There is no Verification section, so nobody knows how success will be shown.",
+      "suggested_fix": "Add a Verification section that says which tests or manual checks prove the criteria.",
+      "input": {
+        "title": "Add a pause menu to the puzzle game",
+        "body": [
+          "## Why this matters",
+          "Players who get a phone call have no way to stop the game, so they lose the level.",
+          "",
+          "## What needs to change",
+          "Add a pause button to the level screen. Pressing it stops the timer and shows a menu with Resume and Quit.",
+          "",
+          "## Acceptance criteria",
+          "- The timer stops while the menu is open.",
+          "- Resume continues the level where it stopped."
+        ]
+      }
+    },
+    {
+      "id": "task-trading-good-market-data-validation",
+      "kind": "task",
+      "domain": "trading",
+      "source": "authored",
+      "exercises": ["task-missing-section"],
+      "breaks": [],
+      "verdict": "pass",
+      "reason": "Names the checks and the failure behavior, as the master prompt's example describes.",
+      "input": {
+        "title": "Detect invalid market data before model training",
+        "body": [
+          "## Why this matters",
+          "Models trained on bad prices give results nobody can trust. A single missing day or a price of zero can change a backtest result without any visible error.",
+          "",
+          "## What needs to change",
+          "Add a validation step that runs on the price table before training starts. It must reject the table when it finds a missing trading day, a non-positive price, a high price below the low price, or a timestamp that does not increase.",
+          "",
+          "## Acceptance criteria",
+          "- Each problem is reported with the row number and the name of the check that failed.",
+          "- Training does not start when any check fails, and the error message lists every failed check.",
+          "- A clean table passes without warnings.",
+          "",
+          "## Verification",
+          "Run the validation tests with one fixture table per failure type and one clean table. Attach the test output to the pull request.",
+          "",
+          "## Dependencies",
+          "Needs the price table loader from the data ingestion work."
+        ]
+      }
+    },
+    {
+      "id": "task-trading-unexpanded-acronyms",
+      "kind": "task",
+      "domain": "trading",
+      "source": "authored",
+      "tags": ["unexpanded-acronym"],
+      "exercises": ["text-abbreviation-unexpanded"],
+      "breaks": ["text-abbreviation-unexpanded"],
+      "verdict": "warn",
+      "reason": "DCF and WACC are never spelled out, so a reader outside finance cannot follow the task.",
+      "suggested_fix": "Write 'discounted cash flow (DCF)' and 'weighted average cost of capital (WACC)' at the first mention.",
+      "input": {
+        "title": "Estimate the fair value of each holding",
+        "body": [
+          "## Why this matters",
+          "The portfolio team needs one comparable value per holding before it rebalances.",
+          "",
+          "## What needs to change",
+          "Use a DCF model with the WACC set per sector, and show the fair value next to the market price.",
+          "",
+          "## Acceptance criteria",
+          "- Every holding has a fair value or a clear reason why none could be computed.",
+          "- The sector rates are listed on the result page.",
+          "",
+          "## Verification",
+          "Compare three holdings against a spreadsheet calculation that the finance team already trusts."
+        ]
+      }
+    },
+    {
+      "id": "task-ml-good-leakage-check",
+      "kind": "task",
+      "domain": "ml-research",
+      "source": "authored",
+      "exercises": ["task-missing-section"],
+      "breaks": [],
+      "verdict": "pass",
+      "reason": "States the checks, the stop condition and how success is shown.",
+      "input": {
+        "title": "Detect data leakage between training and evaluation sets",
+        "body": [
+          "## Why this matters",
+          "If rows from the evaluation set also appear in the training set, the reported accuracy is too high and the model will disappoint in production.",
+          "",
+          "## What needs to change",
+          "Add a check that compares the training and evaluation sets before each experiment run. The check looks for identical rows and for rows that share the same customer identifier. It stops the run when it finds either.",
+          "",
+          "## Acceptance criteria",
+          "- The check reports how many rows overlap and which key matched.",
+          "- A run with overlapping rows stops before training begins and says why.",
+          "- A run with no overlap starts as before.",
+          "",
+          "## Verification",
+          "Run the unit tests for the check with one fixture that has overlapping rows and one that does not. Run the experiment script once on the sample data and confirm it starts."
+        ]
+      }
+    },
+    {
+      "id": "task-ml-missing-acceptance-criteria",
+      "kind": "task",
+      "domain": "ml-research",
+      "source": "authored",
+      "exercises": ["task-missing-section"],
+      "breaks": ["task-missing-section"],
+      "verdict": "block",
+      "reason": "Acceptance criteria are missing, so the task has no definition of done.",
+      "suggested_fix": "Add an Acceptance criteria section, for example: two runs with the same seed give identical scores.",
+      "input": {
+        "title": "Fix the random seed so training runs can be repeated",
+        "body": [
+          "## Why this matters",
+          "Two runs of the same experiment give different scores, so we cannot tell a real improvement from noise.",
+          "",
+          "## What needs to change",
+          "Set one seed at the start of the training script and pass it to the data shuffling and to the model initialization.",
+          "",
+          "## Verification",
+          "Run the script twice with the same seed and compare the scores."
+        ]
+      }
+    },
+    {
+      "id": "task-native-good-keep-drafts",
+      "kind": "task",
+      "domain": "native-apps",
+      "source": "authored",
+      "exercises": ["task-missing-section"],
+      "breaks": [],
+      "verdict": "pass",
+      "reason": "Separates simulator evidence from physical-device evidence in the verification step.",
+      "input": {
+        "title": "Keep unsent drafts when the app is closed",
+        "body": [
+          "## Why this matters",
+          "Half-written messages are lost when the system closes the app to free memory, and people have to start again.",
+          "",
+          "## What needs to change",
+          "Save the current draft on the device every time the text changes and when the app moves to the background. Restore it the next time the compose screen opens. Delete the saved draft after the message is sent.",
+          "",
+          "## Acceptance criteria",
+          "- Closing the app from the task switcher and opening it again shows the same draft.",
+          "- A sent message does not come back as a draft.",
+          "- Drafts stay on the device and are removed when the person signs out.",
+          "",
+          "## Verification",
+          "Run the new interface test on a simulator and on a physical phone, and record the two results separately."
+        ]
+      }
+    },
+    {
+      "id": "task-native-bloated-three-features",
+      "kind": "task",
+      "domain": "native-apps",
+      "source": "authored",
+      "exercises": ["task-granularity"],
+      "breaks": ["task-granularity"],
+      "verdict": "warn",
+      "reason": "Three unrelated outcomes in one task cannot be reviewed or rolled back separately.",
+      "suggested_fix": "Split it into three tasks, one per outcome.",
+      "input": {
+        "title": "Rebuild the notifications screen, add dark mode and migrate the database",
+        "body": [
+          "## Why this matters",
+          "The notifications screen is slow, the app has no dark theme, and the old database format is going away.",
+          "",
+          "## What needs to change",
+          "Rebuild the notifications screen with a list that loads page by page. Add a dark color theme to every screen. Move the stored data to the new database format and delete the old one.",
+          "",
+          "## Acceptance criteria",
+          "- The notifications screen opens in under one second on the test phone.",
+          "- Every screen can be switched to the dark theme.",
+          "- Existing users keep all their data after the update.",
+          "",
+          "## Verification",
+          "Run the interface tests for each screen and the data migration test on a copy of a real user database."
+        ]
+      }
+    },
+    {
+      "id": "task-web-good-password-reset",
+      "kind": "task",
+      "domain": "web",
+      "source": "authored",
+      "exercises": ["task-missing-section", "task-acceptance-criteria-vague", "task-granularity"],
+      "breaks": [],
+      "verdict": "pass",
+      "reason": "Complete, concrete and checkable, in the shape the master prompt asks for.",
+      "input": {
+        "title": "Add password reset support",
+        "body": [
+          "## Why this matters",
+          "People who forget their password have to contact support today, which delays them and adds to the support queue.",
+          "",
+          "## What needs to change",
+          "Add a \"Forgot your password?\" link to the sign-in page. It sends a reset link by email that works once and expires after 30 minutes. The reset page lets the person choose a new password and signs them in.",
+          "",
+          "## Acceptance criteria",
+          "- A reset link works once and then shows a clear message that it was already used.",
+          "- A link older than 30 minutes shows a clear message and offers to send a new one.",
+          "- The sign-in page and the email do not reveal whether an address has an account.",
+          "",
+          "## Verification",
+          "Run the reset flow end to end in a browser test against the staging mail catcher. Check the three messages by hand and attach screenshots."
+        ]
+      }
+    },
+    {
+      "id": "task-web-vague-acceptance-criteria",
+      "kind": "task",
+      "domain": "web",
+      "source": "authored",
+      "exercises": ["task-acceptance-criteria-vague"],
+      "breaks": ["task-acceptance-criteria-vague"],
+      "verdict": "warn",
+      "reason": "All four sections exist, so the deterministic rule passes, but no criterion can be checked.",
+      "suggested_fix": "State a measurable condition, for example: results appear in under 500 milliseconds for a query that returns 20 items.",
+      "input": {
+        "title": "Make the search page faster",
+        "body": [
+          "## Why this matters",
+          "Search is the most used page and people complain that it is slow.",
+          "",
+          "## What needs to change",
+          "Look at how the search results are loaded and make the page quicker.",
+          "",
+          "## Acceptance criteria",
+          "- The search page feels fast.",
+          "- Users are happy with the results.",
+          "",
+          "## Verification",
+          "Try the search page and see how it feels."
+        ]
+      }
+    },
+    {
+      "id": "task-structure-near-miss-bold-labels",
+      "kind": "task",
+      "domain": "general",
+      "source": "authored",
+      "exercises": ["task-missing-section"],
+      "breaks": [],
+      "verdict": "pass",
+      "reason": "Bold labels count as section headings, with or without a trailing colon.",
+      "input": {
+        "title": "Show a message when an export has no rows",
+        "body": [
+          "**Why this matters**",
+          "An empty file looks like a failed export, so people run it again.",
+          "",
+          "**What needs to change**",
+          "When an export finds no rows, show the message \"Nothing to export for this period\" instead of downloading an empty file.",
+          "",
+          "**Acceptance criteria**",
+          "- An export with no rows shows the message and downloads nothing.",
+          "- An export with rows is unchanged.",
+          "",
+          "**Verification:**",
+          "Run the export tests with an empty period and a period that has rows."
+        ]
+      }
+    },
+    {
+      "id": "task-structure-empty-section",
+      "kind": "task",
+      "domain": "general",
+      "source": "authored",
+      "exercises": ["task-missing-section"],
+      "breaks": ["task-missing-section"],
+      "verdict": "block",
+      "reason": "The Verification heading is present but has no content.",
+      "suggested_fix": "Say which tests or checks prove the criteria.",
+      "input": {
+        "title": "Show a message when an export has no rows",
+        "body": [
+          "## Why this matters",
+          "An empty file looks like a failed export, so people run it again.",
+          "",
+          "## What needs to change",
+          "When an export finds no rows, show a message instead of downloading an empty file.",
+          "",
+          "## Acceptance criteria",
+          "- An export with no rows shows the message and downloads nothing.",
+          "",
+          "## Verification"
+        ]
+      }
+    }
+  ]
+}

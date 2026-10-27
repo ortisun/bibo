@@ -1,0 +1,176 @@
+{
+  "corpus_format": 1,
+  "cases": [
+    {
+      "id": "pr-games-good-offline-saving",
+      "kind": "pull_request",
+      "domain": "games",
+      "source": "authored",
+      "exercises": ["pr-missing-evidence-link"],
+      "breaks": [],
+      "verdict": "pass",
+      "reason": "Summarizes the user-visible behavior and links the evidence.",
+      "input": {
+        "title": "Add offline progress saving for the puzzle game",
+        "body": [
+          "Players can now finish a level without a connection. The game saves progress on the device after every level and sends it to the server the next time a connection is available.",
+          "",
+          "What changed",
+          "- Progress is written to local storage when a level ends.",
+          "- On start-up the game compares local and server progress and keeps the newer one.",
+          "",
+          "How it was checked",
+          "- The new save and restore tests pass: see the test report in the [CI run](https://example.com/ci/runs/1842).",
+          "- Played levels 1 to 5 in airplane mode on a physical phone, then reconnected. Progress synced once.",
+          "",
+          "Closes #214. The design is in `docs/adr/0012-offline-saves.md`."
+        ]
+      }
+    },
+    {
+      "id": "pr-trading-good-data-validation",
+      "kind": "pull_request",
+      "domain": "trading",
+      "source": "authored",
+      "exercises": ["pr-missing-evidence-link", "text-filler-phrase", "doc-claim-without-evidence"],
+      "breaks": [],
+      "verdict": "pass",
+      "reason": "States behavior, failure handling and evidence in ordinary English.",
+      "input": {
+        "title": "Validate trading data before backtesting",
+        "body": [
+          "Backtests now stop before they start when the price table has a missing trading day, a price of zero, or timestamps that go backwards.",
+          "",
+          "What changed",
+          "- A validation step runs on the price table and reports every failed check with its row number.",
+          "- The backtest command exits with an error when any check fails.",
+          "",
+          "How it was checked",
+          "- One fixture table per failure type and one clean table. Output: [test run](https://example.com/ci/runs/2210).",
+          "- Re-ran last quarter's backtest. Results are unchanged because that table was already clean.",
+          "",
+          "Closes #187."
+        ]
+      }
+    },
+    {
+      "id": "pr-ml-good-fixed-seed",
+      "kind": "pull_request",
+      "domain": "ml-research",
+      "source": "authored",
+      "exercises": ["pr-missing-evidence-link"],
+      "breaks": [],
+      "verdict": "pass",
+      "reason": "Says what was checked and states the limit of the check.",
+      "input": {
+        "title": "Fix the random seed so training runs can be repeated",
+        "body": [
+          "Two training runs with the same seed now give the same scores. Before this change the data shuffling used its own unseeded generator.",
+          "",
+          "What changed",
+          "- The seed set at the start of `train.py` is now passed to the shuffling and to the model initialization.",
+          "- The seed is printed at the start of each run so it can be reused.",
+          "",
+          "How it was checked",
+          "- Ran the script twice with seed 7 on the sample data and compared the scores: identical to six decimals. Logs are in `reports/seed-check/`.",
+          "- This was checked on one machine only. Results on a different GPU are not covered.",
+          "",
+          "Closes #301."
+        ]
+      }
+    },
+    {
+      "id": "pr-web-no-evidence-link",
+      "kind": "pull_request",
+      "domain": "web",
+      "source": "authored",
+      "exercises": ["pr-missing-evidence-link"],
+      "breaks": ["pr-missing-evidence-link"],
+      "verdict": "warn",
+      "reason": "No link, URL, issue number or path, so a reader cannot follow any claim to its evidence.",
+      "suggested_fix": "Link the issue and the test run, and name the files or documents that changed.",
+      "input": {
+        "title": "Add password reset support",
+        "body": [
+          "The sign-in page now has a link that sends a reset email. The link works once and expires after 30 minutes.",
+          "",
+          "Tests pass and the flow was checked by hand."
+        ]
+      }
+    },
+    {
+      "id": "pr-native-filler-phrases",
+      "kind": "pull_request",
+      "domain": "native-apps",
+      "source": "authored",
+      "exercises": ["text-filler-phrase"],
+      "breaks": ["text-filler-phrase"],
+      "verdict": "warn",
+      "reason": "Chatbot filler takes the place of facts about what changed and how it was checked.",
+      "suggested_fix": "Say what changed on the settings screen and what was tested.",
+      "input": {
+        "title": "Add a dark theme to the settings screen",
+        "body": [
+          "I have successfully implemented the dark theme! Great news: everything works and the change is ready. Let me know if you need anything else.",
+          "",
+          "Test run: [CI](https://example.com/ci/runs/3304). Closes #412."
+        ]
+      }
+    },
+    {
+      "id": "pr-native-uuid-in-prose",
+      "kind": "pull_request",
+      "domain": "native-apps",
+      "source": "authored",
+      "exercises": ["text-raw-internal-id"],
+      "breaks": ["text-raw-internal-id"],
+      "verdict": "warn",
+      "reason": "An internal job identifier sits in a sentence instead of in metadata.",
+      "suggested_fix": "Remove the identifier. The pull request already links to the job.",
+      "input": {
+        "title": "Keep unsent drafts when the app is closed",
+        "body": [
+          "Job 0198f3c2-7a41-7c3e-9b0d-2f6a8e4c1d55 produced this change. Drafts are now saved on the device and restored when the compose screen opens.",
+          "",
+          "Test run: [CI](https://example.com/ci/runs/3411). Closes #418."
+        ]
+      }
+    },
+    {
+      "id": "pr-conventional-commit-title",
+      "kind": "pull_request",
+      "domain": "web",
+      "source": "authored",
+      "exercises": ["title-type-tag"],
+      "breaks": ["title-type-tag"],
+      "verdict": "warn",
+      "reason": "A commit-style tag in a pull request title. A warning because many teams use it by habit.",
+      "suggested_fix": "Add password reset support",
+      "input": {
+        "title": "feat(auth): add password reset",
+        "body": [
+          "The sign-in page now has a link that sends a reset email. The link works once and expires after 30 minutes. See the [test run](https://example.com/ci/runs/2987)."
+        ]
+      }
+    },
+    {
+      "id": "pr-claim-without-evidence",
+      "kind": "pull_request",
+      "domain": "trading",
+      "source": "authored",
+      "exercises": ["doc-claim-without-evidence", "pr-missing-evidence-link"],
+      "breaks": ["doc-claim-without-evidence"],
+      "verdict": "warn",
+      "reason": "A link exists, so the deterministic rule passes, but neither claim is backed by a measurement or a test.",
+      "suggested_fix": "Report the measured times before and after, and link the test that checks for look-ahead bias.",
+      "input": {
+        "title": "Speed up the backtest data loader",
+        "body": [
+          "The loader now reads prices in blocks. This makes the backtest much faster and removes all look-ahead bias.",
+          "",
+          "The change is in [this diff](https://example.com/pull/530/files)."
+        ]
+      }
+    }
+  ]
+}

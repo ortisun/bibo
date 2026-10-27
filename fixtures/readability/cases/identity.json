@@ -1,0 +1,68 @@
+{
+  "corpus_format": 1,
+  "cases": [
+    {
+      "id": "identity-reword-keeps-ids",
+      "kind": "identity_pair",
+      "domain": "web",
+      "source": "authored",
+      "exercises": ["ids-stable-under-rewording", "title-opaque-prefix"],
+      "breaks": [],
+      "verdict": "pass",
+      "reason": "Rewording a title changes only the display text. Every metadata identifier stays byte for byte the same.",
+      "input": {
+        "metadata": {
+          "work_item_id": "0198f3c2-7a41-7c3e-9b0d-2f6a8e4c1d55",
+          "dag_node_id": "n-0012",
+          "github_issue_number": 214
+        },
+        "versions": [
+          {
+            "label": "first draft",
+            "title": "Add password reset support",
+            "verdict": "pass",
+            "breaks": []
+          },
+          {
+            "label": "reworded after review",
+            "title": "Let people reset a forgotten password by email",
+            "verdict": "pass",
+            "breaks": []
+          }
+        ]
+      }
+    },
+    {
+      "id": "identity-gate-feedback-removes-code-from-title",
+      "kind": "identity_pair",
+      "domain": "native-apps",
+      "source": "authored",
+      "exercises": ["ids-stable-under-rewording", "title-opaque-prefix", "title-machine-label"],
+      "breaks": ["title-opaque-prefix", "title-machine-label"],
+      "verdict": "block",
+      "reason": "The first draft puts the display reference in the title and is blocked. The rewrite moves it out. The identifiers do not change.",
+      "suggested_fix": "Keep WI-0192 in metadata and write the title as a sentence.",
+      "input": {
+        "metadata": {
+          "work_item_id": "0198f3d9-1b22-7d10-8a4e-5c3b7f9e2a10",
+          "display_ref": "WI-0192",
+          "dag_node_id": "n-0031"
+        },
+        "versions": [
+          {
+            "label": "agent draft",
+            "title": "WI-0192 | UI | Add a dark theme to the settings screen",
+            "verdict": "block",
+            "breaks": ["title-opaque-prefix", "title-machine-label"]
+          },
+          {
+            "label": "after the gate's feedback",
+            "title": "Add a dark theme to the settings screen",
+            "verdict": "pass",
+            "breaks": []
+          }
+        ]
+      }
+    }
+  ]
+}
