@@ -180,7 +180,6 @@ impl Timeline {
     }
 
     /// True when a command with this id was already applied.
-    #[allow(dead_code)] // The command handling of a later increment reads it.
     pub(crate) fn has_applied(&self, command: CausationId) -> bool {
         self.commands.contains(&command)
     }

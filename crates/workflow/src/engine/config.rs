@@ -23,10 +23,6 @@ pub const DEFAULT_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(15);
 /// How long a cancelled attempt has to tear its sandbox down before the sweeper forces it.
 pub const DEFAULT_TEARDOWN_GRACE: Duration = Duration::from_secs(30);
 
-/// Iterations without new passing evidence before the stagnation detector asks a person
-/// (`policies/security.yaml`, `budgets.stagnation.window_iterations`).
-pub const DEFAULT_STAGNATION_WINDOW: u32 = 3;
-
 /// The most stage runs one claim call leases.
 pub const DEFAULT_CLAIM_BATCH: u32 = 8;
 
@@ -77,8 +73,6 @@ pub struct EngineConfig {
     pub rework_limits: ReworkLimits,
     /// The repair cap after an invalid output. Never above two (ADR 0010).
     pub repair_cap: RepairCap,
-    /// Iterations without new passing evidence before a person is asked.
-    pub stagnation_window: u32,
     /// The most stage runs one claim call leases.
     pub claim_batch: u32,
     /// What one job may spend across all its attempts, in millionths of a US dollar. When it is
@@ -101,7 +95,6 @@ impl EngineConfig {
             teardown_grace: DEFAULT_TEARDOWN_GRACE,
             rework_limits: ReworkLimits::default(),
             repair_cap: RepairCap::default(),
-            stagnation_window: DEFAULT_STAGNATION_WINDOW,
             claim_batch: DEFAULT_CLAIM_BATCH,
             job_budget_micro_usd: DEFAULT_JOB_BUDGET_MICRO_USD,
             budget_warn_percent: DEFAULT_BUDGET_WARN_PERCENT,
@@ -134,11 +127,6 @@ impl EngineConfig {
         }
         if self.claim_batch == 0 {
             return Err(EngineError::Config("the claim batch must be above zero"));
-        }
-        if self.stagnation_window == 0 {
-            return Err(EngineError::Config(
-                "the stagnation window must be above zero",
-            ));
         }
         Ok(())
     }

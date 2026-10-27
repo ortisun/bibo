@@ -21,11 +21,9 @@ use factory_domain::contracts::evidence_ledger_entry::{
 };
 use factory_domain::contracts::review_verdict::DefectClass;
 use factory_domain::contracts::{ArtifactRef, StageContract};
-use factory_domain::ids::StageRunId;
 use factory_domain::machines::guards::{
     BlockingFacts, GatePassFacts, GuardFacts, NeedsHumanFacts, NoReworkFacts, ReworkFacts, evaluate,
 };
-use factory_domain::machines::limits::ReworkTrack;
 use factory_domain::machines::rework::{
     GateFinding, GateReworkDecision, GateReworkRequest, NeedsHumanCause, ReworkPlan,
     decide_gate_rework,
@@ -41,12 +39,12 @@ use super::Engine;
 use super::error::EngineError;
 use super::ledger::ClaimSpec;
 use super::payload::{self, key};
-use super::progress::{Board, guard_error};
+use super::progress::guard_error;
 use super::record::Cx;
 use super::timeline::Timeline;
 use crate::audit::{AuditAction, AuditDecision, AuditKind};
 use crate::gates::framework::{
-    BlockCause, EvidenceProblem, GateDecision, Resolution, resolve, snapshots, uncovered_criteria,
+    BlockCause, EvidenceProblem, GateDecision, Resolution, resolve, snapshots,
 };
 use crate::handlers::NamedArtifact;
 
@@ -129,15 +127,6 @@ impl Engine {
             Resolution::ReviewerNeedsHuman | Resolution::HumanGate => "",
         };
         let audit = |decision| AuditAction::new(AuditKind::GateResult, decision);
-        let span = tracing::info_span!(
-            "factory.gate",
-            factory.correlation_id = %cx.correlation,
-            factory.job_id = %cx.job,
-            factory.stage_run_id = %gating.value.id,
-            factory.gate_id = gate_label(contract),
-            factory.outcome = outcome_label(&resolution),
-        );
-        let _entered = span.enter();
 
         match resolution {
             Resolution::Pass => {
@@ -147,9 +136,10 @@ impl Engine {
                 let snaps = snapshots(&judged.decision.reports);
                 let facts = GatePassFacts {
                     decision_is_pass_and_persisted: true,
-                    criteria_without_ledger_entry: uncovered_criteria(contract, &judged.decision)
-                        + (contract.acceptance_criteria.len() - covered)
-                            .saturating_sub(uncovered_criteria(contract, &judged.decision)),
+                    criteria_without_ledger_entry: contract
+                        .acceptance_criteria
+                        .len()
+                        .saturating_sub(covered),
                     mandatory_gate_reports: &snaps,
                 };
                 if evaluate(Guard::GatePassEvidenced, &GuardFacts::GatePass(facts)).is_ok() {
@@ -282,7 +272,7 @@ impl Engine {
             cx.record_claim(
                 tx,
                 run.value.id,
-                Some(report_attempt(report)),
+                report.metadata.attempt_id,
                 &claim,
                 &[evidence],
             )
@@ -571,19 +561,7 @@ impl Engine {
         }
         cx.move_stage_run(tx, failing_run, event, Some("rework"), payload)
             .await?;
-        let _ = (ReworkTrack::Code, StageRunId::from_uuid(uuid::Uuid::nil()));
         Ok(())
-    }
-
-    /// A board of the job, for callers that need the rows.
-    #[allow(dead_code)]
-    pub(crate) async fn board_of(
-        &self,
-        tx: &mut dyn Tx,
-        cx: &Cx<'_>,
-    ) -> Result<Board, EngineError> {
-        let timeline = Timeline::load(tx, cx.job).await?;
-        Board::load(tx, &timeline).await
     }
 }
 
@@ -595,15 +573,6 @@ fn needs_human_facts(cause: NeedsHumanCause) -> (NeedsHumanFacts, &'static str) 
         NeedsHumanCause::DefectNeedsDecision(_) => "defect-needs-a-person",
     };
     (cause.facts(), code)
-}
-
-fn report_attempt(
-    report: &factory_domain::contracts::GateReport,
-) -> factory_domain::ids::AttemptId {
-    report
-        .metadata
-        .attempt_id
-        .unwrap_or_else(|| factory_domain::ids::AttemptId::from_uuid(uuid::Uuid::nil()))
 }
 
 fn verification_word(
@@ -619,7 +588,7 @@ fn verification_word(
     }
 }
 
-fn gate_label(contract: &StageContract) -> &str {
+pub(super) fn gate_label(contract: &StageContract) -> &str {
     contract
         .evaluator
         .gate_ids
@@ -628,7 +597,7 @@ fn gate_label(contract: &StageContract) -> &str {
         .map_or("none", factory_domain::values::Slug::as_str)
 }
 
-fn outcome_label(resolution: &Resolution) -> &'static str {
+pub(super) fn outcome_label(resolution: &Resolution) -> &'static str {
     match resolution {
         Resolution::Pass => "passed",
         Resolution::Blocked(_) => "blocked",

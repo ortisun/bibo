@@ -20,7 +20,6 @@ use std::future::Future;
 use std::pin::Pin;
 use std::time::Duration;
 
-use factory_domain::contracts::evidence_ledger_entry::Evidence;
 use factory_domain::contracts::stage_contract::Placement;
 use factory_domain::contracts::{ArtifactRef, StageContract};
 use factory_domain::machines::failure::FailureClass;
@@ -47,7 +46,7 @@ use super::progress::{Board, upstream_runs};
 use super::record::Cx;
 use super::timeline::Timeline;
 use crate::audit::{AuditAction, AuditDecision, AuditKind};
-use crate::gates::framework::{Expectation, GateDecision, check_evidence};
+use crate::gates::framework::{Expectation, GateDecision, check_evidence, resolve};
 use crate::handlers::{
     GateContext, NamedArtifact, Notes, OutputDocument, SandboxReady, StageContext, StageError,
     StageHandler, StageOutput, UpstreamRun,
@@ -130,6 +129,10 @@ struct Watched {
 
 impl Engine {
     /// Runs the attempt a worker holds, and records the result.
+    ///
+    /// The call needs a Tokio runtime with the time driver enabled: the heartbeat of the lease and
+    /// the teardown grace period are timers of that runtime. The lease itself is judged by the
+    /// database clock, not by these timers.
     ///
     /// # Errors
     /// The store errors. A handler failure is an [`AttemptOutcome`], not an error.
@@ -619,7 +622,22 @@ impl Engine {
             human_inputs: &prepared.human_inputs,
             upstream: &prepared.upstream,
         };
-        let (decision, could_not_run) = match prepared.handler.evaluate(&gate).await {
+        // The gate is a span of its own, so its time is visible apart from the stage's. The
+        // outcome is set once the evidence has been read.
+        let span = tracing::info_span!(
+            "factory.gate",
+            factory.correlation_id = %claimed.correlation,
+            factory.job_id = %claimed.job,
+            factory.stage_run_id = %claimed.stage_run,
+            factory.gate_id = super::gate::gate_label(&prepared.contract),
+            factory.outcome = tracing::field::Empty,
+        );
+        let evaluated = prepared
+            .handler
+            .evaluate(&gate)
+            .instrument(span.clone())
+            .await;
+        let (decision, could_not_run) = match evaluated {
             Ok(decision) => (decision, false),
             // The gate could not run. That blocks the stage run, and it is not a failure of the
             // attempt: the output itself was valid.
@@ -633,6 +651,12 @@ impl Engine {
             mode: self.config.mode,
         };
         let problem = check_evidence(&decision, &expectation).err();
+        let seen = if could_not_run || problem.is_some() {
+            "blocked"
+        } else {
+            super::gate::outcome_label(&resolve(&prepared.contract, &decision))
+        };
+        span.record("factory.outcome", seen);
         let mut reports = Vec::new();
         let mut review = None;
         if problem.is_none() && !could_not_run {
@@ -1087,16 +1111,4 @@ fn outcome_label(outcome: &AttemptOutcome) -> &'static str {
         AttemptOutcome::LeaseLost => "lease_lost",
         AttemptOutcome::Cancelled => "cancelled",
     }
-}
-
-/// The ledger evidence that cites a stored artifact. Used by the gate increment.
-#[allow(dead_code)]
-fn artifact_evidence(artifact: &ArtifactRef, what: &str) -> Result<Evidence, EngineError> {
-    Ok(Evidence::Artifact(
-        factory_domain::contracts::evidence_ledger_entry::ArtifactEvidence {
-            sha256: artifact.sha256.clone(),
-            media_type: artifact.media_type.clone(),
-            description: Some(factory_domain::values::HumanText::parse(what)?),
-        },
-    ))
 }
