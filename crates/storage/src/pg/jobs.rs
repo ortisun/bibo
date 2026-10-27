@@ -255,13 +255,13 @@ async fn insert_job(
         };
     }
     // By the origin: the first job made for it, under another id.
-    if let Some(origin) = &new.origin {
-        if let Some(first) = find_job_by_origin(connection, tenant, origin).await? {
-            return Ok(Inserted {
-                row: first,
-                created: false,
-            });
-        }
+    if let Some(origin) = &new.origin
+        && let Some(first) = find_job_by_origin(connection, tenant, origin).await?
+    {
+        return Ok(Inserted {
+            row: first,
+            created: false,
+        });
     }
     // The clash was on the correlation id alone, and the id was never used.
     Err(id_reused())

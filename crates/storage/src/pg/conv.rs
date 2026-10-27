@@ -11,11 +11,6 @@ use factory_domain::values::{AggregateVersion, GitSha, Sha256Digest, Slug, Times
 use factory_ports::store::{FaultCode, LeaseEpoch, StoreError, Version};
 use time::OffsetDateTime;
 
-/// A timestamp as the column type.
-pub(super) fn to_column(at: &Timestamp) -> OffsetDateTime {
-    at.to_utc()
-}
-
 /// A column value as a timestamp.
 pub(super) fn from_column(at: OffsetDateTime) -> Timestamp {
     Timestamp::from_utc(at)

@@ -5,30 +5,23 @@
 //! each, and each holds the `impl` of its port trait for the transaction.
 //! `docs/database/for-the-storage-crate.md` is the specification of the SQL.
 
-#[cfg(any())]
+mod approvals;
 mod artifact_index;
 mod attempts;
-#[cfg(any())]
 mod audit;
 mod cas;
 mod config;
 mod conv;
 mod error;
 mod jobs;
-#[cfg(any())]
 mod ledger;
-#[cfg(any())]
-mod lookup;
-#[cfg(any())]
 mod outbox;
-mod pending;
 mod pool;
 mod principals;
 mod readiness;
 mod stage_runs;
 mod store;
 mod system;
-#[cfg(any())]
 mod task_nodes;
 mod tx;
 

@@ -21,7 +21,6 @@ use super::error::database;
 pub(super) enum Table {
     Jobs,
     StageRuns,
-    Attempts,
     TaskNodes,
     Repositories,
 }
@@ -34,9 +33,6 @@ impl Table {
             }
             Self::StageRuns => {
                 "SELECT EXISTS (SELECT 1 FROM stage_runs WHERE tenant_id = $1 AND id = $2) AS found"
-            }
-            Self::Attempts => {
-                "SELECT EXISTS (SELECT 1 FROM attempts WHERE tenant_id = $1 AND id = $2) AS found"
             }
             Self::TaskNodes => {
                 "SELECT EXISTS (SELECT 1 FROM task_nodes WHERE tenant_id = $1 AND id = $2) AS found"

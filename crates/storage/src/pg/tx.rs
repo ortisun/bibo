@@ -216,6 +216,11 @@ impl PgTx {
         }
     }
 
+    /// The backend label stored with an artifact index row.
+    pub(super) fn artifact_backend(&self) -> factory_ports::artifact::ArtifactBackend {
+        self.shared.artifact_backend
+    }
+
     /// Whether the witnessed write is stored for this transaction's tenant.
     pub(super) async fn witnessed(&mut self, witness: Witness) -> Result<bool, StoreError> {
         call!(self, connection, tenant => async {
