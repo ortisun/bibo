@@ -84,6 +84,12 @@ fn cases() -> Vec<Case> {
             expect: Rejected("every entry after the first must carry the hash"),
         },
         Case {
+            name: "a first entry whose previous-hash key is missing",
+            base: "evidence-ledger-entry/sandbox-verification-first-entry.json",
+            change: |d| remove(d, "/prev_entry_hash"),
+            expect: Rejected("missing field `prev_entry_hash`"),
+        },
+        Case {
             name: "a simulation result resting only on a test report",
             base: "evidence-ledger-entry/approver-accepts-residual-risk.json",
             change: |d| put(d, "/claim/kind", json!("simulation_result")),
@@ -504,10 +510,29 @@ fn cases() -> Vec<Case> {
             expect: Rejected("a command that ran has an exit code"),
         },
         Case {
-            name: "a command whose exit code key is missing",
+            name: "a command that ran whose exit code key is missing",
             base: "gate-report/security-scan-blocked-tool-missing.json",
             change: |d| remove(d, "/commands/0/exit_code"),
             expect: Rejected("missing field `exit_code`"),
+        },
+        Case {
+            // `null` is allowed for a command that did not run, but the key itself is required.
+            name: "a command that did not run whose exit code key is missing",
+            base: "gate-report/security-scan-blocked-tool-missing.json",
+            change: |d| {
+                put(d, "/commands/0/executed", json!(false));
+                remove(d, "/commands/0/exit_code");
+            },
+            expect: Rejected("missing field `exit_code`"),
+        },
+        Case {
+            name: "a command that did not run with a null exit code",
+            base: "gate-report/security-scan-blocked-tool-missing.json",
+            change: |d| {
+                put(d, "/commands/0/executed", json!(false));
+                put(d, "/commands/0/exit_code", Value::Null);
+            },
+            expect: Accepted,
         },
         // ---- review verdict -----------------------------------------------------------------------
         Case {
