@@ -4,3 +4,4 @@
 pub mod schema_engine;
 pub mod schemas;
 pub mod validator;
+pub mod yaml;
