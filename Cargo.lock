@@ -203,6 +203,14 @@ dependencies = [
 [[package]]
 name = "factory-ports"
 version = "0.0.0"
+dependencies = [
+ "async-trait",
+ "factory-domain",
+ "serde_json",
+ "thiserror",
+ "time",
+ "uuid",
+]
 
 [[package]]
 name = "factory-runtime"
