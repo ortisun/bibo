@@ -33,7 +33,7 @@ use factory_domain::values::Slug;
 use factory_ports::agent::{
     CostMicroUsd, IssuedJobToken, JobTokenId, JobTokenRef, JobTokenRequest,
 };
-use factory_ports::store::{AttemptEnd, AuditActor, NewArtifactIndexEntry, StoreError, Tx};
+use factory_ports::store::{AttemptEnd, AuditActor, NewArtifactIndexEntry, Tx};
 use serde_json::{Value, json};
 use tracing::Instrument;
 
@@ -515,7 +515,7 @@ impl Engine {
             )
             .await?;
         }
-        tx.commit().await?;
+        cx.commit(tx).await?;
         Ok(())
     }
 
@@ -529,7 +529,7 @@ impl Engine {
         let job = tx.get_job(claimed.job).await?;
         let cx = Cx::new(self, &job.value, self.new_causation_id());
         cx.audit_engine(&mut *tx, action).await?;
-        tx.commit().await?;
+        cx.commit(tx).await?;
         Ok(())
     }
 
@@ -581,7 +581,7 @@ impl Engine {
             AttemptEnd::default(),
         )
         .await?;
-        tx.commit().await?;
+        cx.commit(tx).await?;
         Ok(true)
     }
 
@@ -897,7 +897,7 @@ impl Engine {
                 .await
         }
         .await;
-        Ok(match self.conclude(tx, recorded).await? {
+        Ok(match self.conclude(tx, &cx, recorded).await? {
             Ok(()) => AttemptOutcome::NeedsHuman,
             Err(outcome) => outcome,
         })
@@ -962,7 +962,7 @@ impl Engine {
                 .await
         }
         .await;
-        Ok(match self.conclude(tx, recorded).await? {
+        Ok(match self.conclude(tx, &cx, recorded).await? {
             Ok(()) => AttemptOutcome::Succeeded,
             Err(outcome) => outcome,
         })
@@ -992,15 +992,16 @@ impl Engine {
     async fn conclude<T>(
         &self,
         tx: Box<dyn Tx>,
+        cx: &Cx<'_>,
         recorded: Result<T, EngineError>,
     ) -> Result<Result<T, AttemptOutcome>, EngineError> {
         match recorded {
-            Ok(value) => match tx.commit().await {
+            Ok(value) => match cx.commit(tx).await {
                 Ok(()) => Ok(Ok(value)),
-                Err(StoreError::Conflict | StoreError::LeaseFenced) => {
+                Err(EngineError::Conflict | EngineError::LeaseFenced) => {
                     Ok(Err(AttemptOutcome::LeaseLost))
                 }
-                Err(other) => Err(other.into()),
+                Err(other) => Err(other),
             },
             Err(EngineError::LeaseFenced | EngineError::Conflict) => {
                 Ok(Err(AttemptOutcome::LeaseLost))
@@ -1086,7 +1087,7 @@ impl Engine {
             Ok::<Option<AttemptDisposition>, EngineError>(disposition)
         }
         .await;
-        Ok(match self.conclude(tx, recorded).await? {
+        Ok(match self.conclude(tx, &cx, recorded).await? {
             Ok(Some(then)) => AttemptOutcome::Failed { class, then },
             Ok(None) => AttemptOutcome::Cancelled,
             Err(outcome) => outcome,
@@ -1144,7 +1145,7 @@ impl Engine {
                 .await
         }
         .await;
-        Ok(match self.conclude(tx, recorded).await? {
+        Ok(match self.conclude(tx, &cx, recorded).await? {
             Ok(()) => AttemptOutcome::Failed {
                 class,
                 then: AttemptDisposition::Escalate(

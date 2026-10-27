@@ -251,7 +251,7 @@ impl Engine {
             AuditAction::new(AuditKind::ToolGrantIssued, AuditDecision::Granted),
         )
         .await?;
-        tx.commit().await?;
+        cx.commit(tx).await?;
         let attempt = started.attempt.value;
         Ok(Ok(ClaimedAttempt {
             tenant,

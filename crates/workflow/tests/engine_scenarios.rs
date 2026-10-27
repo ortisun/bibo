@@ -2515,3 +2515,79 @@ async fn restart_resumes_without_duplication() {
         "the lost attempt and its replacement"
     );
 }
+
+// ---- a commit whose answer is lost (ports v1.1, CommitOutcomeUnknown) -------------------------
+
+#[tokio::test]
+async fn a_commit_whose_answer_is_lost_but_was_applied_is_a_success_and_nothing_repeats() {
+    // The store applies the commit and then fails to say so. The engine asks the store whether the
+    // last record of the decision is stored (`Store::committed`), finds it, and reports success.
+    // The decision is neither lost nor made twice.
+    let world = World::new().await;
+    let job = world
+        .engine
+        .receive_job(world.tenant, world.requester, world.repository)
+        .await
+        .expect("receive");
+
+    world.store.lose_next_commit_answer();
+    let admission = world
+        .engine
+        .admit_job(world.tenant, job)
+        .await
+        .expect("an applied commit is a success even when its answer is lost");
+    assert!(matches!(admission, Admission::Admitted { .. }));
+    assert_eq!(world.view(job).await.status, JobStatus::Active);
+    let admitted = world
+        .events(job)
+        .await
+        .iter()
+        .filter(|event| event.event_type.as_str() == "job.admitted")
+        .count();
+    assert_eq!(admitted, 1, "the admission was made once");
+
+    // The start of an attempt is the other decision that matters: a lost answer must not leave a
+    // second attempt behind when the caller goes on.
+    world.store.lose_next_commit_answer();
+    let claimed = world.claim_one("worker-1").await;
+    let view = world.view(job).await;
+    assert_eq!(
+        view.newest(StageKind::Intake).expect("run").attempts.len(),
+        1
+    );
+    assert_eq!(claimed.attempt_number, 1);
+}
+
+#[tokio::test]
+async fn creating_a_job_whose_commit_answer_is_lost_finds_the_job() {
+    let world = World::new().await;
+    world.store.lose_next_commit_answer();
+    let job = world
+        .engine
+        .receive_job(world.tenant, world.requester, world.repository)
+        .await
+        .expect("the job was stored, so the call succeeds");
+    assert_eq!(
+        world.engine.job_status(world.tenant, job).await,
+        Ok(JobStatus::Received)
+    );
+}
+
+#[tokio::test]
+async fn a_commit_the_store_cannot_confirm_is_never_reported_as_a_success() {
+    // The store loses the answer and then says the witness is not stored. The engine must not
+    // call that a success: the call fails with an error that can be repeated, and the caller
+    // reads the state before it acts again. The defect makes `committed` answer "no" always.
+    let world = World::with_store_defect(factory_testkit::store::StoreDefect::LosesWitness).await;
+    let job = world
+        .engine
+        .receive_job(world.tenant, world.requester, world.repository)
+        .await
+        .expect("receive");
+    world.store.lose_next_commit_answer();
+    let refused = world.engine.admit_job(world.tenant, job).await;
+    let Err(error) = refused else {
+        panic!("an unconfirmed commit was reported as a success: {refused:?}");
+    };
+    assert!(error.is_retryable(), "{error:?}");
+}

@@ -79,7 +79,7 @@ impl Engine {
             .supersede_and_replace(&mut *tx, &cx, &stale, &kinds, why, code(change))
             .await?;
         self.settle(&mut *tx, &cx).await?;
-        tx.commit().await?;
+        cx.commit(tx).await?;
         Ok(ChangeApplied {
             superseded: stale,
             created,

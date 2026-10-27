@@ -91,7 +91,7 @@ impl Engine {
                     AuditAction::new(AuditKind::AuthorizationDecision, AuditDecision::Denied),
                 )
                 .await?;
-                denied.commit().await?;
+                cx.commit(denied).await?;
                 return Err(guard_error(error));
             }
         };
@@ -110,7 +110,7 @@ impl Engine {
         )
         .await?;
         self.settle(&mut *tx, &cx).await?;
-        tx.commit().await?;
+        cx.commit(tx).await?;
         Ok(())
     }
 
@@ -151,7 +151,7 @@ impl Engine {
         )
         .await?;
         self.settle(&mut *tx, &cx).await?;
-        tx.commit().await?;
+        cx.commit(tx).await?;
         Ok(())
     }
 
@@ -214,7 +214,7 @@ impl Engine {
             }
         }
         self.settle(&mut *tx, &cx).await?;
-        tx.commit().await?;
+        cx.commit(tx).await?;
         Ok(())
     }
 

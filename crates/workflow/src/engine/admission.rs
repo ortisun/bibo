@@ -11,7 +11,7 @@ use factory_domain::ids::{JobId, PrincipalId, RepositoryId, StageRunId, TenantId
 use factory_domain::machines::guards::{GuardFacts, evaluate};
 use factory_domain::state::{Guard, JobEvent, JobStatus};
 use factory_domain::vocabulary::StageKind;
-use factory_ports::store::{AuditActor, NewJob, NewStageRun, PipelineScope};
+use factory_ports::store::{AuditActor, NewJob, NewStageRun, PipelineScope, StoreError};
 use serde_json::json;
 
 use super::Engine;
@@ -67,8 +67,22 @@ impl Engine {
             origin: None,
         })
         .await?;
-        tx.commit().await?;
-        Ok(id)
+        match tx.commit().await {
+            Ok(()) => Ok(id),
+            // Creating a job writes no event or audit record to ask about, but the insert is
+            // idempotent by id, so the job itself is the witness.
+            Err(StoreError::CommitOutcomeUnknown) => {
+                let mut read = self.tenant_tx(tenant).await?;
+                let found = read.get_job(id).await;
+                read.rollback().await?;
+                match found {
+                    Ok(_) => Ok(id),
+                    Err(StoreError::NotFound) => Err(EngineError::Store(StoreError::Unavailable)),
+                    Err(other) => Err(other.into()),
+                }
+            }
+            Err(other) => Err(other.into()),
+        }
     }
 
     /// Decides whether a received job runs.
@@ -135,7 +149,7 @@ impl Engine {
                 )
                 .await?;
                 self.settle(&mut *tx, &cx).await?;
-                tx.commit().await?;
+                cx.commit(tx).await?;
                 Ok(Admission::Admitted {
                     stage_runs: created,
                 })
@@ -158,7 +172,7 @@ impl Engine {
                     AuditAction::new(AuditKind::AuthorizationDecision, AuditDecision::Denied),
                 )
                 .await?;
-                tx.commit().await?;
+                cx.commit(tx).await?;
                 Ok(Admission::Rejected)
             }
         }

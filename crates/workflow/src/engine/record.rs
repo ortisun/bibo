@@ -11,10 +11,12 @@
 
 use factory_domain::contracts::domain_event::AggregateKind;
 use factory_domain::contracts::{Contract, DomainEvent};
+use std::cell::Cell;
 use std::time::Duration;
 
 use factory_domain::ids::{AttemptId, AuditEventId, CausationId, CorrelationId, JobId, TenantId};
 use factory_domain::machines::guards::GuardCleared;
+use factory_domain::scope::TenantScope;
 use factory_domain::state::{
     AttemptEvent, AttemptStatus, JobEvent, JobStatus, StageRunEvent, StageRunStatus, Status,
 };
@@ -22,7 +24,7 @@ use factory_domain::values::{Slug, Timestamp, Traceparent};
 use factory_ports::store::{
     AppliedTransition, Attempt, AttemptEnd, AuditAction as PortAuditAction, AuditActor,
     AuditDecision as PortAuditDecision, Job, LeaseEpoch, NewAuditEvent, StageRun, StageRunEffects,
-    StartAttempt, StartedAttempt, Tx, Version, Versioned, WorkerId,
+    StartAttempt, StartedAttempt, StoreError, Tx, Version, Versioned, Witness, WorkerId,
 };
 use serde_json::{Map, Value, json};
 use uuid::Uuid;
@@ -47,6 +49,10 @@ pub(crate) struct Cx<'e> {
     /// What the attempt that this decision records spent, in millionths of a US dollar. An
     /// attempt event carries it, so the job's spend can be rebuilt from its events.
     pub(crate) cost_micro_usd: u64,
+    /// The last outbox event or audit record this decision wrote. If the answer to the commit is
+    /// lost, the store is asked whether this is stored (`Store::committed`), and that settles
+    /// whether the whole decision was applied.
+    witness: Cell<Option<Witness>>,
 }
 
 /// One move of an aggregate: the event that asks for it, the proof that its guard held, why it
@@ -106,6 +112,39 @@ impl<'e> Cx<'e> {
             causation,
             now: engine.deps.clock.now(),
             cost_micro_usd: 0,
+            witness: Cell::new(None),
+        }
+    }
+
+    /// Commits the decision. When the commit was sent and its answer was lost
+    /// (`CommitOutcomeUnknown`), the transaction may or may not be applied, and the engine does
+    /// not guess: it asks the store whether the last thing the decision wrote is stored.
+    ///
+    /// # Errors
+    /// * The error of the commit, when it is not an unknown outcome. A `Conflict` or
+    ///   `Unavailable` means nothing was applied.
+    /// * [`StoreError::Unavailable`], as `EngineError::Store`, when the store says the decision
+    ///   was not applied. Nothing changed, and the caller may repeat the call.
+    /// * `CommitOutcomeUnknown`, as `EngineError::Store`, when the decision wrote nothing that can
+    ///   be asked about, or the question itself could not be answered. The caller must not act
+    ///   again on this job until it has read the state.
+    pub(crate) async fn commit(&self, tx: Box<dyn Tx>) -> Result<(), EngineError> {
+        match tx.commit().await {
+            Ok(()) => Ok(()),
+            Err(StoreError::CommitOutcomeUnknown) => {
+                let applied = match self.witness.get() {
+                    Some(witness) => {
+                        self.engine
+                            .deps
+                            .store
+                            .committed(TenantScope::new(self.tenant), witness)
+                            .await
+                    }
+                    None => Err(StoreError::CommitOutcomeUnknown),
+                };
+                settle_unknown_commit(applied)
+            }
+            Err(other) => Err(other.into()),
         }
     }
 
@@ -310,7 +349,9 @@ impl<'e> Cx<'e> {
         }
         let event = DomainEvent::from_json_value(document)
             .map_err(|error| EngineError::Invalid(error.to_string()))?;
+        let event_id = event.event_id;
         tx.enqueue_event(event).await?;
+        self.witness.set(Some(Witness::OutboxEvent(event_id)));
         Ok(())
     }
 
@@ -323,8 +364,9 @@ impl<'e> Cx<'e> {
         action: AuditAction,
     ) -> Result<(), EngineError> {
         let text = action.slug()?;
+        let id = AuditEventId::from_uuid(self.engine.deps.ids.new_uuid());
         tx.record_audit(NewAuditEvent {
-            id: AuditEventId::from_uuid(self.engine.deps.ids.new_uuid()),
+            id,
             actor,
             action: PortAuditAction::new(text.as_str())?,
             subject: format!("job {}", self.job),
@@ -340,6 +382,7 @@ impl<'e> Cx<'e> {
             correlation_id: self.correlation,
         })
         .await?;
+        self.witness.set(Some(Witness::Audit(id)));
         Ok(())
     }
 
@@ -351,6 +394,20 @@ impl<'e> Cx<'e> {
     ) -> Result<(), EngineError> {
         self.audit(tx, AuditActor::System(Self::component()?), action)
             .await
+    }
+}
+
+/// What the store's answer about a witness means for a commit whose answer was lost.
+///
+/// * The witness is stored: the whole decision was applied, and the call succeeded.
+/// * The witness is not stored: nothing was applied. The call reports a failure that can be
+///   repeated, and never a success.
+/// * The question could not be answered: the outcome stays unknown, and the call says so.
+pub(crate) fn settle_unknown_commit(applied: Result<bool, StoreError>) -> Result<(), EngineError> {
+    match applied {
+        Ok(true) => Ok(()),
+        Ok(false) => Err(EngineError::Store(StoreError::Unavailable)),
+        Err(_) => Err(EngineError::Store(StoreError::CommitOutcomeUnknown)),
     }
 }
 
@@ -369,5 +426,30 @@ impl Seal {
             guard: planned.guard().to_string(),
             facts_sha256: planned.facts_sha256().to_string(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_stored_witness_means_the_decision_was_applied() {
+        assert_eq!(settle_unknown_commit(Ok(true)), Ok(()));
+    }
+
+    #[test]
+    fn a_missing_witness_is_never_a_success() {
+        let outcome = settle_unknown_commit(Ok(false));
+        assert_eq!(outcome, Err(EngineError::Store(StoreError::Unavailable)));
+        assert!(outcome.is_err_and(|error| error.is_retryable()));
+    }
+
+    #[test]
+    fn a_question_that_cannot_be_answered_leaves_the_outcome_unknown() {
+        assert_eq!(
+            settle_unknown_commit(Err(StoreError::Unavailable)),
+            Err(EngineError::Store(StoreError::CommitOutcomeUnknown))
+        );
     }
 }

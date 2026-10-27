@@ -118,7 +118,7 @@ impl Engine {
             FailureClass::LeaseLost,
         )
         .await?;
-        tx.commit().await?;
+        cx.commit(tx).await?;
         Ok(true)
     }
 }

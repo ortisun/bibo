@@ -91,7 +91,7 @@ impl Engine {
                 cx.audit(&mut *tx, AuditActor::Human(actor.principal), action)
                     .await?;
                 self.settle(&mut *tx, &cx).await?;
-                tx.commit().await?;
+                cx.commit(tx).await?;
                 Ok(())
             }
             Err(error @ (EngineError::NotAuthorized(_) | EngineError::GuardUnmet(_))) => {
@@ -466,7 +466,7 @@ impl Engine {
         let cx = Cx::new(self, &job.value, actor.command);
         cx.audit(&mut *tx, AuditActor::Human(actor.principal), action)
             .await?;
-        tx.commit().await?;
+        cx.commit(tx).await?;
         Ok(())
     }
 }
