@@ -27,7 +27,7 @@
 //! * **Words from the file.** A predicate follows the plain-English definition in
 //!   `state-machine.json` clause by clause. Where a definition says "or", any one clause is
 //!   enough. A test per guard covers each clause.
-//! * **Time is a parameter.** Moments come in as [`Timestamp`](crate::values::Timestamp) values
+//! * **Time is a parameter.** Moments come in as [`Timestamp`] values
 //!   and are compared as instants, so `10:00:00Z` and `10:00:00.000Z` are the same moment.
 //!
 //! Every [`Guard`] has a predicate. The `match` in [`evaluate`] names every guard with no
