@@ -1,10 +1,10 @@
 # Migration safety
 
-- Status: baseline for Slice 0. What the first nine migrations do is tested. The rules for later migrations are guidance from the PostgreSQL documentation and from ADR 0007. They have not been exercised here, because there is no earlier schema to migrate from.
+- Status: the Slice 0 baseline (nine migrations) and the five migrations of `s1-database-tenancy-and-state-sync` (supersede edge, then row-level security in four parts). What the fourteen migrations do is tested. The rules for later migrations are guidance from the PostgreSQL documentation and from ADR 0007. They have not been exercised against an earlier schema with data, because there is none. The five new migrations are new files: nothing in the first nine was amended.
 - Form: how-to guide and explanation.
 - Source: [ADR 0007](../adr/0007-persistence-access-and-tenancy.md) rules 1 and 2 and the "Required tests" list, the [documentation policy](../reference/documentation-policy.md) row for data and schema migrations.
 
-## What the first nine migrations do
+## What the migrations do
 
 | # | Directory under `migrations/` | Creates |
 |---|---|---|
@@ -17,12 +17,17 @@
 | 7 | `2026-10-27-000700_audit_events` | `audit_events` and its verifier. |
 | 8 | `2026-10-27-000800_outbox_inbox_approvals` | `outbox`, `inbox`, `approvals`. |
 | 9 | `2026-10-27-000900_application_privileges` | Every grant of `factory_app`. |
+| 10 | `2026-10-27-001000_skipped_can_be_superseded` | The edge `SKIPPED` to `SUPERSEDED` (ADR 0010) and the terminal-row trigger rewritten to follow the supersede edges. Data only plus one `CREATE OR REPLACE FUNCTION`. |
+| 11 | `2026-10-27-001100_rls_roles` | The groups `factory_system`, `factory_lookup`, `factory_resolver` (if missing). |
+| 12 | `2026-10-27-001200_rls_tenant_isolation` | `ENABLE` and `FORCE ROW LEVEL SECURITY` and the policy `tenant_isolation` on the 17 tenant-owned tables; `ENABLE` and `tenant_self` on `tenants`. |
+| 13 | `2026-10-27-001300_rls_system_scope` | The column grants and policies of `factory_system`. |
+| 14 | `2026-10-27-001400_rls_lookup_functions` | The grants and policies of `factory_lookup`, the view `active_api_tokens` with the tenant check, `resolve_token` and `resolve_installation`, and their ownership and execute rights. |
 
 The migrations are ordered so that each one creates objects that only depend on earlier ones. The two foreign keys that would otherwise form a cycle (`artifacts` to `stage_runs`, and `jobs` to `ledger_entries`) are added by `ALTER TABLE` in the later migration, and the second one is deferred.
 
 ### Locks and downtime
 
-The baseline creates every object new, so no other session is using those tables while it runs and no lock makes anyone wait. Its two `ALTER TABLE ... ADD CONSTRAINT ... FOREIGN KEY` statements lock both tables they touch while they validate, which on empty tables takes no time. There is no table rewrite, no data movement and no downtime. Nothing here has been timed on large data, because there is none yet.
+The baseline creates every object new, so no other session is using those tables while it runs and no lock makes anyone wait. Migrations 12 and 13 take `ACCESS EXCLUSIVE` on each tenant table for the length of an `ALTER TABLE ... ENABLE ROW LEVEL SECURITY`, which is a catalog change and takes no longer than the lock wait; on a database that is serving traffic, run them in a quiet moment or with a `lock_timeout`. Migration 11 to 14 add no rows and rewrite no table. Its two `ALTER TABLE ... ADD CONSTRAINT ... FOREIGN KEY` statements lock both tables they touch while they validate, which on empty tables takes no time. There is no table rewrite, no data movement and no downtime. Nothing here has been timed on large data, because there is none yet.
 
 ## Rules for every later migration
 

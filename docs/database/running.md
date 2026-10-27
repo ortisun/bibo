@@ -98,7 +98,7 @@ Seven more suites go beyond the original criteria: `lease`, `outbox`, `approvals
 A passing run ends like this (the number of checks changes when a test is added):
 
 ```text
-PASS: migrations statuses ledger tenancy terminal_rows plans audit webhook_delivery lease outbox approvals tokens privileges contracts (510 checks, PostgreSQL 18.6 (Debian 18.6-1.pgdg13+2), docker)
+PASS: migrations statuses ledger tenancy rls terminal_rows plans audit webhook_delivery lease outbox approvals tokens privileges contracts (679 checks, PostgreSQL 18.6 (Debian 18.6-1.pgdg13+2), docker)
 ```
 
 A failing check prints `NOT OK - <what was expected>: <what happened>` and the statement, and the run exits 1.
