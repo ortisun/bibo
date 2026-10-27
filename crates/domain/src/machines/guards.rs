@@ -383,7 +383,7 @@ pub const fn facts_kind(guard: Guard) -> FactsKind {
         Guard::NotApplicableDecided => FactsKind::NotApplicable,
         Guard::LeaseAcquired => FactsKind::LeaseGrant,
         Guard::OutputSchemaValid => FactsKind::Output,
-        Guard::RetryAllowed | Guard::RetryExhaustedOrNonretryable => FactsKind::Retry,
+        Guard::RetryAllowed | Guard::FailureNonretryable => FactsKind::Retry,
         Guard::EscalationRequired => FactsKind::Escalation,
         Guard::GatePassEvidenced => FactsKind::GatePass,
         Guard::ReworkAllowed => FactsKind::Rework,
@@ -450,9 +450,7 @@ pub fn evaluate(guard: Guard, facts: &GuardFacts<'_>) -> Result<(), GuardError> 
         Guard::LeaseAcquired => run!(LeaseGrant => stage_run::lease_acquired),
         Guard::OutputSchemaValid => run!(Output => stage_run::output_schema_valid),
         Guard::RetryAllowed => run!(Retry => stage_run::retry_allowed),
-        Guard::RetryExhaustedOrNonretryable => {
-            run!(Retry => stage_run::retry_exhausted_or_nonretryable)
-        }
+        Guard::FailureNonretryable => run!(Retry => stage_run::failure_nonretryable),
         Guard::EscalationRequired => run!(Escalation => stage_run::escalation_required),
         Guard::GatePassEvidenced => run!(GatePass => stage_run::gate_pass_evidenced),
         Guard::ReworkAllowed => run!(Rework => stage_run::rework_allowed),

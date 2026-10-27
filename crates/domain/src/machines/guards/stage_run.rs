@@ -6,7 +6,7 @@
 use super::{Check, GuardResult, any_of};
 use crate::contracts::stage_contract::RetryClass;
 use crate::machines::failure::FailureClass;
-use crate::machines::limits::ReworkCap;
+use crate::machines::limits::{RepairCap, ReworkCap};
 use crate::machines::snapshot::{GateReportSnapshot, StageRunSnapshot};
 use crate::state::{Guard, JobStatus, StageRunStatus};
 use crate::values::Timestamp;
@@ -194,12 +194,19 @@ pub struct RetryFacts<'a> {
     pub class: FailureClass,
     /// The failure classes the stage contract lists as worth retrying.
     pub retry_on: &'a [RetryClass],
-    /// Attempts used so far, counting the one that just failed.
+    /// Attempts used since the last human answer, counting the one that just failed. A human
+    /// answer (`S13`) starts a new window, so the count begins again at the answer.
     pub attempts_used: u32,
     /// The most attempts the stage contract allows.
     pub max_attempts: u32,
     /// The budget has room for another attempt.
     pub budget_has_room: bool,
+    /// Attempts since the last human answer that failed with `INVALID_OUTPUT`, counting the one
+    /// that just failed if it did. A retry after such a failure is a repair, so the retry that
+    /// would follow this failure is repair number `invalid_output_failures`.
+    pub invalid_output_failures: u32,
+    /// The most repairs the policy allows. Never above two.
+    pub repair_cap: RepairCap,
 }
 
 impl RetryFacts<'_> {
@@ -213,6 +220,16 @@ impl RetryFacts<'_> {
     #[must_use]
     pub const fn attempts_remain(&self) -> bool {
         self.attempts_used < self.max_attempts
+    }
+
+    /// True when the repair cap does not stop a retry. Only a retry after an `INVALID_OUTPUT`
+    /// failure is a repair, so every other class always has repairs left. The retry that follows
+    /// the n-th invalid output of the window is repair number n, and it is allowed while n is at
+    /// most the cap.
+    #[must_use]
+    pub fn repairs_remain(&self) -> bool {
+        self.class != FailureClass::InvalidOutput
+            || self.invalid_output_failures <= u32::from(self.repair_cap.get())
     }
 }
 
@@ -228,7 +245,11 @@ pub fn retry_allowed(facts: &RetryFacts<'_>) -> GuardResult {
         )
         .require(
             facts.attempts_remain(),
-            "no attempts are left: attempts used has reached max_attempts",
+            "no attempts are left: attempts used since the last human answer has reached max_attempts",
+        )
+        .require(
+            facts.repairs_remain(),
+            "no repairs are left: the repair cap after an invalid output is reached",
         )
         .require(
             facts.budget_has_room,
@@ -237,25 +258,27 @@ pub fn retry_allowed(facts: &RetryFacts<'_>) -> GuardResult {
         .finish()
 }
 
-/// `G_RETRY_EXHAUSTED_OR_NONRETRYABLE`.
+/// `G_FAILURE_NONRETRYABLE`.
 ///
-/// This is not the opposite of [`retry_allowed`]. A retryable failure with attempts left but no
-/// budget satisfies neither. That case is a budget limit, which asks a human
-/// (`G_ESCALATION_REQUIRED`).
+/// This is not the opposite of [`retry_allowed`]. A retryable failure with no attempt, repair or
+/// budget left satisfies neither. That case asks a human (`G_ESCALATION_REQUIRED`).
 ///
 /// # Errors
-/// Returns the alternatives, none of which is true.
-pub fn retry_exhausted_or_nonretryable(facts: &RetryFacts<'_>) -> GuardResult {
-    any_of(
-        Guard::RetryExhaustedOrNonretryable,
-        &[
-            (
-                !facts.class_is_retryable(),
-                "the failure class is not retryable under this stage contract",
-            ),
-            (!facts.attempts_remain(), "max_attempts is reached"),
-        ],
-    )
+/// Returns the conditions that are not met.
+pub fn failure_nonretryable(facts: &RetryFacts<'_>) -> GuardResult {
+    // A budget limit asks a human (S07). `BUDGET_EXHAUSTED` has no retry class, so without this
+    // clause it would count as "not in retry_on" and fail the stage run.
+    Check::new(Guard::FailureNonretryable)
+        .require(
+            !facts.class_is_retryable(),
+            "the failure class is retryable under this stage contract, so a limit asks a human \
+             instead of failing the stage run",
+        )
+        .require(
+            facts.class != FailureClass::BudgetExhausted,
+            "the failure class is BUDGET_EXHAUSTED, which asks a human instead of failing the stage run",
+        )
+        .finish()
 }
 
 /// What decides whether a running stage run asks a human.
@@ -263,12 +286,14 @@ pub fn retry_exhausted_or_nonretryable(facts: &RetryFacts<'_>) -> GuardResult {
 pub struct EscalationFacts {
     /// A budget limit was hit.
     pub budget_limit_hit: bool,
+    /// The attempt limit or the repair cap was reached on a failure class the stage contract
+    /// lists as retryable (invariant INV-10: exhaustion escalates to a human and does not loop).
+    pub attempt_limit_reached: bool,
     /// The agent returned a structured request for a human.
     pub agent_requested_a_human: bool,
     /// The stagnation detector fired.
     pub stagnation_detected: bool,
-    /// Policy requires a human decision here. Reaching the attempt limit is one such case
-    /// (invariant INV-10: exhaustion escalates to a human and does not loop).
+    /// Policy requires a human decision here.
     pub policy_requires_human_decision: bool,
 }
 
@@ -281,6 +306,10 @@ pub fn escalation_required(facts: &EscalationFacts) -> GuardResult {
         Guard::EscalationRequired,
         &[
             (facts.budget_limit_hit, "a budget limit was hit"),
+            (
+                facts.attempt_limit_reached,
+                "the attempt limit or the repair cap was reached",
+            ),
             (
                 facts.agent_requested_a_human,
                 "the agent returned a structured request for a human",
@@ -474,6 +503,10 @@ pub struct AnswerFacts {
     pub answer_recorded_with_principal: bool,
     /// The answer became a new input hash for the stage.
     pub answer_became_a_new_input_hash: bool,
+    /// The answer raises a budget ceiling (`raise_budget_ceiling` in the approval policy).
+    pub raises_a_ceiling: bool,
+    /// The principal who gave the answer holds the `org_admin` role.
+    pub principal_is_org_admin: bool,
 }
 
 /// `G_ANSWER_RECORDED`.
@@ -489,6 +522,10 @@ pub fn answer_recorded(facts: &AnswerFacts) -> GuardResult {
         .require(
             facts.answer_became_a_new_input_hash,
             "the answer did not become a new input hash for the stage",
+        )
+        .require(
+            !facts.raises_a_ceiling || facts.principal_is_org_admin,
+            "an answer that raises a ceiling is accepted only from an org_admin",
         )
         .finish()
 }

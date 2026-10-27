@@ -28,7 +28,7 @@ use factory_domain::machines::guards::{
     evaluate, facts_kind,
 };
 use factory_domain::machines::invalidation::{ArtifactChange, INVALIDATION_RULES, plan_for_change};
-use factory_domain::machines::limits::{DEFAULT_REWORK_CAP, ReworkCap};
+use factory_domain::machines::limits::{DEFAULT_REWORK_CAP, RepairCap, ReworkCap};
 use factory_domain::machines::rework::{REWORK_ROUTES, ReworkCause, ReworkTrigger, route};
 use factory_domain::machines::snapshot::StageRunSnapshot;
 use factory_domain::state::{
@@ -514,9 +514,12 @@ fn sample_facts(kind: FactsKind) -> GuardFacts<'static> {
             attempts_used: 0,
             max_attempts: 1,
             budget_has_room: true,
+            invalid_output_failures: 0,
+            repair_cap: RepairCap::DEFAULT,
         }),
         FactsKind::Escalation => GuardFacts::Escalation(EscalationFacts {
             budget_limit_hit: false,
+            attempt_limit_reached: false,
             agent_requested_a_human: false,
             stagnation_detected: false,
             policy_requires_human_decision: false,
@@ -553,6 +556,8 @@ fn sample_facts(kind: FactsKind) -> GuardFacts<'static> {
         FactsKind::Answer => GuardFacts::Answer(AnswerFacts {
             answer_recorded_with_principal: true,
             answer_became_a_new_input_hash: true,
+            raises_a_ceiling: false,
+            principal_is_org_admin: false,
         }),
         FactsKind::Approval => GuardFacts::Approval(ApprovalFacts {
             decision_is_approve: true,

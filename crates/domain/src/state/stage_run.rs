@@ -1,6 +1,6 @@
 //! The Stage run state machine.
 //!
-//! One execution of one stage kind for a job. Terminal runs are immutable. Rework creates a new run; it never reopens an old one.
+//! One execution of one stage kind for a job. Terminal runs are immutable. Rework creates a new run; it never reopens an old one. When more than one of S05, S06 and S07 is legal for a failed attempt, the engine takes the first that applies in this order: S07 for BUDGET_EXHAUSTED, S05 when a retry is allowed, S06 when the class is not retryable, otherwise S07 because the attempt limit, the repair cap or the budget stopped a retry.
 //!
 //! Written from `docs/architecture/state-machine.json`. If the file changes, change this one to match;
 //! `tests/state_machine_conformance.rs` compares every status, event and transition with
@@ -117,7 +117,7 @@ pub static STAGE_RUN_TRANSITIONS: &[Transition<StageRunStatus, StageRunEvent>] =
         id: "S06",
         from: &[StageRunStatus::Running],
         event: StageRunEvent::AttemptFailedFinal,
-        guard: Guard::RetryExhaustedOrNonretryable,
+        guard: Guard::FailureNonretryable,
         to: StageRunStatus::Failed,
         actors: &[Actor::Engine],
         emits: Some("stage_run.failed"),
@@ -182,7 +182,12 @@ pub static STAGE_RUN_TRANSITIONS: &[Transition<StageRunStatus, StageRunEvent>] =
         event: StageRunEvent::HumanAnswered,
         guard: Guard::AnswerRecorded,
         to: StageRunStatus::Ready,
-        actors: &[Actor::Requester, Actor::Operator, Actor::Approver],
+        actors: &[
+            Actor::Requester,
+            Actor::Operator,
+            Actor::Approver,
+            Actor::OrgAdmin,
+        ],
         emits: Some("stage_run.ready"),
     },
     Transition {
