@@ -2,8 +2,8 @@
 
 PostgreSQL is the source of truth for the factory's jobs, stage runs, attempts, leases, evidence, approvals and audit trail. This directory documents the first schema, how to run its migrations, and what its tests prove.
 
-- Status: the Slice 0 baseline (`s0-database-baseline`) plus row-level security and the revised state machine (`s1-database-tenancy-and-state-sync`, [ADR 0012](../adr/0012-row-level-security-in-slice-1.md) and [ADR 0010](../adr/0010-failure-escalation-routing-and-invalidation.md)). Not yet reviewed by the software architect or the security specialist.
-- Verified: see the table of runs in [running.md](running.md). Fourteen migrations applied and reverted with Diesel 2.3.11, and 679 checks in fifteen suites passed on PostgreSQL 18.6 (local cluster and Docker) and 16.15 (Docker).
+- Status: the Slice 0 baseline (`s0-database-baseline`), row-level security and the revised state machine (`s1-database-tenancy-and-state-sync`, [ADR 0012](../adr/0012-row-level-security-in-slice-1.md) and [ADR 0010](../adr/0010-failure-escalation-routing-and-invalidation.md)), and the alignment with the ports v1.1 store (`s1-database-port-alignment`, [ADR 0014](../adr/0014-ports-v1-1-claim-protocol-and-port-revision.md)). Not yet reviewed by the software architect or the security specialist.
+- Verified: see the table of runs in [running.md](running.md). Eighteen migrations applied, reverted and upgraded from the fourteenth with Diesel 2.3.11, and 923 checks in sixteen suites passed twice on PostgreSQL 18.6 (local cluster). The earlier package also passed on 18.6 and 16.15 in Docker; this one was not run there.
 
 ## Where to start
 
@@ -14,7 +14,7 @@ PostgreSQL is the source of truth for the factory's jobs, stage runs, attempts, 
 | Know why a constraint or index exists | [constraints-and-indexes.md](constraints-and-indexes.md) |
 | Understand how tenants are kept apart (keys and row-level security), the roles, and what is left open | [tenancy.md](tenancy.md) |
 | Understand the evidence ledger and the audit log, and how to verify them | [ledger-and-audit.md](ledger-and-audit.md) |
-| Write the storage crate against this schema | [for-the-storage-crate.md](for-the-storage-crate.md) |
+| Write the storage crate against this schema: the recipes, and a table of the SQL, the pool and the constraint behind each `Store` method of ports v1.1 | [for-the-storage-crate.md](for-the-storage-crate.md) |
 | Change the schema safely later | [migration-safety.md](migration-safety.md) |
 | See the query plans on 10,000 and 100,000 rows, with row-level security on | [query-plans.md](query-plans.md) |
 | Know what this work does not cover | [not-covered.md](not-covered.md) |
@@ -23,11 +23,11 @@ PostgreSQL is the source of truth for the factory's jobs, stage runs, attempts, 
 
 | Path | What it is |
 |---|---|
-| [`migrations/`](../../migrations/) | Fourteen Diesel migrations, each with `up.sql` and `down.sql`. The last five are new in the second package: the supersede edge for skipped stage runs, then the four row-level security parts (roles, tenant isolation, system scope, lookup functions). |
+| [`migrations/`](../../migrations/) | Eighteen Diesel migrations, each with `up.sql` and `down.sql`. Nine are the baseline, five came with row-level security (the supersede edge for skipped stage runs, then roles, tenant isolation, system scope, lookup functions), and four are new for ports v1.1: the state machine rows `S21` and `S22`, the claim protocol, the Store model columns and rules, and the listing index. |
 | [`crates/storage/diesel.toml`](../../crates/storage/diesel.toml) | Diesel configuration: migrations directory and the generated schema path. |
 | [`crates/storage/src/schema.rs`](../../crates/storage/src/schema.rs) | The schema as `diesel print-schema` writes it. Generated, never edited by hand. |
 | [`scripts/db-test.sh`](../../scripts/db-test.sh) | Builds a throwaway database, migrates it and runs the suites. |
-| [`tests/`](tests/) | The SQL for each suite, the test helpers, two catalog queries, and `role_readiness.sql`, the start-up check of a pool's role. |
+| [`tests/`](tests/) | The SQL for each suite, the test helpers, two catalog queries, `role_readiness.sql` (the start-up check of a pool's role), and the three files of the data-preserving upgrade test (`upgrade_fixture.sql`, `upgrade_fingerprint.sql`, `upgrade_check.sql`). |
 | [`tools/`](tools/) | `state_machine_sql.py` (reference rows and expected values from `state-machine.json`) and `verify_audit_chain.py` (rebuilds an audit chain outside PostgreSQL). |
 
 The SQL tests live under `docs/database/tests/` because the work package owns `docs/database/**` and does not own a separate tests directory. That is a placement the architect may want to change.
@@ -48,3 +48,6 @@ These are the points I could not settle alone. Details are in the pages linked.
 6. **PostgreSQL 18** as the pinned major version.
 7. **Where the SQL tests live.**
 8. **Who runs the migrations.** The migration role must be a superuser or the role that created the groups ([migration-safety.md](migration-safety.md)).
+9. **A ledger append does not raise the job's version** (migration 17), which departs from the wording of ADR 0008. The port's `append_ledger_entry` returns no version, so otherwise a transition after an append in one transaction would always conflict. See [constraints-and-indexes.md](constraints-and-indexes.md).
+10. **The attempt limit counts from the last human answer** (migration 16), through a column the database sets when S13 moves a run to `READY`. The old absolute count would have refused the first attempt after an answer. See [constraints-and-indexes.md](constraints-and-indexes.md).
+11. **The points that need the architect**, listed at the end of [for-the-storage-crate.md](for-the-storage-crate.md): the port cannot read or write the attestation, `ConstraintRule` lacks four codes, `update_job_facts` is write-once in the port and not in the data, and the A07 effect text in `state-machine.json` still says the epoch rises on a lost lease, which ADR 0014 says it does not.

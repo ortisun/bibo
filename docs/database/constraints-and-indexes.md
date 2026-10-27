@@ -111,7 +111,7 @@ The `tenancy` suite asserts that these two are the only unique indexes on tenant
 | The same trigger: `lease_epoch` changes only with `READY` to `RUNNING`, by exactly one, and that move must change it | A claim and nothing else raises the fencing counter. | `terminal_rows` |
 | `passed_has_outcome`, `skipped_has_outcome`, `superseded_check` | `PASSED` needs a gate outcome (`PASSED`, or `BLOCKED` after an override), `SKIPPED` needs `NOT_APPLICABLE`, `superseded_at` is set exactly for `SUPERSEDED`. | `terminal_rows` |
 | `max_attempts BETWEEN 1 AND 20` | A sanity bound; the policy value sits below it. | |
-| Partial index `stage_runs_claim_idx (not_before) WHERE status = 'READY'` | The claim query. It holds only runs that can be claimed (about 1.6 percent of the generated rows). It has no tenant column on purpose: the engine claims across tenants in the system scope. | `plans` |
+| Partial index `stage_runs_claim_order_idx (not_before, id) WHERE status = 'READY'` (migration 16; it replaced `stage_runs_claim_idx (not_before)`) | The claim query. It holds only runs that can be claimed (about 1.6 percent of the generated rows). It has no tenant column on purpose: the engine claims across tenants in the system scope. | `plans` |
 
 ### `attempts`
 
@@ -119,7 +119,7 @@ The `tenancy` suite asserts that these two are the only unique indexes on tenant
 |---|---|---|
 | Partial unique index `attempts_one_active_per_stage_run (tenant_id, stage_run_id) WHERE status IN (STARTING, RUNNING, CANCELLING)` | The database's answer to "two workers claimed the same run". | `lease` |
 | `UNIQUE (tenant_id, stage_run_id, attempt_number)`, trigger `attempts_insert_guard` | Attempts are numbered 1, 2, 3 in order and cannot pass the run's `max_attempts` (INV-10). | `lease` |
-| Deferred constraint trigger `attempts_epoch_check` | A live attempt holds the stage run's current epoch. | `lease` |
+| Deferred constraint trigger `attempts_epoch_check` | A live attempt holds the stage run's current epoch. Judged on the row as it stands at commit (migration 16). | `lease` |
 | Trigger `attempts_update_guard` | A finished attempt keeps its result. Only `sandbox_id` and `sandbox_leaked` may still change. The epoch of an attempt never changes (INV-05). | `terminal_rows` |
 | Trigger `attempts_lease_bound`: `lease_expires_at <= now() + 1 hour` | A skewed or hostile worker cannot hold a lease far ahead of the database clock. | `lease` |
 | `attempts_active_has_lease`, `attempts_failed_has_class`, `attempts_succeeded_has_output`, `attempts_cancelling_has_teardown` | A live attempt has an owner and an expiry. Only a failure has a failure class, and every failure has one. A success names its output artifact. A cancelling attempt has a teardown deadline. | `terminal_rows`, `lease` |
@@ -168,6 +168,47 @@ Primary key `(tenant_id, consumer, event_id)`. A consumer inserts its row in the
 | Trigger `approvals_guard` and column grants | Only `invalidated_at` and `invalidation_reason`, once, together. | `approvals` |
 | `expires_at > created_at` | The 72-hour limit is policy and is set by the caller. The database only requires a window. | `approvals` |
 
+## Added for ports v1.1 (migrations 15 to 18)
+
+Each row is a rule the revised Store ([ports-v1.1](../architecture/ports-v1.1.md), [ADR 0014](../adr/0014-ports-v1-1-claim-protocol-and-port-revision.md)) states or relies on, and why the database holds it as well as the code. The test column names the suite; the deliberate break that shows each check can fail is in [running.md](running.md). Nothing is removed: the migrations only add, replace a function by a stricter one, or replace an index by a superset (see [migration-safety.md](migration-safety.md)).
+
+### State machine (migration 15)
+
+| Rule | Why | Test |
+|---|---|---|
+| Rows `S21` (`RUNNING` to `BLOCKED`, `attempt_blocked`, emits `stage_run.blocked`) and `S22` (`READY` to `WAITING_FOR_HUMAN`, `require_reauthorization`, emits `stage_run.waiting_for_human`), with their edges | The reference tables are generated from `state-machine.json`. The status trigger reads the edges, so the two moves are legal only from here on, and the outbox foreign key accepts the two events only for these transitions. | `statuses`, `outbox` |
+
+### Claim protocol (migration 16)
+
+| Rule | Why | Test |
+|---|---|---|
+| Deferred constraint triggers `stage_runs_live_attempt_check` (on `stage_runs`) and `attempts_live_attempt_check` (on `attempts`): a run that is not `RUNNING` or `SUPERSEDED` has no live attempt, checked at commit | ADR 0014, R1 to R3: the lease lives on the attempt, a retry (S05) waits for no lease because the failed attempt is terminal in the same transaction. Without this, a run could go back to `READY` with a live attempt; the unique index would then block the next start and the epoch check would fail the one after. `SUPERSEDED` is exempt: superseding asks its attempts to cancel, and they take their grace period. A function that reads the live state at commit, so a transaction may create, end and restart in any order. | `lease` section 9, 14 |
+| `stage_runs_guard`: `not_before` changes only while the run is `READY` after the move | A back-off or a postponement belongs to a run that can be claimed. | `lease` section 10 |
+| `stage_runs_guard`: an update that keeps the status changes only `not_before`, `max_attempts` and the bookkeeping columns | `postpone_stage_run` is "the only update of a stage run that is not a transition" (ports-v1.1). A raised budget stays allowed: the application role has that column grant, and the existing `terminal_rows` check shows it is deliberate. | `lease` section 10, `terminal_rows` |
+| `stage_runs.attempts_before_last_answer integer NOT NULL DEFAULT 0 CHECK (>= 0)`, set by `stage_runs_guard` when a run moves `WAITING_FOR_HUMAN` to `READY` (S13) and by nothing else | INV-10 and `G_RETRY_ALLOWED` count the attempts since the last human answer. The old trigger counted all of them and would have refused the first attempt after an answer. The numbers of attempts keep rising; only the limit subtracts the window. No role has a column grant on it; a write by anyone else is refused. | `lease` section 8 |
+| `attempts_insert_guard`: `attempt_number - attempts_before_last_answer <= max_attempts` (the constraint keeps its name `attempts_within_stage_run_limit`) | The same rule, at the row. | `lease` sections 2, 8 |
+| `attempts_update_guard`: `sandbox_leaked` never goes from true to false, and `sandbox_id` never changes once set | `record_sandbox` (ports-v1.1): "`leaked` only rises". An attempt has one sandbox. The masked columns of the terminal guard still let both be written after the attempt ended. | `lease` section 13 |
+| `attempts_epoch_check` reads the attempt as it stands at commit | The old function judged the row as it was when the event was queued; a transaction that created, ended and restarted would fail for an attempt that is no longer live. The rule is the same. | `lease` sections 8, 9 |
+| Index `stage_runs_claim_order_idx (not_before, id) WHERE status = 'READY'`, replacing `stage_runs_claim_idx (not_before)` | `find_claim_candidates` promises `not_before` then `id`. Rows made in one transaction share `not_before`; the tie-break makes the order total and avoids an incremental sort. A superset of the old index, so code that ordered by `not_before` alone still uses it. | `plans` |
+
+### Store model (migration 17)
+
+| Rule | Why | Test |
+|---|---|---|
+| `stage_runs.failing_set_sha256 text`, `CHECK` hash form, `CHECK` only with the `FAILED` outcome (IS NOT NULL spelled out) | `GateRecord::failing_set_sha256` for the stagnation detector, a digest and not an artifact so that it is read without an artifact inside a transaction. A terminal run is frozen with it. | `store_model` section 1 |
+| `stage_runs_blocked_has_outcome`: `BLOCKED` records the `BLOCKED` outcome | S11 and S21 both record it (`stage_run_effects_rule`). With `passed_has_outcome` and `skipped_has_outcome`, every status that the port ties to an outcome is tied in the data. The report hash is not forced: the port types it optional. | `store_model` section 1 |
+| `repositories.bypass_attested_by_principal_id`, `bypass_attested_at` (nullable); `CHECK` both or neither; composite foreign key `(tenant_id, bypass_attested_by_principal_id)` to `principals`; trigger `repositories_attestation_guard` | ADR 0014, decision 7: the attestation that the App is on no bypass list, by an organization admin. The trigger requires an active human principal of the tenant, stamps `bypass_attested_at` from the database clock (the port's rule that times come from the database), clears it with the attestor, and keeps it when something else changes. | `store_model` section 2 |
+| `task_nodes_running_has_attempt`, `task_nodes_idle_has_no_attempt` (`PENDING`, `READY`, `FAILED`), `task_nodes_commit_iff_succeeded` | `TaskNodeEffects`: the attempt is set on T02 and cleared on T04 and T05, the commit is required on T03. | `store_model` section 3 |
+| Trigger `jobs_bump_guard` replaces `bump_guard` on `jobs`: moving only `ledger_head_sequence` and `ledger_head_hash` may leave the version where it is (a raise by one is still accepted); the head never moves back | `append_ledger_entry` returns the chain head and no version; `transition_job` takes the version the caller read. If an append raised the version, every transition after an append in the same transaction would be a `Conflict`. The fake store has always behaved as this does. A decision for a person: ADR 0008 says the head moves "with the same compare-and-swap as any other state". The chain stays linear without it: the primary key and the key to the predecessor of `ledger_entries` allow one entry at each position. | `store_model` section 4, `ledger` |
+| Grants: the tenant role may `UPDATE` `failing_set_sha256` and the two attestation columns. The system role holds nothing new | The tenant role writes these through `transition_stage_run` and the repository operations. The system role finds work and writes nothing; the `rls` suite lists its grants column by column. | `privileges`, `rls`, `store_model` |
+
+### Listings (migration 18)
+
+| Rule | Why | Test |
+|---|---|---|
+| Index `jobs_repository_listing_idx (tenant_id, repository_id, created_at DESC, id DESC)` | `list_jobs` with a repository filter. Measured without it: a bitmap scan of every job of the tenant and a sort (400 of 2,000 rows read to return one page of one repository); the cost followed the tenant's history. Also the index behind the foreign key to `repositories`. | `plans` |
+| No other new index | The other listings and probes were measured and already use an index (`query-plans.md`, "Listings and the other operations of ports v1.1"). The edges of a task graph are read through their nodes, so an index on `task_node_dependencies (tenant_id, stage_run_id)` would be written for every edge and read by no plan. | `plans` |
+
 ## Invariants from `state-machine.json` and where the database stands on each
 
 | Invariant | In the database | Proven by |
@@ -180,7 +221,7 @@ Primary key `(tenant_id, consumer, event_id)`. A consumer inserts its row in the
 | INV-06 a mandatory gate that did not run is BLOCKED | Not in the database. | |
 | INV-07, INV-08 overrides and fake evidence | Ledger CHECKs and the execution mode key. | `ledger` |
 | INV-09 the ledger is append-only | Grants and triggers. | `ledger` |
-| INV-10 bounded attempts | `attempts_insert_guard`. Rework rounds are counted by the engine. | `lease` |
+| INV-10 bounded attempts | `attempts_insert_guard`, counted since the last human answer through `stage_runs.attempts_before_last_answer`. Rework rounds are counted by the engine. | `lease` |
 | INV-11 documentation stages come after review | Not in the database. | |
 
 ## Decisions that need a person
@@ -188,3 +229,6 @@ Primary key `(tenant_id, consumer, event_id)`. A consumer inserts its row in the
 1. **`UNIQUE (tenant_id, body_sha256)` on `webhook_deliveries`.** It closes a replay hole that the delivery id alone leaves open, and it assumes two different legitimate deliveries never have byte-identical bodies. GitHub payloads carry ids and timestamps, so this should hold, but it is an assumption. The alternative is to rely on the semantic key alone.
 2. **The platform tenant** (`00000000-0000-0000-0000-000000000001`) that owns audit events with no tenant. The other choice is to let `audit_events.tenant_id` be null, which would break the per-tenant chain.
 3. **The one-hour bound on a lease** and the **16 KiB limit on an outbox payload.** Both are generous sanity limits, set here because the policy gives no figure. Change them by migration.
+4. **A ledger append does not raise the job's version** (migration 17). It differs from the wording of ADR 0008 and is needed because `append_ledger_entry` returns no version while `transition_job` compares one. The alternative is a port that returns the version from an append; this one was chosen because it matches the fake store and keeps the chain's safety in the keys of `ledger_entries`.
+5. **The attempt limit counts since the last human answer** (migration 16), as INV-10 says, through a column the database derives when a person answers (S13). The alternative is to count the `human-answer-<n>` inputs of `stage_run_artifacts`; the column is cheaper to read and cannot be edited by the application.
+6. **A run that is not `RUNNING` has no live attempt** (migration 16). `SUPERSEDED` is the one exception. If the engine ever needs a state that keeps an attempt alive (a graceful cancel of a run in `CANCELLED`), the check names the states in one place.

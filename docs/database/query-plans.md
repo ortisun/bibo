@@ -1,6 +1,7 @@
 # Query plans with row-level security on, at 10,000 and 100,000 rows
 
 - Status: recorded from `scripts/db-test.sh plans` on 2026-10-27, PostgreSQL 18.6 (Homebrew), one laptop, `EXPLAIN (COSTS OFF)`. The 10,000 row run is the default. The 100,000 row run is `FACTORY_DB_PLANS_SCALE=10 scripts/db-test.sh plans` and took 191 seconds, almost all of it generating the data through the ledger and audit triggers. Both passed. The plans are text from one run each; the suite asserts only that the named index is used and that the large table is not scanned sequentially.
+- Update by `s1-database-port-alignment` (2026-10-27): the claim uses `stage_runs_claim_order_idx (not_before, id)`, the relay locks with `FOR NO KEY UPDATE`, and the section "Listings and the other operations of ports v1.1" at the end records the plans of the operations that ports v1.1 added, at 10,000 and 100,000 rows. The other tables below were not re-recorded.
 - Form: reference.
 - Limits: this is the shape of the plans on a small, freshly analysed data set. It says nothing about timing, cache behaviour or bloat under load. The `s1-database-review` package measures those once there is a store to measure.
 - What changed from the baseline: every plan is made **as the role that runs the query** with the policies on. The claim, the sweep and the relay run as `factory_system`. The timelines and lookups run as `factory_app` with the tenant setting. The two authentication lookups run as `factory_lookup`, the owner of the lookup functions (EXPLAIN cannot enter a function, so the body of each one is run as that role).
@@ -26,11 +27,11 @@ Bulk status changes on `jobs`, `stage_runs`, `attempts` and `outbox` ran with tr
 
 | Query | Role | At 10,000 rows | At 100,000 rows |
 |---|---|---|---|
-| **Claim**: `READY` runs of `ACTIVE` jobs, `ORDER BY not_before LIMIT 10 FOR NO KEY UPDATE SKIP LOCKED` | system | Index Scan `stage_runs_claim_idx`, hash join to a sequential scan of `jobs` (2,000 rows) | Index Scan `stage_runs_claim_idx`, **nested loop with a memoized Index Scan `jobs_open_idx`** |
+| **Claim**: `READY` runs of `ACTIVE` jobs, `ORDER BY not_before, id LIMIT 10 FOR NO KEY UPDATE SKIP LOCKED` (index `stage_runs_claim_order_idx` since migration 16; it was `stage_runs_claim_idx`) | system | Index Scan `stage_runs_claim_order_idx`, hash join to a sequential scan of `jobs` (2,000 rows) | Index Scan `stage_runs_claim_order_idx`, **nested loop with a memoized Index Scan `jobs_open_idx`** |
 | **Sweep**: leases that expired, `FOR NO KEY UPDATE SKIP LOCKED` | system | Index Scan `attempts_lease_expiry_idx` | the same |
 | **Sweep**: deadlines that passed | system | Index Scan `attempts_deadline_idx` | the same |
 | **Sweep**: teardown deadlines that passed | system | Index Scan `attempts_teardown_idx` | the same |
-| **Relay**: unpublished outbox rows, `FOR UPDATE SKIP LOCKED` | system | Index Scan `outbox_unpublished_idx` | the same |
+| **Relay**: unpublished outbox rows, `FOR NO KEY UPDATE SKIP LOCKED` | system | Index Scan `outbox_unpublished_idx` | the same |
 | **Timeline**: outbox events of one job | tenant | Index Scan `outbox_job_timeline_idx` | the same |
 | **Timeline**: ledger entries of one job | tenant | Bitmap Index Scan `ledger_entries_pkey`, sort | Index Scan `ledger_entries_tenant_id_job_id_sequence_entry_hash_key` (no sort) |
 | **Timeline**: stage runs of one job | tenant | Index Scan `stage_runs_tenant_id_job_id_stage_kind_run_number_key` | the same |
@@ -56,7 +57,7 @@ Limit
               Sort Key: s.not_before
               ->  Hash Join
                     Hash Cond: ((s.tenant_id = j.tenant_id) AND (s.job_id = j.id))
-                    ->  Index Scan using stage_runs_claim_idx on stage_runs s
+                    ->  Index Scan using stage_runs_claim_order_idx on stage_runs s
                           Index Cond: (not_before <= now())
                           Filter: (status = 'READY'::text)
                     ->  Hash
@@ -70,7 +71,7 @@ At 100,000 rows (20,000 jobs) the planner moves to the key lookup that the basel
 Limit
   ->  LockRows
         ->  Nested Loop
-              ->  Index Scan using stage_runs_claim_idx on stage_runs s
+              ->  Index Scan using stage_runs_claim_order_idx on stage_runs s
                     Index Cond: (not_before <= now())
                     Filter: (status = 'READY'::text)
               ->  Memoize
@@ -128,3 +129,33 @@ One timeline query was also run with `EXPLAIN ANALYZE` as the owner and as the t
 - `principals` and `tenants` are read with sequential scans in the authentication plans, because each has five rows. They use their keys as the tables grow. `tenants` is read to check that the tenant is not disabled.
 - `jobs` carries two unique indexes that start with `(tenant_id, id)`, and the planner prefers the wider one for lookups. The narrower primary key is needed as the target of the foreign keys from other tables. The cost is one more index to maintain on each job write.
 - The `repositories` table has to be large for the webhook binding to show an index scan. With five rows the planner joins two sequential scans, which is the right plan for five rows.
+
+## Listings and the other operations of ports v1.1
+
+Added by the work package `s1-database-port-alignment`. Same method, same roles, row-level security on. The suite (`plans`, section 3, and the changed claim and sweep checks) gained rows for these operations: task graphs of five nodes in a chain (one per job), an approval, an original request and a webhook delivery per job, and the jobs spread over twenty repositories per tenant. The `Store` method each query serves is in the first column.
+
+| Store method and query | Role | At 10,000 rows | At 100,000 rows |
+|---|---|---|---|
+| `find_claim_candidates`: `ORDER BY not_before, id LIMIT 10 FOR NO KEY UPDATE OF s SKIP LOCKED` | system | Index Scan `stage_runs_claim_order_idx`; a hash join to `jobs` and a sort of the 10 candidates (the join does not keep the order). Forced to a nested loop (as the 100,000 run chooses it): Index Scan `stage_runs_claim_order_idx`, memoized Index Scan `jobs_open_idx`, **no sort** | Index Scan `stage_runs_claim_order_idx`, nested loop with a memoized Index Scan `jobs_open_idx`, no sort |
+| `find_due_attempts`, lease expired | system | Incremental Sort over Index Scan `attempts_lease_expiry_idx` | Index Scan `attempts_lease_expiry_idx`, no sort |
+| `find_due_attempts`, deadline passed | system | Bitmap Heap Scan on `attempts_deadline_idx` and a sort (about 7 percent of the live attempts in this data are past their deadline) | Index Scan `attempts_deadline_idx`, no sort |
+| `find_due_attempts`, teardown deadline passed | system | Incremental Sort over Index Scan `attempts_teardown_idx` | Index Scan `attempts_teardown_idx`, no sort |
+| `list_jobs`, newest first, one page | tenant | Index Scan `jobs_listing_idx` | the same |
+| `list_jobs`, next page by keyset `(created_at, id) <` | tenant | Index Scan `jobs_listing_idx` | the same |
+| `list_jobs`, some statuses | tenant | Bitmap Index Scan `jobs_open_idx`, sort | Index Scan `jobs_listing_idx` with the status as a filter (the planner prefers the ordered index at this size) |
+| `list_jobs`, one repository | tenant | Bitmap Index Scan `jobs_repository_listing_idx`, sort of the repository's jobs. **Without the index** (measured before migration 18): Bitmap Heap Scan on `jobs_tenant_id_webhook_delivery_id_key` reading every job of the tenant, a filter on the repository and a sort | the same |
+| `list_stage_runs`, `list_attempts`, `list_task_nodes`, `get_original_request`, `read_audit` | tenant | Index Scan `stage_runs_tenant_id_job_id_stage_kind_run_number_key` (sort of at most 14 rows); `attempts_tenant_id_stage_run_id_attempt_number_key`; `task_nodes_tenant_id_stage_run_id_task_key_key`; Index Scan Backward `original_requests_tenant_id_job_id_revision_key`; `audit_events_pkey` | the same indexes |
+| `task_dependencies`, through the nodes | tenant | Nested loop: Index Only Scan `task_nodes_tenant_id_stage_run_id_id_key`, Index Only Scan `task_node_dependencies_pkey` | the same |
+| `valid_approvals(job, head)` | tenant | Index Scan `approvals_job_idx` | the same |
+| `record_delivery`, the duplicate probe on three keys | tenant | Bitmap Heap Scan over three Bitmap Index Scans: `webhook_deliveries_tenant_id_delivery_id_key`, `..._body_sha256_key`, `..._semantic_key_key` | the same |
+| `committed`, the witness of an outbox event or an audit record | tenant | Index Only Scan `outbox_pkey`; Index Only Scan `audit_events_tenant_id_event_id_key` | the same |
+| The tenant-scoped artifact read: one hash for one tenant | tenant | Index Scan `artifacts_pkey` | the same |
+
+What this shows, and what it does not:
+
+- Every query uses an index on the large table, at both sizes, and none scans a large table sequentially. The `plans` suite fails if one does.
+- The one index that was missing is `jobs_repository_listing_idx` (migration 18). Without it a page of one repository's jobs cost the tenant's whole history.
+- The task graph's edges are read through their nodes. A direct index on `task_node_dependencies (tenant_id, stage_run_id)` was not added: the join is two index-only scans, and the index would be written for every edge and read by nothing.
+- The claim query keeps a sort at the smaller size because the planner joins the candidates to a small `jobs` table with a hash join, which loses the order. The forced nested loop shows the plan at the size where `jobs` is large: no sort.
+- The audit-tail plans accept either `audit_events_pkey` or `audit_events_tenant_id_sequence_hash_key`: at 100,000 rows the planner takes the second, an index-only scan, as it does for the ledger.
+- No timing is claimed beyond the `EXPLAIN ANALYZE` figures above. The load tests of the later packages measure it.

@@ -124,7 +124,7 @@ erDiagram
 
 | Table | Holds | Notes |
 |---|---|---|
-| `repositories` | A registered GitHub repository: installation id, repository id, protection preflight result and the highest autonomy level allowed. | A repository belongs to one tenant, and the lookup by GitHub repository id is global on purpose (see [tenancy.md](tenancy.md)). |
+| `repositories` | A registered GitHub repository: installation id, repository id, protection preflight result, the highest autonomy level allowed, and the admin's attestation that the App is on no bypass list (`bypass_attested_by_principal_id`, `bypass_attested_at`, nullable). | A repository belongs to one tenant, and the lookup by GitHub repository id is global on purpose (see [tenancy.md](tenancy.md)). |
 | `principals` | A person or a service inside a tenant. Humans carry a numeric GitHub user id. | Identity only. What a person may do comes from the named allowlist in protected configuration, which the database does not store. |
 | `api_tokens` | The SHA-256 hash of a token, its audience, expiry, revocation time and last use. | The token itself is never stored. `active_api_tokens` is the view that says what counts as usable. |
 | `webhook_deliveries` | One row per verified GitHub delivery: delivery id, event, installation, repository, sender, body hash and semantic key. | Unique per tenant on delivery id, on body hash and on semantic key. |
@@ -135,7 +135,7 @@ erDiagram
 |---|---|---|
 | `jobs` | One request. Status, version, execution mode, autonomy level, pipeline scope, correlation id, the ledger head pointer, the reference to the normalized request. | `webhook_delivery_id` and `idempotency_key` are unique per tenant, so one delivery or one API retry can create at most one job. |
 | `original_requests` | The request text exactly as received, with its SHA-256 hash. One row per revision. | Untrusted text lives only here. The database checks that the hash matches the text. Rows are never updated. |
-| `stage_runs` | One execution of one stage kind. Rework adds a new run with the next `run_number`. | Terminal runs are frozen. `lease_epoch` rises by one on every claim. |
+| `stage_runs` | One execution of one stage kind. Rework adds a new run with the next `run_number`. The gate record: outcome, report hash, `failing_set_sha256`. | Terminal runs are frozen. `lease_epoch` rises by one on every claim and holds no lease: the lease is on the attempt. `attempts_before_last_answer` is how many attempts came before the last human answer, set by the database at S13. |
 | `attempts` | One try at a stage run, with its lease: owner, epoch, expiry, deadline, heartbeat. | At most one live attempt per stage run. |
 | `task_nodes`, `task_node_dependencies` | The nodes of the task graph of an implementation run and the edges between them. | The graph is acyclic. Edges stay inside one stage run. |
 | `artifacts` | Metadata of a stored blob: hash, size, media type, backend, retention class, the stage run that first stored it. | One row per tenant and hash. |
@@ -174,7 +174,11 @@ Foreign keys and deferred checks mean the order of the statements does not matte
 
 ### A claim
 
-The engine's system pool selects `READY` stage runs of `ACTIVE` jobs whose `not_before` has passed, with `FOR NO KEY UPDATE SKIP LOCKED`, and returns the identifiers. A tenant transaction for the tenant it found then moves the run to `RUNNING` with `lease_epoch + 1`, by compare and swap on `version`, and inserts the attempt at that epoch. A partial unique index allows one live attempt per stage run, and a trigger lets the epoch rise only with that move. The `lease` suite runs 25 rounds of four workers on each of three claim styles, and each round has exactly one winner; the `rls` suite does the same through two real logins, where several workers hold the same candidate.
+Two steps with two roles ([ADR 0014](../adr/0014-ports-v1-1-claim-protocol-and-port-revision.md)). The engine's system pool selects `READY` stage runs of `ACTIVE` jobs whose `not_before` has passed, in `(not_before, id)` order, with `FOR NO KEY UPDATE SKIP LOCKED`, and returns the identifiers and the version (`find_claim_candidates`). A tenant transaction for the tenant it found then runs `start_attempt`: it share-locks the job, locks the run, decides (not found, conflict, job not active, backing off, epoch exhausted, attempt limit), moves the run to `RUNNING` with `lease_epoch + 1` by compare and swap on `version`, and inserts the attempt at that epoch with its lease and deadline from the database clock. The lease is on the attempt. A partial unique index allows one live attempt per stage run, a trigger lets the epoch rise only with that move, and a deferred check says a run that is not `RUNNING` has no live attempt, so a retry (S05) waits for no lease. The `lease` suite runs 25 rounds of four workers on each of three claim styles, and each round has exactly one winner; the `rls` suite does the same through two real logins, where several workers hold the same candidate.
+
+### The sweep covers three questions
+
+`find_due_attempts` asks the database clock three things, each with its own partial index: has a lease lapsed (A07), has a deadline passed (A06), has a teardown deadline passed (A10, only while `CANCELLING`). The system role finds them; a tenant transaction moves each one with a compare and swap on version and epoch.
 
 ### A lease is fenced
 
