@@ -42,6 +42,7 @@ pub mod ids;
 pub mod ledger;
 pub mod machines;
 pub mod patterns;
+pub mod redaction;
 pub mod scope;
 pub mod state;
 pub mod values;
