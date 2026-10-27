@@ -1,0 +1,3 @@
+[alias]
+# `cargo xtask check-architecture` runs the architecture checks. xtask is tooling, not product code.
+xtask = "run --quiet --package xtask --"

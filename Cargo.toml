@@ -1,0 +1,47 @@
+# Workspace root. The crate layout and the dependency rules are in ADR 0002 and in
+# docs/architecture/crate-dependency-rules.json, which `cargo xtask check-architecture` enforces.
+[workspace]
+resolver = "3"
+# Only xtask exists today. Cargo 1.98 rejects a glob that matches nothing, so `crates/*` and
+# `apps/*` cannot be listed until the first crate and the first binary exist. Add both globs in
+# the change that creates them.
+members = ["xtask"]
+
+[workspace.package]
+version = "0.0.0"
+edition = "2024"
+rust-version = "1.98"
+publish = false
+
+# Library crates and binaries inherit these with `[lints] workspace = true`.
+[workspace.lints.rust]
+# DEP-06: no crate uses unsafe code. `forbid` cannot be overridden by an `allow` in a crate.
+unsafe_code = "forbid"
+rust_2018_idioms = { level = "warn", priority = -1 }
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
+dbg_macro = "warn"
+
+# Crates inherit dependencies with `name.workspace = true`.
+[workspace.dependencies]
+# xtask reads `cargo metadata` output and the rules file with it. The rules file lets xtask use
+# std and serde_json only. Maintained by dtolnay (1.0.154, published 2026-10-11).
+serde_json = "1.0.154"
+
+# The twelve library crates from ADR 0002 (package prefix `factory-`, directory `crates/<name>`).
+# Cargo reads an entry only when a crate inherits it, so an entry for a crate that does not exist
+# yet is harmless. The crate's own manifest still lists which workspace crates it may depend on,
+# and `cargo xtask check-architecture` rejects any edge the rules file does not allow.
+factory-domain = { path = "crates/domain" }
+factory-ports = { path = "crates/ports" }
+factory-workflow = { path = "crates/workflow" }
+factory-spec_adapter = { path = "crates/spec_adapter" }
+factory-storage = { path = "crates/storage" }
+factory-runtime = { path = "crates/runtime" }
+factory-sandbox = { path = "crates/sandbox" }
+factory-github = { path = "crates/github" }
+factory-contracts = { path = "crates/contracts" }
+factory-egress = { path = "crates/egress" }
+factory-observability = { path = "crates/observability" }
+factory-testkit = { path = "crates/testkit" }
