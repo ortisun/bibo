@@ -67,7 +67,7 @@ Consequently:
 | Create the Cargo workspace and the architecture checks | `s0-workspace-skeleton` | 0 | software_engineer | M | 0 | none | yes |
 | Define identifiers, value types and contract types in the domain crate | `s0-domain-vocabulary` | 0 | software_engineer | L | 1 | `s0-workspace-skeleton` | yes |
 | Implement the four state machines exactly as the transition tables | `s0-state-machines` | 0 | software_engineer | L | 2 | `s0-domain-vocabulary` | yes |
-| Define the port traits and the labelled fakes with shared contract tests | `s0-ports-and-testkit` | 0 | software_engineer | L | 2 | `s0-domain-vocabulary` | yes |
+| Define the port traits and the labelled fakes with shared contract tests | `s0-ports-and-testkit` | 0 | software_engineer | L | 2 | `s0-domain-vocabulary` |  |
 | Validate contracts and load agent, profile, project and policy definitions | `s0-contracts-and-registry` | 0 | software_engineer | M | 3 | `s0-domain-vocabulary`, `s0-ports-and-testkit` |  |
 | Create the first PostgreSQL migrations and database tests | `s0-database-baseline` | 0 | dba | L | 1 | `s0-workspace-skeleton` |  |
 | Set up continuous integration that runs the same checks as a developer | `s0-ci-pipeline` | 0 | sre | M | 1 | `s0-workspace-skeleton`, `s0-security-baseline` |  |
@@ -76,41 +76,43 @@ Consequently:
 | Settle the open Spec Kit questions: revision, checklist, arguments and running in the sandbox | `s0-spec-kit-spike` | 0 | software_engineer | M | 1 | `s0-agent-runtime-spike` |  |
 | Prove how the agent tools run inside the sandbox behind the broker | `s0-agent-runtime-spike` | 0 | software_engineer | M | 0 | none |  |
 | Build and pin the sandbox image for the fixture project | `s1-sandbox-images` | 1 | sre | M | 1 | `s0-workspace-skeleton` |  |
-| Implement the Docker sandbox supervisor and the posture verifier | `s1-sandbox-adapter` | 1 | software_engineer | L | 4 | `s0-ports-and-testkit`, `s1-sandbox-images`, `s1-security-test-harness`, `s1-redaction` | yes |
-| Implement the PostgreSQL store, the evidence ledger and the local artifact store | `s1-storage-postgres` | 1 | software_engineer | L | 3 | `s0-ports-and-testkit`, `s0-database-baseline`, `s1-database-tenancy-and-state-sync` |  |
-| Build the durable workflow engine | `s1-engine-core` | 1 | software_engineer | XL | 4 | `s0-state-machines`, `s0-ports-and-testkit`, `s1-domain-revision` |  |
-| Evaluate approval, tool grant, protected path and budget policy as pure rules | `s1-policy-evaluation` | 1 | software_engineer | L | 4 | `s0-state-machines`, `s0-security-baseline`, `s0-contracts-and-registry`, `s1-domain-revision` | yes |
-| Implement the Claude Code and Codex adapters that run inside the sandbox | `s1-agent-runtime-adapters` | 1 | software_engineer | L | 5 | `s0-ports-and-testkit`, `s0-agent-runtime-spike`, `s1-sandbox-adapter` | yes |
-| Implement the GitHub App adapter for issues, narrowed tokens, draft pull requests and webhooks | `s1-github-adapter` | 1 | software_engineer | L | 4 | `s0-ports-and-testkit`, `s1-security-test-harness`, `s1-redaction` |  |
+| Implement the Docker sandbox supervisor and the posture verifier | `s1-sandbox-adapter` | 1 | software_engineer | L | 6 | `s0-ports-and-testkit`, `s1-sandbox-images`, `s1-security-test-harness`, `s1-redaction`, `s1-ports-revision` | yes |
+| Implement the PostgreSQL store, the evidence ledger and the local artifact store | `s1-storage-postgres` | 1 | software_engineer | L | 6 | `s0-ports-and-testkit`, `s0-database-baseline`, `s1-database-tenancy-and-state-sync`, `s1-ports-revision`, `s1-database-port-alignment` |  |
+| Build the durable workflow engine | `s1-engine-core` | 1 | software_engineer | XL | 4 | `s0-state-machines`, `s0-ports-and-testkit`, `s1-domain-revision` | yes |
+| Evaluate approval, tool grant, protected path and budget policy as pure rules | `s1-policy-evaluation` | 1 | software_engineer | L | 4 | `s0-state-machines`, `s0-security-baseline`, `s0-contracts-and-registry`, `s1-domain-revision` |  |
+| Implement the Claude Code and Codex adapters that run inside the sandbox | `s1-agent-runtime-adapters` | 1 | software_engineer | L | 7 | `s0-ports-and-testkit`, `s0-agent-runtime-spike`, `s1-sandbox-adapter`, `s1-ports-revision` | yes |
+| Implement the GitHub App adapter for issues, narrowed tokens, draft pull requests and webhooks | `s1-github-adapter` | 1 | software_engineer | L | 6 | `s0-ports-and-testkit`, `s1-security-test-harness`, `s1-redaction`, `s1-ports-revision` |  |
 | Write the agent manifests, prompts and the general-software profile | `s1-agent-definitions` | 1 | software_engineer | M | 4 | `s0-contracts-and-registry`, `s0-agent-runtime-spike` |  |
 | Write the documentation policy and the readability rubric with a test corpus | `s1-documentation-rubric` | 1 | documenter | S | 0 | none |  |
 | Build the human-readable artifact quality gate | `s1-readability-gate` | 1 | software_engineer | M | 2 | `s0-domain-vocabulary`, `s1-documentation-rubric` |  |
-| Build the Spec Kit adapter and the specification stage | `s1-spec-adapter-and-stage` | 1 | software_engineer | L | 6 | `s0-spec-kit-spike`, `s1-engine-core`, `s0-contracts-and-registry`, `s1-agent-definitions`, `s1-prompt-assembly`, `s1-policy-evaluation`, `s1-workspace-ingestion` | yes |
-| Build the intake and repository context stages | `s1-stage-intake-and-repository` | 1 | software_engineer | M | 6 | `s1-engine-core`, `s1-sandbox-adapter`, `s1-workspace-ingestion`, `s1-agent-definitions`, `s1-readability-gate`, `s1-policy-evaluation`, `s1-prompt-assembly` |  |
-| Build the domain discovery, architecture and task planning stages | `s1-stage-architecture-and-planning` | 1 | software_engineer | L | 6 | `s1-engine-core`, `s1-agent-definitions`, `s0-contracts-and-registry`, `s1-readability-gate`, `s1-prompt-assembly` |  |
-| Build the documentation stages and the documentation quality gate | `s1-stage-documentation` | 1 | software_engineer | L | 6 | `s1-engine-core`, `s1-sandbox-adapter`, `s1-workspace-ingestion`, `s1-agent-definitions`, `s1-documentation-rubric`, `s1-readability-gate`, `s1-prompt-assembly` | yes |
-| Build the delivery and approval stages | `s1-stage-delivery-and-approval` | 1 | software_engineer | L | 5 | `s1-engine-core`, `s1-github-adapter`, `s1-readability-gate`, `s1-policy-evaluation`, `s1-redaction` |  |
-| Wire the API, worker and command line into runnable programs | `s1-apps-composition` | 1 | software_engineer | L | 7 | `s1-engine-core`, `s1-storage-postgres`, `s1-sandbox-adapter`, `s1-workspace-ingestion`, `s1-agent-runtime-adapters`, `s1-github-adapter`, `s1-egress-and-broker`, `s0-contracts-and-registry`, `s0-telemetry-baseline`, `s1-policy-evaluation`, `s1-spec-adapter-and-stage`, `s1-stage-intake-and-repository`, `s1-stage-architecture-and-planning`, `s1-stage-implementation-and-review`, `s1-trusted-gates-and-validation`, `s1-supply-chain-gates`, `s1-stage-documentation`, `s1-stage-delivery-and-approval`, `s1-agent-definitions`, `s1-security-test-harness`, `s1-telemetry-wiring` | yes |
+| Build the Spec Kit adapter and the specification stage | `s1-spec-adapter-and-stage` | 1 | software_engineer | L | 7 | `s0-spec-kit-spike`, `s1-engine-core`, `s0-contracts-and-registry`, `s1-agent-definitions`, `s1-prompt-assembly`, `s1-policy-evaluation`, `s1-workspace-ingestion`, `s1-ports-revision` |  |
+| Build the intake and repository context stages | `s1-stage-intake-and-repository` | 1 | software_engineer | M | 7 | `s1-engine-core`, `s1-sandbox-adapter`, `s1-workspace-ingestion`, `s1-agent-definitions`, `s1-readability-gate`, `s1-policy-evaluation`, `s1-prompt-assembly`, `s1-ports-revision` |  |
+| Build the domain discovery, architecture and task planning stages | `s1-stage-architecture-and-planning` | 1 | software_engineer | L | 6 | `s1-engine-core`, `s1-agent-definitions`, `s0-contracts-and-registry`, `s1-readability-gate`, `s1-prompt-assembly`, `s1-ports-revision` |  |
+| Build the documentation stages and the documentation quality gate | `s1-stage-documentation` | 1 | software_engineer | L | 7 | `s1-engine-core`, `s1-sandbox-adapter`, `s1-workspace-ingestion`, `s1-agent-definitions`, `s1-documentation-rubric`, `s1-readability-gate`, `s1-prompt-assembly`, `s1-ports-revision` |  |
+| Build the delivery and approval stages | `s1-stage-delivery-and-approval` | 1 | software_engineer | L | 7 | `s1-engine-core`, `s1-github-adapter`, `s1-readability-gate`, `s1-policy-evaluation`, `s1-redaction`, `s1-ports-revision` |  |
+| Wire the API, worker and command line into runnable programs | `s1-apps-composition` | 1 | software_engineer | L | 9 | `s1-engine-core`, `s1-storage-postgres`, `s1-sandbox-adapter`, `s1-workspace-ingestion`, `s1-agent-runtime-adapters`, `s1-github-adapter`, `s1-egress-and-broker`, `s0-contracts-and-registry`, `s0-telemetry-baseline`, `s1-policy-evaluation`, `s1-spec-adapter-and-stage`, `s1-stage-intake-and-repository`, `s1-stage-architecture-and-planning`, `s1-stage-implementation-and-review`, `s1-trusted-gates-and-validation`, `s1-supply-chain-gates`, `s1-stage-documentation`, `s1-stage-delivery-and-approval`, `s1-agent-definitions`, `s1-security-test-harness`, `s1-telemetry-wiring`, `s1-ports-revision` | yes |
 | Create the fixture repository and the end-to-end acceptance harness | `s1-fixture-and-e2e-harness` | 1 | qa | L | 1 | `s0-workspace-skeleton` |  |
 | Verify traces, metrics and correlation across a job | `s1-observability-instrumentation` | 1 | observability | M | 5 | `s0-telemetry-baseline`, `s1-engine-core` |  |
 | Provide local Compose deployment, backup and restore | `s1-local-deployment` | 1 | sre | M | 2 | `s0-ci-pipeline`, `s1-sandbox-images` |  |
-| Review queries, indexes and retention against realistic data volumes | `s1-database-review` | 1 | dba | M | 4 | `s1-storage-postgres`, `s1-local-deployment` |  |
-| Test prompt injection, sandbox escape attempts and secret handling | `s1-security-review-and-tests` | 1 | security | L | 7 | `s0-security-baseline`, `s1-sandbox-adapter`, `s1-workspace-ingestion`, `s1-egress-and-broker`, `s1-github-adapter`, `s1-agent-runtime-adapters`, `s1-fixture-and-e2e-harness`, `s1-stage-intake-and-repository`, `s1-policy-evaluation`, `s1-redaction`, `s1-prompt-assembly`, `s1-trusted-gates-and-validation`, `s1-supply-chain-gates`, `s1-security-test-harness`, `s1-stage-implementation-and-review` | yes |
-| Run and record the Slice 1 end-to-end proof | `s1-end-to-end-run` | 1 | qa | M | 8 | `s1-apps-composition`, `s1-fixture-and-e2e-harness`, `s1-local-deployment`, `s1-observability-instrumentation`, `s1-security-review-and-tests` | yes |
-| Write the guides, reference, runbooks and the recorded walkthrough | `s1-docs-and-walkthrough` | 1 | documenter | L | 9 | `s1-end-to-end-run`, `s1-documentation-rubric`, `s1-database-review` | yes |
-| Build the host-side workspace, git hardening and output ingestion | `s1-workspace-ingestion` | 1 | software_engineer | L | 5 | `s0-ports-and-testkit`, `s1-security-test-harness`, `s1-policy-evaluation`, `s1-redaction` | yes |
-| Build the model broker and the per-job egress relay | `s1-egress-and-broker` | 1 | software_engineer | XL | 4 | `s0-ports-and-testkit`, `s1-security-test-harness`, `s1-redaction` |  |
+| Review queries, indexes and retention against realistic data volumes | `s1-database-review` | 1 | dba | M | 7 | `s1-storage-postgres`, `s1-local-deployment` |  |
+| Test prompt injection, sandbox escape attempts and secret handling | `s1-security-review-and-tests` | 1 | security | L | 9 | `s0-security-baseline`, `s1-sandbox-adapter`, `s1-workspace-ingestion`, `s1-egress-and-broker`, `s1-github-adapter`, `s1-agent-runtime-adapters`, `s1-fixture-and-e2e-harness`, `s1-stage-intake-and-repository`, `s1-policy-evaluation`, `s1-redaction`, `s1-prompt-assembly`, `s1-trusted-gates-and-validation`, `s1-supply-chain-gates`, `s1-security-test-harness`, `s1-stage-implementation-and-review` | yes |
+| Run and record the Slice 1 end-to-end proof | `s1-end-to-end-run` | 1 | qa | M | 10 | `s1-apps-composition`, `s1-fixture-and-e2e-harness`, `s1-local-deployment`, `s1-observability-instrumentation`, `s1-security-review-and-tests` | yes |
+| Write the guides, reference, runbooks and the recorded walkthrough | `s1-docs-and-walkthrough` | 1 | documenter | L | 11 | `s1-end-to-end-run`, `s1-documentation-rubric`, `s1-database-review` | yes |
+| Build the host-side workspace, git hardening and output ingestion | `s1-workspace-ingestion` | 1 | software_engineer | L | 6 | `s0-ports-and-testkit`, `s1-security-test-harness`, `s1-policy-evaluation`, `s1-redaction`, `s1-ports-revision` |  |
+| Build the model broker and the per-job egress relay | `s1-egress-and-broker` | 1 | software_engineer | XL | 6 | `s0-ports-and-testkit`, `s1-security-test-harness`, `s1-redaction`, `s1-ports-revision` |  |
 | Assemble prompts with a data envelope and hardened untrusted text | `s1-prompt-assembly` | 1 | software_engineer | M | 5 | `s0-contracts-and-registry`, `s1-policy-evaluation`, `s1-redaction` |  |
 | Redact secrets from every output the factory stores or sends | `s1-redaction` | 1 | software_engineer | M | 2 | `s0-domain-vocabulary`, `s0-security-baseline` |  |
-| Build the dependency and supply chain gates | `s1-supply-chain-gates` | 1 | software_engineer | M | 5 | `s1-engine-core`, `s1-policy-evaluation`, `s1-sandbox-adapter`, `s1-security-test-harness` |  |
-| Build the security test harness and the hostile fixtures | `s1-security-test-harness` | 1 | qa | L | 3 | `s0-ports-and-testkit` | yes |
-| Build the trusted gates and the validation stage | `s1-trusted-gates-and-validation` | 1 | software_engineer | L | 6 | `s1-engine-core`, `s1-sandbox-adapter`, `s1-workspace-ingestion`, `s1-policy-evaluation`, `s1-redaction` | yes |
-| Build the implementation and review stages | `s1-stage-implementation-and-review` | 1 | software_engineer | L | 6 | `s1-engine-core`, `s1-sandbox-adapter`, `s1-workspace-ingestion`, `s1-agent-runtime-adapters`, `s1-agent-definitions`, `s1-policy-evaluation`, `s1-prompt-assembly` | yes |
+| Build the dependency and supply chain gates | `s1-supply-chain-gates` | 1 | software_engineer | M | 7 | `s1-engine-core`, `s1-policy-evaluation`, `s1-sandbox-adapter`, `s1-security-test-harness` |  |
+| Build the security test harness and the hostile fixtures | `s1-security-test-harness` | 1 | qa | L | 3 | `s0-ports-and-testkit` |  |
+| Build the trusted gates and the validation stage | `s1-trusted-gates-and-validation` | 1 | software_engineer | L | 7 | `s1-engine-core`, `s1-sandbox-adapter`, `s1-workspace-ingestion`, `s1-policy-evaluation`, `s1-redaction`, `s1-ports-revision` |  |
+| Build the implementation and review stages | `s1-stage-implementation-and-review` | 1 | software_engineer | L | 8 | `s1-engine-core`, `s1-sandbox-adapter`, `s1-workspace-ingestion`, `s1-agent-runtime-adapters`, `s1-agent-definitions`, `s1-policy-evaluation`, `s1-prompt-assembly`, `s1-ports-revision` | yes |
 | Bring the domain crate in line with the revised state machine and contracts | `s1-domain-revision` | 1 | software_engineer | L | 3 | `s0-domain-vocabulary`, `s0-state-machines` | yes |
 | Add row-level security and bring the state tables in line with the revised state machine | `s1-database-tenancy-and-state-sync` | 1 | dba | L | 2 | `s0-database-baseline` |  |
-| Extend the architecture check with the repository-wide span name scan and the adapter allow lists | `s1-xtask-extensions` | 1 | software_engineer | M | 2 | `s0-workspace-skeleton`, `s0-telemetry-baseline` |  |
+| Extend the architecture check with the repository-wide span name scan and the adapter allow lists | `s1-xtask-extensions` | 1 | software_engineer | L | 6 | `s0-workspace-skeleton`, `s0-telemetry-baseline`, `s1-ports-revision` |  |
 | Move the local database to PostgreSQL 18 and test it, with the generated files, in CI | `s1-ci-database-and-generated-checks` | 1 | sre | M | 4 | `s0-ci-pipeline`, `s1-database-tenancy-and-state-sync`, `s1-domain-revision` |  |
 | Connect the real redactor to telemetry and add the job trace context | `s1-telemetry-wiring` | 1 | observability | M | 4 | `s0-telemetry-baseline`, `s1-redaction`, `s1-domain-revision` |  |
+| Revise the ports, fakes, contract suites and engine to ports v1.1 | `s1-ports-revision` | 1 | software_engineer | XL | 5 | `s0-ports-and-testkit`, `s0-contracts-and-registry`, `s1-domain-revision`, `s1-engine-core`, `s1-security-test-harness` | yes |
+| Add the migration that the revised ports need and align the claim notes | `s1-database-port-alignment` | 1 | dba | M | 3 | `s1-database-tenancy-and-state-sync` |  |
 <!-- GENERATED:end wp-summary -->
 
 ## 5. Parallel waves and the critical path
@@ -122,14 +124,16 @@ A wave is the earliest point at which a package can start, counting dependency h
 |---|---|---|
 | 0 | nothing | `s0-workspace-skeleton`, `s0-security-baseline`, `s0-agent-runtime-spike`, `s1-documentation-rubric` |
 | 1 | packages of wave 0 or earlier | `s0-domain-vocabulary`, `s0-database-baseline`, `s0-ci-pipeline`, `s0-telemetry-baseline`, `s0-spec-kit-spike`, `s1-sandbox-images`, `s1-fixture-and-e2e-harness` |
-| 2 | packages of wave 1 or earlier | `s0-state-machines`, `s0-ports-and-testkit`, `s1-readability-gate`, `s1-local-deployment`, `s1-redaction`, `s1-database-tenancy-and-state-sync`, `s1-xtask-extensions` |
-| 3 | packages of wave 2 or earlier | `s0-contracts-and-registry`, `s1-storage-postgres`, `s1-security-test-harness`, `s1-domain-revision` |
-| 4 | packages of wave 3 or earlier | `s1-sandbox-adapter`, `s1-engine-core`, `s1-policy-evaluation`, `s1-github-adapter`, `s1-agent-definitions`, `s1-database-review`, `s1-egress-and-broker`, `s1-ci-database-and-generated-checks`, `s1-telemetry-wiring` |
-| 5 | packages of wave 4 or earlier | `s1-agent-runtime-adapters`, `s1-stage-delivery-and-approval`, `s1-observability-instrumentation`, `s1-workspace-ingestion`, `s1-prompt-assembly`, `s1-supply-chain-gates` |
-| 6 | packages of wave 5 or earlier | `s1-spec-adapter-and-stage`, `s1-stage-intake-and-repository`, `s1-stage-architecture-and-planning`, `s1-stage-documentation`, `s1-trusted-gates-and-validation`, `s1-stage-implementation-and-review` |
-| 7 | packages of wave 6 or earlier | `s1-apps-composition`, `s1-security-review-and-tests` |
-| 8 | packages of wave 7 or earlier | `s1-end-to-end-run` |
-| 9 | packages of wave 8 or earlier | `s1-docs-and-walkthrough` |
+| 2 | packages of wave 1 or earlier | `s0-state-machines`, `s0-ports-and-testkit`, `s1-readability-gate`, `s1-local-deployment`, `s1-redaction`, `s1-database-tenancy-and-state-sync` |
+| 3 | packages of wave 2 or earlier | `s0-contracts-and-registry`, `s1-security-test-harness`, `s1-domain-revision`, `s1-database-port-alignment` |
+| 4 | packages of wave 3 or earlier | `s1-engine-core`, `s1-policy-evaluation`, `s1-agent-definitions`, `s1-ci-database-and-generated-checks`, `s1-telemetry-wiring` |
+| 5 | packages of wave 4 or earlier | `s1-observability-instrumentation`, `s1-prompt-assembly`, `s1-ports-revision` |
+| 6 | packages of wave 5 or earlier | `s1-sandbox-adapter`, `s1-storage-postgres`, `s1-github-adapter`, `s1-stage-architecture-and-planning`, `s1-workspace-ingestion`, `s1-egress-and-broker`, `s1-xtask-extensions` |
+| 7 | packages of wave 6 or earlier | `s1-agent-runtime-adapters`, `s1-spec-adapter-and-stage`, `s1-stage-intake-and-repository`, `s1-stage-documentation`, `s1-stage-delivery-and-approval`, `s1-database-review`, `s1-supply-chain-gates`, `s1-trusted-gates-and-validation` |
+| 8 | packages of wave 7 or earlier | `s1-stage-implementation-and-review` |
+| 9 | packages of wave 8 or earlier | `s1-apps-composition`, `s1-security-review-and-tests` |
+| 10 | packages of wave 9 or earlier | `s1-end-to-end-run` |
+| 11 | packages of wave 10 or earlier | `s1-docs-and-walkthrough` |
 <!-- GENERATED:end waves -->
 
 ### The longest chain
@@ -141,16 +145,18 @@ A wave is the earliest point at which a package can start, counting dependency h
 | 2 | Define identifiers, value types and contract types in the domain crate (`s0-domain-vocabulary`) | L | 8 |
 | 3 | Implement the four state machines exactly as the transition tables (`s0-state-machines`) | L | 13 |
 | 4 | Bring the domain crate in line with the revised state machine and contracts (`s1-domain-revision`) | L | 18 |
-| 5 | Evaluate approval, tool grant, protected path and budget policy as pure rules (`s1-policy-evaluation`) | L | 23 |
-| 6 | Build the host-side workspace, git hardening and output ingestion (`s1-workspace-ingestion`) | L | 28 |
-| 7 | Build the Spec Kit adapter and the specification stage (`s1-spec-adapter-and-stage`) | L | 33 |
-| 8 | Wire the API, worker and command line into runnable programs (`s1-apps-composition`) | L | 38 |
-| 9 | Run and record the Slice 1 end-to-end proof (`s1-end-to-end-run`) | M | 41 |
-| 10 | Write the guides, reference, runbooks and the recorded walkthrough (`s1-docs-and-walkthrough`) | L | 46 |
+| 5 | Build the durable workflow engine (`s1-engine-core`) | XL | 26 |
+| 6 | Revise the ports, fakes, contract suites and engine to ports v1.1 (`s1-ports-revision`) | XL | 34 |
+| 7 | Implement the Docker sandbox supervisor and the posture verifier (`s1-sandbox-adapter`) | L | 39 |
+| 8 | Implement the Claude Code and Codex adapters that run inside the sandbox (`s1-agent-runtime-adapters`) | L | 44 |
+| 9 | Build the implementation and review stages (`s1-stage-implementation-and-review`) | L | 49 |
+| 10 | Wire the API, worker and command line into runnable programs (`s1-apps-composition`) | L | 54 |
+| 11 | Run and record the Slice 1 end-to-end proof (`s1-end-to-end-run`) | M | 57 |
+| 12 | Write the guides, reference, runbooks and the recorded walkthrough (`s1-docs-and-walkthrough`) | L | 62 |
 
-Total relative weight along the longest chain: 46.
+Total relative weight along the longest chain: 62.
 
-Other packages with zero slack, because a second chain ties with the first. A delay in any of them delays the end: `s0-ports-and-testkit`, `s1-sandbox-adapter`, `s1-agent-runtime-adapters`, `s1-stage-documentation`, `s1-security-review-and-tests`, `s1-security-test-harness`, `s1-trusted-gates-and-validation`, `s1-stage-implementation-and-review`.
+Other packages with zero slack, because a second chain ties with the first. A delay in any of them delays the end: `s1-security-review-and-tests`.
 <!-- GENERATED:end critical-path -->
 
 How to read this: a zero-slack package is one whose delay delays the end. The chain runs through the skeleton, the domain, the ports and the fakes, the security test harness, the sandbox supervisor, the agent runtime adapters, the implementation and review stage, the composition roots, the end-to-end run and the documentation. Two observations follow from the computation, and both are plan choices that the lead can change.
@@ -166,50 +172,52 @@ The two spikes are not on the longest chain by weight, but a NO-GO re-plans the 
 | `s0-workspace-skeleton` | 3 | 0 |
 | `s0-domain-vocabulary` | 8 | 0 |
 | `s0-state-machines` | 13 | 0 |
-| `s0-ports-and-testkit` | 13 | 0 |
-| `s1-security-test-harness` | 18 | 0 |
 | `s1-domain-revision` | 18 | 0 |
-| `s1-sandbox-adapter` | 23 | 0 |
-| `s1-policy-evaluation` | 23 | 0 |
-| `s1-agent-runtime-adapters` | 28 | 0 |
-| `s1-workspace-ingestion` | 28 | 0 |
-| `s1-spec-adapter-and-stage` | 33 | 0 |
-| `s1-stage-documentation` | 33 | 0 |
-| `s1-trusted-gates-and-validation` | 33 | 0 |
-| `s1-stage-implementation-and-review` | 33 | 0 |
-| `s1-apps-composition` | 38 | 0 |
-| `s1-security-review-and-tests` | 38 | 0 |
-| `s1-end-to-end-run` | 41 | 0 |
-| `s1-docs-and-walkthrough` | 46 | 0 |
-| `s0-contracts-and-registry` | 16 | 2 |
-| `s1-engine-core` | 26 | 2 |
-| `s1-prompt-assembly` | 26 | 2 |
-| `s1-stage-intake-and-repository` | 31 | 2 |
-| `s1-stage-architecture-and-planning` | 31 | 2 |
-| `s1-stage-delivery-and-approval` | 31 | 2 |
-| `s1-supply-chain-gates` | 29 | 4 |
-| `s1-github-adapter` | 23 | 5 |
-| `s1-redaction` | 11 | 7 |
-| `s1-egress-and-broker` | 26 | 7 |
-| `s1-agent-definitions` | 19 | 9 |
-| `s1-observability-instrumentation` | 29 | 9 |
-| `s0-security-baseline` | 3 | 12 |
-| `s1-sandbox-images` | 6 | 12 |
-| `s1-telemetry-wiring` | 21 | 12 |
-| `s0-database-baseline` | 8 | 15 |
-| `s1-database-tenancy-and-state-sync` | 13 | 15 |
-| `s1-storage-postgres` | 18 | 15 |
-| `s1-readability-gate` | 11 | 17 |
-| `s0-agent-runtime-spike` | 3 | 20 |
-| `s1-database-review` | 21 | 20 |
-| `s0-spec-kit-spike` | 6 | 22 |
-| `s1-documentation-rubric` | 1 | 24 |
-| `s1-fixture-and-e2e-harness` | 8 | 25 |
-| `s1-ci-database-and-generated-checks` | 21 | 25 |
-| `s0-telemetry-baseline` | 4 | 26 |
-| `s0-ci-pipeline` | 6 | 29 |
-| `s1-local-deployment` | 9 | 29 |
-| `s1-xtask-extensions` | 7 | 39 |
+| `s1-engine-core` | 26 | 0 |
+| `s1-ports-revision` | 34 | 0 |
+| `s1-sandbox-adapter` | 39 | 0 |
+| `s1-agent-runtime-adapters` | 44 | 0 |
+| `s1-stage-implementation-and-review` | 49 | 0 |
+| `s1-apps-composition` | 54 | 0 |
+| `s1-security-review-and-tests` | 54 | 0 |
+| `s1-end-to-end-run` | 57 | 0 |
+| `s1-docs-and-walkthrough` | 62 | 0 |
+| `s0-ports-and-testkit` | 13 | 5 |
+| `s1-github-adapter` | 39 | 5 |
+| `s1-workspace-ingestion` | 39 | 5 |
+| `s1-spec-adapter-and-stage` | 44 | 5 |
+| `s1-stage-documentation` | 44 | 5 |
+| `s1-stage-delivery-and-approval` | 44 | 5 |
+| `s1-trusted-gates-and-validation` | 44 | 5 |
+| `s1-stage-intake-and-repository` | 42 | 7 |
+| `s1-egress-and-broker` | 42 | 7 |
+| `s1-supply-chain-gates` | 42 | 7 |
+| `s1-security-test-harness` | 18 | 8 |
+| `s0-contracts-and-registry` | 16 | 10 |
+| `s1-storage-postgres` | 39 | 10 |
+| `s1-stage-architecture-and-planning` | 39 | 10 |
+| `s1-database-review` | 42 | 15 |
+| `s1-policy-evaluation` | 23 | 16 |
+| `s1-prompt-assembly` | 26 | 18 |
+| `s1-redaction` | 11 | 23 |
+| `s1-xtask-extensions` | 39 | 23 |
+| `s1-agent-definitions` | 19 | 25 |
+| `s1-observability-instrumentation` | 29 | 25 |
+| `s0-security-baseline` | 3 | 28 |
+| `s1-sandbox-images` | 6 | 28 |
+| `s0-database-baseline` | 8 | 28 |
+| `s1-database-tenancy-and-state-sync` | 13 | 28 |
+| `s1-database-port-alignment` | 16 | 28 |
+| `s1-telemetry-wiring` | 21 | 28 |
+| `s1-readability-gate` | 11 | 33 |
+| `s0-agent-runtime-spike` | 3 | 36 |
+| `s0-spec-kit-spike` | 6 | 38 |
+| `s1-documentation-rubric` | 1 | 40 |
+| `s1-fixture-and-e2e-harness` | 8 | 41 |
+| `s1-ci-database-and-generated-checks` | 21 | 41 |
+| `s0-telemetry-baseline` | 4 | 42 |
+| `s0-ci-pipeline` | 6 | 45 |
+| `s1-local-deployment` | 9 | 45 |
 <!-- GENERATED:end slack -->
 
 ### Dependency graph
@@ -269,6 +277,8 @@ flowchart LR
     s1_xtask_extensions["s1-xtask-extensions"]
     s1_ci_database_and_generated_checks["s1-ci-database-and-generated-checks"]
     s1_telemetry_wiring["s1-telemetry-wiring"]
+    s1_ports_revision["s1-ports-revision"]
+    s1_database_port_alignment["s1-database-port-alignment"]
   end
   s0_workspace_skeleton --> s0_domain_vocabulary
   s0_domain_vocabulary --> s0_state_machines
@@ -285,9 +295,12 @@ flowchart LR
   s1_sandbox_images --> s1_sandbox_adapter
   s1_security_test_harness --> s1_sandbox_adapter
   s1_redaction --> s1_sandbox_adapter
+  s1_ports_revision --> s1_sandbox_adapter
   s0_ports_and_testkit --> s1_storage_postgres
   s0_database_baseline --> s1_storage_postgres
   s1_database_tenancy_and_state_sync --> s1_storage_postgres
+  s1_ports_revision --> s1_storage_postgres
+  s1_database_port_alignment --> s1_storage_postgres
   s0_state_machines --> s1_engine_core
   s0_ports_and_testkit --> s1_engine_core
   s1_domain_revision --> s1_engine_core
@@ -298,9 +311,11 @@ flowchart LR
   s0_ports_and_testkit --> s1_agent_runtime_adapters
   s0_agent_runtime_spike --> s1_agent_runtime_adapters
   s1_sandbox_adapter --> s1_agent_runtime_adapters
+  s1_ports_revision --> s1_agent_runtime_adapters
   s0_ports_and_testkit --> s1_github_adapter
   s1_security_test_harness --> s1_github_adapter
   s1_redaction --> s1_github_adapter
+  s1_ports_revision --> s1_github_adapter
   s0_contracts_and_registry --> s1_agent_definitions
   s0_agent_runtime_spike --> s1_agent_definitions
   s0_domain_vocabulary --> s1_readability_gate
@@ -312,6 +327,7 @@ flowchart LR
   s1_prompt_assembly --> s1_spec_adapter_and_stage
   s1_policy_evaluation --> s1_spec_adapter_and_stage
   s1_workspace_ingestion --> s1_spec_adapter_and_stage
+  s1_ports_revision --> s1_spec_adapter_and_stage
   s1_engine_core --> s1_stage_intake_and_repository
   s1_sandbox_adapter --> s1_stage_intake_and_repository
   s1_workspace_ingestion --> s1_stage_intake_and_repository
@@ -319,11 +335,13 @@ flowchart LR
   s1_readability_gate --> s1_stage_intake_and_repository
   s1_policy_evaluation --> s1_stage_intake_and_repository
   s1_prompt_assembly --> s1_stage_intake_and_repository
+  s1_ports_revision --> s1_stage_intake_and_repository
   s1_engine_core --> s1_stage_architecture_and_planning
   s1_agent_definitions --> s1_stage_architecture_and_planning
   s0_contracts_and_registry --> s1_stage_architecture_and_planning
   s1_readability_gate --> s1_stage_architecture_and_planning
   s1_prompt_assembly --> s1_stage_architecture_and_planning
+  s1_ports_revision --> s1_stage_architecture_and_planning
   s1_engine_core --> s1_stage_documentation
   s1_sandbox_adapter --> s1_stage_documentation
   s1_workspace_ingestion --> s1_stage_documentation
@@ -331,11 +349,13 @@ flowchart LR
   s1_documentation_rubric --> s1_stage_documentation
   s1_readability_gate --> s1_stage_documentation
   s1_prompt_assembly --> s1_stage_documentation
+  s1_ports_revision --> s1_stage_documentation
   s1_engine_core --> s1_stage_delivery_and_approval
   s1_github_adapter --> s1_stage_delivery_and_approval
   s1_readability_gate --> s1_stage_delivery_and_approval
   s1_policy_evaluation --> s1_stage_delivery_and_approval
   s1_redaction --> s1_stage_delivery_and_approval
+  s1_ports_revision --> s1_stage_delivery_and_approval
   s1_engine_core --> s1_apps_composition
   s1_storage_postgres --> s1_apps_composition
   s1_sandbox_adapter --> s1_apps_composition
@@ -357,6 +377,7 @@ flowchart LR
   s1_agent_definitions --> s1_apps_composition
   s1_security_test_harness --> s1_apps_composition
   s1_telemetry_wiring --> s1_apps_composition
+  s1_ports_revision --> s1_apps_composition
   s0_workspace_skeleton --> s1_fixture_and_e2e_harness
   s0_telemetry_baseline --> s1_observability_instrumentation
   s1_engine_core --> s1_observability_instrumentation
@@ -391,9 +412,11 @@ flowchart LR
   s1_security_test_harness --> s1_workspace_ingestion
   s1_policy_evaluation --> s1_workspace_ingestion
   s1_redaction --> s1_workspace_ingestion
+  s1_ports_revision --> s1_workspace_ingestion
   s0_ports_and_testkit --> s1_egress_and_broker
   s1_security_test_harness --> s1_egress_and_broker
   s1_redaction --> s1_egress_and_broker
+  s1_ports_revision --> s1_egress_and_broker
   s0_contracts_and_registry --> s1_prompt_assembly
   s1_policy_evaluation --> s1_prompt_assembly
   s1_redaction --> s1_prompt_assembly
@@ -409,6 +432,7 @@ flowchart LR
   s1_workspace_ingestion --> s1_trusted_gates_and_validation
   s1_policy_evaluation --> s1_trusted_gates_and_validation
   s1_redaction --> s1_trusted_gates_and_validation
+  s1_ports_revision --> s1_trusted_gates_and_validation
   s1_engine_core --> s1_stage_implementation_and_review
   s1_sandbox_adapter --> s1_stage_implementation_and_review
   s1_workspace_ingestion --> s1_stage_implementation_and_review
@@ -416,21 +440,29 @@ flowchart LR
   s1_agent_definitions --> s1_stage_implementation_and_review
   s1_policy_evaluation --> s1_stage_implementation_and_review
   s1_prompt_assembly --> s1_stage_implementation_and_review
+  s1_ports_revision --> s1_stage_implementation_and_review
   s0_domain_vocabulary --> s1_domain_revision
   s0_state_machines --> s1_domain_revision
   s0_database_baseline --> s1_database_tenancy_and_state_sync
   s0_workspace_skeleton --> s1_xtask_extensions
   s0_telemetry_baseline --> s1_xtask_extensions
+  s1_ports_revision --> s1_xtask_extensions
   s0_ci_pipeline --> s1_ci_database_and_generated_checks
   s1_database_tenancy_and_state_sync --> s1_ci_database_and_generated_checks
   s1_domain_revision --> s1_ci_database_and_generated_checks
   s0_telemetry_baseline --> s1_telemetry_wiring
   s1_redaction --> s1_telemetry_wiring
   s1_domain_revision --> s1_telemetry_wiring
+  s0_ports_and_testkit --> s1_ports_revision
+  s0_contracts_and_registry --> s1_ports_revision
+  s1_domain_revision --> s1_ports_revision
+  s1_engine_core --> s1_ports_revision
+  s1_security_test_harness --> s1_ports_revision
+  s1_database_tenancy_and_state_sync --> s1_database_port_alignment
   class s0_workspace_skeleton crit;
   class s0_domain_vocabulary crit;
   class s0_state_machines crit;
-  class s0_ports_and_testkit crit;
+  class s0_ports_and_testkit norm;
   class s0_contracts_and_registry norm;
   class s0_database_baseline norm;
   class s0_ci_pipeline norm;
@@ -441,17 +473,17 @@ flowchart LR
   class s1_sandbox_images norm;
   class s1_sandbox_adapter crit;
   class s1_storage_postgres norm;
-  class s1_engine_core norm;
-  class s1_policy_evaluation crit;
+  class s1_engine_core crit;
+  class s1_policy_evaluation norm;
   class s1_agent_runtime_adapters crit;
   class s1_github_adapter norm;
   class s1_agent_definitions norm;
   class s1_documentation_rubric norm;
   class s1_readability_gate norm;
-  class s1_spec_adapter_and_stage crit;
+  class s1_spec_adapter_and_stage norm;
   class s1_stage_intake_and_repository norm;
   class s1_stage_architecture_and_planning norm;
-  class s1_stage_documentation crit;
+  class s1_stage_documentation norm;
   class s1_stage_delivery_and_approval norm;
   class s1_apps_composition crit;
   class s1_fixture_and_e2e_harness norm;
@@ -461,19 +493,21 @@ flowchart LR
   class s1_security_review_and_tests crit;
   class s1_end_to_end_run crit;
   class s1_docs_and_walkthrough crit;
-  class s1_workspace_ingestion crit;
+  class s1_workspace_ingestion norm;
   class s1_egress_and_broker norm;
   class s1_prompt_assembly norm;
   class s1_redaction norm;
   class s1_supply_chain_gates norm;
-  class s1_security_test_harness crit;
-  class s1_trusted_gates_and_validation crit;
+  class s1_security_test_harness norm;
+  class s1_trusted_gates_and_validation norm;
   class s1_stage_implementation_and_review crit;
   class s1_domain_revision crit;
   class s1_database_tenancy_and_state_sync norm;
   class s1_xtask_extensions norm;
   class s1_ci_database_and_generated_checks norm;
   class s1_telemetry_wiring norm;
+  class s1_ports_revision crit;
+  class s1_database_port_alignment norm;
 ```
 <!-- GENERATED:end wp-graph -->
 
@@ -503,37 +537,59 @@ No two packages that can run at the same time own the same path. Paths outside t
 | `crates/*/clippy.toml` | `s0-workspace-skeleton` | software_engineer | 0 |
 | `crates/*/src/lib.rs` | `s0-workspace-skeleton` | software_engineer | 0 |
 | `crates/contracts/**` | `s0-contracts-and-registry` | software_engineer | 0 |
+| `crates/contracts/src/registry.rs` | `s1-ports-revision` | software_engineer | 1 |
+| `crates/contracts/src/validator.rs` | `s1-ports-revision` | software_engineer | 1 |
+| `crates/contracts/tests/registry.rs` | `s1-ports-revision` | software_engineer | 1 |
+| `crates/contracts/tests/validator_limits.rs` | `s1-ports-revision` | software_engineer | 1 |
 | `crates/domain/**` | `s0-domain-vocabulary` | software_engineer | 0 |
 | `crates/domain/src/contracts/**` | `s1-domain-revision` | software_engineer | 1 |
+| `crates/domain/src/contracts/evidence_ledger_entry.rs` | `s1-ports-revision` | software_engineer | 1 |
+| `crates/domain/src/contracts/review_verdict.rs` | `s1-ports-revision` | software_engineer | 1 |
+| `crates/domain/src/contracts/stage_contract.rs` | `s1-ports-revision` | software_engineer | 1 |
+| `crates/domain/src/ids.rs` | `s1-ports-revision` | software_engineer | 1 |
 | `crates/domain/src/ledger.rs` | `s1-domain-revision` | software_engineer | 1 |
 | `crates/domain/src/machines/**` | `s0-state-machines` | software_engineer | 0 |
 | `crates/domain/src/machines/**` | `s1-domain-revision` | software_engineer | 1 |
+| `crates/domain/src/machines/**` | `s1-ports-revision` | software_engineer | 1 |
+| `crates/domain/src/patterns.rs` | `s1-ports-revision` | software_engineer | 1 |
 | `crates/domain/src/policy/**` | `s1-policy-evaluation` | software_engineer | 1 |
 | `crates/domain/src/redaction/**` | `s1-redaction` | software_engineer | 1 |
+| `crates/domain/src/scope.rs` | `s1-ports-revision` | software_engineer | 1 |
 | `crates/domain/src/state/**` | `s1-domain-revision` | software_engineer | 1 |
+| `crates/domain/src/state/**` | `s1-ports-revision` | software_engineer | 1 |
 | `crates/domain/src/values/**` | `s1-domain-revision` | software_engineer | 1 |
+| `crates/domain/src/values/timestamp.rs` | `s1-ports-revision` | software_engineer | 1 |
+| `crates/domain/src/vocabulary/**` | `s1-ports-revision` | software_engineer | 1 |
 | `crates/domain/tests/contract_examples.rs` | `s1-domain-revision` | software_engineer | 1 |
+| `crates/domain/tests/contract_examples.rs` | `s1-ports-revision` | software_engineer | 1 |
 | `crates/domain/tests/contract_rules.rs` | `s1-domain-revision` | software_engineer | 1 |
+| `crates/domain/tests/contract_rules.rs` | `s1-ports-revision` | software_engineer | 1 |
 | `crates/domain/tests/ledger_chain.rs` | `s1-domain-revision` | software_engineer | 1 |
 | `crates/domain/tests/policy.rs` | `s1-policy-evaluation` | software_engineer | 1 |
 | `crates/domain/tests/redaction.rs` | `s1-redaction` | software_engineer | 1 |
 | `crates/domain/tests/state_machine_conformance.rs` | `s0-state-machines` | software_engineer | 0 |
 | `crates/domain/tests/state_machine_conformance.rs` | `s1-domain-revision` | software_engineer | 1 |
+| `crates/domain/tests/state_machine_conformance.rs` | `s1-ports-revision` | software_engineer | 1 |
 | `crates/domain/tests/state_machine_properties.rs` | `s0-state-machines` | software_engineer | 0 |
 | `crates/domain/tests/state_machine_properties.rs` | `s1-domain-revision` | software_engineer | 1 |
+| `crates/domain/tests/state_machine_properties.rs` | `s1-ports-revision` | software_engineer | 1 |
 | `crates/domain/tests/support/**` | `s1-domain-revision` | software_engineer | 1 |
+| `crates/domain/tests/support/**` | `s1-ports-revision` | software_engineer | 1 |
 | `crates/domain/tests/tools/**` | `s1-domain-revision` | software_engineer | 1 |
+| `crates/domain/tests/tools/**` | `s1-ports-revision` | software_engineer | 1 |
 | `crates/domain/tests/values.rs` | `s1-domain-revision` | software_engineer | 1 |
 | `crates/egress/**` | `s1-egress-and-broker` | software_engineer | 1 |
 | `crates/github/**` | `s1-github-adapter` | software_engineer | 1 |
 | `crates/observability/**` | `s0-telemetry-baseline` | observability | 0 |
 | `crates/observability/**` | `s1-telemetry-wiring` | observability | 1 |
 | `crates/ports/**` | `s0-ports-and-testkit` | software_engineer | 0 |
+| `crates/ports/**` | `s1-ports-revision` | software_engineer | 1 |
 | `crates/runtime/**` | `s1-agent-runtime-adapters` | software_engineer | 1 |
 | `crates/sandbox/Cargo.toml` | `s1-sandbox-adapter` | software_engineer | 1 |
 | `crates/sandbox/clippy.toml` | `s1-sandbox-adapter` | software_engineer | 1 |
 | `crates/sandbox/src/container/**` | `s1-sandbox-adapter` | software_engineer | 1 |
 | `crates/sandbox/src/lib.rs` | `s1-sandbox-adapter` | software_engineer | 1 |
+| `crates/sandbox/src/process.rs` | `s1-sandbox-adapter` | software_engineer | 1 |
 | `crates/sandbox/src/supervisor/**` | `s1-sandbox-adapter` | software_engineer | 1 |
 | `crates/sandbox/src/workspace/**` | `s1-workspace-ingestion` | software_engineer | 1 |
 | `crates/sandbox/tests/container/**` | `s1-sandbox-adapter` | software_engineer | 1 |
@@ -546,27 +602,40 @@ No two packages that can run at the same time own the same path. Paths outside t
 | `crates/storage/src/lib.rs` | `s1-storage-postgres` | software_engineer | 1 |
 | `crates/storage/src/pg/**` | `s1-storage-postgres` | software_engineer | 1 |
 | `crates/storage/src/schema.rs` | `s0-database-baseline` | dba | 0 |
+| `crates/storage/src/schema.rs` | `s1-database-port-alignment` | dba | 1 |
 | `crates/storage/tests/**` | `s1-storage-postgres` | software_engineer | 1 |
 | `crates/testkit/**` | `s0-ports-and-testkit` | software_engineer | 0 |
+| `crates/testkit/src/*.rs` | `s1-ports-revision` | software_engineer | 1 |
+| `crates/testkit/src/contracts/**` | `s1-ports-revision` | software_engineer | 1 |
 | `crates/testkit/src/fx/**` | `s1-security-test-harness` | qa | 1 |
+| `crates/testkit/src/fx/spawn.rs` | `s1-ports-revision` | software_engineer | 1 |
+| `crates/testkit/src/fx/spawn/**` | `s1-ports-revision` | software_engineer | 1 |
+| `crates/testkit/tests/**` | `s1-ports-revision` | software_engineer | 1 |
 | `crates/workflow/Cargo.toml` | `s1-engine-core` | software_engineer | 1 |
 | `crates/workflow/clippy.toml` | `s1-engine-core` | software_engineer | 1 |
 | `crates/workflow/src/audit/**` | `s1-engine-core` | software_engineer | 1 |
+| `crates/workflow/src/audit/**` | `s1-ports-revision` | software_engineer | 1 |
 | `crates/workflow/src/commands/**` | `s1-engine-core` | software_engineer | 1 |
+| `crates/workflow/src/commands/**` | `s1-ports-revision` | software_engineer | 1 |
 | `crates/workflow/src/engine/**` | `s1-engine-core` | software_engineer | 1 |
+| `crates/workflow/src/engine/**` | `s1-ports-revision` | software_engineer | 1 |
 | `crates/workflow/src/gates/command/**` | `s1-trusted-gates-and-validation` | software_engineer | 1 |
 | `crates/workflow/src/gates/dag/**` | `s1-stage-architecture-and-planning` | software_engineer | 1 |
 | `crates/workflow/src/gates/docs/**` | `s1-stage-documentation` | software_engineer | 1 |
 | `crates/workflow/src/gates/framework/**` | `s1-engine-core` | software_engineer | 1 |
+| `crates/workflow/src/gates/framework/**` | `s1-ports-revision` | software_engineer | 1 |
 | `crates/workflow/src/gates/mod.rs` | `s1-engine-core` | software_engineer | 1 |
+| `crates/workflow/src/gates/mod.rs` | `s1-ports-revision` | software_engineer | 1 |
 | `crates/workflow/src/gates/readability/**` | `s1-readability-gate` | software_engineer | 1 |
 | `crates/workflow/src/gates/scope/**` | `s1-trusted-gates-and-validation` | software_engineer | 1 |
 | `crates/workflow/src/gates/spec/**` | `s1-spec-adapter-and-stage` | software_engineer | 1 |
 | `crates/workflow/src/gates/supply_chain/**` | `s1-supply-chain-gates` | software_engineer | 1 |
 | `crates/workflow/src/handlers/**` | `s1-engine-core` | software_engineer | 1 |
+| `crates/workflow/src/handlers/**` | `s1-ports-revision` | software_engineer | 1 |
 | `crates/workflow/src/lib.rs` | `s1-engine-core` | software_engineer | 1 |
 | `crates/workflow/src/prompts/**` | `s1-prompt-assembly` | software_engineer | 1 |
 | `crates/workflow/src/scheduler/**` | `s1-engine-core` | software_engineer | 1 |
+| `crates/workflow/src/scheduler/**` | `s1-ports-revision` | software_engineer | 1 |
 | `crates/workflow/src/stages/approval/**` | `s1-stage-delivery-and-approval` | software_engineer | 1 |
 | `crates/workflow/src/stages/architecture/**` | `s1-stage-architecture-and-planning` | software_engineer | 1 |
 | `crates/workflow/src/stages/delivery/**` | `s1-stage-delivery-and-approval` | software_engineer | 1 |
@@ -582,18 +651,22 @@ No two packages that can run at the same time own the same path. Paths outside t
 | `crates/workflow/src/stages/specification/**` | `s1-spec-adapter-and-stage` | software_engineer | 1 |
 | `crates/workflow/src/stages/validation/**` | `s1-trusted-gates-and-validation` | software_engineer | 1 |
 | `crates/workflow/tests/audit.rs` | `s1-engine-core` | software_engineer | 1 |
+| `crates/workflow/tests/audit.rs` | `s1-ports-revision` | software_engineer | 1 |
 | `crates/workflow/tests/delivery/**` | `s1-stage-delivery-and-approval` | software_engineer | 1 |
 | `crates/workflow/tests/documentation/**` | `s1-stage-documentation` | software_engineer | 1 |
 | `crates/workflow/tests/engine_scenarios.rs` | `s1-engine-core` | software_engineer | 1 |
+| `crates/workflow/tests/engine_scenarios.rs` | `s1-ports-revision` | software_engineer | 1 |
 | `crates/workflow/tests/implementation/**` | `s1-stage-implementation-and-review` | software_engineer | 1 |
 | `crates/workflow/tests/intake_repo/**` | `s1-stage-intake-and-repository` | software_engineer | 1 |
 | `crates/workflow/tests/invariants.rs` | `s1-engine-core` | software_engineer | 1 |
+| `crates/workflow/tests/invariants.rs` | `s1-ports-revision` | software_engineer | 1 |
 | `crates/workflow/tests/planning/**` | `s1-stage-architecture-and-planning` | software_engineer | 1 |
 | `crates/workflow/tests/prompts/**` | `s1-prompt-assembly` | software_engineer | 1 |
 | `crates/workflow/tests/readability/**` | `s1-readability-gate` | software_engineer | 1 |
 | `crates/workflow/tests/security/**` | `s1-security-review-and-tests` | security | 1 |
 | `crates/workflow/tests/specification/**` | `s1-spec-adapter-and-stage` | software_engineer | 1 |
 | `crates/workflow/tests/supply_chain/**` | `s1-supply-chain-gates` | software_engineer | 1 |
+| `crates/workflow/tests/support/**` | `s1-ports-revision` | software_engineer | 1 |
 | `crates/workflow/tests/validation/**` | `s1-trusted-gates-and-validation` | software_engineer | 1 |
 | `deny.toml` | `s0-security-baseline` | security | 0 |
 | `docs/adr/**` | software_architect | outside this plan |  |
@@ -601,6 +674,7 @@ No two packages that can run at the same time own the same path. Paths outside t
 | `docs/database/**` | `s0-database-baseline` | dba | 0 |
 | `docs/database/**` | `s1-database-review` | dba | 1 |
 | `docs/database/**` | `s1-database-tenancy-and-state-sync` | dba | 1 |
+| `docs/database/**` | `s1-database-port-alignment` | dba | 1 |
 | `docs/guides/**` | `s1-docs-and-walkthrough` | documenter | 1 |
 | `docs/observability/conventions.md` | `s0-telemetry-baseline` | observability | 0 |
 | `docs/observability/conventions.md` | `s1-telemetry-wiring` | observability | 1 |
@@ -628,6 +702,7 @@ No two packages that can run at the same time own the same path. Paths outside t
 | `migrations/**` | `s0-database-baseline` | dba | 0 |
 | `migrations/**` | `s1-database-review` | dba | 1 |
 | `migrations/**` | `s1-database-tenancy-and-state-sync` | dba | 1 |
+| `migrations/**` | `s1-database-port-alignment` | dba | 1 |
 | `policies/**` | `s0-security-baseline` | security | 0 |
 | `profiles/**` | `s1-agent-definitions` | software_engineer | 1 |
 | `rust-toolchain.toml` | `s0-workspace-skeleton` | software_engineer | 0 |
@@ -639,6 +714,7 @@ No two packages that can run at the same time own the same path. Paths outside t
 | `scripts/ci/**` | `s1-ci-database-and-generated-checks` | sre | 1 |
 | `scripts/db-test.sh` | `s0-database-baseline` | dba | 0 |
 | `scripts/db-test.sh` | `s1-database-tenancy-and-state-sync` | dba | 1 |
+| `scripts/db-test.sh` | `s1-database-port-alignment` | dba | 1 |
 | `scripts/dev-up.sh` | `s0-ci-pipeline` | sre | 0 |
 | `scripts/docs-check.sh` | `s1-docs-and-walkthrough` | documenter | 1 |
 | `scripts/e2e.sh` | `s1-fixture-and-e2e-harness` | qa | 1 |
@@ -658,7 +734,7 @@ No two packages that can run at the same time own the same path. Paths outside t
 
 ## 7. Ports
 
-Signatures are sketches. `s0-ports-and-testkit` finalizes them with the architect and tags `ports-v1`. Every real adapter is built to pass the same contract suite as its fake. A trait whose name ends in `Ops` is a small piece of a larger port, split to keep each trait focused. Error enums are closed.
+Signatures are sketches. **The exact signatures are in [ports-v1.1](ports-v1.1.md)**, which replaces `ports-v1` after the independent review ([ADR 0014](../adr/0014-ports-v1-1-claim-protocol-and-port-revision.md)). Where a sketch below differs from that file, the file wins: the claim is `SystemTx::find_claim_candidates` then `AttemptOps::start_attempt`, the lease lives on the attempt, `AgentRuntime::run` takes the session and returns a report, the code host publishes check runs, and `Workspace` and `JobRepo` are two traits. `s1-ports-revision` makes the code match, and the contract suites and fakes with it. Every real adapter is built to pass the same contract suite as its fake. A trait whose name ends in `Ops` is a small piece of a larger port, split to keep each trait focused. Error enums are closed.
 
 ```rust
 // crates/ports/src/time.rs
@@ -689,18 +765,32 @@ pub trait Store: Send + Sync {
     fn fidelity(&self) -> Fidelity;
     /// Makes the transaction-local tenant setting before any other statement (ADR 0012).
     async fn begin(&self, scope: TenantScope) -> Result<Box<dyn Tx>, StoreError>;
-    /// Uses the system role's own connection pool (ADR 0012).
-    async fn begin_system(&self, scope: SystemScope) -> Result<Box<dyn Tx>, StoreError>;
+    /// Uses the system role's own connection pool (ADR 0012). Read-only: it finds work (ADR 0014).
+    async fn begin_system(&self, scope: SystemScope) -> Result<Box<dyn SystemTx>, StoreError>;
     /// Before any tenant is known. A narrow SECURITY DEFINER function behind it (ADR 0012).
     /// `None` for every miss reason, so the caller cannot tell which one it was.
-    async fn resolve_token(&self, hash: TokenHash, audience: Audience) -> Result<Option<ResolvedPrincipal>, StoreError>;
-    async fn resolve_installation(&self, installation: InstallationId) -> Result<Option<ResolvedRepository>, StoreError>;
+    async fn resolve_token(&self, hash: &TokenHash, audience: &Audience) -> Result<Option<ResolvedPrincipal>, StoreError>;
+    /// The pair names the repository: one installation covers many repositories.
+    async fn resolve_installation(&self, installation: InstallationId, repository: GithubRepositoryId) -> Result<Option<ResolvedRepository>, StoreError>;
+    /// An audit record that belongs to no tenant, under the platform tenant.
+    async fn record_platform_audit(&self, scope: PlatformScope, event: NewAuditEvent) -> Result<AuditRecord, StoreError>;
+    /// The answer after `CommitOutcomeUnknown`.
+    async fn committed(&self, scope: TenantScope, witness: Witness) -> Result<bool, StoreError>;
     async fn schema_version(&self) -> Result<SchemaVersion, StoreError>;
+}
+
+/// The cross-tenant, read-only transaction: find claim candidates and due attempts.
+#[async_trait]
+pub trait SystemTx: Send {
+    async fn database_time(&mut self) -> Result<Timestamp, StoreError>;
+    async fn find_claim_candidates(&mut self, limit: u32) -> Result<Vec<ClaimCandidate>, StoreError>;
+    async fn find_due_attempts(&mut self, reason: DueReason, limit: u32) -> Result<Vec<DueAttempt>, StoreError>;
+    async fn finish(self: Box<Self>) -> Result<(), StoreError>;
 }
 
 /// One database transaction. Dropping it without commit rolls back.
 #[async_trait]
-pub trait Tx: JobOps + StageRunOps + AttemptOps + TaskNodeOps + LedgerOps + OutboxOps + AuditOps + ArtifactIndexOps + PrincipalOps + Send {
+pub trait Tx: JobOps + RequestOps + DeliveryOps + RepositoryOps + StageRunOps + AttemptOps + TaskNodeOps + StageArtifactOps + ApprovalOps + LedgerOps + OutboxOps + AuditOps + ArtifactIndexOps + PrincipalOps + Send {
     /// Database time. Lease and deadline checks use this and never the Clock port.
     async fn database_time(&mut self) -> Result<Timestamp, StoreError>;
     async fn commit(self: Box<Self>) -> Result<(), StoreError>;
@@ -711,19 +801,22 @@ pub trait Tx: JobOps + StageRunOps + AttemptOps + TaskNodeOps + LedgerOps + Outb
 pub trait StageRunOps {
     async fn insert_stage_run(&mut self, new: NewStageRun) -> Result<Versioned<StageRun>, StoreError>;
     async fn get_stage_run(&mut self, id: StageRunId) -> Result<Versioned<StageRun>, StoreError>;
-    /// Compare and swap. `StoreError::Conflict` when `expected` is stale.
-    async fn transition_stage_run(&mut self, id: StageRunId, expected: Version, t: AppliedTransition<StageRunStatus>) -> Result<Version, StoreError>;
-    /// System scope only. FOR NO KEY UPDATE SKIP LOCKED. Increments the lease epoch.
-    async fn claim_ready(&mut self, worker: &WorkerId, limit: u32) -> Result<Vec<ClaimedWork>, StoreError>;
-    async fn expired_leases(&mut self, limit: u32) -> Result<Vec<AttemptId>, StoreError>;
+    async fn list_stage_runs(&mut self, job: JobId) -> Result<Vec<Versioned<StageRun>>, StoreError>;
+    /// Compare and swap. `StoreError::Conflict` when `expected` is stale. The transition carries the
+    /// guard that cleared it (ADR 0014, decision 3) and the records it requires.
+    async fn transition_stage_run(&mut self, id: StageRunId, expected: Version, t: AppliedTransition<StageRunStatus>, effects: StageRunEffects) -> Result<Version, StoreError>;
+    /// While READY, moves not_before. The only update that is not a transition.
+    async fn postpone_stage_run(&mut self, id: StageRunId, expected: Version, delay: Duration) -> Result<Version, StoreError>;
 }
 
 #[async_trait]
 pub trait AttemptOps {
-    async fn insert_attempt(&mut self, new: NewAttempt) -> Result<Versioned<Attempt>, StoreError>;
-    /// Rejects the write when `epoch` is older than the stored epoch (fencing).
-    async fn heartbeat(&mut self, id: AttemptId, epoch: LeaseEpoch) -> Result<(), StoreError>;
-    async fn transition_attempt(&mut self, id: AttemptId, expected: Version, epoch: LeaseEpoch, t: AppliedTransition<AttemptStatus>) -> Result<Version, StoreError>;
+    /// Atomic: READY to RUNNING (S03), epoch plus one, the attempt in STARTING with its lease.
+    /// Found by `SystemTx::find_claim_candidates` first (ADR 0014, decision 1).
+    async fn start_attempt(&mut self, start: StartAttempt) -> Result<StartedAttempt, StoreError>;
+    /// Rejects the write when the fence is not current. The lease lives on the attempt.
+    async fn heartbeat(&mut self, fence: Fence, ttl: Duration) -> Result<LeaseRenewal, StoreError>;
+    async fn transition_attempt(&mut self, id: AttemptId, expected: Version, epoch: LeaseEpoch, t: AppliedTransition<AttemptStatus>, end: AttemptEnd) -> Result<Version, StoreError>;
 }
 
 #[async_trait]
@@ -764,11 +857,11 @@ pub trait ArtifactStore: Send + Sync {
     fn fidelity(&self) -> Fidelity;
     /// Idempotent. Never overwrites. The same bytes give the same reference.
     async fn put(&self, bytes: Bytes, media_type: MediaType) -> Result<ArtifactRef, ArtifactError>;
-    /// Re-hashes on read. Callers check the tenant's index row first.
-    async fn get(&self, r: &ArtifactRef) -> Result<Bytes, ArtifactError>;
-    async fn exists(&self, r: &ArtifactRef) -> Result<bool, ArtifactError>;
+    /// Re-hashes on read. Answers only for a tenant whose index row names the hash (ADR 0014, decision 9).
+    async fn get(&self, scope: &TenantScope, r: &ArtifactRef) -> Result<Bytes, ArtifactError>;
+    async fn exists(&self, scope: &TenantScope, r: &ArtifactRef) -> Result<bool, ArtifactError>;
 }
-pub enum ArtifactError { NotFound, HashMismatch { expected: Sha256, actual: Sha256 }, TooLarge { limit: u64 }, Io(String) }
+pub enum ArtifactError { NotFound, HashMismatch { expected: Sha256, actual: Sha256 }, TooLarge { limit: u64 }, Io(BackendStep) }
 ```
 
 ```rust
@@ -780,16 +873,17 @@ pub struct SandboxSpec {
     pub attempt: AttemptId,
     pub profile: SandboxProfile,
     pub image: ImageDigest,               // a digest, never a tag
-    pub limits: ResourceLimits,           // cpus, memory, swap, pids, fsize, tmpfs, workspace bytes, wall clock
+    pub limits: SandboxLimits,            // every value at least 1; swap at least memory
     pub network: NetworkAttachment,       // None, or JobInternal { sidecar }
-    pub mounts: WorkspaceMounts,          // /workspace and /out read-write, protected overlays, .git masked
-    pub job_token: Option<JobTokenFile>,  // agent profile only, a file on a tmpfs
+    pub mounts: SandboxMounts,            // typed: the workspace mounts and named caches, nothing else can be written
+    pub job_token: Option<JobTokenMount>, // agent profile only; carries the secret, the adapter writes the file
     pub env: FixedEnv,                    // set by the supervisor from a fixed list
 }
 
 impl SandboxSpec {
     /// Pure. Rejects anything weaker than the policy: privileged, added capabilities, host namespaces,
-    /// the Docker socket, unconfined seccomp or AppArmor, a tag-only image, user 0, a forbidden mount source.
+    /// unconfined seccomp or AppArmor, a tag-only image, user 0, a zero limit, a workspace path that is
+    /// not normalized. Mounts are typed, so the Docker socket cannot be named at all (ADR 0014, decision 5).
     pub fn validate(&self, policy: &SandboxPolicy) -> Result<(), PolicyViolation> { todo!() }
 }
 
@@ -798,8 +892,8 @@ pub trait SandboxProvider: Send + Sync {
     fn fidelity(&self) -> Fidelity;
     /// Create, inspect, compare with policy, start, run the runtime self-check.
     /// Never returns a container that did not pass. A mismatch removes it and fails closed.
-    async fn create_verified(&self, spec: SandboxSpec) -> Result<Box<dyn SandboxSession>, SandboxError>;
-    /// Removes containers, networks and sidecars whose attempt is not in `live`.
+    async fn create_verified(&self, spec: SandboxSpec, cancel: &dyn CancelSignal) -> Result<Box<dyn SandboxSession>, SandboxError>;
+    /// Removes containers, networks, sidecars and token files whose attempt is not in `live`.
     async fn sweep_orphans(&self, live: &[AttemptId]) -> Result<Vec<SandboxId>, SandboxError>;
 }
 
@@ -817,34 +911,48 @@ pub struct ExecRequest { pub argv: Vec<String>, pub cwd: RepoPath, pub stdin: Op
 pub struct ExecResult { pub exit_code: Option<i32>, pub signal: Option<i32>, pub timed_out: bool, pub oom_killed: bool,
                         pub stdout: ArtifactRef, pub stderr: ArtifactRef, pub started_at: Timestamp, pub finished_at: Timestamp }
 pub enum SandboxError { PolicyViolation(PolicyViolation), PostureMismatch(PostureDiff), ImageUnavailable, DaemonUnavailable,
-                        ProvisionFailed(String), Timeout, ResourceExceeded(Resource), TeardownFailed { leaked: bool } }
+                        ProvisionFailed(ProvisionStage), Timeout, ResourceExceeded(Resource), Cancelled, TeardownFailed { leaked: bool } }
 ```
 
 ```rust
-// crates/ports/src/workspace.rs
+// crates/ports/src/workspace.rs (ports-v1.1: the job owns the object store, an attempt owns a worktree)
 #[async_trait]
 pub trait WorkspaceProvider: Send + Sync {
     fn fidelity(&self) -> Fidelity;
-    /// A sparse, detached worktree of the base commit. Hidden paths are excluded from the checkout.
-    async fn create(&self, req: WorkspaceRequest) -> Result<Box<dyn Workspace>, WorkspaceError>;
+    /// Puts the branch tip into the job's object store and returns the commit it fetched.
+    async fn fetch(&self, job: JobId, target: &FetchTarget, branch: &BranchName, cancel: &dyn CancelSignal) -> Result<FetchedBase, WorkspaceError>;
+    /// A sparse, detached worktree of a commit in that store. Paths the rules call hidden are excluded.
+    async fn create(&self, req: WorkspaceRequest, cancel: &dyn CancelSignal) -> Result<Box<dyn Workspace>, WorkspaceError>;
+    async fn repo(&self, job: JobId) -> Result<Box<dyn JobRepo>, WorkspaceError>;
+    async fn dispose_job(&self, job: JobId) -> Result<(), WorkspaceError>;
+    async fn sweep_orphans(&self, live: &[AttemptId], live_jobs: &[JobId]) -> Result<Vec<AttemptId>, WorkspaceError>;
 }
 
-/// Host side. The sandbox never sees the trusted git directory. All git runs here with a fixed environment.
+/// The trusted object store of one job. Reads, patches and pushes, never the sandbox-writable tree.
+#[async_trait]
+pub trait JobRepo: Send + Sync {
+    async fn read_file_at(&self, commit: &CommitSha, path: &RepoPath, max_bytes: u64, view: ReadView) -> Result<Vec<u8>, WorkspaceError>;
+    async fn list_at(&self, commit: &CommitSha, glob: &RepoGlob, limit: usize, view: ReadView) -> Result<Vec<RepoPath>, WorkspaceError>;
+    async fn export_patch(&self, base: &CommitSha, head: &CommitSha, max_bytes: u64, cancel: &dyn CancelSignal) -> Result<PatchExport, WorkspaceError>;
+    /// Pushes a commit the factory made in this job. Works after a restart.
+    async fn push(&self, target: &PushTarget, commit: &CommitSha, cancel: &dyn CancelSignal) -> Result<(), WorkspaceError>;
+}
+
+/// Host side of one attempt's checkout. The sandbox never sees the trusted git directory.
 #[async_trait]
 pub trait Workspace: Send + Sync {
     fn mounts(&self) -> WorkspaceMounts;
-    /// Reads from the trusted object store at the base commit, never from the sandbox-writable tree.
-    async fn read_base_file(&self, path: &RepoPath, max_bytes: u64) -> Result<Vec<u8>, WorkspaceError>;
-    async fn list_base(&self, glob: &RepoGlob, limit: usize) -> Result<Vec<RepoPath>, WorkspaceError>;
-    /// Call after the container is gone. No-follow audit walk, temporary-index tree diff, protected-path
-    /// inputs, rejection of gitlinks and escaping symlinks, secret scan.
-    async fn ingest(&self, base: &CommitSha) -> Result<IngestedChange, WorkspaceError>;
+    fn base(&self) -> &CommitSha;
+    /// Call after the container is gone. No-follow audit walk, temporary-index tree diff, path rules,
+    /// rejection of gitlinks and escaping symlinks, secret scan.
+    async fn ingest(&self, cancel: &dyn CancelSignal) -> Result<IngestedChange, WorkspaceError>;
     async fn commit(&self, change: &IngestedChange, req: CommitRequest) -> Result<CommitSha, WorkspaceError>;
-    async fn push(&self, target: &PushTarget, commit: &CommitSha) -> Result<(), WorkspaceError>;
     async fn dispose(self: Box<Self>) -> Result<(), WorkspaceError>;
 }
 pub enum WorkspaceError { HiddenPathPresent(RepoPath), EscapingSymlink(RepoPath), Gitlink(RepoPath), NestedGit(RepoPath),
-                          ProtectedPathChanged(Vec<RepoPath>), SecretFound(Vec<Finding>), TooLarge, Git(String) }
+                          ProtectedPathChanged(Vec<PathViolation>), SecretFound(Vec<Finding>), TooLarge, PathNotFound(RepoPath),
+                          UnknownCommit, NotFetched, BaseMoved, NonFastForward, NotMadeHere, BranchNotAllowed, Unauthorized,
+                          Cancelled, Timeout, Git { operation: GitOperation, exit: Option<i32> }, Io(IoOperation) }
 ```
 
 ```rust
@@ -854,8 +962,9 @@ pub trait AgentRuntime: Send + Sync {
     fn id(&self) -> &RuntimeId;                 // "claude-code-cli", "codex-cli", "fake"
     fn fidelity(&self) -> Fidelity;
     async fn probe(&self, session: &mut dyn SandboxSession) -> Result<RuntimeCapabilities, ProbeError>;
-    /// Starts the tool inside `req.session`. The engine validates the output. This never marks success.
-    async fn run(&self, req: AgentRunRequest, cancel: &dyn CancelSignal) -> Result<AgentRunOutcome, AgentRunError>;
+    /// Starts the tool inside `session`. The engine validates the output. This never marks success.
+    /// Always returns a report: a failed run still carries its usage, transcript and denials.
+    async fn run(&self, session: &mut dyn SandboxSession, req: AgentRunRequest, cancel: &dyn CancelSignal) -> AgentRunReport;
 }
 
 pub struct AgentRunRequest {
@@ -863,6 +972,7 @@ pub struct AgentRunRequest {
     pub agent: AgentRef,
     pub prompt: AssembledPrompt,           // untrusted text only inside the data envelope
     pub output_schema: SchemaRef,
+    pub max_output_bytes: u64,             // more than this is OutputTooLarge
     pub broker: BrokerEndpoint,            // where the sidecar relays to
     pub job_token: JobTokenRef,
     pub tools: GrantedTools,               // decided by policy, never by the agent
@@ -870,13 +980,20 @@ pub struct AgentRunRequest {
     pub model: ModelSelection,
     pub flag_set: FlagSet,                 // per stage; see ADR 0005
 }
-pub struct AgentRunOutcome { pub output: serde_json::Value /* unvalidated */, pub transcript: ArtifactRef, pub usage: Usage,
-                             pub runtime_version: String, pub exit: ExitInfo, pub permission_denials: Vec<Denial> }
+pub struct AgentRunReport { pub outcome: Result<RawOutput /* bytes, unvalidated */, AgentRunError>, pub transcript: Option<ArtifactRef>,
+                            pub usage: Usage, pub runtime_version: Option<String>, pub exit: Option<ExitInfo>, pub permission_denials: Vec<Denial> }
 pub enum AgentRunError { ProviderUnavailable, RateLimited { retry_after: Option<Duration> }, AuthenticationRequired, Timeout,
-                         ProcessFailed(ExitInfo), OutputMissing, Cancelled, CapabilityMissing(Capability), BudgetRefused }
+                         ProcessFailed(ExitInfo), OutputMissing, OutputTooLarge, Cancelled, CapabilityMissing(Capability), BudgetRefused }
 
 pub trait ModelRouter: Send + Sync {
-    fn route(&self, need: &RoutingNeed) -> Result<RoutingDecision, RoutingError>;   // pure; reads policies/model_routing.yaml
+    /// Pure. The need carries `exclude` (runtimes that failed) and `probed` (what the probes found).
+    fn route(&self, need: &RoutingNeed) -> Result<RoutingDecision, RoutingError>;   // reads policies/model_routing.yaml
+}
+
+/// The seam through which spend reaches a broker. The engine never holds one (ST-14).
+#[async_trait]
+pub trait MeteringOps: Send + Sync {
+    async fn record_usage(&self, token: &JobTokenId, delta: Usage) -> Result<TokenUsage, BrokerError>;
 }
 
 #[async_trait]
@@ -886,7 +1003,9 @@ pub trait ModelBroker: Send + Sync {
     async fn issue(&self, req: JobTokenRequest) -> Result<IssuedJobToken, BrokerError>;
     /// Idempotent.
     async fn revoke(&self, token: &JobTokenId) -> Result<(), BrokerError>;
-    async fn usage(&self, token: &JobTokenId) -> Result<Usage, BrokerError>;
+    /// Idempotent. Removes the tokens of attempts that crashed.
+    async fn revoke_for_job(&self, job: JobId) -> Result<(), BrokerError>;
+    async fn usage(&self, token: &JobTokenId) -> Result<TokenUsage, BrokerError>;
 }
 ```
 
@@ -899,8 +1018,10 @@ pub trait AgentRegistry: Send + Sync {
 }
 
 pub trait OutputValidator: Send + Sync {
-    /// Size and depth limits apply before any parse that could exhaust memory.
-    fn validate(&self, kind: ContractKind, version: u32, instance: &serde_json::Value) -> Result<(), Vec<Violation>>;
+    /// The only path for agent output: size, depth, node budget and repeated keys are checked before a value exists.
+    fn validate_bytes(&self, kind: ContractKind, version: u32, bytes: &[u8]) -> Result<ValidatedOutput, Vec<Violation>>;
+    /// For values the factory built itself.
+    fn validate_value(&self, kind: ContractKind, version: u32, instance: &serde_json::Value) -> Result<(), Vec<Violation>>;
 }
 ```
 
@@ -909,15 +1030,18 @@ pub trait OutputValidator: Send + Sync {
 #[async_trait]
 pub trait SpecificationProvider: Send + Sync {
     fn fidelity(&self) -> Fidelity;
-    async fn run(&self, req: SpecKitRequest, ctx: &mut SpecContext<'_>) -> Result<SpecKitOutcome, SpecError>;
+    /// Runs the skills in the sandbox. The stage handler then stops the sandbox, ingests, commits and reads the files.
+    async fn run(&self, req: &SpecRequest, ctx: &mut SpecContext<'_>) -> Result<SpecRunReport, SpecError>;
+    /// Pure. Builds the typed outcome from the committed bytes.
+    fn assemble(&self, req: &SpecRequest, files: &SpecFileSet) -> Result<SpecOutcome, SpecError>;
 }
-pub enum SpecKitOperation { Constitution, Specify, Clarify, Checklist }     // no other variant can be written
-pub struct SpecKitRequest { pub job: JobId, pub op: SpecKitOperation, pub feature_directory: FeatureDir,
-                            pub request_file: RepoPath, pub answers: Vec<HumanAnswer>, pub revision: Option<RevisionRequest> }
-pub enum SpecKitOutcome { Draft(SpecificationDraft), NeedsHuman(Vec<OpenQuestion>) }
-pub enum SpecError { SpecKitMissing, VersionMismatch { expected: String, found: String }, IntegrityNotOk(Vec<Finding>),
-                     ExtensionsPresent, PostConditionFailed(Vec<PostCondition>), ParseError { path: String, reason: String },
-                     ForbiddenOperation, Runtime(AgentRunError) }
+pub enum SpecOperation { Constitution, Specify, Clarify, Checklist }     // no other variant can be written
+pub struct SpecRequest { pub job: JobId, pub op: SpecOperation, pub feature_directory: FeatureDir,
+                         pub request_file: RepoPath, pub answers: Vec<HumanAnswer>, pub revision: Option<RevisionRequest> }
+pub enum SpecOutcome { Draft(Box<SpecificationDraft>), NeedsHuman(Vec<OpenQuestion>) }
+pub enum SpecError { ToolMissing, VersionMismatch { expected: String, found: String }, IntegrityNotOk(Vec<Finding>),
+                     ExtensionsPresent, PostConditionFailed(Vec<PostCondition>), ParseError { path: RepoPath, reason: ParseReason },
+                     Runtime(AgentRunError) }
 ```
 
 ```rust
@@ -929,25 +1053,48 @@ pub struct GitScope { pub tenant: TenantId, pub job: JobId, pub stage: StageKind
 pub trait IssueSource: Send + Sync {
     /// Always a live fetch. A webhook payload is a hint.
     async fn fetch_issue(&self, scope: &GitScope, issue: &IssueRef) -> Result<Issue, GitHostError>;
-    async fn label_actor(&self, scope: &GitScope, issue: &IssueRef, label: &str) -> Result<Option<ActorLogin>, GitHostError>;
-    /// Branch protection, checks pinned to the App, no bypass for the App. A failure means level L0.
+    /// A comment with its author's numeric id. Operator commands arrive this way (FR-029).
+    async fn fetch_comment(&self, scope: &GitScope, comment: &CommentRef) -> Result<Comment, GitHostError>;
+    async fn label_actor(&self, scope: &GitScope, issue: &IssueRef, label: &str) -> Result<Option<GithubActor>, GitHostError>;
+    /// Reads the rulesets that apply to the default branch (Metadata read). Never asks for Administration.
     async fn repository_protection(&self, scope: &GitScope) -> Result<ProtectionReport, GitHostError>;
+}
+
+/// Verifies a webhook before anything parses or stores it. Pure; the `api` binary depends on this port.
+pub trait WebhookVerifier: Send + Sync {
+    fn fidelity(&self) -> Fidelity;
+    fn verify(&self, raw_body: &[u8], headers: &WebhookHeaders) -> Result<VerifiedDelivery, WebhookRejection>;
 }
 
 #[async_trait]
 pub trait ChangeHost: Send + Sync {
     fn fidelity(&self) -> Fidelity;
+    async fn fetch_target(&self, scope: &GitScope) -> Result<FetchTarget, GitHostError>;                       // read credential, one repository
     async fn push_target(&self, scope: &GitScope, branch: &BranchName) -> Result<PushTarget, GitHostError>;   // factory/* only
+    async fn resolve_branch(&self, scope: &GitScope, branch: &BranchName) -> Result<CommitSha, GitHostError>;
     /// Idempotent for the same head branch.
     async fn open_draft_pull_request(&self, scope: &GitScope, req: DraftPrRequest) -> Result<PullRequestRef, GitHostError>;
     async fn update_pull_request_body(&self, scope: &GitScope, pr: &PullRequestRef, body: &str, etag: Option<&str>) -> Result<(), GitHostError>;
-    /// Sanitized and secret-checked inside the adapter. Idempotent by key.
+    /// Sanitized and secret-checked inside the adapter. At least once by key (a marker reduces duplicates).
     async fn post_comment(&self, scope: &GitScope, target: &CommentTarget, body: &str, idempotency_key: &str) -> Result<CommentRef, GitHostError>;
-    async fn set_status(&self, scope: &GitScope, req: StatusRequest) -> Result<(), GitHostError>;
+    /// A check run carries the App's identity; a commit status does not (ADR 0014, decision 7).
+    async fn publish_check(&self, scope: &GitScope, req: CheckRequest) -> Result<CheckRef, GitHostError>;
     async fn pull_request_state(&self, scope: &GitScope, pr: &PullRequestRef) -> Result<PullRequestState, GitHostError>;
     /// Called at job end, failure and cancel, and by the cleanup sweep.
     async fn revoke_job_tokens(&self, job: JobId) -> Result<(), GitHostError>;
-    // There is no merge method and none whose name starts with merge (rule DEP-09).
+    // There is no merge method, no method that marks a pull request ready, and none whose name starts
+    // with merge, ready or undraft (rule DEP-09).
+}
+```
+
+```rust
+// crates/ports/src/process.rs (ports-v1.1)
+/// The one funnel through which the factory starts a host process. Only the sandbox crate holds one.
+#[async_trait]
+pub trait ProcessRunner: Send + Sync {
+    fn fidelity(&self) -> Fidelity;
+    /// `req.program` is `Program::Docker` or `Program::Git`; nothing else can be named.
+    async fn run(&self, req: SpawnRequest, cancel: &dyn CancelSignal) -> Result<SpawnOutput, SpawnError>;
 }
 ```
 
@@ -988,6 +1135,10 @@ pub trait StageHandler: Send + Sync {
 | `ChangeHost` | ports | `s0-ports-and-testkit` | FakeChangeHost | GitHubChangeHost in github (GitHub App) | `s1-github-adapter` | `s1-stage-delivery-and-approval` |
 | `StageHandler` | workflow | `s1-engine-core` | scripted handlers in workflow tests | one handler per stage kind in workflow | `s1-spec-adapter-and-stage`, `s1-stage-intake-and-repository`, `s1-stage-architecture-and-planning`, `s1-stage-implementation-and-review`, `s1-trusted-gates-and-validation`, `s1-stage-documentation`, `s1-stage-delivery-and-approval` | `s1-engine-core` |
 | `ModelBroker` | ports | `s0-ports-and-testkit` | FakeModelBroker | Broker in egress | `s1-egress-and-broker` | `s1-engine-core` |
+| `SystemTx` | ports | `s1-ports-revision` | InMemorySystemTx | PgSystemTx in storage | `s1-storage-postgres` | `s1-engine-core` |
+| `JobRepo` | ports | `s1-ports-revision` | FakeJobRepo | GitJobRepo in sandbox | `s1-workspace-ingestion` | `s1-spec-adapter-and-stage`, `s1-stage-delivery-and-approval`, `s1-stage-documentation`, `s1-stage-implementation-and-review`, `s1-stage-intake-and-repository`, `s1-trusted-gates-and-validation` |
+| `ProcessRunner` | ports | `s1-ports-revision` | ScriptedProcessRunner | OsProcessRunner in sandbox | `s1-sandbox-adapter` | `s1-sandbox-adapter`, `s1-workspace-ingestion` |
+| `WebhookVerifier` | ports | `s1-ports-revision` | FakeWebhookVerifier | GitHubWebhookVerifier in github | `s1-github-adapter` | `s1-apps-composition` |
 <!-- GENERATED:end ports-registry -->
 
 ## 8. Slice 0 work packages
@@ -1089,10 +1240,10 @@ Done when:
 | Reviewers | software_architect, security |
 | Size | L (relative weight 5) |
 | Wave | 2 |
-| On the critical path | yes |
+| On the critical path | no |
 | Depends on | `s0-domain-vocabulary` |
 
-Fix version 1 of the port traits and their closed error enums from the sketches in this plan, and build testkit: faithful in-memory fakes that each report fidelity fake, the scripted adversarial runtime FX-ADV, a controllable clock FX-CLOCK, and generic contract test suites that run against any implementation. The same suites later run against the real adapters, which is how a fake is kept honest.
+Fix version 1 of the port traits and their closed error enums from the sketches in this plan, and build testkit: faithful in-memory fakes that each report fidelity fake, the scripted adversarial runtime FX-ADV, a controllable clock FX-CLOCK, and generic contract test suites that run against any implementation. The same suites later run against the real adapters, which is how a fake is kept honest. Revised after the independent review by s1-ports-revision (ADR 0014); the signatures in docs/architecture/ports-v1.1.md replace the ports-v1 sketches.
 
 Owns: `crates/ports/**`, `crates/testkit/**`
 
@@ -1360,17 +1511,17 @@ Done when:
 | Owner role | software_engineer |
 | Reviewers | security, software_architect, sre |
 | Size | L (relative weight 5) |
-| Wave | 4 |
+| Wave | 6 |
 | On the critical path | yes |
-| Depends on | `s0-ports-and-testkit`, `s1-sandbox-images`, `s1-security-test-harness`, `s1-redaction` |
+| Depends on | `s0-ports-and-testkit`, `s1-sandbox-images`, `s1-security-test-harness`, `s1-redaction`, `s1-ports-revision` |
 
-Implement SandboxProvider over the Docker command line as the supervisor in sandbox-policy.md section 9: three network profiles with per-job internal networks and the sidecar, create then inspect then compare against policy then start, the runtime self-check, wall-clock and disk enforcement by the supervisor, redacted log streaming with the daemon log driver off, the janitor, and fail-closed behavior. Gates run in fresh verify containers.
+Implement SandboxProvider over the Docker command line as the supervisor in sandbox-policy.md section 9: three network profiles with per-job internal networks and the sidecar, create then inspect then compare against policy then start, the runtime self-check, wall-clock and disk enforcement by the supervisor, redacted log streaming with the daemon log driver off, the janitor, and fail-closed behavior. Gates run in fresh verify containers. Built to the ports-v1.1 shape (ADR 0014): typed mounts only, a posture report that covers hardening, image, limits, network, mounts and environment and is compared by the pure function in ports, non-zero limits, AppArmor reported as not available only where the policy allows it, and the job token file written by this adapter on a tmpfs it controls and removed on every teardown path. Every host process is started through ProcessRunner from one file, process.rs.
 
-Owns: `crates/sandbox/Cargo.toml`, `crates/sandbox/clippy.toml`, `crates/sandbox/src/lib.rs`, `crates/sandbox/src/container/**`, `crates/sandbox/src/supervisor/**`, `crates/sandbox/tests/container/**`
+Owns: `crates/sandbox/Cargo.toml`, `crates/sandbox/clippy.toml`, `crates/sandbox/src/lib.rs`, `crates/sandbox/src/container/**`, `crates/sandbox/src/supervisor/**`, `crates/sandbox/tests/container/**`, `crates/sandbox/src/process.rs`
 
 Inputs: ADR 0003; port sketches; infra/sandbox-images/images.json
 
-Ports: defines none; implements `SandboxProvider`, `SandboxSession`; uses none.
+Ports: defines none; implements `SandboxProvider`, `SandboxSession`, `ProcessRunner`; uses `ProcessRunner`.
 
 Done when:
 
@@ -1386,6 +1537,9 @@ Done when:
 | 8 | No generated argument vector contains a denied flag, over randomly generated specifications, and nothing in the crate starts a shell (ST-03). | test | `cargo nextest run -p factory-sandbox denied_flags_are_never_emitted` |
 | 9 | The janitor removes labelled containers, networks and sidecars whose attempt is terminal. | test | `cargo nextest run -p factory-sandbox janitor_removes_orphans` |
 | 10 | Shell metacharacters in an argument run as literals, and a shell interpreter is denied (NT-TOOL-01, S part). Inside the agent sandbox the same payload runs as a non-root user without capabilities, writes only to the allowed mounts, and leaves no host marker (B part). Paths that leave the workspace, hidden paths and writes outside the writable mounts are refused (NT-TOOL-04, B part). Argument-injection commands run inside the sandbox without effect on evidence or the network (NT-TOOL-05, B part). | test | `cargo nextest run -p factory-sandbox negative_nt_tool_01 negative_nt_tool_04 negative_nt_tool_05` |
+| 11 | The posture compare finds a drift in each of limits, network, mounts, environment and image on a real container, and a missing AppArmor is accepted only when the policy flag is set. | test | `cargo nextest run -p factory-sandbox --test container posture_covers_every_part` |
+| 12 | The job token file exists inside the agent container at its fixed path, is mode 0400, is absent from the host after teardown by completion, failure, cancellation and timeout, and never appears in Debug output. | test | `cargo nextest run -p factory-sandbox --test container token_file_lifecycle` |
+| 13 | Only crates/sandbox/src/process.rs contains a process-spawning call, and the Docker supervisor runs against a scripted ProcessRunner in every unit test. | command | `cargo xtask check-architecture` |
 
 #### Implement the PostgreSQL store, the evidence ledger and the local artifact store
 
@@ -1395,24 +1549,24 @@ Done when:
 | Owner role | software_engineer |
 | Reviewers | dba, software_architect |
 | Size | L (relative weight 5) |
-| Wave | 3 |
+| Wave | 6 |
 | On the critical path | no |
-| Depends on | `s0-ports-and-testkit`, `s0-database-baseline`, `s1-database-tenancy-and-state-sync` |
+| Depends on | `s0-ports-and-testkit`, `s0-database-baseline`, `s1-database-tenancy-and-state-sync`, `s1-ports-revision`, `s1-database-port-alignment` |
 
-Implement Store and Tx over Diesel with diesel-async, claim and lease operations, outbox writes, the ledger with chain verification, and LocalFsArtifactStore. The shared contract suite from testkit runs against it. Follow the notes in docs/database/for-the-storage-crate.md and ADR 0012. Claims lock with FOR NO KEY UPDATE SKIP LOCKED. Store::begin makes the tenant setting as its first statement, the system scope uses its own role and pool, and the two lookups outside a transaction use the narrow functions. The isolation tests run as the application login. No database message or detail text ever reaches an API client.
+Implement Store and Tx over Diesel with diesel-async, claim and lease operations, outbox writes, the ledger with chain verification, and LocalFsArtifactStore. The shared contract suite from testkit runs against it. Follow the notes in docs/database/for-the-storage-crate.md and ADR 0012. Claims lock with FOR NO KEY UPDATE SKIP LOCKED. Store::begin makes the tenant setting as its first statement, the system scope uses its own role and pool, and the two lookups outside a transaction use the narrow functions. The isolation tests run as the application login. No database message or detail text ever reaches an API client. Built to the ports-v1.1 shape (ADR 0014): SystemTx for the candidate search and the due-attempt queries, start_attempt as the DBA's two-step claim with the lease on the attempt, inserts that are idempotent by id and content, the listings, Store::committed to settle an unknown commit outcome, record_platform_audit under the platform tenant, resolve_installation with the repository id, and an artifact store whose get and exists join the tenant's index row.
 
 Owns: `crates/storage/Cargo.toml`, `crates/storage/clippy.toml`, `crates/storage/src/lib.rs`, `crates/storage/src/pg/**`, `crates/storage/src/artifact_fs/**`, `crates/storage/tests/**`
 
 Inputs: ADR 0001; ADR 0004; ADR 0007; ADR 0008; ADR 0012; migrations/; docs/database/for-the-storage-crate.md; docs/database/ledger-and-audit.md (the hash vectors)
 
-Ports: defines none; implements `ArtifactStore`, `Store`, `Tx`; uses `Clock`.
+Ports: defines none; implements `ArtifactStore`, `Store`, `Tx`, `SystemTx`; uses `Clock`.
 
 Done when:
 
 | # | Check | How | Command or evidence |
 |---|---|---|---|
 | 1 | The store contract suite passes against PgStore on PostgreSQL in Docker, the same suite that passes against the in-memory fake. | test | `cargo nextest run -p factory-storage --test store_contract` |
-| 2 | Two concurrent claimers on one ready row produce exactly one winner. | test | `cargo nextest run -p factory-storage concurrent_claim_has_one_winner` |
+| 2 | Two workers that find the same candidate: exactly one start_attempt wins, the loser gets Conflict, and the winner's stage run is RUNNING at epoch plus one with its attempt in STARTING. | test | `cargo nextest run -p factory-storage concurrent_claim_has_one_winner` |
 | 3 | A zombie worker's write with an old lease epoch is rejected. | test | `cargo nextest run -p factory-storage stale_lease_epoch_is_fenced` |
 | 4 | A fault injected after the outbox insert rolls back the status change, the ledger entry and the outbox row together. | test | `cargo nextest run -p factory-storage transition_is_atomic` |
 | 5 | Every repository method refuses to return or change another tenant's rows. | test | `cargo nextest run -p factory-storage --test tenant_isolation` |
@@ -1424,8 +1578,11 @@ Done when:
 | 11 | The application role cannot UPDATE, DELETE, TRUNCATE or DROP the audit tables (NT-AUD-01), and the audit events carry actor, policy hash and correlation id. | test | `cargo nextest run -p factory-storage negative_nt_aud_01` |
 | 12 | Claims use FOR NO KEY UPDATE SKIP LOCKED, shown by a ledger append that is not blocked while a claimer holds the stage run. | test | `cargo nextest run -p factory-storage claim_does_not_block_ledger_appends` |
 | 13 | Every tenant transaction makes the tenant setting first. Run as the application login with two tenants, a call for tenant A never reads or changes tenant B's rows and a call with no tenant sees nothing (NT-TEN-01, Rust part). The store refuses to become ready when its role can bypass row-level security or owns the tables. | test | `cargo nextest run -p factory-storage negative_nt_ten_01 refuses_a_role_that_bypasses_rls` |
-| 14 | The two lookups outside a transaction answer None for every miss reason, so a caller cannot tell an unknown token from an expired one. | test | `cargo nextest run -p factory-storage lookups_hide_the_reason` |
+| 14 | The two lookups outside a transaction answer None for every miss reason, so a caller cannot tell an unknown token from an expired one, and resolve_installation needs the pair of installation and repository ids. | test | `cargo nextest run -p factory-storage lookups_hide_the_reason` |
 | 15 | Every database error maps to the closed StoreError. The message and detail text of the database, which can name another tenant's key value, never reach a caller and are logged only after redaction. | test | `cargo nextest run -p factory-storage database_text_never_reaches_a_caller` |
+| 16 | A connection that drops after COMMIT was sent is reported as an unknown outcome, and Store::committed answers from the witness whether the transaction was applied, shown with a fault injected between the commit and the reply. | test | `cargo nextest run -p factory-storage unknown_commit_outcome_is_settled_by_the_witness` |
+| 17 | A tenant cannot read, or test the existence of, an artifact that another tenant holds under the same hash. | test | `cargo nextest run -p factory-storage --test artifact_tenancy` |
+| 18 | The due-attempt queries find an expired lease, a passed deadline and a passed teardown deadline by the database clock, and a platform audit event lands under the platform tenant only. | test | `cargo nextest run -p factory-storage due_attempts_and_platform_audit` |
 
 #### Build the durable workflow engine
 
@@ -1436,16 +1593,16 @@ Done when:
 | Reviewers | software_architect, dba |
 | Size | XL (relative weight 8) |
 | Wave | 4 |
-| On the critical path | no |
+| On the critical path | yes |
 | Depends on | `s0-state-machines`, `s0-ports-and-testkit`, `s1-domain-revision` |
 
-Build admission, the claim loop, leases with heartbeats and the sweeper, attempt result handling with output validation, retry with back-off, the gate framework, rework routing, supersession, human decisions, bounds, the ledger and outbox writes, the StageHandler trait and registry, the job audit verifier, and the production-mode refusal of fake adapters. All of it runs first against the in-memory fakes. The skeleton pre-declares the module lines for every stage and gate directory, so the stage packages add code without editing the files this package owns. It also owns the audit event stream with actor, policy hash and correlation id, and the credential and budget hooks around each attempt (job token issue and revoke through ModelBroker).
+Build admission, the claim loop, leases with heartbeats and the sweeper, attempt result handling with output validation, retry with back-off, the gate framework, rework routing, supersession, human decisions, bounds, the ledger and outbox writes, the StageHandler trait and registry, the job audit verifier, and the production-mode refusal of fake adapters. All of it runs first against the in-memory fakes. The skeleton pre-declares the module lines for every stage and gate directory, so the stage packages add code without editing the files this package owns. It also owns the audit event stream with actor, policy hash and correlation id, and the credential and budget hooks around each attempt (job token issue and revoke through ModelBroker). Adapted to ports v1.1 by s1-ports-revision: the claim is a read-only candidate search followed by a start in the tenant scope, rows are listed instead of read back from event payloads, a transition carries the guard that cleared it, and the commit witness settles an unknown commit outcome.
 
 Owns: `crates/workflow/Cargo.toml`, `crates/workflow/clippy.toml`, `crates/workflow/src/lib.rs`, `crates/workflow/src/engine/**`, `crates/workflow/src/commands/**`, `crates/workflow/src/scheduler/**`, `crates/workflow/src/audit/**`, `crates/workflow/src/handlers/**`, `crates/workflow/src/gates/mod.rs`, `crates/workflow/src/gates/framework/**`, `crates/workflow/src/stages/mod.rs`, `crates/workflow/tests/engine_scenarios.rs`, `crates/workflow/tests/invariants.rs`, `crates/workflow/tests/audit.rs`
 
 Inputs: docs/architecture/state-machine.json; ADR 0001; ADR 0004; ADR 0008; port sketches
 
-Ports: defines `StageHandler`; implements none; uses `AgentRegistry`, `AgentRuntime`, `ArtifactStore`, `CancelSignal`, `Clock`, `IdGenerator`, `ModelBroker`, `ModelRouter`, `OutputValidator`, `SandboxProvider`, `StageHandler`, `Store`, `Tx`, `WorkspaceProvider`.
+Ports: defines `StageHandler`; implements none; uses `AgentRegistry`, `AgentRuntime`, `ArtifactStore`, `CancelSignal`, `Clock`, `IdGenerator`, `ModelBroker`, `ModelRouter`, `OutputValidator`, `SandboxProvider`, `StageHandler`, `Store`, `Tx`, `WorkspaceProvider`, `SystemTx`.
 
 Done when:
 
@@ -1476,7 +1633,7 @@ Done when:
 | Reviewers | security, software_architect |
 | Size | L (relative weight 5) |
 | Wave | 4 |
-| On the critical path | yes |
+| On the critical path | no |
 | Depends on | `s0-state-machines`, `s0-security-baseline`, `s0-contracts-and-registry`, `s1-domain-revision` |
 
 Write the pure policy functions the guards need, with deny overrides, as policies/security.yaml specifies: requester allowlist, admission, autonomy level from the repository preflight, risk tier, tool grants as the intersection of manifest, policy and stage need, command classes, path normalization and protected-path matching, required approval role, override permission, new-dependency decisions, rework caps and budget checks. When the tests pass, flip policy.status in the policy file to enforced (its owner makes that edit).
@@ -1506,11 +1663,11 @@ Done when:
 | Owner role | software_engineer |
 | Reviewers | security, software_architect |
 | Size | L (relative weight 5) |
-| Wave | 5 |
+| Wave | 7 |
 | On the critical path | yes |
-| Depends on | `s0-ports-and-testkit`, `s0-agent-runtime-spike`, `s1-sandbox-adapter` |
+| Depends on | `s0-ports-and-testkit`, `s0-agent-runtime-spike`, `s1-sandbox-adapter`, `s1-ports-revision` |
 
-Implement AgentRuntime for both tools following ADR 0005 and the spike verdict: the probe, argument builders from a closed allow list, starting the tool inside the sandbox through the session with the job token and the broker address, output parsing and usage accounting, failure mapping, and cancellation. Live smoke tests need an API key and are BLOCKED without one.
+Implement AgentRuntime for both tools following ADR 0005 and the spike verdict: the probe, argument builders from a closed allow list, starting the tool inside the sandbox through the session with the job token and the broker address, output parsing and usage accounting, failure mapping, and cancellation. Live smoke tests need an API key and are BLOCKED without one. Built to the ports-v1.1 shape (ADR 0014): run always returns a report, with the transcript, usage and denials the adapter could collect even when the run failed; the final output is read as bytes up to a limit and never parsed by the adapter; a larger output is OutputTooLarge.
 
 Owns: `crates/runtime/**`
 
@@ -1530,6 +1687,7 @@ Done when:
 | 6 | Recorded real outputs parse into outcomes with usage, and malformed output maps to a typed error. | test | `cargo nextest run -p factory-runtime --test output_parsing` |
 | 7 | Provider outage, rate limit and missing credential map to the closed error set, using a scripted stand-in process labelled fake. | test | `cargo nextest run -p factory-runtime --test failure_mapping` |
 | 8 | A live smoke test through the broker records fidelity-real evidence. Without an API key or a binary it reports BLOCKED. A subscription login does not count. | test | `FACTORY_LIVE=1 cargo nextest run -p factory-runtime --test live_smoke` |
+| 9 | A run that times out, is cancelled or exits with a failure still returns its usage, its stored transcript and its permission denials, and an output over the limit is OutputTooLarge, shown with scripted stand-in processes labelled fake. | test | `cargo nextest run -p factory-runtime --test failure_report` |
 
 #### Implement the GitHub App adapter for issues, narrowed tokens, draft pull requests and webhooks
 
@@ -1539,17 +1697,17 @@ Done when:
 | Owner role | software_engineer |
 | Reviewers | security |
 | Size | L (relative weight 5) |
-| Wave | 4 |
+| Wave | 6 |
 | On the critical path | no |
-| Depends on | `s0-ports-and-testkit`, `s1-security-test-harness`, `s1-redaction` |
+| Depends on | `s0-ports-and-testkit`, `s1-security-test-harness`, `s1-redaction`, `s1-ports-revision` |
 
-Implement IssueSource and ChangeHost as a GitHub App: sign the App JWT, mint one installation token per job narrowed to one repository and to the permissions of one stage, revoke it at job end, verify webhook signatures on the raw body, deduplicate deliveries, run the repository protection preflight, push only to factory branches, and write only sanitized text. Merging is not implemented. Requester authorization is the named allowlist from policy, not a GitHub role.
+Implement IssueSource and ChangeHost as a GitHub App: sign the App JWT, mint one installation token per job narrowed to one repository and to the permissions of one stage, revoke it at job end, verify webhook signatures on the raw body, deduplicate deliveries, run the repository protection preflight, push only to factory branches, and write only sanitized text. Merging is not implemented. Requester authorization is the named allowlist from policy, not a GitHub role. Built to the ports-v1.1 shape (ADR 0014): gate results are check runs created as the App, the preflight reads the rulesets that apply to the default branch with the Metadata permission and never asks for Administration, a bypass attestation is a recorded statement by an organization admin, comments are fetched with the numeric id of their author, fetch and push credentials are narrowed to one repository, and webhooks are verified by a pure WebhookVerifier before anything is stored. The App never marks a pull request ready for review.
 
 Owns: `crates/github/**`
 
 Inputs: master prompt sections 1, 3 and 11; GitHub REST documentation read at implementation time
 
-Ports: defines none; implements `ChangeHost`, `IssueSource`; uses none.
+Ports: defines none; implements `ChangeHost`, `IssueSource`, `WebhookVerifier`; uses none.
 
 Done when:
 
@@ -1565,6 +1723,10 @@ Done when:
 | 8 | Opening a draft pull request is idempotent for the same head branch, and the contract suite passes as it does for the fake. | test | `cargo nextest run -p factory-github --test change_host_contract` |
 | 9 | No merge call exists in the crate, and rate-limit responses are handled with back-off. | command | `cargo xtask check-architecture` |
 | 10 | A live smoke test opens and closes a draft pull request on the fixture repository using a registered App. Without the App credentials it reports BLOCKED. | test | `FACTORY_LIVE=1 cargo nextest run -p factory-github --test live_smoke` |
+| 11 | The contract suite for the change host passes against the adapter with a recorded GitHub response: a check run is updated and not duplicated, a pull request needs a pushed head, and a comment is found by its marker before posting. | test | `cargo nextest run -p factory-github --test change_host_contract check_runs_and_markers` |
+| 12 | The ruleset reader turns a recorded response of the rules for a branch into a protection report, a repository with only classic branch protection is capped at L0 with a named reason, and a missing attestation caps it too. The recorded responses are fixtures with the date they were taken. | test | `cargo nextest run -p factory-github --test protection` |
+| 13 | The webhook verifier passes the verifier contract suite, tells a pull request comment from an issue comment using a recorded delivery, and reads no state from the payload. | test | `cargo nextest run -p factory-github --test webhook_verifier` |
+| 14 | A live check against a fixture repository shows that a required check pinned to the App's id is not satisfied by a check run of the same name from another App. Without credentials it reports BLOCKED. If it passes the claim of ADR 0014 decision 7 stands; if not, the decision is reopened. | test | `FACTORY_LIVE=1 cargo nextest run -p factory-github --test live_pinning` |
 
 #### Write the agent manifests, prompts and the general-software profile
 
@@ -1656,17 +1818,17 @@ Done when:
 | Owner role | software_engineer |
 | Reviewers | security, software_architect |
 | Size | L (relative weight 5) |
-| Wave | 6 |
-| On the critical path | yes |
-| Depends on | `s0-spec-kit-spike`, `s1-engine-core`, `s0-contracts-and-registry`, `s1-agent-definitions`, `s1-prompt-assembly`, `s1-policy-evaluation`, `s1-workspace-ingestion` |
+| Wave | 7 |
+| On the critical path | no |
+| Depends on | `s0-spec-kit-spike`, `s1-engine-core`, `s0-contracts-and-registry`, `s1-agent-definitions`, `s1-prompt-assembly`, `s1-policy-evaluation`, `s1-workspace-ingestion`, `s1-ports-revision` |
 
-Implement SpecKitProvider in the spec_adapter crate, the pure parser that turns Spec Kit files into a SpecificationContract, the specification stage handler and the deterministic gate with freeze and revision. Follows ADR 0006 and the spike verdict: invocation syntax read from integration.json, no init on an initialised repository, an explicit feature directory per job in its own worktree, the seven post-conditions after every skill, the question detector, the checklist pre-run, the revision method, and issue text kept out of the instruction channel. The stage profile check is a gate of this stage and cannot be waived: a forbidden Spec Kit artifact after the run, or a denied skill in the event stream, makes it FAILED, the stage BLOCKED and the output discarded.
+Implement SpecKitProvider in the spec_adapter crate, the pure parser that turns Spec Kit files into a SpecificationContract, the specification stage handler and the deterministic gate with freeze and revision. Follows ADR 0006 and the spike verdict: invocation syntax read from integration.json, no init on an initialised repository, an explicit feature directory per job in its own worktree, the seven post-conditions after every skill, the question detector, the checklist pre-run, the revision method, and issue text kept out of the instruction channel. The stage profile check is a gate of this stage and cannot be waived: a forbidden Spec Kit artifact after the run, or a denied skill in the event stream, makes it FAILED, the stage BLOCKED and the output discarded. Built to the ports-v1.1 shape (ADR 0014): the provider runs the skills in the sandbox and assembles the contract from file bytes it is handed, and the stage handler stops the sandbox, ingests, commits and reads the files through JobRepo. The adapter reads no file.
 
 Owns: `crates/spec_adapter/**`, `crates/workflow/src/stages/specification/**`, `crates/workflow/src/gates/spec/**`, `crates/workflow/tests/specification/**`
 
 Inputs: ADR 0006; fixtures/recordings/spec-kit/; schemas/specification-contract.schema.json
 
-Ports: defines none; implements `SpecificationProvider`, `StageHandler`; uses `AgentRuntime`, `OutputValidator`, `Workspace`.
+Ports: defines none; implements `SpecificationProvider`, `StageHandler`; uses `AgentRuntime`, `OutputValidator`, `Workspace`, `JobRepo`.
 
 Done when:
 
@@ -1693,17 +1855,17 @@ Done when:
 | Owner role | software_engineer |
 | Reviewers | security |
 | Size | M (relative weight 3) |
-| Wave | 6 |
+| Wave | 7 |
 | On the critical path | no |
-| Depends on | `s1-engine-core`, `s1-sandbox-adapter`, `s1-workspace-ingestion`, `s1-agent-definitions`, `s1-readability-gate`, `s1-policy-evaluation`, `s1-prompt-assembly` |
+| Depends on | `s1-engine-core`, `s1-sandbox-adapter`, `s1-workspace-ingestion`, `s1-agent-definitions`, `s1-readability-gate`, `s1-policy-evaluation`, `s1-prompt-assembly`, `s1-ports-revision` |
 
-Authorize the requester against the named allowlist, store the original text apart from the normalized request with its hash, classify the request, and build the repository map: languages, build and test commands, CODEOWNERS, protected paths, existing decisions and documents, plus a baseline build and test run in a verify sandbox. Files that must not reach model context are excluded.
+Authorize the requester against the named allowlist, store the original text apart from the normalized request with its hash, classify the request, and build the repository map: languages, build and test commands, CODEOWNERS, protected paths, existing decisions and documents, plus a baseline build and test run in a verify sandbox. Files that must not reach model context are excluded. Uses the ports-v1.1 shape (ADR 0014): the original request is stored apart with its hash, the repository is fetched into the job's object store and the base commit comes from the fetch, and an edited request takes S22 so that nobody reads the new text before a person has confirmed it.
 
 Owns: `crates/workflow/src/stages/intake/**`, `crates/workflow/src/stages/repo_intel/**`, `crates/workflow/tests/intake_repo/**`
 
 Inputs: master prompt section 3; schemas/stage-contract.schema.json; fixtures/repos/word-count
 
-Ports: defines none; implements `StageHandler`; uses `AgentRuntime`, `IssueSource`, `SandboxProvider`, `Workspace`, `WorkspaceProvider`.
+Ports: defines none; implements `StageHandler`; uses `AgentRuntime`, `IssueSource`, `SandboxProvider`, `Workspace`, `WorkspaceProvider`, `JobRepo`.
 
 Done when:
 
@@ -1727,9 +1889,9 @@ Done when:
 | Size | L (relative weight 5) |
 | Wave | 6 |
 | On the critical path | no |
-| Depends on | `s1-engine-core`, `s1-agent-definitions`, `s0-contracts-and-registry`, `s1-readability-gate`, `s1-prompt-assembly` |
+| Depends on | `s1-engine-core`, `s1-agent-definitions`, `s0-contracts-and-registry`, `s1-readability-gate`, `s1-prompt-assembly`, `s1-ports-revision` |
 
-Resolve the domain profile and probe its tools, run the architecture agent and the traceability gate, run the planner and the deterministic task DAG validator. Add an independent critic only when policy requires it for the risk tier.
+Resolve the domain profile and probe its tools, run the architecture agent and the traceability gate, run the planner and the deterministic task DAG validator. Add an independent critic only when policy requires it for the risk tier. Uses the ports-v1.1 shape (ADR 0014): the task graph is stored with one atomic insert that creates every node and edge.
 
 Owns: `crates/workflow/src/stages/domain_discovery/**`, `crates/workflow/src/stages/architecture/**`, `crates/workflow/src/stages/planning/**`, `crates/workflow/src/gates/dag/**`, `crates/workflow/tests/planning/**`
 
@@ -1755,17 +1917,17 @@ Done when:
 | Owner role | software_engineer |
 | Reviewers | documenter, software_architect |
 | Size | L (relative weight 5) |
-| Wave | 6 |
-| On the critical path | yes |
-| Depends on | `s1-engine-core`, `s1-sandbox-adapter`, `s1-workspace-ingestion`, `s1-agent-definitions`, `s1-documentation-rubric`, `s1-readability-gate`, `s1-prompt-assembly` |
+| Wave | 7 |
+| On the critical path | no |
+| Depends on | `s1-engine-core`, `s1-sandbox-adapter`, `s1-workspace-ingestion`, `s1-agent-definitions`, `s1-documentation-rubric`, `s1-readability-gate`, `s1-prompt-assembly`, `s1-ports-revision` |
 
-Derive the minimal documentation set from the change, write it, and check it with the Documentation Quality Gate: links, executed snippets, command references against real help output, diagram syntax, required-page coverage, readability, secrets, changelog. The gate distinguishes NOT_APPLICABLE, BLOCKED, FAILED and PASSED. This package also defines the documentation plan schema through a pull request to schemas/ with architect review.
+Derive the minimal documentation set from the change, write it, and check it with the Documentation Quality Gate: links, executed snippets, command references against real help output, diagram syntax, required-page coverage, readability, secrets, changelog. The gate distinguishes NOT_APPLICABLE, BLOCKED, FAILED and PASSED. This package also defines the documentation plan schema through a pull request to schemas/ with architect review. Uses the ports-v1.1 shape (ADR 0014): documentation files are committed and read back through JobRepo.
 
 Owns: `crates/workflow/src/stages/documenting/**`, `crates/workflow/src/stages/documentation_review/**`, `crates/workflow/src/gates/docs/**`, `crates/workflow/tests/documentation/**`
 
 Inputs: master prompt section 10; docs/reference/documentation-policy.md; fixtures/readability/; schemas/gate-report.schema.json
 
-Ports: defines none; implements `StageHandler`; uses `AgentRuntime`, `SandboxProvider`, `Workspace`.
+Ports: defines none; implements `StageHandler`; uses `AgentRuntime`, `SandboxProvider`, `Workspace`, `JobRepo`.
 
 Done when:
 
@@ -1787,17 +1949,17 @@ Done when:
 | Owner role | software_engineer |
 | Reviewers | security, software_architect |
 | Size | L (relative weight 5) |
-| Wave | 5 |
+| Wave | 7 |
 | On the critical path | no |
-| Depends on | `s1-engine-core`, `s1-github-adapter`, `s1-readability-gate`, `s1-policy-evaluation`, `s1-redaction` |
+| Depends on | `s1-engine-core`, `s1-github-adapter`, `s1-readability-gate`, `s1-policy-evaluation`, `s1-redaction`, `s1-ports-revision` |
 
-Build the evidence manifest, push the job branch from the control plane with the narrowed token, open the draft pull request with the English body, and handle approve, reject, rework, pause and cancel from the CLI and from authorized GitHub comments, bound to the evidence digest the human saw. There is no merge and no deploy.
+Build the evidence manifest, push the job branch from the control plane with the narrowed token, open the draft pull request with the English body, and handle approve, reject, rework, pause and cancel from the CLI and from authorized GitHub comments, bound to the evidence digest the human saw. There is no merge and no deploy. Uses the ports-v1.1 shape (ADR 0014): the branch is pushed with JobRepo::push, which works after a restart, gate results are published as check runs, the base is resolved again before the push, approvals are recorded and counted through ApprovalOps for the head the approver saw, and the pull request stays a draft.
 
 Owns: `crates/workflow/src/stages/delivery/**`, `crates/workflow/src/stages/approval/**`, `crates/workflow/tests/delivery/**`
 
 Inputs: schemas/evidence-manifest.schema.json; master prompt section 11; ADR 0008
 
-Ports: defines none; implements `StageHandler`; uses `ArtifactStore`, `ChangeHost`, `Workspace`.
+Ports: defines none; implements `StageHandler`; uses `ArtifactStore`, `ChangeHost`, `Workspace`, `JobRepo`.
 
 Done when:
 
@@ -1824,17 +1986,17 @@ Done when:
 | Owner role | software_engineer |
 | Reviewers | software_architect, security |
 | Size | L (relative weight 5) |
-| Wave | 7 |
+| Wave | 9 |
 | On the critical path | yes |
-| Depends on | `s1-engine-core`, `s1-storage-postgres`, `s1-sandbox-adapter`, `s1-workspace-ingestion`, `s1-agent-runtime-adapters`, `s1-github-adapter`, `s1-egress-and-broker`, `s0-contracts-and-registry`, `s0-telemetry-baseline`, `s1-policy-evaluation`, `s1-spec-adapter-and-stage`, `s1-stage-intake-and-repository`, `s1-stage-architecture-and-planning`, `s1-stage-implementation-and-review`, `s1-trusted-gates-and-validation`, `s1-supply-chain-gates`, `s1-stage-documentation`, `s1-stage-delivery-and-approval`, `s1-agent-definitions`, `s1-security-test-harness`, `s1-telemetry-wiring` |
+| Depends on | `s1-engine-core`, `s1-storage-postgres`, `s1-sandbox-adapter`, `s1-workspace-ingestion`, `s1-agent-runtime-adapters`, `s1-github-adapter`, `s1-egress-and-broker`, `s0-contracts-and-registry`, `s0-telemetry-baseline`, `s1-policy-evaluation`, `s1-spec-adapter-and-stage`, `s1-stage-intake-and-repository`, `s1-stage-architecture-and-planning`, `s1-stage-implementation-and-review`, `s1-trusted-gates-and-validation`, `s1-supply-chain-gates`, `s1-stage-documentation`, `s1-stage-delivery-and-approval`, `s1-agent-definitions`, `s1-security-test-harness`, `s1-telemetry-wiring`, `s1-ports-revision` |
 
-Write the composition roots: configuration, adapter selection by profile, the HTTP API with webhook verification and token authentication, the worker loop that also hosts the model broker listener, the operator CLI including a probe command, the egress sidecar binary entry point, health endpoints, and the contract-first OpenAPI file. The production profile refuses fakes. API tokens are opaque, stored hashed, with expiry, audience and revocation, so there is no JWT to attack.
+Write the composition roots: configuration, adapter selection by profile, the HTTP API with webhook verification and token authentication, the worker loop that also hosts the model broker listener, the operator CLI including a probe command, the egress sidecar binary entry point, health endpoints, and the contract-first OpenAPI file. The production profile refuses fakes. API tokens are opaque, stored hashed, with expiry, audience and revocation, so there is no JWT to attack. Uses the ports-v1.1 shape (ADR 0014): the api binary depends on WebhookVerifier, not on the github crate, and the composition root calls require_permitted for every port in the registry, shown by a test.
 
 Owns: `apps/**`
 
 Inputs: all adapters and stage handlers; ADR 0002; docs/architecture/crate-dependency-rules.json apps section
 
-Ports: defines none; implements `CancelSignal`, `Clock`, `IdGenerator`; uses `IssueSource`.
+Ports: defines none; implements `CancelSignal`, `Clock`, `IdGenerator`; uses `IssueSource`, `WebhookVerifier`.
 
 Done when:
 
@@ -1866,7 +2028,7 @@ Done when:
 | On the critical path | no |
 | Depends on | `s0-workspace-skeleton` |
 
-Create the fixture repository, a small dependency-free Rust command line tool with tests, documentation, CODEOWNERS and a project manifest, plus the English and Portuguese issue texts. Write the scenarios and the machine-checkable assertions A1 to A14 first, so the end-to-end test is red from the start. The fixture's GitHub repository needs a branch-protection ruleset, or the job runs at level L0 and opens no pull request.
+Create the fixture repository, a small dependency-free Rust command line tool with tests, documentation, CODEOWNERS and a project manifest, plus the English and Portuguese issue texts. Write the scenarios and the machine-checkable assertions A1 to A14 first, so the end-to-end test is red from the start. The fixture's GitHub repository needs a branch-protection ruleset, or the job runs at level L0 and opens no pull request. The end-to-end assertion about stages reads the list of Slice 1 stages from docs/architecture/state-machine.json and does not hard-code a number (ADR 0014; the specification's count is edited separately).
 
 Owns: `fixtures/repos/word-count/**`, `tests/end_to_end/**`, `tests/contract/**`, `scripts/e2e.sh`
 
@@ -1945,7 +2107,7 @@ Done when:
 | Owner role | dba |
 | Reviewers | software_architect |
 | Size | M (relative weight 3) |
-| Wave | 4 |
+| Wave | 7 |
 | On the critical path | no |
 | Depends on | `s1-storage-postgres`, `s1-local-deployment` |
 
@@ -1972,7 +2134,7 @@ Done when:
 | Owner role | security |
 | Reviewers | software_architect |
 | Size | L (relative weight 5) |
-| Wave | 7 |
+| Wave | 9 |
 | On the critical path | yes |
 | Depends on | `s0-security-baseline`, `s1-sandbox-adapter`, `s1-workspace-ingestion`, `s1-egress-and-broker`, `s1-github-adapter`, `s1-agent-runtime-adapters`, `s1-fixture-and-e2e-harness`, `s1-stage-intake-and-repository`, `s1-policy-evaluation`, `s1-redaction`, `s1-prompt-assembly`, `s1-trusted-gates-and-validation`, `s1-supply-chain-gates`, `s1-security-test-harness`, `s1-stage-implementation-and-review` |
 
@@ -2000,7 +2162,7 @@ Done when:
 | Owner role | qa |
 | Reviewers | software_architect, security |
 | Size | M (relative weight 3) |
-| Wave | 8 |
+| Wave | 10 |
 | On the critical path | yes |
 | Depends on | `s1-apps-composition`, `s1-fixture-and-e2e-harness`, `s1-local-deployment`, `s1-observability-instrumentation`, `s1-security-review-and-tests` |
 
@@ -2027,7 +2189,7 @@ Done when:
 | Owner role | documenter |
 | Reviewers | software_architect, sre |
 | Size | L (relative weight 5) |
-| Wave | 9 |
+| Wave | 11 |
 | On the critical path | yes |
 | Depends on | `s1-end-to-end-run`, `s1-documentation-rubric`, `s1-database-review` |
 
@@ -2055,17 +2217,17 @@ Done when:
 | Owner role | software_engineer |
 | Reviewers | security, software_architect |
 | Size | L (relative weight 5) |
-| Wave | 5 |
-| On the critical path | yes |
-| Depends on | `s0-ports-and-testkit`, `s1-security-test-harness`, `s1-policy-evaluation`, `s1-redaction` |
+| Wave | 6 |
+| On the critical path | no |
+| Depends on | `s0-ports-and-testkit`, `s1-security-test-harness`, `s1-policy-evaluation`, `s1-redaction`, `s1-ports-revision` |
 
-Implement WorkspaceProvider and Workspace as sandbox-policy.md section 6 requires: a trusted bare mirror that is never mounted, a sparse detached worktree per job, a read-only /dev/null bound over .git, host-side version control with a fixed environment, protected-path overlays, and the ingestion pipeline (stop the container, no-follow audit walk, temporary-index tree diff, protected-path evaluation, gitlink and symlink rejection, secret scan, then commit). All reads of sandbox output go through one module.
+Implement WorkspaceProvider and Workspace as sandbox-policy.md section 6 requires: a trusted bare mirror that is never mounted, a sparse detached worktree per job, a read-only /dev/null bound over .git, host-side version control with a fixed environment, protected-path overlays, and the ingestion pipeline (stop the container, no-follow audit walk, temporary-index tree diff, protected-path evaluation, gitlink and symlink rejection, secret scan, then commit). All reads of sandbox output go through one module. Built to the ports-v1.1 shape (ADR 0014): the job owns a trusted object store that survives restarts and an attempt owns a worktree over it. fetch puts the branch tip into the store, create makes a sparse detached worktree of any commit in it (a verify workspace is read-only and holds the held-out tests), JobRepo reads committed files in an agent view and a trusted view, exports a patch as an artifact, and pushes a commit the factory made. Every path decision comes from PathRules (the five modes, NFC and case folding, re-inclusion, the aliases of .git). Git is started through ProcessRunner.
 
 Owns: `crates/sandbox/src/workspace/**`, `crates/sandbox/tests/workspace/**`
 
 Inputs: ADR 0003; docs/security/sandbox-policy.md section 6; policies/security.yaml path_access
 
-Ports: defines none; implements `Workspace`, `WorkspaceProvider`; uses none.
+Ports: defines none; implements `Workspace`, `WorkspaceProvider`, `JobRepo`; uses `ProcessRunner`.
 
 Done when:
 
@@ -2077,6 +2239,9 @@ Done when:
 | 4 | Protected files cannot be modified in the sandbox, hidden paths do not exist in the checkout and a file created at a hidden path fails the job (NT-SBX-11, NT-GATE-08 sandbox part). | test | `cargo nextest run -p factory-sandbox negative_nt_sbx_11 negative_nt_gate_08` |
 | 5 | Every read of a workspace or output path goes through the ingestion module (ST-09), and no safe.directory wildcard exists (ST-01). | command | `cargo xtask check-architecture` |
 | 6 | A rename counts as two paths and a mode or type change as a modification in the protected-path evaluation. | test | `cargo nextest run -p factory-sandbox rename_counts_as_two_paths` |
+| 7 | A second workspace starts at a commit the first made, and push works from a new provider value over the same host directory after a simulated restart. A commit the factory did not make is refused. | test | `cargo nextest run -p factory-sandbox --test workspace restart_keeps_commits` |
+| 8 | PathRules refuses a case variant of a protected path, a Unicode-ignorable and an 8.3 form of .git, allows an added test and refuses an edited one under additions_only, and applies a re-inclusion only inside its own group. | test | `cargo nextest run -p factory-sandbox path_rules_follow_the_policy` |
+| 9 | The patch for the same two commits is byte for byte the same, a verify workspace is read-only and holds the holdouts, and the agent view of a hidden path is not found. | test | `cargo nextest run -p factory-sandbox --test workspace patch_and_views` |
 
 #### Build the model broker and the per-job egress relay
 
@@ -2086,11 +2251,11 @@ Done when:
 | Owner role | software_engineer |
 | Reviewers | security, software_architect |
 | Size | XL (relative weight 8) |
-| Wave | 4 |
+| Wave | 6 |
 | On the critical path | no |
-| Depends on | `s0-ports-and-testkit`, `s1-security-test-harness`, `s1-redaction` |
+| Depends on | `s0-ports-and-testkit`, `s1-security-test-harness`, `s1-redaction`, `s1-ports-revision` |
 
-Implement the model broker that holds the real provider keys and the egress relay that runs as the per-job sidecar, following sandbox-policy.md section 5 and secrets-and-credentials.md section 4. The broker issues, checks and revokes job tokens, forwards only allowed API paths, meters usage against the job ceiling and alerts at 80 and 100 percent. The relay allows exact hosts, rejects private and metadata ranges after its own resolution, pins the connection and enforces a byte quota. Real calls need an API key and are BLOCKED without one. Tests use a labelled fake provider.
+Implement the model broker that holds the real provider keys and the egress relay that runs as the per-job sidecar, following sandbox-policy.md section 5 and secrets-and-credentials.md section 4. The broker issues, checks and revokes job tokens, forwards only allowed API paths, meters usage against the job ceiling and alerts at 80 and 100 percent. The relay allows exact hosts, rejects private and metadata ranges after its own resolution, pins the connection and enforces a byte quota. Real calls need an API key and are BLOCKED without one. Tests use a labelled fake provider. Built to the ports-v1.1 shape (ADR 0014): the relay records spend through MeteringOps, the broker revokes every token of a job on request, and the contract suite covers both.
 
 Owns: `crates/egress/**`, `apps/egress-sidecar/**`
 
@@ -2108,6 +2273,7 @@ Done when:
 | 4 | A tool that ignores its own budget flag is still stopped, and the next request after revocation is refused (NT-BUD-07). | test | `cargo nextest run -p factory-egress negative_nt_bud_07` |
 | 5 | The real provider key never appears in the container, in a log, in a trace or in a response body, shown by the canary sweep. | test | `cargo nextest run -p factory-egress real_key_never_leaves_the_broker` |
 | 6 | A live call through the broker with a real key succeeds. Without a key it reports BLOCKED. | test | `FACTORY_LIVE=1 cargo nextest run -p factory-egress --test live_smoke` |
+| 7 | revoke_for_job revokes every token of the job including those of crashed attempts, and spend recorded through MeteringOps that reaches the ceiling revokes the token in the same step. | test | `cargo nextest run -p factory-egress --test broker_contract revoke_for_job_and_metering` |
 
 #### Assemble prompts with a data envelope and hardened untrusted text
 
@@ -2171,7 +2337,7 @@ Done when:
 | Owner role | software_engineer |
 | Reviewers | security |
 | Size | M (relative weight 3) |
-| Wave | 5 |
+| Wave | 7 |
 | On the critical path | no |
 | Depends on | `s1-engine-core`, `s1-policy-evaluation`, `s1-sandbox-adapter`, `s1-security-test-harness` |
 
@@ -2201,7 +2367,7 @@ Done when:
 | Reviewers | security |
 | Size | L (relative weight 5) |
 | Wave | 3 |
-| On the critical path | yes |
+| On the critical path | no |
 | Depends on | `s0-ports-and-testkit` |
 
 Build the harness components of the negative-test catalog that other packages need: the fake GitHub server FX-GH, the canary generator and sweeper FX-CANARY, the sink collector FX-SINKS, the process spawn recorder FX-SPAWN, the Docker availability guard FX-DOCKER, the controllable DNS and HTTP servers FX-DNS, the fake registry FX-REG, and the clean and hostile fixture repositories. Every test built on them gets a control-off switch, and a test that still passes with its control off is rejected.
@@ -2227,17 +2393,17 @@ Done when:
 | Owner role | software_engineer |
 | Reviewers | security, software_architect |
 | Size | L (relative weight 5) |
-| Wave | 6 |
-| On the critical path | yes |
-| Depends on | `s1-engine-core`, `s1-sandbox-adapter`, `s1-workspace-ingestion`, `s1-policy-evaluation`, `s1-redaction` |
+| Wave | 7 |
+| On the critical path | no |
+| Depends on | `s1-engine-core`, `s1-sandbox-adapter`, `s1-workspace-ingestion`, `s1-policy-evaluation`, `s1-redaction`, `s1-ports-revision` |
 
-Run validation in a fresh verify container from the commit, using gate definitions read from the protected base commit, never from the builder's branch. Evaluate the scope, protected-path, test-protection, secret and evidence-binding rules on the host-side tree diff. Missing evidence is BLOCKED. The supervisor's observation of the exit code is the evidence, not a file the builder could write. The stage profile check belongs to the specification stage package, which owns the gate that runs after a specification attempt.
+Run validation in a fresh verify container from the commit, using gate definitions read from the protected base commit, never from the builder's branch. Evaluate the scope, protected-path, test-protection, secret and evidence-binding rules on the host-side tree diff. Missing evidence is BLOCKED. The supervisor's observation of the exit code is the evidence, not a file the builder could write. The stage profile check belongs to the specification stage package, which owns the gate that runs after a specification attempt. Uses the ports-v1.1 shape (ADR 0014): the gates run in a read-only verify workspace of the candidate commit that holds the held-out tests, and a missing tool or an unavailable sandbox blocks the stage run (S21) and never passes it.
 
 Owns: `crates/workflow/src/stages/validation/**`, `crates/workflow/src/gates/command/**`, `crates/workflow/src/gates/scope/**`, `crates/workflow/tests/validation/**`
 
 Inputs: ADR 0003; master prompt section 8; schemas/gate-report.schema.json; schemas/project-manifest.schema.json; docs/security/negative-test-catalog.md section 7
 
-Ports: defines none; implements `StageHandler`; uses `OutputValidator`, `SandboxProvider`, `SandboxSession`, `Workspace`.
+Ports: defines none; implements `StageHandler`; uses `OutputValidator`, `SandboxProvider`, `SandboxSession`, `Workspace`, `JobRepo`.
 
 Done when:
 
@@ -2259,17 +2425,17 @@ Done when:
 | Owner role | software_engineer |
 | Reviewers | security, software_architect |
 | Size | L (relative weight 5) |
-| Wave | 6 |
+| Wave | 8 |
 | On the critical path | yes |
-| Depends on | `s1-engine-core`, `s1-sandbox-adapter`, `s1-workspace-ingestion`, `s1-agent-runtime-adapters`, `s1-agent-definitions`, `s1-policy-evaluation`, `s1-prompt-assembly` |
+| Depends on | `s1-engine-core`, `s1-sandbox-adapter`, `s1-workspace-ingestion`, `s1-agent-runtime-adapters`, `s1-agent-definitions`, `s1-policy-evaluation`, `s1-prompt-assembly`, `s1-ports-revision` |
 
-Run the single builder over the task graph in order inside the agent sandbox, hand the workspace to ingestion and commit on the host, then run an independent review that never sees the builder's own account. Deterministic failures outrank a reviewer PASS.
+Run the single builder over the task graph in order inside the agent sandbox, hand the workspace to ingestion and commit on the host, then run an independent review that never sees the builder's own account. Deterministic failures outrank a reviewer PASS. Uses the ports-v1.1 shape (ADR 0014): the implementation commit is made before anything is read from it, the reviewer receives the exported patch, the agent's output is validated as review findings from bytes and wrapped into the stored verdict with the engine's own fields, and the gate checks that every finding of a verdict other than PASS cites a file and a line that exist in the patch.
 
 Owns: `crates/workflow/src/stages/implementation/**`, `crates/workflow/src/stages/review/**`, `crates/workflow/tests/implementation/**`
 
 Inputs: ADR 0005; master prompt sections 7 and 9; schemas/review-verdict.schema.json
 
-Ports: defines none; implements `StageHandler`; uses `AgentRuntime`, `SandboxProvider`, `SandboxSession`, `Workspace`.
+Ports: defines none; implements `StageHandler`; uses `AgentRuntime`, `SandboxProvider`, `SandboxSession`, `Workspace`, `JobRepo`.
 
 Done when:
 
@@ -2354,12 +2520,12 @@ Done when:
 | Id | `s1-xtask-extensions` |
 | Owner role | software_engineer |
 | Reviewers | software_architect, security |
-| Size | M (relative weight 3) |
-| Wave | 2 |
+| Size | L (relative weight 5) |
+| Wave | 6 |
 | On the critical path | no |
-| Depends on | `s0-workspace-skeleton`, `s0-telemetry-baseline` |
+| Depends on | `s0-workspace-skeleton`, `s0-telemetry-baseline`, `s1-ports-revision` |
 
-Add to the xtask architecture check: the repository-wide static check ST-07 that compares every span name, attribute key and metric field written in a tracing call with the tables of the observability conventions page (ADR 0013); the external crate and feature check for adapter crates, which today returns early so their allow lists are enforced by review only; and a structured source_scans section in docs/architecture/crate-dependency-rules.json that holds the lists the source scans use today as constants (shells, spawn permissions, dangerous container flags, ingestion paths, crate names), so that a reviewer changes them in one reviewed file. The structure of that section is proposed in the pull request and reviewed by the architect, who owns the file. The domain crate's uuid and time feature limits are already in the rules file; this package adds the failing fixtures for them.
+Add to the xtask architecture check: the repository-wide static check ST-07 that compares every span name, attribute key and metric field written in a tracing call with the tables of the observability conventions page (ADR 0013); the external crate and feature check for adapter crates, which today returns early so their allow lists are enforced by review only; and a structured source_scans section in docs/architecture/crate-dependency-rules.json that holds the lists the source scans use today as constants (shells, spawn permissions, dangerous container flags, ingestion paths, crate names), so that a reviewer changes them in one reviewed file. The structure of that section is proposed in the pull request and reviewed by the architect, who owns the file. The domain crate's uuid and time feature limits are already in the rules file; this package adds the failing fixtures for them. It also closes the bypasses the independent review found (ADR 0014, decision 11; docs/architecture/ports-v1.1.md section 12), each with a failing fixture first: the DEP-05 ban list gains the Path and PathBuf methods that touch the file system, std::env, Unix sockets, tokio::time, OffsetDateTime::now_utc and now_local, and the uuid generators; the resolved feature set of time, uuid and tokio is read from cargo metadata and compared with the allow list, so an adapter cannot enable time/std for the domain; an allow or expect of a DEP-05 lint in an inner crate fails; the spawn scan resolves use-as aliases and scans every file the module tree includes, deciding test code only from cfg(test); only one file may contain a process-spawning call; the constructors of TenantScope, SystemScope, PlatformScope, ResolvedPrincipal and IngestedChange are called only from the crates that may; the workflow crate does not mention MeteringOps; ChangeHost has no method starting with merge, ready or undraft; the clippy-ban tests ignore CARGO_TARGET_DIR (F-23); an invariant register check fails when an INV id has no named test (F-24); and a path or git dependency under an allowed crate name fails (F-31).
 
 Owns: `xtask/**`
 
@@ -2376,6 +2542,8 @@ Done when:
 | 5 | The source scans read their lists from the source_scans section of the rules file, a test fails if a list is still a constant in the xtask sources, and a named crate that does not exist fails the check. | test | `cargo nextest run -p xtask source_scans_come_from_the_rules_file` |
 | 6 | The architect reviews the structure of the source_scans section, and the rules file and its generated overview are in sync. | review | reviewer sign-off recorded in the pull request |
 | 7 | Lints and formatting are clean, and the rules checker still passes. | command | `cargo clippy -p xtask --all-targets -- -D warnings && python3 -I docs/architecture/tools/check_crate_rules.py --check` |
+| 8 | Each bypass the review found has a failing fixture and the check now fails on it: a Path::exists, read_dir, std::env::var or Unix socket call in the domain crate, time/std enabled from another crate, an allow attribute over a banned call, a use-as alias of Command, a module file named like a test file without cfg(test), and a path dependency under an allowed name. | test | `cargo nextest run -p xtask review_bypasses` |
+| 9 | The clippy-ban tests pass when CARGO_TARGET_DIR is set to a shared directory, and the invariant register check lists every INV id that has no test naming it. | test | `CARGO_TARGET_DIR=$(mktemp -d) cargo nextest run -p xtask clippy_bans invariant_register` |
 
 #### Move the local database to PostgreSQL 18 and test it, with the generated files, in CI
 
@@ -2433,6 +2601,72 @@ Done when:
 | 3 | The job stretch helper gives a span whose trace id is the job's derived trace id, so two processes that work on one job produce one trace. | test | `cargo nextest run -p factory-observability job_stretch_uses_the_derived_trace_id` |
 | 4 | The existing telemetry tests, the name tables and the conventions page still agree. | command | `cargo nextest run -p factory-observability` |
 | 5 | Section 12 of the conventions page no longer lists the redactor, the peer-crate names and the trace context as open, and says what was decided. | review | reviewer sign-off recorded in the pull request |
+
+#### Revise the ports, fakes, contract suites and engine to ports v1.1
+
+| Field | Value |
+|---|---|
+| Id | `s1-ports-revision` |
+| Owner role | software_engineer |
+| Reviewers | software_architect, security |
+| Size | XL (relative weight 8) |
+| Wave | 5 |
+| On the critical path | yes |
+| Depends on | `s0-ports-and-testkit`, `s0-contracts-and-registry`, `s1-domain-revision`, `s1-engine-core`, `s1-security-test-harness` |
+
+Make the code match docs/architecture/ports-v1.1.md and ADR 0014, in one pull request per port group so that every trait, its fake and its contract suite change together: the Store (two-step claim with the lease on the attempt, a read-only SystemTx, idempotent inserts, listings, due-work queries, the audit shape, the platform audit call, the commit witness), guard-bound transitions (GuardCleared), the workspace split into a job-owned object store (JobRepo) and an attempt-owned worktree, PathRules with the policy's five modes, the typed sandbox spec with a full posture report, agent output as bytes with a report that survives failure, router exclusion and probed capabilities, the metering seam, ProcessRunner, WebhookVerifier, check runs instead of commit statuses, and tenant-scoped artifact reads. Add the domain items the ports need, the state machine rows S21 and S22 and the three schema rules that docs/architecture/state-machine.json and schemas/ already carry, adapt the workflow engine to the new store with no event payload used as a read model, and write the missing contract suites. Every check of every suite must be shown to fail against a seeded defect, and the register test fails when one is not.
+
+Owns: `crates/ports/**`, `crates/testkit/src/*.rs`, `crates/testkit/src/contracts/**`, `crates/testkit/src/fx/spawn.rs`, `crates/testkit/src/fx/spawn/**`, `crates/testkit/tests/**`, `crates/domain/src/ids.rs`, `crates/domain/src/scope.rs`, `crates/domain/src/vocabulary/**`, `crates/domain/src/values/timestamp.rs`, `crates/domain/src/machines/**`, `crates/domain/src/state/**`, `crates/domain/src/contracts/review_verdict.rs`, `crates/domain/src/contracts/stage_contract.rs`, `crates/domain/src/contracts/evidence_ledger_entry.rs`, `crates/domain/tests/contract_examples.rs`, `crates/domain/tests/contract_rules.rs`, `crates/domain/tests/state_machine_conformance.rs`, `crates/domain/tests/state_machine_properties.rs`, `crates/contracts/src/registry.rs`, `crates/contracts/src/validator.rs`, `crates/contracts/tests/registry.rs`, `crates/contracts/tests/validator_limits.rs`, `crates/workflow/src/engine/**`, `crates/workflow/src/commands/**`, `crates/workflow/src/scheduler/**`, `crates/workflow/src/audit/**`, `crates/workflow/src/handlers/**`, `crates/workflow/src/gates/mod.rs`, `crates/workflow/src/gates/framework/**`, `crates/workflow/tests/engine_scenarios.rs`, `crates/workflow/tests/invariants.rs`, `crates/workflow/tests/audit.rs`, `crates/workflow/tests/support/**`, `crates/domain/src/patterns.rs`, `crates/domain/tests/support/**`, `crates/domain/tests/tools/**`
+
+Inputs: docs/architecture/ports-v1.1.md (the signatures, the finding table, the JSON change to Rust table); ADR 0014; docs/reviews/architecture-foundation-review.md; docs/database/for-the-storage-crate.md (the claim recipe); docs/architecture/state-machine.json; schemas/ (review-verdict, stage-contract, evidence-ledger-entry)
+
+Ports: defines `JobRepo`, `ProcessRunner`, `SystemTx`, `WebhookVerifier`; implements none; uses none.
+
+Done when:
+
+| # | Check | How | Command or evidence |
+|---|---|---|---|
+| 1 | Every trait of the ports crate has the headings Preconditions, Postconditions, Errors, Idempotency and Cancellation and timeouts, and no secret type shows its value in Debug output. | test | `cargo nextest run -p factory-ports` |
+| 2 | The store contract suite, with every new check of ports-v1.1 section 9, passes on the in-memory store, and each seeded defect makes the check named for it fail. The fake refuses to start work for a job that is not ACTIVE, allows one live attempt, honours not_before and the attempt limit, and lets two transactions find the same candidate. | test | `cargo nextest run -p factory-testkit --test store_contract` |
+| 3 | The workspace and sandbox suites pass on their fakes with the new checks: a second workspace starts at a commit the first made, push works after a simulated restart, a case variant of a protected path is refused, a verify workspace is read-only, the posture compare finds a drift in each part, and the token file is absent after teardown. | test | `cargo nextest run -p factory-testkit --test workspace_contract --test sandbox_contract` |
+| 4 | The agent, router, broker, registry and specification suites pass on their fakes with the new checks: a failed run reports usage and transcript, excluding an answer yields another runtime or an error, metering to the ceiling revokes the token, validate_bytes refuses a repeated key and an oversize body, and assemble reads real file bytes. | test | `cargo nextest run -p factory-testkit --test agent_contract --test router_registry_contract --test broker_contract --test spec_provider` |
+| 5 | The change host suite passes on its fake: a pull request needs a pushed head, a closed one is not reused, a check run is updated and not duplicated, and a comment is found by its marker before posting. | test | `cargo nextest run -p factory-testkit --test githost_contract` |
+| 6 | Every check of every contract suite is named in at least one defect table or carries a waiver with a reason and a trigger, and deleting each rule of each fake in turn makes its suite fail. The review's two survivors, the duplicate task key and the audit limit, are the first entries. | test | `cargo nextest run -p factory-testkit --test contract_register` |
+| 7 | The domain conformance, property and example tests pass with S21, S22, the restated guards, the clearance token and the three schema rules. AppliedTransition::plan refuses a clearance for another guard, and a missing environment blocks before anything else. | test | `cargo nextest run -p factory-domain` |
+| 8 | The real validator refuses a repeated key, an oversize body, deep nesting and an excessive node count from bytes before a value exists, and the policy router honours exclusions and probe results. | test | `cargo nextest run -p factory-contracts` |
+| 9 | The engine scenarios run on the revised store with no event payload used as a read model. They include a crash between the candidate search and the start, a crash after the start, two workers that find one candidate, an unknown commit outcome settled by the witness, a missing environment that blocks, a changed request that needs reauthorization, and a retry that does not wait for a lease. | test | `cargo nextest run -p factory-workflow --test engine_scenarios` |
+| 10 | Each invariant INV-01 to INV-11 has a test that names it, including INV-01 and INV-11 which the review found unnamed. | test | `cargo nextest run -p factory-workflow --test invariants` |
+| 11 | The schemas validate and every new invalid example is rejected by the Rust type for the reason stated in the examples table. | command | `schemas/validate.sh && cargo nextest run -p factory-domain --test contract_examples` |
+| 12 | Lints and the architecture check pass on the whole workspace. | command | `cargo clippy --workspace --all-targets -- -D warnings && cargo xtask check-architecture` |
+| 13 | The architect reviews the diff against ports-v1.1 and signs off, any deviation is listed with its reason in the pull request, and a release candidate tag is made only if the same contract suites are in it. | review | reviewer sign-off recorded in the pull request |
+
+#### Add the migration that the revised ports need and align the claim notes
+
+| Field | Value |
+|---|---|
+| Id | `s1-database-port-alignment` |
+| Owner role | dba |
+| Reviewers | software_architect |
+| Size | M (relative weight 3) |
+| Wave | 3 |
+| On the critical path | no |
+| Depends on | `s1-database-tenancy-and-state-sync` |
+
+Regenerate the state machine reference rows from docs/architecture/state-machine.json (the transitions S21 and S22, their events and guards), add stage_runs.failing_set_sha256 and the two nullable attestation columns on repositories, grant the tenant role what the new columns need, add the due-attempt queries and the start-attempt statement sequence to the lease suite, and bring docs/database/for-the-storage-crate.md in line with ADR 0014: one claim recipe, a sweep that covers lease, deadline and teardown, and the recipe for the blocked stage run. The migration is an expand step: nothing is removed, so version N and N+1 of the code can run on one schema.
+
+Owns: `migrations/**`, `docs/database/**`, `scripts/db-test.sh`, `crates/storage/src/schema.rs`
+
+Inputs: ADR 0014; docs/architecture/ports-v1.1.md section 8; docs/architecture/state-machine.json; docs/database/tools/state_machine_sql.py
+
+Done when:
+
+| # | Check | How | Command or evidence |
+|---|---|---|---|
+| 1 | The status and outbox suites pass against the regenerated state machine rows: S21 and S22 exist with their events, the outbox foreign key accepts stage_run.blocked for S21, and an unknown status is still refused. | command | `scripts/db-test.sh statuses outbox` |
+| 2 | The lease suite runs the candidate search and the start-attempt statement sequence as the system and application roles, finds an attempt past its deadline and one past its teardown deadline, and still ends with exactly one winner in 12 rounds of four workers. | command | `scripts/db-test.sh lease rls` |
+| 3 | The new columns accept and refuse the values the ports document, the tenant role can write them, and the system role cannot. | command | `scripts/db-test.sh privileges tenancy` |
+| 4 | Migrations run up, redo and up on an empty database, a data-preserving upgrade keeps existing rows, and the committed schema.rs equals the output of diesel print-schema. | command | `scripts/db-test.sh migrations` |
+| 5 | The storage notes describe one claim recipe that agrees with the port, name the due-attempt queries, and say FOR NO KEY UPDATE everywhere. | review | reviewer sign-off recorded in the pull request |
 <!-- GENERATED:end wp-details-1 -->
 
 ## 10. Slice 1 acceptance

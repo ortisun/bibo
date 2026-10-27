@@ -2,25 +2,26 @@
 //! the store, the sandbox, the agent runtime, the change host, the clock and others. Ring 1: it
 //! depends on `factory-domain` only and makes no I/O call (rule DEP-05).
 //!
-//! This is **version 1** of the ports. Every adapter is built against it, and every adapter must
-//! pass the same shared contract suite as its in-memory fake (`factory-testkit`, module
-//! `contracts`). A port changes only by a reviewed pull request that updates the trait, the fake
-//! and the contract suite together.
+//! This is **version 1.1** of the ports (ADR 0014, `docs/architecture/ports-v1.1.md`). Every
+//! adapter is built against it, and every adapter must pass the same shared contract suite as its
+//! in-memory fake (`factory-testkit`, module `contracts`). A port changes only by a reviewed pull
+//! request that updates the trait, the fake and the contract suite together.
 //!
 //! # Map
 //!
 //! | Module | Ports |
 //! |---|---|
 //! | [`clock`] | `Clock`, `IdGenerator`, `CancelSignal` |
-//! | [`store`] | `Store`, `Tx` and its parts: `JobOps`, `StageRunOps`, `AttemptOps`, `TaskNodeOps`, `LedgerOps`, `OutboxOps`, `AuditOps`, `ArtifactIndexOps`, `PrincipalOps` |
+//! | [`store`] | `Store`, the read-only `SystemTx`, `Tx` and its parts: `JobOps`, `RequestOps`, `DeliveryOps`, `RepositoryOps`, `StageRunOps`, `AttemptOps`, `TaskNodeOps`, `StageArtifactOps`, `ApprovalOps`, `LedgerOps`, `OutboxOps`, `AuditOps`, `ArtifactIndexOps`, `PrincipalOps` |
 //! | [`artifact`] | `ArtifactStore` |
-//! | [`sandbox`] | `SandboxProvider`, `SandboxSession`, and the pure `SandboxSpec::validate` |
-//! | [`workspace`] | `WorkspaceProvider`, `Workspace` |
-//! | [`agent`] | `AgentRuntime`, `ModelRouter`, `ModelBroker` |
+//! | [`sandbox`] | `SandboxProvider`, `SandboxSession`, and the pure `SandboxSpec::validate` and `PostureReport::differences` |
+//! | [`workspace`] | `WorkspaceProvider`, `JobRepo`, `Workspace` |
+//! | [`agent`] | `AgentRuntime`, `ModelRouter`, `ModelBroker`, and the metering seam `MeteringOps` |
 //! | [`registry`] | `AgentRegistry`, `OutputValidator` |
 //! | [`spec`] | `SpecificationProvider` |
-//! | [`githost`] | `IssueSource`, `ChangeHost` |
-//! | [`paths`] | Checked names shared by the ports: `RepoPath`, `RepoGlob`, `BranchName`, `RepoRef` |
+//! | [`githost`] | `IssueSource`, `ChangeHost`, `WebhookVerifier` |
+//! | [`process`] | `ProcessRunner` |
+//! | [`paths`] | Checked names shared by the ports: `RepoPath`, `RepoGlob`, `BranchName`, `RepoRef`, and the policy's `PathRules` |
 //!
 //! # Async strategy
 //!
@@ -49,9 +50,12 @@
 //!   through `fidelity()`. A fake reports `fake`, and a production run refuses it: see
 //!   [`require_permitted`].
 //! * **A documented contract.** Each public trait states its preconditions, postconditions,
-//!   closed error set and idempotency in its documentation. A test (`trait_docs_state_the_contract`)
-//!   fails if one is missing.
-//! * **No merge.** `ChangeHost` has no method whose name starts with `merge`.
+//!   closed error set, idempotency, and cancellation and timeouts in its documentation. A test
+//!   (`trait_docs_state_the_contract`) fails if one is missing.
+//! * **No merge, no ready.** `ChangeHost` has no method whose name starts with `merge`, `ready` or
+//!   `undraft`.
+//! * **No secret in `Debug`.** `FetchCredential`, `PushCredential`, `JobTokenSecret`, `RawOutput`,
+//!   `TokenHash` and `EnvValue::Secret` show a placeholder.
 //! * **Identifiers and time come in.** Nothing here reads the clock or makes an identifier. The
 //!   `Clock` and `IdGenerator` ports do.
 
@@ -60,6 +64,7 @@ pub mod artifact;
 pub mod clock;
 pub mod githost;
 pub mod paths;
+pub mod process;
 pub mod registry;
 pub mod sandbox;
 pub mod spec;

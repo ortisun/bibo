@@ -79,6 +79,7 @@
           "title": { "$ref": "#/$defs/humanTitle" },
           "description": { "$ref": "#/$defs/humanText" },
           "location": {
+            "description": "The file and line the finding is about. Required, with line_start, for every finding of a verdict other than PASS (FR-023, SC-008). The gate checks that the line is in the exported diff.",
             "type": "object",
             "additionalProperties": false,
             "required": ["path"],
@@ -116,6 +117,10 @@
     {
       "if": { "properties": { "verdict": { "const": "BLOCK" } }, "required": ["verdict"] },
       "then": { "properties": { "findings": { "contains": { "properties": { "severity": { "const": "blocker" } }, "required": ["severity"] } } } }
+    },
+    {
+      "if": { "properties": { "verdict": { "enum": ["CHANGES_REQUIRED", "BLOCK", "NEEDS_HUMAN"] } }, "required": ["verdict"] },
+      "then": { "properties": { "findings": { "items": { "required": ["location"], "properties": { "location": { "required": ["path", "line_start"] } } } } } }
     },
     {
       "if": { "properties": { "verdict": { "const": "NEEDS_HUMAN" } }, "required": ["verdict"] },

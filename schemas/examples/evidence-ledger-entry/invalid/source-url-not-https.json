@@ -1,0 +1,53 @@
+{
+  "schema_version": 1,
+  "metadata": {
+    "entry_id": "018f3a95-0001-7a01-8b01-1c01d01e01f1",
+    "job_id": "018f3a7e-5c1b-7d2e-9a4f-3b6c8d1e2f40",
+    "stage_run_id": "018f3a7e-9b22-7c10-8e5d-4a7b9c0d1e21",
+    "attempt_id": "018f3a7f-0a11-7f33-b2c4-5d6e7f809a12",
+    "sequence": 1,
+    "recorded_at": "2026-10-27T09:16:35Z",
+    "execution_mode": "production",
+    "recorded_by": {
+      "component": "workflow.gate-evaluator",
+      "fidelity": "real"
+    }
+  },
+  "claim": {
+    "statement": "The project builds and its 42 unit tests pass in a fresh sandbox created from the job commit.",
+    "kind": "measured_fact",
+    "assurance_level": "VERIFIED_IN_SANDBOX"
+  },
+  "evidence": [
+    {
+      "type": "test",
+      "gate_report_id": "018f3a80-1c22-7a44-9b55-6c7d8e9fa0b3",
+      "gate_report_sha256": "sha256:f46413546b49a12b2eb6ec29a33c7e41fb245bbc9b6cfd8d06b3394e3e434c78",
+      "result": "passed"
+    },
+    {
+      "type": "trace",
+      "trace_id": "4bf92f3577b34da6a3ce929d0e0e4736",
+      "span_id": "00f067aa0ba902b7"
+    },
+    {
+      "type": "code_location",
+      "path": "src/output.rs",
+      "line_start": 1,
+      "line_end": 64,
+      "commit_sha": "1a954628a960aaef81d7b2d4521929579f3541e6"
+    },
+    {
+      "type": "source",
+      "citation": "The page that describes how a required status check is pinned to an App, read on the date below.",
+      "url": "javascript:alert(1)",
+      "retrieved_at": "2026-10-27T09:16:00Z"
+    }
+  ],
+  "confidence": {
+    "level": "high",
+    "rationale": "The gate ran the project's own commands from a trusted definition in a sandbox built from the job commit, and both commands exited with code 0."
+  },
+  "prev_entry_hash": null,
+  "entry_hash": "sha256:5e2d5d1e58e94d7607e0745cd3e612c4a358fc93f37fc5ab1fed8d04bbf7ce77"
+}

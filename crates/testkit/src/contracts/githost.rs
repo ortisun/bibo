@@ -13,13 +13,16 @@ use factory_domain::values::Timestamp;
 use factory_domain::vocabulary::StageKind;
 use factory_ports::clock::Uuid;
 use factory_ports::githost::{
-    ActorLogin, ChangeHost, CommentTarget, DraftPrRequest, GitHostError, GitScope, Issue, IssueRef,
-    IssueSource, ProtectionReport, PullRequestLifecycle, PullRequestRef, StatusRequest,
-    StatusState,
+    ActorLogin, AppId, ChangeHost, CheckConclusion, CheckRef, CheckRequest, CheckStatus, Comment,
+    CommentRef, CommentTarget, DraftPrRequest, GitHostError, GitScope, GithubActor, Issue,
+    IssueRef, IssueSource, ProtectionReport, ProtectionSource, PullRequestLifecycle,
+    PullRequestRef, Rejection, RequiredCheck,
 };
-use factory_ports::paths::{BranchName, RepoRef};
+use factory_ports::paths::{BranchName, CommitSha, RepoRef};
 
-use super::{Check, Context, Report, check_list, ensure, ensure_eq, ensure_err, run_checks};
+use super::{
+    Check, Context, Report, Waiver, check_list, ensure, ensure_eq, ensure_err, run_checks,
+};
 
 /// A GitHub installation token in the format of FX-CANARY: `ghs_` and 36 letters and digits.
 pub const TOKEN_CANARY: &str = "ghs_a1B2c3D4e5a1B2c3D4e5a1B2c3D4e5a1B2c3";
@@ -84,6 +87,22 @@ pub trait ChangeHostSubject: Send + Sync {
 
     /// A person merges the pull request on the code host, outside the factory.
     async fn person_merges(&self, pr: &PullRequestRef);
+
+    /// A person closes the pull request without merging it.
+    async fn person_closes(&self, pr: &PullRequestRef);
+
+    /// The id of the App the host makes check runs as.
+    fn app_id(&self) -> AppId;
+
+    /// How many check runs the host holds for the commit and name.
+    async fn check_run_count(&self, commit: &CommitSha, name: &str) -> usize;
+
+    /// The App a check run was made as, as the code host records it.
+    async fn check_run_app(&self, check: &CheckRef) -> Option<AppId>;
+
+    /// The commit a branch of the remote points at. The branches `factory/job-1`,
+    /// `factory/job-2`, `factory/job-3` and `main` exist before a check starts.
+    async fn branch_tip(&self, repo: &RepoRef, branch: &BranchName) -> Option<CommitSha>;
 }
 
 /// A check of the change host contract.
@@ -113,13 +132,21 @@ pub fn change_host_checks() -> Vec<ChangeHostCheck> {
         the_body_is_updated_only_if_its_tag_is_current,
         a_comment_is_posted_once_per_key,
         text_with_a_secret_is_not_posted,
-        a_status_can_be_set_again,
+        a_check_run_is_updated_not_duplicated,
+        a_check_run_carries_the_apps_identity,
         after_a_job_ends_its_calls_are_refused,
         another_tenant_cannot_reach_a_pull_request,
         a_scope_for_another_repository_cannot_reach_a_pull_request,
         a_pull_request_merged_by_a_person_reads_as_merged,
+        a_pull_request_needs_a_pushed_head,
+        a_closed_pull_request_is_not_reused,
+        base_is_honoured,
+        a_comment_is_found_by_its_marker_before_posting,
     ]
 }
+
+/// No waivers: every check has a defect.
+pub const WAIVERS: &[Waiver] = &[];
 
 async fn push_targets_are_for_factory_branches_only(
     subject: &dyn ChangeHostSubject,
@@ -338,22 +365,174 @@ async fn text_with_a_secret_is_not_posted(subject: &dyn ChangeHostSubject) -> Re
     Ok(())
 }
 
-async fn a_status_can_be_set_again(subject: &dyn ChangeHostSubject) -> Result<(), String> {
+async fn check(
+    subject: &dyn ChangeHostSubject,
+    external: &str,
+    status: CheckStatus,
+) -> Result<CheckRef, String> {
+    let commit = subject
+        .branch_tip(&repo(), &branch("factory/job-1")?)
+        .await
+        .ok_or("the branch factory/job-1 should exist on the remote")?;
+    subject
+        .host()
+        .publish_check(
+            &scope(1, 1),
+            CheckRequest {
+                commit,
+                name: factory_domain::values::Slug::parse("factory-validation").ctx("name")?,
+                external_id: factory_domain::values::Slug::parse(external).ctx("external id")?,
+                status,
+                title: "Validation".to_owned(),
+                summary: "Every gate ran.".to_owned(),
+                details_url: None,
+            },
+        )
+        .await
+        .ctx("publish a check")
+}
+
+async fn a_check_run_is_updated_not_duplicated(
+    subject: &dyn ChangeHostSubject,
+) -> Result<(), String> {
+    let running = check(subject, "run-1", CheckStatus::InProgress).await?;
+    let done = check(
+        subject,
+        "run-1",
+        CheckStatus::Completed(CheckConclusion::Success),
+    )
+    .await?;
+    ensure_eq!(
+        done,
+        running,
+        "publishing the same (commit, name, external id) again"
+    );
+    let commit = subject
+        .branch_tip(&repo(), &branch("factory/job-1")?)
+        .await
+        .ok_or("the branch should exist")?;
+    ensure_eq!(
+        subject.check_run_count(&commit, "factory-validation").await,
+        1,
+        "check runs for the name"
+    );
+    // Another run of the same stage is a second check run.
+    let second = check(subject, "run-2", CheckStatus::InProgress).await?;
+    ensure!(
+        second != running,
+        "a different external id makes a different check run"
+    );
+    Ok(())
+}
+
+async fn a_check_run_carries_the_apps_identity(
+    subject: &dyn ChangeHostSubject,
+) -> Result<(), String> {
+    let made = check(subject, "run-1", CheckStatus::InProgress).await?;
+    ensure_eq!(
+        subject.check_run_app(&made).await,
+        Some(subject.app_id()),
+        "the App a check run was made as (only an App can make one)"
+    );
+    Ok(())
+}
+
+async fn a_pull_request_needs_a_pushed_head(subject: &dyn ChangeHostSubject) -> Result<(), String> {
+    ensure_err!(
+        subject
+            .host()
+            .open_draft_pull_request(&scope(1, 1), draft("factory/never-pushed")?)
+            .await,
+        GitHostError::Rejected(Rejection::HeadNotPushed),
+        "a pull request from a branch that is not on the remote"
+    );
+    Ok(())
+}
+
+async fn a_closed_pull_request_is_not_reused(
+    subject: &dyn ChangeHostSubject,
+) -> Result<(), String> {
     let host = subject.host();
     let scope = scope(1, 1);
-    let request = StatusRequest {
-        commit: factory_ports::paths::CommitSha::parse(&"ab".repeat(20)).ctx("sha")?,
-        context: factory_domain::values::Slug::parse("factory-validation").ctx("slug")?,
-        state: StatusState::Success,
-        description: "Every gate passed.".to_owned(),
-        target_url: None,
-    };
-    host.set_status(&scope, request.clone())
+    let first = host
+        .open_draft_pull_request(&scope, draft("factory/job-1")?)
         .await
-        .ctx("first status")?;
-    host.set_status(&scope, request)
+        .ctx("open")?;
+    subject.person_closes(&first).await;
+    let second = host
+        .open_draft_pull_request(&scope, draft("factory/job-1")?)
         .await
-        .ctx("the same status again")?;
+        .ctx("open again")?;
+    ensure!(
+        second != first,
+        "a closed pull request must not be returned for a new open call"
+    );
+    let state = host
+        .pull_request_state(&scope, &second)
+        .await
+        .ctx("state")?;
+    ensure_eq!(
+        state.lifecycle,
+        PullRequestLifecycle::Open,
+        "the new pull request is open"
+    );
+    Ok(())
+}
+
+async fn base_is_honoured(subject: &dyn ChangeHostSubject) -> Result<(), String> {
+    let host = subject.host();
+    let scope = scope(1, 1);
+    let mut request = draft("factory/job-1")?;
+    request.base = branch("factory/job-2")?;
+    let pr = host
+        .open_draft_pull_request(&scope, request)
+        .await
+        .ctx("open")?;
+    let state = host.pull_request_state(&scope, &pr).await.ctx("state")?;
+    ensure_eq!(
+        state.base,
+        branch("factory/job-2")?,
+        "the base branch of the request"
+    );
+    let head = subject.branch_tip(&repo(), &branch("factory/job-1")?).await;
+    ensure_eq!(
+        Some(state.head_sha),
+        head,
+        "the head commit the host reports"
+    );
+    Ok(())
+}
+
+async fn a_comment_is_found_by_its_marker_before_posting(
+    subject: &dyn ChangeHostSubject,
+) -> Result<(), String> {
+    let host = subject.host();
+    let scope = scope(1, 1);
+    let pr = host
+        .open_draft_pull_request(&scope, draft("factory/job-1")?)
+        .await
+        .ctx("open")?;
+    let target = CommentTarget::PullRequest(pr);
+    let first = host
+        .post_comment(&scope, &target, "Evidence attached.", "evidence-1")
+        .await
+        .ctx("post")?;
+    // The first answer was lost; the retry carries the same key and finds the comment.
+    let retry = host
+        .post_comment(&scope, &target, "Evidence attached.", "evidence-1")
+        .await
+        .ctx("retry")?;
+    ensure_eq!(retry, first, "the same key finds the same comment");
+    let other = host
+        .post_comment(&scope, &target, "Second note.", "evidence-2")
+        .await
+        .ctx("another key")?;
+    ensure!(other != first, "a different key is a different comment");
+    ensure_eq!(
+        subject.comment_count(&target).await,
+        2,
+        "two keys, two comments"
+    );
     Ok(())
 }
 
@@ -502,7 +681,13 @@ pub trait IssueSourceSubject: Send + Sync {
     async fn edit_issue_title(&self, issue: &IssueRef, title: &str);
 
     /// Records that `actor` applied `label` to the issue.
-    async fn seed_label(&self, issue: &IssueRef, label: &str, actor: &ActorLogin);
+    async fn seed_label(&self, issue: &IssueRef, label: &str, actor: &GithubActor);
+
+    /// Puts a comment on the code host.
+    async fn seed_comment(&self, comment: Comment);
+
+    /// The permissions the source asked the code host for so far.
+    async fn permissions_asked(&self) -> Vec<String>;
 
     /// Sets what the repository's protection looks like.
     async fn seed_protection(&self, repo: &RepoRef, report: ProtectionReport);
@@ -533,7 +718,19 @@ pub fn issue_source_checks() -> Vec<IssueSourceCheck> {
         the_label_actor_is_the_person_who_applied_it,
         protection_is_reported_as_the_repository_has_it,
         a_scope_for_another_repository_cannot_read_an_issue,
+        fetch_comment_returns_the_numeric_author_id,
+        repository_protection_never_asks_for_administration,
     ]
+}
+
+/// No waivers: every check has a defect.
+pub const ISSUE_SOURCE_WAIVERS: &[Waiver] = &[];
+
+fn actor(id: u64, login: &str) -> Result<GithubActor, String> {
+    Ok(GithubActor {
+        id,
+        login: ActorLogin::new(login).ctx("login")?,
+    })
 }
 
 fn issue_ref(number: u64) -> IssueRef {
@@ -548,8 +745,9 @@ fn issue(number: u64, title: &str) -> Result<Issue, String> {
         reference: issue_ref(number),
         title: title.to_owned(),
         body: "Please add a word count command.".to_owned(),
-        author: ActorLogin::new("octocat").ctx("login")?,
+        author: actor(1, "octocat")?,
         labels: vec!["factory".to_owned()],
+        updated_at: Timestamp::parse("2026-10-27T08:00:00Z").ctx("timestamp")?,
         fetched_at: Timestamp::parse("2026-10-27T08:30:00Z").ctx("timestamp")?,
     })
 }
@@ -605,7 +803,7 @@ async fn the_label_actor_is_the_person_who_applied_it(
     subject: &dyn IssueSourceSubject,
 ) -> Result<(), String> {
     subject.seed_issue(issue(12, "Add word count")?).await;
-    let actor = ActorLogin::new("maintainer").ctx("login")?;
+    let actor = actor(77, "maintainer")?;
     subject
         .seed_label(&issue_ref(12), "factory:run", &actor)
         .await;
@@ -631,37 +829,46 @@ async fn the_label_actor_is_the_person_who_applied_it(
     Ok(())
 }
 
+fn report(strong: bool) -> Result<ProtectionReport, String> {
+    Ok(ProtectionReport {
+        default_branch: branch("main")?,
+        source: if strong {
+            ProtectionSource::Rulesets
+        } else {
+            ProtectionSource::NoRulesetRules
+        },
+        requires_pull_request: strong,
+        requires_code_owner_review: strong,
+        dismisses_stale_approvals: strong,
+        blocks_force_push: strong,
+        blocks_deletion: strong,
+        required_checks: if strong {
+            vec![RequiredCheck {
+                context: "factory-validation".to_owned(),
+                integration_id: Some(4242),
+            }]
+        } else {
+            Vec::new()
+        },
+    })
+}
+
 async fn protection_is_reported_as_the_repository_has_it(
     subject: &dyn IssueSourceSubject,
 ) -> Result<(), String> {
     let scope = scope(1, 1);
-    let strong = ProtectionReport {
-        default_branch_protected: true,
-        required_checks_pinned_to_app: true,
-        app_can_bypass: false,
-    };
-    subject.seed_protection(&repo(), strong.clone()).await;
+    subject.seed_protection(&repo(), report(true)?).await;
     let found = subject
         .source()
         .repository_protection(&scope)
         .await
         .ctx("strong")?;
     ensure_eq!(
-        found.clone(),
-        strong,
+        found,
+        report(true)?,
         "the protection of a well protected repository"
     );
-    ensure!(
-        found.allows_pull_requests(),
-        "a well protected repository allows pull requests"
-    );
-
-    let weak = ProtectionReport {
-        default_branch_protected: true,
-        required_checks_pinned_to_app: false,
-        app_can_bypass: true,
-    };
-    subject.seed_protection(&repo(), weak.clone()).await;
+    subject.seed_protection(&repo(), report(false)?).await;
     let found = subject
         .source()
         .repository_protection(&scope)
@@ -669,12 +876,79 @@ async fn protection_is_reported_as_the_repository_has_it(
         .ctx("weak")?;
     ensure_eq!(
         found.clone(),
-        weak,
-        "the protection of a weakly protected repository"
+        report(false)?,
+        "the protection of a repository with no ruleset rules"
+    );
+    ensure_eq!(
+        found.source,
+        ProtectionSource::NoRulesetRules,
+        "where the rules came from"
     );
     ensure!(
-        !found.allows_pull_requests(),
-        "a weakly protected repository must not allow pull requests"
+        !found.requires_pull_request,
+        "a repository with no rules does not require a pull request"
+    );
+    Ok(())
+}
+
+async fn fetch_comment_returns_the_numeric_author_id(
+    subject: &dyn IssueSourceSubject,
+) -> Result<(), String> {
+    let reference = CommentRef {
+        target: CommentTarget::Issue(issue_ref(12)),
+        id: 501,
+    };
+    subject
+        .seed_comment(Comment {
+            reference: reference.clone(),
+            author: actor(4242, "maintainer")?,
+            body: "factory approve".to_owned(),
+            created_at: Timestamp::parse("2026-10-27T08:30:00Z").ctx("timestamp")?,
+            edited_at: None,
+        })
+        .await;
+    let found = subject
+        .source()
+        .fetch_comment(&scope(1, 1), &reference)
+        .await
+        .ctx("fetch the comment")?;
+    ensure_eq!(found.author.id, 4242, "the numeric id of the author");
+    ensure_err!(
+        subject
+            .source()
+            .fetch_comment(
+                &scope(1, 1),
+                &CommentRef {
+                    target: CommentTarget::Issue(issue_ref(12)),
+                    id: 999
+                }
+            )
+            .await,
+        GitHostError::NotFound,
+        "a comment that does not exist"
+    );
+    Ok(())
+}
+
+async fn repository_protection_never_asks_for_administration(
+    subject: &dyn IssueSourceSubject,
+) -> Result<(), String> {
+    subject.seed_protection(&repo(), report(true)?).await;
+    subject
+        .source()
+        .repository_protection(&scope(1, 1))
+        .await
+        .ctx("read the protection")?;
+    let asked = subject.permissions_asked().await;
+    ensure!(
+        !asked.is_empty(),
+        "the source should say which permissions it used"
+    );
+    ensure!(
+        !asked
+            .iter()
+            .any(|permission| permission.to_lowercase().contains("administration")),
+        "the App must never hold the Administration permission, but {asked:?} were asked for"
     );
     Ok(())
 }

@@ -10,13 +10,14 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use factory_domain::ids::AttemptId;
-use factory_ports::artifact::ArtifactStore;
 use factory_ports::sandbox::{
-    ExecRequest, SandboxError, SandboxId, SandboxProfile, SandboxProvider, SandboxRule,
-    SandboxSession, SandboxSpec, TeardownReason,
+    CacheMount, CacheName, ExecRequest, SandboxError, SandboxId, SandboxProfile, SandboxProvider,
+    SandboxRule, SandboxSession, SandboxSpec, TeardownReason,
 };
 
-use super::{Check, Context, Report, check_list, ensure, ensure_eq, ensure_err, run_checks, skip};
+use super::{
+    Check, Context, Report, Waiver, check_list, ensure, ensure_eq, ensure_err, run_checks, skip,
+};
 use crate::clock::FakeCancel;
 use crate::fixtures::argv;
 
@@ -26,8 +27,12 @@ pub trait SandboxSubject: Send + Sync {
     /// The provider under test. It starts with no sandboxes and is used by one check only.
     fn provider(&self) -> &dyn SandboxProvider;
 
-    /// The store that holds command output. Checks read stdout and stderr from it.
-    fn artifacts(&self) -> &dyn ArtifactStore;
+    /// Reads stored command output. A fake indexes the artifact for a test tenant first, as the
+    /// engine does; a real adapter reads through its store.
+    async fn read_output(
+        &self,
+        reference: &factory_domain::contracts::ArtifactRef,
+    ) -> Result<Vec<u8>, String>;
 
     /// A spec the provider's policy accepts, for the profile and attempt.
     fn spec(&self, profile: SandboxProfile, attempt: AttemptId) -> SandboxSpec;
@@ -38,7 +43,36 @@ pub trait SandboxSubject: Send + Sync {
     /// Makes the next container the provider builds differ from its spec, as if the daemon had
     /// ignored a setting. Returns `false` when the subject cannot do that, and the check is then
     /// reported as skipped.
-    async fn inject_posture_drift(&self) -> bool;
+    async fn inject_posture_drift(&self, part: DriftPart) -> bool;
+
+    /// True when a job token file for any sandbox of this provider exists on the host. `None`
+    /// when the subject cannot look.
+    async fn token_file_present(&self) -> Option<bool>;
+
+    /// Sets whether the provider's policy accepts a daemon without AppArmor. Returns `false`
+    /// when the subject cannot change its policy.
+    async fn allow_apparmor_unavailable(&self, allowed: bool) -> bool;
+}
+
+/// A part of the posture that a daemon can be made to get wrong, for the drift checks.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DriftPart {
+    /// A security setting.
+    Hardening,
+    /// The image.
+    Image,
+    /// A resource limit.
+    Limits,
+    /// The network.
+    Network,
+    /// A mount nobody asked for.
+    ExtraMount,
+    /// A read-only mount that is writable.
+    WritableMount,
+    /// The environment.
+    Env,
+    /// AppArmor reported as not available.
+    AppArmorNotAvailable,
 }
 
 /// A check of the sandbox contract.
@@ -76,8 +110,27 @@ pub fn checks() -> Vec<SandboxCheck> {
         a_sandbox_past_its_wall_clock_refuses_commands,
         teardown_removes_the_sandbox,
         sweeping_removes_only_sandboxes_whose_attempt_is_not_live,
+        a_different_image_is_a_mismatch,
+        a_drifted_limit_is_a_mismatch,
+        a_drifted_network_is_a_mismatch,
+        an_extra_mount_is_a_mismatch,
+        a_writable_mount_that_should_be_read_only_is_a_mismatch,
+        a_drifted_environment_is_a_mismatch,
+        a_zero_wall_clock_is_refused,
+        a_writable_cache_is_refused_outside_fetch_deps,
+        the_job_token_file_is_absent_after_stop_and_remove,
+        the_job_token_never_shows_in_debug_output,
+        apparmor_not_available_is_accepted_only_by_policy,
+        a_cancelled_create_removes_what_it_made,
     ]
 }
+
+/// The one check a fake cannot fail: the types decide what `Debug` shows.
+pub const WAIVERS: &[Waiver] = &[Waiver {
+    check: "the_job_token_never_shows_in_debug_output",
+    reason: "JobTokenSecret implements Debug in the ports crate, so no sandbox fake can make a spec or a posture report show the secret.",
+    trigger: "None: the unit test of JobTokenSecret in factory-ports is the proof. The check guards the real adapter's own types and logs.",
+}];
 
 fn attempt(n: u128) -> AttemptId {
     AttemptId::from_uuid(factory_ports::clock::Uuid::from_u128(
@@ -102,7 +155,7 @@ async fn create(
 ) -> Result<Box<dyn SandboxSession>, String> {
     subject
         .provider()
-        .create_verified(subject.spec(profile, attempt(n)))
+        .create_verified(subject.spec(profile, attempt(n)), &FakeCancel::new())
         .await
         .ctx("create a sandbox")
 }
@@ -111,11 +164,7 @@ async fn read(
     subject: &dyn SandboxSubject,
     reference: &factory_domain::contracts::ArtifactRef,
 ) -> Result<Vec<u8>, String> {
-    subject
-        .artifacts()
-        .get(reference)
-        .await
-        .ctx("read stored output")
+    subject.read_output(reference).await
 }
 
 async fn every_profile_can_be_created_and_its_posture_matches_the_spec(
@@ -132,7 +181,7 @@ async fn every_profile_can_be_created_and_its_posture_matches_the_spec(
         let spec = subject.spec(profile, attempt(n as u128 + 1));
         let session = subject
             .provider()
-            .create_verified(spec.clone())
+            .create_verified(spec.clone(), &FakeCancel::new())
             .await
             .ctx(&format!("create a {} sandbox", profile.as_str()))?;
         ensure_eq!(
@@ -161,7 +210,11 @@ async fn a_spec_weaker_than_the_policy_is_refused_and_builds_nothing(
     let mut spec = subject.spec(SandboxProfile::Agent, attempt(1));
     spec.hardening.privileged = true;
     spec.hardening.cap_add = vec!["SYS_ADMIN".to_owned()];
-    match subject.provider().create_verified(spec).await {
+    match subject
+        .provider()
+        .create_verified(spec, &FakeCancel::new())
+        .await
+    {
         Err(SandboxError::PolicyViolation(violation)) => {
             ensure!(
                 violation.rules.contains(&SandboxRule::Privileged),
@@ -189,7 +242,10 @@ async fn a_network_that_does_not_suit_the_profile_is_refused(
         sidecar: "sidecar-x".to_owned(),
     };
     ensure_err!(
-        subject.provider().create_verified(spec).await,
+        subject
+            .provider()
+            .create_verified(spec, &FakeCancel::new())
+            .await,
         SandboxError::PolicyViolation(_),
         "a verify sandbox with a network"
     );
@@ -199,12 +255,15 @@ async fn a_network_that_does_not_suit_the_profile_is_refused(
 async fn a_container_that_differs_from_its_spec_is_removed_and_never_returned(
     subject: &dyn SandboxSubject,
 ) -> Result<(), String> {
-    if !subject.inject_posture_drift().await {
+    if !subject.inject_posture_drift(DriftPart::Hardening).await {
         skip!("this subject cannot make a container differ from its spec");
     }
     let spec = subject.spec(SandboxProfile::Agent, attempt(1));
     ensure_err!(
-        subject.provider().create_verified(spec).await,
+        subject
+            .provider()
+            .create_verified(spec, &FakeCancel::new())
+            .await,
         SandboxError::PostureMismatch(_),
         "a container that does not match its spec"
     );
@@ -397,7 +456,7 @@ async fn a_sandbox_past_its_wall_clock_refuses_commands(
     spec.limits.wall_clock = Duration::from_secs(5);
     let mut session = subject
         .provider()
-        .create_verified(spec)
+        .create_verified(spec, &FakeCancel::new())
         .await
         .ctx("create")?;
     let cancel = FakeCancel::new();
@@ -460,5 +519,239 @@ async fn sweeping_removes_only_sandboxes_whose_attempt_is_not_live(
     two.exec(request(&["true"]), &cancel)
         .await
         .ctx("the other live sandbox after the sweep")?;
+    Ok(())
+}
+
+// ---- ports-v1.1: the posture is compared in every part ----------------------------------------------
+
+async fn drift_is_a_mismatch(
+    subject: &dyn SandboxSubject,
+    part: DriftPart,
+    field: &str,
+) -> Result<(), String> {
+    if !subject.inject_posture_drift(part).await {
+        skip!("this subject cannot make a container differ from its spec in {part:?}");
+    }
+    let spec = subject.spec(SandboxProfile::Agent, attempt(1));
+    match subject
+        .provider()
+        .create_verified(spec, &FakeCancel::new())
+        .await
+    {
+        Err(SandboxError::PostureMismatch(diff)) => {
+            ensure!(
+                diff.fields.contains(&leak(field)),
+                "the mismatch should name {field}, but named {:?}",
+                diff.fields
+            );
+        }
+        Err(other) => {
+            return Err(format!(
+                "a drifted {field}: expected PostureMismatch but found {other:?}"
+            ));
+        }
+        Ok(_) => {
+            return Err(format!(
+                "a drifted {field}: the provider returned a sandbox"
+            ));
+        }
+    }
+    let left = subject.provider().sweep_orphans(&[]).await.ctx("sweep")?;
+    ensure_eq!(left.len(), 0, "containers left behind by the failed check");
+    Ok(())
+}
+
+/// The names in a mismatch are `&'static str`; the check compares by text.
+fn leak(field: &str) -> &'static str {
+    match field {
+        "image" => "image",
+        "limits" => "limits",
+        "network" => "network",
+        "mounts" => "mounts",
+        "env" => "env",
+        _ => "hardening",
+    }
+}
+
+async fn a_different_image_is_a_mismatch(subject: &dyn SandboxSubject) -> Result<(), String> {
+    drift_is_a_mismatch(subject, DriftPart::Image, "image").await
+}
+
+async fn a_drifted_limit_is_a_mismatch(subject: &dyn SandboxSubject) -> Result<(), String> {
+    drift_is_a_mismatch(subject, DriftPart::Limits, "limits").await
+}
+
+async fn a_drifted_network_is_a_mismatch(subject: &dyn SandboxSubject) -> Result<(), String> {
+    drift_is_a_mismatch(subject, DriftPart::Network, "network").await
+}
+
+async fn an_extra_mount_is_a_mismatch(subject: &dyn SandboxSubject) -> Result<(), String> {
+    drift_is_a_mismatch(subject, DriftPart::ExtraMount, "mounts").await
+}
+
+async fn a_writable_mount_that_should_be_read_only_is_a_mismatch(
+    subject: &dyn SandboxSubject,
+) -> Result<(), String> {
+    drift_is_a_mismatch(subject, DriftPart::WritableMount, "mounts").await
+}
+
+async fn a_drifted_environment_is_a_mismatch(subject: &dyn SandboxSubject) -> Result<(), String> {
+    drift_is_a_mismatch(subject, DriftPart::Env, "env").await
+}
+
+async fn a_zero_wall_clock_is_refused(subject: &dyn SandboxSubject) -> Result<(), String> {
+    let mut spec = subject.spec(SandboxProfile::Agent, attempt(1));
+    spec.limits.wall_clock = Duration::ZERO;
+    match subject
+        .provider()
+        .create_verified(spec, &FakeCancel::new())
+        .await
+    {
+        Err(SandboxError::PolicyViolation(violation)) => {
+            ensure!(
+                violation
+                    .rules
+                    .contains(&SandboxRule::LimitIsZero("wall_clock")),
+                "the refusal must name the zero wall clock, but listed {:?}",
+                violation.rules
+            );
+            Ok(())
+        }
+        Err(other) => Err(format!(
+            "a zero wall clock: expected PolicyViolation but found {other:?}"
+        )),
+        Ok(_) => Err("a zero wall clock: the provider returned a sandbox".to_owned()),
+    }
+}
+
+async fn a_writable_cache_is_refused_outside_fetch_deps(
+    subject: &dyn SandboxSubject,
+) -> Result<(), String> {
+    let cache = |writable| CacheMount {
+        name: CacheName(factory_domain::values::Slug::parse("cargo-registry").expect("a slug")),
+        writable,
+    };
+    let mut agent = subject.spec(SandboxProfile::Agent, attempt(1));
+    agent.mounts.caches = vec![cache(true)];
+    ensure_err!(
+        subject
+            .provider()
+            .create_verified(agent, &FakeCancel::new())
+            .await,
+        SandboxError::PolicyViolation(_),
+        "an agent sandbox with a writable cache"
+    );
+    let mut fetch = subject.spec(SandboxProfile::FetchDeps, attempt(2));
+    fetch.mounts.caches = vec![cache(true)];
+    subject
+        .provider()
+        .create_verified(fetch, &FakeCancel::new())
+        .await
+        .ctx("a fetch_deps sandbox may write its cache")?;
+    Ok(())
+}
+
+async fn the_job_token_file_is_absent_after_stop_and_remove(
+    subject: &dyn SandboxSubject,
+) -> Result<(), String> {
+    let Some(before) = subject.token_file_present().await else {
+        skip!("this subject cannot look for the token file");
+    };
+    ensure!(!before, "no token file exists before a sandbox is made");
+    let session = create(subject, SandboxProfile::Agent, 1).await?;
+    ensure_eq!(
+        subject.token_file_present().await,
+        Some(true),
+        "the file exists while the sandbox lives"
+    );
+    session
+        .stop_and_remove(TeardownReason::Completed)
+        .await
+        .ctx("stop and remove")?;
+    ensure_eq!(
+        subject.token_file_present().await,
+        Some(false),
+        "the file is gone after teardown"
+    );
+    Ok(())
+}
+
+async fn the_job_token_never_shows_in_debug_output(
+    subject: &dyn SandboxSubject,
+) -> Result<(), String> {
+    let spec = subject.spec(SandboxProfile::Agent, attempt(1));
+    let secret = spec
+        .job_token
+        .as_ref()
+        .map(|mount| mount.secret.expose().to_owned())
+        .ok_or("an agent spec must carry a job token")?;
+    ensure!(
+        !format!("{spec:?}").contains(&secret),
+        "the spec's Debug output shows the secret"
+    );
+    let session = subject
+        .provider()
+        .create_verified(spec, &FakeCancel::new())
+        .await
+        .ctx("create")?;
+    ensure!(
+        !format!("{:?}", session.posture()).contains(&secret),
+        "the posture report's Debug output shows the secret"
+    );
+    Ok(())
+}
+
+async fn apparmor_not_available_is_accepted_only_by_policy(
+    subject: &dyn SandboxSubject,
+) -> Result<(), String> {
+    if !subject.allow_apparmor_unavailable(false).await {
+        skip!("this subject cannot change its policy");
+    }
+    if !subject
+        .inject_posture_drift(DriftPart::AppArmorNotAvailable)
+        .await
+    {
+        skip!("this subject cannot make the daemon lack AppArmor");
+    }
+    let spec = subject.spec(SandboxProfile::Agent, attempt(1));
+    ensure_err!(
+        subject
+            .provider()
+            .create_verified(spec.clone(), &FakeCancel::new())
+            .await,
+        SandboxError::PostureMismatch(_),
+        "a daemon without AppArmor on a production policy"
+    );
+    subject.allow_apparmor_unavailable(true).await;
+    subject
+        .inject_posture_drift(DriftPart::AppArmorNotAvailable)
+        .await;
+    subject
+        .provider()
+        .create_verified(spec, &FakeCancel::new())
+        .await
+        .ctx("a daemon without AppArmor on a development policy")?;
+    Ok(())
+}
+
+async fn a_cancelled_create_removes_what_it_made(
+    subject: &dyn SandboxSubject,
+) -> Result<(), String> {
+    let cancel = FakeCancel::new();
+    cancel.cancel();
+    let spec = subject.spec(SandboxProfile::Agent, attempt(1));
+    ensure_err!(
+        subject.provider().create_verified(spec, &cancel).await,
+        SandboxError::Cancelled,
+        "a create whose cancel signal is set"
+    );
+    let left = subject.provider().sweep_orphans(&[]).await.ctx("sweep")?;
+    ensure_eq!(left.len(), 0, "sandboxes left behind by a cancelled create");
+    if let Some(present) = subject.token_file_present().await {
+        ensure!(
+            !present,
+            "a token file is left behind by a cancelled create"
+        );
+    }
     Ok(())
 }

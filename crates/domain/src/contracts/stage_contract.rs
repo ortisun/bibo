@@ -578,6 +578,15 @@ contract! {
 
 impl StageContract {
     fn check(&self, found: &mut Violations) {
+        // Without these two, a worker crash or a timeout would end the stage run in S06 instead
+        // of a retry (F-20). The schema says the same with a `contains` rule.
+        let retry_on = self.timeout_and_retries.retry_on.as_slice();
+        found.require(
+            retry_on.contains(&RetryClass::LeaseLost) && retry_on.contains(&RetryClass::TimedOut),
+            "timeout_and_retries.retry_on",
+            "must list LEASE_LOST and TIMED_OUT",
+        );
+
         for (index, input) in self.inputs.iter().enumerate() {
             let outside_the_factory = matches!(
                 input.provenance.source,

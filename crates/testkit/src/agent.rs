@@ -23,13 +23,13 @@ use factory_domain::contracts::agent_manifest::AllowedTool;
 use factory_domain::values::MediaType;
 use factory_domain::vocabulary::Fidelity;
 use factory_ports::agent::{
-    AgentRef, AgentRunError, AgentRunOutcome, AgentRunRequest, AgentRuntime, AssembledPrompt,
+    AgentRef, AgentRunError, AgentRunReport, AgentRunRequest, AgentRuntime, AssembledPrompt,
     Capability, CapabilityObservation, DataPart, Denial, ExitInfo, FlagSet, ModelSelection,
-    ProbeError, RuntimeCapabilities, RuntimeId, Usage,
+    ProbeError, ProbeStep, RawOutput, RuntimeCapabilities, RuntimeId, Usage,
 };
 use factory_ports::artifact::ArtifactStore;
 use factory_ports::clock::CancelSignal;
-use factory_ports::sandbox::{ExecArgv, ExecRequest, SandboxError, SandboxSession};
+use factory_ports::sandbox::{ExecArgv, ExecRequest, ProvisionStage, SandboxError, SandboxSession};
 
 use crate::contracts::agent::{AgentRuntimeSubject, Behavior};
 
@@ -53,7 +53,63 @@ pub enum RuntimeDefect {
     LosesTranscript,
     /// The probe reports every capability as present.
     GuessesCapabilities,
+    /// A failed run reports no usage and no transcript.
+    DropsPartialUsage,
+    /// A run reports no usage even when it finished.
+    ForgetsUsage,
+    /// An output over `max_output_bytes` is returned whole.
+    IgnoresOutputLimit,
+    /// The second probe of a runtime reports another version.
+    FlakyProbe,
 }
+
+/// Each defect and the checks of `contracts::agent` that must fail when the fake has it.
+pub const DEFECTS: &[(RuntimeDefect, &[&str])] = &[
+    (
+        RuntimeDefect::IgnoresCancellation,
+        &[
+            "a_cancel_that_is_already_set_stops_the_run",
+            "a_cancel_during_a_run_stops_it_promptly",
+        ],
+    ),
+    (
+        RuntimeDefect::SwallowsDenials,
+        &["denied_tool_calls_are_reported"],
+    ),
+    (
+        RuntimeDefect::JudgesOutput,
+        &["a_run_returns_the_output_unjudged_with_a_stored_transcript"],
+    ),
+    (
+        RuntimeDefect::IgnoresBudget,
+        &["a_run_over_its_cost_limit_is_refused"],
+    ),
+    (
+        RuntimeDefect::BlursFailures,
+        &["every_failure_keeps_its_own_closed_variant"],
+    ),
+    (
+        RuntimeDefect::LosesTranscript,
+        &["a_run_returns_the_output_unjudged_with_a_stored_transcript"],
+    ),
+    (
+        RuntimeDefect::GuessesCapabilities,
+        &["a_run_that_needs_a_missing_capability_is_refused"],
+    ),
+    (
+        RuntimeDefect::DropsPartialUsage,
+        &["a_failed_run_still_reports_usage_and_transcript"],
+    ),
+    (RuntimeDefect::ForgetsUsage, &["a_run_reports_what_it_used"]),
+    (
+        RuntimeDefect::IgnoresOutputLimit,
+        &["output_is_bytes_and_a_oversize_output_is_a_failure"],
+    ),
+    (
+        RuntimeDefect::FlakyProbe,
+        &["probing_reports_a_version_and_its_observations_and_repeats"],
+    ),
+];
 
 /// One thing the scripted attacker does.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -172,6 +228,7 @@ struct State {
     prompts: Vec<RecordedPrompt>,
     performed: Vec<Performed>,
     missing: Vec<Capability>,
+    probes: u32,
 }
 
 /// The scripted adversarial runtime. Reports fidelity `fake`.
@@ -263,14 +320,17 @@ impl FakeAgentRuntime {
     }
 
     fn capabilities(&self) -> RuntimeCapabilities {
-        let missing = self
-            .state
-            .lock()
-            .expect("the lock is never poisoned")
-            .missing
-            .clone();
+        let (missing, probes) = {
+            let state = self.state.lock().expect("the lock is never poisoned");
+            (state.missing.clone(), state.probes)
+        };
+        let flaky = self.has(RuntimeDefect::FlakyProbe) && probes > 0;
         RuntimeCapabilities {
-            runtime_version: FAKE_RUNTIME_VERSION.to_owned(),
+            runtime_version: if flaky {
+                format!("{FAKE_RUNTIME_VERSION}-{probes}")
+            } else {
+                FAKE_RUNTIME_VERSION.to_owned()
+            },
             observations: ALL_CAPABILITIES
                 .iter()
                 .map(|capability| CapabilityObservation {
@@ -310,9 +370,8 @@ impl FakeAgentRuntime {
 
 fn exec_request(words: &[String]) -> Result<ExecRequest, SandboxError> {
     Ok(ExecRequest {
-        argv: ExecArgv::new(words.to_vec()).map_err(|_| {
-            SandboxError::ProvisionFailed("the scripted command is empty".to_owned())
-        })?,
+        argv: ExecArgv::new(words.to_vec())
+            .map_err(|_| SandboxError::ProvisionFailed(ProvisionStage::Create))?,
         cwd: None,
         stdin: None,
         timeout: Duration::from_secs(30),
@@ -334,7 +393,13 @@ impl AgentRuntime for FakeAgentRuntime {
         &self,
         _session: &mut dyn SandboxSession,
     ) -> Result<RuntimeCapabilities, ProbeError> {
-        Ok(self.capabilities())
+        let capabilities = self.capabilities();
+        self.state
+            .lock()
+            .expect("the lock is never poisoned")
+            .probes += 1;
+        let _ = ProbeStep::Version;
+        Ok(capabilities)
     }
 
     async fn run(
@@ -342,36 +407,53 @@ impl AgentRuntime for FakeAgentRuntime {
         session: &mut dyn SandboxSession,
         req: AgentRunRequest,
         cancel: &dyn CancelSignal,
-    ) -> Result<AgentRunOutcome, AgentRunError> {
+    ) -> AgentRunReport {
         self.record(&req);
+        let mut report = AgentRunReport {
+            outcome: Err(AgentRunError::OutputMissing),
+            transcript: None,
+            usage: Usage::default(),
+            runtime_version: None,
+            exit: None,
+            permission_denials: Vec::new(),
+        };
         let honours_cancel = !self.has(RuntimeDefect::IgnoresCancellation);
         if honours_cancel && cancel.is_cancelled() {
-            return Err(AgentRunError::Cancelled);
+            report.outcome = Err(AgentRunError::Cancelled);
+            return report;
         }
         if req.flag_set == FlagSet::Specification
             && !self.capabilities().supports(Capability::SkillInvocation)
         {
-            return Err(AgentRunError::CapabilityMissing(
+            report.outcome = Err(AgentRunError::CapabilityMissing(
                 Capability::SkillInvocation,
             ));
+            return report;
         }
-        let script = self
+        let Some(script) = self
             .state
             .lock()
             .expect("the lock is never poisoned")
             .scripts
             .pop_front()
-            .ok_or(AgentRunError::OutputMissing)?;
+        else {
+            return report;
+        };
+        report.runtime_version = Some(FAKE_RUNTIME_VERSION.to_owned());
 
         let limit_micro = (req.limits.max_cost_usd.as_f64() * 1_000_000.0).ceil();
         if !self.has(RuntimeDefect::IgnoresBudget) && (script.usage.cost.0 as f64) > limit_micro {
-            return Err(AgentRunError::BudgetRefused);
+            report.usage = script.usage;
+            report.outcome = Err(AgentRunError::BudgetRefused);
+            return report;
         }
 
         let mut transcript = Vec::new();
+        let mut cancelled = false;
         for action in &script.actions {
             if honours_cancel && cancel.is_cancelled() {
-                return Err(AgentRunError::Cancelled);
+                cancelled = true;
+                break;
             }
             match action {
                 ScriptedAction::Claim(text) => {
@@ -396,7 +478,10 @@ impl AgentRuntime for FakeAgentRuntime {
                                 "stdout_sha256": result.stdout.sha256.to_string(),
                             }));
                         }
-                        Err(SandboxError::Cancelled) => return Err(AgentRunError::Cancelled),
+                        Err(SandboxError::Cancelled) => {
+                            cancelled = true;
+                            break;
+                        }
                         Err(error) => {
                             self.note(Performed::ExecFailed {
                                 argv: words.clone(),
@@ -410,64 +495,89 @@ impl AgentRuntime for FakeAgentRuntime {
             }
         }
 
-        match &script.end {
-            ScriptEnd::UntilCancelled => {
-                if honours_cancel {
-                    cancel.cancelled().await;
-                    return Err(AgentRunError::Cancelled);
+        // The usage, denials and transcript are reported whether the run worked or not.
+        let report_partial = !self.has(RuntimeDefect::DropsPartialUsage);
+        let denials = if self.has(RuntimeDefect::SwallowsDenials) {
+            Vec::new()
+        } else {
+            script.denials.clone()
+        };
+        let usage = if self.has(RuntimeDefect::ForgetsUsage) {
+            Usage::default()
+        } else {
+            script.usage
+        };
+        let store_transcript = |bytes: Vec<u8>| async move {
+            let media = MediaType::parse("application/json").expect("a valid media type");
+            self.artifacts.put(bytes, media).await.ok()
+        };
+        let transcript_bytes = serde_json::to_vec(&transcript).unwrap_or_default();
+
+        let mut failure: Option<AgentRunError> = None;
+        if cancelled {
+            failure = Some(AgentRunError::Cancelled);
+        } else {
+            match &script.end {
+                ScriptEnd::UntilCancelled => {
+                    if honours_cancel {
+                        cancel.cancelled().await;
+                        report.outcome = Err(AgentRunError::Cancelled);
+                        return report;
+                    }
+                    // A runtime that ignores the cancel has nothing to wait for and never returns.
+                    std::future::pending::<()>().await;
                 }
-                // A runtime that ignores the cancel has nothing to wait for and never returns.
-                std::future::pending::<()>().await;
+                ScriptEnd::Fail(error) => {
+                    failure = Some(if self.has(RuntimeDefect::BlursFailures) {
+                        AgentRunError::ProcessFailed(ExitInfo {
+                            code: Some(1),
+                            signal: None,
+                        })
+                    } else {
+                        error.clone()
+                    });
+                }
+                ScriptEnd::Finish => {}
             }
-            ScriptEnd::Fail(error) => {
-                return Err(if self.has(RuntimeDefect::BlursFailures) {
-                    AgentRunError::ProcessFailed(ExitInfo {
-                        code: Some(1),
-                        signal: None,
-                    })
-                } else {
-                    error.clone()
-                });
-            }
-            ScriptEnd::Finish => {}
         }
 
-        if self.has(RuntimeDefect::JudgesOutput) && !script.output.is_object() {
-            return Err(AgentRunError::OutputMissing);
+        let output_bytes = serde_json::to_vec(&script.output).unwrap_or_default();
+        if failure.is_none() {
+            if self.has(RuntimeDefect::JudgesOutput) && !script.output.is_object() {
+                failure = Some(AgentRunError::OutputMissing);
+            } else if output_bytes.len() as u64 > req.max_output_bytes
+                && !self.has(RuntimeDefect::IgnoresOutputLimit)
+            {
+                failure = Some(AgentRunError::OutputTooLarge);
+            }
         }
-        let transcript_bytes =
-            serde_json::to_vec(&transcript).map_err(|_| AgentRunError::OutputMissing)?;
-        let media = MediaType::parse("application/json").expect("a valid media type");
-        let transcript_ref = if self.has(RuntimeDefect::LosesTranscript) {
-            // A reference to bytes that were never stored.
-            let mut lost = self
-                .artifacts
-                .put(b"lost".to_vec(), media.clone())
-                .await
-                .map_err(|_| AgentRunError::OutputMissing)?;
-            lost.sha256 = factory_domain::values::Sha256Digest::of(&transcript_bytes);
-            lost
-        } else {
-            self.artifacts
-                .put(transcript_bytes, media)
-                .await
-                .map_err(|_| AgentRunError::OutputMissing)?
-        };
-        Ok(AgentRunOutcome {
-            output: script.output,
-            transcript: transcript_ref,
-            usage: script.usage,
-            runtime_version: FAKE_RUNTIME_VERSION.to_owned(),
-            exit: ExitInfo {
-                code: Some(0),
-                signal: None,
-            },
-            permission_denials: if self.has(RuntimeDefect::SwallowsDenials) {
-                Vec::new()
+
+        let is_failure = failure.is_some();
+        if !is_failure || report_partial {
+            report.usage = usage;
+            report.permission_denials = denials;
+            report.transcript = if self.has(RuntimeDefect::LosesTranscript) && !is_failure {
+                // A reference to bytes that were never stored.
+                match store_transcript(b"lost".to_vec()).await {
+                    Some(mut lost) => {
+                        lost.sha256 = factory_domain::values::Sha256Digest::of(&transcript_bytes);
+                        Some(lost)
+                    }
+                    None => None,
+                }
             } else {
-                script.denials
-            },
-        })
+                store_transcript(transcript_bytes).await
+            };
+            report.exit = Some(ExitInfo {
+                code: Some(if is_failure { 1 } else { 0 }),
+                signal: None,
+            });
+        }
+        report.outcome = match failure {
+            Some(error) => Err(error),
+            None => Ok(RawOutput::new(output_bytes)),
+        };
+        report
     }
 }
 
@@ -520,6 +630,19 @@ impl FakeAgentRuntimeSubject {
         &self.runtime
     }
 
+    /// The stored bytes of a transcript, read as the test tenant after the engine indexed it.
+    pub async fn transcript_bytes(
+        &self,
+        reference: &factory_domain::contracts::ArtifactRef,
+    ) -> Option<Vec<u8>> {
+        let scope = factory_domain::scope::TenantScope::new(
+            factory_domain::ids::TenantId::parse("00000000-0000-7000-8000-00000000000a")
+                .expect("a tenant id"),
+        );
+        self.artifacts.grant(scope.tenant_id(), &reference.sha256);
+        self.artifacts.get(&scope, reference).await.ok()
+    }
+
     /// The clock the sandbox uses.
     #[must_use]
     pub fn clock(&self) -> &crate::clock::FakeClock {
@@ -539,16 +662,31 @@ impl AgentRuntimeSubject for FakeAgentRuntimeSubject {
         &self.runtime
     }
 
-    fn artifacts(&self) -> &dyn ArtifactStore {
-        self.artifacts.as_ref()
+    async fn transcript_is_stored(
+        &self,
+        reference: &factory_domain::contracts::ArtifactRef,
+    ) -> Result<bool, String> {
+        let scope = factory_domain::scope::TenantScope::new(
+            factory_domain::ids::TenantId::parse("00000000-0000-7000-8000-00000000000a")
+                .expect("a tenant id"),
+        );
+        self.artifacts.grant(scope.tenant_id(), &reference.sha256);
+        self.artifacts
+            .exists(&scope, reference)
+            .await
+            .map_err(|error| format!("look for the transcript: {error:?}"))
     }
 
     async fn session(&self) -> Result<Box<dyn SandboxSession>, String> {
         let spec =
             crate::fixtures::sandbox_spec(&self.ids, factory_ports::sandbox::SandboxProfile::Agent);
-        factory_ports::sandbox::SandboxProvider::create_verified(&self.sandbox, spec)
-            .await
-            .map_err(|error| format!("create the agent sandbox: {error:?}"))
+        factory_ports::sandbox::SandboxProvider::create_verified(
+            &self.sandbox,
+            spec,
+            &crate::clock::FakeCancel::new(),
+        )
+        .await
+        .map_err(|error| format!("create the agent sandbox: {error:?}"))
     }
 
     fn request(&self) -> AgentRunRequest {
@@ -565,9 +703,10 @@ impl AgentRuntimeSubject for FakeAgentRuntimeSubject {
                 denials,
                 ..AdversarialScript::returning(serde_json::json!({}))
             },
-            Behavior::Fail(error) => {
-                AdversarialScript::returning(serde_json::Value::Null).failing_with(error)
-            }
+            Behavior::Fail { error, usage } => AdversarialScript {
+                usage,
+                ..AdversarialScript::returning(serde_json::Value::Null).failing_with(error)
+            },
             Behavior::RunUntilCancelled => AdversarialScript {
                 end: ScriptEnd::UntilCancelled,
                 ..AdversarialScript::returning(serde_json::Value::Null)

@@ -1,26 +1,26 @@
-//! The fake specification provider plays back queued outcomes, records requests and honours the
-//! cancel signal.
+//! The fake specification provider (ports-v1.1). `run` drives a scripted tool in the fake sandbox
+//! and reads no file; `assemble` is pure over committed files, refuses a feature without its
+//! `spec.md` or with a `spec.md` that is not text, and returns what a test queued.
+
+use std::sync::Arc;
 
 use factory_domain::contracts::specification_contract::OpenQuestion;
 use factory_domain::contracts::{Contract, SpecificationContract};
 use factory_domain::ids::JobId;
 use factory_ports::agent::AgentRunError;
 use factory_ports::clock::Uuid;
-use factory_ports::paths::{CommitSha, RepoGlob, RepoPath, RepoRef};
+use factory_ports::paths::{CommitSha, RepoPath};
 use factory_ports::sandbox::{SandboxProfile, SandboxProvider};
 use factory_ports::spec::{
-    FeatureDir, SpecContext, SpecError, SpecOperation, SpecOutcome, SpecRequest,
-    SpecificationDraft, SpecificationProvider,
+    FeatureDir, ParseReason, SpecContext, SpecError, SpecFile, SpecFileSet, SpecOperation,
+    SpecOutcome, SpecRequest, SpecificationDraft, SpecificationProvider,
 };
-use factory_ports::workspace::{WorkspaceProvider, WorkspaceRequest};
 use factory_testkit::agent::FakeAgentRuntime;
 use factory_testkit::artifact::InMemoryArtifactStore;
 use factory_testkit::clock::{FakeCancel, FakeClock};
 use factory_testkit::fixtures::{self, Ids};
 use factory_testkit::sandbox::FakeSandbox;
-use factory_testkit::spec::FakeSpecificationProvider;
-use factory_testkit::workspace::FakeWorkspaceProvider;
-use std::sync::Arc;
+use factory_testkit::spec::{FakeSpecificationProvider, ScriptedRun};
 
 fn request(op: SpecOperation) -> SpecRequest {
     SpecRequest {
@@ -48,77 +48,145 @@ fn open_question() -> OpenQuestion {
         .expect("the example has an open question")
 }
 
-#[tokio::test]
-async fn the_fake_plays_queued_outcomes_in_order_and_records_requests() {
+fn files(spec_bytes: Option<&[u8]>) -> SpecFileSet {
+    SpecFileSet {
+        commit: CommitSha::parse(&"1".repeat(40)).expect("a sha"),
+        files: spec_bytes
+            .map(|bytes| SpecFile {
+                path: RepoPath::new("specs/001-word-count/spec.md").expect("a path"),
+                bytes: bytes.to_vec(),
+            })
+            .into_iter()
+            .collect(),
+    }
+}
+
+struct Rig {
+    sandbox: FakeSandbox,
+    runtime: FakeAgentRuntime,
+    ids: Ids,
+}
+
+fn rig() -> Rig {
     let clock = Arc::new(FakeClock::new());
     let artifacts = Arc::new(InMemoryArtifactStore::new());
-    let sandbox = FakeSandbox::new(clock, artifacts.clone(), fixtures::sandbox_policy());
-    let ids = Ids::new();
-    let mut session = sandbox
-        .create_verified(fixtures::sandbox_spec(&ids, SandboxProfile::Agent))
-        .await
-        .expect("an agent sandbox");
-    let repo = RepoRef::parse("example-org/fixture").expect("a repo");
-    let base = CommitSha::parse(&"1".repeat(40)).expect("a sha");
-    let workspaces =
-        FakeWorkspaceProvider::new(repo.clone(), base.clone(), &[("README.md", "# x\n")]);
-    let workspace = workspaces
-        .create(WorkspaceRequest {
-            job: ids.job(),
-            repo,
-            base,
-            hidden: vec![RepoGlob::new("hidden/**").expect("a glob")],
-            protected: Vec::new(),
-        })
-        .await
-        .expect("a workspace");
-    let runtime = FakeAgentRuntime::new(artifacts);
-    let cancel = FakeCancel::new();
+    Rig {
+        sandbox: FakeSandbox::new(clock, artifacts.clone(), fixtures::sandbox_policy()),
+        runtime: FakeAgentRuntime::new(artifacts),
+        ids: Ids::new(),
+    }
+}
 
+#[tokio::test]
+async fn assemble_plays_queued_outcomes_after_it_checks_the_files() {
     let provider = FakeSpecificationProvider::new();
     provider.queue(Ok(SpecOutcome::NeedsHuman(vec![open_question()])));
     provider.queue(Ok(SpecOutcome::Draft(Box::new(SpecificationDraft {
         contract: approved(),
         files: Vec::new(),
     }))));
+    let request = request(SpecOperation::Specify);
 
-    let mut context = SpecContext {
-        workspace: workspace.as_ref(),
-        session: session.as_mut(),
-        runtime: &runtime,
-        run_template: fixtures::agent_run_request(&ids),
-        cancel: &cancel,
-    };
-
-    let first = provider
-        .run(request(SpecOperation::Specify), &mut context)
-        .await;
-    assert!(matches!(first, Ok(SpecOutcome::NeedsHuman(ref questions)) if questions.len() == 1));
-    let second = provider
-        .run(request(SpecOperation::Clarify), &mut context)
-        .await;
+    let first = provider.assemble(&request, &files(Some(b"# A spec\n")));
+    assert!(matches!(first, Ok(SpecOutcome::NeedsHuman(ref q)) if q.len() == 1));
+    let second = provider.assemble(&request, &files(Some(b"# A spec\n")));
     assert!(matches!(second, Ok(SpecOutcome::Draft(_))));
     // Nothing is queued any more: the fake reports a missing tool, not a made-up result.
-    let third = provider
-        .run(request(SpecOperation::Checklist), &mut context)
-        .await;
+    let third = provider.assemble(&request, &files(Some(b"# A spec\n")));
     assert_eq!(third.err(), Some(SpecError::ToolMissing));
+}
 
-    let seen: Vec<SpecOperation> = provider.requests().iter().map(|r| r.op).collect();
-    assert_eq!(
-        seen,
-        vec![
-            SpecOperation::Specify,
-            SpecOperation::Clarify,
-            SpecOperation::Checklist
-        ]
-    );
-
-    // A cancel that is already set stops the call, and the queued outcome is not consumed.
+#[tokio::test]
+async fn assemble_refuses_a_missing_spec_and_one_that_is_not_text() {
+    let provider = FakeSpecificationProvider::new();
     provider.queue(Ok(SpecOutcome::NeedsHuman(Vec::new())));
+    let request = request(SpecOperation::Specify);
+    let missing = provider.assemble(&request, &files(None));
+    assert!(matches!(
+        missing,
+        Err(SpecError::ParseError {
+            reason: ParseReason::Missing,
+            ..
+        })
+    ));
+    let binary = provider.assemble(&request, &files(Some(&[0xff, 0xfe, 0x00])));
+    assert!(matches!(
+        binary,
+        Err(SpecError::ParseError {
+            reason: ParseReason::NotText,
+            ..
+        })
+    ));
+    // Neither refusal consumed the queued outcome.
+    let good = provider.assemble(&request, &files(Some(b"ok")));
+    assert!(matches!(good, Ok(SpecOutcome::NeedsHuman(_))));
+}
+
+#[tokio::test]
+async fn run_executes_the_scripted_tool_in_the_sandbox_and_records_the_request() {
+    let rig = rig();
+    let mut session = rig
+        .sandbox
+        .create_verified(
+            fixtures::sandbox_spec(&rig.ids, SandboxProfile::Agent),
+            &FakeCancel::new(),
+        )
+        .await
+        .expect("an agent sandbox");
+    let cancel = FakeCancel::new();
+    let provider = FakeSpecificationProvider::new();
+    let expected = RepoPath::new("specs/001-word-count/spec.md").expect("a path");
+    provider.script_run(ScriptedRun {
+        commands: vec![vec!["echo".into(), "specify".into()]],
+        expected_files: vec![expected.clone()],
+    });
+    let mut context = SpecContext {
+        session: session.as_mut(),
+        runtime: &rig.runtime,
+        run_template: fixtures::agent_run_request(&rig.ids),
+        cancel: &cancel,
+    };
+    let report = provider
+        .run(&request(SpecOperation::Specify), &mut context)
+        .await
+        .expect("the scripted run finishes");
+    assert_eq!(report.op, SpecOperation::Specify);
+    assert_eq!(report.expected_files, vec![expected]);
+    assert_eq!(provider.requests().len(), 1);
+
+    // A command that fails in the sandbox fails the run, instead of being ignored.
+    provider.script_run(ScriptedRun {
+        commands: vec![vec!["false".into()]],
+        expected_files: Vec::new(),
+    });
+    let failed = provider
+        .run(&request(SpecOperation::Clarify), &mut context)
+        .await;
+    assert_eq!(failed.err(), Some(SpecError::ToolMissing));
+}
+
+#[tokio::test]
+async fn a_cancel_that_is_already_set_stops_the_run() {
+    let rig = rig();
+    let mut session = rig
+        .sandbox
+        .create_verified(
+            fixtures::sandbox_spec(&rig.ids, SandboxProfile::Agent),
+            &FakeCancel::new(),
+        )
+        .await
+        .expect("an agent sandbox");
+    let cancel = FakeCancel::new();
     cancel.cancel();
+    let provider = FakeSpecificationProvider::new();
+    let mut context = SpecContext {
+        session: session.as_mut(),
+        runtime: &rig.runtime,
+        run_template: fixtures::agent_run_request(&rig.ids),
+        cancel: &cancel,
+    };
     let cancelled = provider
-        .run(request(SpecOperation::Specify), &mut context)
+        .run(&request(SpecOperation::Specify), &mut context)
         .await;
     assert_eq!(
         cancelled.err(),

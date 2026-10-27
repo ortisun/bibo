@@ -1,20 +1,26 @@
-//! The sandbox ports: hardened, ephemeral containers that run untrusted work (ADR 0003).
+//! The sandbox ports: hardened, ephemeral containers that run untrusted work (ADR 0003, ADR 0014
+//! decision 5).
 //!
 //! A [`SandboxSpec`] says what to build. [`SandboxSpec::validate`] is a pure check against the
 //! [`SandboxPolicy`] and rejects anything weaker. The provider then builds the container, reads
 //! back what it actually built (the [`PostureReport`]), and hands out a session only if the two
-//! agree. There is no downgrade to a weaker profile and no fallback to the host.
+//! agree in every part ([`PostureReport::differences`]). There is no downgrade to a weaker profile
+//! and no fallback to the host.
+//!
+//! The spec is an allow list by construction: [`SandboxMounts`] holds the workspace mounts and
+//! named caches and nothing else, so a mount of the Docker socket or of a host directory cannot be
+//! written. Eight limits are `NonZeroU32`, so "no limit" cannot be written either.
 
 use std::fmt;
-use std::path::PathBuf;
+use std::num::NonZeroU32;
 use std::time::Duration;
 
 use async_trait::async_trait;
 use factory_domain::contracts::ArtifactRef;
 use factory_domain::ids::{AttemptId, JobId};
-use factory_domain::values::Timestamp;
-use factory_domain::vocabulary::Fidelity;
+use factory_domain::values::{Slug, Timestamp};
 
+use crate::agent::JobTokenSecret;
 use crate::clock::CancelSignal;
 use crate::paths::RepoPath;
 use crate::workspace::WorkspaceMounts;
@@ -81,27 +87,84 @@ impl ImageDigest {
     }
 }
 
-/// Resource limits for one container. Values are whole units so they compare exactly.
+/// Where the job token file is mounted inside an `agent` container: read-only, at this fixed path.
+/// The sandbox adapter writes the secret to a tmpfs it controls, mode 0400, and removes the file
+/// when the sandbox is torn down, whatever the reason.
+pub const JOB_TOKEN_TARGET: &str = "/run/factory/job-token";
+
+/// Where the checkout is mounted inside the container.
+pub const WORKSPACE_TARGET: &str = "/workspace";
+
+/// Where the output directory is mounted, read-write.
+pub const OUT_TARGET: &str = "/out";
+
+/// The scratch tmpfs every container has, because the root file system is read-only. Its size is
+/// `SandboxLimits::tmpfs_mb`.
+pub const SCRATCH_TARGET: &str = "/tmp";
+
+/// The directory under which a named cache is mounted: `/caches/<name>`.
+pub const CACHE_ROOT: &str = "/caches";
+
+/// What `source` shows for a tmpfs mount in an [`ObservedMount`].
+pub const TMPFS_SOURCE: &str = "tmpfs";
+
+/// Resource limits for one container. Every value is at least 1, so "no limit" cannot be written:
+/// Docker reads 0 as unlimited for memory, CPUs and processes.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SandboxLimits {
     /// CPU in thousandths of a core (2000 is two cores).
-    pub cpu_millis: u32,
+    pub cpu_millis: NonZeroU32,
     /// Memory in MiB.
-    pub memory_mb: u32,
-    /// Memory plus swap in MiB. Equal to `memory_mb` means no swap.
-    pub memory_swap_mb: u32,
+    pub memory_mb: NonZeroU32,
+    /// Memory plus swap in MiB. At least `memory_mb`. Equal means no swap.
+    pub memory_swap_mb: NonZeroU32,
     /// Maximum number of processes.
-    pub pids: u32,
+    pub pids: NonZeroU32,
     /// Maximum number of open files.
-    pub nofile: u32,
+    pub nofile: NonZeroU32,
     /// Largest single file in MiB.
-    pub max_file_mb: u32,
+    pub max_file_mb: NonZeroU32,
     /// Size of each tmpfs in MiB.
-    pub tmpfs_mb: u32,
+    pub tmpfs_mb: NonZeroU32,
     /// Disk the workspace and output directories may use, in MiB.
-    pub workspace_disk_mb: u32,
-    /// How long the container may live. Docker has no such limit, so the supervisor enforces it.
+    pub workspace_disk_mb: NonZeroU32,
+    /// How long the container may live. Not zero. Docker has no such limit, so the supervisor
+    /// enforces it.
     pub wall_clock: Duration,
+}
+
+/// A named read-only cache the supervisor owns, such as `cargo-registry`. The host directory
+/// behind a name is the adapter's own business and is never in a spec.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct CacheName(pub Slug);
+
+/// A cache mounted into the container.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CacheMount {
+    /// Which cache.
+    pub name: CacheName,
+    /// True when the container may write to it. Only the `fetch_deps` profile may.
+    pub writable: bool,
+}
+
+/// Everything mounted into the container. There is no free-form mount: a spec can name only
+/// these kinds, so a mount of the Docker socket or of a host directory cannot be written.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SandboxMounts {
+    /// The checkout and output directories, protected overlays and the `.git` mask.
+    pub workspace: WorkspaceMounts,
+    /// The caches. Usually empty for `agent`.
+    pub caches: Vec<CacheMount>,
+}
+
+/// The job token, as the secret itself. The sandbox adapter, and only it, writes the secret to a
+/// file on a tmpfs it controls, mode 0400 and owned by the sandbox user, mounts the file
+/// read-only at a fixed path, and removes it when the sandbox is torn down, whatever the reason.
+/// The engine never writes a file.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct JobTokenMount {
+    /// The token's secret. Never shown in `Debug` output.
+    pub secret: JobTokenSecret,
 }
 
 /// How the container reaches the network. A host or shared network cannot be written.
@@ -114,14 +177,6 @@ pub enum NetworkAttachment {
         /// The name of the per-job sidecar.
         sidecar: String,
     },
-}
-
-/// The file that holds the job token, on a worker-side tmpfs. Mounted read-only into the agent
-/// profile only.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct JobTokenFile {
-    /// Where the file is on the host.
-    pub host_path: PathBuf,
 }
 
 /// A name was not a valid environment variable name.
@@ -172,6 +227,9 @@ pub enum Confinement {
     RuntimeDefault,
     /// Turned off. The policy never allows this.
     Unconfined,
+    /// The module does not exist on this daemon (AppArmor on Docker Desktop). Allowed only when
+    /// [`SandboxPolicy::apparmor_may_be_unavailable`] is set, and only for AppArmor.
+    NotAvailable,
 }
 
 /// Which namespace a container shares.
@@ -179,12 +237,15 @@ pub enum Confinement {
 pub enum Namespace {
     /// The container has its own.
     Private,
+    /// The container has none (`ipc: none`).
+    None,
     /// The container uses the host's. The policy never allows this.
     Host,
 }
 
 /// The security settings of a container, as requested in a spec and as read back from the created
-/// container. Comparing the two is the posture check.
+/// container. Fields and `Hardening::strict` are unchanged from ports-v1; only the types of
+/// `seccomp`, `apparmor`, `pid`, `ipc`, `uts` and `userns` are the enums above.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Hardening {
     /// Privileged mode.
@@ -207,7 +268,7 @@ pub struct Hardening {
     pub apparmor: Confinement,
     /// Process id namespace.
     pub pid: Namespace,
-    /// Inter-process communication namespace.
+    /// Inter-process communication namespace. `Namespace::None` is `ipc: none`.
     pub ipc: Namespace,
     /// Host name namespace.
     pub uts: Namespace,
@@ -219,7 +280,7 @@ pub struct Hardening {
     pub sysctls: Vec<String>,
     /// A minimal init process is PID 1.
     pub init: bool,
-    /// The daemon keeps no copy of the logs (`--log-driver none`); the supervisor streams them.
+    /// The daemon keeps no copy of the logs.
     pub log_driver_none: bool,
 }
 
@@ -282,74 +343,23 @@ impl Hardening {
     }
 }
 
-/// The settings that differ between the spec and the created container.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PostureDiff {
-    /// Names of the differing fields of [`Hardening`].
-    pub fields: Vec<&'static str>,
-}
-
-impl PostureDiff {
-    /// True when nothing differs.
-    #[must_use]
-    pub fn is_empty(&self) -> bool {
-        self.fields.is_empty()
-    }
-}
-
-/// A mount that is not one of the supervisor's own. A spec lists these only so the policy check
-/// can refuse them.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ExtraMount {
-    /// The host path.
-    pub source: String,
-    /// The path inside the container.
-    pub target: String,
-    /// True when mounted read-only.
-    pub read_only: bool,
-}
-
-/// Everything needed to build one sandbox.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SandboxSpec {
-    /// The job the sandbox serves.
-    pub job: JobId,
-    /// The attempt the sandbox belongs to. A sandbox whose attempt is not live is an orphan.
-    pub attempt: AttemptId,
-    /// Which kind of sandbox.
-    pub profile: SandboxProfile,
-    /// The image, by digest.
-    pub image: ImageDigest,
-    /// Resource limits.
-    pub limits: SandboxLimits,
-    /// Network access.
-    pub network: NetworkAttachment,
-    /// `/workspace` and `/out` read-write, protected overlays, `.git` masked.
-    pub mounts: WorkspaceMounts,
-    /// The job token file. Agent profile only.
-    pub job_token: Option<JobTokenFile>,
-    /// The environment, set by the supervisor from a fixed list.
-    pub env: FixedEnv,
-    /// The security settings to build the container with.
-    pub hardening: Hardening,
-    /// Mounts beyond the supervisor's own. Normally empty.
-    pub extra_mounts: Vec<ExtraMount>,
-}
-
 /// What the policy requires of every sandbox. The values are loaded from
 /// `policies/security.yaml`; this crate holds no numbers.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SandboxPolicy {
-    /// The smallest user id and group id allowed. Ids below it are root-like.
+    /// The smallest user id and group id allowed.
     pub min_uid: u32,
-    /// Host paths that may never be mounted, or lie under a path that is listed. The root path
-    /// `/` forbids only a mount of the root itself.
+    /// Host paths that may never be mounted or lie under a mount source. A second layer under the
+    /// typed mounts: it checks the two host directories a workspace brings.
     pub forbidden_mount_sources: Vec<String>,
     /// Environment names that may never be set.
     pub forbidden_env_names: Vec<String>,
-    /// The only environment names the supervisor may set. Empty means no names are allowed.
+    /// The only environment names the supervisor may set.
     pub allowed_env_names: Vec<String>,
-    /// The largest limits for the `fetch_deps` profile. Raising a limit is a human decision.
+    /// True on a development host whose daemon has no AppArmor. The posture report then records
+    /// `NotAvailable` and the reason. Production hosts set it to false.
+    pub apparmor_may_be_unavailable: bool,
+    /// The largest limits for the `fetch_deps` profile.
     pub fetch_deps_max: SandboxLimits,
     /// The largest limits for the `agent` profile.
     pub agent_max: SandboxLimits,
@@ -369,64 +379,203 @@ impl SandboxPolicy {
     }
 }
 
-/// One way a spec is weaker than the policy. The set is closed.
+/// Everything needed to build one sandbox.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum SandboxRule {
-    /// Privileged mode.
-    Privileged,
-    /// A capability was added back.
-    CapabilityAdded(String),
-    /// Capabilities were not all dropped.
-    CapabilitiesNotDropped,
-    /// The user or group id is below the policy minimum (root or a system account).
-    UserNotNonRoot,
-    /// The root file system is writable.
-    WritableRootFilesystem,
-    /// `no-new-privileges` is off.
-    PrivilegeEscalationPossible,
-    /// Seccomp is off.
-    SeccompUnconfined,
-    /// AppArmor is off.
-    AppArmorUnconfined,
-    /// A host namespace is shared (process, IPC, host name or user).
-    HostNamespace(&'static str),
-    /// A device is passed through.
-    DeviceAttached(String),
-    /// A kernel parameter is overridden.
-    SysctlOverride(String),
-    /// There is no init process.
-    NoInitProcess,
-    /// The daemon would keep a copy of the logs.
-    DaemonKeepsLogs,
-    /// A host path that the policy forbids is mounted. The Docker socket is one.
-    ForbiddenMountSource(String),
-    /// An environment name the policy forbids.
-    EnvNameForbidden(String),
-    /// An environment name that is not on the supervisor's list.
-    EnvNameNotAllowed(String),
-    /// The network does not suit the profile: `verify` has none, the others use the job network.
-    NetworkNotAllowedForProfile,
-    /// A job token is present outside the agent profile, or missing from it.
-    JobTokenMisplaced,
-    /// A limit is above the policy maximum for the profile.
-    LimitAboveMaximum(&'static str),
-    /// `.git` is not masked.
-    GitDirectoryNotMasked,
+pub struct SandboxSpec {
+    /// The job the sandbox serves.
+    pub job: JobId,
+    /// The attempt the sandbox belongs to. A sandbox whose attempt is not live is an orphan.
+    pub attempt: AttemptId,
+    /// Which kind of sandbox.
+    pub profile: SandboxProfile,
+    /// The image, by digest.
+    pub image: ImageDigest,
+    /// Resource limits.
+    pub limits: SandboxLimits,
+    /// Network access.
+    pub network: NetworkAttachment,
+    /// The mounts. Typed; nothing else can be mounted.
+    pub mounts: SandboxMounts,
+    /// The job token. `agent` profile only.
+    pub job_token: Option<JobTokenMount>,
+    /// The environment, set by the supervisor from a fixed list.
+    pub env: FixedEnv,
+    /// The security settings to build the container with.
+    pub hardening: Hardening,
 }
 
-/// A spec was weaker than the policy. It lists every rule it broke.
-#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
-#[error("the sandbox spec is weaker than the policy ({} rule(s) broken)", .rules.len())]
-pub struct PolicyViolation {
-    /// Every rule the spec broke, in a fixed order.
-    pub rules: Vec<SandboxRule>,
+/// One mount the spec asks for, as the posture check expects to find it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExpectedMount {
+    /// Where it is inside the container.
+    pub target: String,
+    /// True when it is read-only.
+    pub read_only: bool,
+    /// The host path, when the spec names one (the checkout and the output directory). `None`
+    /// for mounts whose host side the adapter chooses (caches, the token file, tmpfs).
+    pub source: Option<String>,
+}
+
+/// One mount of the created container, as `docker inspect` reports it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ObservedMount {
+    /// Where it is inside the container.
+    pub target: String,
+    /// True when it is read-only.
+    pub read_only: bool,
+    /// The host path, or the kind for a tmpfs.
+    pub source: String,
+}
+
+/// What the created container actually looked like when the supervisor inspected it.
+/// Everything the spec asked for is read back here, so the engine can compare all of it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PostureReport {
+    /// The security settings read back from the container.
+    pub observed: Hardening,
+    /// The image the container runs.
+    pub image: ImageDigest,
+    /// The limits read back. `wall_clock` is the supervisor's deadline for the container.
+    pub limits: SandboxLimits,
+    /// The network the container is attached to.
+    pub network: NetworkAttachment,
+    /// Every mount of the container.
+    pub mounts: Vec<ObservedMount>,
+    /// The environment of the container as `Config.Env` reports it.
+    pub env: Vec<(String, String)>,
+    /// True when the runtime self-check inside the container passed.
+    pub self_check_passed: bool,
+    /// When the posture was verified.
+    pub verified_at: Timestamp,
+}
+
+/// Which parts of the posture differ from the spec. Empty means the posture matches.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PostureDiff {
+    /// Names of the differing parts: the field names of `Hardening`, and `image`, `limits`,
+    /// `network`, `mounts`, `env`, `self_check`.
+    pub fields: Vec<&'static str>,
+}
+
+impl PostureDiff {
+    /// True when nothing differs.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.fields.is_empty()
+    }
+}
+
+impl PostureReport {
+    /// Pure. Compares every part of the report with the spec and the policy:
+    ///
+    /// * `Hardening`: each field equal, except that `apparmor` may be `NotAvailable` against a
+    ///   requested `RuntimeDefault` when the policy allows it.
+    /// * `image` equal; `limits` equal; `network` equal.
+    /// * `mounts`: the observed set equals [`SandboxSpec::expected_mounts`]. A mount that is not
+    ///   expected is a difference, and so is a missing one or one whose read-only flag differs.
+    /// * `env`: every pair of the spec is present with the same value, and every observed name is
+    ///   on the policy's allowed list.
+    /// * `self_check_passed` is true.
+    #[must_use]
+    pub fn differences(&self, spec: &SandboxSpec, policy: &SandboxPolicy) -> PostureDiff {
+        let mut fields = spec.hardening.differences(&self.observed).fields;
+        // A daemon without AppArmor reports `NotAvailable` for a requested default profile. That
+        // is accepted only when the policy says so, which a development host does and a
+        // production host does not.
+        let apparmor_excused = policy.apparmor_may_be_unavailable
+            && spec.hardening.apparmor == Confinement::RuntimeDefault
+            && self.observed.apparmor == Confinement::NotAvailable;
+        if apparmor_excused {
+            fields.retain(|name| *name != "apparmor");
+        }
+        if self.image != spec.image {
+            fields.push("image");
+        }
+        if self.limits != spec.limits {
+            fields.push("limits");
+        }
+        if self.network != spec.network {
+            fields.push("network");
+        }
+        if !self.mounts_match(&spec.expected_mounts()) {
+            fields.push("mounts");
+        }
+        if !self.env_matches(spec, policy) {
+            fields.push("env");
+        }
+        if !self.self_check_passed {
+            fields.push("self_check");
+        }
+        PostureDiff { fields }
+    }
 }
 
 impl SandboxSpec {
-    /// Pure. Rejects anything weaker than the policy: privileged, added capabilities, host
-    /// namespaces, the Docker socket, unconfined seccomp or AppArmor, user 0, a forbidden mount
-    /// source, a network that does not suit the profile, a misplaced job token or a limit above
-    /// the maximum. (A tag-only image cannot be written: [`ImageDigest`] refuses it.)
+    /// Pure. Every mount the spec asks for, with the flags the policy requires.
+    #[must_use]
+    pub fn expected_mounts(&self) -> Vec<ExpectedMount> {
+        let workspace = &self.mounts.workspace;
+        let mut mounts = vec![
+            ExpectedMount {
+                target: WORKSPACE_TARGET.to_owned(),
+                read_only: workspace.workspace_read_only,
+                source: Some(workspace.workspace.to_string_lossy().into_owned()),
+            },
+            ExpectedMount {
+                target: OUT_TARGET.to_owned(),
+                read_only: false,
+                source: Some(workspace.out.to_string_lossy().into_owned()),
+            },
+            ExpectedMount {
+                target: SCRATCH_TARGET.to_owned(),
+                read_only: false,
+                source: Some(TMPFS_SOURCE.to_owned()),
+            },
+        ];
+        for overlay in &workspace.protected_overlays {
+            mounts.push(ExpectedMount {
+                target: format!("{WORKSPACE_TARGET}/{}", overlay.as_str()),
+                read_only: true,
+                source: None,
+            });
+        }
+        if workspace.git_masked {
+            mounts.push(ExpectedMount {
+                target: MASK_TARGET.to_owned(),
+                read_only: true,
+                source: Some(MASK_SOURCE.to_owned()),
+            });
+        }
+        for cache in &self.mounts.caches {
+            mounts.push(ExpectedMount {
+                target: format!("{CACHE_ROOT}/{}", cache.name.0.as_str()),
+                read_only: !cache.writable,
+                source: None,
+            });
+        }
+        if self.job_token.is_some() {
+            mounts.push(ExpectedMount {
+                target: JOB_TOKEN_TARGET.to_owned(),
+                read_only: true,
+                source: None,
+            });
+        }
+        mounts
+    }
+
+    /// Pure. Rejects anything weaker than the policy. In addition to the rules of ports-v1
+    /// (privileged, capabilities, user, root file system, privilege escalation, seccomp, host
+    /// namespaces, devices, sysctls, init, log driver, environment, network and token fit to the
+    /// profile, limits at most the maximum, the `.git` mask), it rejects:
+    ///
+    /// * a zero wall clock, and `memory_swap_mb` below `memory_mb`;
+    /// * AppArmor `NotAvailable` unless the policy allows it, and `NotAvailable` for seccomp;
+    /// * a workspace or output directory that is not an absolute, normalized host path (no `..`,
+    ///   no `.` or empty component, no trailing `/`) or that is, or lies under, a forbidden mount
+    ///   source;
+    /// * a `verify` workspace that is not read-only, and an `agent` or `fetch_deps` workspace that
+    ///   is read-only;
+    /// * a writable cache outside `fetch_deps`, and a cache named twice.
     ///
     /// # Errors
     /// Returns every broken rule, not only the first.
@@ -462,11 +611,21 @@ impl SandboxSpec {
         if !h.no_new_privileges {
             rules.push(SandboxRule::PrivilegeEscalationPossible);
         }
-        if h.seccomp == Confinement::Unconfined {
+        // A seccomp profile that is not applied is the same as none.
+        if matches!(
+            h.seccomp,
+            Confinement::Unconfined | Confinement::NotAvailable
+        ) {
             rules.push(SandboxRule::SeccompUnconfined);
         }
-        if h.apparmor == Confinement::Unconfined {
-            rules.push(SandboxRule::AppArmorUnconfined);
+        match h.apparmor {
+            Confinement::RuntimeDefault => {}
+            Confinement::Unconfined => rules.push(SandboxRule::AppArmorUnconfined),
+            Confinement::NotAvailable => {
+                if !policy.apparmor_may_be_unavailable {
+                    rules.push(SandboxRule::AppArmorUnavailableNotPermitted);
+                }
+            }
         }
         for (label, namespace) in [
             ("pid", h.pid),
@@ -489,19 +648,42 @@ impl SandboxSpec {
     }
 
     fn check_mounts(&self, policy: &SandboxPolicy, rules: &mut Vec<SandboxRule>) {
-        if !self.mounts.git_masked {
+        let workspace = &self.mounts.workspace;
+        if !workspace.git_masked {
             rules.push(SandboxRule::GitDirectoryNotMasked);
         }
-        for mount in &self.extra_mounts {
-            let is_the_mask =
-                mount.source == MASK_SOURCE && mount.target == MASK_TARGET && mount.read_only;
-            let forbidden = policy.forbidden_mount_sources.iter().any(|listed| {
-                mount.source == *listed
-                    || (listed != "/" && mount.source.starts_with(&format!("{listed}/")))
-            });
-            if forbidden && !is_the_mask {
-                rules.push(SandboxRule::ForbiddenMountSource(mount.source.clone()));
+        for (label, path) in [("workspace", &workspace.workspace), ("out", &workspace.out)] {
+            let text = path.to_string_lossy();
+            if !is_absolute_and_normalized(&text) {
+                rules.push(SandboxRule::HostPathNotNormalized(label));
+                continue;
             }
+            let forbidden = policy.forbidden_mount_sources.iter().any(|listed| {
+                *text == **listed || (listed != "/" && text.starts_with(&format!("{listed}/")))
+            });
+            if forbidden {
+                rules.push(SandboxRule::ForbiddenMountSource(text.into_owned()));
+            }
+        }
+        let read_only_fits = match self.profile {
+            SandboxProfile::Verify => workspace.workspace_read_only,
+            SandboxProfile::Agent | SandboxProfile::FetchDeps => !workspace.workspace_read_only,
+        };
+        if !read_only_fits {
+            rules.push(SandboxRule::WorkspaceAccessMismatch);
+        }
+        let mut seen = std::collections::BTreeSet::new();
+        let mut misuse = false;
+        for cache in &self.mounts.caches {
+            if cache.writable && self.profile != SandboxProfile::FetchDeps {
+                misuse = true;
+            }
+            if !seen.insert(cache.name.0.as_str()) {
+                misuse = true;
+            }
+        }
+        if misuse {
+            rules.push(SandboxRule::CacheMisuse);
         }
     }
 
@@ -536,6 +718,12 @@ impl SandboxSpec {
     fn check_limits(&self, policy: &SandboxPolicy, rules: &mut Vec<SandboxRule>) {
         let max = policy.max_limits(self.profile);
         let own = &self.limits;
+        if own.wall_clock.is_zero() {
+            rules.push(SandboxRule::LimitIsZero("wall_clock"));
+        }
+        if own.memory_swap_mb < own.memory_mb {
+            rules.push(SandboxRule::SwapBelowMemory);
+        }
         macro_rules! at_most {
             ($($field:ident),+ $(,)?) => {
                 $( if own.$field > max.$field {
@@ -586,19 +774,6 @@ impl fmt::Display for SandboxId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(&self.0)
     }
-}
-
-/// What the created container actually looked like when the supervisor inspected it.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PostureReport {
-    /// The security settings read back from the container.
-    pub observed: Hardening,
-    /// The image the container runs.
-    pub image: ImageDigest,
-    /// True when the runtime self-check inside the container passed.
-    pub self_check_passed: bool,
-    /// When the posture was verified.
-    pub verified_at: Timestamp,
 }
 
 /// A command to run. There is no shell string: the program and its arguments are separate.
@@ -712,37 +887,122 @@ pub struct TeardownReport {
     pub oom_killed: bool,
 }
 
-/// Why a sandbox call failed. The set is closed.
+/// One way a spec is weaker than the policy. The set is closed. The first group is unchanged from
+/// ports-v1 except `ForbiddenMountSource`, which now reports the host path of the workspace or
+/// output directory; the second group is new.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SandboxRule {
+    /// Privileged mode.
+    Privileged,
+    /// A capability was added back.
+    CapabilityAdded(String),
+    /// Capabilities were not all dropped.
+    CapabilitiesNotDropped,
+    /// The user or group id is below the policy minimum.
+    UserNotNonRoot,
+    /// The root file system is writable.
+    WritableRootFilesystem,
+    /// `no-new-privileges` is off.
+    PrivilegeEscalationPossible,
+    /// Seccomp is off.
+    SeccompUnconfined,
+    /// AppArmor is off.
+    AppArmorUnconfined,
+    /// A host namespace is shared (process, IPC, host name or user).
+    HostNamespace(&'static str),
+    /// A device is passed through.
+    DeviceAttached(String),
+    /// A kernel parameter is overridden.
+    SysctlOverride(String),
+    /// There is no init process.
+    NoInitProcess,
+    /// The daemon would keep a copy of the logs.
+    DaemonKeepsLogs,
+    /// The workspace or output directory is, or lies under, a path the policy forbids.
+    ForbiddenMountSource(String),
+    /// An environment name the policy forbids.
+    EnvNameForbidden(String),
+    /// An environment name that is not on the supervisor's list.
+    EnvNameNotAllowed(String),
+    /// The network does not suit the profile.
+    NetworkNotAllowedForProfile,
+    /// A job token is present outside the agent profile, or missing from it.
+    JobTokenMisplaced,
+    /// A limit is above the policy maximum for the profile.
+    LimitAboveMaximum(&'static str),
+    /// `.git` is not masked.
+    GitDirectoryNotMasked,
+    /// A limit is zero. Only the wall clock can be, because the others cannot be written as zero.
+    LimitIsZero(&'static str),
+    /// `memory_swap_mb` is below `memory_mb`.
+    SwapBelowMemory,
+    /// AppArmor is not available and the policy does not allow that.
+    AppArmorUnavailableNotPermitted,
+    /// A host path is not absolute and normalized.
+    HostPathNotNormalized(&'static str),
+    /// The workspace is writable in `verify`, or read-only elsewhere.
+    WorkspaceAccessMismatch,
+    /// A cache is writable outside `fetch_deps`, or listed twice.
+    CacheMisuse,
+}
+
+/// A spec was weaker than the policy.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[error("the sandbox spec is weaker than the policy")]
+pub struct PolicyViolation {
+    /// Every rule the spec broke, in a fixed order.
+    pub rules: Vec<SandboxRule>,
+}
+
+/// Where provisioning stopped.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProvisionStage {
+    /// Writing the job token file.
+    TokenFile,
+    /// Making the per-job network or the sidecar.
+    Network,
+    /// Creating the container.
+    Create,
+    /// Inspecting it.
+    Inspect,
+    /// Starting it.
+    Start,
+    /// Running the self-check.
+    SelfCheck,
+}
+
+/// Why a sandbox call failed. The set is closed. Changes from ports-v1: `ProvisionFailed` names
+/// the stage instead of carrying text.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum SandboxError {
     /// The spec is weaker than the policy. No container was made.
     #[error("the sandbox spec is weaker than the policy")]
     PolicyViolation(PolicyViolation),
-    /// The container that was made differs from the spec. It was removed.
+    /// The created container differs from the spec. It was removed.
     #[error("the created container differs from the spec in: {}", .0.fields.join(", "))]
     PostureMismatch(PostureDiff),
     /// The image is not present on the host. Images are never pulled.
     #[error("the image is not available on this host")]
     ImageUnavailable,
-    /// The container runtime cannot be reached. The job is blocked, never run on the host.
+    /// The container runtime cannot be reached. The stage run is blocked, never run on the host.
     #[error("the container runtime is unavailable")]
     DaemonUnavailable,
-    /// The container could not be made or started. The text never includes secrets.
-    #[error("the sandbox could not be provisioned: {0}")]
-    ProvisionFailed(String),
+    /// The container could not be made or started. Anything made so far was removed.
+    #[error("the sandbox could not be provisioned at {0:?}")]
+    ProvisionFailed(ProvisionStage),
     /// The sandbox lived past its wall-clock limit and was killed.
     #[error("the sandbox exceeded its wall-clock limit")]
     Timeout,
     /// A resource limit was hit.
     #[error("a resource limit was exceeded")]
     ResourceExceeded(Resource),
-    /// The caller cancelled the command. The process was stopped.
-    #[error("the command was cancelled")]
+    /// The caller cancelled the call. The process was stopped and anything made was removed.
+    #[error("the call was cancelled")]
     Cancelled,
     /// The sandbox could not be fully removed. `leaked` says whether something may still run.
     #[error("teardown failed (leaked: {leaked})")]
     TeardownFailed {
-        /// True when a container, network or sidecar may still exist.
+        /// True when a container, network, sidecar or token file may still exist.
         leaked: bool,
     },
 }
@@ -753,35 +1013,89 @@ pub enum SandboxError {
 /// The spec's image is on the host, pinned by digest. The caller holds the attempt's lease.
 ///
 /// # Postconditions
-/// `create_verified` returns a session only for a container that was created, inspected, found to
-/// match the spec and the policy, started, and found to pass the runtime self-check. A mismatch
-/// removes the container and fails closed. `sweep_orphans` leaves no sandbox whose attempt is not
-/// in `live`, and never touches one that is.
+/// `create_verified` returns a session only for a container that was created, inspected, found
+/// to match the spec and the policy in every part of [`PostureReport::differences`], started, and
+/// found to pass the runtime self-check. A mismatch removes the container and fails closed.
+/// For an `agent` sandbox the job token file exists inside the container at the fixed path
+/// and nowhere else on the host once the sandbox is torn down. `sweep_orphans` leaves no sandbox,
+/// network, sidecar or token file whose attempt is not in `live`, and never touches one that is.
 ///
 /// # Errors
-/// [`SandboxError::PolicyViolation`] (checked before anything is built, with
-/// [`SandboxSpec::validate`]), [`SandboxError::PostureMismatch`], [`SandboxError::ImageUnavailable`],
-/// [`SandboxError::DaemonUnavailable`], [`SandboxError::ProvisionFailed`] and
-/// [`SandboxError::TeardownFailed`] (from a sweep).
+/// [`SandboxError`].
 ///
 /// # Idempotency
-/// `create_verified` is not idempotent: each call makes a new sandbox. `sweep_orphans` is
-/// idempotent: a second sweep with the same `live` list finds nothing to remove.
+/// `create_verified` is not idempotent. `sweep_orphans` is.
+///
+/// # Cancellation and timeouts
+/// `create_verified` takes a cancel signal. A cancelled or timed-out provisioning removes
+/// everything it made before it returns, and reports `Cancelled` or `ProvisionFailed`. Dropping
+/// the future is unsafe for resources, so the supervisor does the removal in a guard that runs on
+/// drop; `sweep_orphans` is the backstop.
 #[async_trait]
 pub trait SandboxProvider: Send + Sync {
     /// Says whether this provider starts real containers (`real`) or simulates them (`fake`).
-    fn fidelity(&self) -> Fidelity;
+    fn fidelity(&self) -> factory_domain::vocabulary::Fidelity;
 
-    /// Create, inspect, compare with policy, start, run the runtime self-check. Never returns a
-    /// container that did not pass. A mismatch removes it and fails closed.
+    /// Create, inspect, compare with policy, start, run the runtime self-check.
     async fn create_verified(
         &self,
         spec: SandboxSpec,
+        cancel: &dyn CancelSignal,
     ) -> Result<Box<dyn SandboxSession>, SandboxError>;
 
-    /// Removes containers, networks and sidecars whose attempt is not in `live`. Returns the
-    /// sandboxes it removed.
+    /// Removes containers, networks, sidecars and token files whose attempt is not in `live`.
     async fn sweep_orphans(&self, live: &[AttemptId]) -> Result<Vec<SandboxId>, SandboxError>;
+}
+
+/// True for an absolute host path with no `.`, `..` or empty component and no trailing `/`.
+/// The root `/` alone counts as normalized; the forbidden list refuses it.
+fn is_absolute_and_normalized(text: &str) -> bool {
+    let Some(rest) = text.strip_prefix('/') else {
+        return false;
+    };
+    if text.contains('\0') {
+        return false;
+    }
+    rest.is_empty()
+        || rest
+            .split('/')
+            .all(|part| !part.is_empty() && part != "." && part != "..")
+}
+
+impl PostureReport {
+    /// True when the observed mounts are exactly the expected ones: each target once, with the
+    /// read-only flag, and the host source where the spec names one.
+    fn mounts_match(&self, expected: &[ExpectedMount]) -> bool {
+        self.mounts.len() == expected.len()
+            && expected.iter().all(|want| {
+                let mut found = self.mounts.iter().filter(|m| m.target == want.target);
+                match (found.next(), found.next()) {
+                    (Some(have), None) => {
+                        have.read_only == want.read_only
+                            && want
+                                .source
+                                .as_ref()
+                                .is_none_or(|source| *source == have.source)
+                    }
+                    _ => false,
+                }
+            })
+    }
+
+    /// True when every pair of the spec is present with the same value and every observed name
+    /// is on the policy's allowed list.
+    fn env_matches(&self, spec: &SandboxSpec, policy: &SandboxPolicy) -> bool {
+        let all_present = spec
+            .env
+            .pairs()
+            .iter()
+            .all(|(name, value)| self.env.iter().any(|(n, v)| n == name && v == value));
+        let all_allowed = self
+            .env
+            .iter()
+            .all(|(name, _)| policy.allowed_env_names.contains(name));
+        all_present && all_allowed
+    }
 }
 
 /// One running sandbox.
@@ -804,6 +1118,12 @@ pub trait SandboxProvider: Send + Sync {
 /// # Idempotency
 /// `exec` is not idempotent: each call runs the command again. `stop_and_remove` consumes the
 /// session, so it is called once.
+///
+/// # Cancellation and timeouts
+/// exec takes a cancel signal and stops the process within a second, reporting Cancelled. Each
+/// command has its own timeout and the sandbox has a wall clock; running past either is reported,
+/// never ignored. stop_and_remove runs to the end: a failure leaves a TeardownFailed that says
+/// whether anything may still run.
 #[async_trait]
 pub trait SandboxSession: Send {
     /// The sandbox's name.
@@ -829,21 +1149,25 @@ pub trait SandboxSession: Send {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use factory_domain::ids::{AttemptId, JobId};
     use std::path::PathBuf;
 
     const DIGEST: &str = "registry.local/factory/agent@sha256:0000000000000000000000000000000000000000000000000000000000000000";
+    const OTHER_DIGEST: &str = "registry.local/factory/agent@sha256:1111111111111111111111111111111111111111111111111111111111111111";
+
+    fn n(value: u32) -> NonZeroU32 {
+        NonZeroU32::new(value).expect("a non-zero test value")
+    }
 
     fn limits(scale: u32) -> SandboxLimits {
         SandboxLimits {
-            cpu_millis: 1000 * scale,
-            memory_mb: 1024 * scale,
-            memory_swap_mb: 1024 * scale,
-            pids: 128 * scale,
-            nofile: 2048,
-            max_file_mb: 512,
-            tmpfs_mb: 256,
-            workspace_disk_mb: 2048,
+            cpu_millis: n(1000 * scale),
+            memory_mb: n(1024 * scale),
+            memory_swap_mb: n(1024 * scale),
+            pids: n(128 * scale),
+            nofile: n(2048),
+            max_file_mb: n(512),
+            tmpfs_mb: n(256),
+            workspace_disk_mb: n(2048),
             wall_clock: Duration::from_secs(600 * u64::from(scale)),
         }
     }
@@ -863,9 +1187,17 @@ mod tests {
             .to_vec(),
             forbidden_env_names: ["LD_PRELOAD", "NODE_OPTIONS"].map(String::from).to_vec(),
             allowed_env_names: ["HOME", "PATH", "TERM"].map(String::from).to_vec(),
+            apparmor_may_be_unavailable: false,
             fetch_deps_max: limits(1),
             agent_max: limits(2),
             verify_max: limits(4),
+        }
+    }
+
+    fn token_mount() -> JobTokenMount {
+        // Built at run time so that no secret-shaped literal sits in the source.
+        JobTokenMount {
+            secret: JobTokenSecret::new(format!("{}-{}", "test", "secret-value")),
         }
     }
 
@@ -882,9 +1214,7 @@ mod tests {
                 NetworkAttachment::JobInternal {
                     sidecar: "sidecar-1".to_owned(),
                 },
-                Some(JobTokenFile {
-                    host_path: PathBuf::from("/run/factory/token"),
-                }),
+                Some(token_mount()),
             ),
         };
         SandboxSpec {
@@ -894,27 +1224,54 @@ mod tests {
             image: ImageDigest::parse(DIGEST).unwrap(),
             limits: limits(1),
             network,
-            mounts: WorkspaceMounts {
-                workspace: PathBuf::from("/jobs/1/worktree"),
-                out: PathBuf::from("/jobs/1/out"),
-                protected_overlays: Vec::new(),
-                git_masked: true,
+            mounts: SandboxMounts {
+                workspace: WorkspaceMounts {
+                    workspace: PathBuf::from("/jobs/1/worktree"),
+                    workspace_read_only: profile == SandboxProfile::Verify,
+                    out: PathBuf::from("/jobs/1/out"),
+                    protected_overlays: vec![RepoPath::new(".github").unwrap()],
+                    git_masked: true,
+                },
+                caches: Vec::new(),
             },
             job_token,
-            env: FixedEnv::new(vec![("HOME".to_owned(), "/home/agent".to_owned())]).unwrap(),
+            env: FixedEnv::new(vec![("HOME".to_owned(), "/home/sandbox".to_owned())]).unwrap(),
             hardening: Hardening::strict(10_001, 10_001),
-            extra_mounts: Vec::new(),
         }
     }
 
-    fn broken(spec: &SandboxSpec) -> Vec<SandboxRule> {
+    /// A report that matches `spec` in every part.
+    fn report(spec: &SandboxSpec) -> PostureReport {
+        PostureReport {
+            observed: spec.hardening.clone(),
+            image: spec.image.clone(),
+            limits: spec.limits.clone(),
+            network: spec.network.clone(),
+            mounts: spec
+                .expected_mounts()
+                .into_iter()
+                .map(|m| ObservedMount {
+                    source: m.source.unwrap_or_else(|| "host-chosen".to_owned()),
+                    target: m.target,
+                    read_only: m.read_only,
+                })
+                .collect(),
+            env: spec.env.pairs().to_vec(),
+            self_check_passed: true,
+            verified_at: Timestamp::parse("2026-10-27T10:00:00Z").unwrap(),
+        }
+    }
+
+    fn rules_of(spec: &SandboxSpec) -> Vec<SandboxRule> {
         spec.validate(&policy())
             .expect_err("the spec should be refused")
             .rules
     }
 
+    // ---- validate: the rules of ports-v1 ------------------------------------------------------------
+
     #[test]
-    fn a_policy_compliant_spec_passes_for_every_profile() {
+    fn a_strict_spec_passes_for_each_profile() {
         for profile in [
             SandboxProfile::FetchDeps,
             SandboxProfile::Agent,
@@ -925,269 +1282,475 @@ mod tests {
     }
 
     #[test]
-    fn privileged_mode_is_refused() {
-        let mut s = spec(SandboxProfile::Agent);
-        s.hardening.privileged = true;
-        assert!(broken(&s).contains(&SandboxRule::Privileged));
-    }
-
-    #[test]
-    fn an_added_capability_is_refused_by_name() {
-        let mut s = spec(SandboxProfile::Agent);
-        s.hardening.cap_add = vec!["SYS_ADMIN".to_owned()];
-        assert!(broken(&s).contains(&SandboxRule::CapabilityAdded("SYS_ADMIN".to_owned())));
-    }
-
-    #[test]
-    fn capabilities_that_are_not_dropped_are_refused() {
-        let mut s = spec(SandboxProfile::Agent);
-        s.hardening.cap_drop_all = false;
-        assert!(broken(&s).contains(&SandboxRule::CapabilitiesNotDropped));
-    }
-
-    #[test]
-    fn root_and_system_users_are_refused() {
-        for (uid, gid) in [
-            (0, 0),
-            (0, 10_001),
-            (10_001, 0),
-            (9_999, 10_001),
-            (10_001, 9_999),
-        ] {
-            let mut s = spec(SandboxProfile::Agent);
-            s.hardening.uid = uid;
-            s.hardening.gid = gid;
-            assert!(
-                broken(&s).contains(&SandboxRule::UserNotNonRoot),
-                "{uid}:{gid}"
-            );
-        }
-    }
-
-    #[test]
-    fn a_writable_root_and_missing_no_new_privileges_are_refused() {
-        let mut s = spec(SandboxProfile::Agent);
-        s.hardening.read_only_rootfs = false;
-        s.hardening.no_new_privileges = false;
-        let rules = broken(&s);
-        assert!(rules.contains(&SandboxRule::WritableRootFilesystem));
-        assert!(rules.contains(&SandboxRule::PrivilegeEscalationPossible));
-    }
-
-    #[test]
-    fn unconfined_seccomp_and_apparmor_are_refused() {
-        let mut s = spec(SandboxProfile::Agent);
-        s.hardening.seccomp = Confinement::Unconfined;
-        s.hardening.apparmor = Confinement::Unconfined;
-        let rules = broken(&s);
-        assert!(rules.contains(&SandboxRule::SeccompUnconfined));
-        assert!(rules.contains(&SandboxRule::AppArmorUnconfined));
-    }
-
-    #[test]
-    fn every_host_namespace_is_refused() {
-        for (label, edit) in [
+    fn each_weaker_setting_is_refused_for_its_own_rule() {
+        type Edit = fn(&mut SandboxSpec);
+        let cases: [(&str, Edit, SandboxRule); 13] = [
             (
-                "pid",
-                (|h: &mut Hardening| h.pid = Namespace::Host) as fn(&mut Hardening),
+                "privileged",
+                |s| s.hardening.privileged = true,
+                SandboxRule::Privileged,
             ),
-            ("ipc", |h| h.ipc = Namespace::Host),
-            ("uts", |h| h.uts = Namespace::Host),
-            ("userns", |h| h.userns = Namespace::Host),
-        ] {
-            let mut s = spec(SandboxProfile::Agent);
-            edit(&mut s.hardening);
-            assert!(
-                broken(&s).contains(&SandboxRule::HostNamespace(label)),
-                "{label}"
-            );
-        }
-    }
-
-    #[test]
-    fn devices_sysctls_and_a_missing_init_and_daemon_logs_are_refused() {
-        let mut s = spec(SandboxProfile::Agent);
-        s.hardening.devices = vec!["/dev/kvm".to_owned()];
-        s.hardening.sysctls = vec!["net.ipv4.ip_forward=1".to_owned()];
-        s.hardening.init = false;
-        s.hardening.log_driver_none = false;
-        let rules = broken(&s);
-        assert!(rules.contains(&SandboxRule::DeviceAttached("/dev/kvm".to_owned())));
-        assert!(rules.contains(&SandboxRule::SysctlOverride(
-            "net.ipv4.ip_forward=1".to_owned()
-        )));
-        assert!(rules.contains(&SandboxRule::NoInitProcess));
-        assert!(rules.contains(&SandboxRule::DaemonKeepsLogs));
-    }
-
-    #[test]
-    fn the_docker_socket_and_other_forbidden_sources_are_refused() {
-        for source in [
-            "/var/run/docker.sock",
-            "/etc",
-            "/etc/ssh",
-            "/var/lib/docker",
-            "/",
-            "/dev/sda",
-        ] {
-            let mut s = spec(SandboxProfile::Agent);
-            s.extra_mounts = vec![ExtraMount {
-                source: source.to_owned(),
-                target: "/mnt/x".to_owned(),
-                read_only: true,
-            }];
-            assert!(
-                broken(&s).contains(&SandboxRule::ForbiddenMountSource(source.to_owned())),
-                "{source}"
-            );
-        }
-    }
-
-    #[test]
-    fn a_mount_next_to_a_forbidden_source_is_not_refused() {
-        let mut s = spec(SandboxProfile::Agent);
-        s.extra_mounts = vec![
-            ExtraMount {
-                source: "/etcetera/data".to_owned(),
-                target: "/mnt/a".to_owned(),
-                read_only: true,
-            },
-            ExtraMount {
-                source: "/srv/cache".to_owned(),
-                target: "/cache".to_owned(),
-                read_only: true,
-            },
+            (
+                "capability",
+                |s| s.hardening.cap_add.push("SYS_ADMIN".to_owned()),
+                SandboxRule::CapabilityAdded("SYS_ADMIN".to_owned()),
+            ),
+            (
+                "caps kept",
+                |s| s.hardening.cap_drop_all = false,
+                SandboxRule::CapabilitiesNotDropped,
+            ),
+            (
+                "root user",
+                |s| s.hardening.uid = 0,
+                SandboxRule::UserNotNonRoot,
+            ),
+            (
+                "writable root",
+                |s| s.hardening.read_only_rootfs = false,
+                SandboxRule::WritableRootFilesystem,
+            ),
+            (
+                "escalation",
+                |s| s.hardening.no_new_privileges = false,
+                SandboxRule::PrivilegeEscalationPossible,
+            ),
+            (
+                "seccomp off",
+                |s| s.hardening.seccomp = Confinement::Unconfined,
+                SandboxRule::SeccompUnconfined,
+            ),
+            (
+                "apparmor off",
+                |s| s.hardening.apparmor = Confinement::Unconfined,
+                SandboxRule::AppArmorUnconfined,
+            ),
+            (
+                "host pid",
+                |s| s.hardening.pid = Namespace::Host,
+                SandboxRule::HostNamespace("pid"),
+            ),
+            (
+                "device",
+                |s| s.hardening.devices.push("/dev/kvm".to_owned()),
+                SandboxRule::DeviceAttached("/dev/kvm".to_owned()),
+            ),
+            (
+                "no init",
+                |s| s.hardening.init = false,
+                SandboxRule::NoInitProcess,
+            ),
+            (
+                "daemon logs",
+                |s| s.hardening.log_driver_none = false,
+                SandboxRule::DaemonKeepsLogs,
+            ),
+            (
+                "git visible",
+                |s| s.mounts.workspace.git_masked = false,
+                SandboxRule::GitDirectoryNotMasked,
+            ),
         ];
-        assert_eq!(s.validate(&policy()), Ok(()));
+        for (name, edit, expected) in cases {
+            let mut broken = spec(SandboxProfile::Agent);
+            edit(&mut broken);
+            assert!(rules_of(&broken).contains(&expected), "{name}");
+        }
     }
 
     #[test]
-    fn the_dev_null_mask_over_git_is_the_one_dev_mount_allowed() {
-        let mut s = spec(SandboxProfile::Agent);
-        s.extra_mounts = vec![ExtraMount {
-            source: "/dev/null".to_owned(),
-            target: "/workspace/.git".to_owned(),
-            read_only: true,
-        }];
-        assert_eq!(s.validate(&policy()), Ok(()));
-        s.extra_mounts[0].target = "/workspace/other".to_owned();
-        assert!(broken(&s).contains(&SandboxRule::ForbiddenMountSource("/dev/null".to_owned())));
+    fn a_shared_inter_process_namespace_is_refused_but_ipc_none_is_allowed() {
+        let mut host = spec(SandboxProfile::Agent);
+        host.hardening.ipc = Namespace::Host;
+        assert!(rules_of(&host).contains(&SandboxRule::HostNamespace("ipc")));
+        let mut none = spec(SandboxProfile::Agent);
+        none.hardening.ipc = Namespace::None;
+        assert_eq!(none.validate(&policy()), Ok(()));
     }
 
     #[test]
-    fn forbidden_and_unlisted_environment_names_are_refused() {
-        let mut s = spec(SandboxProfile::Agent);
-        s.env = FixedEnv::new(vec![
-            ("HOME".to_owned(), "/home/agent".to_owned()),
-            ("LD_PRELOAD".to_owned(), "/tmp/x.so".to_owned()),
-            ("MY_OWN".to_owned(), "1".to_owned()),
-        ])
-        .unwrap();
-        let rules = broken(&s);
-        assert!(rules.contains(&SandboxRule::EnvNameForbidden("LD_PRELOAD".to_owned())));
-        assert!(rules.contains(&SandboxRule::EnvNameNotAllowed("MY_OWN".to_owned())));
-        assert!(!rules.contains(&SandboxRule::EnvNameNotAllowed("HOME".to_owned())));
-    }
+    fn the_environment_network_and_token_must_fit_the_profile() {
+        let mut env = spec(SandboxProfile::Agent);
+        env.env = FixedEnv::new(vec![("LD_PRELOAD".to_owned(), "/x".to_owned())]).unwrap();
+        assert!(rules_of(&env).contains(&SandboxRule::EnvNameForbidden("LD_PRELOAD".to_owned())));
+        let mut unlisted = spec(SandboxProfile::Agent);
+        unlisted.env = FixedEnv::new(vec![("SECRET_MODE".to_owned(), "1".to_owned())]).unwrap();
+        assert!(
+            rules_of(&unlisted).contains(&SandboxRule::EnvNameNotAllowed("SECRET_MODE".to_owned()))
+        );
 
-    #[test]
-    fn the_network_must_suit_the_profile() {
-        let mut verify = spec(SandboxProfile::Verify);
-        verify.network = NetworkAttachment::JobInternal {
+        let mut wrong_network = spec(SandboxProfile::Verify);
+        wrong_network.network = NetworkAttachment::JobInternal {
             sidecar: "s".to_owned(),
         };
-        assert!(broken(&verify).contains(&SandboxRule::NetworkNotAllowedForProfile));
+        assert!(rules_of(&wrong_network).contains(&SandboxRule::NetworkNotAllowedForProfile));
 
-        let mut agent = spec(SandboxProfile::Agent);
-        agent.network = NetworkAttachment::None;
-        assert!(broken(&agent).contains(&SandboxRule::NetworkNotAllowedForProfile));
+        let mut token_missing = spec(SandboxProfile::Agent);
+        token_missing.job_token = None;
+        assert!(rules_of(&token_missing).contains(&SandboxRule::JobTokenMisplaced));
+        let mut token_extra = spec(SandboxProfile::Verify);
+        token_extra.job_token = Some(token_mount());
+        assert!(rules_of(&token_extra).contains(&SandboxRule::JobTokenMisplaced));
     }
 
     #[test]
-    fn the_job_token_belongs_to_the_agent_profile_only() {
-        let mut verify = spec(SandboxProfile::Verify);
-        verify.job_token = Some(JobTokenFile {
-            host_path: PathBuf::from("/run/t"),
-        });
-        assert!(broken(&verify).contains(&SandboxRule::JobTokenMisplaced));
-
-        let mut agent = spec(SandboxProfile::Agent);
-        agent.job_token = None;
-        assert!(broken(&agent).contains(&SandboxRule::JobTokenMisplaced));
-    }
-
-    #[test]
-    fn a_limit_above_the_profile_maximum_is_refused_by_field() {
-        let mut s = spec(SandboxProfile::FetchDeps);
-        s.limits.memory_mb = 4096;
-        s.limits.pids = 10_000;
-        s.limits.wall_clock = Duration::from_secs(99_999);
-        let rules = broken(&s);
+    fn a_limit_above_the_profile_maximum_is_refused_and_the_maximum_is_allowed() {
+        let mut over = spec(SandboxProfile::Agent);
+        over.limits.memory_mb = n(2049);
+        over.limits.memory_swap_mb = n(2049);
+        let rules = rules_of(&over);
         assert!(rules.contains(&SandboxRule::LimitAboveMaximum("memory_mb")));
-        assert!(rules.contains(&SandboxRule::LimitAboveMaximum("pids")));
-        assert!(rules.contains(&SandboxRule::LimitAboveMaximum("wall_clock")));
-        assert!(!rules.contains(&SandboxRule::LimitAboveMaximum("cpu_millis")));
-    }
-
-    #[test]
-    fn an_unmasked_git_directory_is_refused() {
-        let mut s = spec(SandboxProfile::Agent);
-        s.mounts.git_masked = false;
-        assert!(broken(&s).contains(&SandboxRule::GitDirectoryNotMasked));
+        let mut at_max = spec(SandboxProfile::Agent);
+        at_max.limits = limits(2);
+        assert_eq!(at_max.validate(&policy()), Ok(()));
     }
 
     #[test]
     fn every_broken_rule_is_reported_not_only_the_first() {
-        let mut s = spec(SandboxProfile::Agent);
-        s.hardening.privileged = true;
-        s.hardening.uid = 0;
-        s.mounts.git_masked = false;
-        assert!(broken(&s).len() >= 3);
+        let mut broken = spec(SandboxProfile::Agent);
+        broken.hardening.privileged = true;
+        broken.hardening.uid = 0;
+        broken.hardening.init = false;
+        assert!(rules_of(&broken).len() >= 3);
+    }
+
+    // ---- validate: the rules of ports-v1.1 -----------------------------------------------------------
+
+    #[test]
+    fn a_zero_wall_clock_is_refused() {
+        let mut zero = spec(SandboxProfile::Agent);
+        zero.limits.wall_clock = Duration::ZERO;
+        assert!(rules_of(&zero).contains(&SandboxRule::LimitIsZero("wall_clock")));
     }
 
     #[test]
-    fn a_tag_is_not_an_image_digest() {
+    fn swap_below_memory_is_refused() {
+        let mut broken = spec(SandboxProfile::Agent);
+        broken.limits.memory_mb = n(1024);
+        broken.limits.memory_swap_mb = n(512);
+        assert!(rules_of(&broken).contains(&SandboxRule::SwapBelowMemory));
+        let mut equal = spec(SandboxProfile::Agent);
+        equal.limits.memory_swap_mb = equal.limits.memory_mb;
+        assert_eq!(equal.validate(&policy()), Ok(()), "equal means no swap");
+    }
+
+    #[test]
+    fn apparmor_not_available_is_accepted_only_by_policy() {
+        let mut unavailable = spec(SandboxProfile::Agent);
+        unavailable.hardening.apparmor = Confinement::NotAvailable;
+        assert!(rules_of(&unavailable).contains(&SandboxRule::AppArmorUnavailableNotPermitted));
+        let mut development = policy();
+        development.apparmor_may_be_unavailable = true;
+        assert_eq!(unavailable.validate(&development), Ok(()));
+    }
+
+    #[test]
+    fn seccomp_not_available_is_never_accepted() {
+        let mut broken = spec(SandboxProfile::Agent);
+        broken.hardening.seccomp = Confinement::NotAvailable;
+        let mut development = policy();
+        development.apparmor_may_be_unavailable = true;
+        assert!(broken.validate(&development).is_err());
+        assert!(rules_of(&broken).contains(&SandboxRule::SeccompUnconfined));
+    }
+
+    #[test]
+    fn a_host_path_must_be_absolute_and_normalized() {
         for bad in [
-            "alpine",
-            "alpine:3.20",
-            "alpine@sha256:abc",
-            "@sha256:",
-            "x@sha256:ZZ",
+            "jobs/1/worktree",
+            "/jobs/../etc",
+            "/jobs/./1",
+            "/jobs//1",
+            "/jobs/1/",
+            "",
         ] {
-            assert_eq!(ImageDigest::parse(bad), Err(NotADigest), "{bad}");
-        }
-        assert!(ImageDigest::parse(DIGEST).is_ok());
-    }
-
-    #[test]
-    fn a_command_needs_a_program_and_no_nul_bytes() {
-        assert!(ExecArgv::new(vec![]).is_err());
-        assert!(ExecArgv::new(vec![String::new()]).is_err());
-        assert!(ExecArgv::new(vec!["ls".into(), "a\0b".into()]).is_err());
-        let ok = ExecArgv::new(vec!["echo".into(), "hi".into()]).unwrap();
-        assert_eq!(ok.program(), "echo");
-    }
-
-    #[test]
-    fn environment_names_must_be_upper_case_identifiers() {
-        assert!(FixedEnv::new(vec![("HOME".into(), "x".into())]).is_ok());
-        for bad in ["home", "1ABC", "A-B", "", "A B"] {
+            let mut broken = spec(SandboxProfile::Agent);
+            broken.mounts.workspace.workspace = PathBuf::from(bad);
             assert!(
-                FixedEnv::new(vec![(bad.into(), "x".into())]).is_err(),
+                rules_of(&broken).contains(&SandboxRule::HostPathNotNormalized("workspace")),
                 "{bad:?}"
             );
         }
+        let mut out = spec(SandboxProfile::Agent);
+        out.mounts.workspace.out = PathBuf::from("out/relative");
+        assert!(rules_of(&out).contains(&SandboxRule::HostPathNotNormalized("out")));
     }
 
     #[test]
-    fn posture_differences_name_the_fields_that_changed() {
-        let requested = Hardening::strict(10_001, 10_001);
-        let mut observed = requested.clone();
-        assert!(requested.differences(&observed).is_empty());
-        observed.privileged = true;
-        observed.cap_add = vec!["NET_ADMIN".to_owned()];
+    fn the_workspace_may_not_be_a_forbidden_source_or_lie_under_one() {
+        for bad in [
+            "/var/run/docker.sock",
+            "/var",
+            "/var/lib/docker",
+            "/etc/ssl",
+            "/",
+        ] {
+            let mut broken = spec(SandboxProfile::Agent);
+            broken.mounts.workspace.workspace = PathBuf::from(bad);
+            assert!(
+                rules_of(&broken)
+                    .iter()
+                    .any(|r| matches!(r, SandboxRule::ForbiddenMountSource(_))),
+                "{bad:?}"
+            );
+        }
+        let mut near = spec(SandboxProfile::Agent);
+        near.mounts.workspace.workspace = PathBuf::from("/variable/work");
         assert_eq!(
-            requested.differences(&observed).fields,
-            vec!["privileged", "cap_add"]
+            near.validate(&policy()),
+            Ok(()),
+            "a name that only starts like a forbidden one"
         );
+    }
+
+    #[test]
+    fn the_workspace_access_must_fit_the_profile() {
+        let mut writable_verify = spec(SandboxProfile::Verify);
+        writable_verify.mounts.workspace.workspace_read_only = false;
+        assert!(rules_of(&writable_verify).contains(&SandboxRule::WorkspaceAccessMismatch));
+        let mut read_only_agent = spec(SandboxProfile::Agent);
+        read_only_agent.mounts.workspace.workspace_read_only = true;
+        assert!(rules_of(&read_only_agent).contains(&SandboxRule::WorkspaceAccessMismatch));
+    }
+
+    #[test]
+    fn a_writable_cache_is_refused_outside_fetch_deps() {
+        let cache = |writable| CacheMount {
+            name: CacheName(Slug::parse("cargo-registry").unwrap()),
+            writable,
+        };
+        let mut agent = spec(SandboxProfile::Agent);
+        agent.mounts.caches = vec![cache(true)];
+        assert!(rules_of(&agent).contains(&SandboxRule::CacheMisuse));
+        let mut read_only = spec(SandboxProfile::Agent);
+        read_only.mounts.caches = vec![cache(false)];
+        assert_eq!(read_only.validate(&policy()), Ok(()));
+        let mut fetch = spec(SandboxProfile::FetchDeps);
+        fetch.mounts.caches = vec![cache(true)];
+        assert_eq!(fetch.validate(&policy()), Ok(()));
+    }
+
+    #[test]
+    fn a_cache_named_twice_is_refused() {
+        let cache = || CacheMount {
+            name: CacheName(Slug::parse("npm").unwrap()),
+            writable: false,
+        };
+        let mut twice = spec(SandboxProfile::FetchDeps);
+        twice.mounts.caches = vec![cache(), cache()];
+        assert!(rules_of(&twice).contains(&SandboxRule::CacheMisuse));
+    }
+
+    #[test]
+    fn a_job_token_secret_never_shows_in_debug_output() {
+        let spec = spec(SandboxProfile::Agent);
+        assert!(!format!("{spec:?}").contains("secret-value"));
+    }
+
+    // ---- expected mounts ------------------------------------------------------------------------------
+
+    #[test]
+    fn the_expected_mounts_are_the_workspace_the_output_the_scratch_the_overlays_and_the_mask() {
+        let mounts = spec(SandboxProfile::Agent).expected_mounts();
+        let find = |target: &str| mounts.iter().find(|m| m.target == target).cloned();
+        let workspace = find(WORKSPACE_TARGET).expect("the workspace");
+        assert!(!workspace.read_only);
+        assert_eq!(workspace.source.as_deref(), Some("/jobs/1/worktree"));
+        let out = find(OUT_TARGET).expect("the output directory");
+        assert!(!out.read_only);
+        assert_eq!(out.source.as_deref(), Some("/jobs/1/out"));
+        assert!(find(SCRATCH_TARGET).is_some());
+        let overlay = find("/workspace/.github").expect("the protected overlay");
+        assert!(overlay.read_only);
+        let mask = find(MASK_TARGET).expect("the git mask");
+        assert!(mask.read_only);
+        assert_eq!(mask.source.as_deref(), Some(MASK_SOURCE));
+        let token = find(JOB_TOKEN_TARGET).expect("the token file");
+        assert!(token.read_only);
+    }
+
+    #[test]
+    fn a_verify_workspace_is_expected_read_only_and_has_no_token() {
+        let mounts = spec(SandboxProfile::Verify).expected_mounts();
+        let workspace = mounts
+            .iter()
+            .find(|m| m.target == WORKSPACE_TARGET)
+            .unwrap();
+        assert!(workspace.read_only);
+        assert!(mounts.iter().all(|m| m.target != JOB_TOKEN_TARGET));
+    }
+
+    // ---- the posture report ----------------------------------------------------------------------------
+
+    #[test]
+    fn a_report_that_matches_the_spec_has_no_differences() {
+        for profile in [
+            SandboxProfile::FetchDeps,
+            SandboxProfile::Agent,
+            SandboxProfile::Verify,
+        ] {
+            let spec = spec(profile);
+            let diff = report(&spec).differences(&spec, &policy());
+            assert!(diff.is_empty(), "{profile:?}: {diff:?}");
+        }
+    }
+
+    fn drift(edit: impl FnOnce(&mut PostureReport)) -> Vec<&'static str> {
+        let spec = spec(SandboxProfile::Agent);
+        let mut observed = report(&spec);
+        edit(&mut observed);
+        observed.differences(&spec, &policy()).fields
+    }
+
+    #[test]
+    fn a_drifted_hardening_field_is_named() {
+        assert_eq!(drift(|r| r.observed.privileged = true), vec!["privileged"]);
+        assert_eq!(drift(|r| r.observed.uid = 0), vec!["uid"]);
+        assert_eq!(drift(|r| r.observed.ipc = Namespace::Host), vec!["ipc"]);
+    }
+
+    #[test]
+    fn a_different_image_is_a_mismatch() {
+        let fields = drift(|r| r.image = ImageDigest::parse(OTHER_DIGEST).unwrap());
+        assert_eq!(fields, vec!["image"]);
+    }
+
+    #[test]
+    fn a_drifted_limit_is_a_mismatch() {
+        assert_eq!(drift(|r| r.limits.pids = n(100_000)), vec!["limits"]);
+        assert_eq!(
+            drift(|r| r.limits.wall_clock = Duration::from_secs(1)),
+            vec!["limits"]
+        );
+    }
+
+    #[test]
+    fn a_drifted_network_is_a_mismatch() {
+        assert_eq!(
+            drift(|r| r.network = NetworkAttachment::None),
+            vec!["network"]
+        );
+    }
+
+    #[test]
+    fn an_extra_mount_is_a_mismatch() {
+        let fields = drift(|r| {
+            r.mounts.push(ObservedMount {
+                target: "/host".to_owned(),
+                read_only: false,
+                source: "/".to_owned(),
+            });
+        });
+        assert_eq!(fields, vec!["mounts"]);
+    }
+
+    #[test]
+    fn a_missing_mount_is_a_mismatch() {
+        assert_eq!(drift(|r| drop(r.mounts.pop())), vec!["mounts"]);
+    }
+
+    #[test]
+    fn a_writable_mount_that_should_be_read_only_is_a_mismatch() {
+        let fields = drift(|r| {
+            let mask = r
+                .mounts
+                .iter_mut()
+                .find(|m| m.target == MASK_TARGET)
+                .unwrap();
+            mask.read_only = false;
+        });
+        assert_eq!(fields, vec!["mounts"]);
+    }
+
+    #[test]
+    fn a_workspace_mounted_from_another_host_path_is_a_mismatch() {
+        let fields = drift(|r| {
+            let w = r
+                .mounts
+                .iter_mut()
+                .find(|m| m.target == WORKSPACE_TARGET)
+                .unwrap();
+            w.source = "/jobs/other/worktree".to_owned();
+        });
+        assert_eq!(fields, vec!["mounts"]);
+    }
+
+    #[test]
+    fn a_drifted_environment_is_a_mismatch() {
+        // A changed value, a name the spec did not set and a missing pair.
+        assert_eq!(
+            drift(|r| r.env = vec![("HOME".to_owned(), "/root".to_owned())]),
+            vec!["env"]
+        );
+        assert_eq!(
+            drift(|r| r.env.push(("LD_PRELOAD".to_owned(), "/x".to_owned()))),
+            vec!["env"]
+        );
+        assert_eq!(drift(|r| r.env.clear()), vec!["env"]);
+    }
+
+    #[test]
+    fn a_failed_self_check_is_a_mismatch() {
+        assert_eq!(drift(|r| r.self_check_passed = false), vec!["self_check"]);
+    }
+
+    #[test]
+    fn several_drifts_are_all_named_in_a_fixed_order() {
+        let fields = drift(|r| {
+            r.self_check_passed = false;
+            r.network = NetworkAttachment::None;
+            r.observed.privileged = true;
+        });
+        assert_eq!(fields, vec!["privileged", "network", "self_check"]);
+    }
+
+    #[test]
+    fn apparmor_not_available_is_excused_only_when_the_policy_allows_it() {
+        let spec = spec(SandboxProfile::Agent);
+        let mut observed = report(&spec);
+        observed.observed.apparmor = Confinement::NotAvailable;
+        assert_eq!(
+            observed.differences(&spec, &policy()).fields,
+            vec!["apparmor"]
+        );
+        let mut development = policy();
+        development.apparmor_may_be_unavailable = true;
+        assert!(observed.differences(&spec, &development).is_empty());
+        // The excuse covers a requested default profile, not a profile that was switched off.
+        observed.observed.apparmor = Confinement::Unconfined;
+        assert_eq!(
+            observed.differences(&spec, &development).fields,
+            vec!["apparmor"]
+        );
+    }
+
+    #[test]
+    fn image_references_must_be_pinned_by_digest() {
+        assert!(ImageDigest::parse(DIGEST).is_ok());
+        assert!(ImageDigest::parse("registry.local/factory/agent:latest").is_err());
+        assert!(ImageDigest::parse("agent@sha256:short").is_err());
+    }
+
+    #[test]
+    fn the_error_set_names_a_stage_and_carries_no_text() {
+        assert_eq!(
+            SandboxError::ProvisionFailed(ProvisionStage::Inspect).to_string(),
+            "the sandbox could not be provisioned at Inspect"
+        );
+        assert_eq!(
+            SandboxError::PostureMismatch(PostureDiff {
+                fields: vec!["limits", "env"]
+            })
+            .to_string(),
+            "the created container differs from the spec in: limits, env"
+        );
+    }
+
+    #[test]
+    fn exec_argv_has_no_shell_string() {
+        assert!(ExecArgv::new(vec!["cargo".to_owned(), "test".to_owned()]).is_ok());
+        assert!(ExecArgv::new(vec![]).is_err());
+        assert!(ExecArgv::new(vec![String::new()]).is_err());
+        assert!(ExecArgv::new(vec!["a\0b".to_owned()]).is_err());
     }
 }

@@ -1,9 +1,13 @@
 # 0003: Run untrusted work in hardened ephemeral containers under a supervisor, with a masked git workspace, behind SandboxProvider and WorkspaceProvider ports
 
-- Status: Accepted. Revised on 2026-10-27 after the security review (see "Revision note").
+- Status: Accepted. Revised on 2026-10-27 after the security review (see "Revision note"). Revised again on 2026-10-27 by ADR 0014 (see "Revision note (ADR 0014)").
 - Date: 2026-10-27
 - Deciders: software_architect. The container settings, network design and ingestion rules are owned by the security specialist in [`docs/security/sandbox-policy.md`](../security/sandbox-policy.md) and `policies/security.yaml`. This record decides the architecture around them and does not restate them.
 - Related: [ADR 0005](0005-agent-runtime-adapter-boundary.md), [ADR 0009](0009-operating-defaults-pending-confirmation.md), [overview](../architecture/overview.md)
+
+## Revision note (ADR 0014)
+
+Revised on 2026-10-27 by [ADR 0014](0014-ports-v1-1-claim-protocol-and-port-revision.md): the job owns the trusted object store and an attempt owns a worktree (`JobRepo` and `Workspace`), a commit made in one workspace is pushable from any other, mounts in a sandbox spec are typed so the policy check is an allow list by construction, the posture report covers hardening, image, limits, network, mounts and environment, the sandbox adapter writes and removes the job token file, AppArmor may be reported as not available where the policy allows it, and every host process is started through one `ProcessRunner`.
 
 ## Context and problem statement
 

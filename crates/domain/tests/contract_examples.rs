@@ -220,6 +220,10 @@ const REJECTED_FOR: &[(&str, &str)] = &[
         "use a whole number from -9007199254740991 to 9007199254740991",
     ),
     (
+        "evidence-ledger-entry/source-url-not-https.json",
+        "a source URL starts with https://",
+    ),
+    (
         "gate-report/blocked-report-with-warnings.json",
         "warnings: a BLOCKED report carries no warnings",
     ),
@@ -296,6 +300,14 @@ const REJECTED_FOR: &[(&str, &str)] = &[
         "human_question: a NEEDS_HUMAN verdict must carry the one question",
     ),
     (
+        "review-verdict/non-pass-finding-without-a-line.json",
+        "findings[0].location.line_start: a finding of a verdict other than PASS cites a line",
+    ),
+    (
+        "review-verdict/non-pass-finding-without-location.json",
+        "findings[0].location: a finding of a verdict other than PASS cites a file and a line",
+    ),
+    (
         "review-verdict/pass-with-blocking-finding.json",
         "findings[0].severity: a PASS verdict cannot carry a blocker",
     ),
@@ -354,6 +366,10 @@ const REJECTED_FOR: &[(&str, &str)] = &[
     (
         "stage-contract/repository-content-marked-trusted.json",
         "inputs[1].trust: content from outside the factory",
+    ),
+    (
+        "stage-contract/retry-on-without-lease-lost.json",
+        "timeout_and_retries.retry_on: must list LEASE_LOST and TIMED_OUT",
     ),
     (
         "stage-contract/reviewer-may-see-builder-summary.json",

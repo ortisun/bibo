@@ -26,21 +26,23 @@
 use std::sync::{Arc, Mutex, PoisonError};
 
 use async_trait::async_trait;
-use factory_domain::scope::TenantScope;
+use factory_domain::scope::{PlatformScope, ResolvedPrincipal, ResolvedRepository, TenantScope};
 use factory_domain::vocabulary::{ExecutionMode, Fidelity, StageKind};
 use factory_ports::artifact::ArtifactBackend;
-use factory_ports::store::{SchemaVersion, Store, StoreError, SystemScope, Tx};
+use factory_ports::store::{
+    Audience, AuditRecord, GithubRepositoryId, InstallationId, NewAuditEvent, SchemaVersion, Store,
+    StoreError, SystemScope, SystemTx, TokenHash, Tx, Witness,
+};
 use tokio::task::JoinHandle;
 
 use super::config::{AttemptTimings, JobDefaults, PgStoreConfig, TenantLogin};
 use super::error::StartupError;
 use super::pool::{PgPool, PooledConnection};
 use super::readiness::{self, Expected};
-use super::system::SystemTx;
-use super::tx::PgTx;
 
 /// The parts of the configuration that the operations read.
 #[derive(Debug, Clone)]
+#[allow(dead_code)] // Read by the table modules once they are adapted to ports v1.1.
 pub(super) struct Settings {
     pub execution_mode: ExecutionMode,
     pub pipeline_scope: Vec<StageKind>,
@@ -51,6 +53,7 @@ pub(super) struct Settings {
 }
 
 /// What every transaction of a store shares.
+#[allow(dead_code)] // Read by the table modules once they are adapted to ports v1.1.
 pub(super) struct Shared {
     pub tenant_pool: PgPool,
     pub system_pool: Option<PgPool>,
@@ -59,6 +62,7 @@ pub(super) struct Shared {
     rollbacks: Mutex<Vec<JoinHandle<()>>>,
 }
 
+#[allow(dead_code)] // Used by the transaction types once they are adapted to ports v1.1.
 impl Shared {
     /// Waits for the rollbacks of dropped transactions, so their locks are gone.
     pub(super) async fn settle_rollbacks(&self) {
@@ -206,18 +210,42 @@ impl Store for PgStore {
         Fidelity::Real
     }
 
-    async fn begin(&self, scope: TenantScope) -> Result<Box<dyn Tx>, StoreError> {
-        let tx = PgTx::begin(self.shared.clone(), scope.tenant_id()).await?;
-        Ok(Box::new(tx))
+    // Pending adaptation to ports v1.1: the transaction types of this crate were written against
+    // the old write model and are not compiled. See the notice in `pg/mod.rs`.
+    async fn begin(&self, _scope: TenantScope) -> Result<Box<dyn Tx>, StoreError> {
+        Err(StoreError::Unavailable)
     }
 
-    async fn begin_system(&self, _scope: SystemScope) -> Result<Box<dyn Tx>, StoreError> {
-        if self.shared.system_pool.is_none() {
-            tracing::error!("begin_system was called on a store that has no system pool");
-            return Err(StoreError::Unavailable);
-        }
-        self.shared.settle_rollbacks().await;
-        Ok(Box::new(SystemTx::new(self.shared.clone())))
+    async fn begin_system(&self, _scope: SystemScope) -> Result<Box<dyn SystemTx>, StoreError> {
+        Err(StoreError::Unavailable)
+    }
+
+    async fn resolve_token(
+        &self,
+        _hash: &TokenHash,
+        _audience: &Audience,
+    ) -> Result<Option<ResolvedPrincipal>, StoreError> {
+        Err(StoreError::Unavailable)
+    }
+
+    async fn resolve_installation(
+        &self,
+        _installation: InstallationId,
+        _repository: GithubRepositoryId,
+    ) -> Result<Option<ResolvedRepository>, StoreError> {
+        Err(StoreError::Unavailable)
+    }
+
+    async fn record_platform_audit(
+        &self,
+        _scope: PlatformScope,
+        _event: NewAuditEvent,
+    ) -> Result<AuditRecord, StoreError> {
+        Err(StoreError::Unavailable)
+    }
+
+    async fn committed(&self, _scope: TenantScope, _witness: Witness) -> Result<bool, StoreError> {
+        Err(StoreError::Unavailable)
     }
 
     async fn schema_version(&self) -> Result<SchemaVersion, StoreError> {
