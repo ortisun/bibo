@@ -29,8 +29,12 @@ use crate::contracts::EvidenceLedgerEntry;
 use crate::ids::JobId;
 use crate::values::Sha256Digest;
 
-/// The largest whole number that a 64-bit float holds exactly: 2^53 - 1.
-const LARGEST_EXACT_INTEGER: u64 = (1 << 53) - 1;
+/// The largest whole number that a 64-bit float holds exactly: 2^53 - 1 (ADR 0011).
+///
+/// The same number as [`crate::values::LARGEST_EXACT_INTEGER`], which bounds the integers of a
+/// ledger entry when the entry is built. This is the second layer: the hash function refuses a
+/// larger number even if a value got past the first one.
+pub const LARGEST_EXACT_INTEGER: u64 = crate::values::LARGEST_EXACT_INTEGER.unsigned_abs();
 
 /// An entry that cannot be turned into canonical JSON.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -297,5 +301,57 @@ pub fn verify_chain_against_head(
             expected: head.clone(),
             found,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::{Value, json};
+
+    use super::{LARGEST_EXACT_INTEGER, LedgerError, require_exact_numbers};
+
+    #[test]
+    fn the_ledger_limit_is_the_largest_whole_number_a_float_holds() {
+        assert_eq!(LARGEST_EXACT_INTEGER, 9_007_199_254_740_991);
+        assert_eq!(LARGEST_EXACT_INTEGER, (1_u64 << 53) - 1);
+    }
+
+    fn refused(document: &Value) -> Option<String> {
+        match require_exact_numbers(document) {
+            Err(LedgerError::IntegerNotRepresentable { number }) => Some(number),
+            Err(other) => panic!("{other}"),
+            Ok(()) => None,
+        }
+    }
+
+    #[test]
+    fn the_second_layer_still_refuses_a_number_the_first_layer_should_have_stopped() {
+        // The types of a ledger entry cannot hold these numbers, so the check is tried directly.
+        assert_eq!(
+            refused(&json!(9_007_199_254_740_992_u64)),
+            Some("9007199254740992".into())
+        );
+        assert_eq!(
+            refused(&json!(-9_007_199_254_740_992_i64)),
+            Some("-9007199254740992".into())
+        );
+        assert_eq!(refused(&json!(u64::MAX)), Some(u64::MAX.to_string()));
+        assert_eq!(refused(&json!(i64::MIN)), Some(i64::MIN.to_string()));
+    }
+
+    #[test]
+    fn the_second_layer_accepts_both_ends_of_the_exact_range() {
+        assert_eq!(refused(&json!(9_007_199_254_740_991_u64)), None);
+        assert_eq!(refused(&json!(-9_007_199_254_740_991_i64)), None);
+        assert_eq!(refused(&json!(0)), None);
+    }
+
+    #[test]
+    fn the_second_layer_looks_inside_arrays_and_objects() {
+        let nested =
+            json!({ "evidence": [{ "seeds": [1, 2, { "deep": [9_007_199_254_740_992_u64] }] }] });
+        assert_eq!(refused(&nested), Some("9007199254740992".into()));
+        let fine = json!({ "evidence": [{ "seeds": [1, 2, { "deep": [3] }] }], "text": "9007199254740992" });
+        assert_eq!(refused(&fine), None);
     }
 }

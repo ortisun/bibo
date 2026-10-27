@@ -20,6 +20,21 @@ pub type PositiveInt = Bounded<1, { i64::MAX }>;
 /// An integer of at least 0, such as a count.
 pub type NonNegativeInt = Bounded<0, { i64::MAX }>;
 
+/// The largest whole number that a 64-bit float holds exactly: 2^53 - 1 (ADR 0011).
+///
+/// RFC 8785, the canonical JSON that the evidence ledger hash is taken over, writes every number
+/// as a 64-bit float. A larger integer would be rounded, so the hash would cover a number
+/// different from the one stored. `schemas/evidence-ledger-entry.schema.json` bounds every integer
+/// of an entry by this number, and [`crate::ledger`] refuses a larger one when it hashes.
+pub const LARGEST_EXACT_INTEGER: i64 = (1 << 53) - 1;
+
+/// A whole number from -(2^53 - 1) to 2^53 - 1, such as a random seed in a ledger entry. Refuses
+/// a larger one when the value is built, so a ledger entry never holds a number that its hash
+/// would round.
+pub type ExactInteger = Bounded<{ -LARGEST_EXACT_INTEGER }, { LARGEST_EXACT_INTEGER }>;
+/// A whole number from 1 to 2^53 - 1, such as the sequence or a line number in a ledger entry.
+pub type ExactPositiveInt = Bounded<1, { LARGEST_EXACT_INTEGER }>;
+
 impl<const MIN: i64, const MAX: i64> Bounded<MIN, MAX> {
     /// Checks the range.
     ///

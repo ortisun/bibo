@@ -4,8 +4,9 @@
 use factory_domain::ids::{JobId, TenantId};
 use factory_domain::scope::{CrossTenantAccess, TenantScope};
 use factory_domain::values::{
-    AggregateVersion, Bounded, GitSha, HumanText, HumanTitle, MediaType, NonEmptyVec,
-    SemanticVersion, Sha256Digest, Slug, Timestamp, Traceparent, UniqueVec, UnitInterval,
+    AggregateVersion, Bounded, ExactInteger, ExactPositiveInt, GitSha, HumanText, HumanTitle,
+    LARGEST_EXACT_INTEGER, MediaType, NonEmptyVec, SemanticVersion, Sha256Digest, Slug, Timestamp,
+    Traceparent, UniqueVec, UnitInterval,
 };
 
 fn json_error_text<T: serde::de::DeserializeOwned + std::fmt::Debug>(json: &str) -> String {
@@ -410,6 +411,83 @@ fn from_utc_agrees_with_a_parsed_timestamp_of_the_same_instant() {
     assert_eq!(hash_of(&parsed), hash_of(&built));
     assert_ne!(parsed.as_text(), built.as_text());
     assert_eq!(built.as_text(), "2026-10-27T10:00:00.25Z");
+}
+
+// ---- integers that a ledger hash can hold ---------------------------------------------------------
+
+#[test]
+fn the_largest_exact_integer_is_two_to_the_53_minus_one() {
+    // ADR 0011: RFC 8785 writes every number as a 64-bit float, which holds this one exactly and
+    // rounds the next.
+    assert_eq!(LARGEST_EXACT_INTEGER, 9_007_199_254_740_991);
+    assert_eq!(LARGEST_EXACT_INTEGER, (1_i64 << 53) - 1);
+    #[allow(clippy::cast_precision_loss)]
+    let as_float = LARGEST_EXACT_INTEGER as f64;
+    assert_eq!(as_float as i64, LARGEST_EXACT_INTEGER);
+    assert_eq!((as_float + 1.0) as i64, LARGEST_EXACT_INTEGER + 1);
+    // One more is where a float starts to skip: 2^53 + 1 is not a float.
+    #[allow(clippy::cast_precision_loss)]
+    let skipped = (LARGEST_EXACT_INTEGER + 2) as f64;
+    assert_eq!(skipped as i64, LARGEST_EXACT_INTEGER + 1);
+}
+
+#[test]
+fn an_exact_integer_accepts_the_whole_range_and_refuses_the_next_number() {
+    for ok in [-LARGEST_EXACT_INTEGER, -1, 0, 1, 42, LARGEST_EXACT_INTEGER] {
+        assert_eq!(ExactInteger::new(ok).unwrap().get(), ok);
+    }
+    for bad in [
+        LARGEST_EXACT_INTEGER + 1,
+        -LARGEST_EXACT_INTEGER - 1,
+        i64::MAX,
+        i64::MIN,
+    ] {
+        let error = ExactInteger::new(bad).unwrap_err().to_string();
+        assert!(
+            error.contains("use a whole number from -9007199254740991 to 9007199254740991"),
+            "{bad}: {error}"
+        );
+    }
+}
+
+#[test]
+fn an_exact_positive_integer_starts_at_one_and_stops_at_the_largest_exact_integer() {
+    assert!(ExactPositiveInt::new(0).is_err());
+    assert!(ExactPositiveInt::new(-1).is_err());
+    assert_eq!(ExactPositiveInt::new(1).unwrap().get(), 1);
+    assert_eq!(
+        ExactPositiveInt::new(LARGEST_EXACT_INTEGER).unwrap().get(),
+        LARGEST_EXACT_INTEGER
+    );
+    let error = ExactPositiveInt::new(LARGEST_EXACT_INTEGER + 1)
+        .unwrap_err()
+        .to_string();
+    assert!(
+        error.contains("use a whole number from 1 to 9007199254740991"),
+        "{error}"
+    );
+}
+
+#[test]
+fn an_exact_integer_is_refused_when_a_document_is_read() {
+    // The value is checked when it is built from a document, so a number that a hash would round
+    // never gets as far as the hash.
+    assert_eq!(
+        serde_json::from_str::<ExactInteger>("9007199254740991")
+            .unwrap()
+            .get(),
+        LARGEST_EXACT_INTEGER
+    );
+    let error = json_error_text::<ExactInteger>("9007199254740992");
+    assert!(error.contains("9007199254740992"), "{error}");
+    let error = json_error_text::<ExactInteger>("-9007199254740992");
+    assert!(error.contains("-9007199254740992"), "{error}");
+    // A fraction is not a whole number, whatever its size.
+    assert!(serde_json::from_str::<ExactInteger>("5.0").is_err());
+    assert!(serde_json::from_str::<ExactInteger>("1e3").is_err());
+    // It writes back as the number it was.
+    let written = serde_json::to_string(&ExactInteger::new(-7).unwrap()).unwrap();
+    assert_eq!(written, "-7");
 }
 
 // ---- the trace context of a job ---------------------------------------------------------------
