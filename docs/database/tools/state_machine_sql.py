@@ -141,7 +141,7 @@ def expected(doc, schema_dir):
 
 def main(argv):
     if len(argv) != 3 or argv[1] not in ("seed", "expected"):
-        sys.stderr.write(__doc__)
+        sys.stderr.write(__doc__ or "")
         return 2
     mode, path = argv[1], argv[2]
     doc = load(path)

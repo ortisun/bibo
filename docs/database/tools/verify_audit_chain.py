@@ -57,7 +57,8 @@ def main():
             print("sequence %s: hash does not match its text" % row["sequence"], file=sys.stderr)
             return 1
         previous = row
-    print("verified %d audit events outside PostgreSQL (head %s)" % (len(rows), previous["hash"]))
+    head = previous["hash"] if previous else "none, the ledger is empty"
+    print("verified %d audit events outside PostgreSQL (head %s)" % (len(rows), head))
     return 0
 
 

@@ -737,7 +737,7 @@ main() {
       --list) list_suites; exit 0 ;;
       --keep) KEEP=1 ;;
       write-schema) do_write=1 ;;
-      all) selected=($SUITES) ;;
+      all) read -r -a selected <<< "$SUITES" ;;
       *)
         case " $SUITES " in
           *" $arg "*) selected+=("$arg") ;;
@@ -746,7 +746,7 @@ main() {
         ;;
     esac
   done
-  if [ "$do_write" = 0 ] && [ "${#selected[@]}" -eq 0 ]; then selected=($SUITES); fi
+  if [ "$do_write" = 0 ] && [ "${#selected[@]}" -eq 0 ]; then read -r -a selected <<< "$SUITES"; fi
 
   WORK="$(mktemp -d "${TMPDIR:-/tmp}/factory-db-work.XXXXXX")"
   provision
