@@ -10,3 +10,6 @@ dist/
 !.env.example
 *.log
 .DS_Store
+
+# Isolated worktrees created for parallel agents
+.claude/worktrees/
