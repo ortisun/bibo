@@ -1410,6 +1410,36 @@ fn conformance_detects_a_changed_table() {
             "the number of invalidation rules differs",
         ),
         (
+            "the intake dropped from the request edit rule",
+            |doc| {
+                array_mut(doc, "/pipeline/invalidation_rules/5/supersedes").remove(0);
+            },
+            "invalidation rule \"The source request is edited after the intake snapshot\"",
+        ),
+        (
+            "documenting added to the gate evidence rule",
+            |doc| {
+                array_mut(doc, "/pipeline/invalidation_rules/7/supersedes")
+                    .push(json!("DOCUMENTING"));
+            },
+            "invalidation rule \"A value bound to gate evidence changes\"",
+        ),
+        (
+            "an invalidation rule removed",
+            |doc| {
+                array_mut(doc, "/pipeline/invalidation_rules").pop();
+            },
+            "the number of invalidation rules differs",
+        ),
+        (
+            "an invalidation rule renamed",
+            |doc| {
+                doc["pipeline"]["invalidation_rules"][6]["when"] =
+                    json!("REPOSITORY_INTELLIGENCE produces a map");
+            },
+            "is in the file but not in code",
+        ),
+        (
             "a rework route added",
             |doc| {
                 let extra = doc["pipeline"]["rework_routes"][0].clone();

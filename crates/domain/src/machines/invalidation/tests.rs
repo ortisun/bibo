@@ -91,35 +91,201 @@ fn the_table_has_one_rule_for_each_change_in_declaration_order() {
 }
 
 #[test]
+fn eight_rules_are_in_the_table_and_the_last_three_are_the_new_ones() {
+    assert_eq!(INVALIDATION_RULES.len(), 8);
+    let tail: Vec<ArtifactChange> = INVALIDATION_RULES[5..].iter().map(|r| r.change).collect();
+    assert_eq!(
+        tail,
+        [
+            ArtifactChange::RequestEdited,
+            ArtifactChange::RepositoryMapVersion,
+            ArtifactChange::GateEvidenceBinding,
+        ]
+    );
+    assert_eq!(
+        ArtifactChange::RequestEdited.as_str(),
+        "The source request is edited after the intake snapshot"
+    );
+    assert_eq!(
+        ArtifactChange::RepositoryMapVersion.as_str(),
+        "REPOSITORY_INTELLIGENCE produces a new repository map"
+    );
+    assert_eq!(
+        ArtifactChange::GateEvidenceBinding.as_str(),
+        "A value bound to gate evidence changes"
+    );
+}
+
+#[test]
 fn a_change_never_makes_its_own_producer_stale() {
     for change in ArtifactChange::ALL {
-        assert!(
-            !change.stale_stages().contains(&change.producer()),
-            "{change}"
-        );
+        if let Some(producer) = change.producer() {
+            assert!(!change.stale_stages().contains(&producer), "{change}");
+        }
     }
 }
 
 #[test]
-fn every_change_has_exactly_one_producer_and_the_lookup_agrees() {
+fn every_change_with_a_producer_has_exactly_one_and_the_lookup_agrees() {
     for change in ArtifactChange::ALL {
-        assert_eq!(
-            ArtifactChange::produced_by(change.producer()),
-            Some(*change)
-        );
+        if let Some(producer) = change.producer() {
+            assert_eq!(ArtifactChange::produced_by(producer), Some(*change));
+        }
     }
-    let producers: Vec<StageKind> = ArtifactChange::ALL.iter().map(|c| c.producer()).collect();
+    let producers: Vec<Option<StageKind>> =
+        ArtifactChange::ALL.iter().map(|c| c.producer()).collect();
     assert_eq!(
         producers,
         [
-            StageKind::Specification,
-            StageKind::Architecture,
-            StageKind::TaskPlanning,
-            StageKind::Implementation,
-            StageKind::Documenting,
+            Some(StageKind::Specification),
+            Some(StageKind::Architecture),
+            Some(StageKind::TaskPlanning),
+            Some(StageKind::Implementation),
+            Some(StageKind::Documenting),
+            // The source request is edited by a person, outside the pipeline.
+            None,
+            Some(StageKind::RepositoryIntelligence),
+            // A value bound to gate evidence moves outside the pipeline: the base branch, the
+            // policy, the gate definition or the image.
+            None,
         ]
     );
     assert_eq!(ArtifactChange::produced_by(StageKind::Review), None);
+    // The lookup never answers with a change that no stage produces.
+    for stage in StageKind::ALL {
+        if let Some(change) = ArtifactChange::produced_by(*stage) {
+            assert_eq!(change.producer(), Some(*stage));
+        }
+    }
+}
+
+#[test]
+fn a_new_repository_map_makes_the_specification_and_everything_after_it_stale() {
+    assert_eq!(
+        ArtifactChange::produced_by(StageKind::RepositoryIntelligence),
+        Some(ArtifactChange::RepositoryMapVersion)
+    );
+    assert_eq!(
+        ArtifactChange::RepositoryMapVersion.stale_stages(),
+        [
+            StageKind::Specification,
+            StageKind::DomainDiscovery,
+            StageKind::Architecture,
+            StageKind::TaskPlanning,
+            StageKind::Implementation,
+            StageKind::Validation,
+            StageKind::Review,
+            StageKind::Documenting,
+            StageKind::DocumentationReview,
+            StageKind::Delivery,
+            StageKind::Approval,
+        ]
+    );
+}
+
+#[test]
+fn an_edited_request_makes_every_stage_stale_including_the_intake() {
+    // The text that every later stage read is no longer the text a person authorized, so the
+    // intake run goes too (ADR 0010, NT-AUTHZ-05).
+    let stale = ArtifactChange::RequestEdited.stale_stages();
+    assert_eq!(stale.len(), 13);
+    assert_eq!(stale[0], StageKind::Intake);
+    assert_eq!(stale[1], StageKind::RepositoryIntelligence);
+    assert_eq!(stale[12], StageKind::Approval);
+    assert!(!stale.contains(&StageKind::Merge));
+}
+
+#[test]
+fn a_change_to_a_value_bound_to_gate_evidence_leaves_the_documentation_text_alone() {
+    // The base commit, the gate definition hash, the policy hash and the image digest are bound
+    // to the evidence. The documentation text did not change, so DOCUMENTING stays.
+    assert_eq!(
+        ArtifactChange::GateEvidenceBinding.stale_stages(),
+        [
+            StageKind::Validation,
+            StageKind::Review,
+            StageKind::DocumentationReview,
+            StageKind::Delivery,
+            StageKind::Approval,
+        ]
+    );
+    assert!(
+        !ArtifactChange::GateEvidenceBinding
+            .stale_stages()
+            .contains(&StageKind::Documenting)
+    );
+}
+
+fn one_passed_run_per_stage() -> Vec<StageRunSnapshot> {
+    StageKind::ALL
+        .iter()
+        .enumerate()
+        .map(|(index, kind)| run(index as u128 + 1, *kind, StageRunStatus::Passed))
+        .collect()
+}
+
+#[test]
+fn an_external_change_supersedes_its_first_stage_too() {
+    // A change with no producing stage has nobody to spare, so every listed run is superseded,
+    // the first one included.
+    let runs = one_passed_run_per_stage();
+    for (change, first) in [
+        (ArtifactChange::RequestEdited, StageKind::Intake),
+        (ArtifactChange::GateEvidenceBinding, StageKind::Validation),
+    ] {
+        assert_eq!(change.producer(), None);
+        let planned = plan_for_change(&runs, change);
+        let first_run = runs.iter().find(|r| r.kind == first).unwrap();
+        assert!(planned.contains(&first_run.id), "{change}");
+        assert_eq!(planned.len(), change.stale_stages().len(), "{change}");
+    }
+    // A change that a stage produces spares that stage.
+    let planned = plan_for_change(&runs, ArtifactChange::RepositoryMapVersion);
+    let producer = runs
+        .iter()
+        .find(|r| r.kind == StageKind::RepositoryIntelligence)
+        .unwrap();
+    assert!(!planned.contains(&producer.id));
+    let first = runs
+        .iter()
+        .find(|r| r.kind == StageKind::Specification)
+        .unwrap();
+    assert!(planned.contains(&first.id));
+}
+
+#[test]
+fn an_edited_request_supersedes_live_and_skipped_runs_alike() {
+    let runs = [
+        run(1, StageKind::Intake, StageRunStatus::Passed),
+        run(2, StageKind::Specification, StageRunStatus::WaitingForHuman),
+        run(3, StageKind::DomainDiscovery, StageRunStatus::Skipped),
+        run(4, StageKind::Architecture, StageRunStatus::Failed),
+        run(5, StageKind::Approval, StageRunStatus::Pending),
+    ];
+    assert_eq!(
+        plan_for_change(&runs, ArtifactChange::RequestEdited),
+        [id(1), id(2), id(3), id(5)]
+    );
+}
+
+#[test]
+fn a_rework_to_repository_intelligence_is_planned_from_the_new_row() {
+    let stages = rework_stages(StageKind::RepositoryIntelligence);
+    assert_eq!(stages[0], StageKind::RepositoryIntelligence);
+    assert_eq!(
+        &stages[1..],
+        ArtifactChange::RepositoryMapVersion.stale_stages()
+    );
+    let runs = [
+        run(1, StageKind::Intake, StageRunStatus::Passed),
+        run(2, StageKind::RepositoryIntelligence, StageRunStatus::Gating),
+        run(3, StageKind::Specification, StageRunStatus::Pending),
+        run(4, StageKind::Architecture, StageRunStatus::Pending),
+    ];
+    assert_eq!(
+        plan_for_rework(&runs, StageKind::RepositoryIntelligence, id(2)),
+        [id(3), id(4)]
+    );
 }
 
 #[test]
@@ -128,12 +294,26 @@ fn the_rules_equal_everything_downstream_of_the_producer_except_merge() {
     // disagree, one of them is wrong. MERGE is left out of the file because it is not
     // implemented and is disabled by default.
     for change in ArtifactChange::ALL {
-        let mut expected = downstream(change.producer());
+        // A change that no stage produces has no producer to measure from. The request edit
+        // starts from the intake, which is why the intake goes too, and the gate evidence rule is
+        // a list of its own.
+        let Some(producer) = change.producer() else {
+            continue;
+        };
+        let mut expected = downstream(producer);
         expected.retain(|kind| *kind != StageKind::Merge);
         let mut actual = change.stale_stages().to_vec();
         actual.sort();
         assert_eq!(actual, expected, "{change}");
     }
+    // The edited request is everything from the intake on.
+    let mut from_the_intake = downstream(StageKind::Intake);
+    from_the_intake.push(StageKind::Intake);
+    from_the_intake.retain(|kind| *kind != StageKind::Merge);
+    from_the_intake.sort();
+    let mut actual = ArtifactChange::RequestEdited.stale_stages().to_vec();
+    actual.sort();
+    assert_eq!(actual, from_the_intake);
 }
 
 #[test]

@@ -546,7 +546,7 @@ impl Sim {
                 let producer_before: Vec<_> = self
                     .runs
                     .iter()
-                    .filter(|r| r.kind == change.producer())
+                    .filter(|r| Some(r.kind) == change.producer())
                     .map(|r| r.status)
                     .collect();
                 let planned = plan_for_change(&self.runs, change);
@@ -556,11 +556,12 @@ impl Sim {
                     plan_for_change(&self.runs, change).is_empty(),
                     "a stale run is still live after {change}"
                 );
-                // The stage that produced the artifact is never made stale by it.
+                // The stage that produced the artifact is never made stale by it. A change that no
+                // stage produces (an edited request, a moved base branch) spares nobody.
                 let producer_after: Vec<_> = self
                     .runs
                     .iter()
-                    .filter(|r| r.kind == change.producer())
+                    .filter(|r| Some(r.kind) == change.producer())
                     .map(|r| r.status)
                     .collect();
                 prop_assert_eq!(producer_before, producer_after);
