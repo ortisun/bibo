@@ -630,8 +630,14 @@ pub struct Versioned<T> { pub value: T, pub version: Version }
 #[async_trait]
 pub trait Store: Send + Sync {
     fn fidelity(&self) -> Fidelity;
+    /// Makes the transaction-local tenant setting before any other statement (ADR 0012).
     async fn begin(&self, scope: TenantScope) -> Result<Box<dyn Tx>, StoreError>;
+    /// Uses the system role's own connection pool (ADR 0012).
     async fn begin_system(&self, scope: SystemScope) -> Result<Box<dyn Tx>, StoreError>;
+    /// Before any tenant is known. A narrow SECURITY DEFINER function behind it (ADR 0012).
+    /// `None` for every miss reason, so the caller cannot tell which one it was.
+    async fn resolve_token(&self, hash: TokenHash, audience: Audience) -> Result<Option<ResolvedPrincipal>, StoreError>;
+    async fn resolve_installation(&self, installation: InstallationId) -> Result<Option<ResolvedRepository>, StoreError>;
     async fn schema_version(&self) -> Result<SchemaVersion, StoreError>;
 }
 
@@ -650,7 +656,7 @@ pub trait StageRunOps {
     async fn get_stage_run(&mut self, id: StageRunId) -> Result<Versioned<StageRun>, StoreError>;
     /// Compare and swap. `StoreError::Conflict` when `expected` is stale.
     async fn transition_stage_run(&mut self, id: StageRunId, expected: Version, t: AppliedTransition<StageRunStatus>) -> Result<Version, StoreError>;
-    /// System scope only. FOR UPDATE SKIP LOCKED. Increments the lease epoch.
+    /// System scope only. FOR NO KEY UPDATE SKIP LOCKED. Increments the lease epoch.
     async fn claim_ready(&mut self, worker: &WorkerId, limit: u32) -> Result<Vec<ClaimedWork>, StoreError>;
     async fn expired_leases(&mut self, limit: u32) -> Result<Vec<AttemptId>, StoreError>;
 }
