@@ -70,7 +70,7 @@ impl ActorLogin {
 pub struct BadLogin;
 
 /// An issue, by repository and number.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct IssueRef {
     /// The repository.
     pub repo: RepoRef,
@@ -129,7 +129,7 @@ pub struct DraftPrRequest {
 }
 
 /// A pull request, by repository and number.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct PullRequestRef {
     /// The repository.
     pub repo: RepoRef,
@@ -162,7 +162,7 @@ pub struct PullRequestState {
 }
 
 /// Where a comment goes.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum CommentTarget {
     /// An issue.
     Issue(IssueRef),
@@ -171,7 +171,7 @@ pub enum CommentTarget {
 }
 
 /// A comment that was posted.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct CommentRef {
     /// Where it is.
     pub target: CommentTarget,
