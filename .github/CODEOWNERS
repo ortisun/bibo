@@ -1,0 +1,83 @@
+# Code owners.
+#
+# A pull request that changes any file below needs a review from its owner. This only has an
+# effect when the branch ruleset turns on "Require review from Code Owners". policies/security.yaml
+# (repository_requirements.require_code_owner_review_for_protected_paths) requires that setting.
+#
+# What is listed here: the files that decide what "the checks passed" means, who may review, and
+# which rules apply. They are the groups of protected paths in policies/security.yaml that are
+# marked deny_write: ci_workflows, gate_and_toolchain_config, factory_config,
+# agent_instruction_files, vcs_internals_and_hooks and factory_self_protection. A pull request
+# that quietly weakens a check, edits this file, or changes a policy must not merge unseen.
+#
+# Owners: @ortisan has admin access to this repository today (checked with the GitHub API).
+# The organization has no team yet. When one exists, replace the handle with the team, for
+# example @ortisun/maintainers, and add a second owner. With a single owner, GitHub cannot
+# count the owner's approval of their own pull request, so a protected change by the only
+# owner has no second reviewer until another owner is added.
+#
+# The last matching line wins. Paths that start with / are relative to the repository root.
+
+# --- CI definitions and this file itself (ci_workflows) -------------------------------------
+/.github/                              @ortisan
+/CODEOWNERS                            @ortisan
+/docs/CODEOWNERS                       @ortisan
+
+# --- The one script every check runs through, and where later packages add steps ------------
+/scripts/ci.sh                         @ortisan
+/scripts/ci/                           @ortisan
+/scripts/gates/                        @ortisan
+
+# --- Gate and toolchain configuration (gate_and_toolchain_config) ---------------------------
+/.cargo/                               @ortisan
+/rust-toolchain                        @ortisan
+/rust-toolchain.toml                   @ortisan
+clippy.toml                            @ortisan
+.clippy.toml                           @ortisan
+rustfmt.toml                           @ortisan
+.rustfmt.toml                          @ortisan
+/deny.toml                             @ortisan
+/audit.toml                            @ortisan
+/.config/nextest.toml                  @ortisan
+/.gitleaks.toml                        @ortisan
+/.gitleaksignore                       @ortisan
+/.pre-commit-config.yaml               @ortisan
+/Makefile                              @ortisan
+/justfile                              @ortisan
+
+# --- Gate definitions that live outside the folders above -----------------------------------
+# These decide what a PASS means for the architecture, schema and readability checks.
+/xtask/                                @ortisan
+/docs/architecture/crate-dependency-rules.json @ortisan
+/docs/architecture/tools/              @ortisan
+/schemas/validate.sh                   @ortisan
+/fixtures/readability/                 @ortisan
+
+# --- Local stack and the example environment (container_and_infrastructure) -----------------
+/infra/                                @ortisan
+/scripts/dev-up.sh                     @ortisan
+/.env.example                          @ortisan
+
+# --- Policies, security documents, agent manifests (factory_self_protection) ----------------
+/policies/                             @ortisan
+/docs/security/                        @ortisan
+/agents/                               @ortisan
+/workflows/                            @ortisan
+
+# --- Factory configuration and files that steer agents (factory_config, agent_instruction_files)
+/.factory/                             @ortisan
+/.specify/                             @ortisan
+/AGENTS.md                             @ortisan
+/CLAUDE.md                             @ortisan
+/GEMINI.md                             @ortisan
+/.claude/                              @ortisan
+/.codex/                               @ortisan
+/.gemini/                              @ortisan
+/.agents/                              @ortisan
+/.cursor/                              @ortisan
+/.mcp.json                             @ortisan
+
+# --- Hooks and submodules (vcs_internals_and_hooks) -----------------------------------------
+/.githooks/                            @ortisan
+/.husky/                               @ortisan
+/.gitmodules                           @ortisan

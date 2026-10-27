@@ -1,0 +1,91 @@
+# PostgreSQL for local development. Included by docker-compose.yml.
+#
+# Everything the factory stores (jobs, stage runs, audit, evidence) lives here (ADR 0007).
+# This is a development database. It is not the production deployment.
+#
+# All values that differ between machines come from the root .env (see .env.example).
+# No credential appears in this file.
+
+services:
+  postgres:
+    # PostgreSQL 17, pinned by digest so that every machine and CI run gets the same bytes.
+    # A tag such as "17-alpine" moves whenever the image is rebuilt. The digest does not.
+    # The digest is the multi-platform index for linux/amd64 and linux/arm64, taken from the
+    # Docker Hub tag on 2026-10-27 (PostgreSQL 17.11 on Alpine 3.24).
+    # ADR 0007 leaves the major version (17 or 18) to the DBA. To change it, update this line
+    # and the data volume path below (PostgreSQL 18 images keep data under /var/lib/postgresql).
+    # To update within 17: run "docker buildx imagetools inspect postgres:17-alpine", copy the
+    # new top-level Digest, and review the change like any other dependency bump.
+    image: postgres:17-alpine@sha256:266d3c257594e195b309ae9d1805e54c788f1d7b375f56bf6c367aac6c917e7b
+
+    restart: unless-stopped
+
+    environment:
+      # "${NAME:?message}" makes Compose stop with the message if the value is unset or empty.
+      POSTGRES_USER: ${POSTGRES_USER:?Set POSTGRES_USER in .env (copy .env.example, or run scripts/dev-up.sh)}
+      POSTGRES_DB: ${POSTGRES_DB:?Set POSTGRES_DB in .env (copy .env.example, or run scripts/dev-up.sh)}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env. scripts/dev-up.sh generates one for you}
+
+    ports:
+      # Bound to the loopback address only. Without the "127.0.0.1:" prefix Docker would
+      # publish the port on every network interface of this machine.
+      - "127.0.0.1:${POSTGRES_HOST_PORT:-5432}:5432"
+
+    volumes:
+      # Named volume: the data survives "docker compose down" and is removed only by
+      # "scripts/dev-up.sh --destroy --yes" (or "docker compose down --volumes").
+      - postgres_data:/var/lib/postgresql/data
+
+    healthcheck:
+      # Ask the server over TCP on 127.0.0.1. During first-time setup the image runs a
+      # temporary server that listens only on a Unix socket. A check over the socket would
+      # report "healthy" before setup finishes. A check over TCP waits for the real server.
+      # "$$" is Compose's way to write a literal "$", so the shell inside the container
+      # expands the variable, not Compose.
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U \"$$POSTGRES_USER\" -d \"$$POSTGRES_DB\""]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 10s
+
+    # ---- Container hardening (the same stance as docs/security/sandbox-policy.md) ----
+    # The image starts as root only to fix ownership of the data folder, then drops to the
+    # "postgres" user. These four are the only capabilities that first step needs.
+    # Each one was tested by removing it and starting the image: without any of them the
+    # container fails to start. FOWNER, which many examples add, is not needed here, on
+    # a first start or on a restart with existing data.
+    #   CHOWN         give the data and socket folders to the postgres user
+    #   DAC_OVERRIDE  let root read the data folder, which only the postgres user may open
+    #   SETUID/SETGID switch from root to the postgres user
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+      - DAC_OVERRIDE
+      - SETGID
+      - SETUID
+    security_opt:
+      - no-new-privileges:true
+    # The root file system is read-only. PostgreSQL writes only to its data volume and to
+    # the two temporary folders below.
+    read_only: true
+    tmpfs:
+      - /tmp
+      - /run/postgresql
+
+    # Limits so a runaway query or connection storm cannot take the whole machine.
+    mem_limit: 2g
+    pids_limit: 512
+
+    # Keep container logs from growing without bound.
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"
+
+    # Give PostgreSQL time to shut down cleanly and flush to disk.
+    stop_grace_period: 30s
+
+volumes:
+  postgres_data:
