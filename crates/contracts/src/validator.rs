@@ -869,6 +869,22 @@ mod tests {
     }
 
     #[test]
+    fn a_value_with_too_many_values_is_refused_by_the_measure() {
+        let limits = OutputLimits::new(1 << 20, 8, 20).expect("limits");
+        let validator = SchemaOutputValidator::with_limits(limits).expect("compile");
+        let wide = Value::Array((0..30).map(|n| json!(n)).collect());
+        let issues = validator
+            .check(ContractKind::GateReport, 1, &wide)
+            .expect_err("too many values");
+        assert_eq!(issues[0].kind, IssueKind::TooManyNodes);
+        let narrow = Value::Array((0..5).map(|n| json!(n)).collect());
+        let issues = validator
+            .check(ContractKind::GateReport, 1, &narrow)
+            .expect_err("a list is not a gate report");
+        assert!(issues.iter().all(|i| i.kind != IssueKind::TooManyNodes));
+    }
+
+    #[test]
     fn path_fields_must_be_repository_relative() {
         let mut issues = Vec::new();
         check_paths(

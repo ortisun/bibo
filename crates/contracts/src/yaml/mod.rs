@@ -68,7 +68,7 @@
 //! the parser's limit is ever built, and the test
 //! `yaml_a_flow_sequence_nested_10000_deep_is_refused_without_overflowing_the_stack` shows it.
 
-mod scalar;
+pub mod scalar;
 mod tree;
 
 use std::collections::HashMap;

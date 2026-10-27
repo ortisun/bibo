@@ -606,6 +606,7 @@ fn negative_nt_pol_01_a_policy_file_that_is_a_symbolic_link_is_refused() {
     let source = ProtectedPolicySource::protected_default_branch(dir.path(), &[]).expect("source");
     let error = PolicyLoader::load_security(&source).expect_err("a link");
     assert_eq!(error.kind, PolicyErrorKind::Unavailable);
+    assert!(error.message.contains("symbolic link"), "{error}");
 }
 
 #[test]

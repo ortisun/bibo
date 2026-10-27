@@ -342,6 +342,7 @@ fn a_manifest_that_is_a_symbolic_link_is_not_followed() {
         .agent_with_prompt(repo.path(), &link)
         .expect_err("a link");
     assert_eq!(error.kind, LoadErrorKind::Unreadable);
+    assert!(error.message.contains("symbolic link"), "{error}");
 }
 
 #[test]

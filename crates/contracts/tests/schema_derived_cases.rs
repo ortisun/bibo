@@ -49,8 +49,10 @@ fn dependent_schemas_refuse_a_reason_that_does_not_fit_the_outcome() {
         ContractKind::GateReport,
         "build-and-test-passed.json",
         |document| {
-            document["blocked_reason"] =
-                Value::String("The scanner could not start in this environment.".to_owned());
+            document["blocked_reason"] = serde_json::json!({
+                "code": "tool_unavailable",
+                "missing": ["secret-scanner"]
+            });
         },
         "outcome",
         Keyword::Const,
@@ -59,8 +61,11 @@ fn dependent_schemas_refuse_a_reason_that_does_not_fit_the_outcome() {
         ContractKind::GateReport,
         "build-and-test-passed.json",
         |document| {
-            document["not_applicable_reason"] =
-                Value::String("There is nothing in this change that this gate checks.".to_owned());
+            document["not_applicable_reason"] = serde_json::json!({
+                "code": "no_matching_files",
+                "justification": "There is nothing in this change that this gate checks.",
+                "decided_by": "deterministic_rule"
+            });
         },
         "outcome",
         Keyword::Const,
