@@ -10,7 +10,8 @@ use factory_domain::vocabulary::{ExecutionMode, Fidelity};
 use factory_ports::agent::{AgentRuntime, ModelBroker, ModelRouter};
 use factory_ports::artifact::ArtifactStore;
 use factory_ports::clock::{CancelSignal, Clock, IdGenerator};
-use factory_ports::githost::{ChangeHost, IssueSource};
+use factory_ports::githost::{ChangeHost, IssueSource, WebhookVerifier};
+use factory_ports::process::ProcessRunner;
 use factory_ports::registry::AgentRegistry;
 use factory_ports::require_permitted;
 use factory_ports::sandbox::SandboxProvider;
@@ -21,11 +22,13 @@ use factory_testkit::artifact::InMemoryArtifactStore;
 use factory_testkit::broker::FakeModelBroker;
 use factory_testkit::clock::{FakeCancel, FakeClock, SequentialIdGenerator};
 use factory_testkit::githost::{FakeChangeHost, FakeIssueSource};
+use factory_testkit::process::ScriptedProcessRunner;
 use factory_testkit::registry::InMemoryAgentRegistry;
 use factory_testkit::router::StaticModelRouter;
 use factory_testkit::sandbox::FakeSandbox;
 use factory_testkit::spec::FakeSpecificationProvider;
 use factory_testkit::store::InMemoryStore;
+use factory_testkit::webhook::FakeWebhookVerifier;
 use factory_testkit::workspace::FakeWorkspaceProvider;
 use factory_testkit::{agent::FakeAgentRuntime, fixtures};
 
@@ -35,7 +38,6 @@ fn every_fake() -> Vec<(&'static str, Fidelity)> {
     let artifacts = Arc::new(InMemoryArtifactStore::new());
     let ids: Arc<dyn IdGenerator> = Arc::new(SequentialIdGenerator::new());
     let repo = factory_ports::paths::RepoRef::parse("example-org/fixture").expect("a repo");
-    let base = factory_ports::paths::CommitSha::parse(&"0".repeat(40)).expect("a sha");
     vec![
         ("Clock", Clock::fidelity(&*clock)),
         ("IdGenerator", ids.fidelity()),
@@ -49,7 +51,13 @@ fn every_fake() -> Vec<(&'static str, Fidelity)> {
         ),
         (
             "WorkspaceProvider",
-            FakeWorkspaceProvider::new(repo, base, &[]).fidelity(),
+            FakeWorkspaceProvider::new(
+                repo,
+                factory_testkit::workspace::FakeRemote::new(),
+                artifacts.clone(),
+                factory_ports::paths::PathRules::default(),
+            )
+            .fidelity(),
         ),
         (
             "AgentRuntime",
@@ -76,6 +84,14 @@ fn every_fake() -> Vec<(&'static str, Fidelity)> {
             IssueSource::fidelity(&FakeIssueSource::new()),
         ),
         ("ChangeHost", ChangeHost::fidelity(&FakeChangeHost::new())),
+        (
+            "WebhookVerifier",
+            WebhookVerifier::fidelity(&FakeWebhookVerifier::new()),
+        ),
+        (
+            "ProcessRunner",
+            ProcessRunner::fidelity(&ScriptedProcessRunner::new()),
+        ),
     ]
 }
 
@@ -103,11 +119,12 @@ fn a_production_run_refuses_every_fake_and_a_test_run_accepts_it() {
     }
 }
 
-const PORT_SOURCES: [&str; 9] = [
+const PORT_SOURCES: [&str; 10] = [
     include_str!("../../ports/src/agent.rs"),
     include_str!("../../ports/src/artifact.rs"),
     include_str!("../../ports/src/clock.rs"),
     include_str!("../../ports/src/githost.rs"),
+    include_str!("../../ports/src/process.rs"),
     include_str!("../../ports/src/registry.rs"),
     include_str!("../../ports/src/sandbox.rs"),
     include_str!("../../ports/src/spec.rs"),

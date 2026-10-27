@@ -27,7 +27,48 @@ pub enum RegistryDefect {
     BlursMissingErrors,
     /// Profiles come back in an order that depends on insertion.
     UnstableProfileOrder,
+    /// An exact requirement is read as "any version".
+    IgnoresExactRequirement,
+    /// A prompt that is not in the registry comes back empty instead of `PromptNotFound`.
+    MissingPromptIsEmpty,
+    /// The text of a prompt comes back changed, with the manifest's template reference.
+    ReturnsAlteredPromptText,
 }
+
+/// Each defect and the checks of `contracts::registry` that must fail when the fake has it.
+pub const DEFECTS: &[(RegistryDefect, &[&str])] = &[
+    (
+        RegistryDefect::PicksLowestVersion,
+        &[
+            "any_version_picks_the_highest",
+            "a_major_requirement_picks_the_highest_of_that_major",
+        ],
+    ),
+    (
+        RegistryDefect::SkipsPromptHash,
+        &["a_changed_prompt_is_refused"],
+    ),
+    (
+        RegistryDefect::BlursMissingErrors,
+        &["an_unknown_agent_and_an_unmatched_requirement_are_different_errors"],
+    ),
+    (
+        RegistryDefect::UnstableProfileOrder,
+        &["profiles_come_back_for_a_tag_in_a_stable_order"],
+    ),
+    (
+        RegistryDefect::IgnoresExactRequirement,
+        &["an_exact_requirement_picks_that_version"],
+    ),
+    (
+        RegistryDefect::MissingPromptIsEmpty,
+        &["a_missing_prompt_is_not_found"],
+    ),
+    (
+        RegistryDefect::ReturnsAlteredPromptText,
+        &["a_prompt_comes_back_with_a_matching_hash"],
+    ),
+];
 
 /// A registry over manifests, prompts and profiles added by hand. Reports fidelity `fake`.
 #[derive(Default)]
@@ -91,7 +132,11 @@ impl AgentRegistry for InMemoryAgentRegistry {
         }
         let mut matching: Vec<&AgentManifest> = held
             .into_iter()
-            .filter(|manifest| req.matches(&manifest.version))
+            .filter(|manifest| {
+                self.has(RegistryDefect::IgnoresExactRequirement)
+                    && matches!(req, factory_ports::registry::VersionReq::Exact(_))
+                    || req.matches(&manifest.version)
+            })
             .collect();
         matching.sort_by(|a, b| a.version.cmp(&b.version));
         let chosen = if self.has(RegistryDefect::PicksLowestVersion) {
@@ -109,10 +154,16 @@ impl AgentRegistry for InMemoryAgentRegistry {
     }
 
     fn prompt(&self, manifest: &AgentManifest) -> Result<LoadedPrompt, RegistryError> {
-        let text = self
+        let found = self
             .prompts
-            .get(&(manifest.id.clone(), manifest.version.clone()))
-            .ok_or(RegistryError::PromptNotFound)?;
+            .get(&(manifest.id.clone(), manifest.version.clone()));
+        if found.is_none() && self.has(RegistryDefect::MissingPromptIsEmpty) {
+            return Ok(LoadedPrompt {
+                template: manifest.prompt.clone(),
+                text: String::new(),
+            });
+        }
+        let text = found.ok_or(RegistryError::PromptNotFound)?;
         let actual = Sha256Digest::of(text.as_bytes());
         if actual != manifest.prompt.template_sha256 && !self.has(RegistryDefect::SkipsPromptHash) {
             return Err(RegistryError::PromptHashMismatch {
@@ -120,9 +171,14 @@ impl AgentRegistry for InMemoryAgentRegistry {
                 actual,
             });
         }
+        let text = if self.has(RegistryDefect::ReturnsAlteredPromptText) {
+            format!("{text} (edited)")
+        } else {
+            text.clone()
+        };
         Ok(LoadedPrompt {
             template: manifest.prompt.clone(),
-            text: text.clone(),
+            text,
         })
     }
 

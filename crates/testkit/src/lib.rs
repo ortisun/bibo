@@ -29,6 +29,8 @@
 //! | [`router`] | `StaticModelRouter` | `contracts::router` |
 //! | [`registry`] | `InMemoryAgentRegistry` | `contracts::registry` |
 //! | [`githost`] | `FakeChangeHost`, `FakeIssueSource` | `contracts::githost` |
+//! | [`webhook`] | `FakeWebhookVerifier` (a real HMAC-SHA256, fixed test secrets) | `contracts::webhook` |
+//! | [`process`] | `ScriptedProcessRunner` (starts nothing) | `contracts::process` |
 //! | [`spec`] | `FakeSpecificationProvider` | none yet: Spec Kit is driven only by `spec_adapter` |
 //! | [`fixtures`] | typed identifiers, a valid ledger entry and domain event, a sandbox policy and spec, an agent run request | |
 //! | [`fx`] | the security test harness: fake GitHub server, canary sweeper, sink collector, spawn recorder, Docker guard, DNS and registry fakes, hostile repositories | the tests inside each module |
@@ -54,9 +56,11 @@ pub mod contracts;
 pub mod fixtures;
 pub mod fx;
 pub mod githost;
+pub mod process;
 pub mod registry;
 pub mod router;
 pub mod sandbox;
 pub mod spec;
 pub mod store;
+pub mod webhook;
 pub mod workspace;

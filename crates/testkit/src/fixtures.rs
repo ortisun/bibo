@@ -5,6 +5,7 @@
 use std::path::PathBuf;
 use std::time::Duration;
 
+use factory_domain::contracts::stage_contract::RetryClass;
 use factory_domain::contracts::{
     AgentManifest, Contract, DomainEvent, EvidenceLedgerEntry, VersionedRef,
 };
@@ -12,18 +13,31 @@ use factory_domain::ids::{
     AttemptId, CorrelationId, EventId, JobId, LedgerEntryId, PrincipalId, StageRunId, TaskNodeId,
     TenantId,
 };
+use factory_domain::machines::failure::FailureClass;
+use factory_domain::machines::guards::{
+    AdmissionFacts, AttemptsFacts, CancelFacts, DeadlineFacts, EnvironmentCause, EnvironmentFacts,
+    EpochFacts, EscalationFacts, GatePassFacts, GuardCleared, GuardFacts, LeaseExpiryFacts,
+    LeaseGrantFacts, NotApplicableBasis, NotApplicableFacts, OutputFacts, RetryFacts,
+    SandboxGoneFacts, SandboxProvisionFacts, TaskDepsFacts, TaskEvidenceFacts, TaskStartFacts,
+    TeardownFacts, UnrecoverableFacts, UpstreamFacts, evaluate,
+};
+use factory_domain::machines::limits::RepairCap;
+use factory_domain::state::{Guard, JobStatus};
 use factory_domain::values::{NonEmptyString, Sha256Digest, Timestamp, Uri};
+use factory_domain::vocabulary::StageKind;
+use factory_ports::agent::JobTokenSecret;
 use factory_ports::agent::{
     AgentRunRequest, AssembledPrompt, BrokerEndpoint, DataClass, DataPart, FlagSet, JobTokenId,
     JobTokenRef, ModelSelection, RuntimeId,
 };
 use factory_ports::clock::IdGenerator;
 use factory_ports::sandbox::{
-    ExecArgv, FixedEnv, Hardening, ImageDigest, JobTokenFile, NetworkAttachment, SandboxLimits,
-    SandboxPolicy, SandboxProfile, SandboxSpec,
+    ExecArgv, FixedEnv, Hardening, ImageDigest, JobTokenMount, NetworkAttachment, SandboxLimits,
+    SandboxMounts, SandboxPolicy, SandboxProfile, SandboxSpec,
 };
 use factory_ports::workspace::WorkspaceMounts;
 use serde_json::json;
+use std::num::NonZeroU32;
 
 use crate::clock::SequentialIdGenerator;
 
@@ -78,6 +92,11 @@ impl Ids {
     /// A new event id.
     pub fn event(&self) -> EventId {
         EventId::from_uuid(self.generator.new_uuid())
+    }
+
+    /// A new identifier for a row that has no typed id of its own.
+    pub fn uuid7(&self) -> factory_ports::store::Uuid7 {
+        self.generator.new_uuid()
     }
 
     /// A new ledger entry id.
@@ -173,16 +192,20 @@ pub fn image() -> ImageDigest {
     .expect("a valid digest reference")
 }
 
+fn nz(value: u32) -> NonZeroU32 {
+    NonZeroU32::new(value).expect("a non-zero fixture value")
+}
+
 fn limits(scale: u32) -> SandboxLimits {
     SandboxLimits {
-        cpu_millis: 1000 * scale,
-        memory_mb: 1024 * scale,
-        memory_swap_mb: 1024 * scale,
-        pids: 128 * scale,
-        nofile: 2048,
-        max_file_mb: 512,
-        tmpfs_mb: 256,
-        workspace_disk_mb: 2048,
+        cpu_millis: nz(1000 * scale),
+        memory_mb: nz(1024 * scale),
+        memory_swap_mb: nz(1024 * scale),
+        pids: nz(128 * scale),
+        nofile: nz(2048),
+        max_file_mb: nz(512),
+        tmpfs_mb: nz(256),
+        workspace_disk_mb: nz(2048),
         wall_clock: Duration::from_secs(600 * u64::from(scale)),
     }
 }
@@ -213,6 +236,7 @@ pub fn sandbox_policy() -> SandboxPolicy {
             .map(String::from)
             .to_vec(),
         allowed_env_names: ["HOME", "PATH", "TERM", "LANG"].map(String::from).to_vec(),
+        apparmor_may_be_unavailable: false,
         fetch_deps_max: limits(1),
         agent_max: limits(2),
         verify_max: limits(4),
@@ -237,8 +261,9 @@ pub fn sandbox_spec(ids: &Ids, profile: SandboxProfile) -> SandboxSpec {
             NetworkAttachment::JobInternal {
                 sidecar: "sidecar-fixture".to_owned(),
             },
-            Some(JobTokenFile {
-                host_path: PathBuf::from("/run/factory/fixture-token"),
+            Some(JobTokenMount {
+                // Built at run time so that no secret-shaped literal sits in the source.
+                secret: JobTokenSecret::new(format!("{}-{}", "fixture", "job-token")),
             }),
         ),
     };
@@ -249,17 +274,20 @@ pub fn sandbox_spec(ids: &Ids, profile: SandboxProfile) -> SandboxSpec {
         image: image(),
         limits: limits(1),
         network,
-        mounts: WorkspaceMounts {
-            workspace: PathBuf::from("/fake/job/worktree"),
-            out: PathBuf::from("/fake/job/out"),
-            protected_overlays: Vec::new(),
-            git_masked: true,
+        mounts: SandboxMounts {
+            workspace: WorkspaceMounts {
+                workspace: PathBuf::from("/fake/job/worktree"),
+                workspace_read_only: profile == SandboxProfile::Verify,
+                out: PathBuf::from("/fake/job/out"),
+                protected_overlays: Vec::new(),
+                git_masked: true,
+            },
+            caches: Vec::new(),
         },
         job_token,
         env: FixedEnv::new(vec![("HOME".to_owned(), "/home/agent".to_owned())])
             .expect("a valid environment"),
         hardening: Hardening::strict(10_001, 10_001),
-        extra_mounts: Vec::new(),
     }
 }
 
@@ -314,7 +342,166 @@ pub fn agent_run_request(ids: &Ids) -> AgentRunRequest {
             model: NonEmptyString::parse("fake-model").expect("a valid model name"),
         },
         flag_set: FlagSet::Standard,
+        max_output_bytes: 1_048_576,
     }
+}
+
+/// A clearance for `guard`, from facts on which it holds. For tests that plan a transition and do
+/// not care what the guard looked at. The facts are plain, so a test that cares builds its own.
+///
+/// # Panics
+/// Panics for a guard this helper has no facts for. Add them here.
+pub fn cleared(guard: Guard) -> GuardCleared {
+    let at = Timestamp::parse("2026-10-27T10:00:00Z").expect("a valid time");
+    let epoch = EpochFacts {
+        sent_epoch: 1,
+        stored_epoch: 1,
+    };
+    let request = Sha256Digest::of(b"request");
+    let none_authorized = None;
+    let facts = match guard {
+        Guard::AdmissionOk => GuardFacts::Admission(AdmissionFacts {
+            requester_on_allowlist: true,
+            tenant_within_job_quota: true,
+            repository_registered_and_enabled: true,
+            policy_allows_request_class: true,
+            protection_preflight_passed: true,
+        }),
+        Guard::UpstreamPassed => GuardFacts::Upstream(UpstreamFacts {
+            stage: StageKind::Intake,
+            stage_runs: &[],
+            consumed_artifact_hashes_current: true,
+            stage_contract_resolved_and_valid: true,
+        }),
+        Guard::NotApplicableDecided => GuardFacts::NotApplicable(NotApplicableFacts {
+            basis: Some(NotApplicableBasis::Policy),
+            rule_and_inputs_recorded: true,
+        }),
+        Guard::LeaseAcquired => GuardFacts::LeaseGrant(LeaseGrantFacts {
+            claim_candidate_current: true,
+            job_status: JobStatus::Active,
+            now: at,
+            not_before: None,
+            concurrency_quota_allows: true,
+            runtime_capability_check_passed: true,
+        }),
+        Guard::OutputSchemaValid => GuardFacts::Output(OutputFacts {
+            attempt_succeeded: true,
+            output_validates_against_outputs_schema: true,
+            output_artifact_hash_stored: true,
+        }),
+        Guard::RetryAllowed => GuardFacts::Retry(RetryFacts {
+            class: FailureClass::ToolError,
+            retry_on: &[RetryClass::ToolError],
+            attempts_used: 1,
+            max_attempts: 3,
+            budget_has_room: true,
+            invalid_output_failures: 0,
+            repair_cap: RepairCap::DEFAULT,
+            environment: None,
+        }),
+        Guard::FailureNonretryable => GuardFacts::Retry(RetryFacts {
+            class: FailureClass::PolicyDenied,
+            retry_on: &[],
+            attempts_used: 1,
+            max_attempts: 3,
+            budget_has_room: true,
+            invalid_output_failures: 0,
+            repair_cap: RepairCap::DEFAULT,
+            environment: None,
+        }),
+        Guard::EscalationRequired => GuardFacts::Escalation(EscalationFacts {
+            budget_limit_hit: true,
+            attempt_limit_reached: false,
+            agent_requested_a_human: false,
+            stagnation_detected: false,
+            policy_requires_human_decision: false,
+        }),
+        Guard::GatePassEvidenced => GuardFacts::GatePass(GatePassFacts {
+            decision_is_pass_and_persisted: true,
+            criteria_without_ledger_entry: 0,
+            mandatory_gate_reports: &[],
+        }),
+        Guard::Unrecoverable => GuardFacts::Unrecoverable(UnrecoverableFacts {
+            stage_run_failed: true,
+            newer_run_of_kind_exists: false,
+            rework_route_remains: false,
+            retry_budget_remains: false,
+            hard_limit_reached: false,
+            policy_says_fail: false,
+        }),
+        Guard::EnvironmentBlocked => GuardFacts::Environment(EnvironmentFacts {
+            cause: EnvironmentCause::DaemonUnavailable,
+            attempt_ended_failed: true,
+        }),
+        Guard::ReauthorizationRequired => {
+            GuardFacts::Reauthorization(factory_domain::machines::guards::ReauthorizationFacts {
+                authorized_request: none_authorized,
+                current_request: &request,
+                policy_asks_confirmation: false,
+            })
+        }
+        Guard::SandboxProvisioned => GuardFacts::SandboxProvision(SandboxProvisionFacts {
+            posture_verified: true,
+            tool_grants_recorded: true,
+            probe_satisfies_stage: true,
+            epoch,
+        }),
+        Guard::EpochCurrent => GuardFacts::Epoch(epoch),
+        Guard::DeadlinePassed => GuardFacts::Deadline(DeadlineFacts {
+            now: at
+                .checked_add(Duration::from_secs(1))
+                .expect("a later time"),
+            attempt_deadline: at,
+        }),
+        Guard::LeaseExpired => GuardFacts::LeaseExpiry(LeaseExpiryFacts {
+            now: at
+                .checked_add(Duration::from_secs(1))
+                .expect("a later time"),
+            lease_expires_at: at,
+            heartbeat_arrived: false,
+        }),
+        Guard::CancelAllowed => GuardFacts::Cancel(CancelFacts {
+            attempt: factory_domain::state::AttemptStatus::Running,
+            job: JobStatus::Cancelling,
+            stage_run_is_being_superseded: false,
+        }),
+        Guard::SandboxGone => GuardFacts::SandboxGone(SandboxGoneFacts {
+            provider_confirms_sandbox_gone: true,
+        }),
+        Guard::TeardownDeadlinePassed => GuardFacts::Teardown(TeardownFacts {
+            now: at
+                .checked_add(Duration::from_secs(60))
+                .expect("a later time"),
+            cancel_requested_at: at,
+            grace_seconds: 30,
+        }),
+        Guard::NoActiveAttempt => GuardFacts::Attempts(AttemptsFacts { attempts: &[] }),
+        Guard::TaskDepsSucceeded => GuardFacts::TaskDeps(TaskDepsFacts { dependencies: &[] }),
+        Guard::TaskStartedByAttempt => {
+            let node =
+                TaskNodeId::parse("00000000-0000-7000-8000-000000000001").expect("a valid id");
+            GuardFacts::TaskStart(TaskStartFacts {
+                this_task: node,
+                next_in_topological_order: Some(node),
+            })
+        }
+        Guard::TaskEvidenceRecorded => GuardFacts::TaskEvidence(TaskEvidenceFacts {
+            commit_exists_for_task: true,
+            changed_paths_inside_owned_files: true,
+            protected_path_changed: false,
+            per_task_checks_passed: true,
+        }),
+        Guard::ActorMayPause | Guard::ActorMayCancel => {
+            GuardFacts::Principal(factory_domain::machines::guards::PrincipalFacts {
+                roles: &[factory_domain::vocabulary::HumanRole::Operator],
+                is_job_requester: true,
+            })
+        }
+        other => panic!("fixtures::cleared has no facts for {other}; add them"),
+    };
+    evaluate(guard, &facts)
+        .unwrap_or_else(|error| panic!("the fixture facts for {guard} do not hold: {error}"))
 }
 
 /// A command from words, for example `argv(&["echo", "hello"])`.
