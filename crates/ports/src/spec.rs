@@ -4,6 +4,11 @@
 //! factory sees a typed [`SpecificationContract`] and never Spec Kit's files. The set of
 //! operations is closed: no other operation can be written, so a skill outside the boundary
 //! cannot be asked for.
+//!
+//! In ports-v1.1 the provider splits in two: `run` drives the skills in the sandbox and reports
+//! which files it expects; the stage handler stops the sandbox, ingests, commits and reads the
+//! files back with `JobRepo::read_file_at`; then the pure `assemble` builds the typed outcome
+//! from the exact bytes. The adapter reads no file and holds no workspace.
 
 use async_trait::async_trait;
 use factory_domain::contracts::specification_contract::{OpenQuestion, QuestionId};
@@ -12,11 +17,10 @@ use factory_domain::ids::JobId;
 use factory_domain::values::{HumanText, Slug};
 use factory_domain::vocabulary::Fidelity;
 
-use crate::agent::{AgentRunError, AgentRunRequest, AgentRuntime};
+use crate::agent::{AgentRunError, AgentRunRequest, AgentRuntime, Denial, Usage};
 use crate::clock::CancelSignal;
-use crate::paths::{Finding, NameError, RepoPath};
+use crate::paths::{CommitSha, Finding, NameError, RepoPath};
 use crate::sandbox::SandboxSession;
-use crate::workspace::Workspace;
 
 /// The four Spec Kit operations the factory may run. Planning, task generation, implementation
 /// and the other installed skills are not here and cannot be requested.
@@ -128,10 +132,9 @@ pub struct PostCondition {
     pub detail: String,
 }
 
-/// What a Spec Kit run may use. The adapter does not own any of these.
+/// What a Spec Kit run may use. The adapter owns none of these, and it has no access to the host
+/// side of the repository: files come back through [`SpecFileSet`], read by the engine.
 pub struct SpecContext<'a> {
-    /// The host side of the repository.
-    pub workspace: &'a dyn Workspace,
     /// The `agent`-profile sandbox the skills run in.
     pub session: &'a mut dyn SandboxSession,
     /// The agent runtime that runs the skills.
@@ -142,7 +145,68 @@ pub struct SpecContext<'a> {
     pub cancel: &'a dyn CancelSignal,
 }
 
-/// Why a Spec Kit run failed. The set is closed.
+/// What one skill run cost. The stage handler adds it to the attempt's usage and keeps the
+/// transcripts as evidence.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SkillRun {
+    /// The transcript, stored after redaction.
+    pub transcript: Option<ArtifactRef>,
+    /// What the run used.
+    pub usage: Usage,
+    /// Tool calls the tool reported as denied.
+    pub permission_denials: Vec<Denial>,
+}
+
+/// What `run` did. The files are in the sandbox's checkout; the stage handler stops the
+/// sandbox, ingests, commits and reads them back (`JobRepo::read_file_at`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct SpecRunReport {
+    /// The operation that ran.
+    pub op: SpecOperation,
+    /// The feature directory the skills wrote to.
+    pub feature_directory: FeatureDir,
+    /// The files the run is expected to have left, relative to the repository root. The stage
+    /// handler reads exactly these.
+    pub expected_files: Vec<RepoPath>,
+    /// One entry for each skill run, in order.
+    pub skill_runs: Vec<SkillRun>,
+}
+
+/// One file read back from a commit.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SpecFile {
+    /// The path.
+    pub path: RepoPath,
+    /// The exact bytes of the committed file.
+    pub bytes: Vec<u8>,
+}
+
+/// The committed files of a Spec Kit run, for `assemble`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SpecFileSet {
+    /// The commit the files were read from.
+    pub commit: CommitSha,
+    /// The files, including the constitution when the operation wrote it.
+    pub files: Vec<SpecFile>,
+}
+
+/// Why a file could not be read into the contract.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ParseReason {
+    /// The file is not in the set.
+    Missing,
+    /// The bytes are not UTF-8 text.
+    NotText,
+    /// A required section is absent.
+    SectionMissing,
+    /// A requirement or scenario id does not follow the id patterns.
+    BadId,
+    /// The file is larger than the limit.
+    TooLarge,
+}
+
+/// Why a Spec Kit run failed. The set is closed. `ForbiddenOperation` is removed: the operation
+/// is a closed enum, so the variant could never be produced.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum SpecError {
     /// Spec Kit is not installed in the project.
@@ -166,16 +230,13 @@ pub enum SpecError {
     #[error("{} post-condition(s) of the Spec Kit run do not hold", .0.len())]
     PostConditionFailed(Vec<PostCondition>),
     /// A Spec Kit file could not be read into the contract.
-    #[error("the Spec Kit file {path} could not be read: {reason}")]
+    #[error("the Spec Kit file {path} could not be read: {reason:?}")]
     ParseError {
         /// The file.
-        path: String,
+        path: RepoPath,
         /// Why not.
-        reason: String,
+        reason: ParseReason,
     },
-    /// The request needs something outside the four allowed operations.
-    #[error("the request needs an operation outside the allowed four")]
-    ForbiddenOperation,
     /// The agent runtime failed.
     #[error("the agent runtime failed while running a Spec Kit skill")]
     Runtime(AgentRunError),
@@ -184,34 +245,41 @@ pub enum SpecError {
 /// Runs the Spec Kit operations and returns a typed specification.
 ///
 /// # Preconditions
-/// The workspace holds the project with Spec Kit installed at the pinned version and the
-/// session is a verified `agent`-profile sandbox. The request file holds normalized text.
+/// `run`: the sandbox's checkout holds the project with Spec Kit installed at the pinned
+/// version and the session is a verified `agent`-profile sandbox. `assemble`: the files were
+/// read from a commit the factory made, after ingestion passed.
 ///
 /// # Postconditions
-/// `Draft` carries a contract that validates against its schema, with a hash of each Spec Kit
-/// file it was read from. `NeedsHuman` lists every blocking question and writes no contract. A
-/// run that is cancelled stops before it returns. No file outside the feature directory and the
-/// constitution is changed.
+/// `run` leaves files only under the feature directory and the constitution, and says which it
+/// expects. `assemble` is pure: `Draft` carries a contract that validates against its schema with
+/// the SHA-256 of each file's exact bytes; `NeedsHuman` lists every blocking question and
+/// writes no contract. A cancelled `run` stops before it returns.
 ///
 /// # Errors
-/// [`SpecError`]: `ToolMissing`, `VersionMismatch`, `IntegrityNotOk`, `ExtensionsPresent`,
-/// `PostConditionFailed`, `ParseError`, `ForbiddenOperation` and `Runtime`.
+/// [`SpecError`].
 ///
 /// # Idempotency
-/// Not idempotent. A second `Specify` for the same feature directory may overwrite the first
-/// draft, so the caller runs `Specify` once per feature and revises through
-/// [`SpecRequest::revision`].
+/// `run` is not idempotent: a second `Specify` for the same feature directory may overwrite the
+/// first draft, so the caller runs `Specify` once per feature and revises through
+/// `SpecRequest::revision`. `assemble` is idempotent.
+///
+/// # Cancellation and timeouts
+/// `run` takes the cancel signal in its context and stops its skill runs. `assemble` is
+/// synchronous and bounded by the size of the files.
 #[async_trait]
 pub trait SpecificationProvider: Send + Sync {
     /// Says whether this provider drives real Spec Kit (`real`) or is scripted (`fake`).
     fn fidelity(&self) -> Fidelity;
 
-    /// Runs one operation.
+    /// Runs one operation inside the sandbox.
     async fn run(
         &self,
-        req: SpecRequest,
+        req: &SpecRequest,
         ctx: &mut SpecContext<'_>,
-    ) -> Result<SpecOutcome, SpecError>;
+    ) -> Result<SpecRunReport, SpecError>;
+
+    /// Builds the typed outcome from the committed files.
+    fn assemble(&self, req: &SpecRequest, files: &SpecFileSet) -> Result<SpecOutcome, SpecError>;
 }
 
 #[cfg(test)]

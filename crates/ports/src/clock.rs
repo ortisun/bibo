@@ -30,6 +30,9 @@ pub use uuid::Uuid;
 ///
 /// # Idempotency
 /// Reading the time changes nothing, so a call can be repeated freely.
+///
+/// # Cancellation and timeouts
+/// The call is pure and returns at once. There is nothing to cancel and no timeout.
 pub trait Clock: Send + Sync {
     /// Says whether this clock is the system clock (`real`) or a controllable stand-in (`fake`).
     /// A production run refuses a clock that reports `fake`.
@@ -53,6 +56,9 @@ pub trait Clock: Send + Sync {
 ///
 /// # Idempotency
 /// Not idempotent by design: each call returns a new value.
+///
+/// # Cancellation and timeouts
+/// The call returns at once. There is nothing to cancel and no timeout.
 pub trait IdGenerator: Send + Sync {
     /// Says whether this generator is the real one (`real`) or a deterministic stand-in (`fake`).
     fn fidelity(&self) -> Fidelity;
@@ -79,6 +85,10 @@ pub trait IdGenerator: Send + Sync {
 ///
 /// # Idempotency
 /// Reading the signal changes nothing, so both methods can be called any number of times.
+///
+/// # Cancellation and timeouts
+/// Checking the signal never blocks. The signal only asks; a method that takes it stops within one
+/// second of the signal being set.
 #[async_trait]
 pub trait CancelSignal: Send + Sync {
     /// Says whether this signal is wired to a real cancellation source (`real`) or is a manual

@@ -1,9 +1,12 @@
 //! The agent ports: running an agent tool inside a sandbox, choosing which one, and the broker
-//! that holds the real model credentials (ADR 0005).
+//! that holds the real model credentials (ADR 0005, ADR 0014 decision 6).
 //!
 //! An adapter reports what happened. The engine decides whether it counts: `AgentRuntime::run`
-//! never marks a stage successful, and the output it returns is unvalidated.
+//! never marks a stage successful, and the output it returns is raw bytes that nothing has
+//! parsed. A run that failed still reports its usage, transcript and denials. Spend reaches a
+//! broker through [`MeteringOps`], which the engine never holds.
 
+use std::collections::BTreeMap;
 use std::fmt;
 use std::time::Duration;
 
@@ -296,7 +299,7 @@ pub struct Denial {
     pub reason: String,
 }
 
-/// Everything one agent run needs.
+/// Everything one agent run needs. One field is new: `max_output_bytes`.
 #[derive(Debug, Clone, PartialEq)]
 pub struct AgentRunRequest {
     /// The attempt the run belongs to.
@@ -307,6 +310,9 @@ pub struct AgentRunRequest {
     pub prompt: AssembledPrompt,
     /// The schema the output must follow.
     pub output_schema: SchemaRef,
+    /// The most bytes of final output the adapter reads. One more byte is `OutputTooLarge`. From
+    /// `untrusted_content.structured_output.max_bytes` in the policy.
+    pub max_output_bytes: u64,
     /// Where the sidecar relays to.
     pub broker: BrokerEndpoint,
     /// The job token the tool authenticates with.
@@ -321,25 +327,52 @@ pub struct AgentRunRequest {
     pub flag_set: FlagSet,
 }
 
-/// What a run produced. The engine validates `output`; this is a report, not a verdict.
+/// The final output of a run, **as bytes**. Nothing has parsed it. The engine hands the bytes to
+/// `OutputValidator::validate_bytes`, which refuses a document with a repeated key, an
+/// oversize body or too deep a nesting before any parser builds a value, and stores the same
+/// bytes as an artifact.
+#[derive(Clone, PartialEq, Eq)]
+pub struct RawOutput(Vec<u8>);
+
+impl RawOutput {
+    /// Wraps the bytes the tool wrote.
+    #[must_use]
+    pub fn new(bytes: Vec<u8>) -> Self {
+        Self(bytes)
+    }
+    /// The bytes.
+    #[must_use]
+    pub fn as_bytes(&self) -> &[u8] {
+        &self.0
+    }
+}
+
+impl std::fmt::Debug for RawOutput {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "RawOutput({} bytes)", self.0.len())
+    }
+}
+
+/// What a run left behind, whether it worked or not. The failed attempt is the one that needs its
+/// evidence and may have cost money, so every part is returned either way.
 #[derive(Debug, Clone, PartialEq)]
-pub struct AgentRunOutcome {
-    /// The tool's final output, **unvalidated**.
-    pub output: serde_json::Value,
-    /// The full transcript, stored in the artifact store after redaction.
-    pub transcript: ArtifactRef,
-    /// What the run used.
+pub struct AgentRunReport {
+    /// The final output, or why there is none.
+    pub outcome: Result<RawOutput, AgentRunError>,
+    /// The transcript, stored after redaction. `None` only when the run failed before the tool
+    /// produced any.
+    pub transcript: Option<ArtifactRef>,
+    /// What the run used, as far as the adapter could tell. Zero when nothing was used.
     pub usage: Usage,
-    /// The version of the tool that ran.
-    pub runtime_version: String,
-    /// How the process ended.
-    pub exit: ExitInfo,
+    /// The version of the tool that ran, when it started.
+    pub runtime_version: Option<String>,
+    /// How the process ended, when it started and ended.
+    pub exit: Option<ExitInfo>,
     /// Tool calls the tool reported as denied.
     pub permission_denials: Vec<Denial>,
 }
 
-/// Why a run failed. The set is closed: an adapter maps every failure of its tool onto one of
-/// these.
+/// Why a run failed. The set is closed. `OutputTooLarge` is new.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum AgentRunError {
     /// The model provider cannot be reached.
@@ -363,6 +396,9 @@ pub enum AgentRunError {
     /// The tool ended without producing the final output.
     #[error("the agent produced no output")]
     OutputMissing,
+    /// The final output is larger than `max_output_bytes`.
+    #[error("the agent output is larger than the limit")]
+    OutputTooLarge,
     /// The caller cancelled the run and the tool was stopped.
     #[error("the agent run was cancelled")]
     Cancelled,
@@ -374,7 +410,18 @@ pub enum AgentRunError {
     BudgetRefused,
 }
 
-/// Why a probe failed. The set is closed.
+/// The step of a probe that failed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProbeStep {
+    /// Reading the version.
+    Version,
+    /// Reading the help text.
+    Help,
+    /// Running a trial command.
+    Trial,
+}
+
+/// Why a probe failed. The set is closed. `ProbeFailed` names the step instead of carrying text.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum ProbeError {
     /// The tool is not installed in the sandbox image.
@@ -386,9 +433,9 @@ pub enum ProbeError {
         /// The version the tool reported.
         found: String,
     },
-    /// The probe command failed. The text never includes secrets.
-    #[error("the probe failed: {0}")]
-    ProbeFailed(String),
+    /// The probe command failed.
+    #[error("the probe failed at {0:?}")]
+    ProbeFailed(ProbeStep),
 }
 
 /// Runs an agent tool inside a sandbox.
@@ -398,22 +445,25 @@ pub enum ProbeError {
 /// untrusted text inside its data envelope. The granted tools were decided by policy.
 ///
 /// # Postconditions
-/// `probe` returns what the tool can do, read from the tool itself and repeatable: probing twice
-/// gives the same answer. It changes nothing in the sandbox. `run` starts the tool inside the
-/// session and returns what the tool produced, **unvalidated**, with a stored transcript, usage
-/// and any denials the tool reported. It never marks a stage as successful: the engine validates
-/// the output and the gate decides. A cancelled run stops the tool before it returns.
+/// `probe` returns what the tool can do, read from the tool itself and repeatable. `run` always
+/// returns a report. A report with an output carries the tool's final output as bytes,
+/// unvalidated. A report with an error still carries the usage, the transcript and the denials
+/// of the run. `run` never marks a stage successful, and a cancelled run stops the tool before
+/// it returns.
 ///
 /// # Errors
-/// [`ProbeError`] for `probe`. [`AgentRunError`] for `run`: `ProviderUnavailable`, `RateLimited`,
-/// `AuthenticationRequired`, `Timeout`, `ProcessFailed`, `OutputMissing`, `Cancelled`,
-/// `CapabilityMissing` (the probe did not find a capability the run needs) and `BudgetRefused`.
+/// [`ProbeError`] for `probe`. For `run`, the error is `report.outcome`.
 ///
 /// # Idempotency
 /// `probe` is a read. `run` is not idempotent: each call runs the tool again and may cost money.
+///
+/// # Cancellation and timeouts
+/// `run` takes a cancel signal and `req.limits` holds the wall clock. Dropping the future kills
+/// the tool process but loses the report; the usage is still in the broker (`ModelBroker::usage`).
+/// `probe` has a fixed timeout of 30 seconds and is safe to drop.
 #[async_trait]
 pub trait AgentRuntime: Send + Sync {
-    /// The runtime's name: `claude-code-cli`, `codex-cli` or `fake`.
+    /// The runtime's name.
     fn id(&self) -> &RuntimeId;
 
     /// Says whether this adapter drives a real tool (`real`) or is a scripted stand-in (`fake`).
@@ -432,8 +482,13 @@ pub trait AgentRuntime: Send + Sync {
         session: &mut dyn SandboxSession,
         req: AgentRunRequest,
         cancel: &dyn CancelSignal,
-    ) -> Result<AgentRunOutcome, AgentRunError>;
+    ) -> AgentRunReport;
 }
+
+/// What the probes of the available runtimes found. Probing is done by the engine, per runtime,
+/// and cached by runtime version and image digest.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ProbedCapabilities(pub BTreeMap<RuntimeId, RuntimeCapabilities>);
 
 /// What a stage needs from a model, as a routing question.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -446,6 +501,10 @@ pub struct RoutingNeed {
     pub required: Vec<Capability>,
     /// The risk of the job, which can force a larger model.
     pub risk: RiskTier,
+    /// Runtimes that already failed for this attempt window. The router never returns one.
+    pub exclude: Vec<RuntimeId>,
+    /// What the probes found. A runtime with no entry is not a candidate.
+    pub probed: ProbedCapabilities,
 }
 
 /// The answer to a routing question.
@@ -463,26 +522,37 @@ pub enum RoutingError {
     /// The routing policy has no entry for this stage and tier.
     #[error("the routing policy has no route for this need")]
     NoRoute,
-    /// Every candidate lacks a capability the need requires.
+    /// Every candidate was excluded.
+    #[error("every candidate runtime was excluded")]
+    AllExcluded,
+    /// Every remaining candidate lacks a capability the need requires, as the probes found.
     #[error("no candidate runtime has the capability {}", .0.as_str())]
     CapabilityUnavailable(Capability),
 }
 
 /// Chooses a runtime and model. A pure function of the routing policy and the question.
 ///
-/// # Preconditions
-/// The routing policy (`policies/model_routing.yaml`) was loaded and validated when the router was
-/// built.
-///
 /// # Postconditions
-/// The same need always gets the same decision. The decision's flag set is
-/// [`FlagSet::for_stage`] of the need's stage. Routing never calls a provider.
+/// The same need, with the same exclusions and the same probe results, always gets the same
+/// decision. The decision's runtime is not in `need.exclude`, has an entry in `need.probed`, and
+/// that entry supports every capability in `need.required`. The candidates are tried in the
+/// order the policy lists them. Excluding the answer of a first call gives a different runtime
+/// or an error, never the same one. The flag set is `FlagSet::for_stage`. Routing never calls a
+/// provider.
 ///
 /// # Errors
-/// [`RoutingError::NoRoute`] and [`RoutingError::CapabilityUnavailable`].
+/// [`RoutingError`].
 ///
 /// # Idempotency
 /// Idempotent and side-effect free.
+///
+/// # Preconditions
+/// The routing policy is loaded. The need names a stage, a tier, the capabilities the runtime must
+/// have, and the runtimes already excluded and probed.
+///
+/// # Cancellation and timeouts
+/// The call is pure and returns at once. It reads no clock and makes no call, so there is nothing to
+/// cancel and no timeout.
 pub trait ModelRouter: Send + Sync {
     /// Says whether this router reads the real routing policy (`real`) or a fixed table (`fake`).
     fn fidelity(&self) -> Fidelity;
@@ -541,15 +611,26 @@ pub struct TokenUsage {
     pub state: TokenState,
 }
 
+/// Why a token request was refused.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InvalidTokenRequest {
+    /// The cost ceiling is zero.
+    ZeroCeiling,
+    /// The list of allowed models is empty.
+    NoModels,
+    /// The lifetime is zero.
+    ZeroTtl,
+}
+
 /// Why a broker call failed. The set is closed.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum BrokerError {
     /// The broker has no such token.
     #[error("the broker has no such token")]
     UnknownToken,
-    /// The request was malformed, such as a zero ceiling or an empty model list.
-    #[error("the token request is invalid: {0}")]
-    InvalidRequest(String),
+    /// The request was malformed.
+    #[error("the token request is invalid: {0:?}")]
+    InvalidRequest(InvalidTokenRequest),
     /// The broker cannot be reached.
     #[error("the model broker is unavailable")]
     Unavailable,
@@ -558,38 +639,77 @@ pub enum BrokerError {
 /// Issues, revokes and meters the per-job tokens that stand between the sandbox and the real
 /// model keys.
 ///
-/// # Preconditions
-/// `issue` needs a non-empty list of allowed models and a ceiling above zero. The broker holds the
-/// real provider keys; the caller never sees them.
-///
 /// # Postconditions
 /// An issued token is bound to its tenant, job and stage, starts with zero usage and is `Active`
-/// until it is revoked, expires or reaches its ceiling. After `revoke` the token is `Revoked` and
-/// no further spending is allowed under it; the usage recorded so far stays readable. A token
-/// that reaches its ceiling is revoked by the broker. The secret never appears in `Debug` output.
+/// until it is revoked, expires or reaches its ceiling. After `revoke` the token is `Revoked`
+/// and no further spending is allowed under it; the usage recorded so far stays readable.
+/// `revoke_for_job` revokes every token of the job, including tokens whose attempt crashed. The
+/// secret never appears in `Debug` output.
 ///
 /// # Errors
-/// [`BrokerError::InvalidRequest`] (`issue`), [`BrokerError::UnknownToken`] (`usage`),
-/// [`BrokerError::Unavailable`].
+/// [`BrokerError`].
 ///
 /// # Idempotency
-/// `revoke` is idempotent: revoking a revoked token succeeds and changes nothing, and revoking a
-/// token the broker never issued succeeds too. `issue` is not idempotent: each call makes a new
-/// token. `usage` is a read.
+/// `revoke` and `revoke_for_job` are idempotent: revoking a revoked token, or a token the broker
+/// never issued, succeeds. `issue` is not idempotent. `usage` is a read.
+///
+/// # Cancellation and timeouts
+/// Every call is safe to drop. `issue` that was dropped may have made a token that nobody holds;
+/// `revoke_for_job` at the end of the job removes it.
+///
+/// # Preconditions
+/// issue needs a non-empty list of allowed models, a ceiling above zero and a lifetime above zero.
+/// The broker holds the real provider keys; the caller never sees them.
 #[async_trait]
 pub trait ModelBroker: Send + Sync {
     /// Says whether this is the real broker (`real`) or an in-memory stand-in (`fake`).
     fn fidelity(&self) -> Fidelity;
 
-    /// Bound to tenant, job and stage, with a cost ceiling and an allowed provider and model
-    /// list.
+    /// Bound to tenant, job and stage, with a cost ceiling and an allowed provider and model list.
     async fn issue(&self, req: JobTokenRequest) -> Result<IssuedJobToken, BrokerError>;
 
     /// Idempotent.
     async fn revoke(&self, token: &JobTokenId) -> Result<(), BrokerError>;
 
+    /// Revokes every token of the job. Idempotent.
+    async fn revoke_for_job(&self, job: JobId) -> Result<(), BrokerError>;
+
     /// What the token has used and whether it still works.
     async fn usage(&self, token: &JobTokenId) -> Result<TokenUsage, BrokerError>;
+}
+
+/// The seam through which spend reaches a broker. The real broker's relay calls it in the
+/// `egress` crate when it forwards a model request; the fake agent runtime calls it on the fake
+/// broker to pretend to spend. **The engine never holds a `MeteringOps`**, and the static check
+/// ST-14 fails a reference to it in the `workflow` crate: the engine reads what was spent with
+/// `ModelBroker::usage` and cannot invent spend.
+///
+/// # Postconditions
+/// The usage is added to the token's total. If the new total reaches the ceiling, the token is
+/// revoked in the same step. Spend under a revoked or expired token is refused with
+/// [`BrokerError::UnknownToken`] and adds nothing.
+///
+/// # Idempotency
+/// Not idempotent: each call adds.
+///
+/// # Preconditions
+/// The token was issued by this broker. The caller is the relay inside the egress crate, or a fake
+/// agent runtime acting on the fake broker. The workflow crate never holds one (ST-14).
+///
+/// # Errors
+/// BrokerError::UnknownToken (the token is unknown, revoked or expired), BrokerError::Unavailable.
+///
+/// # Cancellation and timeouts
+/// The call is safe to drop. A dropped call may have been applied, so the relay records each spend
+/// exactly once and does not retry blindly. The adapter sets a timeout and reports it as Unavailable.
+#[async_trait]
+pub trait MeteringOps: Send + Sync {
+    /// Adds `delta` to the token's usage and returns the totals.
+    async fn record_usage(
+        &self,
+        token: &JobTokenId,
+        delta: Usage,
+    ) -> Result<TokenUsage, BrokerError>;
 }
 
 #[cfg(test)]
@@ -656,5 +776,68 @@ mod tests {
         let secret = JobTokenSecret::new("sfjt_super-secret-value".to_owned());
         assert!(!format!("{secret:?}").contains("super-secret"));
         assert_eq!(secret.expose(), "sfjt_super-secret-value");
+    }
+
+    #[test]
+    fn raw_output_shows_its_size_and_never_its_content() {
+        let bytes = format!("{{\"answer\":\"{}\"}}", "sensitive text").into_bytes();
+        let output = RawOutput::new(bytes.clone());
+        let shown = format!("{output:?}");
+        assert_eq!(shown, format!("RawOutput({} bytes)", bytes.len()));
+        assert!(!shown.contains("sensitive"));
+        assert_eq!(output.as_bytes(), bytes.as_slice());
+    }
+
+    #[test]
+    fn a_failed_run_report_still_holds_usage_and_denials() {
+        let report = AgentRunReport {
+            outcome: Err(AgentRunError::Timeout),
+            transcript: None,
+            usage: Usage {
+                input_tokens: 10,
+                output_tokens: 2,
+                cost: CostMicroUsd(40),
+                requests: 1,
+            },
+            runtime_version: Some("1.2.3".to_owned()),
+            exit: None,
+            permission_denials: Vec::new(),
+        };
+        assert!(report.outcome.is_err());
+        assert_eq!(report.usage.cost, CostMicroUsd(40));
+    }
+
+    #[test]
+    fn a_routing_need_with_nothing_probed_has_no_candidate_to_offer() {
+        let need = RoutingNeed {
+            stage: StageKind::Implementation,
+            tier: RecommendedTier::Standard,
+            required: vec![Capability::JsonSchemaOutput],
+            risk: RiskTier::Low,
+            exclude: Vec::new(),
+            probed: ProbedCapabilities::default(),
+        };
+        assert!(need.probed.0.is_empty());
+        assert!(need.exclude.is_empty());
+    }
+
+    #[test]
+    fn the_error_sets_carry_no_free_text() {
+        assert_eq!(
+            BrokerError::InvalidRequest(InvalidTokenRequest::ZeroCeiling).to_string(),
+            "the token request is invalid: ZeroCeiling"
+        );
+        assert_eq!(
+            AgentRunError::OutputTooLarge.to_string(),
+            "the agent output is larger than the limit"
+        );
+        assert_eq!(
+            ProbeError::ProbeFailed(ProbeStep::Trial).to_string(),
+            "the probe failed at Trial"
+        );
+        assert_eq!(
+            RoutingError::AllExcluded.to_string(),
+            "every candidate runtime was excluded"
+        );
     }
 }

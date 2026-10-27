@@ -417,6 +417,7 @@ dependencies = [
  "serde_json",
  "thiserror",
  "time",
+ "unicode-normalization",
  "uuid",
 ]
 

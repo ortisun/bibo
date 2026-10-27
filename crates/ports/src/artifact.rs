@@ -2,11 +2,12 @@
 //!
 //! Logs, transcripts, diffs and reports are artifacts. A blob is written once and never changes,
 //! so a hash in the ledger or in a pull request body keeps meaning the same bytes. Who may read a
-//! blob is not decided here: the caller checks the tenant's index row first
-//! (`ArtifactIndexOps::get_artifact_index`).
+//! blob is decided here: `get` and `exists` take the tenant's scope and answer only for a hash
+//! that the tenant's index row names (`ArtifactIndexOps`, ports-v1.1 decision 9).
 
 use async_trait::async_trait;
 use factory_domain::contracts::ArtifactRef;
+use factory_domain::scope::TenantScope;
 use factory_domain::values::{MediaType, Sha256Digest};
 use factory_domain::vocabulary::Fidelity;
 
@@ -31,10 +32,21 @@ impl ArtifactBackend {
     }
 }
 
-/// Why an artifact call failed. The set is closed.
+/// What the adapter was doing when the backend failed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BackendStep {
+    /// Writing a blob.
+    Write,
+    /// Reading a blob.
+    Read,
+    /// Reading the tenant's index row.
+    Index,
+}
+
+/// Why an artifact call failed. The set is closed. `Io` names the step instead of carrying text.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum ArtifactError {
-    /// No blob has this hash.
+    /// No blob has this hash, or the tenant has no index row for it. The two look the same.
     #[error("no artifact has this content hash")]
     NotFound,
     /// The stored bytes no longer hash to the address they are stored under: the blob was changed
@@ -54,9 +66,9 @@ pub enum ArtifactError {
         /// The largest size the store accepts, in bytes.
         limit: u64,
     },
-    /// The backend failed. The text names the operation and never includes artifact content.
-    #[error("the artifact backend failed: {0}")]
-    Io(String),
+    /// The backend failed.
+    #[error("the artifact backend failed at {0:?}")]
+    Io(BackendStep),
 }
 
 /// Content-addressed storage for immutable blobs.
@@ -66,21 +78,29 @@ pub enum ArtifactError {
 /// from logs and transcripts; this port stores exactly what it is given.
 ///
 /// # Postconditions
-/// After `put` returns a reference, `get` on it returns exactly the bytes that were put, `exists`
-/// returns `true`, and the reference's `sha256` is the SHA-256 of those bytes and its `size_bytes`
-/// is their length. A blob is never overwritten, and `get` never returns bytes whose hash differs
-/// from the address.
+/// After `put` returns a reference, the blob is stored once, whoever else holds the same bytes.
+/// `get` and `exists` answer only for a tenant whose index row (`ArtifactIndexOps`) names the
+/// hash: for any other tenant `get` is `NotFound` and `exists` is `false`, so a hash held by
+/// another tenant cannot be read and its existence cannot be tested. `get` never returns bytes
+/// whose hash differs from the address. The implementation of this port lives with the database
+/// adapter and reads the index through the same store.
 ///
 /// # Errors
-/// [`ArtifactError::NotFound`] (`get` of an unknown hash), [`ArtifactError::HashMismatch`] (the
-/// stored bytes were damaged), [`ArtifactError::TooLarge`] (`put` over the limit) and
-/// [`ArtifactError::Io`] (the backend failed).
+/// [`ArtifactError::NotFound`] (`get` of an unknown hash, or of a hash the tenant has not
+/// indexed), [`ArtifactError::HashMismatch`] (the stored bytes were damaged),
+/// [`ArtifactError::TooLarge`] (`put` over the limit) and [`ArtifactError::Io`] (the backend
+/// failed, naming the step).
 ///
 /// # Idempotency
 /// `put` is idempotent: the same bytes always give the same hash, a second `put` stores nothing
 /// new, and an earlier blob is never replaced. The reference carries the media type of the call
 /// that made it, so the same bytes put with two media types give two references with one hash.
 /// `get` and `exists` are reads.
+///
+/// # Cancellation and timeouts
+/// Every call is safe to drop. A `put` that was dropped may have stored the blob; the next `put`
+/// of the same bytes is a no-op. An adapter sets a timeout on every backend call and reports it
+/// as `Io` with the step that timed out.
 #[async_trait]
 pub trait ArtifactStore: Send + Sync {
     /// Where the bytes live: the local file system now, an S3-compatible store in Slice 2.
@@ -90,20 +110,27 @@ pub trait ArtifactStore: Send + Sync {
     /// A production run refuses a store that reports `fake`.
     fn fidelity(&self) -> Fidelity;
 
-    /// Stores the bytes and returns their reference. Never overwrites. The same bytes give the
-    /// same hash.
+    /// Stores the bytes and returns their reference. Never overwrites. Makes no index row: the
+    /// caller indexes the artifact for its tenant in the transaction that uses it.
     async fn put(
         &self,
         bytes: Vec<u8>,
         media_type: MediaType,
     ) -> Result<ArtifactRef, ArtifactError>;
 
-    /// Returns the bytes. Re-hashes them on the way out. Callers check the tenant's index row
-    /// first.
-    async fn get(&self, reference: &ArtifactRef) -> Result<Vec<u8>, ArtifactError>;
+    /// Returns the bytes if the tenant's index row names the hash. Re-hashes them on the way out.
+    async fn get(
+        &self,
+        scope: &TenantScope,
+        reference: &ArtifactRef,
+    ) -> Result<Vec<u8>, ArtifactError>;
 
-    /// True when a blob with the reference's hash is stored.
-    async fn exists(&self, reference: &ArtifactRef) -> Result<bool, ArtifactError>;
+    /// True when the tenant's index row names the hash and the blob is stored.
+    async fn exists(
+        &self,
+        scope: &TenantScope,
+        reference: &ArtifactRef,
+    ) -> Result<bool, ArtifactError>;
 }
 
 #[cfg(test)]
@@ -125,5 +152,11 @@ mod tests {
         let text = error.to_string();
         assert!(text.contains(Sha256Digest::of(b"a").as_str()));
         assert!(text.contains(Sha256Digest::of(b"b").as_str()));
+    }
+
+    #[test]
+    fn a_backend_failure_names_the_step_and_nothing_else() {
+        let text = ArtifactError::Io(BackendStep::Index).to_string();
+        assert_eq!(text, "the artifact backend failed at Index");
     }
 }
