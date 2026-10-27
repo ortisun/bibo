@@ -68,7 +68,5 @@ uuid = { version = "1.29.0", default-features = false, features = ["std"] }
 
 [dev-dependencies]
 factory-testkit.workspace = true
-# Real database tests: a runtime that can run many tasks, the migrations run from Rust, and the
-# connection wrapper that lets `diesel_migrations` drive an async connection. Dev only.
-tokio = { version = "1.54.1", default-features = false, features = ["rt-multi-thread", "macros", "sync", "time"] }
-diesel-async = { version = "0.9.2", default-features = false, features = ["postgres", "deadpool", "migrations"] }
+# Real database tests: a runtime that runs many tasks at once for the concurrency tests. Dev only.
+tokio = { version = "1.54.1", default-features = false, features = ["rt-multi-thread", "macros", "sync", "time", "process"] }
