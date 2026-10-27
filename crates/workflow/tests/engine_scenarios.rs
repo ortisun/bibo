@@ -344,8 +344,14 @@ async fn a_valid_output_is_stored_by_hash_and_the_attempt_succeeds() {
     let run = intake(&view);
     assert_eq!(run.attempts[0].status, AttemptStatus::Succeeded);
     assert_eq!(run.attempts[0].id, claimed.attempt);
-    // The stage run waits at its gate. The gate arrives in a later increment.
-    assert_eq!(run.status, StageRunStatus::Gating);
+    // The scripted gate passed, so the stage run is passed and the next stage is ready.
+    assert_eq!(run.status, StageRunStatus::Passed);
+    assert_eq!(
+        view.newest(StageKind::RepositoryIntelligence)
+            .expect("run")
+            .status,
+        StageRunStatus::Ready
+    );
 
     // The output is in the artifact store under its hash, and the event says which.
     let events = world.events(job).await;
@@ -765,4 +771,506 @@ async fn an_attempt_past_its_deadline_is_stopped_and_timed_out() {
     let view = world.view(job).await;
     assert_eq!(intake(&view).attempts[0].status, AttemptStatus::TimedOut);
     assert_eq!(intake(&view).status, StageRunStatus::Ready);
+}
+
+// ---- the gate, rework and supersession ---------------------------------------------------
+
+use factory_domain::ids::StageRunId;
+use factory_domain::machines::invalidation::ArtifactChange;
+use factory_workflow::engine::JobView;
+use support::Eval;
+
+/// Claims and runs `count` stage runs, one after another, moving the clock past every lease and
+/// back-off in between.
+async fn run_stages(world: &World, count: usize) {
+    for _ in 0..count {
+        world.advance(400);
+        let (_, outcome) = world.run_next("worker-1").await;
+        assert_eq!(outcome, AttemptOutcome::Succeeded);
+    }
+}
+
+fn status_of(view: &JobView, kind: StageKind) -> StageRunStatus {
+    view.newest(kind).expect("a run").status
+}
+
+fn statuses_of(view: &JobView, kind: StageKind) -> Vec<StageRunStatus> {
+    view.runs_of(kind).map(|run| run.status).collect()
+}
+
+#[tokio::test]
+async fn a_job_runs_every_stage_in_order_and_waits_for_the_approval() {
+    let world = World::new().await;
+    world
+        .script(StageKind::Approval)
+        .evals_otherwise(Eval::HumanGate);
+    let job = world.admitted_job().await;
+    run_stages(&world, 13).await;
+
+    let view = world.view(job).await;
+    for kind in &world.config.scope {
+        let expected = if *kind == StageKind::Approval {
+            StageRunStatus::WaitingForHuman
+        } else {
+            StageRunStatus::Passed
+        };
+        assert_eq!(status_of(&view, *kind), expected, "{kind}");
+    }
+    assert_eq!(view.status, JobStatus::WaitingForHuman);
+
+    // Every passed stage run has a ledger entry that cites its gate report, and the chain holds.
+    let ledger = world.ledger(job).await;
+    assert!(ledger.len() >= 12, "{} entries", ledger.len());
+    assert_eq!(factory_domain::ledger::verify_chain(&ledger), Ok(()));
+    // Every event of one aggregate has the next version, with no gap (ADR 0004).
+    let events = world.events(job).await;
+    let mut last: std::collections::HashMap<_, i64> = std::collections::HashMap::new();
+    for event in &events {
+        let key = (event.aggregate.kind, event.aggregate.id);
+        let version = event.aggregate.version.get();
+        if let Some(previous) = last.insert(key, version) {
+            assert!(version > previous, "{} did not rise", event.event_type);
+        }
+    }
+}
+
+#[tokio::test]
+async fn a_failed_gate_sends_the_work_back_by_the_route_of_the_stage() {
+    let world = World::new().await;
+    let job = world.admitted_job().await;
+    // Through IMPLEMENTATION (7 stages). VALIDATION is next, and its first gate fails.
+    run_stages(&world, 7).await;
+    world
+        .script(StageKind::Validation)
+        .queue_evals([Eval::Fail("tests-pass")]);
+    world.advance(400);
+    let (_, outcome) = world.run_next("worker-1").await;
+    assert_eq!(
+        outcome,
+        AttemptOutcome::Succeeded,
+        "the attempt itself succeeded"
+    );
+
+    let view = world.view(job).await;
+    // The route of VALIDATION is IMPLEMENTATION: the passed run is replaced, the failing run is
+    // marked for rework, and every stage after the target starts again.
+    assert_eq!(
+        statuses_of(&view, StageKind::Implementation),
+        vec![StageRunStatus::Superseded, StageRunStatus::Ready]
+    );
+    assert_eq!(
+        statuses_of(&view, StageKind::Validation),
+        vec![StageRunStatus::ReworkRequested, StageRunStatus::Pending]
+    );
+    assert_eq!(view.code_rework_rounds, 1);
+    assert_eq!(view.documentation_rework_rounds, 0);
+    // The stages before the target keep their runs.
+    assert_eq!(
+        statuses_of(&view, StageKind::TaskPlanning),
+        vec![StageRunStatus::Passed]
+    );
+    assert_eq!(view.status, JobStatus::Active);
+}
+
+#[tokio::test]
+async fn rework_stops_at_the_cap_of_two_and_then_a_person_decides() {
+    // NT-BUD-04: at most two rounds, then the stage waits. No automatic third round.
+    let world = World::new().await;
+    let job = world.admitted_job().await;
+    run_stages(&world, 7).await;
+    world.script(StageKind::Validation).queue_evals([
+        Eval::Fail("first-check"),
+        Eval::Fail("second-check"),
+        Eval::Fail("third-check"),
+    ]);
+    // VALIDATION fails, IMPLEMENTATION reruns, VALIDATION fails, IMPLEMENTATION reruns, and
+    // VALIDATION fails a third time.
+    for _ in 0..5 {
+        world.advance(400);
+        world.run_next("worker-1").await;
+    }
+    let view = world.view(job).await;
+    assert_eq!(view.code_rework_rounds, 2, "the cap is two rounds");
+    assert_eq!(
+        status_of(&view, StageKind::Validation),
+        StageRunStatus::WaitingForHuman
+    );
+    assert_eq!(view.status, JobStatus::WaitingForHuman);
+    assert_eq!(
+        view.runs_of(StageKind::Implementation).count(),
+        3,
+        "the original run and two reworks, and no third round"
+    );
+}
+
+#[tokio::test]
+async fn negative_nt_bud_03_a_repeated_failure_asks_a_person_after_one_round() {
+    // The same failing check twice means another round would not help.
+    let world = World::new().await;
+    let job = world.admitted_job().await;
+    run_stages(&world, 7).await;
+    world
+        .script(StageKind::Validation)
+        .queue_evals([Eval::Fail("same-check"), Eval::Fail("same-check")]);
+    for _ in 0..3 {
+        world.advance(400);
+        world.run_next("worker-1").await;
+    }
+    let view = world.view(job).await;
+    assert_eq!(
+        view.code_rework_rounds, 1,
+        "the second identical failure is not reworked"
+    );
+    assert_eq!(
+        status_of(&view, StageKind::Validation),
+        StageRunStatus::WaitingForHuman
+    );
+}
+
+const TABLE: &str = include_str!("../../../docs/architecture/state-machine.json");
+
+/// The invalidation rows of `state-machine.json`: the change, and the stages it supersedes.
+fn table() -> Vec<(String, Vec<String>)> {
+    let document: serde_json::Value = serde_json::from_str(TABLE).expect("the file is JSON");
+    document["pipeline"]["invalidation_rules"]
+        .as_array()
+        .expect("a list")
+        .iter()
+        .map(|row| {
+            (
+                row["when"].as_str().expect("text").to_owned(),
+                row["supersedes"]
+                    .as_array()
+                    .expect("a list")
+                    .iter()
+                    .map(|stage| stage.as_str().expect("text").to_owned())
+                    .collect(),
+            )
+        })
+        .collect()
+}
+
+#[tokio::test]
+async fn invalidation_follows_the_table() {
+    // A documentation defect found at the documentation review reworks DOCUMENTING. The rows of
+    // the file say that a new documentation commit supersedes the review, delivery and approval.
+    let world = World::new().await;
+    let job = world.admitted_job().await;
+    run_stages(&world, 10).await; // INTAKE .. DOCUMENTING passed
+    world
+        .script(StageKind::DocumentationReview)
+        .queue_evals([Eval::ChangesRequired("documentation")]);
+    world.advance(400);
+    world.run_next("worker-1").await;
+
+    let view = world.view(job).await;
+    let row = table()
+        .into_iter()
+        .find(|(when, _)| when == "DOCUMENTING produces a new documentation commit")
+        .expect("the row exists")
+        .1;
+    for stage in &row {
+        let kind = StageKind::parse(stage).expect("a stage");
+        let statuses = statuses_of(&view, kind);
+        let expected = if kind == StageKind::DocumentationReview {
+            // The failing run takes the rework move instead.
+            vec![StageRunStatus::ReworkRequested, StageRunStatus::Pending]
+        } else {
+            vec![StageRunStatus::Superseded, StageRunStatus::Pending]
+        };
+        assert_eq!(statuses, expected, "{kind}");
+    }
+    // The target is replaced as well, and nothing before it is touched.
+    assert_eq!(
+        statuses_of(&view, StageKind::Documenting),
+        vec![StageRunStatus::Superseded, StageRunStatus::Ready]
+    );
+    assert_eq!(
+        statuses_of(&view, StageKind::Review),
+        vec![StageRunStatus::Passed]
+    );
+    assert_eq!(view.documentation_rework_rounds, 1);
+    assert_eq!(view.code_rework_rounds, 0);
+}
+
+#[tokio::test]
+async fn a_code_defect_at_review_supersedes_both_documentation_runs() {
+    // INV-11: a new implementation commit supersedes DOCUMENTING and DOCUMENTATION_REVIEW.
+    let world = World::new().await;
+    let job = world.admitted_job().await;
+    run_stages(&world, 11).await; // through DOCUMENTATION_REVIEW
+    // A reviewer who comes late finds a code defect: the rework goes to IMPLEMENTATION.
+    // The documentation review is the failing stage here, with a code_behavior finding.
+    let view = world.view(job).await;
+    assert_eq!(
+        status_of(&view, StageKind::DocumentationReview),
+        StageRunStatus::Passed
+    );
+    let world2 = World::new().await;
+    let job2 = world2.admitted_job().await;
+    run_stages(&world2, 10).await;
+    world2
+        .script(StageKind::DocumentationReview)
+        .queue_evals([Eval::ChangesRequired("code_behavior")]);
+    world2.advance(400);
+    world2.run_next("worker-1").await;
+    let view = world2.view(job2).await;
+    assert_eq!(
+        statuses_of(&view, StageKind::Documenting),
+        vec![StageRunStatus::Superseded, StageRunStatus::Pending],
+        "the passed documentation run is superseded"
+    );
+    assert_eq!(
+        statuses_of(&view, StageKind::DocumentationReview),
+        vec![StageRunStatus::ReworkRequested, StageRunStatus::Pending]
+    );
+    assert_eq!(
+        statuses_of(&view, StageKind::Implementation),
+        vec![StageRunStatus::Superseded, StageRunStatus::Ready]
+    );
+    assert_eq!(view.code_rework_rounds, 1);
+}
+
+#[tokio::test]
+async fn external_changes_follow_the_table() {
+    // Every row of the table, applied to a job whose first eleven stages passed, supersedes
+    // exactly the runs the row lists, creates one new run for each, and cancels live attempts.
+    for (when, listed) in table() {
+        let change = ArtifactChange::parse(&when).expect("a known change");
+        let world = World::new().await;
+        let job = world.admitted_job().await;
+        run_stages(&world, 11).await; // DELIVERY is ready, APPROVAL is pending
+        // A worker holds DELIVERY: its attempt is live when the change arrives.
+        world.advance(400);
+        let live = world.claim_one("worker-live").await;
+        assert_eq!(live.kind, StageKind::Delivery);
+
+        let applied = world
+            .engine
+            .apply_change(world.tenant, job, change)
+            .await
+            .expect("the change applies");
+        let mut superseded: Vec<String> = Vec::new();
+        for id in &applied.superseded {
+            let view = world.view(job).await;
+            let run = view
+                .stage_runs
+                .iter()
+                .find(|run| run.id == *id)
+                .expect("a run");
+            assert_eq!(
+                run.status,
+                StageRunStatus::Superseded,
+                "{when}: {}",
+                run.kind
+            );
+            superseded.push(run.kind.as_str().to_owned());
+        }
+        assert_eq!(superseded, listed, "{when}");
+        assert_eq!(
+            applied.created.len(),
+            listed.len(),
+            "{when}: one new run for each"
+        );
+
+        // The live attempt of DELIVERY, if the row lists it, was asked to cancel.
+        let view = world.view(job).await;
+        let delivery = view.runs_of(StageKind::Delivery).next().expect("a run");
+        let expected_attempt = if listed.iter().any(|s| s == "DELIVERY") {
+            AttemptStatus::Cancelling
+        } else {
+            AttemptStatus::Starting
+        };
+        assert_eq!(delivery.attempts[0].status, expected_attempt, "{when}");
+    }
+}
+
+#[tokio::test]
+async fn an_edited_request_restarts_the_job_from_the_intake() {
+    let world = World::new().await;
+    let job = world.admitted_job().await;
+    run_stages(&world, 3).await;
+    let applied = world
+        .engine
+        .apply_change(world.tenant, job, ArtifactChange::RequestEdited)
+        .await
+        .expect("applies");
+    assert_eq!(applied.superseded.len(), 13);
+    let view = world.view(job).await;
+    // The intake is superseded too, and its replacement is ready first.
+    assert_eq!(
+        statuses_of(&view, StageKind::Intake),
+        vec![StageRunStatus::Superseded, StageRunStatus::Ready]
+    );
+    assert_eq!(
+        status_of(&view, StageKind::Specification),
+        StageRunStatus::Pending
+    );
+    assert_eq!(view.status, JobStatus::Active);
+}
+
+#[tokio::test]
+async fn skipped_stage_does_not_stall_the_pipeline() {
+    let world = World::new().await;
+    world
+        .script(StageKind::Approval)
+        .evals_otherwise(Eval::HumanGate);
+    world
+        .script(StageKind::DomainDiscovery)
+        .skip_by_rule("no-profile-needed");
+    let job = world.admitted_job().await;
+    // INTAKE, REPOSITORY_INTELLIGENCE and SPECIFICATION run; DOMAIN_DISCOVERY is skipped.
+    run_stages(&world, 3).await;
+    let view = world.view(job).await;
+    assert_eq!(
+        status_of(&view, StageKind::DomainDiscovery),
+        StageRunStatus::Skipped
+    );
+    assert!(
+        view.newest(StageKind::DomainDiscovery)
+            .expect("run")
+            .attempts
+            .is_empty()
+    );
+    // The architecture stage requires the skipped stage, and it is ready.
+    assert_eq!(
+        status_of(&view, StageKind::Architecture),
+        StageRunStatus::Ready
+    );
+    // The skip and its rule are in the ledger.
+    let ledger = world.ledger(job).await;
+    assert!(
+        ledger
+            .iter()
+            .any(|entry| entry.claim.statement.as_str().contains("no-profile-needed"))
+    );
+    // The rest of the pipeline runs to the approval.
+    run_stages(&world, 9).await;
+    let view = world.view(job).await;
+    assert_eq!(
+        status_of(&view, StageKind::Approval),
+        StageRunStatus::WaitingForHuman
+    );
+}
+
+#[tokio::test]
+async fn negative_nt_mrg_02_missing_or_blocked_evidence_never_passes_a_stage() {
+    // Every way a gate can hand over less than a pass leaves the stage run unpromoted.
+    let cases: [(Eval, &str); 5] = [
+        (Eval::NoEvidence, "no evidence at all"),
+        (Eval::Blocked, "a gate that could not run"),
+        (Eval::CannotRun, "an evaluator that is missing a tool"),
+        (Eval::WrongStageRun, "evidence about another stage run"),
+        (Eval::PolicyViolation, "a policy violation"),
+    ];
+    for (eval, why) in cases {
+        let world = World::new().await;
+        let job = world.admitted_job().await;
+        world.script(StageKind::Intake).queue_evals([eval]);
+        let (_, outcome) = world.run_next("worker-1").await;
+        assert_eq!(
+            outcome,
+            AttemptOutcome::Succeeded,
+            "{why}: the attempt itself succeeded"
+        );
+        let view = world.view(job).await;
+        assert_eq!(
+            status_of(&view, StageKind::Intake),
+            StageRunStatus::Blocked,
+            "{why}"
+        );
+        assert_eq!(view.status, JobStatus::Blocked, "{why}");
+        // Nothing downstream moved, and no event says the stage passed.
+        assert_eq!(
+            status_of(&view, StageKind::RepositoryIntelligence),
+            StageRunStatus::Pending,
+            "{why}"
+        );
+        let events = world.events(job).await;
+        assert!(
+            !events
+                .iter()
+                .any(|e| e.event_type.as_str() == "stage_run.passed"),
+            "{why}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn evidence_refused_by_the_engine_is_never_cited_in_the_ledger() {
+    let world = World::new().await;
+    let job = world.admitted_job().await;
+    world
+        .script(StageKind::Intake)
+        .queue_evals([Eval::WrongStageRun]);
+    world.run_next("worker-1").await;
+    let ledger = world.ledger(job).await;
+    assert!(
+        ledger
+            .iter()
+            .all(|entry| !entry.claim.statement.as_str().contains("scripted-gate")),
+        "a refused report is not recorded as evidence"
+    );
+}
+
+#[tokio::test]
+async fn a_reviewer_who_asks_for_a_person_or_a_human_gate_waits_for_one() {
+    let world = World::new().await;
+    let job = world.admitted_job().await;
+    world
+        .script(StageKind::Intake)
+        .queue_evals([Eval::ReviewerNeedsHuman]);
+    world.run_next("worker-1").await;
+    let view = world.view(job).await;
+    assert_eq!(
+        status_of(&view, StageKind::Intake),
+        StageRunStatus::WaitingForHuman
+    );
+    assert_eq!(view.status, JobStatus::WaitingForHuman);
+
+    let world = World::new().await;
+    let job = world.admitted_job().await;
+    world
+        .script(StageKind::Intake)
+        .queue_evals([Eval::HumanGate]);
+    world.run_next("worker-1").await;
+    assert_eq!(
+        status_of(&world.view(job).await, StageKind::Intake),
+        StageRunStatus::WaitingForHuman
+    );
+}
+
+#[tokio::test]
+async fn a_specification_or_policy_defect_asks_a_person_and_uses_no_round() {
+    // ADR 0010 decision 3: the builder cannot fix these, so no rework round is spent.
+    let world = World::new().await;
+    let job = world.admitted_job().await;
+    run_stages(&world, 8).await; // through VALIDATION; REVIEW is next
+    world
+        .script(StageKind::Review)
+        .queue_evals([Eval::ChangesRequired("specification")]);
+    world.advance(400);
+    world.run_next("worker-1").await;
+    let view = world.view(job).await;
+    assert_eq!(
+        status_of(&view, StageKind::Review),
+        StageRunStatus::WaitingForHuman
+    );
+    assert_eq!(view.code_rework_rounds, 0, "no round was used");
+}
+
+#[tokio::test]
+async fn ids_of_runs_are_unique_across_a_rework() {
+    let world = World::new().await;
+    let job = world.admitted_job().await;
+    run_stages(&world, 7).await;
+    world
+        .script(StageKind::Validation)
+        .queue_evals([Eval::Fail("tests-pass")]);
+    world.advance(400);
+    world.run_next("worker-1").await;
+    let view = world.view(job).await;
+    let ids: std::collections::HashSet<StageRunId> =
+        view.stage_runs.iter().map(|run| run.id).collect();
+    assert_eq!(ids.len(), view.stage_runs.len());
 }

@@ -66,6 +66,9 @@ pub(crate) struct RunRecord {
     pub(crate) human_inputs: Vec<ArtifactRef>,
     /// The run that replaced this one after a supersession.
     pub(crate) replaced_by: Option<StageRunId>,
+    /// The source request was edited after the intake snapshot, so this run must ask for
+    /// re-authorization before an agent reads the new text (NT-AUTHZ-05).
+    pub(crate) reauthorize: bool,
     /// An approver approved the run (`S14`).
     pub(crate) approved: bool,
     /// An approver rejected the run (`S16`).
@@ -83,6 +86,7 @@ impl RunRecord {
             outputs: Vec::new(),
             human_inputs: Vec::new(),
             replaced_by: None,
+            reauthorize: false,
             approved: false,
             rejected: false,
         }
@@ -167,7 +171,6 @@ impl Timeline {
     }
 
     /// The digest of what failed in the last rework round of `kind`.
-    #[allow(dead_code)] // The gate handling of a later increment reads it.
     pub(crate) fn last_failing_set(&self, kind: StageKind) -> Option<&Sha256Digest> {
         self.failing_sets.get(&position(kind))
     }
@@ -306,6 +309,11 @@ impl Timeline {
                 self.runs.push(RunRecord::new(replacement, kind));
             }
             self.run_mut(id)?.replaced_by = Some(replacement);
+            let edited =
+                event.payload.get(key::CAUSE) == Some(&Value::String("request-edited".to_owned()));
+            if edited {
+                self.run_mut(replacement)?.reauthorize = true;
+            }
         }
         Ok(())
     }

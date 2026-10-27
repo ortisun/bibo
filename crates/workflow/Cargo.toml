@@ -19,6 +19,9 @@ factory-domain.workspace = true
 factory-ports.workspace = true
 # The stage handler trait is used as `dyn StageHandler`, like the ports. Maintained by dtolnay.
 async-trait = "0.1.92"
+# The `Serialize` bound on the gate documents that the engine stores. No derive: this crate
+# defines no type that is read from or written to a document.
+serde = { version = "1.0.229", default-features = false, features = ["std"] }
 # Output documents of a stage and the payload of an outbox event are JSON values.
 serde_json = { version = "1.0.154", default-features = false, features = ["std"] }
 # Derive for the closed error enums. Maintained by dtolnay.

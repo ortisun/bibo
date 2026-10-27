@@ -9,5 +9,5 @@ pub mod handler;
 pub mod world;
 
 pub use authority::StaticAuthority;
-pub use handler::{ScriptHandle, ScriptedHandler, Step, Tweaks};
+pub use handler::{Eval, ScriptHandle, ScriptedHandler, Step, Tweaks};
 pub use world::{ScriptedValidator, World};

@@ -98,6 +98,9 @@ pub struct ContractContext<'a> {
     /// The answers people gave to this stage run, oldest first. Each is an input of the stage:
     /// resolving the contract again with a new answer gives a new input hash.
     pub human_inputs: &'a [ArtifactRef],
+    /// The source request was edited after the intake snapshot. The intake stage must ask for
+    /// re-authorization before an agent reads the new text (NT-AUTHZ-05).
+    pub request_edited: bool,
 }
 
 /// What the handler tells the engine about the sandbox it provisioned. The facts are the ones
@@ -251,6 +254,9 @@ pub struct GateContext<'a> {
     pub contract: &'a StageContract,
     /// The ports.
     pub ports: StagePorts<'a>,
+    /// Trips when the engine cancels the attempt. Pass it to every long operation, such as a
+    /// command in a fresh sandbox.
+    pub cancel: &'a dyn CancelSignal,
     /// What the attempt produced and the engine stored, by deliverable name.
     pub outputs: &'a [NamedArtifact],
     /// The answers people gave to this stage run, oldest first.

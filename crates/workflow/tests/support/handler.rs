@@ -8,7 +8,7 @@ use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
-use factory_domain::contracts::{Contract, StageContract};
+use factory_domain::contracts::{Contract, GateReport, ReviewVerdict, StageContract};
 use factory_domain::values::{HumanText, MediaType, Slug};
 use factory_domain::vocabulary::{Fidelity, StageKind};
 use factory_ports::agent::Usage;
@@ -34,6 +34,31 @@ pub enum Step {
     /// Waits until the notify is set, then returns a valid output. The wait ends early if the
     /// engine cancels the attempt.
     Hang(Arc<tokio::sync::Notify>),
+}
+
+/// What one call to `evaluate` hands over as gate evidence.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum Eval {
+    /// A passing report of the scripted gate.
+    Pass,
+    /// A failing report. The text is the id of the failed check.
+    Fail(&'static str),
+    /// A report of a gate that could not run.
+    Blocked,
+    /// Nothing at all: the nearest thing to an agent saying "it passed".
+    NoEvidence,
+    /// A passing report and a verdict that asks for changes of this defect class.
+    ChangesRequired(&'static str),
+    /// A passing report and a verdict that asks a person.
+    ReviewerNeedsHuman,
+    /// A passing report, and the gate itself asks a person.
+    HumanGate,
+    /// A passing report, and a deterministic check found a policy violation.
+    PolicyViolation,
+    /// A report that claims another stage run.
+    WrongStageRun,
+    /// The gate cannot run: the handler reports a missing tool.
+    CannotRun,
 }
 
 /// The retry-related fields of the contract the handler resolves.
@@ -78,6 +103,12 @@ pub struct Script {
     pub skip: Option<SkipRule>,
     pub tweaks: Tweaks,
     pub executed: Vec<Executed>,
+    /// What the next calls to `evaluate` hand over, in order.
+    pub evals: VecDeque<Eval>,
+    /// What `evaluate` hands over once the queue is empty.
+    pub eval_otherwise: Eval,
+    /// How many times `evaluate` ran.
+    pub evaluated: u32,
     /// Whether `execute` says that its sandbox is ready. A stage that runs no sandbox may not.
     pub report_sandbox: bool,
     /// Whether the output carries a document the contract does not declare.
@@ -94,6 +125,9 @@ impl Default for Script {
             skip: None,
             tweaks: Tweaks::default(),
             executed: Vec::new(),
+            evals: VecDeque::new(),
+            eval_otherwise: Eval::Pass,
+            evaluated: 0,
             report_sandbox: true,
             extra_document: false,
             omit_deliverable: false,
@@ -130,6 +164,21 @@ impl ScriptHandle {
                     .expect("a text"),
             });
         });
+    }
+
+    /// Queues what the next gate evaluations hand over, in order.
+    pub fn queue_evals(&self, evals: impl IntoIterator<Item = Eval>) {
+        self.with(|script| script.evals.extend(evals));
+    }
+
+    /// What gate evaluations hand over once the queue is empty.
+    pub fn evals_otherwise(&self, eval: Eval) {
+        self.with(|script| script.eval_otherwise = eval);
+    }
+
+    /// How many times the gate was evaluated.
+    pub fn evaluated(&self) -> u32 {
+        self.with(|script| script.evaluated)
     }
 
     /// The attempt numbers that ran `execute`, in order.
@@ -281,7 +330,125 @@ impl StageHandler for ScriptedHandler {
         }
     }
 
-    async fn evaluate(&self, _ctx: &GateContext<'_>) -> Result<GateDecision, StageError> {
-        Ok(GateDecision::default())
+    async fn evaluate(&self, ctx: &GateContext<'_>) -> Result<GateDecision, StageError> {
+        let eval = self.script.with(|script| {
+            script.evaluated += 1;
+            script.evals.pop_front().unwrap_or(script.eval_otherwise)
+        });
+        let pass = |ctx: &GateContext<'_>| report(ctx, "PASSED", "tests-pass");
+        Ok(match eval {
+            Eval::Pass => GateDecision {
+                reports: vec![pass(ctx)],
+                ..GateDecision::default()
+            },
+            Eval::Fail(check) => GateDecision {
+                reports: vec![report(ctx, "FAILED", check)],
+                ..GateDecision::default()
+            },
+            Eval::Blocked => GateDecision {
+                reports: vec![report(ctx, "BLOCKED", "scanner")],
+                ..GateDecision::default()
+            },
+            Eval::NoEvidence => GateDecision::default(),
+            Eval::ChangesRequired(defect) => GateDecision {
+                reports: vec![pass(ctx)],
+                review: Some(verdict(ctx, "CHANGES_REQUIRED", defect)),
+                ..GateDecision::default()
+            },
+            Eval::ReviewerNeedsHuman => GateDecision {
+                reports: vec![pass(ctx)],
+                review: Some(verdict(ctx, "NEEDS_HUMAN", "specification")),
+                ..GateDecision::default()
+            },
+            Eval::HumanGate => GateDecision {
+                reports: vec![pass(ctx)],
+                human_gate: true,
+                ..GateDecision::default()
+            },
+            Eval::PolicyViolation => GateDecision {
+                reports: vec![pass(ctx)],
+                policy_violation: true,
+                ..GateDecision::default()
+            },
+            Eval::WrongStageRun => {
+                let mut wrong = report(ctx, "PASSED", "tests-pass");
+                wrong.metadata.stage_run_id =
+                    factory_domain::ids::StageRunId::from_uuid(ctx.ports.ids.new_uuid());
+                GateDecision {
+                    reports: vec![wrong],
+                    ..GateDecision::default()
+                }
+            }
+            Eval::CannotRun => {
+                return Err(StageError::Blocked(
+                    factory_domain::contracts::gate_report::BlockedCode::ToolUnavailable,
+                ));
+            }
+        })
     }
+}
+
+const PASSED_REPORT: &str =
+    include_str!("../../../../schemas/examples/gate-report/valid/build-and-test-passed.json");
+const BLOCKED_REPORT: &str = include_str!(
+    "../../../../schemas/examples/gate-report/valid/security-scan-blocked-tool-missing.json"
+);
+const VERDICT: &str = include_str!(
+    "../../../../schemas/examples/review-verdict/valid/changes-required-missing-test.json"
+);
+
+fn uuid_text(ctx: &GateContext<'_>) -> String {
+    ctx.ports.ids.new_uuid().hyphenated().to_string()
+}
+
+/// A gate report for the scripted gate, about the stage run being judged.
+fn report(ctx: &GateContext<'_>, outcome: &str, check: &str) -> GateReport {
+    let mut doc: Value = serde_json::from_str(if outcome == "BLOCKED" {
+        BLOCKED_REPORT
+    } else {
+        PASSED_REPORT
+    })
+    .expect("the example is JSON");
+    let meta = doc["metadata"].as_object_mut().expect("metadata");
+    meta.insert("gate_report_id".into(), json!(uuid_text(ctx)));
+    meta.insert("gate_id".into(), json!("scripted-gate"));
+    meta.insert("job_id".into(), json!(ctx.identity.job.to_string()));
+    meta.insert(
+        "stage_run_id".into(),
+        json!(ctx.identity.stage_run.to_string()),
+    );
+    meta.insert("attempt_id".into(), json!(ctx.attempt.to_string()));
+    meta.insert("execution_mode".into(), json!(ctx.mode.as_str()));
+    doc["environment"]["fidelity"] = json!("fake");
+    if outcome == "FAILED" {
+        doc["outcome"] = json!("FAILED");
+        doc["reason"] = json!("One check of the scripted gate failed on the job commit.");
+        doc["commands"][0]["exit_code"] = json!(1);
+        doc["failures"] = json!([{
+            "check_id": check,
+            "message": "The scripted check found a problem in the change."
+        }]);
+    }
+    GateReport::from_json_value(doc).expect("a valid scripted report")
+}
+
+/// A review verdict about the stage run being judged.
+fn verdict(ctx: &GateContext<'_>, kind: &str, defect: &str) -> ReviewVerdict {
+    let mut doc: Value = serde_json::from_str(VERDICT).expect("the example is JSON");
+    let meta = doc["metadata"].as_object_mut().expect("metadata");
+    meta.insert("review_id".into(), json!(uuid_text(ctx)));
+    meta.insert("job_id".into(), json!(ctx.identity.job.to_string()));
+    meta.insert(
+        "stage_run_id".into(),
+        json!(ctx.identity.stage_run.to_string()),
+    );
+    meta.insert("execution_mode".into(), json!(ctx.mode.as_str()));
+    doc["metadata"]["reviewer"]["runtime"]["fidelity"] = json!("fake");
+    doc["verdict"] = json!(kind);
+    doc["findings"][0]["defect_class"] = json!(defect);
+    if kind == "NEEDS_HUMAN" {
+        doc["findings"] = json!([]);
+        doc["human_question"] = json!("Is the unreadable file case in scope for this change?");
+    }
+    ReviewVerdict::from_json_value(doc).expect("a valid scripted verdict")
 }

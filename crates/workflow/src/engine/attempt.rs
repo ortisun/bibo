@@ -28,7 +28,7 @@ use factory_domain::machines::guards::{
     DeadlineFacts, EpochFacts, GuardFacts, OutputFacts, SandboxProvisionFacts, evaluate,
 };
 use factory_domain::machines::retry::AttemptDisposition;
-use factory_domain::state::{AttemptEvent, AttemptStatus, Guard, StageRunEvent, Status};
+use factory_domain::state::{AttemptEvent, AttemptStatus, Guard, Status};
 use factory_domain::values::Slug;
 use factory_ports::store::{AuditActor, NewArtifactIndexEntry, StoreError, Tx};
 use serde_json::{Value, json};
@@ -38,14 +38,16 @@ use super::Engine;
 use super::cancel::AttemptCancel;
 use super::error::EngineError;
 use super::failure::HumanReason;
-use super::payload::{self, key};
+use super::gate::Judged;
+use super::payload;
 use super::progress::{Board, upstream_runs};
 use super::record::Cx;
 use super::timeline::Timeline;
 use crate::audit::{AuditAction, AuditDecision, AuditKind};
+use crate::gates::framework::{Expectation, GateDecision, check_evidence};
 use crate::handlers::{
-    NamedArtifact, Notes, OutputDocument, SandboxReady, StageContext, StageError, StageHandler,
-    StageOutput, UpstreamRun,
+    GateContext, NamedArtifact, Notes, OutputDocument, SandboxReady, StageContext, StageError,
+    StageHandler, StageOutput, UpstreamRun,
 };
 use crate::scheduler::{ClaimedAttempt, Pulse};
 
@@ -78,10 +80,45 @@ struct Prepared {
     identity: crate::handlers::RunIdentity,
 }
 
+/// What the work before the result transaction produced.
+enum Produced {
+    /// The agent asked for a person. The request is stored.
+    AgentAsked {
+        request: NamedArtifact,
+        output: StageOutput,
+    },
+    /// The output is valid and stored, and the gate collected its evidence.
+    Judged {
+        outputs: Vec<NamedArtifact>,
+        judged: Box<Judged>,
+        output: StageOutput,
+    },
+}
+
+/// Why the work before the result transaction did not produce a result.
+enum PipelineError {
+    /// The stage handler failed, or the output was invalid.
+    Stage(StageError),
+    /// The engine could not store a document. The attempt is left to its lease.
+    Engine(EngineError),
+}
+
+impl From<StageError> for PipelineError {
+    fn from(error: StageError) -> Self {
+        Self::Stage(error)
+    }
+}
+
+impl From<EngineError> for PipelineError {
+    fn from(error: EngineError) -> Self {
+        Self::Engine(error)
+    }
+}
+
 /// What watching the handler found.
 #[derive(Default)]
 struct Watched {
-    result: Option<Result<StageOutput, StageError>>,
+    result: Option<Result<Produced, PipelineError>>,
     lease_lost: bool,
     deadline_passed: bool,
     cancel_requested: bool,
@@ -151,7 +188,12 @@ impl Engine {
         )
         .with_notes(notes.clone());
         let watched = self
-            .watch(claimed, &cancel, &notes, prepared.handler.execute(&mut ctx))
+            .watch(
+                claimed,
+                &cancel,
+                &notes,
+                self.produce(claimed, &prepared, &mut ctx),
+            )
             .await;
         drop(ctx);
 
@@ -192,13 +234,30 @@ impl Engine {
                 .await;
         }
         match watched.result {
-            Some(Ok(output)) => {
-                self.commit_output(claimed, &prepared.contract, output, &notes)
-                    .await
+            Some(Ok(Produced::AgentAsked { request, output })) => {
+                self.commit_asked(claimed, request, &output, &notes).await
             }
-            Some(Err(StageError::Cancelled)) => Ok(AttemptOutcome::Cancelled),
-            Some(Err(StageError::Blocked(_))) => self.commit_blocked(claimed, &notes).await,
-            Some(Err(error)) => {
+            Some(Ok(Produced::Judged {
+                outputs,
+                judged,
+                output,
+            })) => {
+                self.commit_judged(
+                    claimed,
+                    &prepared.contract,
+                    outputs,
+                    &judged,
+                    &output,
+                    &notes,
+                )
+                .await
+            }
+            Some(Err(PipelineError::Engine(error))) => Err(error),
+            Some(Err(PipelineError::Stage(StageError::Cancelled))) => Ok(AttemptOutcome::Cancelled),
+            Some(Err(PipelineError::Stage(StageError::Blocked(_)))) => {
+                self.commit_blocked(claimed, &notes).await
+            }
+            Some(Err(PipelineError::Stage(error))) => {
                 let class = error.failure_class().unwrap_or(FailureClass::Internal);
                 self.commit_failure(claimed, class, &notes).await
             }
@@ -252,7 +311,7 @@ impl Engine {
         work: F,
     ) -> Watched
     where
-        F: Future<Output = Result<StageOutput, StageError>>,
+        F: Future<Output = Result<Produced, PipelineError>>,
     {
         let mut work = std::pin::pin!(work);
         let mut watched = Watched::default();
@@ -357,45 +416,100 @@ impl Engine {
         Ok(true)
     }
 
-    // ---- recording a valid output ---------------------------------------------------------------
+    // ---- producing the output and its gate evidence --------------------------------------------
 
-    async fn commit_output(
+    /// Everything that happens before the result transaction: the handler runs, its output is
+    /// checked and stored, and the gate collects its evidence. All of it can take minutes, so no
+    /// transaction is open, and the lease heartbeat runs beside it.
+    async fn produce(
         &self,
         claimed: &ClaimedAttempt,
-        contract: &StageContract,
-        output: StageOutput,
-        notes: &Notes,
-    ) -> Result<AttemptOutcome, EngineError> {
+        prepared: &Prepared,
+        ctx: &mut StageContext<'_>,
+    ) -> Result<Produced, PipelineError> {
+        let cancel = ctx.cancel;
+        let output = prepared.handler.execute(ctx).await?;
         if let Some(request) = &output.needs_human {
             let document = json!({ "needs_human": request.reason.as_str() });
             let stored = self
                 .store_document("needs-human-request", "application/json", &document)
                 .await?;
-            return self
-                .commit_result(
-                    claimed,
-                    vec![stored],
-                    Some(HumanReason::AgentRequested),
-                    &output,
-                    notes,
-                )
-                .await;
+            return Ok(Produced::AgentAsked {
+                request: stored,
+                output,
+            });
         }
-        let documents = match self.check_output(contract, &output).await {
-            Ok(documents) => documents,
-            Err(()) => {
-                return self
-                    .commit_failure(claimed, FailureClass::InvalidOutput, notes)
-                    .await;
-            }
-        };
+        let documents = self
+            .check_output(&prepared.contract, &output)
+            .await
+            .map_err(|()| StageError::InvalidOutput)?;
         let mut outputs = Vec::with_capacity(documents.len() + output.artifacts.len());
         for (name, media_type, value) in &documents {
             outputs.push(self.store_document(name, media_type, value).await?);
         }
         outputs.extend(output.artifacts.iter().cloned());
-        self.commit_result(claimed, outputs, None, &output, notes)
+
+        let gate = GateContext {
+            identity: prepared.identity,
+            attempt: claimed.attempt,
+            mode: self.config.mode,
+            contract: &prepared.contract,
+            ports: self.stage_ports(),
+            cancel,
+            outputs: &outputs,
+            human_inputs: &prepared.human_inputs,
+            upstream: &prepared.upstream,
+        };
+        let (decision, could_not_run) = match prepared.handler.evaluate(&gate).await {
+            Ok(decision) => (decision, false),
+            // The gate could not run. That blocks the stage run, and it is not a failure of the
+            // attempt: the output itself was valid.
+            Err(StageError::Blocked(_)) => (GateDecision::default(), true),
+            Err(other) => return Err(other.into()),
+        };
+        let expectation = Expectation {
+            job: claimed.job,
+            stage_run: claimed.stage_run,
+            attempt: claimed.attempt,
+            mode: self.config.mode,
+        };
+        let problem = check_evidence(&decision, &expectation).err();
+        let mut reports = Vec::new();
+        let mut review = None;
+        if problem.is_none() && !could_not_run {
+            for report in &decision.reports {
+                reports.push(self.store_json(report, "application/json").await?);
+            }
+            if let Some(verdict) = &decision.review {
+                review = Some(self.store_json(verdict, "application/json").await?);
+            }
+        }
+        Ok(Produced::Judged {
+            outputs,
+            judged: Box::new(Judged {
+                decision,
+                reports,
+                review,
+                problem,
+                could_not_run,
+            }),
+            output,
+        })
+    }
+
+    /// Stores any serializable document by its content hash.
+    async fn store_json<T: serde::Serialize>(
+        &self,
+        value: &T,
+        media_type: &str,
+    ) -> Result<ArtifactRef, EngineError> {
+        let bytes =
+            serde_json::to_vec(value).map_err(|error| EngineError::Invalid(error.to_string()))?;
+        self.deps
+            .artifacts
+            .put(bytes, factory_domain::values::MediaType::parse(media_type)?)
             .await
+            .map_err(|error| EngineError::Artifacts(error.to_string()))
     }
 
     /// Checks an output against the contract, before anything is stored. Returns the documents
@@ -478,13 +592,76 @@ impl Engine {
         })
     }
 
-    /// Records a valid output: the attempt succeeds (`A04`) and the stage run takes `S04`, or
-    /// `S07` when the agent asked for a person.
-    async fn commit_result(
+    /// The agent asked for a person: the attempt succeeds with the request as its output, and the
+    /// stage run waits for an answer instead of going to its gate.
+    async fn commit_asked(
         &self,
         claimed: &ClaimedAttempt,
+        request: NamedArtifact,
+        output: &StageOutput,
+        notes: &Notes,
+    ) -> Result<AttemptOutcome, EngineError> {
+        let mut tx = self.tenant_tx(claimed.tenant).await?;
+        let attempt = tx.get_attempt(claimed.attempt).await?;
+        if attempt.value.status.is_terminal() {
+            return Ok(AttemptOutcome::LeaseLost);
+        }
+        let job = tx.get_job(claimed.job).await?;
+        let cx = Cx::new(self, &job.value, self.new_causation_id());
+        let recorded = async {
+            let facts = GuardFacts::Output(OutputFacts {
+                attempt_succeeded: true,
+                output_validates_against_outputs_schema: true,
+                output_artifact_hash_stored: true,
+            });
+            evaluate(Guard::OutputSchemaValid, &facts).map_err(super::progress::guard_error)?;
+            self.index(
+                &mut *tx,
+                &cx,
+                claimed,
+                std::slice::from_ref(&request.artifact),
+            )
+            .await?;
+            cx.move_attempt(
+                &mut *tx,
+                &attempt,
+                claimed.epoch,
+                AttemptEvent::ReportSuccess,
+                None,
+                payload::attempt_event(
+                    claimed.kind,
+                    claimed.stage_run,
+                    claimed.attempt_number,
+                    None,
+                ),
+            )
+            .await?;
+            self.escalate_running(
+                &mut *tx,
+                &cx,
+                claimed.stage_run,
+                HumanReason::AgentRequested,
+            )
+            .await?;
+            self.record_handler_notes(&mut *tx, &cx, claimed, notes, output)
+                .await
+        }
+        .await;
+        Ok(match self.conclude(tx, recorded).await? {
+            Ok(()) => AttemptOutcome::NeedsHuman,
+            Err(outcome) => outcome,
+        })
+    }
+
+    /// Records a valid output and the gate that judged it, in one transaction: the attempt
+    /// succeeds (`A04`), the stage run goes through `GATING` and takes the move that the evidence
+    /// calls for, and the ledger entries that justify the move are appended with it (INV-03).
+    async fn commit_judged(
+        &self,
+        claimed: &ClaimedAttempt,
+        contract: &StageContract,
         outputs: Vec<NamedArtifact>,
-        human: Option<HumanReason>,
+        judged: &Judged,
         output: &StageOutput,
         notes: &Notes,
     ) -> Result<AttemptOutcome, EngineError> {
@@ -505,14 +682,11 @@ impl Engine {
                 output_artifact_hash_stored: !outputs.is_empty(),
             });
             evaluate(Guard::OutputSchemaValid, &facts).map_err(super::progress::guard_error)?;
-            for named in &outputs {
-                tx.index_artifact(NewArtifactIndexEntry {
-                    artifact: named.artifact.clone(),
-                    stage_run_id: Some(claimed.stage_run),
-                    created_at: cx.now,
-                })
-                .await?;
-            }
+            let mut stored: Vec<ArtifactRef> =
+                outputs.iter().map(|named| named.artifact.clone()).collect();
+            stored.extend(judged.reports.iter().cloned());
+            stored.extend(judged.review.iter().cloned());
+            self.index(&mut *tx, &cx, claimed, &stored).await?;
             cx.move_attempt(
                 &mut *tx,
                 &attempt,
@@ -527,47 +701,35 @@ impl Engine {
                 ),
             )
             .await?;
-            let listed: Vec<Value> = outputs
-                .iter()
-                .map(|named| {
-                    json!({
-                        "name": named.name.as_str(),
-                        "sha256": named.artifact.sha256.as_str(),
-                        "media_type": named.artifact.media_type.as_str(),
-                    })
-                })
-                .collect();
-            match human {
-                None => {
-                    let payload = payload::with(
-                        payload::for_run(claimed.kind, claimed.stage_run),
-                        key::OUTPUTS,
-                        Value::Array(listed),
-                    );
-                    cx.move_stage_run(
-                        &mut *tx,
-                        &run,
-                        StageRunEvent::AttemptSucceeded,
-                        None,
-                        payload,
-                    )
-                    .await?;
-                    self.settle(&mut *tx, &cx).await?;
-                }
-                Some(reason) => {
-                    self.escalate_running(&mut *tx, &cx, claimed.stage_run, reason)
-                        .await?;
-                }
-            }
+            self.gate_stage(&mut *tx, &cx, &run, contract, judged, &outputs)
+                .await?;
             self.record_handler_notes(&mut *tx, &cx, claimed, notes, output)
                 .await
         }
         .await;
         Ok(match self.conclude(tx, recorded).await? {
-            Ok(()) if human.is_some() => AttemptOutcome::NeedsHuman,
             Ok(()) => AttemptOutcome::Succeeded,
             Err(outcome) => outcome,
         })
+    }
+
+    /// Records in the tenant's artifact index that it holds these artifacts.
+    async fn index(
+        &self,
+        tx: &mut dyn Tx,
+        cx: &Cx<'_>,
+        claimed: &ClaimedAttempt,
+        artifacts: &[ArtifactRef],
+    ) -> Result<(), EngineError> {
+        for artifact in artifacts {
+            tx.index_artifact(NewArtifactIndexEntry {
+                artifact: artifact.clone(),
+                stage_run_id: Some(claimed.stage_run),
+                created_at: cx.now,
+            })
+            .await?;
+        }
+        Ok(())
     }
 
     /// Commits when `recorded` succeeded. A write that loses a race or is fenced means the

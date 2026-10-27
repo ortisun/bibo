@@ -133,6 +133,7 @@ impl Engine {
             now: cx.now,
             upstream,
             human_inputs: &record.human_inputs,
+            request_edited: record.reauthorize,
         }
     }
 

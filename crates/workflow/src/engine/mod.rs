@@ -23,13 +23,16 @@
 mod admission;
 mod attempt;
 mod cancel;
+mod changes;
 pub mod config;
 mod error;
 mod failure;
+mod gate;
 mod ledger;
 pub(crate) mod payload;
 pub(crate) mod progress;
 pub(crate) mod record;
+mod replace;
 pub(crate) mod timeline;
 mod view;
 
@@ -49,6 +52,7 @@ use factory_ports::workspace::WorkspaceProvider;
 
 pub use admission::Admission;
 pub use attempt::AttemptOutcome;
+pub use changes::ChangeApplied;
 pub use config::EngineConfig;
 pub use error::EngineError;
 pub use view::{AttemptView, JobView, StageRunView};

@@ -280,6 +280,7 @@ dependencies = [
  "factory-ports",
  "factory-testkit",
  "proptest",
+ "serde",
  "serde_json",
  "thiserror",
  "tokio",

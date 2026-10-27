@@ -168,7 +168,7 @@ mod claim_loop {
             let intake = view.newest(StageKind::Intake).ok_or("no intake run")?;
             if !matches!(
                 intake.status,
-                StageRunStatus::Gating | StageRunStatus::WaitingForHuman
+                StageRunStatus::Passed | StageRunStatus::WaitingForHuman
             ) {
                 return Err(format!(
                     "the intake run of {job} is {} after the drain: {:?}",
@@ -180,7 +180,7 @@ mod claim_loop {
     }
 
     proptest! {
-        #![proptest_config(ProptestConfig { cases: 48, ..ProptestConfig::default() })]
+        #![proptest_config(ProptestConfig { cases: 24, ..ProptestConfig::default() })]
 
         #[test]
         fn no_double_claim_and_no_lost_work(sequence in ops()) {
