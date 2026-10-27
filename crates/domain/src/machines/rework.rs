@@ -530,10 +530,10 @@ impl GateReworkDecision {
 pub fn decide_gate_rework(request: &GateReworkRequest) -> GateReworkDecision {
     // A class that only a person can decide at this stage asks a person first. It is not
     // rework, so it uses no round and the cap does not matter.
-    if let Some(defect) = request.defect {
-        if defect_outcome(request.from, defect) == Some(DefectOutcome::Human) {
-            return GateReworkDecision::NeedsHuman(NeedsHumanCause::DefectNeedsDecision(defect));
-        }
+    if let Some(defect) = request.defect
+        && defect_outcome(request.from, defect) == Some(DefectOutcome::Human)
+    {
+        return GateReworkDecision::NeedsHuman(NeedsHumanCause::DefectNeedsDecision(defect));
     }
     let found = match route(
         request.from,
