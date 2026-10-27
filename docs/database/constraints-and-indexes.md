@@ -58,7 +58,7 @@ The `tenancy` suite asserts that these two are the only unique indexes on tenant
 | `audience` slug, `expires_at NOT NULL`, `expires_at > created_at` | A token is for one audience and always expires. | `tokens` |
 | Trigger `api_tokens_guard`: once `revoked_at` is set it cannot change | Revocation is final. | `tokens` |
 | Column grants: the application role may update only `revoked_at` and `last_used_at` | It cannot extend, retarget or swap a token. | `tokens`, `privileges` |
-| View `active_api_tokens` (not revoked, not expired, owner not disabled) | One place says what a usable token is. `security_invoker` means a later row-level security policy applies through it. | `tokens` |
+| View `active_api_tokens` (not revoked, not expired, owner not disabled, tenant not disabled) | One place says what a usable token is. `security_invoker` means the row-level security policies of the caller apply through it. `resolve_token` reads it. | `tokens`, `rls` |
 | No column named like a secret | Catalog scan in `tokens`: nothing matches `secret`, `password`, `credential`, `private`, `api_key` or `token` except `token_hash`. | `tokens` |
 
 ### `webhook_deliveries`
@@ -107,7 +107,7 @@ The `tenancy` suite asserts that these two are the only unique indexes on tenant
 | Rule | Why | Test |
 |---|---|---|
 | `UNIQUE (tenant_id, job_id, stage_kind, run_number)` | Rework adds a run with the next number and never reopens an old one. The index also serves "stage runs of one job". | `plans` |
-| Trigger `stage_runs_guard`: a terminal run cannot change, except `PASSED` to `SUPERSEDED` with only `status`, `version`, `updated_at` and `superseded_at` different | Invariant INV-04. | `terminal_rows` |
+| Trigger `stage_runs_guard`: a terminal run cannot change, except that a run in a state with a supersede edge (`PASSED` and, since ADR 0010, `SKIPPED`) can become `SUPERSEDED` with only `status`, `version`, `updated_at` and `superseded_at` different. It reads the edges from `state_machine_edges`, so it follows `state-machine.json` | Invariant INV-04. A skipped run satisfies the stages that require it, so when an input changes the decision is made again in a new run and the old one must give way. | `terminal_rows` (all 66 moves out of a terminal state, against the JSON) |
 | The same trigger: `lease_epoch` changes only with `READY` to `RUNNING`, by exactly one, and that move must change it | A claim and nothing else raises the fencing counter. | `terminal_rows` |
 | `passed_has_outcome`, `skipped_has_outcome`, `superseded_check` | `PASSED` needs a gate outcome (`PASSED`, or `BLOCKED` after an override), `SKIPPED` needs `NOT_APPLICABLE`, `superseded_at` is set exactly for `SUPERSEDED`. | `terminal_rows` |
 | `max_attempts BETWEEN 1 AND 20` | A sanity bound; the policy value sits below it. | |

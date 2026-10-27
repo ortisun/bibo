@@ -66,9 +66,36 @@ The state lists are written out in more than one place, because a CHECK cannot r
 | `jobs_open_idx` | The terminal job states, in its predicate |
 | `attempts_one_active_per_stage_run`, `attempts_lease_expiry_idx`, `attempts_deadline_idx`, `attempts_teardown_idx`, and the CHECK `attempts_active_has_lease` | The live attempt states |
 | `stage_runs_claim_idx` | The `READY` state |
-| `stage_runs_guard` | Reads terminal states from `state_machine_states`, so it follows the table |
+| `stage_runs_guard` | Reads terminal states from `state_machine_states` and the supersede edges from `state_machine_edges`, so it follows the tables. A state that the JSON later marks `supersedable` needs one row in `state_machine_edges` (the way migration 10 added SKIPPED) and no new function |
 
 The `statuses` suite compares the CHECK lists and the terminal lists with the JSON. It does not read the index predicates. Check those by hand.
+
+## Row-level security and migrations
+
+Every tenant-owned table has `FORCE ROW LEVEL SECURITY`, so the table owner, which runs the migrations, is bound by the policies. The policy names `factory_app` only, so **the owner sees no row of a tenant table and cannot write one** (measured: 2 rows without `FORCE`, 0 with it, for an owner that is not a superuser; a superuser bypasses it either way).
+
+- **A migration that only changes structure** (a column, an index, a constraint) is not affected. `ALTER TABLE` does not read rows. A new `CHECK` or `NOT NULL` that validates existing rows does read them, and validation inside `ALTER TABLE` is not subject to policies.
+- **A migration that moves or backfills data** reads and writes rows through the policy. Lift `FORCE` for that table for the length of the migration, and put it back, in the same migration (a migration is one transaction):
+
+  ```sql
+  ALTER TABLE jobs NO FORCE ROW LEVEL SECURITY;
+  UPDATE jobs SET ... ;            -- as the owner, which now bypasses the policy
+  ALTER TABLE jobs FORCE ROW LEVEL SECURITY;
+  ```
+
+  The `rls` suite checks the final state, so a forgotten `FORCE ROW LEVEL SECURITY` fails it. Prefer a backfill that the application does itself, one tenant at a time, under the policy.
+- **A new tenant-owned table** needs, in the same migration: `ENABLE` and `FORCE ROW LEVEL SECURITY`, the policy `tenant_isolation` exactly as in migration 12, its grants, a line in `dbtest.mk_everything` and the new name in `expected_policies` of the `rls` suite. The suite fails on a table that lacks any of them.
+- **A new loop for the system scope** needs its own policy, its own column grants, and a line in `rls` section 4.
+- **Down scripts** must drop every policy they created. A full revert hides a forgotten one (the table is dropped later anyway), so the `migrations` suite also reverts the newest `j` migrations and runs them again, for each `j`. A leftover policy then makes the run fail with "already exists".
+
+### Who runs the migrations
+
+The migrations create roles (cluster wide), `REVOKE CREATE ON SCHEMA public FROM PUBLIC`, and hand two functions to `factory_lookup`. That needs one of:
+
+1. **A superuser.** Nothing else to arrange.
+2. **The role that created the groups**, on PostgreSQL 16 and later: creating a role gives its creator the ADMIN option on it, which is what lets migration 14 grant `factory_lookup` to itself for four statements and revoke it again. Tried here: a login with only `CREATEROLE` that owns the database ran all fourteen migrations, reverted them and ran them again.
+
+A non-superuser that did not create the groups stops at migration 14 with a message that says so, before it changes anything. To use such a role, create the four groups first with the attributes in migration 11 and grant `factory_lookup` to the migration role with `WITH ADMIN OPTION`.
 
 ## Backward and forward compatibility of this baseline
 
@@ -82,25 +109,29 @@ The `down.sql` files drop the tables and with them all the data. They exist so t
 
 Two things stay after the full revert, on purpose:
 
-- The `factory_app` role. Roles belong to the cluster, and other databases may use them. The next `up` finds the role and carries on.
+- The four group roles (`factory_app`, `factory_system`, `factory_lookup`, `factory_resolver`). Roles belong to the cluster, and other databases may use them. The next `up` finds them and carries on, and refuses one that has gained a dangerous attribute.
 - The `REVOKE CREATE ON SCHEMA public FROM PUBLIC` hardening, which is already the default on PostgreSQL 15 and later.
 
 ## Apply, verify and roll back, for the baseline
 
 1. **Apply.** As the table owner, on an empty database: `diesel migration run --config-file crates/storage/diesel.toml`.
-2. **Verify.** `SELECT count(*) FROM __diesel_schema_migrations` returns 9. `scripts/db-test.sh` passes against a database built the same way.
-3. **Create a login** for each service as a member of `factory_app`.
+2. **Verify.** `SELECT count(*) FROM __diesel_schema_migrations` returns 14. `scripts/db-test.sh` passes against a database built the same way.
+3. **Create the logins** as members of the groups ([for-the-storage-crate.md](for-the-storage-crate.md)): never one login in both `factory_app` and `factory_system`.
 4. **Roll back.** `diesel migration revert --all`, which drops everything this set created. Use it only on a database that holds nothing worth keeping.
 
-### Providing the role
+### Providing the roles
 
-If the migrating login cannot create roles, create `factory_app` first and the migration only grants to it:
+If the migrating login cannot create roles, create the groups first and the migrations only grant to them:
 
 ```sql
-CREATE ROLE factory_app NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS;
+CREATE ROLE factory_app      NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS;
+CREATE ROLE factory_system   NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS;
+CREATE ROLE factory_lookup   NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS;
+CREATE ROLE factory_resolver NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS;
+GRANT factory_lookup TO <migration role> WITH ADMIN OPTION;
 ```
 
-The migration refuses a role of that name that has superuser, create-role, create-database, replication or bypass-row-security rights.
+The migrations refuse a role of those names that has superuser, create-role, create-database, replication or bypass-row-security rights, or (for the three new ones) the right to log in.
 
 ## PostgreSQL versions
 

@@ -1,6 +1,6 @@
 # Running the migrations and the database tests
 
-- Status: every command below was run on 2026-10-27 on a macOS laptop. Results are in the last section.
+- Status: every command below was run on 2026-10-27 on a macOS laptop. Results are in the last section. Written for the baseline and revised for the work package `s1-database-tenancy-and-state-sync`.
 - Form: how-to guide.
 - Goal: apply the migrations to a PostgreSQL database, run the database tests, and regenerate `schema.rs`.
 
@@ -8,7 +8,7 @@
 
 | Tool | Version used | Needed for |
 |---|---|---|
-| PostgreSQL server | 18.6 (Homebrew, local cluster) and 18.6 in Docker (`postgres:18`); 16.15 in Docker (`postgres:16-alpine`) also passed. 17 was not run. | The tests need a server and the superuser role. |
+| PostgreSQL server | 18.6 (Homebrew, local cluster) and 18.6 in Docker (`postgres:18`); 16.15 in Docker (`postgres:16-alpine`) is listed in the results. 17 was not run. | The tests need a server and the superuser role. |
 | `psql` | 18.6 | Every suite. |
 | Diesel CLI | 2.3.11 | Running migrations and `diesel print-schema`. |
 | Python 3 | 3.15.0 (standard library only) | Generating the expected values from `state-machine.json` and the outside check of the audit chain. |
@@ -35,7 +35,9 @@ The script warns when the installed CLI has another version, because `schema.rs`
 3. To check the down migrations, run `diesel migration redo --all --config-file crates/storage/diesel.toml`. It reverts every migration and applies them again.
 4. Never run the migrations from the application. Applications check the schema version at start-up and refuse to become ready if it is behind (ADR 0007).
 
-Expected result of step 2: nine `Running migration` lines, the last one `2026-10-27-000900_application_privileges`. Verify with `psql "$DATABASE_URL" -c 'select version from __diesel_schema_migrations order by version'`.
+Expected result of step 2: fourteen `Running migration` lines, the last one `2026-10-27-001400_rls_lookup_functions`. Verify with `psql "$DATABASE_URL" -c 'select version from __diesel_schema_migrations order by version'`.
+
+The role that runs them must be a superuser or the role that created the four groups ([migration-safety.md](migration-safety.md)). After they ran, create the logins: [for-the-storage-crate.md](for-the-storage-crate.md).
 
 ## Run the database tests
 
@@ -45,8 +47,8 @@ Expected result of step 2: nine `Running migration` lines, the last one `2026-10
    scripts/db-test.sh
    ```
 
-   It provides a database, migrates it, runs the fourteen suites, drops everything it created, and prints a last line that starts with `PASS` or `FAIL`.
-2. To run some suites only, name them. `scripts/db-test.sh ledger audit` runs two. `scripts/db-test.sh --list` prints all fourteen with one line each on what they prove.
+   It provides a database, migrates it, runs the fifteen suites, drops everything it created (the databases, and the login roles the `rls` suite makes), and prints a last line that starts with `PASS` or `FAIL`.
+2. To run some suites only, name them. `scripts/db-test.sh ledger audit` runs two. `scripts/db-test.sh --list` prints all fifteen with one line each on what they prove.
 3. To keep the server for inspection use `--keep`. It prints the URL of the maintenance database and leaves the process running, and you stop it yourself.
 
 ### Where the database comes from
@@ -57,7 +59,9 @@ The script picks the first of these that works:
 2. A private local cluster. The script looks for `initdb`, `pg_ctl` and `postgres` in `FACTORY_PG_BIN`, on `PATH`, and in the usual Homebrew and Debian directories. It starts a cluster on a unix socket in a mode 0700 directory, with TCP off and `fsync` off, and stops and deletes it at the end.
 3. Docker, with the image in `FACTORY_DB_IMAGE` (default `postgres:18`), published on a random loopback port with a random password.
 
-`FACTORY_DB_PROVISION=local`, `docker` or `none` forces one of them or turns provisioning off. `FACTORY_DB_LEASE_ROUNDS` (default 25) sets how many contested claims the lease suite makes.
+`FACTORY_DB_PROVISION=local`, `docker` or `none` forces one of them or turns provisioning off. `FACTORY_DB_LEASE_ROUNDS` (default 25) sets how many contested claims the lease suite makes. `FACTORY_DB_PLANS_SCALE` (default 1) sets the size of the plans suite: 1 is 10,000 rows in each large table, 10 is 100,000 and takes about three minutes.
+
+The `rls` suite opens sessions as real login roles (`dbtest_app_*`, `dbtest_system_*`, `dbtest_api_*`) with a random password, over the same address as the superuser connection. They are cluster wide, so the script drops them when it ends, also on Ctrl-C. On a server you provide, a run that was killed with `kill -9` leaves them behind; drop the `dbtest_*` roles by hand.
 
 ### Exit codes
 
@@ -75,13 +79,14 @@ The script picks the first of these that works:
 | `scripts/db-test.sh migrations` | Up, revert all, up again and redo on an empty database; the catalog is identical afterwards; the committed `schema.rs` equals `diesel print-schema`. |
 | `scripts/db-test.sh statuses` | An unknown status is rejected on every status column; the allowed values equal `state-machine.json`. |
 | `scripts/db-test.sh ledger` | `UPDATE` and `DELETE` on the ledger fail for the application role, and a gapped insert fails. |
-| `scripts/db-test.sh tenancy` | A foreign key into another tenant's row is rejected, and unique keys include the tenant. |
-| `scripts/db-test.sh terminal_rows` | `UPDATE` of a terminal stage run fails except for the supersede transition. |
-| `scripts/db-test.sh plans` | The claim, sweep, timeline and ledger-tail queries use index scans on 10,000 generated rows. |
+| `scripts/db-test.sh tenancy` | A foreign key into another tenant's row is rejected, also for a session under row-level security, and unique keys include the tenant. Foreign key checks bypass row security. |
+| `scripts/db-test.sh rls` | Every table with a tenant column, found from the catalog, is isolated; the roles, the system scope and the two lookup functions; real logins, a reused connection and a claim race through two logins (NT-TEN-01, database part). |
+| `scripts/db-test.sh terminal_rows` | `UPDATE` of a terminal stage run fails except for the supersede transition, and every move out of a terminal state is checked against `state-machine.json`. |
+| `scripts/db-test.sh plans` | The claim, sweep, timeline and ledger-tail queries use index scans on 10,000 generated rows (100,000 with `FACTORY_DB_PLANS_SCALE=10`), as the roles that run them, with row-level security on. |
 | `scripts/db-test.sh audit` | The application role can only `INSERT` and `SELECT` on the audit table (NT-AUD-01). |
 | `scripts/db-test.sh webhook_delivery` | A second delivery with the same id violates a unique constraint and creates no second job or outbox row. |
 
-Six more suites go beyond the criteria: `lease`, `outbox`, `approvals`, `tokens`, `privileges` and `contracts`.
+Seven more suites go beyond the original criteria: `lease`, `outbox`, `approvals`, `tokens`, `privileges`, `contracts` and `rls`.
 
 ## Regenerate `schema.rs`
 
@@ -109,7 +114,10 @@ A failing check prints `NOT OK - <what was expected>: <what happened>` and the s
 | `crates/storage/src/schema.rs differs from diesel print-schema` | A migration changed and the file was not regenerated, or the CLI version differs. Run `write-schema` and read the diff. |
 | `the race barrier failed` | Fewer sessions than expected reached the start line, usually because `max_connections` is too low. The script's own cluster allows 120. Raise it on a server you provide. |
 | Tests leave databases behind | They are named `factory_t_*` or `factory_tpl_*`. Drop them. A normal run and a Ctrl-C both clean up. |
-| `role "factory_app" already exists` with other attributes | The migration refuses a role with superuser, create-role, create-database, replication or bypass-RLS rights. Fix the role. |
+| `role "factory_app" already exists` with other attributes (or `factory_system`, `factory_lookup`, `factory_resolver`) | The migration refuses a role with superuser, create-role, create-database, replication or bypass-RLS rights, and the three newer groups also with the right to log in. Fix the role. |
+| `run this migration as a superuser, or as the role that created factory_lookup` | Migration 14 hands two functions to `factory_lookup` and needs the right to become it. See [migration-safety.md](migration-safety.md). |
+| `permission denied for table ...` in the `rls` output for the system role | Intended in most places. The suite lists what the system role may read; a new loop needs a migration. |
+| Leftover `dbtest_*` roles on a server you provide | A run was killed hard. `DROP ROLE` them. |
 
 ## Results of the runs for this work package
 
