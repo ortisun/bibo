@@ -31,6 +31,10 @@ pub struct Member {
     /// The directory of the member's `Cargo.toml`, as Cargo reports it.
     pub dir: PathBuf,
     pub dependencies: Vec<Dependency>,
+    /// The root source file of every target that ships: library, binary, procedural macro and
+    /// build script. Tests, benches and examples are left out. A root can sit outside `src`
+    /// when the manifest sets a `path`.
+    pub production_targets: Vec<PathBuf>,
 }
 
 #[derive(Debug, Clone)]
@@ -154,10 +158,38 @@ pub fn parse(json: &str) -> Result<Workspace, String> {
                     .collect(),
             });
         }
+        let production_targets = package["targets"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter(|t| {
+                t["kind"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter_map(Value::as_str)
+                    .any(|k| {
+                        matches!(
+                            k,
+                            "lib"
+                                | "bin"
+                                | "proc-macro"
+                                | "cdylib"
+                                | "dylib"
+                                | "rlib"
+                                | "staticlib"
+                                | "custom-build"
+                        )
+                    })
+            })
+            .filter_map(|t| t["src_path"].as_str())
+            .map(PathBuf::from)
+            .collect();
         members.push(Member {
             name: name.to_string(),
             dir,
             dependencies,
+            production_targets,
         });
     }
     members.sort_by(|a, b| a.name.cmp(&b.name));

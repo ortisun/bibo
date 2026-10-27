@@ -12,9 +12,6 @@ use crate::rules::{Role, Rules};
 use std::collections::BTreeSet;
 use std::fs;
 
-/// The crates whose `clippy.toml` must carry the ban list, as DEP-05 names them.
-pub const INNER_CRATES: [&str; 4] = ["domain", "ports", "workflow", "spec_adapter"];
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum BanKind {
     Method,
@@ -228,7 +225,7 @@ pub fn check(rules: &Rules, ws: &Workspace) -> Vec<Finding> {
         let Some(Role::Library(rule)) = rules.role_of_package(&member.name) else {
             continue;
         };
-        if !INNER_CRATES.contains(&rule.name.as_str()) {
+        if !rules.source_scans.dep_05.inner_crates.contains(&rule.name) {
             continue;
         }
         let location = format!("{}/clippy.toml", ws.relative_dir(member));
@@ -536,7 +533,7 @@ mod tests {
             .join("../docs/architecture/crate-dependency-rules.json");
         let rules = Rules::load(&path).expect("rules");
         let statement = rules.statement("DEP-05").expect("DEP-05");
-        for name in INNER_CRATES {
+        for name in &rules.source_scans.dep_05.inner_crates {
             assert!(
                 statement.contains(name),
                 "DEP-05 no longer names {name}: {statement}"

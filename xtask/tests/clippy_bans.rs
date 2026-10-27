@@ -165,8 +165,8 @@ mod clippy_bans {
     #[test]
     fn every_ban_fires_under_the_clippy_toml_each_inner_crate_actually_has() {
         let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
-        for name in xtask::clippy_bans::INNER_CRATES {
-            let path = root.join("crates").join(name).join("clippy.toml");
+        for name in common::real_rules().source_scans.dep_05.inner_crates {
+            let path = root.join("crates").join(&name).join("clippy.toml");
             let text = fs::read_to_string(&path)
                 .unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
             let scratch = Scratch::new(&format!("real-{name}"), Some(&text), &scratch_source());
@@ -282,9 +282,9 @@ mod clippy_bans {
 
         #[test]
         fn each_of_the_four_inner_crates_needs_the_file() {
-            for name in xtask::clippy_bans::INNER_CRATES {
+            for name in common::real_rules().source_scans.dep_05.inner_crates {
                 let mut fx = Fixture::baseline("dep05-each");
-                fx.without_clippy_toml(name);
+                fx.without_clippy_toml(&name);
                 fx.run()
                     .assert_violation_mentions("DEP-05", &format!("crates/{name}/clippy.toml"));
             }

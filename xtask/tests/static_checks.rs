@@ -139,16 +139,24 @@ mod static_checks {
         }
 
         #[test]
-        fn docker_and_git_spawned_by_sandbox_pass() {
-            let mut fx = Fixture::baseline("dep10-sandbox");
-            fx.source("sandbox", "src/docker.rs", &spawn("\"docker\""));
-            fx.source("sandbox", "src/git.rs", &spawn("\"/usr/bin/git\""));
-            fx.run().assert_passes();
+        fn docker_and_git_spawned_by_sandbox_in_the_spawn_file_pass() {
+            let code = "use std::process::Command;\npub fn docker() {\n    let _ = Command::new(\"docker\");\n}\npub fn git() {\n    let _ = Command::new(\"/usr/bin/git\");\n}\n";
+            run_with_source("sandbox", "src/process.rs", code).assert_passes();
         }
 
         #[test]
-        fn an_agent_tool_spawned_by_runtime_passes() {
-            run_with_source("runtime", "src/claude.rs", &spawn("\"claude\"")).assert_passes();
+        fn docker_spawned_by_sandbox_outside_the_spawn_file_fails() {
+            // ST-03 as the architect reworded it: one file holds every process-spawning path.
+            run_with_source("sandbox", "src/docker.rs", &spawn("\"docker\""))
+                .assert_violation_mentions("ST-03", "crates/sandbox/src/process.rs");
+        }
+
+        #[test]
+        fn an_agent_tool_spawned_by_runtime_fails_because_the_spawn_file_is_in_sandbox() {
+            // The agent runs in a container through SandboxSession, so runtime has no process
+            // of its own. DEP-10 still lists claude and codex for runtime; ST-03 wins.
+            run_with_source("runtime", "src/claude.rs", &spawn("\"claude\""))
+                .assert_violation_mentions("ST-03", "runtime mentions std::process::Command");
         }
 
         #[test]
@@ -177,7 +185,7 @@ mod static_checks {
 
         #[test]
         fn a_program_that_is_not_a_literal_passes_in_sandbox() {
-            run_with_source("sandbox", "src/lib.rs", &spawn("program")).assert_passes();
+            run_with_source("sandbox", "src/process.rs", &spawn("program")).assert_passes();
         }
 
         #[test]
@@ -273,12 +281,13 @@ mod static_checks {
 
         #[test]
         fn a_program_that_only_starts_with_sh_passes_this_rule() {
-            run_with_source("sandbox", "src/lib.rs", &spawn("shred")).assert_no_violation("ST-03");
+            run_with_source("sandbox", "src/process.rs", &spawn("shred"))
+                .assert_no_violation("ST-03");
         }
 
         #[test]
         fn docker_run_without_a_shell_passes() {
-            run_with_source("sandbox", "src/lib.rs", &spawn("docker")).assert_passes();
+            run_with_source("sandbox", "src/process.rs", &spawn("docker")).assert_passes();
         }
     }
 

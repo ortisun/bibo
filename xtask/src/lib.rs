@@ -12,5 +12,7 @@ pub mod lints;
 pub mod metadata;
 pub mod rules;
 pub mod scan;
+pub mod source_scans;
 pub mod static_checks;
+pub mod syntax;
 pub mod topology;

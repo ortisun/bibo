@@ -145,8 +145,14 @@
         "time",
         "sha2",
         "hex",
-        "serde_jcs"
+        "serde_jcs",
+        "async-trait",
+        "rustix[std,fs]"
       ],
+      "external_allow_notes": {
+        "async-trait": "Added by s1-xtask-extensions, which now enforces the allow list for adapters. storage implements port traits declared with #[async_trait], so it cannot implement them without the crate; ports and testkit already list it.",
+        "rustix": "Added by s1-xtask-extensions. The local-filesystem ArtifactStore refuses a symbolic link at every step of a path with openat and no-follow flags. rustix is the safe binding (the workspace forbids unsafe code) and the only way to do that without a race between the check and the use. Features std and fs only."
+      },
       "responsibility": "PostgreSQL implementation of Store (Diesel, async), outbox writes, evidence ledger with hash chain, lease compare-and-swap, local-filesystem content-addressed ArtifactStore."
     },
     {
@@ -237,8 +243,17 @@
         "serde",
         "serde_json",
         "thiserror",
-        "a maintained YAML parser (serde_yaml is deprecated; choose in work package s0-contracts-and-registry)"
+        "saphyr-parser",
+        "regex[std,unicode-perl]",
+        "globset",
+        "serde_jcs"
       ],
+      "external_allow_notes": {
+        "saphyr-parser": "Added by s1-xtask-extensions. It replaces the free-text entry for a maintained YAML parser: work package s0-contracts-and-registry chose it (pure safe Rust, YAML 1.2) and the evidence is in the crate documentation, module yaml.",
+        "regex": "Added by s1-xtask-extensions. The regular expression dialect the policy file names, for the schema pattern keyword and to check that every policy regex compiles. Features std and unicode-perl only.",
+        "globset": "Added by s1-xtask-extensions. The glob dialect the policy file names, used only to check that every glob compiles.",
+        "serde_jcs": "Added by s1-xtask-extensions. RFC 8785 canonical JSON, the input to the policy hash; the same crate domain uses for the ledger chain."
+      },
       "responsibility": "Embeds schemas/, implements OutputValidator, loads and validates agent manifests, domain capability profiles and policy files."
     },
     {
@@ -389,6 +404,120 @@
       "enforced_by": "xtask check-architecture by source scan, plus the process spawn recorder in the end-to-end tests (negative test ST-03 and FX-SPAWN)"
     }
   ],
+  "source_scans": {
+    "description": "The lists that the source scans of xtask check-architecture use. They were constants in the xtask sources; a reviewer now changes them here. Every crate named below must be in crates or apps, or the check stops. Crate names are the names in this file, without the package prefix.",
+    "st_01": {
+      "skipped_directories": [".git", "target", "node_modules"],
+      "prose_extensions": ["md", "txt", "rst", "lock"]
+    },
+    "dep_05": {
+      "inner_crates": ["domain", "ports", "workflow", "spec_adapter"],
+      "forbidden_lint_allows": [
+        "clippy::disallowed_methods",
+        "clippy::disallowed_types",
+        "clippy::all",
+        "warnings"
+      ],
+      "resolved_features": [
+        {
+          "package": "time",
+          "allowed": [],
+          "reason": "ADR 0011: the inner crates read the time from the Clock port. The std feature of time provides OffsetDateTime::now_utc, and Cargo unifies features across the workspace, so any crate that enables time/std gives it to domain. The resolved feature set is read from cargo metadata, not from the domain manifest."
+        },
+        {
+          "package": "uuid",
+          "allowed": ["std"],
+          "reason": "ADR 0002: identifiers come from the IdGenerator port. The v1, v3, v4, v5, v6, v7 and v8 features and rng/fast-rng provide generators, so none of them may resolve for the inner crates."
+        },
+        {
+          "package": "tokio",
+          "allowed": ["io-util", "macros", "net", "process", "rt", "rt-multi-thread", "sync", "test-util", "time"],
+          "reason": "workflow lists tokio[sync,time,rt,macros]. net, process, io-util and rt-multi-thread resolve because adapters and dev-dependencies enable them, and Cargo unifies them into the one tokio that workflow sees; the DEP-05 bans on tokio::net, tokio::process and tokio::fs paths are what stops workflow from using them. A new feature (fs, signal, full) appearing in this set needs an architect-reviewed change here."
+        }
+      ]
+    },
+    "dep_09": {
+      "begin_system_function": "begin_system",
+      "begin_system_crate": "workflow",
+      "spec_kit_crate": "spec_adapter",
+      "spec_kit_terms": [".specify", "speckit"],
+      "change_host_trait": "ChangeHost",
+      "forbidden_method_prefixes": ["merge", "ready", "undraft"]
+    },
+    "dep_10": {
+      "spawn_file": "crates/sandbox/src/process.rs",
+      "spawn_paths": [
+        "std::process::Command",
+        "std::process::Child",
+        "std::process::Stdio",
+        "std::os::unix::process",
+        "std::os::windows::process",
+        "tokio::process"
+      ],
+      "shells": ["sh", "bash", "zsh", "dash", "fish", "ksh", "csh", "tcsh", "cmd", "powershell", "pwsh"],
+      "programs": [
+        { "crate": "sandbox", "programs": ["docker", "git"] },
+        { "crate": "runtime", "programs": ["claude", "codex"] }
+      ]
+    },
+    "st_04": {
+      "verifier_crate": "sandbox",
+      "verifier_prefix": "posture",
+      "dangerous_strings": ["--privileged", "--cap-add", "seccomp=unconfined", "apparmor=unconfined", "docker.sock"],
+      "host_namespace_flags": ["--network", "--net", "--pid"]
+    },
+    "st_05": {
+      "verbs": ["merge", "deploy"],
+      "fragments": ["publish_release", "release_publish"],
+      "route_segments": ["merge", "merges", "deploy", "deployments"],
+      "workflow_file_words": ["deploy", "merge", "publish"]
+    },
+    "st_07": {
+      "conventions": "docs/observability/conventions.md",
+      "skip_crates": ["observability"]
+    },
+    "st_09": {
+      "crates": ["sandbox", "runtime", "spec_adapter", "workflow"],
+      "ingestion_crate": "sandbox",
+      "ingestion_dir": "src/workspace/",
+      "calls": [
+        "fs::read(",
+        "fs::read_to_string(",
+        "fs::read_dir(",
+        "fs::metadata(",
+        "fs::symlink_metadata(",
+        "fs::canonicalize(",
+        "fs::read_link(",
+        "fs::exists(",
+        "File::open(",
+        "OpenOptions::new("
+      ],
+      "methods": [
+        ".read_dir(",
+        ".metadata(",
+        ".symlink_metadata(",
+        ".canonicalize(",
+        ".read_link(",
+        ".exists()",
+        ".try_exists()",
+        ".is_file()",
+        ".is_dir()",
+        ".is_symlink()"
+      ]
+    },
+    "st_13": [
+      { "name": "TenantScope::new", "allowed_crates": ["workflow", "storage", "testkit", "api", "worker"] },
+      { "name": "SystemScope::engine", "allowed_crates": ["workflow"] },
+      { "name": "PlatformScope::receiver", "allowed_crates": ["api"] },
+      { "name": "ResolvedPrincipal", "allowed_crates": ["storage", "testkit"] },
+      { "name": "ResolvedRepository", "allowed_crates": ["storage", "testkit"] },
+      { "name": "IngestedChange::new", "allowed_crates": ["sandbox", "testkit"] }
+    ],
+    "st_14": {
+      "crate": "workflow",
+      "names": ["MeteringOps"]
+    }
+  },
   "deferred": [
     {
       "name": "repository_intel",
