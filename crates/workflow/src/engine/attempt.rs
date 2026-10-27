@@ -703,6 +703,7 @@ impl Engine {
                 review,
                 problem,
                 could_not_run,
+                attempt: claimed.attempt,
             }),
             output,
         })

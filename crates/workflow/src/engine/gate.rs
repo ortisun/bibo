@@ -21,6 +21,7 @@ use factory_domain::contracts::evidence_ledger_entry::{
 };
 use factory_domain::contracts::review_verdict::DefectClass;
 use factory_domain::contracts::{ArtifactRef, StageContract};
+use factory_domain::ids::AttemptId;
 use factory_domain::machines::guards::{
     BlockingFacts, GatePassFacts, GuardCleared, GuardFacts, NeedsHumanFacts, NoReworkFacts,
     OutputFacts, ReworkFacts, evaluate,
@@ -45,7 +46,8 @@ use super::record::{Cx, Step};
 use super::timeline::Timeline;
 use crate::audit::{AuditAction, AuditDecision, AuditKind};
 use crate::gates::framework::{
-    BlockCause, EvidenceProblem, GateDecision, Resolution, resolve, snapshots,
+    BlockCause, EvidenceProblem, Expectation, GateDecision, Resolution, assurance_entries, resolve,
+    snapshots,
 };
 use crate::handlers::NamedArtifact;
 
@@ -62,6 +64,8 @@ pub(crate) struct Judged {
     pub(crate) problem: Option<EvidenceProblem>,
     /// The gate said it could not run (a tool or capability is missing).
     pub(crate) could_not_run: bool,
+    /// The attempt whose output was judged. An assurance claim must rest on a report that names it.
+    pub(crate) attempt: AttemptId,
 }
 
 impl Engine {
@@ -295,6 +299,47 @@ impl Engine {
                 tx,
                 run.value.id,
                 report.metadata.attempt_id,
+                &claim,
+                &[evidence],
+            )
+            .await?;
+        }
+        // An assurance level is written only from a passed, real and current report, by a real
+        // recorder. A claim that does not meet that is dropped, and the stage run is judged on
+        // its evidence as before.
+        let expect = Expectation {
+            job: cx.job,
+            stage_run: run.value.id,
+            attempt: judged.attempt,
+            mode: self.config.mode,
+        };
+        for entry in assurance_entries(&judged.decision, &expect, self.fidelity) {
+            let Some(stored) = judged.reports.get(entry.report_index) else {
+                continue;
+            };
+            let claim = ClaimSpec {
+                statement: format!(
+                    "The gate {} passed for the {} stage run, which supports the assurance level {}.",
+                    entry.report.metadata.gate_id,
+                    run.value.kind,
+                    entry.level.as_str()
+                ),
+                kind: ClaimKind::MeasuredFact,
+                assurance_level: Some(entry.level),
+                confidence: ConfidenceLevel::High,
+                rationale: "The report is real, current and passed, and is stored by its hash."
+                    .to_owned(),
+            };
+            let evidence = Evidence::Test(TestEvidence {
+                gate_report_id: entry.report.metadata.gate_report_id,
+                gate_report_sha256: stored.sha256.clone(),
+                test_name: None,
+                result: TestResult::Passed,
+            });
+            cx.record_claim(
+                tx,
+                run.value.id,
+                entry.report.metadata.attempt_id,
                 &claim,
                 &[evidence],
             )

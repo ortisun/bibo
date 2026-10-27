@@ -46,6 +46,8 @@ pub enum Step {
 pub enum Eval {
     /// A passing report of the scripted gate.
     Pass,
+    /// A passing report, and the handler says it supports the sandbox assurance level.
+    PassClaimingAssurance,
     /// A failing report. The text is the id of the failed check.
     Fail(&'static str),
     /// A report of a gate that could not run.
@@ -447,6 +449,19 @@ impl StageHandler for ScriptedHandler {
                 reports: vec![pass(ctx)],
                 ..GateDecision::default()
             },
+            Eval::PassClaimingAssurance => {
+                let report = pass(ctx);
+                GateDecision {
+                    assurance: vec![
+                        factory_workflow::gates::framework::decision::AssuranceClaim {
+                            level: factory_domain::vocabulary::AssuranceLevel::VerifiedInSandbox,
+                            gate: report.metadata.gate_id.clone(),
+                        },
+                    ],
+                    reports: vec![report],
+                    ..GateDecision::default()
+                }
+            }
             Eval::Fail(check) => GateDecision {
                 reports: vec![report(ctx, "FAILED", check)],
                 ..GateDecision::default()

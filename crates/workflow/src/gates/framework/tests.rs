@@ -1,6 +1,6 @@
 use factory_domain::contracts::review_verdict::DefectClass;
 use factory_domain::contracts::{Contract, GateReport, ReviewVerdict, StageContract};
-use factory_domain::vocabulary::ExecutionMode;
+use factory_domain::vocabulary::{ExecutionMode, RecorderFidelity};
 use serde_json::{Value, json};
 
 use super::*;
@@ -66,6 +66,7 @@ fn decision(reports: Vec<GateReport>, review: Option<ReviewVerdict>) -> GateDeci
         review,
         human_gate: false,
         policy_violation: false,
+        assurance: Vec::new(),
     }
 }
 
@@ -301,6 +302,133 @@ fn two_reports_for_one_gate_are_refused() {
         check_evidence(&decision(vec![r.clone(), r], None), &expect),
         Err(EvidenceProblem::DuplicateGate)
     );
+}
+
+// ---- assurance claims -----------------------------------------------------------------------
+
+fn claiming(report: GateReport, level: &str) -> GateDecision {
+    let gate = report.metadata.gate_id.clone();
+    GateDecision {
+        reports: vec![report],
+        assurance: vec![AssuranceClaim {
+            level: factory_domain::vocabulary::AssuranceLevel::parse(level)
+                .expect("an assurance level"),
+            gate,
+        }],
+        ..GateDecision::default()
+    }
+}
+
+#[test]
+fn a_claim_on_a_real_current_passing_report_is_written_by_a_real_recorder() {
+    let r = report(PASSED, GATE);
+    let expect = expectation(&r);
+    let d = claiming(r, "VERIFIED_IN_SANDBOX");
+    let entries = assurance_entries(&d, &expect, RecorderFidelity::Real);
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0].report_index, 0);
+}
+
+#[test]
+fn no_claim_is_written_by_a_recorder_that_is_not_real() {
+    // INV-08: a fake or simulated recorder never supports an assurance level.
+    let r = report(PASSED, GATE);
+    let expect = expectation(&r);
+    let d = claiming(r, "VERIFIED_IN_SANDBOX");
+    for recorder in [RecorderFidelity::Fake, RecorderFidelity::Simulated] {
+        assert!(assurance_entries(&d, &expect, recorder).is_empty());
+    }
+}
+
+#[test]
+fn a_claim_on_a_report_of_a_fake_environment_is_dropped() {
+    let mut doc: Value = serde_json::from_str(PASSED).expect("JSON");
+    doc["metadata"]["gate_id"] = json!(GATE);
+    // A fake environment is allowed in a test job and refused in a production one.
+    doc["metadata"]["execution_mode"] = json!("test");
+    doc["environment"]["fidelity"] = json!("fake");
+    let r = GateReport::from_json_value(doc).expect("a valid report");
+    let mut expect = expectation(&r);
+    expect.mode = ExecutionMode::Test;
+    let d = claiming(r, "VERIFIED_IN_SANDBOX");
+    assert!(assurance_entries(&d, &expect, RecorderFidelity::Real).is_empty());
+}
+
+#[test]
+fn a_claim_on_a_failed_or_blocked_report_is_dropped() {
+    let failed = failed_report(GATE, "check-1");
+    let expect = expectation(&failed);
+    assert!(
+        assurance_entries(
+            &claiming(failed, "VERIFIED_IN_SANDBOX"),
+            &expect,
+            RecorderFidelity::Real
+        )
+        .is_empty()
+    );
+    // The blocked example names no attempt, so give it the failed report's, so that only its
+    // outcome is what makes the claim fail.
+    let mut doc: Value = serde_json::from_str(BLOCKED).expect("JSON");
+    doc["metadata"]["gate_id"] = json!(GATE);
+    doc["metadata"]["attempt_id"] = json!(expect.attempt.to_string());
+    let blocked = GateReport::from_json_value(doc).expect("a valid report");
+    assert!(
+        assurance_entries(
+            &claiming(blocked, "VERIFIED_IN_SANDBOX"),
+            &expect,
+            RecorderFidelity::Real
+        )
+        .is_empty()
+    );
+}
+
+#[test]
+fn a_claim_on_a_report_of_another_attempt_is_not_current() {
+    let r = report(PASSED, GATE);
+    let mut expect = expectation(&r);
+    expect.attempt = factory_domain::ids::AttemptId::from_uuid(uuid::Uuid::from_u128(9));
+    assert!(
+        assurance_entries(
+            &claiming(r, "VERIFIED_IN_SANDBOX"),
+            &expect,
+            RecorderFidelity::Real
+        )
+        .is_empty()
+    );
+}
+
+#[test]
+fn a_claim_on_a_report_with_no_attempt_is_not_current() {
+    let mut doc: Value = serde_json::from_str(PASSED).expect("JSON");
+    doc["metadata"]["gate_id"] = json!(GATE);
+    doc["metadata"]
+        .as_object_mut()
+        .expect("metadata")
+        .remove("attempt_id");
+    let r = GateReport::from_json_value(doc).expect("a valid report");
+    let expect = Expectation {
+        job: r.metadata.job_id,
+        stage_run: r.metadata.stage_run_id,
+        attempt: factory_domain::ids::AttemptId::from_uuid(uuid::Uuid::from_u128(9)),
+        mode: ExecutionMode::Production,
+    };
+    assert!(
+        assurance_entries(
+            &claiming(r, "VERIFIED_IN_SANDBOX"),
+            &expect,
+            RecorderFidelity::Real
+        )
+        .is_empty()
+    );
+}
+
+#[test]
+fn a_claim_that_names_a_gate_without_a_report_is_dropped() {
+    let r = report(PASSED, GATE);
+    let expect = expectation(&r);
+    let mut d = claiming(r, "VERIFIED_IN_SANDBOX");
+    d.assurance[0].gate = factory_domain::values::Slug::parse("some-other-gate").expect("a slug");
+    assert!(assurance_entries(&d, &expect, RecorderFidelity::Real).is_empty());
 }
 
 #[test]

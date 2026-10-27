@@ -2686,6 +2686,35 @@ async fn every_move_names_the_guard_that_cleared_it_and_the_facts_it_held_on() {
     assert!(passes.iter().all(|guard| *guard == "G_GATE_PASS_EVIDENCED"));
 }
 
+// ---- assurance claims of a gate decision --------------------------------------------------------
+
+#[tokio::test]
+async fn an_assurance_claim_in_a_test_run_is_dropped_and_the_stage_still_passes() {
+    // A test run records as a fake component, and the domain refuses an assurance level on a fake
+    // entry (INV-08). The handler's claim is therefore not written, and the stage run is judged on
+    // its evidence all the same. Whether a claim is written when the evidence is real and current
+    // is covered by the unit tests of `assurance_entries`, which can take a real recorder.
+    let world = World::new().await;
+    let job = world.admitted_job().await;
+    world
+        .script(StageKind::Intake)
+        .queue_evals([Eval::PassClaimingAssurance]);
+    let (_, outcome) = world.run_next("worker-1").await;
+    assert_eq!(outcome, AttemptOutcome::Succeeded);
+    assert_eq!(
+        status_of(&world.view(job).await, StageKind::Intake),
+        StageRunStatus::Passed
+    );
+    let entries = world.ledger(job).await;
+    assert!(!entries.is_empty());
+    assert!(
+        entries
+            .iter()
+            .all(|entry| entry.claim.assurance_level.is_none()),
+        "an assurance level was written for a fake run"
+    );
+}
+
 // ---- a commit whose answer is lost (ports v1.1, CommitOutcomeUnknown) -------------------------
 
 #[tokio::test]

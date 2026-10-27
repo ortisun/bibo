@@ -7,6 +7,19 @@
 //! that sets a flag has no flag to set (see `crate::gates::framework`).
 
 use factory_domain::contracts::{GateReport, ReviewVerdict};
+use factory_domain::values::Slug;
+use factory_domain::vocabulary::AssuranceLevel;
+
+/// A claim that the report of a gate supports an assurance level. It is a request, not a result:
+/// the engine writes an assurance entry to the ledger only when the report is real and current
+/// (see [`assurance`](super::assurance)).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AssuranceClaim {
+    /// The level the report is said to support.
+    pub level: AssuranceLevel,
+    /// The gate whose report supports it.
+    pub gate: Slug,
+}
 
 /// The evidence a gate collected for one stage run.
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -21,4 +34,7 @@ pub struct GateDecision {
     /// A deterministic check detected a violation of policy. The stage is blocked and nobody is
     /// asked: a reviewer's opinion about policy is a `ReviewVerdict` finding instead.
     pub policy_violation: bool,
+    /// The assurance levels the handler says the reports support. The engine checks each claim
+    /// against its report before it writes anything.
+    pub assurance: Vec<AssuranceClaim>,
 }
