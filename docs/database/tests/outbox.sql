@@ -170,8 +170,8 @@ $$;
 -- The relay's own query works with the grants it has: unpublished rows in order, skipping locked ones.
 DO $$
 BEGIN
-  PERFORM dbtest.expect_ok('the relay query (FOR UPDATE SKIP LOCKED over unpublished rows) runs as the system role',
-    'SELECT event_id FROM outbox WHERE published_at IS NULL ORDER BY seq LIMIT 100 FOR UPDATE SKIP LOCKED', 'factory_system');
+  PERFORM dbtest.expect_ok('the relay query (FOR NO KEY UPDATE SKIP LOCKED over unpublished rows) runs as the system role',
+    'SELECT event_id FROM outbox WHERE published_at IS NULL ORDER BY seq LIMIT 100 FOR NO KEY UPDATE SKIP LOCKED', 'factory_system');
   -- Tenant 2 has an unpublished event too.
   PERFORM dbtest.set_status('jobs', 2, dbtest.u(2101), 'ACTIVE');
   PERFORM dbtest.exec(dbtest.event_sql(dbtest.u(70), p_agg => dbtest.u(2101), p_tenant => dbtest.u(2), p_job => dbtest.u(2101)));

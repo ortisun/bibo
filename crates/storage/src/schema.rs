@@ -264,6 +264,7 @@ diesel::table! {
         updated_at -> Timestamptz,
         finished_at -> Nullable<Timestamptz>,
         superseded_at -> Nullable<Timestamptz>,
+        attempts_before_last_answer -> Int4,
     }
 }
 

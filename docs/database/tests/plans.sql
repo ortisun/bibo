@@ -202,8 +202,8 @@ BEGIN
     $q$SELECT s.tenant_id, s.id, s.job_id, s.version FROM stage_runs s
          JOIN jobs j ON j.tenant_id = s.tenant_id AND j.id = s.job_id AND j.status = 'ACTIVE'
         WHERE s.status = 'READY' AND s.not_before <= now()
-        ORDER BY s.not_before LIMIT 10 FOR NO KEY UPDATE OF s SKIP LOCKED$q$,
-    'stage_runs_claim_idx', 'stage_runs', sys);
+        ORDER BY s.not_before, s.id LIMIT 10 FOR NO KEY UPDATE OF s SKIP LOCKED$q$,
+    'stage_runs_claim_order_idx', 'stage_runs', sys);
 
   -- Sweep: expired leases, passed deadlines, overdue teardowns. FOR NO KEY UPDATE, like the claim: FOR UPDATE
   -- on an attempt would block a ledger entry that points at it.
@@ -246,8 +246,8 @@ BEGIN
     'audit_events_pkey', 'audit_events', app, 3);
 
   -- Other hot paths named in the design.
-  PERFORM dbtest.expect_plan('relay: unpublished outbox rows in order, FOR UPDATE SKIP LOCKED',
-    $q$SELECT seq, event_id FROM outbox WHERE published_at IS NULL ORDER BY seq LIMIT 100 FOR UPDATE SKIP LOCKED$q$,
+  PERFORM dbtest.expect_plan('relay: unpublished outbox rows in order, FOR NO KEY UPDATE SKIP LOCKED',
+    $q$SELECT seq, event_id FROM outbox WHERE published_at IS NULL ORDER BY seq LIMIT 100 FOR NO KEY UPDATE SKIP LOCKED$q$,
     'outbox_unpublished_idx', 'outbox', sys);
   -- The lookups run inside SECURITY DEFINER functions as factory_lookup. EXPLAIN cannot enter a function,
   -- so this is the body of each one, run as that role under its policies.
@@ -280,7 +280,7 @@ BEGIN
     $q$SELECT s.tenant_id, s.id, s.job_id, s.version FROM stage_runs s
          JOIN jobs j ON j.tenant_id = s.tenant_id AND j.id = s.job_id AND j.status = 'ACTIVE'
         WHERE s.status = 'READY' AND s.not_before <= now()
-        ORDER BY s.not_before LIMIT 10 FOR NO KEY UPDATE OF s SKIP LOCKED$q$,
+        ORDER BY s.not_before, s.id LIMIT 10 FOR NO KEY UPDATE OF s SKIP LOCKED$q$,
     'jobs_(open_idx|pkey|tenant_id_id_execution_mode_key)', 'jobs', 'factory_system');
 END
 $$;
