@@ -10,6 +10,7 @@ use factory_observability::spans::{self, Job, StageRun};
 use std::borrow::Cow;
 use std::sync::Arc;
 use tracing::field::Empty;
+use tracing_subscriber::EnvFilter;
 use tracing_subscriber::prelude::*;
 
 const CORRELATION: &str = "0192f3a4-7b1c-7d3e-9a52-1c8f0e4b6a77";
@@ -21,6 +22,7 @@ fn with_logging<T>(capture: &Capture, body: impl FnOnce() -> T) -> T {
         .with(logging::log_layer(
             capture.clone(),
             Arc::new(PolicyPatternScrubber::new()),
+            EnvFilter::new("trace"),
         ));
     tracing::subscriber::with_default(subscriber, body)
 }
@@ -175,7 +177,11 @@ fn when_the_scrubber_fails_the_line_is_replaced_and_the_original_is_not_written(
     let capture = Capture::default();
     let subscriber = tracing_subscriber::registry()
         .with(CorrelationLayer::new())
-        .with(logging::log_layer(capture.clone(), Arc::new(Failing)));
+        .with(logging::log_layer(
+            capture.clone(),
+            Arc::new(Failing),
+            EnvFilter::new("trace"),
+        ));
     tracing::subscriber::with_default(subscriber, || {
         tracing::info!("contains SECRETWORD");
     });

@@ -79,8 +79,29 @@ where
         .with_error_records_to_exceptions(false)
         .with_error_events_to_exceptions(false)
         .with_error_events_to_status(true);
-    // A metric update is not a span event.
+    // A metric update is not a span event. The libraries that carry the export are not traced:
+    // tracing the exporter's own requests would feed the exporter with its own output.
     layer.with_filter(filter_fn(|metadata| {
-        !crate::metrics::is_metric_event(metadata)
+        !crate::metrics::is_metric_event(metadata) && !is_export_machinery(metadata.target())
     }))
+}
+
+/// Targets of the crates that send telemetry. Spans and events from them stay out of the trace.
+const EXPORT_MACHINERY: &[&str] = &[
+    "opentelemetry",
+    "hyper",
+    "hyper_util",
+    "reqwest",
+    "h2",
+    "tower",
+    "http",
+    "tokio",
+];
+
+fn is_export_machinery(target: &str) -> bool {
+    EXPORT_MACHINERY.iter().any(|prefix| {
+        target
+            .strip_prefix(prefix)
+            .is_some_and(|rest| rest.is_empty() || rest.starts_with("::") || rest.starts_with('_'))
+    })
 }

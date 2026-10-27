@@ -580,6 +580,7 @@ fn a_metric_event_never_reaches_the_log_or_the_trace() {
         .with(logging::log_layer(
             log.clone(),
             Arc::new(PolicyPatternScrubber::new()),
+            tracing_subscriber::EnvFilter::new("trace"),
         ))
         .with(trace::otel_layer(&tracer_provider))
         .with(metrics::metrics_layer(&pipeline.provider));

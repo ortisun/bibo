@@ -21,7 +21,7 @@ use std::io;
 use std::sync::Arc;
 use tracing::span::{Attributes, Id, Record};
 use tracing::{Event, Subscriber, field::Visit};
-use tracing_subscriber::filter::filter_fn;
+use tracing_subscriber::filter::{EnvFilter, FilterExt as _, filter_fn};
 use tracing_subscriber::fmt::format::{
     Format, FormatEvent, FormatFields, Json, JsonFields, Writer,
 };
@@ -192,7 +192,10 @@ where
 /// are written.
 ///
 /// Pair it with [`CorrelationLayer`]. Without that layer no line has a correlation id.
-pub fn log_layer<S, M>(make_writer: M, scrubber: Arc<dyn Scrub>) -> impl Layer<S>
+///
+/// `filter` decides which events are logged, in the usual `RUST_LOG` syntax. Metric updates are
+/// never logged, whatever the filter says.
+pub fn log_layer<S, M>(make_writer: M, scrubber: Arc<dyn Scrub>, filter: EnvFilter) -> impl Layer<S>
 where
     S: Subscriber + for<'lookup> LookupSpan<'lookup>,
     M: for<'writer> MakeWriter<'writer> + 'static,
@@ -204,8 +207,7 @@ where
             inner: make_writer,
             scrubber,
         })
-        // A metric update is not a log line.
-        .with_filter(filter_fn(|metadata| !crate::metrics::is_metric_event(metadata)))
+        .with_filter(filter_fn(|metadata| !crate::metrics::is_metric_event(metadata)).and(filter))
 }
 
 /// What is written in place of a line when the scrubber is not available.
