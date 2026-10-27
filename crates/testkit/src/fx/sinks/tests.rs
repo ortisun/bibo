@@ -303,6 +303,93 @@ fn a_secret_in_a_process_argument_or_environment_is_found_through_the_spawn_reco
 }
 
 #[test]
+fn a_secret_sent_to_the_fake_github_is_found_but_the_token_it_was_sent_with_is_not() {
+    use crate::fx::github::{FakeGithub, User};
+    let set = canaries();
+    let github = FakeGithub::new();
+    github
+        .add_repo("acme/widgets", "main")
+        .add_installation(7, "acme", &["acme/widgets"])
+        .add_user(User::person("alice", 1, "write", "MEMBER"));
+    let number = github.add_issue("acme/widgets", "A", "B", "alice", &[]);
+
+    // The sweeper also knows the tokens and the webhook secret the fake made.
+    let mut known = set.clone();
+    let jwt = github.sample_app_jwt();
+    let mint = |body: &serde_json::Value| {
+        let request = crate::fx::http::HttpRequest {
+            method: "POST".to_owned(),
+            target: "/app/installations/7/access_tokens".to_owned(),
+            version: "HTTP/1.1".to_owned(),
+            headers: vec![("Authorization".to_owned(), format!("Bearer {jwt}"))],
+            body: body.to_string().into_bytes(),
+            peer: "127.0.0.1:1".parse().unwrap(),
+        };
+        let response = github.handle(&request);
+        serde_json::from_slice::<serde_json::Value>(&response.body).unwrap()["token"]
+            .as_str()
+            .unwrap()
+            .to_owned()
+    };
+    let token = mint(&serde_json::json!({"repositories": ["widgets"]}));
+    for secret in github.minted_secrets() {
+        known = known.with(secret);
+    }
+    known = known.with(github.webhook_secret_canary());
+    let sweeper = Sweeper::new(&known);
+
+    let call = |method: &str, target: &str, body: serde_json::Value| {
+        github.handle(&crate::fx::http::HttpRequest {
+            method: method.to_owned(),
+            target: target.to_owned(),
+            version: "HTTP/1.1".to_owned(),
+            headers: vec![("Authorization".to_owned(), format!("Bearer {token}"))],
+            body: body.to_string().into_bytes(),
+            peer: "127.0.0.1:1".parse().unwrap(),
+        })
+    };
+    // A clean comment: the token was used to send it, and it does not show up in the sink.
+    let status = call(
+        "POST",
+        &format!("/repos/acme/widgets/issues/{number}/comments"),
+        serde_json::json!({"body": "all good"}),
+    )
+    .status;
+    assert_eq!(status, 201);
+    let clean = SinkCollector::new();
+    clean.ingest_github(&github);
+    let report = clean.sweep(&sweeper);
+    report.assert_clean();
+    assert!(report.sinks_scanned >= 2);
+
+    // The same call with a secret in the body: found, and named as a GitHub request.
+    let leaked = set.get(CanaryKind::DatabasePassword).value();
+    call(
+        "POST",
+        &format!("/repos/acme/widgets/issues/{number}/comments"),
+        serde_json::json!({"body": format!("connection failed for {leaked}")}),
+    );
+    let dirty = SinkCollector::new();
+    dirty.ingest_github(&github);
+    let report = dirty.sweep(&sweeper);
+    let hit = report
+        .hits
+        .iter()
+        .find(|h| h.canary == "database_password")
+        .expect("the password in the comment is found");
+    assert!(
+        hit.sink
+            .starts_with("github_request:POST /repos/{owner}/{repo}/issues/{number}/comments")
+    );
+    assert_eq!(
+        report.hits.len(),
+        1,
+        "only the password leaked: {:?}",
+        report.hits
+    );
+}
+
+#[test]
 fn the_whole_pipeline_fails_when_the_redactor_is_off() {
     // Deliberate break, end to end: a logger that redacts keeps the sinks clean, and the same
     // logger with redaction switched off leaks. The check passes with the control on and fails

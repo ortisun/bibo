@@ -224,6 +224,16 @@ impl SinkCollector {
         }
     }
 
+    /// Takes every request the fake GitHub server received: the request line, the headers (the
+    /// `Authorization` value is already masked by the fake) and the body. A secret the code
+    /// under test sent to GitHub in a title, a comment or a branch name is swept (NT-SEC-03).
+    pub fn ingest_github(&self, github: &super::github::FakeGithub) {
+        for request in github.requests() {
+            let origin = format!("{}#{}", request.route, request.seq);
+            self.record(SinkKind::GithubRequest, &origin, request.as_text());
+        }
+    }
+
     /// A copy of everything collected, in order.
     #[must_use]
     pub fn entries(&self) -> Vec<SinkEntry> {
