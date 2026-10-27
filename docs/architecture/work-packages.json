@@ -355,7 +355,7 @@
         "software_architect"
       ],
       "size": "M",
-      "summary": "Create the workspace with the twelve library crates and four binaries from ADR 0002 as compiling shells. Each manifest already lists the dependencies its rules allow, each lib.rs already declares its planned modules (including every stage and gate directory under workflow), and each inner crate carries its clippy ban list. Write the xtask architecture check test-first, including the source-scan rules that the negative-test catalog lists as static checks. This package merges before any other package touches a crate directory.",
+      "summary": "Create the workspace with the twelve library crates and four binaries from ADR 0002 as empty compiling shells. A shell has no dependencies and only a short crate comment; the package that owns the crate adds its dependencies and its module declarations. Each crate inherits the workspace lints, and the four crates that must stay free of I/O carry their clippy ban list. Every binary prints that it is not implemented and exits with an error. External dependency versions are pinned in the manifest of the crate that uses them, so parallel packages never edit the root manifest. Write the xtask architecture check test-first, including the source-scan rules that the negative-test catalog lists as static checks. This package merges before any other package touches a crate directory.",
       "owns": [
         "Cargo.toml",
         "Cargo.lock",
@@ -412,7 +412,7 @@
         {
           "check": "The set of crates in cargo metadata equals the set in crate-dependency-rules.json, so every listed crate and binary exists as an empty compiling shell.",
           "kind": "command",
-          "command": "cargo xtask check-architecture --require-all-crates"
+          "command": "cargo xtask check-architecture"
         },
         {
           "check": "Every crate sets [lints] workspace = true, and a crate that does not fails the architecture check (DEP-06).",

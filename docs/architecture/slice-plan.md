@@ -940,7 +940,7 @@ pub trait StageHandler: Send + Sync {
 | On the critical path | yes |
 | Depends on | none |
 
-Create the workspace with the twelve library crates and four binaries from ADR 0002 as compiling shells. Each manifest already lists the dependencies its rules allow, each lib.rs already declares its planned modules (including every stage and gate directory under workflow), and each inner crate carries its clippy ban list. Write the xtask architecture check test-first, including the source-scan rules that the negative-test catalog lists as static checks. This package merges before any other package touches a crate directory.
+Create the workspace with the twelve library crates and four binaries from ADR 0002 as empty compiling shells. A shell has no dependencies and only a short crate comment; the package that owns the crate adds its dependencies and its module declarations. Each crate inherits the workspace lints, and the four crates that must stay free of I/O carry their clippy ban list. Every binary prints that it is not implemented and exits with an error. External dependency versions are pinned in the manifest of the crate that uses them, so parallel packages never edit the root manifest. Write the xtask architecture check test-first, including the source-scan rules that the negative-test catalog lists as static checks. This package merges before any other package touches a crate directory.
 
 Owns: `Cargo.toml`, `Cargo.lock`, `rust-toolchain.toml`, `rustfmt.toml`, `.cargo/**`, `xtask/**`, `crates/*/Cargo.toml`, `crates/*/clippy.toml`, `crates/*/src/lib.rs`, `apps/*/Cargo.toml`, `apps/*/src/main.rs`
 
@@ -956,7 +956,7 @@ Done when:
 | 4 | Static checks ST-01 (no safe.directory wildcard), ST-02 (no equality comparison on signatures), ST-03 (no shell spawn), ST-04 (dangerous container flags only in the posture verifier deny list and tests), ST-05 (no merge or deploy path without the approval check) and ST-09 (workspace reads only through the ingestion module) each have a failing fixture. | test | `cargo nextest run -p xtask static_checks` |
 | 5 | The clippy bans fire: a scratch crate using each banned call fails under the same clippy.toml. | test | `cargo nextest run -p xtask clippy_bans` |
 | 6 | Lints and formatting are clean. | command | `cargo clippy --workspace --all-targets -- -D warnings && cargo fmt --all -- --check` |
-| 7 | The set of crates in cargo metadata equals the set in crate-dependency-rules.json, so every listed crate and binary exists as an empty compiling shell. | command | `cargo xtask check-architecture --require-all-crates` |
+| 7 | The set of crates in cargo metadata equals the set in crate-dependency-rules.json, so every listed crate and binary exists as an empty compiling shell. | command | `cargo xtask check-architecture` |
 | 8 | Every crate sets [lints] workspace = true, and a crate that does not fails the architecture check (DEP-06). | test | `cargo nextest run -p xtask dependency_rules` |
 
 #### Define identifiers, value types and contract types in the domain crate
