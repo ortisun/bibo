@@ -1,0 +1,194 @@
+# deny.toml - dependency, license and source policy, checked by `cargo deny --locked check`.
+#
+# Owner: work package s0-security-baseline (security specialist). This file is a protected path
+# (policies/security.yaml group gate_and_toolchain_config, and .github/CODEOWNERS). A pull request
+# that edits it needs the owner's review, so a builder cannot loosen the supply-chain rules to
+# make a build pass (threat T-12). Threats this file answers: T-29 (generated or typosquatted
+# dependencies, unknown sources) and T-30 (poisoned sources). The license rule itself is stated in
+# policies/security.yaml, supply_chain.licenses.
+#
+# Schema checked against cargo-deny 0.19.9, the version pinned in scripts/ci.sh (PIN_DENY). The
+# parser rejects an unknown key with an error, so a typo here fails loudly. When the pin changes,
+# re-read the output of `cargo deny init` and re-run this file before merging.
+#
+# RULE FOR EXCEPTIONS. This file has none today. A future exception (an ignored advisory, a skipped
+# duplicate, a license exception) must carry a `reason` that names the crate and why the risk is
+# accepted, plus an expiry note in the form "review by YYYY-MM-DD", and it needs a human decision
+# (policies/approval.yaml, always_human). An exception without a date is a defect in review.
+
+# --- Dependency graph --------------------------------------------------------------------------
+[graph]
+# No `targets` list, on purpose. With no list, cargo-deny checks every crate in Cargo.lock for
+# every platform. Developers use macOS and CI uses Linux, and a crate that is only pulled in on
+# Windows, WebAssembly or UEFI is still in Cargo.lock and still counts. Narrowing this would hide
+# findings.
+#
+# Check every feature of every workspace crate, not only the default set. A feature that nobody
+# turns on today can be turned on by a later change, and the policy should already cover it.
+all-features = true
+
+# --- Advisories (known vulnerabilities, unmaintained, unsound and yanked crates) ---------------
+[advisories]
+# One database, named explicitly: the RustSec advisory database. Naming it keeps a changed default
+# or an environment override from silently swapping the source of truth.
+db-urls = ["https://github.com/rustsec/advisory-db"]
+
+# Do not pass on an old copy. If the database cannot be refreshed and the cached copy is older than
+# 7 days, cargo-deny stops with "repository is stale" (verified). scripts/ci.sh reports that as
+# BLOCKED, never PASSED. CI always fetches a fresh copy. An RFC 3339 duration, "P" prefix required.
+maximum-db-staleness = "P7D"
+
+# Known vulnerabilities are always an error in cargo-deny 0.19. The old `vulnerability`, `notice`
+# and `severity-threshold` keys were removed (verified: the parser rejects them). A vulnerability
+# can only be silenced by listing its id in `ignore`, and `ignore` is empty.
+#
+# Unmaintained crates: "all" means an unmaintained crate anywhere in the graph, direct or
+# transitive, fails the check. This matches the scripts/ci.sh `rust-audit` step, which runs
+# `cargo audit --deny warnings` and also fails on unmaintained, unsound and yanked crates. Two steps
+# that disagree would let a crate pass one and fail the other. A transitive crate we cannot replace
+# is handled by a dated exception in `ignore`, never by weakening this line.
+unmaintained = "all"
+
+# Unsound crates have a published soundness bug (safe code that can cause undefined behavior).
+# Same scope and same reasoning as above.
+unsound = "all"
+
+# A yanked version is one its author withdrew, usually for a serious defect. Deny it.
+yanked = "deny"
+
+# Empty on purpose: no advisory is ignored. See the rule for exceptions at the top.
+ignore = []
+
+# --- Licenses -----------------------------------------------------------------------------------
+[licenses]
+# Allow list, written from the licenses that `cargo metadata` reports for the crates in Cargo.lock
+# on 2026-10-27. Anything not listed is denied: every GPL, LGPL and AGPL license, any other
+# copyleft license, and any crate whose license cannot be read. cargo-deny 0.19 has no deny list for
+# licenses, so leaving a license off this list IS the denial.
+#
+# The list is small on purpose. Adding a license is a decision for a person and happens in the same
+# pull request as the dependency that needs it (policies/security.yaml: a new direct dependency
+# always needs a human). Common licenses such as BSD-3-Clause, ISC, Zlib, CC0-1.0, 0BSD and MPL-2.0
+# are NOT pre-approved. The first crate that needs one fails the check and the reviewer decides.
+#
+# "OR" expressions: cargo-deny passes a crate when at least one alternative is on this list, and we
+# then use the crate under that alternative. That is how the license terms work, and it is how every
+# crate with an OR below is accepted.
+allow = [
+    # Most crates: alone, or as one alternative of "MIT OR Apache-2.0". Permissive.
+    "MIT",
+    # Alone (the opentelemetry and prost crates) or as one alternative of an OR. Permissive, with an
+    # express patent grant.
+    "Apache-2.0",
+    # The ICU4X crates (icu_*, zerovec, yoke, zerofrom, tinystr, writeable, litemap, potential_utf)
+    # carry only Unicode-3.0, and unicode-ident is "(MIT OR Apache-2.0) AND Unicode-3.0", so this
+    # entry is required and has no alternative. Permissive: keep the copyright and permission
+    # notice with the Unicode data files.
+    "Unicode-3.0",
+]
+
+# Licenses that appear in an OR expression, are NOT on the list, and are not needed because MIT or
+# Apache-2.0 is also offered by the same crate:
+#   Apache-2.0 WITH LLVM-exception   wasi, wasip2, wit-bindgen
+#   BSD-2-Clause                     zerocopy, zerocopy-derive
+#   BSL-1.0                          ryu-js
+#   Unlicense                        aho-corasick, memchr
+#   LGPL-2.1-or-later                r-efi (next paragraph)
+#
+# r-efi (5.3.0 and 6.0.0) is licensed "MIT OR Apache-2.0 OR LGPL-2.1-or-later". The project does not
+# accept LGPL, so the LGPL option is never taken: we use r-efi under MIT or Apache-2.0, both on the
+# list, and the check passes through them. We do NOT add LGPL-2.1-or-later to the allow list and we
+# do NOT write an exception for r-efi. If the crate ever drops MIT and Apache-2.0 and keeps only the
+# LGPL option, it fails here and a person decides. r-efi is only pulled in by getrandom on UEFI
+# targets (verified in getrandom's manifest), so it is not compiled for macOS or Linux, but it is in
+# Cargo.lock and is checked because `targets` is not narrowed.
+#
+# core_detect 1.0.0 (a dev-only crate through proptest) writes its license as "MIT/Apache-2.0" with a
+# slash, which is not valid SPDX. cargo-deny reads it as MIT and Apache-2.0 as alternatives
+# (verified: with only Unicode-3.0 allowed, it reports both as rejected). No exception is needed.
+#
+# Coverage note: Cargo.lock holds three crates that no build of any workspace feature reaches
+# (aho-corasick, valuable, zerocopy-derive: `cargo tree --all-features --target all -e all -i` finds
+# no path to them). cargo-deny does not check them. `cargo audit` reads Cargo.lock directly and does.
+
+# No per-crate exceptions. See the rule for exceptions at the top.
+exceptions = []
+
+# How closely a license file must match the standard text when a crate has no machine-readable
+# license field. 0.8 is the cargo-deny default, written out so a change of default cannot lower it.
+confidence-threshold = 0.8
+
+# Check dev-dependencies too. The default is false, which skipped `proptest` and its ten
+# dependencies entirely (verified: they were absent from `cargo deny list`). Dev-dependencies run
+# on developer machines and in the verification sandbox, so they belong in the policy.
+include-dev = true
+
+# Check build-dependencies too. Written out because it is a default today.
+include-build = true
+
+# Warn when a listed license is no longer used by any crate. A stale entry is a wider door than the
+# project needs, and the warning tells the reviewer to remove it.
+unused-allowed-license = "warn"
+
+[licenses.private]
+# The workspace crates (apps, crates, xtask) are private: `publish = false` through the workspace
+# and no `license` field. They are our own code. Ignoring them here stops every one being reported
+# as unlicensed. This only applies to crates that are not published to any registry, so it cannot
+# be used to hide a third-party crate.
+ignore = true
+registries = []
+
+# --- Bans (duplicate versions, wildcard requirements, banned crates) ---------------------------
+[bans]
+# Two versions of one crate are not a vulnerability by themselves: they cost build time and binary
+# size and give an attacker two places to look. Today the graph has five such pairs (getrandom,
+# r-efi, rand, rand_core, syn). The rand family and r-efi come from the dev-dependency proptest
+# next to opentelemetry_sdk, and syn comes from different majors in the proc-macro crates. "deny"
+# would force a skip entry for each, and every routine update would need a human edit of this file
+# for no security gain. "warn" keeps every pair visible in each run without failing it. The
+# advisories check above covers every version separately, so an old vulnerable copy cannot hide
+# behind a newer one. Revisit if the count grows past ten.
+multiple-versions = "warn"
+
+# Count duplicates that come through dev-dependencies too. The default is false, which hid the
+# rand, rand_core, getrandom and r-efi pairs above (verified).
+multiple-versions-include-dev = true
+
+# A `*` version requirement lets any future version in, including a hostile one. Deny it. Path
+# dependencies between our own private workspace crates are not flagged (verified: the check passes
+# with allow-wildcard-paths left at its default of false). A `*` on a crates.io dependency fails
+# (verified in a scratch workspace).
+wildcards = "deny"
+
+# Show both the lowest-version path and the shortest path to a duplicate in the output.
+highlight = "all"
+
+# Default features are left as they are. A rule for a particular crate belongs in a
+# [[bans.features]] entry when one is needed.
+workspace-default-features = "allow"
+external-default-features = "allow"
+
+# No banned crates, no skipped duplicates, no allow list. The workspace crates are not auto-allowed.
+allow = []
+allow-workspace = false
+deny = []
+skip = []
+skip-tree = []
+
+# --- Sources (where crates may come from) ------------------------------------------------------
+[sources]
+# Crates come from crates.io only. A crate from any other registry or from a git repository is an
+# error, not a warning (threat T-29: a lockfile edited to point at another source, or a git
+# dependency). Path dependencies between our own workspace crates are not affected.
+unknown-registry = "deny"
+unknown-git = "deny"
+
+# The crates.io index. This is the URL Cargo.lock records for crates.io, for both the git index and
+# the sparse index (verified: with a different URL here every registry crate is rejected).
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []
+
+[sources.allow-org]
+github = []
+gitlab = []
+bitbucket = []
