@@ -45,7 +45,9 @@ macro_rules! string_traits {
             }
         }
         impl<'de> ::serde::Deserialize<'de> for $name {
-            fn deserialize<D: ::serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+            fn deserialize<D: ::serde::Deserializer<'de>>(
+                deserializer: D,
+            ) -> Result<Self, D::Error> {
                 let text = <String as ::serde::Deserialize>::deserialize(deserializer)?;
                 Self::parse(&text).map_err(::serde::de::Error::custom)
             }

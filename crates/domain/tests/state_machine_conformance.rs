@@ -9,16 +9,18 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::LazyLock;
 
 use factory_domain::state::{
-    Actor, AttemptEvent, AttemptStatus, Guard, IllegalTransition, JobEvent, JobStatus, Status,
-    StageRunEvent, StageRunStatus, TaskNodeEvent, TaskNodeStatus,
+    Actor, AttemptEvent, AttemptStatus, Guard, IllegalTransition, JobEvent, JobStatus,
+    StageRunEvent, StageRunStatus, Status, TaskNodeEvent, TaskNodeStatus,
 };
 use factory_domain::values::{EventType, TransitionId};
 use factory_domain::vocabulary::{AssuranceLevel, ReleaseState, StageKind};
 use serde_json::Value;
 
 static DOCUMENT: LazyLock<Value> = LazyLock::new(|| {
-    serde_json::from_str(include_str!("../../../docs/architecture/state-machine.json"))
-        .expect("state-machine.json is valid JSON")
+    serde_json::from_str(include_str!(
+        "../../../docs/architecture/state-machine.json"
+    ))
+    .expect("state-machine.json is valid JSON")
 });
 
 fn strings_of(value: &Value) -> BTreeSet<String> {
@@ -31,7 +33,12 @@ fn strings_of(value: &Value) -> BTreeSet<String> {
 }
 
 fn keys_of(value: &Value) -> BTreeSet<String> {
-    value.as_object().expect("an object").keys().cloned().collect()
+    value
+        .as_object()
+        .expect("an object")
+        .keys()
+        .cloned()
+        .collect()
 }
 
 fn machine_json(name: &str) -> &'static Value {
@@ -115,12 +122,18 @@ fn assurance_levels_release_states_and_stage_kinds_match_state_machine_json() {
         .map(|l| l["level"].as_str().unwrap().to_owned())
         .collect();
     assert_eq!(
-        AssuranceLevel::ALL.iter().map(ToString::to_string).collect::<BTreeSet<_>>(),
+        AssuranceLevel::ALL
+            .iter()
+            .map(ToString::to_string)
+            .collect::<BTreeSet<_>>(),
         levels
     );
 
     assert_eq!(
-        ReleaseState::ALL.iter().map(ToString::to_string).collect::<BTreeSet<_>>(),
+        ReleaseState::ALL
+            .iter()
+            .map(ToString::to_string)
+            .collect::<BTreeSet<_>>(),
         strings_of(&DOCUMENT["assurance_levels"]["release_states"]["values"])
     );
 
@@ -128,7 +141,10 @@ fn assurance_levels_release_states_and_stage_kinds_match_state_machine_json() {
     let stages = DOCUMENT["pipeline"]["stages"].as_array().unwrap();
     let documented_order: Vec<&str> = stages.iter().map(|s| s["kind"].as_str().unwrap()).collect();
     let code_order: Vec<&str> = StageKind::ALL.iter().map(|k| k.as_str()).collect();
-    assert_eq!(code_order, documented_order, "stage kinds or their order differ");
+    assert_eq!(
+        code_order, documented_order,
+        "stage kinds or their order differ"
+    );
     for stage in stages {
         let kind = StageKind::parse(stage["kind"].as_str().unwrap()).unwrap();
         let documented_requires = strings_of(&stage["requires"]);
@@ -150,17 +166,32 @@ fn check_transition_table<S: Status>() {
     );
 
     let in_code: BTreeMap<&str, _> = S::TRANSITIONS.iter().map(|t| (t.id, t)).collect();
-    assert_eq!(in_code.len(), S::TRANSITIONS.len(), "a transition id repeats");
+    assert_eq!(
+        in_code.len(),
+        S::TRANSITIONS.len(),
+        "a transition id repeats"
+    );
 
     for entry in documented {
         let id = entry["id"].as_str().unwrap();
-        let t = in_code
-            .get(id)
-            .unwrap_or_else(|| panic!("{}: transition {id} is in the file but not in code", S::MACHINE));
+        let t = in_code.get(id).unwrap_or_else(|| {
+            panic!(
+                "{}: transition {id} is in the file but not in code",
+                S::MACHINE
+            )
+        });
         let from_in_code: BTreeSet<String> = t.from.iter().map(ToString::to_string).collect();
         assert_eq!(from_in_code, strings_of(&entry["from"]), "{id}: from");
-        assert_eq!(t.event.to_string(), entry["event"].as_str().unwrap(), "{id}: event");
-        assert_eq!(t.guard.to_string(), entry["guard"].as_str().unwrap(), "{id}: guard");
+        assert_eq!(
+            t.event.to_string(),
+            entry["event"].as_str().unwrap(),
+            "{id}: event"
+        );
+        assert_eq!(
+            t.guard.to_string(),
+            entry["guard"].as_str().unwrap(),
+            "{id}: guard"
+        );
         assert_eq!(t.to.to_string(), entry["to"].as_str().unwrap(), "{id}: to");
         let actors_in_code: BTreeSet<String> = t.actors.iter().map(ToString::to_string).collect();
         assert_eq!(actors_in_code, strings_of(&entry["actors"]), "{id}: actors");
@@ -186,7 +217,10 @@ fn check_cross_product<S: Status>() {
     for t in json["transitions"].as_array().unwrap() {
         for from in t["from"].as_array().unwrap() {
             documented.insert(
-                (from.as_str().unwrap().to_owned(), t["event"].as_str().unwrap().to_owned()),
+                (
+                    from.as_str().unwrap().to_owned(),
+                    t["event"].as_str().unwrap().to_owned(),
+                ),
                 t["to"].as_str().unwrap().to_owned(),
             );
         }
@@ -241,8 +275,9 @@ fn emitted_event_types_are_valid_domain_event_types_of_the_right_aggregate() {
     fn check<S: Status>() {
         for t in S::TRANSITIONS {
             if let Some(name) = t.emits {
-                let event_type = EventType::parse(name)
-                    .unwrap_or_else(|e| panic!("{}: {} emits an invalid type: {e}", S::MACHINE, t.id));
+                let event_type = EventType::parse(name).unwrap_or_else(|e| {
+                    panic!("{}: {} emits an invalid type: {e}", S::MACHINE, t.id)
+                });
                 assert!(
                     event_type.as_str().starts_with(&format!("{}.", S::MACHINE)),
                     "{} emits {name}, which is not an event of the {} aggregate",
@@ -268,17 +303,33 @@ fn emitted_event_types_are_valid_domain_event_types_of_the_right_aggregate() {
 #[test]
 fn only_the_heartbeat_emits_no_event() {
     let silent: Vec<&str> = [
-        JobStatus::TRANSITIONS.iter().map(|t| (t.id, t.emits)).collect::<Vec<_>>(),
-        StageRunStatus::TRANSITIONS.iter().map(|t| (t.id, t.emits)).collect(),
-        AttemptStatus::TRANSITIONS.iter().map(|t| (t.id, t.emits)).collect(),
-        TaskNodeStatus::TRANSITIONS.iter().map(|t| (t.id, t.emits)).collect(),
+        JobStatus::TRANSITIONS
+            .iter()
+            .map(|t| (t.id, t.emits))
+            .collect::<Vec<_>>(),
+        StageRunStatus::TRANSITIONS
+            .iter()
+            .map(|t| (t.id, t.emits))
+            .collect(),
+        AttemptStatus::TRANSITIONS
+            .iter()
+            .map(|t| (t.id, t.emits))
+            .collect(),
+        TaskNodeStatus::TRANSITIONS
+            .iter()
+            .map(|t| (t.id, t.emits))
+            .collect(),
     ]
     .into_iter()
     .flatten()
     .filter(|(_, emits)| emits.is_none())
     .map(|(id, _)| id)
     .collect();
-    assert_eq!(silent, ["A03"], "the heartbeat is the only silent transition");
+    assert_eq!(
+        silent,
+        ["A03"],
+        "the heartbeat is the only silent transition"
+    );
     assert_eq!(
         AttemptStatus::Running.apply(AttemptEvent::Heartbeat),
         Ok(AttemptStatus::Running)
@@ -314,10 +365,17 @@ fn failed_task_nodes_are_not_terminal_so_they_can_be_retried() {
 #[test]
 fn job_admission_and_rejection_start_from_received() {
     assert_eq!(JobStatus::INITIAL, JobStatus::Received);
-    assert_eq!(JobStatus::Received.apply(JobEvent::Admit), Ok(JobStatus::Active));
+    assert_eq!(
+        JobStatus::Received.apply(JobEvent::Admit),
+        Ok(JobStatus::Active)
+    );
     assert_eq!(
         JobStatus::Received.apply(JobEvent::RejectAtAdmission),
         Ok(JobStatus::Rejected)
     );
-    assert!(JobStatus::Active.apply(JobEvent::RejectAtAdmission).is_err());
+    assert!(
+        JobStatus::Active
+            .apply(JobEvent::RejectAtAdmission)
+            .is_err()
+    );
 }

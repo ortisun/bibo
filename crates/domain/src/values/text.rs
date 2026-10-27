@@ -71,7 +71,11 @@ impl EventType {
     pub fn parse(text: &str) -> Result<Self, ValueError> {
         const WHAT: &str = "event type";
         if text == HEARTBEAT_EVENT {
-            return Err(ValueError::new(WHAT, text, "heartbeats are not domain events"));
+            return Err(ValueError::new(
+                WHAT,
+                text,
+                "heartbeats are not domain events",
+            ));
         }
         if !EVENT_TYPE_SHAPE.is_match(text) {
             return Err(ValueError::new(
@@ -272,7 +276,8 @@ impl SemanticVersion {
     /// Returns a [`ValueError`] when the text is not a semantic version in the schema's form.
     pub fn parse(text: &str) -> Result<Self, ValueError> {
         const WHAT: &str = "semantic version";
-        const RULE: &str = "use `major.minor.patch` with an optional `-pre-release` and no build metadata";
+        const RULE: &str =
+            "use `major.minor.patch` with an optional `-pre-release` and no build metadata";
         if !SEMVER_SHAPE.is_match(text) {
             return Err(ValueError::new(WHAT, text, RULE));
         }

@@ -4,7 +4,7 @@
 use factory_domain::ids::{JobId, TenantId};
 use factory_domain::scope::{CrossTenantAccess, TenantScope};
 use factory_domain::values::{
-    Bounded, GitSha, HumanText, HumanTitle, MediaType, NonEmptyVec, Sha256Digest, SemanticVersion,
+    Bounded, GitSha, HumanText, HumanTitle, MediaType, NonEmptyVec, SemanticVersion, Sha256Digest,
     Slug, Timestamp, UniqueVec, UnitInterval,
 };
 
@@ -18,7 +18,13 @@ fn json_error_text<T: serde::de::DeserializeOwned + std::fmt::Debug>(json: &str)
 
 #[test]
 fn slug_accepts_machine_safe_identifiers() {
-    for ok in ["a", "word-count", "workflow.gate-evaluator", "a_b.c-9", "x0"] {
+    for ok in [
+        "a",
+        "word-count",
+        "workflow.gate-evaluator",
+        "a_b.c-9",
+        "x0",
+    ] {
         assert_eq!(Slug::parse(ok).expect(ok).as_str(), ok);
     }
 }
@@ -57,9 +63,14 @@ fn slug_round_trips_through_json() {
 
 #[test]
 fn slug_error_names_the_type_and_shows_a_short_excerpt() {
-    let message = Slug::parse(&format!("BAD{}", "x".repeat(500))).unwrap_err().to_string();
+    let message = Slug::parse(&format!("BAD{}", "x".repeat(500)))
+        .unwrap_err()
+        .to_string();
     assert!(message.contains("slug"), "{message}");
-    assert!(message.len() < 300, "the excerpt must be truncated: {message}");
+    assert!(
+        message.len() < 300,
+        "the excerpt must be truncated: {message}"
+    );
 }
 
 // ---- human text and titles ---------------------------------------------------------------------
@@ -140,7 +151,12 @@ fn sha256_text_form_is_strict() {
 fn git_sha_accepts_forty_or_sixty_four_lowercase_hex_characters() {
     assert!(GitSha::parse(&"a".repeat(40)).is_ok());
     assert!(GitSha::parse(&"a".repeat(64)).is_ok());
-    for bad in [&"a".repeat(39), &"a".repeat(41), &"A".repeat(40), &"g".repeat(40)] {
+    for bad in [
+        &"a".repeat(39),
+        &"a".repeat(41),
+        &"A".repeat(40),
+        &"g".repeat(40),
+    ] {
         assert!(GitSha::parse(bad).is_err(), "{bad:?}");
     }
 }
@@ -149,10 +165,20 @@ fn git_sha_accepts_forty_or_sixty_four_lowercase_hex_characters() {
 
 #[test]
 fn media_type_matches_the_schema_pattern() {
-    for ok in ["application/json", "text/markdown", "application/vnd.api+json"] {
+    for ok in [
+        "application/json",
+        "text/markdown",
+        "application/vnd.api+json",
+    ] {
         assert!(MediaType::parse(ok).is_ok(), "{ok}");
     }
-    for bad in ["json", "Application/JSON", "text/", "/json", "text/plain; charset=utf-8"] {
+    for bad in [
+        "json",
+        "Application/JSON",
+        "text/",
+        "/json",
+        "text/plain; charset=utf-8",
+    ] {
         assert!(MediaType::parse(bad).is_err(), "{bad}");
     }
 }
@@ -163,7 +189,16 @@ fn semantic_version_follows_the_schema_not_the_whole_semver_grammar() {
         let v = SemanticVersion::parse(ok).expect(ok);
         assert_eq!(v.to_string(), ok);
     }
-    for bad in ["1", "1.2", "01.2.3", "1.2.3+build.5", "v1.2.3", "1.2.3-", "1.2.3-a..b", " 1.2.3"] {
+    for bad in [
+        "1",
+        "1.2",
+        "01.2.3",
+        "1.2.3+build.5",
+        "v1.2.3",
+        "1.2.3-",
+        "1.2.3-a..b",
+        " 1.2.3",
+    ] {
         assert!(SemanticVersion::parse(bad).is_err(), "{bad:?}");
     }
 }
@@ -183,7 +218,10 @@ fn timestamp_round_trips_the_exact_text() {
         let parsed = Timestamp::parse(text).expect(text);
         assert_eq!(parsed.to_string(), text);
         let via_json: Timestamp = serde_json::from_str(&format!("\"{text}\"")).unwrap();
-        assert_eq!(serde_json::to_string(&via_json).unwrap(), format!("\"{text}\""));
+        assert_eq!(
+            serde_json::to_string(&via_json).unwrap(),
+            format!("\"{text}\"")
+        );
     }
 }
 
@@ -278,7 +316,10 @@ fn tenant_scope_admits_only_its_own_tenant() {
     assert_eq!(scope.require(a), Ok(()));
     assert_eq!(
         scope.require(b),
-        Err(CrossTenantAccess { scope: a, requested: b })
+        Err(CrossTenantAccess {
+            scope: a,
+            requested: b
+        })
     );
 }
 

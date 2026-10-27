@@ -81,7 +81,10 @@ impl<T: Eq + Hash, const MIN: usize> UniqueVec<T, MIN> {
         }
         let mut seen = HashSet::with_capacity(items.len());
         if !items.iter().all(|item| seen.insert(item)) {
-            return Err(ValueError::unquoted("list", "an item appears more than once"));
+            return Err(ValueError::unquoted(
+                "list",
+                "an item appears more than once",
+            ));
         }
         Ok(Self(items))
     }

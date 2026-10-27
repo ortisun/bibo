@@ -82,13 +82,18 @@ mod tests {
     fn long_input_is_cut_and_marked() {
         let error = ValueError::new("slug", &"x".repeat(500), "too long");
         let message = error.to_string();
-        assert!(message.ends_with("...\" is not a valid slug: too long") || message.contains("..."));
+        assert!(
+            message.ends_with("...\" is not a valid slug: too long") || message.contains("...")
+        );
         assert!(message.len() < 120, "{message}");
     }
 
     #[test]
     fn control_characters_are_escaped() {
         let error = ValueError::new("slug", "a\nb", "no newlines");
-        assert_eq!(error.to_string(), "\"a\\nb\" is not a valid slug: no newlines");
+        assert_eq!(
+            error.to_string(),
+            "\"a\\nb\" is not a valid slug: no newlines"
+        );
     }
 }

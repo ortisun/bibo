@@ -16,17 +16,25 @@ use proptest::test_runner::{Config, TestCaseError, TestRunner};
 use serde_json::Value;
 
 static DOCUMENT: LazyLock<Value> = LazyLock::new(|| {
-    serde_json::from_str(include_str!("../../../docs/architecture/state-machine.json"))
-        .expect("state-machine.json is valid JSON")
+    serde_json::from_str(include_str!(
+        "../../../docs/architecture/state-machine.json"
+    ))
+    .expect("state-machine.json is valid JSON")
 });
 
 /// What the file allows: (from, event) to the next status.
 fn documented_moves(machine: &str) -> BTreeMap<(String, String), String> {
     let mut moves = BTreeMap::new();
-    for t in DOCUMENT["machines"][machine]["transitions"].as_array().unwrap() {
+    for t in DOCUMENT["machines"][machine]["transitions"]
+        .as_array()
+        .unwrap()
+    {
         for from in t["from"].as_array().unwrap() {
             moves.insert(
-                (from.as_str().unwrap().to_owned(), t["event"].as_str().unwrap().to_owned()),
+                (
+                    from.as_str().unwrap().to_owned(),
+                    t["event"].as_str().unwrap().to_owned(),
+                ),
                 t["to"].as_str().unwrap().to_owned(),
             );
         }
@@ -101,8 +109,17 @@ fn walks_follow_the_file<S: Status>() {
                     prop_assert!(S::STATES.contains(&state));
                 }
                 Err(_) => {
-                    prop_assert!(documented.is_none(), "{} on {} is documented but was rejected", before, event);
-                    prop_assert_eq!(state, before, "a rejected event must leave the status unchanged");
+                    prop_assert!(
+                        documented.is_none(),
+                        "{} on {} is documented but was rejected",
+                        before,
+                        event
+                    );
+                    prop_assert_eq!(
+                        state,
+                        before,
+                        "a rejected event must leave the status unchanged"
+                    );
                 }
             }
         }
@@ -130,7 +147,8 @@ fn terminal_statuses_absorb<S: Status>() {
             let before = state;
             let _ = state.advance(event);
             if reached_terminal {
-                let allowed = supersedable.contains(&before.to_string()) && event.to_string() == "supersede";
+                let allowed =
+                    supersedable.contains(&before.to_string()) && event.to_string() == "supersede";
                 prop_assert!(
                     state == before || allowed,
                     "left the terminal status {} on {}",
@@ -155,7 +173,11 @@ fn terminal_states_have_no_exits_on_any_random_walk() {
 fn terminal_statuses_have_no_exit_in_the_cross_product<S: Status>() {
     let supersedable = documented_supersedable(S::MACHINE);
     let terminal = documented_terminal(S::MACHINE);
-    assert!(!terminal.is_empty(), "{} has no terminal status", S::MACHINE);
+    assert!(
+        !terminal.is_empty(),
+        "{} has no terminal status",
+        S::MACHINE
+    );
     for state in S::STATES.iter().filter(|s| s.is_terminal()) {
         let exits: Vec<String> = S::EVENTS
             .iter()
@@ -165,7 +187,11 @@ fn terminal_statuses_have_no_exit_in_the_cross_product<S: Status>() {
         if supersedable.contains(&state.to_string()) {
             assert_eq!(exits, ["supersede"], "{}.{state}", S::MACHINE);
         } else {
-            assert!(exits.is_empty(), "{}.{state} is terminal but exits on {exits:?}", S::MACHINE);
+            assert!(
+                exits.is_empty(),
+                "{}.{state} is terminal but exits on {exits:?}",
+                S::MACHINE
+            );
         }
     }
 }
@@ -181,7 +207,11 @@ fn terminal_states_have_no_exits_over_the_whole_cross_product() {
 // ---- reachability and liveness ----------------------------------------------------------------------
 
 fn successors<S: Status>(state: S) -> Vec<S> {
-    state.legal_events().into_iter().filter_map(|e| state.apply(e).ok()).collect()
+    state
+        .legal_events()
+        .into_iter()
+        .filter_map(|e| state.apply(e).ok())
+        .collect()
 }
 
 fn reachable<S: Status>(start: S) -> BTreeSet<String> {
@@ -200,12 +230,21 @@ fn reachable<S: Status>(start: S) -> BTreeSet<String> {
 fn every_status_is_reachable_and_can_finish<S: Status>() {
     let from_start = reachable(S::INITIAL);
     let all: BTreeSet<String> = S::STATES.iter().map(ToString::to_string).collect();
-    assert_eq!(from_start, all, "{}: some status cannot be reached from the initial one", S::MACHINE);
+    assert_eq!(
+        from_start,
+        all,
+        "{}: some status cannot be reached from the initial one",
+        S::MACHINE
+    );
     for state in S::STATES {
         let can_reach_terminal = reachable(*state)
             .iter()
             .any(|name| S::parse_name(name).is_some_and(Status::is_terminal));
-        assert!(can_reach_terminal, "{}.{state} can never reach a terminal status", S::MACHINE);
+        assert!(
+            can_reach_terminal,
+            "{}.{state} can never reach a terminal status",
+            S::MACHINE
+        );
     }
 }
 
@@ -236,5 +275,9 @@ fn a_superseded_or_reworked_stage_run_never_comes_back() {
             );
         }
     }
-    assert!(StageRunStatus::Passed.apply(StageRunEvent::Supersede).is_ok());
+    assert!(
+        StageRunStatus::Passed
+            .apply(StageRunEvent::Supersede)
+            .is_ok()
+    );
 }

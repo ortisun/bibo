@@ -14,7 +14,8 @@ static SHAPE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(patterns::TIMESTAMP).expect("a schema pattern is a valid regex"));
 
 const WHAT: &str = "timestamp";
-const RULE: &str = "use a real UTC time as `YYYY-MM-DDTHH:MM:SS` with up to 9 fraction digits and a `Z` suffix";
+const RULE: &str =
+    "use a real UTC time as `YYYY-MM-DDTHH:MM:SS` with up to 9 fraction digits and a `Z` suffix";
 
 /// A UTC instant in RFC 3339 form with a `Z` suffix, for example `2026-10-27T08:30:01Z`.
 ///
@@ -63,7 +64,9 @@ impl Timestamp {
         let nanosecond = if fraction.is_empty() {
             0
         } else {
-            format!("{fraction:0<9}").parse::<u32>().map_err(|_| fail())?
+            format!("{fraction:0<9}")
+                .parse::<u32>()
+                .map_err(|_| fail())?
         };
 
         let date = Date::from_calendar_date(year, month, day).map_err(|_| fail())?;
@@ -95,7 +98,7 @@ impl Timestamp {
         let nanos = utc.nanosecond();
         let mut digits = 9_u8;
         let mut rest = nanos;
-        while digits > 0 && rest % 10 == 0 {
+        while digits > 0 && rest.is_multiple_of(10) {
             rest /= 10;
             digits -= 1;
         }

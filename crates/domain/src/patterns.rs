@@ -11,7 +11,8 @@ pub const SHA256: &str = r"^sha256:[0-9a-f]{64}$";
 /// A full Git object id.
 pub const GIT_SHA: &str = r"^([0-9a-f]{40}|[0-9a-f]{64})$";
 /// UTC instant in RFC 3339 form with a `Z` suffix.
-pub const TIMESTAMP: &str = r"^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\.[0-9]{1,9})?Z$";
+pub const TIMESTAMP: &str =
+    r"^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\.[0-9]{1,9})?Z$";
 /// Machine-safe identifier.
 pub const SLUG: &str = r"^[a-z0-9]([a-z0-9._-]{0,62}[a-z0-9])?$";
 /// Semantic version without build metadata.
