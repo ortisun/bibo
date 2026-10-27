@@ -7,6 +7,7 @@ pub mod archive;
 pub mod canary;
 pub mod control;
 pub mod digest;
+pub mod dns;
 pub mod docker;
 pub mod encoding;
 pub mod github;
