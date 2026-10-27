@@ -53,7 +53,7 @@ Expected result of step 2: nine `Running migration` lines, the last one `2026-10
 
 The script picks the first of these that works:
 
-1. `FACTORY_DB_ADMIN_URL`, a superuser URL of a server you provide, such as `postgres://postgres@localhost:5432/postgres`. The script creates and drops only databases named `factory_t_*` and `factory_tpl_*`. Use this in CI with a service container.
+1. `FACTORY_DB_ADMIN_URL`, a superuser URL of a server you provide, such as `postgres://postgres@localhost:5432/postgres`. The script creates and drops only databases named `factory_t_*` and `factory_tpl_*`. Use this in CI with a service container. **Do not point it at a server that matters.** The tests create the cluster-wide role `factory_app`, create and drop test roles, and switch superuser-only session settings. The script leaves `factory_app` behind on purpose.
 2. A private local cluster. The script looks for `initdb`, `pg_ctl` and `postgres` in `FACTORY_PG_BIN`, on `PATH`, and in the usual Homebrew and Debian directories. It starts a cluster on a unix socket in a mode 0700 directory, with TCP off and `fsync` off, and stops and deletes it at the end.
 3. Docker, with the image in `FACTORY_DB_IMAGE` (default `postgres:18`), published on a random loopback port with a random password.
 
@@ -93,7 +93,7 @@ Six more suites go beyond the criteria: `lease`, `outbox`, `approvals`, `tokens`
 A passing run ends like this (the number of checks changes when a test is added):
 
 ```text
-PASS: migrations statuses ledger tenancy terminal_rows plans audit webhook_delivery lease outbox approvals tokens privileges contracts (505 checks, PostgreSQL 18.6 (Debian 18.6-1.pgdg13+2), docker)
+PASS: migrations statuses ledger tenancy terminal_rows plans audit webhook_delivery lease outbox approvals tokens privileges contracts (510 checks, PostgreSQL 18.6 (Debian 18.6-1.pgdg13+2), docker)
 ```
 
 A failing check prints `NOT OK - <what was expected>: <what happened>` and the statement, and the run exits 1.
@@ -115,6 +115,9 @@ A failing check prints `NOT OK - <what was expected>: <what happened>` and the s
 
 | Provider | PostgreSQL | Command | Result |
 |---|---|---|---|
-| Local cluster (Homebrew) | 18.6 | `scripts/db-test.sh` | pass, 505 checks, about 13 seconds |
-| Docker `postgres:18` | 18.6 (Debian) | `FACTORY_DB_PROVISION=docker scripts/db-test.sh` | pass, 505 checks, about 21 seconds |
-| Docker `postgres:16-alpine` | 16.15 | `FACTORY_DB_PROVISION=docker FACTORY_DB_IMAGE=postgres:16-alpine scripts/db-test.sh` | pass, 505 checks |
+| Local cluster (Homebrew) | 18.6 | `scripts/db-test.sh`, twice in a row | pass both times, 510 checks, about 15 seconds each |
+| Local cluster, persistent server | 18.6 | `FACTORY_DB_ADMIN_URL=... scripts/db-test.sh`, twice in a row | pass both times, no test database left, only the `factory_app` role remains |
+| Docker `postgres:18` | 18.6 (Debian) | `FACTORY_DB_PROVISION=docker scripts/db-test.sh` | pass, 510 checks, container removed |
+| Docker `postgres:16-alpine` | 16.15 | `FACTORY_DB_PROVISION=docker FACTORY_DB_IMAGE=postgres:16-alpine scripts/db-test.sh` | pass, 510 checks, container removed |
+| No database (`FACTORY_DB_PROVISION=none`), unreachable server, no Diesel CLI on `PATH` | | `scripts/db-test.sh ledger` | exit code 3 and `BLOCKED:` each time |
+| Ten deliberate breaks of the schema, one at a time | 18.6 | each break plus the suites that should notice it | exit code 1 each time, with a message naming the broken rule |

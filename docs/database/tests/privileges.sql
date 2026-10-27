@@ -154,6 +154,12 @@ BEGIN
   PERFORM dbtest.expect_true('a GRANT to PUBLIC run by factory_app changes nothing',
     NOT EXISTS (SELECT 1 FROM pg_class c, aclexplode(c.relacl) a WHERE c.relname = 'tenants' AND a.grantee = 0));
   PERFORM dbtest.expect_error('factory_app cannot turn row-level security on or off', 'ALTER TABLE jobs DISABLE ROW LEVEL SECURITY', '42501', 'factory_app');
+  -- The setting that switches every trigger and foreign key off. The tests use it as a superuser to tamper.
+  PERFORM dbtest.expect_error('factory_app cannot switch triggers and foreign keys off (session_replication_role)',
+    'SET session_replication_role = replica', '42501', 'factory_app');
+  PERFORM dbtest.expect_error('factory_app cannot switch triggers and foreign keys off through set_config either',
+    'SELECT set_config(''session_replication_role'', ''replica'', true)', '42501', 'factory_app');
+  PERFORM dbtest.expect_error('factory_app cannot read files on the database server', 'SELECT pg_read_file(''/etc/hosts'')', '42501', 'factory_app');
   PERFORM dbtest.expect_ok('factory_app can read the migration version table for the start-up schema check', 'SELECT max(version) FROM __diesel_schema_migrations', 'factory_app');
   PERFORM dbtest.expect_error('factory_app cannot change the migration version table', 'DELETE FROM __diesel_schema_migrations', '42501', 'factory_app');
   PERFORM dbtest.expect_error('factory_app cannot change the state machine reference data',

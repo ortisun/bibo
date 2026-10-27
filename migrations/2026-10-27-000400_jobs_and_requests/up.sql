@@ -49,7 +49,7 @@ CREATE TABLE jobs (
   CONSTRAINT jobs_execution_mode_check CHECK (execution_mode IN ('production', 'test')),
   CONSTRAINT jobs_autonomy_level_check CHECK (autonomy_level IN ('L0', 'L1', 'L2', 'L3')),
   CONSTRAINT jobs_pipeline_scope_check CHECK (
-    cardinality(pipeline_scope) >= 1
+    cardinality(pipeline_scope) BETWEEN 1 AND 14
     AND pipeline_scope <@ ARRAY['INTAKE', 'REPOSITORY_INTELLIGENCE', 'SPECIFICATION', 'DOMAIN_DISCOVERY',
       'ARCHITECTURE', 'TASK_PLANNING', 'IMPLEMENTATION', 'VALIDATION', 'REVIEW', 'DOCUMENTING',
       'DOCUMENTATION_REVIEW', 'DELIVERY', 'APPROVAL', 'MERGE']::text[]),

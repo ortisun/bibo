@@ -109,6 +109,17 @@ BEGIN
                      VALUES (%L, %L, %L, %L, 'task-one', %L, 'BOGUS')$q$, t, dbtest.u(401), j, sr, dbtest.sha('plan')),
     '23514', NULL, 'task_nodes_status_check');
 
+  PERFORM dbtest.expect_error('jobs: a pipeline scope longer than the 14 stage kinds is rejected',
+    off || format($q$INSERT INTO jobs (tenant_id, id, repository_id, requester_principal_id, execution_mode, autonomy_level,
+                       pipeline_scope, correlation_id)
+                     VALUES (%L, %L, %L, %L, 'production', 'L1', array_fill('INTAKE'::text, ARRAY[15]), %L)$q$, t, j, dbtest.u(1001), dbtest.u(1002), dbtest.u(501)),
+    '23514', NULL, 'jobs_pipeline_scope_check');
+  PERFORM dbtest.expect_error('jobs: an empty pipeline scope is rejected',
+    off || format($q$INSERT INTO jobs (tenant_id, id, repository_id, requester_principal_id, execution_mode, autonomy_level,
+                       pipeline_scope, correlation_id)
+                     VALUES (%L, %L, %L, %L, 'production', 'L1', '{}', %L)$q$, t, j, dbtest.u(1001), dbtest.u(1002), dbtest.u(501)),
+    '23514', NULL, 'jobs_pipeline_scope_check');
+
   -- Lower case or a typo is also unknown.
   PERFORM dbtest.expect_error('stage_runs: a lower-case status is rejected',
     off || format($q$INSERT INTO stage_runs (tenant_id, id, job_id, stage_kind, run_number, status)

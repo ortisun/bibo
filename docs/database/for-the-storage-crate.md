@@ -48,6 +48,8 @@ Diesel reports SQLSTATE 23505, 23503 and 23514 as `UniqueViolation`, `ForeignKey
 
 The constraint checks on `outbox_aggregate_*` and on `attempts_live_attempt_has_current_epoch` are deferred, so they fire at `COMMIT`, not at the statement. Map errors from `commit()` as well.
 
+Never pass the database's message or detail text to an API client. A unique violation names the key value in its detail, and the two keys that are global (`repositories_github_repository_id_key` and `api_tokens_token_hash_key`) could tell a caller that another tenant already holds that repository or token. Log it, and return the closed error. NT-TEN-05 asks for the same answer for a missing object and a foreign one.
+
 ## Recipes
 
 Each recipe names the test that ran it.

@@ -56,6 +56,20 @@ These follow ADR 0007's "expand, migrate, contract", so version N and version N 
 
 Regenerate the seed rows with `python3 -I docs/database/tools/state_machine_sql.py seed docs/architecture/state-machine.json`, and use only the difference in the new migration. The `statuses` suite compares the database with the JSON and fails if they differ, so a forgotten edit is caught the first time anyone runs it.
 
+The state lists are written out in more than one place, because a CHECK cannot read another table. A change to a status or a stage kind must update each of them:
+
+| Where | What it repeats |
+|---|---|
+| `jobs_status_check`, `stage_runs_status_check`, `attempts_status_check`, `task_nodes_status_check` | The states of each machine |
+| `jobs_terminal_check`, `stage_runs_terminal_check`, `attempts_terminal_check`, `task_nodes_terminal_check` | The terminal states |
+| `stage_runs_stage_kind_check`, `jobs_pipeline_scope_check` | The 14 stage kinds |
+| `jobs_open_idx` | The terminal job states, in its predicate |
+| `attempts_one_active_per_stage_run`, `attempts_lease_expiry_idx`, `attempts_deadline_idx`, `attempts_teardown_idx`, and the CHECK `attempts_active_has_lease` | The live attempt states |
+| `stage_runs_claim_idx` | The `READY` state |
+| `stage_runs_guard` | Reads terminal states from `state_machine_states`, so it follows the table |
+
+The `statuses` suite compares the CHECK lists and the terminal lists with the JSON. It does not read the index predicates. Check those by hand.
+
 ## Backward and forward compatibility of this baseline
 
 - **Older code on a newer schema.** The application role has column-level `UPDATE` grants and inserts name their columns, so a new nullable column does not break old code. A new `NOT NULL` column without a default would, so avoid it in an expand step.

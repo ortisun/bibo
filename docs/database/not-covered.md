@@ -55,9 +55,11 @@ The tables below give the detail.
 
 | Weak point | Detail |
 |---|---|
+| **Only stage runs and attempts are frozen once terminal.** | `state-machine.json` asks for it only for stage runs (INV-04). A terminal job or task node cannot change status, because no transition leaves a terminal state, but its other columns (for example `policy_hash`) can still be edited by the application role. Freezing them is a small trigger if the architect wants it. |
 | **A superuser can rewrite everything.** | The chains show partial tampering. A consistent rewrite from some point forward passes both verifiers. |
 | **Deleting the end of the audit chain is not found** by `audit_verify_chain`. | A test states this limit. Only the anchor catches it. |
 | **The owner role can `DROP TABLE`.** | Operational control only. |
+| **The application role can create temporary tables.** | `TEMPORARY` on a database goes to `PUBLIC` by default. The trigger functions qualify every table with `public.` and pin `search_path`, so a temporary table cannot shadow what they read. Revoking `TEMPORARY` from `PUBLIC` and granting it back to the roles that need it is a hardening step for the deployment. |
 | **Audit writes serialize per tenant.** | Fine at expected volume. If one job produced audit events at a high rate, the advisory lock would show up as latency. Writing audit events last in a transaction limits it. |
 | **The composite keys and triggers add write cost.** | Every ledger, outbox and audit insert checks several keys, and `jobs` has two indexes that start with `(tenant_id, id)`. Not measured. |
 | **`UNIQUE (tenant_id, body_sha256)` on deliveries** rests on an assumption about GitHub payloads. | See [constraints-and-indexes.md](constraints-and-indexes.md). |

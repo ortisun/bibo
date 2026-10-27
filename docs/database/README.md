@@ -3,7 +3,7 @@
 PostgreSQL is the source of truth for the factory's jobs, stage runs, attempts, leases, evidence, approvals and audit trail. This directory documents the first schema, how to run its migrations, and what its tests prove.
 
 - Status: baseline for Slice 0, work package `s0-database-baseline`. Not yet reviewed by the software architect or the security specialist.
-- Verified on 2026-10-27: nine migrations applied and reverted with Diesel 2.3.11; 505 checks in fourteen suites passed on PostgreSQL 18.6 (local cluster and Docker) and 16.15 (Docker).
+- Verified on 2026-10-27: nine migrations applied and reverted with Diesel 2.3.11; 510 checks in fourteen suites passed on PostgreSQL 18.6 (local cluster and Docker) and 16.15 (Docker).
 
 ## Where to start
 
