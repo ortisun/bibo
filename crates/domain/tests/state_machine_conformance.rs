@@ -582,6 +582,7 @@ fn sample_facts(kind: FactsKind) -> GuardFacts<'static> {
             stagnation_detected: false,
             budget_limit_reached: false,
             gate_is_a_human_gate: false,
+            defect_needs_a_person: false,
         }),
         FactsKind::Blocking => GuardFacts::Blocking(BlockingFacts {
             verdict_is_block: false,
@@ -602,6 +603,7 @@ fn sample_facts(kind: FactsKind) -> GuardFacts<'static> {
             decision_is_approve: true,
             principal_holds_required_role: true,
             evidence_digest_seen_equals_current: true,
+            translation_warnings_decided: true,
         }),
         FactsKind::HumanRework => GuardFacts::HumanRework(HumanReworkFacts {
             principal_roles: &[],
@@ -628,6 +630,7 @@ fn sample_facts(kind: FactsKind) -> GuardFacts<'static> {
         FactsKind::Supersede => GuardFacts::Supersede(SupersedeFacts {
             consumed_artifact_superseded_by_newer_version: true,
             upstream_stage_run_was_reworked: false,
+            external_change_recorded: false,
         }),
         FactsKind::SandboxProvision => GuardFacts::SandboxProvision(SandboxProvisionFacts {
             sandbox_started_within_limits: true,

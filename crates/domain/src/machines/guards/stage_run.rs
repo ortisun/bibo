@@ -430,6 +430,10 @@ pub struct NeedsHumanFacts {
     pub budget_limit_reached: bool,
     /// The gate itself is a human gate.
     pub gate_is_a_human_gate: bool,
+    /// A finding that justifies the verdict has a defect class that only a person can decide
+    /// (`specification`, or `policy`), at a stage whose defect routing sends that class to a
+    /// person (`pipeline.defect_routing` in the file).
+    pub defect_needs_a_person: bool,
 }
 
 /// `G_NEEDS_HUMAN_VERDICT`.
@@ -448,6 +452,10 @@ pub fn needs_human_verdict(facts: &NeedsHumanFacts) -> GuardResult {
                 facts.gate_is_a_human_gate,
                 "the gate itself is a human gate",
             ),
+            (
+                facts.defect_needs_a_person,
+                "a finding has a defect class that only a person can decide",
+            ),
         ],
     )
 }
@@ -459,7 +467,10 @@ pub struct BlockingFacts {
     pub verdict_is_block: bool,
     /// A mandatory gate could not run (a tool was unavailable or a probe failed).
     pub mandatory_gate_could_not_run: bool,
-    /// A policy violation was detected.
+    /// A policy violation was detected by a deterministic check. A reviewer's finding with the
+    /// defect class `policy` is not one: it asks a person (`G_NEEDS_HUMAN_VERDICT`, `S10`),
+    /// because a reviewer's opinion can be wrong and a block with nobody asked is worse than a
+    /// question (ADR 0010 decision 3).
     pub policy_violation_detected: bool,
 }
 
@@ -552,6 +563,9 @@ pub struct ApprovalFacts {
     pub principal_holds_required_role: bool,
     /// The evidence digest the human saw equals the current evidence digest.
     pub evidence_digest_seen_equals_current: bool,
+    /// Every open warning of the rule `translation-unfaithful` in the gate reports of that
+    /// evidence has a recorded human decision. True when there is no such warning.
+    pub translation_warnings_decided: bool,
 }
 
 /// `G_APPROVER_AUTHORIZED`.
@@ -568,6 +582,10 @@ pub fn approver_authorized(facts: &ApprovalFacts) -> GuardResult {
         .require(
             facts.evidence_digest_seen_equals_current,
             "the evidence digest the human saw is not the current digest",
+        )
+        .require(
+            facts.translation_warnings_decided,
+            "a translation-unfaithful warning in the gate reports has no recorded human decision",
         )
         .finish()
 }
@@ -718,6 +736,9 @@ pub struct SupersedeFacts {
     pub consumed_artifact_superseded_by_newer_version: bool,
     /// An upstream stage run was reworked.
     pub upstream_stage_run_was_reworked: bool,
+    /// An external change listed in the invalidation table happened: the source request was
+    /// edited after the intake snapshot, or a value bound to gate evidence changed.
+    pub external_change_recorded: bool,
 }
 
 /// `G_UPSTREAM_INVALIDATED`.
@@ -735,6 +756,10 @@ pub fn upstream_invalidated(facts: &SupersedeFacts) -> GuardResult {
             (
                 facts.upstream_stage_run_was_reworked,
                 "an upstream stage run was reworked",
+            ),
+            (
+                facts.external_change_recorded,
+                "an external change listed in the invalidation table happened",
             ),
         ],
     )

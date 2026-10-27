@@ -255,6 +255,7 @@ impl NeedsHumanCause {
             stagnation_detected: false,
             budget_limit_reached: false,
             gate_is_a_human_gate: false,
+            defect_needs_a_person: false,
         };
         match self {
             NeedsHumanCause::ReworkLimit => NeedsHumanFacts {

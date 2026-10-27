@@ -88,15 +88,22 @@ string_enum! {
 }
 
 string_enum! {
-    /// Which stage a finding sends the work back to.
+    /// Used to route a `CHANGES_REQUIRED` verdict (`pipeline.defect_routing` in
+    /// `state-machine.json`, and [`machines::rework`](crate::machines::rework)).
+    ///
+    /// `code_behavior` goes to a new run of `IMPLEMENTATION` and `documentation` to `DOCUMENTING`,
+    /// as the route of the stage says. `specification` and `policy` are decisions for a person, so
+    /// the stage run waits for one, except that the stage that produces the specification reworks
+    /// its own artifact. When findings differ, `specification` wins over `policy`, `policy` over
+    /// `code_behavior` and `code_behavior` over `documentation`.
     pub enum DefectClass("defect class") {
         /// The code behaves wrongly. Goes back to implementation.
         CodeBehavior = "code_behavior",
         /// The documentation is wrong. Goes back to documenting.
         Documentation = "documentation",
-        /// The specification is wrong.
+        /// The specification is wrong. A person decides.
         Specification = "specification",
-        /// A policy is broken.
+        /// A policy is broken. A person decides.
         Policy = "policy",
     }
 }

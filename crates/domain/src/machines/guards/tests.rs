@@ -1132,6 +1132,7 @@ fn a_human_is_asked_at_a_gate_when_any_one_reason_applies() {
         stagnation_detected: false,
         budget_limit_reached: false,
         gate_is_a_human_gate: false,
+        defect_needs_a_person: false,
     };
     assert!(stage_run::needs_human_verdict(&none).is_err());
     for facts in [
@@ -1155,9 +1156,40 @@ fn a_human_is_asked_at_a_gate_when_any_one_reason_applies() {
             gate_is_a_human_gate: true,
             ..none
         },
+        NeedsHumanFacts {
+            defect_needs_a_person: true,
+            ..none
+        },
     ] {
         assert_holds(stage_run::needs_human_verdict(&facts));
     }
+}
+
+#[test]
+fn a_defect_only_a_person_can_decide_is_a_reason_of_its_own() {
+    // ADR 0010 decision 3: a `specification` or `policy` finding asks a person even when the
+    // rework cap has room, the findings are new and the budget remains.
+    let only_the_defect = NeedsHumanFacts {
+        verdict_is_needs_human: false,
+        rework_limit_reached: false,
+        stagnation_detected: false,
+        budget_limit_reached: false,
+        gate_is_a_human_gate: false,
+        defect_needs_a_person: true,
+    };
+    assert_holds(stage_run::needs_human_verdict(&only_the_defect));
+    let failure = stage_run::needs_human_verdict(&NeedsHumanFacts {
+        defect_needs_a_person: false,
+        ..only_the_defect
+    })
+    .unwrap_err();
+    assert!(
+        failure
+            .unmet
+            .iter()
+            .any(|text| text.contains("only a person can decide")),
+        "the failure names the defect among the alternatives: {failure}"
+    );
 }
 
 #[test]
@@ -1266,6 +1298,7 @@ fn an_approval_needs_the_role_and_the_evidence_the_human_actually_saw() {
         decision_is_approve: true,
         principal_holds_required_role: true,
         evidence_digest_seen_equals_current: true,
+        translation_warnings_decided: true,
     };
     assert_holds(stage_run::approver_authorized(&facts));
     assert_unmet(
@@ -1288,6 +1321,34 @@ fn an_approval_needs_the_role_and_the_evidence_the_human_actually_saw() {
             ..facts
         }),
         "digest",
+    );
+}
+
+#[test]
+fn an_approval_needs_a_decision_for_every_open_translation_warning() {
+    let facts = ApprovalFacts {
+        decision_is_approve: true,
+        principal_holds_required_role: true,
+        evidence_digest_seen_equals_current: true,
+        translation_warnings_decided: true,
+    };
+    assert_holds(stage_run::approver_authorized(&facts));
+    assert_unmet(
+        stage_run::approver_authorized(&ApprovalFacts {
+            translation_warnings_decided: false,
+            ..facts
+        }),
+        "translation",
+    );
+    // The role and the digest do not make up for it.
+    assert!(
+        stage_run::approver_authorized(&ApprovalFacts {
+            translation_warnings_decided: false,
+            principal_holds_required_role: true,
+            evidence_digest_seen_equals_current: true,
+            decision_is_approve: true,
+        })
+        .is_err()
     );
 }
 
@@ -1442,6 +1503,7 @@ fn a_run_is_superseded_when_an_input_changed_or_an_upstream_run_was_reworked() {
     let neither = SupersedeFacts {
         consumed_artifact_superseded_by_newer_version: false,
         upstream_stage_run_was_reworked: false,
+        external_change_recorded: false,
     };
     assert!(stage_run::upstream_invalidated(&neither).is_err());
     assert_holds(stage_run::upstream_invalidated(&SupersedeFacts {
@@ -1450,6 +1512,12 @@ fn a_run_is_superseded_when_an_input_changed_or_an_upstream_run_was_reworked() {
     }));
     assert_holds(stage_run::upstream_invalidated(&SupersedeFacts {
         upstream_stage_run_was_reworked: true,
+        ..neither
+    }));
+    // An external change from the invalidation table: the request was edited, or a value bound
+    // to gate evidence changed.
+    assert_holds(stage_run::upstream_invalidated(&SupersedeFacts {
+        external_change_recorded: true,
         ..neither
     }));
 }
