@@ -96,7 +96,7 @@
           },
           "confidence": { "type": "number", "minimum": 0, "maximum": 1 },
           "proposed_next_action": { "enum": ["fix", "add_test", "clarify_specification", "escalate_to_human", "accept_risk"] },
-          "defect_class": { "enum": ["code_behavior", "documentation", "specification", "policy"], "description": "Used to route rework: documentation defects go back to DOCUMENTING, code_behavior goes to IMPLEMENTATION." }
+          "defect_class": { "enum": ["code_behavior", "documentation", "specification", "policy"], "description": "Used to route a CHANGES_REQUIRED verdict (state-machine.json, pipeline.defect_routing). code_behavior goes to a new run of IMPLEMENTATION and documentation to DOCUMENTING, as the stage's rework route says. specification and policy are decisions for a person, so the stage run waits for one. When findings differ, specification wins over policy, policy over code_behavior and code_behavior over documentation." }
         }
       }
     },

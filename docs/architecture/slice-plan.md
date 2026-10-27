@@ -1,6 +1,6 @@
 # Slice 0 and Slice 1 plan
 
-- Status: Slice 0 baseline. Nothing here is built.
+- Status: Slice 0 baseline, partly built. Eleven packages are merged on `feat/slice-0-foundation`. The plan was revised on 2026-10-27 after the implementers' findings: five packages were added (`s1-domain-revision`, `s1-database-tenancy-and-state-sync`, `s1-xtask-extensions`, `s1-ci-database-and-generated-checks`, `s1-telemetry-wiring`) and others were amended (ADR 0010 to 0013).
 - Date: 2026-10-27
 - Author: software_architect
 - Source of truth: [`work-packages.json`](work-packages.json). The tables, the dependency graph, the waves and the critical path below are generated from it by `docs/architecture/tools/check_work_packages.py`, which also checks that concurrent packages own disjoint paths, that the graph has no cycle, that the port lists agree, and that every P0 negative test has an owner. Do not edit text between the `GENERATED` markers by hand. The critical path is computed from relative sizes. It is not a schedule.
@@ -66,7 +66,7 @@ Consequently:
 |---|---|---|---|---|---|---|---|
 | Create the Cargo workspace and the architecture checks | `s0-workspace-skeleton` | 0 | software_engineer | M | 0 | none | yes |
 | Define identifiers, value types and contract types in the domain crate | `s0-domain-vocabulary` | 0 | software_engineer | L | 1 | `s0-workspace-skeleton` | yes |
-| Implement the four state machines exactly as the transition tables | `s0-state-machines` | 0 | software_engineer | L | 2 | `s0-domain-vocabulary` |  |
+| Implement the four state machines exactly as the transition tables | `s0-state-machines` | 0 | software_engineer | L | 2 | `s0-domain-vocabulary` | yes |
 | Define the port traits and the labelled fakes with shared contract tests | `s0-ports-and-testkit` | 0 | software_engineer | L | 2 | `s0-domain-vocabulary` | yes |
 | Validate contracts and load agent, profile, project and policy definitions | `s0-contracts-and-registry` | 0 | software_engineer | M | 3 | `s0-domain-vocabulary`, `s0-ports-and-testkit` |  |
 | Create the first PostgreSQL migrations and database tests | `s0-database-baseline` | 0 | dba | L | 1 | `s0-workspace-skeleton` |  |
@@ -77,35 +77,40 @@ Consequently:
 | Prove how the agent tools run inside the sandbox behind the broker | `s0-agent-runtime-spike` | 0 | software_engineer | M | 0 | none |  |
 | Build and pin the sandbox image for the fixture project | `s1-sandbox-images` | 1 | sre | M | 1 | `s0-workspace-skeleton` |  |
 | Implement the Docker sandbox supervisor and the posture verifier | `s1-sandbox-adapter` | 1 | software_engineer | L | 4 | `s0-ports-and-testkit`, `s1-sandbox-images`, `s1-security-test-harness`, `s1-redaction` | yes |
-| Implement the PostgreSQL store, the evidence ledger and the local artifact store | `s1-storage-postgres` | 1 | software_engineer | L | 3 | `s0-ports-and-testkit`, `s0-database-baseline` |  |
-| Build the durable workflow engine | `s1-engine-core` | 1 | software_engineer | XL | 3 | `s0-state-machines`, `s0-ports-and-testkit` |  |
-| Evaluate approval, tool grant, protected path and budget policy as pure rules | `s1-policy-evaluation` | 1 | software_engineer | L | 4 | `s0-state-machines`, `s0-security-baseline`, `s0-contracts-and-registry` |  |
+| Implement the PostgreSQL store, the evidence ledger and the local artifact store | `s1-storage-postgres` | 1 | software_engineer | L | 3 | `s0-ports-and-testkit`, `s0-database-baseline`, `s1-database-tenancy-and-state-sync` |  |
+| Build the durable workflow engine | `s1-engine-core` | 1 | software_engineer | XL | 4 | `s0-state-machines`, `s0-ports-and-testkit`, `s1-domain-revision` |  |
+| Evaluate approval, tool grant, protected path and budget policy as pure rules | `s1-policy-evaluation` | 1 | software_engineer | L | 4 | `s0-state-machines`, `s0-security-baseline`, `s0-contracts-and-registry`, `s1-domain-revision` | yes |
 | Implement the Claude Code and Codex adapters that run inside the sandbox | `s1-agent-runtime-adapters` | 1 | software_engineer | L | 5 | `s0-ports-and-testkit`, `s0-agent-runtime-spike`, `s1-sandbox-adapter` | yes |
 | Implement the GitHub App adapter for issues, narrowed tokens, draft pull requests and webhooks | `s1-github-adapter` | 1 | software_engineer | L | 4 | `s0-ports-and-testkit`, `s1-security-test-harness`, `s1-redaction` |  |
 | Write the agent manifests, prompts and the general-software profile | `s1-agent-definitions` | 1 | software_engineer | M | 4 | `s0-contracts-and-registry`, `s0-agent-runtime-spike` |  |
 | Write the documentation policy and the readability rubric with a test corpus | `s1-documentation-rubric` | 1 | documenter | S | 0 | none |  |
 | Build the human-readable artifact quality gate | `s1-readability-gate` | 1 | software_engineer | M | 2 | `s0-domain-vocabulary`, `s1-documentation-rubric` |  |
-| Build the Spec Kit adapter and the specification stage | `s1-spec-adapter-and-stage` | 1 | software_engineer | L | 6 | `s0-spec-kit-spike`, `s1-engine-core`, `s0-contracts-and-registry`, `s1-agent-definitions`, `s1-prompt-assembly`, `s1-policy-evaluation`, `s1-workspace-ingestion` |  |
+| Build the Spec Kit adapter and the specification stage | `s1-spec-adapter-and-stage` | 1 | software_engineer | L | 6 | `s0-spec-kit-spike`, `s1-engine-core`, `s0-contracts-and-registry`, `s1-agent-definitions`, `s1-prompt-assembly`, `s1-policy-evaluation`, `s1-workspace-ingestion` | yes |
 | Build the intake and repository context stages | `s1-stage-intake-and-repository` | 1 | software_engineer | M | 6 | `s1-engine-core`, `s1-sandbox-adapter`, `s1-workspace-ingestion`, `s1-agent-definitions`, `s1-readability-gate`, `s1-policy-evaluation`, `s1-prompt-assembly` |  |
 | Build the domain discovery, architecture and task planning stages | `s1-stage-architecture-and-planning` | 1 | software_engineer | L | 6 | `s1-engine-core`, `s1-agent-definitions`, `s0-contracts-and-registry`, `s1-readability-gate`, `s1-prompt-assembly` |  |
-| Build the documentation stages and the documentation quality gate | `s1-stage-documentation` | 1 | software_engineer | L | 6 | `s1-engine-core`, `s1-sandbox-adapter`, `s1-workspace-ingestion`, `s1-agent-definitions`, `s1-documentation-rubric`, `s1-readability-gate`, `s1-prompt-assembly` |  |
+| Build the documentation stages and the documentation quality gate | `s1-stage-documentation` | 1 | software_engineer | L | 6 | `s1-engine-core`, `s1-sandbox-adapter`, `s1-workspace-ingestion`, `s1-agent-definitions`, `s1-documentation-rubric`, `s1-readability-gate`, `s1-prompt-assembly` | yes |
 | Build the delivery and approval stages | `s1-stage-delivery-and-approval` | 1 | software_engineer | L | 5 | `s1-engine-core`, `s1-github-adapter`, `s1-readability-gate`, `s1-policy-evaluation`, `s1-redaction` |  |
-| Wire the API, worker and command line into runnable programs | `s1-apps-composition` | 1 | software_engineer | L | 7 | `s1-engine-core`, `s1-storage-postgres`, `s1-sandbox-adapter`, `s1-workspace-ingestion`, `s1-agent-runtime-adapters`, `s1-github-adapter`, `s1-egress-and-broker`, `s0-contracts-and-registry`, `s0-telemetry-baseline`, `s1-policy-evaluation`, `s1-spec-adapter-and-stage`, `s1-stage-intake-and-repository`, `s1-stage-architecture-and-planning`, `s1-stage-implementation-and-review`, `s1-trusted-gates-and-validation`, `s1-supply-chain-gates`, `s1-stage-documentation`, `s1-stage-delivery-and-approval`, `s1-agent-definitions`, `s1-security-test-harness` | yes |
+| Wire the API, worker and command line into runnable programs | `s1-apps-composition` | 1 | software_engineer | L | 7 | `s1-engine-core`, `s1-storage-postgres`, `s1-sandbox-adapter`, `s1-workspace-ingestion`, `s1-agent-runtime-adapters`, `s1-github-adapter`, `s1-egress-and-broker`, `s0-contracts-and-registry`, `s0-telemetry-baseline`, `s1-policy-evaluation`, `s1-spec-adapter-and-stage`, `s1-stage-intake-and-repository`, `s1-stage-architecture-and-planning`, `s1-stage-implementation-and-review`, `s1-trusted-gates-and-validation`, `s1-supply-chain-gates`, `s1-stage-documentation`, `s1-stage-delivery-and-approval`, `s1-agent-definitions`, `s1-security-test-harness`, `s1-telemetry-wiring` | yes |
 | Create the fixture repository and the end-to-end acceptance harness | `s1-fixture-and-e2e-harness` | 1 | qa | L | 1 | `s0-workspace-skeleton` |  |
-| Verify traces, metrics and correlation across a job | `s1-observability-instrumentation` | 1 | observability | M | 4 | `s0-telemetry-baseline`, `s1-engine-core` |  |
+| Verify traces, metrics and correlation across a job | `s1-observability-instrumentation` | 1 | observability | M | 5 | `s0-telemetry-baseline`, `s1-engine-core` |  |
 | Provide local Compose deployment, backup and restore | `s1-local-deployment` | 1 | sre | M | 2 | `s0-ci-pipeline`, `s1-sandbox-images` |  |
 | Review queries, indexes and retention against realistic data volumes | `s1-database-review` | 1 | dba | M | 4 | `s1-storage-postgres`, `s1-local-deployment` |  |
 | Test prompt injection, sandbox escape attempts and secret handling | `s1-security-review-and-tests` | 1 | security | L | 7 | `s0-security-baseline`, `s1-sandbox-adapter`, `s1-workspace-ingestion`, `s1-egress-and-broker`, `s1-github-adapter`, `s1-agent-runtime-adapters`, `s1-fixture-and-e2e-harness`, `s1-stage-intake-and-repository`, `s1-policy-evaluation`, `s1-redaction`, `s1-prompt-assembly`, `s1-trusted-gates-and-validation`, `s1-supply-chain-gates`, `s1-security-test-harness`, `s1-stage-implementation-and-review` | yes |
 | Run and record the Slice 1 end-to-end proof | `s1-end-to-end-run` | 1 | qa | M | 8 | `s1-apps-composition`, `s1-fixture-and-e2e-harness`, `s1-local-deployment`, `s1-observability-instrumentation`, `s1-security-review-and-tests` | yes |
 | Write the guides, reference, runbooks and the recorded walkthrough | `s1-docs-and-walkthrough` | 1 | documenter | L | 9 | `s1-end-to-end-run`, `s1-documentation-rubric`, `s1-database-review` | yes |
-| Build the host-side workspace, git hardening and output ingestion | `s1-workspace-ingestion` | 1 | software_engineer | L | 5 | `s0-ports-and-testkit`, `s1-security-test-harness`, `s1-policy-evaluation`, `s1-redaction` |  |
+| Build the host-side workspace, git hardening and output ingestion | `s1-workspace-ingestion` | 1 | software_engineer | L | 5 | `s0-ports-and-testkit`, `s1-security-test-harness`, `s1-policy-evaluation`, `s1-redaction` | yes |
 | Build the model broker and the per-job egress relay | `s1-egress-and-broker` | 1 | software_engineer | XL | 4 | `s0-ports-and-testkit`, `s1-security-test-harness`, `s1-redaction` |  |
 | Assemble prompts with a data envelope and hardened untrusted text | `s1-prompt-assembly` | 1 | software_engineer | M | 5 | `s0-contracts-and-registry`, `s1-policy-evaluation`, `s1-redaction` |  |
 | Redact secrets from every output the factory stores or sends | `s1-redaction` | 1 | software_engineer | M | 2 | `s0-domain-vocabulary`, `s0-security-baseline` |  |
 | Build the dependency and supply chain gates | `s1-supply-chain-gates` | 1 | software_engineer | M | 5 | `s1-engine-core`, `s1-policy-evaluation`, `s1-sandbox-adapter`, `s1-security-test-harness` |  |
 | Build the security test harness and the hostile fixtures | `s1-security-test-harness` | 1 | qa | L | 3 | `s0-ports-and-testkit` | yes |
-| Build the trusted gates and the validation stage | `s1-trusted-gates-and-validation` | 1 | software_engineer | L | 6 | `s1-engine-core`, `s1-sandbox-adapter`, `s1-workspace-ingestion`, `s1-policy-evaluation`, `s1-redaction` |  |
+| Build the trusted gates and the validation stage | `s1-trusted-gates-and-validation` | 1 | software_engineer | L | 6 | `s1-engine-core`, `s1-sandbox-adapter`, `s1-workspace-ingestion`, `s1-policy-evaluation`, `s1-redaction` | yes |
 | Build the implementation and review stages | `s1-stage-implementation-and-review` | 1 | software_engineer | L | 6 | `s1-engine-core`, `s1-sandbox-adapter`, `s1-workspace-ingestion`, `s1-agent-runtime-adapters`, `s1-agent-definitions`, `s1-policy-evaluation`, `s1-prompt-assembly` | yes |
+| Bring the domain crate in line with the revised state machine and contracts | `s1-domain-revision` | 1 | software_engineer | L | 3 | `s0-domain-vocabulary`, `s0-state-machines` | yes |
+| Add row-level security and bring the state tables in line with the revised state machine | `s1-database-tenancy-and-state-sync` | 1 | dba | L | 2 | `s0-database-baseline` |  |
+| Extend the architecture check with the repository-wide span name scan and the adapter allow lists | `s1-xtask-extensions` | 1 | software_engineer | M | 2 | `s0-workspace-skeleton`, `s0-telemetry-baseline` |  |
+| Move the local database to PostgreSQL 18 and test it, with the generated files, in CI | `s1-ci-database-and-generated-checks` | 1 | sre | M | 4 | `s0-ci-pipeline`, `s1-database-tenancy-and-state-sync`, `s1-domain-revision` |  |
+| Connect the real redactor to telemetry and add the job trace context | `s1-telemetry-wiring` | 1 | observability | M | 4 | `s0-telemetry-baseline`, `s1-redaction`, `s1-domain-revision` |  |
 <!-- GENERATED:end wp-summary -->
 
 ## 5. Parallel waves and the critical path
@@ -117,10 +122,10 @@ A wave is the earliest point at which a package can start, counting dependency h
 |---|---|---|
 | 0 | nothing | `s0-workspace-skeleton`, `s0-security-baseline`, `s0-agent-runtime-spike`, `s1-documentation-rubric` |
 | 1 | packages of wave 0 or earlier | `s0-domain-vocabulary`, `s0-database-baseline`, `s0-ci-pipeline`, `s0-telemetry-baseline`, `s0-spec-kit-spike`, `s1-sandbox-images`, `s1-fixture-and-e2e-harness` |
-| 2 | packages of wave 1 or earlier | `s0-state-machines`, `s0-ports-and-testkit`, `s1-readability-gate`, `s1-local-deployment`, `s1-redaction` |
-| 3 | packages of wave 2 or earlier | `s0-contracts-and-registry`, `s1-storage-postgres`, `s1-engine-core`, `s1-security-test-harness` |
-| 4 | packages of wave 3 or earlier | `s1-sandbox-adapter`, `s1-policy-evaluation`, `s1-github-adapter`, `s1-agent-definitions`, `s1-observability-instrumentation`, `s1-database-review`, `s1-egress-and-broker` |
-| 5 | packages of wave 4 or earlier | `s1-agent-runtime-adapters`, `s1-stage-delivery-and-approval`, `s1-workspace-ingestion`, `s1-prompt-assembly`, `s1-supply-chain-gates` |
+| 2 | packages of wave 1 or earlier | `s0-state-machines`, `s0-ports-and-testkit`, `s1-readability-gate`, `s1-local-deployment`, `s1-redaction`, `s1-database-tenancy-and-state-sync`, `s1-xtask-extensions` |
+| 3 | packages of wave 2 or earlier | `s0-contracts-and-registry`, `s1-storage-postgres`, `s1-security-test-harness`, `s1-domain-revision` |
+| 4 | packages of wave 3 or earlier | `s1-sandbox-adapter`, `s1-engine-core`, `s1-policy-evaluation`, `s1-github-adapter`, `s1-agent-definitions`, `s1-database-review`, `s1-egress-and-broker`, `s1-ci-database-and-generated-checks`, `s1-telemetry-wiring` |
+| 5 | packages of wave 4 or earlier | `s1-agent-runtime-adapters`, `s1-stage-delivery-and-approval`, `s1-observability-instrumentation`, `s1-workspace-ingestion`, `s1-prompt-assembly`, `s1-supply-chain-gates` |
 | 6 | packages of wave 5 or earlier | `s1-spec-adapter-and-stage`, `s1-stage-intake-and-repository`, `s1-stage-architecture-and-planning`, `s1-stage-documentation`, `s1-trusted-gates-and-validation`, `s1-stage-implementation-and-review` |
 | 7 | packages of wave 6 or earlier | `s1-apps-composition`, `s1-security-review-and-tests` |
 | 8 | packages of wave 7 or earlier | `s1-end-to-end-run` |
@@ -134,18 +139,18 @@ A wave is the earliest point at which a package can start, counting dependency h
 |---|---|---|---|
 | 1 | Create the Cargo workspace and the architecture checks (`s0-workspace-skeleton`) | M | 3 |
 | 2 | Define identifiers, value types and contract types in the domain crate (`s0-domain-vocabulary`) | L | 8 |
-| 3 | Define the port traits and the labelled fakes with shared contract tests (`s0-ports-and-testkit`) | L | 13 |
-| 4 | Build the security test harness and the hostile fixtures (`s1-security-test-harness`) | L | 18 |
-| 5 | Implement the Docker sandbox supervisor and the posture verifier (`s1-sandbox-adapter`) | L | 23 |
-| 6 | Implement the Claude Code and Codex adapters that run inside the sandbox (`s1-agent-runtime-adapters`) | L | 28 |
-| 7 | Build the implementation and review stages (`s1-stage-implementation-and-review`) | L | 33 |
+| 3 | Implement the four state machines exactly as the transition tables (`s0-state-machines`) | L | 13 |
+| 4 | Bring the domain crate in line with the revised state machine and contracts (`s1-domain-revision`) | L | 18 |
+| 5 | Evaluate approval, tool grant, protected path and budget policy as pure rules (`s1-policy-evaluation`) | L | 23 |
+| 6 | Build the host-side workspace, git hardening and output ingestion (`s1-workspace-ingestion`) | L | 28 |
+| 7 | Build the Spec Kit adapter and the specification stage (`s1-spec-adapter-and-stage`) | L | 33 |
 | 8 | Wire the API, worker and command line into runnable programs (`s1-apps-composition`) | L | 38 |
 | 9 | Run and record the Slice 1 end-to-end proof (`s1-end-to-end-run`) | M | 41 |
 | 10 | Write the guides, reference, runbooks and the recorded walkthrough (`s1-docs-and-walkthrough`) | L | 46 |
 
 Total relative weight along the longest chain: 46.
 
-Other packages with zero slack, because a second chain ties with the first. A delay in any of them delays the end: `s1-security-review-and-tests`.
+Other packages with zero slack, because a second chain ties with the first. A delay in any of them delays the end: `s0-ports-and-testkit`, `s1-sandbox-adapter`, `s1-agent-runtime-adapters`, `s1-stage-documentation`, `s1-security-review-and-tests`, `s1-security-test-harness`, `s1-trusted-gates-and-validation`, `s1-stage-implementation-and-review`.
 <!-- GENERATED:end critical-path -->
 
 How to read this: a zero-slack package is one whose delay delays the end. The chain runs through the skeleton, the domain, the ports and the fakes, the security test harness, the sandbox supervisor, the agent runtime adapters, the implementation and review stage, the composition roots, the end-to-end run and the documentation. Two observations follow from the computation, and both are plan choices that the lead can change.
@@ -160,46 +165,51 @@ The two spikes are not on the longest chain by weight, but a NO-GO re-plans the 
 |---|---|---|
 | `s0-workspace-skeleton` | 3 | 0 |
 | `s0-domain-vocabulary` | 8 | 0 |
+| `s0-state-machines` | 13 | 0 |
 | `s0-ports-and-testkit` | 13 | 0 |
 | `s1-security-test-harness` | 18 | 0 |
+| `s1-domain-revision` | 18 | 0 |
 | `s1-sandbox-adapter` | 23 | 0 |
+| `s1-policy-evaluation` | 23 | 0 |
 | `s1-agent-runtime-adapters` | 28 | 0 |
+| `s1-workspace-ingestion` | 28 | 0 |
+| `s1-spec-adapter-and-stage` | 33 | 0 |
+| `s1-stage-documentation` | 33 | 0 |
+| `s1-trusted-gates-and-validation` | 33 | 0 |
 | `s1-stage-implementation-and-review` | 33 | 0 |
 | `s1-apps-composition` | 38 | 0 |
 | `s1-security-review-and-tests` | 38 | 0 |
 | `s1-end-to-end-run` | 41 | 0 |
 | `s1-docs-and-walkthrough` | 46 | 0 |
 | `s0-contracts-and-registry` | 16 | 2 |
-| `s1-policy-evaluation` | 21 | 2 |
-| `s1-workspace-ingestion` | 26 | 2 |
-| `s1-spec-adapter-and-stage` | 31 | 2 |
-| `s1-stage-documentation` | 31 | 2 |
-| `s1-trusted-gates-and-validation` | 31 | 2 |
-| `s1-prompt-assembly` | 24 | 4 |
-| `s1-stage-intake-and-repository` | 29 | 4 |
-| `s1-stage-architecture-and-planning` | 29 | 4 |
-| `s0-state-machines` | 13 | 5 |
+| `s1-engine-core` | 26 | 2 |
+| `s1-prompt-assembly` | 26 | 2 |
+| `s1-stage-intake-and-repository` | 31 | 2 |
+| `s1-stage-architecture-and-planning` | 31 | 2 |
+| `s1-stage-delivery-and-approval` | 31 | 2 |
+| `s1-supply-chain-gates` | 29 | 4 |
 | `s1-github-adapter` | 23 | 5 |
-| `s1-stage-delivery-and-approval` | 28 | 5 |
 | `s1-redaction` | 11 | 7 |
-| `s1-engine-core` | 21 | 7 |
 | `s1-egress-and-broker` | 26 | 7 |
-| `s1-supply-chain-gates` | 26 | 7 |
 | `s1-agent-definitions` | 19 | 9 |
+| `s1-observability-instrumentation` | 29 | 9 |
 | `s0-security-baseline` | 3 | 12 |
 | `s1-sandbox-images` | 6 | 12 |
-| `s1-observability-instrumentation` | 24 | 14 |
+| `s1-telemetry-wiring` | 21 | 12 |
+| `s0-database-baseline` | 8 | 15 |
+| `s1-database-tenancy-and-state-sync` | 13 | 15 |
 | `s1-storage-postgres` | 18 | 15 |
 | `s1-readability-gate` | 11 | 17 |
 | `s0-agent-runtime-spike` | 3 | 20 |
-| `s0-database-baseline` | 8 | 20 |
 | `s1-database-review` | 21 | 20 |
 | `s0-spec-kit-spike` | 6 | 22 |
 | `s1-documentation-rubric` | 1 | 24 |
 | `s1-fixture-and-e2e-harness` | 8 | 25 |
-| `s0-telemetry-baseline` | 4 | 29 |
+| `s1-ci-database-and-generated-checks` | 21 | 25 |
+| `s0-telemetry-baseline` | 4 | 26 |
 | `s0-ci-pipeline` | 6 | 29 |
 | `s1-local-deployment` | 9 | 29 |
+| `s1-xtask-extensions` | 7 | 39 |
 <!-- GENERATED:end slack -->
 
 ### Dependency graph
@@ -254,6 +264,11 @@ flowchart LR
     s1_security_test_harness["s1-security-test-harness"]
     s1_trusted_gates_and_validation["s1-trusted-gates-and-validation"]
     s1_stage_implementation_and_review["s1-stage-implementation-and-review"]
+    s1_domain_revision["s1-domain-revision"]
+    s1_database_tenancy_and_state_sync["s1-database-tenancy-and-state-sync"]
+    s1_xtask_extensions["s1-xtask-extensions"]
+    s1_ci_database_and_generated_checks["s1-ci-database-and-generated-checks"]
+    s1_telemetry_wiring["s1-telemetry-wiring"]
   end
   s0_workspace_skeleton --> s0_domain_vocabulary
   s0_domain_vocabulary --> s0_state_machines
@@ -272,11 +287,14 @@ flowchart LR
   s1_redaction --> s1_sandbox_adapter
   s0_ports_and_testkit --> s1_storage_postgres
   s0_database_baseline --> s1_storage_postgres
+  s1_database_tenancy_and_state_sync --> s1_storage_postgres
   s0_state_machines --> s1_engine_core
   s0_ports_and_testkit --> s1_engine_core
+  s1_domain_revision --> s1_engine_core
   s0_state_machines --> s1_policy_evaluation
   s0_security_baseline --> s1_policy_evaluation
   s0_contracts_and_registry --> s1_policy_evaluation
+  s1_domain_revision --> s1_policy_evaluation
   s0_ports_and_testkit --> s1_agent_runtime_adapters
   s0_agent_runtime_spike --> s1_agent_runtime_adapters
   s1_sandbox_adapter --> s1_agent_runtime_adapters
@@ -338,6 +356,7 @@ flowchart LR
   s1_stage_delivery_and_approval --> s1_apps_composition
   s1_agent_definitions --> s1_apps_composition
   s1_security_test_harness --> s1_apps_composition
+  s1_telemetry_wiring --> s1_apps_composition
   s0_workspace_skeleton --> s1_fixture_and_e2e_harness
   s0_telemetry_baseline --> s1_observability_instrumentation
   s1_engine_core --> s1_observability_instrumentation
@@ -397,9 +416,20 @@ flowchart LR
   s1_agent_definitions --> s1_stage_implementation_and_review
   s1_policy_evaluation --> s1_stage_implementation_and_review
   s1_prompt_assembly --> s1_stage_implementation_and_review
+  s0_domain_vocabulary --> s1_domain_revision
+  s0_state_machines --> s1_domain_revision
+  s0_database_baseline --> s1_database_tenancy_and_state_sync
+  s0_workspace_skeleton --> s1_xtask_extensions
+  s0_telemetry_baseline --> s1_xtask_extensions
+  s0_ci_pipeline --> s1_ci_database_and_generated_checks
+  s1_database_tenancy_and_state_sync --> s1_ci_database_and_generated_checks
+  s1_domain_revision --> s1_ci_database_and_generated_checks
+  s0_telemetry_baseline --> s1_telemetry_wiring
+  s1_redaction --> s1_telemetry_wiring
+  s1_domain_revision --> s1_telemetry_wiring
   class s0_workspace_skeleton crit;
   class s0_domain_vocabulary crit;
-  class s0_state_machines norm;
+  class s0_state_machines crit;
   class s0_ports_and_testkit crit;
   class s0_contracts_and_registry norm;
   class s0_database_baseline norm;
@@ -412,16 +442,16 @@ flowchart LR
   class s1_sandbox_adapter crit;
   class s1_storage_postgres norm;
   class s1_engine_core norm;
-  class s1_policy_evaluation norm;
+  class s1_policy_evaluation crit;
   class s1_agent_runtime_adapters crit;
   class s1_github_adapter norm;
   class s1_agent_definitions norm;
   class s1_documentation_rubric norm;
   class s1_readability_gate norm;
-  class s1_spec_adapter_and_stage norm;
+  class s1_spec_adapter_and_stage crit;
   class s1_stage_intake_and_repository norm;
   class s1_stage_architecture_and_planning norm;
-  class s1_stage_documentation norm;
+  class s1_stage_documentation crit;
   class s1_stage_delivery_and_approval norm;
   class s1_apps_composition crit;
   class s1_fixture_and_e2e_harness norm;
@@ -431,14 +461,19 @@ flowchart LR
   class s1_security_review_and_tests crit;
   class s1_end_to_end_run crit;
   class s1_docs_and_walkthrough crit;
-  class s1_workspace_ingestion norm;
+  class s1_workspace_ingestion crit;
   class s1_egress_and_broker norm;
   class s1_prompt_assembly norm;
   class s1_redaction norm;
   class s1_supply_chain_gates norm;
   class s1_security_test_harness crit;
-  class s1_trusted_gates_and_validation norm;
+  class s1_trusted_gates_and_validation crit;
   class s1_stage_implementation_and_review crit;
+  class s1_domain_revision crit;
+  class s1_database_tenancy_and_state_sync norm;
+  class s1_xtask_extensions norm;
+  class s1_ci_database_and_generated_checks norm;
+  class s1_telemetry_wiring norm;
 ```
 <!-- GENERATED:end wp-graph -->
 
@@ -453,6 +488,7 @@ No two packages that can run at the same time own the same path. Paths outside t
 | `.claude/**` | Spec Kit specialist | outside this plan |  |
 | `.env.example` | `s0-ci-pipeline` | sre | 0 |
 | `.github/**` | `s0-ci-pipeline` | sre | 0 |
+| `.github/**` | `s1-ci-database-and-generated-checks` | sre | 1 |
 | `.gitignore` | lead | outside this plan |  |
 | `.specify/**` | Spec Kit specialist | outside this plan |  |
 | `Cargo.lock` | `s0-workspace-skeleton` | software_engineer | 0 |
@@ -468,16 +504,30 @@ No two packages that can run at the same time own the same path. Paths outside t
 | `crates/*/src/lib.rs` | `s0-workspace-skeleton` | software_engineer | 0 |
 | `crates/contracts/**` | `s0-contracts-and-registry` | software_engineer | 0 |
 | `crates/domain/**` | `s0-domain-vocabulary` | software_engineer | 0 |
+| `crates/domain/src/contracts/**` | `s1-domain-revision` | software_engineer | 1 |
+| `crates/domain/src/ledger.rs` | `s1-domain-revision` | software_engineer | 1 |
 | `crates/domain/src/machines/**` | `s0-state-machines` | software_engineer | 0 |
+| `crates/domain/src/machines/**` | `s1-domain-revision` | software_engineer | 1 |
 | `crates/domain/src/policy/**` | `s1-policy-evaluation` | software_engineer | 1 |
 | `crates/domain/src/redaction/**` | `s1-redaction` | software_engineer | 1 |
+| `crates/domain/src/state/**` | `s1-domain-revision` | software_engineer | 1 |
+| `crates/domain/src/values/**` | `s1-domain-revision` | software_engineer | 1 |
+| `crates/domain/tests/contract_examples.rs` | `s1-domain-revision` | software_engineer | 1 |
+| `crates/domain/tests/contract_rules.rs` | `s1-domain-revision` | software_engineer | 1 |
+| `crates/domain/tests/ledger_chain.rs` | `s1-domain-revision` | software_engineer | 1 |
 | `crates/domain/tests/policy.rs` | `s1-policy-evaluation` | software_engineer | 1 |
 | `crates/domain/tests/redaction.rs` | `s1-redaction` | software_engineer | 1 |
 | `crates/domain/tests/state_machine_conformance.rs` | `s0-state-machines` | software_engineer | 0 |
+| `crates/domain/tests/state_machine_conformance.rs` | `s1-domain-revision` | software_engineer | 1 |
 | `crates/domain/tests/state_machine_properties.rs` | `s0-state-machines` | software_engineer | 0 |
+| `crates/domain/tests/state_machine_properties.rs` | `s1-domain-revision` | software_engineer | 1 |
+| `crates/domain/tests/support/**` | `s1-domain-revision` | software_engineer | 1 |
+| `crates/domain/tests/tools/**` | `s1-domain-revision` | software_engineer | 1 |
+| `crates/domain/tests/values.rs` | `s1-domain-revision` | software_engineer | 1 |
 | `crates/egress/**` | `s1-egress-and-broker` | software_engineer | 1 |
 | `crates/github/**` | `s1-github-adapter` | software_engineer | 1 |
 | `crates/observability/**` | `s0-telemetry-baseline` | observability | 0 |
+| `crates/observability/**` | `s1-telemetry-wiring` | observability | 1 |
 | `crates/ports/**` | `s0-ports-and-testkit` | software_engineer | 0 |
 | `crates/runtime/**` | `s1-agent-runtime-adapters` | software_engineer | 1 |
 | `crates/sandbox/Cargo.toml` | `s1-sandbox-adapter` | software_engineer | 1 |
@@ -550,8 +600,10 @@ No two packages that can run at the same time own the same path. Paths outside t
 | `docs/architecture/**` | software_architect | outside this plan |  |
 | `docs/database/**` | `s0-database-baseline` | dba | 0 |
 | `docs/database/**` | `s1-database-review` | dba | 1 |
+| `docs/database/**` | `s1-database-tenancy-and-state-sync` | dba | 1 |
 | `docs/guides/**` | `s1-docs-and-walkthrough` | documenter | 1 |
 | `docs/observability/conventions.md` | `s0-telemetry-baseline` | observability | 0 |
+| `docs/observability/conventions.md` | `s1-telemetry-wiring` | observability | 1 |
 | `docs/observability/runbooks/**` | `s1-observability-instrumentation` | observability | 1 |
 | `docs/reference/**` | `s1-docs-and-walkthrough` | documenter | 1 |
 | `docs/reference/documentation-policy.md` | `s1-documentation-rubric` | documenter | 1 |
@@ -570,10 +622,12 @@ No two packages that can run at the same time own the same path. Paths outside t
 | `fixtures/repos/security/**` | `s1-security-test-harness` | qa | 1 |
 | `fixtures/repos/word-count/**` | `s1-fixture-and-e2e-harness` | qa | 1 |
 | `infra/compose/**` | `s0-ci-pipeline` | sre | 0 |
+| `infra/compose/**` | `s1-ci-database-and-generated-checks` | sre | 1 |
 | `infra/otel/**` | `s0-telemetry-baseline` | observability | 0 |
 | `infra/sandbox-images/**` | `s1-sandbox-images` | sre | 1 |
 | `migrations/**` | `s0-database-baseline` | dba | 0 |
 | `migrations/**` | `s1-database-review` | dba | 1 |
+| `migrations/**` | `s1-database-tenancy-and-state-sync` | dba | 1 |
 | `policies/**` | `s0-security-baseline` | security | 0 |
 | `profiles/**` | `s1-agent-definitions` | software_engineer | 1 |
 | `rust-toolchain.toml` | `s0-workspace-skeleton` | software_engineer | 0 |
@@ -582,7 +636,9 @@ No two packages that can run at the same time own the same path. Paths outside t
 | `scripts/backup.sh` | `s1-local-deployment` | sre | 1 |
 | `scripts/ci.sh` | `s0-ci-pipeline` | sre | 0 |
 | `scripts/ci/**` | `s0-ci-pipeline` | sre | 0 |
+| `scripts/ci/**` | `s1-ci-database-and-generated-checks` | sre | 1 |
 | `scripts/db-test.sh` | `s0-database-baseline` | dba | 0 |
+| `scripts/db-test.sh` | `s1-database-tenancy-and-state-sync` | dba | 1 |
 | `scripts/dev-up.sh` | `s0-ci-pipeline` | sre | 0 |
 | `scripts/docs-check.sh` | `s1-docs-and-walkthrough` | documenter | 1 |
 | `scripts/e2e.sh` | `s1-fixture-and-e2e-harness` | qa | 1 |
@@ -597,6 +653,7 @@ No two packages that can run at the same time own the same path. Paths outside t
 | `tests/security/**` | `s1-security-review-and-tests` | security | 1 |
 | `universal_agentic_software_factory_master_prompt.md` | lead | outside this plan |  |
 | `xtask/**` | `s0-workspace-skeleton` | software_engineer | 0 |
+| `xtask/**` | `s1-xtask-extensions` | software_engineer | 1 |
 <!-- GENERATED:end ownership-map -->
 
 ## 7. Ports
@@ -630,8 +687,14 @@ pub struct Versioned<T> { pub value: T, pub version: Version }
 #[async_trait]
 pub trait Store: Send + Sync {
     fn fidelity(&self) -> Fidelity;
+    /// Makes the transaction-local tenant setting before any other statement (ADR 0012).
     async fn begin(&self, scope: TenantScope) -> Result<Box<dyn Tx>, StoreError>;
+    /// Uses the system role's own connection pool (ADR 0012).
     async fn begin_system(&self, scope: SystemScope) -> Result<Box<dyn Tx>, StoreError>;
+    /// Before any tenant is known. A narrow SECURITY DEFINER function behind it (ADR 0012).
+    /// `None` for every miss reason, so the caller cannot tell which one it was.
+    async fn resolve_token(&self, hash: TokenHash, audience: Audience) -> Result<Option<ResolvedPrincipal>, StoreError>;
+    async fn resolve_installation(&self, installation: InstallationId) -> Result<Option<ResolvedRepository>, StoreError>;
     async fn schema_version(&self) -> Result<SchemaVersion, StoreError>;
 }
 
@@ -650,7 +713,7 @@ pub trait StageRunOps {
     async fn get_stage_run(&mut self, id: StageRunId) -> Result<Versioned<StageRun>, StoreError>;
     /// Compare and swap. `StoreError::Conflict` when `expected` is stale.
     async fn transition_stage_run(&mut self, id: StageRunId, expected: Version, t: AppliedTransition<StageRunStatus>) -> Result<Version, StoreError>;
-    /// System scope only. FOR UPDATE SKIP LOCKED. Increments the lease epoch.
+    /// System scope only. FOR NO KEY UPDATE SKIP LOCKED. Increments the lease epoch.
     async fn claim_ready(&mut self, worker: &WorkerId, limit: u32) -> Result<Vec<ClaimedWork>, StoreError>;
     async fn expired_leases(&mut self, limit: u32) -> Result<Vec<AttemptId>, StoreError>;
 }
@@ -997,7 +1060,7 @@ Done when:
 | Reviewers | software_architect |
 | Size | L (relative weight 5) |
 | Wave | 2 |
-| On the critical path | no |
+| On the critical path | yes |
 | Depends on | `s0-domain-vocabulary` |
 
 Write the Job, StageRun, Attempt and TaskNode transition functions as pure code, the named guard predicates, the invalidation rules, and the conformance and property tests that read state-machine.json. This package is test-first by construction: the conformance test is written before the functions.
@@ -1073,13 +1136,14 @@ Done when:
 | # | Check | How | Command or evidence |
 |---|---|---|---|
 | 1 | Every valid example validates and every invalid example is rejected at the path named in its .expect file. | test | `cargo nextest run -p factory-contracts --test schema_examples` |
-| 2 | Every keyword used by the schemas (if/then/else, dependentSchemas, contains, oneOf, not) behaves as in check-jsonschema, proven by the same examples. | test | `cargo nextest run -p factory-contracts --test schema_examples` |
-| 3 | A YAML parser is chosen from at least two maintained candidates, with serde_yaml excluded as deprecated, and the comparison is written down. | review | reviewer sign-off recorded in the pull request |
-| 4 | Loaders reject a manifest whose prompt hash does not match the prompt file, and name the file and field in the error. | test | `cargo nextest run -p factory-contracts loader_errors_name_file_and_field` |
-| 5 | The policy files in policies/ load without error. | test | `cargo nextest run -p factory-contracts --test policy_files` |
-| 6 | The schema suite still passes. | command | `schemas/validate.sh` |
-| 7 | Policy loading is strict: an unknown key, a wrong schema version, a duplicate key, an anchor, alias or merge key, a wrong type, an invalid regex or glob, and a missing default action each fail the load (NT-POL-03). Policy is read only from the protected configuration source, never from an environment path, a feature branch or the target repository (NT-POL-01). | test | `cargo nextest run -p factory-contracts negative_nt_pol_01 negative_nt_pol_03 st_06` |
-| 8 | Adapter output with an unknown field, wrong types, depth 10,000, a 10 MB body, invalid UTF-8 or a traversal path is rejected before any parse that could exhaust memory (NT-TOOL-09). | test | `cargo nextest run -p factory-contracts negative_nt_tool_09` |
+| 2 | The two YAML example files are loaded directly through the YAML loader, validated against their schemas, and equal to the JSON transcriptions that the domain crate tests: schemas/examples/domain-capability-profile/valid/quant-trading-from-master-prompt.yaml and schemas/examples/project-manifest/valid/word-count-fixture.yaml. The domain crate only reads the JSON transcriptions. | test | `cargo nextest run -p factory-contracts --test yaml_examples` |
+| 3 | Every keyword used by the schemas (if/then/else, dependentSchemas, contains, oneOf, not) behaves as in check-jsonschema, proven by the same examples. | test | `cargo nextest run -p factory-contracts --test schema_examples` |
+| 4 | A YAML parser is chosen from at least two maintained candidates, with serde_yaml excluded as deprecated, and the comparison is written down. | review | reviewer sign-off recorded in the pull request |
+| 5 | Loaders reject a manifest whose prompt hash does not match the prompt file, and name the file and field in the error. | test | `cargo nextest run -p factory-contracts loader_errors_name_file_and_field` |
+| 6 | The policy files in policies/ load without error. | test | `cargo nextest run -p factory-contracts --test policy_files` |
+| 7 | The schema suite still passes. | command | `schemas/validate.sh` |
+| 8 | Policy loading is strict: an unknown key, a wrong schema version, a duplicate key, an anchor, alias or merge key, a wrong type, an invalid regex or glob, and a missing default action each fail the load (NT-POL-03). Policy is read only from the protected configuration source, never from an environment path, a feature branch or the target repository (NT-POL-01). | test | `cargo nextest run -p factory-contracts negative_nt_pol_01 negative_nt_pol_03 st_06` |
+| 9 | Adapter output with an unknown field, wrong types, depth 10,000, a 10 MB body, invalid UTF-8 or a traversal path is rejected before any parse that could exhaust memory (NT-TOOL-09). | test | `cargo nextest run -p factory-contracts negative_nt_tool_09` |
 
 #### Create the first PostgreSQL migrations and database tests
 
@@ -1321,6 +1385,7 @@ Done when:
 | 7 | Process arguments and environments recorded by the spawn recorder contain no secret (NT-SEC-09, sandbox part). | test | `cargo nextest run -p factory-sandbox negative_nt_sec_09` |
 | 8 | No generated argument vector contains a denied flag, over randomly generated specifications, and nothing in the crate starts a shell (ST-03). | test | `cargo nextest run -p factory-sandbox denied_flags_are_never_emitted` |
 | 9 | The janitor removes labelled containers, networks and sidecars whose attempt is terminal. | test | `cargo nextest run -p factory-sandbox janitor_removes_orphans` |
+| 10 | Shell metacharacters in an argument run as literals, and a shell interpreter is denied (NT-TOOL-01, S part). Inside the agent sandbox the same payload runs as a non-root user without capabilities, writes only to the allowed mounts, and leaves no host marker (B part). Paths that leave the workspace, hidden paths and writes outside the writable mounts are refused (NT-TOOL-04, B part). Argument-injection commands run inside the sandbox without effect on evidence or the network (NT-TOOL-05, B part). | test | `cargo nextest run -p factory-sandbox negative_nt_tool_01 negative_nt_tool_04 negative_nt_tool_05` |
 
 #### Implement the PostgreSQL store, the evidence ledger and the local artifact store
 
@@ -1332,13 +1397,13 @@ Done when:
 | Size | L (relative weight 5) |
 | Wave | 3 |
 | On the critical path | no |
-| Depends on | `s0-ports-and-testkit`, `s0-database-baseline` |
+| Depends on | `s0-ports-and-testkit`, `s0-database-baseline`, `s1-database-tenancy-and-state-sync` |
 
-Implement Store and Tx over Diesel with diesel-async, claim and lease operations, outbox writes, the ledger with chain verification, and LocalFsArtifactStore. The shared contract suite from testkit runs against it.
+Implement Store and Tx over Diesel with diesel-async, claim and lease operations, outbox writes, the ledger with chain verification, and LocalFsArtifactStore. The shared contract suite from testkit runs against it. Follow the notes in docs/database/for-the-storage-crate.md and ADR 0012. Claims lock with FOR NO KEY UPDATE SKIP LOCKED. Store::begin makes the tenant setting as its first statement, the system scope uses its own role and pool, and the two lookups outside a transaction use the narrow functions. The isolation tests run as the application login. No database message or detail text ever reaches an API client.
 
 Owns: `crates/storage/Cargo.toml`, `crates/storage/clippy.toml`, `crates/storage/src/lib.rs`, `crates/storage/src/pg/**`, `crates/storage/src/artifact_fs/**`, `crates/storage/tests/**`
 
-Inputs: ADR 0001; ADR 0004; ADR 0007; ADR 0008; migrations/
+Inputs: ADR 0001; ADR 0004; ADR 0007; ADR 0008; ADR 0012; migrations/; docs/database/for-the-storage-crate.md; docs/database/ledger-and-audit.md (the hash vectors)
 
 Ports: defines none; implements `ArtifactStore`, `Store`, `Tx`; uses `Clock`.
 
@@ -1351,11 +1416,16 @@ Done when:
 | 3 | A zombie worker's write with an old lease epoch is rejected. | test | `cargo nextest run -p factory-storage stale_lease_epoch_is_fenced` |
 | 4 | A fault injected after the outbox insert rolls back the status change, the ledger entry and the outbox row together. | test | `cargo nextest run -p factory-storage transition_is_atomic` |
 | 5 | Every repository method refuses to return or change another tenant's rows. | test | `cargo nextest run -p factory-storage --test tenant_isolation` |
-| 6 | Concurrent appends to one job give a continuous, verifiable chain, and flipping one byte makes the verifier fail. | test | `cargo nextest run -p factory-storage --test ledger_chain` |
-| 7 | The artifact store is idempotent, verifies hashes on read, detects a corrupted blob and writes read-only files. | test | `cargo nextest run -p factory-storage --test artifact_fs` |
-| 8 | Lease expiry is judged by the database clock, shown with a skewed Clock. | test | `cargo nextest run -p factory-storage lease_expiry_uses_database_time` |
-| 9 | 100 interleavings of two workers claiming one job produce exactly one winner, and a renewal with a wrong owner or tenant is refused (NT-LSE-02). | test | `cargo nextest run -p factory-storage negative_nt_lse_02` |
-| 10 | The application role cannot UPDATE, DELETE, TRUNCATE or DROP the audit tables (NT-AUD-01), and the audit events carry actor, policy hash and correlation id. | test | `cargo nextest run -p factory-storage negative_nt_aud_01` |
+| 6 | Concurrent appends to one job give a continuous, verifiable chain. The test that flips one byte of a stored entry does it as the table owner with the ledger trigger disabled (ALTER TABLE ... DISABLE TRIGGER), and the verifier then fails. | test | `cargo nextest run -p factory-storage --test ledger_chain` |
+| 7 | The first append test reproduces the two published hash vectors of docs/database/ledger-and-audit.md, so the database check and the domain function agree. | test | `cargo nextest run -p factory-storage ledger_vectors_from_the_database_docs` |
+| 8 | The artifact store is idempotent, verifies hashes on read, detects a corrupted blob and writes read-only files. | test | `cargo nextest run -p factory-storage --test artifact_fs` |
+| 9 | Lease expiry is judged by the database clock, shown with a skewed Clock. | test | `cargo nextest run -p factory-storage lease_expiry_uses_database_time` |
+| 10 | 100 interleavings of two workers claiming one job produce exactly one winner, and a renewal with a wrong owner or tenant is refused (NT-LSE-02). | test | `cargo nextest run -p factory-storage negative_nt_lse_02` |
+| 11 | The application role cannot UPDATE, DELETE, TRUNCATE or DROP the audit tables (NT-AUD-01), and the audit events carry actor, policy hash and correlation id. | test | `cargo nextest run -p factory-storage negative_nt_aud_01` |
+| 12 | Claims use FOR NO KEY UPDATE SKIP LOCKED, shown by a ledger append that is not blocked while a claimer holds the stage run. | test | `cargo nextest run -p factory-storage claim_does_not_block_ledger_appends` |
+| 13 | Every tenant transaction makes the tenant setting first. Run as the application login with two tenants, a call for tenant A never reads or changes tenant B's rows and a call with no tenant sees nothing (NT-TEN-01, Rust part). The store refuses to become ready when its role can bypass row-level security or owns the tables. | test | `cargo nextest run -p factory-storage negative_nt_ten_01 refuses_a_role_that_bypasses_rls` |
+| 14 | The two lookups outside a transaction answer None for every miss reason, so a caller cannot tell an unknown token from an expired one. | test | `cargo nextest run -p factory-storage lookups_hide_the_reason` |
+| 15 | Every database error maps to the closed StoreError. The message and detail text of the database, which can name another tenant's key value, never reach a caller and are logged only after redaction. | test | `cargo nextest run -p factory-storage database_text_never_reaches_a_caller` |
 
 #### Build the durable workflow engine
 
@@ -1365,9 +1435,9 @@ Done when:
 | Owner role | software_engineer |
 | Reviewers | software_architect, dba |
 | Size | XL (relative weight 8) |
-| Wave | 3 |
+| Wave | 4 |
 | On the critical path | no |
-| Depends on | `s0-state-machines`, `s0-ports-and-testkit` |
+| Depends on | `s0-state-machines`, `s0-ports-and-testkit`, `s1-domain-revision` |
 
 Build admission, the claim loop, leases with heartbeats and the sweeper, attempt result handling with output validation, retry with back-off, the gate framework, rework routing, supersession, human decisions, bounds, the ledger and outbox writes, the StageHandler trait and registry, the job audit verifier, and the production-mode refusal of fake adapters. All of it runs first against the in-memory fakes. The skeleton pre-declares the module lines for every stage and gate directory, so the stage packages add code without editing the files this package owns. It also owns the audit event stream with actor, policy hash and correlation id, and the credential and budget hooks around each attempt (job token issue and revoke through ModelBroker).
 
@@ -1384,14 +1454,18 @@ Done when:
 | 1 | The engine scenario suite, written generically over Store, passes on the in-memory store with scripted fake stage handlers in test mode. | test | `cargo nextest run -p factory-workflow --test engine_scenarios` |
 | 2 | Each invariant INV-01 to INV-11 has a named test. | test | `cargo nextest run -p factory-workflow --test invariants` |
 | 3 | A runtime that always fails reaches WAITING_FOR_HUMAN within a bounded number of steps (INV-10). | test | `cargo nextest run -p factory-workflow bounded_failure_escalates` |
-| 4 | A rework after documentation supersedes the documentation runs, driven by the JSON invalidation table. | test | `cargo nextest run -p factory-workflow invalidation_follows_the_table` |
-| 5 | Dropping the engine mid-transaction and starting a new one resumes the job without loss or duplication. | test | `cargo nextest run -p factory-workflow restart_resumes_without_duplication` |
-| 6 | Production mode refuses to start with any fake adapter (INV-08). | test | `cargo nextest run -p factory-workflow production_mode_refuses_fakes` |
-| 7 | The audit verifier detects a broken chain, a fake entry in production, and a PASSED run without evidence. | test | `cargo nextest run -p factory-workflow --test audit` |
-| 8 | Store::begin_system is called only inside this crate. | command | `cargo xtask check-architecture` |
-| 9 | A stale worker that resumes after its lease was taken cannot push, comment, start a sandbox or change state (NT-LSE-01). | test | `cargo nextest run -p factory-workflow negative_nt_lse_01` |
-| 10 | Missing, blocked or stale gate evidence refuses promotion (NT-MRG-02), and a repeated failing action ends in WAITING_FOR_HUMAN after the stagnation window (NT-BUD-03). | test | `cargo nextest run -p factory-workflow negative_nt_mrg_02 negative_nt_bud_03` |
-| 11 | Every audit event type the policy requires is emitted with actor, policy hash and correlation id, shown by a scripted scenario per type (NT-AUD-03, engine part). | test | `cargo nextest run -p factory-workflow --test audit every_required_event_type` |
+| 4 | A human answer starts a new attempt window, so the failure after an answer retries before it escalates again, and the total stays bounded (ADR 0010). | test | `cargo nextest run -p factory-workflow human_answer_starts_a_new_window` |
+| 5 | A rework after documentation supersedes the documentation runs, driven by the JSON invalidation table. | test | `cargo nextest run -p factory-workflow invalidation_follows_the_table` |
+| 6 | An external change (the source request edited, or a value bound to gate evidence changed) supersedes exactly the runs the invalidation table lists, the first one included, cancels their active attempts and creates new runs. | test | `cargo nextest run -p factory-workflow external_changes_follow_the_table` |
+| 7 | A stage skipped by a recorded rule does not stall the pipeline or the completion of the job. | test | `cargo nextest run -p factory-workflow skipped_stage_does_not_stall_the_pipeline` |
+| 8 | Dropping the engine mid-transaction and starting a new one resumes the job without loss or duplication. | test | `cargo nextest run -p factory-workflow restart_resumes_without_duplication` |
+| 9 | Production mode refuses to start with any fake adapter (INV-08). | test | `cargo nextest run -p factory-workflow production_mode_refuses_fakes` |
+| 10 | The audit verifier detects a broken chain, a fake entry in production, and a PASSED run without evidence. | test | `cargo nextest run -p factory-workflow --test audit` |
+| 11 | Store::begin_system is called only inside this crate. | command | `cargo xtask check-architecture` |
+| 12 | A stale worker that resumes after its lease was taken cannot push, comment, start a sandbox or change state (NT-LSE-01). | test | `cargo nextest run -p factory-workflow negative_nt_lse_01` |
+| 13 | Missing, blocked or stale gate evidence refuses promotion (NT-MRG-02), and a repeated failing action ends in WAITING_FOR_HUMAN after the stagnation window (NT-BUD-03). | test | `cargo nextest run -p factory-workflow negative_nt_mrg_02 negative_nt_bud_03` |
+| 14 | Every audit event type the policy requires is emitted with actor, policy hash and correlation id, shown by a scripted scenario per type (NT-AUD-03, engine part). | test | `cargo nextest run -p factory-workflow --test audit every_required_event_type` |
+| 15 | Every outbox event carries the traceparent derived from its job id, and two engine instances working on one job produce events with one trace id (ADR 0013). | test | `cargo nextest run -p factory-workflow events_carry_the_job_traceparent` |
 
 #### Evaluate approval, tool grant, protected path and budget policy as pure rules
 
@@ -1402,8 +1476,8 @@ Done when:
 | Reviewers | security, software_architect |
 | Size | L (relative weight 5) |
 | Wave | 4 |
-| On the critical path | no |
-| Depends on | `s0-state-machines`, `s0-security-baseline`, `s0-contracts-and-registry` |
+| On the critical path | yes |
+| Depends on | `s0-state-machines`, `s0-security-baseline`, `s0-contracts-and-registry`, `s1-domain-revision` |
 
 Write the pure policy functions the guards need, with deny overrides, as policies/security.yaml specifies: requester allowlist, admission, autonomy level from the repository preflight, risk tier, tool grants as the intersection of manifest, policy and stage need, command classes, path normalization and protected-path matching, required approval role, override permission, new-dependency decisions, rework caps and budget checks. When the tests pass, flip policy.status in the policy file to enforced (its owner makes that edit).
 
@@ -1422,6 +1496,7 @@ Done when:
 | 5 | A granted tool set never exceeds the manifest's allowed tools, over generated inputs, and an unknown tool or path class is denied. | test | `cargo nextest run -p factory-domain grants_never_exceed_the_manifest` |
 | 6 | An override of a mandatory gate of an active profile is refused (INV-07), and a new direct dependency always needs a human (ADR 0009). | test | `cargo nextest run -p factory-domain override_and_dependency_rules` |
 | 7 | The rework cap in the policy file is at most two. A larger value fails the test (ADR 0009). | test | `cargo nextest run -p factory-domain rework_cap_matches_the_default` |
+| 8 | The structured-output repair cap in the policy file is at most two. A larger value fails the test (ADR 0010). | test | `cargo nextest run -p factory-domain repair_cap_matches_the_default` |
 
 #### Implement the Claude Code and Codex adapters that run inside the sandbox
 
@@ -1450,7 +1525,7 @@ Done when:
 | 1 | The probe turns recorded help text into the expected flag observations, and an unsupported version blocks the stage. | test | `cargo nextest run -p factory-runtime --test probe` |
 | 2 | Bypass flags are emitted only for a sandbox target whose posture check passed. For any other target the builder refuses. Only allow-listed flags appear, and the flag set differs per stage (the slash-command disable flag is absent for the specification stage). | test | `cargo nextest run -p factory-runtime argument_safety` |
 | 3 | Repository-resident agent configuration (hooks, environment blocks, MCP servers, instruction files) is never honored: the hostile fixture produces no marker file and no unexpected connection (NT-INJ-07). | test | `cargo nextest run -p factory-runtime negative_nt_inj_07` |
-| 4 | The environment of the spawned tool is fixed by the supervisor, and an env parameter or an LD_PRELOAD-style value from the agent has no effect (NT-TOOL-06). | test | `cargo nextest run -p factory-runtime negative_nt_tool_06` |
+| 4 | The environment of the spawned tool is fixed by the supervisor, and an env parameter or an LD_PRELOAD-style value from the agent has no effect. The created container has only allowlisted names in Config.Env, and the posture verifier rejects one created with LD_PRELOAD or RUSTFLAGS (NT-TOOL-06, S and B parts). | test | `cargo nextest run -p factory-runtime negative_nt_tool_06` |
 | 5 | A command that floods output, a command that sleeps past its timeout and background children started with setsid are bounded and the whole process group ends (NT-TOOL-07). | test | `cargo nextest run -p factory-runtime negative_nt_tool_07` |
 | 6 | Recorded real outputs parse into outcomes with usage, and malformed output maps to a typed error. | test | `cargo nextest run -p factory-runtime --test output_parsing` |
 | 7 | Provider outage, rate limit and missing credential map to the closed error set, using a scripted stand-in process labelled fake. | test | `cargo nextest run -p factory-runtime --test failure_mapping` |
@@ -1567,10 +1642,11 @@ Done when:
 | # | Check | How | Command or evidence |
 |---|---|---|---|
 | 1 | Every good example passes and every bad example fails with the rule id in its header. | test | `cargo nextest run -p factory-workflow --test readability` |
-| 2 | The gate never alters its input and reports warnings separately from blocking violations. | test | `cargo nextest run -p factory-workflow readability_never_edits_and_separates_severity` |
+| 2 | The gate never alters its input and reports warnings separately from blocking violations, in the warnings field of the gate report. A report with only warnings is PASSED with an empty failures list. | test | `cargo nextest run -p factory-workflow readability_never_edits_and_separates_severity` |
 | 3 | Metadata identifiers stay stable when a title is reworded. | test | `cargo nextest run -p factory-workflow ids_are_stable_when_titles_change` |
 | 4 | Non-English prose outside quotes and code is flagged, and quoted source text is not. | test | `cargo nextest run -p factory-workflow english_check_respects_quotes_and_code` |
 | 5 | Its reports validate against the gate-report schema. | test | `cargo nextest run -p factory-workflow readability_reports_match_the_schema` |
+| 6 | A repository's disabled_readability_rules switches off title-type-tag and no other rule, and a rule that blocks stays on whatever the manifest says (ADR 0009 item 19). | test | `cargo nextest run -p factory-workflow readability_manifest_switches_off_only_warning_rules` |
 
 #### Build the Spec Kit adapter and the specification stage
 
@@ -1581,10 +1657,10 @@ Done when:
 | Reviewers | security, software_architect |
 | Size | L (relative weight 5) |
 | Wave | 6 |
-| On the critical path | no |
+| On the critical path | yes |
 | Depends on | `s0-spec-kit-spike`, `s1-engine-core`, `s0-contracts-and-registry`, `s1-agent-definitions`, `s1-prompt-assembly`, `s1-policy-evaluation`, `s1-workspace-ingestion` |
 
-Implement SpecKitProvider in the spec_adapter crate, the pure parser that turns Spec Kit files into a SpecificationContract, the specification stage handler and the deterministic gate with freeze and revision. Follows ADR 0006 and the spike verdict: invocation syntax read from integration.json, no init on an initialised repository, an explicit feature directory per job in its own worktree, the seven post-conditions after every skill, the question detector, the checklist pre-run, the revision method, and issue text kept out of the instruction channel.
+Implement SpecKitProvider in the spec_adapter crate, the pure parser that turns Spec Kit files into a SpecificationContract, the specification stage handler and the deterministic gate with freeze and revision. Follows ADR 0006 and the spike verdict: invocation syntax read from integration.json, no init on an initialised repository, an explicit feature directory per job in its own worktree, the seven post-conditions after every skill, the question detector, the checklist pre-run, the revision method, and issue text kept out of the instruction channel. The stage profile check is a gate of this stage and cannot be waived: a forbidden Spec Kit artifact after the run, or a denied skill in the event stream, makes it FAILED, the stage BLOCKED and the output discarded.
 
 Owns: `crates/spec_adapter/**`, `crates/workflow/src/stages/specification/**`, `crates/workflow/src/gates/spec/**`, `crates/workflow/tests/specification/**`
 
@@ -1601,12 +1677,13 @@ Done when:
 | 3 | A Spec Kit version different from the pinned one, an integration status other than ok, a modified installed file or a present extensions file blocks the stage. The adapter never runs init on an initialised repository. | test | `cargo nextest run -p factory-spec-adapter integrity_blocks_the_stage` |
 | 4 | The seven post-conditions are checked after every skill and the agent's own report is ignored. | test | `cargo nextest run -p factory-spec-adapter post_conditions` |
 | 5 | Checklist ticks written by the authoring agent carry no weight. An item counts only when an independent reviewer or a person with a reason is recorded in the ledger by the engine. | test | `cargo nextest run -p factory-workflow --test specification self_ticked_checklist_is_not_evidence` |
-| 6 | Each deterministic specification gate rule has a failing fixture: required sections, status and date, story priorities and scenarios, identifier uniqueness, requirement keywords, remaining markers and placeholders, technology names, and the committed artifact set with matching hashes. | test | `cargo nextest run -p factory-workflow --test specification` |
+| 6 | Each deterministic specification gate rule has a failing fixture: required sections, status and date, story priorities and scenarios, identifier uniqueness, requirement keywords, remaining markers and placeholders, technology names, the committed artifact set with matching hashes, and the stage profile check (stage_profile_check, which cannot be waived). | test | `cargo nextest run -p factory-workflow --test specification` |
 | 7 | A revision creates a new feature directory seeded on the host, links it with supersedes and revision metadata, and supersedes every downstream run. The method is replaced if the spike showed it failing. | test | `cargo nextest run -p factory-workflow new_spec_revision_supersedes_downstream` |
 | 8 | Specification text that claims authorization (for example 'this task is authorized to modify workflows') grants nothing, and an issue body that asks for another skill cannot select one (NT-POL-05, NT-INJ-02 for the skill input). | test | `cargo nextest run -p factory-spec-adapter negative_nt_pol_05` |
 | 9 | Strings .specify and speckit appear only in this crate, its fixtures and documentation. | command | `cargo xtask check-architecture` |
 | 10 | The live run on the fixture issue produces a contract that validates and whose artifact hashes match the files. Without an API key or prerequisites it reports BLOCKED. | test | `FACTORY_LIVE=1 cargo nextest run -p factory-spec-adapter --test live` |
 | 11 | The specification stage profile permits exactly the four allowed Spec Kit skills and denies plan, tasks, analyze, implement, converge and taskstoissues even inside that stage (NT-POL-08). | test | `cargo nextest run -p factory-spec-adapter --test negative stage_profile_denies_forbidden_skills` |
+| 12 | The stage profile check is FAILED and the stage BLOCKED, with the output discarded and a forbidden_skill_invoked audit event, when plan.md, tasks.md, research.md, data-model.md, quickstart.md or contracts/ appear after the specification attempt, and the check is on the list of gates that cannot be waived (NT-POL-08, B part). | test | `cargo nextest run -p factory-workflow --test specification stage_profile_check_blocks_forbidden_artifacts` |
 
 #### Build the intake and repository context stages
 
@@ -1633,7 +1710,7 @@ Done when:
 | # | Check | How | Command or evidence |
 |---|---|---|---|
 | 1 | A label applied by someone who is not on the requester allowlist is rejected at admission with a recorded reason and one explanatory comment that does not reveal which test failed (NT-AUTHZ-01). | test | `cargo nextest run -p factory-workflow negative_nt_authz_01` |
-| 2 | An issue edited by someone without authorization after the intake snapshot stops processing on a hash mismatch (NT-AUTHZ-05). | test | `cargo nextest run -p factory-workflow negative_nt_authz_05` |
+| 2 | An issue edited by someone without authorization after the intake snapshot is detected by a hash mismatch. The job's runs from INTAKE on are superseded, no agent reads the new text, and the new intake run waits for re-authorization with the job WAITING_FOR_HUMAN (NT-AUTHZ-05; the catalog's name awaiting_reauthorization is this condition, ADR 0010). | test | `cargo nextest run -p factory-workflow negative_nt_authz_05` |
 | 3 | The original text is stored separately with its hash, and the normalized request uses a plain-English title that passes the readability gate. | test | `cargo nextest run -p factory-workflow --test intake_repo original_and_normalized_are_separate` |
 | 4 | An issue that contains instructions cannot change the tools granted to any stage. | test | `cargo nextest run -p factory-workflow --test intake_repo issue_text_cannot_change_grants` |
 | 5 | The context builder excludes .env files, private keys, tokens in the README and secret-bearing configuration (NT-SEC-07). | test | `cargo nextest run -p factory-workflow negative_nt_sec_07` |
@@ -1679,7 +1756,7 @@ Done when:
 | Reviewers | documenter, software_architect |
 | Size | L (relative weight 5) |
 | Wave | 6 |
-| On the critical path | no |
+| On the critical path | yes |
 | Depends on | `s1-engine-core`, `s1-sandbox-adapter`, `s1-workspace-ingestion`, `s1-agent-definitions`, `s1-documentation-rubric`, `s1-readability-gate`, `s1-prompt-assembly` |
 
 Derive the minimal documentation set from the change, write it, and check it with the Documentation Quality Gate: links, executed snippets, command references against real help output, diagram syntax, required-page coverage, readability, secrets, changelog. The gate distinguishes NOT_APPLICABLE, BLOCKED, FAILED and PASSED. This package also defines the documentation plan schema through a pull request to schemas/ with architect review.
@@ -1699,7 +1776,8 @@ Done when:
 | 3 | Each check has a failing fixture: broken link, snippet whose output differs, command that does not exist, bad diagram, missing required page, secret in text, missing changelog. | test | `cargo nextest run -p factory-workflow --test documentation gate_checks` |
 | 4 | When diagrams exist and the diagram parser is absent the result is BLOCKED, and when nothing applies it is NOT_APPLICABLE with a reason. Absence is never PASSED. | test | `cargo nextest run -p factory-workflow --test documentation absence_is_never_a_pass` |
 | 5 | The documentation reviewer's input excludes the writer's self-assessment. | test | `cargo nextest run -p factory-workflow --test documentation reviewer_independence` |
-| 6 | Defects route by defect class: documentation back to DOCUMENTING, code behavior back to IMPLEMENTATION. | test | `cargo nextest run -p factory-workflow --test documentation defects_route_by_class` |
+| 6 | Defects route by defect class: documentation back to DOCUMENTING, code behavior back to IMPLEMENTATION, and specification or policy to a person. A deterministic failure of the documentation gate counts as a documentation defect (ADR 0010). | test | `cargo nextest run -p factory-workflow --test documentation defects_route_by_class` |
+| 7 | External links are not fetched. The report says how many it did not check and never calls one valid, and internal links and anchors are checked (ADR 0009 item 18). | test | `cargo nextest run -p factory-workflow --test documentation external_links_are_not_reported_valid` |
 
 #### Build the delivery and approval stages
 
@@ -1734,6 +1812,9 @@ Done when:
 | 7 | A retry between push and opening the pull request, and duplicate comment posting, create no duplicate (NT-LSE-03). | test | `cargo nextest run -p factory-workflow negative_nt_lse_03` |
 | 8 | An approval with a stale evidence digest is rejected. | test | `cargo nextest run -p factory-workflow --test delivery stale_digest_is_rejected` |
 | 9 | No code path merges or deploys. | command | `cargo xtask check-architecture` |
+| 10 | Before the branch is pushed and when an approval is recorded, the base commit, the gate definition hash, the policy hash and the image digest are compared with the evidence manifest, and a difference supersedes the validation, review, documentation review, delivery and approval runs (ADR 0010). | test | `cargo nextest run -p factory-workflow --test delivery evidence_binding_is_rechecked` |
+| 11 | An approval is refused while a translation-unfaithful warning in the evidence has no recorded human decision (ADR 0009 item 17). | test | `cargo nextest run -p factory-workflow --test delivery translation_warnings_need_a_decision` |
+| 12 | A person can send rework from a waiting or blocked stage only to the targets of the human rework table, and the cap of two rounds applies to each count. | test | `cargo nextest run -p factory-workflow --test delivery human_rework_targets` |
 
 #### Wire the API, worker and command line into runnable programs
 
@@ -1745,7 +1826,7 @@ Done when:
 | Size | L (relative weight 5) |
 | Wave | 7 |
 | On the critical path | yes |
-| Depends on | `s1-engine-core`, `s1-storage-postgres`, `s1-sandbox-adapter`, `s1-workspace-ingestion`, `s1-agent-runtime-adapters`, `s1-github-adapter`, `s1-egress-and-broker`, `s0-contracts-and-registry`, `s0-telemetry-baseline`, `s1-policy-evaluation`, `s1-spec-adapter-and-stage`, `s1-stage-intake-and-repository`, `s1-stage-architecture-and-planning`, `s1-stage-implementation-and-review`, `s1-trusted-gates-and-validation`, `s1-supply-chain-gates`, `s1-stage-documentation`, `s1-stage-delivery-and-approval`, `s1-agent-definitions`, `s1-security-test-harness` |
+| Depends on | `s1-engine-core`, `s1-storage-postgres`, `s1-sandbox-adapter`, `s1-workspace-ingestion`, `s1-agent-runtime-adapters`, `s1-github-adapter`, `s1-egress-and-broker`, `s0-contracts-and-registry`, `s0-telemetry-baseline`, `s1-policy-evaluation`, `s1-spec-adapter-and-stage`, `s1-stage-intake-and-repository`, `s1-stage-architecture-and-planning`, `s1-stage-implementation-and-review`, `s1-trusted-gates-and-validation`, `s1-supply-chain-gates`, `s1-stage-documentation`, `s1-stage-delivery-and-approval`, `s1-agent-definitions`, `s1-security-test-harness`, `s1-telemetry-wiring` |
 
 Write the composition roots: configuration, adapter selection by profile, the HTTP API with webhook verification and token authentication, the worker loop that also hosts the model broker listener, the operator CLI including a probe command, the egress sidecar binary entry point, health endpoints, and the contract-first OpenAPI file. The production profile refuses fakes. API tokens are opaque, stored hashed, with expiry, audience and revocation, so there is no JWT to attack.
 
@@ -1770,6 +1851,8 @@ Done when:
 | 9 | Missing, expired, wrong-audience, JWT-with-no-algorithm and logged-out tokens each give a bare 401 (NT-WEB-05). | test | `cargo nextest run -p factory-api negative_nt_web_05` |
 | 10 | Tenant A asking for tenant B's job, artifact or log ids, including sequential guesses, gets the same 404 with similar timing (NT-TEN-05). | test | `cargo nextest run -p factory-api negative_nt_ten_05` |
 | 11 | A webhook for an unknown installation or a transferred repository is dropped and audited (NT-AUTHZ-08). | test | `cargo nextest run -p factory-api negative_nt_authz_08` |
+| 12 | Every binary builds the redactor from the loaded policy and the registry of the factory's secret values and passes it to the telemetry setup. The worker and the API run each stretch of work on a job inside a factory.job span with the derived trace context. | test | `cargo nextest run -p factory-worker telemetry_gets_the_real_redactor job_work_runs_in_a_job_span` |
+| 13 | The worker holds two connection pools with two different login roles, one for tenant transactions and one for the system scope, and the configuration is refused if both name the same role (ADR 0012). | test | `cargo nextest run -p factory-worker two_pools_two_roles` |
 
 #### Create the fixture repository and the end-to-end acceptance harness
 
@@ -1807,7 +1890,7 @@ Done when:
 | Owner role | observability |
 | Reviewers | software_architect |
 | Size | M (relative weight 3) |
-| Wave | 4 |
+| Wave | 5 |
 | On the critical path | no |
 | Depends on | `s0-telemetry-baseline`, `s1-engine-core` |
 
@@ -1825,6 +1908,7 @@ Done when:
 | 2 | Every registered stage handler produces a span. | test | `cargo nextest run --test every_handler_has_a_span` |
 | 3 | The correlation id appears on all log lines and events of a job. | test | `cargo nextest run --test correlation_id_everywhere` |
 | 4 | The metric names for queue depth, duration, gate failures, retries and spend exist in the registry. | test | `cargo nextest run --test metric_names` |
+| 5 | Two engine instances that work on one job, one after the other, produce spans with one trace id (ADR 0013). | test | `cargo nextest run --test one_trace_across_restarts` |
 
 #### Provide local Compose deployment, backup and restore
 
@@ -1865,7 +1949,7 @@ Done when:
 | On the critical path | no |
 | Depends on | `s1-storage-postgres`, `s1-local-deployment` |
 
-Measure the hot queries at 100,000 rows, propose retention and partitioning for the outbox, ledger and artifact metadata, check that version N-1 code runs on version N schema, and draft the row-level security proposal for Slice 4.
+Measure the hot queries at 100,000 rows with row-level security on, propose retention and partitioning for the outbox, ledger and artifact metadata, and check that version N-1 code runs on version N schema.
 
 Owns: `docs/database/**`, `migrations/**`
 
@@ -1878,7 +1962,7 @@ Done when:
 | 1 | Plans for claim, sweep, timeline and ledger tail at 100,000 rows are recorded, and none uses a sequential scan on the claim path. | command | `scripts/db-test.sh plans --rows 100000` |
 | 2 | Retention and partitioning proposals exist for the outbox, ledger and artifact metadata. | review | reviewer sign-off recorded in the pull request |
 | 3 | Each migration added in Slice 1 works with the previous code version. | command | `scripts/db-test.sh compat` |
-| 4 | A row-level security proposal is drafted as an ADR for Slice 4. | review | reviewer sign-off recorded in the pull request |
+| 4 | The cost of row-level security is measured at 100,000 rows (the extra statement per transaction, the claim and sweep plans) and recorded, and the result of each item ADR 0012 listed as not verified is in docs/database. | review | reviewer sign-off recorded in the pull request |
 
 #### Test prompt injection, sandbox escape attempts and secret handling
 
@@ -1902,7 +1986,7 @@ Done when:
 
 | # | Check | How | Command or evidence |
 |---|---|---|---|
-| 1 | With a runtime scripted to obey each injected instruction, policy still denies the effect, the protected path stays unchanged, there is no network and no secret read, shown by ledger and sandbox logs (NT-INJ-01, NT-INJ-03, NT-INJ-04). | test | `cargo nextest run -p factory-workflow negative_nt_inj_01 negative_nt_inj_03 negative_nt_inj_04` |
+| 1 | With a runtime scripted to obey each injected instruction, policy still denies the effect, the protected path stays unchanged, there is no network and no secret read, shown by ledger and sandbox logs (NT-INJ-01, NT-INJ-03). Tool-output injection (NT-INJ-04) has its B and S parts in full: every control-plane endpoint but the broker rejects the job token, no approval or grant appears, the posture at the end equals the posture at the start, and supervisor-run output sits in a data envelope. The C part is BLOCKED until s0-agent-runtime-spike has run. | test | `cargo nextest run -p factory-workflow negative_nt_inj_01 negative_nt_inj_03 negative_nt_inj_04` |
 | 2 | A full fixture job with canaries planted for every secret class leaves no canary in any sink (NT-SEC-01). | test | `cargo nextest run -p factory-workflow negative_nt_sec_01` |
 | 3 | Every audit event type the policy requires appears in a scripted scenario, none lacks an actor, policy hash and correlation id, and the coverage matrix lists the owner of each (NT-AUD-03). | test | `cargo nextest run -p factory-workflow negative_nt_aud_03` |
 | 4 | Every P0 test of the catalog maps to a work package and a crate in the work package source, and each test has a control-off variant that fails. | command | `python3 -I docs/architecture/tools/check_work_packages.py --check` |
@@ -1972,7 +2056,7 @@ Done when:
 | Reviewers | security, software_architect |
 | Size | L (relative weight 5) |
 | Wave | 5 |
-| On the critical path | no |
+| On the critical path | yes |
 | Depends on | `s0-ports-and-testkit`, `s1-security-test-harness`, `s1-policy-evaluation`, `s1-redaction` |
 
 Implement WorkspaceProvider and Workspace as sandbox-policy.md section 6 requires: a trusted bare mirror that is never mounted, a sparse detached worktree per job, a read-only /dev/null bound over .git, host-side version control with a fixed environment, protected-path overlays, and the ingestion pipeline (stop the container, no-follow audit walk, temporary-index tree diff, protected-path evaluation, gitlink and symlink rejection, secret scan, then commit). All reads of sandbox output go through one module.
@@ -2064,7 +2148,7 @@ Done when:
 | On the critical path | no |
 | Depends on | `s0-domain-vocabulary`, `s0-security-baseline` |
 
-Implement the pure redactor and secret check described in docs/security/secrets-and-credentials.md: an in-memory exact-value registry matched in raw, base64, hex, percent-encoded and JSON-escaped forms, the vendor patterns from the policy, and matching across chunk boundaries. Logs, artifacts, GitHub-bound text and traces all call it.
+Implement the pure redactor and secret check described in docs/security/secrets-and-credentials.md: an in-memory exact-value registry matched in raw, base64, hex, percent-encoded and JSON-escaped forms, the vendor patterns from the policy, and matching across chunk boundaries. Logs, artifacts, GitHub-bound text and traces all call it. The telemetry crate wraps this redactor (s1-telemetry-wiring), so it must be built from the loaded policy without I/O and be shared between threads.
 
 Owns: `crates/domain/src/redaction/**`, `crates/domain/tests/redaction.rs`
 
@@ -2077,6 +2161,7 @@ Done when:
 | 1 | A token split over two writes, ANSI codes between characters, encoded forms and zero-width characters do not evade redaction (NT-SEC-02). | test | `cargo nextest run -p factory-domain negative_nt_sec_02` |
 | 2 | The vendor patterns pass their positive and negative samples and compile with the regex crate dialect. | test | `cargo nextest run -p factory-domain --test redaction patterns` |
 | 3 | The redactor is pure: it makes no clock, file or network call. | command | `cargo clippy -p factory-domain -- -D warnings` |
+| 4 | The redactor is built from the policy's pattern list without any I/O, can be shared between threads, and its patterns are not a second copy of the policy. | test | `cargo nextest run -p factory-domain --test redaction redactor_is_built_from_the_policy_and_is_shareable` |
 
 #### Build the dependency and supply chain gates
 
@@ -2143,10 +2228,10 @@ Done when:
 | Reviewers | security, software_architect |
 | Size | L (relative weight 5) |
 | Wave | 6 |
-| On the critical path | no |
+| On the critical path | yes |
 | Depends on | `s1-engine-core`, `s1-sandbox-adapter`, `s1-workspace-ingestion`, `s1-policy-evaluation`, `s1-redaction` |
 
-Run validation in a fresh verify container from the commit, using gate definitions read from the protected base commit, never from the builder's branch. Evaluate the scope, protected-path, test-protection, secret and evidence-binding rules on the host-side tree diff. Missing evidence is BLOCKED. The supervisor's observation of the exit code is the evidence, not a file the builder could write.
+Run validation in a fresh verify container from the commit, using gate definitions read from the protected base commit, never from the builder's branch. Evaluate the scope, protected-path, test-protection, secret and evidence-binding rules on the host-side tree diff. Missing evidence is BLOCKED. The supervisor's observation of the exit code is the evidence, not a file the builder could write. The stage profile check belongs to the specification stage package, which owns the gate that runs after a specification attempt.
 
 Owns: `crates/workflow/src/stages/validation/**`, `crates/workflow/src/gates/command/**`, `crates/workflow/src/gates/scope/**`, `crates/workflow/tests/validation/**`
 
@@ -2196,6 +2281,158 @@ Done when:
 | 4 | A failed deterministic gate sends the work back to implementation with the reports, up to the cap of two rounds, then to a human. | test | `cargo nextest run -p factory-workflow --test implementation rework_is_capped_at_two` |
 | 5 | After a crash the next attempt resumes at the first task that is not SUCCEEDED. | test | `cargo nextest run -p factory-workflow --test implementation resume_after_crash` |
 | 6 | The agent tool runs only in the agent profile, and the builder refuses to run with any other target. | test | `cargo nextest run -p factory-workflow --test implementation agent_runs_only_in_the_sandbox` |
+
+#### Bring the domain crate in line with the revised state machine and contracts
+
+| Field | Value |
+|---|---|
+| Id | `s1-domain-revision` |
+| Owner role | software_engineer |
+| Reviewers | software_architect |
+| Size | L (relative weight 5) |
+| Wave | 3 |
+| On the critical path | yes |
+| Depends on | `s0-domain-vocabulary`, `s0-state-machines` |
+
+Make the Rust code of the domain crate follow the changes made to state-machine.json and the schemas on 2026-10-27 (ADR 0010, ADR 0011 and ADR 0013): the renamed retry guard and the repair cap, the attempt limit as an escalation condition, skipped stages that satisfy their dependants, the defect routing matrix and the human rework routes, three new invalidation rows, a timestamp that compares by instant, warnings in the gate report, the manifest field, the integer bounds and the derived trace context of a job. This package must land in the same branch as the JSON and schema changes, because the conformance and example tests of the domain crate fail until it does. docs/architecture/domain-revision-checklist.md maps every JSON change to the function and the test, and this package deletes that file when every row is true. It is test-first: the failing conformance run is the first commit.
+
+Owns: `crates/domain/src/machines/**`, `crates/domain/src/state/**`, `crates/domain/src/values/**`, `crates/domain/src/contracts/**`, `crates/domain/src/ledger.rs`, `crates/domain/tests/state_machine_conformance.rs`, `crates/domain/tests/state_machine_properties.rs`, `crates/domain/tests/contract_examples.rs`, `crates/domain/tests/contract_rules.rs`, `crates/domain/tests/ledger_chain.rs`, `crates/domain/tests/values.rs`, `crates/domain/tests/support/**`, `crates/domain/tests/tools/**`
+
+Inputs: docs/architecture/domain-revision-checklist.md; docs/architecture/state-machine.json; ADR 0010; ADR 0011; ADR 0013; schemas/
+
+Done when:
+
+| # | Check | How | Command or evidence |
+|---|---|---|---|
+| 1 | This package merges together with the changes to state-machine.json and the schemas, so no branch has a red conformance test. The reviewer checks the order of the commits: the failing run first, then the code. | review | reviewer sign-off recorded in the pull request |
+| 2 | The whole conformance file passes against the revised JSON, including the guard rename, the new edge of SKIPPED, the new actor of S13 and the eight invalidation rows. | test | `cargo nextest run -p factory-domain --test state_machine_conformance` |
+| 3 | The defect routing matrix and the human rework routes are tested cell by cell against the JSON, and a verdict with mixed defect classes picks the class by precedence. | test | `cargo nextest run -p factory-domain defect_routing_matches_json human_rework_routes_match_json mixed_defect_classes_follow_precedence` |
+| 4 | BUDGET_EXHAUSTED, an exhausted attempt limit and an exhausted repair cap choose S07 and never S06, over generated facts, and an attempt window restarts at a human answer. | test | `cargo nextest run -p factory-domain budget_and_attempt_limit_escalate repair_cap_is_at_most_two` |
+| 5 | A skipped run satisfies the upstream and the completion guards, is planned for supersession by an upstream change, and creates no assurance level. | test | `cargo nextest run -p factory-domain skipped_stage_satisfies_dependants skipped_stage_is_superseded` |
+| 6 | Timestamps with the same instant are equal, hash alike and order alike whatever their spelling, and the factory's own values have no trailing zero in the fraction. | test | `cargo nextest run -p factory-domain --test values timestamp_equality_ignores_spelling from_utc_is_the_shortest_spelling` |
+| 7 | The gate report has warnings, the project manifest has the disabled readability rules, and a BLOCKED or NOT_APPLICABLE report with warnings is refused. The generated example index is regenerated. | test | `python3 -I crates/domain/tests/tools/gen_example_index.py --check && cargo nextest run -p factory-domain --test contract_examples --test contract_rules` |
+| 8 | The integer limit of a ledger entry in the schema equals the limit the hash function enforces, and an out-of-range seed is refused when the value is built. | test | `cargo nextest run -p factory-domain schema_integer_maximum_equals_ledger_limit` |
+| 9 | The traceparent derived from a job id has the job's UUID as trace id, the documented span id and the sampled flag, and matches the W3C pattern. | test | `cargo nextest run -p factory-domain --test values traceparent_for_job` |
+| 10 | The state machine document, the schemas, the independent ledger oracle and the lints are still clean. | command | `python3 -I docs/architecture/tools/render_state_machine.py --check && schemas/validate.sh && python3 -I crates/domain/tests/oracle/ledger_chain_oracle.py --check && cargo clippy -p factory-domain --all-targets -- -D warnings` |
+| 11 | docs/architecture/domain-revision-checklist.md is deleted in the same pull request, with architect review, because every row is true. | review | reviewer sign-off recorded in the pull request |
+
+#### Add row-level security and bring the state tables in line with the revised state machine
+
+| Field | Value |
+|---|---|
+| Id | `s1-database-tenancy-and-state-sync` |
+| Owner role | dba |
+| Reviewers | software_architect, security |
+| Size | L (relative weight 5) |
+| Wave | 2 |
+| On the critical path | no |
+| Depends on | `s0-database-baseline` |
+
+Implement the design of ADR 0012 before the storage crate exists: row-level security on every tenant table with the transaction-local tenant setting and NULLIF, the group roles factory_app and factory_system with their own policies, the two narrow lookup functions for tokens and installations, and a catalog-driven rls suite with a control-off check. In the same package, add the migration that the revised state machine needs (the edge SKIPPED to SUPERSEDED, its terminal-row trigger and the reference rows) and bring the status and terminal-row suites in line. Rewrite docs/database/tenancy.md and add the recipe for setting the tenant to the storage notes. Record the result of each item that ADR 0012 lists as not verified.
+
+Owns: `migrations/**`, `docs/database/**`, `scripts/db-test.sh`
+
+Inputs: ADR 0007; ADR 0010; ADR 0012; docs/database/tenancy.md; docs/architecture/state-machine.json; policies/security.yaml tenancy; docs/security/negative-test-catalog.md NT-TEN-01
+
+Done when:
+
+| # | Check | How | Command or evidence |
+|---|---|---|---|
+| 1 | The status and terminal-row suites pass against the revised state-machine.json: the edge SKIPPED to SUPERSEDED exists in the reference rows and the terminal-row trigger allows it, and nothing else leaves a terminal state. | command | `scripts/db-test.sh statuses terminal_rows` |
+| 2 | The new rls suite finds every table with a tenant column from the catalog and shows that a session for tenant A cannot select, insert, update or delete tenant B's rows, that a session with no tenant sees nothing, and that a second transaction on a reused connection sees nothing and raises no error (NT-TEN-01, database part). | command | `scripts/db-test.sh rls` |
+| 3 | The rls suite checks the roles: no application role has BYPASSRLS, owns a table or is a superuser, and no login is a member of both factory_app and factory_system. Switching row-level security off on one table makes the suite fail, so the suite is not vacuous. | command | `scripts/db-test.sh rls` |
+| 4 | The two lookup functions return the tenant and principal for a valid token and the tenant and repository for an installation, return no row for every miss reason, are not executable by PUBLIC, and pin their search path. | command | `scripts/db-test.sh tokens rls` |
+| 5 | The claim, sweep, relay, webhook and approval suites still pass when run as the application and system roles under row-level security, and composite foreign keys still reject another tenant's parent. | command | `scripts/db-test.sh lease outbox webhook_delivery approvals tenancy` |
+| 6 | The claim and sweep plans still use their indexes with row-level security on, on 10,000 rows. | command | `scripts/db-test.sh plans` |
+| 7 | Migrations still run up, redo and up on an empty database, and the committed schema.rs equals the output of diesel print-schema. | command | `scripts/db-test.sh migrations` |
+| 8 | docs/database/tenancy.md, the storage notes and the not-covered page describe the design as built, and each item that ADR 0012 lists as not verified has a recorded result. | review | reviewer sign-off recorded in the pull request |
+
+#### Extend the architecture check with the repository-wide span name scan and the adapter allow lists
+
+| Field | Value |
+|---|---|
+| Id | `s1-xtask-extensions` |
+| Owner role | software_engineer |
+| Reviewers | software_architect, security |
+| Size | M (relative weight 3) |
+| Wave | 2 |
+| On the critical path | no |
+| Depends on | `s0-workspace-skeleton`, `s0-telemetry-baseline` |
+
+Add to the xtask architecture check: the repository-wide static check ST-07 that compares every span name, attribute key and metric field written in a tracing call with the tables of the observability conventions page (ADR 0013); the external crate and feature check for adapter crates, which today returns early so their allow lists are enforced by review only; and a structured source_scans section in docs/architecture/crate-dependency-rules.json that holds the lists the source scans use today as constants (shells, spawn permissions, dangerous container flags, ingestion paths, crate names), so that a reviewer changes them in one reviewed file. The structure of that section is proposed in the pull request and reviewed by the architect, who owns the file. The domain crate's uuid and time feature limits are already in the rules file; this package adds the failing fixtures for them.
+
+Owns: `xtask/**`
+
+Inputs: ADR 0002; ADR 0013; docs/architecture/crate-dependency-rules.json; docs/observability/conventions.md; docs/security/negative-test-catalog.md ST-07
+
+Done when:
+
+| # | Check | How | Command or evidence |
+|---|---|---|---|
+| 1 | ST-07 over the whole workspace has a failing fixture each for an unknown span name in a peer crate, an unknown factory. field, a metric recorded with the wrong kind and a label that is not listed for its metric. The tables are read from the conventions page. | test | `cargo nextest run -p xtask static_checks st_07` |
+| 2 | The check passes on the real workspace with ST-07 switched on. | command | `cargo xtask check-architecture` |
+| 3 | Adapter crates are checked for external crates and features against their allow lists. A fixture adapter with a crate that is not listed fails, and one that enables a tokio feature that is not listed fails. | test | `cargo nextest run -p xtask dependency_rules dep_04_adapters` |
+| 4 | The domain crate fails the check if it enables a uuid feature other than std or any feature of time, shown by one fixture for each. | test | `cargo nextest run -p xtask dependency_rules dep_04_domain_features` |
+| 5 | The source scans read their lists from the source_scans section of the rules file, a test fails if a list is still a constant in the xtask sources, and a named crate that does not exist fails the check. | test | `cargo nextest run -p xtask source_scans_come_from_the_rules_file` |
+| 6 | The architect reviews the structure of the source_scans section, and the rules file and its generated overview are in sync. | review | reviewer sign-off recorded in the pull request |
+| 7 | Lints and formatting are clean, and the rules checker still passes. | command | `cargo clippy -p xtask --all-targets -- -D warnings && python3 -I docs/architecture/tools/check_crate_rules.py --check` |
+
+#### Move the local database to PostgreSQL 18 and test it, with the generated files, in CI
+
+| Field | Value |
+|---|---|
+| Id | `s1-ci-database-and-generated-checks` |
+| Owner role | sre |
+| Reviewers | security |
+| Size | M (relative weight 3) |
+| Wave | 4 |
+| On the critical path | no |
+| Depends on | `s0-ci-pipeline`, `s1-database-tenancy-and-state-sync`, `s1-domain-revision` |
+
+Move the local Compose database from PostgreSQL 17 to PostgreSQL 18, pinned by digest (infra/compose/postgres.yml pins 17 today, while scripts/db-test.sh and ADR 0007 as revised use 18; the data directory of the 18 image is /var/lib/postgresql). Add step files under scripts/ci/steps.d/ that run scripts/db-test.sh against a postgres:18 service container with the diesel command line tool pinned to 2.3.11, and that run the two generated file checks: the example index (crates/domain/tests/tools/gen_example_index.py --check) and the ledger oracle fixture (crates/domain/tests/oracle/ledger_chain_oracle.py --check). The workflow already fails on any non-zero exit of scripts/ci.sh, which includes the exit code 3 that means BLOCKED (read in ci.yml on 2026-10-27). This package makes sure the database step cannot be BLOCKED in CI by giving it the service container, and proves that a missing database still fails the job. How the diesel tool is installed on the runner (it needs libpq) is not verified.
+
+Owns: `.github/**`, `scripts/ci/**`, `infra/compose/**`
+
+Inputs: scripts/ci.sh header (step file format); .github/workflows/ci.yml; scripts/db-test.sh; ADR 0007; ADR 0012; infra/compose/postgres.yml
+
+Done when:
+
+| # | Check | How | Command or evidence |
+|---|---|---|---|
+| 1 | The local Compose database runs PostgreSQL 18 pinned by digest, keeps its data in a named volume at the path the 18 image uses, and reports healthy. | command | `docker compose -f infra/compose/docker-compose.yml up -d --wait` |
+| 2 | A step file runs scripts/db-test.sh with the service container's admin URL and the pinned diesel tool, and all suites pass in CI. | command | `scripts/ci.sh --only db-tests` |
+| 3 | With no database available the database step ends with exit code 3, scripts/ci.sh exits 3, and the workflow step that runs it fails. BLOCKED is never a pass in CI. | test | `scripts/ci.sh --self-test-blocked` |
+| 4 | The example index and the ledger oracle fixture are checked as steps, and a stale file makes the step fail. | command | `scripts/ci.sh --only generated-files` |
+| 5 | The workflow still passes the pinning and policy checks: actions pinned to commit SHAs, no pull_request_target, read-only token. | command | `scripts/ci.sh --self-test-pinning` |
+| 6 | The security specialist reviews the new service container and the way the tool is installed. | review | reviewer sign-off recorded in the pull request |
+
+#### Connect the real redactor to telemetry and add the job trace context
+
+| Field | Value |
+|---|---|
+| Id | `s1-telemetry-wiring` |
+| Owner role | observability |
+| Reviewers | software_architect, security |
+| Size | M (relative weight 3) |
+| Wave | 4 |
+| On the critical path | no |
+| Depends on | `s0-telemetry-baseline`, `s1-redaction`, `s1-domain-revision` |
+
+Finish the telemetry baseline as ADR 0013 decides: implement the Scrub seam over domain::redaction::Redactor, delete the stopgap PolicyPatternScrubber and the test that keeps it equal to the policy, make the scrubber a required argument of TelemetryConfig::new so that a binary cannot start telemetry without it, add a helper that builds the factory.job span of one stretch of work with the remote parent derived from the job id, and update section 12 of the conventions page. The composition roots pass the redactor and open the stretch spans in s1-apps-composition.
+
+Owns: `crates/observability/**`, `docs/observability/conventions.md`
+
+Inputs: ADR 0013; docs/observability/conventions.md; crates/domain/src/redaction/
+
+Done when:
+
+| # | Check | How | Command or evidence |
+|---|---|---|---|
+| 1 | TelemetryConfig::new takes the scrubber, and nothing in the workspace refers to PolicyPatternScrubber any more. | command | `cargo build --workspace --locked && ! git grep -q PolicyPatternScrubber -- crates apps` |
+| 2 | A canary secret in a span attribute, a span event and a log line is replaced by the real redactor before export, and a redactor that fails drops the value (NT-SEC-01, telemetry sinks). | test | `cargo nextest run -p factory-observability canary_is_redacted_in_spans_events_and_logs` |
+| 3 | The job stretch helper gives a span whose trace id is the job's derived trace id, so two processes that work on one job produce one trace. | test | `cargo nextest run -p factory-observability job_stretch_uses_the_derived_trace_id` |
+| 4 | The existing telemetry tests, the name tables and the conventions page still agree. | command | `cargo nextest run -p factory-observability` |
+| 5 | Section 12 of the conventions page no longer lists the redactor, the peer-crate names and the trace context as open, and says what was decided. | review | reviewer sign-off recorded in the pull request |
 <!-- GENERATED:end wp-details-1 -->
 
 ## 10. Slice 1 acceptance
@@ -2244,7 +2481,7 @@ The harness reads the database and GitHub, not log text. All of them must hold f
 The security specialist's catalog is the oracle. The validator parses it live, so a new or changed P0 test fails the check until it has an owner.
 
 <!-- GENERATED:begin negative-test-summary -->
-The catalog has 86 P0 tests. 86 are mapped to a work package and a crate: 76 with full scope and 10 with reduced scope, listed under gaps. 0 have no owner. The catalog also has 36 P1 and 5 P2 tests, which it requires before Slice 2 and later, and 10 static checks, all mapped.
+The catalog has 86 P0 tests. 86 are mapped to a work package and a crate: 81 with full scope and 5 with reduced scope, listed under gaps. 3 of the full ones have a part that stays BLOCKED until a spike has run. 0 have no owner. The catalog also has 36 P1 and 5 P2 tests, which it requires before Slice 2 and later (1 P1 mapped so far), and 10 static checks, all mapped.
 <!-- GENERATED:end negative-test-summary -->
 
 ### P0 tests and their owners
@@ -2276,7 +2513,7 @@ The catalog has 86 P0 tests. 86 are mapped to a work package and a crate: 76 wit
 | `NT-INJ-01` | Compromised model obeys issue text | Integration | agents policy runtime sandbox | `s1-security-review-and-tests` | `workflow` | `s1-policy-evaluation`, `s1-agent-runtime-adapters`, `s1-prompt-assembly` | full |
 | `NT-INJ-02` | Envelope hardening | Unit | agents | `s1-prompt-assembly` | `workflow` | `s1-spec-adapter-and-stage` | full |
 | `NT-INJ-03` | Repository document injection | Integration | agents policy | `s1-security-review-and-tests` | `workflow` | `s1-policy-evaluation` | full |
-| `NT-INJ-04` | Tool-output injection | Integration | runtime agents sandbox | `s1-security-review-and-tests` | `workflow` | `s1-agent-runtime-adapters` | partial |
+| `NT-INJ-04` | Tool-output injection | Integration | runtime agents sandbox | `s1-security-review-and-tests` | `workflow` | `s1-agent-runtime-adapters` | full |
 | `NT-INJ-06` | Reviewer manipulation and isolation | Integration | quality workflow | `s1-stage-implementation-and-review` | `workflow` | `s1-trusted-gates-and-validation` | full |
 | `NT-INJ-07` | Repository-resident agent configuration | Unit and integration | agents runtime | `s1-agent-runtime-adapters` | `runtime` | `s1-sandbox-adapter` | full |
 | `NT-LSE-01` | Stale worker fencing | Integration | workflow github | `s1-engine-core` | `workflow` | `s1-stage-delivery-and-approval` | full |
@@ -2309,7 +2546,7 @@ The catalog has 86 P0 tests. 86 are mapped to a work package and a crate: 76 wit
 | `NT-SBX-12` | No daemon access | Integration | sandbox | `s1-sandbox-adapter` | `sandbox` |  | full |
 | `NT-SBX-13` | Credential isolation | Integration | sandbox | `s1-sandbox-adapter` | `sandbox` | `s1-egress-and-broker` | full |
 | `NT-SBX-14` | Fail closed | Integration | sandbox workflow | `s1-sandbox-adapter` | `sandbox` | `s1-engine-core` | full |
-| `NT-SEC-01` | Canary sweep of a full job | E2E | observability | `s1-security-review-and-tests` | `workflow` | `s1-redaction`, `s1-github-adapter`, `s1-sandbox-adapter`, `s1-egress-and-broker` | partial |
+| `NT-SEC-01` | Canary sweep of a full job | E2E | observability | `s1-security-review-and-tests` | `workflow` | `s1-redaction`, `s1-github-adapter`, `s1-sandbox-adapter`, `s1-egress-and-broker`, `s1-telemetry-wiring` | partial |
 | `NT-SEC-02` | Redaction evasion | Unit | observability policy | `s1-redaction` | `domain` |  | full |
 | `NT-SEC-03` | GitHub-bound text is blocked | Integration | github | `s1-github-adapter` | `github` | `s1-redaction` | full |
 | `NT-SEC-04` | Markdown exfiltration | Unit | github | `s1-github-adapter` | `github` |  | full |
@@ -2323,12 +2560,12 @@ The catalog has 86 P0 tests. 86 are mapped to a work package and a crate: 76 wit
 | `NT-SUP-03` | Lockfile and source tampering | Integration | quality | `s1-supply-chain-gates` | `workflow` |  | full |
 | `NT-SUP-05` | Image pinning | Integration | sandbox | `s1-sandbox-adapter` | `sandbox` |  | full |
 | `NT-TEN-05` | API object references | Integration | api | `s1-apps-composition` | `api` | `s1-storage-postgres` | full |
-| `NT-TOOL-01` | No shell interpretation | Integration | runtime sandbox | `s1-sandbox-adapter` | `sandbox` | `s1-agent-runtime-adapters` | partial |
+| `NT-TOOL-01` | No shell interpretation | Integration | runtime sandbox | `s1-sandbox-adapter` | `sandbox` | `s1-agent-runtime-adapters` | full |
 | `NT-TOOL-02` | Forbidden command class matrix | Unit | policy | `s1-policy-evaluation` | `domain` |  | full |
 | `NT-TOOL-03` | Unknown tools, never-grantable tools, self-grant | Unit and integration | policy agents | `s1-policy-evaluation` | `domain` | `s1-security-review-and-tests` | full |
-| `NT-TOOL-04` | Path policy | Unit and integration | policy runtime sandbox | `s1-policy-evaluation` | `domain` | `s1-workspace-ingestion` | partial |
-| `NT-TOOL-05` | Argument injection | Unit and integration | policy sandbox | `s1-policy-evaluation` | `domain` |  | partial |
-| `NT-TOOL-06` | Environment injection | Integration | runtime sandbox | `s1-agent-runtime-adapters` | `runtime` | `s1-sandbox-adapter` | partial |
+| `NT-TOOL-04` | Path policy | Unit and integration | policy runtime sandbox | `s1-policy-evaluation` | `domain` | `s1-workspace-ingestion`, `s1-sandbox-adapter` | full |
+| `NT-TOOL-05` | Argument injection | Unit and integration | policy sandbox | `s1-policy-evaluation` | `domain` | `s1-sandbox-adapter` | full |
+| `NT-TOOL-06` | Environment injection | Integration | runtime sandbox | `s1-agent-runtime-adapters` | `runtime` | `s1-sandbox-adapter` | full |
 | `NT-TOOL-07` | Output flood, timeout, process group | Integration | runtime sandbox | `s1-agent-runtime-adapters` | `runtime` | `s1-sandbox-adapter` | full |
 | `NT-TOOL-09` | Structured output abuse | Unit | agents | `s0-contracts-and-registry` | `contracts` | `s1-agent-runtime-adapters` | full |
 | `NT-WEB-05` | API authentication | Integration | api | `s1-apps-composition` | `api` |  | full |
@@ -2351,7 +2588,7 @@ The catalog has 86 P0 tests. 86 are mapped to a work package and a crate: 76 wit
 | `ST-04` | The strings `--privileged`, `--cap-add`, `seccomp=unconfined`, `apparmor=unconfined`, `--n | `s0-workspace-skeleton` | `xtask/tests/static_checks.rs` |
 | `ST-05` | No endpoint, function or workflow named deploy, release publish or merge is reachable with | `s0-workspace-skeleton` | `xtask/tests/static_checks.rs` |
 | `ST-06` | Policy files pass the parser, have unique keys, no anchors or merge keys, and every `threa | `s0-contracts-and-registry` | `crates/contracts/tests/negative.rs` |
-| `ST-07` | Every metrics, log and trace field name used in code is in the attribute allowlist | `s0-telemetry-baseline` | `crates/observability/tests/static_checks.rs` |
+| `ST-07` | Every metrics, log and trace field name used in code is in the attribute allowlist | `s1-xtask-extensions` | `xtask/tests/static_checks.rs` |
 | `ST-08` | No secret-pattern match in the repository history (full-history scan with the patterns fro | `s0-ci-pipeline` | `.github/workflows/ci.yml` |
 | `ST-09` | All reads of workspace or output paths go through the single ingestion module | `s0-workspace-skeleton` | `xtask/tests/static_checks.rs` |
 | `ST-10` | CI actions pinned to full commit SHAs | `s0-ci-pipeline` | `.github/workflows/ci.yml` |
@@ -2368,17 +2605,18 @@ These are listed so they are not hidden. Each says what is not covered, why and 
 | NT-GATE-08 | Held-out evaluation data in the evals component | There is no evals crate before Slice 4. Sandbox, prompts and sinks are covered. | Slice 4 |
 | NT-SEC-01 | NATS messages and memory stores as sinks in the canary sweep | Neither exists in Slice 1. | Slice 2 and Slice 4 |
 | NT-BUD-03 | A turn cap on the agent tool | Claude Code 2.1.311 has no --max-turns flag and Codex exec shows no budget flag. Only stagnation detection and the broker ceiling bound the run. | needs a decision: broker request counting, or a tool that supports a cap |
-| NT-INJ-04, NT-TOOL-01, NT-TOOL-04, NT-TOOL-05, NT-TOOL-06 | Factory-mediated tool calls by the agent (exec.run, fs.read, fs.write, exec.shell, approval.grant) | With the agent tool inside the sandbox its own tools are not mediated by the factory. The container, the broker and the ingestion pipeline contain it instead. The catalog's setups assume mediation (the host tool bridge). | If a human chooses the host tool bridge, these tests apply in full to the bridge tools |
 | NT-AUD-03 | Event types whose emitting component is built late | The coverage test can only finish when every emitter exists. | end of Slice 1, by the coverage matrix |
 <!-- GENERATED:end negative-test-gaps -->
 
-### Mapped in full, with a difference from the catalog's setup
+### Parts that stay BLOCKED until a spike has run
 
-<!-- GENERATED:begin negative-test-reduced-scope -->
-| Test | Reduced scope |
+<!-- GENERATED:begin negative-test-blocked-parts -->
+| Test | Part that reports BLOCKED, with the reason |
 |---|---|
-| `NT-AUTHZ-02` | The catalog sets up a user whose GitHub permission was revoked. Under the named allowlist the equivalent is a user removed from the list. The expected result is the same. |
-<!-- GENERATED:end negative-test-reduced-scope -->
+| `NT-INJ-04` | [C] The request the broker forwards after the injection keeps the command output in a tool-result part and not in the instruction part. BLOCKED until s0-agent-runtime-spike has shown the event fields. The [T] part applies only if the host tool bridge is chosen. |
+| `NT-TOOL-04` | [C] CLI deny rules generated from the path policy block a read of .env and the CLI reports the denial. BLOCKED until s0-agent-runtime-spike has shown whether the CLI supports deny rules. |
+| `NT-TOOL-05` | [C] CLI deny rules generated from forbidden_args block the call and the CLI reports it. BLOCKED until s0-agent-runtime-spike has shown whether the CLI supports deny rules. |
+<!-- GENERATED:end negative-test-blocked-parts -->
 
 The catalog's names for crates differ from this layout. `agents` is the module `workflow::prompts` plus the `agents/` data directory. `policy` is the module `domain::policy` and its loader in `contracts`. `quality` is the module `workflow::gates`. `repository_intel` and `planner` are modules of `workflow`. `scheduler` is the engine loop inside the worker. `events` and `evals` are deferred.
 
@@ -2400,16 +2638,28 @@ Found while reading `docs/spec-kit/` and `docs/security/` after the first draft.
 | 10 | Three network profiles, a per-job relay and a model broker (sandbox-policy sections 2 and 5) were missing from my layout. | New `egress` crate, `egress-sidecar` binary, `ModelBroker` port, and the package `s1-egress-and-broker`. | Resolved |
 | 11 | Docker enforces neither a wall-clock limit nor `--storage-opt` disk size on this machine. | ADR 0003: the supervisor enforces both. | Resolved |
 | 12 | Subscription logins cannot be brokered or metered. | ADR 0005 and ADR 0009: API keys. Real-provider tests BLOCKED until supplied. Section 2 above. | Resolved, pending a person |
-| 13 | `policies/approval.yaml` resolves roles by GitHub repository permission. The decided default is a named allowlist. | ADR 0009 item 5. The engine requires allowlist membership. | **Open**: the policy owner must change `roles`, and the catalog setups for NT-AUTHZ-01 and NT-AUTHZ-02 need adjusting |
-| 14 | `policies/security.yaml` `budgets.per_job.max_rework_iterations` is 3. The decided default is 2. | ADR 0009 item 6. A test fails if the policy exceeds 2. | **Open**: the policy owner lowers it |
-| 15 | `policies/security.yaml` `supply_chain.new_direct_dependency.auto_approve_when` includes `name_on_org_allowlist`. The decided default is always a human. | ADR 0009 item 4. | **Open**: the policy owner decides |
-| 16 | `policies/security.yaml` requires `--disable-slash-commands` for Claude Code. Spec Kit skills are slash commands and would stop resolving. | ADR 0005: the flag set is per stage and the flag is absent for the specification stage. Whether `--bare` still resolves project skills is UNVERIFIED. | Resolved in my files, **open** in the policy file |
-| 17 | The catalog's tool tests assume factory-mediated tool calls (`exec.run`, `fs.write`, `approval.grant`). With the agent in the sandbox its own tools are not mediated. | Section 11 gaps. The tests apply to supervisor-run commands. If a human picks the host tool bridge they apply in full. | **Open**: needs the Q1 decision |
+| 13 | `policies/approval.yaml` resolves roles by GitHub repository permission. The decided default is a named allowlist. | ADR 0009 item 5. The engine requires allowlist membership. | Resolved by the policy owner: `policies/approval.yaml` has `authority.source: named_allowlist` and the catalog setups use the allowlist (read 2026-10-27) |
+| 14 | `policies/security.yaml` `budgets.per_job.max_rework_iterations` is 3. The decided default is 2. | ADR 0009 item 6. A test fails if the policy exceeds 2. | Resolved by the policy owner: it is 2 (read 2026-10-27) |
+| 15 | `policies/security.yaml` `supply_chain.new_direct_dependency.auto_approve_when` includes `name_on_org_allowlist`. The decided default is always a human. | ADR 0009 item 4. | Resolved by the policy owner: the key is gone, and `approval.yaml` says no allowlist or heuristic approves a new name (read 2026-10-27) |
+| 16 | `policies/security.yaml` requires `--disable-slash-commands` for Claude Code. Spec Kit skills are slash commands and would stop resolving. | ADR 0005: the flag set is per stage and the flag is absent for the specification stage. Whether `--bare` still resolves project skills is UNVERIFIED. | Resolved in my files and, since 2026-10-27, in the policy file (the flag is per stage) |
+| 17 | The catalog's tool tests assume factory-mediated tool calls (`exec.run`, `fs.write`, `approval.grant`). With the agent in the sandbox its own tools are not mediated. | Section 11 gaps. The tests apply to supervisor-run commands. If a human picks the host tool bridge they apply in full. | Resolved in the catalog, which now splits each tool test into S, B and C parts (and T for the bridge). The plan maps the S and B parts in full and the C parts as BLOCKED until `s0-agent-runtime-spike` (section 11) |
 | 18 | The security documents say "policy crate", "quality", "agents", "planner" and "scheduler". Those are deferred or are modules in this layout. | ADR 0002 and section 11 give the mapping. | Resolved |
 | 19 | `policies/security.yaml` has `status: designed`. | `s1-policy-evaluation` makes the tests pass. Its owner then flips the status. | Open, in sequence |
 | 20 | My role name `security_reviewer` (a human) differs from the policy's `security_approver`. | Renamed in the state machine and the schemas. The review verdict keeps `security_reviewer` for the agent role. | Resolved |
 | 21 | The catalog's P0 tests need a GitHub App (narrowed installation tokens, permission audit). My first draft used a fine-grained token in Slice 1. | `s1-github-adapter` implements App authentication. A token is a development fallback at most. | Resolved |
 | 22 | The catalog's API authentication test (NT-WEB-05) presumes expiring, audience-bound tokens and logout. | Opaque hashed tokens with expiry, audience and revocation. There is no JWT to attack. | Resolved |
+| 23 | `policies/security.yaml` `budgets.on_exhaustion` says `stop_job_revoke_job_token_mark_BLOCKED`. The state machine had three different outcomes for exhaustion: fail (`S06`), a person (INV-10 and the domain code), and BLOCKED (the policy). | ADR 0010 decision 1: every limit asks a person; the policy value becomes `stop_job_revoke_job_token_wait_for_human`. | **Open**: the policy owner changes the value |
+| 24 | NT-TOOL-09 expects the stage state `FAILED` after two repairs. | ADR 0010: the stage run is `WAITING_FOR_HUMAN`, or `FAILED` when the contract does not list `INVALID_OUTPUT` in `retry_on`. It never advances. The test's wording should say "does not advance". | **Open**: the catalog owner |
+| 25 | NT-AUTHZ-05 names a job state `awaiting_reauthorization` that the machine does not have. | ADR 0010 decision 4: a new invalidation row; the new intake run and the job are `WAITING_FOR_HUMAN`. | **Open**: the catalog owner uses the machine's wording |
+| 26 | ADR 0007 deferred row-level security while `policies/security.yaml` requires it, so NT-TEN-01 could not pass. | ADR 0012 turns it on in Slice 1. New package `s1-database-tenancy-and-state-sync` before `s1-storage-postgres`. | Resolved, pending confirmation (ADR 0009 item 13) |
+| 27 | `gate_integrity.invalidated_by` lists six items and the invalidation table covered two. | ADR 0010 decision 4 maps each item to a row. | Resolved |
+| 28 | The state machine JSON changed and the Rust code in `domain` and the database tables still follow the old file. | The packages `s1-domain-revision` and `s1-database-tenancy-and-state-sync`. The checklist is `domain-revision-checklist.md`. | **Open** until both land. The conformance tests and the `statuses` suite fail until then |
+| 29 | `docs/observability/conventions.md` section 12 lists three unsettled items: peer crate names, two redactors, and the trace context. | ADR 0013 and the packages `s1-xtask-extensions` and `s1-telemetry-wiring`. | Resolved in the plan. The page is updated by `s1-telemetry-wiring` |
+| 30 | `docs/database/tenancy.md`, `not-covered.md` and the README say row-level security is deferred. | `s1-database-tenancy-and-state-sync` rewrites them. | **Open**, in sequence |
+| 31 | `docs/reference/documentation-policy.md` section 11 lists open decisions that ADR 0009 items 15 to 19 now answer. | The documenter updates the section. | **Open**: the documenter |
+| 32 | `xtask` enforces external crate allow lists for rings 0 and 1 and the application crates, and returns early for adapters. | `s1-xtask-extensions` checks adapters too. | Resolved in the plan |
+| 33 | The threat model (open question Q9 and control C-36) and the secret handling documents treat row-level security as later work. | Names ADR 0012. | **Open**: the security specialist updates the timing |
+| 34 | `infra/compose/postgres.yml` pins PostgreSQL 17, while `scripts/db-test.sh` runs 18 and ADR 0007 as revised pins 18. | The package `s1-ci-database-and-generated-checks` moves Compose to 18, pinned by digest. | **Open**: the SRE |
 
 ## 13. Risks and spikes
 
@@ -2429,7 +2679,7 @@ Found while reading `docs/spec-kit/` and `docs/security/` after the first draft.
 
 ## 14. Open questions for a human
 
-1. **Confirm or reverse the six defaults in ADR 0009**, above all that the agent runs inside the sandbox behind a broker.
+1. **Confirm or reverse the nineteen defaults in ADR 0009**, above all that the agent runs inside the sandbox behind a broker (item 1), that row-level security is on in Slice 1 (item 13, which reverses a statement of the accepted ADR 0007), and that a limit asks a person instead of failing or blocking (item 7).
 2. **Supply API keys with a provider-side spend limit**, or accept a named exception that uses subscription logins on the host. Until one of them, real-agent scenarios are BLOCKED.
 3. **Register the GitHub App** and create the protected fixture repository, or say who will.
 4. **Name the requester allowlist** and where protected configuration lives.

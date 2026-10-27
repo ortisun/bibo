@@ -1,6 +1,6 @@
 # 0001: Orchestrate with a narrow PostgreSQL durable state machine; Temporal is not integrated
 
-- Status: Accepted (architect decision; awaiting human confirmation, see open questions in the Slice 0 report)
+- Status: Accepted (architect decision; awaiting human confirmation, see open questions in the Slice 0 report). The claim query was corrected on 2026-10-27 from `FOR UPDATE SKIP LOCKED` to `FOR NO KEY UPDATE SKIP LOCKED`, which gives the same exclusion between claimers and does not block evidence writers ([ADR 0012](0012-row-level-security-in-slice-1.md)).
 - Date: 2026-10-27
 - Deciders: software_architect
 - Related: [state machines](../architecture/state-machine.md), [ADR 0004](0004-event-model.md), [ADR 0007](0007-persistence-access-and-tenancy.md)
@@ -50,7 +50,7 @@ Not verified: running a workflow against a server, activity heartbeats for long 
 ## Considered options
 
 1. **Temporal now.** Add the Rust SDK and a self-hosted Temporal server. Model the pipeline as a workflow and stage handlers as activities. Project state into PostgreSQL for queries, audit and the dashboard.
-2. **A narrow PostgreSQL durable state machine.** Rows hold the state. Transitions are pure functions. A claim query with `FOR UPDATE SKIP LOCKED` hands out work. Leases carry an epoch for fencing. A sweeper handles deadlines and back-off. A small `Engine` boundary keeps the choice replaceable.
+2. **A narrow PostgreSQL durable state machine.** Rows hold the state. Transitions are pure functions. A claim query with `FOR NO KEY UPDATE SKIP LOCKED` hands out work. Leases carry an epoch for fencing. A sweeper handles deadlines and back-off. A small `Engine` boundary keeps the choice replaceable.
 
 Not evaluated: Restate, DBOS and Rust job-queue crates. They are outside this decision. See the triggers below.
 
@@ -67,7 +67,7 @@ The main reasons are drivers 1 to 4. A second durable store for orchestration st
 The engine does these things and nothing else:
 
 - Apply transitions from [`state-machine.json`](../architecture/state-machine.json) in one transaction with compare-and-swap on a version column.
-- Claim ready stage runs with `SELECT ... FOR UPDATE SKIP LOCKED`, create the attempt, and increment the lease epoch.
+- Claim ready stage runs with `SELECT ... FOR NO KEY UPDATE SKIP LOCKED`, create the attempt, and increment the lease epoch.
 - Reject any worker write whose lease epoch is older than the stored one.
 - Move expired deadlines, leases and retry back-offs forward on a sweeper tick. Timers are columns (`not_before`, `deadline_at`, `lease_expires_at`), never in-memory timers.
 - Persist the ledger entries and outbox events that justify each transition in the same transaction.
