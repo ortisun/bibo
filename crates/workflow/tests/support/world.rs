@@ -5,10 +5,10 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use factory_domain::contracts::{DomainEvent, EvidenceLedgerEntry, Violation};
-use factory_domain::ids::{JobId, PrincipalId, TenantId};
+use factory_domain::ids::{CausationId, JobId, PrincipalId, TenantId};
 use factory_domain::scope::TenantScope;
 use factory_domain::values::{NonEmptyString, Sha256Digest};
-use factory_domain::vocabulary::{ExecutionMode, StageKind};
+use factory_domain::vocabulary::{ExecutionMode, HumanRole, StageKind};
 use factory_ports::clock::{Clock, IdGenerator};
 use factory_ports::paths::{CommitSha, RepoRef};
 use factory_ports::registry::{ContractKind, OutputValidator};
@@ -23,6 +23,7 @@ use factory_testkit::router::StaticModelRouter;
 use factory_testkit::sandbox::FakeSandbox;
 use factory_testkit::store::InMemoryStore;
 use factory_testkit::workspace::FakeWorkspaceProvider;
+use factory_workflow::commands::Actor;
 use factory_workflow::engine::{
     Admission, AttemptOutcome, Engine, EngineConfig, EngineDeps, JobView,
 };
@@ -209,6 +210,35 @@ impl World {
             .expect("claim");
         assert_eq!(claimed.started.len(), 1, "{claimed:?}");
         claimed.started.into_iter().next().expect("one")
+    }
+
+    /// Records a person in the tenant and gives them these roles on the allowlist.
+    pub async fn person(&self, name: &str, roles: &[HumanRole]) -> PrincipalId {
+        let id = PrincipalId::from_uuid(self.ids.new_uuid());
+        let mut tx = self
+            .store
+            .begin(TenantScope::new(self.tenant))
+            .await
+            .expect("a tx");
+        tx.insert_principal(NewPrincipal {
+            id,
+            external_ref: NonEmptyString::parse(&format!("github:{name}")).expect("a reference"),
+            created_at: self.clock.now(),
+        })
+        .await
+        .expect("a principal");
+        tx.commit().await.expect("commit");
+        self.authority.grant(id, roles);
+        id
+    }
+
+    /// A new command by a principal, with a command id of its own.
+    pub fn actor(&self, principal: PrincipalId) -> Actor {
+        Actor {
+            tenant: self.tenant,
+            principal,
+            command: CausationId::from_uuid(self.ids.new_uuid()),
+        }
     }
 
     /// A system transaction, as the engine opens to find work.

@@ -47,6 +47,8 @@ pub(crate) struct AttemptRecord {
     pub(crate) id: AttemptId,
     pub(crate) number: u32,
     pub(crate) deadline_at: Option<Timestamp>,
+    /// When the engine asked the attempt to stop (`A08`).
+    pub(crate) cancel_requested_at: Option<Timestamp>,
     pub(crate) end: Option<AttemptEnd>,
 }
 
@@ -210,6 +212,7 @@ impl Timeline {
                 let class = failure_class(&event.payload)?;
                 self.attempt_ended(event, AttemptEnd::Failed(class))
             }
+            ("attempt.cancel_requested", _) => self.cancel_requested(event),
             ("attempt.cancelled", _) => self.attempt_ended(event, AttemptEnd::Cancelled),
             _ => Ok(()),
         }
@@ -247,6 +250,7 @@ impl Timeline {
                 id: attempt,
                 number,
                 deadline_at,
+                cancel_requested_at: None,
                 end: None,
             });
         }
@@ -335,6 +339,16 @@ impl Timeline {
                 media_type: media,
                 size_bytes: None,
             });
+        }
+        Ok(())
+    }
+
+    fn cancel_requested(&mut self, event: &DomainEvent) -> Result<(), EngineError> {
+        let run_id = parse_run_id(&event.payload, key::STAGE_RUN)?;
+        let attempt_id = AttemptId::from_uuid(event.aggregate.id.as_uuid());
+        let run = self.run_mut(run_id)?;
+        if let Some(attempt) = run.attempts.iter_mut().find(|a| a.id == attempt_id) {
+            attempt.cancel_requested_at = Some(event.occurred_at);
         }
         Ok(())
     }

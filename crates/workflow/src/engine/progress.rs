@@ -169,6 +169,30 @@ impl Engine {
         board: &Board,
     ) -> Result<Round, EngineError> {
         let status = job.value.status;
+        if status == JobStatus::Cancelling {
+            return Ok(
+                match self
+                    .cancellation_round(tx, cx, job, timeline, board)
+                    .await?
+                {
+                    super::control::Cancellation::Moved => Round::Moved,
+                    super::control::Cancellation::Idle => Round::Settled,
+                },
+            );
+        }
+        if status == JobStatus::Blocked {
+            // Every blocked stage run was disposed of, so the job goes on (`J08`).
+            let snaps = board.snapshots();
+            let facts = GuardFacts::StageBoard(StageBoardFacts { stage_runs: &snaps });
+            if !board.any(StageRunStatus::Blocked)
+                && evaluate(Guard::BlockDispositionsRecorded, &facts).is_ok()
+            {
+                cx.move_job(tx, job, JobEvent::Unblock, None, Default::default())
+                    .await?;
+                return Ok(Round::Moved);
+            }
+            return Ok(Round::Settled);
+        }
         if !matches!(status, JobStatus::Active | JobStatus::WaitingForHuman) {
             return Ok(Round::Settled);
         }

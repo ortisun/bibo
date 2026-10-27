@@ -206,6 +206,7 @@ impl Engine {
                 .await;
         }
         if watched.cancel_requested {
+            self.teardown_complete(claimed).await?;
             return Ok(AttemptOutcome::Cancelled);
         }
         // The handler may have finished before the first heartbeat noticed that its sandbox was
@@ -253,7 +254,10 @@ impl Engine {
                 .await
             }
             Some(Err(PipelineError::Engine(error))) => Err(error),
-            Some(Err(PipelineError::Stage(StageError::Cancelled))) => Ok(AttemptOutcome::Cancelled),
+            Some(Err(PipelineError::Stage(StageError::Cancelled))) => {
+                self.teardown_complete(claimed).await?;
+                Ok(AttemptOutcome::Cancelled)
+            }
             Some(Err(PipelineError::Stage(StageError::Blocked(_)))) => {
                 self.commit_blocked(claimed, &notes).await
             }

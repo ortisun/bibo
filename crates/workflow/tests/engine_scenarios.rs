@@ -1274,3 +1274,874 @@ async fn ids_of_runs_are_unique_across_a_rework() {
         view.stage_runs.iter().map(|run| run.id).collect();
     assert_eq!(ids.len(), view.stage_runs.len());
 }
+
+// ---- people: answers, approvals, rework, overrides ---------------------------------------
+
+use factory_domain::values::{HumanText, Sha256Digest};
+use factory_domain::vocabulary::HumanRole;
+use factory_workflow::commands::{Decision, JobCommand, OverrideFacts, Subject};
+
+fn text(words: &str) -> HumanText {
+    HumanText::parse(words).expect("a text")
+}
+
+async fn waiting_intake(world: &World) -> (factory_domain::ids::JobId, StageRunId) {
+    let job = world.admitted_job().await;
+    world
+        .script(StageKind::Intake)
+        .otherwise(Step::Fail(StageError::Tool));
+    for _ in 0..3 {
+        world.advance(600);
+        world.run_next("worker-1").await;
+    }
+    let view = world.view(job).await;
+    assert_eq!(
+        status_of(&view, StageKind::Intake),
+        StageRunStatus::WaitingForHuman
+    );
+    let run = view.newest(StageKind::Intake).expect("run").id;
+    (job, run)
+}
+
+fn answer(text: &str) -> Decision {
+    Decision::Answer {
+        text: text.to_owned(),
+        raises_budget_ceiling: false,
+    }
+}
+
+#[tokio::test]
+async fn human_answer_starts_a_new_window() {
+    // ADR 0010: attempts are counted from the last answer, so the first failure after an answer
+    // retries, and the total stays bounded because a person is in the loop each time.
+    let world = World::new().await;
+    let (job, run) = waiting_intake(&world).await;
+    let operator = world.person("operator-1", &[HumanRole::Operator]).await;
+    world
+        .engine
+        .decide(
+            &world.actor(operator),
+            Subject {
+                job,
+                stage_run: run,
+            },
+            answer("Please try again, the provider was down."),
+        )
+        .await
+        .expect("the answer applies");
+    let view = world.view(job).await;
+    assert_eq!(status_of(&view, StageKind::Intake), StageRunStatus::Ready);
+    assert_eq!(view.status, JobStatus::Active);
+    assert_eq!(
+        view.newest(StageKind::Intake).expect("run").human_answers,
+        1
+    );
+
+    // The first failure after the answer retries. It does not ask again at once.
+    world.advance(600);
+    world.run_next("worker-1").await;
+    assert_eq!(
+        status_of(&world.view(job).await, StageKind::Intake),
+        StageRunStatus::Ready
+    );
+    // Two more failures use up the new window, and the third asks a person again: six attempts
+    // in all, three for each answer.
+    for _ in 0..2 {
+        world.advance(600);
+        world.run_next("worker-1").await;
+    }
+    let view = world.view(job).await;
+    assert_eq!(
+        status_of(&view, StageKind::Intake),
+        StageRunStatus::WaitingForHuman
+    );
+    assert_eq!(
+        view.newest(StageKind::Intake).expect("run").attempts.len(),
+        6
+    );
+}
+
+#[tokio::test]
+async fn only_people_with_a_listed_role_may_answer_and_a_refusal_is_audited() {
+    let world = World::new().await;
+    let (job, run) = waiting_intake(&world).await;
+    let stranger = world.person("stranger", &[]).await;
+    let refused = world
+        .engine
+        .decide(
+            &world.actor(stranger),
+            Subject {
+                job,
+                stage_run: run,
+            },
+            answer("I am nobody, but I would like to answer."),
+        )
+        .await;
+    assert!(
+        matches!(refused, Err(EngineError::NotAuthorized(_))),
+        "{refused:?}"
+    );
+    assert_eq!(
+        status_of(&world.view(job).await, StageKind::Intake),
+        StageRunStatus::WaitingForHuman
+    );
+    let audit = world.audit(job).await;
+    assert!(audit.iter().any(|record| {
+        record.action.as_str() == "authorization_decision.denied"
+            && matches!(&record.actor, factory_ports::store::AuditActor::Principal(p) if *p == stranger)
+    }));
+}
+
+#[tokio::test]
+async fn a_requester_may_answer_only_their_own_job() {
+    let world = World::new().await;
+    let (job, run) = waiting_intake(&world).await;
+    let other = world
+        .person("other-requester", &[HumanRole::Requester])
+        .await;
+    let refused = world
+        .engine
+        .decide(
+            &world.actor(other),
+            Subject {
+                job,
+                stage_run: run,
+            },
+            answer("This is not my job but I will answer it."),
+        )
+        .await;
+    assert!(matches!(refused, Err(EngineError::NotAuthorized(_))));
+    world
+        .authority
+        .grant(world.requester, &[HumanRole::Requester]);
+    world
+        .engine
+        .decide(
+            &world.actor(world.requester),
+            Subject {
+                job,
+                stage_run: run,
+            },
+            answer("It is my job, and the answer is to go on."),
+        )
+        .await
+        .expect("the requester answers their own job");
+}
+
+#[tokio::test]
+async fn raising_a_budget_ceiling_needs_an_org_admin() {
+    let world = World::new().await;
+    let (job, run) = waiting_intake(&world).await;
+    let operator = world.person("operator-1", &[HumanRole::Operator]).await;
+    let admin = world.person("admin-1", &[HumanRole::OrgAdmin]).await;
+    let raise = Decision::Answer {
+        text: "Raise the ceiling by ten dollars.".to_owned(),
+        raises_budget_ceiling: true,
+    };
+    let refused = world
+        .engine
+        .decide(
+            &world.actor(operator),
+            Subject {
+                job,
+                stage_run: run,
+            },
+            raise.clone(),
+        )
+        .await;
+    assert!(
+        matches!(refused, Err(EngineError::GuardUnmet(_))),
+        "{refused:?}"
+    );
+    world
+        .engine
+        .decide(
+            &world.actor(admin),
+            Subject {
+                job,
+                stage_run: run,
+            },
+            raise,
+        )
+        .await
+        .expect("an org admin may raise it");
+}
+
+#[tokio::test]
+async fn removing_a_person_from_the_allowlist_takes_effect_at_once() {
+    // NT-AUTHZ-04: authority is read when the decision is taken.
+    let world = World::new().await;
+    let (job, run) = waiting_intake(&world).await;
+    let operator = world.person("operator-1", &[HumanRole::Operator]).await;
+    world.authority.revoke(operator);
+    let refused = world
+        .engine
+        .decide(
+            &world.actor(operator),
+            Subject {
+                job,
+                stage_run: run,
+            },
+            answer("Too late, I was removed."),
+        )
+        .await;
+    assert!(matches!(refused, Err(EngineError::NotAuthorized(_))));
+}
+
+#[tokio::test]
+async fn a_command_that_arrives_twice_is_applied_once() {
+    let world = World::new().await;
+    let (job, run) = waiting_intake(&world).await;
+    let operator = world.person("operator-1", &[HumanRole::Operator]).await;
+    let actor = world.actor(operator);
+    world
+        .engine
+        .decide(
+            &actor,
+            Subject {
+                job,
+                stage_run: run,
+            },
+            answer("Go on, please."),
+        )
+        .await
+        .expect("applies");
+    let again = world
+        .engine
+        .decide(
+            &actor,
+            Subject {
+                job,
+                stage_run: run,
+            },
+            answer("Go on, please."),
+        )
+        .await;
+    assert_eq!(again, Err(EngineError::Duplicate));
+    let answered = world
+        .events(job)
+        .await
+        .iter()
+        .filter(|e| e.transition_id.as_str() == "S13")
+        .count();
+    assert_eq!(answered, 1);
+}
+
+/// A job whose stages ran to the approval, which waits for a person.
+async fn at_approval(world: &World) -> (factory_domain::ids::JobId, StageRunId) {
+    world
+        .script(StageKind::Approval)
+        .evals_otherwise(Eval::HumanGate);
+    let job = world.admitted_job().await;
+    run_stages(world, 13).await;
+    let run = world
+        .view(job)
+        .await
+        .newest(StageKind::Approval)
+        .expect("run")
+        .id;
+    (job, run)
+}
+
+async fn head(world: &World, job: factory_domain::ids::JobId) -> Sha256Digest {
+    world
+        .ledger(job)
+        .await
+        .last()
+        .expect("an entry")
+        .entry_hash
+        .clone()
+}
+
+#[tokio::test]
+async fn an_approval_completes_the_job_and_the_ledger_verifies() {
+    let world = World::new().await;
+    let (job, run) = at_approval(&world).await;
+    let approver = world.person("approver-1", &[HumanRole::Approver]).await;
+    let seen = head(&world, job).await;
+    world
+        .engine
+        .decide(
+            &world.actor(approver),
+            Subject {
+                job,
+                stage_run: run,
+            },
+            Decision::Approve {
+                evidence_seen: seen,
+                warnings_decided: true,
+            },
+        )
+        .await
+        .expect("the approval applies");
+    let view = world.view(job).await;
+    assert_eq!(view.status, JobStatus::Completed);
+    assert_eq!(
+        status_of(&view, StageKind::Approval),
+        StageRunStatus::Passed
+    );
+    let ledger = world.ledger(job).await;
+    assert_eq!(factory_domain::ledger::verify_chain(&ledger), Ok(()));
+    // The approval is a named person's judgment, and it supports no assurance level.
+    let last = ledger.last().expect("an entry");
+    assert!(last.claim.assurance_level.is_none());
+}
+
+#[tokio::test]
+async fn a_skipped_stage_does_not_stop_the_job_from_completing() {
+    let world = World::new().await;
+    world
+        .script(StageKind::DomainDiscovery)
+        .skip_by_rule("no-profile-needed");
+    world
+        .script(StageKind::Approval)
+        .evals_otherwise(Eval::HumanGate);
+    let job = world.admitted_job().await;
+    run_stages(&world, 12).await; // twelve stage runs; the thirteenth was skipped
+    let run = world
+        .view(job)
+        .await
+        .newest(StageKind::Approval)
+        .expect("run")
+        .id;
+    let approver = world.person("approver-1", &[HumanRole::Approver]).await;
+    let seen = head(&world, job).await;
+    world
+        .engine
+        .decide(
+            &world.actor(approver),
+            Subject {
+                job,
+                stage_run: run,
+            },
+            Decision::Approve {
+                evidence_seen: seen,
+                warnings_decided: true,
+            },
+        )
+        .await
+        .expect("applies");
+    assert_eq!(world.view(job).await.status, JobStatus::Completed);
+}
+
+#[tokio::test]
+async fn negative_nt_mrg_02_an_approval_of_stale_evidence_is_refused() {
+    let world = World::new().await;
+    let (job, run) = at_approval(&world).await;
+    let approver = world.person("approver-1", &[HumanRole::Approver]).await;
+    let stale = world.ledger(job).await[0].entry_hash.clone();
+    let refused = world
+        .engine
+        .decide(
+            &world.actor(approver),
+            Subject {
+                job,
+                stage_run: run,
+            },
+            Decision::Approve {
+                evidence_seen: stale,
+                warnings_decided: true,
+            },
+        )
+        .await;
+    assert!(
+        matches!(refused, Err(EngineError::GuardUnmet(_))),
+        "{refused:?}"
+    );
+    let view = world.view(job).await;
+    assert_eq!(
+        status_of(&view, StageKind::Approval),
+        StageRunStatus::WaitingForHuman
+    );
+    assert_ne!(view.status, JobStatus::Completed);
+    let audit = world.audit(job).await;
+    assert!(
+        audit
+            .iter()
+            .any(|r| r.action.as_str() == "approval_granted_or_rejected.denied")
+    );
+}
+
+#[tokio::test]
+async fn nobody_approves_their_own_request() {
+    // NT-MRG-06: the requester's own approval is not counted.
+    let world = World::new().await;
+    let (job, run) = at_approval(&world).await;
+    world.authority.grant(
+        world.requester,
+        &[HumanRole::Requester, HumanRole::Approver],
+    );
+    let seen = head(&world, job).await;
+    let refused = world
+        .engine
+        .decide(
+            &world.actor(world.requester),
+            Subject {
+                job,
+                stage_run: run,
+            },
+            Decision::Approve {
+                evidence_seen: seen,
+                warnings_decided: true,
+            },
+        )
+        .await;
+    assert!(
+        matches!(refused, Err(EngineError::NotAuthorized(_))),
+        "{refused:?}"
+    );
+}
+
+#[tokio::test]
+async fn a_rejection_ends_the_job_as_rejected() {
+    let world = World::new().await;
+    let (job, run) = at_approval(&world).await;
+    let approver = world.person("approver-1", &[HumanRole::Approver]).await;
+    world
+        .engine
+        .decide(
+            &world.actor(approver),
+            Subject {
+                job,
+                stage_run: run,
+            },
+            Decision::Reject {
+                reason: text("The change does not do what the request asked for."),
+            },
+        )
+        .await
+        .expect("applies");
+    let view = world.view(job).await;
+    assert_eq!(view.status, JobStatus::Rejected);
+    assert_eq!(
+        status_of(&view, StageKind::Approval),
+        StageRunStatus::Failed
+    );
+}
+
+#[tokio::test]
+async fn a_person_can_send_work_back_from_the_approval_to_a_listed_stage() {
+    // INV-11: a new implementation commit supersedes both documentation runs.
+    let world = World::new().await;
+    let (job, run) = at_approval(&world).await;
+    let approver = world.person("approver-1", &[HumanRole::Approver]).await;
+    // SPECIFICATION is not a target from the approval (ADR 0010 decision 3).
+    let refused = world
+        .engine
+        .decide(
+            &world.actor(approver),
+            Subject {
+                job,
+                stage_run: run,
+            },
+            Decision::RequestRework {
+                target: StageKind::Specification,
+            },
+        )
+        .await;
+    assert!(
+        matches!(refused, Err(EngineError::Refused(_))),
+        "{refused:?}"
+    );
+
+    world
+        .engine
+        .decide(
+            &world.actor(approver),
+            Subject {
+                job,
+                stage_run: run,
+            },
+            Decision::RequestRework {
+                target: StageKind::Implementation,
+            },
+        )
+        .await
+        .expect("applies");
+    let view = world.view(job).await;
+    assert_eq!(
+        statuses_of(&view, StageKind::Documenting),
+        vec![StageRunStatus::Superseded, StageRunStatus::Pending]
+    );
+    assert_eq!(
+        statuses_of(&view, StageKind::DocumentationReview),
+        vec![StageRunStatus::Superseded, StageRunStatus::Pending]
+    );
+    assert_eq!(
+        statuses_of(&view, StageKind::Approval),
+        vec![StageRunStatus::ReworkRequested, StageRunStatus::Pending]
+    );
+    assert_eq!(view.code_rework_rounds, 1);
+    assert_eq!(view.status, JobStatus::Active);
+}
+
+#[tokio::test]
+async fn a_stranger_cannot_send_work_back() {
+    let world = World::new().await;
+    let (job, run) = at_approval(&world).await;
+    let stranger = world.person("stranger", &[]).await;
+    let refused = world
+        .engine
+        .decide(
+            &world.actor(stranger),
+            Subject {
+                job,
+                stage_run: run,
+            },
+            Decision::RequestRework {
+                target: StageKind::Implementation,
+            },
+        )
+        .await;
+    assert!(
+        matches!(refused, Err(EngineError::NotAuthorized(_))),
+        "{refused:?}"
+    );
+}
+
+fn override_facts(security: bool, mandatory: bool) -> OverrideFacts {
+    OverrideFacts {
+        policy_permits: true,
+        security_class: security,
+        mandatory_of_active_profile: mandatory,
+    }
+}
+
+#[tokio::test]
+async fn an_override_passes_a_block_without_creating_an_assurance_level() {
+    let world = World::new().await;
+    let job = world.admitted_job().await;
+    world.script(StageKind::Intake).queue_evals([Eval::Blocked]);
+    world.run_next("worker-1").await;
+    let view = world.view(job).await;
+    assert_eq!(view.status, JobStatus::Blocked);
+    let run = view.newest(StageKind::Intake).expect("run").id;
+    let approver = world.person("approver-1", &[HumanRole::Approver]).await;
+    world
+        .engine
+        .decide(
+            &world.actor(approver),
+            Subject {
+                job,
+                stage_run: run,
+            },
+            Decision::Override {
+                justification: text("The scanner is missing on this host and the risk is small."),
+                facts: override_facts(false, false),
+            },
+        )
+        .await
+        .expect("applies");
+    let view = world.view(job).await;
+    assert_eq!(status_of(&view, StageKind::Intake), StageRunStatus::Passed);
+    assert_eq!(view.status, JobStatus::Active);
+    assert!(
+        world
+            .ledger(job)
+            .await
+            .iter()
+            .all(|entry| entry.claim.assurance_level.is_none()),
+        "an override never creates an assurance level"
+    );
+}
+
+#[tokio::test]
+async fn an_override_of_a_mandatory_gate_of_an_active_profile_is_refused() {
+    // INV-07.
+    let world = World::new().await;
+    let job = world.admitted_job().await;
+    world.script(StageKind::Intake).queue_evals([Eval::Blocked]);
+    world.run_next("worker-1").await;
+    let run = world
+        .view(job)
+        .await
+        .newest(StageKind::Intake)
+        .expect("run")
+        .id;
+    let approver = world.person("approver-1", &[HumanRole::Approver]).await;
+    let refused = world
+        .engine
+        .decide(
+            &world.actor(approver),
+            Subject {
+                job,
+                stage_run: run,
+            },
+            Decision::Override {
+                justification: text("I would like to pass it anyway, please."),
+                facts: override_facts(false, true),
+            },
+        )
+        .await;
+    assert!(
+        matches!(refused, Err(EngineError::GuardUnmet(_))),
+        "{refused:?}"
+    );
+    assert_eq!(world.view(job).await.status, JobStatus::Blocked);
+}
+
+#[tokio::test]
+async fn a_security_class_block_needs_a_security_approver() {
+    let world = World::new().await;
+    let job = world.admitted_job().await;
+    world.script(StageKind::Intake).queue_evals([Eval::Blocked]);
+    world.run_next("worker-1").await;
+    let run = world
+        .view(job)
+        .await
+        .newest(StageKind::Intake)
+        .expect("run")
+        .id;
+    let approver = world.person("approver-1", &[HumanRole::Approver]).await;
+    let security = world
+        .person("security-1", &[HumanRole::SecurityApprover])
+        .await;
+    let request = Decision::Override {
+        justification: text("The finding is a false positive, as the log shows."),
+        facts: override_facts(true, false),
+    };
+    let refused = world
+        .engine
+        .decide(
+            &world.actor(approver),
+            Subject {
+                job,
+                stage_run: run,
+            },
+            request.clone(),
+        )
+        .await;
+    assert!(
+        matches!(refused, Err(EngineError::NotAuthorized(_))),
+        "{refused:?}"
+    );
+    world
+        .engine
+        .decide(
+            &world.actor(security),
+            Subject {
+                job,
+                stage_run: run,
+            },
+            request,
+        )
+        .await
+        .expect("a security approver may");
+}
+
+#[tokio::test]
+async fn an_operator_can_unblock_a_stage_once_the_missing_tool_is_back() {
+    let world = World::new().await;
+    let job = world.admitted_job().await;
+    world.script(StageKind::Intake).queue_evals([Eval::Blocked]);
+    world.run_next("worker-1").await;
+    let run = world
+        .view(job)
+        .await
+        .newest(StageKind::Intake)
+        .expect("run")
+        .id;
+    let operator = world.person("operator-1", &[HumanRole::Operator]).await;
+    world
+        .engine
+        .decide(
+            &world.actor(operator),
+            Subject {
+                job,
+                stage_run: run,
+            },
+            Decision::UnblockRerun {
+                capability_reprobe_passed: true,
+                dependency_now_available: false,
+            },
+        )
+        .await
+        .expect("applies");
+    let view = world.view(job).await;
+    assert_eq!(status_of(&view, StageKind::Intake), StageRunStatus::Ready);
+    assert_eq!(view.status, JobStatus::Active);
+    world.advance(600);
+    let (_, outcome) = world.run_next("worker-1").await;
+    assert_eq!(outcome, AttemptOutcome::Succeeded);
+    assert_eq!(
+        status_of(&world.view(job).await, StageKind::Intake),
+        StageRunStatus::Passed
+    );
+}
+
+// ---- pause, resume, cancel -------------------------------------------------------------------
+
+#[tokio::test]
+async fn a_paused_job_starts_nothing_and_a_resumed_job_goes_on() {
+    let world = World::new().await;
+    let job = world.admitted_job().await;
+    let operator = world.person("operator-1", &[HumanRole::Operator]).await;
+    world
+        .engine
+        .control(&world.actor(operator), job, JobCommand::Pause)
+        .await
+        .expect("pauses");
+    assert_eq!(world.view(job).await.status, JobStatus::Paused);
+    let claimed = world
+        .engine
+        .claim_next(&World::worker("worker-1"))
+        .await
+        .expect("claim");
+    assert!(claimed.started.is_empty());
+    assert_eq!(claimed.deferred[0].1, Deferral::JobNotActive);
+
+    world
+        .engine
+        .control(&world.actor(operator), job, JobCommand::Resume)
+        .await
+        .expect("resumes");
+    world.advance(61);
+    let (_, outcome) = world.run_next("worker-1").await;
+    assert_eq!(outcome, AttemptOutcome::Succeeded);
+}
+
+#[tokio::test]
+async fn only_an_operator_may_pause() {
+    let world = World::new().await;
+    let job = world.admitted_job().await;
+    let stranger = world.person("stranger", &[]).await;
+    let refused = world
+        .engine
+        .control(&world.actor(stranger), job, JobCommand::Pause)
+        .await;
+    assert!(
+        matches!(refused, Err(EngineError::GuardUnmet(_))),
+        "{refused:?}"
+    );
+    assert_eq!(world.view(job).await.status, JobStatus::Active);
+    assert!(
+        world
+            .audit(job)
+            .await
+            .iter()
+            .any(|r| r.action.as_str() == "authorization_decision.denied")
+    );
+}
+
+#[tokio::test]
+async fn cancelling_a_job_with_no_running_attempt_ends_it_at_once() {
+    let world = World::new().await;
+    let job = world.admitted_job().await;
+    world
+        .authority
+        .grant(world.requester, &[HumanRole::Requester]);
+    world
+        .engine
+        .control(&world.actor(world.requester), job, JobCommand::Cancel)
+        .await
+        .expect("cancels");
+    let view = world.view(job).await;
+    assert_eq!(view.status, JobStatus::Cancelled);
+    assert!(
+        view.stage_runs
+            .iter()
+            .all(|run| run.status == StageRunStatus::Cancelled)
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn cancelling_stops_the_running_attempt_and_tears_it_down() {
+    let world = World::new().await;
+    let job = world.admitted_job().await;
+    let release = std::sync::Arc::new(tokio::sync::Notify::new());
+    world
+        .script(StageKind::Intake)
+        .queue([Step::Hang(release.clone())]);
+    let claimed = world.claim_one("worker-1").await;
+    let operator = world.person("operator-1", &[HumanRole::Operator]).await;
+
+    let work = async { world.engine.run_attempt(&claimed).await };
+    let driver = async {
+        world
+            .engine
+            .control(&world.actor(operator), job, JobCommand::Cancel)
+            .await
+            .expect("cancels");
+        assert_eq!(
+            world.view(job).await.status,
+            JobStatus::Cancelling,
+            "the attempt is still tearing down"
+        );
+        // The next heartbeat tells the worker to stop.
+        tokio::time::sleep(std::time::Duration::from_secs(16)).await;
+    };
+    let (outcome, ()) = tokio::join!(work, driver);
+    assert_eq!(outcome.expect("runs"), AttemptOutcome::Cancelled);
+    let view = world.view(job).await;
+    assert_eq!(view.status, JobStatus::Cancelled);
+    assert_eq!(
+        view.newest(StageKind::Intake).expect("run").attempts[0].status,
+        AttemptStatus::Cancelled
+    );
+    assert_eq!(
+        status_of(&view, StageKind::Intake),
+        StageRunStatus::Cancelled
+    );
+}
+
+#[tokio::test]
+async fn a_worker_that_never_tears_down_is_forced_after_the_grace_period() {
+    let world = World::new().await;
+    let job = world.admitted_job().await;
+    world.claim_one("worker-1").await;
+    let operator = world.person("operator-1", &[HumanRole::Operator]).await;
+    world
+        .engine
+        .control(&world.actor(operator), job, JobCommand::Cancel)
+        .await
+        .expect("cancels");
+    let view = world.view(job).await;
+    assert_eq!(view.status, JobStatus::Cancelling);
+    assert_eq!(
+        view.newest(StageKind::Intake).expect("run").attempts[0].status,
+        AttemptStatus::Cancelling
+    );
+    // Nothing happens before the grace period.
+    world.advance(10);
+    world
+        .engine
+        .sweep_job(world.tenant, job)
+        .await
+        .expect("sweep");
+    assert_eq!(world.view(job).await.status, JobStatus::Cancelling);
+    // After it, the sweeper forces the end.
+    world.advance(30);
+    world
+        .engine
+        .sweep_job(world.tenant, job)
+        .await
+        .expect("sweep");
+    let view = world.view(job).await;
+    assert_eq!(view.status, JobStatus::Cancelled);
+    assert_eq!(
+        view.newest(StageKind::Intake).expect("run").attempts[0].status,
+        AttemptStatus::Cancelled
+    );
+}
+
+#[tokio::test]
+async fn the_sweeper_times_out_an_attempt_whose_worker_went_quiet() {
+    let world = World::new().await;
+    let job = world.admitted_job().await;
+    world
+        .script(StageKind::Intake)
+        .with(|s| s.tweaks.attempt_timeout_seconds = 30);
+    let claimed = world.claim_one("worker-1").await;
+    world.advance(31);
+    // The lease is still held (31 s of 60), so only the deadline is past.
+    world
+        .engine
+        .sweep_job(world.tenant, job)
+        .await
+        .expect("sweep");
+    let view = world.view(job).await;
+    let intake = view.newest(StageKind::Intake).expect("run");
+    assert_eq!(intake.attempts[0].status, AttemptStatus::TimedOut);
+    assert_eq!(intake.attempts[0].id, claimed.attempt);
+    assert_eq!(intake.status, StageRunStatus::Ready);
+}

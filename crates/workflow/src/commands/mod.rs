@@ -6,5 +6,7 @@
 //! command is recognised and returns the first result (state-machine.md, ground rule 7).
 
 mod authority;
+mod decision;
 
 pub use authority::{Authority, AuthorityError};
+pub use decision::{Actor, Decision, JobCommand, OverrideFacts, Subject};

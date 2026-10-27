@@ -47,6 +47,8 @@ pub(crate) mod key {
     pub const ANSWER_MEDIA_TYPE: &str = "answer_media_type";
     /// A short machine code for why a move happened.
     pub const CAUSE: &str = "cause";
+    /// The principal who took a human decision.
+    pub const PRINCIPAL: &str = "principal_id";
 }
 
 /// A stage run as the payload lists it.

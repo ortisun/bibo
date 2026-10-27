@@ -25,6 +25,8 @@ mod attempt;
 mod cancel;
 mod changes;
 pub mod config;
+mod control;
+mod decide;
 mod error;
 mod failure;
 mod gate;
