@@ -72,8 +72,9 @@ usage() {
 
 list_suites() {
   cat <<'EOF'
-migrations       up, revert all, up again, redo on an empty database; the catalog is identical afterwards;
-                 the committed schema.rs equals diesel print-schema
+migrations       up, revert all, up again, redo on an empty database; the catalog (tables, policies, grants,
+                 function owners) is identical afterwards, also after reverting only the newest j migrations,
+                 for every j; the committed schema.rs equals diesel print-schema
 statuses         every status column rejects an unknown value; allowed values, terminal flags, transitions
                  and event names equal state-machine.json
 ledger           the evidence ledger refuses UPDATE, DELETE, TRUNCATE and gapped, forked or forged inserts;
@@ -85,14 +86,18 @@ rls              every tenant-owned table, found from the catalog, is isolated b
                  the roles, the system scope and the two lookup functions; real logins and a reused connection
 terminal_rows    terminal stage runs cannot be edited except to become SUPERSEDED from PASSED or SKIPPED;
                  every other move out of a terminal state fails
-plans            claim, sweep, timeline and ledger-tail queries use index scans on 10,000 generated rows
+plans            claim, sweep, timeline and ledger-tail queries use index scans on 10,000 generated rows (100,000
+                 with FACTORY_DB_PLANS_SCALE=10), run as the roles that run them, with row-level security on
 audit            the application role can only INSERT and SELECT audit events; the chain is built by the
                  server, survives concurrent writers and verifies outside PostgreSQL
 webhook_delivery a duplicate delivery id cannot create a second job or outbox row, also under 50 concurrent replays
-lease            concurrent claims give exactly one winner; stale epochs and forged renewals are refused
-outbox           the outbox is atomic with the state change, immutable, and consumer idempotent
+lease            concurrent claims (system role finds, tenant role swaps) give exactly one winner; stale epochs
+                 and forged renewals are refused; a claimer does not block the ledger
+outbox           the outbox is atomic with the state change, immutable, and consumer idempotent; the relay
+                 runs as the system role
 approvals        approvals bind a head SHA and only a human principal can approve
-tokens           API tokens are stored hashed, expire, are audience bound and cannot be un-revoked
+tokens           API tokens are stored hashed, expire, are audience bound and cannot be un-revoked; resolve_token
+                 agrees with the view on every case
 privileges       the application role has exactly the grants the design lists
 contracts        the rows can carry the fields the domain-event and evidence-ledger-entry schemas require
 EOF
@@ -498,6 +503,33 @@ suite_migrations() {
   fi
   ok "the catalog fingerprint is identical after up, down-up and redo (${fp_first:0:16}...)"
 
+  # A full revert hides a down script that leaves something behind when a later down drops the table anyway (a
+  # policy on a table, for example). So revert only the newest j migrations, run them again, and compare, for
+  # every j. A leftover then makes the run fail ("already exists") or changes the fingerprint.
+  local j
+  for j in $(seq 1 "$expected"); do
+    for _ in $(seq 1 "$j"); do
+      if ! diesel_run "$db" --config-file "$cfg" migration revert >"$out" 2>&1; then
+        not_ok "reverting the newest migration failed while reverting the $j newest"
+        cat "$out" >&2
+        drop_db "$db"
+        return 1
+      fi
+    done
+    if ! diesel_run "$db" --config-file "$cfg" migration run >"$out" 2>&1; then
+      not_ok "running the $j newest migrations again after reverting them failed (a down script left something behind?)"
+      cat "$out" >&2
+      drop_db "$db"
+      return 1
+    fi
+    if [ "$(psql_scalar "$db" -f "$TESTS/catalog_fingerprint.sql")" != "$fp_first" ]; then
+      not_ok "reverting the $j newest migrations and running them again changed the catalog"
+      drop_db "$db"
+      return 1
+    fi
+  done
+  ok "reverting the j newest migrations and running them again leaves the catalog unchanged, for every j from 1 to $expected"
+
   local printed="$WORK/print-schema.rs"
   if ! diesel_run "$db" --config-file "$DIESEL_CONFIG" print-schema >"$printed" 2>"$out"; then
     not_ok "diesel print-schema failed"
@@ -622,6 +654,16 @@ rls_sessions() {
   expect_count "logins: the three logins are members of the groups they were given and the membership check finds no conflict" \
     "$(psql_scalar "$CLONE" -c "SELECT count(*) || ':' || dbtest.membership_conflicts() FROM dbtest.group_members() WHERE member LIKE 'dbtest_%_${RUN_ID}'")" "4:" || rc=1
 
+  # The start-up check a pool runs on its own role (docs/database/tests/role_readiness.sql, quoted in the storage notes).
+  expect_count "readiness query as the tenant login: not a superuser, no bypass, owns nothing, in factory_app only" \
+    "$(psql_as "$app" -At -f "$TESTS/role_readiness.sql")" "f|f|f|t|f|f|f" || rc=1
+  expect_count "readiness query as the system login: in factory_system only" \
+    "$(psql_as "$sys" -At -f "$TESTS/role_readiness.sql")" "f|f|f|f|t|f|f" || rc=1
+  expect_count "readiness query as the API login: in factory_app and factory_resolver" \
+    "$(psql_as "$api" -At -f "$TESTS/role_readiness.sql")" "f|f|f|t|f|t|f" || rc=1
+  expect_count "control: the readiness query as a superuser starts with true, so a pool that connects as one refuses to start" \
+    "$(psql_db "$CLONE" -At -f "$TESTS/role_readiness.sql" | cut -c1-2)" "t|" || rc=1
+
   # --- A tenant login (the application role) --------------------------------------------------------
   out="$(session_output "$app" "SELECT count(*) FROM jobs;
 SELECT current_setting('factory.tenant_id', true) IS NULL;")"
@@ -698,10 +740,13 @@ SELECT set_config('factory.tenant_id', '$t1', true) AS x \\gset
 SELECT 'inside:' || string_agg(DISTINCT tenant_id::text, ',') FROM jobs;
 COMMIT;
 SELECT 'poisoned:' || string_agg(DISTINCT tenant_id::text, ',') FROM jobs;
+RESET factory.tenant_id;
+SELECT 'reset:' || count(*) FROM jobs;
+SELECT set_config('factory.tenant_id', '$t2', false) AS x \\gset
 DISCARD ALL;
 SELECT 'discarded:' || count(*) FROM jobs;")"
-  expect_count "KNOWN LIMIT: a session-level SET survives the transaction and shows its tenant to the next borrower; DISCARD ALL (what a pool must run on release) ends it" \
-    "$out" "$(printf 'inside:%s\npoisoned:%s\ndiscarded:0' "$t1" "$t2")" || rc=1
+  expect_count "KNOWN LIMIT: a session-level SET survives the transaction and shows its tenant to the next borrower; RESET of the setting, or DISCARD ALL, ends it" \
+    "$out" "$(printf 'inside:%s\npoisoned:%s\nreset:0\ndiscarded:0' "$t1" "$t2")" || rc=1
 
   # What the login cannot do to the rules themselves.
   session_refused "$app" "SET ROLE factory_system" 'permission denied to set role "factory_system"' && ok "the tenant login cannot become the system role (SET ROLE)" || { not_ok "the tenant login could become the system role"; rc=1; }

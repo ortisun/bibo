@@ -328,5 +328,12 @@ BEGIN
               VALUES (%L, %L, 9002, 8001, 'org2/probe', 'main')$q$, dbtest.u(2), dbtest.u(2091)),
     '23505', 'factory_app', 'repositories_github_repository_id_key', NULL, 2);
   PERFORM dbtest.expect_eq('while the same session cannot read that repository', dbtest.run_as('SELECT 1 FROM repositories WHERE github_repository_id = 8001', 'factory_app', 2), 'rows=0');
+  PERFORM dbtest.expect_eq('ON CONFLICT DO NOTHING on that key skips silently: no row comes back and no error, which is the same oracle',
+    dbtest.run_as(format($q$INSERT INTO repositories (tenant_id, id, github_installation_id, github_repository_id, full_name, default_branch)
+                            VALUES (%L, %L, 9002, 8001, 'org2/probe', 'main') ON CONFLICT DO NOTHING RETURNING id$q$, dbtest.u(2), dbtest.u(2092)), 'factory_app', 2), 'rows=0');
+  PERFORM dbtest.expect_true('ON CONFLICT DO UPDATE on that key fails the policy (42501, USING expression), because the row it would update belongs to another tenant',
+    dbtest.run_as(format($q$INSERT INTO repositories (tenant_id, id, github_installation_id, github_repository_id, full_name, default_branch)
+                            VALUES (%L, %L, 9002, 8001, 'org2/probe', 'main') ON CONFLICT (github_repository_id) DO UPDATE SET enabled = true RETURNING id$q$, dbtest.u(2), dbtest.u(2092)), 'factory_app', 2)
+    LIKE 'ERR:42501:new row violates row-level security policy (USING expression)%');
 END
 $$;

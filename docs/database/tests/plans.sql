@@ -221,12 +221,15 @@ BEGIN
     'attempts_teardown_idx', 'attempts', sys);
 
   -- Timeline of one job: events, ledger entries and stage runs, each by tenant and job, as the tenant role.
+  -- The ledger has two indexes that start with (tenant_id, job_id, sequence): the primary key and the unique key
+  -- that the job's head pointer references. The planner picks either one depending on the table size (at 100,000
+  -- rows it took the second), so both are accepted.
   PERFORM dbtest.expect_plan('timeline: outbox events of one job in order',
     format($q$SELECT event_type, aggregate_version FROM outbox WHERE tenant_id = %L AND job_id = %L ORDER BY seq$q$, tj, jb),
     'outbox_job_timeline_idx', 'outbox', app, 3);
   PERFORM dbtest.expect_plan('timeline: ledger entries of one job in order',
     format($q$SELECT sequence, claim_kind FROM ledger_entries WHERE tenant_id = %L AND job_id = dbtest.u(100000 + 7) ORDER BY sequence$q$, tj),
-    'ledger_entries_pkey', 'ledger_entries', app, 3);
+    'ledger_entries_(pkey|tenant_id_job_id_sequence_entry_hash_key)', 'ledger_entries', app, 3);
   PERFORM dbtest.expect_plan('timeline: stage runs of one job',
     format($q$SELECT stage_kind, status FROM stage_runs WHERE tenant_id = %L AND job_id = %L ORDER BY stage_kind$q$, tj, jb),
     'stage_runs_tenant_id_job_id_stage_kind_run_number_key', 'stage_runs', app, 3);
@@ -237,7 +240,7 @@ BEGIN
   -- Ledger tail: the head of one job's chain.
   PERFORM dbtest.expect_plan('ledger tail: the last entry of one job',
     format($q$SELECT sequence, entry_hash FROM ledger_entries WHERE tenant_id = %L AND job_id = %L ORDER BY sequence DESC LIMIT 1$q$, tj, dbtest.u(100000 + 7)::text),
-    'ledger_entries_pkey', 'ledger_entries', app, 3);
+    'ledger_entries_(pkey|tenant_id_job_id_sequence_entry_hash_key)', 'ledger_entries', app, 3);
   PERFORM dbtest.expect_plan('ledger tail: the audit chain head of one tenant',
     format($q$SELECT sequence, hash FROM audit_events WHERE tenant_id = %L ORDER BY sequence DESC LIMIT 1$q$, tj),
     'audit_events_pkey', 'audit_events', app, 3);
