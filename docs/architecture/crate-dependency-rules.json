@@ -65,9 +65,10 @@
         "serde_json",
         "thiserror",
         "uuid",
-        "time"
+        "time",
+        "unicode-normalization"
       ],
-      "responsibility": "Outbound traits and their closed error enums: Store, ArtifactStore, SandboxProvider, AgentRuntime, ChangeHost, IssueSource, SpecificationProvider, OutputValidator, AgentRegistry, Clock, IdGenerator, CancelSignal."
+      "responsibility": "Outbound traits and their closed error enums: Clock, IdGenerator, CancelSignal, Store with SystemTx and Tx and their parts, ArtifactStore, SandboxProvider, SandboxSession, WorkspaceProvider, Workspace, JobRepo, AgentRuntime, ModelRouter, ModelBroker, AgentRegistry, OutputValidator, SpecificationProvider, IssueSource, ChangeHost, WebhookVerifier and ProcessRunner. Also the pure checks that every adapter and fake must share: the sandbox spec validation and posture comparison, the path rules, and the protection preflight."
     },
     {
       "name": "workflow",
@@ -299,7 +300,7 @@
         "serde_json",
         "tokio"
       ],
-      "responsibility": "Labelled fakes: FakeClock, InMemoryStore, FakeSandbox, FakeAgentRuntime, FakeChangeHost, FakeSpecificationProvider. Every fake reports fidelity fake. May appear only in dev-dependencies."
+      "responsibility": "Labelled fakes: FakeClock, InMemoryStore, FakeSandbox, FakeAgentRuntime, FakeModelBroker, FakeChangeHost, FakeWorkspaceProvider, FakeJobRepo, FakeSpecificationProvider, ScriptedProcessRunner and FakeWebhookVerifier, with FakeRemote shared by the workspace and change host fakes. Every fake reports fidelity fake. Also the shared contract suites and the register that shows every check can fail. May appear only in dev-dependencies."
     }
   ],
   "apps": [
