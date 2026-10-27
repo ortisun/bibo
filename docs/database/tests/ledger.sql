@@ -194,14 +194,14 @@ $$;
 
 DO $$
 DECLARE
-  doc text := '{"claim":{"kind":"assumption","statement":"Café ☃ gate"},"schema_version":1}';
+  doc text := '{"claim":{"kind":"assumption","statement":"Café ü ß gate"},"schema_version":1}';
 BEGIN
   PERFORM dbtest.expect_eq('the chain formula matches an independent SHA-256 (with a previous hash)',
     public.ledger_entry_hash('sha256:' || repeat('a', 64), doc),
-    'sha256:ba7b2cc7369714d8e9d87792d41da5a556b596ece9a29fd39ee8a1217d4a96f1');
+    'sha256:0f5f57aa591430b785ee073cdf1ac6e09932ee15965755ae728714f00e2bc7c3');
   PERFORM dbtest.expect_eq('the chain formula matches an independent SHA-256 (first entry, empty previous hash)',
     public.ledger_entry_hash(NULL, doc),
-    'sha256:b6978e3d0f99c20ad0c6cbe3e11e3e23fa8549d091130f0a34aa08f552d1aaff');
+    'sha256:9f563e281c5bf7065d0ead6194d1e3140cee4610b140dc82263618a4d2302520');
 END
 $$;
 

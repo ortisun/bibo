@@ -242,7 +242,7 @@ provision() {
   elif [ "$mode" = local ]; then
     provision_local || blocked "no local PostgreSQL server binaries (initdb, pg_ctl, postgres) were found, or the server did not start"
   else
-    provision_local || provision_docker || blocked "no PostgreSQL server: set FACTORY_DB_ADMIN_URL, install PostgreSQL 17 or 18, or start Docker"
+    provision_local || provision_docker || blocked "no PostgreSQL server: set FACTORY_DB_ADMIN_URL, install PostgreSQL 16 or later, or start Docker"
   fi
   if ! SERVER_VERSION="$(psql_scalar postgres -c 'SHOW server_version' 2>/dev/null)"; then
     blocked "the $PROVISIONED database server is not reachable"
