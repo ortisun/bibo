@@ -25,27 +25,27 @@
     "G_ALL_ATTEMPTS_TERMINAL": "Every attempt of the job is in a terminal state and every sandbox has been torn down or flagged as leaked.",
     "G_UNRECOVERABLE": "A stage run is FAILED and no rework route or retry budget remains, or a job-level hard limit was reached under a policy that says fail.",
     "G_REJECTION_RECORDED": "The intake decision is decline, or an authorized approver recorded a reject decision.",
-    "G_PIPELINE_SCOPE_COMPLETE": "Every stage kind in the job's configured scope has a PASSED run that is not superseded, the approval decision is approve, and the evidence ledger hash chain verifies.",
-    "G_UPSTREAM_PASSED": "Every required upstream stage run is PASSED and not superseded, every consumed artifact hash equals the current version, and the stage contract resolved and validated against its schema.",
+    "G_PIPELINE_SCOPE_COMPLETE": "Every stage kind in the job's configured scope has a run that is PASSED, or SKIPPED because a recorded rule says the stage does not apply, and that run is not superseded; the approval decision is approve; and the evidence ledger hash chain verifies.",
+    "G_UPSTREAM_PASSED": "Every required upstream stage run is PASSED, or SKIPPED because a recorded rule says the stage does not apply, and is not superseded. Every consumed artifact hash equals the current version (a skipped stage produced none, and the stage contract records the skip rule instead of a hash). The stage contract resolved and validated against its schema.",
     "G_NOT_APPLICABLE_DECIDED": "A deterministic rule, a domain profile or a policy states that the stage does not apply. The rule and its inputs are recorded in the ledger. An agent opinion is never sufficient.",
     "G_LEASE_ACQUIRED": "The lease compare-and-swap succeeded, the job is ACTIVE, not_before has passed, the concurrency quota allows it, and the runtime capability check passed.",
     "G_OUTPUT_SCHEMA_VALID": "The attempt succeeded and its output validates against the stage outputs schema, and the output artifact hash is stored.",
-    "G_RETRY_ALLOWED": "The failure class is retryable, attempts used is below max_attempts, and the budget has room for another attempt.",
-    "G_RETRY_EXHAUSTED_OR_NONRETRYABLE": "The failure class is not retryable, or max_attempts is reached.",
-    "G_ESCALATION_REQUIRED": "A budget limit was hit, the agent returned a structured needs_human request, the stagnation detector fired, or policy requires a human decision here.",
+    "G_RETRY_ALLOWED": "The failure class is retryable under the stage contract, the attempts used since the last human answer are below max_attempts, the budget has room for another attempt, and, after INVALID_OUTPUT, no more than two repairs have been made (a repair is a retry that follows an invalid-output failure; the cap comes from policy and can only be lowered).",
+    "G_FAILURE_NONRETRYABLE": "Retrying cannot help: the failure class is POLICY_DENIED or INTERNAL, or the stage contract does not list it in retry_on. BUDGET_EXHAUSTED is not covered here, because a budget limit asks a human (S07). Reaching the attempt limit is not covered either, because an attempt limit asks a human (S07).",
+    "G_ESCALATION_REQUIRED": "A budget limit was hit (the failure class is BUDGET_EXHAUSTED, or a retry would be allowed in every other way but the budget has no room), the attempt limit or the repair cap was reached on a failure class the stage contract lists as retryable, the agent returned a structured needs_human request, the stagnation detector fired, or policy requires a human decision here.",
     "G_GATE_PASS_EVIDENCED": "The gate decision is PASS and is persisted, every acceptance criterion of the stage contract has a ledger entry, and every mandatory gate report is PASSED or NOT_APPLICABLE with a recorded reason. No gate report is BLOCKED.",
     "G_REWORK_ALLOWED": "The verdict is CHANGES_REQUIRED or a deterministic gate FAILED, rework rounds used are below the cap of two (code and documentation each have their own count), the failing set differs from the previous round, and budget remains. After the second round a human decides.",
-    "G_NEEDS_HUMAN_VERDICT": "The verdict is NEEDS_HUMAN, or the rework limit, the stagnation detector or a budget limit was reached, or the gate itself is a human gate.",
-    "G_BLOCKING_CONDITION": "The verdict is BLOCK, a mandatory gate could not run (tool unavailable or probe failed), or a policy violation was detected.",
+    "G_NEEDS_HUMAN_VERDICT": "The verdict is NEEDS_HUMAN, or the rework limit, the stagnation detector or a budget limit was reached, or the gate itself is a human gate, or a finding that justifies the verdict has a defect class that only a person can decide (specification, or policy; see defect_routing).",
+    "G_BLOCKING_CONDITION": "The verdict is BLOCK, a mandatory gate could not run (tool unavailable or probe failed), or a deterministic check detected a policy violation. A reviewer's finding with defect class policy asks a person instead (S10).",
     "G_GATE_FAILED_NO_REWORK": "The gate FAILED and the stage has no rework route, for example an intake record that is still invalid after bounded repair.",
-    "G_ANSWER_RECORDED": "A human answer, clarification, approval of residual input or budget extension is recorded with the principal and becomes a new input hash for the stage.",
-    "G_APPROVER_AUTHORIZED": "The decision is approve, the principal holds the role the approval policy requires for this stage and risk tier, and the evidence digest the human saw equals the current evidence digest.",
+    "G_ANSWER_RECORDED": "A human answer, clarification, approval of residual input or budget extension is recorded with the principal and becomes a new input hash for the stage. It also starts a new attempt window: attempts and repairs are counted from the answer. A budget extension that raises a ceiling is accepted only from an org_admin.",
+    "G_APPROVER_AUTHORIZED": "The decision is approve, the principal holds the role the approval policy requires for this stage and risk tier, the evidence digest the human saw equals the current evidence digest, and every warning of the rule translation-unfaithful in the gate reports of that evidence has a recorded human decision.",
     "G_HUMAN_REWORK_ALLOWED": "The principal holds the approver or operator role and the rework rounds used are below the cap of two. The stagnation detector does not apply to human requests. After the second round a human must choose to continue, with the decision recorded.",
     "G_HUMAN_REJECTED": "An authorized approver recorded a reject decision with a reason.",
     "G_BLOCK_CLEARED_RERUN": "The capability re-probe passed or the missing dependency is now available, so the stage can run again.",
     "G_OVERRIDE_PERMITTED": "Policy permits an override for this block code, the principal holds the required role (security_approver for security-class blocks), a justification is recorded, and the blocked gate is not a mandatory gate of an active domain profile. An override records accepted residual risk. It never creates an assurance level claim.",
     "G_NO_ACTIVE_ATTEMPT": "The stage run has no attempt in STARTING, RUNNING or CANCELLING.",
-    "G_UPSTREAM_INVALIDATED": "A consumed upstream artifact was superseded by a newer version, or an upstream stage run was reworked.",
+    "G_UPSTREAM_INVALIDATED": "A consumed upstream artifact was superseded by a newer version, an upstream stage run was reworked, or an external change listed in the invalidation table happened (the source request was edited after the intake snapshot, or a value bound to gate evidence changed).",
     "G_SANDBOX_PROVISIONED": "The sandbox started within its limits, the policy-approved tool grants are in place, the runtime capability probe satisfies the stage needs, and the lease epoch is current.",
     "G_LEASE_EPOCH_CURRENT": "The epoch sent by the worker equals the stored epoch and now is not past lease_expires_at.",
     "G_EPOCH_CURRENT": "The epoch sent by the worker equals the stored epoch.",
@@ -324,7 +324,7 @@
     },
     "stage_run": {
       "title": "Stage run",
-      "description": "One execution of one stage kind for a job. Terminal runs are immutable. Rework creates a new run; it never reopens an old one.",
+      "description": "One execution of one stage kind for a job. Terminal runs are immutable. Rework creates a new run; it never reopens an old one. When more than one of S05, S06 and S07 is legal for a failed attempt, the engine takes the first that applies in this order: S07 for BUDGET_EXHAUSTED, S05 when a retry is allowed, S06 when the class is not retryable, otherwise S07 because the attempt limit, the repair cap or the budget stopped a retry.",
       "initial": "PENDING",
       "states": {
         "PENDING": {
@@ -366,7 +366,8 @@
         },
         "SKIPPED": {
           "terminal": true,
-          "meaning": "NOT_APPLICABLE by deterministic rule, profile or policy, with the rule recorded."
+          "supersedable": true,
+          "meaning": "NOT_APPLICABLE by deterministic rule, profile or policy, with the rule recorded. Counts as satisfied for the stages that require it and for completion, never as passed, and never as evidence for an assurance level. Becomes SUPERSEDED when an input of the decision changes."
         },
         "SUPERSEDED": {
           "terminal": true,
@@ -465,7 +466,7 @@
             "RUNNING"
           ],
           "event": "attempt_failed_final",
-          "guard": "G_RETRY_EXHAUSTED_OR_NONRETRYABLE",
+          "guard": "G_FAILURE_NONRETRYABLE",
           "to": "FAILED",
           "actors": [
             "engine"
@@ -488,7 +489,8 @@
           ],
           "emits": "stage_run.waiting_for_human",
           "effects": [
-            "store the question or the limit that was hit"
+            "store the question or the limit that was hit",
+            "when a budget limit was hit, revoke the job's broker token"
           ]
         },
         {
@@ -581,7 +583,8 @@
           "actors": [
             "requester",
             "operator",
-            "approver"
+            "approver",
+            "org_admin"
           ],
           "emits": "stage_run.ready",
           "effects": [
@@ -701,7 +704,8 @@
             "GATING",
             "WAITING_FOR_HUMAN",
             "BLOCKED",
-            "PASSED"
+            "PASSED",
+            "SKIPPED"
           ],
           "event": "supersede",
           "guard": "G_UPSTREAM_INVALIDATED",
@@ -1244,7 +1248,7 @@
         "from_stage": "REVIEW",
         "trigger": "verdict CHANGES_REQUIRED",
         "target_stage": "IMPLEMENTATION",
-        "note": "findings are deduplicated before the builder sees them"
+        "note": "findings are deduplicated before the builder sees them; applies to defect classes code_behavior and documentation, see defect_routing"
       },
       {
         "from_stage": "DOCUMENTATION_REVIEW",
@@ -1262,9 +1266,128 @@
         "from_stage": "APPROVAL",
         "trigger": "human requests rework",
         "target_stage": "IMPLEMENTATION",
-        "note": "human instructions are authorized input but still untrusted text"
+        "note": "human instructions are authorized input but still untrusted text; the baseline route, see human_rework_routes for the full set"
       }
     ],
+    "defect_routing": {
+      "description": "How the defect classes of a reviewer's findings route a CHANGES_REQUIRED verdict. Only the four stages with an independent reviewer use it; the other gates are deterministic and use the single route in rework_routes. The class is taken from the findings that justify the verdict (severity blocker, high or medium). When classes differ, the first in precedence wins, so a decision that needs a person is never hidden behind an easier fix. A deterministic failure at DOCUMENTATION_REVIEW has no reviewer class and counts as documentation. 'rework' means the route in rework_routes (DOCUMENTATION_REVIEW picks its row by class). 'human' means gate_needs_human (S10): the stage run waits for a person, and no automatic rework happens.",
+      "precedence": [
+        "specification",
+        "policy",
+        "code_behavior",
+        "documentation"
+      ],
+      "stages": {
+        "SPECIFICATION": {
+          "code_behavior": "rework",
+          "documentation": "rework",
+          "specification": "rework",
+          "policy": "human"
+        },
+        "ARCHITECTURE": {
+          "code_behavior": "rework",
+          "documentation": "rework",
+          "specification": "human",
+          "policy": "human"
+        },
+        "REVIEW": {
+          "code_behavior": "rework",
+          "documentation": "rework",
+          "specification": "human",
+          "policy": "human"
+        },
+        "DOCUMENTATION_REVIEW": {
+          "code_behavior": "rework",
+          "documentation": "rework",
+          "specification": "human",
+          "policy": "human"
+        }
+      }
+    },
+    "human_rework_routes": {
+      "description": "Where a person may send rework from a stage run that waits for a human or is blocked (S15). The person names the target. A target is an agent-produced stage at or before the waiting stage: ARCHITECTURE, TASK_PLANNING, IMPLEMENTATION or DOCUMENTING. SPECIFICATION is a target only from SPECIFICATION itself, because revising a frozen specification needs the spec adapter's revision method (ADR 0006), which is not proven in Slice 1. INTAKE, REPOSITORY_INTELLIGENCE and DOMAIN_DISCOVERY have no human rework route; a person answers, approves or rejects there. Each round is charged to the code count, or to the documentation count when the target is DOCUMENTING, and the cap of two applies.",
+      "routes": [
+        {
+          "from_stage": "SPECIFICATION",
+          "targets": [
+            "SPECIFICATION"
+          ]
+        },
+        {
+          "from_stage": "ARCHITECTURE",
+          "targets": [
+            "ARCHITECTURE"
+          ]
+        },
+        {
+          "from_stage": "TASK_PLANNING",
+          "targets": [
+            "ARCHITECTURE",
+            "TASK_PLANNING"
+          ]
+        },
+        {
+          "from_stage": "IMPLEMENTATION",
+          "targets": [
+            "ARCHITECTURE",
+            "TASK_PLANNING",
+            "IMPLEMENTATION"
+          ]
+        },
+        {
+          "from_stage": "VALIDATION",
+          "targets": [
+            "ARCHITECTURE",
+            "TASK_PLANNING",
+            "IMPLEMENTATION"
+          ]
+        },
+        {
+          "from_stage": "REVIEW",
+          "targets": [
+            "ARCHITECTURE",
+            "TASK_PLANNING",
+            "IMPLEMENTATION"
+          ]
+        },
+        {
+          "from_stage": "DOCUMENTING",
+          "targets": [
+            "ARCHITECTURE",
+            "TASK_PLANNING",
+            "IMPLEMENTATION",
+            "DOCUMENTING"
+          ]
+        },
+        {
+          "from_stage": "DOCUMENTATION_REVIEW",
+          "targets": [
+            "ARCHITECTURE",
+            "TASK_PLANNING",
+            "IMPLEMENTATION",
+            "DOCUMENTING"
+          ]
+        },
+        {
+          "from_stage": "DELIVERY",
+          "targets": [
+            "ARCHITECTURE",
+            "TASK_PLANNING",
+            "IMPLEMENTATION",
+            "DOCUMENTING"
+          ]
+        },
+        {
+          "from_stage": "APPROVAL",
+          "targets": [
+            "ARCHITECTURE",
+            "TASK_PLANNING",
+            "IMPLEMENTATION",
+            "DOCUMENTING"
+          ]
+        }
+      ]
+    },
     "invalidation_rules": [
       {
         "when": "SPECIFICATION produces a new approved spec version",
@@ -1279,7 +1402,8 @@
           "DOCUMENTATION_REVIEW",
           "DELIVERY",
           "APPROVAL"
-        ]
+        ],
+        "note": "gate_integrity.invalidated_by: spec_revision."
       },
       {
         "when": "ARCHITECTURE produces a new version",
@@ -1292,7 +1416,8 @@
           "DOCUMENTATION_REVIEW",
           "DELIVERY",
           "APPROVAL"
-        ]
+        ],
+        "note": ""
       },
       {
         "when": "TASK_PLANNING produces a new plan version",
@@ -1304,7 +1429,8 @@
           "DOCUMENTATION_REVIEW",
           "DELIVERY",
           "APPROVAL"
-        ]
+        ],
+        "note": ""
       },
       {
         "when": "IMPLEMENTATION produces a new commit",
@@ -1315,7 +1441,8 @@
           "DOCUMENTATION_REVIEW",
           "DELIVERY",
           "APPROVAL"
-        ]
+        ],
+        "note": "gate_integrity.invalidated_by: new_commit and rebase. A rebase writes new commits, so it counts as a new commit."
       },
       {
         "when": "DOCUMENTING produces a new documentation commit",
@@ -1323,7 +1450,55 @@
           "DOCUMENTATION_REVIEW",
           "DELIVERY",
           "APPROVAL"
-        ]
+        ],
+        "note": "gate_integrity.invalidated_by: new_commit."
+      },
+      {
+        "when": "The source request is edited after the intake snapshot",
+        "supersedes": [
+          "INTAKE",
+          "REPOSITORY_INTELLIGENCE",
+          "SPECIFICATION",
+          "DOMAIN_DISCOVERY",
+          "ARCHITECTURE",
+          "TASK_PLANNING",
+          "IMPLEMENTATION",
+          "VALIDATION",
+          "REVIEW",
+          "DOCUMENTING",
+          "DOCUMENTATION_REVIEW",
+          "DELIVERY",
+          "APPROVAL"
+        ],
+        "note": "An external change, so the intake run is superseded too. The new intake run asks for re-authorization before any agent reads the new text (NT-AUTHZ-05)."
+      },
+      {
+        "when": "REPOSITORY_INTELLIGENCE produces a new repository map",
+        "supersedes": [
+          "SPECIFICATION",
+          "DOMAIN_DISCOVERY",
+          "ARCHITECTURE",
+          "TASK_PLANNING",
+          "IMPLEMENTATION",
+          "VALIDATION",
+          "REVIEW",
+          "DOCUMENTING",
+          "DOCUMENTATION_REVIEW",
+          "DELIVERY",
+          "APPROVAL"
+        ],
+        "note": "The specification consumed the map and the baseline."
+      },
+      {
+        "when": "A value bound to gate evidence changes",
+        "supersedes": [
+          "VALIDATION",
+          "REVIEW",
+          "DOCUMENTATION_REVIEW",
+          "DELIVERY",
+          "APPROVAL"
+        ],
+        "note": "The values are the base commit, the gate definition hash, the policy hash and the sandbox image digest (gate_integrity.evidence_binding). gate_integrity.invalidated_by: base_moved, policy_change and image_change. Checked at two points, before DELIVERY pushes and when an approval is recorded. DOCUMENTING is not superseded, because the documentation text did not change."
       }
     ]
   },
@@ -1496,12 +1671,13 @@
     },
     {
       "id": "INV-10",
-      "statement": "The number of attempts per stage run and rework rounds per job are bounded by policy (default: three attempts, two rework rounds for code and two for documentation). Exhaustion escalates to a human; it does not loop.",
+      "statement": "The number of attempts per stage run (counted since the last human answer) and rework rounds per job are bounded by policy (default: three attempts, two rework rounds for code and two for documentation, and two repairs after an invalid output). Exhaustion, including a budget limit, escalates to a human; it does not loop, and it does not fail the stage run.",
       "enforced_by": [
-        "guards G_RETRY_ALLOWED and G_REWORK_ALLOWED"
+        "guards G_RETRY_ALLOWED, G_ESCALATION_REQUIRED and G_REWORK_ALLOWED"
       ],
       "verified_by": [
-        "engine test with an always-failing fake runtime reaches WAITING_FOR_HUMAN in a bounded number of steps"
+        "engine test with an always-failing fake runtime reaches WAITING_FOR_HUMAN in a bounded number of steps",
+        "domain test: BUDGET_EXHAUSTED and an exhausted attempt limit choose S07, never S06"
       ]
     },
     {
