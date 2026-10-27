@@ -1,0 +1,13 @@
+# Diesel CLI configuration for the storage crate (ADR 0007).
+#
+# Migrations live at the repository root, owned by the DBA. The generated schema is committed and
+# CI fails when `diesel print-schema` differs from it: scripts/db-test.sh migrations.
+# Regenerate it with: scripts/db-test.sh write-schema
+#
+# Paths are relative to this file.
+
+[print_schema]
+file = "src/schema.rs"
+
+[migrations_directory]
+dir = "../../migrations"

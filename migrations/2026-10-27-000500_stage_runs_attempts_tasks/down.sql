@@ -1,0 +1,12 @@
+DROP TABLE IF EXISTS task_node_dependencies;
+DROP FUNCTION IF EXISTS task_node_dependencies_acyclic();
+DROP TABLE IF EXISTS task_nodes;
+DROP TABLE IF EXISTS attempts;
+DROP FUNCTION IF EXISTS attempts_lease_bound();
+DROP FUNCTION IF EXISTS attempts_update_guard();
+DROP FUNCTION IF EXISTS attempts_epoch_check();
+DROP FUNCTION IF EXISTS attempts_insert_guard();
+DROP TABLE IF EXISTS stage_run_artifacts;
+ALTER TABLE artifacts DROP CONSTRAINT IF EXISTS artifacts_created_by_stage_run_fk;
+DROP TABLE IF EXISTS stage_runs;
+DROP FUNCTION IF EXISTS stage_runs_guard();
