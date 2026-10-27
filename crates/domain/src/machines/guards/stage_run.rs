@@ -3,7 +3,7 @@
 //! `G_NO_ACTIVE_ATTEMPT` (`S19`) is in [`attempt`](super::attempt), next to the other guards that
 //! read attempts.
 
-use super::{Check, GuardResult, any_of, instant};
+use super::{Check, GuardResult, any_of};
 use crate::contracts::stage_contract::RetryClass;
 use crate::machines::failure::FailureClass;
 use crate::machines::limits::ReworkCap;
@@ -131,7 +131,7 @@ pub struct LeaseGrantFacts {
 pub fn lease_acquired(facts: &LeaseGrantFacts) -> GuardResult {
     let back_off_over = facts
         .not_before
-        .is_none_or(|not_before| instant(facts.now) >= instant(not_before));
+        .is_none_or(|not_before| facts.now >= not_before);
     Check::new(Guard::LeaseAcquired)
         .require(
             facts.lease_compare_and_swap_succeeded,

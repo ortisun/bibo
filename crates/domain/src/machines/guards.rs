@@ -27,8 +27,8 @@
 //! * **Words from the file.** A predicate follows the plain-English definition in
 //!   `state-machine.json` clause by clause. Where a definition says "or", any one clause is
 //!   enough. A test per guard covers each clause.
-//! * **Time is a parameter.** Moments come in as [`Timestamp`] values
-//!   and are compared as instants, so `10:00:00Z` and `10:00:00.000Z` are the same moment.
+//! * **Time is a parameter.** Moments come in as [`Timestamp`](crate::values::Timestamp) values. A `Timestamp` compares by
+//!   instant, so `10:00:00Z` and `10:00:00.000Z` are the same moment (ADR 0011).
 //!
 //! Every [`Guard`] has a predicate. The `match` in [`evaluate`] names every guard with no
 //! catch-all arm, so adding a guard to the enum without a predicate does not compile.
@@ -42,7 +42,6 @@ use std::fmt;
 
 use crate::macros::string_enum;
 use crate::state::Guard;
-use crate::values::Timestamp;
 
 pub use attempt::{
     AttemptsFacts, CancelFacts, DeadlineFacts, EpochFacts, LeaseEpochFacts, LeaseExpiryFacts,
@@ -159,13 +158,6 @@ fn any_of(guard: Guard, alternatives: &[(bool, &'static str)]) -> GuardResult {
             any_of: true,
         })
     }
-}
-
-/// A moment as a pair that orders correctly. `Timestamp` also remembers how many fraction
-/// digits it was written with and orders on that after the instant, so two spellings of one
-/// moment are not equal. A guard cares about the moment only.
-fn instant(moment: Timestamp) -> (i64, u32) {
-    (moment.unix_seconds(), moment.subsecond_nanos())
 }
 
 string_enum! {

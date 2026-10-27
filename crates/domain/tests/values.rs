@@ -265,6 +265,153 @@ fn timestamps_order_by_instant() {
     assert_eq!(early.unix_seconds(), 1_793_089_801);
 }
 
+fn hash_of(value: &Timestamp) -> u64 {
+    use std::hash::{BuildHasher, BuildHasherDefault, DefaultHasher};
+    BuildHasherDefault::<DefaultHasher>::default().hash_one(value)
+}
+
+#[test]
+fn timestamp_equality_ignores_spelling() {
+    // ADR 0011: `10:00:00Z` and `10:00:00.000Z` are one instant written two ways.
+    let spellings = [
+        "2026-10-27T10:00:00Z",
+        "2026-10-27T10:00:00.0Z",
+        "2026-10-27T10:00:00.000Z",
+        "2026-10-27T10:00:00.000000000Z",
+    ];
+    let parsed: Vec<Timestamp> = spellings
+        .iter()
+        .map(|text| Timestamp::parse(text).unwrap())
+        .collect();
+    for (left, left_text) in parsed.iter().zip(spellings) {
+        for (right, right_text) in parsed.iter().zip(spellings) {
+            assert_eq!(left, right, "{left_text} and {right_text}");
+            assert_eq!(
+                hash_of(left),
+                hash_of(right),
+                "{left_text} and {right_text} hash differently"
+            );
+            // Neither sorts before the other, and the order is consistent with equality.
+            assert_eq!(left.cmp(right), std::cmp::Ordering::Equal);
+            assert_eq!(left.partial_cmp(right), Some(std::cmp::Ordering::Equal));
+        }
+    }
+    // The spelling is still kept: only the comparison ignores it.
+    assert_eq!(parsed[0].as_text(), "2026-10-27T10:00:00Z");
+    assert_eq!(parsed[2].as_text(), "2026-10-27T10:00:00.000Z");
+    assert_ne!(parsed[0].as_text(), parsed[2].as_text());
+
+    // A set holds one of them, and a sorted list does not depend on the spelling.
+    let set: std::collections::HashSet<Timestamp> = parsed.iter().copied().collect();
+    assert_eq!(set.len(), 1);
+    let ordered: std::collections::BTreeSet<Timestamp> = parsed.iter().copied().collect();
+    assert_eq!(ordered.len(), 1);
+}
+
+#[test]
+fn timestamps_with_different_instants_stay_different_whatever_the_spelling() {
+    // The same digits at different lengths are different instants: `.5` is half a second and
+    // `.05` is a twentieth of one.
+    let half = Timestamp::parse("2026-10-27T10:00:00.5Z").unwrap();
+    let half_long = Timestamp::parse("2026-10-27T10:00:00.500Z").unwrap();
+    let twentieth = Timestamp::parse("2026-10-27T10:00:00.05Z").unwrap();
+    assert!(
+        Timestamp::parse("2026-10-27T10:00:00.5000000001Z").is_err(),
+        "ten fraction digits are not allowed"
+    );
+    let just_over = Timestamp::parse("2026-10-27T10:00:00.500000001Z").unwrap();
+
+    assert_eq!(half, half_long);
+    assert!(twentieth < half && twentieth < half_long);
+    assert!(half < just_over && half_long < just_over);
+    assert_ne!(hash_of(&half), hash_of(&twentieth));
+
+    // Sorting looks at the instant only: the shorter spelling does not always go first.
+    let mut stamps = vec![just_over, half_long, twentieth, half];
+    stamps.sort();
+    assert_eq!(stamps, [twentieth, half_long, half, just_over]);
+    assert_eq!(stamps[1].as_text(), "2026-10-27T10:00:00.500Z");
+    assert_eq!(stamps[2].as_text(), "2026-10-27T10:00:00.5Z");
+}
+
+#[test]
+fn equal_timestamps_hash_alike_and_order_alike_over_many_spellings() {
+    // Every nanosecond count that has trailing zeros can be written at several lengths.
+    for nanos in [
+        0_u32,
+        500_000_000,
+        250_000_000,
+        120_000_000,
+        100_000_000,
+        10_000_000,
+        1_000_000,
+        100_000,
+        10,
+        1,
+        999_999_999,
+    ] {
+        let full = format!("{nanos:09}");
+        let shortest = full.trim_end_matches('0');
+        let mut spellings = Vec::new();
+        for digits in shortest.len().max(1)..=9 {
+            let fraction = &full[..digits];
+            spellings.push(format!("2026-10-27T10:00:01.{fraction}Z"));
+        }
+        if nanos == 0 {
+            spellings.push("2026-10-27T10:00:01Z".to_owned());
+        }
+        let parsed: Vec<Timestamp> = spellings
+            .iter()
+            .map(|text| Timestamp::parse(text).unwrap())
+            .collect();
+        for window in parsed.windows(2) {
+            assert_eq!(window[0], window[1], "{spellings:?}");
+            assert_eq!(hash_of(&window[0]), hash_of(&window[1]), "{spellings:?}");
+            assert_eq!(window[0].cmp(&window[1]), std::cmp::Ordering::Equal);
+        }
+    }
+}
+
+#[test]
+fn from_utc_is_the_shortest_spelling() {
+    use time::OffsetDateTime;
+    let base = OffsetDateTime::from_unix_timestamp(1_793_095_200).unwrap(); // 2026-10-27T10:00:00Z
+    for (nanos, expected) in [
+        (0_i128, "2026-10-27T10:00:00Z"),
+        (500_000_000, "2026-10-27T10:00:00.5Z"),
+        (120_000_000, "2026-10-27T10:00:00.12Z"),
+        (1_000_000, "2026-10-27T10:00:00.001Z"),
+        (1_000, "2026-10-27T10:00:00.000001Z"),
+        (1, "2026-10-27T10:00:00.000000001Z"),
+        (999_999_999, "2026-10-27T10:00:00.999999999Z"),
+    ] {
+        let instant = base + time::Duration::nanoseconds(i64::try_from(nanos).unwrap());
+        let stamp = Timestamp::from_utc(instant);
+        assert_eq!(stamp.as_text(), expected);
+        // No value the factory builds ends in a zero digit of the fraction.
+        let text = stamp.as_text();
+        let without_zone = text.strip_suffix('Z').unwrap();
+        if let Some((_, fraction)) = without_zone.split_once('.') {
+            assert!(!fraction.ends_with('0'), "{text} has a trailing zero");
+        }
+    }
+    // Two values for the same instant that the factory built are byte-identical.
+    let once = Timestamp::from_utc(base + time::Duration::milliseconds(250));
+    let twice = Timestamp::from_utc(base + time::Duration::microseconds(250_000));
+    assert_eq!(once.as_text(), twice.as_text());
+}
+
+#[test]
+fn from_utc_agrees_with_a_parsed_timestamp_of_the_same_instant() {
+    // A timestamp from a document with a long spelling equals the one the factory builds.
+    let parsed = Timestamp::parse("2026-10-27T10:00:00.250000Z").unwrap();
+    let built = Timestamp::from_utc(parsed.to_utc());
+    assert_eq!(parsed, built);
+    assert_eq!(hash_of(&parsed), hash_of(&built));
+    assert_ne!(parsed.as_text(), built.as_text());
+    assert_eq!(built.as_text(), "2026-10-27T10:00:00.25Z");
+}
+
 // ---- identifiers ------------------------------------------------------------------------------
 
 #[test]
