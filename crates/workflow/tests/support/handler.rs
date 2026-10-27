@@ -74,6 +74,9 @@ pub struct Tweaks {
     pub backoff_initial_ms: i64,
     pub backoff_max_ms: i64,
     pub attempt_timeout_seconds: i64,
+    /// Adds an acceptance criterion that names a gate which never reports, so a pass has a
+    /// criterion with no evidence behind it.
+    pub uncovered_criterion: bool,
 }
 
 impl Default for Tweaks {
@@ -91,6 +94,7 @@ impl Default for Tweaks {
             backoff_initial_ms: 5_000,
             backoff_max_ms: 300_000,
             attempt_timeout_seconds: 900,
+            uncovered_criterion: false,
         }
     }
 }
@@ -266,6 +270,16 @@ fn resolve_contract(ctx: &ContractContext<'_>, tweaks: &Tweaks) -> StageContract
         "machine_verifiable": true,
         "verification": { "kind": "gate", "ref": "scripted-gate" }
     }]);
+    if tweaks.uncovered_criterion
+        && let Some(criteria) = doc["acceptance_criteria"].as_array_mut()
+    {
+        criteria.push(json!({
+            "id": "unverified-check",
+            "description": "A check that no gate of this stage ever reports on.",
+            "machine_verifiable": true,
+            "verification": { "kind": "gate", "ref": "silent-gate" }
+        }));
+    }
     doc["deliverables"] = json!([{
         "name": "scripted-output",
         "description": "The document the scripted stage produces.",

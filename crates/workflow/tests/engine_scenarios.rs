@@ -2617,6 +2617,75 @@ async fn restart_resumes_without_duplication() {
     );
 }
 
+// ---- a pass needs the guard that clears it (ports v1.1, GuardCleared) ---------------------------
+
+#[tokio::test]
+async fn a_pass_with_a_criterion_that_nothing_verified_is_blocked_and_never_passed() {
+    // The contract has two acceptance criteria and the gate reports on one. The guard of the pass
+    // (`G_GATE_PASS_EVIDENCED`) asks for evidence behind every criterion, so the stage run is
+    // blocked and no `stage_run.passed` event exists for it.
+    let world = World::new().await;
+    let job = world.admitted_job().await;
+    world
+        .script(StageKind::Intake)
+        .with(|s| s.tweaks.uncovered_criterion = true);
+    world.run_next("worker-1").await;
+    let view = world.view(job).await;
+    assert_eq!(status_of(&view, StageKind::Intake), StageRunStatus::Blocked);
+    let intake_id = view.newest(StageKind::Intake).expect("run").id;
+    let passed = world
+        .events(job)
+        .await
+        .iter()
+        .filter(|event| {
+            event.event_type.as_str() == "stage_run.passed"
+                && event.aggregate.id.as_uuid() == intake_id.as_uuid()
+        })
+        .count();
+    assert_eq!(passed, 0, "a stage run with an unverified criterion passed");
+}
+
+#[tokio::test]
+async fn every_move_names_the_guard_that_cleared_it_and_the_facts_it_held_on() {
+    // Every move of a job, a stage run or an attempt is written with the proof that its guard
+    // held. The event says which guard and carries the digest of the facts, so the record shows
+    // that the move was justified. A passed stage run names the guard of its pass.
+    let world = World::new().await;
+    let job = world.admitted_job().await;
+    world.run_stages(3).await;
+    let events = world.events(job).await;
+    let mut moves = 0;
+    for event in &events {
+        let Some(row) = event.payload.get("guard") else {
+            continue;
+        };
+        moves += 1;
+        let guard = row.as_str().expect("a guard name");
+        assert!(guard.starts_with("G_"), "{guard}");
+        let digest = event
+            .payload
+            .get("guard_facts_sha256")
+            .and_then(|v| v.as_str())
+            .expect("the facts digest");
+        assert!(
+            factory_domain::values::Sha256Digest::parse(digest).is_ok(),
+            "{digest}"
+        );
+    }
+    assert!(
+        moves >= events.len() - 1,
+        "{moves} of {} events name a guard",
+        events.len()
+    );
+    let passes: Vec<&str> = events
+        .iter()
+        .filter(|event| event.event_type.as_str() == "stage_run.passed")
+        .filter_map(|event| event.payload.get("guard").and_then(|v| v.as_str()))
+        .collect();
+    assert_eq!(passes.len(), 3);
+    assert!(passes.iter().all(|guard| *guard == "G_GATE_PASS_EVIDENCED"));
+}
+
 // ---- a commit whose answer is lost (ports v1.1, CommitOutcomeUnknown) -------------------------
 
 #[tokio::test]
