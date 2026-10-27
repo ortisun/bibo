@@ -21,13 +21,13 @@ use factory_domain::state::{
     AttemptEvent, AttemptStatus, Guard, JobEvent, StageRunEvent, StageRunStatus, Status,
 };
 use factory_domain::vocabulary::HumanRole;
-use factory_ports::store::{AuditActor, Job, Tx, Versioned};
+use factory_ports::store::{AttemptEnd, AuditActor, Job, StageRunEffects, Tx, Versioned};
 
 use super::Engine;
 use super::error::EngineError;
 use super::payload;
-use super::progress::{Board, guard_error};
-use super::record::Cx;
+use super::progress::{Board, clear, guard_error};
+use super::record::{Cx, Step};
 use super::timeline::Timeline;
 use crate::audit::{AuditAction, AuditDecision, AuditKind};
 use crate::commands::{Actor, JobCommand};
@@ -78,31 +78,34 @@ impl Engine {
             JobCommand::Resume => (Guard::ActorMayPause, JobEvent::Resume),
             JobCommand::Cancel => (Guard::ActorMayCancel, JobEvent::RequestCancel),
         };
-        if let Err(error) = evaluate(guard, &GuardFacts::Principal(facts)) {
-            drop(tx);
-            let mut denied = self.tenant_tx(actor.tenant).await?;
-            let again = denied.get_job(job).await?;
-            let cx = Cx::new(self, &again.value, actor.command);
-            cx.audit(
-                &mut *denied,
-                AuditActor::Principal(actor.principal),
-                AuditAction::new(AuditKind::AuthorizationDecision, AuditDecision::Denied),
-            )
-            .await?;
-            denied.commit().await?;
-            return Err(guard_error(error));
-        }
+        let cleared = match evaluate(guard, &GuardFacts::Principal(facts)) {
+            Ok(cleared) => cleared,
+            Err(error) => {
+                drop(tx);
+                let mut denied = self.tenant_tx(actor.tenant).await?;
+                let again = denied.get_job(job).await?;
+                let cx = Cx::new(self, &again.value, actor.command);
+                cx.audit(
+                    &mut *denied,
+                    AuditActor::Human(actor.principal),
+                    AuditAction::new(AuditKind::AuthorizationDecision, AuditDecision::Denied),
+                )
+                .await?;
+                denied.commit().await?;
+                return Err(guard_error(error));
+            }
+        };
         cx.move_job(
             &mut *tx,
             &stored,
-            event,
-            Some(cause_of(command)),
-            payload_for(actor),
+            Step::new(event, cleared)
+                .cause(cause_of(command))
+                .payload(payload_for(actor)),
         )
         .await?;
         cx.audit(
             &mut *tx,
-            AuditActor::Principal(actor.principal),
+            AuditActor::Human(actor.principal),
             AuditAction::new(AuditKind::AuthorizationDecision, AuditDecision::Granted),
         )
         .await?;
@@ -126,25 +129,25 @@ impl Engine {
         let cx = Cx::new(self, &job.value, self.new_causation_id());
         // The handler stopped and tore its sandbox down before it returned, so the provider's
         // confirmation is the handler's return.
-        evaluate(
+        let cleared = clear(
             Guard::SandboxGone,
             &GuardFacts::SandboxGone(SandboxGoneFacts {
                 provider_confirms_sandbox_gone: true,
             }),
-        )
-        .map_err(guard_error)?;
+        )?;
         cx.move_attempt(
             &mut *tx,
             &attempt,
             claimed.epoch,
-            AttemptEvent::TeardownComplete,
-            Some("teardown-complete"),
-            payload::attempt_event(
-                claimed.kind,
-                claimed.stage_run,
-                claimed.attempt_number,
-                None,
-            ),
+            Step::new(AttemptEvent::TeardownComplete, cleared)
+                .cause("teardown-complete")
+                .payload(payload::attempt_event(
+                    claimed.kind,
+                    claimed.stage_run,
+                    claimed.attempt_number,
+                    None,
+                )),
+            AttemptEnd::default(),
         )
         .await?;
         self.settle(&mut *tx, &cx).await?;
@@ -184,19 +187,20 @@ impl Engine {
                     now,
                     attempt_deadline: deadline,
                 });
-                evaluate(Guard::DeadlinePassed, &facts).map_err(guard_error)?;
+                let cleared = clear(Guard::DeadlinePassed, &facts)?;
                 cx.move_attempt(
                     &mut *tx,
                     &row,
                     row.value.epoch,
-                    AttemptEvent::DeadlineExceeded,
-                    Some("deadline-exceeded"),
-                    payload::attempt_event(
-                        record.kind,
-                        record.id,
-                        row.value.number,
-                        Some(FailureClass::TimedOut),
-                    ),
+                    Step::new(AttemptEvent::DeadlineExceeded, cleared)
+                        .cause("deadline-exceeded")
+                        .payload(payload::attempt_event(
+                            record.kind,
+                            record.id,
+                            row.value.number,
+                            Some(FailureClass::TimedOut),
+                        )),
+                    AttemptEnd::default(),
                 )
                 .await?;
                 self.after_attempt_failed(
@@ -249,14 +253,23 @@ impl Engine {
                             job: job.value.status,
                             stage_run_is_being_superseded: false,
                         });
-                        evaluate(Guard::CancelAllowed, &facts).map_err(guard_error)?;
+                        let cleared = clear(Guard::CancelAllowed, &facts)?;
                         cx.move_attempt(
                             tx,
                             &row,
                             row.value.epoch,
-                            AttemptEvent::RequestCancel,
-                            Some("job-cancelled"),
-                            payload::attempt_event(record.kind, record.id, row.value.number, None),
+                            Step::new(AttemptEvent::RequestCancel, cleared)
+                                .cause("job-cancelled")
+                                .payload(payload::attempt_event(
+                                    record.kind,
+                                    record.id,
+                                    row.value.number,
+                                    None,
+                                )),
+                            AttemptEnd {
+                                teardown_grace: Some(self.config.teardown_grace),
+                                ..AttemptEnd::default()
+                            },
                         )
                         .await?;
                         return Ok(Cancellation::Moved);
@@ -270,21 +283,23 @@ impl Engine {
                                 grace_seconds: u32::try_from(self.config.teardown_grace.as_secs())
                                     .unwrap_or(u32::MAX),
                             };
-                            if evaluate(Guard::TeardownDeadlinePassed, &GuardFacts::Teardown(facts))
-                                .is_ok()
-                            {
+                            if let Ok(cleared) = evaluate(
+                                Guard::TeardownDeadlinePassed,
+                                &GuardFacts::Teardown(facts),
+                            ) {
                                 cx.move_attempt(
                                     tx,
                                     &row,
                                     row.value.epoch,
-                                    AttemptEvent::TeardownDeadline,
-                                    Some("teardown-deadline"),
-                                    payload::attempt_event(
-                                        record.kind,
-                                        record.id,
-                                        row.value.number,
-                                        None,
-                                    ),
+                                    Step::new(AttemptEvent::TeardownDeadline, cleared)
+                                        .cause("teardown-deadline")
+                                        .payload(payload::attempt_event(
+                                            record.kind,
+                                            record.id,
+                                            row.value.number,
+                                            None,
+                                        )),
+                                    AttemptEnd::default(),
                                 )
                                 .await?;
                                 return Ok(Cancellation::Moved);
@@ -305,14 +320,14 @@ impl Engine {
             );
             if live && !active {
                 let attempts = AttemptsFacts { attempts: &of_run };
-                evaluate(Guard::NoActiveAttempt, &GuardFacts::Attempts(attempts))
-                    .map_err(guard_error)?;
+                let cleared = clear(Guard::NoActiveAttempt, &GuardFacts::Attempts(attempts))?;
                 cx.move_stage_run(
                     tx,
                     run,
-                    StageRunEvent::Cancel,
-                    Some("job-cancelled"),
-                    payload::for_run(record.kind, record.id),
+                    Step::new(StageRunEvent::Cancel, cleared)
+                        .cause("job-cancelled")
+                        .payload(payload::for_run(record.kind, record.id)),
+                    StageRunEffects::default(),
                 )
                 .await?;
                 return Ok(Cancellation::Moved);
@@ -321,15 +336,9 @@ impl Engine {
         let facts = GuardFacts::Attempts(AttemptsFacts {
             attempts: &snapshots,
         });
-        if evaluate(Guard::AllAttemptsTerminal, &facts).is_ok() {
-            cx.move_job(
-                tx,
-                job,
-                JobEvent::CancellationComplete,
-                None,
-                serde_json::Map::new(),
-            )
-            .await?;
+        if let Ok(cleared) = evaluate(Guard::AllAttemptsTerminal, &facts) {
+            cx.move_job(tx, job, Step::new(JobEvent::CancellationComplete, cleared))
+                .await?;
             return Ok(Cancellation::Moved);
         }
         Ok(Cancellation::Idle)

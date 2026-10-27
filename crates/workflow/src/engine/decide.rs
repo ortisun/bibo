@@ -18,24 +18,27 @@ use factory_domain::contracts::evidence_ledger_entry::{
 };
 use factory_domain::ids::{PrincipalId, StageRunId};
 use factory_domain::machines::guards::{
-    AnswerFacts, ApprovalFacts, GuardFacts, HumanRejectFacts, OverrideFacts as DomainOverride,
-    UnblockFacts, evaluate,
+    AnswerFacts, ApprovalFacts, GuardFacts, HumanRejectFacts, HumanReworkFacts,
+    OverrideFacts as DomainOverride, UnblockFacts,
 };
 use factory_domain::machines::rework::{
     HumanReworkDecision, HumanReworkRequest, decide_human_rework,
 };
 use factory_domain::state::{Guard, StageRunEvent};
 use factory_domain::values::{HumanText, MediaType};
-use factory_domain::vocabulary::{ConfidenceLevel, HumanRole};
-use factory_ports::store::{AuditActor, NewArtifactIndexEntry, StageRun, Tx, Versioned};
+use factory_domain::vocabulary::{ConfidenceLevel, GateOutcome, HumanRole};
+use factory_ports::store::{
+    AuditActor, GateRecord, NewArtifactIndexEntry, StageRun, StageRunEffects, Tx, Versioned,
+};
 use serde_json::json;
 
 use super::Engine;
 use super::error::EngineError;
+use super::gate::ReworkMove;
 use super::ledger::ClaimSpec;
 use super::payload::{self, key};
-use super::progress::guard_error;
-use super::record::Cx;
+use super::progress::clear;
+use super::record::{Cx, Step};
 use super::timeline::Timeline;
 use crate::audit::{AuditAction, AuditDecision, AuditKind};
 use crate::commands::{Actor, Decision, Subject};
@@ -85,7 +88,7 @@ impl Engine {
             .await;
         match applied {
             Ok(action) => {
-                cx.audit(&mut *tx, AuditActor::Principal(actor.principal), action)
+                cx.audit(&mut *tx, AuditActor::Human(actor.principal), action)
                     .await?;
                 self.settle(&mut *tx, &cx).await?;
                 tx.commit().await?;
@@ -152,7 +155,7 @@ impl Engine {
                     raises_a_ceiling: *raises_budget_ceiling,
                     principal_is_org_admin: holds(HumanRole::OrgAdmin),
                 };
-                evaluate(Guard::AnswerRecorded, &GuardFacts::Answer(facts)).map_err(guard_error)?;
+                let cleared = clear(Guard::AnswerRecorded, &GuardFacts::Answer(facts))?;
                 let answer = stored.ok_or(EngineError::Corrupt("an answer was not stored"))?;
                 self.index_for(tx, cx, run.value.id, &answer).await?;
                 let payload = payload::with(base, key::ANSWER, json!(answer.sha256.to_string()));
@@ -160,9 +163,10 @@ impl Engine {
                 cx.move_stage_run(
                     tx,
                     run,
-                    StageRunEvent::HumanAnswered,
-                    Some("answered"),
-                    payload,
+                    Step::new(StageRunEvent::HumanAnswered, cleared)
+                        .cause("answered")
+                        .payload(payload),
+                    StageRunEffects::default(),
                 )
                 .await?;
                 Ok(AuditAction::new(
@@ -189,8 +193,7 @@ impl Engine {
                         "an approval needs an approver other than the requester",
                     ));
                 }
-                evaluate(Guard::ApproverAuthorized, &GuardFacts::Approval(facts))
-                    .map_err(guard_error)?;
+                let cleared = clear(Guard::ApproverAuthorized, &GuardFacts::Approval(facts))?;
                 self.record_judgment(
                     tx,
                     cx,
@@ -200,12 +203,21 @@ impl Engine {
                     "approved",
                 )
                 .await?;
+                // A person's approval has no gate report. The record names the outcome only.
                 cx.move_stage_run(
                     tx,
                     run,
-                    StageRunEvent::HumanApproved,
-                    Some("approved"),
-                    base,
+                    Step::new(StageRunEvent::HumanApproved, cleared)
+                        .cause("approved")
+                        .payload(base),
+                    StageRunEffects {
+                        gate: Some(GateRecord {
+                            outcome: GateOutcome::Passed,
+                            report_sha256: None,
+                            failing_set_sha256: None,
+                        }),
+                        ..StageRunEffects::default()
+                    },
                 )
                 .await?;
                 Ok(AuditAction::new(
@@ -222,8 +234,7 @@ impl Engine {
                     reject_decision_recorded: true,
                     reason_recorded: stored.is_some(),
                 };
-                evaluate(Guard::HumanRejected, &GuardFacts::HumanReject(facts))
-                    .map_err(guard_error)?;
+                let cleared = clear(Guard::HumanRejected, &GuardFacts::HumanReject(facts))?;
                 self.record_judgment(
                     tx,
                     cx,
@@ -236,9 +247,10 @@ impl Engine {
                 cx.move_stage_run(
                     tx,
                     run,
-                    StageRunEvent::HumanRejected,
-                    Some("rejected"),
-                    base,
+                    Step::new(StageRunEvent::HumanRejected, cleared)
+                        .cause("rejected")
+                        .payload(base),
+                    StageRunEffects::default(),
                 )
                 .await?;
                 Ok(AuditAction::new(
@@ -256,13 +268,25 @@ impl Engine {
                 };
                 match decide_human_rework(&request) {
                     HumanReworkDecision::Rework(plan) => {
+                        let cleared = clear(
+                            Guard::HumanReworkAllowed,
+                            &GuardFacts::HumanRework(HumanReworkFacts {
+                                principal_roles: roles,
+                                rounds_used: timeline.rework.used(plan.track),
+                                cap: self.config.rework_limits.cap(plan.track),
+                            }),
+                        )?;
                         self.apply_rework(
                             tx,
                             cx,
                             run,
                             &plan,
                             None,
-                            StageRunEvent::HumanRequestedRework,
+                            ReworkMove {
+                                event: StageRunEvent::HumanRequestedRework,
+                                cleared,
+                                effects: StageRunEffects::default(),
+                            },
                         )
                         .await?;
                         Ok(AuditAction::new(
@@ -294,14 +318,14 @@ impl Engine {
                     capability_reprobe_passed: *capability_reprobe_passed,
                     missing_dependency_now_available: *dependency_now_available,
                 };
-                evaluate(Guard::BlockClearedRerun, &GuardFacts::Unblock(facts))
-                    .map_err(guard_error)?;
+                let cleared = clear(Guard::BlockClearedRerun, &GuardFacts::Unblock(facts))?;
                 cx.move_stage_run(
                     tx,
                     run,
-                    StageRunEvent::UnblockedRerun,
-                    Some("unblocked"),
-                    base,
+                    Step::new(StageRunEvent::UnblockedRerun, cleared)
+                        .cause("unblocked")
+                        .payload(base),
+                    StageRunEffects::default(),
                 )
                 .await?;
                 Ok(AuditAction::new(
@@ -328,8 +352,7 @@ impl Engine {
                     justification_recorded: stored.is_some(),
                     blocked_gate_is_mandatory_of_active_profile: facts.mandatory_of_active_profile,
                 };
-                evaluate(Guard::OverridePermitted, &GuardFacts::Override(guard))
-                    .map_err(guard_error)?;
+                let cleared = clear(Guard::OverridePermitted, &GuardFacts::Override(guard))?;
                 self.record_judgment(
                     tx,
                     cx,
@@ -342,9 +365,10 @@ impl Engine {
                 cx.move_stage_run(
                     tx,
                     run,
-                    StageRunEvent::OverrideAccepted,
-                    Some("override"),
-                    base,
+                    Step::new(StageRunEvent::OverrideAccepted, cleared)
+                        .cause("override")
+                        .payload(base),
+                    StageRunEffects::default(),
                 )
                 .await?;
                 Ok(AuditAction::new(
@@ -383,8 +407,7 @@ impl Engine {
     ) -> Result<(), EngineError> {
         tx.index_artifact(NewArtifactIndexEntry {
             artifact: artifact.clone(),
-            stage_run_id: Some(run),
-            created_at: cx.now,
+            origin: Some((cx.job, run)),
         })
         .await?;
         Ok(())
@@ -441,7 +464,7 @@ impl Engine {
         let mut tx = self.tenant_tx(actor.tenant).await?;
         let job = tx.get_job(subject.job).await?;
         let cx = Cx::new(self, &job.value, actor.command);
-        cx.audit(&mut *tx, AuditActor::Principal(actor.principal), action)
+        cx.audit(&mut *tx, AuditActor::Human(actor.principal), action)
             .await?;
         tx.commit().await?;
         Ok(())

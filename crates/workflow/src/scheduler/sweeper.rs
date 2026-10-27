@@ -14,8 +14,10 @@ use factory_domain::machines::failure::FailureClass;
 use factory_domain::machines::guards::{GuardFacts, LeaseExpiryFacts, evaluate};
 use factory_domain::state::{AttemptEvent, Guard};
 
+use factory_ports::store::{AttemptEnd, DueReason};
+
 use crate::engine::payload::attempt_event;
-use crate::engine::record::Cx;
+use crate::engine::record::{Cx, Step};
 use crate::engine::{Engine, EngineError};
 
 /// The most expired leases one sweep takes.
@@ -40,17 +42,16 @@ impl Engine {
     pub async fn sweep(&self) -> Result<Swept, EngineError> {
         let found = {
             let mut tx = self.system_tx().await?;
-            let ids = tx.expired_leases(SWEEP_BATCH).await?;
-            let mut found = Vec::with_capacity(ids.len());
-            for id in ids {
-                let attempt = tx.get_attempt(id).await?;
-                found.push((attempt.value.tenant_id, attempt.value.job_id, id));
-            }
-            tx.rollback().await?;
-            found
+            let due = tx
+                .find_due_attempts(DueReason::LeaseExpired, SWEEP_BATCH)
+                .await;
+            // The transaction ends whether or not the lookup worked, so no lock outlives it.
+            tx.finish().await?;
+            due?
         };
         let mut swept = Swept::default();
-        for (tenant, job, attempt) in found {
+        for due in found {
+            let (tenant, job, attempt) = (due.tenant, due.job, due.attempt);
             match self.expire_lease(tenant, job, attempt).await {
                 Ok(true) => swept.lease_lost.push(attempt),
                 Ok(false)
@@ -77,22 +78,19 @@ impl Engine {
         let attempt = tx.get_attempt(attempt_id).await?;
         let run = tx.get_stage_run(attempt.value.stage_run_id).await?;
         let job = tx.get_job(job_id).await?;
-        let Some(lease) = run.value.lease.clone() else {
-            return Ok(false);
-        };
-        if lease.epoch != attempt.value.epoch {
+        if run.value.lease_epoch != attempt.value.epoch {
             // A later claim holds the stage run. This attempt was already replaced.
             return Ok(false);
         }
         let now = tx.database_time().await?;
         let facts = GuardFacts::LeaseExpiry(LeaseExpiryFacts {
             now,
-            lease_expires_at: lease.expires_at,
+            lease_expires_at: attempt.value.lease_expires_at,
             heartbeat_arrived: false,
         });
-        if evaluate(Guard::LeaseExpired, &facts).is_err() {
+        let Ok(cleared) = evaluate(Guard::LeaseExpired, &facts) else {
             return Ok(false);
-        }
+        };
         let cx = Cx::new(self, &job.value, self.new_causation_id());
         let payload = attempt_event(
             run.value.kind,
@@ -104,9 +102,10 @@ impl Engine {
             &mut *tx,
             &attempt,
             attempt.value.epoch,
-            AttemptEvent::LeaseExpired,
-            Some("lease-expired"),
-            payload,
+            Step::new(AttemptEvent::LeaseExpired, cleared)
+                .cause("lease-expired")
+                .payload(payload),
+            AttemptEnd::default(),
         )
         .await?;
         // The lease ran out, so the stage run decides: retry after a back-off, ask a person, or

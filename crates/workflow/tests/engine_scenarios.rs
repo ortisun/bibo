@@ -20,7 +20,7 @@ async fn admission_creates_one_stage_run_per_stage_and_readies_the_first() {
     let world = World::new().await;
     let job = world
         .engine
-        .receive_job(world.tenant, world.requester)
+        .receive_job(world.tenant, world.requester, world.repository)
         .await
         .expect("receive");
     assert_eq!(
@@ -60,7 +60,7 @@ async fn admission_rejects_an_unlisted_requester_and_does_not_say_why() {
         .set_admission(|facts| facts.requester_on_allowlist = false);
     let job = world
         .engine
-        .receive_job(world.tenant, world.requester)
+        .receive_job(world.tenant, world.requester, world.repository)
         .await
         .expect("receive");
 
@@ -78,7 +78,10 @@ async fn admission_rejects_an_unlisted_requester_and_does_not_say_why() {
     // The reason is for the audit log, which records the denial and not the reason.
     let audit = world.audit(job).await;
     assert_eq!(audit.len(), 1);
-    assert_eq!(audit[0].action.as_str(), "authorization_decision.denied");
+    assert_eq!(
+        audit[0].event.action.as_str(),
+        "authorization_decision.denied"
+    );
 }
 
 #[tokio::test]
@@ -87,7 +90,7 @@ async fn admission_fails_closed_when_the_protected_configuration_cannot_be_read(
     world.authority.set_unavailable(true);
     let job = world
         .engine
-        .receive_job(world.tenant, world.requester)
+        .receive_job(world.tenant, world.requester, world.repository)
         .await
         .expect("receive");
 
@@ -155,42 +158,59 @@ async fn a_second_claim_finds_nothing_while_the_work_is_taken() {
 }
 
 #[tokio::test]
-async fn a_crash_between_the_claim_and_the_start_loses_nothing_and_starts_once() {
+async fn a_crash_between_the_find_and_the_start_loses_nothing_and_starts_once() {
+    // Meaning changed with ports v1.1: finding work no longer leases it. A claim is a find in
+    // a system transaction that writes nothing, and a start in a tenant transaction. An engine
+    // that stops between the two has left no lease to wait out, and the next engine starts the
+    // stage run at once, at the first epoch, exactly once.
     let world = World::new().await;
     let job = world.admitted_job().await;
-    // Claim from the store directly, as an engine that stopped right after the claim would.
     let mut tx = world.store_system().await;
-    let work = tx
-        .claim_ready(
-            &World::worker("worker-1"),
-            8,
-            std::time::Duration::from_secs(60),
-        )
-        .await
-        .expect("claim");
-    assert_eq!(work.len(), 1);
-    tx.commit().await.expect("commit");
-    // The claim is committed and no attempt exists. A restarted engine sees a ready stage run
-    // with a lease that has not run out, so it leaves it alone.
+    let found = tx.find_claim_candidates(8).await.expect("find");
+    assert_eq!(found.len(), 1);
+    tx.finish().await.expect("finish");
+    let view = world.view(job).await;
+    let intake = view.newest(StageKind::Intake).expect("run");
+    assert_eq!(
+        intake.lease_epoch,
+        LeaseEpoch::NEVER_CLAIMED,
+        "nothing was written"
+    );
+    assert!(intake.attempts.is_empty());
+
     let restarted = world.restarted_engine();
-    let none = restarted
-        .claim_next(&World::worker("worker-2"))
-        .await
-        .expect("claim");
-    assert!(none.started.is_empty());
-    // After the lease lapses the stage run is claimed again, at a higher epoch, and starts once.
-    world.advance(61);
     let again = restarted
         .claim_next(&World::worker("worker-2"))
         .await
         .expect("claim");
     assert_eq!(again.started.len(), 1);
-    assert_eq!(again.started[0].epoch, LeaseEpoch::new(2));
+    assert_eq!(again.started[0].epoch, LeaseEpoch::new(1));
     let view = world.view(job).await;
     assert_eq!(
         view.newest(StageKind::Intake).expect("run").attempts.len(),
         1
     );
+}
+
+#[tokio::test]
+async fn a_crash_after_the_start_leaves_a_lease_that_the_sweeper_ends_and_a_retry_starts() {
+    // New scenario for ports v1.1: the engine started the attempt and stopped before it ran
+    // anything. The attempt holds a lease that lapses by itself; the sweeper ends it and the
+    // stage run goes back to ready, and a later claim starts a second attempt at a higher epoch.
+    let world = World::new().await;
+    let job = world.admitted_job().await;
+    let first = world.claim_one("worker-1").await;
+    world.advance(61);
+    let swept = world.engine.sweep().await.expect("sweep");
+    assert_eq!(swept.lease_lost, vec![first.attempt]);
+    world.advance(400);
+    let second = world.claim_one("worker-2").await;
+    assert_eq!(second.epoch, LeaseEpoch::new(2));
+    assert_eq!(second.attempt_number, 2);
+    let view = world.view(job).await;
+    let intake = view.newest(StageKind::Intake).expect("run");
+    assert_eq!(intake.attempts[0].status, AttemptStatus::LeaseLost);
+    assert_eq!(intake.attempts[1].status, AttemptStatus::Starting);
 }
 
 #[tokio::test]
@@ -309,7 +329,7 @@ async fn a_job_whose_scope_has_a_stage_without_a_handler_is_not_admitted() {
             .expect("an engine starts");
     let job = world
         .engine
-        .receive_job(world.tenant, world.requester)
+        .receive_job(world.tenant, world.requester, world.repository)
         .await
         .expect("receive");
     let refused = world.engine.admit_job(world.tenant, job).await;
@@ -466,7 +486,9 @@ async fn a_tool_error_is_retried_after_a_back_off_that_the_claim_honours() {
         Timestamp::parse("2026-10-27T08:31:30Z").expect("an instant")
     );
 
-    // The lease has lapsed and the back-off has not: the claim finds the run and leaves it.
+    // The back-off has not ended. Meaning changed with ports v1.1: the store does not offer a
+    // stage run whose `not_before` is in the future, so the claim finds nothing at all. Before,
+    // the claim took a lease on the run, deferred it, and the lease had to run out too.
     world.advance(80);
     let early = world
         .engine
@@ -474,18 +496,17 @@ async fn a_tool_error_is_retried_after_a_back_off_that_the_claim_honours() {
         .await
         .expect("claim");
     assert!(early.started.is_empty());
-    assert_eq!(early.deferred.len(), 1);
-    assert_eq!(early.deferred[0].1, Deferral::BackingOff);
-    // The deferred claim holds the lease until it lapses, because the Store port cannot give a
-    // lease back. Once it has lapsed and the back-off is over, the retry starts as attempt 2
-    // under a higher epoch.
-    world.advance(70);
+    assert!(early.deferred.is_empty(), "{early:?}");
+    // The early look took nothing, so the retry starts the moment the back-off ends, with no
+    // lease to wait out, as attempt 2 under the next epoch and not one above it.
+    world.advance(10);
     let (second, outcome) = world.run_next("worker-2").await;
     assert_eq!(outcome, AttemptOutcome::Succeeded);
     assert_eq!(second.attempt_number, 2);
-    assert!(
-        second.epoch > LeaseEpoch::new(2),
-        "the deferred claim also raised the epoch"
+    assert_eq!(
+        second.epoch,
+        LeaseEpoch::new(2),
+        "the early look did not raise the epoch"
     );
 }
 
@@ -1387,8 +1408,8 @@ async fn only_people_with_a_listed_role_may_answer_and_a_refusal_is_audited() {
     );
     let audit = world.audit(job).await;
     assert!(audit.iter().any(|record| {
-        record.action.as_str() == "authorization_decision.denied"
-            && matches!(&record.actor, factory_ports::store::AuditActor::Principal(p) if *p == stranger)
+        record.event.action.as_str() == "authorization_decision.denied"
+            && matches!(&record.event.actor, factory_ports::store::AuditActor::Human(p) if *p == stranger)
     }));
 }
 
@@ -1658,7 +1679,7 @@ async fn negative_nt_mrg_02_an_approval_of_stale_evidence_is_refused() {
     assert!(
         audit
             .iter()
-            .any(|r| r.action.as_str() == "approval_granted_or_rejected.denied")
+            .any(|r| r.event.action.as_str() == "approval_granted_or_rejected.denied")
     );
 }
 
@@ -1988,14 +2009,21 @@ async fn a_paused_job_starts_nothing_and_a_resumed_job_goes_on() {
         .await
         .expect("claim");
     assert!(claimed.started.is_empty());
-    assert_eq!(claimed.deferred[0].1, Deferral::JobNotActive);
+    // Meaning changed with ports v1.1: the store offers only stage runs of active jobs, so a
+    // paused job is not found and nothing is deferred. The stage run is still ready, and nothing
+    // was taken from it.
+    assert!(claimed.deferred.is_empty(), "{claimed:?}");
+    let view = world.view(job).await;
+    let intake = view.newest(StageKind::Intake).expect("run");
+    assert_eq!(intake.status, StageRunStatus::Ready);
+    assert_eq!(intake.lease_epoch, LeaseEpoch::NEVER_CLAIMED);
 
     world
         .engine
         .control(&world.actor(operator), job, JobCommand::Resume)
         .await
         .expect("resumes");
-    world.advance(61);
+    // No lease from the earlier look lingers, so the stage run starts at once.
     let (_, outcome) = world.run_next("worker-1").await;
     assert_eq!(outcome, AttemptOutcome::Succeeded);
 }
@@ -2019,7 +2047,7 @@ async fn only_an_operator_may_pause() {
             .audit(job)
             .await
             .iter()
-            .any(|r| r.action.as_str() == "authorization_decision.denied")
+            .any(|r| r.event.action.as_str() == "authorization_decision.denied")
     );
 }
 
@@ -2176,7 +2204,7 @@ async fn an_agent_stage_gets_a_job_token_that_ends_with_the_attempt() {
         .audit(job)
         .await
         .iter()
-        .map(|r| r.action.as_str().to_owned())
+        .map(|r| r.event.action.as_str().to_owned())
         .collect();
     assert!(audit.contains(&"credential_minted_and_revoked.granted".to_owned()));
     assert!(audit.contains(&"credential_minted_and_revoked.ended".to_owned()));
@@ -2197,11 +2225,11 @@ async fn a_stage_that_runs_no_agent_gets_no_token() {
     world.run_next("worker-1").await;
     assert_eq!(world.script(StageKind::Intake).tokens(), vec![None]);
     assert!(
-        world
-            .audit(job)
-            .await
-            .iter()
-            .all(|r| !r.action.as_str().starts_with("credential_minted"))
+        world.audit(job).await.iter().all(|r| !r
+            .event
+            .action
+            .as_str()
+            .starts_with("credential_minted"))
     );
 }
 
@@ -2236,7 +2264,7 @@ async fn a_budget_limit_revokes_the_token_and_asks_a_person() {
             .audit(job)
             .await
             .iter()
-            .any(|r| r.action.as_str() == "budget_threshold_crossed.noted")
+            .any(|r| r.event.action.as_str() == "budget_threshold_crossed.noted")
     );
 }
 

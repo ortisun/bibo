@@ -12,8 +12,8 @@
 
 use super::claim::ClaimedAttempt;
 use crate::engine::{Engine, EngineError};
-use factory_domain::state::{AttemptStatus, Status};
-use factory_ports::store::StoreError;
+use factory_domain::state::AttemptStatus;
+use factory_ports::store::{Fence, StoreError};
 
 /// What a heartbeat found out.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -32,37 +32,29 @@ impl Engine {
     /// Renews the lease of a claimed attempt.
     ///
     /// # Errors
-    /// * [`EngineError::LeaseFenced`] when the lease was lost: it expired, or another worker took
-    ///   the stage run at a higher epoch. The worker stops and writes nothing more.
-    /// * [`EngineError::Conflict`] when the attempt already ended.
+    /// * [`EngineError::LeaseFenced`] when the lease was lost: it expired, another worker took the
+    ///   stage run at a higher epoch, or the attempt already ended. The worker stops and writes
+    ///   nothing more.
     /// * The store errors.
     pub async fn heartbeat(&self, claimed: &ClaimedAttempt) -> Result<Pulse, EngineError> {
+        let fence = Fence {
+            attempt: claimed.attempt,
+            epoch: claimed.epoch,
+            worker: claimed.worker.clone(),
+        };
         let mut tx = self.tenant_tx(claimed.tenant).await?;
-        match tx.heartbeat(claimed.attempt, claimed.epoch).await {
-            Ok(()) => {}
-            Err(StoreError::Conflict) => {
-                // The store reports an attempt that already ended as a conflict. For the worker
-                // that is the same as a lost lease: the sweeper or a cancel ended the attempt, so
-                // it stops. The check reads in a new transaction, because a failed statement can
-                // leave the first one unusable.
-                drop(tx);
-                let mut read = self.tenant_tx(claimed.tenant).await?;
-                let attempt = read.get_attempt(claimed.attempt).await?;
-                read.rollback().await?;
-                return Err(if attempt.value.status.is_terminal() {
-                    EngineError::LeaseFenced
-                } else {
-                    EngineError::Conflict
-                });
-            }
+        let renewal = match tx.heartbeat(fence, self.config.lease_ttl).await {
+            Ok(renewal) => renewal,
+            // The store reports an attempt that already ended as a conflict. For the worker that
+            // is the same as a lost lease: the sweeper or a cancel ended the attempt, so it stops.
+            Err(StoreError::Conflict) => return Err(EngineError::LeaseFenced),
             Err(other) => return Err(other.into()),
-        }
-        let attempt = tx.get_attempt(claimed.attempt).await?;
+        };
         let now = tx.database_time().await?;
         tx.commit().await?;
-        Ok(if attempt.value.status == AttemptStatus::Cancelling {
+        Ok(if renewal.status == AttemptStatus::Cancelling {
             Pulse::CancelRequested
-        } else if now > claimed.deadline_at {
+        } else if now > renewal.deadline_at {
             Pulse::DeadlinePassed
         } else {
             Pulse::Alive

@@ -22,7 +22,8 @@ use factory_domain::contracts::evidence_ledger_entry::{
 use factory_domain::contracts::review_verdict::DefectClass;
 use factory_domain::contracts::{ArtifactRef, StageContract};
 use factory_domain::machines::guards::{
-    BlockingFacts, GatePassFacts, GuardFacts, NeedsHumanFacts, NoReworkFacts, ReworkFacts, evaluate,
+    BlockingFacts, GatePassFacts, GuardCleared, GuardFacts, NeedsHumanFacts, NoReworkFacts,
+    OutputFacts, ReworkFacts, evaluate,
 };
 use factory_domain::machines::rework::{
     GateFinding, GateReworkDecision, GateReworkRequest, NeedsHumanCause, ReworkPlan,
@@ -32,15 +33,15 @@ use factory_domain::machines::snapshot::StageRunSnapshot;
 use factory_domain::state::{Guard, StageRunEvent, StageRunStatus};
 use factory_domain::values::{HumanText, MediaType, Sha256Digest};
 use factory_domain::vocabulary::{ConfidenceLevel, GateOutcome, Verdict};
-use factory_ports::store::{StageRun, Tx, Versioned};
+use factory_ports::store::{GateRecord, StageRun, StageRunEffects, Tx, Versioned};
 use serde_json::{Value, json};
 
 use super::Engine;
 use super::error::EngineError;
 use super::ledger::ClaimSpec;
 use super::payload::{self, key};
-use super::progress::guard_error;
-use super::record::Cx;
+use super::progress::clear;
+use super::record::{Cx, Step};
 use super::timeline::Timeline;
 use crate::audit::{AuditAction, AuditDecision, AuditKind};
 use crate::gates::framework::{
@@ -92,13 +93,22 @@ impl Engine {
             key::OUTPUTS,
             Value::Array(listed),
         );
+        // `S04` and `A04` share the guard `G_OUTPUT_SCHEMA_VALID`, checked here on the facts of
+        // the stored output.
+        let output_cleared = clear(
+            Guard::OutputSchemaValid,
+            &GuardFacts::Output(OutputFacts {
+                attempt_succeeded: true,
+                output_validates_against_outputs_schema: true,
+                output_artifact_hash_stored: !outputs.is_empty(),
+            }),
+        )?;
         let version = cx
             .move_stage_run(
                 tx,
                 run,
-                StageRunEvent::AttemptSucceeded,
-                None,
-                gating_payload,
+                Step::new(StageRunEvent::AttemptSucceeded, output_cleared).payload(gating_payload),
+                StageRunEffects::default(),
             )
             .await?;
         let gating = Versioned {
@@ -142,7 +152,9 @@ impl Engine {
                         .saturating_sub(covered),
                     mandatory_gate_reports: &snaps,
                 };
-                if evaluate(Guard::GatePassEvidenced, &GuardFacts::GatePass(facts)).is_ok() {
+                if let Ok(cleared) =
+                    evaluate(Guard::GatePassEvidenced, &GuardFacts::GatePass(facts))
+                {
                     let hashes: Vec<String> = judged
                         .reports
                         .iter()
@@ -153,18 +165,26 @@ impl Engine {
                         "gate_report_sha256s",
                         json!(hashes),
                     );
-                    cx.move_stage_run(tx, &gating, StageRunEvent::GatePassed, None, payload)
-                        .await?;
+                    cx.move_stage_run(
+                        tx,
+                        &gating,
+                        Step::new(StageRunEvent::GatePassed, cleared).payload(payload),
+                        StageRunEffects {
+                            gate: Some(gate_record(judged, GateOutcome::Passed, None)),
+                            ..StageRunEffects::default()
+                        },
+                    )
+                    .await?;
                     cx.audit_engine(tx, audit(AuditDecision::Granted)).await?;
                 } else {
                     metric_outcome = "blocked";
-                    self.block(tx, cx, &gating, &BlockCause::MissingEvidence)
+                    self.block(tx, cx, &gating, judged, &BlockCause::MissingEvidence)
                         .await?;
                     cx.audit_engine(tx, audit(AuditDecision::Denied)).await?;
                 }
             }
             Resolution::Blocked(cause) => {
-                self.block(tx, cx, &gating, &cause).await?;
+                self.block(tx, cx, &gating, judged, &cause).await?;
                 cx.audit_engine(tx, audit(AuditDecision::Denied)).await?;
             }
             Resolution::Failed { failing } => {
@@ -172,6 +192,7 @@ impl Engine {
                     tx,
                     cx,
                     &gating,
+                    judged,
                     None,
                     GateFinding::DeterministicGateFailed,
                     &failing,
@@ -184,6 +205,7 @@ impl Engine {
                     tx,
                     cx,
                     &gating,
+                    judged,
                     defect,
                     GateFinding::VerdictChangesRequired,
                     &failing,
@@ -393,6 +415,7 @@ impl Engine {
         tx: &mut dyn Tx,
         cx: &Cx<'_>,
         gating: &Versioned<StageRun>,
+        judged: &Judged,
         cause: &BlockCause,
     ) -> Result<(), EngineError> {
         let facts = BlockingFacts {
@@ -403,7 +426,7 @@ impl Engine {
             ),
             policy_violation_detected: matches!(cause, BlockCause::PolicyViolation),
         };
-        evaluate(Guard::BlockingCondition, &GuardFacts::Blocking(facts)).map_err(guard_error)?;
+        let cleared = clear(Guard::BlockingCondition, &GuardFacts::Blocking(facts))?;
         let payload = payload::with(
             payload::for_run(gating.value.kind, gating.value.id),
             key::CAUSE,
@@ -412,9 +435,13 @@ impl Engine {
         cx.move_stage_run(
             tx,
             gating,
-            StageRunEvent::GateBlocks,
-            Some(cause.code()),
-            payload,
+            Step::new(StageRunEvent::GateBlocks, cleared)
+                .cause(cause.code())
+                .payload(payload),
+            StageRunEffects {
+                gate: Some(gate_record(judged, GateOutcome::Blocked, None)),
+                ..StageRunEffects::default()
+            },
         )
         .await?;
         Ok(())
@@ -429,7 +456,7 @@ impl Engine {
         facts: NeedsHumanFacts,
         cause: &'static str,
     ) -> Result<(), EngineError> {
-        evaluate(Guard::NeedsHumanVerdict, &GuardFacts::NeedsHuman(facts)).map_err(guard_error)?;
+        let cleared = clear(Guard::NeedsHumanVerdict, &GuardFacts::NeedsHuman(facts))?;
         let payload = payload::with(
             payload::for_run(gating.value.kind, gating.value.id),
             key::CAUSE,
@@ -438,9 +465,10 @@ impl Engine {
         cx.move_stage_run(
             tx,
             gating,
-            StageRunEvent::GateNeedsHuman,
-            Some(cause),
-            payload,
+            Step::new(StageRunEvent::GateNeedsHuman, cleared)
+                .cause(cause)
+                .payload(payload),
+            StageRunEffects::default(),
         )
         .await?;
         Ok(())
@@ -449,11 +477,13 @@ impl Engine {
     /// A failed gate or a verdict asking for changes: rework while the limits allow it, a person
     /// when they do not or when only a person can decide, and a final failure when there is no
     /// route at all.
+    #[allow(clippy::too_many_arguments)]
     async fn rework_or_ask(
         &self,
         tx: &mut dyn Tx,
         cx: &Cx<'_>,
         gating: &Versioned<StageRun>,
+        judged: &Judged,
         defect: Option<DefectClass>,
         finding: GateFinding,
         failing: &Sha256Digest,
@@ -479,14 +509,21 @@ impl Engine {
                     failing_set_differs_from_previous_round: differs,
                     budget_remains: request.budget_remains,
                 };
-                evaluate(Guard::ReworkAllowed, &GuardFacts::Rework(facts)).map_err(guard_error)?;
+                let cleared = clear(Guard::ReworkAllowed, &GuardFacts::Rework(facts))?;
                 self.apply_rework(
                     tx,
                     cx,
                     gating,
                     &plan,
                     Some(failing),
-                    StageRunEvent::GateRequiresRework,
+                    ReworkMove {
+                        event: StageRunEvent::GateRequiresRework,
+                        cleared,
+                        effects: StageRunEffects {
+                            gate: Some(gate_record(judged, GateOutcome::Failed, Some(failing))),
+                            ..StageRunEffects::default()
+                        },
+                    },
                 )
                 .await?;
             }
@@ -499,8 +536,7 @@ impl Engine {
                     gate_failed: true,
                     a_rework_route_exists: false,
                 };
-                evaluate(Guard::GateFailedNoRework, &GuardFacts::NoRework(facts))
-                    .map_err(guard_error)?;
+                let cleared = clear(Guard::GateFailedNoRework, &GuardFacts::NoRework(facts))?;
                 let payload = payload::with(
                     payload::for_run(gating.value.kind, gating.value.id),
                     key::CAUSE,
@@ -509,9 +545,13 @@ impl Engine {
                 cx.move_stage_run(
                     tx,
                     gating,
-                    StageRunEvent::GateFailedFinal,
-                    Some("no-rework-route"),
-                    payload,
+                    Step::new(StageRunEvent::GateFailedFinal, cleared)
+                        .cause("no-rework-route")
+                        .payload(payload),
+                    StageRunEffects {
+                        gate: Some(gate_record(judged, GateOutcome::Failed, Some(failing))),
+                        ..StageRunEffects::default()
+                    },
                 )
                 .await?;
             }
@@ -519,8 +559,8 @@ impl Engine {
         Ok(())
     }
 
-    /// Sends the work back: the failing run takes `event` (`S09` from a gate, `S15` from a
-    /// person), the runs the target's new artifact makes stale are superseded, and a new run
+    /// Sends the work back: the failing run takes the move in `step` (`S09` from a gate, `S15` from
+    /// a person), the runs the target's new artifact makes stale are superseded, and a new run
     /// starts for the target and every stage after it.
     pub(crate) async fn apply_rework(
         &self,
@@ -529,7 +569,7 @@ impl Engine {
         failing_run: &Versioned<StageRun>,
         plan: &ReworkPlan,
         failing: Option<&Sha256Digest>,
-        event: StageRunEvent,
+        step: ReworkMove,
     ) -> Result<(), EngineError> {
         let snaps: Vec<StageRunSnapshot> = self.snapshots_of(tx, cx).await?;
         let to_supersede = factory_domain::machines::invalidation::plan_for_rework(
@@ -559,9 +599,47 @@ impl Engine {
         if let Some(failing) = failing {
             payload = payload::with(payload, key::FAILING_SET, json!(failing.to_string()));
         }
-        cx.move_stage_run(tx, failing_run, event, Some("rework"), payload)
-            .await?;
+        cx.move_stage_run(
+            tx,
+            failing_run,
+            Step::new(step.event, step.cleared)
+                .cause("rework")
+                .payload(payload),
+            step.effects,
+        )
+        .await?;
         Ok(())
+    }
+}
+
+/// The move of the failing run when work is sent back: its event, the proof that the guard held,
+/// and the records the transition requires.
+pub(crate) struct ReworkMove {
+    /// `GateRequiresRework` (`S09`) or `HumanRequestedRework` (`S15`).
+    pub(crate) event: StageRunEvent,
+    /// The proof that the guard of that move held.
+    pub(crate) cleared: GuardCleared,
+    /// The gate record `S09` requires, and nothing for `S15`.
+    pub(crate) effects: StageRunEffects,
+}
+
+/// The gate record the store keeps with a move: the outcome, the report that backs it and, for a
+/// failure, the digest of what failed. The report is the first gate report the gate produced, or
+/// the review verdict when there is no gate report. A gate that produced neither (a refused
+/// document, a gate that could not run) has none.
+fn gate_record(
+    judged: &Judged,
+    outcome: GateOutcome,
+    failing: Option<&Sha256Digest>,
+) -> GateRecord {
+    GateRecord {
+        outcome,
+        report_sha256: judged
+            .reports
+            .first()
+            .or(judged.review.as_ref())
+            .map(|artifact| artifact.sha256.clone()),
+        failing_set_sha256: failing.cloned(),
     }
 }
 

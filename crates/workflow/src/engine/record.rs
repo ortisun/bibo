@@ -4,26 +4,32 @@
 //! [`Cx`] carries what every write of one decision shares: the tenant, the job, the correlation id
 //! that every event and log line of the job carries, the id of the command that caused the
 //! decision, and the time. A move is planned by `AppliedTransition::plan`, which asks the domain's
-//! transition table, so this module cannot write a status that the table does not list (INV-02).
-//! The event type and the transition id of an event come from the same table row.
+//! transition table and needs the `GuardCleared` that `guards::evaluate` returned, so this module
+//! cannot write a status that the table does not list (INV-02) and cannot write a move whose
+//! guard was not checked (ADR 0014, decision 3). The event type and the transition id of an event
+//! come from the same table row, and the event also names the guard and the digest of its facts.
 
 use factory_domain::contracts::domain_event::AggregateKind;
 use factory_domain::contracts::{Contract, DomainEvent};
-use factory_domain::ids::{CausationId, CorrelationId, JobId, TenantId};
+use std::time::Duration;
+
+use factory_domain::ids::{AttemptId, AuditEventId, CausationId, CorrelationId, JobId, TenantId};
+use factory_domain::machines::guards::GuardCleared;
 use factory_domain::state::{
     AttemptEvent, AttemptStatus, JobEvent, JobStatus, StageRunEvent, StageRunStatus, Status,
 };
 use factory_domain::values::{Slug, Timestamp, Traceparent};
 use factory_ports::store::{
-    AppliedTransition, Attempt, AuditActor, AuditEvent, Job, LeaseEpoch, StageRun, Tx, Version,
-    Versioned,
+    AppliedTransition, Attempt, AttemptEnd, AuditAction as PortAuditAction, AuditActor,
+    AuditDecision as PortAuditDecision, Job, LeaseEpoch, NewAuditEvent, StageRun, StageRunEffects,
+    StartAttempt, StartedAttempt, Tx, Version, Versioned, WorkerId,
 };
 use serde_json::{Map, Value, json};
 use uuid::Uuid;
 
 use super::Engine;
 use super::error::EngineError;
-use crate::audit::AuditAction;
+use crate::audit::{AuditAction, AuditDecision};
 
 /// The name the engine gives itself as the producer of events and the actor of audit records.
 pub(crate) const COMPONENT: &str = "workflow.engine";
@@ -41,6 +47,52 @@ pub(crate) struct Cx<'e> {
     /// What the attempt that this decision records spent, in millionths of a US dollar. An
     /// attempt event carries it, so the job's spend can be rebuilt from its events.
     pub(crate) cost_micro_usd: u64,
+}
+
+/// One move of an aggregate: the event that asks for it, the proof that its guard held, why it
+/// happened and what the outbox event carries. The proof is required, so a move cannot be written
+/// without its guard having been checked.
+pub(crate) struct Step<'a, E> {
+    event: E,
+    cleared: GuardCleared,
+    cause: Option<&'a str>,
+    payload: Map<String, Value>,
+}
+
+impl<'a, E> Step<'a, E> {
+    /// A move caused by `event`, whose guard held as `cleared` says.
+    pub(crate) fn new(event: E, cleared: GuardCleared) -> Self {
+        Self {
+            event,
+            cleared,
+            cause: None,
+            payload: Map::new(),
+        }
+    }
+
+    /// The short machine code for why the move happened.
+    pub(crate) fn cause(mut self, cause: &'a str) -> Self {
+        self.cause = Some(cause);
+        self
+    }
+
+    /// The payload of the event that announces the move.
+    pub(crate) fn payload(mut self, payload: Map<String, Value>) -> Self {
+        self.payload = payload;
+        self
+    }
+}
+
+/// What `start_stage_run` needs besides the proof that the guard held.
+pub(crate) struct Launch {
+    /// The new attempt's id.
+    pub(crate) attempt: AttemptId,
+    /// The worker that takes the lease.
+    pub(crate) worker: WorkerId,
+    /// How long the lease lasts, and how long each heartbeat extends it.
+    pub(crate) lease_ttl: Duration,
+    /// How long the attempt may run.
+    pub(crate) attempt_timeout: Duration,
 }
 
 impl<'e> Cx<'e> {
@@ -73,11 +125,11 @@ impl<'e> Cx<'e> {
         &self,
         tx: &mut dyn Tx,
         job: &Versioned<Job>,
-        event: JobEvent,
-        cause: Option<&str>,
-        payload: Map<String, Value>,
+        step: Step<'_, JobEvent>,
     ) -> Result<Version, EngineError> {
-        let planned = AppliedTransition::plan(job.value.status, event, self.now)?;
+        let planned =
+            AppliedTransition::plan(job.value.status, step.event, self.now, step.cleared)?;
+        let seal = Seal::of(&planned);
         let version = tx
             .transition_job(job.value.id, job.version, planned)
             .await?;
@@ -86,56 +138,108 @@ impl<'e> Cx<'e> {
             AggregateKind::Job,
             job.value.id.as_uuid(),
             version,
-            planned.transition_id(),
-            cause,
-            payload,
+            &seal,
+            step.cause,
+            step.payload,
         )
         .await?;
         Ok(version)
     }
 
-    /// Moves a stage run and announces it. Returns the version after the move.
+    /// Moves a stage run and announces it. Returns the version after the move. `effects` holds the
+    /// records the transition requires (`stage_run_effects_rule`).
     pub(crate) async fn move_stage_run(
         &self,
         tx: &mut dyn Tx,
         run: &Versioned<StageRun>,
-        event: StageRunEvent,
-        cause: Option<&str>,
-        payload: Map<String, Value>,
+        step: Step<'_, StageRunEvent>,
+        effects: StageRunEffects,
     ) -> Result<Version, EngineError> {
-        let planned = AppliedTransition::plan(run.value.status, event, self.now)?;
+        let planned =
+            AppliedTransition::plan(run.value.status, step.event, self.now, step.cleared)?;
+        let seal = Seal::of(&planned);
         let version = tx
-            .transition_stage_run(run.value.id, run.version, planned)
+            .transition_stage_run(run.value.id, run.version, planned, effects)
             .await?;
         self.enqueue::<StageRunStatus>(
             tx,
             AggregateKind::StageRun,
             run.value.id.as_uuid(),
             version,
-            planned.transition_id(),
-            cause,
-            payload,
+            &seal,
+            step.cause,
+            step.payload,
         )
         .await?;
         Ok(version)
     }
 
+    /// Starts the stage run: `S03` and the attempt that holds the lease, in the one atomic step the
+    /// store offers (`AttemptOps::start_attempt`), and announces it. Nothing else creates an
+    /// attempt or raises the lease epoch (ADR 0014, rules R1 to R3).
+    ///
+    /// # Errors
+    /// The store errors of the start: `Conflict` when another worker won, `NotReady` when the job
+    /// is not active or the back-off has not ended, `Constraint` at a limit.
+    pub(crate) async fn start_stage_run(
+        &self,
+        tx: &mut dyn Tx,
+        run: &Versioned<StageRun>,
+        cleared: GuardCleared,
+        launch: Launch,
+    ) -> Result<StartedAttempt, EngineError> {
+        let planned =
+            AppliedTransition::plan(run.value.status, StageRunEvent::Start, self.now, cleared)?;
+        let seal = Seal::of(&planned);
+        let started = tx
+            .start_attempt(StartAttempt {
+                attempt: launch.attempt,
+                stage_run: run.value.id,
+                expected: run.version,
+                worker: launch.worker,
+                lease_ttl: launch.lease_ttl,
+                attempt_timeout: launch.attempt_timeout,
+                transition: planned,
+            })
+            .await?;
+        let payload = super::payload::attempt_started(
+            run.value.kind,
+            run.value.id,
+            launch.attempt,
+            started.attempt.value.number,
+            started.attempt.value.deadline_at,
+        );
+        self.enqueue::<StageRunStatus>(
+            tx,
+            AggregateKind::StageRun,
+            run.value.id.as_uuid(),
+            started.stage_run.version,
+            &seal,
+            None,
+            payload,
+        )
+        .await?;
+        Ok(started)
+    }
+
     /// Moves an attempt and announces it. `epoch` is the lease epoch the move is written under.
-    /// The store refuses a move whose epoch is not current (INV-05).
+    /// The store refuses a move whose epoch is not current (INV-05). `end` holds the records the
+    /// transition requires (`attempt_end_rule`).
     pub(crate) async fn move_attempt(
         &self,
         tx: &mut dyn Tx,
         attempt: &Versioned<Attempt>,
         epoch: LeaseEpoch,
-        event: AttemptEvent,
-        cause: Option<&str>,
-        payload: Map<String, Value>,
+        step: Step<'_, AttemptEvent>,
+        end: AttemptEnd,
     ) -> Result<Version, EngineError> {
-        let planned = AppliedTransition::plan(attempt.value.status, event, self.now)?;
+        let planned =
+            AppliedTransition::plan(attempt.value.status, step.event, self.now, step.cleared)?;
+        let seal = Seal::of(&planned);
         let version = tx
-            .transition_attempt(attempt.value.id, attempt.version, epoch, planned)
+            .transition_attempt(attempt.value.id, attempt.version, epoch, planned, end)
             .await?;
-        let mut payload = payload;
+        let mut payload = step.payload;
         if self.cost_micro_usd > 0 {
             payload.insert(
                 super::payload::key::COST.to_owned(),
@@ -147,8 +251,8 @@ impl<'e> Cx<'e> {
             AggregateKind::Attempt,
             attempt.value.id.as_uuid(),
             version,
-            planned.transition_id(),
-            cause,
+            &seal,
+            step.cause,
             payload,
         )
         .await?;
@@ -157,6 +261,7 @@ impl<'e> Cx<'e> {
 
     /// Writes the outbox event that a transition emits, in the same transaction as the move.
     /// The event type comes from the transition row, so it cannot name a move that did not happen.
+    /// The payload also names the guard that held and the digest of the facts it held on.
     #[allow(clippy::too_many_arguments)]
     async fn enqueue<S: Status>(
         &self,
@@ -164,10 +269,11 @@ impl<'e> Cx<'e> {
         kind: AggregateKind,
         aggregate: Uuid,
         version: Version,
-        transition_id: &str,
+        seal: &Seal,
         cause: Option<&str>,
-        payload: Map<String, Value>,
+        mut payload: Map<String, Value>,
     ) -> Result<(), EngineError> {
+        let transition_id = seal.transition_id;
         let row = S::TRANSITIONS
             .iter()
             .find(|row| row.id == transition_id)
@@ -178,6 +284,11 @@ impl<'e> Cx<'e> {
             // A heartbeat has no event (ADR 0004). The engine does not plan one through here.
             return Ok(());
         };
+        payload.insert(super::payload::key::GUARD.to_owned(), json!(seal.guard));
+        payload.insert(
+            super::payload::key::GUARD_FACTS.to_owned(),
+            json!(seal.facts_sha256),
+        );
         let mut document = json!({
             "schema_version": 1,
             "event_id": self.engine.new_event_id().to_string(),
@@ -204,20 +315,29 @@ impl<'e> Cx<'e> {
     }
 
     /// Records an audit event of the engine: the actor, the action, the policy hash in force and
-    /// the correlation id.
+    /// the correlation id. The store assigns the time.
     pub(crate) async fn audit(
         &self,
         tx: &mut dyn Tx,
         actor: AuditActor,
         action: AuditAction,
     ) -> Result<(), EngineError> {
-        tx.record_audit(AuditEvent {
-            job_id: self.job,
+        let text = action.slug()?;
+        tx.record_audit(NewAuditEvent {
+            id: AuditEventId::from_uuid(self.engine.deps.ids.new_uuid()),
             actor,
-            action: action.slug()?,
+            action: PortAuditAction::new(text.as_str())?,
+            subject: format!("job {}", self.job),
+            decision: match action.decision {
+                AuditDecision::Granted => PortAuditDecision::Allow,
+                AuditDecision::Denied => PortAuditDecision::Deny,
+                AuditDecision::Ended | AuditDecision::Noted => PortAuditDecision::Record,
+            },
+            reason: format!("the engine recorded {}", text.as_str()),
             policy_hash: self.engine.config.policy_hash.clone(),
+            job: Some(self.job),
+            stage_run: None,
             correlation_id: self.correlation,
-            occurred_at: self.now,
         })
         .await?;
         Ok(())
@@ -229,7 +349,25 @@ impl<'e> Cx<'e> {
         tx: &mut dyn Tx,
         action: AuditAction,
     ) -> Result<(), EngineError> {
-        self.audit(tx, AuditActor::Component(Self::component()?), action)
+        self.audit(tx, AuditActor::System(Self::component()?), action)
             .await
+    }
+}
+
+/// What an event states about the move it announces: the transition, the guard that held and the
+/// digest of the facts it held on. Taken before the planned move goes to the store.
+struct Seal {
+    transition_id: &'static str,
+    guard: String,
+    facts_sha256: String,
+}
+
+impl Seal {
+    fn of<S: Status>(planned: &AppliedTransition<S>) -> Self {
+        Self {
+            transition_id: planned.transition_id(),
+            guard: planned.guard().to_string(),
+            facts_sha256: planned.facts_sha256().to_string(),
+        }
     }
 }

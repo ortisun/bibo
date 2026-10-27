@@ -11,18 +11,18 @@
 
 use factory_domain::ids::{AttemptId, StageRunId};
 use factory_domain::machines::failure::FailureClass;
-use factory_domain::machines::guards::{EscalationFacts, GuardFacts, RetryFacts, evaluate};
+use factory_domain::machines::guards::{EscalationFacts, GuardFacts, RetryFacts};
 use factory_domain::machines::retry::{AttemptDisposition, EscalationCause, decide_after_failure};
 use factory_domain::state::{Guard, StageRunEvent, StageRunStatus};
 use factory_ports::clock::timestamp_after;
-use factory_ports::store::Tx;
+use factory_ports::store::{StageRunEffects, Tx};
 use serde_json::json;
 
 use super::Engine;
 use super::error::EngineError;
 use super::payload::{self, key};
-use super::progress::{Board, guard_error, upstream_runs};
-use super::record::Cx;
+use super::progress::{Board, clear, upstream_runs};
+use super::record::{Cx, Step};
 use super::timeline::Timeline;
 use crate::scheduler::retry_delay;
 
@@ -99,6 +99,7 @@ impl Engine {
             budget_has_room: timeline.spent_micro_usd < self.config.job_budget_micro_usd,
             invalid_output_failures: window.invalid_output_failures(),
             repair_cap: self.config.repair_cap,
+            environment: None,
         };
         let disposition = decide_after_failure(&facts);
         let base = payload::attempt_event(
@@ -109,7 +110,7 @@ impl Engine {
         );
         match disposition {
             AttemptDisposition::Retry => {
-                evaluate(Guard::RetryAllowed, &GuardFacts::Retry(facts)).map_err(guard_error)?;
+                let cleared = clear(Guard::RetryAllowed, &GuardFacts::Retry(facts))?;
                 let delay = retry_delay(
                     &contract.timeout_and_retries.backoff,
                     window.attempts_used(),
@@ -118,12 +119,18 @@ impl Engine {
                 let now = tx.database_time().await?;
                 let not_before = timestamp_after(&now, delay);
                 let payload = payload::with(base, key::NOT_BEFORE, json!(not_before.to_string()));
+                // The store sets `not_before` from its own clock, so the back-off needs no wait
+                // for an old lease: the stage run is findable again once the delay has passed.
                 cx.move_stage_run(
                     tx,
                     run,
-                    StageRunEvent::AttemptFailedRetryable,
-                    Some("retry-scheduled"),
-                    payload,
+                    Step::new(StageRunEvent::AttemptFailedRetryable, cleared)
+                        .cause("retry-scheduled")
+                        .payload(payload),
+                    StageRunEffects {
+                        not_before_after: Some(delay),
+                        ..StageRunEffects::default()
+                    },
                 )
                 .await?;
                 tracing::info!(
@@ -132,30 +139,43 @@ impl Engine {
                 );
             }
             AttemptDisposition::Escalate(cause) => {
-                evaluate(
+                let cleared = clear(
                     Guard::EscalationRequired,
                     &GuardFacts::Escalation(cause.facts()),
-                )
-                .map_err(guard_error)?;
+                )?;
                 let code = match cause {
                     EscalationCause::BudgetLimit => "budget-limit",
                     EscalationCause::AttemptLimit => "attempt-limit",
                 };
                 let payload = payload::with(base, key::CAUSE, json!(code));
-                cx.move_stage_run(tx, run, StageRunEvent::EscalateToHuman, Some(code), payload)
-                    .await?;
-            }
-            AttemptDisposition::Fail => {
-                evaluate(Guard::FailureNonretryable, &GuardFacts::Retry(facts))
-                    .map_err(guard_error)?;
                 cx.move_stage_run(
                     tx,
                     run,
-                    StageRunEvent::AttemptFailedFinal,
-                    Some("failure-not-retryable"),
-                    base,
+                    Step::new(StageRunEvent::EscalateToHuman, cleared)
+                        .cause(code)
+                        .payload(payload),
+                    StageRunEffects::default(),
                 )
                 .await?;
+            }
+            AttemptDisposition::Fail => {
+                let cleared = clear(Guard::FailureNonretryable, &GuardFacts::Retry(facts))?;
+                cx.move_stage_run(
+                    tx,
+                    run,
+                    Step::new(StageRunEvent::AttemptFailedFinal, cleared)
+                        .cause("failure-not-retryable")
+                        .payload(base),
+                    StageRunEffects::default(),
+                )
+                .await?;
+            }
+            AttemptDisposition::Block(_) => {
+                // `S21` is taken first when the environment is the cause. No failure class maps
+                // to it yet, so this arm is not reached; it is wired with the environment cause.
+                return Err(EngineError::Corrupt(
+                    "an environment block was decided before the engine builds environment causes",
+                ));
             }
         }
         self.settle(tx, cx).await?;
@@ -177,11 +197,10 @@ impl Engine {
         let timeline = Timeline::load(tx, cx.job).await?;
         let board = Board::load(tx, &timeline).await?;
         let run = board.run(run_id).ok_or(EngineError::NotFound)?;
-        evaluate(
+        let cleared = clear(
             Guard::EscalationRequired,
             &GuardFacts::Escalation(reason.facts()),
-        )
-        .map_err(guard_error)?;
+        )?;
         let payload = payload::with(
             payload::for_run(run.value.kind, run_id),
             key::CAUSE,
@@ -190,9 +209,10 @@ impl Engine {
         cx.move_stage_run(
             tx,
             run,
-            StageRunEvent::EscalateToHuman,
-            Some(reason.code()),
-            payload,
+            Step::new(StageRunEvent::EscalateToHuman, cleared)
+                .cause(reason.code())
+                .payload(payload),
+            StageRunEffects::default(),
         )
         .await?;
         self.settle(tx, cx).await

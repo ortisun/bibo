@@ -6,25 +6,29 @@ use std::time::Duration;
 
 use factory_domain::contracts::agent_manifest::RecommendedTier;
 use factory_domain::contracts::{DomainEvent, EvidenceLedgerEntry, Violation};
-use factory_domain::ids::{CausationId, JobId, PrincipalId, StageRunId, TenantId};
+use factory_domain::ids::{CausationId, JobId, PrincipalId, RepositoryId, StageRunId, TenantId};
 use factory_domain::scope::TenantScope;
 use factory_domain::values::{NonEmptyString, Sha256Digest};
 use factory_domain::vocabulary::{ExecutionMode, HumanRole, StageKind};
 use factory_ports::agent::{ModelSelection, RuntimeId};
 use factory_ports::clock::{Clock, IdGenerator};
-use factory_ports::paths::{CommitSha, RepoRef};
-use factory_ports::registry::{ContractKind, OutputValidator};
-use factory_ports::store::{AuditEvent, NewPrincipal, OutboxSeq, Store, SystemScope, Tx, WorkerId};
+use factory_ports::paths::RepoRef;
+use factory_ports::registry::{ContractKind, OutputValidator, ValidatedOutput};
+use factory_ports::store::{
+    AuditFilter, AuditRecord, NewPrincipal, OutboxSeq, PrincipalKind, Store, SystemScope, SystemTx,
+    WorkerId,
+};
 use factory_testkit::agent::FakeAgentRuntime;
 use factory_testkit::artifact::InMemoryArtifactStore;
 use factory_testkit::broker::FakeModelBroker;
 use factory_testkit::clock::FakeClock;
+use factory_testkit::contracts::workspace::fixture_rules;
 use factory_testkit::fixtures::sandbox_policy;
 use factory_testkit::registry::InMemoryAgentRegistry;
 use factory_testkit::router::{RouteRule, StaticModelRouter};
 use factory_testkit::sandbox::FakeSandbox;
 use factory_testkit::store::{InMemoryStore, StoreDefect};
-use factory_testkit::workspace::FakeWorkspaceProvider;
+use factory_testkit::workspace::{FakeRemote, FakeWorkspaceProvider};
 use factory_workflow::commands::{Actor, Decision, Subject};
 use factory_workflow::engine::{
     Admission, AttemptOutcome, Engine, EngineConfig, EngineDeps, JobView,
@@ -40,7 +44,27 @@ use super::ids::FaultyIds;
 pub struct ScriptedValidator;
 
 impl OutputValidator for ScriptedValidator {
-    fn validate(
+    fn validate_bytes(
+        &self,
+        kind: ContractKind,
+        version: u32,
+        bytes: &[u8],
+    ) -> Result<ValidatedOutput, Vec<Violation>> {
+        let value: serde_json::Value = serde_json::from_slice(bytes).map_err(|_| {
+            vec![Violation {
+                path: String::new(),
+                message: "the bytes are not a JSON document".to_owned(),
+            }]
+        })?;
+        self.validate_value(kind, version, &value)?;
+        Ok(ValidatedOutput {
+            value,
+            sha256: Sha256Digest::of(bytes),
+            size_bytes: bytes.len() as u64,
+        })
+    }
+
+    fn validate_value(
         &self,
         _kind: ContractKind,
         _version: u32,
@@ -72,6 +96,8 @@ pub struct World {
     pub engine: Engine,
     pub tenant: TenantId,
     pub requester: PrincipalId,
+    pub repository: RepositoryId,
+    next_github_user: std::sync::atomic::AtomicU64,
 }
 
 impl World {
@@ -113,7 +139,6 @@ impl World {
             })
             .collect();
         let repo = RepoRef::parse("example-org/fixture").expect("a repository");
-        let base = CommitSha::parse(&"0123456789".repeat(4)).expect("a commit");
         let deps = EngineDeps {
             store: store.clone(),
             clock: clock.clone(),
@@ -126,8 +151,9 @@ impl World {
             )),
             workspaces: Arc::new(FakeWorkspaceProvider::new(
                 repo,
-                base,
-                &[("README.md", "hi")],
+                FakeRemote::new(),
+                artifacts.clone(),
+                fixture_rules(),
             )),
             runtime: Arc::new(FakeAgentRuntime::new(artifacts.clone())),
             router: Arc::new(StaticModelRouter::new(routes)),
@@ -153,11 +179,14 @@ impl World {
 
         let tenant = TenantId::from_uuid(ids.new_uuid());
         let requester = PrincipalId::from_uuid(ids.new_uuid());
+        let repository = store.seed_repository(tenant);
         let mut tx = store.begin(TenantScope::new(tenant)).await.expect("a tx");
         tx.insert_principal(NewPrincipal {
             id: requester,
-            external_ref: NonEmptyString::parse("github:1001").expect("a reference"),
-            created_at: clock.now(),
+            kind: PrincipalKind::Human {
+                github_user_id: 1001,
+            },
+            login: None,
         })
         .await
         .expect("a principal");
@@ -177,6 +206,9 @@ impl World {
             engine,
             tenant,
             requester,
+            repository,
+            // The requester holds 1001.
+            next_github_user: std::sync::atomic::AtomicU64::new(2000),
         }
     }
 
@@ -209,7 +241,7 @@ impl World {
     pub async fn admitted_job(&self) -> JobId {
         let job = self
             .engine
-            .receive_job(self.tenant, self.requester)
+            .receive_job(self.tenant, self.requester, self.repository)
             .await
             .expect("receive");
         let admission = self
@@ -251,10 +283,14 @@ impl World {
             .begin(TenantScope::new(self.tenant))
             .await
             .expect("a tx");
+        // A numeric GitHub user id that no other person of the tenant holds.
+        let github_user_id = self
+            .next_github_user
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         tx.insert_principal(NewPrincipal {
             id,
-            external_ref: NonEmptyString::parse(&format!("github:{name}")).expect("a reference"),
-            created_at: self.clock.now(),
+            kind: PrincipalKind::Human { github_user_id },
+            login: Some(name.to_owned()),
         })
         .await
         .expect("a principal");
@@ -328,7 +364,7 @@ impl World {
     }
 
     /// A system transaction, as the engine opens to find work.
-    pub async fn store_system(&self) -> Box<dyn Tx> {
+    pub async fn store_system(&self) -> Box<dyn SystemTx> {
         self.store
             .begin_system(SystemScope::engine())
             .await
@@ -362,13 +398,16 @@ impl World {
     }
 
     /// The audit records of a job.
-    pub async fn audit(&self, job: JobId) -> Vec<AuditEvent> {
+    pub async fn audit(&self, job: JobId) -> Vec<AuditRecord> {
         let mut tx = self
             .store
             .begin(TenantScope::new(self.tenant))
             .await
             .expect("a tx");
-        let rows = tx.read_audit(job, 10_000).await.expect("audit");
+        let rows = tx
+            .read_audit(AuditFilter::Job(job), 0, 10_000)
+            .await
+            .expect("audit");
         tx.rollback().await.expect("rollback");
         rows
     }

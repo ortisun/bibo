@@ -8,7 +8,7 @@ use factory_domain::machines::guards::GuardFailure;
 use factory_domain::state::IllegalTransition;
 use factory_domain::vocabulary::StageKind;
 use factory_ports::FakeRefused;
-use factory_ports::store::StoreError;
+use factory_ports::store::{PlanError, StoreError};
 
 /// Why an engine call did not do what was asked.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -71,6 +71,19 @@ impl From<StoreError> for EngineError {
             StoreError::LeaseFenced => Self::LeaseFenced,
             StoreError::NotFound => Self::NotFound,
             other => Self::Store(other),
+        }
+    }
+}
+
+impl From<PlanError> for EngineError {
+    fn from(error: PlanError) -> Self {
+        match error {
+            PlanError::Illegal(illegal) => Self::Illegal(illegal),
+            // The engine cleared a guard that the table row for this move does not use. That is a
+            // mistake in the engine, never a state of the data.
+            PlanError::WrongGuard { .. } => {
+                Self::Corrupt("the engine cleared a different guard than the move needs")
+            }
         }
     }
 }

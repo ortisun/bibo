@@ -49,7 +49,7 @@ use factory_ports::clock::{Clock, IdGenerator};
 use factory_ports::registry::{AgentRegistry, OutputValidator};
 use factory_ports::require_permitted;
 use factory_ports::sandbox::SandboxProvider;
-use factory_ports::store::{Store, SystemScope, Tx};
+use factory_ports::store::{Store, SystemScope, SystemTx, Tx};
 use factory_ports::workspace::WorkspaceProvider;
 
 pub(crate) use ledger::read_all_ledger;
@@ -202,8 +202,9 @@ impl Engine {
         Ok(self.deps.store.begin(TenantScope::new(tenant)).await?)
     }
 
-    /// Opens a transaction that sees every tenant. Used only to find work.
-    pub(crate) async fn system_tx(&self) -> Result<Box<dyn Tx>, EngineError> {
+    /// Opens the read-only transaction that sees every tenant. Used only to find work; it cannot
+    /// write.
+    pub(crate) async fn system_tx(&self) -> Result<Box<dyn SystemTx>, EngineError> {
         Ok(self.deps.store.begin_system(SystemScope::engine()).await?)
     }
 

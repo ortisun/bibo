@@ -26,6 +26,12 @@ pub const DEFAULT_TEARDOWN_GRACE: Duration = Duration::from_secs(30);
 /// The most stage runs one claim call leases.
 pub const DEFAULT_CLAIM_BATCH: u32 = 8;
 
+/// The most attempts the store lets a stage run hold over its whole life (`NewStageRun::
+/// max_attempts`, INV-10). It is the largest value the port accepts. The attempt limit that decides
+/// a retry is the one in the stage contract, counted from the last human answer, so the store's
+/// number is the backstop and never the first limit to be reached.
+pub const STORE_ATTEMPT_CEILING: u8 = 20;
+
 /// What one job may spend, in millionths of a US dollar: 25 dollars
 /// (`policies/security.yaml`, `budgets.hard_ceilings.per_job.max_usd`).
 pub const DEFAULT_JOB_BUDGET_MICRO_USD: u64 = 25_000_000;

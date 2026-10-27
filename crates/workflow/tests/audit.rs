@@ -9,12 +9,12 @@ mod support;
 
 use factory_domain::ids::AttemptId;
 use factory_domain::scope::TenantScope;
-use factory_domain::state::{StageRunEvent, StageRunStatus};
+use factory_domain::state::{Guard, StageRunEvent, StageRunStatus};
 use factory_domain::values::{Sha256Digest, Timestamp};
-use factory_domain::vocabulary::{ExecutionMode, HumanRole, StageKind};
+use factory_domain::vocabulary::{ExecutionMode, GateOutcome, HumanRole, StageKind};
 use factory_ports::clock::{Clock, IdGenerator};
-use factory_ports::store::{AppliedTransition, NewAttempt, Store};
-use factory_testkit::fixtures::{Ids, ledger_entry};
+use factory_ports::store::{AppliedTransition, GateRecord, StageRunEffects, StartAttempt, Store};
+use factory_testkit::fixtures::{Ids, cleared, ledger_entry};
 use factory_testkit::store::StoreDefect;
 use factory_workflow::audit::{
     AuditAction, AuditDecision, AuditKind, Finding, RunOutcomes, check_job,
@@ -106,38 +106,60 @@ async fn the_verifier_detects_a_fake_entry_in_a_production_job() {
 async fn pass_without_evidence(world: &World, run: factory_domain::ids::StageRunId) {
     let now = world.clock.now();
     let mut system = world.store_system().await;
-    let work = system
-        .claim_ready(
-            &World::worker("rogue"),
-            1,
-            std::time::Duration::from_secs(60),
-        )
-        .await
-        .expect("claim");
-    system.commit().await.expect("commit");
-    assert_eq!(work[0].stage_run.value.id, run);
+    let candidates = system.find_claim_candidates(1).await.expect("find");
+    system.finish().await.expect("finish");
+    assert_eq!(candidates[0].stage_run, run);
     let mut tx = world
         .store
         .begin(TenantScope::new(world.tenant))
         .await
         .expect("a tx");
-    tx.insert_attempt(NewAttempt {
-        id: AttemptId::from_uuid(world.ids.new_uuid()),
-        stage_run_id: run,
-        epoch: work[0].lease.epoch,
-        created_at: now,
-    })
-    .await
-    .expect("an attempt");
-    let mut version = tx.get_stage_run(run).await.expect("run").version;
-    for (from, event) in [
-        (StageRunStatus::Ready, StageRunEvent::Start),
-        (StageRunStatus::Running, StageRunEvent::AttemptSucceeded),
-        (StageRunStatus::Gating, StageRunEvent::GatePassed),
+    let start = AppliedTransition::plan(
+        StageRunStatus::Ready,
+        StageRunEvent::Start,
+        now,
+        cleared(Guard::LeaseAcquired),
+    )
+    .expect("a legal move");
+    let started = tx
+        .start_attempt(StartAttempt {
+            attempt: AttemptId::from_uuid(world.ids.new_uuid()),
+            stage_run: run,
+            expected: candidates[0].version,
+            worker: World::worker("rogue"),
+            lease_ttl: std::time::Duration::from_secs(60),
+            attempt_timeout: std::time::Duration::from_secs(600),
+            transition: start,
+        })
+        .await
+        .expect("the store starts it");
+    let mut version = started.stage_run.version;
+    // The store takes a pass that names an outcome, so the faulty engine names one. What it never
+    // writes is the gate report or the ledger entry that should stand behind it.
+    for (from, event, guard, effects) in [
+        (
+            StageRunStatus::Running,
+            StageRunEvent::AttemptSucceeded,
+            Guard::OutputSchemaValid,
+            StageRunEffects::default(),
+        ),
+        (
+            StageRunStatus::Gating,
+            StageRunEvent::GatePassed,
+            Guard::GatePassEvidenced,
+            StageRunEffects {
+                gate: Some(GateRecord {
+                    outcome: GateOutcome::Passed,
+                    report_sha256: None,
+                    failing_set_sha256: None,
+                }),
+                ..StageRunEffects::default()
+            },
+        ),
     ] {
-        let plan = AppliedTransition::plan(from, event, now).expect("a legal move");
+        let plan = AppliedTransition::plan(from, event, now, cleared(guard)).expect("a legal move");
         version = tx
-            .transition_stage_run(run, version, plan)
+            .transition_stage_run(run, version, plan, effects)
             .await
             .expect("the store accepts a legal move");
     }
@@ -181,11 +203,24 @@ async fn the_verifier_detects_a_skipped_run_without_a_rule() {
         StageRunStatus::Pending,
         StageRunEvent::MarkNotApplicable,
         at,
+        cleared(Guard::NotApplicableDecided),
     )
     .expect("legal");
-    tx.transition_stage_run(pending, version, plan)
-        .await
-        .expect("moves");
+    tx.transition_stage_run(
+        pending,
+        version,
+        plan,
+        StageRunEffects {
+            gate: Some(GateRecord {
+                outcome: GateOutcome::NotApplicable,
+                report_sha256: None,
+                failing_set_sha256: None,
+            }),
+            ..StageRunEffects::default()
+        },
+    )
+    .await
+    .expect("moves");
     tx.commit().await.expect("commit");
     let report = world
         .engine
@@ -264,12 +299,16 @@ async fn every_required_event_type() {
         for record in world.audit(job).await {
             // Every record names who acted, the policy in force and the job's correlation id.
             assert_eq!(
-                record.policy_hash, world.config.policy_hash,
+                record.event.policy_hash, world.config.policy_hash,
                 "{}",
-                record.action
+                record.event.action
             );
-            assert_eq!(record.correlation_id, correlation, "{}", record.action);
-            if let Some(kind) = AuditKind::of_action(record.action.as_str()) {
+            assert_eq!(
+                record.event.correlation_id, correlation,
+                "{}",
+                record.event.action
+            );
+            if let Some(kind) = AuditKind::of_action(record.event.action.as_str()) {
                 seen.insert(kind);
             }
         }

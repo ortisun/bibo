@@ -92,17 +92,12 @@ mod claim_loop {
                     tickets.extend(claimed.started);
                 }
                 Op::CrashAfterClaim => {
+                    // A claim is found in one transaction and started in another. An engine
+                    // that stops between the two has written nothing, so the stage run is found
+                    // again by the next claim.
                     let mut tx = world.store_system().await;
-                    let _ = tx
-                        .claim_ready(
-                            &World::worker("crashing"),
-                            1,
-                            std::time::Duration::from_secs(60),
-                        )
-                        .await;
-                    // Committed and then forgotten: the engine stopped before it started the
-                    // attempt.
-                    let _ = tx.commit().await;
+                    let _ = tx.find_claim_candidates(1).await;
+                    let _ = tx.finish().await;
                 }
                 Op::Heartbeat(index) => {
                     if let Some(ticket) = tickets.get(index % tickets.len().max(1))
@@ -145,7 +140,7 @@ mod claim_loop {
         // with an attempt that nobody owns.
         for _ in 0..24 {
             world.advance(400);
-            world.engine.sweep().await.map_err(|e| e.to_string())?;
+            let swept = world.engine.sweep().await.map_err(|e| e.to_string())?;
             let claimed = world
                 .engine
                 .claim_next(&World::worker("drain"))
@@ -158,7 +153,13 @@ mod claim_loop {
                     .await
                     .map_err(|e| e.to_string())?;
             }
-            if claimed.started.is_empty() && claimed.deferred.is_empty() {
+            // Changed with ports v1.1: a stage run in its back-off is not offered by the store,
+            // so a round that only swept an attempt finds nothing to claim yet. The drain stops
+            // when a whole round did nothing: no attempt swept, none started, none deferred.
+            if swept.lease_lost.is_empty()
+                && claimed.started.is_empty()
+                && claimed.deferred.is_empty()
+            {
                 break;
             }
         }
@@ -202,10 +203,13 @@ mod named {
     use factory_domain::contracts::DomainEvent;
     use factory_domain::contracts::domain_event::AggregateKind;
     use factory_domain::scope::TenantScope;
-    use factory_domain::state::{AttemptStatus, JobStatus, StageRunEvent, StageRunStatus, Status};
+    use factory_domain::state::{
+        AttemptStatus, Guard, JobStatus, StageRunEvent, StageRunStatus, Status,
+    };
     use factory_domain::values::Timestamp;
     use factory_domain::vocabulary::{HumanRole, StageKind};
     use factory_ports::store::{AppliedTransition, Store, StoreError};
+    use factory_testkit::fixtures::cleared;
     use factory_testkit::store::StoreDefect;
     use factory_workflow::commands::{Decision, OverrideFacts, Subject};
     use factory_workflow::engine::{AttemptOutcome, EngineError};
@@ -313,10 +317,21 @@ mod named {
             .await
             .expect("a tx");
         let status = tx.get_stage_run(run).await.expect("run").value.status;
-        let plan = AppliedTransition::plan(status, StageRunEvent::Cancel, at).expect("legal");
+        let plan = AppliedTransition::plan(
+            status,
+            StageRunEvent::Cancel,
+            at,
+            cleared(Guard::NoActiveAttempt),
+        )
+        .expect("legal");
         // The row has moved past its first version, so version one is stale.
         match tx
-            .transition_stage_run(run, factory_ports::store::Version::FIRST, plan)
+            .transition_stage_run(
+                run,
+                factory_ports::store::Version::FIRST,
+                plan,
+                factory_ports::store::StageRunEffects::default(),
+            )
             .await
         {
             Err(StoreError::Conflict) => Ok(()),
@@ -379,11 +394,24 @@ mod named {
         for status in StageRunStatus::STATES {
             for event in StageRunStatus::EVENTS {
                 let listed = status.legal_events().contains(event);
+                // A listed pair is planned with the guard of its own row; an unlisted pair is
+                // refused whatever guard is offered. The fixture builds a clearance for most
+                // guards and refuses to build one for the rest, so a listed pair whose guard the
+                // fixture lacks is skipped here; the ports crate checks every listed pair with
+                // its own guard in `every_legal_job_move_with_its_own_guard_can_be_planned`.
+                let guard = status
+                    .transition(*event)
+                    .map_or(Guard::AdmissionOk, |row| row.guard);
+                let Ok(clearance) = std::panic::catch_unwind(|| cleared(guard)) else {
+                    assert!(listed, "an unlisted pair is always checked");
+                    continue;
+                };
                 assert_eq!(
                     AppliedTransition::plan(
                         *status,
                         *event,
-                        Timestamp::parse("2026-10-27T08:30:00Z").unwrap()
+                        Timestamp::parse("2026-10-27T08:30:00Z").unwrap(),
+                        clearance,
                     )
                     .is_ok(),
                     listed
@@ -397,7 +425,7 @@ mod named {
         // Fault injection at every write boundary: the n-th identifier repeats, some write of
         // some transaction fails, and that transaction is dropped. Nothing of it may remain.
         let mut faulted = 0;
-        for n in 1..=45_u64 {
+        for n in 1..=120_u64 {
             let world = World::new().await;
             world
                 .script(StageKind::Approval)
@@ -409,12 +437,18 @@ mod named {
                 world.advance(400);
                 let swept = world.engine.sweep().await;
                 let claimed = world.engine.claim_next(&World::worker("worker-1")).await;
-                let (Ok(_), Ok(claimed)) = (swept, claimed) else {
+                let (Ok(swept), Ok(claimed)) = (swept, claimed) else {
                     broke = true;
                     world.ids.disarm();
                     continue;
                 };
-                if claimed.started.is_empty() && claimed.deferred.is_empty() {
+                // A stage run in its back-off is not offered by the store (ports v1.1), so a
+                // round that only swept an attempt finds nothing to claim yet. Stop when a whole
+                // round did nothing.
+                if swept.lease_lost.is_empty()
+                    && claimed.started.is_empty()
+                    && claimed.deferred.is_empty()
+                {
                     break;
                 }
                 for ticket in &claimed.started {
@@ -450,7 +484,7 @@ mod named {
                 "fault {n}: a stage run passed twice or not at all"
             );
         }
-        assert!(faulted > 5, "the faults did hit writes ({faulted} of 45)");
+        assert!(faulted > 5, "the faults did hit writes ({faulted} of 120)");
     }
 
     #[tokio::test]
@@ -520,11 +554,12 @@ mod named {
     }
 
     #[tokio::test]
-    async fn a_store_that_grants_the_lease_twice_cannot_make_two_attempts() {
-        // The claim is guarded in three places: the store's exclusion, the engine's re-read of
-        // the stage run before it starts, and the compare-and-swap of the move. Here the first is
-        // broken on purpose, so one stage run goes to two engines at once, and the others hold.
-        let world = World::with_store_defect(StoreDefect::DoubleGrantsLease).await;
+    async fn a_store_that_starts_the_attempt_twice_cannot_make_two_attempts() {
+        // The claim is guarded in three places: the store's exclusion in `start_attempt`, the
+        // engine's re-read of the stage run before it starts, and the compare-and-swap of the
+        // commit. Here the first is broken on purpose, so one stage run goes to two engines at
+        // once, and the others hold.
+        let world = World::with_store_defect(StoreDefect::DoubleStartsAttempt).await;
         let job = world.admitted_job().await;
         let other = world.restarted_engine();
         let (first, second) = (World::worker("worker-1"), World::worker("worker-2"));

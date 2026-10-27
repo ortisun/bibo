@@ -4,7 +4,7 @@
 //! from the schema example, so the contract is a real, validated `StageContract`. It reports
 //! fidelity `fake`, which a production engine refuses.
 
-use std::collections::VecDeque;
+use std::collections::{BTreeMap, VecDeque};
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
@@ -13,7 +13,9 @@ use factory_domain::contracts::{Contract, GateReport, ReviewVerdict, StageContra
 use factory_domain::values::{HumanText, MediaType, Slug};
 use factory_domain::vocabulary::RiskTier;
 use factory_domain::vocabulary::{Fidelity, StageKind};
-use factory_ports::agent::{CostMicroUsd, Denial, RoutingNeed, Usage};
+use factory_ports::agent::{
+    CostMicroUsd, Denial, ProbedCapabilities, RoutingNeed, RuntimeCapabilities, RuntimeId, Usage,
+};
 use factory_ports::registry::ContractKind;
 use factory_workflow::audit::AuditAction;
 use factory_workflow::gates::framework::GateDecision;
@@ -298,6 +300,16 @@ impl StageHandler for ScriptedHandler {
                 tier: RecommendedTier::Standard,
                 required: Vec::new(),
                 risk: RiskTier::Low,
+                exclude: Vec::new(),
+                // The router considers only a runtime that was probed. The scripted stage
+                // stands for the probe of the one fake runtime.
+                probed: ProbedCapabilities(BTreeMap::from([(
+                    RuntimeId::new("fake").expect("a runtime"),
+                    RuntimeCapabilities {
+                        runtime_version: "fake".to_owned(),
+                        observations: Vec::new(),
+                    },
+                )])),
             })
     }
 
@@ -324,9 +336,9 @@ impl StageHandler for ScriptedHandler {
         });
         if report {
             ctx.report_sandbox_ready(SandboxReady {
-                started_within_limits: true,
-                tool_grants_in_place: true,
-                capability_probe_satisfied: true,
+                posture_verified: true,
+                tool_grants_recorded: true,
+                probe_satisfies_stage: true,
             });
         }
         self.script.with(|script| {

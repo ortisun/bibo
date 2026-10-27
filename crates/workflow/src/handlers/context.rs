@@ -107,12 +107,14 @@ pub struct ContractContext<'a> {
 /// guard `G_SANDBOX_PROVISIONED` reads.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SandboxReady {
-    /// The sandbox started within its limits and passed its posture check.
-    pub started_within_limits: bool,
-    /// The tool grants that policy approved are in place.
-    pub tool_grants_in_place: bool,
-    /// The runtime capability probe satisfies what the stage needs.
-    pub capability_probe_satisfied: bool,
+    /// The sandbox provider returned a session, which means it read the container's posture
+    /// back and found every part equal to the spec and the policy. Set from that and from nothing
+    /// else.
+    pub posture_verified: bool,
+    /// The tool grants that policy approved are recorded in the audit log.
+    pub tool_grants_recorded: bool,
+    /// The runtime probe of this attempt supports every capability the stage needs.
+    pub probe_satisfies_stage: bool,
 }
 
 /// What a handler noted while it ran, for the engine to record with the attempt result.

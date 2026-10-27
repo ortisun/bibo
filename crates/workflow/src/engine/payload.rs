@@ -51,6 +51,10 @@ pub(crate) mod key {
     pub const CAUSE: &str = "cause";
     /// The principal who took a human decision.
     pub const PRINCIPAL: &str = "principal_id";
+    /// The guard that held for the move an event announces (ADR 0014, decision 3).
+    pub const GUARD: &str = "guard";
+    /// The SHA-256 of the facts that guard held on.
+    pub const GUARD_FACTS: &str = "guard_facts_sha256";
 }
 
 /// A stage run as the payload lists it.

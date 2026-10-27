@@ -123,6 +123,9 @@ impl From<AgentRunError> for StageError {
             AgentRunError::Timeout
             | AgentRunError::ProcessFailed(_)
             | AgentRunError::OutputMissing => Self::Tool,
+            // An output over the limit is an output that cannot be used, like one that breaks its
+            // schema, so it counts against the repair cap.
+            AgentRunError::OutputTooLarge => Self::InvalidOutput,
             AgentRunError::Cancelled => Self::Cancelled,
             AgentRunError::CapabilityMissing(_) => Self::Blocked(BlockedCode::ToolUnavailable),
             AgentRunError::BudgetRefused => Self::BudgetExhausted,
@@ -156,6 +159,7 @@ mod tests {
                 StageError::Tool,
             ),
             (AgentRunError::OutputMissing, StageError::Tool),
+            (AgentRunError::OutputTooLarge, StageError::InvalidOutput),
             (AgentRunError::Cancelled, StageError::Cancelled),
             (
                 AgentRunError::CapabilityMissing(Capability::SkillInvocation),
