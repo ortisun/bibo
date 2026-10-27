@@ -1,9 +1,13 @@
 # 0007: Access PostgreSQL through Diesel with diesel-async, and scope every row and every call by tenant
 
-- Status: Accepted. Revised on 2026-10-27 by [ADR 0012](0012-row-level-security-in-slice-1.md): row-level security moves into Slice 1, claims lock with `FOR NO KEY UPDATE`, and PostgreSQL 18 is the pinned version (see "Revision note").
+- Status: Accepted. Revised on 2026-10-27 by [ADR 0012](0012-row-level-security-in-slice-1.md): row-level security moves into Slice 1, claims lock with `FOR NO KEY UPDATE`, and PostgreSQL 18 is the pinned version (see "Revision note"). Revised again on 2026-10-27 by ADR 0014 (see "Revision note (ADR 0014)").
 - Date: 2026-10-27
 - Deciders: software_architect (schema design belongs to the DBA)
 - Related: [ADR 0001](0001-orchestration-engine.md), [ADR 0004](0004-event-model.md), [ADR 0008](0008-artifact-store-and-evidence-ledger.md), [ADR 0012](0012-row-level-security-in-slice-1.md)
+
+## Revision note (ADR 0014)
+
+Revised again on 2026-10-27 by [ADR 0014](0014-ports-v1-1-claim-protocol-and-port-revision.md): the claim is two steps (a read-only search in the system scope, a start in the tenant scope), the lease belongs to the attempt, the epoch moves only when an attempt starts, inserts are idempotent by id and content, a commit can report an unknown outcome and a witness settles it, and the port documentation now says `FOR NO KEY UPDATE SKIP LOCKED`, which this record already chose.
 
 ## Context and problem statement
 

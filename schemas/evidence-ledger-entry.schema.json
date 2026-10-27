@@ -556,7 +556,9 @@
         },
         "url": {
           "type": "string",
-          "format": "uri"
+          "pattern": "^https://[^\\s]+$",
+          "maxLength": 2048,
+          "description": "An https URL with no whitespace. The schema engine does not assert `format`, so the rule is a pattern."
         },
         "version": {
           "type": "string",

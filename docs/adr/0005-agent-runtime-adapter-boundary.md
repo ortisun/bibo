@@ -1,9 +1,13 @@
 # 0005: Drive agents through an AgentRuntime port with probed adapters that run inside the sandbox, behind a model broker
 
-- Status: Accepted for the port, the probing rules and the argument safety rules. **Decided by default, pending human confirmation:** the agent command line tool runs inside the sandbox in Slice 1, and model credentials are API keys with hard spend limits held by a broker. Work package `s0-agent-runtime-spike` must prove the parts marked UNVERIFIED.
+- Status: Accepted for the port, the probing rules and the argument safety rules. **Decided by default, pending human confirmation:** the agent command line tool runs inside the sandbox in Slice 1, and model credentials are API keys with hard spend limits held by a broker. Work package `s0-agent-runtime-spike` must prove the parts marked UNVERIFIED. Revised again on 2026-10-27 by ADR 0014 (see "Revision note (ADR 0014)").
 - Date: 2026-10-27
 - Deciders: software_architect with the security specialist's recommendation (threat model questions Q1 and Q2). A human confirms.
 - Related: [ADR 0003](0003-sandbox-strategy.md), [ADR 0006](0006-spec-kit-boundary.md), [ADR 0009](0009-operating-defaults-pending-confirmation.md), [`agent-manifest` schema](../../schemas/agent-manifest.schema.json), [`secrets-and-credentials.md`](../security/secrets-and-credentials.md)
+
+## Revision note (ADR 0014)
+
+Revised on 2026-10-27 by [ADR 0014](0014-ports-v1-1-claim-protocol-and-port-revision.md): `run` returns a report that survives failure; the final output is bytes that only `OutputValidator::validate_bytes` parses; the router takes the runtimes that already failed and the probe results, so a retry on another runtime is possible; the job token file is written and removed by the sandbox adapter and the secret travels in the spec; spend reaches the broker through a metering seam that the engine does not hold.
 
 ## Context and problem statement
 

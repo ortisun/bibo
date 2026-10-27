@@ -343,6 +343,64 @@
       "implemented_by": [
         "s1-egress-and-broker"
       ]
+    },
+    {
+      "name": "SystemTx",
+      "crate": "ports",
+      "defined_by": "s1-ports-revision",
+      "fake": "InMemorySystemTx",
+      "real": "PgSystemTx in storage",
+      "consumers": [
+        "s1-engine-core"
+      ],
+      "implemented_by": [
+        "s1-storage-postgres"
+      ]
+    },
+    {
+      "name": "JobRepo",
+      "crate": "ports",
+      "defined_by": "s1-ports-revision",
+      "fake": "FakeJobRepo",
+      "real": "GitJobRepo in sandbox",
+      "consumers": [
+        "s1-spec-adapter-and-stage",
+        "s1-stage-delivery-and-approval",
+        "s1-stage-documentation",
+        "s1-stage-implementation-and-review",
+        "s1-stage-intake-and-repository",
+        "s1-trusted-gates-and-validation"
+      ],
+      "implemented_by": [
+        "s1-workspace-ingestion"
+      ]
+    },
+    {
+      "name": "ProcessRunner",
+      "crate": "ports",
+      "defined_by": "s1-ports-revision",
+      "fake": "ScriptedProcessRunner",
+      "real": "OsProcessRunner in sandbox",
+      "consumers": [
+        "s1-sandbox-adapter",
+        "s1-workspace-ingestion"
+      ],
+      "implemented_by": [
+        "s1-sandbox-adapter"
+      ]
+    },
+    {
+      "name": "WebhookVerifier",
+      "crate": "ports",
+      "defined_by": "s1-ports-revision",
+      "fake": "FakeWebhookVerifier",
+      "real": "GitHubWebhookVerifier in github",
+      "consumers": [
+        "s1-apps-composition"
+      ],
+      "implemented_by": [
+        "s1-github-adapter"
+      ]
     }
   ],
   "work_packages": [
@@ -537,7 +595,7 @@
         "security"
       ],
       "size": "L",
-      "summary": "Fix version 1 of the port traits and their closed error enums from the sketches in this plan, and build testkit: faithful in-memory fakes that each report fidelity fake, the scripted adversarial runtime FX-ADV, a controllable clock FX-CLOCK, and generic contract test suites that run against any implementation. The same suites later run against the real adapters, which is how a fake is kept honest.",
+      "summary": "Fix version 1 of the port traits and their closed error enums from the sketches in this plan, and build testkit: faithful in-memory fakes that each report fidelity fake, the scripted adversarial runtime FX-ADV, a controllable clock FX-CLOCK, and generic contract test suites that run against any implementation. The same suites later run against the real adapters, which is how a fake is kept honest. Revised after the independent review by s1-ports-revision (ADR 0014); the signatures in docs/architecture/ports-v1.1.md replace the ports-v1 sketches.",
       "owns": [
         "crates/ports/**",
         "crates/testkit/**"
@@ -1113,14 +1171,15 @@
         "sre"
       ],
       "size": "L",
-      "summary": "Implement SandboxProvider over the Docker command line as the supervisor in sandbox-policy.md section 9: three network profiles with per-job internal networks and the sidecar, create then inspect then compare against policy then start, the runtime self-check, wall-clock and disk enforcement by the supervisor, redacted log streaming with the daemon log driver off, the janitor, and fail-closed behavior. Gates run in fresh verify containers.",
+      "summary": "Implement SandboxProvider over the Docker command line as the supervisor in sandbox-policy.md section 9: three network profiles with per-job internal networks and the sidecar, create then inspect then compare against policy then start, the runtime self-check, wall-clock and disk enforcement by the supervisor, redacted log streaming with the daemon log driver off, the janitor, and fail-closed behavior. Gates run in fresh verify containers. Built to the ports-v1.1 shape (ADR 0014): typed mounts only, a posture report that covers hardening, image, limits, network, mounts and environment and is compared by the pure function in ports, non-zero limits, AppArmor reported as not available only where the policy allows it, and the job token file written by this adapter on a tmpfs it controls and removed on every teardown path. Every host process is started through ProcessRunner from one file, process.rs.",
       "owns": [
         "crates/sandbox/Cargo.toml",
         "crates/sandbox/clippy.toml",
         "crates/sandbox/src/lib.rs",
         "crates/sandbox/src/container/**",
         "crates/sandbox/src/supervisor/**",
-        "crates/sandbox/tests/container/**"
+        "crates/sandbox/tests/container/**",
+        "crates/sandbox/src/process.rs"
       ],
       "inputs": [
         "ADR 0003",
@@ -1130,14 +1189,18 @@
       "exposes_ports": [],
       "implements_ports": [
         "SandboxProvider",
-        "SandboxSession"
+        "SandboxSession",
+        "ProcessRunner"
       ],
-      "consumes_ports": [],
+      "consumes_ports": [
+        "ProcessRunner"
+      ],
       "depends_on": [
         "s0-ports-and-testkit",
         "s1-sandbox-images",
         "s1-security-test-harness",
-        "s1-redaction"
+        "s1-redaction",
+        "s1-ports-revision"
       ],
       "done": [
         {
@@ -1189,6 +1252,21 @@
           "check": "Shell metacharacters in an argument run as literals, and a shell interpreter is denied (NT-TOOL-01, S part). Inside the agent sandbox the same payload runs as a non-root user without capabilities, writes only to the allowed mounts, and leaves no host marker (B part). Paths that leave the workspace, hidden paths and writes outside the writable mounts are refused (NT-TOOL-04, B part). Argument-injection commands run inside the sandbox without effect on evidence or the network (NT-TOOL-05, B part).",
           "kind": "test",
           "command": "cargo nextest run -p factory-sandbox negative_nt_tool_01 negative_nt_tool_04 negative_nt_tool_05"
+        },
+        {
+          "check": "The posture compare finds a drift in each of limits, network, mounts, environment and image on a real container, and a missing AppArmor is accepted only when the policy flag is set.",
+          "kind": "test",
+          "command": "cargo nextest run -p factory-sandbox --test container posture_covers_every_part"
+        },
+        {
+          "check": "The job token file exists inside the agent container at its fixed path, is mode 0400, is absent from the host after teardown by completion, failure, cancellation and timeout, and never appears in Debug output.",
+          "kind": "test",
+          "command": "cargo nextest run -p factory-sandbox --test container token_file_lifecycle"
+        },
+        {
+          "check": "Only crates/sandbox/src/process.rs contains a process-spawning call, and the Docker supervisor runs against a scripted ProcessRunner in every unit test.",
+          "kind": "command",
+          "command": "cargo xtask check-architecture"
         }
       ]
     },
@@ -1202,7 +1280,7 @@
         "software_architect"
       ],
       "size": "L",
-      "summary": "Implement Store and Tx over Diesel with diesel-async, claim and lease operations, outbox writes, the ledger with chain verification, and LocalFsArtifactStore. The shared contract suite from testkit runs against it. Follow the notes in docs/database/for-the-storage-crate.md and ADR 0012. Claims lock with FOR NO KEY UPDATE SKIP LOCKED. Store::begin makes the tenant setting as its first statement, the system scope uses its own role and pool, and the two lookups outside a transaction use the narrow functions. The isolation tests run as the application login. No database message or detail text ever reaches an API client.",
+      "summary": "Implement Store and Tx over Diesel with diesel-async, claim and lease operations, outbox writes, the ledger with chain verification, and LocalFsArtifactStore. The shared contract suite from testkit runs against it. Follow the notes in docs/database/for-the-storage-crate.md and ADR 0012. Claims lock with FOR NO KEY UPDATE SKIP LOCKED. Store::begin makes the tenant setting as its first statement, the system scope uses its own role and pool, and the two lookups outside a transaction use the narrow functions. The isolation tests run as the application login. No database message or detail text ever reaches an API client. Built to the ports-v1.1 shape (ADR 0014): SystemTx for the candidate search and the due-attempt queries, start_attempt as the DBA's two-step claim with the lease on the attempt, inserts that are idempotent by id and content, the listings, Store::committed to settle an unknown commit outcome, record_platform_audit under the platform tenant, resolve_installation with the repository id, and an artifact store whose get and exists join the tenant's index row.",
       "owns": [
         "crates/storage/Cargo.toml",
         "crates/storage/clippy.toml",
@@ -1225,7 +1303,8 @@
       "implements_ports": [
         "ArtifactStore",
         "Store",
-        "Tx"
+        "Tx",
+        "SystemTx"
       ],
       "consumes_ports": [
         "Clock"
@@ -1233,7 +1312,9 @@
       "depends_on": [
         "s0-ports-and-testkit",
         "s0-database-baseline",
-        "s1-database-tenancy-and-state-sync"
+        "s1-database-tenancy-and-state-sync",
+        "s1-ports-revision",
+        "s1-database-port-alignment"
       ],
       "done": [
         {
@@ -1242,7 +1323,7 @@
           "command": "cargo nextest run -p factory-storage --test store_contract"
         },
         {
-          "check": "Two concurrent claimers on one ready row produce exactly one winner.",
+          "check": "Two workers that find the same candidate: exactly one start_attempt wins, the loser gets Conflict, and the winner's stage run is RUNNING at epoch plus one with its attempt in STARTING.",
           "kind": "test",
           "command": "cargo nextest run -p factory-storage concurrent_claim_has_one_winner"
         },
@@ -1302,7 +1383,7 @@
           "command": "cargo nextest run -p factory-storage negative_nt_ten_01 refuses_a_role_that_bypasses_rls"
         },
         {
-          "check": "The two lookups outside a transaction answer None for every miss reason, so a caller cannot tell an unknown token from an expired one.",
+          "check": "The two lookups outside a transaction answer None for every miss reason, so a caller cannot tell an unknown token from an expired one, and resolve_installation needs the pair of installation and repository ids.",
           "kind": "test",
           "command": "cargo nextest run -p factory-storage lookups_hide_the_reason"
         },
@@ -1310,6 +1391,21 @@
           "check": "Every database error maps to the closed StoreError. The message and detail text of the database, which can name another tenant's key value, never reach a caller and are logged only after redaction.",
           "kind": "test",
           "command": "cargo nextest run -p factory-storage database_text_never_reaches_a_caller"
+        },
+        {
+          "check": "A connection that drops after COMMIT was sent is reported as an unknown outcome, and Store::committed answers from the witness whether the transaction was applied, shown with a fault injected between the commit and the reply.",
+          "kind": "test",
+          "command": "cargo nextest run -p factory-storage unknown_commit_outcome_is_settled_by_the_witness"
+        },
+        {
+          "check": "A tenant cannot read, or test the existence of, an artifact that another tenant holds under the same hash.",
+          "kind": "test",
+          "command": "cargo nextest run -p factory-storage --test artifact_tenancy"
+        },
+        {
+          "check": "The due-attempt queries find an expired lease, a passed deadline and a passed teardown deadline by the database clock, and a platform audit event lands under the platform tenant only.",
+          "kind": "test",
+          "command": "cargo nextest run -p factory-storage due_attempts_and_platform_audit"
         }
       ]
     },
@@ -1323,7 +1419,7 @@
         "dba"
       ],
       "size": "XL",
-      "summary": "Build admission, the claim loop, leases with heartbeats and the sweeper, attempt result handling with output validation, retry with back-off, the gate framework, rework routing, supersession, human decisions, bounds, the ledger and outbox writes, the StageHandler trait and registry, the job audit verifier, and the production-mode refusal of fake adapters. All of it runs first against the in-memory fakes. The skeleton pre-declares the module lines for every stage and gate directory, so the stage packages add code without editing the files this package owns. It also owns the audit event stream with actor, policy hash and correlation id, and the credential and budget hooks around each attempt (job token issue and revoke through ModelBroker).",
+      "summary": "Build admission, the claim loop, leases with heartbeats and the sweeper, attempt result handling with output validation, retry with back-off, the gate framework, rework routing, supersession, human decisions, bounds, the ledger and outbox writes, the StageHandler trait and registry, the job audit verifier, and the production-mode refusal of fake adapters. All of it runs first against the in-memory fakes. The skeleton pre-declares the module lines for every stage and gate directory, so the stage packages add code without editing the files this package owns. It also owns the audit event stream with actor, policy hash and correlation id, and the credential and budget hooks around each attempt (job token issue and revoke through ModelBroker). Adapted to ports v1.1 by s1-ports-revision: the claim is a read-only candidate search followed by a start in the tenant scope, rows are listed instead of read back from event payloads, a transition carries the guard that cleared it, and the commit witness settles an unknown commit outcome.",
       "owns": [
         "crates/workflow/Cargo.toml",
         "crates/workflow/clippy.toml",
@@ -1365,7 +1461,8 @@
         "StageHandler",
         "Store",
         "Tx",
-        "WorkspaceProvider"
+        "WorkspaceProvider",
+        "SystemTx"
       ],
       "depends_on": [
         "s0-state-machines",
@@ -1532,7 +1629,7 @@
         "software_architect"
       ],
       "size": "L",
-      "summary": "Implement AgentRuntime for both tools following ADR 0005 and the spike verdict: the probe, argument builders from a closed allow list, starting the tool inside the sandbox through the session with the job token and the broker address, output parsing and usage accounting, failure mapping, and cancellation. Live smoke tests need an API key and are BLOCKED without one.",
+      "summary": "Implement AgentRuntime for both tools following ADR 0005 and the spike verdict: the probe, argument builders from a closed allow list, starting the tool inside the sandbox through the session with the job token and the broker address, output parsing and usage accounting, failure mapping, and cancellation. Live smoke tests need an API key and are BLOCKED without one. Built to the ports-v1.1 shape (ADR 0014): run always returns a report, with the transcript, usage and denials the adapter could collect even when the run failed; the final output is read as bytes up to a limit and never parsed by the adapter; a larger output is OutputTooLarge.",
       "owns": [
         "crates/runtime/**"
       ],
@@ -1552,7 +1649,8 @@
       "depends_on": [
         "s0-ports-and-testkit",
         "s0-agent-runtime-spike",
-        "s1-sandbox-adapter"
+        "s1-sandbox-adapter",
+        "s1-ports-revision"
       ],
       "done": [
         {
@@ -1594,6 +1692,11 @@
           "check": "A live smoke test through the broker records fidelity-real evidence. Without an API key or a binary it reports BLOCKED. A subscription login does not count.",
           "kind": "test",
           "command": "FACTORY_LIVE=1 cargo nextest run -p factory-runtime --test live_smoke"
+        },
+        {
+          "check": "A run that times out, is cancelled or exits with a failure still returns its usage, its stored transcript and its permission denials, and an output over the limit is OutputTooLarge, shown with scripted stand-in processes labelled fake.",
+          "kind": "test",
+          "command": "cargo nextest run -p factory-runtime --test failure_report"
         }
       ]
     },
@@ -1606,7 +1709,7 @@
         "security"
       ],
       "size": "L",
-      "summary": "Implement IssueSource and ChangeHost as a GitHub App: sign the App JWT, mint one installation token per job narrowed to one repository and to the permissions of one stage, revoke it at job end, verify webhook signatures on the raw body, deduplicate deliveries, run the repository protection preflight, push only to factory branches, and write only sanitized text. Merging is not implemented. Requester authorization is the named allowlist from policy, not a GitHub role.",
+      "summary": "Implement IssueSource and ChangeHost as a GitHub App: sign the App JWT, mint one installation token per job narrowed to one repository and to the permissions of one stage, revoke it at job end, verify webhook signatures on the raw body, deduplicate deliveries, run the repository protection preflight, push only to factory branches, and write only sanitized text. Merging is not implemented. Requester authorization is the named allowlist from policy, not a GitHub role. Built to the ports-v1.1 shape (ADR 0014): gate results are check runs created as the App, the preflight reads the rulesets that apply to the default branch with the Metadata permission and never asks for Administration, a bypass attestation is a recorded statement by an organization admin, comments are fetched with the numeric id of their author, fetch and push credentials are narrowed to one repository, and webhooks are verified by a pure WebhookVerifier before anything is stored. The App never marks a pull request ready for review.",
       "owns": [
         "crates/github/**"
       ],
@@ -1617,13 +1720,15 @@
       "exposes_ports": [],
       "implements_ports": [
         "ChangeHost",
-        "IssueSource"
+        "IssueSource",
+        "WebhookVerifier"
       ],
       "consumes_ports": [],
       "depends_on": [
         "s0-ports-and-testkit",
         "s1-security-test-harness",
-        "s1-redaction"
+        "s1-redaction",
+        "s1-ports-revision"
       ],
       "done": [
         {
@@ -1675,6 +1780,26 @@
           "check": "A live smoke test opens and closes a draft pull request on the fixture repository using a registered App. Without the App credentials it reports BLOCKED.",
           "kind": "test",
           "command": "FACTORY_LIVE=1 cargo nextest run -p factory-github --test live_smoke"
+        },
+        {
+          "check": "The contract suite for the change host passes against the adapter with a recorded GitHub response: a check run is updated and not duplicated, a pull request needs a pushed head, and a comment is found by its marker before posting.",
+          "kind": "test",
+          "command": "cargo nextest run -p factory-github --test change_host_contract check_runs_and_markers"
+        },
+        {
+          "check": "The ruleset reader turns a recorded response of the rules for a branch into a protection report, a repository with only classic branch protection is capped at L0 with a named reason, and a missing attestation caps it too. The recorded responses are fixtures with the date they were taken.",
+          "kind": "test",
+          "command": "cargo nextest run -p factory-github --test protection"
+        },
+        {
+          "check": "The webhook verifier passes the verifier contract suite, tells a pull request comment from an issue comment using a recorded delivery, and reads no state from the payload.",
+          "kind": "test",
+          "command": "cargo nextest run -p factory-github --test webhook_verifier"
+        },
+        {
+          "check": "A live check against a fixture repository shows that a required check pinned to the App's id is not satisfied by a check run of the same name from another App. Without credentials it reports BLOCKED. If it passes the claim of ADR 0014 decision 7 stands; if not, the decision is reopened.",
+          "kind": "test",
+          "command": "FACTORY_LIVE=1 cargo nextest run -p factory-github --test live_pinning"
         }
       ]
     },
@@ -1838,7 +1963,7 @@
         "software_architect"
       ],
       "size": "L",
-      "summary": "Implement SpecKitProvider in the spec_adapter crate, the pure parser that turns Spec Kit files into a SpecificationContract, the specification stage handler and the deterministic gate with freeze and revision. Follows ADR 0006 and the spike verdict: invocation syntax read from integration.json, no init on an initialised repository, an explicit feature directory per job in its own worktree, the seven post-conditions after every skill, the question detector, the checklist pre-run, the revision method, and issue text kept out of the instruction channel. The stage profile check is a gate of this stage and cannot be waived: a forbidden Spec Kit artifact after the run, or a denied skill in the event stream, makes it FAILED, the stage BLOCKED and the output discarded.",
+      "summary": "Implement SpecKitProvider in the spec_adapter crate, the pure parser that turns Spec Kit files into a SpecificationContract, the specification stage handler and the deterministic gate with freeze and revision. Follows ADR 0006 and the spike verdict: invocation syntax read from integration.json, no init on an initialised repository, an explicit feature directory per job in its own worktree, the seven post-conditions after every skill, the question detector, the checklist pre-run, the revision method, and issue text kept out of the instruction channel. The stage profile check is a gate of this stage and cannot be waived: a forbidden Spec Kit artifact after the run, or a denied skill in the event stream, makes it FAILED, the stage BLOCKED and the output discarded. Built to the ports-v1.1 shape (ADR 0014): the provider runs the skills in the sandbox and assembles the contract from file bytes it is handed, and the stage handler stops the sandbox, ingests, commits and reads the files through JobRepo. The adapter reads no file.",
       "owns": [
         "crates/spec_adapter/**",
         "crates/workflow/src/stages/specification/**",
@@ -1858,7 +1983,8 @@
       "consumes_ports": [
         "AgentRuntime",
         "OutputValidator",
-        "Workspace"
+        "Workspace",
+        "JobRepo"
       ],
       "depends_on": [
         "s0-spec-kit-spike",
@@ -1867,7 +1993,8 @@
         "s1-agent-definitions",
         "s1-prompt-assembly",
         "s1-policy-evaluation",
-        "s1-workspace-ingestion"
+        "s1-workspace-ingestion",
+        "s1-ports-revision"
       ],
       "done": [
         {
@@ -1941,7 +2068,7 @@
         "security"
       ],
       "size": "M",
-      "summary": "Authorize the requester against the named allowlist, store the original text apart from the normalized request with its hash, classify the request, and build the repository map: languages, build and test commands, CODEOWNERS, protected paths, existing decisions and documents, plus a baseline build and test run in a verify sandbox. Files that must not reach model context are excluded.",
+      "summary": "Authorize the requester against the named allowlist, store the original text apart from the normalized request with its hash, classify the request, and build the repository map: languages, build and test commands, CODEOWNERS, protected paths, existing decisions and documents, plus a baseline build and test run in a verify sandbox. Files that must not reach model context are excluded. Uses the ports-v1.1 shape (ADR 0014): the original request is stored apart with its hash, the repository is fetched into the job's object store and the base commit comes from the fetch, and an edited request takes S22 so that nobody reads the new text before a person has confirmed it.",
       "owns": [
         "crates/workflow/src/stages/intake/**",
         "crates/workflow/src/stages/repo_intel/**",
@@ -1961,7 +2088,8 @@
         "IssueSource",
         "SandboxProvider",
         "Workspace",
-        "WorkspaceProvider"
+        "WorkspaceProvider",
+        "JobRepo"
       ],
       "depends_on": [
         "s1-engine-core",
@@ -1970,7 +2098,8 @@
         "s1-agent-definitions",
         "s1-readability-gate",
         "s1-policy-evaluation",
-        "s1-prompt-assembly"
+        "s1-prompt-assembly",
+        "s1-ports-revision"
       ],
       "done": [
         {
@@ -2019,7 +2148,7 @@
         "software_architect"
       ],
       "size": "L",
-      "summary": "Resolve the domain profile and probe its tools, run the architecture agent and the traceability gate, run the planner and the deterministic task DAG validator. Add an independent critic only when policy requires it for the risk tier.",
+      "summary": "Resolve the domain profile and probe its tools, run the architecture agent and the traceability gate, run the planner and the deterministic task DAG validator. Add an independent critic only when policy requires it for the risk tier. Uses the ports-v1.1 shape (ADR 0014): the task graph is stored with one atomic insert that creates every node and edge.",
       "owns": [
         "crates/workflow/src/stages/domain_discovery/**",
         "crates/workflow/src/stages/architecture/**",
@@ -2046,7 +2175,8 @@
         "s1-agent-definitions",
         "s0-contracts-and-registry",
         "s1-readability-gate",
-        "s1-prompt-assembly"
+        "s1-prompt-assembly",
+        "s1-ports-revision"
       ],
       "done": [
         {
@@ -2086,7 +2216,7 @@
         "software_architect"
       ],
       "size": "L",
-      "summary": "Derive the minimal documentation set from the change, write it, and check it with the Documentation Quality Gate: links, executed snippets, command references against real help output, diagram syntax, required-page coverage, readability, secrets, changelog. The gate distinguishes NOT_APPLICABLE, BLOCKED, FAILED and PASSED. This package also defines the documentation plan schema through a pull request to schemas/ with architect review.",
+      "summary": "Derive the minimal documentation set from the change, write it, and check it with the Documentation Quality Gate: links, executed snippets, command references against real help output, diagram syntax, required-page coverage, readability, secrets, changelog. The gate distinguishes NOT_APPLICABLE, BLOCKED, FAILED and PASSED. This package also defines the documentation plan schema through a pull request to schemas/ with architect review. Uses the ports-v1.1 shape (ADR 0014): documentation files are committed and read back through JobRepo.",
       "owns": [
         "crates/workflow/src/stages/documenting/**",
         "crates/workflow/src/stages/documentation_review/**",
@@ -2106,7 +2236,8 @@
       "consumes_ports": [
         "AgentRuntime",
         "SandboxProvider",
-        "Workspace"
+        "Workspace",
+        "JobRepo"
       ],
       "depends_on": [
         "s1-engine-core",
@@ -2115,7 +2246,8 @@
         "s1-agent-definitions",
         "s1-documentation-rubric",
         "s1-readability-gate",
-        "s1-prompt-assembly"
+        "s1-prompt-assembly",
+        "s1-ports-revision"
       ],
       "done": [
         {
@@ -2165,7 +2297,7 @@
         "software_architect"
       ],
       "size": "L",
-      "summary": "Build the evidence manifest, push the job branch from the control plane with the narrowed token, open the draft pull request with the English body, and handle approve, reject, rework, pause and cancel from the CLI and from authorized GitHub comments, bound to the evidence digest the human saw. There is no merge and no deploy.",
+      "summary": "Build the evidence manifest, push the job branch from the control plane with the narrowed token, open the draft pull request with the English body, and handle approve, reject, rework, pause and cancel from the CLI and from authorized GitHub comments, bound to the evidence digest the human saw. There is no merge and no deploy. Uses the ports-v1.1 shape (ADR 0014): the branch is pushed with JobRepo::push, which works after a restart, gate results are published as check runs, the base is resolved again before the push, approvals are recorded and counted through ApprovalOps for the head the approver saw, and the pull request stays a draft.",
       "owns": [
         "crates/workflow/src/stages/delivery/**",
         "crates/workflow/src/stages/approval/**",
@@ -2183,14 +2315,16 @@
       "consumes_ports": [
         "ArtifactStore",
         "ChangeHost",
-        "Workspace"
+        "Workspace",
+        "JobRepo"
       ],
       "depends_on": [
         "s1-engine-core",
         "s1-github-adapter",
         "s1-readability-gate",
         "s1-policy-evaluation",
-        "s1-redaction"
+        "s1-redaction",
+        "s1-ports-revision"
       ],
       "done": [
         {
@@ -2265,7 +2399,7 @@
         "security"
       ],
       "size": "L",
-      "summary": "Write the composition roots: configuration, adapter selection by profile, the HTTP API with webhook verification and token authentication, the worker loop that also hosts the model broker listener, the operator CLI including a probe command, the egress sidecar binary entry point, health endpoints, and the contract-first OpenAPI file. The production profile refuses fakes. API tokens are opaque, stored hashed, with expiry, audience and revocation, so there is no JWT to attack.",
+      "summary": "Write the composition roots: configuration, adapter selection by profile, the HTTP API with webhook verification and token authentication, the worker loop that also hosts the model broker listener, the operator CLI including a probe command, the egress sidecar binary entry point, health endpoints, and the contract-first OpenAPI file. The production profile refuses fakes. API tokens are opaque, stored hashed, with expiry, audience and revocation, so there is no JWT to attack. Uses the ports-v1.1 shape (ADR 0014): the api binary depends on WebhookVerifier, not on the github crate, and the composition root calls require_permitted for every port in the registry, shown by a test.",
       "owns": [
         "apps/**"
       ],
@@ -2281,7 +2415,8 @@
         "IdGenerator"
       ],
       "consumes_ports": [
-        "IssueSource"
+        "IssueSource",
+        "WebhookVerifier"
       ],
       "depends_on": [
         "s1-engine-core",
@@ -2304,7 +2439,8 @@
         "s1-stage-delivery-and-approval",
         "s1-agent-definitions",
         "s1-security-test-harness",
-        "s1-telemetry-wiring"
+        "s1-telemetry-wiring",
+        "s1-ports-revision"
       ],
       "done": [
         {
@@ -2383,7 +2519,7 @@
         "software_architect"
       ],
       "size": "L",
-      "summary": "Create the fixture repository, a small dependency-free Rust command line tool with tests, documentation, CODEOWNERS and a project manifest, plus the English and Portuguese issue texts. Write the scenarios and the machine-checkable assertions A1 to A14 first, so the end-to-end test is red from the start. The fixture's GitHub repository needs a branch-protection ruleset, or the job runs at level L0 and opens no pull request.",
+      "summary": "Create the fixture repository, a small dependency-free Rust command line tool with tests, documentation, CODEOWNERS and a project manifest, plus the English and Portuguese issue texts. Write the scenarios and the machine-checkable assertions A1 to A14 first, so the end-to-end test is red from the start. The fixture's GitHub repository needs a branch-protection ruleset, or the job runs at level L0 and opens no pull request. The end-to-end assertion about stages reads the list of Slice 1 stages from docs/architecture/state-machine.json and does not hard-code a number (ADR 0014; the specification's count is edited separately).",
       "owns": [
         "fixtures/repos/word-count/**",
         "tests/end_to_end/**",
@@ -2773,7 +2909,7 @@
         "software_architect"
       ],
       "size": "L",
-      "summary": "Implement WorkspaceProvider and Workspace as sandbox-policy.md section 6 requires: a trusted bare mirror that is never mounted, a sparse detached worktree per job, a read-only /dev/null bound over .git, host-side version control with a fixed environment, protected-path overlays, and the ingestion pipeline (stop the container, no-follow audit walk, temporary-index tree diff, protected-path evaluation, gitlink and symlink rejection, secret scan, then commit). All reads of sandbox output go through one module.",
+      "summary": "Implement WorkspaceProvider and Workspace as sandbox-policy.md section 6 requires: a trusted bare mirror that is never mounted, a sparse detached worktree per job, a read-only /dev/null bound over .git, host-side version control with a fixed environment, protected-path overlays, and the ingestion pipeline (stop the container, no-follow audit walk, temporary-index tree diff, protected-path evaluation, gitlink and symlink rejection, secret scan, then commit). All reads of sandbox output go through one module. Built to the ports-v1.1 shape (ADR 0014): the job owns a trusted object store that survives restarts and an attempt owns a worktree over it. fetch puts the branch tip into the store, create makes a sparse detached worktree of any commit in it (a verify workspace is read-only and holds the held-out tests), JobRepo reads committed files in an agent view and a trusted view, exports a patch as an artifact, and pushes a commit the factory made. Every path decision comes from PathRules (the five modes, NFC and case folding, re-inclusion, the aliases of .git). Git is started through ProcessRunner.",
       "owns": [
         "crates/sandbox/src/workspace/**",
         "crates/sandbox/tests/workspace/**"
@@ -2788,7 +2924,8 @@
         "s0-ports-and-testkit",
         "s1-security-test-harness",
         "s1-policy-evaluation",
-        "s1-redaction"
+        "s1-redaction",
+        "s1-ports-revision"
       ],
       "done": [
         {
@@ -2820,13 +2957,31 @@
           "check": "A rename counts as two paths and a mode or type change as a modification in the protected-path evaluation.",
           "kind": "test",
           "command": "cargo nextest run -p factory-sandbox rename_counts_as_two_paths"
+        },
+        {
+          "check": "A second workspace starts at a commit the first made, and push works from a new provider value over the same host directory after a simulated restart. A commit the factory did not make is refused.",
+          "kind": "test",
+          "command": "cargo nextest run -p factory-sandbox --test workspace restart_keeps_commits"
+        },
+        {
+          "check": "PathRules refuses a case variant of a protected path, a Unicode-ignorable and an 8.3 form of .git, allows an added test and refuses an edited one under additions_only, and applies a re-inclusion only inside its own group.",
+          "kind": "test",
+          "command": "cargo nextest run -p factory-sandbox path_rules_follow_the_policy"
+        },
+        {
+          "check": "The patch for the same two commits is byte for byte the same, a verify workspace is read-only and holds the holdouts, and the agent view of a hidden path is not found.",
+          "kind": "test",
+          "command": "cargo nextest run -p factory-sandbox --test workspace patch_and_views"
         }
       ],
       "implements_ports": [
         "Workspace",
-        "WorkspaceProvider"
+        "WorkspaceProvider",
+        "JobRepo"
       ],
-      "consumes_ports": []
+      "consumes_ports": [
+        "ProcessRunner"
+      ]
     },
     {
       "id": "s1-egress-and-broker",
@@ -2838,7 +2993,7 @@
         "software_architect"
       ],
       "size": "XL",
-      "summary": "Implement the model broker that holds the real provider keys and the egress relay that runs as the per-job sidecar, following sandbox-policy.md section 5 and secrets-and-credentials.md section 4. The broker issues, checks and revokes job tokens, forwards only allowed API paths, meters usage against the job ceiling and alerts at 80 and 100 percent. The relay allows exact hosts, rejects private and metadata ranges after its own resolution, pins the connection and enforces a byte quota. Real calls need an API key and are BLOCKED without one. Tests use a labelled fake provider.",
+      "summary": "Implement the model broker that holds the real provider keys and the egress relay that runs as the per-job sidecar, following sandbox-policy.md section 5 and secrets-and-credentials.md section 4. The broker issues, checks and revokes job tokens, forwards only allowed API paths, meters usage against the job ceiling and alerts at 80 and 100 percent. The relay allows exact hosts, rejects private and metadata ranges after its own resolution, pins the connection and enforces a byte quota. Real calls need an API key and are BLOCKED without one. Tests use a labelled fake provider. Built to the ports-v1.1 shape (ADR 0014): the relay records spend through MeteringOps, the broker revokes every token of a job on request, and the contract suite covers both.",
       "owns": [
         "crates/egress/**",
         "apps/egress-sidecar/**"
@@ -2853,7 +3008,8 @@
       "depends_on": [
         "s0-ports-and-testkit",
         "s1-security-test-harness",
-        "s1-redaction"
+        "s1-redaction",
+        "s1-ports-revision"
       ],
       "done": [
         {
@@ -2885,6 +3041,11 @@
           "check": "A live call through the broker with a real key succeeds. Without a key it reports BLOCKED.",
           "kind": "test",
           "command": "FACTORY_LIVE=1 cargo nextest run -p factory-egress --test live_smoke"
+        },
+        {
+          "check": "revoke_for_job revokes every token of the job including those of crashed attempts, and spend recorded through MeteringOps that reaches the ceiling revokes the token in the same step.",
+          "kind": "test",
+          "command": "cargo nextest run -p factory-egress --test broker_contract revoke_for_job_and_metering"
         }
       ],
       "implements_ports": [
@@ -3099,7 +3260,7 @@
         "software_architect"
       ],
       "size": "L",
-      "summary": "Run validation in a fresh verify container from the commit, using gate definitions read from the protected base commit, never from the builder's branch. Evaluate the scope, protected-path, test-protection, secret and evidence-binding rules on the host-side tree diff. Missing evidence is BLOCKED. The supervisor's observation of the exit code is the evidence, not a file the builder could write. The stage profile check belongs to the specification stage package, which owns the gate that runs after a specification attempt.",
+      "summary": "Run validation in a fresh verify container from the commit, using gate definitions read from the protected base commit, never from the builder's branch. Evaluate the scope, protected-path, test-protection, secret and evidence-binding rules on the host-side tree diff. Missing evidence is BLOCKED. The supervisor's observation of the exit code is the evidence, not a file the builder could write. The stage profile check belongs to the specification stage package, which owns the gate that runs after a specification attempt. Uses the ports-v1.1 shape (ADR 0014): the gates run in a read-only verify workspace of the candidate commit that holds the held-out tests, and a missing tool or an unavailable sandbox blocks the stage run (S21) and never passes it.",
       "owns": [
         "crates/workflow/src/stages/validation/**",
         "crates/workflow/src/gates/command/**",
@@ -3119,7 +3280,8 @@
         "s1-sandbox-adapter",
         "s1-workspace-ingestion",
         "s1-policy-evaluation",
-        "s1-redaction"
+        "s1-redaction",
+        "s1-ports-revision"
       ],
       "done": [
         {
@@ -3165,7 +3327,8 @@
         "OutputValidator",
         "SandboxProvider",
         "SandboxSession",
-        "Workspace"
+        "Workspace",
+        "JobRepo"
       ]
     },
     {
@@ -3178,7 +3341,7 @@
         "software_architect"
       ],
       "size": "L",
-      "summary": "Run the single builder over the task graph in order inside the agent sandbox, hand the workspace to ingestion and commit on the host, then run an independent review that never sees the builder's own account. Deterministic failures outrank a reviewer PASS.",
+      "summary": "Run the single builder over the task graph in order inside the agent sandbox, hand the workspace to ingestion and commit on the host, then run an independent review that never sees the builder's own account. Deterministic failures outrank a reviewer PASS. Uses the ports-v1.1 shape (ADR 0014): the implementation commit is made before anything is read from it, the reviewer receives the exported patch, the agent's output is validated as review findings from bytes and wrapped into the stored verdict with the engine's own fields, and the gate checks that every finding of a verdict other than PASS cites a file and a line that exist in the patch.",
       "owns": [
         "crates/workflow/src/stages/implementation/**",
         "crates/workflow/src/stages/review/**",
@@ -3197,7 +3360,8 @@
         "s1-agent-runtime-adapters",
         "s1-agent-definitions",
         "s1-policy-evaluation",
-        "s1-prompt-assembly"
+        "s1-prompt-assembly",
+        "s1-ports-revision"
       ],
       "done": [
         {
@@ -3238,7 +3402,8 @@
         "AgentRuntime",
         "SandboxProvider",
         "SandboxSession",
-        "Workspace"
+        "Workspace",
+        "JobRepo"
       ]
     },
     {
@@ -3421,8 +3586,8 @@
         "software_architect",
         "security"
       ],
-      "size": "M",
-      "summary": "Add to the xtask architecture check: the repository-wide static check ST-07 that compares every span name, attribute key and metric field written in a tracing call with the tables of the observability conventions page (ADR 0013); the external crate and feature check for adapter crates, which today returns early so their allow lists are enforced by review only; and a structured source_scans section in docs/architecture/crate-dependency-rules.json that holds the lists the source scans use today as constants (shells, spawn permissions, dangerous container flags, ingestion paths, crate names), so that a reviewer changes them in one reviewed file. The structure of that section is proposed in the pull request and reviewed by the architect, who owns the file. The domain crate's uuid and time feature limits are already in the rules file; this package adds the failing fixtures for them.",
+      "size": "L",
+      "summary": "Add to the xtask architecture check: the repository-wide static check ST-07 that compares every span name, attribute key and metric field written in a tracing call with the tables of the observability conventions page (ADR 0013); the external crate and feature check for adapter crates, which today returns early so their allow lists are enforced by review only; and a structured source_scans section in docs/architecture/crate-dependency-rules.json that holds the lists the source scans use today as constants (shells, spawn permissions, dangerous container flags, ingestion paths, crate names), so that a reviewer changes them in one reviewed file. The structure of that section is proposed in the pull request and reviewed by the architect, who owns the file. The domain crate's uuid and time feature limits are already in the rules file; this package adds the failing fixtures for them. It also closes the bypasses the independent review found (ADR 0014, decision 11; docs/architecture/ports-v1.1.md section 12), each with a failing fixture first: the DEP-05 ban list gains the Path and PathBuf methods that touch the file system, std::env, Unix sockets, tokio::time, OffsetDateTime::now_utc and now_local, and the uuid generators; the resolved feature set of time, uuid and tokio is read from cargo metadata and compared with the allow list, so an adapter cannot enable time/std for the domain; an allow or expect of a DEP-05 lint in an inner crate fails; the spawn scan resolves use-as aliases and scans every file the module tree includes, deciding test code only from cfg(test); only one file may contain a process-spawning call; the constructors of TenantScope, SystemScope, PlatformScope, ResolvedPrincipal and IngestedChange are called only from the crates that may; the workflow crate does not mention MeteringOps; ChangeHost has no method starting with merge, ready or undraft; the clippy-ban tests ignore CARGO_TARGET_DIR (F-23); an invariant register check fails when an INV id has no named test (F-24); and a path or git dependency under an allowed crate name fails (F-31).",
       "owns": [
         "xtask/**"
       ],
@@ -3438,7 +3603,8 @@
       "consumes_ports": [],
       "depends_on": [
         "s0-workspace-skeleton",
-        "s0-telemetry-baseline"
+        "s0-telemetry-baseline",
+        "s1-ports-revision"
       ],
       "done": [
         {
@@ -3475,6 +3641,16 @@
           "check": "Lints and formatting are clean, and the rules checker still passes.",
           "kind": "command",
           "command": "cargo clippy -p xtask --all-targets -- -D warnings && python3 -I docs/architecture/tools/check_crate_rules.py --check"
+        },
+        {
+          "check": "Each bypass the review found has a failing fixture and the check now fails on it: a Path::exists, read_dir, std::env::var or Unix socket call in the domain crate, time/std enabled from another crate, an allow attribute over a banned call, a use-as alias of Command, a module file named like a test file without cfg(test), and a path dependency under an allowed name.",
+          "kind": "test",
+          "command": "cargo nextest run -p xtask review_bypasses"
+        },
+        {
+          "check": "The clippy-ban tests pass when CARGO_TARGET_DIR is set to a shared directory, and the invariant register check lists every INV id that has no test naming it.",
+          "kind": "test",
+          "command": "CARGO_TARGET_DIR=$(mktemp -d) cargo nextest run -p xtask clippy_bans invariant_register"
         }
       ]
     },
@@ -3593,6 +3769,203 @@
         },
         {
           "check": "Section 12 of the conventions page no longer lists the redactor, the peer-crate names and the trace context as open, and says what was decided.",
+          "kind": "review",
+          "command": null
+        }
+      ]
+    },
+    {
+      "id": "s1-ports-revision",
+      "title": "Revise the ports, fakes, contract suites and engine to ports v1.1",
+      "slice": 1,
+      "owner_role": "software_engineer",
+      "reviewers": [
+        "software_architect",
+        "security"
+      ],
+      "size": "XL",
+      "summary": "Make the code match docs/architecture/ports-v1.1.md and ADR 0014, in one pull request per port group so that every trait, its fake and its contract suite change together: the Store (two-step claim with the lease on the attempt, a read-only SystemTx, idempotent inserts, listings, due-work queries, the audit shape, the platform audit call, the commit witness), guard-bound transitions (GuardCleared), the workspace split into a job-owned object store (JobRepo) and an attempt-owned worktree, PathRules with the policy's five modes, the typed sandbox spec with a full posture report, agent output as bytes with a report that survives failure, router exclusion and probed capabilities, the metering seam, ProcessRunner, WebhookVerifier, check runs instead of commit statuses, and tenant-scoped artifact reads. Add the domain items the ports need, the state machine rows S21 and S22 and the three schema rules that docs/architecture/state-machine.json and schemas/ already carry, adapt the workflow engine to the new store with no event payload used as a read model, and write the missing contract suites. Every check of every suite must be shown to fail against a seeded defect, and the register test fails when one is not.",
+      "owns": [
+        "crates/ports/**",
+        "crates/testkit/src/*.rs",
+        "crates/testkit/src/contracts/**",
+        "crates/testkit/src/fx/spawn.rs",
+        "crates/testkit/src/fx/spawn/**",
+        "crates/testkit/tests/**",
+        "crates/domain/src/ids.rs",
+        "crates/domain/src/scope.rs",
+        "crates/domain/src/vocabulary/**",
+        "crates/domain/src/values/timestamp.rs",
+        "crates/domain/src/machines/**",
+        "crates/domain/src/state/**",
+        "crates/domain/src/contracts/review_verdict.rs",
+        "crates/domain/src/contracts/stage_contract.rs",
+        "crates/domain/src/contracts/evidence_ledger_entry.rs",
+        "crates/domain/tests/contract_examples.rs",
+        "crates/domain/tests/contract_rules.rs",
+        "crates/domain/tests/state_machine_conformance.rs",
+        "crates/domain/tests/state_machine_properties.rs",
+        "crates/contracts/src/registry.rs",
+        "crates/contracts/src/validator.rs",
+        "crates/contracts/tests/registry.rs",
+        "crates/contracts/tests/validator_limits.rs",
+        "crates/workflow/src/engine/**",
+        "crates/workflow/src/commands/**",
+        "crates/workflow/src/scheduler/**",
+        "crates/workflow/src/audit/**",
+        "crates/workflow/src/handlers/**",
+        "crates/workflow/src/gates/mod.rs",
+        "crates/workflow/src/gates/framework/**",
+        "crates/workflow/tests/engine_scenarios.rs",
+        "crates/workflow/tests/invariants.rs",
+        "crates/workflow/tests/audit.rs",
+        "crates/workflow/tests/support/**",
+        "crates/domain/src/patterns.rs",
+        "crates/domain/tests/support/**",
+        "crates/domain/tests/tools/**"
+      ],
+      "inputs": [
+        "docs/architecture/ports-v1.1.md (the signatures, the finding table, the JSON change to Rust table)",
+        "ADR 0014",
+        "docs/reviews/architecture-foundation-review.md",
+        "docs/database/for-the-storage-crate.md (the claim recipe)",
+        "docs/architecture/state-machine.json",
+        "schemas/ (review-verdict, stage-contract, evidence-ledger-entry)"
+      ],
+      "exposes_ports": [
+        "JobRepo",
+        "ProcessRunner",
+        "SystemTx",
+        "WebhookVerifier"
+      ],
+      "implements_ports": [],
+      "consumes_ports": [],
+      "depends_on": [
+        "s0-ports-and-testkit",
+        "s0-contracts-and-registry",
+        "s1-domain-revision",
+        "s1-engine-core",
+        "s1-security-test-harness"
+      ],
+      "done": [
+        {
+          "check": "Every trait of the ports crate has the headings Preconditions, Postconditions, Errors, Idempotency and Cancellation and timeouts, and no secret type shows its value in Debug output.",
+          "kind": "test",
+          "command": "cargo nextest run -p factory-ports"
+        },
+        {
+          "check": "The store contract suite, with every new check of ports-v1.1 section 9, passes on the in-memory store, and each seeded defect makes the check named for it fail. The fake refuses to start work for a job that is not ACTIVE, allows one live attempt, honours not_before and the attempt limit, and lets two transactions find the same candidate.",
+          "kind": "test",
+          "command": "cargo nextest run -p factory-testkit --test store_contract"
+        },
+        {
+          "check": "The workspace and sandbox suites pass on their fakes with the new checks: a second workspace starts at a commit the first made, push works after a simulated restart, a case variant of a protected path is refused, a verify workspace is read-only, the posture compare finds a drift in each part, and the token file is absent after teardown.",
+          "kind": "test",
+          "command": "cargo nextest run -p factory-testkit --test workspace_contract --test sandbox_contract"
+        },
+        {
+          "check": "The agent, router, broker, registry and specification suites pass on their fakes with the new checks: a failed run reports usage and transcript, excluding an answer yields another runtime or an error, metering to the ceiling revokes the token, validate_bytes refuses a repeated key and an oversize body, and assemble reads real file bytes.",
+          "kind": "test",
+          "command": "cargo nextest run -p factory-testkit --test agent_contract --test router_registry_contract --test broker_contract --test spec_provider"
+        },
+        {
+          "check": "The change host suite passes on its fake: a pull request needs a pushed head, a closed one is not reused, a check run is updated and not duplicated, and a comment is found by its marker before posting.",
+          "kind": "test",
+          "command": "cargo nextest run -p factory-testkit --test githost_contract"
+        },
+        {
+          "check": "Every check of every contract suite is named in at least one defect table or carries a waiver with a reason and a trigger, and deleting each rule of each fake in turn makes its suite fail. The review's two survivors, the duplicate task key and the audit limit, are the first entries.",
+          "kind": "test",
+          "command": "cargo nextest run -p factory-testkit --test contract_register"
+        },
+        {
+          "check": "The domain conformance, property and example tests pass with S21, S22, the restated guards, the clearance token and the three schema rules. AppliedTransition::plan refuses a clearance for another guard, and a missing environment blocks before anything else.",
+          "kind": "test",
+          "command": "cargo nextest run -p factory-domain"
+        },
+        {
+          "check": "The real validator refuses a repeated key, an oversize body, deep nesting and an excessive node count from bytes before a value exists, and the policy router honours exclusions and probe results.",
+          "kind": "test",
+          "command": "cargo nextest run -p factory-contracts"
+        },
+        {
+          "check": "The engine scenarios run on the revised store with no event payload used as a read model. They include a crash between the candidate search and the start, a crash after the start, two workers that find one candidate, an unknown commit outcome settled by the witness, a missing environment that blocks, a changed request that needs reauthorization, and a retry that does not wait for a lease.",
+          "kind": "test",
+          "command": "cargo nextest run -p factory-workflow --test engine_scenarios"
+        },
+        {
+          "check": "Each invariant INV-01 to INV-11 has a test that names it, including INV-01 and INV-11 which the review found unnamed.",
+          "kind": "test",
+          "command": "cargo nextest run -p factory-workflow --test invariants"
+        },
+        {
+          "check": "The schemas validate and every new invalid example is rejected by the Rust type for the reason stated in the examples table.",
+          "kind": "command",
+          "command": "schemas/validate.sh && cargo nextest run -p factory-domain --test contract_examples"
+        },
+        {
+          "check": "Lints and the architecture check pass on the whole workspace.",
+          "kind": "command",
+          "command": "cargo clippy --workspace --all-targets -- -D warnings && cargo xtask check-architecture"
+        },
+        {
+          "check": "The architect reviews the diff against ports-v1.1 and signs off, any deviation is listed with its reason in the pull request, and a release candidate tag is made only if the same contract suites are in it.",
+          "kind": "review",
+          "command": null
+        }
+      ]
+    },
+    {
+      "id": "s1-database-port-alignment",
+      "title": "Add the migration that the revised ports need and align the claim notes",
+      "slice": 1,
+      "owner_role": "dba",
+      "reviewers": [
+        "software_architect"
+      ],
+      "size": "M",
+      "summary": "Regenerate the state machine reference rows from docs/architecture/state-machine.json (the transitions S21 and S22, their events and guards), add stage_runs.failing_set_sha256 and the two nullable attestation columns on repositories, grant the tenant role what the new columns need, add the due-attempt queries and the start-attempt statement sequence to the lease suite, and bring docs/database/for-the-storage-crate.md in line with ADR 0014: one claim recipe, a sweep that covers lease, deadline and teardown, and the recipe for the blocked stage run. The migration is an expand step: nothing is removed, so version N and N+1 of the code can run on one schema.",
+      "owns": [
+        "migrations/**",
+        "docs/database/**",
+        "scripts/db-test.sh",
+        "crates/storage/src/schema.rs"
+      ],
+      "inputs": [
+        "ADR 0014",
+        "docs/architecture/ports-v1.1.md section 8",
+        "docs/architecture/state-machine.json",
+        "docs/database/tools/state_machine_sql.py"
+      ],
+      "exposes_ports": [],
+      "implements_ports": [],
+      "consumes_ports": [],
+      "depends_on": [
+        "s1-database-tenancy-and-state-sync"
+      ],
+      "done": [
+        {
+          "check": "The status and outbox suites pass against the regenerated state machine rows: S21 and S22 exist with their events, the outbox foreign key accepts stage_run.blocked for S21, and an unknown status is still refused.",
+          "kind": "command",
+          "command": "scripts/db-test.sh statuses outbox"
+        },
+        {
+          "check": "The lease suite runs the candidate search and the start-attempt statement sequence as the system and application roles, finds an attempt past its deadline and one past its teardown deadline, and still ends with exactly one winner in 12 rounds of four workers.",
+          "kind": "command",
+          "command": "scripts/db-test.sh lease rls"
+        },
+        {
+          "check": "The new columns accept and refuse the values the ports document, the tenant role can write them, and the system role cannot.",
+          "kind": "command",
+          "command": "scripts/db-test.sh privileges tenancy"
+        },
+        {
+          "check": "Migrations run up, redo and up on an empty database, a data-preserving upgrade keeps existing rows, and the committed schema.rs equals the output of diesel print-schema.",
+          "kind": "command",
+          "command": "scripts/db-test.sh migrations"
+        },
+        {
+          "check": "The storage notes describe one claim recipe that agrees with the port, name the due-attempt queries, and say FOR NO KEY UPDATE everywhere.",
           "kind": "review",
           "command": null
         }
