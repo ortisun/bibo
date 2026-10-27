@@ -122,7 +122,7 @@ BEGIN
   PERFORM dbtest.expect_error('an event with an unknown decision is rejected', format(base, t, dbtest.u(41), 'service', 'engine', 'gate.result', 'maybe', ph, dbtest.u(1500)), '23514', 'factory_app', 'audit_events_decision_check');
   PERFORM dbtest.expect_error('an event with a malformed action is rejected', format(base, t, dbtest.u(41), 'service', 'engine', 'Gate Result', 'record', ph, dbtest.u(1500)), '23514', 'factory_app', 'audit_events_action_check');
   PERFORM dbtest.expect_error('the same event id twice in one tenant is rejected', format(base, t, dbtest.u(40), 'service', 'engine', 'gate.result', 'record', ph, dbtest.u(1500)), '23505', 'factory_app');
-  PERFORM dbtest.expect_error('an event for a tenant that does not exist is rejected', format(base, dbtest.u(77), dbtest.u(42), 'service', 'engine', 'gate.result', 'record', ph, dbtest.u(1500)), '23503', 'factory_app');
+  PERFORM dbtest.expect_error('an event for a tenant that does not exist is rejected', format(base, dbtest.u(77), dbtest.u(42), 'service', 'engine', 'gate.result', 'record', ph, dbtest.u(1500)), '23503', 'factory_app', NULL, NULL, 77);
   PERFORM dbtest.expect_error('a stage run without a job is rejected',
     format($q$INSERT INTO audit_events (tenant_id, event_id, actor_type, actor_id, action, subject, decision, reason, policy_hash, correlation_id, stage_run_id)
               VALUES (%L, %L, 'service', 'engine', 'gate.result', 's', 'record', 'r', %L, %L, %L)$q$, t, dbtest.u(43), ph, dbtest.u(1500), dbtest.u(1201)),
@@ -138,7 +138,7 @@ DO $$
 BEGIN
   PERFORM dbtest.exec(format($q$INSERT INTO audit_events (tenant_id, event_id, actor_type, actor_id, action, subject, decision, reason, policy_hash, correlation_id)
         VALUES ('00000000-0000-0000-0000-000000000001', %L, 'anonymous', 'unknown', 'webhook.rejected', 'delivery', 'deny', 'The signature did not verify.', %L, %L)$q$,
-        dbtest.u(50), dbtest.sha('policy'), dbtest.u(1501)), 'factory_app');
+        dbtest.u(50), dbtest.sha('policy'), dbtest.u(1501)), 'factory_app', -1);   -- a session for the platform tenant (Store::begin with its id)
   PERFORM dbtest.expect_eq('an event with no tenant is recorded under the platform tenant, starting its own chain at 1',
     (SELECT sequence FROM audit_events WHERE tenant_id = '00000000-0000-0000-0000-000000000001'), 1::bigint);
 END
@@ -155,7 +155,7 @@ DECLARE
   probe text := format($q$DO $d$ BEGIN RAISE EXCEPTION 'verify=%%', public.audit_verify_chain(%L); END $d$ $q$, dbtest.u(2));
 BEGIN
   FOR i IN 1..6 LOOP
-    PERFORM dbtest.exec(format('SELECT dbtest.audit(2, %s)', i), 'factory_app');
+    PERFORM dbtest.exec(format('SELECT dbtest.audit(2, %s)', i), 'factory_app', 2);
   END LOOP;
   PERFORM dbtest.expect_true('an intact chain verifies: audit_verify_chain returns NULL (tenant 2, six events)', public.audit_verify_chain(t) IS NULL);
   PERFORM dbtest.expect_true('an intact chain verifies (tenant 1)', public.audit_verify_chain(dbtest.u(1)) IS NULL);

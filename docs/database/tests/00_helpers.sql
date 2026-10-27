@@ -30,8 +30,9 @@ $$;
 -- Which tenant a statement run as the application role is made for. Since ADR 0012 the application role
 -- sees only the rows of the tenant named by the transaction-local setting factory.tenant_id, which is what
 -- Store::begin sets. dbtest.tenant is the default for the whole test run (tenant 1, set at the end of this
--- file). A call can name another tenant with as_tenant, or pass 0 for a transaction that made no setting
--- (the setting then reads as an empty string, as it does on a reused connection).
+-- file as a database setting). A call can name another tenant with as_tenant, pass 0 for a transaction that
+-- made no setting (the setting then reads as an empty string, as it does on a reused connection), or pass -1
+-- for the platform tenant that owns the audit events of requests no tenant could be found for.
 CREATE FUNCTION dbtest.use_tenant(t int) RETURNS void LANGUAGE sql AS $$
   SELECT set_config('dbtest.tenant', t::text, false) IS NOT NULL
 $$;
@@ -42,7 +43,10 @@ $$;
 CREATE FUNCTION dbtest.become(p_role text, p_tenant int DEFAULT NULL) RETURNS void LANGUAGE plpgsql AS $$
 DECLARE
   t int := coalesce(p_tenant, nullif(current_setting('dbtest.tenant', true), '')::int, 0);
-  tenant_text text := CASE WHEN p_role = 'factory_app' AND t > 0 THEN dbtest.u(t)::text ELSE '' END;
+  tenant_text text := CASE WHEN p_role <> 'factory_app' THEN ''
+                           WHEN t = -1 THEN '00000000-0000-0000-0000-000000000001'   -- the platform tenant
+                           WHEN t > 0 THEN dbtest.u(t)::text
+                           ELSE '' END;
 BEGIN
   EXECUTE format('SET LOCAL ROLE %I', p_role);
   PERFORM set_config('factory.tenant_id', tenant_text, true);
@@ -122,6 +126,47 @@ BEGIN
     PERFORM dbtest.fail(label, format('the statement failed with %s (%s): %s', got_state, got_msg, stmt));
   END IF;
   PERFORM dbtest.pass(label);
+END
+$$;
+
+-- Run one statement as a group role, with the tenant setting Store::begin would make, in a subtransaction
+-- that is always rolled back. Reports 'rows=N' (rows returned or changed) or 'ERR:<sqlstate>:<message>'.
+--   p_setup         statements run first, as the owner (a temporary GRANT, for instance)
+--   p_triggers_off  run with session_replication_role = replica, which switches off user triggers and foreign
+--                   keys but NOT policies. Used to reach the policy check without a trigger answering first.
+--   p_setting       a raw value for factory.tenant_id instead of a tenant number (for 'not-a-uuid')
+CREATE FUNCTION dbtest.run_as(
+  p_stmt text, p_role text, p_tenant int DEFAULT NULL, p_setup text DEFAULT NULL,
+  p_triggers_off boolean DEFAULT false, p_setting text DEFAULT NULL
+) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE
+  n bigint;
+  res text;
+  st text;
+  msg text;
+BEGIN
+  BEGIN
+    IF p_setup IS NOT NULL THEN
+      EXECUTE p_setup;
+    END IF;
+    IF p_triggers_off THEN
+      SET LOCAL session_replication_role = replica;
+    END IF;
+    PERFORM dbtest.become(p_role, p_tenant);
+    IF p_setting IS NOT NULL THEN
+      PERFORM set_config('factory.tenant_id', p_setting, true);
+    END IF;
+    EXECUTE p_stmt;
+    GET DIAGNOSTICS n = ROW_COUNT;
+    res := 'rows=' || n;
+    RAISE EXCEPTION 'rollback' USING ERRCODE = 'XX998';
+  EXCEPTION WHEN OTHERS THEN
+    GET STACKED DIAGNOSTICS st = RETURNED_SQLSTATE, msg = MESSAGE_TEXT;
+    IF st <> 'XX998' THEN
+      res := 'ERR:' || st || ':' || msg;
+    END IF;
+  END;
+  RETURN res;
 END
 $$;
 
@@ -308,5 +353,11 @@ BEGIN
 END
 $$;
 
--- The default tenant for statements run as the application role: tenant 1 (see dbtest.become).
-SELECT dbtest.use_tenant(1);
+-- The default tenant for statements run as the application role: tenant 1 (see dbtest.become). Stored as a
+-- database setting, so every suite session started after this file picks it up. dbtest.use_tenant(n)
+-- changes it for one session.
+DO $$
+BEGIN
+  EXECUTE format('ALTER DATABASE %I SET dbtest.tenant = %L', current_database(), '1');
+END
+$$;

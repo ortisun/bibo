@@ -134,8 +134,12 @@ BEGIN
   PERFORM dbtest.expect_error('the owner cannot move an event to another job (trigger)',
     format($q$UPDATE outbox SET aggregate_version = 9 WHERE event_id = %L$q$, e), '23514', NULL, 'outbox_event_is_immutable');
 
-  PERFORM dbtest.exec(format($q$UPDATE outbox SET published_at = now(), publish_attempts = publish_attempts + 1 WHERE event_id = %L$q$, e), 'factory_app');
-  PERFORM dbtest.expect_true('the relay marked the event published', (SELECT published_at IS NOT NULL AND publish_attempts = 1 FROM outbox WHERE event_id = e));
+  -- The relay runs as the system role (ADR 0012): it reads events of every tenant and marks them published.
+  PERFORM dbtest.exec(format($q$UPDATE outbox SET published_at = now(), publish_attempts = publish_attempts + 1 WHERE event_id = %L$q$, e), 'factory_system');
+  PERFORM dbtest.expect_true('the relay, running as the system role, marked the event published', (SELECT published_at IS NOT NULL AND publish_attempts = 1 FROM outbox WHERE event_id = e));
+  PERFORM dbtest.expect_error('the system role cannot rewrite a payload either (no column grant)',
+    format($q$UPDATE outbox SET payload = '{}' WHERE event_id = %L$q$, dbtest.u(2)), '42501', 'factory_system');
+  PERFORM dbtest.expect_error('the system role cannot delete events', 'DELETE FROM outbox', '42501', 'factory_system');
   PERFORM dbtest.expect_error('a published event cannot be marked published again at another time',
     format($q$UPDATE outbox SET published_at = now() + interval '1 second' WHERE event_id = %L$q$, e), '23514', 'factory_app', 'outbox_event_is_immutable');
   PERFORM dbtest.expect_error('a published event cannot be marked unpublished',
@@ -150,9 +154,15 @@ $$;
 -- The relay's own query works with the grants it has: unpublished rows in order, skipping locked ones.
 DO $$
 BEGIN
-  PERFORM dbtest.expect_ok('the relay query (FOR UPDATE SKIP LOCKED over unpublished rows) runs as the application role',
-    'SELECT event_id FROM outbox WHERE published_at IS NULL ORDER BY seq LIMIT 100 FOR UPDATE SKIP LOCKED', 'factory_app');
-  PERFORM dbtest.expect_eq('only the second event is still unpublished', (SELECT count(*) FROM outbox WHERE published_at IS NULL), 1::bigint);
+  PERFORM dbtest.expect_ok('the relay query (FOR UPDATE SKIP LOCKED over unpublished rows) runs as the system role',
+    'SELECT event_id FROM outbox WHERE published_at IS NULL ORDER BY seq LIMIT 100 FOR UPDATE SKIP LOCKED', 'factory_system');
+  -- Tenant 2 has an unpublished event too.
+  PERFORM dbtest.set_status('jobs', 2, dbtest.u(2101), 'ACTIVE');
+  PERFORM dbtest.exec(dbtest.event_sql(dbtest.u(70), p_agg => dbtest.u(2101), p_tenant => dbtest.u(2), p_job => dbtest.u(2101)));
+  PERFORM dbtest.expect_eq('the relay sees the unpublished events of every tenant, the application role only its own',
+    dbtest.run_as('SELECT event_id FROM outbox WHERE published_at IS NULL', 'factory_system') || ' / ' || dbtest.run_as('SELECT event_id FROM outbox WHERE published_at IS NULL', 'factory_app', 1),
+    'rows=2 / rows=1');
+  PERFORM dbtest.expect_eq('only the second event of tenant 1 and the event of tenant 2 are still unpublished', (SELECT count(*) FROM outbox WHERE published_at IS NULL), 2::bigint);
 END
 $$;
 
@@ -265,7 +275,7 @@ BEGIN
   PERFORM dbtest.expect_error('a raw duplicate inbox row violates the primary key',
     format($q$INSERT INTO inbox (tenant_id, consumer, event_id) VALUES (%L, 'dashboard', %L)$q$, dbtest.u(1), dbtest.u(1)), '23505', 'factory_app', 'inbox_pkey');
   PERFORM dbtest.expect_ok('the same event id is a different row for the same consumer in another tenant',
-    format($q$INSERT INTO inbox (tenant_id, consumer, event_id) VALUES (%L, 'dashboard', %L)$q$, dbtest.u(2), dbtest.u(1)), 'factory_app');
+    format($q$INSERT INTO inbox (tenant_id, consumer, event_id) VALUES (%L, 'dashboard', %L)$q$, dbtest.u(2), dbtest.u(1)), 'factory_app', 2);
   PERFORM dbtest.expect_error('an inbox row is a record: the application role cannot update it',
     'UPDATE inbox SET processed_at = now()', '42501', 'factory_app');
   PERFORM dbtest.expect_error('an inbox row is a record: the application role cannot delete it',

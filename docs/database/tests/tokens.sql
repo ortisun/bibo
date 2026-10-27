@@ -35,7 +35,7 @@ BEGIN
   PERFORM dbtest.expect_error('the readable form of a job token (sfjt_ followed by 43 characters) does not fit the hash column',
     dbtest.token_sql(dbtest.u(2), convert_to('sfjt_' || repeat('A', 43), 'UTF8')), '23514', 'factory_app', 'api_tokens_token_hash_check');
   PERFORM dbtest.expect_error('the same hash cannot be stored twice, not even under another tenant (lookup by hash must be unambiguous)',
-    dbtest.token_sql(dbtest.u(2), decode(repeat('11', 32), 'hex'), p_principal => dbtest.u(2002), p_tenant => dbtest.u(2)), '23505', 'factory_app', 'api_tokens_token_hash_key');
+    dbtest.token_sql(dbtest.u(2), decode(repeat('11', 32), 'hex'), p_principal => dbtest.u(2002), p_tenant => dbtest.u(2)), '23505', 'factory_app', 'api_tokens_token_hash_key', NULL, 2);
 END
 $$;
 
@@ -108,6 +108,26 @@ BEGIN
   EXECUTE format(q, decode(repeat('99', 32), 'hex'), 'factory-api') INTO n;
   PERFORM dbtest.expect_eq('a hash that was never stored is not found', n, 0::bigint);
   PERFORM dbtest.expect_ok('the application role can authenticate through the view', 'SELECT tenant_id, principal_id FROM active_api_tokens LIMIT 1', 'factory_app');
+END
+$$;
+
+-- The same cases through resolve_token, the SECURITY DEFINER lookup that the API calls before it knows the
+-- tenant (ADR 0012). It must agree with the view on every case: it reads the view, and the answers below are
+-- the ones above. It returns the tenant and the principal, and nothing at all for a miss.
+DO $$
+DECLARE
+  cases text[][] := ARRAY[['11', 'factory-api', '1'], ['11', 'factory-cli', '0'], ['12', 'factory-cli', '1'], ['13', 'factory-api', '0'],
+                          ['14', 'factory-api', '0'], ['15', 'factory-api', '0'], ['99', 'factory-api', '0']];
+  c text[];
+BEGIN
+  FOREACH c SLICE 1 IN ARRAY cases LOOP
+    PERFORM dbtest.expect_eq(format('resolve_token for hash %s0.. and audience %s finds %s row(s), as the view does', c[1], c[2], c[3]),
+      dbtest.run_as(format($q$SELECT 1 FROM resolve_token(%L, %L)$q$, decode(repeat(c[1], 32), 'hex'), c[2]), 'factory_resolver'), 'rows=' || c[3]);
+  END LOOP;
+  PERFORM dbtest.expect_eq('resolve_token names the tenant and the principal of the active token, for a session that has no tenant',
+    dbtest.run_as(format($q$SELECT 1 FROM resolve_token(%L, 'factory-api') WHERE tenant_id = %L AND principal_id = %L$q$, decode(repeat('11', 32), 'hex'), dbtest.u(1), dbtest.u(1002)), 'factory_resolver'), 'rows=1');
+  PERFORM dbtest.expect_eq('a revoked token stops resolving the moment it is revoked (the lookup reads the same row the view does)',
+    dbtest.run_as(format($q$SELECT 1 FROM resolve_token(%L, 'factory-api')$q$, decode(repeat('12', 32), 'hex')), 'factory_resolver', NULL, 'UPDATE api_tokens SET revoked_at = now() WHERE id = ' || quote_literal(dbtest.u(12))), 'rows=0');
 END
 $$;
 

@@ -1,9 +1,11 @@
 -- Suite: tenancy
--- Proves ADR 0007 rule 4 as it is implemented in this baseline: tenant_id on every tenant-owned
--- table, foreign keys that name the tenant on both sides, unique keys that include the tenant, and
--- no way to point at another tenant's row. The structure is read from the catalog, so a new table
--- cannot skip the rules. Row-level security is deliberately NOT enabled (ADR 0007); the last section
--- shows the candidate design working on this schema inside a transaction that is rolled back.
+-- Proves ADR 0007 rule 4 as ADR 0012 revised it: tenant_id on every tenant-owned table, foreign keys
+-- that name the tenant on both sides, unique keys that include the tenant, and no way to point at another
+-- tenant's row. The structure is read from the catalog, so a new table cannot skip the rules. These
+-- checks stay beside row-level security (docs/database/tests/rls.sql proves the policies): the keys catch
+-- a WRONG TENANT ON A WRITE, which a policy cannot, and everything below that writes as the application
+-- role does so as a session for one tenant, with row-level security on. The last section tests, on this
+-- schema, the claim of ADR 0012 that foreign key checks bypass row security.
 
 -- ---------------------------------------------------------------------------------------------
 -- 1. Structure, from the catalog.
@@ -113,14 +115,16 @@ BEGIN
 END
 $$;
 
--- This baseline does not use row-level security (ADR 0007, rule 4). State it so a change is deliberate.
+-- Row-level security is on for every tenant-owned table (the rls suite proves what it does).
 DO $$
 DECLARE
-  with_rls text;
+  without_rls text;
 BEGIN
-  SELECT string_agg(relname, ', ') INTO with_rls
-    FROM pg_class WHERE relnamespace = 'public'::regnamespace AND relkind = 'r' AND (relrowsecurity OR relforcerowsecurity);
-  PERFORM dbtest.expect_eq('row-level security is off on every table in the baseline (ADR 0007: decided for Slice 4)', coalesce(with_rls, ''), '');
+  SELECT string_agg(c.relname, ', ' ORDER BY c.relname) INTO without_rls
+    FROM pg_class c
+   WHERE c.relnamespace = 'public'::regnamespace AND c.relname IN (SELECT tbl FROM tenant_owned)
+     AND NOT (c.relrowsecurity AND c.relforcerowsecurity);
+  PERFORM dbtest.expect_eq('row-level security is enabled and forced on every tenant-owned table (ADR 0012)', coalesce(without_rls, ''), '');
 END
 $$;
 
@@ -244,17 +248,17 @@ DO $$
 BEGIN
   PERFORM dbtest.expect_ok('the same X-GitHub-Delivery id is allowed in another tenant',
     format($q$INSERT INTO webhook_deliveries (tenant_id, id, delivery_id, event_name, github_installation_id, body_sha256)
-              VALUES (%L, %L, 'delivery-tenant-one', 'issues', 9002, %L)$q$, dbtest.u(2), dbtest.u(2701), dbtest.sha('other body')), 'factory_app');
+              VALUES (%L, %L, 'delivery-tenant-one', 'issues', 9002, %L)$q$, dbtest.u(2), dbtest.u(2701), dbtest.sha('other body')), 'factory_app', 2);
   PERFORM dbtest.expect_error('the same delivery id is refused inside one tenant',
     format($q$INSERT INTO webhook_deliveries (tenant_id, id, delivery_id, event_name, github_installation_id, body_sha256)
               VALUES (%L, %L, 'delivery-tenant-one', 'issues', 9001, %L)$q$, dbtest.u(1), dbtest.u(1701), dbtest.sha('another body')), '23505', 'factory_app');
   PERFORM dbtest.expect_ok('the same artifact hash is allowed in another tenant',
-    format($q$INSERT INTO artifacts (tenant_id, content_sha256, size_bytes, media_type, backend) VALUES (%L, %L, 10, 'text/plain', 'local-fs')$q$, dbtest.u(2), dbtest.sha('a1')), 'factory_app');
+    format($q$INSERT INTO artifacts (tenant_id, content_sha256, size_bytes, media_type, backend) VALUES (%L, %L, 10, 'text/plain', 'local-fs')$q$, dbtest.u(2), dbtest.sha('a1')), 'factory_app', 2);
   PERFORM dbtest.expect_error('the same artifact hash is refused inside one tenant',
     format($q$INSERT INTO artifacts (tenant_id, content_sha256, size_bytes, media_type, backend) VALUES (%L, %L, 10, 'text/plain', 'local-fs')$q$, dbtest.u(1), dbtest.sha('a1')), '23505', 'factory_app');
   PERFORM dbtest.expect_error('the same GitHub repository cannot be registered by two tenants (the binding is global)',
     format($q$INSERT INTO repositories (tenant_id, id, github_installation_id, github_repository_id, full_name, default_branch)
-              VALUES (%L, %L, 9002, 8001, 'org2/other', 'main')$q$, dbtest.u(2), dbtest.u(2090)), '23505', 'factory_app', 'repositories_github_repository_id_key');
+              VALUES (%L, %L, 9002, 8001, 'org2/other', 'main')$q$, dbtest.u(2), dbtest.u(2090)), '23505', 'factory_app', 'repositories_github_repository_id_key', NULL, 2);
 END
 $$;
 
@@ -272,59 +276,57 @@ END
 $$;
 
 -- ---------------------------------------------------------------------------------------------
--- 4. Row-level security: the candidate design from ADR 0007, tried on this schema and rolled back.
--- This is evidence for the later ADR, not part of the baseline. FORCE ROW LEVEL SECURITY with a
--- per-transaction setting; a separate BYPASSRLS role stands for the engine's system scope.
+-- 4. Foreign key checks and row security (the first "not verified" item of ADR 0012).
+--
+-- PostgreSQL runs the referential checks as the owner of the referenced table with row security lifted
+-- ("integrity checks bypass row security"). This section tests that on this schema, with the composite keys,
+-- under FORCE ROW LEVEL SECURITY. Each case runs as a session for tenant 1 and rolls back.
 
-BEGIN;
-
-CREATE ROLE rls_spike_engine NOLOGIN BYPASSRLS;
-GRANT SELECT ON jobs TO rls_spike_engine;
-GRANT USAGE ON SCHEMA dbtest TO rls_spike_engine;
--- The application role has no DELETE in the baseline. Grant it inside the spike only, to show that a
--- policy limits a DELETE to the session's tenant.
-GRANT DELETE ON jobs TO factory_app;
-ALTER TABLE jobs ENABLE ROW LEVEL SECURITY;
-ALTER TABLE jobs FORCE ROW LEVEL SECURITY;
-CREATE POLICY jobs_by_tenant ON jobs
-  USING (tenant_id = nullif(current_setting('factory.tenant_id', true), '')::uuid)
-  WITH CHECK (tenant_id = nullif(current_setting('factory.tenant_id', true), '')::uuid);
-
-SET LOCAL ROLE factory_app;
-SELECT set_config('factory.tenant_id', dbtest.u(1)::text, true);
-
-DO $$
-BEGIN
-  PERFORM dbtest.expect_eq('[RLS spike] a session set to tenant 1 sees only tenant 1 jobs',
-    (SELECT array_agg(DISTINCT tenant_id) FROM jobs), ARRAY[dbtest.u(1)]);
-  PERFORM dbtest.expect_eq('[RLS spike] even a query that asks for a tenant 2 job by id sees nothing',
-    (SELECT count(*) FROM jobs WHERE id = dbtest.u(2101)), 0::bigint);
-END
-$$;
-
+-- (a) The check does not see policies. The parent stage run is hidden from the session by a temporary
+-- restrictive policy, and the session can still insert a child that points at it.
 DO $$
 DECLARE
-  n bigint;
+  hide text := 'CREATE POLICY hide_parent ON stage_runs AS RESTRICTIVE FOR SELECT TO factory_app USING (false)';
+  child text := format($q$INSERT INTO stage_run_artifacts (tenant_id, job_id, stage_run_id, direction, role, content_sha256)
+                          VALUES (%L, %L, %L, 'input', 'spec', %L)$q$, dbtest.u(1), dbtest.u(1101), dbtest.u(1201), dbtest.sha('a1'));
 BEGIN
-  UPDATE jobs SET version = version + 1 WHERE id = dbtest.u(2101);
-  GET DIAGNOSTICS n = ROW_COUNT;
-  PERFORM dbtest.expect_eq('[RLS spike] an UPDATE of a tenant 2 job by id changes zero rows', n, 0::bigint);
-  DELETE FROM jobs WHERE id = dbtest.u(2101);
-  GET DIAGNOSTICS n = ROW_COUNT;
-  PERFORM dbtest.expect_eq('[RLS spike] a DELETE of a tenant 2 job by id deletes zero rows', n, 0::bigint);
+  PERFORM dbtest.expect_eq('the temporary policy hides every stage run from a tenant-1 session',
+    dbtest.run_as('SELECT 1 FROM stage_runs', 'factory_app', 1, hide), 'rows=0');
+  PERFORM dbtest.expect_eq('and a child row that points at a stage run the session cannot see is still accepted: the foreign key check bypasses row security',
+    dbtest.run_as(child, 'factory_app', 1, hide), 'rows=1');
+  PERFORM dbtest.expect_eq('control: without the temporary policy the same child is accepted too',
+    dbtest.run_as(child, 'factory_app', 1), 'rows=1');
 END
 $$;
 
-SELECT set_config('factory.tenant_id', '', true);
-SELECT dbtest.expect_eq('[RLS spike] with no tenant set the policy fails closed: zero rows', (SELECT count(*) FROM jobs), 0::bigint);
+-- (b) The check sees rows the session cannot see. Deleting a parent that has a child fails even when a
+-- restrictive policy hides the child from the deleting session.
+DO $$
+DECLARE
+  setup text := 'GRANT DELETE ON stage_runs TO factory_app; '
+    || format($q$INSERT INTO stage_run_artifacts (tenant_id, job_id, stage_run_id, direction, role, content_sha256) VALUES (%L, %L, %L, 'input', 'spec', %L); $q$,
+              dbtest.u(1), dbtest.u(1101), dbtest.u(1201), dbtest.sha('a1'))
+    || 'CREATE POLICY hide_child ON stage_run_artifacts AS RESTRICTIVE FOR SELECT TO factory_app USING (false)';
+BEGIN
+  PERFORM dbtest.expect_eq('a stage run with a child the deleting session cannot see still refuses to be deleted (SQLSTATE 23503)',
+    left(dbtest.run_as(format('DELETE FROM stage_runs WHERE id = %L', dbtest.u(1201)), 'factory_app', 1, setup), 9), 'ERR:23503');
+END
+$$;
 
-RESET ROLE;
-SET LOCAL ROLE rls_spike_engine;
-SELECT dbtest.expect_eq('[RLS spike] the engine role with BYPASSRLS (system scope) sees every tenant', (SELECT count(DISTINCT tenant_id) FROM jobs), 2::bigint);
-RESET ROLE;
+-- (c) The composite key still stops a child that points at another tenant's parent. Section 2 above does it
+-- for 14 keys, every one as a session for tenant 1 with row-level security on: the policy lets the row in
+-- (its tenant_id is tenant 1's), and the key refuses it (SQLSTATE 23503) because tenant 1 has no such parent.
 
-ROLLBACK;
-
-SELECT dbtest.expect_eq('the spike left nothing behind: row-level security is off again',
-  (SELECT count(*) FROM pg_class WHERE relnamespace = 'public'::regnamespace AND (relrowsecurity OR relforcerowsecurity)), 0::bigint);
-SELECT dbtest.expect_eq('the spike left no role behind', (SELECT count(*) FROM pg_roles WHERE rolname = 'rls_spike_engine'), 0::bigint);
+-- (d) What row security does not hide: a UNIQUE key is checked against every row, whoever owns it. The two
+-- global keys (the GitHub repository binding and the token hash) answer a tenant that tries a value another
+-- tenant already holds, with a unique violation that names the key. The storage crate must not pass that
+-- message on (docs/database/for-the-storage-crate.md).
+DO $$
+BEGIN
+  PERFORM dbtest.expect_error('a tenant-2 session learns from a unique violation that tenant 1 holds a GitHub repository (the known existence oracle of the global keys)',
+    format($q$INSERT INTO repositories (tenant_id, id, github_installation_id, github_repository_id, full_name, default_branch)
+              VALUES (%L, %L, 9002, 8001, 'org2/probe', 'main')$q$, dbtest.u(2), dbtest.u(2091)),
+    '23505', 'factory_app', 'repositories_github_repository_id_key', NULL, 2);
+  PERFORM dbtest.expect_eq('while the same session cannot read that repository', dbtest.run_as('SELECT 1 FROM repositories WHERE github_repository_id = 8001', 'factory_app', 2), 'rows=0');
+END
+$$;
