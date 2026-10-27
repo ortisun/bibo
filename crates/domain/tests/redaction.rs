@@ -257,6 +257,9 @@ fn strip_noise(bytes: &[u8]) -> Vec<u8> {
             | '\u{feff}'
             | '\u{ad}'
             | '\u{202a}'..='\u{202e}' => {}
+            // Control characters that draw nothing. Tab, line feed and carriage return separate
+            // words and lines, so they stay.
+            c if c.is_control() && !matches!(c, '\t' | '\n' | '\r') => {}
             c => out.push(c),
         }
     }
@@ -879,6 +882,20 @@ fn negative_nt_sec_02_terminal_codes_between_the_characters_do_not_hide_a_token(
 }
 
 #[test]
+fn negative_nt_sec_02_control_bytes_between_the_characters_do_not_hide_a_token() {
+    let (r, secret, token) = a_registered_secret_and_a_pattern_token();
+    for (what, value) in [("registered secret", &secret), ("pattern token", &token)] {
+        // A NUL between letters is how text written as UTF-16 looks in a byte stream. A
+        // backspace, a bell and a delete draw nothing either.
+        for control in ["\u{0}", "\u{8}", "\u{7}", "\u{7f}", "\u{1}\u{2}"] {
+            let input = format!("value: {} end", interleave(value, control));
+            let out = redact(&r, input.as_bytes());
+            assert_no_leak(&out, value, &format!("{what} with {control:?}"));
+        }
+    }
+}
+
+#[test]
 fn negative_nt_sec_02_a_coloured_token_is_redacted() {
     let (r, _, token) = a_registered_secret_and_a_pattern_token();
     // The colour code ends in a letter that sits right before the token, so the raw bytes have
@@ -975,6 +992,63 @@ fn negative_nt_sec_02_ordinary_text_with_the_word_password_is_untouched() {
         let out = r.redact(text.as_bytes()).unwrap();
         assert_eq!(out.output.as_ref(), text.as_bytes());
         assert!(out.report.is_clean(), "{text:?}: {:?}", out.report);
+    }
+}
+
+// ===== The entropy heuristic =========================================================================
+
+#[test]
+fn entropy_flags_a_random_key_and_ignores_hashes_ids_and_ordinary_runs() {
+    let r = redactor();
+    let mut rng = Rng::new(0x5eed_0030);
+    let random_base64 = base64(rng.string(ALNUM, 33).as_bytes(), false, true);
+    for flagged in [
+        rng.string(ALNUM, 40),
+        rng.string(ALNUM, 32),
+        rng.string(ALNUM, 80),
+        random_base64,
+    ] {
+        let report = r.scan(format!("key {flagged} end").as_bytes()).unwrap();
+        assert!(report.has_flagged(), "{flagged} should be flagged");
+        assert!(
+            report
+                .findings()
+                .iter()
+                .any(|f| f.source == FindingSource::Entropy)
+        );
+    }
+    for ignored in [
+        // A SHA-256 digest, a SHA-1 and a UUID are long and look random, but their alphabet is
+        // small, so their entropy stays under the threshold.
+        "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08".to_owned(),
+        "da39a3ee5e6b4b0d3255bfef95601890afd80709".to_owned(),
+        "123e4567-e89b-12d3-a456-426614174000".to_owned(),
+        "a".repeat(50),
+        "abcabcabcabcabcabcabcabcabcabcabcabcabc".to_owned(),
+        // Shorter than the threshold.
+        rng.string(ALNUM, 31),
+    ] {
+        let report = r.scan(format!("id {ignored} end").as_bytes()).unwrap();
+        assert!(
+            !report.has_flagged(),
+            "{ignored} must not be flagged: {report:?}"
+        );
+    }
+}
+
+#[test]
+fn entropy_in_redact_mode_replaces_the_whole_run_whatever_the_chunking() {
+    let strict = builder().flagged(FlagHandling::Redact).build().unwrap();
+    let mut rng = Rng::new(0x5eed_0031);
+    for len in [32usize, 40, 5_000, 20_000] {
+        let run = rng.string(ALNUM, len);
+        let text = format!("before {run} after");
+        let whole = redact_text(&strict, &text);
+        assert_eq!(whole, "before [REDACTED:entropy] after", "length {len}");
+        let (chunked, _) = stream_with(&strict, text.as_bytes(), &[333, 4096, 5]);
+        assert_eq!(String::from_utf8(chunked).unwrap(), whole, "length {len}");
+        // Idempotent: the marker is short and not a run.
+        assert_eq!(redact_text(&strict, &whole), whole);
     }
 }
 

@@ -177,6 +177,15 @@ struct Window {
     resume_entropy: u64,
 }
 
+impl Drop for Window {
+    /// Overwrites the text of the window, which may hold a secret. A best effort, as noted in
+    /// `registry`.
+    fn drop(&mut self) {
+        self.bytes.fill(0);
+        std::hint::black_box(&self.bytes);
+    }
+}
+
 impl Window {
     fn end(&self) -> u64 {
         self.base + self.bytes.len() as u64

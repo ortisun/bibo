@@ -8,8 +8,9 @@
 //! span runs from the first to the last byte of the match in the original text, so the noise
 //! inside it goes too.
 //!
-//! This is the model the canary sweeper of the test kit uses to read output, on purpose: what
-//! that sweeper cannot see, a leak cannot hide behind, and the other way round.
+//! The escape sequences are read the way the canary sweeper of the test kit reads them, on
+//! purpose, so that nothing the sweeper can find is hidden from this view. The view then goes
+//! further than the sweeper: more invisible characters, and control bytes that draw nothing.
 //!
 //! * An escape sequence starts at the control byte `ESC` (0x1B). `ESC [` starts a control
 //!   sequence that ends at the first byte from 0x40 to 0x7E. `ESC ]` starts an operating system
@@ -21,6 +22,9 @@
 //!   joiner, the byte order mark, the soft hyphen, the bidirectional controls, the variation
 //!   selectors, the fillers and the tag characters. The list is longer than the one the sweeper
 //!   uses, so a hidden character the sweeper does not know about is removed here as well.
+//! * A control byte that draws nothing (NUL, bell, backspace, DEL and the other C0 controls
+//!   except tab, line feed, carriage return and `ESC`) is removed too. Text written as UTF-16
+//!   has a NUL between its letters.
 //!
 //! The view is built one byte at a time and keeps no more than three bytes of state, so a
 //! sequence or a character cut in two by a chunk boundary is handled the same way as one that is
@@ -124,6 +128,14 @@ fn classify(prefix: &[u8]) -> Class {
         [0xF3, 0xA0, 0x80..=0xBF, 0x80..=0xBF] => Class::Invisible,
         _ => Class::Visible,
     }
+}
+
+/// True for a control byte that draws nothing and does not separate words: the C0 controls
+/// except tab, line feed, carriage return and `ESC` (which starts a sequence), and `DEL`.
+/// A program that writes a secret as UTF-16 puts a NUL between its letters; a program that
+/// wants to hide one can put a backspace or a bell there.
+fn draws_nothing(byte: u8) -> bool {
+    matches!(byte, 0x00..=0x08 | 0x0B | 0x0C | 0x0E..=0x1A | 0x1C..=0x1F | 0x7F)
 }
 
 /// True for a byte that can start a character on the list above.
@@ -248,6 +260,7 @@ impl Terminal {
         }
         match byte {
             0x1B => self.state = State::Escape,
+            b if draws_nothing(b) => {}
             b if starts_a_possibly_invisible_character(b) => {
                 if !self.hold(b, at) {
                     out.push(b, at);
@@ -375,6 +388,17 @@ mod tests {
             let input = format!("a{invisible}b");
             assert_eq!(text(input.as_bytes()), b"ab", "{invisible:?}");
         }
+    }
+
+    #[test]
+    fn control_bytes_that_draw_nothing_disappear_and_the_ones_that_separate_words_stay() {
+        // A NUL between letters is what text written as UTF-16 looks like.
+        assert_eq!(text(b"g\0h\0p\0_\0"), b"ghp_");
+        assert_eq!(text(b"a\x08b\x07c\x7fd\x01e\x1ff"), b"abcdef");
+        // Tab, line feed and carriage return separate words and lines, so they stay.
+        assert_eq!(text(b"a\tb\nc\rd"), b"a\tb\nc\rd");
+        // The offsets still point into the original text.
+        assert_eq!(view(b"a\0b"), vec![(b'a', 0), (b'b', 2)]);
     }
 
     #[test]

@@ -147,6 +147,13 @@ impl Sink {
         &self.names
     }
 
+    /// Overwrites the text that was held back, which may hold a secret that was never released.
+    /// A best effort, as noted in `registry`.
+    fn wipe(&mut self) {
+        self.pending.fill(0);
+        std::hint::black_box(&self.pending);
+    }
+
     /// How many bytes are held back.
     pub(super) fn pending_len(&self) -> usize {
         self.pending.len() - self.head
@@ -234,16 +241,23 @@ impl Sink {
         Ok(())
     }
 
+    /// The end, in `pending`, of the held text that runs up to `offset`.
+    fn held_end(&self, offset: u64) -> Result<usize, RedactionError> {
+        usize::try_from(offset.saturating_sub(self.frontier))
+            .ok()
+            .and_then(|count| self.head.checked_add(count))
+            .ok_or(RedactionError::Internal)
+    }
+
     /// Copies the held text up to `offset` to `out`.
     fn release_until(&mut self, offset: u64, out: &mut Vec<u8>) -> Result<(), RedactionError> {
-        let count = usize::try_from(offset.saturating_sub(self.frontier))
-            .map_err(|_| RedactionError::Internal)?;
+        let end = self.held_end(offset)?;
         let held = self
             .pending
-            .get(self.head..self.head + count)
+            .get(self.head..end)
             .ok_or(RedactionError::Internal)?;
         out.extend_from_slice(held);
-        self.head += count;
+        self.head = end;
         self.frontier = offset.max(self.frontier);
         self.compact();
         Ok(())
@@ -251,14 +265,13 @@ impl Sink {
 
     /// Drops the held text up to `offset` without writing it.
     fn skip_until(&mut self, offset: u64) -> Result<(), RedactionError> {
-        let count = usize::try_from(offset.saturating_sub(self.frontier))
-            .map_err(|_| RedactionError::Internal)?;
+        let end = self.held_end(offset)?;
         let held = self
             .pending
-            .get_mut(self.head..self.head + count)
+            .get_mut(self.head..end)
             .ok_or(RedactionError::Internal)?;
         held.fill(0);
-        self.head += count;
+        self.head = end;
         self.frontier = offset.max(self.frontier);
         self.compact();
         Ok(())
@@ -279,6 +292,12 @@ impl Sink {
     /// The final spans of collect mode.
     pub(super) fn take_done(&mut self) -> Vec<Span> {
         std::mem::take(&mut self.done)
+    }
+}
+
+impl Drop for Sink {
+    fn drop(&mut self) {
+        self.wipe();
     }
 }
 

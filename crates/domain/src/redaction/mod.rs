@@ -67,8 +67,18 @@
 //! * A pattern written with a word boundary does not match a token glued to a word. Registered
 //!   values do not have this limit, which is why the factory's own secrets are registered.
 //! * It does not decode text that is encoded twice (base64 of hex of a secret), text that was
-//!   wrapped over several lines, or text where letters are replaced by look-alike characters.
+//!   wrapped over several lines, text with visible separators put between the characters,
+//!   reversed or rotated text, text where letters are replaced by look-alike or combining
+//!   characters, or a hidden string held in a different escape sequence than the ones the
+//!   terminal view reads. A reader who decodes that much by hand is outside what a filter on the
+//!   text can promise; the first line of defence is that the agent never holds the secret.
 //! * It does not see a secret the registry has not been given, unless a pattern matches it.
+//! * A key block whose end line never comes takes the rest of the input. A log that merely
+//!   mentions a key header therefore loses what follows it, or, in a stream, fails at the
+//!   pending limit. That is the fail-closed choice.
+//! * Registering a secret rebuilds the search automaton, which costs time in proportion to the
+//!   registry (about 1 ms at 100 secrets and 19 ms at 1000, in a release build). The registry
+//!   is meant for the secrets of live jobs, not for a large fixed list.
 //! * The registry's memory is overwritten when a value is forgotten, as far as the language
 //!   lets a safe program do so. Crash dumps and swap are the host's business.
 //! * A stream sees the secrets registered before it started.
