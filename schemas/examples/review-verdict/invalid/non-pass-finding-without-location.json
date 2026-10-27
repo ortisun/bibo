@@ -1,0 +1,52 @@
+{
+  "schema_version": 1,
+  "metadata": {
+    "review_id": "018f3a90-3e44-7c66-9d77-8e9fa0b1c2d5",
+    "job_id": "018f3a7e-5c1b-7d2e-9a4f-3b6c8d1e2f40",
+    "stage_run_id": "018f3a90-1a11-7b22-8c33-9d4e5f6a7b88",
+    "execution_mode": "production",
+    "created_at": "2026-10-27T09:40:12Z",
+    "reviewer": {
+      "agent_id": "code-reviewer",
+      "agent_version": "1.0.0",
+      "role": "code_reviewer",
+      "runtime": {
+        "adapter": "claude-code-cli",
+        "adapter_version": "2.1.311",
+        "model": "claude-opus",
+        "fidelity": "real"
+      }
+    }
+  },
+  "title": "The new flag works but one error path has no test",
+  "verdict": "CHANGES_REQUIRED",
+  "summary": "The --json flag matches the specification for the normal case. The error path for an unreadable input file is not covered by any test, so the acceptance scenario about error output is not yet shown to hold.",
+  "inputs_reviewed": {
+    "frozen_spec_sha256": "sha256:baf140c9dd2a28aed50ca11af81b4c5da75f95b60b9600081b4d8d746ec7bcf7",
+    "diff_sha256": "sha256:df087996d45b03e7eb8c133c0298fd98d35113fca26aaba58612fef3cc212cad",
+    "gate_reports": [
+      {
+        "gate_report_id": "018f3a80-1c22-7a44-9b55-6c7d8e9fa0b3",
+        "sha256": "sha256:f46413546b49a12b2eb6ec29a33c7e41fb245bbc9b6cfd8d06b3394e3e434c78"
+      }
+    ],
+    "saw_builder_self_assessment": false
+  },
+  "findings": [
+    {
+      "finding_id": "missing-error-path-test",
+      "severity": "medium",
+      "category": "tests",
+      "title": "Add a test for unreadable input files",
+      "description": "Acceptance scenario 3 requires a clear error message and a non-zero exit code when the input file cannot be read. The implementation handles this, but no test exercises it, so a regression would go unnoticed.",
+      "reproduction": {
+        "kind": "steps",
+        "detail": "Run the command with a path to a file that does not exist and compare the exit code and message with scenario 3."
+      },
+      "confidence": 0.9,
+      "proposed_next_action": "add_test",
+      "defect_class": "code_behavior"
+    }
+  ],
+  "confidence_overall": 0.85
+}

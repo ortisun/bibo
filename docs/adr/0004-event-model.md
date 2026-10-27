@@ -1,9 +1,13 @@
 # 0004: Publish domain events through a transactional outbox to NATS JetStream, at least once, with idempotent consumers
 
-- Status: Accepted
+- Status: Accepted Revised again on 2026-10-27 by ADR 0014 (see "Revision note (ADR 0014)").
 - Date: 2026-10-27
 - Deciders: software_architect
 - Related: [ADR 0001](0001-orchestration-engine.md), [state machines](../architecture/state-machine.md), [`domain-event` schema](../../schemas/domain-event.schema.json)
+
+## Revision note (ADR 0014)
+
+Revised on 2026-10-27 by [ADR 0014](0014-ports-v1-1-claim-protocol-and-port-revision.md): the outbox is a notification record and not a read model. The engine lists rows instead of reading stage runs and attempts out of event payloads, and no creation event is added. The `ChangeHost` documentation said a comment is posted at most once per key; it is at least once with a marker that reduces duplicates, as this record already said.
 
 ## Context and problem statement
 

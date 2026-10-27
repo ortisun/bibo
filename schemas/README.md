@@ -2,7 +2,7 @@
 
 JSON Schema (draft 2020-12) definitions for the documents the factory passes between stages, agents and storage. They are the contracts that let engineers work in parallel: a producer and a consumer only need to agree on the schema.
 
-Status: Slice 0 baseline, revised on 2026-10-27 (gate report warnings, integer bounds in ledger entries, a wider description of `defect_class`; see ADR 0010 and ADR 0011). The `domain` crate has one Rust type for each schema in `crates/domain/src/contracts/`, and its tests read the examples below. Run `schemas/validate.sh` to check the schemas themselves.
+Status: Slice 0 baseline, revised on 2026-10-27 (gate report warnings, integer bounds in ledger entries, a wider description of `defect_class`; see ADR 0010 and ADR 0011), and again the same day by [ADR 0014](../docs/adr/0014-ports-v1-1-claim-protocol-and-port-revision.md) after the independent review: a finding of a verdict other than `PASS` cites a file and a line (`review-verdict`), a stage contract's `retry_on` lists `LEASE_LOST` and `TIMED_OUT` (`stage-contract`), and a ledger source URL is an https URL (`evidence-ledger-entry`). These tighten version 1 in place because no document has ever been stored under it; a person may prefer new versions. **The Rust types and tests that read these files fail until the work package `s1-ports-revision` lands.** The `domain` crate has one Rust type for each schema in `crates/domain/src/contracts/`, and its tests read the examples below. Run `schemas/validate.sh` to check the schemas themselves.
 
 ## The schemas
 
@@ -48,6 +48,8 @@ These rules need code. The owner is named so they are not forgotten.
 | The ledger hash chain is continuous and every `entry_hash` recomputes | `storage` on append, `workflow` before completing a job |
 | The permissions in a stage contract are a subset of the agent manifest and the policy grant | policy engine |
 | Prose is English, readable, and free of unexplained acronyms | Human-Readable Artifact Quality Gate |
+| The line a review finding cites exists in the exported patch (SC-008) | the review gate in `workflow`, using `JobRepo::export_patch` |
+| The agent's review output and the stored verdict agree, and the engine-owned fields (`inputs_reviewed`, the reviewer's runtime) are the engine's | the engine, which wraps the agent's findings (ports-v1.1, section 10.3) |
 
 ## Check the schemas
 
