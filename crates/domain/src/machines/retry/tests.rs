@@ -32,6 +32,7 @@ fn facts<'a>(
         budget_has_room: budget,
         invalid_output_failures: 0,
         repair_cap: RepairCap::DEFAULT,
+        environment: None,
     }
 }
 
@@ -46,7 +47,51 @@ fn invalid_output(failures: u32, cap: RepairCap) -> RetryFacts<'static> {
         budget_has_room: true,
         invalid_output_failures: failures,
         repair_cap: cap,
+        environment: None,
     }
+}
+
+#[test]
+fn a_missing_environment_blocks_before_anything_else() {
+    use crate::machines::guards::EnvironmentCause;
+    for cause in EnvironmentCause::ALL {
+        // A class that would otherwise be retried, with attempts and budget to spare.
+        let mut input = facts(FailureClass::SandboxError, &ALL_RETRY, 1, 3, true);
+        input.environment = Some(*cause);
+        let decision = decide_after_failure(&input);
+        assert_eq!(decision, AttemptDisposition::Block(*cause), "{cause}");
+        assert_eq!(decision.stage_run_event(), StageRunEvent::AttemptBlocked);
+        assert_eq!(
+            StageRunStatus::Running.apply(decision.stage_run_event()),
+            Ok(StageRunStatus::Blocked)
+        );
+    }
+}
+
+#[test]
+fn the_environment_blocks_ahead_of_a_budget_limit_and_a_non_retryable_class() {
+    use crate::machines::guards::EnvironmentCause;
+    for class in [
+        FailureClass::BudgetExhausted,
+        FailureClass::PolicyDenied,
+        FailureClass::Internal,
+    ] {
+        let mut input = facts(class, &ALL_RETRY, 1, 3, true);
+        input.environment = Some(EnvironmentCause::PostureMismatch);
+        assert_eq!(
+            decide_after_failure(&input),
+            AttemptDisposition::Block(EnvironmentCause::PostureMismatch),
+            "{class}"
+        );
+    }
+}
+
+#[test]
+fn a_provision_failure_is_still_retried() {
+    // ProvisionFailed, Timeout and ResourceExceeded are not environment causes: no cause is set.
+    let input = facts(FailureClass::SandboxError, &ALL_RETRY, 1, 3, true);
+    assert_eq!(input.environment, None);
+    assert_eq!(decide_after_failure(&input), AttemptDisposition::Retry);
 }
 
 #[test]
@@ -254,6 +299,7 @@ fn grid(mut check: impl FnMut(&RetryFacts<'_>)) {
                                     budget_has_room: budget,
                                     invalid_output_failures: invalid,
                                     repair_cap: RepairCap::from_policy(cap),
+                                    environment: None,
                                 });
                             }
                         }
@@ -284,6 +330,9 @@ fn every_decision_is_backed_by_its_own_guard_over_a_grid_of_inputs() {
                     && failure_nonretryable(input).is_err(),
                 "{input:?}"
             ),
+            AttemptDisposition::Block(_) => {
+                panic!("the grid sets no environment cause, yet it blocked: {input:?}")
+            }
         }
         // The stage run machine accepts the event from RUNNING.
         assert!(
@@ -430,6 +479,7 @@ fn an_answer_gives_back_the_repairs_too() {
         budget_has_room: true,
         invalid_output_failures: window.invalid_output_failures(),
         repair_cap: RepairCap::DEFAULT,
+        environment: None,
     };
     assert_eq!(decide_after_failure(&input), AttemptDisposition::Retry);
 }

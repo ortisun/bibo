@@ -6,17 +6,61 @@ use serde::{Deserialize, Serialize};
 
 use super::common::{SchemaVersion, required_nullable};
 use super::{Violations, contract};
+use crate::error::ValueError;
 use crate::ids::{
     AttemptId, ExperimentRunId, GateReportId, JobId, LedgerEntryId, PrincipalId, StageRunId,
 };
 use crate::macros::string_enum;
+use crate::macros::string_traits;
+use crate::patterns;
 use crate::values::{
     ExactInteger, ExactPositiveInt, GitSha, HumanText, MediaType, NonEmptyString, NonEmptyVec,
-    Sha256Digest, Slug, SpanId, Timestamp, TraceId, UniqueVec, Uri,
+    Sha256Digest, Slug, SpanId, Timestamp, TraceId, UniqueVec,
 };
 use crate::vocabulary::{
     AssuranceLevel, ConfidenceLevel, ExecutionMode, HumanRole, RecorderFidelity,
 };
+
+/// The most characters a source URL may have, as the schema says.
+const HTTPS_URL_MAX_CHARS: usize = 2048;
+
+/// An `https` URL with no whitespace, at most 2048 characters (`evidenceSource.url`).
+///
+/// A source URL is shown to people and followed by tools, so `javascript:`, `file:` and plain
+/// `http:` are refused. The schema engine does not assert `format: uri`, so the rule is the
+/// pattern [`patterns::HTTPS_URL`], which this type compiles.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct HttpsUri(String);
+
+impl HttpsUri {
+    /// Checks the URL.
+    ///
+    /// # Errors
+    /// Returns a [`ValueError`] when the text does not start with `https://`, contains
+    /// whitespace, or is longer than 2048 characters.
+    pub fn parse(text: &str) -> Result<Self, ValueError> {
+        static SHAPE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+            regex::Regex::new(patterns::HTTPS_URL).expect("a schema pattern is a valid regex")
+        });
+        if SHAPE.is_match(text) && text.chars().count() <= HTTPS_URL_MAX_CHARS {
+            Ok(Self(text.to_owned()))
+        } else {
+            Err(ValueError::new(
+                "source URL",
+                text,
+                "a source URL starts with https://, has no spaces and is at most 2048 characters",
+            ))
+        }
+    }
+
+    /// The text.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+string_traits!(HttpsUri);
 
 string_enum! {
     /// What sort of claim an entry makes.
@@ -115,7 +159,7 @@ pub struct SourceEvidence {
     pub citation: HumanText,
     /// Where it was found.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub url: Option<Uri>,
+    pub url: Option<HttpsUri>,
     /// The version that was read.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub version: Option<NonEmptyString>,

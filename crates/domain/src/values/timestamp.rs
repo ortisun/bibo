@@ -131,6 +131,49 @@ impl Timestamp {
     pub fn as_text(&self) -> String {
         self.to_string()
     }
+
+    /// The instant `d` after this one, or `None` when it would pass the last date this type
+    /// holds. Reads no clock. The result uses the shortest spelling of its fraction.
+    #[must_use]
+    pub fn checked_add(&self, d: std::time::Duration) -> Option<Timestamp> {
+        let d = time::Duration::try_from(d).ok()?;
+        let moved = self.instant.checked_add(d)?;
+        Self::shortest(moved)
+    }
+
+    /// The instant `d` before this one, or `None` when it would pass the first date this type
+    /// holds. Reads no clock. The result uses the shortest spelling of its fraction.
+    #[must_use]
+    pub fn checked_sub(&self, d: std::time::Duration) -> Option<Timestamp> {
+        let d = time::Duration::try_from(d).ok()?;
+        let moved = self.instant.checked_sub(d)?;
+        Self::shortest(moved)
+    }
+
+    /// The gap from `earlier` to `self`, or `None` when `earlier` is later than `self`.
+    #[must_use]
+    pub fn duration_since(&self, earlier: &Timestamp) -> Option<std::time::Duration> {
+        let gap = self.instant - earlier.instant;
+        std::time::Duration::try_from(gap).ok()
+    }
+
+    /// A timestamp for `instant` with the fewest fraction digits that hold it, or `None` when the
+    /// year is outside `0000` to `9999`, the years the text form can spell.
+    fn shortest(instant: PrimitiveDateTime) -> Option<Self> {
+        if !(0..=9999).contains(&instant.year()) {
+            return None;
+        }
+        let mut digits = 9_u8;
+        let mut rest = instant.nanosecond();
+        while digits > 0 && rest.is_multiple_of(10) {
+            rest /= 10;
+            digits -= 1;
+        }
+        Some(Self {
+            instant,
+            fraction_digits: digits,
+        })
+    }
 }
 
 impl PartialEq for Timestamp {
@@ -201,5 +244,68 @@ impl<'de> serde::Deserialize<'de> for Timestamp {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         let text = <String as serde::Deserialize>::deserialize(deserializer)?;
         Self::parse(&text).map_err(serde::de::Error::custom)
+    }
+}
+
+#[cfg(test)]
+mod arithmetic_tests {
+    use std::time::Duration;
+
+    use super::Timestamp;
+
+    fn at(text: &str) -> Timestamp {
+        Timestamp::parse(text).expect("a valid timestamp")
+    }
+
+    #[test]
+    fn adding_a_duration_moves_the_instant_forward() {
+        let later = at("2026-10-27T10:00:00Z")
+            .checked_add(Duration::from_secs(90))
+            .expect("no overflow");
+        assert_eq!(later, at("2026-10-27T10:01:30Z"));
+    }
+
+    #[test]
+    fn subtracting_a_duration_moves_the_instant_back_across_midnight() {
+        let earlier = at("2026-10-27T00:00:10Z")
+            .checked_sub(Duration::from_secs(20))
+            .expect("no overflow");
+        assert_eq!(earlier, at("2026-10-26T23:59:50Z"));
+    }
+
+    #[test]
+    fn a_fraction_survives_arithmetic() {
+        let later = at("2026-10-27T10:00:00.250Z")
+            .checked_add(Duration::from_millis(500))
+            .expect("no overflow");
+        assert_eq!(later.subsecond_nanos(), 750_000_000);
+    }
+
+    #[test]
+    fn arithmetic_past_the_largest_date_returns_none() {
+        let last = at("9999-12-31T23:59:59Z");
+        assert_eq!(last.checked_add(Duration::from_secs(1)), None);
+        assert_eq!(last.checked_add(Duration::MAX), None);
+    }
+
+    #[test]
+    fn arithmetic_before_the_smallest_date_returns_none() {
+        let first = at("0000-01-01T00:00:00Z");
+        assert_eq!(first.checked_sub(Duration::from_secs(1)), None);
+    }
+
+    #[test]
+    fn the_gap_between_two_instants_is_a_duration() {
+        let a = at("2026-10-27T10:00:00Z");
+        let b = at("2026-10-27T10:00:07.5Z");
+        assert_eq!(b.duration_since(&a), Some(Duration::from_millis(7_500)));
+        assert_eq!(a.duration_since(&a), Some(Duration::ZERO));
+    }
+
+    #[test]
+    fn the_gap_to_a_later_instant_is_none() {
+        let a = at("2026-10-27T10:00:00Z");
+        let b = at("2026-10-27T10:00:07Z");
+        assert_eq!(a.duration_since(&b), None);
     }
 }

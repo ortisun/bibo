@@ -94,7 +94,7 @@ impl RepoPath {
                 "" => return Err(NameError::EmptyComponent),
                 "." => return Err(NameError::DotComponent),
                 ".." => return Err(NameError::ParentComponent),
-                other if other.eq_ignore_ascii_case(".git") => {
+                other if is_git_directory_alias(other) => {
                     return Err(NameError::GitDirectory);
                 }
                 _ => {}
@@ -175,6 +175,142 @@ impl RepoGlob {
         let pattern: Vec<&str> = self.0.split('/').collect();
         let parts: Vec<&str> = path.components().collect();
         match_components(&pattern, &parts)
+    }
+
+    /// True when the whole of `path` matches, after both are folded the way the policy says:
+    /// Unicode NFC, then case folding. `matches` (exact, case-sensitive) stays for tests.
+    ///
+    /// The policy (`protected_paths.normalization`) says `.GitHub/Workflows` must not dodge
+    /// `.github/**` on a case-insensitive file system, and that a decomposed spelling of a name is
+    /// the same name.
+    #[must_use]
+    pub fn matches_folded(&self, path: &RepoPath) -> bool {
+        let pattern = fold(&self.0);
+        let path = fold(path.as_str());
+        let pattern: Vec<&str> = pattern.split('/').collect();
+        let parts: Vec<&str> = path.split('/').collect();
+        match_components(&pattern, &parts)
+    }
+}
+
+/// Unicode NFC, then lower case, then NFC again (lower-casing can leave a sequence that
+/// composes). `*`, `?` and `/` are unaffected, so a folded glob keeps its shape.
+fn fold(text: &str) -> String {
+    use unicode_normalization::UnicodeNormalization;
+    let composed: String = text.nfc().collect();
+    let lowered: String = composed.chars().flat_map(char::to_lowercase).collect();
+    lowered.nfc().collect()
+}
+
+/// The characters git's own HFS and NTFS protections ignore inside a name: U+200C to U+200F,
+/// U+202A to U+202E, U+206A to U+206F and U+FEFF.
+fn is_ignorable(c: char) -> bool {
+    matches!(
+        c,
+        '\u{200c}'..='\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{206a}'..='\u{206f}' | '\u{feff}'
+    )
+}
+
+/// The check `RepoPath::new` makes for the `.git` component, replacing the ASCII-only
+/// comparison. A component is an alias of the git directory when, after removing the characters
+/// git's own HFS and NTFS protections ignore (U+200C to U+200F, U+202A to U+202E, U+206A to
+/// U+206F, U+FEFF), trimming trailing dots and spaces, applying NFC and folding case, it equals
+/// `.git`, or it equals the short name `git~1` followed by nothing or by digits.
+#[must_use]
+pub fn is_git_directory_alias(component: &str) -> bool {
+    let visible: String = component.chars().filter(|c| !is_ignorable(*c)).collect();
+    let trimmed = visible.trim_end_matches(['.', ' ']);
+    let folded = fold(trimmed);
+    if folded == ".git" {
+        return true;
+    }
+    folded
+        .strip_prefix("git~1")
+        .is_some_and(|rest| rest.chars().all(|c| c.is_ascii_digit()))
+}
+
+/// What the policy does with a path (`policies/security.yaml`, section `protected_paths`). When
+/// several rules match one path, the most restrictive wins, in this order: `Hidden`,
+/// `DenyWrite`, `AppendOnly`, `AdditionsOnly`, `Sensitive`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum PathMode {
+    /// Not in the checkout at all, and not readable.
+    Hidden,
+    /// Any add, modify, delete, rename or mode change is refused.
+    DenyWrite,
+    /// New files are allowed; modifying, deleting or renaming an existing file is refused.
+    AppendOnly,
+    /// New files are allowed; an existing file may only gain lines. Deleting or renaming it is
+    /// refused.
+    AdditionsOnly,
+    /// The change is allowed and is reported for the semantic checks and extra review.
+    Sensitive,
+}
+
+/// One rule of a [`PathRules`] list.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PathRule {
+    /// Paths that match the glob get the mode.
+    Mode {
+        /// The pattern.
+        glob: RepoGlob,
+        /// What the policy does with a matching path.
+        mode: PathMode,
+    },
+    /// A policy entry written with a leading `!`: a path that matches the glob is taken out of
+    /// the matching rules *of the same group*.
+    Reinclude {
+        /// The pattern, without the `!`.
+        glob: RepoGlob,
+        /// The group the re-inclusion belongs to (the policy group id), so that it cannot lift
+        /// a protection from another group.
+        group: String,
+    },
+}
+
+/// The ordered path rules for a job, built from the central policy and the project's
+/// tighten-only overrides. This is the **only** place that decides what a path is: every adapter
+/// and every fake calls [`PathRules::classify`], and none matches globs by itself.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct PathRules {
+    rules: Vec<(String, PathRule)>,
+}
+
+impl PathRules {
+    /// Builds the rules from `(group id, rule)` pairs in policy order.
+    #[must_use]
+    pub fn new(rules: Vec<(String, PathRule)>) -> Self {
+        Self { rules }
+    }
+
+    /// The mode that applies to `path`, or `None` for a free path. The path is folded the way
+    /// the policy says (Unicode NFC, then case-insensitive) before any glob is tried. A
+    /// `Reinclude` is applied after all the `Mode` rules, and lifts only the matches that come
+    /// from its own group (the policy loader applies a leading `!` last).
+    #[must_use]
+    pub fn classify(&self, path: &RepoPath) -> Option<PathMode> {
+        let mut matched: Vec<(&str, PathMode)> = Vec::new();
+        for (group, rule) in &self.rules {
+            if let PathRule::Mode { glob, mode } = rule
+                && glob.matches_folded(path)
+            {
+                matched.push((group.as_str(), *mode));
+            }
+        }
+        for (_, rule) in &self.rules {
+            if let PathRule::Reinclude { glob, group } = rule
+                && glob.matches_folded(path)
+            {
+                matched.retain(|(matched_group, _)| *matched_group != group.as_str());
+            }
+        }
+        matched.into_iter().map(|(_, mode)| mode).min()
+    }
+
+    /// The rules, for adapters that must show them in a report.
+    #[must_use]
+    pub fn rules(&self) -> &[(String, PathRule)] {
+        &self.rules
     }
 }
 
@@ -521,5 +657,219 @@ mod tests {
                 "{bad:?}"
             );
         }
+    }
+
+    // ---- ports-v1.1: git directory aliases, folded matching and the path rules -------------------
+
+    #[test]
+    fn the_git_directory_is_refused_in_every_spelling_git_itself_protects() {
+        for text in [
+            ".git",
+            ".GIT/config",
+            "a/.Git/hooks",
+            ".git./x",
+            ".git /x",
+            "a/.git.../x",
+            ".g\u{200c}it/config",
+            ".\u{200e}git/config",
+            ".\u{feff}git",
+            ".gi\u{202a}t",
+            "git~1/config",
+            "GIT~1",
+            "x/git~12/y",
+        ] {
+            assert_eq!(
+                RepoPath::new(text),
+                Err(NameError::GitDirectory),
+                "{text:?} must be refused"
+            );
+        }
+    }
+
+    #[test]
+    fn names_that_only_look_like_the_git_directory_are_allowed() {
+        for text in [
+            ".gitignore",
+            ".github/x",
+            "git~1x/y",
+            "git~a",
+            "my.git/x",
+            "git/x",
+            "gitx",
+        ] {
+            assert!(RepoPath::new(text).is_ok(), "{text:?}");
+        }
+    }
+
+    #[test]
+    fn the_alias_check_works_on_one_component() {
+        assert!(is_git_directory_alias(".git"));
+        assert!(is_git_directory_alias(".GiT"));
+        assert!(is_git_directory_alias("git~1"));
+        assert!(!is_git_directory_alias(".gitmodules"));
+        assert!(!is_git_directory_alias(""));
+    }
+
+    fn folded(pattern: &str, path: &str) -> bool {
+        RepoGlob::new(pattern)
+            .unwrap()
+            .matches_folded(&RepoPath::new(path).unwrap())
+    }
+
+    #[test]
+    fn folded_matching_ignores_letter_case() {
+        assert!(folded(".github/**", ".GitHub/Workflows/ci.yml"));
+        assert!(folded("Dockerfile", "dockerfile"));
+        assert!(
+            !glob(".github/**", ".GitHub/Workflows/ci.yml"),
+            "exact matching stays exact"
+        );
+    }
+
+    #[test]
+    fn folded_matching_ignores_the_unicode_normalization_form() {
+        // "é" as one character and as "e" plus a combining accent are the same name once folded.
+        let composed = "docs/caf\u{e9}.md";
+        let decomposed = "docs/cafe\u{301}.md";
+        assert!(folded(composed, decomposed));
+        assert!(folded(decomposed, composed));
+        assert!(!glob(composed, decomposed), "exact matching stays exact");
+    }
+
+    #[test]
+    fn folded_matching_keeps_the_wildcard_rules() {
+        assert!(folded("src/*.RS", "src/Lib.rs"));
+        assert!(!folded("src/*.rs", "src/deep/lib.rs"));
+        assert!(folded("**/Cargo.TOML", "a/b/cargo.toml"));
+    }
+
+    fn rules(list: &[(&str, PathRule)]) -> PathRules {
+        PathRules::new(
+            list.iter()
+                .map(|(g, r)| ((*g).to_owned(), r.clone()))
+                .collect(),
+        )
+    }
+
+    fn mode(glob: &str, mode: PathMode) -> PathRule {
+        PathRule::Mode {
+            glob: RepoGlob::new(glob).unwrap(),
+            mode,
+        }
+    }
+
+    fn reinclude(glob: &str, group: &str) -> PathRule {
+        PathRule::Reinclude {
+            glob: RepoGlob::new(glob).unwrap(),
+            group: group.to_owned(),
+        }
+    }
+
+    fn classify(rules: &PathRules, path: &str) -> Option<PathMode> {
+        rules.classify(&RepoPath::new(path).unwrap())
+    }
+
+    #[test]
+    fn a_free_path_has_no_mode_and_a_protected_path_has_its_mode() {
+        let rules = rules(&[
+            ("ci", mode(".github/**", PathMode::DenyWrite)),
+            ("fixtures", mode("tests/golden/**", PathMode::AppendOnly)),
+        ]);
+        assert_eq!(classify(&rules, "src/lib.rs"), None);
+        assert_eq!(
+            classify(&rules, ".github/workflows/ci.yml"),
+            Some(PathMode::DenyWrite)
+        );
+        assert_eq!(
+            classify(&rules, "tests/golden/a.txt"),
+            Some(PathMode::AppendOnly)
+        );
+    }
+
+    #[test]
+    fn a_case_variant_of_a_protected_path_is_protected() {
+        let rules = rules(&[("ci", mode(".github/**", PathMode::DenyWrite))]);
+        assert_eq!(
+            classify(&rules, ".GitHub/Workflows/ci.yml"),
+            Some(PathMode::DenyWrite)
+        );
+        assert_eq!(classify(&rules, ".GITHUB/x"), Some(PathMode::DenyWrite));
+    }
+
+    #[test]
+    fn a_decomposed_spelling_of_a_protected_path_is_protected() {
+        let rules = rules(&[("docs", mode("docs/caf\u{e9}/**", PathMode::DenyWrite))]);
+        assert_eq!(
+            classify(&rules, "docs/cafe\u{301}/x.md"),
+            Some(PathMode::DenyWrite)
+        );
+    }
+
+    #[test]
+    fn the_most_restrictive_mode_wins_in_the_documented_order() {
+        let order = [
+            PathMode::Hidden,
+            PathMode::DenyWrite,
+            PathMode::AppendOnly,
+            PathMode::AdditionsOnly,
+            PathMode::Sensitive,
+        ];
+        for (index, strict) in order.iter().enumerate() {
+            for loose in &order[index + 1..] {
+                // The loose rule comes first in the list, the strict one second, and then the
+                // other way round: the answer does not depend on the order of the list.
+                let a = rules(&[("x", mode("p/**", *loose)), ("y", mode("p/**", *strict))]);
+                let b = rules(&[("y", mode("p/**", *strict)), ("x", mode("p/**", *loose))]);
+                assert_eq!(classify(&a, "p/f"), Some(*strict));
+                assert_eq!(classify(&b, "p/f"), Some(*strict));
+            }
+        }
+    }
+
+    #[test]
+    fn a_reinclusion_lifts_a_protection_of_its_own_group() {
+        let rules = rules(&[
+            ("secrets", mode(".env*", PathMode::Hidden)),
+            ("secrets", reinclude(".env.example", "secrets")),
+        ]);
+        assert_eq!(classify(&rules, ".env"), Some(PathMode::Hidden));
+        assert_eq!(classify(&rules, ".env.local"), Some(PathMode::Hidden));
+        assert_eq!(classify(&rules, ".env.example"), None);
+    }
+
+    #[test]
+    fn a_reinclusion_is_applied_after_the_rules_of_its_group_wherever_it_is_listed() {
+        let rules = rules(&[
+            ("secrets", reinclude(".env.example", "secrets")),
+            ("secrets", mode(".env*", PathMode::Hidden)),
+        ]);
+        assert_eq!(classify(&rules, ".env.example"), None);
+    }
+
+    #[test]
+    fn a_reinclusion_cannot_lift_a_protection_of_another_group() {
+        let rules = rules(&[
+            ("secrets", mode(".env*", PathMode::Hidden)),
+            ("ci", mode(".env.example", PathMode::DenyWrite)),
+            ("secrets", reinclude(".env.example", "secrets")),
+        ]);
+        // The secrets group let the file go, the ci group still protects it.
+        assert_eq!(classify(&rules, ".env.example"), Some(PathMode::DenyWrite));
+    }
+
+    #[test]
+    fn a_reinclusion_is_matched_with_the_same_folding() {
+        let rules = rules(&[
+            ("secrets", mode(".env*", PathMode::Hidden)),
+            ("secrets", reinclude(".env.example", "secrets")),
+        ]);
+        assert_eq!(classify(&rules, ".ENV.Example"), None);
+        assert_eq!(classify(&rules, ".ENV.LOCAL"), Some(PathMode::Hidden));
+    }
+
+    #[test]
+    fn empty_rules_protect_nothing() {
+        assert_eq!(classify(&PathRules::default(), "anything"), None);
+        assert!(PathRules::default().rules().is_empty());
     }
 }

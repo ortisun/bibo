@@ -314,12 +314,21 @@ fn a_stage_run_may_be_cancelled_only_when_no_attempt_is_active() {
 fn a_job_fails_only_when_nothing_is_left_to_try() {
     let base = UnrecoverableFacts {
         stage_run_failed: true,
+        newer_run_of_kind_exists: false,
         rework_route_remains: false,
         retry_budget_remains: false,
         hard_limit_reached: false,
         policy_says_fail: false,
     };
     assert_holds(job::unrecoverable(&base));
+
+    // A rework that created a newer run first leaves the guard unmet, even though the old run is
+    // FAILED and nothing else is left.
+    let replaced = UnrecoverableFacts {
+        newer_run_of_kind_exists: true,
+        ..base
+    };
+    assert_unmet(job::unrecoverable(&replaced), "no newer run");
 
     let route_left = UnrecoverableFacts {
         rework_route_remains: true,
@@ -342,6 +351,7 @@ fn a_job_fails_only_when_nothing_is_left_to_try() {
 fn a_hard_limit_fails_the_job_only_under_a_policy_that_says_fail() {
     let none = UnrecoverableFacts {
         stage_run_failed: false,
+        newer_run_of_kind_exists: false,
         rework_route_remains: true,
         retry_budget_remains: true,
         hard_limit_reached: true,
@@ -667,7 +677,7 @@ fn a_not_applicable_decision_must_be_in_the_ledger() {
 
 fn lease_grant() -> LeaseGrantFacts {
     LeaseGrantFacts {
-        lease_compare_and_swap_succeeded: true,
+        claim_candidate_current: true,
         job_status: JobStatus::Active,
         now: at(10),
         not_before: Some(at(5)),
@@ -694,8 +704,8 @@ fn a_lease_is_granted_when_all_five_conditions_hold() {
 fn each_lease_condition_is_required_on_its_own() {
     type Break = fn(&mut LeaseGrantFacts);
     let breaks: [(&str, Break); 5] = [
-        ("compare-and-swap", |f| {
-            f.lease_compare_and_swap_succeeded = false
+        ("version the claim read", |f| {
+            f.claim_candidate_current = false
         }),
         ("ACTIVE", |f| f.job_status = JobStatus::Paused),
         ("back-off", |f| f.not_before = Some(at(11))),
@@ -768,6 +778,7 @@ fn retry<'a>(
         budget_has_room: budget,
         invalid_output_failures: 0,
         repair_cap: RepairCap::DEFAULT,
+        environment: None,
     }
 }
 
@@ -781,6 +792,7 @@ fn invalid_output(failures: u32, cap: RepairCap) -> RetryFacts<'static> {
         budget_has_room: true,
         invalid_output_failures: failures,
         repair_cap: cap,
+        environment: None,
     }
 }
 
@@ -1550,9 +1562,9 @@ fn the_epoch_is_current_only_when_it_equals_the_stored_one() {
 #[test]
 fn a_sandbox_is_provisioned_when_limits_grants_probe_and_epoch_all_hold() {
     let facts = SandboxProvisionFacts {
-        sandbox_started_within_limits: true,
-        policy_tool_grants_in_place: true,
-        runtime_capability_probe_satisfied: true,
+        posture_verified: true,
+        tool_grants_recorded: true,
+        probe_satisfies_stage: true,
         epoch: EpochFacts {
             sent_epoch: 1,
             stored_epoch: 1,
@@ -1561,9 +1573,9 @@ fn a_sandbox_is_provisioned_when_limits_grants_probe_and_epoch_all_hold() {
     assert_holds(attempt::sandbox_provisioned(&facts));
     type Break = fn(&mut SandboxProvisionFacts);
     let breaks: [(&str, Break); 4] = [
-        ("limits", |f| f.sandbox_started_within_limits = false),
-        ("grants", |f| f.policy_tool_grants_in_place = false),
-        ("probe", |f| f.runtime_capability_probe_satisfied = false),
+        ("posture", |f| f.posture_verified = false),
+        ("grants", |f| f.tool_grants_recorded = false),
+        ("probe", |f| f.probe_satisfies_stage = false),
         ("epoch", |f| f.epoch.sent_epoch = 0),
     ];
     for (fragment, break_it) in breaks {
@@ -1829,7 +1841,8 @@ fn evaluate_runs_the_predicate_the_guard_names() {
         evaluate(Guard::AdmissionOk, &wrapped),
         Err(GuardError::Unmet(job::admission_ok(&facts).unwrap_err()))
     );
-    assert_eq!(evaluate(Guard::AdmissionDenied, &wrapped), Ok(()));
+    let cleared = evaluate(Guard::AdmissionDenied, &wrapped).expect("the denial holds");
+    assert_eq!(cleared.guard(), Guard::AdmissionDenied);
 }
 
 #[test]
@@ -1882,4 +1895,189 @@ fn two_guards_may_share_facts_but_each_has_its_own_name_in_a_failure() {
         GuardError::Unmet(failure) => assert_eq!(failure.guard, Guard::FailureNonretryable),
         other @ GuardError::WrongFacts { .. } => panic!("{other}"),
     }
+}
+
+// ---- S21: the environment blocks the stage (G_ENVIRONMENT_BLOCKED) ----------------------------------------
+
+#[test]
+fn every_environment_cause_blocks_once_the_attempt_has_ended_failed() {
+    for cause in [
+        EnvironmentCause::DaemonUnavailable,
+        EnvironmentCause::ImageUnavailable,
+        EnvironmentCause::PostureMismatch,
+        EnvironmentCause::PolicyViolation,
+        EnvironmentCause::ToolMissing,
+        EnvironmentCause::PolicyUnloadable,
+    ] {
+        assert_holds(stage_run::environment_blocked(&EnvironmentFacts {
+            cause,
+            attempt_ended_failed: true,
+        }));
+    }
+}
+
+#[test]
+fn the_environment_does_not_block_while_the_attempt_has_not_ended_failed() {
+    assert_unmet(
+        stage_run::environment_blocked(&EnvironmentFacts {
+            cause: EnvironmentCause::DaemonUnavailable,
+            attempt_ended_failed: false,
+        }),
+        "attempt",
+    );
+}
+
+#[test]
+fn an_environment_cause_has_a_stable_name_for_the_record() {
+    let names: Vec<&str> = [
+        EnvironmentCause::DaemonUnavailable,
+        EnvironmentCause::ImageUnavailable,
+        EnvironmentCause::PostureMismatch,
+        EnvironmentCause::PolicyViolation,
+        EnvironmentCause::ToolMissing,
+        EnvironmentCause::PolicyUnloadable,
+    ]
+    .iter()
+    .map(|cause| cause.as_str())
+    .collect();
+    assert_eq!(
+        names,
+        [
+            "daemon_unavailable",
+            "image_unavailable",
+            "posture_mismatch",
+            "policy_violation",
+            "tool_missing",
+            "policy_unloadable"
+        ]
+    );
+}
+
+// ---- S22: a changed request needs a person first (G_REAUTHORIZATION_REQUIRED) -----------------------------
+
+fn request_hash(seed: &str) -> Sha256Digest {
+    Sha256Digest::of(seed.as_bytes())
+}
+
+#[test]
+fn a_request_that_differs_from_the_authorized_one_needs_reauthorization() {
+    let authorized = request_hash("original text");
+    let current = request_hash("edited text");
+    assert_holds(stage_run::reauthorization_required(&ReauthorizationFacts {
+        authorized_request: Some(&authorized),
+        current_request: &current,
+        policy_asks_confirmation: false,
+    }));
+}
+
+#[test]
+fn a_request_with_no_authorized_hash_needs_reauthorization() {
+    let current = request_hash("edited text");
+    assert_holds(stage_run::reauthorization_required(&ReauthorizationFacts {
+        authorized_request: None,
+        current_request: &current,
+        policy_asks_confirmation: false,
+    }));
+}
+
+#[test]
+fn policy_can_ask_for_confirmation_although_the_hashes_agree() {
+    let same = request_hash("same text");
+    assert_holds(stage_run::reauthorization_required(&ReauthorizationFacts {
+        authorized_request: Some(&same),
+        current_request: &same,
+        policy_asks_confirmation: true,
+    }));
+}
+
+#[test]
+fn an_unchanged_request_that_policy_does_not_question_needs_no_reauthorization() {
+    let same = request_hash("same text");
+    let failure = stage_run::reauthorization_required(&ReauthorizationFacts {
+        authorized_request: Some(&same),
+        current_request: &same,
+        policy_asks_confirmation: false,
+    })
+    .unwrap_err();
+    assert!(failure.any_of);
+    assert_eq!(failure.unmet.len(), 2);
+}
+
+// ---- the clearance that evaluate returns (F-11) -------------------------------------------------------------
+
+#[test]
+fn a_cleared_guard_carries_the_guard_and_a_digest_of_the_facts() {
+    let wrapped = GuardFacts::Admission(admission());
+    let cleared = evaluate(Guard::AdmissionOk, &wrapped).expect("admission holds");
+    assert_eq!(cleared.guard(), Guard::AdmissionOk);
+    let expected = Sha256Digest::of(wrapped.rendered().as_bytes());
+    assert_eq!(cleared.facts_sha256(), &expected);
+}
+
+#[test]
+fn the_digest_follows_the_facts() {
+    let a = evaluate(Guard::AdmissionOk, &GuardFacts::Admission(admission())).unwrap();
+    let b = evaluate(Guard::AdmissionOk, &GuardFacts::Admission(admission())).unwrap();
+    assert_eq!(a, b, "the same facts give the same clearance");
+
+    // Compare two sets of facts that both clear the denial guard but differ in one field.
+    let other = AdmissionFacts {
+        tenant_within_job_quota: false,
+        ..admission()
+    };
+    let denied_other = evaluate(Guard::AdmissionDenied, &GuardFacts::Admission(other)).unwrap();
+    let denied_base = evaluate(
+        Guard::AdmissionDenied,
+        &GuardFacts::Admission(AdmissionFacts {
+            requester_on_allowlist: false,
+            ..admission()
+        }),
+    )
+    .unwrap();
+    assert_ne!(denied_other.facts_sha256(), denied_base.facts_sha256());
+}
+
+#[test]
+fn the_rendered_text_names_each_field_in_declaration_order() {
+    let rendered = GuardFacts::Epoch(EpochFacts {
+        sent_epoch: 4,
+        stored_epoch: 5,
+    })
+    .rendered();
+    assert_eq!(rendered, "sent_epoch=4\nstored_epoch=5\n");
+}
+
+#[test]
+fn every_kind_of_facts_renders_and_a_nested_struct_is_part_of_the_text() {
+    let rendered = GuardFacts::SandboxProvision(SandboxProvisionFacts {
+        posture_verified: true,
+        tool_grants_recorded: true,
+        probe_satisfies_stage: false,
+        epoch: EpochFacts {
+            sent_epoch: 1,
+            stored_epoch: 1,
+        },
+    })
+    .rendered();
+    assert!(
+        rendered.contains("probe_satisfies_stage=false\n"),
+        "{rendered}"
+    );
+    assert!(
+        rendered.contains("epoch={sent_epoch=1,stored_epoch=1}\n"),
+        "{rendered}"
+    );
+}
+
+#[test]
+fn facts_that_hold_a_list_include_every_item_in_the_digest() {
+    let one = [run(1, StageKind::Intake, StageRunStatus::Passed)];
+    let two = [
+        run(1, StageKind::Intake, StageRunStatus::Passed),
+        run(2, StageKind::Specification, StageRunStatus::Ready),
+    ];
+    let first = GuardFacts::StageBoard(StageBoardFacts { stage_runs: &one }).rendered();
+    let second = GuardFacts::StageBoard(StageBoardFacts { stage_runs: &two }).rendered();
+    assert_ne!(first, second);
+    assert!(second.contains("kind=SPECIFICATION"), "{second}");
 }

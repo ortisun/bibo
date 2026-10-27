@@ -6,7 +6,7 @@
 //! A scope is made by the code that has authorized the caller. It has no `Deserialize`
 //! implementation on purpose: a scope must never be read from a request body or a file.
 
-use crate::ids::TenantId;
+use crate::ids::{PrincipalId, RepositoryId, TenantId};
 
 /// The tenant a call is allowed to see and change.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -56,5 +56,62 @@ impl TenantScope {
                 requested: tenant_id,
             })
         }
+    }
+}
+
+/// The scope of the webhook receiver for an event that belongs to no tenant, such as a
+/// delivery rejected before it could be matched to one.
+///
+/// It is used only with `Store::record_platform_audit`. It has no way to open a transaction, so
+/// no job can be created under it. Rust cannot restrict a constructor to a named crate, so the
+/// architecture check ST-13 names the callers: the `api` binary's webhook handler only.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PlatformScope(());
+
+impl PlatformScope {
+    /// The receiver's scope.
+    #[must_use]
+    pub const fn receiver() -> Self {
+        Self(())
+    }
+}
+
+/// What a token lookup returns: the tenant a token belongs to and the principal behind it.
+///
+/// `TenantScope::new` stays public, so the architecture check ST-13 names the crates that may
+/// build this value: `storage` and `testkit`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ResolvedPrincipal {
+    /// The tenant the token belongs to.
+    pub tenant: TenantId,
+    /// The principal the token stands for.
+    pub principal: PrincipalId,
+}
+
+/// What an installation lookup returns: the tenant and the repository an installation covers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ResolvedRepository {
+    /// The tenant that registered the repository.
+    pub tenant: TenantId,
+    /// The registered repository.
+    pub repository: RepositoryId,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_platform_scope_is_a_value_with_one_constructor() {
+        assert_eq!(PlatformScope::receiver(), PlatformScope::receiver());
+    }
+
+    #[test]
+    fn resolved_values_carry_their_ids() {
+        let tenant = TenantId::from_uuid(uuid::Uuid::from_u128(1));
+        let principal = PrincipalId::from_uuid(uuid::Uuid::from_u128(2));
+        let resolved = ResolvedPrincipal { tenant, principal };
+        assert_eq!(resolved.tenant, tenant);
+        assert_eq!(resolved.principal, principal);
     }
 }

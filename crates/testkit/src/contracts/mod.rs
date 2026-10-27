@@ -36,11 +36,27 @@ pub mod agent;
 pub mod artifact;
 pub mod broker;
 pub mod githost;
+pub mod process;
+pub mod register;
 pub mod registry;
 pub mod router;
 pub mod sandbox;
 pub mod store;
+pub mod webhook;
 pub mod workspace;
+
+/// A check that no deliberate defect can fail, with the reason and what would remove the waiver.
+/// `contract_register` fails when a check has neither a defect nor a waiver, or when a waiver has
+/// no reason or no trigger.
+#[derive(Debug, Clone, Copy)]
+pub struct Waiver {
+    /// The check's name.
+    pub check: &'static str,
+    /// Why no defect of the fake can make the check fail.
+    pub reason: &'static str,
+    /// The event that removes the waiver, such as a package that runs the check on a real adapter.
+    pub trigger: &'static str,
+}
 
 /// A check that returns an error starting with this text is recorded as skipped, not failed.
 pub const SKIPPED_PREFIX: &str = "skipped: ";

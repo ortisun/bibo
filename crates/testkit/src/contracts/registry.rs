@@ -67,6 +67,9 @@ pub fn checks() -> Vec<RegistryCheck> {
     ]
 }
 
+/// No waivers: every check has a defect.
+pub const WAIVERS: &[super::Waiver] = &[];
+
 fn versions(subject: &dyn RegistrySubject) -> Result<Vec<SemanticVersion>, String> {
     let found = subject.versions();
     ensure!(

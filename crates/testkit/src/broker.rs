@@ -10,11 +10,12 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use async_trait::async_trait;
+use factory_domain::ids::JobId;
 use factory_domain::values::Timestamp;
 use factory_domain::vocabulary::Fidelity;
 use factory_ports::agent::{
-    BrokerError, CostMicroUsd, IssuedJobToken, JobTokenId, JobTokenRequest, JobTokenSecret,
-    ModelBroker, TokenState, TokenUsage, Usage,
+    BrokerError, CostMicroUsd, InvalidTokenRequest, IssuedJobToken, JobTokenId, JobTokenRequest,
+    JobTokenSecret, MeteringOps, ModelBroker, TokenState, TokenUsage, Usage,
 };
 use factory_ports::clock::{Clock, IdGenerator, timestamp_after};
 
@@ -39,7 +40,60 @@ pub enum BrokerDefect {
     SharedMeter,
     /// Revoking one token revokes them all.
     RevokesEveryone,
+    /// A metered request adds nothing to the usage.
+    DropsUsage,
+    /// An issued token starts revoked.
+    IssuesRevokedToken,
+    /// `usage` of an unknown token answers zero instead of `UnknownToken`.
+    InventsUsageForUnknownToken,
+    /// `revoke_for_job` revokes one token of the job only.
+    KeepsOtherTokens,
 }
+
+/// Each defect and the checks of `contracts::broker` that must fail when the fake has it.
+pub const DEFECTS: &[(BrokerDefect, &[&str])] = &[
+    (
+        BrokerDefect::IssuesWithoutValidation,
+        &["an_invalid_request_is_refused"],
+    ),
+    (
+        BrokerDefect::NeverRevokesAtCeiling,
+        &[
+            "a_token_that_reaches_its_ceiling_is_revoked_and_refuses_more",
+            "metering_to_the_ceiling_revokes_the_token",
+        ],
+    ),
+    (
+        BrokerDefect::RevokeKeepsSpending,
+        &[
+            "revoking_stops_spending_and_keeps_the_usage_readable",
+            "spend_under_a_revoked_token_is_refused",
+        ],
+    ),
+    (
+        BrokerDefect::RevokeFailsTwice,
+        &["revoking_twice_or_revoking_an_unknown_token_succeeds"],
+    ),
+    (BrokerDefect::ForgetsExpiry, &["a_token_expires_with_time"]),
+    (BrokerDefect::SharedMeter, &["tokens_are_independent"]),
+    (BrokerDefect::RevokesEveryone, &["tokens_are_independent"]),
+    (
+        BrokerDefect::DropsUsage,
+        &["spending_is_metered_against_the_token"],
+    ),
+    (
+        BrokerDefect::IssuesRevokedToken,
+        &["an_issued_token_starts_active_with_no_usage"],
+    ),
+    (
+        BrokerDefect::InventsUsageForUnknownToken,
+        &["an_unknown_token_has_no_usage"],
+    ),
+    (
+        BrokerDefect::KeepsOtherTokens,
+        &["revoke_for_job_revokes_every_token_of_the_job"],
+    ),
+];
 
 struct Record {
     request: JobTokenRequest,
@@ -120,7 +174,9 @@ impl FakeModelBroker {
                 .expect("the lock is never poisoned");
             *shared = shared.saturating_add(usage);
         }
-        record.usage = record.usage.saturating_add(usage);
+        if !self.has(BrokerDefect::DropsUsage) {
+            record.usage = record.usage.saturating_add(usage);
+        }
         if record.usage.cost >= record.request.cost_ceiling
             && !self.has(BrokerDefect::NeverRevokesAtCeiling)
         {
@@ -140,18 +196,14 @@ impl ModelBroker for FakeModelBroker {
         if !self.has(BrokerDefect::IssuesWithoutValidation) {
             if req.cost_ceiling == CostMicroUsd(0) {
                 return Err(BrokerError::InvalidRequest(
-                    "the cost ceiling must be above zero".to_owned(),
+                    InvalidTokenRequest::ZeroCeiling,
                 ));
             }
             if req.allowed_models.is_empty() {
-                return Err(BrokerError::InvalidRequest(
-                    "at least one model must be allowed".to_owned(),
-                ));
+                return Err(BrokerError::InvalidRequest(InvalidTokenRequest::NoModels));
             }
             if req.ttl == Duration::ZERO {
-                return Err(BrokerError::InvalidRequest(
-                    "the lifetime must be above zero".to_owned(),
-                ));
+                return Err(BrokerError::InvalidRequest(InvalidTokenRequest::ZeroTtl));
             }
         }
         let id = JobTokenId::from_uuid(self.ids.new_uuid());
@@ -164,7 +216,7 @@ impl ModelBroker for FakeModelBroker {
                 Record {
                     request: req,
                     usage: Usage::default(),
-                    revoked: false,
+                    revoked: self.has(BrokerDefect::IssuesRevokedToken),
                     expires_at,
                 },
             );
@@ -192,8 +244,26 @@ impl ModelBroker for FakeModelBroker {
         Ok(())
     }
 
+    async fn revoke_for_job(&self, job: JobId) -> Result<(), BrokerError> {
+        let mut tokens = self.tokens.lock().expect("the lock is never poisoned");
+        for record in tokens.values_mut().filter(|r| r.request.job == job) {
+            record.revoked = true;
+            if self.has(BrokerDefect::KeepsOtherTokens) {
+                break;
+            }
+        }
+        Ok(())
+    }
+
     async fn usage(&self, token: &JobTokenId) -> Result<TokenUsage, BrokerError> {
         let tokens = self.tokens.lock().expect("the lock is never poisoned");
+        if self.has(BrokerDefect::InventsUsageForUnknownToken) && !tokens.contains_key(token) {
+            return Ok(TokenUsage {
+                usage: Usage::default(),
+                ceiling: CostMicroUsd(0),
+                state: TokenState::Revoked,
+            });
+        }
         let record = tokens.get(token).ok_or(BrokerError::UnknownToken)?;
         let usage = if self.has(BrokerDefect::SharedMeter) {
             *self
@@ -208,6 +278,20 @@ impl ModelBroker for FakeModelBroker {
             ceiling: record.request.cost_ceiling,
             state: self.state_of(record),
         })
+    }
+}
+
+#[async_trait]
+impl MeteringOps for FakeModelBroker {
+    async fn record_usage(
+        &self,
+        token: &JobTokenId,
+        delta: Usage,
+    ) -> Result<TokenUsage, BrokerError> {
+        match self.meter(token, delta) {
+            Spend::Allowed => self.usage(token).await,
+            Spend::Refused => Err(BrokerError::UnknownToken),
+        }
     }
 }
 
@@ -278,7 +362,10 @@ impl BrokerSubject for FakeBrokerSubject {
     }
 
     async fn spend(&self, token: &JobTokenId, usage: Usage) -> Spend {
-        self.broker.meter(token, usage)
+        match MeteringOps::record_usage(&self.broker, token, usage).await {
+            Ok(_) => Spend::Allowed,
+            Err(_) => Spend::Refused,
+        }
     }
 
     async fn advance_time(&self, by: Duration) {

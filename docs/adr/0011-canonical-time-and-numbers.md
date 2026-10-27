@@ -1,9 +1,13 @@
 # 0011: Compare timestamps by instant, write them in the shortest form, and keep ledger integers within 2^53 - 1
 
-- Status: Accepted by the architect. The defaults are **pending human confirmation** and are listed in [ADR 0009](0009-operating-defaults-pending-confirmation.md), item 12.
+- Status: Accepted by the architect. The defaults are **pending human confirmation** and are listed in [ADR 0009](0009-operating-defaults-pending-confirmation.md), item 12. Revised again on 2026-10-27 by ADR 0014 (see "Revision note (ADR 0014)").
 - Date: 2026-10-27
 - Deciders: software_architect
 - Related: [ADR 0008](0008-artifact-store-and-evidence-ledger.md), [`schemas/README.md`](../../schemas/README.md), [`evidence-ledger-entry` schema](../../schemas/evidence-ledger-entry.schema.json)
+
+## Revision note (ADR 0014)
+
+Revised on 2026-10-27 by [ADR 0014](0014-ports-v1-1-claim-protocol-and-port-revision.md). The row of the verification table that cites "the clippy ban on `now_utc`" was not true: the clippy files had no such entry. The revision adds the ban and an architecture check on the resolved `time` features, because `time/std` can be enabled by another crate of the workspace and then `now_utc` compiles inside the domain crate.
 
 ## Context and problem statement
 

@@ -1,13 +1,17 @@
 //! The contract suite for the `ArtifactStore` port: content addressing, idempotent writes,
-//! integrity on read and the size limit.
+//! integrity on read, the size limit and tenant-scoped reads.
 
 use std::future::Future;
 
 use async_trait::async_trait;
+use factory_domain::contracts::ArtifactRef;
+use factory_domain::scope::TenantScope;
 use factory_domain::values::{MediaType, Sha256Digest};
 use factory_ports::artifact::{ArtifactError, ArtifactStore};
 
-use super::{Check, Context, Report, check_list, ensure, ensure_eq, ensure_err, run_checks};
+use super::{
+    Check, Context, Report, Waiver, check_list, ensure, ensure_eq, ensure_err, run_checks,
+};
 
 /// What the suite needs beyond the `ArtifactStore` port itself.
 #[async_trait]
@@ -21,6 +25,33 @@ pub trait ArtifactStoreSubject: Send + Sync {
     /// Damages the stored blob for `sha256`, so its bytes no longer hash to its address. A fake
     /// edits its map. A file store flips a byte in the file.
     async fn corrupt_blob(&self, sha256: &Sha256Digest);
+
+    /// The tenant the checks act as.
+    fn scope(&self) -> TenantScope;
+
+    /// A second tenant, which indexes nothing unless a check says so.
+    fn other_scope(&self) -> TenantScope;
+
+    /// Makes the tenant's index row name the artifact, as the transaction that uses it does.
+    /// A fake records a grant. A real adapter inserts the index row through the store.
+    async fn index_for(&self, scope: &TenantScope, reference: &ArtifactRef);
+}
+
+/// The scope-aware read the older checks use: index the artifact for the acting tenant, then read.
+async fn read(
+    subject: &dyn ArtifactStoreSubject,
+    reference: &ArtifactRef,
+) -> Result<Vec<u8>, ArtifactError> {
+    subject.index_for(&subject.scope(), reference).await;
+    subject.store().get(&subject.scope(), reference).await
+}
+
+async fn present(
+    subject: &dyn ArtifactStoreSubject,
+    reference: &ArtifactRef,
+) -> Result<bool, ArtifactError> {
+    subject.index_for(&subject.scope(), reference).await;
+    subject.store().exists(&subject.scope(), reference).await
 }
 
 /// A check of the artifact store contract.
@@ -52,8 +83,12 @@ pub fn checks() -> Vec<ArtifactCheck> {
         an_object_over_the_limit_is_refused,
         concurrent_writes_of_the_same_bytes_agree,
         different_objects_are_kept_apart,
+        a_blob_is_readable_only_through_the_tenants_index_row,
     ]
 }
+
+/// No waivers: every check has a defect.
+pub const WAIVERS: &[Waiver] = &[];
 
 fn text() -> Result<MediaType, String> {
     MediaType::parse("text/plain").ctx("media type")
@@ -77,12 +112,12 @@ async fn stored_bytes_come_back_unchanged_with_a_reference_that_describes_them(
     );
     ensure_eq!(reference.media_type, text()?, "the reference's media type");
     ensure_eq!(
-        store.get(&reference).await.ctx("get")?,
+        read(subject, &reference).await.ctx("get")?,
         bytes,
         "the bytes read back"
     );
     ensure!(
-        store.exists(&reference).await.ctx("exists")?,
+        present(subject, &reference).await.ctx("exists")?,
         "a stored artifact must exist"
     );
     Ok(())
@@ -129,7 +164,7 @@ async fn the_same_bytes_with_another_media_type_share_one_hash(
         "the second reference carries its own media type"
     );
     ensure_eq!(
-        store.get(&as_json).await.ctx("get")?,
+        read(subject, &as_json).await.ctx("get")?,
         b"{}".to_vec(),
         "the bytes read through the second reference"
     );
@@ -145,7 +180,7 @@ async fn empty_content_can_be_stored(subject: &dyn ArtifactStoreSubject) -> Resu
         "the hash of nothing"
     );
     ensure_eq!(
-        store.get(&reference).await.ctx("get")?,
+        read(subject, &reference).await.ctx("get")?,
         Vec::<u8>::new(),
         "the bytes read back"
     );
@@ -161,12 +196,12 @@ async fn an_unknown_hash_is_not_found_and_does_not_exist(
     let mut unknown = stored.clone();
     unknown.sha256 = Sha256Digest::of(b"absent");
     ensure_err!(
-        store.get(&unknown).await,
+        read(subject, &unknown).await,
         ArtifactError::NotFound,
         "get of an unknown hash"
     );
     ensure!(
-        !store.exists(&unknown).await.ctx("exists")?,
+        !present(subject, &unknown).await.ctx("exists")?,
         "an unknown hash must not exist"
     );
     Ok(())
@@ -181,7 +216,7 @@ async fn a_damaged_blob_is_never_returned(
         .await
         .ctx("put")?;
     subject.corrupt_blob(&reference.sha256).await;
-    match store.get(&reference).await {
+    match read(subject, &reference).await {
         Err(ArtifactError::HashMismatch { expected, actual }) => {
             ensure_eq!(
                 expected,
@@ -215,7 +250,7 @@ async fn an_object_over_the_limit_is_refused(
         .await
         .ctx("an object exactly at the limit")?;
     ensure!(
-        store.exists(&at_limit).await.ctx("exists")?,
+        present(subject, &at_limit).await.ctx("exists")?,
         "an object at the limit must be stored"
     );
     ensure_err!(
@@ -242,7 +277,7 @@ async fn concurrent_writes_of_the_same_bytes_agree(
         "the references of two concurrent writes of the same bytes"
     );
     ensure_eq!(
-        store.get(&one).await.ctx("get")?,
+        read(subject, &one).await.ctx("get")?,
         b"raced".to_vec(),
         "the stored bytes"
     );
@@ -258,12 +293,59 @@ async fn different_objects_are_kept_apart(
         let bytes = vec![number; usize::from(number) + 1];
         references.push((store.put(bytes.clone(), text()?).await.ctx("put")?, bytes));
     }
+    // Two objects of one length must not be mixed up.
+    for bytes in [b"aaaa".to_vec(), b"bbbb".to_vec()] {
+        references.push((store.put(bytes.clone(), text()?).await.ctx("put")?, bytes));
+    }
     for (reference, bytes) in &references {
         ensure_eq!(
-            store.get(reference).await.ctx("get")?,
+            read(subject, reference).await.ctx("get")?,
             bytes.clone(),
             "an object read back"
         );
     }
+    Ok(())
+}
+
+async fn a_blob_is_readable_only_through_the_tenants_index_row(
+    subject: &dyn ArtifactStoreSubject,
+) -> Result<(), String> {
+    let store = subject.store();
+    let reference = store
+        .put(b"tenant blob".to_vec(), text()?)
+        .await
+        .ctx("put")?;
+    // Stored, but no tenant has indexed it: nobody can read it, and nobody can tell it exists.
+    ensure_err!(
+        store.get(&subject.scope(), &reference).await,
+        ArtifactError::NotFound,
+        "a blob no tenant indexed"
+    );
+    ensure!(
+        !store
+            .exists(&subject.scope(), &reference)
+            .await
+            .ctx("exists")?,
+        "a blob no tenant indexed must not exist for the tenant"
+    );
+    subject.index_for(&subject.scope(), &reference).await;
+    ensure_eq!(
+        store.get(&subject.scope(), &reference).await.ctx("get")?,
+        b"tenant blob".to_vec(),
+        "the tenant that indexed the blob reads it"
+    );
+    // Another tenant holds the same hash only if it indexes it itself.
+    ensure_err!(
+        store.get(&subject.other_scope(), &reference).await,
+        ArtifactError::NotFound,
+        "another tenant's read of a hash it has not indexed"
+    );
+    ensure!(
+        !store
+            .exists(&subject.other_scope(), &reference)
+            .await
+            .ctx("exists")?,
+        "another tenant cannot test whether the hash exists"
+    );
     Ok(())
 }

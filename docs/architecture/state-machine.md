@@ -1,6 +1,6 @@
 # State machines and legal transitions
 
-- Status: Accepted for Slice 0, revised on 2026-10-27 by [ADR 0010](../adr/0010-failure-escalation-routing-and-invalidation.md). The domain crate implements the version before the revision. The revision is a set of pending changes that the work package `s1-domain-revision` carries into the Rust code, and the conformance tests fail until it lands.
+- Status: Accepted for Slice 0, revised on 2026-10-27 by [ADR 0010](../adr/0010-failure-escalation-routing-and-invalidation.md), which the domain crate implements (the conformance tests passed at commit `c4d7df1`). Revised again on 2026-10-27 by [ADR 0014](../adr/0014-ports-v1-1-claim-protocol-and-port-revision.md): the stage run machine gains `S21` and `S22`, and the guards `G_LEASE_ACQUIRED`, `G_SANDBOX_PROVISIONED` and `G_UNRECOVERABLE` are restated. The Rust change is carried by the work package `s1-ports-revision`, and **the conformance tests fail until it lands**.
 - Date: 2026-10-27
 - Source of truth: [`state-machine.json`](state-machine.json). The tables and diagrams below are generated from it by `docs/architecture/tools/render_state_machine.py`. Do not edit text between the `GENERATED` markers by hand.
 - Related decisions: [ADR 0001](../adr/0001-orchestration-engine.md), [ADR 0004](../adr/0004-event-model.md), [ADR 0008](../adr/0008-artifact-store-and-evidence-ledger.md), [ADR 0010](../adr/0010-failure-escalation-routing-and-invalidation.md).
@@ -263,6 +263,8 @@ stateDiagram-v2
   BLOCKED --> SUPERSEDED: supersede
   PASSED --> SUPERSEDED: supersede
   SKIPPED --> SUPERSEDED: supersede
+  RUNNING --> BLOCKED: attempt_blocked
+  READY --> WAITING_FOR_HUMAN: require_reauthorization
   REWORK_REQUESTED --> [*]
   FAILED --> [*]
   SUPERSEDED --> [*]
@@ -310,18 +312,25 @@ stateDiagram-v2
 | S18 | `BLOCKED` | `override_accepted` | `G_OVERRIDE_PERMITTED` | `PASSED` | approver, security_approver | `stage_run.passed` |
 | S19 | `PENDING`, `READY`, `RUNNING`, `GATING`, `WAITING_FOR_HUMAN`, `BLOCKED` | `cancel` | `G_NO_ACTIVE_ATTEMPT` | `CANCELLED` | engine | `stage_run.cancelled` |
 | S20 | `PENDING`, `READY`, `RUNNING`, `GATING`, `WAITING_FOR_HUMAN`, `BLOCKED`, `PASSED`, `SKIPPED` | `supersede` | `G_UPSTREAM_INVALIDATED` | `SUPERSEDED` | engine | `stage_run.superseded` |
+| S21 | `RUNNING` | `attempt_blocked` | `G_ENVIRONMENT_BLOCKED` | `BLOCKED` | engine | `stage_run.blocked` |
+| S22 | `READY` | `require_reauthorization` | `G_REAUTHORIZATION_REQUIRED` | `WAITING_FOR_HUMAN` | engine | `stage_run.waiting_for_human` |
 <!-- GENERATED:end stage-run-transitions -->
 
 ### When a failed attempt could take more than one move
 
-The guards of `S05`, `S06` and `S07` overlap, so the order matters. The engine takes the first row that applies. The rule behind the order is that a limit never fails a stage run: reaching a limit asks a person, and only a failure that retrying cannot fix fails it.
+The guards of `S05`, `S06`, `S07` and `S21` overlap, so the order matters. The engine takes the first row that applies. The rule behind the order is that a limit never fails a stage run: reaching a limit asks a person, and only a failure that retrying cannot fix fails it. A missing environment is neither: it blocks, because a person or an operator has to restore it.
 
 | Order | The attempt failed with | Move |
 |---|---|---|
+| 0 | A cause that `G_ENVIRONMENT_BLOCKED` names: the container runtime is unreachable, the image is missing, the posture check found a difference, the spec was weaker than the policy, a required tool is absent or the policy file could not be loaded | `S21` (the attempt ends as `FAILED`; the stage run is `BLOCKED`; the job is blocked by `J07`; nothing is retried with other settings) |
 | 1 | `BUDGET_EXHAUSTED` | `S07`, and the job's broker token is revoked |
 | 2 | A class the contract lists in `retry_on`, with attempts left, repairs left and budget | `S05` |
 | 3 | `POLICY_DENIED`, `INTERNAL`, or a class not in `retry_on` | `S06` |
 | 4 | A class in `retry_on`, but no attempt or repair is left, or the budget has no room | `S07` |
+
+A `SANDBOX_ERROR` that is not one of the causes in row 0 (a container that failed to start for a transient reason, a resource limit hit while running) stays a retryable class and takes row 2 or 4. The adapter's error type decides which: `DaemonUnavailable`, `ImageUnavailable`, `PostureMismatch` and `PolicyViolation` are row 0; `ProvisionFailed`, `Timeout` and `ResourceExceeded` are not.
+
+A new `INTAKE` run that follows an external change to the source request does not start an attempt. `S22` moves it from `READY` to `WAITING_FOR_HUMAN` when the hash of the current original request differs from the hash the requester authorized (NT-AUTHZ-05), and the answer (`S13`) records the new authorized hash.
 
 Attempts and repairs are counted from the last human answer (`S13`). A person who answers a stage run that stopped at its attempt limit therefore gets a new window of attempts, and the total stays bounded because a person is in the loop each time. A skipped stage run (`S02`) counts as satisfied for the stages that require it, so skipping a stage does not stall the pipeline. It never counts as passed: no assurance level comes from it, and the decision is made again if an input of the rule changes (`S20` applies to `SKIPPED` as it does to `PASSED`).
 
@@ -458,12 +467,12 @@ Each guard is a named predicate in the `domain` crate. A transition test fails i
 | `G_BLOCK_DISPOSITIONS_RECORDED` | Every BLOCKED stage run has a recorded disposition: capability re-probe passed, or an allowed override, or a rework decision. |
 | `G_ACTOR_MAY_CANCEL` | The principal is the requester of the job or holds the operator role. |
 | `G_ALL_ATTEMPTS_TERMINAL` | Every attempt of the job is in a terminal state and every sandbox has been torn down or flagged as leaked. |
-| `G_UNRECOVERABLE` | A stage run is FAILED and no rework route or retry budget remains, or a job-level hard limit was reached under a policy that says fail. |
+| `G_UNRECOVERABLE` | The newest run of a stage kind in the job's scope is FAILED (by S06, S12 or S16), no newer run replaces it, and no rework route or retry budget remains; or a job-level hard limit was reached under a policy that says fail. The engine builds the facts from the listing of the job's stage runs, so a rework that created a newer run first leaves the guard unmet. |
 | `G_REJECTION_RECORDED` | The intake decision is decline, or an authorized approver recorded a reject decision. |
 | `G_PIPELINE_SCOPE_COMPLETE` | Every stage kind in the job's configured scope has a run that is PASSED, or SKIPPED because a recorded rule says the stage does not apply, and that run is not superseded; the approval decision is approve; and the evidence ledger hash chain verifies. |
 | `G_UPSTREAM_PASSED` | Every required upstream stage run is PASSED, or SKIPPED because a recorded rule says the stage does not apply, and is not superseded. Every consumed artifact hash equals the current version (a skipped stage produced none, and the stage contract records the skip rule instead of a hash). The stage contract resolved and validated against its schema. |
 | `G_NOT_APPLICABLE_DECIDED` | A deterministic rule, a domain profile or a policy states that the stage does not apply. The rule and its inputs are recorded in the ledger. An agent opinion is never sufficient. |
-| `G_LEASE_ACQUIRED` | The lease compare-and-swap succeeded, the job is ACTIVE, not_before has passed, the concurrency quota allows it, and the runtime capability check passed. |
+| `G_LEASE_ACQUIRED` | The stage run is READY at the version the claim read, the job is ACTIVE, not_before has passed by the database clock, the concurrency quota allows it, and the runtime capability check passed. The store makes the check and the move one atomic step (start_attempt), so two workers cannot both pass it. |
 | `G_OUTPUT_SCHEMA_VALID` | The attempt succeeded and its output validates against the stage outputs schema, and the output artifact hash is stored. |
 | `G_RETRY_ALLOWED` | The failure class is retryable under the stage contract, the attempts used since the last human answer are below max_attempts, the budget has room for another attempt, and, after INVALID_OUTPUT, no more than two repairs have been made (a repair is a retry that follows an invalid-output failure; the cap comes from policy and can only be lowered). |
 | `G_FAILURE_NONRETRYABLE` | Retrying cannot help: the failure class is POLICY_DENIED or INTERNAL, or the stage contract does not list it in retry_on. BUDGET_EXHAUSTED is not covered here, because a budget limit asks a human (S07). Reaching the attempt limit is not covered either, because an attempt limit asks a human (S07). |
@@ -481,7 +490,7 @@ Each guard is a named predicate in the `domain` crate. A transition test fails i
 | `G_OVERRIDE_PERMITTED` | Policy permits an override for this block code, the principal holds the required role (security_approver for security-class blocks), a justification is recorded, and the blocked gate is not a mandatory gate of an active domain profile. An override records accepted residual risk. It never creates an assurance level claim. |
 | `G_NO_ACTIVE_ATTEMPT` | The stage run has no attempt in STARTING, RUNNING or CANCELLING. |
 | `G_UPSTREAM_INVALIDATED` | A consumed upstream artifact was superseded by a newer version, an upstream stage run was reworked, or an external change listed in the invalidation table happened (the source request was edited after the intake snapshot, or a value bound to gate evidence changed). |
-| `G_SANDBOX_PROVISIONED` | The sandbox started within its limits, the policy-approved tool grants are in place, the runtime capability probe satisfies the stage needs, and the lease epoch is current. |
+| `G_SANDBOX_PROVISIONED` | The sandbox provider returned a session for this attempt, which means it created the container, read its posture back, found every part equal to the spec and the policy, started it and passed the runtime self-check. The tool grants that policy approved are recorded in the audit log, the runtime probe of this attempt supports every capability the stage needs, and the lease epoch is current. |
 | `G_LEASE_EPOCH_CURRENT` | The epoch sent by the worker equals the stored epoch and now is not past lease_expires_at. |
 | `G_EPOCH_CURRENT` | The epoch sent by the worker equals the stored epoch. |
 | `G_DEADLINE_PASSED` | Now is past the attempt deadline. |
@@ -493,6 +502,8 @@ Each guard is a named predicate in the `domain` crate. A transition test fails i
 | `G_TASK_STARTED_BY_ATTEMPT` | The IMPLEMENTATION attempt picked this task as the next one in topological order. |
 | `G_TASK_EVIDENCE_RECORDED` | A commit exists for the task, changed paths are inside the task's owned files, no protected path changed, and the per-task checks passed. |
 | `G_TASK_RETRY_ALLOWED` | The task retry count is below the per-task limit and the stage budget has room. |
+| `G_ENVIRONMENT_BLOCKED` | The attempt ended because something the stage cannot work without is missing or unsafe, not because the work failed: the container runtime is unreachable, the image is not on the host, the posture check found a difference, the spec was weaker than the policy, a required tool or runtime capability is absent, or the policy file could not be loaded. The cause is recorded. Retrying with the same settings cannot help, and trying other settings is forbidden. |
+| `G_REAUTHORIZATION_REQUIRED` | The stage run is an INTAKE run created after an external change to the source request, and the hash of the current original request differs from the hash the requester authorized; or policy asks the requester to confirm before any agent reads the text. No attempt starts and no agent reads the new text until a person answers. |
 <!-- GENERATED:end guards -->
 
 ## Delivery status is not one DONE

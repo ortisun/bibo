@@ -6,7 +6,9 @@ use std::future::Future;
 use async_trait::async_trait;
 use factory_ports::agent::{Capability, FlagSet, ModelRouter, RoutingError, RoutingNeed};
 
-use super::{Check, Context, Report, check_list, ensure, ensure_eq, ensure_err, run_checks, skip};
+use super::{
+    Check, Context, Report, Waiver, check_list, ensure, ensure_eq, ensure_err, run_checks, skip,
+};
 
 /// What the suite needs beyond the `ModelRouter` port itself.
 #[async_trait]
@@ -24,6 +26,11 @@ pub trait RouterSubject: Send + Sync {
     /// A need that names a capability no candidate has, with that capability. `None` when the
     /// subject cannot make one.
     fn need_with_an_unavailable_capability(&self) -> Option<(RoutingNeed, Capability)>;
+
+    /// A need that two runtimes can serve, both probed and both supporting every required
+    /// capability, with the first listed in the policy being the one chosen. `None` when the
+    /// subject cannot make one.
+    fn need_with_two_candidates(&self) -> Option<RoutingNeed>;
 }
 
 /// A check of the router contract.
@@ -50,8 +57,14 @@ pub fn checks() -> Vec<RouterCheck> {
         the_flag_set_follows_the_stage,
         a_need_with_no_entry_has_no_route,
         a_missing_capability_is_reported_by_name,
+        excluding_the_answer_gives_another_runtime_or_an_error,
+        a_runtime_without_a_probe_is_not_a_candidate,
+        a_probe_lacking_a_required_capability_is_skipped,
     ]
 }
+
+/// No waivers: every check has a defect.
+pub const WAIVERS: &[Waiver] = &[];
 
 async fn the_same_need_always_gets_the_same_decision(
     subject: &dyn RouterSubject,
@@ -115,6 +128,90 @@ async fn a_missing_capability_is_reported_by_name(
         subject.router().route(&need).err(),
         Some(RoutingError::CapabilityUnavailable(capability)),
         "a need that requires a capability no candidate has"
+    );
+    Ok(())
+}
+
+async fn excluding_the_answer_gives_another_runtime_or_an_error(
+    subject: &dyn RouterSubject,
+) -> Result<(), String> {
+    let Some(need) = subject.need_with_two_candidates() else {
+        skip!("this subject cannot make a need with two candidates");
+    };
+    let first = subject.router().route(&need).ctx("route")?;
+    let mut excluding = need.clone();
+    excluding.exclude = vec![first.model.runtime.clone()];
+    let second = subject
+        .router()
+        .route(&excluding)
+        .ctx("route with the answer excluded")?;
+    ensure!(
+        second.model.runtime != first.model.runtime,
+        "excluding {:?} must give another runtime, got {:?}",
+        first.model.runtime,
+        second.model.runtime
+    );
+    excluding.exclude.push(second.model.runtime.clone());
+    ensure_err!(
+        subject.router().route(&excluding),
+        RoutingError::AllExcluded,
+        "every candidate excluded"
+    );
+    // Determinism: the same need with the same exclusions gives the same answer.
+    let again = subject.router().route(&need).ctx("route again")?;
+    ensure_eq!(again, first, "the same need and exclusions");
+    Ok(())
+}
+
+async fn a_runtime_without_a_probe_is_not_a_candidate(
+    subject: &dyn RouterSubject,
+) -> Result<(), String> {
+    let Some(need) = subject.need_with_two_candidates() else {
+        skip!("this subject cannot make a need with two candidates");
+    };
+    let first = subject.router().route(&need).ctx("route")?;
+    let mut unprobed = need.clone();
+    unprobed.probed.0.remove(&first.model.runtime);
+    let next = subject
+        .router()
+        .route(&unprobed)
+        .ctx("route without a probe for the first runtime")?;
+    ensure!(
+        next.model.runtime != first.model.runtime,
+        "a runtime with no probe result must not be offered, but {:?} was",
+        next.model.runtime
+    );
+    unprobed.probed.0.clear();
+    ensure!(
+        subject.router().route(&unprobed).is_err(),
+        "with nothing probed there is no candidate"
+    );
+    Ok(())
+}
+
+async fn a_probe_lacking_a_required_capability_is_skipped(
+    subject: &dyn RouterSubject,
+) -> Result<(), String> {
+    let Some(need) = subject.need_with_two_candidates() else {
+        skip!("this subject cannot make a need with two candidates");
+    };
+    ensure!(
+        !need.required.is_empty(),
+        "the need should require a capability"
+    );
+    let first = subject.router().route(&need).ctx("route")?;
+    let mut lacking = need.clone();
+    if let Some(found) = lacking.probed.0.get_mut(&first.model.runtime) {
+        found.observations.clear();
+    }
+    let next = subject
+        .router()
+        .route(&lacking)
+        .ctx("route with the first runtime lacking the capability")?;
+    ensure!(
+        next.model.runtime != first.model.runtime,
+        "a runtime whose probe lacks a required capability must be skipped, but {:?} was offered",
+        next.model.runtime
     );
     Ok(())
 }

@@ -155,6 +155,10 @@ pub enum RegistryError {
 ///
 /// # Idempotency
 /// Every method is a read and gives the same answer for the same registry.
+///
+/// # Cancellation and timeouts
+/// Synchronous reads of definitions loaded at start-up. They do no I/O at call time, so there is
+/// nothing to cancel and no timeout.
 pub trait AgentRegistry: Send + Sync {
     /// Says whether this registry reads the real definition files (`real`) or a fixed in-memory
     /// set (`fake`).
@@ -173,25 +177,52 @@ pub trait AgentRegistry: Send + Sync {
     ) -> Result<Vec<DomainCapabilityProfile>, RegistryError>;
 }
 
+/// A document that passed the strict path.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ValidatedOutput {
+    /// The parsed document.
+    pub value: serde_json::Value,
+    /// The SHA-256 of the exact bytes that were validated. The artifact that stores them has this
+    /// hash.
+    pub sha256: Sha256Digest,
+    /// The size of the bytes.
+    pub size_bytes: u64,
+}
+
 /// Checks a JSON document against the schema of a contract kind.
 ///
 /// # Preconditions
-/// None. The document is untrusted agent output.
+/// None. The bytes are untrusted agent output.
 ///
 /// # Postconditions
-/// Size and depth limits apply before any parse that could exhaust memory. `Ok(())` means the
-/// document follows the schema of that kind and version. On failure the list holds every
-/// violation found, each with a path and a plain-English message, and never repeats a large
-/// part of the input.
+/// `validate_bytes` refuses, before any parser builds a value: a body over the size limit, bytes
+/// that are not UTF-8, nesting deeper than the limit, a node count over the budget, and an object
+/// that repeats a key. If it returns `Ok`, the document follows the schema of that kind and
+/// version and `value` is the parse of exactly those bytes. On failure the list holds every
+/// violation found, each with a path and a plain-English message, and never repeats a large part
+/// of the input. `validate_value` is for values the factory built itself and applies the same
+/// schema; it cannot see a repeated key because the value no longer has one.
 ///
 /// # Errors
-/// A non-empty list of [`Violation`]s. An unknown schema version is reported as a violation.
+/// A non-empty list of [`Violation`]s. An unknown schema version is a violation.
 ///
 /// # Idempotency
 /// Pure: the same input gives the same result.
+///
+/// # Cancellation and timeouts
+/// Pure and synchronous. The size, depth and node limits bound the work, so there is nothing to
+/// cancel and no timeout.
 pub trait OutputValidator: Send + Sync {
-    /// Size and depth limits apply before any parse that could exhaust memory.
-    fn validate(
+    /// The only path for agent output and for anything read from a file or the network.
+    fn validate_bytes(
+        &self,
+        kind: ContractKind,
+        version: u32,
+        bytes: &[u8],
+    ) -> Result<ValidatedOutput, Vec<Violation>>;
+
+    /// For values the factory built itself.
+    fn validate_value(
         &self,
         kind: ContractKind,
         version: u32,

@@ -30,3 +30,6 @@ uuid = { version = "1.29.0", default-features = false, features = ["std"] }
 # Adds a `std::time::Duration` to a `Timestamp` and measures the gap between two (lease expiry,
 # token expiry). The `std` feature is off, so `now_utc` does not exist here.
 time = { version = "0.3.55", default-features = false }
+# Unicode NFC folding for protected-path matching (ports-v1.1 decision 4). No I/O, pure functions only.
+# License: (MIT OR Apache-2.0) AND Unicode-3.0, all on the deny.toml allow list. Already in Cargo.lock.
+unicode-normalization = { version = "0.1.26", default-features = false, features = ["std"] }

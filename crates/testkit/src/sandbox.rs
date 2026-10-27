@@ -16,14 +16,16 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use factory_domain::contracts::ArtifactRef;
-use factory_domain::ids::AttemptId;
+use factory_domain::ids::{AttemptId, TenantId};
+use factory_domain::scope::TenantScope;
 use factory_domain::values::MediaType;
 use factory_domain::vocabulary::Fidelity;
 use factory_ports::artifact::ArtifactStore;
 use factory_ports::clock::{CancelSignal, Clock, duration_between};
 use factory_ports::sandbox::{
-    ExecRequest, ExecResult, PostureReport, SandboxError, SandboxId, SandboxPolicy, SandboxProfile,
-    SandboxProvider, SandboxSession, SandboxSpec, TeardownReason, TeardownReport,
+    Confinement, ExecRequest, ExecResult, ImageDigest, NetworkAttachment, ObservedMount,
+    PostureReport, SandboxError, SandboxId, SandboxPolicy, SandboxProfile, SandboxProvider,
+    SandboxSession, SandboxSpec, TeardownReason, TeardownReport,
 };
 
 use crate::clock::FakeClock;
@@ -48,7 +50,134 @@ pub enum SandboxDefect {
     UncappedOutput,
     /// Every command reports exit code 0.
     ReportsFailureAsSuccess,
+    /// A different image in the container is not noticed.
+    IgnoresImageDrift,
+    /// A changed limit is not noticed.
+    IgnoresLimitDrift,
+    /// A changed network is not noticed.
+    IgnoresNetworkDrift,
+    /// An extra mount is not noticed.
+    IgnoresExtraMount,
+    /// A mount that should be read-only and is writable is not noticed.
+    IgnoresWritableMount,
+    /// A changed environment is not noticed.
+    IgnoresEnvDrift,
+    /// The job token file stays after the sandbox is removed.
+    KeepsTokenFile,
+    /// `apparmor: NotAvailable` is accepted whatever the policy says.
+    AcceptsAnyAppArmor,
+    /// A cancel signal is not looked at while the sandbox is created.
+    IgnoresCancelOnCreate,
+    /// The session reports a failed runtime self-check although it passed the posture check.
+    ReportsStalePosture,
+    /// A command runs with its program name only: the arguments are dropped.
+    DropsArguments,
+    /// A command gets no standard input.
+    DropsStdin,
+    /// `stop_and_remove` reports success and leaves the sandbox registered.
+    LeavesSandboxAfterTeardown,
 }
+
+pub use crate::contracts::sandbox::DriftPart;
+
+/// Each defect and the checks of `contracts::sandbox` that must fail when the fake has it.
+pub const DEFECTS: &[(SandboxDefect, &[&str])] = &[
+    (
+        SandboxDefect::IgnoresCancellation,
+        &[
+            "a_cancel_that_is_already_set_stops_the_command_before_it_starts",
+            "a_cancel_during_a_long_command_ends_it_promptly",
+        ],
+    ),
+    (
+        SandboxDefect::IgnoresTimeout,
+        &["a_command_past_its_timeout_is_killed_and_flagged"],
+    ),
+    (
+        SandboxDefect::AcceptsWeakSpec,
+        &[
+            "a_spec_weaker_than_the_policy_is_refused_and_builds_nothing",
+            "a_network_that_does_not_suit_the_profile_is_refused",
+            "a_zero_wall_clock_is_refused",
+            "a_writable_cache_is_refused_outside_fetch_deps",
+        ],
+    ),
+    (
+        SandboxDefect::ReturnsSessionOnPostureMismatch,
+        &["a_container_that_differs_from_its_spec_is_removed_and_never_returned"],
+    ),
+    (
+        SandboxDefect::LeavesOrphans,
+        &["sweeping_removes_only_sandboxes_whose_attempt_is_not_live"],
+    ),
+    (
+        SandboxDefect::NoWallClock,
+        &["a_sandbox_past_its_wall_clock_refuses_commands"],
+    ),
+    (
+        SandboxDefect::UncappedOutput,
+        &["output_beyond_the_cap_is_cut_and_flagged"],
+    ),
+    (
+        SandboxDefect::ReportsFailureAsSuccess,
+        &[
+            "exit_codes_are_reported_as_they_are",
+            "a_missing_program_is_a_failed_command",
+        ],
+    ),
+    (
+        SandboxDefect::IgnoresImageDrift,
+        &["a_different_image_is_a_mismatch"],
+    ),
+    (
+        SandboxDefect::IgnoresLimitDrift,
+        &["a_drifted_limit_is_a_mismatch"],
+    ),
+    (
+        SandboxDefect::IgnoresNetworkDrift,
+        &["a_drifted_network_is_a_mismatch"],
+    ),
+    (
+        SandboxDefect::IgnoresExtraMount,
+        &["an_extra_mount_is_a_mismatch"],
+    ),
+    (
+        SandboxDefect::IgnoresWritableMount,
+        &["a_writable_mount_that_should_be_read_only_is_a_mismatch"],
+    ),
+    (
+        SandboxDefect::IgnoresEnvDrift,
+        &["a_drifted_environment_is_a_mismatch"],
+    ),
+    (
+        SandboxDefect::KeepsTokenFile,
+        &["the_job_token_file_is_absent_after_stop_and_remove"],
+    ),
+    (
+        SandboxDefect::AcceptsAnyAppArmor,
+        &["apparmor_not_available_is_accepted_only_by_policy"],
+    ),
+    (
+        SandboxDefect::IgnoresCancelOnCreate,
+        &["a_cancelled_create_removes_what_it_made"],
+    ),
+    (
+        SandboxDefect::ReportsStalePosture,
+        &["every_profile_can_be_created_and_its_posture_matches_the_spec"],
+    ),
+    (
+        SandboxDefect::DropsArguments,
+        &["a_command_runs_as_an_argument_vector_and_its_output_is_stored"],
+    ),
+    (
+        SandboxDefect::DropsStdin,
+        &["standard_input_reaches_the_command"],
+    ),
+    (
+        SandboxDefect::LeavesSandboxAfterTeardown,
+        &["teardown_removes_the_sandbox"],
+    ),
+];
 
 /// What a fake program produced, before the caps are applied.
 #[derive(Debug, Clone, Default)]
@@ -66,16 +195,18 @@ pub type Program = Arc<dyn Fn(&[String], &[u8]) -> ProgramOutput + Send + Sync>;
 
 struct LiveSandbox {
     attempt: AttemptId,
+    token_file: bool,
 }
 
 struct Inner {
     clock: Arc<FakeClock>,
     artifacts: Arc<dyn ArtifactStore>,
-    policy: SandboxPolicy,
+    policy: Mutex<SandboxPolicy>,
     defect: Option<SandboxDefect>,
     live: Mutex<BTreeMap<SandboxId, LiveSandbox>>,
     next: Mutex<u64>,
-    drift_next: Mutex<bool>,
+    drift_next: Mutex<Option<DriftPart>>,
+    stray_token_files: Mutex<Vec<SandboxId>>,
     programs: Mutex<BTreeMap<String, Program>>,
 }
 
@@ -117,11 +248,12 @@ impl FakeSandbox {
             inner: Arc::new(Inner {
                 clock,
                 artifacts,
-                policy,
+                policy: Mutex::new(policy),
                 defect,
                 live: Mutex::new(BTreeMap::new()),
                 next: Mutex::new(0),
-                drift_next: Mutex::new(false),
+                drift_next: Mutex::new(None),
+                stray_token_files: Mutex::new(Vec::new()),
                 programs: Mutex::new(BTreeMap::new()),
             }),
         }
@@ -143,11 +275,38 @@ impl FakeSandbox {
 
     /// Makes the next container differ from its spec, as if the daemon had ignored a setting.
     pub fn inject_posture_drift(&self) {
+        self.inject_drift(DriftPart::Hardening);
+    }
+
+    /// Makes the next container differ from its spec in one part.
+    pub fn inject_drift(&self, part: DriftPart) {
         *self
             .inner
             .drift_next
             .lock()
-            .expect("the lock is never poisoned") = true;
+            .expect("the lock is never poisoned") = Some(part);
+    }
+
+    /// Sets whether the policy accepts a daemon without AppArmor (a development host).
+    pub fn allow_apparmor_unavailable(&self, allowed: bool) {
+        self.inner
+            .policy
+            .lock()
+            .expect("the lock is never poisoned")
+            .apparmor_may_be_unavailable = allowed;
+    }
+
+    /// True when a job token file exists on the host for any sandbox, live or not.
+    #[must_use]
+    pub fn token_file_present(&self) -> bool {
+        let live = self.inner.live.lock().expect("the lock is never poisoned");
+        live.values().any(|s| s.token_file)
+            || !self
+                .inner
+                .stray_token_files
+                .lock()
+                .expect("the lock is never poisoned")
+                .is_empty()
     }
 
     /// The sandboxes that have not been removed.
@@ -178,24 +337,70 @@ impl SandboxProvider for FakeSandbox {
     async fn create_verified(
         &self,
         spec: SandboxSpec,
+        cancel: &dyn CancelSignal,
     ) -> Result<Box<dyn SandboxSession>, SandboxError> {
         let inner = &self.inner;
+        if cancel.is_cancelled() && !inner.has(SandboxDefect::IgnoresCancelOnCreate) {
+            return Err(SandboxError::Cancelled);
+        }
+        let mut policy = inner
+            .policy
+            .lock()
+            .expect("the lock is never poisoned")
+            .clone();
         if !inner.has(SandboxDefect::AcceptsWeakSpec) {
-            spec.validate(&inner.policy)
+            spec.validate(&policy)
                 .map_err(SandboxError::PolicyViolation)?;
         }
         // "Inspect" the container the daemon made. A drift changes what it reports.
-        let mut observed = spec.hardening.clone();
-        let drift =
-            std::mem::take(&mut *inner.drift_next.lock().expect("the lock is never poisoned"));
-        if drift {
-            observed.privileged = true;
+        let drift = inner
+            .drift_next
+            .lock()
+            .expect("the lock is never poisoned")
+            .take();
+        let mut report = PostureReport {
+            observed: spec.hardening.clone(),
+            image: spec.image.clone(),
+            limits: spec.limits.clone(),
+            network: spec.network.clone(),
+            mounts: spec
+                .expected_mounts()
+                .into_iter()
+                .map(|m| ObservedMount {
+                    source: m.source.unwrap_or_else(|| "host-chosen".to_owned()),
+                    target: m.target,
+                    read_only: m.read_only,
+                })
+                .collect(),
+            env: spec.env.pairs().to_vec(),
+            self_check_passed: true,
+            verified_at: inner.clock.now(),
+        };
+        if let Some(part) = drift {
+            apply_drift(&mut report, part);
         }
-        let difference = spec.hardening.differences(&observed);
+        if inner.has(SandboxDefect::AcceptsAnyAppArmor) {
+            policy.apparmor_may_be_unavailable = true;
+        }
+        let mut difference = report.differences(&spec, &policy);
+        for (defect, field) in [
+            (SandboxDefect::IgnoresImageDrift, "image"),
+            (SandboxDefect::IgnoresLimitDrift, "limits"),
+            (SandboxDefect::IgnoresNetworkDrift, "network"),
+            (SandboxDefect::IgnoresExtraMount, "mounts"),
+            (SandboxDefect::IgnoresWritableMount, "mounts"),
+            (SandboxDefect::IgnoresEnvDrift, "env"),
+        ] {
+            if inner.has(defect) {
+                difference.fields.retain(|name| *name != field);
+            }
+        }
         if !difference.is_empty() && !inner.has(SandboxDefect::ReturnsSessionOnPostureMismatch) {
             // The container is removed before the error is returned: nothing is registered.
             return Err(SandboxError::PostureMismatch(difference));
         }
+        let observed = report.observed.clone();
+        let _ = observed;
         let id = {
             let mut next = inner.next.lock().expect("the lock is never poisoned");
             *next += 1;
@@ -209,17 +414,18 @@ impl SandboxProvider for FakeSandbox {
                 id.clone(),
                 LiveSandbox {
                     attempt: spec.attempt,
+                    token_file: spec.job_token.is_some(),
                 },
             );
-        let posture = PostureReport {
-            observed,
-            image: spec.image.clone(),
-            self_check_passed: true,
-            verified_at: inner.clock.now(),
-        };
         Ok(Box::new(FakeSandboxSession {
             id,
-            posture,
+            posture: {
+                let mut report = report;
+                if inner.has(SandboxDefect::ReportsStalePosture) {
+                    report.self_check_passed = false;
+                }
+                report
+            },
             inner: Arc::clone(inner),
             created_at: inner.clock.now(),
             wall_clock: spec.limits.wall_clock,
@@ -240,6 +446,11 @@ impl SandboxProvider for FakeSandbox {
         for id in &orphans {
             sandboxes.remove(id);
         }
+        self.inner
+            .stray_token_files
+            .lock()
+            .expect("the lock is never poisoned")
+            .clear();
         Ok(orphans)
     }
 }
@@ -277,13 +488,22 @@ impl FakeSandboxSession {
             .artifacts
             .put(kept, text_plain())
             .await
-            .map_err(|error| SandboxError::ProvisionFailed(error.to_string()))?;
+            .map_err(|_| SandboxError::DaemonUnavailable)?;
         Ok((reference, truncated))
     }
 
     fn run_program(&self, req: &ExecRequest) -> ProgramOutput {
-        let words = req.argv.as_slice();
-        let stdin = req.stdin.clone().unwrap_or_default();
+        let all_words = req.argv.as_slice();
+        let words = if self.inner.has(SandboxDefect::DropsArguments) {
+            &all_words[..1]
+        } else {
+            all_words
+        };
+        let stdin = if self.inner.has(SandboxDefect::DropsStdin) {
+            Vec::new()
+        } else {
+            req.stdin.clone().unwrap_or_default()
+        };
         if let Some(program) = self
             .inner
             .programs
@@ -438,11 +658,24 @@ impl SandboxSession for FakeSandboxSession {
         self: Box<Self>,
         reason: TeardownReason,
     ) -> Result<TeardownReport, SandboxError> {
-        self.inner
-            .live
-            .lock()
-            .expect("the lock is never poisoned")
-            .remove(&self.id);
+        let removed = if self.inner.has(SandboxDefect::LeavesSandboxAfterTeardown) {
+            None
+        } else {
+            self.inner
+                .live
+                .lock()
+                .expect("the lock is never poisoned")
+                .remove(&self.id)
+        };
+        if self.inner.has(SandboxDefect::KeepsTokenFile)
+            && removed.is_some_and(|sandbox| sandbox.token_file)
+        {
+            self.inner
+                .stray_token_files
+                .lock()
+                .expect("the lock is never poisoned")
+                .push(self.id.clone());
+        }
         Ok(TeardownReport {
             sandbox: self.id.clone(),
             reason,
@@ -501,8 +734,15 @@ impl SandboxSubject for FakeSandboxSubject {
         &self.sandbox
     }
 
-    fn artifacts(&self) -> &dyn ArtifactStore {
-        self.artifacts.as_ref()
+    async fn read_output(&self, reference: &ArtifactRef) -> Result<Vec<u8>, String> {
+        let tenant = TenantScope::new(
+            TenantId::parse("00000000-0000-7000-8000-00000000000a").expect("a tenant id"),
+        );
+        self.artifacts.grant(tenant.tenant_id(), &reference.sha256);
+        self.artifacts
+            .get(&tenant, reference)
+            .await
+            .map_err(|error| format!("read stored output: {error:?}"))
     }
 
     fn spec(&self, profile: SandboxProfile, attempt: AttemptId) -> SandboxSpec {
@@ -515,8 +755,56 @@ impl SandboxSubject for FakeSandboxSubject {
         self.clock.advance(by);
     }
 
-    async fn inject_posture_drift(&self) -> bool {
-        self.sandbox.inject_posture_drift();
+    async fn inject_posture_drift(&self, part: DriftPart) -> bool {
+        self.sandbox.inject_drift(part);
         true
+    }
+
+    async fn token_file_present(&self) -> Option<bool> {
+        Some(self.sandbox.token_file_present())
+    }
+
+    async fn allow_apparmor_unavailable(&self, allowed: bool) -> bool {
+        self.sandbox.allow_apparmor_unavailable(allowed);
+        true
+    }
+}
+
+/// Changes what the "daemon" reports for one part of the container.
+fn apply_drift(report: &mut PostureReport, part: DriftPart) {
+    match part {
+        DriftPart::Hardening => report.observed.privileged = true,
+        DriftPart::Image => {
+            report.image = ImageDigest::parse(&format!(
+                "registry.local/factory/other@sha256:{}",
+                "b".repeat(64)
+            ))
+            .expect("a valid digest reference");
+        }
+        DriftPart::Limits => {
+            report.limits.pids = report.limits.pids.saturating_add(1);
+        }
+        DriftPart::Network => {
+            report.network = match report.network {
+                NetworkAttachment::None => NetworkAttachment::JobInternal {
+                    sidecar: "uninvited".to_owned(),
+                },
+                NetworkAttachment::JobInternal { .. } => NetworkAttachment::None,
+            };
+        }
+        DriftPart::ExtraMount => report.mounts.push(ObservedMount {
+            target: "/host".to_owned(),
+            read_only: false,
+            source: "/".to_owned(),
+        }),
+        DriftPart::WritableMount => {
+            if let Some(mount) = report.mounts.iter_mut().find(|m| m.read_only) {
+                mount.read_only = false;
+            }
+        }
+        DriftPart::Env => report
+            .env
+            .push(("LD_PRELOAD".to_owned(), "/evil.so".to_owned())),
+        DriftPart::AppArmorNotAvailable => report.observed.apparmor = Confinement::NotAvailable,
     }
 }
