@@ -2,35 +2,32 @@
 //!
 //! A test calls [`Scene::new`] and gets a migrated database of its own, two tenants that each have
 //! a repository, and a store connected the way the deployment connects it: the tenant pool as the
-//! worker login, the system pool as the engine login. Fixtures that create tenants run as the
+//! API login (which is also a member of `factory_app`, so it opens tenant transactions and may call
+//! the lookups), the system pool as the engine login. Fixtures that create tenants run as the
 //! superuser, because the application role cannot insert into `tenants` by design. Everything the
 //! code under test does, it does as an application login.
 #![allow(dead_code)]
 
 pub mod server;
 
-use std::sync::Arc;
+use std::sync::atomic::{AtomicI64, Ordering};
 use std::time::Duration;
 
 use diesel_async::SimpleAsyncConnection;
-use factory_domain::ids::{AttemptId, JobId, PrincipalId, StageRunId, TenantId};
+use factory_domain::ids::{JobId, PrincipalId, RepositoryId, StageRunId, TenantId};
 use factory_domain::scope::TenantScope;
-use factory_domain::state::{JobEvent, JobStatus, StageRunEvent, StageRunStatus, Status};
-use factory_domain::values::{NonEmptyString, Timestamp};
-use factory_domain::vocabulary::{ExecutionMode, StageKind};
+use factory_domain::state::{Guard, JobEvent, JobStatus, StageRunEvent, StageRunStatus, Status};
+use factory_domain::values::Timestamp;
+use factory_domain::vocabulary::{AutonomyLevel, ExecutionMode, StageKind};
 use factory_ports::store::{
-    AppliedTransition, NewJob, NewPrincipal, NewStageRun, Store, SystemScope, Tx, Version, WorkerId,
+    AppliedTransition, NewJob, NewPrincipal, NewStageRun, PipelineScope, PrincipalKind,
+    StageRunEffects, Store, SystemScope, SystemTx, Tx,
 };
 use factory_storage::pg::{PgStore, PgStoreConfig, PoolSettings, TenantLogin};
-use factory_testkit::fixtures::Ids;
+use factory_testkit::fixtures::{Ids, cleared};
 use uuid::Uuid;
 
 pub use server::{Login, TestDb, server};
-
-/// The time now, for the fields the port takes from the caller's clock.
-pub fn now() -> Timestamp {
-    Timestamp::from_utc(time::OffsetDateTime::now_utc())
-}
 
 /// A pool of a few connections, which is enough for the tests and keeps the server's connection
 /// count low when many tests run at once.
@@ -41,14 +38,20 @@ pub fn small_pool(url: factory_storage::pg::DatabaseUrl) -> PoolSettings {
     settings
 }
 
-/// The configuration the deployment would use, on a test database.
+/// The configuration the tests use: the API login on the tenant pool (it can open tenant
+/// transactions and call the lookups), the engine login on the system pool.
 pub async fn config_for(db: &TestDb) -> PgStoreConfig {
     let logins = db.server.logins().await;
-    let mut config = PgStoreConfig::new(small_pool(db.url(&logins.worker)));
-    config.tenant_login = TenantLogin::Worker;
+    let mut config = PgStoreConfig::new(small_pool(db.url(&logins.api)));
+    config.tenant_login = TenantLogin::Api;
     config.system = Some(small_pool(db.url(&logins.engine)));
-    config.execution_mode = ExecutionMode::Test;
     config
+}
+
+/// The configuration of a worker process: the worker login, no system pool.
+pub async fn worker_config_for(db: &TestDb) -> PgStoreConfig {
+    let logins = db.server.logins().await;
+    PgStoreConfig::new(small_pool(db.url(&logins.worker)))
 }
 
 /// A database, two tenants and a store.
@@ -61,22 +64,14 @@ pub struct Scene {
 }
 
 impl Scene {
-    /// A scene whose claims take any job, as the shared contract fixtures need.
     pub async fn new() -> Self {
-        Self::with(|config| config.claim_only_active_jobs = false).await
-    }
-
-    /// A scene with the configuration changed by `adjust`.
-    pub async fn with(adjust: impl FnOnce(&mut PgStoreConfig)) -> Self {
         let db = server().clone_database().await;
         let ids = Ids::new();
         let (a, b) = (ids.tenant(), ids.tenant());
         for (position, tenant) in [a, b].into_iter().enumerate() {
             seed_tenant(&db, tenant, position).await;
         }
-        let mut config = config_for(&db).await;
-        adjust(&mut config);
-        let store = PgStore::connect(config)
+        let store = PgStore::connect(config_for(&db).await)
             .await
             .expect("the store becomes ready");
         Self {
@@ -88,14 +83,19 @@ impl Scene {
         }
     }
 
-    pub async fn tenant_tx(&self, tenant: TenantId) -> Box<dyn Tx> {
+    /// The repository the scene seeded for a tenant.
+    pub fn repository(&self, tenant: TenantId) -> RepositoryId {
+        seeded_repository(tenant)
+    }
+
+    pub async fn tx(&self, tenant: TenantId) -> Box<dyn Tx> {
         self.store
             .begin(TenantScope::new(tenant))
             .await
             .expect("begin")
     }
 
-    pub async fn system_tx(&self) -> Box<dyn Tx> {
+    pub async fn system(&self) -> Box<dyn SystemTx> {
         self.store
             .begin_system(SystemScope::engine())
             .await
@@ -104,11 +104,13 @@ impl Scene {
 
     pub async fn principal(&self, tenant: TenantId) -> PrincipalId {
         let id = self.ids.principal();
-        let mut tx = self.tenant_tx(tenant).await;
+        let mut tx = self.tx(tenant).await;
         tx.insert_principal(NewPrincipal {
             id,
-            external_ref: NonEmptyString::parse(&format!("user-{id}")).expect("ref"),
-            created_at: now(),
+            kind: PrincipalKind::Human {
+                github_user_id: next_github_id(),
+            },
+            login: Some("octocat".to_owned()),
         })
         .await
         .expect("insert principal");
@@ -116,16 +118,20 @@ impl Scene {
         id
     }
 
-    /// A job in `RECEIVED`, committed.
+    /// A new job in `RECEIVED`, committed.
     pub async fn job(&self, tenant: TenantId) -> JobId {
         let requester = self.principal(tenant).await;
         let id = self.ids.job();
-        let mut tx = self.tenant_tx(tenant).await;
+        let mut tx = self.tx(tenant).await;
         tx.insert_job(NewJob {
             id,
             correlation_id: self.ids.correlation(),
+            repository: self.repository(tenant),
             requester,
-            created_at: now(),
+            execution_mode: ExecutionMode::Test,
+            autonomy_level: AutonomyLevel::L1,
+            pipeline_scope: PipelineScope::new(vec![StageKind::Intake]).expect("a scope"),
+            origin: None,
         })
         .await
         .expect("insert job");
@@ -135,75 +141,65 @@ impl Scene {
 
     /// Moves a job from `RECEIVED` to `ACTIVE`, committed.
     pub async fn admit(&self, tenant: TenantId, job: JobId) {
-        let mut tx = self.tenant_tx(tenant).await;
+        let mut tx = self.tx(tenant).await;
         let read = tx.get_job(job).await.expect("get job");
         assert_eq!(read.value.status, JobStatus::Received);
-        let plan =
-            AppliedTransition::plan(JobStatus::Received, JobEvent::Admit, now()).expect("J01");
+        let plan = AppliedTransition::plan(
+            JobStatus::Received,
+            JobEvent::Admit,
+            at(),
+            cleared(Guard::AdmissionOk),
+        )
+        .expect("J01");
         tx.transition_job(job, read.version, plan)
             .await
             .expect("admit");
         tx.commit().await.expect("commit admit");
     }
 
-    /// A stage run in `READY`, committed.
+    /// An `ACTIVE` job.
+    pub async fn active_job(&self, tenant: TenantId) -> JobId {
+        let job = self.job(tenant).await;
+        self.admit(tenant, job).await;
+        job
+    }
+
+    /// A stage run in `READY` (back-off zero), committed.
     pub async fn ready_stage_run(&self, tenant: TenantId, job: JobId) -> StageRunId {
         let id = self.ids.stage_run();
-        let mut tx = self.tenant_tx(tenant).await;
+        let mut tx = self.tx(tenant).await;
         let inserted = tx
             .insert_stage_run(NewStageRun {
                 id,
                 job_id: job,
                 kind: StageKind::Intake,
-                created_at: now(),
+                run_number: 1,
+                max_attempts: 3,
+                rework_of: None,
             })
             .await
             .expect("insert stage run");
         let plan = AppliedTransition::plan(
             StageRunStatus::INITIAL,
             StageRunEvent::PreconditionsMet,
-            now(),
+            at(),
+            cleared(Guard::UpstreamPassed),
         )
         .expect("S01");
-        tx.transition_stage_run(id, inserted.version, plan)
+        let effects = StageRunEffects {
+            contract_sha256: Some(factory_domain::values::Sha256Digest::of(b"contract")),
+            ..StageRunEffects::default()
+        };
+        tx.transition_stage_run(id, inserted.row.version, plan, effects)
             .await
             .expect("ready");
         tx.commit().await.expect("commit stage run");
         id
     }
 
-    /// Claims in a system transaction with a lease of 60 seconds, and commits.
-    pub async fn claim(&self, worker: &str, limit: u32) -> Vec<factory_ports::store::ClaimedWork> {
-        self.claim_for(worker, limit, Duration::from_secs(60)).await
-    }
-
-    /// Claims in a system transaction with a lease of `ttl`, and commits.
-    pub async fn claim_for(
-        &self,
-        worker: &str,
-        limit: u32,
-        ttl: Duration,
-    ) -> Vec<factory_ports::store::ClaimedWork> {
-        let mut tx = self.system_tx().await;
-        let claimed = tx
-            .claim_ready(&WorkerId::new(worker).expect("worker"), limit, ttl)
-            .await
-            .expect("claim");
-        tx.commit().await.expect("commit claim");
-        claimed
-    }
-
-    /// The newest attempt of a stage run, as the superuser sees it: id, number, status, epoch.
-    pub async fn newest_attempt(&self, stage_run: StageRunId) -> (AttemptId, i64, String, i64) {
-        self.attempts_of(stage_run)
-            .await
-            .into_iter()
-            .last()
-            .expect("the stage run has an attempt")
-    }
-
-    /// Every attempt of a stage run in number order.
-    pub async fn attempts_of(&self, stage_run: StageRunId) -> Vec<(AttemptId, i64, String, i64)> {
+    /// Every attempt of a stage run in number order, as the superuser sees it: id, number,
+    /// status, epoch.
+    pub async fn attempts_of(&self, stage_run: StageRunId) -> Vec<(Uuid, i64, String, i64)> {
         let count = self
             .db
             .number(&format!(
@@ -221,7 +217,7 @@ impl Scene {
             };
             let id = self.db.text(&row("id")).await.expect("id");
             found.push((
-                AttemptId::from_uuid(Uuid::parse_str(&id).expect("uuid")),
+                Uuid::parse_str(&id).expect("uuid"),
                 self.db.number(&row("attempt_number")).await,
                 self.db.text(&row("status")).await.expect("status"),
                 self.db.number(&row("lease_epoch")).await,
@@ -231,11 +227,28 @@ impl Scene {
     }
 }
 
+/// A fixed instant for the field the engine plans and the store ignores.
+pub fn at() -> Timestamp {
+    Timestamp::parse("2026-10-27T10:00:00Z").expect("a valid time")
+}
+
+static GITHUB_IDS: AtomicI64 = AtomicI64::new(5000);
+
+/// A GitHub user id that no other call of this process used.
+pub fn next_github_id() -> u64 {
+    u64::try_from(GITHUB_IDS.fetch_add(1, Ordering::Relaxed)).expect("positive")
+}
+
+/// The id of the repository `seed_tenant` makes for a tenant.
+pub fn seeded_repository(tenant: TenantId) -> RepositoryId {
+    RepositoryId::from_uuid(Uuid::from_u128(tenant.as_uuid().as_u128() ^ 0x5eed))
+}
+
 /// Inserts a tenant and one enabled repository for it, as the superuser.
 pub async fn seed_tenant(db: &TestDb, tenant: TenantId, position: usize) {
     let id = tenant.as_uuid();
     let slug = format!("tenant-{position}-{}", &id.simple().to_string()[..8]);
-    let repository = Uuid::from_u128(id.as_u128() ^ 0x5eed);
+    let repository = seeded_repository(tenant).as_uuid();
     let installation = i64::try_from(1000 + position).expect("small");
     let github_repository = i64::try_from(2000 + position).expect("small");
     db.run(&format!(
@@ -245,13 +258,6 @@ pub async fn seed_tenant(db: &TestDb, tenant: TenantId, position: usize) {
     ))
     .await;
 }
-
-/// A shared handle to a version, for readability.
-pub fn first_version() -> Version {
-    Version::FIRST
-}
-
-pub type SharedScene = Arc<Scene>;
 
 /// Runs one statement as a login, inside one transaction that is always rolled back, with the
 /// tenant setting made first when `tenant_setting` is given. The statement must return a column

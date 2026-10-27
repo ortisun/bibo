@@ -1,453 +1,255 @@
-//! `SystemTx`: the system scope (ADR 0012, section 3).
+//! `PgSystemTx`: the cross-tenant, read-only transaction of the engine (ADR 0012, section 3;
+//! ADR 0014, rule R3).
 //!
 //! The system login finds work across tenants and can write nothing. A system transaction
 //! therefore does two things:
 //!
-//! * it **finds** with the system pool: ready stage runs, stage runs whose lease ended, expired
-//!   attempts, and the tenant that owns a job, stage run or attempt given by id;
-//! * it **changes** only through a tenant transaction for the tenant that was found, taken from the
-//!   tenant pool, so every write happens under the tenant policy.
+//! * it **finds**: ready stage runs and attempts that are due, as identifiers and the version they
+//!   were read at, with `FOR NO KEY UPDATE SKIP LOCKED` so that two finders mostly see different
+//!   rows;
+//! * it **finishes**, which ends the transaction and releases the locks.
 //!
-//! The tenant transactions it opens belong to the system transaction. `commit` commits them one
-//! after the other, `rollback` and a drop roll them all back. The commit of several tenants is not
-//! one atomic step: if the second commit fails, the first has already happened. Claims of
-//! different tenants do not depend on each other, so the claim is safe, and a failed commit says
-//! so to the caller.
+//! A found row is a hint. The change is made in a tenant transaction (`start_attempt`,
+//! `transition_attempt`) for the tenant that was found, on the tenant pool, under the tenant's
+//! policy. The system role reads named columns only, so no query here is `SELECT *`.
 //!
-//! The find step cannot hold its locks until the system transaction ends. The tenant transaction
-//! that follows must lock the same row, and a lock held by another connection would make it skip
-//! the row (`docs/database/for-the-storage-crate.md`, "Claim a stage run"). So the find is a
-//! single statement, and the lock that lasts is the one the tenant transaction takes.
+//! The statements use `now()`, the start of this transaction, so one finding sees one instant.
 
-use std::collections::HashSet;
-use std::time::Duration;
+use std::sync::Arc;
 
 use async_trait::async_trait;
 use diesel::QueryableByName;
 use diesel::sql_query;
-use diesel::sql_types::{BigInt, Bool, Uuid as SqlUuid};
-use diesel_async::RunQueryDsl;
-use factory_domain::contracts::{DomainEvent, EvidenceLedgerEntry};
-use factory_domain::ids::{AttemptId, JobId, PrincipalId, StageRunId, TaskNodeId, TenantId};
-use factory_domain::ledger::ChainHead;
-use factory_domain::state::{AttemptStatus, JobStatus, StageRunStatus, TaskNodeStatus};
-use factory_domain::values::{Sha256Digest, Timestamp};
-use factory_ports::store::{
-    AppliedTransition, ArtifactIndexEntry, ArtifactIndexOps, Attempt, AttemptOps, AuditEvent,
-    AuditOps, ClaimedWork, Job, JobOps, LeaseEpoch, LedgerOps, NewArtifactIndexEntry, NewAttempt,
-    NewJob, NewPrincipal, NewStageRun, NewTaskNode, OutboxOps, OutboxRow, OutboxSeq, Principal,
-    PrincipalOps, Sequence, StageRun, StageRunOps, StoreError, TaskNode, TaskNodeOps, Tx, Version,
-    Versioned, WorkerId,
-};
+use diesel::sql_types::{BigInt, Timestamptz, Uuid as SqlUuid};
+use diesel_async::{AnsiTransactionManager, AsyncPgConnection, RunQueryDsl, TransactionManager};
+use factory_domain::ids::{AttemptId, JobId, StageRunId, TenantId};
+use factory_domain::values::Timestamp;
+use factory_ports::store::{ClaimCandidate, DueAttempt, DueReason, StoreError, SystemTx};
+use time::OffsetDateTime;
 use uuid::Uuid;
 
-use super::cas::Machine;
-use super::conv::{attempt_from_column, stage_run_from_column, tenant_from_column};
-use super::error::generic;
+use super::conv::{from_column, version_from_column};
+use super::error::database;
+use super::pool::PooledConnection;
 use super::store::Shared;
-use super::tx::{PgTx, database_now};
-use std::sync::Arc;
+use super::tx::{abandon, database_now, set_limits};
 
-/// A system transaction.
-pub struct SystemTx {
+/// An open system transaction.
+pub struct PgSystemTx {
+    connection: Option<PooledConnection>,
     shared: Arc<Shared>,
-    children: Vec<PgTx>,
+    busy: bool,
+    poisoned: bool,
 }
 
 #[derive(QueryableByName)]
-struct Candidate {
+struct CandidateRow {
     #[diesel(sql_type = SqlUuid)]
     tenant_id: Uuid,
     #[diesel(sql_type = SqlUuid)]
-    stage_run: Uuid,
-}
-
-#[derive(QueryableByName)]
-struct TenantRow {
-    #[diesel(sql_type = SqlUuid)]
-    tenant_id: Uuid,
-}
-
-#[derive(QueryableByName)]
-struct IdRow {
+    job_id: Uuid,
     #[diesel(sql_type = SqlUuid)]
     id: Uuid,
+    #[diesel(sql_type = BigInt)]
+    version: i64,
+    #[diesel(sql_type = Timestamptz)]
+    not_before: OffsetDateTime,
 }
 
-impl SystemTx {
-    pub(super) fn new(shared: Arc<Shared>) -> Self {
-        Self {
+#[derive(QueryableByName)]
+struct DueRow {
+    #[diesel(sql_type = SqlUuid)]
+    tenant_id: Uuid,
+    #[diesel(sql_type = SqlUuid)]
+    job_id: Uuid,
+    #[diesel(sql_type = SqlUuid)]
+    stage_run_id: Uuid,
+    #[diesel(sql_type = SqlUuid)]
+    id: Uuid,
+    #[diesel(sql_type = BigInt)]
+    version: i64,
+}
+
+/// Ready stage runs of active jobs, oldest start time first.
+const CLAIM_CANDIDATES: &str = "\
+    SELECT s.tenant_id, s.job_id, s.id, s.version, s.not_before \
+      FROM stage_runs s \
+      JOIN jobs j ON j.tenant_id = s.tenant_id AND j.id = s.job_id AND j.status = 'ACTIVE' \
+     WHERE s.status = 'READY' AND s.not_before <= now() \
+     ORDER BY s.not_before, s.id \
+     LIMIT $1 \
+     FOR NO KEY UPDATE OF s SKIP LOCKED";
+
+/// A `STARTING` or `RUNNING` attempt whose lease ended (A07). Each of the three queries has an
+/// index of its own.
+const LEASE_EXPIRED: &str = "\
+    SELECT tenant_id, job_id, stage_run_id, id, version FROM attempts \
+     WHERE status IN ('STARTING', 'RUNNING') AND lease_expires_at < now() \
+     ORDER BY lease_expires_at, id LIMIT $1 \
+     FOR NO KEY UPDATE SKIP LOCKED";
+
+/// A `STARTING` or `RUNNING` attempt past its deadline (A06).
+const DEADLINE_PASSED: &str = "\
+    SELECT tenant_id, job_id, stage_run_id, id, version FROM attempts \
+     WHERE status IN ('STARTING', 'RUNNING') AND deadline_at < now() \
+     ORDER BY deadline_at, id LIMIT $1 \
+     FOR NO KEY UPDATE SKIP LOCKED";
+
+/// A `CANCELLING` attempt past its teardown deadline (A10). A cancelling attempt with a lapsed
+/// lease is due only for this reason.
+const TEARDOWN_PASSED: &str = "\
+    SELECT tenant_id, job_id, stage_run_id, id, version FROM attempts \
+     WHERE status = 'CANCELLING' AND teardown_deadline_at < now() \
+     ORDER BY teardown_deadline_at, id LIMIT $1 \
+     FOR NO KEY UPDATE SKIP LOCKED";
+
+impl PgSystemTx {
+    pub(super) async fn begin(shared: Arc<Shared>) -> Result<Self, StoreError> {
+        shared.settle_rollbacks().await;
+        let (Some(pool), Some(limits)) = (&shared.system_pool, &shared.system_limits) else {
+            tracing::error!("a system transaction was asked for, but no system pool is configured");
+            return Err(StoreError::Unavailable);
+        };
+        let mut connection = pool.get().await?;
+        // Not READ ONLY: `SELECT ... FOR NO KEY UPDATE` is refused in a read only transaction.
+        // The role has no write grant on these tables, which is what makes it read only.
+        <AnsiTransactionManager as TransactionManager<AsyncPgConnection>>::begin_transaction(
+            &mut connection,
+        )
+        .await
+        .map_err(|error| database("begin_system", &error))?;
+        set_limits(
+            &mut connection,
+            limits.statement_timeout,
+            limits.lock_timeout,
+        )
+        .await?;
+        Ok(Self {
+            connection: Some(connection),
             shared,
-            children: Vec::new(),
+            busy: false,
+            poisoned: false,
+        })
+    }
+
+    /// Marks a call as started; a dropped call leaves the mark and poisons the transaction.
+    fn enter(&mut self) -> Result<&mut AsyncPgConnection, StoreError> {
+        if self.busy || self.poisoned {
+            self.poisoned = true;
+            return Err(StoreError::Unavailable);
+        }
+        let Some(connection) = self.connection.as_mut() else {
+            return Err(StoreError::Unavailable);
+        };
+        self.busy = true;
+        Ok(&mut **connection)
+    }
+
+    fn leave<T>(&mut self, outcome: &Result<T, StoreError>) {
+        self.busy = false;
+        if outcome.is_err() {
+            self.poisoned = true;
         }
     }
 
-    /// The tenant transaction for `tenant`, opened on first use.
-    async fn child(&mut self, tenant: TenantId) -> Result<&mut PgTx, StoreError> {
-        if let Some(position) = self
-            .children
-            .iter()
-            .position(|child| child.tenant() == tenant)
-        {
-            return Ok(&mut self.children[position]);
-        }
-        let child = PgTx::begin(self.shared.clone(), tenant).await?;
-        self.children.push(child);
-        let last = self.children.len() - 1;
-        Ok(&mut self.children[last])
-    }
-
-    /// Finds the tenant that owns the row with this id, with the system login. A row id is a UUID
-    /// version 7 and unique in practice. If two tenants hold the same id the row cannot be
-    /// routed, and the answer is `NotFound`.
-    async fn tenant_of(&self, machine: Machine, id: Uuid) -> Result<TenantId, StoreError> {
-        let mut connection = self.shared.system_connection().await?;
-        let table = machine.table();
-        let rows = sql_query(format!(
-            "SELECT tenant_id FROM {table} WHERE id = $1 LIMIT 2"
-        ))
-        .bind::<SqlUuid, _>(id)
-        .load::<TenantRow>(&mut *connection)
-        .await
-        .map_err(|error| generic("system_route", &error))?;
-        match rows.as_slice() {
-            [only] => Ok(tenant_from_column(only.tenant_id)),
-            _ => Err(StoreError::NotFound),
-        }
-    }
-
-    async fn job_tx(&mut self, job: JobId) -> Result<&mut PgTx, StoreError> {
-        let tenant = self.tenant_of(Machine::Job, job.as_uuid()).await?;
-        self.child(tenant).await
-    }
-
-    async fn stage_run_tx(&mut self, stage_run: StageRunId) -> Result<&mut PgTx, StoreError> {
-        let tenant = self
-            .tenant_of(Machine::StageRun, stage_run.as_uuid())
-            .await?;
-        self.child(tenant).await
-    }
-
-    async fn attempt_tx(&mut self, attempt: AttemptId) -> Result<&mut PgTx, StoreError> {
-        let tenant = self.tenant_of(Machine::Attempt, attempt.as_uuid()).await?;
-        self.child(tenant).await
-    }
-
-    /// Stage runs to try, as (tenant, stage run, lease ended): first those whose lease ended,
-    /// then the ready ones, oldest first. One statement each, with `SKIP LOCKED`.
-    async fn find(&self, want: usize) -> Result<Vec<(TenantId, StageRunId, bool)>, StoreError> {
-        let mut connection = self.shared.system_connection().await?;
-        let limit = i64::try_from(want).unwrap_or(i64::MAX);
-        let mut found = Vec::new();
-        let expired = sql_query(
-            "SELECT a.tenant_id, a.stage_run_id AS stage_run FROM attempts a \
-              WHERE a.status IN ('STARTING', 'RUNNING') AND a.lease_expires_at <= now() \
-              ORDER BY a.lease_expires_at LIMIT $1 \
-              FOR NO KEY UPDATE OF a SKIP LOCKED",
-        )
-        .bind::<BigInt, _>(limit)
-        .load::<Candidate>(&mut *connection)
-        .await
-        .map_err(|error| generic("claim_ready", &error))?;
-        found.extend(expired.into_iter().map(|row| {
-            (
-                tenant_from_column(row.tenant_id),
-                stage_run_from_column(row.stage_run),
-                true,
-            )
-        }));
-        let ready = sql_query(
-            "SELECT s.tenant_id, s.id AS stage_run FROM stage_runs s \
-              WHERE s.status = 'READY' AND s.not_before <= now() \
-                AND (NOT $2 OR EXISTS (SELECT 1 FROM jobs j WHERE j.tenant_id = s.tenant_id \
-                                        AND j.id = s.job_id AND j.status = 'ACTIVE')) \
-              ORDER BY s.not_before LIMIT $1 \
-              FOR NO KEY UPDATE OF s SKIP LOCKED",
-        )
-        .bind::<BigInt, _>(limit)
-        .bind::<Bool, _>(self.shared.settings.claim_only_active_jobs)
-        .load::<Candidate>(&mut *connection)
-        .await
-        .map_err(|error| generic("claim_ready", &error))?;
-        found.extend(ready.into_iter().map(|row| {
-            (
-                tenant_from_column(row.tenant_id),
-                stage_run_from_column(row.stage_run),
-                false,
-            )
-        }));
-        Ok(found)
+    async fn due(&mut self, query: &'static str, limit: u32) -> Result<Vec<DueRow>, StoreError> {
+        let connection = self.enter()?;
+        let outcome = sql_query(query)
+            .bind::<BigInt, _>(i64::from(limit))
+            .load::<DueRow>(connection)
+            .await
+            .map_err(|error| database("find_due_attempts", &error));
+        self.leave(&outcome);
+        outcome
     }
 }
 
-impl Drop for SystemTx {
+impl Drop for PgSystemTx {
     fn drop(&mut self) {
-        // Each child rolls itself back when it is dropped.
-        self.children.clear();
+        if let Some(connection) = self.connection.take() {
+            abandon(&self.shared, connection);
+        }
     }
 }
 
 #[async_trait]
-impl Tx for SystemTx {
+impl SystemTx for PgSystemTx {
     async fn database_time(&mut self) -> Result<Timestamp, StoreError> {
-        let mut connection = self.shared.system_connection().await?;
-        database_now(&mut connection).await
-    }
-
-    async fn commit(mut self: Box<Self>) -> Result<(), StoreError> {
-        let mut children = std::mem::take(&mut self.children);
-        let mut outcome = Ok(());
-        for child in &mut children {
-            if outcome.is_ok() {
-                outcome = child.commit_inner().await;
-            } else {
-                // A child that was not committed is rolled back, so nothing stays open.
-                let _ = child.rollback_inner().await;
-            }
-        }
+        let connection = self.enter()?;
+        let outcome = database_now(connection).await;
+        self.leave(&outcome);
         outcome
     }
 
-    async fn rollback(mut self: Box<Self>) -> Result<(), StoreError> {
-        let mut children = std::mem::take(&mut self.children);
-        let mut outcome = Ok(());
-        for child in &mut children {
-            if let Err(error) = child.rollback_inner().await {
-                outcome = Err(error);
-            }
-        }
-        outcome
-    }
-}
-
-#[async_trait]
-impl JobOps for SystemTx {
-    async fn insert_job(&mut self, _new: NewJob) -> Result<Versioned<Job>, StoreError> {
-        Err(StoreError::ScopeNotAllowed)
-    }
-
-    async fn get_job(&mut self, id: JobId) -> Result<Versioned<Job>, StoreError> {
-        self.job_tx(id).await?.get_job(id).await
-    }
-
-    async fn transition_job(
+    async fn find_claim_candidates(
         &mut self,
-        id: JobId,
-        expected: Version,
-        t: AppliedTransition<JobStatus>,
-    ) -> Result<Version, StoreError> {
-        self.job_tx(id).await?.transition_job(id, expected, t).await
-    }
-}
-
-#[async_trait]
-impl StageRunOps for SystemTx {
-    async fn insert_stage_run(
-        &mut self,
-        new: NewStageRun,
-    ) -> Result<Versioned<StageRun>, StoreError> {
-        let job = new.job_id;
-        self.job_tx(job).await?.insert_stage_run(new).await
-    }
-
-    async fn get_stage_run(&mut self, id: StageRunId) -> Result<Versioned<StageRun>, StoreError> {
-        self.stage_run_tx(id).await?.get_stage_run(id).await
-    }
-
-    async fn transition_stage_run(
-        &mut self,
-        id: StageRunId,
-        expected: Version,
-        t: AppliedTransition<StageRunStatus>,
-    ) -> Result<Version, StoreError> {
-        self.stage_run_tx(id)
-            .await?
-            .transition_stage_run(id, expected, t)
-            .await
-    }
-
-    async fn claim_ready(
-        &mut self,
-        worker: &WorkerId,
         limit: u32,
-        lease_ttl: Duration,
-    ) -> Result<Vec<ClaimedWork>, StoreError> {
-        let limit = usize::try_from(limit).unwrap_or(usize::MAX);
-        let mut claimed: Vec<ClaimedWork> = Vec::new();
-        let mut tried: HashSet<(TenantId, StageRunId)> = HashSet::new();
-        while claimed.len() < limit {
-            let found = self.find(limit - claimed.len()).await?;
-            let fresh: Vec<_> = found
-                .into_iter()
-                .filter(|(tenant, run, _)| !tried.contains(&(*tenant, *run)))
-                .collect();
-            if fresh.is_empty() {
-                break;
-            }
-            for (tenant, run, lease_ended) in fresh {
-                tried.insert((tenant, run));
-                let child = self.child(tenant).await?;
-                if lease_ended && !child.take_back_expired(run).await? {
-                    continue;
-                }
-                if let Some(work) = child.claim_one(run, worker, lease_ttl).await? {
-                    claimed.push(work);
-                    if claimed.len() >= limit {
-                        break;
-                    }
-                }
-            }
-        }
-        Ok(claimed)
-    }
-
-    async fn expired_leases(&mut self, limit: u32) -> Result<Vec<AttemptId>, StoreError> {
-        let mut connection = self.shared.system_connection().await?;
-        let rows = sql_query(
-            "SELECT id FROM attempts WHERE status IN ('STARTING', 'RUNNING') AND lease_expires_at <= now() \
-              ORDER BY lease_expires_at LIMIT $1",
-        )
-        .bind::<BigInt, _>(i64::from(limit))
-        .load::<IdRow>(&mut *connection)
-        .await
-        .map_err(|error| generic("expired_leases", &error))?;
-        Ok(rows
+    ) -> Result<Vec<ClaimCandidate>, StoreError> {
+        let connection = self.enter()?;
+        let outcome = sql_query(CLAIM_CANDIDATES)
+            .bind::<BigInt, _>(i64::from(limit))
+            .load::<CandidateRow>(connection)
+            .await
+            .map_err(|error| database("find_claim_candidates", &error));
+        self.leave(&outcome);
+        outcome?
             .into_iter()
-            .map(|row| attempt_from_column(row.id))
-            .collect())
-    }
-}
-
-#[async_trait]
-impl AttemptOps for SystemTx {
-    async fn insert_attempt(&mut self, new: NewAttempt) -> Result<Versioned<Attempt>, StoreError> {
-        let run = new.stage_run_id;
-        self.stage_run_tx(run).await?.insert_attempt(new).await
-    }
-
-    async fn get_attempt(&mut self, id: AttemptId) -> Result<Versioned<Attempt>, StoreError> {
-        self.attempt_tx(id).await?.get_attempt(id).await
+            .map(|row| {
+                Ok(ClaimCandidate {
+                    tenant: TenantId::from_uuid(row.tenant_id),
+                    job: JobId::from_uuid(row.job_id),
+                    stage_run: StageRunId::from_uuid(row.id),
+                    version: version_from_column(row.version)?,
+                    not_before: from_column(row.not_before),
+                })
+            })
+            .collect()
     }
 
-    async fn heartbeat(&mut self, id: AttemptId, epoch: LeaseEpoch) -> Result<(), StoreError> {
-        self.attempt_tx(id).await?.heartbeat(id, epoch).await
-    }
-
-    async fn transition_attempt(
+    async fn find_due_attempts(
         &mut self,
-        id: AttemptId,
-        expected: Version,
-        epoch: LeaseEpoch,
-        t: AppliedTransition<AttemptStatus>,
-    ) -> Result<Version, StoreError> {
-        self.attempt_tx(id)
+        reason: DueReason,
+        limit: u32,
+    ) -> Result<Vec<DueAttempt>, StoreError> {
+        let query = match reason {
+            DueReason::LeaseExpired => LEASE_EXPIRED,
+            DueReason::DeadlinePassed => DEADLINE_PASSED,
+            DueReason::TeardownDeadlinePassed => TEARDOWN_PASSED,
+        };
+        self.due(query, limit)
             .await?
-            .transition_attempt(id, expected, epoch, t)
-            .await
-    }
-}
-
-#[async_trait]
-impl TaskNodeOps for SystemTx {
-    // The system login cannot read `task_nodes`, so a node id cannot be routed to its tenant.
-    async fn insert_task_node(
-        &mut self,
-        _new: NewTaskNode,
-    ) -> Result<Versioned<TaskNode>, StoreError> {
-        Err(StoreError::ScopeNotAllowed)
-    }
-
-    async fn get_task_node(&mut self, _id: TaskNodeId) -> Result<Versioned<TaskNode>, StoreError> {
-        Err(StoreError::ScopeNotAllowed)
+            .into_iter()
+            .map(|row| {
+                Ok(DueAttempt {
+                    tenant: TenantId::from_uuid(row.tenant_id),
+                    job: JobId::from_uuid(row.job_id),
+                    stage_run: StageRunId::from_uuid(row.stage_run_id),
+                    attempt: AttemptId::from_uuid(row.id),
+                    version: version_from_column(row.version)?,
+                    reason,
+                })
+            })
+            .collect()
     }
 
-    async fn transition_task_node(
-        &mut self,
-        _id: TaskNodeId,
-        _expected: Version,
-        _t: AppliedTransition<TaskNodeStatus>,
-    ) -> Result<Version, StoreError> {
-        Err(StoreError::ScopeNotAllowed)
-    }
-}
-
-#[async_trait]
-impl LedgerOps for SystemTx {
-    async fn append_ledger_entry(
-        &mut self,
-        entry: EvidenceLedgerEntry,
-    ) -> Result<ChainHead, StoreError> {
-        let job = entry.metadata.job_id;
-        self.job_tx(job).await?.append_ledger_entry(entry).await
-    }
-
-    async fn ledger_head(&mut self, job: JobId) -> Result<Option<ChainHead>, StoreError> {
-        self.job_tx(job).await?.ledger_head(job).await
-    }
-
-    async fn read_ledger(
-        &mut self,
-        job: JobId,
-        from: Sequence,
-        limit: u32,
-    ) -> Result<Vec<EvidenceLedgerEntry>, StoreError> {
-        self.job_tx(job).await?.read_ledger(job, from, limit).await
-    }
-}
-
-#[async_trait]
-impl OutboxOps for SystemTx {
-    async fn enqueue_event(&mut self, event: DomainEvent) -> Result<(), StoreError> {
-        let job = event.job_id;
-        self.job_tx(job).await?.enqueue_event(event).await
-    }
-
-    async fn read_events(
-        &mut self,
-        job: JobId,
-        from: OutboxSeq,
-        limit: u32,
-    ) -> Result<Vec<OutboxRow>, StoreError> {
-        self.job_tx(job).await?.read_events(job, from, limit).await
-    }
-}
-
-#[async_trait]
-impl AuditOps for SystemTx {
-    async fn record_audit(&mut self, event: AuditEvent) -> Result<(), StoreError> {
-        let job = event.job_id;
-        self.job_tx(job).await?.record_audit(event).await
-    }
-
-    async fn read_audit(&mut self, job: JobId, limit: u32) -> Result<Vec<AuditEvent>, StoreError> {
-        self.job_tx(job).await?.read_audit(job, limit).await
-    }
-}
-
-#[async_trait]
-impl ArtifactIndexOps for SystemTx {
-    async fn index_artifact(
-        &mut self,
-        _new: NewArtifactIndexEntry,
-    ) -> Result<ArtifactIndexEntry, StoreError> {
-        Err(StoreError::ScopeNotAllowed)
-    }
-
-    async fn get_artifact_index(
-        &mut self,
-        _sha256: &Sha256Digest,
-    ) -> Result<ArtifactIndexEntry, StoreError> {
-        Err(StoreError::ScopeNotAllowed)
-    }
-}
-
-#[async_trait]
-impl PrincipalOps for SystemTx {
-    async fn insert_principal(&mut self, _new: NewPrincipal) -> Result<Principal, StoreError> {
-        Err(StoreError::ScopeNotAllowed)
-    }
-
-    async fn get_principal(&mut self, _id: PrincipalId) -> Result<Principal, StoreError> {
-        Err(StoreError::ScopeNotAllowed)
+    async fn finish(mut self: Box<Self>) -> Result<(), StoreError> {
+        let Some(mut connection) = self.connection.take() else {
+            return Ok(());
+        };
+        // Nothing was written, so a commit and a rollback end the same way. The commit is used so
+        // the connection leaves a clean transaction state in both outcomes.
+        let ended =
+            <AnsiTransactionManager as TransactionManager<AsyncPgConnection>>::commit_transaction(
+                &mut connection,
+            )
+            .await;
+        match ended {
+            Ok(()) => Ok(()),
+            Err(error) => {
+                let mapped = database("finish", &error);
+                drop(PooledConnection::take(connection));
+                Err(mapped)
+            }
+        }
     }
 }
