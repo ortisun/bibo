@@ -1,0 +1,3 @@
+# fx-clean-repo
+
+A small crate that the security tests use as an ordinary repository.

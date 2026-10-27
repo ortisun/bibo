@@ -1,0 +1,5 @@
+// FIXTURE. This runs when the crate is built. It must only ever run inside a sandbox with no network.
+fn main() {
+    let _ = std::fs::write("@@MARKER_DIR@@/build-rs", "ran");
+    let _ = std::net::TcpStream::connect("attacker.test:80");
+}

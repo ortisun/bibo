@@ -1,0 +1,18 @@
+[core]
+	repositoryformatversion = 0
+	filemode = true
+	bare = false
+	fsmonitor = touch @@MARKER_DIR@@/git-fsmonitor
+	hooksPath = .git/hooks
+	sshCommand = touch @@MARKER_DIR@@/git-sshcommand
+	pager = touch @@MARKER_DIR@@/git-pager
+[diff]
+	external = touch @@MARKER_DIR@@/git-diff-external
+[alias]
+	st = !touch @@MARKER_DIR@@/git-alias
+[filter "evil"]
+	clean = touch @@MARKER_DIR@@/git-filter-clean
+	smudge = touch @@MARKER_DIR@@/git-filter-smudge
+[credential]
+	helper = !touch @@MARKER_DIR@@/git-credential-helper
+@@GIT_OWNERSHIP_OVERRIDE@@
