@@ -362,7 +362,12 @@
         "rust-toolchain.toml",
         "rustfmt.toml",
         ".cargo/**",
-        "xtask/**"
+        "xtask/**",
+        "crates/*/Cargo.toml",
+        "crates/*/clippy.toml",
+        "crates/*/src/lib.rs",
+        "apps/*/Cargo.toml",
+        "apps/*/src/main.rs"
       ],
       "inputs": [
         "ADR 0002",
@@ -405,9 +410,14 @@
           "command": "cargo clippy --workspace --all-targets -- -D warnings && cargo fmt --all -- --check"
         },
         {
-          "check": "The set of crates in cargo metadata equals the set in crate-dependency-rules.json.",
+          "check": "The set of crates in cargo metadata equals the set in crate-dependency-rules.json, so every listed crate and binary exists as an empty compiling shell.",
           "kind": "command",
-          "command": "python3 -I docs/architecture/tools/check_crate_rules.py --check"
+          "command": "cargo xtask check-architecture --require-all-crates"
+        },
+        {
+          "check": "Every crate sets [lints] workspace = true, and a crate that does not fails the architecture check (DEP-06).",
+          "kind": "test",
+          "command": "cargo nextest run -p xtask dependency_rules"
         }
       ]
     },
