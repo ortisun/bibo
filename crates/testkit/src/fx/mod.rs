@@ -3,6 +3,7 @@
 //! The lowest layer is encoders, digests, a random source and calendar helpers. FX-CANARY sits on
 //! top of it.
 
+pub mod archive;
 pub mod canary;
 pub mod control;
 pub mod digest;
