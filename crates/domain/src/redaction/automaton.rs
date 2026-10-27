@@ -41,12 +41,33 @@ struct Output {
 }
 
 /// The automaton for a fixed set of strings.
-#[derive(Debug, Clone)]
+///
+/// The trie spells out every string, and the strings are secrets, so the automaton is never
+/// printed (its `Debug` shows sizes only) and its bytes are overwritten when it is dropped. The
+/// overwrite is a best effort; see the note in `registry`.
 pub(super) struct Automaton {
     nodes: Vec<Node>,
     outputs: Vec<Output>,
     root_next: Vec<u32>,
     longest: usize,
+}
+
+impl std::fmt::Debug for Automaton {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Automaton")
+            .field("nodes", &self.nodes.len())
+            .field("longest", &self.longest)
+            .finish()
+    }
+}
+
+impl Drop for Automaton {
+    fn drop(&mut self) {
+        for node in &mut self.nodes {
+            node.byte = 0;
+        }
+        std::hint::black_box(&self.nodes);
+    }
 }
 
 impl Automaton {
@@ -198,11 +219,6 @@ impl Automaton {
         self.longest
     }
 
-    /// The number of nodes, for the size limit of the registry.
-    pub(super) fn node_count(&self) -> usize {
-        self.nodes.len()
-    }
-
     fn child(&self, at: u32, byte: u8) -> u32 {
         if at == ROOT {
             self.root_next
@@ -272,7 +288,12 @@ impl Iterator for Matches<'_> {
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::expect_used, clippy::indexing_slicing)]
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::indexing_slicing,
+    clippy::panic
+)]
 mod tests {
     use super::*;
 
