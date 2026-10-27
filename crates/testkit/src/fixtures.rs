@@ -5,12 +5,18 @@
 use std::path::PathBuf;
 use std::time::Duration;
 
-use factory_domain::contracts::{Contract, DomainEvent, EvidenceLedgerEntry};
+use factory_domain::contracts::{
+    AgentManifest, Contract, DomainEvent, EvidenceLedgerEntry, VersionedRef,
+};
 use factory_domain::ids::{
     AttemptId, CorrelationId, EventId, JobId, LedgerEntryId, PrincipalId, StageRunId, TaskNodeId,
     TenantId,
 };
-use factory_domain::values::{Sha256Digest, Timestamp};
+use factory_domain::values::{NonEmptyString, Sha256Digest, Timestamp, Uri};
+use factory_ports::agent::{
+    AgentRunRequest, AssembledPrompt, BrokerEndpoint, DataClass, DataPart, FlagSet, JobTokenId,
+    JobTokenRef, ModelSelection, RuntimeId,
+};
 use factory_ports::clock::IdGenerator;
 use factory_ports::sandbox::{
     ExecArgv, FixedEnv, Hardening, ImageDigest, JobTokenFile, NetworkAttachment, SandboxLimits,
@@ -254,6 +260,60 @@ pub fn sandbox_spec(ids: &Ids, profile: SandboxProfile) -> SandboxSpec {
             .expect("a valid environment"),
         hardening: Hardening::strict(10_001, 10_001),
         extra_mounts: Vec::new(),
+    }
+}
+
+/// The builder agent's manifest, from the schema examples.
+///
+/// # Panics
+/// Never in practice: the example is checked by the domain crate's own tests.
+#[must_use]
+pub fn builder_manifest() -> AgentManifest {
+    AgentManifest::from_json_str(include_str!(
+        "../../../schemas/examples/agent-manifest/valid/builder.json"
+    ))
+    .expect("the builder example is a valid agent manifest")
+}
+
+/// A well-formed agent run request for the builder agent: a prompt with its instructions and one
+/// issue text apart, the builder's tools and limits, and a job token reference.
+///
+/// # Panics
+/// Never in practice: every literal is valid.
+#[must_use]
+pub fn agent_run_request(ids: &Ids) -> AgentRunRequest {
+    let manifest = builder_manifest();
+    let issue = "Please add a word count command to the tool.";
+    AgentRunRequest {
+        attempt: ids.attempt(),
+        agent: VersionedRef {
+            id: manifest.id.clone(),
+            version: manifest.version.clone(),
+        },
+        prompt: AssembledPrompt {
+            instructions: "You are the builder. Do the planned task and nothing else.".to_owned(),
+            data: vec![DataPart {
+                source: "issue#12".to_owned(),
+                class: DataClass::IssueText,
+                sha256: Sha256Digest::of(issue.as_bytes()),
+                text: issue.to_owned(),
+            }],
+        },
+        output_schema: manifest.outputs_schema.clone(),
+        broker: BrokerEndpoint {
+            base_url: Uri::parse("https://model-broker.sandbox.internal:8443")
+                .expect("a valid URI"),
+        },
+        job_token: JobTokenRef {
+            id: JobTokenId::from_uuid(ids.generator.new_uuid()),
+        },
+        tools: manifest.allowed_tools.as_slice().to_vec(),
+        limits: manifest.resource_limits.clone(),
+        model: ModelSelection {
+            runtime: RuntimeId::new("fake").expect("a valid runtime id"),
+            model: NonEmptyString::parse("fake-model").expect("a valid model name"),
+        },
+        flag_set: FlagSet::Standard,
     }
 }
 

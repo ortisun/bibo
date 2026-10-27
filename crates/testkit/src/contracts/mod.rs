@@ -32,7 +32,9 @@ use std::fmt::Debug;
 use std::future::Future;
 use std::pin::Pin;
 
+pub mod agent;
 pub mod artifact;
+pub mod broker;
 pub mod sandbox;
 pub mod store;
 pub mod workspace;
