@@ -1,0 +1,22 @@
+# Local development stack for the software factory.
+#
+# Start it with:   scripts/dev-up.sh
+# Or directly:     docker compose -f infra/compose/docker-compose.yml up -d --wait
+# Both need a .env file in the repository root. scripts/dev-up.sh creates one for you.
+#
+# This file only names the project and lists what is included. Each service lives in its own
+# file next to this one, so a later work package can add a service without touching the others.
+#
+# WHY "include" WITH "env_file"
+# Compose looks for ".env" in the folder of the file passed with -f, which is this folder, not
+# the repository root. Without the env_file line below, "docker compose -f infra/compose/..."
+# run from the repository root would not see the root .env, and the password would be unset.
+# With it, Compose reads the root .env for the included file from any working directory,
+# and stops with a clear error if the file is missing. That is the behavior we want: no .env,
+# no database. Checked with Docker Compose 5.6.1.
+
+name: factory-dev
+
+include:
+  - path: ./postgres.yml
+    env_file: ../../.env
