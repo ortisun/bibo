@@ -56,6 +56,103 @@ pub fn files_in(dir: &Path, extensions: &[&str]) -> Vec<PathBuf> {
     files
 }
 
+/// A directory under the system temporary directory that is removed when the value is dropped.
+pub struct TempDir(PathBuf);
+
+impl TempDir {
+    pub fn new(label: &str) -> Self {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        static COUNTER: AtomicUsize = AtomicUsize::new(0);
+        let unique = format!(
+            "{label}-{}-{}",
+            std::process::id(),
+            COUNTER.fetch_add(1, Ordering::Relaxed)
+        );
+        let path = std::env::temp_dir()
+            .join("factory-contracts-tests")
+            .join(unique);
+        fs::create_dir_all(&path).expect("create the temporary directory");
+        Self(path)
+    }
+
+    pub fn path(&self) -> &Path {
+        &self.0
+    }
+
+    /// Writes a file, creating the directories above it.
+    pub fn write(&self, relative: &str, contents: impl AsRef<[u8]>) -> PathBuf {
+        let path = self.0.join(relative);
+        fs::create_dir_all(path.parent().expect("a file has a parent")).expect("create parents");
+        fs::write(&path, contents).unwrap_or_else(|e| panic!("write {}: {e}", path.display()));
+        path
+    }
+}
+
+impl Drop for TempDir {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.0);
+    }
+}
+
+/// Writes a JSON value as block-style YAML, one key per line, so a test can predict the line of
+/// any field. Every string and key is double quoted, which is valid YAML and never ambiguous.
+pub fn to_block_yaml(value: &Value) -> String {
+    fn scalar(value: &Value) -> String {
+        match value {
+            Value::String(text) => serde_json::to_string(text).expect("a string serializes"),
+            other => other.to_string(),
+        }
+    }
+    fn write(value: &Value, indent: usize, out: &mut String) {
+        let pad = " ".repeat(indent);
+        match value {
+            Value::Object(map) if !map.is_empty() => {
+                for (key, child) in map {
+                    let key = serde_json::to_string(key).expect("a key serializes");
+                    match child {
+                        Value::Object(inner) if !inner.is_empty() => {
+                            out.push_str(&format!("{pad}{key}:\n"));
+                            write(child, indent + 2, out);
+                        }
+                        Value::Array(inner) if !inner.is_empty() => {
+                            out.push_str(&format!("{pad}{key}:\n"));
+                            write(child, indent + 2, out);
+                        }
+                        Value::Object(_) => out.push_str(&format!("{pad}{key}: {{}}\n")),
+                        Value::Array(_) => out.push_str(&format!("{pad}{key}: []\n")),
+                        other => out.push_str(&format!("{pad}{key}: {}\n", scalar(other))),
+                    }
+                }
+            }
+            Value::Array(items) if !items.is_empty() => {
+                for item in items {
+                    match item {
+                        Value::Object(inner) if !inner.is_empty() => {
+                            let mut nested = String::new();
+                            write(item, indent + 2, &mut nested);
+                            // The first line of the nested block shares the dash.
+                            let first_pad = " ".repeat(indent + 2);
+                            let rest = nested.strip_prefix(&first_pad).unwrap_or(&nested);
+                            out.push_str(&format!("{pad}- {rest}"));
+                        }
+                        Value::Array(inner) if !inner.is_empty() => {
+                            out.push_str(&format!("{pad}-\n"));
+                            write(item, indent + 2, out);
+                        }
+                        Value::Object(_) => out.push_str(&format!("{pad}- {{}}\n")),
+                        Value::Array(_) => out.push_str(&format!("{pad}- []\n")),
+                        other => out.push_str(&format!("{pad}- {}\n", scalar(other))),
+                    }
+                }
+            }
+            other => out.push_str(&format!("{pad}{}\n", scalar(other))),
+        }
+    }
+    let mut out = String::new();
+    write(value, 0, &mut out);
+    out
+}
+
 /// `examples/<schema>/valid` or `invalid` for a kind.
 pub fn example_dir(kind: ContractKind, which: &str) -> PathBuf {
     schemas_dir()

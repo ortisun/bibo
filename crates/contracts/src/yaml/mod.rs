@@ -283,6 +283,40 @@ impl Document {
         &self.root
     }
 
+    /// The line and column of a field, written like `prompt.template_sha256`, `items[0].colour` or
+    /// `$` for the whole document. `None` when the path leads nowhere. For a field of a mapping the
+    /// position is the key's.
+    #[must_use]
+    pub fn locate(&self, path: &str) -> Option<(usize, usize)> {
+        let mut node = &self.root;
+        let mut position = (node.line, node.column);
+        let mut rest = path.strip_prefix('$').unwrap_or(path);
+        while !rest.is_empty() {
+            if let Some(after) = rest.strip_prefix('[') {
+                let end = after.find(']')?;
+                let index: usize = after[..end].parse().ok()?;
+                let Content::Seq(items) = &node.content else {
+                    return None;
+                };
+                node = items.get(index)?;
+                position = (node.line, node.column);
+                rest = &after[end + 1..];
+            } else {
+                rest = rest.strip_prefix('.').unwrap_or(rest);
+                let end = rest.find(['.', '[']).unwrap_or(rest.len());
+                let key = &rest[..end];
+                let Content::Map(entries) = &node.content else {
+                    return None;
+                };
+                let entry = entries.iter().find(|entry| entry.key == key)?;
+                position = (entry.line, entry.column);
+                node = &entry.value;
+                rest = &rest[end..];
+            }
+        }
+        Some(position)
+    }
+
     /// The document as JSON, for schema validation.
     #[must_use]
     pub fn to_json(&self) -> Value {
