@@ -98,7 +98,7 @@ These are made in that record, with a revision note.
 - Rule 4's statement that RLS is not in Slice 1 is replaced by a pointer to this record.
 - Rule 6 now says that claiming work uses `FOR NO KEY UPDATE SKIP LOCKED`. `FOR UPDATE` conflicts with the `KEY SHARE` lock that a ledger, audit or outbox insert takes on the rows it points at, so a claimer would block the writers of evidence. `FOR NO KEY UPDATE` gives the same exclusion between claimers and does not. Measured on PostgreSQL 18.6 (above).
 - The consequence "no row-level security until Slice 4" is removed.
-- PostgreSQL 18 is the pinned major version in Compose, in CI and in the documents. The DBA already tested 18.6 and 16.15, and 17 was not run.
+- PostgreSQL 18 is the pinned major version in Compose, in CI and in the documents. The DBA already tested 18.6 and 16.15, and 17 was not run. The local Compose file still pins 17 (`infra/compose/postgres.yml`, read 2026-10-27), so the package `s1-ci-database-and-generated-checks` moves it to 18 and owns the data directory change of the 18 image.
 
 ## Consequences
 

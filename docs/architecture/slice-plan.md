@@ -109,7 +109,7 @@ Consequently:
 | Bring the domain crate in line with the revised state machine and contracts | `s1-domain-revision` | 1 | software_engineer | L | 3 | `s0-domain-vocabulary`, `s0-state-machines` | yes |
 | Add row-level security and bring the state tables in line with the revised state machine | `s1-database-tenancy-and-state-sync` | 1 | dba | L | 2 | `s0-database-baseline` |  |
 | Extend the architecture check with the repository-wide span name scan and the adapter allow lists | `s1-xtask-extensions` | 1 | software_engineer | M | 2 | `s0-workspace-skeleton`, `s0-telemetry-baseline` |  |
-| Run the database tests and the generated file checks in continuous integration | `s1-ci-database-and-generated-checks` | 1 | sre | M | 4 | `s0-ci-pipeline`, `s1-database-tenancy-and-state-sync`, `s1-domain-revision` |  |
+| Move the local database to PostgreSQL 18 and test it, with the generated files, in CI | `s1-ci-database-and-generated-checks` | 1 | sre | M | 4 | `s0-ci-pipeline`, `s1-database-tenancy-and-state-sync`, `s1-domain-revision` |  |
 | Connect the real redactor to telemetry and add the job trace context | `s1-telemetry-wiring` | 1 | observability | M | 4 | `s0-telemetry-baseline`, `s1-redaction`, `s1-domain-revision` |  |
 <!-- GENERATED:end wp-summary -->
 
@@ -622,6 +622,7 @@ No two packages that can run at the same time own the same path. Paths outside t
 | `fixtures/repos/security/**` | `s1-security-test-harness` | qa | 1 |
 | `fixtures/repos/word-count/**` | `s1-fixture-and-e2e-harness` | qa | 1 |
 | `infra/compose/**` | `s0-ci-pipeline` | sre | 0 |
+| `infra/compose/**` | `s1-ci-database-and-generated-checks` | sre | 1 |
 | `infra/otel/**` | `s0-telemetry-baseline` | observability | 0 |
 | `infra/sandbox-images/**` | `s1-sandbox-images` | sre | 1 |
 | `migrations/**` | `s0-database-baseline` | dba | 0 |
@@ -2376,7 +2377,7 @@ Done when:
 | 6 | The architect reviews the structure of the source_scans section, and the rules file and its generated overview are in sync. | review | reviewer sign-off recorded in the pull request |
 | 7 | Lints and formatting are clean, and the rules checker still passes. | command | `cargo clippy -p xtask --all-targets -- -D warnings && python3 -I docs/architecture/tools/check_crate_rules.py --check` |
 
-#### Run the database tests and the generated file checks in continuous integration
+#### Move the local database to PostgreSQL 18 and test it, with the generated files, in CI
 
 | Field | Value |
 |---|---|
@@ -2388,21 +2389,22 @@ Done when:
 | On the critical path | no |
 | Depends on | `s0-ci-pipeline`, `s1-database-tenancy-and-state-sync`, `s1-domain-revision` |
 
-Add step files under scripts/ci/steps.d/ that run scripts/db-test.sh against a postgres:18 service container with the diesel command line tool pinned to 2.3.11, and that run the two generated file checks: the example index (crates/domain/tests/tools/gen_example_index.py --check) and the ledger oracle fixture (crates/domain/tests/oracle/ledger_chain_oracle.py --check). The workflow already fails on any non-zero exit of scripts/ci.sh, which includes the exit code 3 that means BLOCKED (checked in ci.yml on 2026-10-27). This package makes sure the database step cannot be BLOCKED in CI by giving it the service container, and proves that a missing database still fails the job. How the diesel tool is installed on the runner (it needs libpq) is not verified.
+Move the local Compose database from PostgreSQL 17 to PostgreSQL 18, pinned by digest (infra/compose/postgres.yml pins 17 today, while scripts/db-test.sh and ADR 0007 as revised use 18; the data directory of the 18 image is /var/lib/postgresql). Add step files under scripts/ci/steps.d/ that run scripts/db-test.sh against a postgres:18 service container with the diesel command line tool pinned to 2.3.11, and that run the two generated file checks: the example index (crates/domain/tests/tools/gen_example_index.py --check) and the ledger oracle fixture (crates/domain/tests/oracle/ledger_chain_oracle.py --check). The workflow already fails on any non-zero exit of scripts/ci.sh, which includes the exit code 3 that means BLOCKED (read in ci.yml on 2026-10-27). This package makes sure the database step cannot be BLOCKED in CI by giving it the service container, and proves that a missing database still fails the job. How the diesel tool is installed on the runner (it needs libpq) is not verified.
 
-Owns: `.github/**`, `scripts/ci/**`
+Owns: `.github/**`, `scripts/ci/**`, `infra/compose/**`
 
-Inputs: scripts/ci.sh header (step file format); .github/workflows/ci.yml; scripts/db-test.sh; ADR 0007; ADR 0012
+Inputs: scripts/ci.sh header (step file format); .github/workflows/ci.yml; scripts/db-test.sh; ADR 0007; ADR 0012; infra/compose/postgres.yml
 
 Done when:
 
 | # | Check | How | Command or evidence |
 |---|---|---|---|
-| 1 | A step file runs scripts/db-test.sh with the service container's admin URL and the pinned diesel tool, and all suites pass in CI. | command | `scripts/ci.sh --only db-tests` |
-| 2 | With no database available the database step ends with exit code 3, scripts/ci.sh exits 3, and the workflow step that runs it fails. BLOCKED is never a pass in CI. | test | `scripts/ci.sh --self-test-blocked` |
-| 3 | The example index and the ledger oracle fixture are checked as steps, and a stale file makes the step fail. | command | `scripts/ci.sh --only generated-files` |
-| 4 | The workflow still passes the pinning and policy checks: actions pinned to commit SHAs, no pull_request_target, read-only token. | command | `scripts/ci.sh --self-test-pinning` |
-| 5 | The security specialist reviews the new service container and the way the tool is installed. | review | reviewer sign-off recorded in the pull request |
+| 1 | The local Compose database runs PostgreSQL 18 pinned by digest, keeps its data in a named volume at the path the 18 image uses, and reports healthy. | command | `docker compose -f infra/compose/docker-compose.yml up -d --wait` |
+| 2 | A step file runs scripts/db-test.sh with the service container's admin URL and the pinned diesel tool, and all suites pass in CI. | command | `scripts/ci.sh --only db-tests` |
+| 3 | With no database available the database step ends with exit code 3, scripts/ci.sh exits 3, and the workflow step that runs it fails. BLOCKED is never a pass in CI. | test | `scripts/ci.sh --self-test-blocked` |
+| 4 | The example index and the ledger oracle fixture are checked as steps, and a stale file makes the step fail. | command | `scripts/ci.sh --only generated-files` |
+| 5 | The workflow still passes the pinning and policy checks: actions pinned to commit SHAs, no pull_request_target, read-only token. | command | `scripts/ci.sh --self-test-pinning` |
+| 6 | The security specialist reviews the new service container and the way the tool is installed. | review | reviewer sign-off recorded in the pull request |
 
 #### Connect the real redactor to telemetry and add the job trace context
 
@@ -2657,6 +2659,7 @@ Found while reading `docs/spec-kit/` and `docs/security/` after the first draft.
 | 31 | `docs/reference/documentation-policy.md` section 11 lists open decisions that ADR 0009 items 15 to 19 now answer. | The documenter updates the section. | **Open**: the documenter |
 | 32 | `xtask` enforces external crate allow lists for rings 0 and 1 and the application crates, and returns early for adapters. | `s1-xtask-extensions` checks adapters too. | Resolved in the plan |
 | 33 | The threat model (open question Q9 and control C-36) and the secret handling documents treat row-level security as later work. | Names ADR 0012. | **Open**: the security specialist updates the timing |
+| 34 | `infra/compose/postgres.yml` pins PostgreSQL 17, while `scripts/db-test.sh` runs 18 and ADR 0007 as revised pins 18. | The package `s1-ci-database-and-generated-checks` moves Compose to 18, pinned by digest. | **Open**: the SRE |
 
 ## 13. Risks and spikes
 

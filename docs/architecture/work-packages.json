@@ -3481,24 +3481,26 @@
     },
     {
       "id": "s1-ci-database-and-generated-checks",
-      "title": "Run the database tests and the generated file checks in continuous integration",
+      "title": "Move the local database to PostgreSQL 18 and test it, with the generated files, in CI",
       "slice": 1,
       "owner_role": "sre",
       "reviewers": [
         "security"
       ],
       "size": "M",
-      "summary": "Add step files under scripts/ci/steps.d/ that run scripts/db-test.sh against a postgres:18 service container with the diesel command line tool pinned to 2.3.11, and that run the two generated file checks: the example index (crates/domain/tests/tools/gen_example_index.py --check) and the ledger oracle fixture (crates/domain/tests/oracle/ledger_chain_oracle.py --check). The workflow already fails on any non-zero exit of scripts/ci.sh, which includes the exit code 3 that means BLOCKED (checked in ci.yml on 2026-10-27). This package makes sure the database step cannot be BLOCKED in CI by giving it the service container, and proves that a missing database still fails the job. How the diesel tool is installed on the runner (it needs libpq) is not verified.",
+      "summary": "Move the local Compose database from PostgreSQL 17 to PostgreSQL 18, pinned by digest (infra/compose/postgres.yml pins 17 today, while scripts/db-test.sh and ADR 0007 as revised use 18; the data directory of the 18 image is /var/lib/postgresql). Add step files under scripts/ci/steps.d/ that run scripts/db-test.sh against a postgres:18 service container with the diesel command line tool pinned to 2.3.11, and that run the two generated file checks: the example index (crates/domain/tests/tools/gen_example_index.py --check) and the ledger oracle fixture (crates/domain/tests/oracle/ledger_chain_oracle.py --check). The workflow already fails on any non-zero exit of scripts/ci.sh, which includes the exit code 3 that means BLOCKED (read in ci.yml on 2026-10-27). This package makes sure the database step cannot be BLOCKED in CI by giving it the service container, and proves that a missing database still fails the job. How the diesel tool is installed on the runner (it needs libpq) is not verified.",
       "owns": [
         ".github/**",
-        "scripts/ci/**"
+        "scripts/ci/**",
+        "infra/compose/**"
       ],
       "inputs": [
         "scripts/ci.sh header (step file format)",
         ".github/workflows/ci.yml",
         "scripts/db-test.sh",
         "ADR 0007",
-        "ADR 0012"
+        "ADR 0012",
+        "infra/compose/postgres.yml"
       ],
       "exposes_ports": [],
       "implements_ports": [],
@@ -3509,6 +3511,11 @@
         "s1-domain-revision"
       ],
       "done": [
+        {
+          "check": "The local Compose database runs PostgreSQL 18 pinned by digest, keeps its data in a named volume at the path the 18 image uses, and reports healthy.",
+          "kind": "command",
+          "command": "docker compose -f infra/compose/docker-compose.yml up -d --wait"
+        },
         {
           "check": "A step file runs scripts/db-test.sh with the service container's admin URL and the pinned diesel tool, and all suites pass in CI.",
           "kind": "command",

@@ -87,7 +87,7 @@ Chosen: **option 3**.
 
 Chosen: **option 3**. The defect class comes from the findings that justify the verdict (severity blocker, high or medium). When they differ, the first in this order wins: `specification`, `policy`, `code_behavior`, `documentation`, so a decision that needs a person is not hidden behind an easy fix.
 
-- The matrix `pipeline.defect_routing` in the JSON gives the outcome for each of the four stages that have an independent reviewer. The stage that produces the specification reworks its own artifact for `specification`. Everywhere else `specification` and `policy` give `gate_needs_human` (`S10`).
+- The matrix `pipeline.defect_routing` in the JSON gives the outcome for each of the four stages that have an independent reviewer. A `policy` finding gives `gate_needs_human` (`S10`) at every stage. A `specification` finding does too, except at the stage that produces the specification, which reworks its own artifact.
 - A reviewer's `policy` finding asks a person and does not block. `G_BLOCKING_CONDITION` is for violations that a deterministic check detected. A reviewer's opinion can be wrong, and a block with nobody asked is a worse outcome than a question.
 - `G_NEEDS_HUMAN_VERDICT` gains the condition for these classes.
 - A deterministic failure at `DOCUMENTATION_REVIEW` has no reviewer class and counts as `documentation`. Today it would hit `DefectNeeded` and fail the job over a broken link.
