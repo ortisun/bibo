@@ -1,0 +1,449 @@
+//! Human decisions on a stage run, and who may take them.
+//!
+//! Every decision follows the same path. The roles of the principal are read from the
+//! [`Authority`](crate::commands::Authority) *now*, so a person removed from the allowlist loses
+//! the right at once (NT-AUTHZ-04). The engine checks the roles the move needs, builds the facts
+//! of the guard from stored state, evaluates the guard, and applies the move with its evidence in
+//! one transaction. A refusal is recorded in the audit log with the actor, and leaves the state as
+//! it was.
+//!
+//! Text a person writes is untrusted. It is stored as an artifact, and the event carries only its
+//! hash. An approval is bound to the evidence the person saw: the hash of the last ledger entry
+//! must still be the head, so a gate result that arrived after the person looked invalidates the
+//! approval (NT-MRG-02, NT-MRG-03).
+
+use factory_domain::contracts::ArtifactRef;
+use factory_domain::contracts::evidence_ledger_entry::{
+    Attestor, ClaimKind, Evidence, ExpertJudgmentEvidence,
+};
+use factory_domain::ids::{PrincipalId, StageRunId};
+use factory_domain::machines::guards::{
+    AnswerFacts, ApprovalFacts, GuardFacts, HumanRejectFacts, OverrideFacts as DomainOverride,
+    UnblockFacts, evaluate,
+};
+use factory_domain::machines::rework::{
+    HumanReworkDecision, HumanReworkRequest, decide_human_rework,
+};
+use factory_domain::state::{Guard, StageRunEvent};
+use factory_domain::values::{HumanText, MediaType};
+use factory_domain::vocabulary::{ConfidenceLevel, HumanRole};
+use factory_ports::store::{AuditActor, NewArtifactIndexEntry, StageRun, Tx, Versioned};
+use serde_json::json;
+
+use super::Engine;
+use super::error::EngineError;
+use super::ledger::ClaimSpec;
+use super::payload::{self, key};
+use super::progress::guard_error;
+use super::record::Cx;
+use super::timeline::Timeline;
+use crate::audit::{AuditAction, AuditDecision, AuditKind};
+use crate::commands::{Actor, Decision, Subject};
+
+impl Engine {
+    /// Applies a human decision to a stage run.
+    ///
+    /// # Errors
+    /// * [`EngineError::NotAuthorized`] when the principal lacks the role the move needs. The
+    ///   refusal is audited.
+    /// * [`EngineError::GuardUnmet`] when the guard does not hold, for instance an approval whose
+    ///   evidence is out of date. The refusal is audited.
+    /// * [`EngineError::Illegal`] when the stage run is not in a state the decision applies to.
+    /// * [`EngineError::Duplicate`] when this command was already applied.
+    /// * The store errors.
+    pub async fn decide(
+        &self,
+        actor: &Actor,
+        subject: Subject,
+        decision: Decision,
+    ) -> Result<(), EngineError> {
+        let roles = self.roles_of(actor).await?;
+        // Text a person wrote is stored before the transaction opens, and only its hash is used.
+        let stored = match &decision {
+            Decision::Answer { text, .. } => Some(self.store_text(text.as_bytes()).await?),
+            Decision::Reject { reason } => Some(self.store_text(reason.as_str().as_bytes()).await?),
+            Decision::Override { justification, .. } => {
+                Some(self.store_text(justification.as_str().as_bytes()).await?)
+            }
+            _ => None,
+        };
+        let mut tx = self.tenant_tx(actor.tenant).await?;
+        let job = tx.get_job(subject.job).await?;
+        let run = tx.get_stage_run(subject.stage_run).await?;
+        if run.value.job_id != subject.job {
+            return Err(EngineError::NotFound);
+        }
+        let timeline = Timeline::load(&mut *tx, subject.job).await?;
+        if timeline.has_applied(actor.command) {
+            return Err(EngineError::Duplicate);
+        }
+        let cx = Cx::new(self, &job.value, actor.command);
+        let applied = self
+            .apply_decision(
+                &mut *tx, &cx, actor, &roles, &job.value, &run, &timeline, &decision, stored,
+            )
+            .await;
+        match applied {
+            Ok(action) => {
+                cx.audit(&mut *tx, AuditActor::Principal(actor.principal), action)
+                    .await?;
+                self.settle(&mut *tx, &cx).await?;
+                tx.commit().await?;
+                Ok(())
+            }
+            Err(error @ (EngineError::NotAuthorized(_) | EngineError::GuardUnmet(_))) => {
+                drop(tx);
+                let kind = match decision {
+                    Decision::Approve { .. } | Decision::Reject { .. } => {
+                        AuditKind::ApprovalGrantedOrRejected
+                    }
+                    Decision::Override { .. } => AuditKind::HumanOverride,
+                    _ => AuditKind::AuthorizationDecision,
+                };
+                self.record_denial(
+                    actor,
+                    subject,
+                    AuditAction::new(kind, AuditDecision::Denied),
+                )
+                .await?;
+                Err(error)
+            }
+            Err(other) => Err(other),
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn apply_decision(
+        &self,
+        tx: &mut dyn Tx,
+        cx: &Cx<'_>,
+        actor: &Actor,
+        roles: &[HumanRole],
+        job: &factory_ports::store::Job,
+        run: &Versioned<StageRun>,
+        timeline: &Timeline,
+        decision: &Decision,
+        stored: Option<ArtifactRef>,
+    ) -> Result<AuditAction, EngineError> {
+        let holds = |role: HumanRole| roles.contains(&role);
+        let is_requester = actor.principal == job.requester;
+        let base = payload::with(
+            payload::for_run(run.value.kind, run.value.id),
+            key::PRINCIPAL,
+            json!(actor.principal.to_string()),
+        );
+        match decision {
+            Decision::Answer {
+                raises_budget_ceiling,
+                ..
+            } => {
+                let may = holds(HumanRole::Operator)
+                    || holds(HumanRole::Approver)
+                    || holds(HumanRole::OrgAdmin)
+                    || (holds(HumanRole::Requester) && is_requester);
+                if !may {
+                    return Err(EngineError::NotAuthorized(
+                        "only the requester, an operator, an approver or an org admin may answer",
+                    ));
+                }
+                let facts = AnswerFacts {
+                    answer_recorded_with_principal: true,
+                    answer_became_a_new_input_hash: stored.is_some(),
+                    raises_a_ceiling: *raises_budget_ceiling,
+                    principal_is_org_admin: holds(HumanRole::OrgAdmin),
+                };
+                evaluate(Guard::AnswerRecorded, &GuardFacts::Answer(facts)).map_err(guard_error)?;
+                let answer = stored.ok_or(EngineError::Corrupt("an answer was not stored"))?;
+                self.index_for(tx, cx, run.value.id, &answer).await?;
+                let payload = payload::with(base, key::ANSWER, json!(answer.sha256.to_string()));
+                let payload = payload::with(payload, key::ANSWER_MEDIA_TYPE, json!("text/plain"));
+                cx.move_stage_run(
+                    tx,
+                    run,
+                    StageRunEvent::HumanAnswered,
+                    Some("answered"),
+                    payload,
+                )
+                .await?;
+                Ok(AuditAction::new(
+                    AuditKind::AuthorizationDecision,
+                    AuditDecision::Granted,
+                ))
+            }
+            Decision::Approve {
+                evidence_seen,
+                warnings_decided,
+            } => {
+                let head = tx.ledger_head(cx.job).await?;
+                let facts = ApprovalFacts {
+                    decision_is_approve: true,
+                    // Nobody approves their own request: a distinct approver is required.
+                    principal_holds_required_role: holds(HumanRole::Approver) && !is_requester,
+                    evidence_digest_seen_equals_current: head
+                        .as_ref()
+                        .is_some_and(|head| &head.hash == evidence_seen),
+                    translation_warnings_decided: *warnings_decided,
+                };
+                if !facts.principal_holds_required_role {
+                    return Err(EngineError::NotAuthorized(
+                        "an approval needs an approver other than the requester",
+                    ));
+                }
+                evaluate(Guard::ApproverAuthorized, &GuardFacts::Approval(facts))
+                    .map_err(guard_error)?;
+                self.record_judgment(
+                    tx,
+                    cx,
+                    run,
+                    actor.principal,
+                    HumanRole::Approver,
+                    "approved",
+                )
+                .await?;
+                cx.move_stage_run(
+                    tx,
+                    run,
+                    StageRunEvent::HumanApproved,
+                    Some("approved"),
+                    base,
+                )
+                .await?;
+                Ok(AuditAction::new(
+                    AuditKind::ApprovalGrantedOrRejected,
+                    AuditDecision::Granted,
+                ))
+            }
+            Decision::Reject { .. } => {
+                if !holds(HumanRole::Approver) {
+                    return Err(EngineError::NotAuthorized("only an approver may reject"));
+                }
+                let facts = HumanRejectFacts {
+                    decider_is_authorized_approver: true,
+                    reject_decision_recorded: true,
+                    reason_recorded: stored.is_some(),
+                };
+                evaluate(Guard::HumanRejected, &GuardFacts::HumanReject(facts))
+                    .map_err(guard_error)?;
+                self.record_judgment(
+                    tx,
+                    cx,
+                    run,
+                    actor.principal,
+                    HumanRole::Approver,
+                    "rejected",
+                )
+                .await?;
+                cx.move_stage_run(
+                    tx,
+                    run,
+                    StageRunEvent::HumanRejected,
+                    Some("rejected"),
+                    base,
+                )
+                .await?;
+                Ok(AuditAction::new(
+                    AuditKind::ApprovalGrantedOrRejected,
+                    AuditDecision::Ended,
+                ))
+            }
+            Decision::RequestRework { target } => {
+                let request = HumanReworkRequest {
+                    from: run.value.kind,
+                    target: *target,
+                    principal_roles: roles,
+                    ledger: timeline.rework,
+                    limits: self.config.rework_limits,
+                };
+                match decide_human_rework(&request) {
+                    HumanReworkDecision::Rework(plan) => {
+                        self.apply_rework(
+                            tx,
+                            cx,
+                            run,
+                            &plan,
+                            None,
+                            StageRunEvent::HumanRequestedRework,
+                        )
+                        .await?;
+                        Ok(AuditAction::new(
+                            AuditKind::AuthorizationDecision,
+                            AuditDecision::Granted,
+                        ))
+                    }
+                    HumanReworkDecision::Refused(failure) => {
+                        if !(holds(HumanRole::Approver) || holds(HumanRole::Operator)) {
+                            return Err(EngineError::NotAuthorized(
+                                "only an approver or an operator may send work back",
+                            ));
+                        }
+                        Err(EngineError::GuardUnmet(failure))
+                    }
+                    HumanReworkDecision::NoRoute(_) => Err(EngineError::Refused(
+                        "the table of human rework routes has no such route from this stage",
+                    )),
+                }
+            }
+            Decision::UnblockRerun {
+                capability_reprobe_passed,
+                dependency_now_available,
+            } => {
+                if !holds(HumanRole::Operator) {
+                    return Err(EngineError::NotAuthorized("only an operator may unblock"));
+                }
+                let facts = UnblockFacts {
+                    capability_reprobe_passed: *capability_reprobe_passed,
+                    missing_dependency_now_available: *dependency_now_available,
+                };
+                evaluate(Guard::BlockClearedRerun, &GuardFacts::Unblock(facts))
+                    .map_err(guard_error)?;
+                cx.move_stage_run(
+                    tx,
+                    run,
+                    StageRunEvent::UnblockedRerun,
+                    Some("unblocked"),
+                    base,
+                )
+                .await?;
+                Ok(AuditAction::new(
+                    AuditKind::AuthorizationDecision,
+                    AuditDecision::Granted,
+                ))
+            }
+            Decision::Override { facts, .. } => {
+                let required = if facts.security_class {
+                    HumanRole::SecurityApprover
+                } else {
+                    HumanRole::Approver
+                };
+                if !holds(required) {
+                    return Err(EngineError::NotAuthorized(
+                        "an override needs the role the block requires",
+                    ));
+                }
+                let guard = DomainOverride {
+                    policy_permits_override_for_block_code: facts.policy_permits,
+                    block_is_security_class: facts.security_class,
+                    principal_roles: roles,
+                    role_required_by_policy: required,
+                    justification_recorded: stored.is_some(),
+                    blocked_gate_is_mandatory_of_active_profile: facts.mandatory_of_active_profile,
+                };
+                evaluate(Guard::OverridePermitted, &GuardFacts::Override(guard))
+                    .map_err(guard_error)?;
+                self.record_judgment(
+                    tx,
+                    cx,
+                    run,
+                    actor.principal,
+                    required,
+                    "accepted the risk of",
+                )
+                .await?;
+                cx.move_stage_run(
+                    tx,
+                    run,
+                    StageRunEvent::OverrideAccepted,
+                    Some("override"),
+                    base,
+                )
+                .await?;
+                Ok(AuditAction::new(
+                    AuditKind::HumanOverride,
+                    AuditDecision::Granted,
+                ))
+            }
+        }
+    }
+
+    /// The roles of the principal now, or a refusal when the configuration cannot be read.
+    async fn roles_of(&self, actor: &Actor) -> Result<Vec<HumanRole>, EngineError> {
+        self.deps
+            .authority
+            .roles(actor.tenant, actor.principal)
+            .await
+            .map_err(|_| EngineError::Refused("the protected configuration cannot be read"))
+    }
+
+    /// Stores a person's text as an artifact and returns its reference.
+    async fn store_text(&self, bytes: &[u8]) -> Result<ArtifactRef, EngineError> {
+        self.deps
+            .artifacts
+            .put(bytes.to_vec(), MediaType::parse("text/plain")?)
+            .await
+            .map_err(|error| EngineError::Artifacts(error.to_string()))
+    }
+
+    /// Records in the tenant's index that it holds an artifact made for a stage run.
+    async fn index_for(
+        &self,
+        tx: &mut dyn Tx,
+        cx: &Cx<'_>,
+        run: StageRunId,
+        artifact: &ArtifactRef,
+    ) -> Result<(), EngineError> {
+        tx.index_artifact(NewArtifactIndexEntry {
+            artifact: artifact.clone(),
+            stage_run_id: Some(run),
+            created_at: cx.now,
+        })
+        .await?;
+        Ok(())
+    }
+
+    /// Writes the ledger entry that names the person who stands behind a decision. It is a
+    /// judgment: it supports no assurance level, so an override or an approval never creates one.
+    async fn record_judgment(
+        &self,
+        tx: &mut dyn Tx,
+        cx: &Cx<'_>,
+        run: &Versioned<StageRun>,
+        principal: PrincipalId,
+        role: HumanRole,
+        what: &str,
+    ) -> Result<(), EngineError> {
+        let scope = HumanText::parse(&format!(
+            "The person {what} the {} stage run after reading the recorded evidence.",
+            run.value.kind
+        ))?;
+        let claim = ClaimSpec {
+            statement: format!(
+                "A person with the role {} {what} the {} stage run.",
+                role.as_str(),
+                run.value.kind
+            ),
+            kind: ClaimKind::ExpertJudgment,
+            assurance_level: None,
+            confidence: ConfidenceLevel::Medium,
+            rationale: "A named person stands behind this decision; it is not a measurement."
+                .to_owned(),
+        };
+        let evidence = Evidence::ExpertJudgment(ExpertJudgmentEvidence {
+            attestor: Attestor {
+                principal_id: principal,
+                role,
+            },
+            scope,
+            recorded_at: cx.now,
+        });
+        cx.record_claim(tx, run.value.id, None, &claim, &[evidence])
+            .await?;
+        Ok(())
+    }
+
+    /// Records a refused decision in the audit log, in a transaction of its own because the
+    /// decision's transaction is dropped.
+    async fn record_denial(
+        &self,
+        actor: &Actor,
+        subject: Subject,
+        action: AuditAction,
+    ) -> Result<(), EngineError> {
+        let mut tx = self.tenant_tx(actor.tenant).await?;
+        let job = tx.get_job(subject.job).await?;
+        let cx = Cx::new(self, &job.value, actor.command);
+        cx.audit(&mut *tx, AuditActor::Principal(actor.principal), action)
+            .await?;
+        tx.commit().await?;
+        Ok(())
+    }
+}

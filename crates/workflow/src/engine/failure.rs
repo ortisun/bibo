@@ -1,0 +1,206 @@
+//! What a failed attempt does to its stage run: retry after a back-off, ask a person, or fail.
+//!
+//! A limit never fails a stage run. Reaching the attempt limit, the repair cap or a budget limit
+//! asks a person, and only a failure that retrying cannot fix fails the run (ADR 0010, decision 1).
+//! The choice is made by `decide_after_failure` of the domain, and the engine then evaluates the
+//! guard of the move that the choice names, so the two cannot disagree.
+//!
+//! Attempts and repairs are counted from the last human answer. A person who answers a stage run
+//! that stopped at its limit therefore gets a new window of attempts, and the total stays bounded
+//! because a person is in the loop each time.
+
+use factory_domain::ids::{AttemptId, StageRunId};
+use factory_domain::machines::failure::FailureClass;
+use factory_domain::machines::guards::{EscalationFacts, GuardFacts, RetryFacts, evaluate};
+use factory_domain::machines::retry::{AttemptDisposition, EscalationCause, decide_after_failure};
+use factory_domain::state::{Guard, StageRunEvent, StageRunStatus};
+use factory_ports::clock::timestamp_after;
+use factory_ports::store::Tx;
+use serde_json::json;
+
+use super::Engine;
+use super::error::EngineError;
+use super::payload::{self, key};
+use super::progress::{Board, guard_error, upstream_runs};
+use super::record::Cx;
+use super::timeline::Timeline;
+use crate::scheduler::retry_delay;
+
+/// Why a running stage run goes to a person when no failure class decides it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum HumanReason {
+    /// The agent returned a structured request for a person.
+    AgentRequested,
+    /// The stage could not run because something it needs is missing, and it fails closed.
+    Blocked,
+}
+
+impl HumanReason {
+    const fn code(self) -> &'static str {
+        match self {
+            Self::AgentRequested => "agent-requested-a-human",
+            Self::Blocked => "stage-blocked",
+        }
+    }
+
+    const fn facts(self) -> EscalationFacts {
+        EscalationFacts {
+            budget_limit_hit: false,
+            attempt_limit_reached: false,
+            agent_requested_a_human: matches!(self, Self::AgentRequested),
+            stagnation_detected: false,
+            policy_requires_human_decision: matches!(self, Self::Blocked),
+        }
+    }
+}
+
+impl Engine {
+    /// Decides and applies what the failure of an attempt means for its stage run, then settles
+    /// the job. The attempt has already moved to its failed state in this transaction.
+    ///
+    /// Returns `None` when the stage run is no longer `RUNNING`: it was cancelled or superseded
+    /// while the attempt ran, and there is nothing to decide.
+    ///
+    /// # Errors
+    /// Any error of a guard, a move or a read. The caller drops the transaction.
+    pub(crate) async fn after_attempt_failed(
+        &self,
+        tx: &mut dyn Tx,
+        cx: &Cx<'_>,
+        run_id: StageRunId,
+        attempt: AttemptId,
+        class: FailureClass,
+    ) -> Result<Option<AttemptDisposition>, EngineError> {
+        let timeline = Timeline::load(tx, cx.job).await?;
+        let board = Board::load(tx, &timeline).await?;
+        let (Some(run), Some(record)) = (board.run(run_id), timeline.run(run_id)) else {
+            return Err(EngineError::NotFound);
+        };
+        if run.value.status != StageRunStatus::Running {
+            return Ok(None);
+        }
+        let handler = self
+            .handlers
+            .get(run.value.kind)
+            .ok_or(EngineError::NoHandler(run.value.kind))?;
+        let upstream = upstream_runs(&timeline, &board);
+        let ccx = self.contract_context(cx, &run.value, record, &upstream);
+        let contract = handler
+            .contract(&ccx)
+            .map_err(|_| EngineError::Corrupt("the stage contract no longer resolves"))?;
+
+        let window = record.window();
+        let facts = RetryFacts {
+            class,
+            retry_on: contract.timeout_and_retries.retry_on.as_slice(),
+            attempts_used: window.attempts_used(),
+            max_attempts: u32::try_from(contract.timeout_and_retries.max_attempts.get())
+                .unwrap_or(1),
+            budget_has_room: timeline.spent_micro_usd < self.config.job_budget_micro_usd,
+            invalid_output_failures: window.invalid_output_failures(),
+            repair_cap: self.config.repair_cap,
+        };
+        let disposition = decide_after_failure(&facts);
+        let base = payload::attempt_event(
+            run.value.kind,
+            run_id,
+            record.attempt(attempt).map_or(0, |a| a.number),
+            Some(class),
+        );
+        match disposition {
+            AttemptDisposition::Retry => {
+                evaluate(Guard::RetryAllowed, &GuardFacts::Retry(facts)).map_err(guard_error)?;
+                let delay = retry_delay(
+                    &contract.timeout_and_retries.backoff,
+                    window.attempts_used(),
+                    seed_of(attempt),
+                );
+                let now = tx.database_time().await?;
+                let not_before = timestamp_after(&now, delay);
+                let payload = payload::with(base, key::NOT_BEFORE, json!(not_before.to_string()));
+                cx.move_stage_run(
+                    tx,
+                    run,
+                    StageRunEvent::AttemptFailedRetryable,
+                    Some("retry-scheduled"),
+                    payload,
+                )
+                .await?;
+                tracing::info!(
+                    monotonic_counter.factory_retries_total = 1_u64,
+                    stage = run.value.kind.as_str()
+                );
+            }
+            AttemptDisposition::Escalate(cause) => {
+                evaluate(
+                    Guard::EscalationRequired,
+                    &GuardFacts::Escalation(cause.facts()),
+                )
+                .map_err(guard_error)?;
+                let code = match cause {
+                    EscalationCause::BudgetLimit => "budget-limit",
+                    EscalationCause::AttemptLimit => "attempt-limit",
+                };
+                let payload = payload::with(base, key::CAUSE, json!(code));
+                cx.move_stage_run(tx, run, StageRunEvent::EscalateToHuman, Some(code), payload)
+                    .await?;
+            }
+            AttemptDisposition::Fail => {
+                evaluate(Guard::FailureNonretryable, &GuardFacts::Retry(facts))
+                    .map_err(guard_error)?;
+                cx.move_stage_run(
+                    tx,
+                    run,
+                    StageRunEvent::AttemptFailedFinal,
+                    Some("failure-not-retryable"),
+                    base,
+                )
+                .await?;
+            }
+        }
+        self.settle(tx, cx).await?;
+        Ok(Some(disposition))
+    }
+
+    /// Sends a running stage run to a person for a reason that is not a failure class: the agent
+    /// asked, or the stage fails closed.
+    ///
+    /// # Errors
+    /// Any error of a guard, a move or a read.
+    pub(crate) async fn escalate_running(
+        &self,
+        tx: &mut dyn Tx,
+        cx: &Cx<'_>,
+        run_id: StageRunId,
+        reason: HumanReason,
+    ) -> Result<(), EngineError> {
+        let timeline = Timeline::load(tx, cx.job).await?;
+        let board = Board::load(tx, &timeline).await?;
+        let run = board.run(run_id).ok_or(EngineError::NotFound)?;
+        evaluate(
+            Guard::EscalationRequired,
+            &GuardFacts::Escalation(reason.facts()),
+        )
+        .map_err(guard_error)?;
+        let payload = payload::with(
+            payload::for_run(run.value.kind, run_id),
+            key::CAUSE,
+            json!(reason.code()),
+        );
+        cx.move_stage_run(
+            tx,
+            run,
+            StageRunEvent::EscalateToHuman,
+            Some(reason.code()),
+            payload,
+        )
+        .await?;
+        self.settle(tx, cx).await
+    }
+}
+
+/// The jitter seed of an attempt: the low 64 bits of its identifier.
+fn seed_of(attempt: AttemptId) -> u64 {
+    let bits = attempt.as_uuid().as_u128();
+    u64::try_from(bits & u128::from(u64::MAX)).unwrap_or(0)
+}
