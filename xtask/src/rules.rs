@@ -12,7 +12,37 @@ pub struct Rules {
     pub crates: Vec<CrateRule>,
     pub apps: Vec<AppRule>,
     pub tooling: Vec<ToolingRule>,
+    /// The lint that DEP-06 relies on, read from that rule's `enforced_by` text, for example
+    /// "workspace lint unsafe_code = forbid".
+    pub workspace_lint: WorkspaceLint,
     statements: BTreeMap<String, String>,
+}
+
+/// A lint the root manifest sets under `[workspace.lints.<table>]`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorkspaceLint {
+    /// `rust` or `clippy`.
+    pub table: String,
+    pub name: String,
+    pub level: String,
+}
+
+impl WorkspaceLint {
+    /// Reads "workspace lint NAME = LEVEL". A name written `clippy::x` is in the clippy table.
+    fn parse(enforced_by: &str) -> Option<Self> {
+        let rest = enforced_by.split("workspace lint ").nth(1)?;
+        let (name, level) = rest.split_once('=')?;
+        let level = level.split_whitespace().next()?;
+        let name = name.trim();
+        let (table, name) = name.split_once("::").unwrap_or(("rust", name));
+        (!name.is_empty()).then(|| Self {
+            table: table.to_string(),
+            name: name.to_string(),
+            level: level
+                .trim_matches(|c: char| !c.is_ascii_alphanumeric())
+                .to_string(),
+        })
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -183,17 +213,24 @@ impl Rules {
             });
         }
         let mut statements = BTreeMap::new();
+        let mut workspace_lint = None;
         for r in list(&doc, "rules", "the document")? {
-            statements.insert(
-                text(r, "id", "a rule entry")?,
-                text(r, "statement", "a rule entry")?,
-            );
+            let id = text(r, "id", "a rule entry")?;
+            if id == "DEP-06" {
+                workspace_lint = WorkspaceLint::parse(&text(r, "enforced_by", "rule DEP-06")?);
+            }
+            statements.insert(id, text(r, "statement", "a rule entry")?);
         }
+        let workspace_lint = workspace_lint.ok_or_else(|| {
+            "rules file: rule DEP-06 must say \"workspace lint NAME = LEVEL\" in `enforced_by`"
+                .to_string()
+        })?;
         Ok(Self {
             package_prefix,
             crates,
             apps,
             tooling,
+            workspace_lint,
             statements,
         })
     }
@@ -331,6 +368,42 @@ mod tests {
             error.contains("`ring`") && error.contains("crate a"),
             "{error}"
         );
+    }
+
+    #[test]
+    fn dep_06_names_the_workspace_lint_it_relies_on() {
+        let rules = Rules::parse(&real_rules_text()).expect("parse");
+        assert_eq!(
+            rules.workspace_lint,
+            WorkspaceLint {
+                table: "rust".into(),
+                name: "unsafe_code".into(),
+                level: "forbid".into()
+            }
+        );
+    }
+
+    #[test]
+    fn a_clippy_lint_is_read_from_the_clippy_table() {
+        let lint = WorkspaceLint::parse("workspace lint clippy::unwrap_used = deny").unwrap();
+        assert_eq!(
+            (lint.table.as_str(), lint.name.as_str(), lint.level.as_str()),
+            ("clippy", "unwrap_used", "deny")
+        );
+    }
+
+    #[test]
+    fn text_without_a_workspace_lint_is_not_one() {
+        assert_eq!(WorkspaceLint::parse("cargo deny check"), None);
+        assert_eq!(WorkspaceLint::parse("workspace lint = forbid"), None);
+    }
+
+    #[test]
+    fn a_rules_file_where_dep_06_names_no_lint_is_refused() {
+        let broken =
+            real_rules_text().replace("workspace lint unsafe_code = forbid", "a code review");
+        let error = Rules::parse(&broken).unwrap_err();
+        assert!(error.contains("DEP-06"), "{error}");
     }
 
     #[test]

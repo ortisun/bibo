@@ -3,6 +3,70 @@
 version = 4
 
 [[package]]
+name = "factory-api"
+version = "0.0.0"
+
+[[package]]
+name = "factory-cli"
+version = "0.0.0"
+
+[[package]]
+name = "factory-contracts"
+version = "0.0.0"
+
+[[package]]
+name = "factory-domain"
+version = "0.0.0"
+
+[[package]]
+name = "factory-egress"
+version = "0.0.0"
+
+[[package]]
+name = "factory-egress-sidecar"
+version = "0.0.0"
+
+[[package]]
+name = "factory-github"
+version = "0.0.0"
+
+[[package]]
+name = "factory-observability"
+version = "0.0.0"
+
+[[package]]
+name = "factory-ports"
+version = "0.0.0"
+
+[[package]]
+name = "factory-runtime"
+version = "0.0.0"
+
+[[package]]
+name = "factory-sandbox"
+version = "0.0.0"
+
+[[package]]
+name = "factory-spec_adapter"
+version = "0.0.0"
+
+[[package]]
+name = "factory-storage"
+version = "0.0.0"
+
+[[package]]
+name = "factory-testkit"
+version = "0.0.0"
+
+[[package]]
+name = "factory-worker"
+version = "0.0.0"
+
+[[package]]
+name = "factory-workflow"
+version = "0.0.0"
+
+[[package]]
 name = "itoa"
 version = "1.0.18"
 source = "registry+https://github.com/rust-lang/crates.io-index"

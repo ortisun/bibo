@@ -550,7 +550,7 @@ fn tree_checks(root: &Path, findings: &mut Vec<Finding>) -> Result<(), String> {
             let code = if relative.ends_with(".rs") {
                 scan::mask(&text).with_strings
             } else {
-                without_hash_comments(&text)
+                scan::without_hash_comments(&text)
             };
             safe_directory_wildcard(&relative, &code, findings);
         }
@@ -600,27 +600,6 @@ fn walk(root: &Path, dir: &Path, files: &mut Vec<String>) -> Result<(), String> 
         }
     }
     Ok(())
-}
-
-/// Blank everything after a `#` that is outside quotes, line by line. Keeps offsets and newlines.
-fn without_hash_comments(text: &str) -> String {
-    text.split('\n')
-        .map(|line| {
-            let mut quote = None;
-            for (at, c) in line.char_indices() {
-                match (quote, c) {
-                    (None, '"' | '\'') => quote = Some(c),
-                    (Some(open), c) if c == open => quote = None,
-                    (None, '#') => {
-                        return format!("{}{}", &line[..at], " ".repeat(line.len() - at));
-                    }
-                    _ => {}
-                }
-            }
-            line.to_string()
-        })
-        .collect::<Vec<_>>()
-        .join("\n")
 }
 
 /// ST-01: `safe.directory` set to `*`, in any spelling: `safe.directory=*`, a quoted argument
@@ -742,15 +721,6 @@ mod tests {
             &mut findings,
         );
         assert!(findings.is_empty());
-    }
-
-    #[test]
-    fn a_hash_comment_is_blanked_but_a_hash_in_quotes_is_kept() {
-        let text = "a: 1 # note safe.directory=*\nb: \"x # y\" # tail\n";
-        let blanked = without_hash_comments(text);
-        assert_eq!(blanked.len(), text.len());
-        assert!(!blanked.contains("note") && !blanked.contains("tail"));
-        assert!(blanked.contains("\"x # y\""));
     }
 
     #[cfg(unix)]

@@ -136,6 +136,33 @@ mod clippy_bans {
     }
 
     #[test]
+    fn every_ban_fires_under_the_clippy_toml_each_inner_crate_actually_has() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
+        for name in xtask::clippy_bans::INNER_CRATES {
+            let path = root.join("crates").join(name).join("clippy.toml");
+            let text = fs::read_to_string(&path)
+                .unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
+            let scratch = Scratch::new(&format!("real-{name}"), Some(&text), &scratch_source());
+            let (_, diagnostics) = scratch.clippy();
+            let silent: Vec<&str> = BANS
+                .iter()
+                .enumerate()
+                .filter(|(index, ban)| {
+                    let line = *index as u64 + 2;
+                    !diagnostics.iter().any(|(lint, at, message)| {
+                        *at == line && lint == lint_for(ban.kind) && message.contains(ban.path)
+                    })
+                })
+                .map(|(_, ban)| ban.path)
+                .collect();
+            assert!(
+                silent.is_empty(),
+                "{name}: these bans did not fire: {silent:?}"
+            );
+        }
+    }
+
+    #[test]
     fn the_same_crate_passes_when_it_uses_nothing_banned() {
         let scratch = Scratch::new(
             "clean",

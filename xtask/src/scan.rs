@@ -238,6 +238,27 @@ pub fn blank_ranges(text: &str, ranges: &[(usize, usize)]) -> String {
     String::from_utf8(bytes).unwrap_or_default()
 }
 
+/// Blank everything after a `#` that is outside quotes, line by line. Keeps offsets and newlines.
+pub fn without_hash_comments(text: &str) -> String {
+    text.split('\n')
+        .map(|line| {
+            let mut quote = None;
+            for (at, c) in line.char_indices() {
+                match (quote, c) {
+                    (None, '"' | '\'') => quote = Some(c),
+                    (Some(open), c) if c == open => quote = None,
+                    (None, '#') => {
+                        return format!("{}{}", &line[..at], " ".repeat(line.len() - at));
+                    }
+                    _ => {}
+                }
+            }
+            line.to_string()
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 /// One production source file, ready to scan.
 pub struct Source {
     /// Path relative to the workspace root, with forward slashes.
@@ -510,6 +531,15 @@ mod tests {
             "begin_system",
         );
         assert_eq!(hits.len(), 2);
+    }
+
+    #[test]
+    fn a_hash_comment_is_blanked_but_a_hash_in_quotes_is_kept() {
+        let text = "a: 1 # note safe.directory=*\nb: \"x # y\" # tail\n";
+        let blanked = without_hash_comments(text);
+        assert_eq!(blanked.len(), text.len());
+        assert!(!blanked.contains("note") && !blanked.contains("tail"));
+        assert!(blanked.contains("\"x # y\""));
     }
 
     #[test]

@@ -8,6 +8,7 @@
 pub mod cli;
 pub mod clippy_bans;
 pub mod finding;
+pub mod lints;
 pub mod metadata;
 pub mod rules;
 pub mod scan;

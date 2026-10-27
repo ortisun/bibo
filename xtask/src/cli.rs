@@ -5,6 +5,7 @@
 
 use crate::clippy_bans;
 use crate::finding::Finding;
+use crate::lints;
 use crate::metadata;
 use crate::rules::Rules;
 use crate::static_checks;
@@ -13,13 +14,15 @@ use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
 const USAGE: &str = "usage:
-  cargo xtask check-architecture [--manifest-path PATH] [--rules PATH] [--require-all-crates]
+  cargo xtask check-architecture [--manifest-path PATH] [--rules PATH]
   cargo xtask clippy-toml
 
-check-architecture options:
-  --manifest-path PATH   the workspace Cargo.toml to check (default: this repository)
-  --rules PATH           the rules file (default: docs/architecture/crate-dependency-rules.json)
-  --require-all-crates   fail when the rules file lists a crate or binary the workspace lacks
+check-architecture fails when the rules file lists a crate or binary that the workspace lacks.
+Options:
+  --manifest-path PATH    the workspace Cargo.toml to check (default: this repository)
+  --rules PATH            the rules file (default: docs/architecture/crate-dependency-rules.json)
+  --require-all-crates    the default, accepted so that older commands keep working
+  --allow-missing-crates  do not fail on missing crates (for the tests of xtask itself)
 
 clippy-toml prints the ban list (DEP-05) that domain, ports, workflow and spec_adapter keep in
 their own clippy.toml, for example: cargo xtask clippy-toml > crates/domain/clippy.toml";
@@ -50,7 +53,7 @@ fn fail_to_run(message: &str) -> i32 {
 struct CheckArgs {
     manifest_path: PathBuf,
     rules_path: PathBuf,
-    require_all_crates: bool,
+    allow_missing_crates: bool,
 }
 
 fn repository_root() -> PathBuf {
@@ -66,16 +69,23 @@ impl CheckArgs {
         let mut parsed = Self {
             manifest_path: root.join("Cargo.toml"),
             rules_path: root.join("docs/architecture/crate-dependency-rules.json"),
-            require_all_crates: false,
+            allow_missing_crates: false,
         };
+        let mut explicitly_required = false;
         let mut rest = args.iter();
         while let Some(arg) = rest.next() {
             match arg.as_str() {
                 "--manifest-path" => parsed.manifest_path = value(&mut rest, arg)?,
                 "--rules" => parsed.rules_path = value(&mut rest, arg)?,
-                "--require-all-crates" => parsed.require_all_crates = true,
+                "--require-all-crates" => explicitly_required = true,
+                "--allow-missing-crates" => parsed.allow_missing_crates = true,
                 other => return Err(format!("unknown option {other:?}")),
             }
+        }
+        if explicitly_required && parsed.allow_missing_crates {
+            return Err(
+                "--require-all-crates and --allow-missing-crates contradict each other".to_string(),
+            );
         }
         Ok(parsed)
     }
@@ -101,9 +111,10 @@ fn check_architecture(args: &CheckArgs) -> i32 {
         &rules,
         &workspace,
         topology::Options {
-            require_all_crates: args.require_all_crates,
+            allow_missing_crates: args.allow_missing_crates,
         },
     );
+    findings.extend(lints::check(&rules, &workspace));
     findings.extend(clippy_bans::check(&rules, &workspace));
     match static_checks::check(&rules, &workspace) {
         Ok(more) => findings.extend(more),
@@ -121,30 +132,10 @@ fn check_architecture(args: &CheckArgs) -> i32 {
             names.len(),
             names.join(", ")
         );
-        let pending = pending_crates(&rules, &workspace);
-        if !pending.is_empty() {
-            println!(
-                "not in the workspace yet ({}): {}; pass --require-all-crates to fail on them",
-                pending.len(),
-                pending.join(", ")
-            );
-        }
         return 0;
     }
     report(&findings, &rules);
     1
-}
-
-fn pending_crates(rules: &Rules, workspace: &metadata::Workspace) -> Vec<String> {
-    let present = workspace.member_names();
-    rules
-        .crates
-        .iter()
-        .map(|c| c.name.as_str())
-        .chain(rules.apps.iter().map(|a| a.name.as_str()))
-        .map(|n| rules.package_name(n))
-        .filter(|p| !present.contains(p.as_str()))
-        .collect()
 }
 
 fn report(findings: &[Finding], rules: &Rules) {

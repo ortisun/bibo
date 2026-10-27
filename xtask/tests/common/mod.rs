@@ -36,6 +36,8 @@ struct Member {
     package: String,
     is_app: bool,
     edges: Vec<Edge>,
+    /// The lints table of the manifest. `None` leaves the crate without one.
+    lints: Option<String>,
 }
 
 struct External {
@@ -129,7 +131,12 @@ pub struct Fixture {
     externals: BTreeMap<String, External>,
     files: Vec<(String, String)>,
     skip_clippy_toml: Vec<String>,
+    /// The `[workspace.lints]` tables of the root manifest.
+    root_lints: Option<String>,
 }
+
+const MEMBER_LINTS: &str = "\n[lints]\nworkspace = true\n";
+const ROOT_LINTS: &str = "\n[workspace.lints.rust]\nunsafe_code = \"forbid\"\n";
 
 impl Drop for Fixture {
     fn drop(&mut self) {
@@ -171,7 +178,14 @@ impl Fixture {
         fs::create_dir_all(&dir).expect("create the fixture directory");
 
         let app = |n: &str| json!({"name": n, "path": format!("apps/{n}"), "slice": 1, "responsibility": "fixture"});
-        let rule = |id: &str| json!({"id": id, "statement": format!("fixture statement for {id}"), "enforced_by": "fixture"});
+        let rule = |id: &str| {
+            let enforced_by = if id == "DEP-06" {
+                "workspace lint unsafe_code = forbid"
+            } else {
+                "fixture"
+            };
+            json!({"id": id, "statement": format!("fixture statement for {id}"), "enforced_by": enforced_by})
+        };
         let rule_list: Vec<Value> = [
             "DEP-01", "DEP-02", "DEP-03", "DEP-04", "DEP-05", "DEP-06", "DEP-07", "DEP-08",
             "DEP-09", "DEP-10",
@@ -208,6 +222,7 @@ impl Fixture {
             externals: BTreeMap::new(),
             files: Vec::new(),
             skip_clippy_toml: Vec::new(),
+            root_lints: Some(ROOT_LINTS.to_string()),
         };
         for c in fixture.rules["crates"]
             .as_array()
@@ -279,6 +294,7 @@ impl Fixture {
                 package,
                 is_app,
                 edges: Vec::new(),
+                lints: Some(MEMBER_LINTS.to_string()),
             },
         );
     }
@@ -446,6 +462,18 @@ impl Fixture {
         self
     }
 
+    /// Replace the lints table of a member's manifest. `None` removes it.
+    pub fn lints_block(&mut self, member: &str, block: Option<&str>) -> &mut Self {
+        self.members.get_mut(member).expect("fixture member").lints = block.map(str::to_string);
+        self
+    }
+
+    /// Replace the `[workspace.lints]` tables of the root manifest. `None` removes them.
+    pub fn root_lints_block(&mut self, block: Option<&str>) -> &mut Self {
+        self.root_lints = block.map(str::to_string);
+        self
+    }
+
     /// Do not write the canonical clippy.toml for this crate.
     pub fn without_clippy_toml(&mut self, member: &str) -> &mut Self {
         self.skip_clippy_toml.push(member.to_string());
@@ -501,6 +529,7 @@ impl Fixture {
         for name in self.externals.keys() {
             root.push_str(&format!("{name} = {{ path = \"../ext/{name}\" }}\n"));
         }
+        root.push_str(self.root_lints.as_deref().unwrap_or_default());
         self.write("Cargo.toml", &root);
 
         for m in self.members.values() {
@@ -532,6 +561,7 @@ impl Fixture {
                     ));
                 }
             }
+            manifest.push_str(m.lints.as_deref().unwrap_or_default());
             self.write(&format!("{}/Cargo.toml", m.path), &manifest);
             let entry = if m.is_app {
                 "src/main.rs"
@@ -568,7 +598,13 @@ impl Fixture {
         }
     }
 
+    /// Run with `--allow-missing-crates`: the fixtures list far fewer crates than the real rules.
     pub fn run(&self) -> Run {
+        self.run_with(&["--allow-missing-crates"])
+    }
+
+    /// Run the default mode, which requires every crate the rules file lists.
+    pub fn run_default(&self) -> Run {
         self.run_with(&[])
     }
 

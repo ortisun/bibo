@@ -8,8 +8,9 @@ use std::collections::{BTreeMap, BTreeSet};
 
 #[derive(Debug, Default, Clone, Copy)]
 pub struct Options {
-    /// Fail when the rules file lists a crate or binary that the workspace does not have yet.
-    pub require_all_crates: bool,
+    /// Do not fail when the rules file lists a crate or binary that the workspace does not have.
+    /// Only the tests use this, because their fixtures list far fewer crates than the real rules.
+    pub allow_missing_crates: bool,
 }
 
 struct Known<'a> {
@@ -27,7 +28,7 @@ struct Edge<'a> {
 pub fn check(rules: &Rules, ws: &Workspace, options: Options) -> Vec<Finding> {
     let mut findings = Vec::new();
     let known = classify(rules, ws, &mut findings);
-    if options.require_all_crates {
+    if !options.allow_missing_crates {
         require_every_listed_crate(rules, &known, &mut findings);
     }
 

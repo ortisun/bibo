@@ -5,13 +5,13 @@ Repository tooling for the architecture checks. It is not part of the product, a
 ## Commands
 
 ```
-cargo xtask check-architecture [--manifest-path PATH] [--rules PATH] [--require-all-crates]
+cargo xtask check-architecture [--manifest-path PATH] [--rules PATH]
 cargo xtask clippy-toml
 ```
 
 `check-architecture` reads `docs/architecture/crate-dependency-rules.json`, runs `cargo metadata`, and scans the Rust sources. It exits with 0 when every rule holds, 1 when a rule is broken, and 2 when it could not run (bad arguments, an unreadable rules file, a failing `cargo metadata`). A violation prints one line, `error[RULE]: where: what`, then the wording of each broken rule from the rules file.
 
-By default a crate that the rules file lists but the workspace does not have yet is only reported. `--require-all-crates` turns that into a `LAYOUT` failure. Use it once the crate shells exist.
+The workspace must hold exactly the crates and binaries that the rules file lists, each in its listed directory, so a missing crate is a `LAYOUT` failure. `--require-all-crates` is accepted as a synonym of this default. `--allow-missing-crates` turns the missing-crate failure off. Only the tests of xtask use it, because their fixture workspaces list far fewer crates than the real rules file.
 
 `clippy-toml` prints the DEP-05 ban list. Create each inner crate's file with `cargo xtask clippy-toml > crates/<name>/clippy.toml`.
 
@@ -20,11 +20,12 @@ By default a crate that the rules file lists but the workspace does not have yet
 | Rule | Source of the check | Where it lives |
 |---|---|---|
 | DEP-01 to DEP-04, DEP-08, `LAYOUT` | `cargo metadata` against the rules file. Nothing is repeated in Rust. | `src/topology.rs` |
+| DEP-06 | The root manifest sets the lint that DEP-06 names in `enforced_by` (read from the rules file), and every workspace package has `[lints] workspace = true`. `cargo metadata` does not report lints, so the manifests are read as text. | `src/lints.rs` |
 | DEP-05 | Each of `domain`, `ports`, `workflow`, `spec_adapter` has a `clippy.toml` that holds every ban. Tests compile a scratch crate to prove each ban fires. | `src/clippy_bans.rs` |
 | DEP-09, DEP-10, ST-02 to ST-05, ST-09 | Text scan of production Rust sources. | `src/static_checks.rs` |
 | ST-01 | Text scan of every non-prose file in the repository. | `src/static_checks.rs` |
 
-DEP-06 (`unsafe_code = "forbid"`) is a workspace lint and DEP-07 is `cargo deny`. Neither is checked here.
+DEP-07 is `cargo deny` and is not checked here.
 
 ## Limits of the source scans
 
@@ -45,6 +46,6 @@ cargo nextest run -p xtask static_checks   # the DEP-09, DEP-10 and ST-xx fixtur
 cargo nextest run -p xtask clippy_bans     # the DEP-05 proof
 ```
 
-Each integration test builds a small workspace in a temporary directory, with its own rules file and stub external crates (no network), and runs the real `xtask` binary on it. The baseline workspace satisfies every rule. A failing fixture changes one thing and expects exit code 1 and the rule's id. The `clippy_bans` tests need clippy for the pinned toolchain and fail with `BLOCKED` if it is missing.
+Each integration test builds a small workspace in a temporary directory, with its own rules file and stub external crates (no network), and runs the real `xtask` binary on it. The baseline workspace satisfies every rule. A failing fixture changes one thing and expects exit code 1 and the rule's id. The `dependency_rules` tests cover DEP-01 to DEP-04, DEP-06 and DEP-08. The `clippy_bans` tests need clippy for the pinned toolchain and fail with `BLOCKED` if it is missing.
 
 To add a rule: write the failing fixture first, check that it fails for the right reason, then add the check.

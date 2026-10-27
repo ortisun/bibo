@@ -2,10 +2,7 @@
 # docs/architecture/crate-dependency-rules.json, which `cargo xtask check-architecture` enforces.
 [workspace]
 resolver = "3"
-# Only xtask exists today. Cargo 1.98 rejects a glob that matches nothing, so `crates/*` and
-# `apps/*` cannot be listed until the first crate and the first binary exist. Add both globs in
-# the change that creates them.
-members = ["xtask"]
+members = ["xtask", "crates/*", "apps/*"]
 
 [workspace.package]
 version = "0.0.0"
@@ -30,9 +27,9 @@ dbg_macro = "warn"
 serde_json = "1.0.154"
 
 # The twelve library crates from ADR 0002 (package prefix `factory-`, directory `crates/<name>`).
-# Cargo reads an entry only when a crate inherits it, so an entry for a crate that does not exist
-# yet is harmless. The crate's own manifest still lists which workspace crates it may depend on,
-# and `cargo xtask check-architecture` rejects any edge the rules file does not allow.
+# A crate lists the workspace crates it may depend on in its own manifest, with
+# `factory-domain.workspace = true`. `cargo xtask check-architecture` rejects any edge the rules
+# file does not allow.
 factory-domain = { path = "crates/domain" }
 factory-ports = { path = "crates/ports" }
 factory-workflow = { path = "crates/workflow" }
