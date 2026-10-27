@@ -881,3 +881,71 @@ pub trait PrincipalOps {
     /// Reads a principal.
     async fn get_principal(&mut self, id: PrincipalId) -> Result<Principal, StoreError>;
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use factory_domain::state::StageRunEvent;
+
+    fn at() -> Timestamp {
+        Timestamp::parse("2026-10-27T08:30:00Z").expect("a valid timestamp")
+    }
+
+    #[test]
+    fn a_planned_transition_carries_the_tables_target_and_id() {
+        let plan = AppliedTransition::plan(
+            StageRunStatus::Pending,
+            StageRunEvent::PreconditionsMet,
+            at(),
+        )
+        .expect("S01 is legal");
+        assert_eq!(plan.from_status(), StageRunStatus::Pending);
+        assert_eq!(plan.to_status(), StageRunStatus::Ready);
+        assert_eq!(plan.event(), StageRunEvent::PreconditionsMet);
+        assert_eq!(plan.transition_id(), "S01");
+        assert_eq!(plan.at(), at());
+    }
+
+    #[test]
+    fn a_move_the_state_machine_does_not_list_cannot_be_planned() {
+        let refused = AppliedTransition::plan(StageRunStatus::Passed, StageRunEvent::Start, at());
+        assert!(refused.is_err());
+    }
+
+    #[test]
+    fn every_legal_job_move_can_be_planned_and_no_other() {
+        for status in JobStatus::STATES {
+            for event in JobStatus::EVENTS {
+                let planned = AppliedTransition::plan(*status, *event, at());
+                assert_eq!(
+                    planned.is_ok(),
+                    status.legal_events().contains(event),
+                    "{status} on {event}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_lease_epoch_only_goes_up() {
+        let never = LeaseEpoch::NEVER_CLAIMED;
+        assert_eq!(never.get(), 0);
+        assert_eq!(never.next(), LeaseEpoch::new(1));
+        assert!(never.next() > never);
+        assert_eq!(LeaseEpoch::new(u64::MAX).next(), LeaseEpoch::new(u64::MAX));
+    }
+
+    #[test]
+    fn worker_names_are_slugs() {
+        assert!(WorkerId::new("worker-1").is_ok());
+        for bad in ["", "Worker 1", "-x"] {
+            assert!(WorkerId::new(bad).is_err(), "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn reading_the_outbox_from_the_start_covers_every_position() {
+        assert_eq!(OutboxSeq::START.get(), 0);
+        assert!(OutboxSeq::new(1) > OutboxSeq::START);
+    }
+}

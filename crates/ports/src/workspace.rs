@@ -291,3 +291,45 @@ pub trait Workspace: Send + Sync {
     /// Ends the workspace and removes its directories.
     async fn dispose(self: Box<Self>) -> Result<(), WorkspaceError>;
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn path(text: &str) -> RepoPath {
+        RepoPath::new(text).expect("a valid path")
+    }
+
+    fn sha() -> CommitSha {
+        CommitSha::parse(&"a".repeat(40)).expect("a valid commit id")
+    }
+
+    #[test]
+    fn an_ingested_change_lists_its_paths_in_order() {
+        let change = IngestedChange::new(
+            sha(),
+            vec![
+                ChangedPath {
+                    path: path("z.txt"),
+                    kind: ChangeKind::Added,
+                },
+                ChangedPath {
+                    path: path("a.txt"),
+                    kind: ChangeKind::Deleted,
+                },
+            ],
+            Sha256Digest::of(b"tree"),
+        );
+        let paths: Vec<&str> = change.changes().iter().map(|c| c.path.as_str()).collect();
+        assert_eq!(paths, vec!["a.txt", "z.txt"]);
+        assert!(!change.is_empty());
+        assert!(IngestedChange::new(sha(), Vec::new(), Sha256Digest::of(b"tree")).is_empty());
+    }
+
+    #[test]
+    fn a_push_credential_never_shows_in_debug_output() {
+        let credential = PushCredential::new("ghs_not-for-logs".to_owned());
+        assert!(!format!("{credential:?}").contains("not-for-logs"));
+        assert_eq!(credential.expose(), "ghs_not-for-logs");
+    }
+}

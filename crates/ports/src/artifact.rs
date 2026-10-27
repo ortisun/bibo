@@ -105,3 +105,25 @@ pub trait ArtifactStore: Send + Sync {
     /// True when a blob with the reference's hash is stored.
     async fn exists(&self, reference: &ArtifactRef) -> Result<bool, ArtifactError>;
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn backends_have_distinct_labels_and_the_local_one_is_not_called_s3() {
+        assert_eq!(ArtifactBackend::LocalFs.label(), "local-fs");
+        assert_eq!(ArtifactBackend::S3Compatible.label(), "s3-compatible");
+    }
+
+    #[test]
+    fn a_hash_mismatch_names_both_hashes() {
+        let error = ArtifactError::HashMismatch {
+            expected: Sha256Digest::of(b"a"),
+            actual: Sha256Digest::of(b"b"),
+        };
+        let text = error.to_string();
+        assert!(text.contains(Sha256Digest::of(b"a").as_str()));
+        assert!(text.contains(Sha256Digest::of(b"b").as_str()));
+    }
+}
