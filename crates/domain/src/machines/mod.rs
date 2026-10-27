@@ -10,11 +10,15 @@
 //! | [`snapshot`] | Read-only views of stored state that the rules read |
 //! | [`limits`] | The rework cap (ADR 0009) and the count of rounds used |
 //! | [`failure`] | The failure classes of an attempt and the attempt event for each |
-//! | [`invalidation`] | Which runs become stale when an upstream artifact changes |
 //! | [`guards`] | The named guard predicates, evaluated against facts |
+//! | [`retry`] | What a failed attempt does to its stage run: retry, ask a human, or fail |
+//! | [`rework`] | Where a stage run that needs rework sends the work, and whether the cap allows it |
+//! | [`invalidation`] | Which runs become stale when an upstream artifact changes |
 
 pub mod failure;
 pub mod guards;
 pub mod invalidation;
 pub mod limits;
+pub mod retry;
+pub mod rework;
 pub mod snapshot;
