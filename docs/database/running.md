@@ -119,13 +119,43 @@ A failing check prints `NOT OK - <what was expected>: <what happened>` and the s
 | `permission denied for table ...` in the `rls` output for the system role | Intended in most places. The suite lists what the system role may read; a new loop needs a migration. |
 | Leftover `dbtest_*` roles on a server you provide | A run was killed hard. `DROP ROLE` them. |
 
-## Results of the runs for this work package
+## Results of the runs
+
+Run on 2026-10-27 after the last commit of the work package `s1-database-tenancy-and-state-sync`. The earlier baseline (510 checks, 14 suites, nine migrations) is in the history of this page.
 
 | Provider | PostgreSQL | Command | Result |
 |---|---|---|---|
-| Local cluster (Homebrew) | 18.6 | `scripts/db-test.sh`, twice in a row | pass both times, 510 checks, about 15 seconds each |
-| Local cluster, persistent server | 18.6 | `FACTORY_DB_ADMIN_URL=... scripts/db-test.sh`, twice in a row | pass both times, no test database left, only the `factory_app` role remains |
-| Docker `postgres:18` | 18.6 (Debian) | `FACTORY_DB_PROVISION=docker scripts/db-test.sh` | pass, 510 checks, container removed |
-| Docker `postgres:16-alpine` | 16.15 | `FACTORY_DB_PROVISION=docker FACTORY_DB_IMAGE=postgres:16-alpine scripts/db-test.sh` | pass, 510 checks, container removed |
-| No database (`FACTORY_DB_PROVISION=none`), unreachable server, no Diesel CLI on `PATH` | | `scripts/db-test.sh ledger` | exit code 3 and `BLOCKED:` each time |
-| Ten deliberate breaks of the schema, one at a time | 18.6 | each break plus the suites that should notice it | exit code 1 each time, with a message naming the broken rule |
+| Local cluster (Homebrew) | 18.6 | `scripts/db-test.sh`, twice in a row | pass both times, 679 checks in 15 suites, 22 and 23 seconds |
+| Local cluster, persistent server | 18.6 | `FACTORY_DB_ADMIN_URL=... scripts/db-test.sh`, twice in a row | pass both times; afterwards no test database, no `dbtest_*` login and no group membership remains, only the four group roles |
+| Docker `postgres:18` | 18.6 (Debian) | `FACTORY_DB_PROVISION=docker scripts/db-test.sh` | pass, 679 checks, container removed. The `rls` suite logs in over TCP with a password here |
+| Docker `postgres:16-alpine` | 16.15 | `FACTORY_DB_PROVISION=docker FACTORY_DB_IMAGE=postgres:16-alpine scripts/db-test.sh` | pass, 679 checks, container removed |
+| Local cluster | 18.6 | `scripts/db-test.sh plans` | pass, 28 checks |
+| Local cluster | 18.6 | `FACTORY_DB_PLANS_SCALE=10 scripts/db-test.sh plans` | pass, 28 checks, 191 seconds |
+| Plain `CREATEROLE` database owner that created the groups | 18.6 | all fourteen `up.sql`, then all `down.sql`, then all `up.sql`, with `psql` | all three passes ran. The same owner without having created the groups stops at migration 14 with the message that says why |
+| No database (`FACTORY_DB_PROVISION=none`), unreachable server, no Diesel CLI on `PATH` | | `scripts/db-test.sh ledger` | exit code 3 and `BLOCKED:` each time (baseline run; not repeated) |
+| Deliberate breaks of the schema | 18.6 | each break plus the suites that should notice it | the baseline ran ten, all exit 1. The second package ran seventeen more, listed below |
+
+### Deliberate breaks of the row-level security work
+
+Each was made by editing one migration, running the suites that should notice, and restoring the file. All exited 1 except one that the suite did not see at first.
+
+| Break | Suite | First failing check |
+|---|---|---|
+| A policy is not created for `jobs` (RLS left on) | `rls` | `[jobs] there is no policy tenant_isolation; tenant 1 sees rows=0, expected only its 1 rows ...` |
+| Row-level security never enabled on `approvals` | `rls` | `[approvals] row-level security is not enabled; FORCE ROW LEVEL SECURITY is not set ...` |
+| `FORCE` skipped for `ledger_entries` | `rls` | `[ledger_entries] FORCE ROW LEVEL SECURITY is not set (the table owner is not bound)` |
+| `NULLIF` dropped from every policy | `rls` | `USING is (tenant_id = (current_setting(...))::uuid), not the NULLIF form` (and, by probe, the second transaction on a reused connection fails with `invalid input syntax for type uuid: ""`) |
+| `BYPASSRLS` on `factory_app` | `rls` | `factory_app is a NOLOGIN group ... got has BYPASSRLS;` |
+| `BYPASSRLS` on `factory_system` | `rls` | `factory_system ... got has BYPASSRLS;` |
+| `resolve_token` without `SET search_path` | `rls` | `... got true s factory_lookup NO CONFIG` |
+| `resolve_installation` executable by `PUBLIC` | `rls` | `expected factory_lookup,factory_resolver, got PUBLIC,factory_lookup,factory_resolver` |
+| `resolve_token` executable by `factory_app` | `rls` | `... got factory_app,factory_lookup,factory_resolver` |
+| `factory_system` may update `status`, `version`, `lease_epoch` of stage runs | `rls` | `factory_system holds no column privilege beyond the expected list: got stage_runs.lease_epoch:UPDATE, ...` |
+| The lock policy on `stage_runs` says `WITH CHECK (true)` | `rls` | `the system role can take the lock but a row it updated would be refused by the policy: condition is false` |
+| `factory_system` may read the ledger | `rls` | `factory_system holds no table privilege beyond the expected list: got ledger_entries:SELECT` |
+| `tenants` left without row-level security | `rls` | `the policies in the database are exactly the policies on the list: ...` |
+| `active_api_tokens` without `security_invoker` | `rls` | `every view ... runs with the caller's rights: got active_api_tokens` |
+| A login in both `factory_app` and `factory_system` | `rls` | `break_both_login is a member of both factory_app and factory_system` |
+| The edge `SKIPPED` to `SUPERSEDED` left out of the migration | `statuses`, `terminal_rows` | `state_machine_edges equals state-machine.json ...: expected 0, got 1` |
+| The down script of the system migration forgets one policy | `migrations` | **Not seen by the first version**: a full revert drops the table and the policy with it, so the run passed. The suite now reverts the newest `j` migrations and runs them again; the break then fails with `running the 2 newest migrations again after reverting them failed (a down script left something behind?)` |
+

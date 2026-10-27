@@ -3,7 +3,7 @@
 PostgreSQL is the source of truth for the factory's jobs, stage runs, attempts, leases, evidence, approvals and audit trail. This directory documents the first schema, how to run its migrations, and what its tests prove.
 
 - Status: the Slice 0 baseline (`s0-database-baseline`) plus row-level security and the revised state machine (`s1-database-tenancy-and-state-sync`, [ADR 0012](../adr/0012-row-level-security-in-slice-1.md) and [ADR 0010](../adr/0010-failure-escalation-routing-and-invalidation.md)). Not yet reviewed by the software architect or the security specialist.
-- Verified: see the table of runs in [running.md](running.md). Fourteen migrations applied and reverted with Diesel 2.3.11, and fifteen suites passed on PostgreSQL 18.6.
+- Verified: see the table of runs in [running.md](running.md). Fourteen migrations applied and reverted with Diesel 2.3.11, and 679 checks in fifteen suites passed on PostgreSQL 18.6 (local cluster and Docker) and 16.15 (Docker).
 
 ## Where to start
 
