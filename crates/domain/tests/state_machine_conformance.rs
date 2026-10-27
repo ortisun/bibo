@@ -4,17 +4,40 @@
 //! no file I/O. Every check goes from the file to the code (nothing in the file is missing from
 //! the code) and from the code to the file (nothing in the code is missing from the file), so
 //! neither side can drift without a test failing.
+//!
+//! Every check takes the document as an argument. That is what lets
+//! `conformance_detects_a_changed_table` feed a changed copy of the file to the same checks and
+//! see them fail, so the checks are known not to pass vacuously.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::LazyLock;
 
+use factory_domain::contracts::review_verdict::DefectClass;
+use factory_domain::contracts::stage_contract::RetryClass;
+use factory_domain::ids::{StageRunId, TaskNodeId};
+use factory_domain::machines::failure::FailureClass;
+use factory_domain::machines::guards::{
+    AdmissionFacts, AnswerFacts, ApprovalFacts, AttemptsFacts, BlockingFacts, CancelFacts,
+    DeadlineFacts, EpochFacts, EscalationFacts, FactsKind, GatePassFacts, GuardError, GuardFacts,
+    HumanRejectFacts, HumanReworkFacts, LeaseEpochFacts, LeaseExpiryFacts, LeaseGrantFacts,
+    NeedsHumanFacts, NoReworkFacts, NotApplicableFacts, OutputFacts, OverrideFacts,
+    PipelineScopeFacts, PrincipalFacts, RejectionFacts, RetryFacts, ReworkFacts, SandboxGoneFacts,
+    SandboxProvisionFacts, StageBoardFacts, SupersedeFacts, TaskDepsFacts, TaskEvidenceFacts,
+    TaskRetryFacts, TaskStartFacts, TeardownFacts, UnblockFacts, UnrecoverableFacts, UpstreamFacts,
+    evaluate, facts_kind,
+};
+use factory_domain::machines::invalidation::{ArtifactChange, INVALIDATION_RULES, plan_for_change};
+use factory_domain::machines::limits::{DEFAULT_REWORK_CAP, ReworkCap};
+use factory_domain::machines::rework::{REWORK_ROUTES, ReworkCause, ReworkTrigger, route};
+use factory_domain::machines::snapshot::StageRunSnapshot;
 use factory_domain::state::{
     Actor, AttemptEvent, AttemptStatus, Guard, IllegalTransition, JobEvent, JobStatus,
     StageRunEvent, StageRunStatus, Status, TaskNodeEvent, TaskNodeStatus,
 };
-use factory_domain::values::{EventType, TransitionId};
-use factory_domain::vocabulary::{AssuranceLevel, ReleaseState, StageKind};
-use serde_json::Value;
+use factory_domain::values::{EventType, Timestamp, TransitionId};
+use factory_domain::vocabulary::{AssuranceLevel, HumanRole, ReleaseState, StageKind};
+use serde_json::{Value, json};
 
 static DOCUMENT: LazyLock<Value> = LazyLock::new(|| {
     serde_json::from_str(include_str!(
@@ -22,6 +45,9 @@ static DOCUMENT: LazyLock<Value> = LazyLock::new(|| {
     ))
     .expect("state-machine.json is valid JSON")
 });
+
+/// The stage contract schema. Its `retry_on` list says which failure classes a contract can name.
+const STAGE_CONTRACT_SCHEMA: &str = include_str!("../../../schemas/stage-contract.schema.json");
 
 fn strings_of(value: &Value) -> BTreeSet<String> {
     value
@@ -41,14 +67,14 @@ fn keys_of(value: &Value) -> BTreeSet<String> {
         .collect()
 }
 
-fn machine_json(name: &str) -> &'static Value {
-    &DOCUMENT["machines"][name]
+fn machine_json<'a>(doc: &'a Value, name: &str) -> &'a Value {
+    &doc["machines"][name]
 }
 
 // ---- names ------------------------------------------------------------------------------------
 
-fn check_status_names<S: Status>() {
-    let json = machine_json(S::MACHINE);
+fn check_status_names<S: Status>(doc: &Value) {
+    let json = machine_json(doc, S::MACHINE);
     let documented = keys_of(&json["states"]);
     let in_code: BTreeSet<String> = S::STATES.iter().map(ToString::to_string).collect();
     assert_eq!(
@@ -77,16 +103,20 @@ fn check_status_names<S: Status>() {
     }
 }
 
-#[test]
-fn status_names_match_state_machine_json() {
-    check_status_names::<JobStatus>();
-    check_status_names::<StageRunStatus>();
-    check_status_names::<AttemptStatus>();
-    check_status_names::<TaskNodeStatus>();
+fn status_names_match(doc: &Value) {
+    check_status_names::<JobStatus>(doc);
+    check_status_names::<StageRunStatus>(doc);
+    check_status_names::<AttemptStatus>(doc);
+    check_status_names::<TaskNodeStatus>(doc);
 }
 
-fn check_event_names<S: Status>() {
-    let json = machine_json(S::MACHINE);
+#[test]
+fn status_names_match_state_machine_json() {
+    status_names_match(&DOCUMENT);
+}
+
+fn check_event_names<S: Status>(doc: &Value) {
+    let json = machine_json(doc, S::MACHINE);
     let documented: BTreeSet<String> = json["transitions"]
         .as_array()
         .unwrap()
@@ -97,25 +127,40 @@ fn check_event_names<S: Status>() {
     assert_eq!(in_code, documented, "{} events differ", S::MACHINE);
 }
 
+fn event_names_match(doc: &Value) {
+    check_event_names::<JobStatus>(doc);
+    check_event_names::<StageRunStatus>(doc);
+    check_event_names::<AttemptStatus>(doc);
+    check_event_names::<TaskNodeStatus>(doc);
+}
+
 #[test]
 fn event_names_match_state_machine_json() {
-    check_event_names::<JobStatus>();
-    check_event_names::<StageRunStatus>();
-    check_event_names::<AttemptStatus>();
-    check_event_names::<TaskNodeStatus>();
+    event_names_match(&DOCUMENT);
+}
+
+fn guard_and_actor_names_match(doc: &Value) {
+    let guards: BTreeSet<String> = Guard::ALL.iter().map(ToString::to_string).collect();
+    assert_eq!(
+        guards,
+        keys_of(&doc["guards"]),
+        "the guards in code and in the file differ"
+    );
+    let actors: BTreeSet<String> = Actor::ALL.iter().map(ToString::to_string).collect();
+    assert_eq!(
+        actors,
+        keys_of(&doc["actors"]),
+        "the actors in code and in the file differ"
+    );
 }
 
 #[test]
 fn guard_and_actor_names_match_state_machine_json() {
-    let guards: BTreeSet<String> = Guard::ALL.iter().map(ToString::to_string).collect();
-    assert_eq!(guards, keys_of(&DOCUMENT["guards"]));
-    let actors: BTreeSet<String> = Actor::ALL.iter().map(ToString::to_string).collect();
-    assert_eq!(actors, keys_of(&DOCUMENT["actors"]));
+    guard_and_actor_names_match(&DOCUMENT);
 }
 
-#[test]
-fn assurance_levels_release_states_and_stage_kinds_match_state_machine_json() {
-    let levels: BTreeSet<String> = DOCUMENT["assurance_levels"]["levels"]
+fn assurance_levels_release_states_and_stage_kinds_match(doc: &Value) {
+    let levels: BTreeSet<String> = doc["assurance_levels"]["levels"]
         .as_array()
         .unwrap()
         .iter()
@@ -126,7 +171,8 @@ fn assurance_levels_release_states_and_stage_kinds_match_state_machine_json() {
             .iter()
             .map(ToString::to_string)
             .collect::<BTreeSet<_>>(),
-        levels
+        levels,
+        "the assurance levels differ"
     );
 
     assert_eq!(
@@ -134,11 +180,12 @@ fn assurance_levels_release_states_and_stage_kinds_match_state_machine_json() {
             .iter()
             .map(ToString::to_string)
             .collect::<BTreeSet<_>>(),
-        strings_of(&DOCUMENT["assurance_levels"]["release_states"]["values"])
+        strings_of(&doc["assurance_levels"]["release_states"]["values"]),
+        "the release states differ"
     );
 
     // Stage kinds, in pipeline order, with the stages each one waits for.
-    let stages = DOCUMENT["pipeline"]["stages"].as_array().unwrap();
+    let stages = doc["pipeline"]["stages"].as_array().unwrap();
     let documented_order: Vec<&str> = stages.iter().map(|s| s["kind"].as_str().unwrap()).collect();
     let code_order: Vec<&str> = StageKind::ALL.iter().map(|k| k.as_str()).collect();
     assert_eq!(
@@ -153,10 +200,15 @@ fn assurance_levels_release_states_and_stage_kinds_match_state_machine_json() {
     }
 }
 
+#[test]
+fn assurance_levels_release_states_and_stage_kinds_match_state_machine_json() {
+    assurance_levels_release_states_and_stage_kinds_match(&DOCUMENT);
+}
+
 // ---- transitions ------------------------------------------------------------------------------
 
-fn check_transition_table<S: Status>() {
-    let json = machine_json(S::MACHINE);
+fn check_transition_table<S: Status>(doc: &Value) {
+    let json = machine_json(doc, S::MACHINE);
     let documented = json["transitions"].as_array().unwrap();
     assert_eq!(
         S::TRANSITIONS.len(),
@@ -201,18 +253,22 @@ fn check_transition_table<S: Status>() {
     }
 }
 
+fn transition_tables_match(doc: &Value) {
+    check_transition_table::<JobStatus>(doc);
+    check_transition_table::<StageRunStatus>(doc);
+    check_transition_table::<AttemptStatus>(doc);
+    check_transition_table::<TaskNodeStatus>(doc);
+}
+
 #[test]
 fn transition_tables_match_state_machine_json() {
-    check_transition_table::<JobStatus>();
-    check_transition_table::<StageRunStatus>();
-    check_transition_table::<AttemptStatus>();
-    check_transition_table::<TaskNodeStatus>();
+    transition_tables_match(&DOCUMENT);
 }
 
 /// The cross product of all statuses and all events: a pair is accepted if and only if the file
 /// lists it (INV-02). The oracle is the JSON file, not the Rust table.
-fn check_cross_product<S: Status>() {
-    let json = machine_json(S::MACHINE);
+fn check_cross_product<S: Status>(doc: &Value) {
+    let json = machine_json(doc, S::MACHINE);
     let mut documented: BTreeMap<(String, String), String> = BTreeMap::new();
     for t in json["transitions"].as_array().unwrap() {
         for from in t["from"].as_array().unwrap() {
@@ -253,12 +309,16 @@ fn check_cross_product<S: Status>() {
     assert_eq!(accepted, documented.len(), "{}", S::MACHINE);
 }
 
+fn cross_products_match(doc: &Value) {
+    check_cross_product::<JobStatus>(doc);
+    check_cross_product::<StageRunStatus>(doc);
+    check_cross_product::<AttemptStatus>(doc);
+    check_cross_product::<TaskNodeStatus>(doc);
+}
+
 #[test]
 fn every_status_and_event_pair_outside_the_table_is_rejected() {
-    check_cross_product::<JobStatus>();
-    check_cross_product::<StageRunStatus>();
-    check_cross_product::<AttemptStatus>();
-    check_cross_product::<TaskNodeStatus>();
+    cross_products_match(&DOCUMENT);
 }
 
 #[test]
@@ -378,4 +438,736 @@ fn job_admission_and_rejection_start_from_received() {
             .apply(JobEvent::RejectAtAdmission)
             .is_err()
     );
+}
+
+// ---- the guard registry ----------------------------------------------------------------------
+
+fn moment() -> Timestamp {
+    Timestamp::parse("2026-10-27T10:00:00Z").unwrap()
+}
+
+/// Facts of each kind, built from the public fields. The `match` has no catch-all arm, so a new
+/// kind of facts cannot be added without adding it here.
+fn sample_facts(kind: FactsKind) -> GuardFacts<'static> {
+    let epoch = EpochFacts {
+        sent_epoch: 1,
+        stored_epoch: 1,
+    };
+    match kind {
+        FactsKind::Admission => GuardFacts::Admission(AdmissionFacts {
+            requester_on_allowlist: true,
+            tenant_within_job_quota: true,
+            repository_registered_and_enabled: true,
+            policy_allows_request_class: true,
+            protection_preflight_passed: true,
+        }),
+        FactsKind::StageBoard => GuardFacts::StageBoard(StageBoardFacts { stage_runs: &[] }),
+        FactsKind::Principal => GuardFacts::Principal(PrincipalFacts {
+            roles: &[],
+            is_job_requester: false,
+        }),
+        FactsKind::Attempts => GuardFacts::Attempts(AttemptsFacts { attempts: &[] }),
+        FactsKind::Unrecoverable => GuardFacts::Unrecoverable(UnrecoverableFacts {
+            stage_run_failed: false,
+            rework_route_remains: false,
+            retry_budget_remains: false,
+            hard_limit_reached: false,
+            policy_says_fail: false,
+        }),
+        FactsKind::Rejection => GuardFacts::Rejection(RejectionFacts {
+            intake_decision_is_decline: false,
+            reject_decision_recorded: false,
+            decider_is_authorized_approver: false,
+        }),
+        FactsKind::PipelineScope => GuardFacts::PipelineScope(PipelineScopeFacts {
+            scope: &[],
+            stage_runs: &[],
+            approval_decision_is_approve: false,
+            ledger_chain_verifies: false,
+        }),
+        FactsKind::Upstream => GuardFacts::Upstream(UpstreamFacts {
+            stage: StageKind::Intake,
+            stage_runs: &[],
+            consumed_artifact_hashes_current: true,
+            stage_contract_resolved_and_valid: true,
+        }),
+        FactsKind::NotApplicable => GuardFacts::NotApplicable(NotApplicableFacts {
+            basis: None,
+            rule_and_inputs_recorded: false,
+        }),
+        FactsKind::LeaseGrant => GuardFacts::LeaseGrant(LeaseGrantFacts {
+            lease_compare_and_swap_succeeded: true,
+            job_status: JobStatus::Active,
+            now: moment(),
+            not_before: None,
+            concurrency_quota_allows: true,
+            runtime_capability_check_passed: true,
+        }),
+        FactsKind::Output => GuardFacts::Output(OutputFacts {
+            attempt_succeeded: true,
+            output_validates_against_outputs_schema: true,
+            output_artifact_hash_stored: true,
+        }),
+        FactsKind::Retry => GuardFacts::Retry(RetryFacts {
+            class: FailureClass::ToolError,
+            retry_on: &[],
+            attempts_used: 0,
+            max_attempts: 1,
+            budget_has_room: true,
+        }),
+        FactsKind::Escalation => GuardFacts::Escalation(EscalationFacts {
+            budget_limit_hit: false,
+            agent_requested_a_human: false,
+            stagnation_detected: false,
+            policy_requires_human_decision: false,
+        }),
+        FactsKind::GatePass => GuardFacts::GatePass(GatePassFacts {
+            decision_is_pass_and_persisted: true,
+            criteria_without_ledger_entry: 0,
+            mandatory_gate_reports: &[],
+        }),
+        FactsKind::Rework => GuardFacts::Rework(ReworkFacts {
+            verdict_is_changes_required: true,
+            deterministic_gate_failed: false,
+            rounds_used: 0,
+            cap: ReworkCap::DEFAULT,
+            failing_set_differs_from_previous_round: true,
+            budget_remains: true,
+        }),
+        FactsKind::NeedsHuman => GuardFacts::NeedsHuman(NeedsHumanFacts {
+            verdict_is_needs_human: false,
+            rework_limit_reached: false,
+            stagnation_detected: false,
+            budget_limit_reached: false,
+            gate_is_a_human_gate: false,
+        }),
+        FactsKind::Blocking => GuardFacts::Blocking(BlockingFacts {
+            verdict_is_block: false,
+            mandatory_gate_could_not_run: false,
+            policy_violation_detected: false,
+        }),
+        FactsKind::NoRework => GuardFacts::NoRework(NoReworkFacts {
+            gate_failed: true,
+            a_rework_route_exists: false,
+        }),
+        FactsKind::Answer => GuardFacts::Answer(AnswerFacts {
+            answer_recorded_with_principal: true,
+            answer_became_a_new_input_hash: true,
+        }),
+        FactsKind::Approval => GuardFacts::Approval(ApprovalFacts {
+            decision_is_approve: true,
+            principal_holds_required_role: true,
+            evidence_digest_seen_equals_current: true,
+        }),
+        FactsKind::HumanRework => GuardFacts::HumanRework(HumanReworkFacts {
+            principal_roles: &[],
+            rounds_used: 0,
+            cap: ReworkCap::DEFAULT,
+        }),
+        FactsKind::HumanReject => GuardFacts::HumanReject(HumanRejectFacts {
+            decider_is_authorized_approver: true,
+            reject_decision_recorded: true,
+            reason_recorded: true,
+        }),
+        FactsKind::Unblock => GuardFacts::Unblock(UnblockFacts {
+            capability_reprobe_passed: true,
+            missing_dependency_now_available: false,
+        }),
+        FactsKind::Override => GuardFacts::Override(OverrideFacts {
+            policy_permits_override_for_block_code: true,
+            block_is_security_class: false,
+            principal_roles: &[],
+            role_required_by_policy: HumanRole::Approver,
+            justification_recorded: true,
+            blocked_gate_is_mandatory_of_active_profile: false,
+        }),
+        FactsKind::Supersede => GuardFacts::Supersede(SupersedeFacts {
+            consumed_artifact_superseded_by_newer_version: true,
+            upstream_stage_run_was_reworked: false,
+        }),
+        FactsKind::SandboxProvision => GuardFacts::SandboxProvision(SandboxProvisionFacts {
+            sandbox_started_within_limits: true,
+            policy_tool_grants_in_place: true,
+            runtime_capability_probe_satisfied: true,
+            epoch,
+        }),
+        FactsKind::Epoch => GuardFacts::Epoch(epoch),
+        FactsKind::LeaseEpoch => GuardFacts::LeaseEpoch(LeaseEpochFacts {
+            epoch,
+            now: moment(),
+            lease_expires_at: moment(),
+        }),
+        FactsKind::Deadline => GuardFacts::Deadline(DeadlineFacts {
+            now: moment(),
+            attempt_deadline: moment(),
+        }),
+        FactsKind::LeaseExpiry => GuardFacts::LeaseExpiry(LeaseExpiryFacts {
+            now: moment(),
+            lease_expires_at: moment(),
+            heartbeat_arrived: false,
+        }),
+        FactsKind::Cancel => GuardFacts::Cancel(CancelFacts {
+            attempt: AttemptStatus::Running,
+            job: JobStatus::Cancelling,
+            stage_run_is_being_superseded: false,
+        }),
+        FactsKind::SandboxGone => GuardFacts::SandboxGone(SandboxGoneFacts {
+            provider_confirms_sandbox_gone: true,
+        }),
+        FactsKind::Teardown => GuardFacts::Teardown(TeardownFacts {
+            now: moment(),
+            cancel_requested_at: moment(),
+            grace_seconds: 30,
+        }),
+        FactsKind::TaskDeps => GuardFacts::TaskDeps(TaskDepsFacts { dependencies: &[] }),
+        FactsKind::TaskStart => GuardFacts::TaskStart(TaskStartFacts {
+            this_task: TaskNodeId::from_uuid(uuid::Uuid::from_u128(1)),
+            next_in_topological_order: None,
+        }),
+        FactsKind::TaskEvidence => GuardFacts::TaskEvidence(TaskEvidenceFacts {
+            commit_exists_for_task: true,
+            changed_paths_inside_owned_files: true,
+            protected_path_changed: false,
+            per_task_checks_passed: true,
+        }),
+        FactsKind::TaskRetry => GuardFacts::TaskRetry(TaskRetryFacts {
+            retries_used: 0,
+            per_task_limit: 1,
+            stage_budget_has_room: true,
+        }),
+    }
+}
+
+/// Every guard id in the file has a named predicate that can be run, every predicate has an
+/// entry in the file, and every guard the transitions use is defined.
+fn guard_registry_matches(doc: &Value) {
+    let documented = keys_of(&doc["guards"]);
+
+    // From the file to the code: each id has a name in code.
+    for id in &documented {
+        assert!(
+            Guard::parse(id).is_ok(),
+            "guard {id} is in the file but has no name in code"
+        );
+    }
+    // From the code to the file: each predicate has an entry.
+    for guard in Guard::ALL {
+        assert!(
+            documented.contains(&guard.to_string()),
+            "the predicate for {guard} has no entry in the file"
+        );
+    }
+
+    // Each predicate runs on the facts it reads, and refuses facts of another kind.
+    for guard in Guard::ALL {
+        let kind = facts_kind(*guard);
+        let facts = sample_facts(kind);
+        assert_eq!(
+            facts.kind(),
+            kind,
+            "{guard}: the sample is of the wrong kind"
+        );
+        match evaluate(*guard, &facts) {
+            Ok(()) | Err(GuardError::Unmet(_)) => {}
+            Err(error @ GuardError::WrongFacts { .. }) => {
+                panic!("{guard} refused the facts it reads: {error}")
+            }
+        }
+        let other = FactsKind::ALL
+            .iter()
+            .copied()
+            .find(|candidate| *candidate != kind)
+            .expect("there is more than one kind of facts");
+        assert!(
+            matches!(
+                evaluate(*guard, &sample_facts(other)),
+                Err(GuardError::WrongFacts { .. })
+            ),
+            "{guard} accepted facts of the wrong kind ({other})"
+        );
+    }
+
+    // No kind of facts is left without a guard that reads it.
+    let read: BTreeSet<FactsKind> = Guard::ALL.iter().map(|g| facts_kind(*g)).collect();
+    for kind in FactsKind::ALL {
+        assert!(read.contains(kind), "no guard reads {kind} facts");
+    }
+
+    // The file is consistent with itself: the guards that transitions name are the guards that
+    // are defined, no more and no fewer.
+    let mut used = BTreeSet::new();
+    for machine in doc["machines"].as_object().unwrap().values() {
+        for transition in machine["transitions"].as_array().unwrap() {
+            used.insert(transition["guard"].as_str().unwrap().to_owned());
+        }
+    }
+    assert_eq!(
+        used, documented,
+        "the guards used by transitions and the guards defined in the file differ"
+    );
+}
+
+#[test]
+fn guard_registry_matches_json() {
+    guard_registry_matches(&DOCUMENT);
+}
+
+// ---- invalidation -----------------------------------------------------------------------------
+
+/// A run of every stage kind, all passed, in pipeline order.
+fn one_passed_run_per_stage() -> Vec<StageRunSnapshot> {
+    StageKind::ALL
+        .iter()
+        .enumerate()
+        .map(|(index, kind)| {
+            StageRunSnapshot::new(
+                StageRunId::from_uuid(uuid::Uuid::from_u128(index as u128 + 1)),
+                *kind,
+                StageRunStatus::Passed,
+            )
+        })
+        .collect()
+}
+
+fn invalidation_rules_match(doc: &Value) {
+    let rows = doc["pipeline"]["invalidation_rules"].as_array().unwrap();
+    assert_eq!(
+        INVALIDATION_RULES.len(),
+        rows.len(),
+        "the number of invalidation rules differs from the file"
+    );
+    let runs = one_passed_run_per_stage();
+    for row in rows {
+        let when = row["when"].as_str().unwrap();
+        let change = ArtifactChange::parse(when).unwrap_or_else(|_| {
+            panic!("invalidation rule {when:?} is in the file but not in code")
+        });
+        let documented: Vec<&str> = row["supersedes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|stage| stage.as_str().unwrap())
+            .collect();
+        let in_code: Vec<&str> = change.stale_stages().iter().map(|k| k.as_str()).collect();
+        assert_eq!(in_code, documented, "invalidation rule {when:?}");
+
+        // The function, not only the table: planning for the change picks the run of each
+        // documented stage and of no other stage.
+        let planned = plan_for_change(&runs, change);
+        let planned_kinds: Vec<&str> = runs
+            .iter()
+            .filter(|run| planned.contains(&run.id))
+            .map(|run| run.kind.as_str())
+            .collect();
+        assert_eq!(planned_kinds, documented, "the plan for {when:?}");
+    }
+    for rule in INVALIDATION_RULES {
+        assert!(
+            rows.iter()
+                .any(|row| row["when"].as_str() == Some(rule.change.as_str())),
+            "invalidation rule {:?} is in code but not in the file",
+            rule.change.as_str()
+        );
+    }
+}
+
+#[test]
+fn invalidation_rules_match_json() {
+    invalidation_rules_match(&DOCUMENT);
+}
+
+// ---- rework routes ----------------------------------------------------------------------------
+
+fn rework_routes_match(doc: &Value) {
+    let rows = doc["pipeline"]["rework_routes"].as_array().unwrap();
+    let documented: Vec<(&str, &str, &str)> = rows
+        .iter()
+        .map(|row| {
+            (
+                row["from_stage"].as_str().unwrap(),
+                row["trigger"].as_str().unwrap(),
+                row["target_stage"].as_str().unwrap(),
+            )
+        })
+        .collect();
+    let in_code: Vec<(&str, &str, &str)> = REWORK_ROUTES
+        .iter()
+        .map(|r| (r.from.as_str(), r.trigger.as_str(), r.target.as_str()))
+        .collect();
+    assert_eq!(in_code, documented, "the rework routes differ");
+
+    // The lookup, not only the table: each documented row is found from the request that its
+    // trigger describes.
+    for (from, trigger, target) in documented {
+        let from = StageKind::parse(from).unwrap();
+        let trigger = ReworkTrigger::parse(trigger).unwrap_or_else(|_| {
+            panic!("rework trigger {trigger:?} is in the file but not in code")
+        });
+        let cause = match trigger {
+            ReworkTrigger::HumanRequestsRework => ReworkCause::Human,
+            _ => ReworkCause::Gate {
+                defect: trigger.defect(),
+            },
+        };
+        assert_eq!(
+            route(from, cause).map(|r| r.target.as_str()),
+            Ok(target),
+            "rework from {from} on {trigger}"
+        );
+    }
+}
+
+#[test]
+fn rework_routes_match_json() {
+    rework_routes_match(&DOCUMENT);
+}
+
+#[test]
+fn the_defect_classes_that_route_rework_are_the_ones_the_review_verdict_names() {
+    // The routes read two defect classes by name. If the verdict schema renames one, this fails.
+    let named: BTreeSet<DefectClass> = REWORK_ROUTES
+        .iter()
+        .filter_map(|r| r.trigger.defect())
+        .collect();
+    assert_eq!(
+        named,
+        BTreeSet::from([DefectClass::Documentation, DefectClass::CodeBehavior])
+    );
+}
+
+// ---- the rework cap ---------------------------------------------------------------------------
+
+fn rework_cap_matches(doc: &Value) {
+    let invariant = doc["invariants"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|i| i["id"] == "INV-10")
+        .expect("INV-10 is in the file");
+    let statement = invariant["statement"].as_str().unwrap();
+    assert!(
+        statement.contains("two rework rounds for code and two for documentation"),
+        "INV-10 no longer says two and two: {statement}"
+    );
+    assert_eq!(DEFAULT_REWORK_CAP, 2, "INV-10 and ADR 0009 say two");
+}
+
+#[test]
+fn the_rework_cap_matches_the_documented_bound() {
+    rework_cap_matches(&DOCUMENT);
+}
+
+// ---- failure classes --------------------------------------------------------------------------
+
+/// The classes that the `FAILED` attempt state lists in its meaning, such as
+/// "Ended with a failure class: TOOL_ERROR, INVALID_OUTPUT or INTERNAL.".
+fn listed_failure_classes(doc: &Value) -> BTreeSet<String> {
+    let meaning = doc["machines"]["attempt"]["states"]["FAILED"]["meaning"]
+        .as_str()
+        .unwrap();
+    let (_, list) = meaning
+        .split_once("failure class: ")
+        .expect("the FAILED meaning lists failure classes");
+    list.trim_end_matches('.')
+        .replace(" or ", ", ")
+        .split(", ")
+        .map(str::to_owned)
+        .collect()
+}
+
+fn failure_classes_match(doc: &Value) {
+    // Seven classes are reported with a FAILED attempt. Two more have a status of their own.
+    let documented = listed_failure_classes(doc);
+    let with_failed_status: BTreeSet<String> = FailureClass::ALL
+        .iter()
+        .filter(|c| c.attempt_status() == AttemptStatus::Failed)
+        .map(ToString::to_string)
+        .collect();
+    assert_eq!(
+        with_failed_status, documented,
+        "the failure classes of a FAILED attempt differ from the file"
+    );
+    for class in FailureClass::ALL {
+        let status = class.attempt_status();
+        assert!(
+            doc["machines"]["attempt"]["states"][status.to_string()].is_object(),
+            "{class} ends in {status}, which the file does not define"
+        );
+        if status != AttemptStatus::Failed {
+            assert_eq!(
+                status.to_string(),
+                class.to_string(),
+                "{class} has a status of its own, spelled the same"
+            );
+        }
+    }
+
+    // The attempt event for each class leads to the status the file names for that event.
+    for class in FailureClass::ALL {
+        for from in AttemptStatus::STATES {
+            if let Some(event) = class.attempt_event(*from) {
+                let row = doc["machines"]["attempt"]["transitions"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .find(|t| {
+                        t["event"].as_str() == Some(event.as_str())
+                            && strings_of(&t["from"]).contains(&from.to_string())
+                    })
+                    .unwrap_or_else(|| panic!("{class}: the file has no {event} from {from}"));
+                assert_eq!(
+                    row["to"].as_str().unwrap(),
+                    class.attempt_status().to_string(),
+                    "{class} through {event} from {from}"
+                );
+            }
+        }
+    }
+    let provision = doc["machines"]["attempt"]["transitions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|t| t["id"] == "A02")
+        .unwrap();
+    assert!(
+        strings_of(&provision["effects"]).contains("failure class SANDBOX_ERROR"),
+        "A02 no longer records SANDBOX_ERROR, so the provision event no longer means that class"
+    );
+
+    // The stage contract can list exactly the classes that code calls retryable.
+    let schema: Value = serde_json::from_str(STAGE_CONTRACT_SCHEMA).unwrap();
+    let listable = strings_of(
+        &schema["properties"]["timeout_and_retries"]["properties"]["retry_on"]["items"]["enum"],
+    );
+    let retryable: BTreeSet<String> = FailureClass::ALL
+        .iter()
+        .filter_map(|c| c.retry_class())
+        .map(|c| c.to_string())
+        .collect();
+    assert_eq!(
+        retryable, listable,
+        "the classes code can retry and the classes the stage contract can list differ"
+    );
+    // The two classes the schema says are never retried have no retry class.
+    for never in [FailureClass::BudgetExhausted, FailureClass::PolicyDenied] {
+        assert_eq!(never.retry_class(), None, "{never}");
+    }
+    assert_eq!(
+        FailureClass::TimedOut.retry_class(),
+        Some(RetryClass::TimedOut)
+    );
+}
+
+#[test]
+fn failure_classes_match_json() {
+    failure_classes_match(&DOCUMENT);
+}
+
+// ---- the whole file ---------------------------------------------------------------------------
+
+fn conforms(doc: &Value) {
+    status_names_match(doc);
+    event_names_match(doc);
+    guard_and_actor_names_match(doc);
+    assurance_levels_release_states_and_stage_kinds_match(doc);
+    transition_tables_match(doc);
+    cross_products_match(doc);
+    invalidation_rules_match(doc);
+    rework_routes_match(doc);
+    rework_cap_matches(doc);
+    guard_registry_matches(doc);
+    failure_classes_match(doc);
+}
+
+#[test]
+fn the_unchanged_file_conforms() {
+    conforms(&DOCUMENT);
+}
+
+/// Runs every check on a changed copy and returns the message of the first one that fails, or
+/// `None` if all of them pass.
+fn first_failure(changed: &Value) -> Option<String> {
+    catch_unwind(AssertUnwindSafe(|| conforms(changed)))
+        .err()
+        .map(|payload| {
+            payload
+                .downcast_ref::<String>()
+                .cloned()
+                .or_else(|| payload.downcast_ref::<&str>().map(|s| (*s).to_owned()))
+                .unwrap_or_else(|| "a check failed without a message".to_owned())
+        })
+}
+
+fn array_mut<'a>(doc: &'a mut Value, pointer: &str) -> &'a mut Vec<Value> {
+    doc.pointer_mut(pointer)
+        .and_then(Value::as_array_mut)
+        .unwrap_or_else(|| panic!("{pointer} is not an array"))
+}
+
+fn transition_mut<'a>(doc: &'a mut Value, machine: &str, id: &str) -> &'a mut Value {
+    array_mut(doc, &format!("/machines/{machine}/transitions"))
+        .iter_mut()
+        .find(|t| t["id"] == id)
+        .unwrap_or_else(|| panic!("{id} is not in the {machine} machine"))
+}
+
+#[test]
+fn conformance_detects_a_changed_table() {
+    type Change = fn(&mut Value);
+    // Each case changes one thing in a copy of the file and names a phrase that the failing
+    // check must print, so a case fails for the wrong reason as loudly as it passes.
+    let cases: &[(&str, Change, &str)] = &[
+        (
+            "a transition added to the stage run table",
+            |doc| {
+                let mut extra = transition_mut(doc, "stage_run", "S19").clone();
+                extra["id"] = json!("S21");
+                extra["from"] = json!(["SKIPPED"]);
+                array_mut(doc, "/machines/stage_run/transitions").push(extra);
+            },
+            "stage_run: the number of transitions differs",
+        ),
+        (
+            "a transition removed from the job table",
+            |doc| {
+                array_mut(doc, "/machines/job/transitions").pop();
+            },
+            // `complete` is used by one row only, so its event name disappears with it.
+            "job events differ",
+        ),
+        (
+            "the target of a transition changed",
+            |doc| transition_mut(doc, "stage_run", "S08")["to"] = json!("FAILED"),
+            "S08: to",
+        ),
+        (
+            "a source status dropped from a transition",
+            |doc| transition_mut(doc, "stage_run", "S20")["from"] = json!(["PENDING", "READY"]),
+            "S20: from",
+        ),
+        (
+            "the actors of a transition changed",
+            |doc| transition_mut(doc, "attempt", "A09")["actors"] = json!(["engine"]),
+            "A09: actors",
+        ),
+        (
+            "the event a transition emits changed",
+            |doc| transition_mut(doc, "stage_run", "S08")["emits"] = json!("stage_run.done"),
+            "S08: emits",
+        ),
+        (
+            "the guard of a transition changed",
+            |doc| transition_mut(doc, "stage_run", "S01")["guard"] = json!("G_ANY_STAGE_BLOCKED"),
+            "S01: guard",
+        ),
+        (
+            "an event renamed",
+            |doc| transition_mut(doc, "attempt", "A06")["event"] = json!("deadline_hit"),
+            "attempt events differ",
+        ),
+        (
+            "a status added to a machine",
+            |doc| {
+                doc["machines"]["task_node"]["states"]["PARKED"] =
+                    json!({ "terminal": false, "meaning": "Invented." });
+            },
+            "task_node statuses in code and in state-machine.json differ",
+        ),
+        (
+            "a terminal flag flipped",
+            |doc| doc["machines"]["task_node"]["states"]["FAILED"]["terminal"] = json!(true),
+            "terminal flag differs",
+        ),
+        (
+            "a guard added to the file",
+            |doc| {
+                doc["guards"]["G_INVENTED"] = json!("A guard that code does not have.");
+            },
+            "the guards in code and in the file differ",
+        ),
+        (
+            "a guard removed from the file",
+            |doc| {
+                doc["guards"]
+                    .as_object_mut()
+                    .unwrap()
+                    .remove("G_SANDBOX_GONE");
+            },
+            "the guards in code and in the file differ",
+        ),
+        (
+            "an actor added to the file",
+            |doc| {
+                doc["actors"]["auditor"] = json!("An actor that code does not have.");
+            },
+            "the actors in code and in the file differ",
+        ),
+        (
+            "a stage added to an invalidation rule",
+            |doc| {
+                array_mut(doc, "/pipeline/invalidation_rules/4/supersedes").push(json!("MERGE"));
+            },
+            "invalidation rule \"DOCUMENTING produces a new documentation commit\"",
+        ),
+        (
+            "an invalidation rule added",
+            |doc| {
+                let extra = doc["pipeline"]["invalidation_rules"][4].clone();
+                array_mut(doc, "/pipeline/invalidation_rules").push(extra);
+            },
+            "the number of invalidation rules differs",
+        ),
+        (
+            "a rework route added",
+            |doc| {
+                let extra = doc["pipeline"]["rework_routes"][0].clone();
+                array_mut(doc, "/pipeline/rework_routes").push(extra);
+            },
+            "the rework routes differ",
+        ),
+        (
+            "the target of a rework route changed",
+            |doc| {
+                doc["pipeline"]["rework_routes"][4]["target_stage"] = json!("TASK_PLANNING");
+            },
+            "the rework routes differ",
+        ),
+        (
+            "the stages a stage requires changed",
+            |doc| {
+                array_mut(doc, "/pipeline/stages/4/requires").push(json!("INTAKE"));
+            },
+            "ARCHITECTURE requires",
+        ),
+        (
+            "a failure class added to the FAILED attempt state",
+            |doc| {
+                doc["machines"]["attempt"]["states"]["FAILED"]["meaning"] =
+                    json!("Ended with a failure class: TOOL_ERROR or ALIEN_ERROR.");
+            },
+            "the failure classes of a FAILED attempt differ from the file",
+        ),
+        (
+            "the rework cap changed in the invariant",
+            |doc| {
+                let invariants = array_mut(doc, "/invariants");
+                for invariant in invariants.iter_mut().filter(|i| i["id"] == "INV-10") {
+                    invariant["statement"] = json!("Attempts are bounded. Three rework rounds.");
+                }
+            },
+            "INV-10 no longer says two and two",
+        ),
+    ];
+
+    for (name, change, expected) in cases {
+        let mut changed = DOCUMENT.clone();
+        change(&mut changed);
+        assert_ne!(changed, *DOCUMENT, "{name}: the case changed nothing");
+        let failure = first_failure(&changed)
+            .unwrap_or_else(|| panic!("{name}: the conformance checks did not notice"));
+        assert!(
+            failure.contains(expected),
+            "{name}: the checks failed, but not on {expected:?}. They said: {failure}"
+        );
+    }
 }
