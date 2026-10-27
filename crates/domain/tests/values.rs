@@ -5,7 +5,7 @@ use factory_domain::ids::{JobId, TenantId};
 use factory_domain::scope::{CrossTenantAccess, TenantScope};
 use factory_domain::values::{
     AggregateVersion, Bounded, GitSha, HumanText, HumanTitle, MediaType, NonEmptyVec,
-    SemanticVersion, Sha256Digest, Slug, Timestamp, UniqueVec, UnitInterval,
+    SemanticVersion, Sha256Digest, Slug, Timestamp, Traceparent, UniqueVec, UnitInterval,
 };
 
 fn json_error_text<T: serde::de::DeserializeOwned + std::fmt::Debug>(json: &str) -> String {
@@ -410,6 +410,62 @@ fn from_utc_agrees_with_a_parsed_timestamp_of_the_same_instant() {
     assert_eq!(hash_of(&parsed), hash_of(&built));
     assert_ne!(parsed.as_text(), built.as_text());
     assert_eq!(built.as_text(), "2026-10-27T10:00:00.25Z");
+}
+
+// ---- the trace context of a job ---------------------------------------------------------------
+
+#[test]
+fn traceparent_for_job_uses_the_job_uuid_as_trace_id_and_the_documented_span_id() {
+    // ADR 0013: the trace id is the 32 hex characters of the job's UUID, the span id is the first
+    // 16 hex characters of SHA-256("factory.job" + the job id), and the flags are `01`. The
+    // expected text was computed with `printf 'factory.job<job id>' | shasum -a 256`, not with
+    // this crate.
+    let job = JobId::parse("018f3a7e-5c1b-7d2e-9a4f-3b6c8d1e2f40").unwrap();
+    assert_eq!(
+        Traceparent::for_job(job).as_str(),
+        "00-018f3a7e5c1b7d2e9a4f3b6c8d1e2f40-f7e4b2ec5e23fd8a-01"
+    );
+    let other = JobId::parse("018f3a7e-b033-7d21-9f6e-5b8c0d1e2f32").unwrap();
+    assert_eq!(
+        Traceparent::for_job(other).as_str(),
+        "00-018f3a7eb0337d219f6e5b8c0d1e2f32-15f80c3cc8af35f0-01"
+    );
+}
+
+#[test]
+fn traceparent_for_job_matches_the_w3c_pattern_and_reads_back() {
+    let pattern = regex::Regex::new(Traceparent::PATTERN).unwrap();
+    for n in [
+        1_u128,
+        2,
+        0xabcd,
+        u128::MAX,
+        0x018f_3a7e_5c1b_7d2e_9a4f_3b6c_8d1e_2f40,
+    ] {
+        let job = JobId::from_uuid(uuid::Uuid::from_u128(n));
+        let made = Traceparent::for_job(job);
+        assert!(pattern.is_match(made.as_str()), "{made}");
+        assert_eq!(Traceparent::parse(made.as_str()).as_ref(), Ok(&made));
+        // The pieces: version 00, a trace id that is the job's UUID without hyphens, sampled.
+        let parts: Vec<&str> = made.as_str().split('-').collect();
+        assert_eq!(parts[0], "00");
+        assert_eq!(parts[1], job.as_uuid().simple().to_string());
+        assert_eq!(parts[2].len(), 16);
+        assert_eq!(parts[3], "01");
+    }
+}
+
+#[test]
+fn traceparent_for_job_is_the_same_for_the_same_job_and_differs_between_jobs() {
+    let a = JobId::from_uuid(uuid::Uuid::from_u128(7));
+    let b = JobId::from_uuid(uuid::Uuid::from_u128(8));
+    assert_eq!(Traceparent::for_job(a), Traceparent::for_job(a));
+    assert_ne!(Traceparent::for_job(a), Traceparent::for_job(b));
+    // Both the trace id and the span id depend on the job.
+    let (left, right) = (Traceparent::for_job(a), Traceparent::for_job(b));
+    let part = |t: &Traceparent, i: usize| t.as_str().split('-').nth(i).unwrap().to_owned();
+    assert_ne!(part(&left, 1), part(&right, 1));
+    assert_ne!(part(&left, 2), part(&right, 2));
 }
 
 // ---- identifiers ------------------------------------------------------------------------------
