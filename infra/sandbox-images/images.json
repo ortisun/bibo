@@ -2,6 +2,78 @@
   "platforms": {
     "linux/arm64": {
       "images": {
+        "agent": {
+          "architecture": "arm64",
+          "base": "rust:1.98.0-slim-trixie@sha256:17d1ba895198f9934c6314ec5346a0d5115372f3243390c3d731e242f35c2f27",
+          "cmd": null,
+          "digest": "sha256:ecf7b08f465657681c34683c1161aa8f1b102597d49ac084a9a4a4f8447baa3d",
+          "entrypoint": null,
+          "env": {
+            "PATH": "/opt/rust/bin:/opt/codex/codex-path:/opt/codex/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+          },
+          "home": "/home/agent",
+          "image_id": "sha256:ecf7b08f465657681c34683c1161aa8f1b102597d49ac084a9a4a4f8447baa3d",
+          "labels": {
+            "factory.sandbox-images": "1",
+            "factory.sandbox.role": "agent",
+            "org.opencontainers.image.description": "Rust toolchain plus the Claude Code and Codex command line tools, for the agent profile. No git, no package manager, no setuid file.",
+            "org.opencontainers.image.title": "factory sandbox agent image"
+          },
+          "mount_points": "/workspace,/out,/cache,/home/agent",
+          "name": "factory-sandbox/agent",
+          "os": "linux",
+          "profile": "agent",
+          "reference": "factory-sandbox/agent@sha256:ecf7b08f465657681c34683c1161aa8f1b102597d49ac084a9a4a4f8447baa3d",
+          "size_bytes": 2005921941,
+          "status": "ready",
+          "tag": "rust1.98.0-claude2.1.311-codex0.163.0",
+          "tools": {
+            "claude": "2.1.311",
+            "claude_sha256": "2e2496c9a8065df93acb0fca2d341f59a6b8777649b2e025ab8c9bcd5eef61f3",
+            "codex": "0.163.0",
+            "codex_binary_sha256": "8a96f66d059d653e68bfd5f3c79337e6f1d7d170d80bf705eb7d0249b34c0ece",
+            "rustc": "1.98.0"
+          },
+          "user": {
+            "gid": 10001,
+            "uid": 10001
+          },
+          "workdir": "/workspace"
+        },
+        "egress-sidecar": {
+          "architecture": "arm64",
+          "base": "gcr.io/distroless/cc-debian13:nonroot@sha256:3ee00291cf386ec52a552e6a858d555debd74776eb4bfa53fa3df2cd6677515e",
+          "binary_path": "/usr/local/bin/factory-egress-sidecar",
+          "binary_sha256": "",
+          "cmd": null,
+          "digest": "sha256:33e2b2867d91231164f8c3779e9cd03ad64cf043349130bfe40fa000d418c5cf",
+          "entrypoint": [
+            "/usr/local/bin/factory-egress-sidecar"
+          ],
+          "env": {
+            "PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+            "SSL_CERT_FILE": "/etc/ssl/certs/ca-certificates.crt"
+          },
+          "image_id": "sha256:33e2b2867d91231164f8c3779e9cd03ad64cf043349130bfe40fa000d418c5cf",
+          "labels": {
+            "factory.sandbox-images": "1",
+            "factory.sandbox.role": "egress-sidecar",
+            "org.opencontainers.image.description": "Holds the factory-egress-sidecar program. No shell, no package manager, no setuid file.",
+            "org.opencontainers.image.title": "factory sandbox egress sidecar image"
+          },
+          "name": "factory-sandbox/egress-sidecar",
+          "os": "linux",
+          "profile": "egress_sidecar",
+          "reference": "factory-sandbox/egress-sidecar@sha256:33e2b2867d91231164f8c3779e9cd03ad64cf043349130bfe40fa000d418c5cf",
+          "size_bytes": 53783940,
+          "status": "awaiting-binary",
+          "tag": "skeleton",
+          "user": {
+            "gid": 10003,
+            "uid": 10003
+          },
+          "workdir": "/home/nonroot"
+        },
         "verify": {
           "architecture": "arm64",
           "base": "rust:1.98.0-slim-trixie@sha256:17d1ba895198f9934c6314ec5346a0d5115372f3243390c3d731e242f35c2f27",
