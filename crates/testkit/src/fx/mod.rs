@@ -4,7 +4,9 @@
 //! top of it.
 
 pub mod canary;
+pub mod control;
 pub mod digest;
 pub mod encoding;
 pub mod rng;
+pub mod sinks;
 pub mod timeutil;
