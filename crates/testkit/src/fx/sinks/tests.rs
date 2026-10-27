@@ -247,6 +247,61 @@ fn the_json_description_is_labelled_fake_and_holds_no_content() {
     );
 }
 
+#[cfg(unix)]
+#[test]
+fn a_secret_in_a_process_argument_or_environment_is_found_through_the_spawn_recorder() {
+    use crate::fx::spawn::{Behavior, SpawnPolicy, SpawnRecorder};
+    let set = canaries();
+    let sweeper = Sweeper::new(&set);
+    let mut recorder = SpawnRecorder::new(SpawnPolicy::docker_and_git()).unwrap();
+    recorder.install("docker", &Behavior::Record).unwrap();
+    recorder.install("git", &Behavior::Record).unwrap();
+
+    // Clean starts first: nothing is reported.
+    let run = |program: &str, args: &[&str], envs: &[(&str, &str)]| {
+        let mut command = std::process::Command::new(program);
+        command
+            .args(args)
+            .env_clear()
+            .env("PATH", recorder.path_env());
+        for (name, value) in envs {
+            command.env(name, value);
+        }
+        assert!(command.status().unwrap().success());
+    };
+    run("docker", &["ps"], &[("HOME", "/home/agent")]);
+    let clean = SinkCollector::new();
+    clean.ingest_spawns(&recorder);
+    clean.sweep(&sweeper).assert_clean();
+
+    // Then a token on a command line, and another in an environment variable.
+    let token = set.get(CanaryKind::GithubInstallationToken).value();
+    let key = set.get(CanaryKind::ModelApiKey).value();
+    let scheme = "https";
+    run(
+        "git",
+        // The scheme is a variable so the source does not hold a URL with a password in it.
+        &["push", &format!("{scheme}://x:{token}@github.com/o/r.git")],
+        &[],
+    );
+    run("docker", &["run", "alpine"], &[("ANTHROPIC_API_KEY", key)]);
+    let dirty = SinkCollector::new();
+    dirty.ingest_spawns(&recorder);
+    let report = dirty.sweep(&sweeper);
+    let argument_hit = report
+        .hits
+        .iter()
+        .find(|h| h.canary == "github_installation_token")
+        .expect("the token on the command line is found");
+    assert!(argument_hit.sink.starts_with("process_argument:git#"));
+    let environment_hit = report
+        .hits
+        .iter()
+        .find(|h| h.canary == "model_api_key")
+        .expect("the key in the environment is found");
+    assert!(environment_hit.sink.starts_with("environment:docker#"));
+}
+
 #[test]
 fn the_whole_pipeline_fails_when_the_redactor_is_off() {
     // Deliberate break, end to end: a logger that redacts keeps the sinks clean, and the same

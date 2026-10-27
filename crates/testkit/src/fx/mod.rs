@@ -9,4 +9,7 @@ pub mod digest;
 pub mod encoding;
 pub mod rng;
 pub mod sinks;
+#[cfg(unix)]
+pub mod spawn;
 pub mod timeutil;
+pub mod tmpdir;

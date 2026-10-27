@@ -207,6 +207,23 @@ impl SinkCollector {
         self.record(SinkKind::ProcessArgument, origin, text);
     }
 
+    /// Takes the arguments and the environment of every program the spawn recorder saw, so a
+    /// secret passed on a command line or in an environment variable is swept (NT-SEC-09).
+    ///
+    /// # Panics
+    /// Panics when the recorder's log cannot be read.
+    #[cfg(unix)]
+    pub fn ingest_spawns(&self, recorder: &super::spawn::SpawnRecorder) {
+        for record in recorder.records().expect("the spawn log can be read") {
+            let origin = format!("{}#{}", record.program, record.seq);
+            self.record_arguments(&origin, record.argv.iter().map(String::as_str));
+            self.record_environment(
+                &origin,
+                record.env.iter().map(|(k, v)| (k.as_str(), v.as_str())),
+            );
+        }
+    }
+
     /// A copy of everything collected, in order.
     #[must_use]
     pub fn entries(&self) -> Vec<SinkEntry> {
