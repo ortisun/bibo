@@ -65,6 +65,23 @@ impl From<Fidelity> for RecorderFidelity {
 }
 
 string_enum! {
+    /// The role of a human who records a decision or stands behind a judgment. Matches the actors
+    /// in `state-machine.json` and the roles in `policies/approval.yaml`.
+    pub enum HumanRole("human role") {
+        /// The person who submitted the request.
+        Requester = "requester",
+        /// A person with operational rights on the tenant.
+        Operator = "operator",
+        /// A person with the approval role.
+        Approver = "approver",
+        /// A person on the security approver list.
+        SecurityApprover = "security_approver",
+        /// An organization administrator.
+        OrgAdmin = "org_admin",
+    }
+}
+
+string_enum! {
     /// How much could go wrong if the work is wrong.
     pub enum RiskTier("risk tier") {
         /// Low.
@@ -106,7 +123,7 @@ string_enum! {
 
 string_enum! {
     /// The result of one independent review.
-    pub enum ReviewVerdict("review verdict") {
+    pub enum Verdict("review verdict") {
         /// The work may go on.
         Pass = "PASS",
         /// The builder must change something.

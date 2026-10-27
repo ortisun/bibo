@@ -10,7 +10,7 @@ use std::ops::Deref;
 use crate::error::ValueError;
 
 /// A list with at least one item.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct NonEmptyVec<T>(Vec<T>);
 
 impl<T> NonEmptyVec<T> {
@@ -67,7 +67,7 @@ impl<'de, T: serde::Deserialize<'de>> serde::Deserialize<'de> for NonEmptyVec<T>
 }
 
 /// A list in which no item appears twice, with at least `MIN` items.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct UniqueVec<T, const MIN: usize = 0>(Vec<T>);
 
 impl<T: Eq + Hash, const MIN: usize> UniqueVec<T, MIN> {

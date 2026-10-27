@@ -1,0 +1,230 @@
+//! `schemas/project-manifest.schema.json`: the project-local `.factory/project.yaml`.
+//!
+//! It names the domain tags, the sandbox image, the gate commands, the protected paths, the
+//! pinned Spec Kit version and the required documents. The validation stage reads it from the
+//! protected base branch, never from the builder's branch, so a builder cannot weaken its own
+//! gates. The manifest protects itself: `.factory/**` must be a protected path.
+//!
+//! This type is stricter than the schema in one place: a gate command may not start a shell,
+//! whichever way the shell is spelled (see [`names_a_shell`]).
+
+use serde::{Deserialize, Serialize};
+
+use super::common::SchemaVersion;
+use super::{Violations, contract};
+use crate::macros::patterned_string;
+use crate::patterns;
+use crate::values::{Bounded, HumanText, HumanTitle, NonEmptyString, NonEmptyVec, Slug, UniqueVec};
+
+/// The protected path that keeps the manifest from being edited by the builder.
+pub const SELF_PROTECTING_PATH: &str = ".factory/**";
+
+/// Programs that are shells. A gate command is an argument vector, never a shell string.
+const SHELLS: [&str; 8] = [
+    "sh",
+    "bash",
+    "zsh",
+    "fish",
+    "dash",
+    "cmd",
+    "powershell",
+    "pwsh",
+];
+
+patterned_string! {
+    /// An absolute working directory inside the sandbox, such as `/workspace`.
+    pub struct Workdir("working directory") = patterns::WORKDIR,
+        "use an absolute path such as /workspace, with letters, digits, dots, underscores, hyphens and slashes only"
+}
+
+patterned_string! {
+    /// A relative working directory for a gate command. May be empty.
+    pub struct GateCwd("gate working directory") = patterns::GATE_CWD,
+        "use a relative path with letters, digits, dots, underscores, hyphens and slashes only"
+}
+
+/// True when `program` is a shell: one of the names the schema lists, written with or without a
+/// directory, in any letter case, with or without `.exe`.
+///
+/// The schema compares the first argument with the eight names as written. `/bin/sh`, `BASH`
+/// and `bash.exe` would slip past that comparison and start a shell all the same.
+#[must_use]
+pub fn names_a_shell(program: &str) -> bool {
+    let file_name = program.rsplit(['/', '\\']).next().unwrap_or(program);
+    let lower = file_name.to_ascii_lowercase();
+    let stem = lower.strip_suffix(".exe").unwrap_or(&lower);
+    SHELLS.contains(&stem)
+}
+
+/// What the project is.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Project {
+    /// The project's machine name.
+    pub name: Slug,
+    /// A plain-English title.
+    pub title: HumanTitle,
+    /// Matched against the domain capability profiles.
+    pub domain_tags: UniqueVec<Slug, 1>,
+    /// The default branch.
+    pub default_branch: NonEmptyString,
+}
+
+/// The sandbox the project's gates run in.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SandboxSpec {
+    /// A logical image name. The digest comes from the factory's image registry file, not from
+    /// the repository.
+    pub image: Slug,
+    /// The working directory.
+    pub workdir: Workdir,
+}
+
+/// One gate command.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct GateCommandSpec {
+    /// The gate.
+    pub id: Slug,
+    /// A plain-English title.
+    pub title: HumanTitle,
+    /// The executable and its arguments. A shell as the first element is not allowed.
+    pub argv: NonEmptyVec<String>,
+    /// The working directory, relative to the repository.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cwd: Option<GateCwd>,
+    /// Seconds before the command is stopped, 1 to 7200.
+    pub timeout_seconds: Bounded<1, 7200>,
+    /// Whether the gate must pass.
+    pub mandatory: bool,
+}
+
+/// The pinned Spec Kit.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SpecToolPin {
+    /// The pinned `specify` version, for example `1.1.2`.
+    pub cli_version: NonEmptyString,
+    /// The integration.
+    pub integration: NonEmptyString,
+    /// Whether the factory may run `specify init` in this repository.
+    pub may_initialize: bool,
+}
+
+/// A document the project must have.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RequiredDocument {
+    /// The path.
+    pub path: NonEmptyString,
+    /// What it is for.
+    pub purpose: HumanText,
+}
+
+/// The project's documentation rules.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DocumentationRules {
+    /// Documents that must exist.
+    pub required_documents: Vec<RequiredDocument>,
+    /// The changelog.
+    pub changelog_path: NonEmptyString,
+}
+
+/// The project-local configuration a repository keeps in `.factory/project.yaml`.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, remote = "Self")]
+pub struct ProjectManifest {
+    /// Always 1.
+    pub schema_version: SchemaVersion,
+    /// What the project is.
+    pub project: Project,
+    /// The sandbox.
+    pub sandbox: SandboxSpec,
+    /// The gate commands. At least one is mandatory.
+    pub gates: NonEmptyVec<GateCommandSpec>,
+    /// Paths a builder may not change. Must include `.factory/**`.
+    pub protected_paths: UniqueVec<NonEmptyString, 1>,
+    /// The pinned Spec Kit.
+    pub spec_kit: SpecToolPin,
+    /// Documentation rules.
+    pub documentation: DocumentationRules,
+}
+
+impl ProjectManifest {
+    fn check(&self, found: &mut Violations) {
+        found.require(
+            self.gates.iter().any(|gate| gate.mandatory),
+            "gates",
+            "at least one gate must be mandatory",
+        );
+        for (index, gate) in self.gates.iter().enumerate() {
+            let starts_a_shell = gate
+                .argv
+                .first()
+                .is_some_and(|program| names_a_shell(program));
+            found.require(
+                !starts_a_shell,
+                format!("gates[{index}].argv"),
+                "a gate command must not start a shell; list the program and its arguments directly",
+            );
+        }
+        found.require(
+            self.protected_paths
+                .iter()
+                .any(|path| path.as_str() == SELF_PROTECTING_PATH),
+            "protected_paths",
+            "the manifest must protect itself, so `.factory/**` must be a protected path",
+        );
+    }
+}
+
+contract!(ProjectManifest, "project-manifest");
+
+#[cfg(test)]
+mod tests {
+    use super::names_a_shell;
+
+    #[test]
+    fn shells_are_found_however_they_are_spelled() {
+        for shell in [
+            "sh",
+            "bash",
+            "zsh",
+            "fish",
+            "dash",
+            "cmd",
+            "powershell",
+            "pwsh",
+        ] {
+            assert!(names_a_shell(shell), "{shell}");
+        }
+        for spelled in [
+            "/bin/sh",
+            "/usr/bin/bash",
+            "BASH",
+            "Bash.EXE",
+            "C:\\Windows\\System32\\cmd.exe",
+            "./sh",
+        ] {
+            assert!(names_a_shell(spelled), "{spelled}");
+        }
+    }
+
+    #[test]
+    fn ordinary_programs_are_not_shells() {
+        for program in [
+            "cargo",
+            "npm",
+            "/usr/bin/git",
+            "shellcheck",
+            "bashful",
+            "sh-tool",
+            "python3",
+            "",
+        ] {
+            assert!(!names_a_shell(program), "{program}");
+        }
+    }
+}

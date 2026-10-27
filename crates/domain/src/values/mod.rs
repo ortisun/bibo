@@ -18,12 +18,12 @@ use crate::patterns;
 
 pub use collections::{NonEmptyVec, UniqueVec};
 pub use numbers::{
-    Bounded, NonNegativeInt, NonNegativeNumber, PositiveFraction, PositiveInt, PositiveNumber,
-    UnitInterval,
+    Bounded, Integer, NonNegativeInt, NonNegativeNumber, PositiveFraction, PositiveInt,
+    PositiveNumber, UnitInterval,
 };
 pub use text::{
-    EventType, GitSha, HumanText, HumanTitle, MediaType, SemanticVersion, Sha256Digest, Slug,
-    SpanId, TraceId, Traceparent, TransitionId,
+    BoundedString, EventType, GitSha, HumanText, HumanTitle, MediaType, NonEmptyString,
+    SemanticVersion, Sha256Digest, Slug, SpanId, TraceId, Traceparent, TransitionId, Uri,
 };
 pub use timestamp::Timestamp;
 

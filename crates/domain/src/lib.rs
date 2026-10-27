@@ -8,6 +8,7 @@
 
 mod macros;
 
+pub mod contracts;
 pub mod error;
 pub mod ids;
 pub mod patterns;

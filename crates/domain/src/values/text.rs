@@ -303,3 +303,104 @@ impl SemanticVersion {
 }
 
 string_traits!(SemanticVersion);
+
+/// Text of `MIN` to `MAX` characters, counted as Unicode scalar values the way JSON Schema counts
+/// `minLength` and `maxLength`.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct BoundedString<const MIN: usize, const MAX: usize>(String);
+
+/// Text of at least one character, for example a name or a path.
+pub type NonEmptyString = BoundedString<1, { usize::MAX }>;
+
+impl<const MIN: usize, const MAX: usize> BoundedString<MIN, MAX> {
+    /// Checks the length.
+    ///
+    /// # Errors
+    /// Returns a [`ValueError`] that states the allowed length.
+    pub fn parse(text: &str) -> Result<Self, ValueError> {
+        let length = text.chars().count();
+        if (MIN..=MAX).contains(&length) {
+            return Ok(Self(text.to_owned()));
+        }
+        let rule = if MAX == usize::MAX {
+            format!("use at least {MIN} character(s), this one has {length}")
+        } else {
+            format!("use {MIN} to {MAX} characters, this one has {length}")
+        };
+        Err(ValueError::new("text", text, rule))
+    }
+
+    /// The text.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl<const MIN: usize, const MAX: usize> std::fmt::Display for BoundedString<MIN, MAX> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl<const MIN: usize, const MAX: usize> std::str::FromStr for BoundedString<MIN, MAX> {
+    type Err = ValueError;
+    fn from_str(text: &str) -> Result<Self, Self::Err> {
+        Self::parse(text)
+    }
+}
+
+impl<const MIN: usize, const MAX: usize> serde::Serialize for BoundedString<MIN, MAX> {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(&self.0)
+    }
+}
+
+impl<'de, const MIN: usize, const MAX: usize> serde::Deserialize<'de> for BoundedString<MIN, MAX> {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let text = <String as serde::Deserialize>::deserialize(deserializer)?;
+        Self::parse(&text).map_err(serde::de::Error::custom)
+    }
+}
+
+/// An absolute URI such as `https://example.org/page`: a scheme, a colon, something after it and
+/// no whitespace or control characters.
+///
+/// The schemas mark these fields `format: uri`, which validators are not required to assert, so
+/// this is the check this crate makes for them. It does not fetch or resolve anything.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct Uri(String);
+
+impl Uri {
+    /// Checks the shape of the URI.
+    ///
+    /// # Errors
+    /// Returns a [`ValueError`] when the text is not an absolute URI.
+    pub fn parse(text: &str) -> Result<Self, ValueError> {
+        let well_formed = text.split_once(':').is_some_and(|(scheme, rest)| {
+            let mut chars = scheme.chars();
+            chars
+                .next()
+                .is_some_and(|first| first.is_ascii_alphabetic())
+                && chars.all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '-' | '.'))
+                && !rest.is_empty()
+        }) && !text.chars().any(|c| c.is_whitespace() || c.is_control());
+        if well_formed {
+            Ok(Self(text.to_owned()))
+        } else {
+            Err(ValueError::new(
+                "URI",
+                text,
+                "use an absolute URI such as https://example.org/page, with no spaces",
+            ))
+        }
+    }
+
+    /// The text.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+string_traits!(Uri);

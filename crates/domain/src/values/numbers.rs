@@ -69,6 +69,50 @@ impl<'de, const MIN: i64, const MAX: i64> serde::Deserialize<'de> for Bounded<MI
     }
 }
 
+/// A whole number of any size that JSON can hold without a fraction, such as a random seed.
+///
+/// A plain `i64` would refuse a seed above 2^63, which the schema allows. `5.0` is not accepted,
+/// because it would not read back as it was written.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct Integer(Number);
+
+impl Integer {
+    /// Checks that the number has no fraction.
+    ///
+    /// # Errors
+    /// Returns a [`ValueError`] for a number with a fraction or an exponent.
+    pub fn new(number: Number) -> Result<Self, ValueError> {
+        if number.is_i64() || number.is_u64() {
+            Ok(Self(number))
+        } else {
+            Err(ValueError::new(
+                "integer",
+                &number.to_string(),
+                "use a whole number without a fraction",
+            ))
+        }
+    }
+
+    /// The number exactly as written in the document.
+    #[must_use]
+    pub const fn number(&self) -> &Number {
+        &self.0
+    }
+}
+
+impl serde::Serialize for Integer {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serde::Serialize::serialize(&self.0, serializer)
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for Integer {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let number = <Number as serde::Deserialize>::deserialize(deserializer)?;
+        Self::new(number).map_err(serde::de::Error::custom)
+    }
+}
+
 /// Defines a wrapper around `serde_json::Number` that accepts a range of values.
 macro_rules! ranged_number {
     ($(#[$meta:meta])* $name:ident ($what:literal), $rule:literal, |$value:ident| $accepts:expr) => {
