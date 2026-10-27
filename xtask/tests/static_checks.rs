@@ -286,6 +286,32 @@ mod static_checks {
         use super::*;
 
         #[test]
+        fn a_nested_checkout_is_not_part_of_this_repository() {
+            // A git worktree or a nested clone has a `.git` entry of its own. Its files belong to
+            // another checkout, so this repository's scan must not report them.
+            let mut fx = Fixture::baseline("nested-checkout");
+            fx.file(
+                "worktrees/other/.git",
+                "gitdir: /elsewhere/.git/worktrees/other\n",
+            )
+            .file(
+                "worktrees/other/scripts/setup.sh",
+                "git config --global --add safe.directory '*'\n",
+            );
+            fx.run().assert_no_violation("ST-01");
+        }
+
+        #[test]
+        fn the_same_file_without_a_git_entry_of_its_own_still_fails() {
+            // Control for the test above: only the `.git` marker grants the exemption.
+            run_with_file(
+                "worktrees/other/scripts/setup.sh",
+                "git config --global --add safe.directory '*'\n",
+            )
+            .assert_violation("ST-01");
+        }
+
+        #[test]
         fn a_shell_script_that_sets_the_wildcard_fails() {
             run_with_file(
                 "scripts/setup.sh",

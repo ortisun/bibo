@@ -562,7 +562,8 @@ const SKIPPED_DIRECTORIES: [&str; 3] = [".git", "target", "node_modules"];
 const PROSE_EXTENSIONS: [&str; 4] = ["md", "txt", "rst", "lock"];
 
 /// Every file under `root` that may hold code or configuration, relative and sorted. Prose, build
-/// output and xtask itself (whose tests contain the offending text on purpose) are left out.
+/// output, nested checkouts such as git worktrees, and xtask itself (whose tests contain the
+/// offending text on purpose) are left out.
 fn walk(root: &Path, dir: &Path, files: &mut Vec<String>) -> Result<(), String> {
     let mut entries: Vec<_> = fs::read_dir(dir)
         .map_err(|e| format!("cannot read {}: {e}", dir.display()))?
@@ -581,7 +582,10 @@ fn walk(root: &Path, dir: &Path, files: &mut Vec<String>) -> Result<(), String> 
         };
         if kind.is_dir() {
             let is_xtask = dir == root && name == "xtask";
-            if !SKIPPED_DIRECTORIES.contains(&name) && !is_xtask {
+            // A directory with a `.git` entry of its own (a file for a git worktree, a directory
+            // for a clone) is another checkout. Its sources are not part of this repository.
+            let is_nested_checkout = path.join(".git").symlink_metadata().is_ok();
+            if !SKIPPED_DIRECTORIES.contains(&name) && !is_xtask && !is_nested_checkout {
                 walk(root, &path, files)?;
             }
         } else if kind.is_file() {
