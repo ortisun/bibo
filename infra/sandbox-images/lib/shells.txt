@@ -1,0 +1,22 @@
+# Names that count as a command shell, one per line.
+#
+# tools/fsaudit.py reports every executable or symlink with one of these names. test.sh then
+# applies the rule of each image:
+#   verify          no shell at all. Gates are typed commands started with an argument vector.
+#   egress-sidecar  no shell at all.
+#   agent           only bash and sh may exist, plus dash as the target of sh. Claude Code and
+#                   Codex run the commands they are asked to run through a shell, so the agent
+#                   image cannot work without one. See agent/README.md.
+sh
+bash
+dash
+ash
+zsh
+ksh
+csh
+tcsh
+fish
+rbash
+mksh
+sash
+busybox

@@ -1,0 +1,50 @@
+{
+  "platforms": {
+    "linux/arm64": {
+      "images": {
+        "verify": {
+          "architecture": "arm64",
+          "base": "rust:1.98.0-slim-trixie@sha256:17d1ba895198f9934c6314ec5346a0d5115372f3243390c3d731e242f35c2f27",
+          "cmd": null,
+          "digest": "sha256:0a2bd97cef66baf07eed7f45c81fe1b7b4bdde4eae981bd6560761b99471600d",
+          "entrypoint": null,
+          "env": {
+            "PATH": "/opt/rust/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+          },
+          "home": "/home/agent",
+          "image_id": "sha256:0a2bd97cef66baf07eed7f45c81fe1b7b4bdde4eae981bd6560761b99471600d",
+          "labels": {
+            "factory.sandbox-images": "1",
+            "factory.sandbox.role": "verify",
+            "org.opencontainers.image.description": "Rust toolchain for trusted build, test, lint and format gates. No network client, no agent tool, no shell.",
+            "org.opencontainers.image.title": "factory sandbox verify image"
+          },
+          "mount_points": "/workspace,/out,/cache,/home/agent",
+          "name": "factory-sandbox/verify",
+          "os": "linux",
+          "profile": "verify",
+          "reference": "factory-sandbox/verify@sha256:0a2bd97cef66baf07eed7f45c81fe1b7b4bdde4eae981bd6560761b99471600d",
+          "size_bytes": 1106981633,
+          "status": "ready",
+          "tag": "rust1.98.0",
+          "tools": {
+            "rustc": "1.98.0"
+          },
+          "user": {
+            "gid": 10001,
+            "uid": 10001
+          },
+          "workdir": "/workspace"
+        }
+      },
+      "pins_sha256": "34c363ee232fbc5dd429f1d2b36ca285c06ce8026c1f0304ea4f87b22b3d50e6"
+    }
+  },
+  "profile_images": {
+    "agent": "agent",
+    "egress_sidecar": "egress-sidecar",
+    "fetch_deps": "verify",
+    "verify": "verify"
+  },
+  "schema": "factory-sandbox-images/1"
+}

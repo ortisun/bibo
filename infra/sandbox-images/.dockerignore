@@ -1,0 +1,6 @@
+# The agent and verify builds use infra/sandbox-images as their build context. Send only lib/,
+# which holds the scripts that the Dockerfiles mount. Nothing else is needed, and keeping the
+# context this small means a change to a README or a test cannot change an image.
+*
+!lib/
+lib/__pycache__

@@ -1,0 +1,361 @@
+"""Audit a container image from the outside, without running anything from it.
+
+Two modes. Both read the secret patterns from policies/security.yaml, so the test and the policy
+cannot drift apart.
+
+    docker export CONTAINER | fsaudit.py fs --out-dir DIR --forbidden F --shells F --policy P
+    fsaudit.py config --inspect INSPECT.json --history HISTORY.txt --policy P --allowed-env NAME ...
+
+`fs` reads the file system as a tar stream. It works for an image that has no shell and no tools
+at all (the egress sidecar). It writes one small text file per finding class into --out-dir. An
+empty file means no finding. test.sh decides what a finding means for each image.
+
+    setid.txt             regular files with the setuid or setgid bit
+    forbidden.txt         executables or symlinks whose name is in forbidden-binaries.txt
+    shells.txt            executables or symlinks whose name is in shells.txt
+    agent-tools.txt       executables or symlinks named claude or codex, with the SHA-256 of files
+    sidecar-binary.txt    the factory-egress-sidecar file and its SHA-256, if the image holds one
+    credential-names.txt  files whose name is a typical credential file
+    special.txt           device nodes and fifos outside /dev
+    secrets.txt           content that matches a blocking pattern of policies/security.yaml
+    skipped.txt           vendor binaries whose content matches were ignored, and why
+    summary.txt           counts
+
+`config` reads `docker image inspect` and `docker history --no-trunc` output and prints one
+finding per line: an environment name that is not allowed or looks like a secret, a value that
+matches a blocking pattern, a declared volume, a health check.
+
+Standard library only.
+"""
+
+from __future__ import annotations
+
+import argparse
+import fnmatch
+import hashlib
+import json
+import re
+import sys
+import tarfile
+from pathlib import Path
+from typing import Dict, List, Optional, Pattern, Tuple
+
+CHUNK = 8 * 1024 * 1024
+OVERLAP = 4096
+SMALL_TEXT_LIMIT = 4 * 1024 * 1024
+AGENT_TOOL_NAMES = ("claude", "codex", "codex-code-mode-host")
+SIDECAR_NAME = "factory-egress-sidecar"
+
+# Names of files that exist only to hold a credential. A CA bundle (*.pem, *.crt) is public and is
+# not on this list.
+CREDENTIAL_NAMES = (
+    ".netrc",
+    ".npmrc",
+    ".pypirc",
+    ".git-credentials",
+    ".gitconfig",
+    ".env",
+    ".envrc",
+    "credentials",
+    "credentials.json",
+    ".credentials.json",
+    "auth.json",
+    ".claude.json",
+    "id_rsa",
+    "id_dsa",
+    "id_ecdsa",
+    "id_ed25519",
+    "*.key",
+    "*.p12",
+    "*.pfx",
+    "*.kdbx",
+    "authorized_keys",
+    "known_hosts",
+)
+CREDENTIAL_DIRS = (".ssh", ".aws", ".claude", ".codex", ".docker", ".kube", ".gnupg", ".config/gh")
+
+# Patterns whose first characters are a distinct vendor prefix. Only these are used on binaries
+# and large files, where generic patterns (a URL with a password, a "password=" assignment, a
+# bearer header) match example text inside compilers and libraries. Each id maps to a literal
+# that must appear in a chunk before the regular expression is run on it.
+HIGH_SIGNAL_LITERALS: Dict[str, Tuple[bytes, ...]] = {
+    "github_token_classic": (b"ghp_",),
+    "github_token_prefixed": (b"gho_", b"ghu_", b"ghs_", b"ghr_"),
+    "github_fine_grained": (b"github_pat_",),
+    "private_key_block": (b"PRIVATE KEY",),
+    "anthropic_api_key": (b"sk-ant-",),
+    "openai_api_key": (b"sk-",),
+    "aws_access_key_id": (b"AKIA", b"ASIA", b"AGPA", b"AIDA", b"AROA", b"ANPA", b"ANVA"),
+    "gcp_api_key": (b"AIza",),
+    "slack_token": (b"xox",),
+    "stripe_live_key": (b"_live_",),
+    "npm_token": (b"npm_",),
+    "pypi_token": (b"pypi-AgE",),
+    "factory_job_token": (b"sfjt_",),
+}
+
+# A private key header alone is an ordinary string in TLS libraries. A real key has base64 lines
+# right after the header, so that is what counts.
+PRIVATE_KEY_BODY = re.compile(rb"PRIVATE KEY(?: BLOCK)?-----\r?\n[A-Za-z0-9+/=]{40,}")
+
+ELF_MAGIC = b"\x7fELF"
+
+
+def read_names(path: Path) -> List[str]:
+    names: List[str] = []
+    for raw in path.read_text(encoding="utf-8").splitlines():
+        line = raw.strip()
+        if line and not line.startswith("#"):
+            names.append(line)
+    return names
+
+
+def load_patterns(policy: Path) -> List[Tuple[str, Pattern[bytes]]]:
+    """Read the blocking patterns from the `secrets:` section of policies/security.yaml."""
+    entry = re.compile(
+        r"^\s*-\s*\{\s*id:\s*(?P<id>[a-z0-9_]+),\s*regex:\s*'(?P<regex>(?:[^']|'')*)',\s*action:\s*(?P<action>[a-z]+)"
+    )
+    patterns: List[Tuple[str, Pattern[bytes]]] = []
+    in_secrets = False
+    for line in policy.read_text(encoding="utf-8").splitlines():
+        if re.match(r"^[A-Za-z_]+:", line):
+            in_secrets = line.startswith("secrets:")
+            continue
+        if not in_secrets:
+            continue
+        match = entry.match(line)
+        if match and match.group("action") == "block":
+            source = match.group("regex").replace("''", "'")
+            patterns.append((match.group("id"), re.compile(source.encode("utf-8"))))
+    if len(patterns) < 15:
+        raise SystemExit(f"{policy}: found only {len(patterns)} blocking secret patterns, expected at least 15")
+    return patterns
+
+
+def is_executable_or_link(member: tarfile.TarInfo) -> bool:
+    if member.issym() or member.islnk():
+        return True
+    return member.isfile() and (member.mode & 0o111) != 0
+
+
+def matches_any(base: str, patterns: List[str]) -> Optional[str]:
+    for pattern in patterns:
+        if fnmatch.fnmatchcase(base, pattern):
+            return pattern
+    return None
+
+
+def scan_bytes(
+    data: bytes,
+    patterns: List[Tuple[str, Pattern[bytes]]],
+    high_signal_only: bool,
+    path: str,
+    findings: List[str],
+) -> None:
+    for pattern_id, regex in patterns:
+        if high_signal_only:
+            literals = HIGH_SIGNAL_LITERALS.get(pattern_id)
+            if literals is None or not any(literal in data for literal in literals):
+                continue
+        for found in regex.finditer(data):
+            if pattern_id == "private_key_block":
+                window = data[found.start() : found.end() + 200]
+                if not PRIVATE_KEY_BODY.search(window):
+                    continue
+            findings.append(f"{path}: matches {pattern_id} at byte {found.start()}")
+            break
+
+
+def command_fs(args: argparse.Namespace) -> int:
+    out_dir = Path(args.out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    forbidden = read_names(Path(args.forbidden))
+    shells = read_names(Path(args.shells))
+    patterns = load_patterns(Path(args.policy))
+    known = {value.lower() for value in args.known_sha256}
+
+    setid: List[str] = []
+    forbidden_hits: List[str] = []
+    shell_hits: List[str] = []
+    tool_hits: List[str] = []
+    sidecar_hits: List[str] = []
+    credential_hits: List[str] = []
+    special_hits: List[str] = []
+    secret_hits: List[str] = []
+    skipped: List[str] = []
+    files = 0
+    scanned_bytes = 0
+
+    with tarfile.open(fileobj=sys.stdin.buffer, mode="r|") as archive:
+        for member in archive:
+            name = member.name[2:] if member.name.startswith("./") else member.name
+            path = "/" + name.lstrip("/")
+            base = path.rstrip("/").rsplit("/", 1)[-1]
+
+            if member.isfile() or member.islnk():
+                files += 1
+                if member.mode & 0o6000:
+                    setid.append(f"{path} mode {member.mode & 0o7777:04o}")
+
+            if member.isdev() or member.isfifo():
+                if not path.startswith("/dev/"):
+                    special_hits.append(f"{path} (special file)")
+
+            if is_executable_or_link(member):
+                hit = matches_any(base, forbidden)
+                if hit:
+                    target = f" -> {member.linkname}" if member.issym() else ""
+                    forbidden_hits.append(f"{path}{target} (matches {hit})")
+                if base in shells:
+                    target = f" -> {member.linkname}" if member.issym() else ""
+                    shell_hits.append(f"{path}{target}")
+                if base in AGENT_TOOL_NAMES:
+                    target = f" -> {member.linkname}" if member.issym() else ""
+                    tool_hits.append(f"{path}{target}")
+
+            if (member.isfile() or member.issym()) and matches_any(base, list(CREDENTIAL_NAMES)):
+                credential_hits.append(path)
+            for directory in CREDENTIAL_DIRS:
+                if member.isdir() and path.rstrip("/").endswith("/" + directory):
+                    credential_hits.append(path + "/")
+
+            if not member.isfile() or member.size == 0:
+                continue
+            handle = archive.extractfile(member)
+            if handle is None:
+                continue
+            is_tool = base in AGENT_TOOL_NAMES
+            is_sidecar = base == SIDECAR_NAME
+            digest = hashlib.sha256() if (is_tool or is_sidecar) else None
+            block = handle.read(CHUNK)
+            if digest is not None:
+                digest.update(block)
+            file_findings: List[str] = []
+            if member.size <= SMALL_TEXT_LIMIT and not block.startswith(ELF_MAGIC):
+                # The whole file is in this one block. Every blocking pattern applies.
+                scan_bytes(block, patterns, False, path, file_findings)
+                scanned_bytes += len(block)
+            else:
+                carry = b""
+                while block:
+                    window = carry + block
+                    scan_bytes(window, patterns, True, path, file_findings)
+                    scanned_bytes += len(block)
+                    carry = window[-OVERLAP:]
+                    block = handle.read(CHUNK)
+                    if digest is not None:
+                        digest.update(block)
+            if digest is not None and is_sidecar:
+                sidecar_hits.append(f"{path} sha256 {digest.hexdigest()}")
+            elif digest is not None:
+                value = digest.hexdigest()
+                tool_hits.append(f"{path} sha256 {value}")
+                if value in known:
+                    skipped.append(f"{path}: pinned vendor binary, sha256 {value}; matches in it are ignored")
+                    file_findings = []
+                else:
+                    skipped.append(f"{path}: sha256 {value} is not a pinned value, so its matches are kept")
+            secret_hits.extend(sorted(set(file_findings)))
+
+    outputs = {
+        "setid.txt": setid,
+        "forbidden.txt": forbidden_hits,
+        "shells.txt": shell_hits,
+        "agent-tools.txt": tool_hits,
+        "sidecar-binary.txt": sidecar_hits,
+        "credential-names.txt": credential_hits,
+        "special.txt": special_hits,
+        "secrets.txt": secret_hits,
+        "skipped.txt": skipped,
+    }
+    for name, lines in outputs.items():
+        (out_dir / name).write_text("".join(f"{line}\n" for line in sorted(set(lines))), encoding="utf-8")
+    (out_dir / "summary.txt").write_text(
+        f"files {files}\nscanned_bytes {scanned_bytes}\npatterns {len(patterns)}\n", encoding="utf-8"
+    )
+    return 0
+
+
+SECRET_NAME = re.compile(r"(?i)(token|secret|passw|api_?key|credential|private_?key|auth)")
+
+
+def forbidden_env_names(policy: Path) -> List[str]:
+    """The `forbidden_names` list of sandbox.required.environment in policies/security.yaml."""
+    for line in policy.read_text(encoding="utf-8").splitlines():
+        match = re.match(r"^\s*forbidden_names:\s*\[(?P<names>[^\]]*)\]", line)
+        if match:
+            return [name.strip() for name in match.group("names").split(",") if name.strip()]
+    raise SystemExit(f"{policy}: no forbidden_names list found")
+
+
+def command_config(args: argparse.Namespace) -> int:
+    patterns = load_patterns(Path(args.policy))
+    forbidden = forbidden_env_names(Path(args.policy))
+    allowed = set(args.allowed_env)
+    inspected = json.loads(Path(args.inspect).read_text(encoding="utf-8"))[0]
+    config = inspected.get("Config") or {}
+    findings: List[str] = []
+
+    def scan_text(label: str, value: str) -> None:
+        for pattern_id, regex in patterns:
+            if regex.search(value.encode("utf-8")):
+                findings.append(f"{label} matches secret pattern {pattern_id}")
+
+    for item in config.get("Env") or []:
+        name, _, value = item.partition("=")
+        if name in forbidden:
+            findings.append(f"environment name {name} is forbidden by the sandbox policy")
+        if name not in allowed:
+            findings.append(f"environment name {name} is not on the allowed list for this image")
+        if SECRET_NAME.search(name):
+            findings.append(f"environment name {name} looks like a secret")
+        scan_text(f"environment value of {name}", value)
+    for key, value in (config.get("Labels") or {}).items():
+        scan_text(f"label {key}", str(value))
+    for field in ("Cmd", "Entrypoint"):
+        for part in config.get(field) or []:
+            scan_text(f"{field} word", str(part))
+    if config.get("Volumes"):
+        findings.append("the image declares VOLUME entries: " + ", ".join(sorted(config["Volumes"])))
+    if config.get("Healthcheck"):
+        findings.append("the image declares a health check")
+    if config.get("OnBuild"):
+        findings.append("the image declares ONBUILD instructions")
+    for number, line in enumerate(Path(args.history).read_text(encoding="utf-8").splitlines(), start=1):
+        scan_text(f"history line {number}", line)
+
+    for finding in findings:
+        print(finding)
+    return 0
+
+
+def main(argv: List[str]) -> int:
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    sub = parser.add_subparsers(dest="command", required=True)
+
+    fs = sub.add_parser("fs", help="audit the file system from a tar stream on standard input")
+    fs.add_argument("--out-dir", required=True)
+    fs.add_argument("--forbidden", required=True)
+    fs.add_argument("--shells", required=True)
+    fs.add_argument("--policy", required=True)
+    fs.add_argument(
+        "--known-sha256",
+        action="append",
+        default=[],
+        help="SHA-256 of a vendor binary that was pinned and checked at build time; matches inside it are ignored",
+    )
+    fs.set_defaults(handler=command_fs)
+
+    config = sub.add_parser("config", help="audit image configuration and history")
+    config.add_argument("--inspect", required=True)
+    config.add_argument("--history", required=True)
+    config.add_argument("--policy", required=True)
+    config.add_argument("--allowed-env", action="append", default=[])
+    config.set_defaults(handler=command_config)
+
+    args = parser.parse_args(argv)
+    return int(args.handler(args))
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))
