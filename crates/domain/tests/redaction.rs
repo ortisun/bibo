@@ -382,17 +382,26 @@ fn every_view(output: &[u8]) -> Vec<Vec<u8>> {
 /// Fails when any ten byte stretch of `secret` appears in any decoding of `output`. Ten bytes,
 /// and not the whole secret, so that a partial leak is a failure too.
 fn assert_no_leak(output: &[u8], secret: &str, context: &str) {
+    if let Some(view) = find_leak(output, secret) {
+        panic!(
+            "{context}: a stretch of the secret survived (view {view}) in {:?}",
+            String::from_utf8_lossy(output)
+        );
+    }
+}
+
+/// The number of the first decoding of `output` that holds a ten byte stretch of `secret`.
+fn find_leak(output: &[u8], secret: &str) -> Option<usize> {
     let window = 10.min(secret.len());
     let views = every_view(output);
     for piece in secret.as_bytes().windows(window) {
         for (n, view) in views.iter().enumerate() {
-            assert!(
-                !contains(view, piece),
-                "{context}: a stretch of the secret survived (view {n}) in {:?}",
-                String::from_utf8_lossy(output)
-            );
+            if contains(view, piece) {
+                return Some(n);
+            }
         }
     }
+    None
 }
 
 // ---- Independent encoders for the leaks ---------------------------------------------------
@@ -693,84 +702,80 @@ fn patterns_all_compile_in_the_regex_dialect() {
     assert_eq!(r.pattern_ids().len(), policy().patterns.len());
 }
 
-#[test]
-fn patterns_redact_their_positive_samples() {
-    let r = redactor();
+/// Judges a redactor by the positive samples: what the samples of each pattern do to it.
+fn positive_failures(r: &Redactor) -> Vec<String> {
     let actions: std::collections::HashMap<String, PatternAction> = policy()
         .patterns
         .into_iter()
         .map(|p| (p.id, p.action))
         .collect();
+    let mut failures = Vec::new();
     for sample in samples() {
         let input = format!("before {} after", sample.positive);
-        let out = r.redact(input.as_bytes()).unwrap();
+        let out = match r.redact(input.as_bytes()) {
+            Ok(out) => out,
+            Err(e) => {
+                failures.push(format!("{}: {e}", sample.id));
+                continue;
+            }
+        };
+        let text = String::from_utf8_lossy(&out.output).into_owned();
         match actions[sample.id] {
             PatternAction::Block => {
-                assert_eq!(
-                    String::from_utf8_lossy(&out.output),
-                    format!("before [REDACTED:{}] after", sample.id),
-                    "pattern {}",
-                    sample.id
-                );
-                assert!(out.report.has_blocking(), "pattern {}", sample.id);
-                assert!(
-                    out.report.ids().any(|id| id == sample.id),
-                    "pattern {}",
-                    sample.id
-                );
-                let finding = &out.report.findings()[0];
-                assert_eq!(finding.start, 7, "pattern {}", sample.id);
-                assert_eq!(
-                    finding.end,
-                    7 + sample.positive.len() as u64,
-                    "pattern {}",
-                    sample.id
-                );
+                if text != format!("before [REDACTED:{}] after", sample.id) {
+                    failures.push(format!("{}: the sample came out as {text:?}", sample.id));
+                } else if !out.report.has_blocking() || !out.report.ids().any(|i| i == sample.id) {
+                    failures.push(format!("{}: the report does not name it", sample.id));
+                } else {
+                    let finding = &out.report.findings()[0];
+                    if (finding.start, finding.end) != (7, 7 + sample.positive.len() as u64) {
+                        failures.push(format!("{}: wrong offsets", sample.id));
+                    }
+                }
             }
             PatternAction::Flag => {
-                assert_eq!(
-                    out.output,
-                    Cow::Borrowed(input.as_bytes()),
-                    "pattern {}",
-                    sample.id
-                );
-                assert!(out.report.has_flagged(), "pattern {}", sample.id);
-                assert!(!out.report.has_blocking(), "pattern {}", sample.id);
-                assert!(
-                    out.report.ids().any(|id| id == sample.id),
-                    "pattern {}",
-                    sample.id
-                );
+                let flagged = out.report.has_flagged() && !out.report.has_blocking();
+                if text != input || !flagged || !out.report.ids().any(|i| i == sample.id) {
+                    failures.push(format!(
+                        "{}: a flag must leave the text and say so",
+                        sample.id
+                    ));
+                }
             }
         }
     }
+    failures
 }
 
-#[test]
-fn patterns_ignore_their_negative_samples() {
-    let r = redactor();
+/// Judges a redactor by the near misses: none of them may be touched or counted as a secret.
+fn negative_failures(r: &Redactor) -> Vec<String> {
+    let mut failures = Vec::new();
     for sample in samples() {
         for negative in &sample.negatives {
             let input = format!("before {negative} after");
             let out = r.redact(input.as_bytes()).unwrap();
-            assert_eq!(
-                String::from_utf8_lossy(&out.output),
-                input,
-                "pattern {}: {negative:?} must not be touched",
-                sample.id
-            );
-            assert!(
-                !out.report.has_blocking(),
-                "pattern {}: {negative:?}",
-                sample.id
-            );
-            assert!(
-                !r.contains_secret(input.as_bytes()).unwrap(),
-                "pattern {}",
-                sample.id
-            );
+            if String::from_utf8_lossy(&out.output) != input
+                || out.report.has_blocking()
+                || r.contains_secret(input.as_bytes()).unwrap()
+            {
+                failures.push(format!(
+                    "{}: {negative:?} was taken for a secret",
+                    sample.id
+                ));
+            }
         }
     }
+    failures
+}
+
+#[test]
+fn patterns_redact_their_positive_samples() {
+    assert_eq!(positive_failures(&redactor()), Vec::<String>::new());
+}
+
+#[test]
+fn patterns_ignore_their_negative_samples() {
+    assert_eq!(negative_failures(&redactor()), Vec::<String>::new());
 }
 
 #[test]
@@ -1187,11 +1192,13 @@ fn streaming_a_secret_at_every_distance_from_a_block_boundary_is_redacted() {
     let token = format!("sfjt_{}", rng.string(ALNUM, 40));
     let r = redactor_with(&[("webhook_secret", &secret)]);
     // The secret is 40 bytes long, so these offsets put a block boundary at every position
-    // inside it, and one byte before and after.
+    // inside it, and one byte before and after. The text after the value is long enough that the
+    // block holding the boundary is searched with a look-ahead and is not the last one: only
+    // then can a match straddle a boundary.
     for boundary in [4096usize, 8192] {
         for offset in boundary - 45..boundary + 3 {
             for value in [&secret, &token] {
-                let text = format!("{}{value}{}", rep('.', offset), rep('.', 200));
+                let text = format!("{}{value}{}", rep('.', offset), rep('.', 9_000));
                 let reference = redact(&r, text.as_bytes());
                 // The value is written as it is here, so the first, middle and last ten bytes
                 // are a cheap and complete check; the full decoding check is slow for 8 KB.
@@ -1499,11 +1506,171 @@ fn redacting_flagged_matches_too_is_a_choice_and_changes_only_flags() {
     );
 }
 
+// ===== Control-off checks ============================================================================
+//
+// Each check weakens the redactor on purpose and shows that the tests above notice. A test that
+// still passed with its control switched off would prove nothing.
+
+fn redactor_with_pattern(id: &str, regex: &str) -> Redactor {
+    let mut p = policy();
+    let spec = p
+        .patterns
+        .iter_mut()
+        .find(|spec| spec.id == id)
+        .expect("the policy has the pattern");
+    spec.regex = regex.to_owned();
+    Redactor::builder()
+        .patterns(p.patterns)
+        .entropy(p.entropy)
+        .exact_value_min_len(p.min_len)
+        .encodings(&p.encodings)
+        .build()
+        .expect("the changed pattern compiles")
+}
+
+#[test]
+fn control_off_a_pattern_that_is_too_narrow_fails_its_positive_sample() {
+    let r = redactor_with_pattern("github_token_classic", r"\bghp_[A-Za-z0-9]{40}\b");
+    let failures = positive_failures(&r);
+    assert!(
+        failures
+            .iter()
+            .any(|f| f.starts_with("github_token_classic")),
+        "{failures:?}"
+    );
+}
+
+#[test]
+fn control_off_a_pattern_that_is_too_greedy_fails_its_positive_sample() {
+    let r = redactor_with_pattern("github_token_classic", r"\bghp_[A-Za-z0-9]{36}\b.*");
+    let failures = positive_failures(&r);
+    assert!(
+        failures
+            .iter()
+            .any(|f| f.starts_with("github_token_classic")),
+        "{failures:?}"
+    );
+}
+
+#[test]
+fn control_off_a_pattern_without_its_word_boundary_fails_its_negative_sample() {
+    let r = redactor_with_pattern("github_token_classic", r"ghp_[A-Za-z0-9]{36}");
+    let failures = negative_failures(&r);
+    assert!(
+        failures
+            .iter()
+            .any(|f| f.starts_with("github_token_classic")),
+        "{failures:?}"
+    );
+}
+
+#[test]
+fn control_off_a_pattern_with_a_ceiling_leaves_the_tail_of_a_long_token() {
+    let r = redactor_with_pattern(
+        "openai_api_key",
+        r"\bsk-(?:proj-|svcacct-|admin-)?[A-Za-z0-9_-]{32,64}\b",
+    );
+    let text = format!("before sk-{} after", rep('a', 3_000));
+    let out = redact_text(&r, &text);
+    assert_ne!(out, "before [REDACTED:openai_api_key] after");
+    assert!(
+        out.contains("aaaaaaaaaaaaaaaa"),
+        "the tail must still be there"
+    );
+    // The real redactor covers it.
+    assert_eq!(
+        redact_text(&redactor(), &text),
+        "before [REDACTED:openai_api_key] after"
+    );
+}
+
+#[test]
+fn control_off_a_redactor_that_skips_the_registry_leaks_every_encoding() {
+    let mut rng = Rng::new(0x5eed_0020);
+    let secret = fake_secret(&mut rng, 30);
+    let unregistered = redactor();
+    for (name, leak) in leaks_of(&secret) {
+        let out = redact(&unregistered, format!("log: {leak} end").as_bytes());
+        assert!(
+            find_leak(&out, &secret).is_some(),
+            "{name}: the leak check missed a secret that nothing removed"
+        );
+    }
+}
+
+#[test]
+fn control_off_dropping_an_encoding_lets_its_spellings_through() {
+    use Encoding::{
+        Base64NoPad, Base64Std, Base64Url, HexLower, HexUpper, JsonEscaped, Raw, UrlPercent,
+    };
+    let mut rng = Rng::new(0x5eed_0021);
+    let secret = fake_secret(&mut rng, 30);
+    let full = redactor_with(&[("job_token", &secret)]);
+    type Affected = fn(&str) -> bool;
+    let cases: [(&[Encoding], Affected); 6] = [
+        (&[Raw], |name| name == "raw"),
+        (&[HexLower], |name| name == "hex"),
+        (&[HexUpper], |name| name == "HEX"),
+        (&[UrlPercent], |name| name == "percent"),
+        (&[JsonEscaped], |name| name == "json"),
+        (&[Base64Std, Base64Url, Base64NoPad], |name| {
+            name.starts_with("base64")
+        }),
+    ];
+    for (dropped, is_affected) in cases {
+        let kept: Vec<Encoding> = policy()
+            .encodings
+            .into_iter()
+            .filter(|e| !dropped.contains(e))
+            .collect();
+        let weakened = builder().encodings(&kept).build().unwrap();
+        weakened.register("job_token", &secret).unwrap();
+        let mut leaked = 0;
+        for (name, leak) in leaks_of(&secret)
+            .into_iter()
+            .filter(|(n, _)| is_affected(n))
+        {
+            let input = format!("log: {leak} end");
+            // With the encoding, nothing survives.
+            assert_no_leak(&redact(&full, input.as_bytes()), &secret, &name);
+            // Without it, the leak check sees the spelling come through.
+            if find_leak(&redact(&weakened, input.as_bytes()), &secret).is_some() {
+                leaked += 1;
+            }
+        }
+        assert!(leaked > 0, "dropping {dropped:?} let nothing through");
+    }
+}
+
+#[test]
+fn control_off_redacting_each_chunk_alone_would_miss_a_secret_cut_by_a_chunk_boundary() {
+    let (r, secret, token) = a_registered_secret_and_a_pattern_token();
+    for value in [&secret, &token] {
+        let line = format!("v: {value} end");
+        let (first, second) = line.split_at(line.len() / 2);
+        // A redactor with no memory between chunks.
+        let mut naive = redact(&r, first.as_bytes());
+        naive.extend(redact(&r, second.as_bytes()));
+        assert!(
+            find_leak(&naive, value).is_some(),
+            "the cut must hide the value"
+        );
+        // The stream, given the same two chunks, does not leak.
+        let (streamed, _) = stream_with(&r, line.as_bytes(), &[first.len(), second.len()]);
+        assert_no_leak(&streamed, value, "stream");
+    }
+}
+
 // ===== Properties ====================================================================================
 
+/// 96 cases by default, which keeps the suite fast. `PROPTEST_CASES=5000` runs a long search.
 fn runner() -> TestRunner {
+    let cases = std::env::var("PROPTEST_CASES")
+        .ok()
+        .and_then(|n| n.parse().ok())
+        .unwrap_or(96);
     TestRunner::new(Config {
-        cases: 96,
+        cases,
         failure_persistence: None,
         ..Config::default()
     })
@@ -1625,6 +1792,49 @@ fn property_text_with_no_secret_in_it_is_returned_unchanged() {
                 Ok(())
             },
         )
+        .unwrap();
+}
+
+#[test]
+fn property_long_tokens_and_key_blocks_are_covered_to_the_end_whatever_the_chunking() {
+    // Tokens and key blocks of up to several blocks long, with noise, white space and words
+    // around them. The body of a token is the letter Q and the body of a key is the letter P,
+    // and no other piece has those letters, so a tail left behind is easy to see.
+    let (r, secret, _) = property_redactor();
+    let long_token = (0usize..7000).prop_map(|n| format!("sk-{}", "Q".repeat(n + 40)).into_bytes());
+    let key_body = (0usize..7000).prop_map(|n| "P".repeat(n + 1));
+    let key = (key_body, any::<bool>()).prop_map(|(body, footer)| {
+        let mut block = format!("-----BEGIN {} KEY-----\n{body}\n", "RSA PRIVATE").into_bytes();
+        if footer {
+            block.extend_from_slice(format!("-----END {} KEY-----", "RSA PRIVATE").as_bytes());
+        }
+        block
+    });
+    let piece = prop_oneof![
+        3 => "[a-z ]{0,400}".prop_map(String::into_bytes),
+        3 => long_token,
+        2 => key,
+        1 => Just(secret.clone().into_bytes()),
+        1 => Just(b"\x1b[31m".to_vec()),
+        1 => Just("\u{200b}".as_bytes().to_vec()),
+        1 => Just(b"\n".to_vec()),
+    ];
+    let input = proptest::collection::vec(piece, 1..8).prop_map(|parts| parts.join(&b' '));
+    let sizes = proptest::collection::vec(1usize..9000, 1..5);
+    runner()
+        .run(&(input, sizes), |(input, sizes)| {
+            let whole = r.redact(&input).unwrap();
+            let (out, report) = stream_with(&r, &input, &sizes);
+            prop_assert_eq!(&out[..], whole.output.as_ref());
+            prop_assert_eq!(report, whole.report);
+            prop_assert!(
+                !contains(&out, b"QQQQQQQQQQ"),
+                "the tail of a token was left"
+            );
+            prop_assert!(!contains(&out, b"PPPPPPPPPP"), "the body of a key was left");
+            prop_assert!(!contains(&out, secret.as_bytes()));
+            Ok(())
+        })
         .unwrap();
 }
 
