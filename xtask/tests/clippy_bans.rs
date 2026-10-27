@@ -16,6 +16,27 @@ use xtask::clippy_bans::{BANS, BanKind, listed_bans, render_clippy_toml, scratch
 mod clippy_bans {
     use super::*;
 
+    /// Variables that change where cargo builds or what clippy reads. A scratch crate must see
+    /// none of the caller's values.
+    const INHERITED_BUILD_VARIABLES: [&str; 6] = [
+        "CARGO_TARGET_DIR",
+        "CARGO_BUILD_TARGET_DIR",
+        "CLIPPY_CONF_DIR",
+        "RUSTFLAGS",
+        "CARGO_ENCODED_RUSTFLAGS",
+        "RUSTC_WRAPPER",
+    ];
+
+    /// Remove the caller's build variables from `command` and give it its own target directory.
+    fn scrub_build_environment(command: &mut Command, target_dir: &Path) {
+        for name in INHERITED_BUILD_VARIABLES {
+            command.env_remove(name);
+        }
+        command
+            .env("CARGO_TARGET_DIR", target_dir)
+            .env("CARGO_NET_OFFLINE", "true");
+    }
+
     /// A scratch crate in a temporary directory, linted with the repository's toolchain.
     struct Scratch {
         dir: PathBuf,
@@ -62,14 +83,20 @@ mod clippy_bans {
         }
 
         /// Run clippy and return its exit code and the lint diagnostics as (code, line, message).
+        ///
+        /// Each scratch crate gets its own target directory and a clean environment (F-23).
+        /// Cargo derives the fingerprint of a path package from its path inside its own
+        /// workspace, so two scratch crates that share one target directory share one cache
+        /// entry, and clippy replays the diagnostics of whichever ran first. A caller who sets
+        /// `CARGO_TARGET_DIR` (a shared build cache, or CI) must not change what these tests see.
         fn clippy(&self) -> (Option<i32>, Vec<(String, u64, String)>) {
             let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
-            let output = Command::new(cargo)
+            let mut command = Command::new(cargo);
+            command
                 .args(["clippy", "--message-format=json", "--", "-D", "warnings"])
-                .current_dir(&self.dir)
-                .env("CARGO_NET_OFFLINE", "true")
-                .output()
-                .expect("run cargo clippy");
+                .current_dir(&self.dir);
+            scrub_build_environment(&mut command, &self.dir.join("target"));
+            let output = command.output().expect("run cargo clippy");
             let stdout = String::from_utf8_lossy(&output.stdout);
             let mut diagnostics = Vec::new();
             for line in stdout.lines() {
