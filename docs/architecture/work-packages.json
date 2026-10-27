@@ -770,7 +770,8 @@
         "scripts/ci.sh",
         "scripts/dev-up.sh",
         "infra/compose/**",
-        ".env.example"
+        ".env.example",
+        "scripts/ci/**"
       ],
       "inputs": [
         "ADR 0002",
@@ -780,7 +781,8 @@
       "implements_ports": [],
       "consumes_ports": [],
       "depends_on": [
-        "s0-workspace-skeleton"
+        "s0-workspace-skeleton",
+        "s0-security-baseline"
       ],
       "done": [
         {

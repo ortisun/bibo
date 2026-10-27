@@ -70,7 +70,7 @@ Consequently:
 | Define the port traits and the labelled fakes with shared contract tests | `s0-ports-and-testkit` | 0 | software_engineer | L | 2 | `s0-domain-vocabulary` | yes |
 | Validate contracts and load agent, profile, project and policy definitions | `s0-contracts-and-registry` | 0 | software_engineer | M | 3 | `s0-domain-vocabulary`, `s0-ports-and-testkit` |  |
 | Create the first PostgreSQL migrations and database tests | `s0-database-baseline` | 0 | dba | L | 1 | `s0-workspace-skeleton` |  |
-| Set up continuous integration that runs the same checks as a developer | `s0-ci-pipeline` | 0 | sre | M | 1 | `s0-workspace-skeleton` |  |
+| Set up continuous integration that runs the same checks as a developer | `s0-ci-pipeline` | 0 | sre | M | 1 | `s0-workspace-skeleton`, `s0-security-baseline` |  |
 | Write the security baseline, policies and supply-chain rules | `s0-security-baseline` | 0 | security | M | 0 | none |  |
 | Initialize tracing and OpenTelemetry for the binaries | `s0-telemetry-baseline` | 0 | observability | S | 1 | `s0-workspace-skeleton` |  |
 | Settle the open Spec Kit questions: revision, checklist, arguments and running in the sandbox | `s0-spec-kit-spike` | 0 | software_engineer | M | 1 | `s0-agent-runtime-spike` |  |
@@ -262,6 +262,7 @@ flowchart LR
   s0_ports_and_testkit --> s0_contracts_and_registry
   s0_workspace_skeleton --> s0_database_baseline
   s0_workspace_skeleton --> s0_ci_pipeline
+  s0_security_baseline --> s0_ci_pipeline
   s0_workspace_skeleton --> s0_telemetry_baseline
   s0_agent_runtime_spike --> s0_spec_kit_spike
   s0_workspace_skeleton --> s1_sandbox_images
@@ -580,6 +581,7 @@ No two packages that can run at the same time own the same path. Paths outside t
 | `schemas/**` | software_architect | outside this plan |  |
 | `scripts/backup.sh` | `s1-local-deployment` | sre | 1 |
 | `scripts/ci.sh` | `s0-ci-pipeline` | sre | 0 |
+| `scripts/ci/**` | `s0-ci-pipeline` | sre | 0 |
 | `scripts/db-test.sh` | `s0-database-baseline` | dba | 0 |
 | `scripts/dev-up.sh` | `s0-ci-pipeline` | sre | 0 |
 | `scripts/docs-check.sh` | `s1-docs-and-walkthrough` | documenter | 1 |
@@ -1120,11 +1122,11 @@ Done when:
 | Size | M (relative weight 3) |
 | Wave | 1 |
 | On the critical path | no |
-| Depends on | `s0-workspace-skeleton` |
+| Depends on | `s0-workspace-skeleton`, `s0-security-baseline` |
 
 Write one script that runs every check, and a workflow that calls it, so local and CI results cannot drift. A missing tool is reported as BLOCKED with its own exit code. It never counts as a pass. Add the Compose file with PostgreSQL.
 
-Owns: `.github/**`, `scripts/ci.sh`, `scripts/dev-up.sh`, `infra/compose/**`, `.env.example`
+Owns: `.github/**`, `scripts/ci.sh`, `scripts/dev-up.sh`, `infra/compose/**`, `.env.example`, `scripts/ci/**`
 
 Inputs: ADR 0002; docs/architecture/overview.md section on checks
 
