@@ -83,6 +83,22 @@ BEGIN
 END
 $$;
 
+-- The two stage run transitions that ports v1.1 added (ADR 0014, decision 8). Stage run 1202 is at version 1.
+DO $$
+BEGIN
+  PERFORM dbtest.expect_ok('S21 (RUNNING to BLOCKED) can emit stage_run.blocked: the foreign key accepts it',
+    dbtest.event_sql(dbtest.u(22), 'stage_run.blocked', 'stage_run', dbtest.u(1202), 1, 'S21', p_job => dbtest.u(1102)), 'factory_app');
+  PERFORM dbtest.expect_ok('S22 (READY to WAITING_FOR_HUMAN) can emit stage_run.waiting_for_human',
+    dbtest.event_sql(dbtest.u(23), 'stage_run.waiting_for_human', 'stage_run', dbtest.u(1202), 1, 'S22', p_job => dbtest.u(1102)), 'factory_app');
+  PERFORM dbtest.expect_error('S21 cannot emit the event of S22 (the foreign key names the transition and its event)',
+    dbtest.event_sql(dbtest.u(24), 'stage_run.waiting_for_human', 'stage_run', dbtest.u(1202), 1, 'S21', p_job => dbtest.u(1102)), '23503', 'factory_app');
+  PERFORM dbtest.expect_error('S22 cannot emit the event of S21',
+    dbtest.event_sql(dbtest.u(25), 'stage_run.blocked', 'stage_run', dbtest.u(1202), 1, 'S22', p_job => dbtest.u(1102)), '23503', 'factory_app');
+  PERFORM dbtest.expect_error('a transition id that state-machine.json does not have (S23) is still refused',
+    dbtest.event_sql(dbtest.u(26), 'stage_run.blocked', 'stage_run', dbtest.u(1202), 1, 'S23', p_job => dbtest.u(1102)), '23503', 'factory_app');
+END
+$$;
+
 -- ---------------------------------------------------------------------------------------------
 -- 3. One event per aggregate version. A replayed transition cannot emit twice.
 
