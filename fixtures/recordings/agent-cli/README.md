@@ -13,7 +13,7 @@ Everything here is labelled. **No recording contains a real model answer, a real
 | `runs/<case id>/` | One folder per case: `case.json`, `stdout.txt`, `stderr.txt`, `provider-requests.jsonl` (what the fake provider received), `sinkhole.jsonl` (names the tool tried to reach), `workspace-changes.json`, and where useful `footprint.txt` (files left in the writable mounts, peak memory and process counts) and `bridge-calls.jsonl`. |
 | `images/` | `Dockerfile.claude` and `Dockerfile.codex`: scratch images built from the official release channels, each with a checksum check. |
 | `fake/` | `fake_provider.py` (Anthropic Messages and OpenAI Responses streaming), `sinkhole.py` (DNS and TLS name logger) and `fake_mcp_bridge.py` (a stand-in for the factory tool bridge). All three carry a "fidelity: fake" label. |
-| `harness/` | `spike.py` (starts the fake world and runs cases), `cases.py` (the case list), `model.py`, `wrap.sh` (writes the footprint file). |
+| `harness/` | `spike.py` (starts the fake world and runs cases), `cases.py` (the `Case` class and the case list), `wrap.sh` (writes the footprint file). |
 
 How the recordings are cleaned. The harness replaces the run-time key, the planted `.env` value and anything shaped like a token before it writes a file. The provider log keeps request bodies as short prefixes plus length and SHA-256, so it holds no long repository content. Full request bodies stay in the scratch directory and are not committed.
 

@@ -518,4 +518,4 @@ Use section 5. Add the retry behavior as a test: after revocation the next reque
 
 ## 9. Reproduction and what was left behind
 
-The README of the recordings directory has the commands. A full run takes about twenty minutes plus two minutes to build the images. At the end of this work the containers, networks, generated key, scratch images and the private Colima virtual machine were removed, so a later package starts by rebuilding the two images from `images/Dockerfile.*`.
+The README of the recordings directory has the commands. A full run takes about twenty minutes plus two minutes to build the images. At the end of this work the containers, networks, generated key, scratch images and the private Colima virtual machine were removed, on the private engine and on the shared Docker Desktop engine (where a first, interrupted session had left two stopped containers, a network and the two images, now deleted). A later package starts by rebuilding the two images from `images/Dockerfile.*`.

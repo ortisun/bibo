@@ -7,7 +7,7 @@ docs/security/sandbox-policy.md, and records what happened under fixtures/record
 
 usage:
   ARS_RUN_DIR=<empty scratch dir outside the repository> python3 harness/spike.py <command>
-  (without -I: the harness imports its sibling modules cases.py and model.py)
+  (cases.py, which sits next to it, is loaded by path)
 
 commands:
   world-up          create the network, generate the run-time fake key, start fake provider, sinkhole and bridge
@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import importlib.util
 import json
 import os
 import re
@@ -40,10 +41,23 @@ import tarfile
 import time
 import urllib.request
 from pathlib import Path
+from types import ModuleType
 from typing import Any
 
-from cases import build_cases
-from model import Case
+
+def load_sibling(name: str) -> ModuleType:
+    """Load a module that sits next to this file, by path, so that it works whatever the working directory is."""
+    spec = importlib.util.spec_from_file_location(name, Path(__file__).resolve().parent / f"{name}.py")
+    if spec is None or spec.loader is None:
+        raise SystemExit(f"spike.py: cannot load {name}.py")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+CASES = load_sibling("cases")
+Case = Any  # the dataclass defined in cases.py; the harness only reads its fields
 
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parent  # fixtures/recordings/agent-cli
@@ -507,7 +521,7 @@ def update_manifest(entry: dict[str, Any]) -> None:
 
 
 def load_cases() -> list[Case]:
-    return list(build_cases(PROVIDER_URL))
+    return list(CASES.build_cases(PROVIDER_URL))
 
 
 def main(argv: list[str]) -> int:

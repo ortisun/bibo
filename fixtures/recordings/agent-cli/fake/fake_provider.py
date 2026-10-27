@@ -285,7 +285,7 @@ class Handler(BaseHTTPRequestHandler):
     server_version = "FakeProvider/1"
 
     def log_message(self, format: str, *args: Any) -> None:  # noqa: A002 - signature fixed by the base class
-        return
+        del format, args  # silent: the request log is written by record()
 
     # ----- plumbing -----
     def read_body(self) -> bytes:
@@ -438,7 +438,7 @@ class Handler(BaseHTTPRequestHandler):
             "directive": list(directive) if directive else None,
             "tool_results_in_request": len(results),
         }
-        _scheme, authorized = self.auth()
+        authorized = self.auth()[1]
         loop = find_loop(conversation_user_texts(parsed))
         revoked = False
         if loop and authorized:

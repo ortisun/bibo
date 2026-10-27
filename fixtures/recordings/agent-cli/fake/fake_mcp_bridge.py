@@ -55,7 +55,7 @@ class Handler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
 
     def log_message(self, format: str, *args: Any) -> None:  # noqa: A002 - signature fixed by the base class
-        return
+        del format, args  # silent: the request log is written by record()
 
     def do_POST(self) -> None:
         length = int(self.headers.get("Content-Length") or 0)
