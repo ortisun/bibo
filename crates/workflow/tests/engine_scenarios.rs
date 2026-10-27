@@ -2132,19 +2132,13 @@ async fn a_worker_that_never_tears_down_is_forced_after_the_grace_period() {
     );
     // Nothing happens before the grace period.
     world.advance(10);
-    world
-        .engine
-        .sweep_job(world.tenant, job)
-        .await
-        .expect("sweep");
+    world.engine.sweep().await.expect("sweep");
     assert_eq!(world.view(job).await.status, JobStatus::Cancelling);
-    // After it, the sweeper forces the end.
+    // After it, the sweeper forces the end, again through the due-work query and with no job
+    // named.
     world.advance(30);
-    world
-        .engine
-        .sweep_job(world.tenant, job)
-        .await
-        .expect("sweep");
+    let swept = world.engine.sweep().await.expect("sweep");
+    assert_eq!(swept.forced.len(), 1);
     let view = world.view(job).await;
     assert_eq!(view.status, JobStatus::Cancelled);
     assert_eq!(
@@ -2162,12 +2156,11 @@ async fn the_sweeper_times_out_an_attempt_whose_worker_went_quiet() {
         .with(|s| s.tweaks.attempt_timeout_seconds = 30);
     let claimed = world.claim_one("worker-1").await;
     world.advance(31);
-    // The lease is still held (31 s of 60), so only the deadline is past.
-    world
-        .engine
-        .sweep_job(world.tenant, job)
-        .await
-        .expect("sweep");
+    // The lease is still held (31 s of 60), so only the deadline is past. One sweep finds it
+    // through the store's due-work query for deadlines, with no job named.
+    let swept = world.engine.sweep().await.expect("sweep");
+    assert_eq!(swept.timed_out, vec![claimed.attempt]);
+    assert!(swept.lease_lost.is_empty());
     let view = world.view(job).await;
     let intake = view.newest(StageKind::Intake).expect("run");
     assert_eq!(intake.attempts[0].status, AttemptStatus::TimedOut);

@@ -8,13 +8,12 @@
 //!   attempt has ended the job is cancelled (`J10`).
 //!
 //! The clean-up runs inside [`Engine::settle`] one move at a time, so it is finished by whichever
-//! decision comes next, and by [`Engine::sweep_job`] when nothing else does.
+//! decision comes next, and by [`Engine::sweep`] when nothing else does.
 
-use factory_domain::ids::{JobId, TenantId};
-use factory_domain::machines::failure::FailureClass;
+use factory_domain::ids::JobId;
 use factory_domain::machines::guards::{
-    AttemptsFacts, CancelFacts, DeadlineFacts, GuardFacts, PrincipalFacts, SandboxGoneFacts,
-    TeardownFacts, evaluate,
+    AttemptsFacts, CancelFacts, GuardFacts, PrincipalFacts, SandboxGoneFacts, TeardownFacts,
+    evaluate,
 };
 use factory_domain::machines::snapshot::{AttemptSnapshot, SandboxState};
 use factory_domain::state::{
@@ -155,69 +154,6 @@ impl Engine {
         Ok(())
     }
 
-    /// Does the timer work for one job: ends an attempt that ran past its deadline (`A06`), forces
-    /// a cancelled attempt that did not tear down in time (`A10`), and finishes a cancellation.
-    ///
-    /// A deadline is also enforced by the heartbeat of the worker itself. This covers a worker
-    /// that has gone quiet. The `Store` port has no query for "attempts past their deadline", so
-    /// the caller names the job.
-    ///
-    /// # Errors
-    /// The store errors.
-    pub async fn sweep_job(&self, tenant: TenantId, job: JobId) -> Result<(), EngineError> {
-        let mut tx = self.tenant_tx(tenant).await?;
-        let stored = tx.get_job(job).await?;
-        let cx = Cx::new(self, &stored.value, self.new_causation_id());
-        let timeline = Timeline::load(&mut *tx, job).await?;
-        let now = tx.database_time().await?;
-        for record in &timeline.runs {
-            for attempt in record.attempts.iter().filter(|a| a.end.is_none()) {
-                let Some(deadline) = attempt.deadline_at else {
-                    continue;
-                };
-                let row = tx.get_attempt(attempt.id).await?;
-                if !matches!(
-                    row.value.status,
-                    AttemptStatus::Starting | AttemptStatus::Running
-                ) || now <= deadline
-                {
-                    continue;
-                }
-                let facts = GuardFacts::Deadline(DeadlineFacts {
-                    now,
-                    attempt_deadline: deadline,
-                });
-                let cleared = clear(Guard::DeadlinePassed, &facts)?;
-                cx.move_attempt(
-                    &mut *tx,
-                    &row,
-                    row.value.epoch,
-                    Step::new(AttemptEvent::DeadlineExceeded, cleared)
-                        .cause("deadline-exceeded")
-                        .payload(payload::attempt_event(
-                            record.kind,
-                            record.id,
-                            row.value.number,
-                            Some(FailureClass::TimedOut),
-                        )),
-                    AttemptEnd::default(),
-                )
-                .await?;
-                self.after_attempt_failed(
-                    &mut *tx,
-                    &cx,
-                    record.id,
-                    attempt.id,
-                    FailureClass::TimedOut,
-                )
-                .await?;
-            }
-        }
-        self.settle(&mut *tx, &cx).await?;
-        cx.commit(tx).await?;
-        Ok(())
-    }
-
     /// One move of a cancellation. Called by `settle` while the job is `CANCELLING`.
     pub(crate) async fn cancellation_round(
         &self,
@@ -276,7 +212,13 @@ impl Engine {
                     }
                     AttemptStatus::Cancelling => {
                         active = true;
-                        if let Some(requested) = attempt.cancel_requested_at {
+                        // The store keeps the end of the grace period (`teardown_deadline_at`); the
+                        // guard reads the moment the cancel was asked and the length of the period.
+                        if let Some(requested) = row
+                            .value
+                            .teardown_deadline_at
+                            .and_then(|deadline| deadline.checked_sub(self.config.teardown_grace))
+                        {
                             let facts = TeardownFacts {
                                 now,
                                 cancel_requested_at: requested,
