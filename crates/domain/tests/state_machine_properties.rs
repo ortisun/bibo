@@ -29,7 +29,7 @@ use factory_domain::machines::retry::{
 };
 use factory_domain::machines::rework::{
     GateFinding, GateReworkDecision, GateReworkRequest, HumanReworkDecision, HumanReworkRequest,
-    decide_gate_rework, decide_human_rework,
+    decide_gate_rework, decide_human_rework, human_targets,
 };
 use factory_domain::machines::snapshot::{GateReportSnapshot, StageRunSnapshot};
 use factory_domain::state::{
@@ -353,8 +353,12 @@ enum Action {
         differs: bool,
         budget: bool,
     },
-    /// A human asks for rework on a run that is waiting or blocked.
-    HumanRework { run: usize, roles: u8 },
+    /// A human asks for rework on a run that is waiting or blocked, naming a target stage.
+    HumanRework {
+        run: usize,
+        roles: u8,
+        target: usize,
+    },
 }
 
 fn action() -> impl Strategy<Value = Action> {
@@ -377,8 +381,8 @@ fn action() -> impl Strategy<Value = Action> {
                 differs,
                 budget,
             }),
-        1 => (any::<usize>(), any::<u8>())
-            .prop_map(|(run, roles)| Action::HumanRework { run, roles }),
+        2 => (any::<usize>(), any::<u8>(), any::<usize>())
+            .prop_map(|(run, roles, target)| Action::HumanRework { run, roles, target }),
     ]
 }
 
@@ -603,7 +607,7 @@ impl Sim {
                     prop_assert_eq!(self.ledger, ledger_before);
                 }
             }
-            Action::HumanRework { run, roles } => {
+            Action::HumanRework { run, roles, target } => {
                 let waiting: Vec<usize> = (0..self.runs.len())
                     .filter(|i| {
                         matches!(
@@ -618,14 +622,19 @@ impl Sim {
                 let index = waiting[run % waiting.len()];
                 let failing = self.runs[index];
                 let roles = roles_from(*roles);
+                let target = StageKind::ALL[target % StageKind::ALL.len()];
                 let decision = decide_human_rework(&HumanReworkRequest {
                     from: failing.kind,
+                    target,
                     principal_roles: &roles,
                     ledger: self.ledger,
                     limits: self.limits,
                 });
                 match decision {
                     HumanReworkDecision::Rework(plan) => {
+                        // Only a target that the file lists for the waiting stage is accepted.
+                        prop_assert_eq!(plan.target, target);
+                        prop_assert!(human_targets(failing.kind).contains(&target));
                         self.start_rework(
                             index,
                             StageRunEvent::HumanRequestedRework,

@@ -28,8 +28,15 @@ use factory_domain::machines::guards::{
     evaluate, facts_kind,
 };
 use factory_domain::machines::invalidation::{ArtifactChange, INVALIDATION_RULES, plan_for_change};
-use factory_domain::machines::limits::{DEFAULT_REWORK_CAP, RepairCap, ReworkCap};
-use factory_domain::machines::rework::{REWORK_ROUTES, ReworkCause, ReworkTrigger, route};
+use factory_domain::machines::limits::{
+    DEFAULT_REWORK_CAP, RepairCap, ReworkCap, ReworkLedger, ReworkLimits, ReworkTrack,
+};
+use factory_domain::machines::rework::{
+    DEFECT_PRECEDENCE, DEFECT_ROUTED_STAGES, DefectOutcome, GateFinding, GateReworkDecision,
+    GateReworkRequest, HUMAN_REWORK_ROUTES, HumanReworkDecision, HumanReworkRequest,
+    NeedsHumanCause, NoReworkRoute, REWORK_ROUTES, ReworkCause, ReworkTrigger, decide_gate_rework,
+    decide_human_rework, defect_outcome, human_targets, route,
+};
 use factory_domain::machines::snapshot::StageRunSnapshot;
 use factory_domain::state::{
     Actor, AttemptEvent, AttemptStatus, Guard, IllegalTransition, JobEvent, JobStatus,
@@ -48,6 +55,9 @@ static DOCUMENT: LazyLock<Value> = LazyLock::new(|| {
 
 /// The stage contract schema. Its `retry_on` list says which failure classes a contract can name.
 const STAGE_CONTRACT_SCHEMA: &str = include_str!("../../../schemas/stage-contract.schema.json");
+
+/// The review verdict schema. Its `defect_class` list says which classes a finding can carry.
+const REVIEW_VERDICT_SCHEMA: &str = include_str!("../../../schemas/review-verdict.schema.json");
 
 fn strings_of(value: &Value) -> BTreeSet<String> {
     value
@@ -871,15 +881,231 @@ fn rework_routes_match_json() {
 
 #[test]
 fn the_defect_classes_that_route_rework_are_the_ones_the_review_verdict_names() {
-    // The routes read two defect classes by name. If the verdict schema renames one, this fails.
-    let named: BTreeSet<DefectClass> = REWORK_ROUTES
+    // The route table reads two defect classes by name, and the defect matrix reads all four. If
+    // the verdict schema renames or adds one, this fails.
+    let named_by_routes: BTreeSet<DefectClass> = REWORK_ROUTES
         .iter()
         .filter_map(|r| r.trigger.defect())
         .collect();
     assert_eq!(
-        named,
+        named_by_routes,
         BTreeSet::from([DefectClass::Documentation, DefectClass::CodeBehavior])
     );
+    let named_by_matrix: BTreeSet<DefectClass> = DEFECT_PRECEDENCE.iter().copied().collect();
+    assert_eq!(
+        named_by_matrix.len(),
+        DEFECT_PRECEDENCE.len(),
+        "a class is listed twice"
+    );
+    let schema: Value = serde_json::from_str(REVIEW_VERDICT_SCHEMA).unwrap();
+    let in_schema = strings_of(
+        &schema["properties"]["findings"]["items"]["properties"]["defect_class"]["enum"],
+    );
+    assert_eq!(
+        named_by_matrix
+            .iter()
+            .map(ToString::to_string)
+            .collect::<BTreeSet<_>>(),
+        in_schema,
+        "the defect classes of the matrix and of the review verdict schema differ"
+    );
+    assert_eq!(named_by_matrix, DefectClass::ALL.iter().copied().collect());
+}
+
+// ---- defect routing ---------------------------------------------------------------------------
+
+/// A verdict that asks for changes, at `stage`, with a fresh ledger and room in every limit.
+fn verdict_at(stage: StageKind, defect: DefectClass) -> GateReworkRequest {
+    GateReworkRequest {
+        from: stage,
+        defect: Some(defect),
+        finding: GateFinding::VerdictChangesRequired,
+        ledger: ReworkLedger::default(),
+        limits: ReworkLimits::default(),
+        failing_set_differs: true,
+        budget_remains: true,
+    }
+}
+
+fn defect_routing_matches(doc: &Value) {
+    let routing = &doc["pipeline"]["defect_routing"];
+
+    // The order that decides between classes.
+    let precedence: Vec<&str> = routing["precedence"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|class| class.as_str().unwrap())
+        .collect();
+    let in_code: Vec<&str> = DEFECT_PRECEDENCE
+        .iter()
+        .map(|class| class.as_str())
+        .collect();
+    assert_eq!(
+        in_code, precedence,
+        "the defect precedence differs from the file"
+    );
+
+    // The stages that route by class, and every cell of the matrix.
+    let documented_stages = keys_of(&routing["stages"]);
+    let stages_in_code: BTreeSet<String> = DEFECT_ROUTED_STAGES
+        .iter()
+        .map(ToString::to_string)
+        .collect();
+    assert_eq!(
+        stages_in_code, documented_stages,
+        "the stages with a defect routing differ from the file"
+    );
+    let class_names: BTreeSet<String> = DefectClass::ALL.iter().map(ToString::to_string).collect();
+    for (stage_name, row) in routing["stages"].as_object().unwrap() {
+        let stage = StageKind::parse(stage_name).unwrap();
+        assert_eq!(
+            keys_of(row),
+            class_names,
+            "defect routing {stage_name}: the file does not name every class once"
+        );
+        for class in DefectClass::ALL {
+            let documented = row[class.as_str()].as_str().unwrap();
+            let outcome = defect_outcome(stage, *class);
+            assert_eq!(
+                outcome.map(DefectOutcome::as_str),
+                Some(documented),
+                "defect routing {stage_name} / {class}"
+            );
+
+            // The decision, not only the table.
+            let decision = decide_gate_rework(&verdict_at(stage, *class));
+            match documented {
+                "rework" => {
+                    // A `rework` cell finds a route in `rework_routes`, and the decision follows it.
+                    let found = route(
+                        stage,
+                        ReworkCause::Gate {
+                            defect: Some(*class),
+                        },
+                    )
+                    .unwrap_or_else(|error| {
+                        panic!("defect routing {stage_name} / {class} says rework: {error}")
+                    });
+                    let GateReworkDecision::Rework(plan) = decision else {
+                        panic!("defect routing {stage_name} / {class}: {decision:?}");
+                    };
+                    assert_eq!(plan.target, found.target, "{stage_name} / {class}");
+                }
+                "human" => assert_eq!(
+                    decision,
+                    GateReworkDecision::NeedsHuman(NeedsHumanCause::DefectNeedsDecision(*class)),
+                    "defect routing {stage_name} / {class}"
+                ),
+                other => panic!("defect routing {stage_name} / {class}: unknown outcome {other}"),
+            }
+        }
+    }
+
+    // A stage the file does not list has no outcome for any class.
+    for stage in StageKind::ALL {
+        if documented_stages.contains(stage.as_str()) {
+            continue;
+        }
+        for class in DefectClass::ALL {
+            assert_eq!(defect_outcome(*stage, *class), None, "{stage} / {class}");
+        }
+    }
+}
+
+#[test]
+fn defect_routing_matches_json() {
+    defect_routing_matches(&DOCUMENT);
+}
+
+// ---- human rework routes ----------------------------------------------------------------------
+
+fn human_rework_routes_match(doc: &Value) {
+    let rows = doc["pipeline"]["human_rework_routes"]["routes"]
+        .as_array()
+        .unwrap();
+    let documented: Vec<(&str, Vec<&str>)> = rows
+        .iter()
+        .map(|row| {
+            (
+                row["from_stage"].as_str().unwrap(),
+                row["targets"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .map(|target| target.as_str().unwrap())
+                    .collect(),
+            )
+        })
+        .collect();
+    let in_code: Vec<(&str, Vec<&str>)> = HUMAN_REWORK_ROUTES
+        .iter()
+        .map(|row| {
+            (
+                row.from.as_str(),
+                row.targets.iter().map(|target| target.as_str()).collect(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        in_code, documented,
+        "the human rework routes differ from the file"
+    );
+
+    // The lookup and the decision, for every pair of stages: a person may send rework from `from`
+    // to `target` if and only if the file lists the target for that stage.
+    let roles = [HumanRole::Approver];
+    for from in StageKind::ALL {
+        let listed: Vec<&str> = documented
+            .iter()
+            .find(|(name, _)| *name == from.as_str())
+            .map(|(_, targets)| targets.clone())
+            .unwrap_or_default();
+        let found: Vec<&str> = human_targets(*from).iter().map(|t| t.as_str()).collect();
+        assert_eq!(found, listed, "human targets from {from}");
+
+        for target in StageKind::ALL {
+            let decision = decide_human_rework(&HumanReworkRequest {
+                from: *from,
+                target: *target,
+                principal_roles: &roles,
+                ledger: ReworkLedger::default(),
+                limits: ReworkLimits::default(),
+            });
+            if listed.contains(&target.as_str()) {
+                let HumanReworkDecision::Rework(plan) = decision else {
+                    panic!("human rework {from} -> {target} is in the file: {decision:?}");
+                };
+                assert_eq!(plan.target, *target);
+                // The count follows the target: documentation for DOCUMENTING, code otherwise.
+                let expected_track = if *target == StageKind::Documenting {
+                    ReworkTrack::Documentation
+                } else {
+                    ReworkTrack::Code
+                };
+                assert_eq!(plan.track, expected_track, "{from} -> {target}");
+            } else {
+                let expected = if listed.is_empty() {
+                    NoReworkRoute::Human(*from)
+                } else {
+                    NoReworkRoute::HumanTarget {
+                        from: *from,
+                        target: *target,
+                    }
+                };
+                assert_eq!(
+                    decision,
+                    HumanReworkDecision::NoRoute(expected),
+                    "human rework {from} -> {target} is not in the file"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn human_rework_routes_match_json() {
+    human_rework_routes_match(&DOCUMENT);
 }
 
 // ---- the rework cap ---------------------------------------------------------------------------
@@ -1021,6 +1247,8 @@ fn conforms(doc: &Value) {
     cross_products_match(doc);
     invalidation_rules_match(doc);
     rework_routes_match(doc);
+    defect_routing_matches(doc);
+    human_rework_routes_match(doc);
     rework_cap_matches(doc);
     guard_registry_matches(doc);
     failure_classes_match(doc);
@@ -1195,6 +1423,51 @@ fn conformance_detects_a_changed_table() {
                 doc["pipeline"]["rework_routes"][4]["target_stage"] = json!("TASK_PLANNING");
             },
             "the rework routes differ",
+        ),
+        (
+            "a cell of the defect routing changed",
+            |doc| {
+                doc["pipeline"]["defect_routing"]["stages"]["REVIEW"]["policy"] = json!("rework");
+            },
+            "defect routing REVIEW / policy",
+        ),
+        (
+            "the defect precedence reordered",
+            |doc| {
+                doc["pipeline"]["defect_routing"]["precedence"] =
+                    json!(["policy", "specification", "code_behavior", "documentation"]);
+            },
+            "the defect precedence differs from the file",
+        ),
+        (
+            "a stage added to the defect routing",
+            |doc| {
+                let row = doc["pipeline"]["defect_routing"]["stages"]["REVIEW"].clone();
+                doc["pipeline"]["defect_routing"]["stages"]["VALIDATION"] = row;
+            },
+            "the stages with a defect routing differ from the file",
+        ),
+        (
+            "a human rework target added",
+            |doc| {
+                array_mut(doc, "/pipeline/human_rework_routes/routes/5/targets")
+                    .push(json!("DOCUMENTING"));
+            },
+            "the human rework routes differ from the file",
+        ),
+        (
+            "a human rework target removed",
+            |doc| {
+                array_mut(doc, "/pipeline/human_rework_routes/routes/9/targets").pop();
+            },
+            "the human rework routes differ from the file",
+        ),
+        (
+            "a human rework route removed",
+            |doc| {
+                array_mut(doc, "/pipeline/human_rework_routes/routes").remove(0);
+            },
+            "the human rework routes differ from the file",
         ),
         (
             "the stages a stage requires changed",
