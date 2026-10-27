@@ -180,10 +180,9 @@ mod dependency_rules {
         }
 
         #[test]
-        fn adapters_and_test_support_are_outside_the_rule() {
-            // DEP-04 covers rings 0 and 1 and the application crates. An adapter chooses its own.
-            let mut fx = Fixture::baseline("dep04-adapter");
-            fx.external("storage", "reqwest", &[]);
+        fn test_support_is_outside_the_rule() {
+            let mut fx = Fixture::baseline("dep04-testkit");
+            fx.external("testkit", "reqwest", &[]);
             fx.run().assert_no_violation("DEP-04");
         }
 
@@ -200,6 +199,163 @@ mod dependency_rules {
             fx.allow_external_in_rules("domain", "a maintained crate chosen later");
             fx.external("domain", "reqwest", &[]);
             fx.run().assert_violation_mentions("DEP-04", "reqwest");
+        }
+    }
+
+    /// Adapters were exempt from DEP-04 until review finding F-12, so their `external_allow` lists
+    /// were read and never enforced.
+    mod dep_04_adapters {
+        use super::*;
+
+        #[test]
+        fn an_adapter_with_a_crate_that_is_not_listed_fails() {
+            let mut fx = Fixture::baseline("dep04-adapter-name");
+            fx.external("sandbox", "reqwest", &[]);
+            fx.run().assert_violation_mentions(
+                "DEP-04",
+                "factory-sandbox depends on the external crate reqwest",
+            );
+        }
+
+        #[test]
+        fn an_adapter_that_enables_a_tokio_feature_that_is_not_listed_fails() {
+            let mut fx = Fixture::baseline("dep04-adapter-feature");
+            fx.allow_external_in_rules("runtime", "tokio[sync,rt]");
+            fx.external("runtime", "tokio", &["sync", "fs"]);
+            fx.run().assert_violation_mentions("DEP-04", "fs");
+        }
+
+        #[test]
+        fn an_adapter_that_uses_only_the_listed_features_passes() {
+            let mut fx = Fixture::baseline("dep04-adapter-ok");
+            fx.allow_external_in_rules("runtime", "tokio[sync,rt]");
+            fx.external("runtime", "tokio", &["sync", "rt"]);
+            fx.run().assert_passes();
+        }
+
+        #[test]
+        fn an_entry_without_brackets_allows_every_feature_of_that_crate() {
+            let mut fx = Fixture::baseline("dep04-adapter-any");
+            fx.allow_external_in_rules("storage", "tokio");
+            fx.external("storage", "tokio", &["net"]);
+            fx.run().assert_passes();
+        }
+
+        #[test]
+        fn a_tokio_feature_that_no_limit_lists_reaches_workflow_through_an_adapter() {
+            // storage may enable any tokio feature by its own entry. Cargo unifies the feature
+            // into the tokio that workflow uses, and the limit on the resolved set catches it.
+            let mut fx = Fixture::baseline("dep04-adapter-unified");
+            fx.allow_external_in_rules("storage", "tokio");
+            fx.external("storage", "tokio", &["fs"]);
+            let run = fx.run();
+            run.assert_violation_mentions("DEP-05", "factory-workflow resolves tokio");
+            run.assert_no_violation("DEP-04");
+        }
+
+        #[test]
+        fn a_dev_dependency_of_an_adapter_is_outside_the_rule() {
+            let mut fx = Fixture::baseline("dep04-adapter-dev");
+            fx.dev_external("sandbox", "reqwest", &[]);
+            fx.run().assert_no_violation("DEP-04");
+        }
+
+        #[test]
+        fn every_adapter_is_checked() {
+            for adapter in ["storage", "sandbox", "runtime", "github", "observability"] {
+                let mut fx = Fixture::baseline("dep04-each-adapter");
+                fx.external(adapter, "reqwest", &[]);
+                fx.run().assert_violation_mentions("DEP-04", adapter);
+            }
+        }
+    }
+
+    /// The domain crate gets no clock and no identifier generator: `time` without `std` and `uuid`
+    /// with `std` only (ADR 0002 and 0011). The first two tests read the domain's own manifest,
+    /// the others read what Cargo resolves for the whole workspace.
+    mod dep_04_domain_features {
+        use super::*;
+
+        fn domain_with_time_and_uuid(label: &str) -> Fixture {
+            let mut fx = Fixture::baseline(label);
+            fx.external_stub(
+                "time",
+                &[("alloc", &[]), ("std", &["alloc"]), ("macros", &[])],
+            );
+            fx.external_stub("uuid", &[("std", &[]), ("v4", &["std"]), ("v7", &["std"])]);
+            fx.allow_external_in_rules("domain", "time[]");
+            fx.allow_external_in_rules("domain", "uuid[std]");
+            fx.external("domain", "time", &[]);
+            fx.external("domain", "uuid", &["std"]);
+            fx
+        }
+
+        #[test]
+        fn time_without_features_and_uuid_with_std_pass() {
+            domain_with_time_and_uuid("dep04-domain-ok")
+                .run()
+                .assert_passes();
+        }
+
+        #[test]
+        fn the_domain_crate_enabling_any_feature_of_time_fails() {
+            let mut fx = domain_with_time_and_uuid("dep04-domain-time");
+            fx.external("domain", "time", &["std"]);
+            fx.run().assert_violation_mentions("DEP-04", "std");
+        }
+
+        #[test]
+        fn the_domain_crate_enabling_a_uuid_feature_other_than_std_fails() {
+            let mut fx = domain_with_time_and_uuid("dep04-domain-uuid");
+            fx.external("domain", "uuid", &["std", "v4"]);
+            fx.run().assert_violation_mentions("DEP-04", "v4");
+        }
+
+        #[test]
+        fn another_crate_enabling_time_std_gives_the_domain_a_clock() {
+            // The review's mutation: time/std switched on in the (empty) storage crate. The
+            // domain manifest still says time without features, and it passes DEP-04.
+            let mut fx = domain_with_time_and_uuid("dep04-domain-unified-time");
+            fx.allow_external_in_rules("storage", "time");
+            fx.external("storage", "time", &["std"]);
+            let run = fx.run();
+            run.assert_violation_mentions("DEP-05", "factory-domain resolves time");
+            run.assert_violation_mentions("DEP-05", "Enabled by factory-storage");
+            run.assert_no_violation("DEP-04");
+        }
+
+        #[test]
+        fn another_crate_enabling_a_uuid_generator_gives_the_domain_one() {
+            let mut fx = domain_with_time_and_uuid("dep04-domain-unified-uuid");
+            fx.allow_external_in_rules("workflow", "uuid");
+            fx.external("workflow", "uuid", &["v7"]);
+            fx.run()
+                .assert_violation_mentions("DEP-05", "factory-domain resolves uuid");
+        }
+
+        #[test]
+        fn a_dev_dependency_that_enables_it_counts_too() {
+            // `cargo clippy --all-targets` builds the tests, so their features are unified.
+            let mut fx = domain_with_time_and_uuid("dep04-domain-unified-dev");
+            fx.dev_external("storage", "time", &["std"]);
+            fx.run().assert_violation_mentions("DEP-05", "time");
+        }
+
+        #[test]
+        fn another_crate_using_time_without_features_changes_nothing() {
+            let mut fx = domain_with_time_and_uuid("dep04-domain-unified-ok");
+            fx.allow_external_in_rules("storage", "time");
+            fx.external("storage", "time", &[]);
+            fx.run().assert_passes();
+        }
+
+        #[test]
+        fn the_check_names_the_limit_in_the_rules_file() {
+            let mut fx = domain_with_time_and_uuid("dep04-domain-message");
+            fx.allow_external_in_rules("storage", "time");
+            fx.external("storage", "time", &["std"]);
+            fx.run()
+                .assert_violation_mentions("DEP-05", "source_scans.dep_05.resolved_features");
         }
     }
 

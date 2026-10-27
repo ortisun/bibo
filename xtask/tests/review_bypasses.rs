@@ -383,4 +383,143 @@ mod review_bypasses {
             .assert_passes();
         }
     }
+
+    mod an_allow_or_expect_of_a_ban_lint_in_an_inner_crate_fails {
+        use super::*;
+
+        const READ: &str = "pub fn f() { let _ = std::fs::read(\"x\"); }\n";
+
+        fn with_attribute(attribute: &str) -> Run {
+            run_with_source("domain", "src/lib.rs", &format!("{attribute}\n{READ}"))
+        }
+
+        #[test]
+        fn allow_of_disallowed_methods() {
+            with_attribute("#[allow(clippy::disallowed_methods)]")
+                .assert_violation_mentions("DEP-05", "clippy::disallowed_methods");
+        }
+
+        #[test]
+        fn allow_of_disallowed_types() {
+            with_attribute("#[allow(clippy::disallowed_types)]").assert_violation("DEP-05");
+        }
+
+        #[test]
+        fn expect_instead_of_allow() {
+            with_attribute("#[expect(clippy::disallowed_methods, reason = \"tests read files\")]")
+                .assert_violation_mentions("DEP-05", "expect");
+        }
+
+        #[test]
+        fn an_inner_attribute_over_the_whole_crate() {
+            with_attribute("#![allow(clippy::all)]")
+                .assert_violation_mentions("DEP-05", "clippy::all");
+        }
+
+        #[test]
+        fn allow_warnings() {
+            with_attribute("#![allow(warnings)]").assert_violation_mentions("DEP-05", "warnings");
+        }
+
+        #[test]
+        fn among_other_lints() {
+            with_attribute("#[allow(dead_code, clippy::disallowed_methods, unused)]")
+                .assert_violation("DEP-05");
+        }
+
+        #[test]
+        fn inside_cfg_attr() {
+            with_attribute("#[cfg_attr(unix, allow(clippy::disallowed_methods))]")
+                .assert_violation("DEP-05");
+        }
+
+        #[test]
+        fn inside_a_cfg_test_module_too() {
+            // clippy runs on test code with --all-targets, so an allow there silences the ban.
+            run_with_source(
+                "domain",
+                "src/lib.rs",
+                "#[cfg(test)]\nmod tests {\n    #![allow(clippy::disallowed_methods)]\n}\n",
+            )
+            .assert_violation("DEP-05");
+        }
+
+        #[test]
+        fn in_an_integration_test_of_the_crate() {
+            run_with_source(
+                "domain",
+                "tests/reads.rs",
+                &format!("#![allow(clippy::disallowed_types)]\n{READ}"),
+            )
+            .assert_violation_mentions("DEP-05", "crates/domain/tests/reads.rs:1");
+        }
+
+        #[test]
+        fn in_each_of_the_four_inner_crates() {
+            for name in ["domain", "ports", "workflow", "spec_adapter"] {
+                run_with_source(
+                    name,
+                    "src/lib.rs",
+                    "#[allow(clippy::disallowed_methods)]\npub fn f() {}\n",
+                )
+                .assert_violation("DEP-05");
+            }
+        }
+
+        #[test]
+        fn set_to_allow_in_the_root_manifest() {
+            let mut fx = Fixture::baseline("manifest-allow");
+            fx.root_lints_block(Some(
+                "\n[workspace.lints.rust]\nunsafe_code = \"forbid\"\n\n[workspace.lints.clippy]\ndisallowed_methods = \"allow\"\n",
+            ));
+            fx.run()
+                .assert_violation_mentions("DEP-05", "disallowed_methods");
+        }
+
+        #[test]
+        fn an_unrelated_allow_passes() {
+            with_attribute("#[allow(dead_code)]").assert_no_violation("DEP-05");
+        }
+
+        #[test]
+        fn denying_the_lint_passes() {
+            with_attribute("#![deny(clippy::disallowed_methods)]").assert_no_violation("DEP-05");
+        }
+
+        #[test]
+        fn an_adapter_may_allow_it_because_no_ban_applies_there() {
+            run_with_source(
+                "storage",
+                "src/lib.rs",
+                "#![allow(clippy::disallowed_methods, clippy::disallowed_types)]\n",
+            )
+            .assert_passes();
+        }
+    }
+
+    mod a_path_or_git_dependency_under_an_allowed_name_fails {
+        use super::*;
+        use serde_json::json;
+
+        #[test]
+        fn a_path_package_named_like_an_allowed_crate() {
+            // Control: the baseline's stub packages are path dependencies, and the fixture lists
+            // them as exceptions. With the exception list empty, the same workspace fails. In
+            // the real repository the list is empty, so a path dependency named serde_json
+            // (which domain may use) is a violation of this check, not only of `cargo deny`.
+            let mut fx = Fixture::baseline("path-dep");
+            fx.run().assert_passes();
+            fx.rules_mut()["source_scans"]["dep_04"]["path_exceptions"] = json!([]);
+            fx.run()
+                .assert_violation_mentions("DEP-04", "serde_json as a path dependency");
+        }
+
+        #[test]
+        fn the_exception_list_is_per_package_name() {
+            let mut fx = Fixture::baseline("path-dep-one");
+            fx.rules_mut()["source_scans"]["dep_04"]["path_exceptions"] =
+                json!(["tokio", "reqwest"]);
+            fx.run().assert_violation_mentions("DEP-04", "serde_json");
+        }
+    }
 }

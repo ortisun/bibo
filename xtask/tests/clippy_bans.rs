@@ -8,7 +8,9 @@ mod common;
 use common::Fixture;
 use serde_json::Value;
 use std::collections::BTreeSet;
+use std::collections::hash_map::DefaultHasher;
 use std::fs;
+use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use xtask::clippy_bans::{BANS, BanKind, listed_bans, render_clippy_toml, scratch_source};
@@ -37,6 +39,46 @@ mod clippy_bans {
             .env("CARGO_NET_OFFLINE", "true");
     }
 
+    /// The version of `name` that the repository's `Cargo.lock` pins. The scratch crate uses the
+    /// real `time`, `uuid` and `tokio`, so a ban for one of their paths is proven against the
+    /// real item and not against a copy that could drift.
+    fn locked_version(name: &str) -> String {
+        let lock = Path::new(env!("CARGO_MANIFEST_DIR")).join("../Cargo.lock");
+        let text =
+            fs::read_to_string(&lock).unwrap_or_else(|e| panic!("read {}: {e}", lock.display()));
+        let mut lines = text.lines();
+        while let Some(line) = lines.next() {
+            if line == format!("name = \"{name}\"")
+                && let Some(version) = lines.next().and_then(|l| l.strip_prefix("version = \""))
+            {
+                return version.trim_end_matches('"').to_string();
+            }
+        }
+        panic!("{name} is not in Cargo.lock");
+    }
+
+    /// The manifest of a scratch crate. It resolves offline from the registry cache that
+    /// building the workspace filled, with only the features the snippets need.
+    fn scratch_manifest(package: &str) -> String {
+        format!(
+            "[package]\nname = \"{package}\"\nversion = \"0.0.0\"\nedition = \"2024\"\n\n\
+             [dependencies]\n\
+             time = {{ version = \"={}\", default-features = false, features = [\"std\"] }}\n\
+             uuid = {{ version = \"={}\", default-features = false, features = [\"std\", \"v4\", \"v7\", \"v8\"] }}\n\
+             tokio = {{ version = \"={}\", default-features = false, features = [\"time\", \"net\", \"process\", \"fs\", \"rt\"] }}\n\n\
+             [workspace]\n",
+            locked_version("time"),
+            locked_version("uuid"),
+            locked_version("tokio")
+        )
+    }
+
+    /// One target directory for every scratch crate of this machine. It holds the checked
+    /// dependencies, and it does not depend on the caller's `CARGO_TARGET_DIR`.
+    fn shared_target_dir() -> PathBuf {
+        std::env::temp_dir().join("xtask-clippy-scratch-target")
+    }
+
     /// A scratch crate in a temporary directory, linted with the repository's toolchain.
     struct Scratch {
         dir: PathBuf,
@@ -48,11 +90,18 @@ mod clippy_bans {
                 std::env::temp_dir().join(format!("xtask-clippy-{}-{label}", std::process::id()));
             let _ = fs::remove_dir_all(&dir);
             fs::create_dir_all(dir.join("src")).expect("create the scratch crate");
-            fs::write(
-                dir.join("Cargo.toml"),
-                "[package]\nname = \"scratch\"\nversion = \"0.0.0\"\nedition = \"2024\"\n\n[workspace]\n",
-            )
-            .expect("write the manifest");
+            // The name carries a hash of everything that decides the result, so two scratch
+            // crates can share one target directory (which keeps `tokio` from being checked
+            // again for each test) without ever sharing a cache entry (F-23).
+            let mut hasher = DefaultHasher::new();
+            (clippy_toml, source).hash(&mut hasher);
+            let package = format!(
+                "scratch_{}_{:016x}",
+                label.replace(|c: char| !c.is_ascii_alphanumeric(), "_"),
+                hasher.finish()
+            );
+            fs::write(dir.join("Cargo.toml"), scratch_manifest(&package))
+                .expect("write the manifest");
             fs::write(dir.join("src/lib.rs"), source).expect("write the source");
             if let Some(text) = clippy_toml {
                 fs::write(dir.join("clippy.toml"), text).expect("write clippy.toml");
@@ -95,8 +144,14 @@ mod clippy_bans {
             command
                 .args(["clippy", "--message-format=json", "--", "-D", "warnings"])
                 .current_dir(&self.dir);
-            scrub_build_environment(&mut command, &self.dir.join("target"));
+            scrub_build_environment(&mut command, &shared_target_dir());
             let output = command.output().expect("run cargo clippy");
+            let stdout_text = String::from_utf8_lossy(&output.stdout);
+            assert!(
+                output.status.success() || stdout_text.contains("compiler-message"),
+                "BLOCKED: the scratch crate did not build, so no ban was tried. It resolves time, uuid and tokio offline from the registry cache; build the workspace once with network access.\n{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
             let stdout = String::from_utf8_lossy(&output.stdout);
             let mut diagnostics = Vec::new();
             for line in stdout.lines() {
@@ -146,46 +201,144 @@ mod clippy_bans {
             matches!(code, Some(c) if c != 0),
             "clippy should fail the scratch crate: {code:?} {diagnostics:?}"
         );
-        let mut silent = Vec::new();
-        for (index, ban) in BANS.iter().enumerate() {
-            let line = index as u64 + 2; // line 1 is the header
-            let fired = diagnostics.iter().any(|(lint, at, message)| {
-                *at == line && lint == lint_for(ban.kind) && message.contains(ban.path)
-            });
-            if !fired {
-                silent.push(ban.path);
-            }
-        }
+        let silent = silent_bans(&diagnostics, None);
         assert!(
             silent.is_empty(),
             "these bans did not fire: {silent:?}\nall diagnostics: {diagnostics:#?}"
         );
     }
 
+    /// The bans with a snippet that did not produce their diagnostic. With `only`, the bans the
+    /// file under test lists.
+    fn silent_bans(
+        diagnostics: &[(String, u64, String)],
+        only: Option<&BTreeSet<(BanKind, String)>>,
+    ) -> Vec<&'static str> {
+        BANS.iter()
+            .enumerate()
+            .filter(|(_, ban)| !ban.snippet.is_empty())
+            .filter(|(_, ban)| only.is_none_or(|o| o.contains(&(ban.kind, ban.path.to_string()))))
+            .filter(|(index, ban)| {
+                let line = *index as u64 + 2; // line 1 is the header
+                !diagnostics.iter().any(|(lint, at, message)| {
+                    *at == line && lint == lint_for(ban.kind) && message.contains(ban.path)
+                })
+            })
+            .map(|(_, ban)| ban.path)
+            .collect()
+    }
+
     #[test]
     fn every_ban_fires_under_the_clippy_toml_each_inner_crate_actually_has() {
+        // Entries the file lacks are `check-architecture`'s finding (DEP-05, with the command
+        // that regenerates the file). This test proves that the entries it does have fire.
         let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
         for name in common::real_rules().source_scans.dep_05.inner_crates {
             let path = root.join("crates").join(&name).join("clippy.toml");
             let text = fs::read_to_string(&path)
                 .unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
+            let listed = listed_bans(&text).expect("the inner crate's clippy.toml parses");
             let scratch = Scratch::new(&format!("real-{name}"), Some(&text), &scratch_source());
             let (_, diagnostics) = scratch.clippy();
-            let silent: Vec<&str> = BANS
-                .iter()
-                .enumerate()
-                .filter(|(index, ban)| {
-                    let line = *index as u64 + 2;
-                    !diagnostics.iter().any(|(lint, at, message)| {
-                        *at == line && lint == lint_for(ban.kind) && message.contains(ban.path)
-                    })
-                })
-                .map(|(_, ban)| ban.path)
-                .collect();
+            let silent = silent_bans(&diagnostics, Some(&listed));
             assert!(
                 silent.is_empty(),
                 "{name}: these bans did not fire: {silent:?}"
             );
+        }
+    }
+
+    #[test]
+    fn the_bans_a_snippet_cannot_prove_are_the_ones_listed_with_a_reason() {
+        let unproven: BTreeSet<&str> = BANS
+            .iter()
+            .filter(|b| b.snippet.is_empty())
+            .map(|b| b.path)
+            .collect();
+        let documented: BTreeSet<&str> = xtask::clippy_bans::UNPROVEN
+            .iter()
+            .map(|(p, _)| *p)
+            .collect();
+        assert_eq!(unproven, documented);
+    }
+
+    #[test]
+    fn a_pathbuf_receiver_is_caught_by_the_bans_on_path() {
+        let source = "pub fn f() -> bool {\n    let p = std::path::PathBuf::new();\n    p.exists() || p.is_dir() || p.read_dir().is_ok()\n}\n";
+        let scratch = Scratch::new("pathbuf", Some(&render_clippy_toml()), source);
+        let (_, diagnostics) = scratch.clippy();
+        for method in ["exists", "is_dir", "read_dir"] {
+            assert!(
+                diagnostics
+                    .iter()
+                    .any(|(lint, _, m)| lint == "clippy::disallowed_methods"
+                        && m.contains(&format!("std::path::Path::{method}"))),
+                "a PathBuf receiver was not caught for {method}: {diagnostics:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn every_review_mutation_is_in_the_ban_list() {
+        // The calls the reviewer made in a scratch copy of the domain crate (F-12), and the rest
+        // of the list in ports-v1.1 section 12.
+        let paths: BTreeSet<&str> = BANS.iter().map(|b| b.path).collect();
+        for path in [
+            "std::path::Path::exists",
+            "std::path::Path::is_file",
+            "std::path::Path::is_dir",
+            "std::path::Path::read_dir",
+            "std::path::Path::metadata",
+            "std::path::Path::symlink_metadata",
+            "std::path::Path::canonicalize",
+            "std::path::Path::read_link",
+            "std::path::Path::try_exists",
+            "std::env::var",
+            "std::env::var_os",
+            "std::env::vars",
+            "std::env::vars_os",
+            "std::env::set_var",
+            "std::env::remove_var",
+            "std::env::current_dir",
+            "std::env::current_exe",
+            "std::env::temp_dir",
+            "std::os::unix::net::UnixStream",
+            "std::os::unix::net::UnixListener",
+            "std::os::unix::net::UnixDatagram",
+            "tokio::time::sleep",
+            "tokio::time::timeout",
+            "tokio::time::interval",
+            "tokio::time::Instant::now",
+            "time::OffsetDateTime::now_utc",
+            "time::OffsetDateTime::now_local",
+            "uuid::Uuid::now_v7",
+            "uuid::Uuid::new_v4",
+            "uuid::Uuid::new_v1",
+            "uuid::Uuid::new_v6",
+            "uuid::Uuid::new_v8",
+            "std::net::ToSocketAddrs::to_socket_addrs",
+        ] {
+            assert!(paths.contains(path), "{path} is not banned");
+        }
+    }
+
+    #[test]
+    fn a_path_that_only_some_crates_can_resolve_is_marked_so_clippy_stays_quiet() {
+        let rendered = render_clippy_toml();
+        for ban in BANS {
+            let line = rendered
+                .lines()
+                .find(|l| l.contains(&format!("\"{}\"", ban.path)))
+                .unwrap_or_else(|| panic!("{} is not rendered", ban.path));
+            let crate_dependent = ["tokio::", "time::", "uuid::"]
+                .iter()
+                .any(|p| ban.path.starts_with(p));
+            assert_eq!(
+                line.contains("allow-invalid = true"),
+                crate_dependent,
+                "{line}"
+            );
+            assert_eq!(ban.optional_path, crate_dependent, "{}", ban.path);
         }
     }
 

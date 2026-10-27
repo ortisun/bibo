@@ -320,6 +320,13 @@ impl Fixture {
     }
 
     fn add_external(&mut self, name: &str, features: &[(&str, &[&str])]) {
+        // A stub is a path package, which the source check refuses for anything but a listed
+        // exception. The tests for that check clear the list.
+        if let Some(list) = self.rules["source_scans"]["dep_04"]["path_exceptions"].as_array_mut()
+            && !list.iter().any(|v| v == name)
+        {
+            list.push(json!(name));
+        }
         self.externals.insert(
             name.to_string(),
             External {

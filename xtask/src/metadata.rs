@@ -21,6 +21,11 @@ pub struct Dependency {
     /// True for a dependency on a local path. A workspace edge is one of these that names a
     /// workspace member.
     pub is_path: bool,
+    /// The directory a path dependency points at, as Cargo reports it.
+    pub path: Option<PathBuf>,
+    /// Where the package comes from: `registry+https://...` or `git+https://...`. `None` for a
+    /// path dependency.
+    pub source: Option<String>,
     pub uses_default_features: bool,
     pub features: Vec<String>,
 }
@@ -35,6 +40,10 @@ pub struct Member {
     /// build script. Tests, benches and examples are left out. A root can sit outside `src`
     /// when the manifest sets a `path`.
     pub production_targets: Vec<PathBuf>,
+    /// For each package this member depends on, the features Cargo resolved for it with the
+    /// whole workspace unified (`resolve.nodes[].features`). A crate that enables a feature in
+    /// its own manifest changes this set for every other crate that uses the package.
+    pub resolved_dependency_features: BTreeMap<String, BTreeSet<String>>,
 }
 
 #[derive(Debug, Clone)]
@@ -148,6 +157,8 @@ pub fn parse(json: &str) -> Result<Workspace, String> {
                     .to_string(),
                 kind,
                 is_path: d["path"].is_string(),
+                path: d["path"].as_str().map(PathBuf::from),
+                source: d["source"].as_str().map(str::to_string),
                 uses_default_features: d["uses_default_features"].as_bool().unwrap_or(true),
                 features: d["features"]
                     .as_array()
@@ -190,6 +201,7 @@ pub fn parse(json: &str) -> Result<Workspace, String> {
             dir,
             dependencies,
             production_targets,
+            resolved_dependency_features: resolved_features_of(&doc, id),
         });
     }
     members.sort_by(|a, b| a.name.cmp(&b.name));
@@ -198,6 +210,52 @@ pub fn parse(json: &str) -> Result<Workspace, String> {
         members,
         package_features,
     })
+}
+
+/// The resolved features of every package that the package `member_id` depends on.
+fn resolved_features_of(doc: &Value, member_id: &str) -> BTreeMap<String, BTreeSet<String>> {
+    let nodes = doc["resolve"]["nodes"].as_array();
+    let name_of = |id: &str| -> Option<String> {
+        doc["packages"]
+            .as_array()?
+            .iter()
+            .find(|p| p["id"].as_str() == Some(id))
+            .and_then(|p| p["name"].as_str().map(str::to_string))
+    };
+    let features_of = |id: &str| -> BTreeSet<String> {
+        nodes
+            .into_iter()
+            .flatten()
+            .find(|n| n["id"].as_str() == Some(id))
+            .map(|n| {
+                n["features"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter_map(Value::as_str)
+                    .map(str::to_string)
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+    let mut resolved: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+    let node = nodes
+        .into_iter()
+        .flatten()
+        .find(|n| n["id"].as_str() == Some(member_id));
+    for dep in node
+        .and_then(|n| n["deps"].as_array())
+        .into_iter()
+        .flatten()
+    {
+        let Some(id) = dep["pkg"].as_str() else {
+            continue;
+        };
+        if let Some(name) = name_of(id) {
+            resolved.entry(name).or_default().extend(features_of(id));
+        }
+    }
+    resolved
 }
 
 #[cfg(test)]

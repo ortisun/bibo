@@ -11,6 +11,7 @@ use std::collections::BTreeSet;
 #[derive(Debug, Clone)]
 pub struct SourceScans {
     pub st_01: St01,
+    pub dep_04: Dep04,
     pub dep_05: Dep05,
     pub dep_09: Dep09,
     pub dep_10: Dep10,
@@ -22,6 +23,17 @@ pub struct SourceScans {
     pub st_14: St14,
     /// Every crate or binary named anywhere in the section, for the existence check.
     pub named_crates: BTreeSet<String>,
+}
+
+/// DEP-04 also covers where an external package comes from. A path or git dependency named like
+/// an allowed crate would pass a check that only reads names (review finding F-31).
+#[derive(Debug, Clone)]
+pub struct Dep04 {
+    /// The `source` values Cargo reports for packages from the public registry.
+    pub registries: Vec<String>,
+    /// Package names that may be a path dependency outside the workspace. Empty in the
+    /// repository; the fixtures of xtask use stub packages and list them here.
+    pub path_exceptions: Vec<String>,
 }
 
 /// ST-01 walks the whole repository tree for `safe.directory`.
@@ -166,6 +178,12 @@ impl SourceScans {
             prose_extensions: strings(d, "prose_extensions", "source_scans.st_01")?,
         };
 
+        let d = object(scans, "dep_04", "source_scans")?;
+        let dep_04 = Dep04 {
+            registries: strings(d, "registries", "source_scans.dep_04")?,
+            path_exceptions: strings(d, "path_exceptions", "source_scans.dep_04")?,
+        };
+
         let d = object(scans, "dep_05", "source_scans")?;
         let mut resolved_features = Vec::new();
         for entry in d
@@ -283,6 +301,7 @@ impl SourceScans {
 
         Ok(Self {
             st_01,
+            dep_04,
             dep_05,
             dep_09,
             dep_10,

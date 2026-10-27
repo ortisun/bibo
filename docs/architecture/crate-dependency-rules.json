@@ -410,6 +410,13 @@
       "skipped_directories": [".git", "target", "node_modules"],
       "prose_extensions": ["md", "txt", "rst", "lock"]
     },
+    "dep_04": {
+      "registries": [
+        "registry+https://github.com/rust-lang/crates.io-index",
+        "sparse+https://index.crates.io/"
+      ],
+      "path_exceptions": []
+    },
     "dep_05": {
       "inner_crates": ["domain", "ports", "workflow", "spec_adapter"],
       "forbidden_lint_allows": [

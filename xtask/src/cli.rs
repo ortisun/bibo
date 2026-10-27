@@ -116,6 +116,10 @@ fn check_architecture(args: &CheckArgs) -> i32 {
     );
     findings.extend(lints::check(&rules, &workspace));
     findings.extend(clippy_bans::check(&rules, &workspace));
+    match clippy_bans::check_silencing(&rules, &workspace) {
+        Ok(more) => findings.extend(more),
+        Err(message) => return fail_to_run(&message),
+    }
     match static_checks::check(&rules, &workspace) {
         Ok(more) => findings.extend(more),
         Err(message) => return fail_to_run(&message),
