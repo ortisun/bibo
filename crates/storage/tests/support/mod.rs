@@ -13,7 +13,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use diesel_async::SimpleAsyncConnection;
-use factory_domain::ids::{JobId, PrincipalId, StageRunId, TenantId};
+use factory_domain::ids::{AttemptId, JobId, PrincipalId, StageRunId, TenantId};
 use factory_domain::scope::TenantScope;
 use factory_domain::state::{JobEvent, JobStatus, StageRunEvent, StageRunStatus, Status};
 use factory_domain::values::{NonEmptyString, Timestamp};
@@ -172,19 +172,62 @@ impl Scene {
         id
     }
 
-    /// Claims in a system transaction and commits.
+    /// Claims in a system transaction with a lease of 60 seconds, and commits.
     pub async fn claim(&self, worker: &str, limit: u32) -> Vec<factory_ports::store::ClaimedWork> {
+        self.claim_for(worker, limit, Duration::from_secs(60)).await
+    }
+
+    /// Claims in a system transaction with a lease of `ttl`, and commits.
+    pub async fn claim_for(
+        &self,
+        worker: &str,
+        limit: u32,
+        ttl: Duration,
+    ) -> Vec<factory_ports::store::ClaimedWork> {
         let mut tx = self.system_tx().await;
         let claimed = tx
-            .claim_ready(
-                &WorkerId::new(worker).expect("worker"),
-                limit,
-                Duration::from_secs(60),
-            )
+            .claim_ready(&WorkerId::new(worker).expect("worker"), limit, ttl)
             .await
             .expect("claim");
         tx.commit().await.expect("commit claim");
         claimed
+    }
+
+    /// The newest attempt of a stage run, as the superuser sees it: id, number, status, epoch.
+    pub async fn newest_attempt(&self, stage_run: StageRunId) -> (AttemptId, i64, String, i64) {
+        self.attempts_of(stage_run)
+            .await
+            .into_iter()
+            .last()
+            .expect("the stage run has an attempt")
+    }
+
+    /// Every attempt of a stage run in number order.
+    pub async fn attempts_of(&self, stage_run: StageRunId) -> Vec<(AttemptId, i64, String, i64)> {
+        let count = self
+            .db
+            .number(&format!(
+                "SELECT count(*) FROM attempts WHERE stage_run_id = '{}'",
+                stage_run.as_uuid()
+            ))
+            .await;
+        let mut found = Vec::new();
+        for position in 0..count {
+            let row = |column: &str| {
+                format!(
+                    "SELECT {column} FROM attempts WHERE stage_run_id = '{}' ORDER BY attempt_number OFFSET {position}",
+                    stage_run.as_uuid()
+                )
+            };
+            let id = self.db.text(&row("id")).await.expect("id");
+            found.push((
+                AttemptId::from_uuid(Uuid::parse_str(&id).expect("uuid")),
+                self.db.number(&row("attempt_number")).await,
+                self.db.text(&row("status")).await.expect("status"),
+                self.db.number(&row("lease_epoch")).await,
+            ));
+        }
+        found
     }
 }
 
@@ -210,9 +253,11 @@ pub fn first_version() -> Version {
 
 pub type SharedScene = Arc<Scene>;
 
-/// Runs statements as a login with the tenant setting made inside one transaction, and returns the
-/// text of the first column of the first row, or the error text. For tests that probe the policy
-/// with raw SQL, which the `Tx` type does not allow.
+/// Runs one statement as a login, inside one transaction that is always rolled back, with the
+/// tenant setting made first when `tenant_setting` is given. The statement must return a column
+/// named `v`. Gives the text of that column in the first row (`None` for no row), or the text of
+/// the database error. For tests that probe the policy with raw SQL, which the `Tx` type does not
+/// allow, so the error text here is for the test to read and never reaches a caller.
 pub async fn as_login(
     db: &TestDb,
     login: &Login,
@@ -234,11 +279,9 @@ pub async fn as_login(
             .await
             .map_err(|error| error.to_string())?;
     }
-    let outcome = sql_query(format!(
-        "SELECT (q.v)::text AS v FROM ({sql}) AS q(v) LIMIT 1"
-    ))
-    .get_result::<server::Scalar>(&mut connection)
-    .await;
+    let outcome = sql_query(sql)
+        .get_result::<server::Scalar>(&mut connection)
+        .await;
     let _ = connection.batch_execute("ROLLBACK").await;
     match outcome {
         Ok(row) => Ok(Some(row.v)),

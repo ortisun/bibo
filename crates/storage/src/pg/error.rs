@@ -84,11 +84,23 @@ pub(super) fn log_failure(operation: &'static str, error: &DieselError) {
     );
 }
 
+/// The unique keys that are not scoped by tenant (`docs/database/tenancy.md`, section 4).
+const GLOBAL_KEYS: [&str; 2] = [
+    "repositories_github_repository_id_key",
+    "api_tokens_token_hash_key",
+];
+
 /// The closed error for a violated rule, naming only the constraint.
 ///
 /// This is the one place where a name from the database enters an error that a caller sees. It
 /// is the name of a constraint of the schema, never a message and never a value.
 pub(super) fn constraint(kind: &'static str, name: Option<&str>) -> StoreError {
+    // The two keys that are global to the database name a value that may belong to another
+    // tenant. Their violation is reported as a missing object (NT-TEN-05): the caller cannot
+    // learn that another tenant holds the repository or the token.
+    if name.is_some_and(|name| GLOBAL_KEYS.contains(&name)) {
+        return StoreError::NotFound;
+    }
     match name {
         Some(name) => StoreError::Constraint(format!("{kind} {name}")),
         None => StoreError::Constraint(kind.to_owned()),
@@ -168,4 +180,92 @@ pub enum RoleProblem {
     /// and the system group, which would show it every tenant's rows).
     #[error("it is a member of a group its pool must not be in")]
     ForbiddenGroup,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use diesel::result::DatabaseErrorInformation;
+
+    /// A database error as PostgreSQL makes it, with a detail that names a value.
+    struct Fake {
+        constraint: Option<&'static str>,
+    }
+
+    impl DatabaseErrorInformation for Fake {
+        fn message(&self) -> &str {
+            "duplicate key value violates unique constraint \"repositories_github_repository_id_key\""
+        }
+        fn details(&self) -> Option<&str> {
+            Some("Key (github_repository_id)=(424242) already exists.")
+        }
+        fn hint(&self) -> Option<&str> {
+            None
+        }
+        fn table_name(&self) -> Option<&str> {
+            Some("repositories")
+        }
+        fn column_name(&self) -> Option<&str> {
+            None
+        }
+        fn constraint_name(&self) -> Option<&str> {
+            self.constraint
+        }
+        fn statement_position(&self) -> Option<i32> {
+            None
+        }
+    }
+
+    fn unique(constraint: Option<&'static str>) -> DieselError {
+        DieselError::DatabaseError(
+            DatabaseErrorKind::UniqueViolation,
+            Box::new(Fake { constraint }),
+        )
+    }
+
+    #[test]
+    fn a_violation_of_a_global_key_is_reported_as_a_missing_object() {
+        for key in GLOBAL_KEYS {
+            assert_eq!(
+                generic("insert", &unique(Some(key))),
+                StoreError::NotFound,
+                "{key}"
+            );
+        }
+    }
+
+    #[test]
+    fn only_the_constraint_name_comes_through() {
+        let error = generic("insert", &unique(Some("jobs_pkey")));
+        let shown = format!("{error} {error:?}");
+        assert!(shown.contains("jobs_pkey"));
+        for text in [
+            "424242",
+            "already exists",
+            "duplicate key",
+            "Key (",
+            "repositories",
+        ] {
+            assert!(!shown.contains(text), "{text}: {shown}");
+        }
+    }
+
+    #[test]
+    fn a_failure_with_no_constraint_name_says_only_what_kind_it_was() {
+        assert_eq!(
+            generic("insert", &unique(None)),
+            StoreError::Constraint("unique violation".to_owned())
+        );
+    }
+
+    #[test]
+    fn a_failure_that_is_not_the_callers_is_unavailable_and_says_nothing() {
+        let error = DieselError::DatabaseError(
+            DatabaseErrorKind::Unknown,
+            Box::new(Fake { constraint: None }),
+        );
+        let mapped = generic("insert", &error);
+        assert_eq!(mapped, StoreError::Unavailable);
+        assert!(!format!("{mapped:?}").contains("424242"));
+    }
 }
