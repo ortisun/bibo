@@ -1,0 +1,154 @@
+# Names of programs that no sandbox image may contain, one per line.
+#
+# Two scripts read this file, so the build and the test cannot drift apart:
+#   lib/harden.sh   deletes every executable or symlink with one of these names while building
+#                   the agent and verify images.
+#   tools/fsaudit.py  fails the test when any image still has an executable file or a symlink with
+#                   one of these names, anywhere in its file system.
+# Blank lines and lines that start with # are ignored. A name is an exact base name; a trailing
+# star (perl*) is the only wildcard and is read the same way by find and by fnmatch.
+#
+# Version control. The sandbox has no git: version control runs on the host against a git
+# directory the sandbox cannot reach (docs/security/sandbox-policy.md section 6.2). A GitHub
+# command line would also carry a way to reach GitHub.
+git
+git-shell
+git-upload-pack
+git-receive-pack
+git-upload-archive
+git-lfs
+gh
+hub
+svn
+hg
+
+# Package managers and installers. Nothing may be installed while a job runs, and the images are
+# not meant to be extended from inside. dpkg's database under /var/lib/dpkg stays so that image
+# scanners can still list the packages; only the programs go.
+apt
+apt-get
+apt-cache
+apt-config
+apt-key
+apt-mark
+apt-cdrom
+aptitude
+dpkg
+dpkg-deb
+dpkg-query
+dpkg-divert
+dpkg-statoverride
+dpkg-trigger
+dpkg-split
+dpkg-realpath
+dpkg-maintscript-helper
+update-alternatives
+rustup
+rustup-init
+pip
+pip3
+pip3.*
+pipx
+npm
+npx
+yarn
+pnpm
+gem
+cpan
+conda
+apk
+yum
+dnf
+microdnf
+zypper
+brew
+snap
+uv
+uvx
+cargo-binstall
+
+# Network clients and remote shells beyond what a build needs. Cargo carries its own HTTP client;
+# it has nothing to reach because the verify profile has no network and the agent profile reaches
+# only the model broker.
+curl
+wget
+nc
+ncat
+netcat
+socat
+telnet
+ftp
+tftp
+ssh
+scp
+sftp
+ssh-agent
+ssh-keygen
+ssh-add
+rsync
+nmap
+dig
+nslookup
+traceroute
+ping
+
+# Privilege and account tools. None can work without setuid or capabilities, which the profile
+# removes, but there is no reason to keep them.
+su
+sudo
+doas
+passwd
+chsh
+chfn
+chage
+expiry
+gpasswd
+newgrp
+mount
+umount
+unix_chkpwd
+useradd
+usermod
+userdel
+groupadd
+groupmod
+groupdel
+adduser
+addgroup
+chpasswd
+newusers
+vipw
+vigr
+pwck
+grpck
+login
+nsenter
+unshare
+setpriv
+runuser
+
+# Interpreters and debuggers that nothing in the toolchain needs.
+python*
+perl*
+ruby
+node
+nodejs
+php
+lua
+tclsh
+gdb
+lldb
+strace
+ltrace
+rust-gdb
+rust-gdbgui
+rust-lldb
+
+# Container and cluster tools.
+docker
+dockerd
+containerd
+runc
+podman
+kubectl
+crictl
