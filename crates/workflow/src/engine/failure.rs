@@ -96,9 +96,7 @@ impl Engine {
             attempts_used: window.attempts_used(),
             max_attempts: u32::try_from(contract.timeout_and_retries.max_attempts.get())
                 .unwrap_or(1),
-            // Budget accounting arrives with the bounds increment. Until then the guard is told
-            // that there is room, and the stage contract's attempt limit bounds the loop.
-            budget_has_room: true,
+            budget_has_room: timeline.spent_micro_usd < self.config.job_budget_micro_usd,
             invalid_output_failures: window.invalid_output_failures(),
             repair_cap: self.config.repair_cap,
         };

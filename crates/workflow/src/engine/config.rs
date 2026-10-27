@@ -30,6 +30,14 @@ pub const DEFAULT_STAGNATION_WINDOW: u32 = 3;
 /// The most stage runs one claim call leases.
 pub const DEFAULT_CLAIM_BATCH: u32 = 8;
 
+/// What one job may spend, in millionths of a US dollar: 25 dollars
+/// (`policies/security.yaml`, `budgets.hard_ceilings.per_job.max_usd`).
+pub const DEFAULT_JOB_BUDGET_MICRO_USD: u64 = 25_000_000;
+
+/// The share of a ceiling, in percent, at which a threshold audit record is written
+/// (`budgets.thresholds.warn_at_fraction`).
+pub const DEFAULT_BUDGET_WARN_PERCENT: u64 = 80;
+
 /// The stage kinds of Slice 1, in pipeline order. `MERGE` is not implemented and is disabled by
 /// default (state-machine.md, pipeline table).
 pub const SLICE_ONE_SCOPE: [StageKind; 13] = [
@@ -73,6 +81,11 @@ pub struct EngineConfig {
     pub stagnation_window: u32,
     /// The most stage runs one claim call leases.
     pub claim_batch: u32,
+    /// What one job may spend across all its attempts, in millionths of a US dollar. When it is
+    /// spent, no retry or rework round starts and a person decides.
+    pub job_budget_micro_usd: u64,
+    /// The share of a ceiling at which the engine records a threshold audit event.
+    pub budget_warn_percent: u64,
 }
 
 impl EngineConfig {
@@ -90,6 +103,8 @@ impl EngineConfig {
             repair_cap: RepairCap::default(),
             stagnation_window: DEFAULT_STAGNATION_WINDOW,
             claim_batch: DEFAULT_CLAIM_BATCH,
+            job_budget_micro_usd: DEFAULT_JOB_BUDGET_MICRO_USD,
+            budget_warn_percent: DEFAULT_BUDGET_WARN_PERCENT,
         }
     }
 

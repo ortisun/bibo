@@ -30,6 +30,9 @@ use factory_domain::machines::guards::{
 use factory_domain::machines::retry::AttemptDisposition;
 use factory_domain::state::{AttemptEvent, AttemptStatus, Guard, Status};
 use factory_domain::values::Slug;
+use factory_ports::agent::{
+    CostMicroUsd, IssuedJobToken, JobTokenId, JobTokenRef, JobTokenRequest,
+};
 use factory_ports::store::{AuditActor, NewArtifactIndexEntry, StoreError, Tx};
 use serde_json::{Value, json};
 use tracing::Instrument;
@@ -74,6 +77,7 @@ pub enum AttemptOutcome {
 /// Everything the handler needs, read before the handler runs.
 struct Prepared {
     contract: StageContract,
+    need: Option<factory_ports::agent::RoutingNeed>,
     upstream: Vec<UpstreamRun>,
     human_inputs: Vec<ArtifactRef>,
     handler: std::sync::Arc<dyn StageHandler>,
@@ -155,6 +159,31 @@ impl Engine {
         claimed: &ClaimedAttempt,
     ) -> Result<AttemptOutcome, EngineError> {
         let prepared = self.prepare(claimed).await?;
+        let notes = Notes::default();
+        let token = match self.issue_token(claimed, &prepared).await? {
+            Ok(token) => token,
+            Err(class) => {
+                return self.commit_failure(claimed, class, &notes).await;
+            }
+        };
+        let reference = token.as_ref().map(|issued| JobTokenRef { id: issued.id });
+        let outcome = self
+            .run_prepared(claimed, &prepared, reference, &notes)
+            .await;
+        // The token ends with the attempt, whatever happened to it. Revoking is idempotent.
+        if let Some(issued) = &token {
+            self.end_token(claimed, issued.id, &notes).await?;
+        }
+        outcome
+    }
+
+    async fn run_prepared(
+        &self,
+        claimed: &ClaimedAttempt,
+        prepared: &Prepared,
+        job_token: Option<JobTokenRef>,
+        notes: &Notes,
+    ) -> Result<AttemptOutcome, EngineError> {
         let needs_sandbox = matches!(
             prepared.contract.capabilities.placement,
             Some(Placement::Sandbox | Placement::HostToolBridge)
@@ -172,7 +201,7 @@ impl Engine {
         }
 
         let cancel = AttemptCancel::new();
-        let notes = Notes::default();
+        let notes = notes.clone();
         let mut ctx = StageContext::new(
             prepared.identity,
             claimed.attempt,
@@ -182,7 +211,7 @@ impl Engine {
             &prepared.contract,
             self.stage_ports(),
             &cancel,
-            None,
+            job_token,
             &prepared.human_inputs,
             &prepared.upstream,
         )
@@ -192,10 +221,15 @@ impl Engine {
                 claimed,
                 &cancel,
                 &notes,
-                self.produce(claimed, &prepared, &mut ctx),
+                self.produce(claimed, prepared, &mut ctx),
             )
             .await;
         drop(ctx);
+        // What the model cost is read once the handler has stopped, so the events of this attempt
+        // can carry it.
+        if let Some(token) = job_token {
+            notes.set_cost(self.token_cost(token.id).await);
+        }
 
         if watched.lease_lost {
             return Ok(AttemptOutcome::LeaseLost);
@@ -295,8 +329,10 @@ impl Engine {
             .contract(&ccx)
             .map_err(|_| EngineError::Corrupt("the stage contract no longer resolves"))?;
         let identity = Self::identity(&cx, &run.value);
+        let need = handler.routing_need(&ccx);
         Ok(Prepared {
             contract,
+            need,
             upstream,
             human_inputs: record.human_inputs.clone(),
             handler,
@@ -367,6 +403,124 @@ impl Engine {
             }
         }
         watched
+    }
+
+    /// Issues the job token for a stage that runs an agent, bound to this tenant, job and stage,
+    /// with the stage's cost ceiling and only the model the router chose. A stage that runs no
+    /// agent gets none. The inner error is the failure class when the token cannot be issued: the
+    /// stage fails closed and never runs without a token it needs.
+    async fn issue_token(
+        &self,
+        claimed: &ClaimedAttempt,
+        prepared: &Prepared,
+    ) -> Result<Result<Option<IssuedJobToken>, FailureClass>, EngineError> {
+        let Some(need) = &prepared.need else {
+            return Ok(Ok(None));
+        };
+        let Ok(decision) = self.deps.router.route(need) else {
+            return Ok(Err(FailureClass::PolicyDenied));
+        };
+        let micro = (prepared.contract.budget.max_cost_usd.as_f64() * 1_000_000.0).round();
+        let ceiling = CostMicroUsd(if micro.is_finite() && micro > 0.0 {
+            micro as u64
+        } else {
+            0
+        });
+        let attempt_seconds = u64::try_from(
+            prepared
+                .contract
+                .timeout_and_retries
+                .attempt_timeout_seconds
+                .get(),
+        )
+        .unwrap_or(u64::MAX);
+        let request = JobTokenRequest {
+            tenant: claimed.tenant,
+            job: claimed.job,
+            stage: claimed.kind,
+            cost_ceiling: ceiling,
+            allowed_models: vec![decision.model],
+            ttl: Duration::from_secs(attempt_seconds.saturating_add(300)),
+        };
+        match self.deps.broker.issue(request).await {
+            Ok(token) => {
+                self.audit_job(
+                    claimed,
+                    AuditAction::new(
+                        AuditKind::CredentialMintedAndRevoked,
+                        AuditDecision::Granted,
+                    ),
+                )
+                .await?;
+                Ok(Ok(Some(token)))
+            }
+            Err(factory_ports::agent::BrokerError::Unavailable) => {
+                Ok(Err(FailureClass::ProviderError))
+            }
+            Err(_) => Ok(Err(FailureClass::Internal)),
+        }
+    }
+
+    /// What the token has spent, in millionths of a US dollar. A broker that cannot be reached
+    /// reads as no spend, and the broker's own ceiling still holds.
+    async fn token_cost(&self, token: JobTokenId) -> u64 {
+        match self.deps.broker.usage(&token).await {
+            Ok(usage) => usage.usage.cost.0,
+            Err(_) => 0,
+        }
+    }
+
+    /// Revokes the token, and records the revocation and, when a threshold was crossed, the
+    /// threshold. The token cannot spend after this.
+    async fn end_token(
+        &self,
+        claimed: &ClaimedAttempt,
+        token: JobTokenId,
+        notes: &Notes,
+    ) -> Result<(), EngineError> {
+        let ceiling = match self.deps.broker.usage(&token).await {
+            Ok(usage) => usage.ceiling.0,
+            Err(_) => 0,
+        };
+        // A broker that cannot be reached cannot revoke, and the token's own expiry ends it.
+        let _ = self.deps.broker.revoke(&token).await;
+        let cost = notes.cost();
+        let warn = self.config.budget_warn_percent;
+        let crossed = ceiling > 0 && cost.saturating_mul(100) >= ceiling.saturating_mul(warn);
+        let mut tx = self.tenant_tx(claimed.tenant).await?;
+        let job = tx.get_job(claimed.job).await?;
+        let cx = Cx::new(self, &job.value, self.new_causation_id());
+        cx.audit_engine(
+            &mut *tx,
+            AuditAction::new(AuditKind::CredentialMintedAndRevoked, AuditDecision::Ended),
+        )
+        .await?;
+        let timeline = Timeline::load(&mut *tx, claimed.job).await?;
+        let job_crossed = timeline.spent_micro_usd.saturating_mul(100)
+            >= self.config.job_budget_micro_usd.saturating_mul(warn);
+        if crossed || job_crossed {
+            cx.audit_engine(
+                &mut *tx,
+                AuditAction::new(AuditKind::BudgetThresholdCrossed, AuditDecision::Noted),
+            )
+            .await?;
+        }
+        tx.commit().await?;
+        Ok(())
+    }
+
+    /// Records one audit event of the engine for the job of a claimed attempt.
+    async fn audit_job(
+        &self,
+        claimed: &ClaimedAttempt,
+        action: AuditAction,
+    ) -> Result<(), EngineError> {
+        let mut tx = self.tenant_tx(claimed.tenant).await?;
+        let job = tx.get_job(claimed.job).await?;
+        let cx = Cx::new(self, &job.value, self.new_causation_id());
+        cx.audit_engine(&mut *tx, action).await?;
+        tx.commit().await?;
+        Ok(())
     }
 
     fn teardown_timer(&self) -> Pin<Box<tokio::time::Sleep>> {
@@ -611,7 +765,7 @@ impl Engine {
             return Ok(AttemptOutcome::LeaseLost);
         }
         let job = tx.get_job(claimed.job).await?;
-        let cx = Cx::new(self, &job.value, self.new_causation_id());
+        let cx = Cx::new(self, &job.value, self.new_causation_id()).with_cost(notes.cost());
         let recorded = async {
             let facts = GuardFacts::Output(OutputFacts {
                 attempt_succeeded: true,
@@ -678,7 +832,7 @@ impl Engine {
         }
         let run = tx.get_stage_run(claimed.stage_run).await?;
         let job = tx.get_job(claimed.job).await?;
-        let cx = Cx::new(self, &job.value, self.new_causation_id());
+        let cx = Cx::new(self, &job.value, self.new_causation_id()).with_cost(notes.cost());
         let recorded = async {
             let facts = GuardFacts::Output(OutputFacts {
                 attempt_succeeded: true,
@@ -774,7 +928,7 @@ impl Engine {
             return Ok(AttemptOutcome::LeaseLost);
         }
         let job = tx.get_job(claimed.job).await?;
-        let cx = Cx::new(self, &job.value, self.new_causation_id());
+        let cx = Cx::new(self, &job.value, self.new_causation_id()).with_cost(notes.cost());
         let from = attempt.value.status;
         let recorded = async {
             let now = tx.database_time().await?;
@@ -843,7 +997,7 @@ impl Engine {
             return Ok(AttemptOutcome::LeaseLost);
         }
         let job = tx.get_job(claimed.job).await?;
-        let cx = Cx::new(self, &job.value, self.new_causation_id());
+        let cx = Cx::new(self, &job.value, self.new_causation_id()).with_cost(notes.cost());
         let class = FailureClass::PolicyDenied;
         let from = attempt.value.status;
         let recorded = async {

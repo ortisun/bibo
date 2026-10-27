@@ -8,10 +8,12 @@ use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
+use factory_domain::contracts::agent_manifest::RecommendedTier;
 use factory_domain::contracts::{Contract, GateReport, ReviewVerdict, StageContract};
 use factory_domain::values::{HumanText, MediaType, Slug};
+use factory_domain::vocabulary::RiskTier;
 use factory_domain::vocabulary::{Fidelity, StageKind};
-use factory_ports::agent::Usage;
+use factory_ports::agent::{CostMicroUsd, RoutingNeed, Usage};
 use factory_ports::registry::ContractKind;
 use factory_workflow::gates::framework::GateDecision;
 use factory_workflow::handlers::{
@@ -103,6 +105,14 @@ pub struct Script {
     pub skip: Option<SkipRule>,
     pub tweaks: Tweaks,
     pub executed: Vec<Executed>,
+    /// Whether the stage runs an agent, so the engine issues a job token for it.
+    pub agent: bool,
+    /// What the stage spends through its token, in millionths of a US dollar.
+    pub spend_micro_usd: u64,
+    /// The broker that meters the spend.
+    pub broker: Option<std::sync::Arc<factory_testkit::broker::FakeModelBroker>>,
+    /// The token each call of `execute` was given.
+    pub tokens: Vec<Option<factory_ports::agent::JobTokenId>>,
     /// What the next calls to `evaluate` hand over, in order.
     pub evals: VecDeque<Eval>,
     /// What `evaluate` hands over once the queue is empty.
@@ -125,6 +135,10 @@ impl Default for Script {
             skip: None,
             tweaks: Tweaks::default(),
             executed: Vec::new(),
+            agent: false,
+            spend_micro_usd: 0,
+            broker: None,
+            tokens: Vec::new(),
             evals: VecDeque::new(),
             eval_otherwise: Eval::Pass,
             evaluated: 0,
@@ -164,6 +178,19 @@ impl ScriptHandle {
                     .expect("a text"),
             });
         });
+    }
+
+    /// Makes the stage run an agent that spends this much through its job token.
+    pub fn agent_spending(&self, micro_usd: u64) {
+        self.with(|script| {
+            script.agent = true;
+            script.spend_micro_usd = micro_usd;
+        });
+    }
+
+    /// The tokens the stage was given, one for each attempt.
+    pub fn tokens(&self) -> Vec<Option<factory_ports::agent::JobTokenId>> {
+        self.with(|script| script.tokens.clone())
     }
 
     /// Queues what the next gate evaluations hand over, in order.
@@ -246,6 +273,17 @@ impl StageHandler for ScriptedHandler {
         self.kind
     }
 
+    fn routing_need(&self, ctx: &ContractContext<'_>) -> Option<RoutingNeed> {
+        self.script
+            .with(|script| script.agent)
+            .then(|| RoutingNeed {
+                stage: ctx.identity.kind,
+                tier: RecommendedTier::Standard,
+                required: Vec::new(),
+                risk: RiskTier::Low,
+            })
+    }
+
     fn applicability(&self, _ctx: &ContractContext<'_>) -> Applicability {
         match self.script.with(|script| script.skip.clone()) {
             Some(rule) => Applicability::NotApplicable(rule),
@@ -273,6 +311,21 @@ impl StageHandler for ScriptedHandler {
                 capability_probe_satisfied: true,
             });
         }
+        self.script.with(|script| {
+            script.tokens.push(ctx.job_token.map(|token| token.id));
+            if let (Some(broker), Some(token)) = (&script.broker, ctx.job_token)
+                && script.spend_micro_usd > 0
+            {
+                broker.meter(
+                    &token.id,
+                    Usage {
+                        cost: CostMicroUsd(script.spend_micro_usd),
+                        requests: 1,
+                        ..Usage::default()
+                    },
+                );
+            }
+        });
         let step = self.script.with(|script| {
             script.executed.push(Executed {
                 attempt_number: ctx.attempt_number,

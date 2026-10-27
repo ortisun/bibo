@@ -2145,3 +2145,141 @@ async fn the_sweeper_times_out_an_attempt_whose_worker_went_quiet() {
     assert_eq!(intake.attempts[0].id, claimed.attempt);
     assert_eq!(intake.status, StageRunStatus::Ready);
 }
+
+// ---- credentials and budgets ----------------------------------------------------------------
+
+use factory_ports::agent::{ModelBroker, TokenState};
+
+#[tokio::test]
+async fn an_agent_stage_gets_a_job_token_that_ends_with_the_attempt() {
+    let world = World::new().await;
+    let job = world.admitted_job().await;
+    world.script(StageKind::Intake).agent_spending(1_000_000);
+    let (_, outcome) = world.run_next("worker-1").await;
+    assert_eq!(outcome, AttemptOutcome::Succeeded);
+
+    let tokens = world.script(StageKind::Intake).tokens();
+    let token = tokens[0].expect("the stage was given a token");
+    let usage = world
+        .broker
+        .usage(&token)
+        .await
+        .expect("the broker knows it");
+    assert_eq!(
+        usage.state,
+        TokenState::Revoked,
+        "the token ends with the attempt"
+    );
+    assert_eq!(usage.usage.cost.0, 1_000_000);
+
+    let audit: Vec<String> = world
+        .audit(job)
+        .await
+        .iter()
+        .map(|r| r.action.as_str().to_owned())
+        .collect();
+    assert!(audit.contains(&"credential_minted_and_revoked.granted".to_owned()));
+    assert!(audit.contains(&"credential_minted_and_revoked.ended".to_owned()));
+    // The attempt's event carries what it cost, so the spend can be rebuilt from the events.
+    let succeeded = world
+        .events(job)
+        .await
+        .into_iter()
+        .find(|e| e.event_type.as_str() == "attempt.succeeded")
+        .expect("an event");
+    assert_eq!(succeeded.payload["cost_micro_usd"], 1_000_000);
+}
+
+#[tokio::test]
+async fn a_stage_that_runs_no_agent_gets_no_token() {
+    let world = World::new().await;
+    let job = world.admitted_job().await;
+    world.run_next("worker-1").await;
+    assert_eq!(world.script(StageKind::Intake).tokens(), vec![None]);
+    assert!(
+        world
+            .audit(job)
+            .await
+            .iter()
+            .all(|r| !r.action.as_str().starts_with("credential_minted"))
+    );
+}
+
+#[tokio::test]
+async fn a_budget_limit_revokes_the_token_and_asks_a_person() {
+    let world = World::new().await;
+    let job = world.admitted_job().await;
+    // The stage spends its whole ceiling of 2.5 dollars, which makes the broker revoke the token.
+    world.script(StageKind::Intake).agent_spending(2_500_000);
+    world
+        .script(StageKind::Intake)
+        .queue([Step::Fail(StageError::BudgetExhausted)]);
+    let (_, outcome) = world.run_next("worker-1").await;
+    assert_eq!(
+        outcome,
+        AttemptOutcome::Failed {
+            class: FailureClass::BudgetExhausted,
+            then: AttemptDisposition::Escalate(EscalationCause::BudgetLimit)
+        }
+    );
+    let token = world.script(StageKind::Intake).tokens()[0].expect("a token");
+    assert_eq!(
+        world.broker.usage(&token).await.expect("known").state,
+        TokenState::Revoked
+    );
+    assert_eq!(
+        status_of(&world.view(job).await, StageKind::Intake),
+        StageRunStatus::WaitingForHuman
+    );
+    assert!(
+        world
+            .audit(job)
+            .await
+            .iter()
+            .any(|r| r.action.as_str() == "budget_threshold_crossed.noted")
+    );
+}
+
+#[tokio::test]
+async fn the_job_budget_stops_retries_and_asks_a_person() {
+    // Retrying would be allowed, but the job has spent more than it may.
+    let world = World::with_config(|config| config.job_budget_micro_usd = 1_000_000).await;
+    let job = world.admitted_job().await;
+    world.script(StageKind::Intake).agent_spending(1_500_000);
+    world
+        .script(StageKind::Intake)
+        .queue([Step::Fail(StageError::Tool)]);
+    let (_, outcome) = world.run_next("worker-1").await;
+    assert_eq!(
+        outcome,
+        AttemptOutcome::Failed {
+            class: FailureClass::ToolError,
+            then: AttemptDisposition::Escalate(EscalationCause::BudgetLimit)
+        }
+    );
+    assert_eq!(
+        status_of(&world.view(job).await, StageKind::Intake),
+        StageRunStatus::WaitingForHuman
+    );
+}
+
+#[tokio::test]
+async fn a_job_that_spent_its_budget_starts_no_new_stage() {
+    let world = World::with_config(|config| config.job_budget_micro_usd = 1_000_000).await;
+    let job = world.admitted_job().await;
+    world.script(StageKind::Intake).agent_spending(1_500_000);
+    let (_, outcome) = world.run_next("worker-1").await;
+    assert_eq!(outcome, AttemptOutcome::Succeeded);
+    world.advance(400);
+    let claimed = world
+        .engine
+        .claim_next(&World::worker("worker-1"))
+        .await
+        .expect("claim");
+    assert!(claimed.started.is_empty());
+    assert_eq!(claimed.deferred[0].1, Deferral::BudgetExhausted);
+    assert_eq!(
+        status_of(&world.view(job).await, StageKind::RepositoryIntelligence),
+        StageRunStatus::Ready
+    );
+}

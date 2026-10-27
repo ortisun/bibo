@@ -112,6 +112,8 @@ pub(crate) struct Timeline {
     pub(crate) runs: Vec<RunRecord>,
     /// Rework rounds used by the job, for each count.
     pub(crate) rework: ReworkLedger,
+    /// What the job's attempts spent, in millionths of a US dollar.
+    pub(crate) spent_micro_usd: u64,
     /// The digest of what failed in the last rework round of each stage kind.
     pub(crate) failing_sets: BTreeMap<usize, Sha256Digest>,
     /// The ids of the commands already applied, for duplicate detection.
@@ -356,6 +358,12 @@ impl Timeline {
     fn attempt_ended(&mut self, event: &DomainEvent, end: AttemptEnd) -> Result<(), EngineError> {
         let run_id = parse_run_id(&event.payload, key::STAGE_RUN)?;
         let attempt_id = AttemptId::from_uuid(event.aggregate.id.as_uuid());
+        let cost = event
+            .payload
+            .get(key::COST)
+            .and_then(Value::as_u64)
+            .unwrap_or(0);
+        self.spent_micro_usd = self.spent_micro_usd.saturating_add(cost);
         let run = self.run_mut(run_id)?;
         if let Some(attempt) = run.attempts.iter_mut().find(|a| a.id == attempt_id) {
             attempt.end = Some(end);

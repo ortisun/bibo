@@ -38,6 +38,9 @@ pub(crate) struct Cx<'e> {
     /// command is recognised (state-machine.md, ground rule 7).
     pub(crate) causation: CausationId,
     pub(crate) now: Timestamp,
+    /// What the attempt that this decision records spent, in millionths of a US dollar. An
+    /// attempt event carries it, so the job's spend can be rebuilt from its events.
+    pub(crate) cost_micro_usd: u64,
 }
 
 impl<'e> Cx<'e> {
@@ -50,7 +53,14 @@ impl<'e> Cx<'e> {
             correlation: job.correlation_id,
             causation,
             now: engine.deps.clock.now(),
+            cost_micro_usd: 0,
         }
+    }
+
+    /// The same context, recording what an attempt spent.
+    pub(crate) const fn with_cost(mut self, micro_usd: u64) -> Self {
+        self.cost_micro_usd = micro_usd;
+        self
     }
 
     /// The component name as a slug.
@@ -125,6 +135,13 @@ impl<'e> Cx<'e> {
         let version = tx
             .transition_attempt(attempt.value.id, attempt.version, epoch, planned)
             .await?;
+        let mut payload = payload;
+        if self.cost_micro_usd > 0 {
+            payload.insert(
+                super::payload::key::COST.to_owned(),
+                serde_json::json!(self.cost_micro_usd),
+            );
+        }
         self.enqueue::<AttemptStatus>(
             tx,
             AggregateKind::Attempt,

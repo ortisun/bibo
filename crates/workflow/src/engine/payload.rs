@@ -45,6 +45,8 @@ pub(crate) mod key {
     pub const ANSWER: &str = "answer_sha256";
     /// `stage_run.ready` after an answer: the media type of the answer.
     pub const ANSWER_MEDIA_TYPE: &str = "answer_media_type";
+    /// What an attempt spent, in millionths of a US dollar, as the broker metered it.
+    pub const COST: &str = "cost_micro_usd";
     /// A short machine code for why a move happened.
     pub const CAUSE: &str = "cause";
     /// The principal who took a human decision.

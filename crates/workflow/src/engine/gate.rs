@@ -459,8 +459,7 @@ impl Engine {
             ledger: timeline.rework,
             limits: self.config.rework_limits,
             failing_set_differs: differs,
-            // Budget accounting arrives with the bounds increment.
-            budget_remains: true,
+            budget_remains: timeline.spent_micro_usd < self.config.job_budget_micro_usd,
         };
         match decide_gate_rework(&request) {
             GateReworkDecision::Rework(plan) => {
@@ -470,7 +469,7 @@ impl Engine {
                     rounds_used: timeline.rework.used(plan.track),
                     cap: self.config.rework_limits.cap(plan.track),
                     failing_set_differs_from_previous_round: differs,
-                    budget_remains: true,
+                    budget_remains: request.budget_remains,
                 };
                 evaluate(Guard::ReworkAllowed, &GuardFacts::Rework(facts)).map_err(guard_error)?;
                 self.apply_rework(

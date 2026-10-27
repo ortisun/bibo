@@ -4,11 +4,13 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
+use factory_domain::contracts::agent_manifest::RecommendedTier;
 use factory_domain::contracts::{DomainEvent, EvidenceLedgerEntry, Violation};
 use factory_domain::ids::{CausationId, JobId, PrincipalId, TenantId};
 use factory_domain::scope::TenantScope;
 use factory_domain::values::{NonEmptyString, Sha256Digest};
 use factory_domain::vocabulary::{ExecutionMode, HumanRole, StageKind};
+use factory_ports::agent::{ModelSelection, RuntimeId};
 use factory_ports::clock::{Clock, IdGenerator};
 use factory_ports::paths::{CommitSha, RepoRef};
 use factory_ports::registry::{ContractKind, OutputValidator};
@@ -19,7 +21,7 @@ use factory_testkit::broker::FakeModelBroker;
 use factory_testkit::clock::{FakeClock, SequentialIdGenerator};
 use factory_testkit::fixtures::sandbox_policy;
 use factory_testkit::registry::InMemoryAgentRegistry;
-use factory_testkit::router::StaticModelRouter;
+use factory_testkit::router::{RouteRule, StaticModelRouter};
 use factory_testkit::sandbox::FakeSandbox;
 use factory_testkit::store::InMemoryStore;
 use factory_testkit::workspace::FakeWorkspaceProvider;
@@ -60,6 +62,7 @@ pub struct World {
     pub ids: Arc<SequentialIdGenerator>,
     pub store: Arc<InMemoryStore>,
     pub artifacts: Arc<InMemoryArtifactStore>,
+    pub broker: Arc<FakeModelBroker>,
     pub authority: Arc<StaticAuthority>,
     pub scripts: HashMap<StageKind, ScriptHandle>,
     pub deps: EngineDeps,
@@ -83,6 +86,19 @@ impl World {
         let store = Arc::new(InMemoryStore::new(clock.clone()));
         let artifacts = Arc::new(InMemoryArtifactStore::new());
         let authority = Arc::new(StaticAuthority::new());
+        let broker = Arc::new(FakeModelBroker::new(clock.clone(), ids.clone()));
+        let routes: Vec<RouteRule> = StageKind::ALL
+            .iter()
+            .map(|kind| RouteRule {
+                stage: *kind,
+                tier: RecommendedTier::Standard,
+                model: ModelSelection {
+                    runtime: RuntimeId::new("fake").expect("a runtime"),
+                    model: NonEmptyString::parse("fake-model").expect("a model"),
+                },
+                capabilities: Vec::new(),
+            })
+            .collect();
         let repo = RepoRef::parse("example-org/fixture").expect("a repository");
         let base = CommitSha::parse(&"0123456789".repeat(4)).expect("a commit");
         let deps = EngineDeps {
@@ -101,10 +117,10 @@ impl World {
                 &[("README.md", "hi")],
             )),
             runtime: Arc::new(FakeAgentRuntime::new(artifacts.clone())),
-            router: Arc::new(StaticModelRouter::new(Vec::new())),
+            router: Arc::new(StaticModelRouter::new(routes)),
             registry: Arc::new(InMemoryAgentRegistry::new()),
             validator: Arc::new(ScriptedValidator),
-            broker: Arc::new(FakeModelBroker::new(clock.clone(), ids.clone())),
+            broker: broker.clone(),
             authority: authority.clone(),
         };
         let mut config = EngineConfig::new(ExecutionMode::Test, Sha256Digest::of(b"test policy"));
@@ -113,6 +129,7 @@ impl World {
         let mut handlers = HandlerRegistry::new();
         for kind in &config.scope {
             let script = ScriptHandle::default();
+            script.with(|s| s.broker = Some(broker.clone()));
             handlers
                 .register(Arc::new(ScriptedHandler::new(*kind, script.clone())))
                 .expect("one handler per stage");
@@ -138,6 +155,7 @@ impl World {
             ids,
             store,
             artifacts,
+            broker,
             authority,
             scripts,
             deps,

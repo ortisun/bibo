@@ -120,6 +120,7 @@ pub struct SandboxReady {
 pub(crate) struct AttemptNotes {
     pub(crate) audit: Vec<AuditAction>,
     pub(crate) sandbox_ready: Option<SandboxReady>,
+    pub(crate) cost_micro_usd: u64,
 }
 
 /// The notes of one attempt, shared between the handler that writes them and the engine that
@@ -139,6 +140,16 @@ impl Notes {
     /// What the handler said about its sandbox, if it said anything yet.
     pub(crate) fn sandbox_ready(&self) -> Option<SandboxReady> {
         self.lock().sandbox_ready
+    }
+
+    /// Records what the attempt spent, as the broker metered it.
+    pub(crate) fn set_cost(&self, micro_usd: u64) {
+        self.lock().cost_micro_usd = micro_usd;
+    }
+
+    /// What the attempt spent, in millionths of a US dollar.
+    pub(crate) fn cost(&self) -> u64 {
+        self.lock().cost_micro_usd
     }
 
     /// Takes the audit actions the handler noted, leaving none behind.

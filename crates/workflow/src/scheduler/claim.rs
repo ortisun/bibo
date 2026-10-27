@@ -66,6 +66,8 @@ pub enum Deferral {
     QuotaExceeded,
     /// The router has no route for what the stage needs.
     NoRuntime,
+    /// The job has spent its budget. A person raises it or ends the job.
+    BudgetExhausted,
     /// The contract of the stage could not be resolved.
     NoContract,
     /// Another writer got there first, or the lease had already ended.
@@ -161,6 +163,9 @@ impl Engine {
             .routing_need(&ccx)
             .is_none_or(|need| self.deps.router.route(&need).is_ok());
 
+        if timeline.spent_micro_usd >= self.config.job_budget_micro_usd {
+            return Ok(Err(Deferral::BudgetExhausted));
+        }
         let now = tx.database_time().await?;
         let facts = GuardFacts::LeaseGrant(LeaseGrantFacts {
             lease_compare_and_swap_succeeded: work.lease.expires_at > now,
