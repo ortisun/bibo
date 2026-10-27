@@ -229,6 +229,8 @@ diesel::table! {
         version -> Int8,
         created_at -> Timestamptz,
         updated_at -> Timestamptz,
+        bypass_attested_by_principal_id -> Nullable<Uuid>,
+        bypass_attested_at -> Nullable<Timestamptz>,
     }
 }
 
@@ -265,6 +267,7 @@ diesel::table! {
         finished_at -> Nullable<Timestamptz>,
         superseded_at -> Nullable<Timestamptz>,
         attempts_before_last_answer -> Int4,
+        failing_set_sha256 -> Nullable<Text>,
     }
 }
 

@@ -37,7 +37,7 @@ DIESEL_CONFIG="$ROOT/crates/storage/diesel.toml"
 SCHEMA_RS="$ROOT/crates/storage/src/schema.rs"
 STATE_MACHINE="$ROOT/docs/architecture/state-machine.json"
 
-SUITES="migrations statuses ledger tenancy rls terminal_rows plans audit webhook_delivery lease outbox approvals tokens privileges contracts"
+SUITES="migrations statuses ledger tenancy rls terminal_rows plans audit webhook_delivery lease outbox approvals tokens privileges contracts store_model"
 
 RUN_ID="$$_$(date +%s)"
 WORK=""
@@ -100,6 +100,9 @@ tokens           API tokens are stored hashed, expire, are audience bound and ca
                  agrees with the view on every case
 privileges       the application role has exactly the grants the design lists
 contracts        the rows can carry the fields the domain-event and evidence-ledger-entry schemas require
+store_model      the tables carry what the Store port of ports v1.1 needs and the rules it states are rules of the data:
+                 gate record, attestation, task nodes and graph, ledger head; the recipes of the operations that
+                 need only the existing tables
 EOF
 }
 
@@ -1068,6 +1071,8 @@ suite_tokens() { simple_suite tokens tokens.sql; }
 suite_privileges() { simple_suite privileges privileges.sql; }
 
 suite_approvals() { simple_suite approvals approvals.sql; }
+
+suite_store_model() { simple_suite store_model store_model.sql; }
 
 suite_contracts() {
   ensure_template || return 1
