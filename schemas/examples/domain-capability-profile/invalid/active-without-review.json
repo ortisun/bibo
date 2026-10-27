@@ -1,0 +1,64 @@
+{
+  "schema_version": 1,
+  "id": "general-software",
+  "version": 1,
+  "title": "General software library or command line tool",
+  "description": "Baseline profile for libraries and command line tools that build and test with a project-provided command. Used for the Slice 1 fixture repository.",
+  "status": "active",
+  "matches": [
+    "general-software",
+    "library",
+    "command-line-tool"
+  ],
+  "required_skills": [
+    "test-driven-development"
+  ],
+  "optional_skills": [
+    "rust"
+  ],
+  "required_tools": [
+    "git",
+    "container-sandbox"
+  ],
+  "required_evidence": [
+    "unit-test-result",
+    "gate-report",
+    "diff"
+  ],
+  "mandatory_gates": [
+    "build",
+    "unit-tests",
+    "protected-paths-unchanged",
+    "secret-scan",
+    "documentation-quality"
+  ],
+  "conditional_gates": [
+    "lint",
+    "type-check"
+  ],
+  "forbidden_autonomous_actions": [
+    "merge",
+    "deploy",
+    "publish-package"
+  ],
+  "approval_policy": "human-required-before-merge",
+  "tool_probes": [
+    {
+      "tool": "git",
+      "argv": [
+        "git",
+        "--version"
+      ],
+      "version_regex": "^git version 2\\."
+    },
+    {
+      "tool": "container-sandbox",
+      "argv": [
+        "docker",
+        "version",
+        "--format",
+        "{{.Server.Version}}"
+      ]
+    }
+  ]
+}

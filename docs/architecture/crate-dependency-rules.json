@@ -1,0 +1,463 @@
+{
+  "schema_version": 1,
+  "title": "Cargo workspace dependency rules",
+  "description": "Source of truth for which workspace crates may depend on which. docs/architecture/overview.md renders its crate graph from this file. The xtask architecture check (work package s0-workspace-skeleton) reads it, runs cargo metadata, and fails the build on any edge, kind or external dependency that this file does not allow. See ADR 0002.",
+  "package_prefix": "factory-",
+  "rings": [
+    {
+      "ring": 0,
+      "name": "Domain",
+      "rule": "Pure model, state machines and contract types. No I/O, no clock, no randomness, no async runtime."
+    },
+    {
+      "ring": 1,
+      "name": "Ports",
+      "rule": "Trait definitions the inner code needs from the outside. Depends on domain only. No I/O."
+    },
+    {
+      "ring": 2,
+      "name": "Application and adapters",
+      "rule": "Application crates hold use cases and depend on domain and ports. Adapter crates implement ports and depend on domain and ports. Neither kind depends on the other, and no crate in this ring depends on a peer."
+    },
+    {
+      "ring": 3,
+      "name": "Composition roots",
+      "rule": "Binaries. The only place where adapters are chosen and wired to use cases."
+    }
+  ],
+  "crates": [
+    {
+      "name": "domain",
+      "ring": 0,
+      "layer": "domain",
+      "path": "crates/domain",
+      "slice": 0,
+      "depends_on": [],
+      "dev_depends_on": [],
+      "external_allow": [
+        "serde",
+        "serde_json",
+        "serde_jcs",
+        "uuid",
+        "time",
+        "thiserror",
+        "sha2",
+        "hex",
+        "semver",
+        "regex",
+        "globset"
+      ],
+      "responsibility": "Identifiers, value objects, the Job, StageRun, Attempt and TaskNode state machines, guards, contract types that mirror schemas/, the ledger chain hash, policy evaluation (the 'policy crate' in docs/security is this module until its extraction trigger fires), secret redaction, assurance-level derivation."
+    },
+    {
+      "name": "ports",
+      "ring": 1,
+      "layer": "ports",
+      "path": "crates/ports",
+      "slice": 0,
+      "depends_on": [
+        "domain"
+      ],
+      "dev_depends_on": [],
+      "external_allow": [
+        "async-trait",
+        "serde",
+        "serde_json",
+        "thiserror",
+        "uuid",
+        "time"
+      ],
+      "responsibility": "Outbound traits and their closed error enums: Store, ArtifactStore, SandboxProvider, AgentRuntime, ChangeHost, IssueSource, SpecificationProvider, OutputValidator, AgentRegistry, Clock, IdGenerator, CancelSignal."
+    },
+    {
+      "name": "workflow",
+      "ring": 2,
+      "layer": "application",
+      "path": "crates/workflow",
+      "slice": 1,
+      "depends_on": [
+        "domain",
+        "ports"
+      ],
+      "dev_depends_on": [
+        "testkit"
+      ],
+      "external_allow": [
+        "async-trait",
+        "serde",
+        "serde_json",
+        "thiserror",
+        "tracing",
+        "uuid",
+        "time",
+        "futures-util",
+        "tokio[sync,time,rt,macros]"
+      ],
+      "responsibility": "The durable engine and all stage handlers: admission, scheduling, leases, retries, gate evaluation, rework routing, human decisions, plus the modules listed under deferred crates."
+    },
+    {
+      "name": "spec_adapter",
+      "ring": 2,
+      "layer": "application",
+      "path": "crates/spec_adapter",
+      "slice": 1,
+      "depends_on": [
+        "domain",
+        "ports"
+      ],
+      "dev_depends_on": [
+        "testkit"
+      ],
+      "external_allow": [
+        "serde",
+        "serde_json",
+        "thiserror",
+        "tracing",
+        "pulldown-cmark",
+        "regex"
+      ],
+      "responsibility": "Anti-corruption layer for GitHub Spec Kit. Drives the four allowed skills, reads the produced files, and returns a SpecificationContract. The only crate that knows Spec Kit's file layout."
+    },
+    {
+      "name": "storage",
+      "ring": 2,
+      "layer": "adapter",
+      "path": "crates/storage",
+      "slice": 1,
+      "depends_on": [
+        "domain",
+        "ports"
+      ],
+      "dev_depends_on": [
+        "testkit"
+      ],
+      "external_allow": [
+        "diesel",
+        "diesel-async",
+        "diesel_migrations",
+        "serde",
+        "serde_json",
+        "thiserror",
+        "tracing",
+        "tokio",
+        "uuid",
+        "time",
+        "sha2",
+        "hex",
+        "serde_jcs"
+      ],
+      "responsibility": "PostgreSQL implementation of Store (Diesel, async), outbox writes, evidence ledger with hash chain, lease compare-and-swap, local-filesystem content-addressed ArtifactStore."
+    },
+    {
+      "name": "runtime",
+      "ring": 2,
+      "layer": "adapter",
+      "path": "crates/runtime",
+      "slice": 1,
+      "depends_on": [
+        "domain",
+        "ports"
+      ],
+      "dev_depends_on": [
+        "testkit"
+      ],
+      "external_allow": [
+        "serde",
+        "serde_json",
+        "thiserror",
+        "tracing",
+        "tokio[process,io-util,time,sync,rt]"
+      ],
+      "responsibility": "AgentRuntime adapters for the Claude Code and Codex command line tools. Builds argument vectors from a closed allow list (bypass flags only for a verified sandbox target), probes capabilities, starts the tool inside the sandbox through SandboxSession, parses output, maps failures to a closed error set, and supports a later host tool bridge as a hardening option."
+    },
+    {
+      "name": "sandbox",
+      "ring": 2,
+      "layer": "adapter",
+      "path": "crates/sandbox",
+      "slice": 1,
+      "depends_on": [
+        "domain",
+        "ports"
+      ],
+      "dev_depends_on": [
+        "testkit"
+      ],
+      "external_allow": [
+        "serde",
+        "serde_json",
+        "thiserror",
+        "tracing",
+        "tokio[process,fs,io-util,time,sync,rt]",
+        "tempfile"
+      ],
+      "responsibility": "SandboxProvider and WorkspaceProvider over the Docker command line and host-side git. Three network profiles (fetch_deps, agent behind a per-job egress sidecar, verify with no network), the posture verifier that inspects a created container before it starts, the supervisor that enforces wall-clock and disk limits, redacted log streaming, the janitor, and the workspace side: mirror, sparse worktree, masked .git, host-side git with a fixed environment, the no-follow audit walk and the tree diff. The only crate that starts containers or runs git."
+    },
+    {
+      "name": "github",
+      "ring": 2,
+      "layer": "adapter",
+      "path": "crates/github",
+      "slice": 1,
+      "depends_on": [
+        "domain",
+        "ports"
+      ],
+      "dev_depends_on": [
+        "testkit"
+      ],
+      "external_allow": [
+        "serde",
+        "serde_json",
+        "thiserror",
+        "tracing",
+        "tokio",
+        "hmac",
+        "sha2",
+        "subtle",
+        "hex",
+        "a JWT signing crate and an HTTP client, both chosen in work package s1-github-adapter and reviewed with cargo deny"
+      ],
+      "responsibility": "IssueSource and ChangeHost against the GitHub REST API as a GitHub App: signs the App JWT, mints per-job, per-stage installation tokens narrowed to one repository, revokes them, verifies webhook signatures, deduplicates deliveries, checks the repository protection preflight, writes only sanitized text. Merging is not implemented."
+    },
+    {
+      "name": "contracts",
+      "ring": 2,
+      "layer": "adapter",
+      "path": "crates/contracts",
+      "slice": 0,
+      "depends_on": [
+        "domain",
+        "ports"
+      ],
+      "dev_depends_on": [],
+      "external_allow": [
+        "jsonschema",
+        "serde",
+        "serde_json",
+        "thiserror",
+        "a maintained YAML parser (serde_yaml is deprecated; choose in work package s0-contracts-and-registry)"
+      ],
+      "responsibility": "Embeds schemas/, implements OutputValidator, loads and validates agent manifests, domain capability profiles and policy files."
+    },
+    {
+      "name": "egress",
+      "ring": 2,
+      "layer": "adapter",
+      "path": "crates/egress",
+      "slice": 1,
+      "depends_on": [
+        "domain",
+        "ports"
+      ],
+      "dev_depends_on": [
+        "testkit"
+      ],
+      "external_allow": [
+        "serde",
+        "serde_json",
+        "thiserror",
+        "tracing",
+        "tokio[net,io-util,time,sync,rt,macros]",
+        "an HTTP/1.1 and TLS stack chosen in work package s1-egress-and-broker and reviewed with cargo deny"
+      ],
+      "responsibility": "The model broker and the egress relay. The broker holds the real provider keys, issues and revokes per-job tokens, forwards only allowed API paths, and meters usage against the job ceiling. The relay is the per-job sidecar: exact-host allowlist, rejection of private and metadata address ranges after resolution, pinned connections and a byte quota. Implements ModelBroker."
+    },
+    {
+      "name": "observability",
+      "ring": 2,
+      "layer": "adapter",
+      "path": "crates/observability",
+      "slice": 0,
+      "depends_on": [
+        "domain"
+      ],
+      "dev_depends_on": [],
+      "external_allow": [
+        "tracing",
+        "tracing-subscriber",
+        "tracing-opentelemetry",
+        "opentelemetry",
+        "opentelemetry_sdk",
+        "opentelemetry-otlp"
+      ],
+      "responsibility": "Initializes tracing and OpenTelemetry for the binaries and owns span and attribute naming."
+    },
+    {
+      "name": "testkit",
+      "ring": 2,
+      "layer": "test-support",
+      "path": "crates/testkit",
+      "slice": 0,
+      "depends_on": [
+        "domain",
+        "ports"
+      ],
+      "dev_depends_on": [],
+      "external_allow": [
+        "async-trait",
+        "serde_json",
+        "tokio"
+      ],
+      "responsibility": "Labelled fakes: FakeClock, InMemoryStore, FakeSandbox, FakeAgentRuntime, FakeChangeHost, FakeSpecificationProvider. Every fake reports fidelity fake. May appear only in dev-dependencies."
+    }
+  ],
+  "apps": [
+    {
+      "name": "api",
+      "path": "apps/api",
+      "slice": 1,
+      "responsibility": "HTTP API: GitHub webhook endpoint with signature verification, job submission, decisions, status and timeline queries, health endpoints."
+    },
+    {
+      "name": "worker",
+      "path": "apps/worker",
+      "slice": 1,
+      "responsibility": "Runs the engine loop in one process: claim, execute stage handlers, sweep leases and deadlines, supervise sandboxes, and host the model broker listener in Slice 1. Single concurrency in Slice 1."
+    },
+    {
+      "name": "cli",
+      "path": "apps/cli",
+      "slice": 1,
+      "responsibility": "Operator command line: submit, status, timeline, approve, reject, rework, pause, resume, cancel, probe. Calls the same use cases in process in Slice 1."
+    },
+    {
+      "name": "egress-sidecar",
+      "path": "apps/egress-sidecar",
+      "slice": 1,
+      "responsibility": "The per-job relay binary, shipped as a container image next to the sandbox image. Holds no real credential."
+    }
+  ],
+  "tooling": [
+    {
+      "name": "xtask",
+      "path": "xtask",
+      "slice": 0,
+      "responsibility": "Cargo xtask binary that runs the architecture checks. Not part of the product. May use std and serde_json only."
+    }
+  ],
+  "rules": [
+    {
+      "id": "DEP-01",
+      "statement": "A library crate depends only on workspace crates listed in its depends_on. Any other workspace edge fails the build.",
+      "enforced_by": "xtask check-architecture, from cargo metadata"
+    },
+    {
+      "id": "DEP-02",
+      "statement": "No crate depends on a crate in the same or a higher ring, except that ports depends on domain.",
+      "enforced_by": "xtask check-architecture"
+    },
+    {
+      "id": "DEP-03",
+      "statement": "Only dev-dependencies may name testkit.",
+      "enforced_by": "xtask check-architecture, from the dependency kind in cargo metadata"
+    },
+    {
+      "id": "DEP-04",
+      "statement": "Rings 0 and 1 and the application crates use only the external crates in external_allow. Adding one needs an architect-reviewed change to this file.",
+      "enforced_by": "xtask check-architecture"
+    },
+    {
+      "id": "DEP-05",
+      "statement": "domain, ports, workflow and spec_adapter contain no call to the clock, the filesystem, the network or process spawning. The clock comes from the Clock port.",
+      "enforced_by": "clippy disallowed-methods and disallowed-types in each crate's clippy.toml, verified with cargo clippy -D warnings"
+    },
+    {
+      "id": "DEP-06",
+      "statement": "No crate uses unsafe code.",
+      "enforced_by": "workspace lint unsafe_code = forbid"
+    },
+    {
+      "id": "DEP-07",
+      "statement": "Third-party licenses and advisories pass policy.",
+      "enforced_by": "cargo deny check"
+    },
+    {
+      "id": "DEP-08",
+      "statement": "Binaries are the only crates that depend on more than one adapter.",
+      "enforced_by": "xtask check-architecture"
+    },
+    {
+      "id": "DEP-09",
+      "statement": "Store::begin_system is called only from the workflow crate, and ChangeHost has no method whose name starts with merge. The sources of the Spec Kit layout (.specify, speckit) appear only in spec_adapter, its fixtures and documentation.",
+      "enforced_by": "xtask check-architecture, by source scan"
+    },
+    {
+      "id": "DEP-10",
+      "statement": "Only the sandbox crate spawns docker or git. Only the runtime crate spawns an agent command line tool. No crate spawns a shell. The set of allowed spawned binaries is docker and git.",
+      "enforced_by": "xtask check-architecture by source scan, plus the process spawn recorder in the end-to-end tests (negative test ST-03 and FX-SPAWN)"
+    }
+  ],
+  "deferred": [
+    {
+      "name": "repository_intel",
+      "slice": 3,
+      "interim_home": "module workflow::stages::repo_intel",
+      "extract_when": "A syntax-tree or symbol-graph index brings heavy parser dependencies, or a second consumer outside workflow needs it.",
+      "why_deferred": "Slice 1 needs language detection, build and test command discovery, CODEOWNERS, protected paths and an ADR and docs inventory. That is a few hundred lines over the bounded repository reader, with no heavy dependency."
+    },
+    {
+      "name": "planner",
+      "slice": 3,
+      "interim_home": "module workflow::stages::{architecture, planning}",
+      "extract_when": "Incremental replanning, the critic loop and the Team Composer arrive, or the DAG validator gains a second consumer.",
+      "why_deferred": "Slice 1 has one planner call and one pure DAG validator. Both depend on the same ports as every other stage handler."
+    },
+    {
+      "name": "quality",
+      "slice": 3,
+      "interim_home": "module workflow::gates",
+      "extract_when": "The gate catalog needs tool-specific dependencies (static analysis, mutation, fuzzing) or domain-pack gates.",
+      "why_deferred": "Slice 1 gates are commands run in the sandbox from trusted definitions plus pure evaluators of their reports."
+    },
+    {
+      "name": "documentation",
+      "slice": 4,
+      "interim_home": "modules workflow::stages::{documenting, documentation_review} and workflow::gates::docs",
+      "extract_when": "Domain documentation packs and the documentation DAG are built.",
+      "why_deferred": "The stage exists as first-class stage kinds in the state machine from Slice 1. Its code does not need its own crate yet."
+    },
+    {
+      "name": "policy",
+      "slice": 4,
+      "interim_home": "module domain::policy for pure evaluation, loaders in contracts",
+      "extract_when": "The policy language needs its own parser or engine, or a consumer outside workflow appears.",
+      "why_deferred": "Policy evaluation is a pure function of typed facts. The YAML files are owned elsewhere and loaded by contracts."
+    },
+    {
+      "name": "events",
+      "slice": 2,
+      "interim_home": "outbox rows written by storage in Slice 1; no relay",
+      "extract_when": "Slice 2 adds the outbox relay to NATS JetStream and idempotent consumers.",
+      "why_deferred": "Slice 1 has no event consumer. The outbox table is written from day one so nothing needs retrofitting."
+    },
+    {
+      "name": "evals",
+      "slice": 4,
+      "interim_home": "none",
+      "extract_when": "The evaluation harness is built.",
+      "why_deferred": "Nothing to evaluate before a real end-to-end run exists."
+    },
+    {
+      "name": "domain_registry, capabilities, team_composer, toolchain_registry, research, experiment_tracking, artifact_catalog, validation_profiles, worker_capabilities",
+      "slice": 3,
+      "interim_home": "contracts loaders and domain::capability types",
+      "extract_when": "Dynamic team composition and open-world domain discovery are implemented.",
+      "why_deferred": "Slice 1 resolves one static profile (general-software). The schemas exist so the registries can be added without changing orchestration code."
+    },
+    {
+      "name": "apps/dashboard",
+      "slice": 4,
+      "interim_home": "CLI timeline and status commands",
+      "extract_when": "Slice 4.",
+      "why_deferred": "Not part of the end-to-end proof."
+    },
+    {
+      "name": "apps/scheduler",
+      "slice": 2,
+      "interim_home": "the engine loop inside apps/worker",
+      "extract_when": "Slice 2 separates scheduling from execution and adds multiple workers. The model broker listener may move to its own binary at the same time.",
+      "why_deferred": "One process is enough to prove the end-to-end path. Leases and fencing are built in Slice 1 so the split is a deployment change."
+    }
+  ]
+}

@@ -1,0 +1,197 @@
+{
+  "schema_version": 1,
+  "metadata": {
+    "plan_id": "018f3a7e-b001-7a10-8c20-2d3e4f5a6b01",
+    "plan_version": 1,
+    "job_id": "018f3a7e-5c1b-7d2e-9a4f-3b6c8d1e2f40",
+    "execution_mode": "production",
+    "spec_ref": {
+      "spec_id": "018f3a7e-7a10-7e20-8b30-1c4d5e6f7a81",
+      "spec_version": 1,
+      "sha256": "sha256:baf140c9dd2a28aed50ca11af81b4c5da75f95b60b9600081b4d8d746ec7bcf7"
+    },
+    "architecture_ref": {
+      "sha256": "sha256:4ca303a3bf7ddf7be8652031ff027f351973a205cddafbffa580750f61bc93ce"
+    },
+    "created_at": "2026-10-27T09:02:00Z"
+  },
+  "title": "Plan for adding JSON output to the word count tool",
+  "summary": "Three tasks: add the JSON output path behind the flag, cover the error path with a test, and document the new flag. The output formatting task comes first because the other two depend on it.",
+  "critical_path": [
+    "add-json-output-formatter",
+    "cover-unreadable-file-error",
+    "document-json-flag"
+  ],
+  "rollback_note": "Revert the job branch. No data or configuration is changed outside the repository.",
+  "tasks": [
+    {
+      "task_id": "add-json-output-formatter",
+      "title": "Print counts as JSON when the flag is given",
+      "kind": "code_change",
+      "why_this_matters": "Scripts cannot reliably parse the plain-text counts. A JSON option gives them a stable format without changing what existing users see.",
+      "what_needs_to_change": "Add a --json flag to the argument parser and a formatter that prints lines, words and characters as one JSON object. Leave the plain-text path untouched.",
+      "acceptance_criteria": [
+        "With --json the tool prints one JSON object with the keys lines, words and characters.",
+        "Without --json the output is byte-for-byte the same as before."
+      ],
+      "verification": [
+        "Unit tests compare the JSON output for a sample file and for an empty file.",
+        "A regression test compares the plain-text output with a stored sample."
+      ],
+      "acceptance_mapping": {
+        "acceptance_scenario_ids": [
+          "AS-001",
+          "AS-002",
+          "AS-003"
+        ],
+        "requirement_ids": [
+          "FR-001",
+          "FR-002"
+        ]
+      },
+      "input_artifacts": [
+        {
+          "role": "frozen_specification",
+          "sha256": "sha256:baf140c9dd2a28aed50ca11af81b4c5da75f95b60b9600081b4d8d746ec7bcf7"
+        }
+      ],
+      "expected_changes": [
+        {
+          "path_glob": "src/main.rs",
+          "change": "modify"
+        },
+        {
+          "path_glob": "src/output.rs",
+          "change": "add"
+        },
+        {
+          "path_glob": "tests/json_output.rs",
+          "change": "add"
+        }
+      ],
+      "owned_files": [
+        "src/main.rs",
+        "src/output.rs",
+        "tests/json_output.rs"
+      ],
+      "depends_on": [],
+      "required_specialist": {
+        "role": "software-engineer",
+        "skills": [
+          "rust"
+        ]
+      },
+      "model_policy": {
+        "tier": "standard"
+      },
+      "estimated_cost": {
+        "tokens": 60000,
+        "usd": 0.8,
+        "wall_time_seconds": 600
+      },
+      "risks": [
+        {
+          "description": "The argument parser may reorder flags in a way that changes existing behavior.",
+          "mitigation": "The regression test runs the old invocation forms against the stored sample."
+        }
+      ],
+      "evidence_required": [
+        "unit_test_result",
+        "gate_report",
+        "diff"
+      ]
+    },
+    {
+      "task_id": "cover-unreadable-file-error",
+      "title": "Show a clear error when the input file cannot be read",
+      "kind": "test",
+      "why_this_matters": "The specification requires a clear error and a non-zero exit code for unreadable files, with or without the flag. Nothing tests that yet.",
+      "what_needs_to_change": "Add tests for a missing file and an unreadable file, with and without the --json flag. Adjust the error handling only if a test fails.",
+      "acceptance_criteria": [
+        "Both error cases write a message to standard error, leave standard output empty and exit with a non-zero status."
+      ],
+      "verification": [
+        "The new tests fail on the previous release and pass on the job branch."
+      ],
+      "input_artifacts": [],
+      "expected_changes": [
+        {
+          "path_glob": "tests/errors.rs",
+          "change": "add"
+        }
+      ],
+      "owned_files": [
+        "tests/errors.rs"
+      ],
+      "depends_on": [
+        "add-json-output-formatter"
+      ],
+      "required_specialist": {
+        "role": "qa"
+      },
+      "model_policy": {
+        "tier": "small"
+      },
+      "estimated_cost": {
+        "tokens": 25000,
+        "usd": 0.3,
+        "wall_time_seconds": 300
+      },
+      "risks": [],
+      "evidence_required": [
+        "unit_test_result",
+        "gate_report"
+      ]
+    },
+    {
+      "task_id": "document-json-flag",
+      "title": "Document the JSON option and its key order",
+      "kind": "documentation",
+      "why_this_matters": "Users find new options in the README and in the command help. The key order was an explicit decision in the specification and has to be written down.",
+      "what_needs_to_change": "Update the usage section of the README and the command help text. Add one runnable example with its expected output.",
+      "acceptance_criteria": [
+        "The README shows the flag, the three keys in order, and an example that matches real output."
+      ],
+      "verification": [
+        "The documentation gate runs the example and compares its output with the text in the README."
+      ],
+      "acceptance_mapping": {
+        "acceptance_scenario_ids": [
+          "AS-001"
+        ],
+        "requirement_ids": [
+          "FR-001"
+        ]
+      },
+      "input_artifacts": [],
+      "expected_changes": [
+        {
+          "path_glob": "README.md",
+          "change": "modify"
+        }
+      ],
+      "owned_files": [
+        "README.md"
+      ],
+      "depends_on": [
+        "add-json-output-formatter"
+      ],
+      "required_specialist": {
+        "role": "documenter"
+      },
+      "model_policy": {
+        "tier": "small"
+      },
+      "estimated_cost": {
+        "tokens": 15000,
+        "usd": 0.2,
+        "wall_time_seconds": 240
+      },
+      "risks": [],
+      "evidence_required": [
+        "documentation_check",
+        "diff"
+      ]
+    }
+  ]
+}

@@ -1,0 +1,108 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:ortisun:factory:schema:project-manifest:1",
+  "title": "Project manifest",
+  "description": "The project-local configuration a repository keeps in .factory/project.yaml. It names the domain tags, the sandbox image, the gate commands, the protected paths, the pinned Spec Kit version and the required documents. The validation stage reads this file from the protected base branch, never from the builder's branch, so a builder cannot weaken its own gates. The manifest protects itself: .factory/** must be a protected path. Gate commands are argument vectors and never shell strings. The file may be written in YAML or JSON.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "project", "sandbox", "gates", "protected_paths", "spec_kit", "documentation"],
+  "properties": {
+    "schema_version": { "const": 1 },
+    "project": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "title", "domain_tags", "default_branch"],
+      "properties": {
+        "name": { "$ref": "#/$defs/slug" },
+        "title": { "$ref": "#/$defs/humanTitle" },
+        "domain_tags": { "type": "array", "minItems": 1, "uniqueItems": true, "items": { "$ref": "#/$defs/slug" }, "description": "Matched against the domain capability profiles." },
+        "default_branch": { "type": "string", "minLength": 1 }
+      }
+    },
+    "sandbox": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["image", "workdir"],
+      "properties": {
+        "image": { "$ref": "#/$defs/slug", "description": "Logical image name. The digest comes from the factory's image registry file, not from the repository." },
+        "workdir": { "type": "string", "pattern": "^/[A-Za-z0-9._/-]*$" }
+      }
+    },
+    "gates": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "title", "argv", "timeout_seconds", "mandatory"],
+        "properties": {
+          "id": { "$ref": "#/$defs/slug" },
+          "title": { "$ref": "#/$defs/humanTitle" },
+          "argv": {
+            "type": "array",
+            "minItems": 1,
+            "items": { "type": "string" },
+            "prefixItems": [{ "not": { "enum": ["sh", "bash", "zsh", "fish", "dash", "cmd", "powershell", "pwsh"] } }],
+            "description": "Executable and arguments. A shell as the first element is not allowed."
+          },
+          "cwd": { "type": "string", "pattern": "^[A-Za-z0-9._/-]*$" },
+          "timeout_seconds": { "type": "integer", "minimum": 1, "maximum": 7200 },
+          "mandatory": { "type": "boolean" }
+        }
+      },
+      "contains": { "type": "object", "properties": { "mandatory": { "const": true } }, "required": ["mandatory"] }
+    },
+    "protected_paths": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": { "type": "string", "minLength": 1 },
+      "contains": { "const": ".factory/**" },
+      "description": "Paths a builder may not change unless the approved specification allows it and an independent policy review agrees."
+    },
+    "spec_kit": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["cli_version", "integration", "may_initialize"],
+      "properties": {
+        "cli_version": { "type": "string", "minLength": 1, "description": "Pinned specify version, for example 1.1.2." },
+        "integration": { "type": "string", "minLength": 1 },
+        "may_initialize": { "type": "boolean", "description": "Whether the factory may run specify init in this repository. The result is committed on the job branch for a human to see." }
+      }
+    },
+    "documentation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["required_documents", "changelog_path"],
+      "properties": {
+        "required_documents": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["path", "purpose"],
+            "properties": { "path": { "type": "string", "minLength": 1 }, "purpose": { "$ref": "#/$defs/humanText" } }
+          }
+        },
+        "changelog_path": { "type": "string", "minLength": 1 }
+      }
+    }
+  },
+  "$defs": {
+    "slug": { "description": "Machine-safe identifier: lowercase letters, digits, dot, underscore and hyphen. For metadata fields, never for human-facing titles.", "type": "string", "pattern": "^[a-z0-9]([a-z0-9._-]{0,62}[a-z0-9])?$" },
+    "humanTitle": {
+      "description": "Short plain-English title in sentence case. Machine identifiers, role stamps and pipeline tags belong in separate metadata fields, never in the title.",
+      "type": "string",
+      "minLength": 3,
+      "maxLength": 100,
+      "pattern": "^\\S(.*\\S)?$",
+      "allOf": [
+        { "not": { "pattern": "\\|" } },
+        { "not": { "pattern": "^[A-Z][A-Z0-9]*(-[A-Z0-9]+)+\\s*[:|]" } },
+        { "not": { "pattern": "^\\[[^\\]]+\\]" } },
+        { "not": { "pattern": "\\[[A-Z_]+:[^\\]]*\\]" } }
+      ]
+    },
+    "humanText": { "description": "Complete plain-English sentences written for a human reader.", "type": "string", "minLength": 10, "maxLength": 4000, "pattern": "^\\S([\\s\\S]*\\S)?$" }
+  }
+}

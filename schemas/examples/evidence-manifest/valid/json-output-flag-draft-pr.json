@@ -1,0 +1,53 @@
+{
+  "schema_version": 1,
+  "metadata": {
+    "manifest_id": "018f3aa0-0001-7a01-8b01-1c01d01e0aa1",
+    "job_id": "018f3a7e-5c1b-7d2e-9a4f-3b6c8d1e2f40",
+    "tenant_id": "018f3a00-0000-7000-8000-00000000c001",
+    "generated_at": "2026-10-27T10:20:00Z",
+    "execution_mode": "production",
+    "repository": { "full_name": "example-org/word-count", "base_commit": "1405df66cbe219b0bf6355bc3d60361a8376b6b4", "head_commit": "1a954628a960aaef81d7b2d4521929579f3541e6" }
+  },
+  "title": "Evidence for adding JSON output to the word count tool",
+  "summary": "The change adds a --json flag. It was built in a sandbox, checked by trusted gates, reviewed by an independent reviewer and documented. A human still has to approve the pull request.",
+  "ledger": { "entry_count": 41, "head_sequence": 41, "head_hash": "sha256:6e18ec763c0751ffab6eddca795cf9a03b16c59b30cc266b9281a23a55897359", "chain_verified_at": "2026-10-27T10:19:58Z" },
+  "specification": { "spec_id": "018f3a7e-7a10-7e20-8b30-1c4d5e6f7a81", "spec_version": 1, "sha256": "sha256:baf140c9dd2a28aed50ca11af81b4c5da75f95b60b9600081b4d8d746ec7bcf7" },
+  "architecture": { "sha256": "sha256:4ca303a3bf7ddf7be8652031ff027f351973a205cddafbffa580750f61bc93ce" },
+  "plan": { "plan_id": "018f3a7e-b001-7a10-8c20-2d3e4f5a6b01", "plan_version": 1, "sha256": "sha256:64879f7d6b960a01909762d911a32d4582c20010c5641ee90278b644a9e3b525" },
+  "change": { "diff_sha256": "sha256:df087996d45b03e7eb8c133c0298fd98d35113fca26aaba58612fef3cc212cad", "files_changed": 5, "insertions": 142, "deletions": 6 },
+  "gate_reports": [
+    { "gate_id": "build-and-unit-tests", "outcome": "PASSED", "sha256": "sha256:f46413546b49a12b2eb6ec29a33c7e41fb245bbc9b6cfd8d06b3394e3e434c78" },
+    { "gate_id": "protected-paths-unchanged", "outcome": "PASSED", "sha256": "sha256:b371afbed6328e32990a17cf4d1e9668fbe9e23e550bdbcc5091c18c58b1d0a0" },
+    { "gate_id": "lint", "outcome": "NOT_APPLICABLE", "sha256": "sha256:eafe895eb8119e6e5d06463590b2ef81b3651c157d5c8e18f1889186c7fd0ac0" }
+  ],
+  "reviews": [ { "role": "code_reviewer", "verdict": "PASS", "sha256": "sha256:13051e349c6f87a0f83427b2d742806fc8e01699c7429ce5b94acd0cece66dbc" } ],
+  "documentation": {
+    "plan_sha256": "sha256:6462d191923d0d849234de241cf341d949f88488593f29e3601b94bd645b7dee",
+    "gate_report_sha256": "sha256:7cc4f43fca3a38e9a1e4320da365a87b6cb88ea4ca45ddf1822576c3e16383a5",
+    "review_sha256": "sha256:f8fe7e62b98d23b61a0066ce95fdf5b86b900f516f09874000faa9fa48daddcb"
+  },
+  "assurance": {
+    "attained": [
+      { "level": "SPECIFIED", "ledger_entry_id": "018f3a95-0010-7a10-8b10-1c10d10e10f1" },
+      { "level": "IMPLEMENTED", "ledger_entry_id": "018f3a95-0011-7a11-8b11-1c11d11e11f2" },
+      { "level": "VERIFIED_IN_SANDBOX", "ledger_entry_id": "018f3a95-0001-7a01-8b01-1c01d01e01f1" }
+    ],
+    "not_attained": [
+      { "level": "PRODUCTION_READY", "reason": "Merge, release and deployment are outside the factory's scope in this slice, and no human release sign-off exists." }
+    ]
+  },
+  "adapters": [
+    { "name": "claude-code-cli", "kind": "agent_runtime", "fidelity": "real", "version": "2.1.311" },
+    { "name": "docker-sandbox", "kind": "sandbox", "fidelity": "real", "version": "29.9.2" },
+    { "name": "github-rest", "kind": "change_host", "fidelity": "real", "version": "api" },
+    { "name": "local-fs", "kind": "artifact_store", "fidelity": "real", "version": "1" },
+    { "name": "postgres", "kind": "store", "fidelity": "real", "version": "18" }
+  ],
+  "risk": { "tier": "low", "score": 12, "rationale": "A small additive option with no data migration and no change to protected paths." },
+  "approvals_required": ["approver"],
+  "limitations": [
+    "The lint gate did not apply because the fixture repository defines no lint command.",
+    "Artifacts are stored on the local filesystem, not in S3-compatible storage.",
+    "The change was not tested on any platform other than the Linux sandbox image."
+  ]
+}

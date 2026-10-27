@@ -1,0 +1,14 @@
+{
+  "name": "architecture-doc-checks",
+  "private": true,
+  "version": "0.0.0",
+  "description": "Syntax-checks the Mermaid diagrams in the architecture documents. Dev tooling only. Run it through check-mermaid.sh, which installs into a temporary directory.",
+  "type": "module",
+  "scripts": {
+    "check": "node check-mermaid.mjs"
+  },
+  "dependencies": {
+    "jsdom": "30.1.3",
+    "mermaid": "12.2.0"
+  }
+}

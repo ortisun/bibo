@@ -1,0 +1,15 @@
+{
+  "schema_version": 1,
+  "event_id": "018f3a7e-5c1c-7000-8000-0000000000a1",
+  "event_type": "job.admitted",
+  "event_version": 1,
+  "tenant_id": "018f3a00-0000-7000-8000-00000000c001",
+  "job_id": "018f3a7e-5c1b-7d2e-9a4f-3b6c8d1e2f40",
+  "aggregate": { "type": "job", "id": "018f3a7e-5c1b-7d2e-9a4f-3b6c8d1e2f40", "version": 2 },
+  "transition_id": "J01",
+  "correlation_id": "018f3a7e-5c1b-7d2e-9a4f-3b6c8d1e2f40",
+  "causation_id": null,
+  "occurred_at": "2026-10-27T08:30:01Z",
+  "producer": "workflow.admission",
+  "payload": { "repository": "example-org/word-count", "issue_number": 12 }
+}

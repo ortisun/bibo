@@ -1,0 +1,204 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:ortisun:factory:schema:gate-report:1",
+  "title": "Gate report",
+  "description": "The machine-readable result of one deterministic gate run against one stage run. A gate report records what was executed, with which tools, and why the outcome is what it is. A report with outcome PASSED must show that every command ran and exited with code 0. A gate that did not run is BLOCKED, never PASSED.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "metadata", "title", "outcome", "reason", "started_at", "finished_at", "environment", "commands", "evidence_hash", "baseline_comparison"],
+  "properties": {
+    "schema_version": { "const": 1 },
+    "metadata": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["gate_report_id", "gate_id", "gate_version", "job_id", "stage_run_id", "execution_mode", "trusted_definition"],
+      "properties": {
+        "gate_report_id": { "$ref": "#/$defs/uuid" },
+        "gate_id": { "$ref": "#/$defs/slug" },
+        "gate_version": { "$ref": "#/$defs/semver" },
+        "job_id": { "$ref": "#/$defs/uuid" },
+        "stage_run_id": { "$ref": "#/$defs/uuid" },
+        "attempt_id": { "$ref": "#/$defs/uuid" },
+        "execution_mode": { "enum": ["production", "test"], "description": "Test mode allows fake adapters. Production mode does not." },
+        "trusted_definition": {
+          "description": "Where the gate definition came from. Builders cannot edit it.",
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["source", "commit_sha", "definition_sha256"],
+          "properties": {
+            "source": { "enum": ["protected_base_branch", "central_config"] },
+            "commit_sha": { "$ref": "#/$defs/gitSha" },
+            "definition_sha256": { "$ref": "#/$defs/sha256" }
+          }
+        }
+      }
+    },
+    "title": { "$ref": "#/$defs/humanTitle" },
+    "outcome": { "enum": ["PASSED", "FAILED", "BLOCKED", "NOT_APPLICABLE"] },
+    "reason": { "$ref": "#/$defs/humanText" },
+    "started_at": { "$ref": "#/$defs/timestamp" },
+    "finished_at": { "$ref": "#/$defs/timestamp" },
+    "environment": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["fidelity", "executor_kind", "tool_versions"],
+      "properties": {
+        "fidelity": { "enum": ["real", "fake"], "description": "fake is allowed only when metadata.execution_mode is test." },
+        "executor_kind": { "enum": ["sandbox_command", "in_process"] },
+        "sandbox": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["sandbox_id", "image_digest", "os", "arch", "network"],
+          "properties": {
+            "sandbox_id": { "type": "string", "minLength": 1, "maxLength": 128 },
+            "image_digest": { "$ref": "#/$defs/sha256" },
+            "os": { "type": "string", "minLength": 1 },
+            "arch": { "type": "string", "minLength": 1 },
+            "network": { "enum": ["none", "allowlist"] }
+          }
+        },
+        "tool_versions": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["tool", "version"],
+            "properties": { "tool": { "type": "string", "minLength": 1 }, "version": { "type": "string", "minLength": 1 } }
+          }
+        }
+      },
+      "if": { "properties": { "executor_kind": { "const": "sandbox_command" } }, "required": ["executor_kind"] },
+      "then": { "required": ["sandbox"] }
+    },
+    "commands": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["argv", "executed", "exit_code", "timed_out", "started_at", "finished_at", "stdout", "stderr"],
+        "properties": {
+          "argv": { "type": "array", "minItems": 1, "items": { "type": "string" }, "description": "Typed argument vector. Never a shell string." },
+          "cwd": { "type": "string" },
+          "executed": { "type": "boolean" },
+          "exit_code": { "type": ["integer", "null"] },
+          "terminated_by_signal": { "type": "integer" },
+          "timed_out": { "type": "boolean" },
+          "started_at": { "$ref": "#/$defs/timestamp" },
+          "finished_at": { "$ref": "#/$defs/timestamp" },
+          "stdout": { "$ref": "#/$defs/artifactRef" },
+          "stderr": { "$ref": "#/$defs/artifactRef" }
+        },
+        "allOf": [
+          { "if": { "properties": { "executed": { "const": false } }, "required": ["executed"] }, "then": { "properties": { "exit_code": { "const": null } } } },
+          { "if": { "properties": { "executed": { "const": true } }, "required": ["executed"] }, "then": { "properties": { "exit_code": { "type": "integer" } } } }
+        ]
+      }
+    },
+    "failures": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["check_id", "message"],
+        "properties": {
+          "check_id": { "$ref": "#/$defs/slug" },
+          "message": { "$ref": "#/$defs/humanText" },
+          "location": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["path"],
+            "properties": { "path": { "type": "string" }, "line": { "type": "integer", "minimum": 1 } }
+          }
+        }
+      }
+    },
+    "blocked_reason": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["code", "missing"],
+      "properties": {
+        "code": { "enum": ["tool_unavailable", "tool_probe_failed", "dependency_unavailable", "policy_unresolvable", "environment_unsupported"] },
+        "missing": { "type": "array", "minItems": 1, "items": { "type": "string", "minLength": 1 }, "description": "The tools, services or capabilities that were absent." }
+      }
+    },
+    "not_applicable_reason": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["code", "justification", "decided_by"],
+      "properties": {
+        "code": { "enum": ["no_matching_files", "profile_excludes_gate", "policy_excludes_gate", "change_type_excludes_gate"] },
+        "justification": { "$ref": "#/$defs/humanText" },
+        "decided_by": { "enum": ["deterministic_rule", "domain_profile", "policy"], "description": "An agent opinion is never a valid decider." }
+      }
+    },
+    "evidence_hash": { "$ref": "#/$defs/sha256", "description": "Hash over the canonical form of commands, logs and failures, so the report can be checked against the artifacts it names." },
+    "baseline_comparison": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["delta"],
+      "properties": {
+        "baseline_commit_sha": { "$ref": "#/$defs/gitSha" },
+        "delta": { "enum": ["none", "improved", "regressed", "new_failures", "not_compared"] },
+        "notes": { "$ref": "#/$defs/humanText" }
+      }
+    }
+  },
+  "allOf": [
+    {
+      "if": { "properties": { "outcome": { "const": "PASSED" } }, "required": ["outcome"] },
+      "then": {
+        "properties": {
+          "commands": { "items": { "properties": { "executed": { "const": true }, "exit_code": { "const": 0 }, "timed_out": { "const": false } } } },
+          "environment": { "properties": { "tool_versions": { "minItems": 1 } } },
+          "baseline_comparison": { "properties": { "delta": { "enum": ["none", "improved", "not_compared"] } } },
+          "failures": { "maxItems": 0 }
+        },
+        "anyOf": [
+          { "properties": { "commands": { "minItems": 1 } } },
+          { "properties": { "environment": { "properties": { "executor_kind": { "const": "in_process" } } } } }
+        ]
+      }
+    },
+    { "if": { "properties": { "outcome": { "const": "FAILED" } }, "required": ["outcome"] }, "then": { "required": ["failures"], "properties": { "failures": { "minItems": 1 } } } },
+    { "if": { "properties": { "outcome": { "const": "BLOCKED" } }, "required": ["outcome"] }, "then": { "required": ["blocked_reason"] } },
+    { "if": { "properties": { "outcome": { "const": "NOT_APPLICABLE" } }, "required": ["outcome"] }, "then": { "required": ["not_applicable_reason"], "properties": { "commands": { "maxItems": 0 } } } },
+    { "if": { "properties": { "metadata": { "properties": { "execution_mode": { "const": "production" } } } }, "required": ["metadata"] }, "then": { "properties": { "environment": { "properties": { "fidelity": { "const": "real" } } } } } }
+  ],
+  "dependentSchemas": {
+    "blocked_reason": { "properties": { "outcome": { "const": "BLOCKED" } } },
+    "not_applicable_reason": { "properties": { "outcome": { "const": "NOT_APPLICABLE" } } }
+  },
+  "$defs": {
+    "uuid": { "description": "Lowercase UUID. Version 7 is recommended so identifiers sort by creation time.", "type": "string", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$" },
+    "sha256": { "description": "Content hash in the form sha256:<64 lowercase hex characters>.", "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+    "gitSha": { "description": "Full Git object id, 40 or 64 lowercase hex characters.", "type": "string", "pattern": "^([0-9a-f]{40}|[0-9a-f]{64})$" },
+    "timestamp": { "description": "UTC instant in RFC 3339 form with a Z suffix.", "type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]{1,9})?Z$" },
+    "slug": { "description": "Machine-safe identifier: lowercase letters, digits, dot, underscore and hyphen. For metadata fields, never for human-facing titles.", "type": "string", "pattern": "^[a-z0-9]([a-z0-9._-]{0,62}[a-z0-9])?$" },
+    "semver": { "description": "Semantic version, for example 1.2.0.", "type": "string", "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)(-[0-9A-Za-z.-]+)?$" },
+    "humanTitle": {
+      "description": "Short plain-English title in sentence case. Machine identifiers, role stamps and pipeline tags belong in separate metadata fields, never in the title.",
+      "type": "string",
+      "minLength": 3,
+      "maxLength": 100,
+      "pattern": "^\\S(.*\\S)?$",
+      "allOf": [
+        { "not": { "pattern": "\\|" } },
+        { "not": { "pattern": "^[A-Z][A-Z0-9]*(-[A-Z0-9]+)+\\s*[:|]" } },
+        { "not": { "pattern": "^\\[[^\\]]+\\]" } },
+        { "not": { "pattern": "\\[[A-Z_]+:[^\\]]*\\]" } }
+      ]
+    },
+    "humanText": { "description": "Complete plain-English sentences written for a human reader.", "type": "string", "minLength": 10, "maxLength": 4000, "pattern": "^\\S([\\s\\S]*\\S)?$" },
+    "artifactRef": {
+      "description": "Pointer to an immutable stored artifact by content hash.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["sha256", "media_type"],
+      "properties": {
+        "sha256": { "$ref": "#/$defs/sha256" },
+        "media_type": { "type": "string", "pattern": "^[a-z]+/[a-z0-9.+-]+$" },
+        "size_bytes": { "type": "integer", "minimum": 0 }
+      }
+    }
+  }
+}

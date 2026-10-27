@@ -1,0 +1,27 @@
+{
+  "schema_version": 1,
+  "metadata": {
+    "entry_id": "018f3a95-0002-7a02-8b02-1c02d02e02f2",
+    "job_id": "018f3a7e-5c1b-7d2e-9a4f-3b6c8d1e2f40",
+    "stage_run_id": "018f3a7e-9b22-7c10-8e5d-4a7b9c0d1e21",
+    "sequence": 2,
+    "recorded_at": "2026-10-27T09:16:40Z",
+    "execution_mode": "test",
+    "recorded_by": {
+      "component": "testkit.fake-agent-runtime",
+      "fidelity": "fake"
+    }
+  },
+  "claim": {
+    "statement": "The scripted fake runtime returned a valid builder output, which only shows that the engine accepts that output shape.",
+    "kind": "assumption",
+    "assurance_level": "IMPLEMENTED"
+  },
+  "evidence": [],
+  "confidence": {
+    "level": "low",
+    "rationale": "A fake adapter produced this output. It says nothing about real agent behavior."
+  },
+  "prev_entry_hash": "sha256:5e2d5d1e58e94d7607e0745cd3e612c4a358fc93f37fc5ab1fed8d04bbf7ce77",
+  "entry_hash": "sha256:edda7b47233f9790fcc6d116d0a0c0eac38a5d6e44b7cf0c002c6d30bfa61e74"
+}

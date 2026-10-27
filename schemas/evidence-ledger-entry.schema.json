@@ -1,0 +1,704 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:ortisun:factory:schema:evidence-ledger-entry:1",
+  "title": "Evidence ledger entry",
+  "description": "One append-only record that binds a claim to the evidence behind it. A claim is a measured fact, a simulation result, an assumption, a hypothesis or a stated expert judgment, and the entry says which. Entries form a hash chain per job, so removing or editing an old entry is detectable. An entry is never changed. To withdraw an earlier claim, append a new entry that names it in invalidates. Evidence produced by a fake adapter is allowed only in test mode and never supports an assurance level.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "metadata",
+    "claim",
+    "evidence",
+    "confidence",
+    "prev_entry_hash",
+    "entry_hash"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 1
+    },
+    "metadata": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "entry_id",
+        "job_id",
+        "stage_run_id",
+        "sequence",
+        "recorded_at",
+        "recorded_by",
+        "execution_mode"
+      ],
+      "properties": {
+        "entry_id": {
+          "$ref": "#/$defs/uuid"
+        },
+        "job_id": {
+          "$ref": "#/$defs/uuid"
+        },
+        "stage_run_id": {
+          "$ref": "#/$defs/uuid"
+        },
+        "attempt_id": {
+          "$ref": "#/$defs/uuid"
+        },
+        "sequence": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Position in the job's chain, starting at 1 with no gaps."
+        },
+        "recorded_at": {
+          "$ref": "#/$defs/timestamp"
+        },
+        "execution_mode": {
+          "enum": [
+            "production",
+            "test"
+          ]
+        },
+        "recorded_by": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "component",
+            "fidelity"
+          ],
+          "properties": {
+            "component": {
+              "$ref": "#/$defs/slug",
+              "description": "The factory component that wrote the entry, for example workflow.gate-evaluator."
+            },
+            "fidelity": {
+              "enum": [
+                "real",
+                "simulated",
+                "fake"
+              ]
+            }
+          }
+        }
+      }
+    },
+    "claim": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "statement",
+        "kind"
+      ],
+      "properties": {
+        "statement": {
+          "$ref": "#/$defs/humanText"
+        },
+        "kind": {
+          "enum": [
+            "measured_fact",
+            "simulation_result",
+            "assumption",
+            "hypothesis",
+            "expert_judgment"
+          ]
+        },
+        "assurance_level": {
+          "enum": [
+            "SPECIFIED",
+            "IMPLEMENTED",
+            "VERIFIED_IN_SANDBOX",
+            "VERIFIED_IN_SIMULATOR",
+            "VERIFIED_ON_DEVICE",
+            "PAPER_VALIDATED",
+            "PRODUCTION_READY"
+          ]
+        }
+      }
+    },
+    "evidence": {
+      "type": "array",
+      "items": {
+        "oneOf": [
+          {
+            "$ref": "#/$defs/evidenceTest"
+          },
+          {
+            "$ref": "#/$defs/evidenceTrace"
+          },
+          {
+            "$ref": "#/$defs/evidenceArtifact"
+          },
+          {
+            "$ref": "#/$defs/evidenceSource"
+          },
+          {
+            "$ref": "#/$defs/evidenceBenchmark"
+          },
+          {
+            "$ref": "#/$defs/evidenceExperiment"
+          },
+          {
+            "$ref": "#/$defs/evidenceCodeLocation"
+          },
+          {
+            "$ref": "#/$defs/evidenceExpertJudgment"
+          }
+        ]
+      }
+    },
+    "confidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "level",
+        "rationale"
+      ],
+      "properties": {
+        "level": {
+          "enum": [
+            "low",
+            "medium",
+            "high"
+          ]
+        },
+        "rationale": {
+          "$ref": "#/$defs/humanText"
+        }
+      }
+    },
+    "invalidates": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "$ref": "#/$defs/uuid"
+      },
+      "description": "Earlier entries this entry withdraws, for example after the work they describe was superseded."
+    },
+    "prev_entry_hash": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/sha256"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "entry_hash of the previous entry in the job. Null only for sequence 1."
+    },
+    "entry_hash": {
+      "$ref": "#/$defs/sha256",
+      "description": "SHA-256 over prev_entry_hash and the canonical JSON (RFC 8785) of this entry without entry_hash."
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "metadata": {
+            "properties": {
+              "sequence": {
+                "const": 1
+              }
+            }
+          }
+        },
+        "required": [
+          "metadata"
+        ]
+      },
+      "then": {
+        "properties": {
+          "prev_entry_hash": {
+            "type": "null"
+          }
+        }
+      },
+      "else": {
+        "properties": {
+          "prev_entry_hash": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "claim": {
+            "properties": {
+              "kind": {
+                "const": "measured_fact"
+              }
+            }
+          }
+        },
+        "required": [
+          "claim"
+        ]
+      },
+      "then": {
+        "properties": {
+          "evidence": {
+            "minItems": 1,
+            "items": {
+              "properties": {
+                "type": {
+                  "enum": [
+                    "test",
+                    "trace",
+                    "artifact",
+                    "benchmark",
+                    "code_location",
+                    "source"
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "claim": {
+            "properties": {
+              "kind": {
+                "const": "simulation_result"
+              }
+            }
+          }
+        },
+        "required": [
+          "claim"
+        ]
+      },
+      "then": {
+        "properties": {
+          "evidence": {
+            "contains": {
+              "properties": {
+                "type": {
+                  "enum": [
+                    "artifact",
+                    "experiment",
+                    "benchmark"
+                  ]
+                }
+              },
+              "required": [
+                "type"
+              ]
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "claim": {
+            "properties": {
+              "kind": {
+                "const": "expert_judgment"
+              }
+            }
+          }
+        },
+        "required": [
+          "claim"
+        ]
+      },
+      "then": {
+        "properties": {
+          "evidence": {
+            "contains": {
+              "properties": {
+                "type": {
+                  "const": "expert_judgment"
+                }
+              },
+              "required": [
+                "type"
+              ]
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "claim": {
+            "properties": {
+              "kind": {
+                "enum": [
+                  "assumption",
+                  "hypothesis"
+                ]
+              }
+            }
+          }
+        },
+        "required": [
+          "claim"
+        ]
+      },
+      "then": {
+        "properties": {
+          "claim": {
+            "not": {
+              "required": [
+                "assurance_level"
+              ]
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "claim": {
+            "required": [
+              "assurance_level"
+            ]
+          }
+        },
+        "required": [
+          "claim"
+        ]
+      },
+      "then": {
+        "properties": {
+          "evidence": {
+            "minItems": 1
+          },
+          "metadata": {
+            "properties": {
+              "recorded_by": {
+                "properties": {
+                  "fidelity": {
+                    "const": "real"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "metadata": {
+            "properties": {
+              "recorded_by": {
+                "properties": {
+                  "fidelity": {
+                    "enum": [
+                      "fake",
+                      "simulated"
+                    ]
+                  }
+                }
+              }
+            }
+          }
+        },
+        "required": [
+          "metadata"
+        ]
+      },
+      "then": {
+        "properties": {
+          "metadata": {
+            "properties": {
+              "execution_mode": {
+                "const": "test"
+              }
+            }
+          },
+          "claim": {
+            "not": {
+              "required": [
+                "assurance_level"
+              ]
+            }
+          }
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "uuid": {
+      "description": "Lowercase UUID. Version 7 is recommended so identifiers sort by creation time.",
+      "type": "string",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+    },
+    "sha256": {
+      "description": "Content hash in the form sha256:<64 lowercase hex characters>.",
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "gitSha": {
+      "description": "Full Git object id, 40 or 64 lowercase hex characters.",
+      "type": "string",
+      "pattern": "^([0-9a-f]{40}|[0-9a-f]{64})$"
+    },
+    "timestamp": {
+      "description": "UTC instant in RFC 3339 form with a Z suffix.",
+      "type": "string",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]{1,9})?Z$"
+    },
+    "slug": {
+      "description": "Machine-safe identifier: lowercase letters, digits, dot, underscore and hyphen. For metadata fields, never for human-facing titles.",
+      "type": "string",
+      "pattern": "^[a-z0-9]([a-z0-9._-]{0,62}[a-z0-9])?$"
+    },
+    "humanText": {
+      "description": "Complete plain-English sentences written for a human reader.",
+      "type": "string",
+      "minLength": 10,
+      "maxLength": 4000,
+      "pattern": "^\\S([\\s\\S]*\\S)?$"
+    },
+    "evidenceTest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "gate_report_id",
+        "gate_report_sha256",
+        "result"
+      ],
+      "properties": {
+        "type": {
+          "const": "test"
+        },
+        "gate_report_id": {
+          "$ref": "#/$defs/uuid"
+        },
+        "gate_report_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "test_name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "result": {
+          "enum": [
+            "passed",
+            "failed",
+            "not_run"
+          ]
+        }
+      }
+    },
+    "evidenceTrace": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "trace_id"
+      ],
+      "properties": {
+        "type": {
+          "const": "trace"
+        },
+        "trace_id": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{32}$"
+        },
+        "span_id": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{16}$"
+        }
+      }
+    },
+    "evidenceArtifact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "sha256",
+        "media_type"
+      ],
+      "properties": {
+        "type": {
+          "const": "artifact"
+        },
+        "sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "media_type": {
+          "type": "string",
+          "pattern": "^[a-z]+/[a-z0-9.+-]+$"
+        },
+        "description": {
+          "$ref": "#/$defs/humanText"
+        }
+      }
+    },
+    "evidenceSource": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "citation",
+        "retrieved_at"
+      ],
+      "properties": {
+        "type": {
+          "const": "source"
+        },
+        "citation": {
+          "$ref": "#/$defs/humanText"
+        },
+        "url": {
+          "type": "string",
+          "format": "uri"
+        },
+        "version": {
+          "type": "string",
+          "minLength": 1
+        },
+        "retrieved_at": {
+          "$ref": "#/$defs/timestamp"
+        },
+        "sha256": {
+          "$ref": "#/$defs/sha256"
+        }
+      }
+    },
+    "evidenceBenchmark": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "name",
+        "result",
+        "environment"
+      ],
+      "properties": {
+        "type": {
+          "const": "benchmark"
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "result": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Value with unit, kept as text so no precision is lost."
+        },
+        "environment": {
+          "$ref": "#/$defs/humanText"
+        }
+      }
+    },
+    "evidenceExperiment": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "experiment_id",
+        "run_ids",
+        "seeds"
+      ],
+      "properties": {
+        "type": {
+          "const": "experiment"
+        },
+        "experiment_id": {
+          "$ref": "#/$defs/slug"
+        },
+        "run_ids": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/uuid"
+          }
+        },
+        "seeds": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "integer"
+          }
+        }
+      }
+    },
+    "evidenceCodeLocation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "path",
+        "commit_sha"
+      ],
+      "properties": {
+        "type": {
+          "const": "code_location"
+        },
+        "path": {
+          "type": "string",
+          "minLength": 1
+        },
+        "line_start": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "line_end": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "commit_sha": {
+          "$ref": "#/$defs/gitSha"
+        }
+      }
+    },
+    "evidenceExpertJudgment": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "attestor",
+        "scope",
+        "recorded_at"
+      ],
+      "properties": {
+        "type": {
+          "const": "expert_judgment"
+        },
+        "attestor": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "principal_id",
+            "role"
+          ],
+          "properties": {
+            "principal_id": {
+              "$ref": "#/$defs/uuid"
+            },
+            "role": {
+              "enum": [
+                "requester",
+                "operator",
+                "approver",
+                "security_approver",
+                "org_admin"
+              ]
+            }
+          }
+        },
+        "scope": {
+          "$ref": "#/$defs/humanText"
+        },
+        "recorded_at": {
+          "$ref": "#/$defs/timestamp"
+        }
+      }
+    }
+  }
+}

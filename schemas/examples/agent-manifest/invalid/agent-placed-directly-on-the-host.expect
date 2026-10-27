@@ -1,0 +1,1 @@
+$.permitted_placements[0]: 'host_direct' is not one of ['sandbox', 'host_tool_bridge']

@@ -1,0 +1,4034 @@
+{
+  "schema_version": 1,
+  "title": "Slice 0 and Slice 1 work packages",
+  "description": "Source of truth for the work breakdown. docs/architecture/slice-plan.md renders its tables from this file, and docs/architecture/tools/check_work_packages.py validates it: roles are known, titles read as plain English, dependencies are acyclic, concurrent packages own disjoint paths, every port is referenced consistently, and every package has at least one done criterion that a command or a named test can check. Sizes are relative effort, not a schedule: S=1, M=3, L=5, XL=8.",
+  "roles": [
+    "software_engineer",
+    "dba",
+    "security",
+    "qa",
+    "documenter",
+    "sre",
+    "observability",
+    "frontend"
+  ],
+  "size_weights": {
+    "S": 1,
+    "M": 3,
+    "L": 5,
+    "XL": 8
+  },
+  "external_owners": [
+    {
+      "path": "docs/adr/**",
+      "owner": "software_architect",
+      "note": "Slice 0 baseline, delivered. Later changes by pull request with architect review."
+    },
+    {
+      "path": "docs/architecture/**",
+      "owner": "software_architect",
+      "note": "Same as above. Includes the JSON sources and the checking scripts."
+    },
+    {
+      "path": "schemas/**",
+      "owner": "software_architect",
+      "note": "Same as above. New or changed schemas follow schemas/README.md."
+    },
+    {
+      "path": ".specify/**",
+      "owner": "Spec Kit specialist",
+      "note": "In flight. Created by specify init for the factory's own requirements."
+    },
+    {
+      "path": ".claude/**",
+      "owner": "Spec Kit specialist",
+      "note": "In flight. Skills installed by specify init."
+    },
+    {
+      "path": "specs/**",
+      "owner": "Spec Kit specialist",
+      "note": "In flight. The factory's own feature specifications."
+    },
+    {
+      "path": "docs/spec-kit/**",
+      "owner": "Spec Kit specialist",
+      "note": "In flight. The Spec Kit integration guide."
+    },
+    {
+      "path": ".gitignore",
+      "owner": "lead",
+      "note": ""
+    },
+    {
+      "path": "universal_agentic_software_factory_master_prompt.md",
+      "owner": "lead",
+      "note": "Read only."
+    }
+  ],
+  "ports": [
+    {
+      "name": "Clock",
+      "crate": "ports",
+      "defined_by": "s0-ports-and-testkit",
+      "fake": "FakeClock",
+      "real": "SystemClock in apps",
+      "consumers": [
+        "s1-engine-core",
+        "s1-storage-postgres"
+      ],
+      "implemented_by": [
+        "s1-apps-composition"
+      ]
+    },
+    {
+      "name": "IdGenerator",
+      "crate": "ports",
+      "defined_by": "s0-ports-and-testkit",
+      "fake": "SequentialIdGenerator",
+      "real": "UuidV7Generator in apps",
+      "consumers": [
+        "s1-engine-core"
+      ],
+      "implemented_by": [
+        "s1-apps-composition"
+      ]
+    },
+    {
+      "name": "CancelSignal",
+      "crate": "ports",
+      "defined_by": "s0-ports-and-testkit",
+      "fake": "FakeCancel",
+      "real": "adapter over a Tokio cancellation token in apps",
+      "consumers": [
+        "s1-engine-core",
+        "s1-agent-runtime-adapters"
+      ],
+      "implemented_by": [
+        "s1-apps-composition"
+      ]
+    },
+    {
+      "name": "Tx",
+      "crate": "ports",
+      "defined_by": "s0-ports-and-testkit",
+      "fake": "InMemoryTx",
+      "real": "PgTx in storage",
+      "consumers": [
+        "s1-engine-core"
+      ],
+      "implemented_by": [
+        "s1-storage-postgres"
+      ]
+    },
+    {
+      "name": "Store",
+      "crate": "ports",
+      "defined_by": "s0-ports-and-testkit",
+      "fake": "InMemoryStore",
+      "real": "PgStore in storage",
+      "consumers": [
+        "s1-engine-core"
+      ],
+      "implemented_by": [
+        "s1-storage-postgres"
+      ]
+    },
+    {
+      "name": "ArtifactStore",
+      "crate": "ports",
+      "defined_by": "s0-ports-and-testkit",
+      "fake": "InMemoryArtifactStore",
+      "real": "LocalFsArtifactStore in storage",
+      "consumers": [
+        "s1-engine-core",
+        "s1-stage-delivery-and-approval"
+      ],
+      "implemented_by": [
+        "s1-storage-postgres"
+      ]
+    },
+    {
+      "name": "SandboxProvider",
+      "crate": "ports",
+      "defined_by": "s0-ports-and-testkit",
+      "fake": "FakeSandbox",
+      "real": "DockerSandbox supervisor in sandbox",
+      "consumers": [
+        "s1-engine-core",
+        "s1-stage-intake-and-repository",
+        "s1-stage-implementation-and-review",
+        "s1-trusted-gates-and-validation",
+        "s1-stage-documentation",
+        "s1-supply-chain-gates"
+      ],
+      "implemented_by": [
+        "s1-sandbox-adapter"
+      ]
+    },
+    {
+      "name": "SandboxSession",
+      "crate": "ports",
+      "defined_by": "s0-ports-and-testkit",
+      "fake": "FakeSandboxSession",
+      "real": "DockerSession in sandbox",
+      "consumers": [
+        "s1-agent-runtime-adapters",
+        "s1-stage-implementation-and-review",
+        "s1-trusted-gates-and-validation",
+        "s1-supply-chain-gates"
+      ],
+      "implemented_by": [
+        "s1-sandbox-adapter"
+      ]
+    },
+    {
+      "name": "WorkspaceProvider",
+      "crate": "ports",
+      "defined_by": "s0-ports-and-testkit",
+      "fake": "FakeWorkspaceProvider",
+      "real": "GitWorkspaceProvider in sandbox",
+      "consumers": [
+        "s1-engine-core",
+        "s1-stage-intake-and-repository"
+      ],
+      "implemented_by": [
+        "s1-workspace-ingestion"
+      ]
+    },
+    {
+      "name": "Workspace",
+      "crate": "ports",
+      "defined_by": "s0-ports-and-testkit",
+      "fake": "FakeWorkspace",
+      "real": "GitWorkspace in sandbox",
+      "consumers": [
+        "s1-stage-intake-and-repository",
+        "s1-stage-implementation-and-review",
+        "s1-trusted-gates-and-validation",
+        "s1-stage-documentation",
+        "s1-spec-adapter-and-stage",
+        "s1-stage-delivery-and-approval"
+      ],
+      "implemented_by": [
+        "s1-workspace-ingestion"
+      ]
+    },
+    {
+      "name": "AgentRuntime",
+      "crate": "ports",
+      "defined_by": "s0-ports-and-testkit",
+      "fake": "FakeAgentRuntime",
+      "real": "ClaudeCodeRuntime and CodexRuntime in runtime",
+      "consumers": [
+        "s1-engine-core",
+        "s1-spec-adapter-and-stage",
+        "s1-stage-intake-and-repository",
+        "s1-stage-architecture-and-planning",
+        "s1-stage-implementation-and-review",
+        "s1-stage-documentation"
+      ],
+      "implemented_by": [
+        "s1-agent-runtime-adapters"
+      ]
+    },
+    {
+      "name": "ModelRouter",
+      "crate": "ports",
+      "defined_by": "s0-ports-and-testkit",
+      "fake": "StaticModelRouter",
+      "real": "PolicyModelRouter in contracts",
+      "consumers": [
+        "s1-engine-core"
+      ],
+      "implemented_by": [
+        "s0-contracts-and-registry"
+      ]
+    },
+    {
+      "name": "AgentRegistry",
+      "crate": "ports",
+      "defined_by": "s0-ports-and-testkit",
+      "fake": "InMemoryAgentRegistry",
+      "real": "FileAgentRegistry in contracts",
+      "consumers": [
+        "s1-engine-core",
+        "s1-stage-architecture-and-planning"
+      ],
+      "implemented_by": [
+        "s0-contracts-and-registry"
+      ]
+    },
+    {
+      "name": "OutputValidator",
+      "crate": "ports",
+      "defined_by": "s0-ports-and-testkit",
+      "fake": "none: the real validator is pure and fast, tests use it directly",
+      "real": "SchemaOutputValidator in contracts",
+      "consumers": [
+        "s1-engine-core",
+        "s1-spec-adapter-and-stage",
+        "s1-stage-architecture-and-planning",
+        "s1-trusted-gates-and-validation"
+      ],
+      "implemented_by": [
+        "s0-contracts-and-registry"
+      ]
+    },
+    {
+      "name": "SpecificationProvider",
+      "crate": "ports",
+      "defined_by": "s0-ports-and-testkit",
+      "fake": "FakeSpecificationProvider",
+      "real": "SpecKitProvider in spec_adapter",
+      "consumers": [],
+      "implemented_by": [
+        "s1-spec-adapter-and-stage"
+      ]
+    },
+    {
+      "name": "IssueSource",
+      "crate": "ports",
+      "defined_by": "s0-ports-and-testkit",
+      "fake": "FakeIssueSource",
+      "real": "GitHubIssueSource in github (GitHub App)",
+      "consumers": [
+        "s1-stage-intake-and-repository",
+        "s1-apps-composition"
+      ],
+      "implemented_by": [
+        "s1-github-adapter"
+      ]
+    },
+    {
+      "name": "ChangeHost",
+      "crate": "ports",
+      "defined_by": "s0-ports-and-testkit",
+      "fake": "FakeChangeHost",
+      "real": "GitHubChangeHost in github (GitHub App)",
+      "consumers": [
+        "s1-stage-delivery-and-approval"
+      ],
+      "implemented_by": [
+        "s1-github-adapter"
+      ]
+    },
+    {
+      "name": "StageHandler",
+      "crate": "workflow",
+      "defined_by": "s1-engine-core",
+      "fake": "scripted handlers in workflow tests",
+      "real": "one handler per stage kind in workflow",
+      "consumers": [
+        "s1-engine-core"
+      ],
+      "implemented_by": [
+        "s1-spec-adapter-and-stage",
+        "s1-stage-intake-and-repository",
+        "s1-stage-architecture-and-planning",
+        "s1-stage-implementation-and-review",
+        "s1-trusted-gates-and-validation",
+        "s1-stage-documentation",
+        "s1-stage-delivery-and-approval"
+      ]
+    },
+    {
+      "name": "ModelBroker",
+      "crate": "ports",
+      "defined_by": "s0-ports-and-testkit",
+      "fake": "FakeModelBroker",
+      "real": "Broker in egress",
+      "consumers": [
+        "s1-engine-core"
+      ],
+      "implemented_by": [
+        "s1-egress-and-broker"
+      ]
+    }
+  ],
+  "work_packages": [
+    {
+      "id": "s0-workspace-skeleton",
+      "title": "Create the Cargo workspace and the architecture checks",
+      "slice": 0,
+      "owner_role": "software_engineer",
+      "reviewers": [
+        "software_architect"
+      ],
+      "size": "M",
+      "summary": "Create the workspace with the twelve library crates and four binaries from ADR 0002 as compiling shells. Each manifest already lists the dependencies its rules allow, each lib.rs already declares its planned modules (including every stage and gate directory under workflow), and each inner crate carries its clippy ban list. Write the xtask architecture check test-first, including the source-scan rules that the negative-test catalog lists as static checks. This package merges before any other package touches a crate directory.",
+      "owns": [
+        "Cargo.toml",
+        "Cargo.lock",
+        "rust-toolchain.toml",
+        "rustfmt.toml",
+        ".cargo/**",
+        "xtask/**"
+      ],
+      "inputs": [
+        "ADR 0002",
+        "docs/architecture/crate-dependency-rules.json",
+        "docs/architecture/overview.md"
+      ],
+      "exposes_ports": [],
+      "implements_ports": [],
+      "consumes_ports": [],
+      "depends_on": [],
+      "done": [
+        {
+          "check": "The workspace builds from a clean checkout.",
+          "kind": "command",
+          "command": "cargo build --workspace --locked"
+        },
+        {
+          "check": "The architecture check passes on the skeleton.",
+          "kind": "command",
+          "command": "cargo xtask check-architecture"
+        },
+        {
+          "check": "Each rule DEP-01 to DEP-04 and DEP-08 to DEP-10 has a failing fixture that makes the check exit non-zero.",
+          "kind": "test",
+          "command": "cargo nextest run -p xtask"
+        },
+        {
+          "check": "Static checks ST-01 (no safe.directory wildcard), ST-02 (no equality comparison on signatures), ST-03 (no shell spawn), ST-04 (dangerous container flags only in the posture verifier deny list and tests), ST-05 (no merge or deploy path without the approval check) and ST-09 (workspace reads only through the ingestion module) each have a failing fixture.",
+          "kind": "test",
+          "command": "cargo nextest run -p xtask static_checks"
+        },
+        {
+          "check": "The clippy bans fire: a scratch crate using each banned call fails under the same clippy.toml.",
+          "kind": "test",
+          "command": "cargo nextest run -p xtask clippy_bans"
+        },
+        {
+          "check": "Lints and formatting are clean.",
+          "kind": "command",
+          "command": "cargo clippy --workspace --all-targets -- -D warnings && cargo fmt --all -- --check"
+        },
+        {
+          "check": "The set of crates in cargo metadata equals the set in crate-dependency-rules.json.",
+          "kind": "command",
+          "command": "python3 -I docs/architecture/tools/check_crate_rules.py --check"
+        }
+      ]
+    },
+    {
+      "id": "s0-domain-vocabulary",
+      "title": "Define identifiers, value types and contract types in the domain crate",
+      "slice": 0,
+      "owner_role": "software_engineer",
+      "reviewers": [
+        "software_architect"
+      ],
+      "size": "L",
+      "summary": "Write the pure types: identifiers, tenant scope, versions, hashes, timestamps, fidelity, execution mode, every status enum with the exact serialized names from state-machine.json, and one Rust type per schema. Add the ledger chain hash as a pure function. No I/O, no clock, no randomness.",
+      "owns": [
+        "crates/domain/**"
+      ],
+      "inputs": [
+        "schemas/*.schema.json and schemas/examples",
+        "docs/architecture/state-machine.json",
+        "ADR 0007",
+        "ADR 0008"
+      ],
+      "exposes_ports": [],
+      "implements_ports": [],
+      "consumes_ports": [],
+      "depends_on": [
+        "s0-workspace-skeleton"
+      ],
+      "done": [
+        {
+          "check": "Every valid example under schemas/examples deserializes into its type and serializes back to an equal JSON value.",
+          "kind": "test",
+          "command": "cargo nextest run -p factory-domain --test contract_examples"
+        },
+        {
+          "check": "Status enum names equal the state lists in state-machine.json.",
+          "kind": "test",
+          "command": "cargo nextest run -p factory-domain status_names_match_state_machine_json"
+        },
+        {
+          "check": "The ledger chain hash reproduces values computed by an independent script on a fixture chain.",
+          "kind": "test",
+          "command": "cargo nextest run -p factory-domain chain_hash_matches_independent_oracle"
+        },
+        {
+          "check": "Clippy bans and the architecture check pass for the crate.",
+          "kind": "command",
+          "command": "cargo clippy -p factory-domain -- -D warnings && cargo xtask check-architecture"
+        }
+      ]
+    },
+    {
+      "id": "s0-state-machines",
+      "title": "Implement the four state machines exactly as the transition tables",
+      "slice": 0,
+      "owner_role": "software_engineer",
+      "reviewers": [
+        "software_architect"
+      ],
+      "size": "L",
+      "summary": "Write the Job, StageRun, Attempt and TaskNode transition functions as pure code, the named guard predicates, the invalidation rules, and the conformance and property tests that read state-machine.json. This package is test-first by construction: the conformance test is written before the functions.",
+      "owns": [
+        "crates/domain/src/machines/**",
+        "crates/domain/tests/state_machine_conformance.rs",
+        "crates/domain/tests/state_machine_properties.rs"
+      ],
+      "inputs": [
+        "docs/architecture/state-machine.json",
+        "docs/architecture/state-machine.md"
+      ],
+      "exposes_ports": [],
+      "implements_ports": [],
+      "consumes_ports": [],
+      "depends_on": [
+        "s0-domain-vocabulary"
+      ],
+      "done": [
+        {
+          "check": "For each machine the accepted (from, event) pairs equal the JSON, and every other pair is rejected with a typed error and no state change.",
+          "kind": "test",
+          "command": "cargo nextest run -p factory-domain --test state_machine_conformance"
+        },
+        {
+          "check": "Every guard id in the JSON has a named predicate, and every predicate has an entry.",
+          "kind": "test",
+          "command": "cargo nextest run -p factory-domain guard_registry_matches_json"
+        },
+        {
+          "check": "Ten thousand generated command sequences never leave the tables (QA-1).",
+          "kind": "test",
+          "command": "cargo nextest run -p factory-domain --test state_machine_properties"
+        },
+        {
+          "check": "The invalidation function reproduces every row of the JSON invalidation table.",
+          "kind": "test",
+          "command": "cargo nextest run -p factory-domain invalidation_rules_match_json"
+        },
+        {
+          "check": "Adding a transition to a copy of the JSON makes the conformance test fail, so the test is not vacuous.",
+          "kind": "test",
+          "command": "cargo nextest run -p factory-domain conformance_detects_a_changed_table"
+        },
+        {
+          "check": "The generated tables in state-machine.md are in sync.",
+          "kind": "command",
+          "command": "python3 -I docs/architecture/tools/render_state_machine.py --check"
+        }
+      ]
+    },
+    {
+      "id": "s0-ports-and-testkit",
+      "title": "Define the port traits and the labelled fakes with shared contract tests",
+      "slice": 0,
+      "owner_role": "software_engineer",
+      "reviewers": [
+        "software_architect",
+        "security"
+      ],
+      "size": "L",
+      "summary": "Fix version 1 of the port traits and their closed error enums from the sketches in this plan, and build testkit: faithful in-memory fakes that each report fidelity fake, the scripted adversarial runtime FX-ADV, a controllable clock FX-CLOCK, and generic contract test suites that run against any implementation. The same suites later run against the real adapters, which is how a fake is kept honest.",
+      "owns": [
+        "crates/ports/**",
+        "crates/testkit/**"
+      ],
+      "inputs": [
+        "Port sketches in this document",
+        "ADR 0003",
+        "ADR 0004",
+        "ADR 0005",
+        "ADR 0007"
+      ],
+      "exposes_ports": [
+        "Clock",
+        "IdGenerator",
+        "CancelSignal",
+        "Tx",
+        "Store",
+        "ArtifactStore",
+        "SandboxProvider",
+        "SandboxSession",
+        "WorkspaceProvider",
+        "Workspace",
+        "AgentRuntime",
+        "ModelRouter",
+        "AgentRegistry",
+        "OutputValidator",
+        "SpecificationProvider",
+        "IssueSource",
+        "ChangeHost",
+        "ModelBroker"
+      ],
+      "implements_ports": [],
+      "consumes_ports": [],
+      "depends_on": [
+        "s0-domain-vocabulary"
+      ],
+      "done": [
+        {
+          "check": "Each contract suite passes against its in-memory fake: store (CAS, lease fencing, tenant scope, ledger chain, outbox), artifact store, sandbox, workspace, agent runtime, model broker, change host.",
+          "kind": "test",
+          "command": "cargo nextest run -p factory-testkit"
+        },
+        {
+          "check": "Every fake reports fidelity fake.",
+          "kind": "test",
+          "command": "cargo nextest run -p factory-testkit every_fake_reports_fake_fidelity"
+        },
+        {
+          "check": "The scripted adversarial runtime obeys any script it is given and records every prompt it receives with the structured parts separated (FX-ADV).",
+          "kind": "test",
+          "command": "cargo nextest run -p factory-testkit fx_adv_records_prompts_and_obeys_the_script"
+        },
+        {
+          "check": "ChangeHost has no method whose name starts with merge, and testkit is a dev-dependency only.",
+          "kind": "command",
+          "command": "cargo xtask check-architecture"
+        },
+        {
+          "check": "Every public trait documents its preconditions, postconditions, closed error set and idempotency.",
+          "kind": "test",
+          "command": "cargo nextest run -p factory-ports trait_docs_state_the_contract"
+        },
+        {
+          "check": "The architect reviewed the port surface and the revision is tagged ports-v1.",
+          "kind": "review",
+          "command": null
+        }
+      ]
+    },
+    {
+      "id": "s0-contracts-and-registry",
+      "title": "Validate contracts and load agent, profile, project and policy definitions",
+      "slice": 0,
+      "owner_role": "software_engineer",
+      "reviewers": [
+        "software_architect"
+      ],
+      "size": "M",
+      "summary": "Embed the schemas, implement OutputValidator with hard size and depth limits, and load agent manifests, domain capability profiles, project manifests and the policy files. The loader follows the parser contract written at the top of policies/security.yaml: typed structs with unknown keys rejected, a single document, no anchors, aliases or merge keys, a schema version that must match, and a policy hash over the canonical form. The existing schema examples and their expectation files are the test oracle.",
+      "owns": [
+        "crates/contracts/**"
+      ],
+      "inputs": [
+        "schemas/",
+        "policies/ as written by the security specialist",
+        "ADR 0005"
+      ],
+      "exposes_ports": [],
+      "implements_ports": [
+        "AgentRegistry",
+        "ModelRouter",
+        "OutputValidator"
+      ],
+      "consumes_ports": [],
+      "depends_on": [
+        "s0-domain-vocabulary",
+        "s0-ports-and-testkit"
+      ],
+      "done": [
+        {
+          "check": "Every valid example validates and every invalid example is rejected at the path named in its .expect file.",
+          "kind": "test",
+          "command": "cargo nextest run -p factory-contracts --test schema_examples"
+        },
+        {
+          "check": "Every keyword used by the schemas (if/then/else, dependentSchemas, contains, oneOf, not) behaves as in check-jsonschema, proven by the same examples.",
+          "kind": "test",
+          "command": "cargo nextest run -p factory-contracts --test schema_examples"
+        },
+        {
+          "check": "A YAML parser is chosen from at least two maintained candidates, with serde_yaml excluded as deprecated, and the comparison is written down.",
+          "kind": "review",
+          "command": null
+        },
+        {
+          "check": "Loaders reject a manifest whose prompt hash does not match the prompt file, and name the file and field in the error.",
+          "kind": "test",
+          "command": "cargo nextest run -p factory-contracts loader_errors_name_file_and_field"
+        },
+        {
+          "check": "The policy files in policies/ load without error.",
+          "kind": "test",
+          "command": "cargo nextest run -p factory-contracts --test policy_files"
+        },
+        {
+          "check": "The schema suite still passes.",
+          "kind": "command",
+          "command": "schemas/validate.sh"
+        },
+        {
+          "check": "Policy loading is strict: an unknown key, a wrong schema version, a duplicate key, an anchor, alias or merge key, a wrong type, an invalid regex or glob, and a missing default action each fail the load (NT-POL-03). Policy is read only from the protected configuration source, never from an environment path, a feature branch or the target repository (NT-POL-01).",
+          "kind": "test",
+          "command": "cargo nextest run -p factory-contracts negative_nt_pol_01 negative_nt_pol_03 st_06"
+        },
+        {
+          "check": "Adapter output with an unknown field, wrong types, depth 10,000, a 10 MB body, invalid UTF-8 or a traversal path is rejected before any parse that could exhaust memory (NT-TOOL-09).",
+          "kind": "test",
+          "command": "cargo nextest run -p factory-contracts negative_nt_tool_09"
+        }
+      ]
+    },
+    {
+      "id": "s0-database-baseline",
+      "title": "Create the first PostgreSQL migrations and database tests",
+      "slice": 0,
+      "owner_role": "dba",
+      "reviewers": [
+        "software_architect",
+        "security"
+      ],
+      "size": "L",
+      "summary": "Design and migrate the first schema: tenant, repository, principal, API token with expiry, audience and revocation, webhook delivery with a unique delivery id, job, original request, stage run, attempt with lease columns, task node, artifact metadata, evidence ledger, append-only audit event with actor, policy hash and correlation id, outbox and approval. Encode the rules from ADR 0007 and ADR 0008 in constraints, triggers and roles, and prove them with database tests.",
+      "owns": [
+        "migrations/**",
+        "crates/storage/src/schema.rs",
+        "crates/storage/diesel.toml",
+        "scripts/db-test.sh",
+        "docs/database/**"
+      ],
+      "inputs": [
+        "ADR 0001",
+        "ADR 0004",
+        "ADR 0007",
+        "ADR 0008",
+        "docs/architecture/state-machine.json",
+        "schemas/evidence-ledger-entry.schema.json",
+        "schemas/domain-event.schema.json"
+      ],
+      "exposes_ports": [],
+      "implements_ports": [],
+      "consumes_ports": [],
+      "depends_on": [
+        "s0-workspace-skeleton"
+      ],
+      "done": [
+        {
+          "check": "Migrations run up, redo and up on an empty PostgreSQL, and the committed schema.rs equals diesel print-schema.",
+          "kind": "command",
+          "command": "scripts/db-test.sh migrations"
+        },
+        {
+          "check": "An unknown status is rejected for every status column, and the allowed values equal the state lists in state-machine.json.",
+          "kind": "command",
+          "command": "scripts/db-test.sh statuses"
+        },
+        {
+          "check": "UPDATE and DELETE on the evidence ledger fail for the application role, and a gapped insert fails.",
+          "kind": "command",
+          "command": "scripts/db-test.sh ledger"
+        },
+        {
+          "check": "A foreign key that points at another tenant's row is rejected, and unique constraints include the tenant.",
+          "kind": "command",
+          "command": "scripts/db-test.sh tenancy"
+        },
+        {
+          "check": "UPDATE of a terminal stage run row fails except for the supersede transition.",
+          "kind": "command",
+          "command": "scripts/db-test.sh terminal_rows"
+        },
+        {
+          "check": "The claim, sweep, timeline and ledger-tail queries use index scans on 10,000 generated rows, with plans recorded.",
+          "kind": "command",
+          "command": "scripts/db-test.sh plans"
+        },
+        {
+          "check": "The application role can only INSERT and SELECT on the audit event table: UPDATE, DELETE, TRUNCATE and DROP fail (NT-AUD-01).",
+          "kind": "command",
+          "command": "scripts/db-test.sh audit"
+        },
+        {
+          "check": "A second webhook delivery with the same delivery id violates a unique constraint and is handled without creating a second job or outbox row (supports NT-WH-04).",
+          "kind": "command",
+          "command": "scripts/db-test.sh webhook_delivery"
+        }
+      ]
+    },
+    {
+      "id": "s0-ci-pipeline",
+      "title": "Set up continuous integration that runs the same checks as a developer",
+      "slice": 0,
+      "owner_role": "sre",
+      "reviewers": [
+        "security"
+      ],
+      "size": "M",
+      "summary": "Write one script that runs every check, and a workflow that calls it, so local and CI results cannot drift. A missing tool is reported as BLOCKED with its own exit code. It never counts as a pass. Add the Compose file with PostgreSQL.",
+      "owns": [
+        ".github/**",
+        "scripts/ci.sh",
+        "scripts/dev-up.sh",
+        "infra/compose/**",
+        ".env.example"
+      ],
+      "inputs": [
+        "ADR 0002",
+        "docs/architecture/overview.md section on checks"
+      ],
+      "exposes_ports": [],
+      "implements_ports": [],
+      "consumes_ports": [],
+      "depends_on": [
+        "s0-workspace-skeleton"
+      ],
+      "done": [
+        {
+          "check": "The script runs format, clippy, tests, deny, audit, the architecture check, schema validation, both document checks and the Mermaid check, and exits non-zero on any failure.",
+          "kind": "command",
+          "command": "scripts/ci.sh"
+        },
+        {
+          "check": "With a required tool hidden from PATH the script prints BLOCKED and exits 3, not 0.",
+          "kind": "test",
+          "command": "scripts/ci.sh --self-test-blocked"
+        },
+        {
+          "check": "Compose brings up a healthy PostgreSQL.",
+          "kind": "command",
+          "command": "docker compose -f infra/compose/docker-compose.yml up -d --wait"
+        },
+        {
+          "check": "The example environment file holds no secret-looking values.",
+          "kind": "test",
+          "command": "scripts/ci.sh --self-test-no-secrets"
+        },
+        {
+          "check": "The workflow runs the same script and is green on the first pull request.",
+          "kind": "review",
+          "command": null
+        },
+        {
+          "check": "CI actions are pinned to full commit SHAs (ST-10), and a secret scan of the full repository history runs, reporting BLOCKED when the scanner is not installed (ST-08).",
+          "kind": "command",
+          "command": "scripts/ci.sh --self-test-pinning"
+        }
+      ]
+    },
+    {
+      "id": "s0-security-baseline",
+      "title": "Write the security baseline, policies and supply-chain rules",
+      "slice": 0,
+      "owner_role": "security",
+      "reviewers": [
+        "software_architect"
+      ],
+      "size": "M",
+      "summary": "Already in progress with the security specialist. Threat model over the eight trust boundaries, the four policy files, the supply-chain policy, the container profile review for ADR 0003, the set of git hardening options for host git operations, secret redaction rules, and the first prompt-injection corpus.",
+      "owns": [
+        "docs/security/**",
+        "policies/**",
+        "deny.toml",
+        "tests/security/**"
+      ],
+      "inputs": [
+        "docs/architecture/overview.md trust boundaries",
+        "ADR 0003",
+        "ADR 0005",
+        "ADR 0006"
+      ],
+      "exposes_ports": [],
+      "implements_ports": [],
+      "consumes_ports": [],
+      "depends_on": [],
+      "done": [
+        {
+          "check": "The threat model walks all eight trust boundaries with a STRIDE pass and records residual risk.",
+          "kind": "review",
+          "command": null
+        },
+        {
+          "check": "The four policy files exist: approval, security, quality, model_routing.",
+          "kind": "command",
+          "command": "ls policies/approval.yaml policies/security.yaml policies/quality.yaml policies/model_routing.yaml"
+        },
+        {
+          "check": "Dependency and license policy passes.",
+          "kind": "command",
+          "command": "cargo deny check"
+        },
+        {
+          "check": "The container profile and the host git hardening options are reviewed and written down.",
+          "kind": "review",
+          "command": null
+        },
+        {
+          "check": "The injection corpus has at least 10 cases covering issue text, repository files and tool output.",
+          "kind": "command",
+          "command": "test \"$(find tests/security/injection -type f | wc -l)\" -ge 10"
+        },
+        {
+          "check": "The conflicts listed in ADR 0009 are resolved in the policy files: rework cap, automatic approval of allowlisted dependency names, and role resolution by allowlist.",
+          "kind": "review",
+          "command": null
+        }
+      ]
+    },
+    {
+      "id": "s0-telemetry-baseline",
+      "title": "Initialize tracing and OpenTelemetry for the binaries",
+      "slice": 0,
+      "owner_role": "observability",
+      "reviewers": [
+        "software_architect"
+      ],
+      "size": "S",
+      "summary": "Provide init functions, the span and attribute naming constants, the conventions page and a local collector configuration. Logs carry the job correlation id.",
+      "owns": [
+        "crates/observability/**",
+        "docs/observability/conventions.md",
+        "infra/otel/**"
+      ],
+      "inputs": [
+        "ADR 0004",
+        "docs/architecture/overview.md QA-7"
+      ],
+      "exposes_ports": [],
+      "implements_ports": [],
+      "consumes_ports": [],
+      "depends_on": [
+        "s0-workspace-skeleton"
+      ],
+      "done": [
+        {
+          "check": "Init is idempotent and the span and attribute constants equal the table in the conventions page.",
+          "kind": "test",
+          "command": "cargo nextest run -p factory-observability"
+        },
+        {
+          "check": "Log lines carry correlation_id when a job span is active.",
+          "kind": "test",
+          "command": "cargo nextest run -p factory-observability log_lines_carry_correlation_id"
+        },
+        {
+          "check": "One span reaches a local OTLP receiver. Without a receiver the test reports BLOCKED.",
+          "kind": "test",
+          "command": "cargo nextest run -p factory-observability --test export_smoke"
+        },
+        {
+          "check": "Every metric, log and trace field name used in code is in the attribute allowlist (ST-07).",
+          "kind": "test",
+          "command": "cargo nextest run -p factory-observability st_07_field_names_are_allowlisted"
+        }
+      ]
+    },
+    {
+      "id": "s0-spec-kit-spike",
+      "title": "Settle the open Spec Kit questions: revision, checklist, arguments and running in the sandbox",
+      "slice": 0,
+      "owner_role": "software_engineer",
+      "reviewers": [
+        "software_architect",
+        "security"
+      ],
+      "size": "M",
+      "summary": "Risk-first spike for ADR 0006, narrowed to what the Spec Kit specialist left unverified. Test the proposed revision method, the checklist pre-run and the preset option, the specify skill with clarification markers, an explicit feature directory in the skill arguments, the file-based request input against an adversarial issue body, concurrent runs in separate worktrees, and all four skills inside the hardened sandbox profile. The specialist's host-run recordings stay as labelled evidence. Live runs need an API key and are BLOCKED without one. Protocol-level checks use the labelled fake provider from the agent spike.",
+      "owns": [
+        "fixtures/recordings/spec-kit/**",
+        "docs/spikes/spec-kit-headless.md"
+      ],
+      "inputs": [
+        "ADR 0006",
+        "specify 1.1.2",
+        "claude 2.1.311",
+        "codex 0.163.0"
+      ],
+      "exposes_ports": [],
+      "implements_ports": [],
+      "consumes_ports": [],
+      "depends_on": [
+        "s0-agent-runtime-spike"
+      ],
+      "done": [
+        {
+          "check": "A run manifest records the Spec Kit and host versions, the exact command, exit code, duration and the sha256 of every produced file, for each recorded run.",
+          "kind": "command",
+          "command": "python3 -I fixtures/recordings/spec-kit/check_manifest.py"
+        },
+        {
+          "check": "The report answers each unverified item in ADR 0006 with a pointer to a recorded file, or marks it BLOCKED with the reason.",
+          "kind": "review",
+          "command": null
+        },
+        {
+          "check": "A recorded revision run follows the proposed method (new feature directory seeded on the host, change by clarify or a reviewed edit) and passes the seven post-conditions. Or the report states the method failed and names the replacement.",
+          "kind": "review",
+          "command": null
+        },
+        {
+          "check": "The checklist skill produces a checklist without a plan.md through the adapter pre-run, or the failure and the preset attempt are recorded. An empty plan.md is never used.",
+          "kind": "review",
+          "command": null
+        },
+        {
+          "check": "The file-based request input and the quoted-block fallback are both run against an adversarial issue body. The security specialist accepts one in writing.",
+          "kind": "review",
+          "command": null
+        },
+        {
+          "check": "The skills start and finish inside the hardened agent profile with a masked .git, or the report names what blocks them.",
+          "kind": "review",
+          "command": null
+        },
+        {
+          "check": "The verdict is GO, GO with a named fallback, or NO-GO, and ADR 0006 carries the amendment.",
+          "kind": "review",
+          "command": null
+        }
+      ]
+    },
+    {
+      "id": "s0-agent-runtime-spike",
+      "title": "Prove how the agent tools run inside the sandbox behind the broker",
+      "slice": 0,
+      "owner_role": "software_engineer",
+      "reviewers": [
+        "software_architect",
+        "security"
+      ],
+      "size": "M",
+      "summary": "Risk-first spike for ADR 0005. Install Claude Code and Codex into a hardened container image, start each under the agent profile with a masked .git, point each at a local labelled fake provider through a base URL or settings file with a dummy key, and record the request each sends. Test structured output with the real gate-report schema, the non-interactive permission behavior, cancellation and exit codes. Evaluate the host tool bridge as the hardening target. Real provider calls need an API key and are BLOCKED without one.",
+      "owns": [
+        "fixtures/recordings/agent-cli/**",
+        "docs/spikes/agent-runtime.md"
+      ],
+      "inputs": [
+        "ADR 0005",
+        "ADR 0003",
+        "schemas/gate-report.schema.json"
+      ],
+      "exposes_ports": [],
+      "implements_ports": [],
+      "consumes_ports": [],
+      "depends_on": [],
+      "done": [
+        {
+          "check": "Recordings exist for each tool with version, command, exit code and output, and a manifest checks the required keys.",
+          "kind": "command",
+          "command": "python3 -I fixtures/recordings/agent-cli/check_manifest.py"
+        },
+        {
+          "check": "Each tool is installed into a container image and starts under the hardened profile with a masked .git, or the report names what blocks it.",
+          "kind": "review",
+          "command": null
+        },
+        {
+          "check": "Each tool is redirected to the labelled fake provider and the request it sends (path, headers, whether the credential came from a file or helper) is recorded, or the report says it cannot be redirected and the fallback in secrets-and-credentials.md section 4.4 is chosen.",
+          "kind": "review",
+          "command": null
+        },
+        {
+          "check": "The report records whether the structured-output options accept the gate-report schema and what the tool sent.",
+          "kind": "review",
+          "command": null
+        },
+        {
+          "check": "The report answers every other item in ADR 0005 under 'Not verified' with a pointer to a recording.",
+          "kind": "review",
+          "command": null
+        },
+        {
+          "check": "The bridge evaluation records GO or NO-GO per tool as the hardening target, with the evidence that the built-in shell was unavailable to the model.",
+          "kind": "review",
+          "command": null
+        },
+        {
+          "check": "ADR 0005 carries the amendment: accepted version range, bridge verdict and the fallback for any tool that fails.",
+          "kind": "review",
+          "command": null
+        }
+      ]
+    },
+    {
+      "id": "s1-sandbox-images",
+      "title": "Build and pin the sandbox image for the fixture project",
+      "slice": 1,
+      "owner_role": "sre",
+      "reviewers": [
+        "security"
+      ],
+      "size": "M",
+      "summary": "Build the images the supervisor runs: the agent image (non-root user, the build toolchain and the agent command line tools, no git binary), the verify image (toolchain only), and the egress sidecar image. Pin each by digest and record the digests where the adapter and the gate reports can read them.",
+      "owns": [
+        "infra/sandbox-images/**"
+      ],
+      "inputs": [
+        "ADR 0003",
+        "the fixture project decision in this plan"
+      ],
+      "exposes_ports": [],
+      "implements_ports": [],
+      "consumes_ports": [],
+      "depends_on": [
+        "s0-workspace-skeleton"
+      ],
+      "done": [
+        {
+          "check": "The build script produces the three images and writes their digests to images.json.",
+          "kind": "command",
+          "command": "infra/sandbox-images/build.sh"
+        },
+        {
+          "check": "The hardened profile from sandbox-policy.md runs the toolchain offline as a non-root user in the verify image.",
+          "kind": "command",
+          "command": "infra/sandbox-images/smoke.sh"
+        },
+        {
+          "check": "No image contains a real credential, a GitHub CLI, a git binary or a secret-looking environment value, and only the agent image contains agent tools.",
+          "kind": "command",
+          "command": "infra/sandbox-images/audit.sh"
+        },
+        {
+          "check": "A suitable base image tag for the pinned Rust toolchain exists, confirmed before the build is written, or the plan records the substitute. Installing each agent tool into the agent image is confirmed or the report names what blocks it.",
+          "kind": "review",
+          "command": null
+        }
+      ]
+    },
+    {
+      "id": "s1-sandbox-adapter",
+      "title": "Implement the Docker sandbox supervisor and the posture verifier",
+      "slice": 1,
+      "owner_role": "software_engineer",
+      "reviewers": [
+        "security",
+        "software_architect",
+        "sre"
+      ],
+      "size": "L",
+      "summary": "Implement SandboxProvider over the Docker command line as the supervisor in sandbox-policy.md section 9: three network profiles with per-job internal networks and the sidecar, create then inspect then compare against policy then start, the runtime self-check, wall-clock and disk enforcement by the supervisor, redacted log streaming with the daemon log driver off, the janitor, and fail-closed behavior. Gates run in fresh verify containers.",
+      "owns": [
+        "crates/sandbox/Cargo.toml",
+        "crates/sandbox/clippy.toml",
+        "crates/sandbox/src/lib.rs",
+        "crates/sandbox/src/container/**",
+        "crates/sandbox/src/supervisor/**",
+        "crates/sandbox/tests/container/**"
+      ],
+      "inputs": [
+        "ADR 0003",
+        "port sketches",
+        "infra/sandbox-images/images.json"
+      ],
+      "exposes_ports": [],
+      "implements_ports": [
+        "SandboxProvider",
+        "SandboxSession"
+      ],
+      "consumes_ports": [],
+      "depends_on": [
+        "s0-ports-and-testkit",
+        "s1-sandbox-images",
+        "s1-security-test-harness",
+        "s1-redaction"
+      ],
+      "done": [
+        {
+          "check": "The sandbox contract suite passes against the Docker adapter as it does against the fake. Without Docker it reports BLOCKED.",
+          "kind": "test",
+          "command": "cargo nextest run -p factory-sandbox --test container"
+        },
+        {
+          "check": "The posture verifier rejects each forbidden setting and runs the runtime self-check (NT-SBX-01, NT-SBX-02).",
+          "kind": "test",
+          "command": "cargo nextest run -p factory-sandbox negative_nt_sbx_01 negative_nt_sbx_02"
+        },
+        {
+          "check": "The verify profile has no network, and the agent profile on a per-job internal network reaches no other job, no external address and no metadata address (NT-SBX-03, NT-SBX-04).",
+          "kind": "test",
+          "command": "cargo nextest run -p factory-sandbox negative_nt_sbx_03 negative_nt_sbx_04"
+        },
+        {
+          "check": "Read-only root, capability removal, kernel path masking, the resource limits and the supervisor-enforced wall-clock deadline hold (NT-SBX-06, NT-SBX-07, NT-SBX-08). The disk poll kills a writer that exceeds the cap.",
+          "kind": "test",
+          "command": "cargo nextest run -p factory-sandbox negative_nt_sbx_06 negative_nt_sbx_07 negative_nt_sbx_08"
+        },
+        {
+          "check": "No daemon socket is reachable, no real credential is visible, and a stopped daemon, a missing image, a bad policy file or a failed sidecar leaves the job BLOCKED with nothing run (NT-SBX-12, NT-SBX-13, NT-SBX-14).",
+          "kind": "test",
+          "command": "cargo nextest run -p factory-sandbox negative_nt_sbx_12 negative_nt_sbx_13 negative_nt_sbx_14"
+        },
+        {
+          "check": "Images run only by digest. A tag, an unknown digest or an image that is not pre-pulled is refused (NT-SUP-05).",
+          "kind": "test",
+          "command": "cargo nextest run -p factory-sandbox negative_nt_sup_05"
+        },
+        {
+          "check": "Process arguments and environments recorded by the spawn recorder contain no secret (NT-SEC-09, sandbox part).",
+          "kind": "test",
+          "command": "cargo nextest run -p factory-sandbox negative_nt_sec_09"
+        },
+        {
+          "check": "No generated argument vector contains a denied flag, over randomly generated specifications, and nothing in the crate starts a shell (ST-03).",
+          "kind": "test",
+          "command": "cargo nextest run -p factory-sandbox denied_flags_are_never_emitted"
+        },
+        {
+          "check": "The janitor removes labelled containers, networks and sidecars whose attempt is terminal.",
+          "kind": "test",
+          "command": "cargo nextest run -p factory-sandbox janitor_removes_orphans"
+        }
+      ]
+    },
+    {
+      "id": "s1-storage-postgres",
+      "title": "Implement the PostgreSQL store, the evidence ledger and the local artifact store",
+      "slice": 1,
+      "owner_role": "software_engineer",
+      "reviewers": [
+        "dba",
+        "software_architect"
+      ],
+      "size": "L",
+      "summary": "Implement Store and Tx over Diesel with diesel-async, claim and lease operations, outbox writes, the ledger with chain verification, and LocalFsArtifactStore. The shared contract suite from testkit runs against it.",
+      "owns": [
+        "crates/storage/Cargo.toml",
+        "crates/storage/clippy.toml",
+        "crates/storage/src/lib.rs",
+        "crates/storage/src/pg/**",
+        "crates/storage/src/artifact_fs/**",
+        "crates/storage/tests/**"
+      ],
+      "inputs": [
+        "ADR 0001",
+        "ADR 0004",
+        "ADR 0007",
+        "ADR 0008",
+        "migrations/"
+      ],
+      "exposes_ports": [],
+      "implements_ports": [
+        "ArtifactStore",
+        "Store",
+        "Tx"
+      ],
+      "consumes_ports": [
+        "Clock"
+      ],
+      "depends_on": [
+        "s0-ports-and-testkit",
+        "s0-database-baseline"
+      ],
+      "done": [
+        {
+          "check": "The store contract suite passes against PgStore on PostgreSQL in Docker, the same suite that passes against the in-memory fake.",
+          "kind": "test",
+          "command": "cargo nextest run -p factory-storage --test store_contract"
+        },
+        {
+          "check": "Two concurrent claimers on one ready row produce exactly one winner.",
+          "kind": "test",
+          "command": "cargo nextest run -p factory-storage concurrent_claim_has_one_winner"
+        },
+        {
+          "check": "A zombie worker's write with an old lease epoch is rejected.",
+          "kind": "test",
+          "command": "cargo nextest run -p factory-storage stale_lease_epoch_is_fenced"
+        },
+        {
+          "check": "A fault injected after the outbox insert rolls back the status change, the ledger entry and the outbox row together.",
+          "kind": "test",
+          "command": "cargo nextest run -p factory-storage transition_is_atomic"
+        },
+        {
+          "check": "Every repository method refuses to return or change another tenant's rows.",
+          "kind": "test",
+          "command": "cargo nextest run -p factory-storage --test tenant_isolation"
+        },
+        {
+          "check": "Concurrent appends to one job give a continuous, verifiable chain, and flipping one byte makes the verifier fail.",
+          "kind": "test",
+          "command": "cargo nextest run -p factory-storage --test ledger_chain"
+        },
+        {
+          "check": "The artifact store is idempotent, verifies hashes on read, detects a corrupted blob and writes read-only files.",
+          "kind": "test",
+          "command": "cargo nextest run -p factory-storage --test artifact_fs"
+        },
+        {
+          "check": "Lease expiry is judged by the database clock, shown with a skewed Clock.",
+          "kind": "test",
+          "command": "cargo nextest run -p factory-storage lease_expiry_uses_database_time"
+        },
+        {
+          "check": "100 interleavings of two workers claiming one job produce exactly one winner, and a renewal with a wrong owner or tenant is refused (NT-LSE-02).",
+          "kind": "test",
+          "command": "cargo nextest run -p factory-storage negative_nt_lse_02"
+        },
+        {
+          "check": "The application role cannot UPDATE, DELETE, TRUNCATE or DROP the audit tables (NT-AUD-01), and the audit events carry actor, policy hash and correlation id.",
+          "kind": "test",
+          "command": "cargo nextest run -p factory-storage negative_nt_aud_01"
+        }
+      ]
+    },
+    {
+      "id": "s1-engine-core",
+      "title": "Build the durable workflow engine",
+      "slice": 1,
+      "owner_role": "software_engineer",
+      "reviewers": [
+        "software_architect",
+        "dba"
+      ],
+      "size": "XL",
+      "summary": "Build admission, the claim loop, leases with heartbeats and the sweeper, attempt result handling with output validation, retry with back-off, the gate framework, rework routing, supersession, human decisions, bounds, the ledger and outbox writes, the StageHandler trait and registry, the job audit verifier, and the production-mode refusal of fake adapters. All of it runs first against the in-memory fakes. The skeleton pre-declares the module lines for every stage and gate directory, so the stage packages add code without editing the files this package owns. It also owns the audit event stream with actor, policy hash and correlation id, and the credential and budget hooks around each attempt (job token issue and revoke through ModelBroker).",
+      "owns": [
+        "crates/workflow/Cargo.toml",
+        "crates/workflow/clippy.toml",
+        "crates/workflow/src/lib.rs",
+        "crates/workflow/src/engine/**",
+        "crates/workflow/src/commands/**",
+        "crates/workflow/src/scheduler/**",
+        "crates/workflow/src/audit/**",
+        "crates/workflow/src/handlers/**",
+        "crates/workflow/src/gates/mod.rs",
+        "crates/workflow/src/gates/framework/**",
+        "crates/workflow/src/stages/mod.rs",
+        "crates/workflow/tests/engine_scenarios.rs",
+        "crates/workflow/tests/invariants.rs",
+        "crates/workflow/tests/audit.rs"
+      ],
+      "inputs": [
+        "docs/architecture/state-machine.json",
+        "ADR 0001",
+        "ADR 0004",
+        "ADR 0008",
+        "port sketches"
+      ],
+      "exposes_ports": [
+        "StageHandler"
+      ],
+      "implements_ports": [],
+      "consumes_ports": [
+        "AgentRegistry",
+        "AgentRuntime",
+        "ArtifactStore",
+        "CancelSignal",
+        "Clock",
+        "IdGenerator",
+        "ModelBroker",
+        "ModelRouter",
+        "OutputValidator",
+        "SandboxProvider",
+        "StageHandler",
+        "Store",
+        "Tx",
+        "WorkspaceProvider"
+      ],
+      "depends_on": [
+        "s0-state-machines",
+        "s0-ports-and-testkit"
+      ],
+      "done": [
+        {
+          "check": "The engine scenario suite, written generically over Store, passes on the in-memory store with scripted fake stage handlers in test mode.",
+          "kind": "test",
+          "command": "cargo nextest run -p factory-workflow --test engine_scenarios"
+        },
+        {
+          "check": "Each invariant INV-01 to INV-11 has a named test.",
+          "kind": "test",
+          "command": "cargo nextest run -p factory-workflow --test invariants"
+        },
+        {
+          "check": "A runtime that always fails reaches WAITING_FOR_HUMAN within a bounded number of steps (INV-10).",
+          "kind": "test",
+          "command": "cargo nextest run -p factory-workflow bounded_failure_escalates"
+        },
+        {
+          "check": "A rework after documentation supersedes the documentation runs, driven by the JSON invalidation table.",
+          "kind": "test",
+          "command": "cargo nextest run -p factory-workflow invalidation_follows_the_table"
+        },
+        {
+          "check": "Dropping the engine mid-transaction and starting a new one resumes the job without loss or duplication.",
+          "kind": "test",
+          "command": "cargo nextest run -p factory-workflow restart_resumes_without_duplication"
+        },
+        {
+          "check": "Production mode refuses to start with any fake adapter (INV-08).",
+          "kind": "test",
+          "command": "cargo nextest run -p factory-workflow production_mode_refuses_fakes"
+        },
+        {
+          "check": "The audit verifier detects a broken chain, a fake entry in production, and a PASSED run without evidence.",
+          "kind": "test",
+          "command": "cargo nextest run -p factory-workflow --test audit"
+        },
+        {
+          "check": "Store::begin_system is called only inside this crate.",
+          "kind": "command",
+          "command": "cargo xtask check-architecture"
+        },
+        {
+          "check": "A stale worker that resumes after its lease was taken cannot push, comment, start a sandbox or change state (NT-LSE-01).",
+          "kind": "test",
+          "command": "cargo nextest run -p factory-workflow negative_nt_lse_01"
+        },
+        {
+          "check": "Missing, blocked or stale gate evidence refuses promotion (NT-MRG-02), and a repeated failing action ends in WAITING_FOR_HUMAN after the stagnation window (NT-BUD-03).",
+          "kind": "test",
+          "command": "cargo nextest run -p factory-workflow negative_nt_mrg_02 negative_nt_bud_03"
+        },
+        {
+          "check": "Every audit event type the policy requires is emitted with actor, policy hash and correlation id, shown by a scripted scenario per type (NT-AUD-03, engine part).",
+          "kind": "test",
+          "command": "cargo nextest run -p factory-workflow --test audit every_required_event_type"
+        }
+      ]
+    },
+    {
+      "id": "s1-policy-evaluation",
+      "title": "Evaluate approval, tool grant, protected path and budget policy as pure rules",
+      "slice": 1,
+      "owner_role": "software_engineer",
+      "reviewers": [
+        "security",
+        "software_architect"
+      ],
+      "size": "L",
+      "summary": "Write the pure policy functions the guards need, with deny overrides, as policies/security.yaml specifies: requester allowlist, admission, autonomy level from the repository preflight, risk tier, tool grants as the intersection of manifest, policy and stage need, command classes, path normalization and protected-path matching, required approval role, override permission, new-dependency decisions, rework caps and budget checks. When the tests pass, flip policy.status in the policy file to enforced (its owner makes that edit).",
+      "owns": [
+        "crates/domain/src/policy/**",
+        "crates/domain/tests/policy.rs"
+      ],
+      "inputs": [
+        "policies/",
+        "docs/security/",
+        "guards in state-machine.json"
+      ],
+      "exposes_ports": [],
+      "implements_ports": [],
+      "consumes_ports": [],
+      "depends_on": [
+        "s0-state-machines",
+        "s0-security-baseline",
+        "s0-contracts-and-registry"
+      ],
+      "done": [
+        {
+          "check": "Table-driven tests built from the policy files cover admission, the requester allowlist, tool grants, protected paths, approval roles, overrides and budgets.",
+          "kind": "test",
+          "command": "cargo nextest run -p factory-domain --test policy"
+        },
+        {
+          "check": "A project policy can only tighten: adding an egress host, removing a protected group, raising a limit, enabling level L3 or adding a tool grant is refused; lowering a budget is allowed (NT-POL-02).",
+          "kind": "test",
+          "command": "cargo nextest run -p factory-domain negative_nt_pol_02"
+        },
+        {
+          "check": "Deny overrides allow, and the exception flow works only through the recorded human decision (NT-POL-04).",
+          "kind": "test",
+          "command": "cargo nextest run -p factory-domain negative_nt_pol_04"
+        },
+        {
+          "check": "The forbidden command classes, the never-grantable tools and self-grant attempts are refused, and path normalization defeats traversal, encoding and case tricks (NT-TOOL-02, NT-TOOL-03, NT-TOOL-04, NT-TOOL-05, NT-GATE-04).",
+          "kind": "test",
+          "command": "cargo nextest run -p factory-domain negative_nt_tool_02 negative_nt_tool_03 negative_nt_tool_04 negative_nt_tool_05"
+        },
+        {
+          "check": "A granted tool set never exceeds the manifest's allowed tools, over generated inputs, and an unknown tool or path class is denied.",
+          "kind": "test",
+          "command": "cargo nextest run -p factory-domain grants_never_exceed_the_manifest"
+        },
+        {
+          "check": "An override of a mandatory gate of an active profile is refused (INV-07), and a new direct dependency always needs a human (ADR 0009).",
+          "kind": "test",
+          "command": "cargo nextest run -p factory-domain override_and_dependency_rules"
+        },
+        {
+          "check": "The rework cap in the policy file is at most two. A larger value fails the test (ADR 0009).",
+          "kind": "test",
+          "command": "cargo nextest run -p factory-domain rework_cap_matches_the_default"
+        }
+      ]
+    },
+    {
+      "id": "s1-agent-runtime-adapters",
+      "title": "Implement the Claude Code and Codex adapters that run inside the sandbox",
+      "slice": 1,
+      "owner_role": "software_engineer",
+      "reviewers": [
+        "security",
+        "software_architect"
+      ],
+      "size": "L",
+      "summary": "Implement AgentRuntime for both tools following ADR 0005 and the spike verdict: the probe, argument builders from a closed allow list, starting the tool inside the sandbox through the session with the job token and the broker address, output parsing and usage accounting, failure mapping, and cancellation. Live smoke tests need an API key and are BLOCKED without one.",
+      "owns": [
+        "crates/runtime/**"
+      ],
+      "inputs": [
+        "ADR 0005",
+        "fixtures/recordings/agent-cli/",
+        "docs/spikes/agent-runtime.md"
+      ],
+      "exposes_ports": [],
+      "implements_ports": [
+        "AgentRuntime"
+      ],
+      "consumes_ports": [
+        "CancelSignal",
+        "SandboxSession"
+      ],
+      "depends_on": [
+        "s0-ports-and-testkit",
+        "s0-agent-runtime-spike",
+        "s1-sandbox-adapter"
+      ],
+      "done": [
+        {
+          "check": "The probe turns recorded help text into the expected flag observations, and an unsupported version blocks the stage.",
+          "kind": "test",
+          "command": "cargo nextest run -p factory-runtime --test probe"
+        },
+        {
+          "check": "Bypass flags are emitted only for a sandbox target whose posture check passed. For any other target the builder refuses. Only allow-listed flags appear, and the flag set differs per stage (the slash-command disable flag is absent for the specification stage).",
+          "kind": "test",
+          "command": "cargo nextest run -p factory-runtime argument_safety"
+        },
+        {
+          "check": "Repository-resident agent configuration (hooks, environment blocks, MCP servers, instruction files) is never honored: the hostile fixture produces no marker file and no unexpected connection (NT-INJ-07).",
+          "kind": "test",
+          "command": "cargo nextest run -p factory-runtime negative_nt_inj_07"
+        },
+        {
+          "check": "The environment of the spawned tool is fixed by the supervisor, and an env parameter or an LD_PRELOAD-style value from the agent has no effect (NT-TOOL-06).",
+          "kind": "test",
+          "command": "cargo nextest run -p factory-runtime negative_nt_tool_06"
+        },
+        {
+          "check": "A command that floods output, a command that sleeps past its timeout and background children started with setsid are bounded and the whole process group ends (NT-TOOL-07).",
+          "kind": "test",
+          "command": "cargo nextest run -p factory-runtime negative_nt_tool_07"
+        },
+        {
+          "check": "Recorded real outputs parse into outcomes with usage, and malformed output maps to a typed error.",
+          "kind": "test",
+          "command": "cargo nextest run -p factory-runtime --test output_parsing"
+        },
+        {
+          "check": "Provider outage, rate limit and missing credential map to the closed error set, using a scripted stand-in process labelled fake.",
+          "kind": "test",
+          "command": "cargo nextest run -p factory-runtime --test failure_mapping"
+        },
+        {
+          "check": "A live smoke test through the broker records fidelity-real evidence. Without an API key or a binary it reports BLOCKED. A subscription login does not count.",
+          "kind": "test",
+          "command": "FACTORY_LIVE=1 cargo nextest run -p factory-runtime --test live_smoke"
+        }
+      ]
+    },
+    {
+      "id": "s1-github-adapter",
+      "title": "Implement the GitHub App adapter for issues, narrowed tokens, draft pull requests and webhooks",
+      "slice": 1,
+      "owner_role": "software_engineer",
+      "reviewers": [
+        "security"
+      ],
+      "size": "L",
+      "summary": "Implement IssueSource and ChangeHost as a GitHub App: sign the App JWT, mint one installation token per job narrowed to one repository and to the permissions of one stage, revoke it at job end, verify webhook signatures on the raw body, deduplicate deliveries, run the repository protection preflight, push only to factory branches, and write only sanitized text. Merging is not implemented. Requester authorization is the named allowlist from policy, not a GitHub role.",
+      "owns": [
+        "crates/github/**"
+      ],
+      "inputs": [
+        "master prompt sections 1, 3 and 11",
+        "GitHub REST documentation read at implementation time"
+      ],
+      "exposes_ports": [],
+      "implements_ports": [
+        "ChangeHost",
+        "IssueSource"
+      ],
+      "consumes_ports": [],
+      "depends_on": [
+        "s0-ports-and-testkit",
+        "s1-security-test-harness",
+        "s1-redaction"
+      ],
+      "done": [
+        {
+          "check": "Webhook signature verification passes known-answer vectors computed by an independent script, rejects missing, malformed, SHA-1-only and tampered signatures, uses the raw body and compares in constant time (NT-WH-02, NT-WH-03, ST-02).",
+          "kind": "test",
+          "command": "cargo nextest run -p factory-github negative_nt_wh_02 negative_nt_wh_03"
+        },
+        {
+          "check": "Webhook state is re-fetched from the API, not trusted from the payload, events arriving out of order are handled, and the factory ignores its own events and other bots' (NT-WH-06, NT-WH-09).",
+          "kind": "test",
+          "command": "cargo nextest run -p factory-github negative_nt_wh_06 negative_nt_wh_09"
+        },
+        {
+          "check": "A token is minted for one repository only and carries only the permissions of the stage, and access to another repository fails (NT-AUTHZ-06, NT-AUTHZ-07).",
+          "kind": "test",
+          "command": "cargo nextest run -p factory-github negative_nt_authz_06 negative_nt_authz_07"
+        },
+        {
+          "check": "An App that holds a forbidden permission is refused at onboarding, or capped at level L0 (NT-AUTHZ-09). A repository without branch protection, without checks pinned to the App, or with the App in a bypass list runs at level L0 (NT-MRG-07).",
+          "kind": "test",
+          "command": "cargo nextest run -p factory-github negative_nt_authz_09 negative_nt_mrg_07"
+        },
+        {
+          "check": "Text bound for GitHub is blocked when it holds a secret, and markdown with image, link and reference tricks cannot carry data out (NT-SEC-03, NT-SEC-04).",
+          "kind": "test",
+          "command": "cargo nextest run -p factory-github negative_nt_sec_03 negative_nt_sec_04"
+        },
+        {
+          "check": "Tokens are revoked at the end of a job that succeeded, failed, was cancelled and was orphaned (NT-SEC-10, GitHub part).",
+          "kind": "test",
+          "command": "cargo nextest run -p factory-github negative_nt_sec_10"
+        },
+        {
+          "check": "The factory's own process arguments and environments hold no token (NT-SEC-09, GitHub part).",
+          "kind": "test",
+          "command": "cargo nextest run -p factory-github negative_nt_sec_09"
+        },
+        {
+          "check": "Opening a draft pull request is idempotent for the same head branch, and the contract suite passes as it does for the fake.",
+          "kind": "test",
+          "command": "cargo nextest run -p factory-github --test change_host_contract"
+        },
+        {
+          "check": "No merge call exists in the crate, and rate-limit responses are handled with back-off.",
+          "kind": "command",
+          "command": "cargo xtask check-architecture"
+        },
+        {
+          "check": "A live smoke test opens and closes a draft pull request on the fixture repository using a registered App. Without the App credentials it reports BLOCKED.",
+          "kind": "test",
+          "command": "FACTORY_LIVE=1 cargo nextest run -p factory-github --test live_smoke"
+        }
+      ]
+    },
+    {
+      "id": "s1-agent-definitions",
+      "title": "Write the agent manifests, prompts and the general-software profile",
+      "slice": 1,
+      "owner_role": "software_engineer",
+      "reviewers": [
+        "security",
+        "documenter"
+      ],
+      "size": "M",
+      "summary": "Write the manifest and versioned prompt for each Slice 1 role: intake classifier, specification writer, specification reviewer, architect, planner, builder, code reviewer, documentation writer, documentation reviewer. Write the general-software profile. Placements are sandbox only. Add per-agent conformance fixtures. These are conformance checks, not quality evaluations.",
+      "owns": [
+        "agents/**",
+        "profiles/**"
+      ],
+      "inputs": [
+        "schemas/agent-manifest.schema.json",
+        "schemas/domain-capability-profile.schema.json",
+        "ADR 0005",
+        "docs/spikes/agent-runtime.md"
+      ],
+      "exposes_ports": [],
+      "implements_ports": [],
+      "consumes_ports": [],
+      "depends_on": [
+        "s0-contracts-and-registry",
+        "s0-agent-runtime-spike"
+      ],
+      "done": [
+        {
+          "check": "Every manifest and profile in the repository validates through the loader, and every prompt hash matches its file.",
+          "kind": "test",
+          "command": "cargo nextest run -p factory-contracts --test repo_definitions"
+        },
+        {
+          "check": "Every manifest allows only the sandbox placement in Slice 1, and writers and readers are consistent with their tool access.",
+          "kind": "test",
+          "command": "cargo nextest run -p factory-contracts placements_follow_tool_access"
+        },
+        {
+          "check": "Rendered prompts keep untrusted inputs inside the delimited data section, shown by a deterministic string test per agent.",
+          "kind": "test",
+          "command": "cargo nextest run -p factory-contracts --test prompt_rendering"
+        },
+        {
+          "check": "Each agent has conformance fixtures, and the scripted fake runtime's outputs validate against the agent's output schema.",
+          "kind": "test",
+          "command": "cargo nextest run -p factory-contracts --test agent_conformance"
+        }
+      ]
+    },
+    {
+      "id": "s1-documentation-rubric",
+      "title": "Write the documentation policy and the readability rubric with a test corpus",
+      "slice": 1,
+      "owner_role": "documenter",
+      "reviewers": [
+        "software_architect"
+      ],
+      "size": "S",
+      "summary": "Define the rules the Human-Readable Artifact Quality Gate checks, the minimal documentation set per change type with the Diataxis mapping, and a corpus of good and bad examples, including every bad example from the master prompt and Portuguese samples.",
+      "owns": [
+        "fixtures/readability/**",
+        "docs/reference/documentation-policy.md"
+      ],
+      "inputs": [
+        "master prompt: communication policy and section 10",
+        "schemas/README.md conventions"
+      ],
+      "exposes_ports": [],
+      "implements_ports": [],
+      "consumes_ports": [],
+      "depends_on": [],
+      "done": [
+        {
+          "check": "The corpus has at least 8 good and 20 bad examples, and each bad example declares the rule id it breaks in a header line.",
+          "kind": "command",
+          "command": "python3 -I fixtures/readability/check_corpus.py"
+        },
+        {
+          "check": "Every bad example from the master prompt is in the corpus.",
+          "kind": "command",
+          "command": "python3 -I fixtures/readability/check_corpus.py --prompt-examples"
+        },
+        {
+          "check": "The policy lists, per change type, the required documents, their audience and their form.",
+          "kind": "review",
+          "command": null
+        }
+      ]
+    },
+    {
+      "id": "s1-readability-gate",
+      "title": "Build the human-readable artifact quality gate",
+      "slice": 1,
+      "owner_role": "software_engineer",
+      "reviewers": [
+        "documenter"
+      ],
+      "size": "M",
+      "summary": "Implement the deterministic rules from the rubric as a pure function that reads titles, task bodies, specifications, pull request text and documentation and returns a gate report. The engine wraps it as a gate. It warns on style and blocks only clear policy violations, and it never changes the text.",
+      "owns": [
+        "crates/workflow/src/gates/readability/**",
+        "crates/workflow/tests/readability/**"
+      ],
+      "inputs": [
+        "fixtures/readability/",
+        "docs/reference/documentation-policy.md",
+        "schemas/gate-report.schema.json"
+      ],
+      "exposes_ports": [],
+      "implements_ports": [],
+      "consumes_ports": [],
+      "depends_on": [
+        "s0-domain-vocabulary",
+        "s1-documentation-rubric"
+      ],
+      "done": [
+        {
+          "check": "Every good example passes and every bad example fails with the rule id in its header.",
+          "kind": "test",
+          "command": "cargo nextest run -p factory-workflow --test readability"
+        },
+        {
+          "check": "The gate never alters its input and reports warnings separately from blocking violations.",
+          "kind": "test",
+          "command": "cargo nextest run -p factory-workflow readability_never_edits_and_separates_severity"
+        },
+        {
+          "check": "Metadata identifiers stay stable when a title is reworded.",
+          "kind": "test",
+          "command": "cargo nextest run -p factory-workflow ids_are_stable_when_titles_change"
+        },
+        {
+          "check": "Non-English prose outside quotes and code is flagged, and quoted source text is not.",
+          "kind": "test",
+          "command": "cargo nextest run -p factory-workflow english_check_respects_quotes_and_code"
+        },
+        {
+          "check": "Its reports validate against the gate-report schema.",
+          "kind": "test",
+          "command": "cargo nextest run -p factory-workflow readability_reports_match_the_schema"
+        }
+      ]
+    },
+    {
+      "id": "s1-spec-adapter-and-stage",
+      "title": "Build the Spec Kit adapter and the specification stage",
+      "slice": 1,
+      "owner_role": "software_engineer",
+      "reviewers": [
+        "security",
+        "software_architect"
+      ],
+      "size": "L",
+      "summary": "Implement SpecKitProvider in the spec_adapter crate, the pure parser that turns Spec Kit files into a SpecificationContract, the specification stage handler and the deterministic gate with freeze and revision. Follows ADR 0006 and the spike verdict: invocation syntax read from integration.json, no init on an initialised repository, an explicit feature directory per job in its own worktree, the seven post-conditions after every skill, the question detector, the checklist pre-run, the revision method, and issue text kept out of the instruction channel.",
+      "owns": [
+        "crates/spec_adapter/**",
+        "crates/workflow/src/stages/specification/**",
+        "crates/workflow/src/gates/spec/**",
+        "crates/workflow/tests/specification/**"
+      ],
+      "inputs": [
+        "ADR 0006",
+        "fixtures/recordings/spec-kit/",
+        "schemas/specification-contract.schema.json"
+      ],
+      "exposes_ports": [],
+      "implements_ports": [
+        "SpecificationProvider",
+        "StageHandler"
+      ],
+      "consumes_ports": [
+        "AgentRuntime",
+        "OutputValidator",
+        "Workspace"
+      ],
+      "depends_on": [
+        "s0-spec-kit-spike",
+        "s1-engine-core",
+        "s0-contracts-and-registry",
+        "s1-agent-definitions",
+        "s1-prompt-assembly",
+        "s1-policy-evaluation",
+        "s1-workspace-ingestion"
+      ],
+      "done": [
+        {
+          "check": "The parser produces the expected contract from each recorded real Spec Kit output, and a structure it does not recognize is SPEC_PARSE_ERROR, never a guess.",
+          "kind": "test",
+          "command": "cargo nextest run -p factory-spec-adapter --test golden"
+        },
+        {
+          "check": "The operation type cannot express plan, tasks, implement, converge, analyze, taskstoissues or workflow, and the invocation builder reads the separator from integration.json and the sigil from the host table.",
+          "kind": "test",
+          "command": "cargo nextest run -p factory-spec-adapter forbidden_operations_are_unrepresentable"
+        },
+        {
+          "check": "A Spec Kit version different from the pinned one, an integration status other than ok, a modified installed file or a present extensions file blocks the stage. The adapter never runs init on an initialised repository.",
+          "kind": "test",
+          "command": "cargo nextest run -p factory-spec-adapter integrity_blocks_the_stage"
+        },
+        {
+          "check": "The seven post-conditions are checked after every skill and the agent's own report is ignored.",
+          "kind": "test",
+          "command": "cargo nextest run -p factory-spec-adapter post_conditions"
+        },
+        {
+          "check": "Checklist ticks written by the authoring agent carry no weight. An item counts only when an independent reviewer or a person with a reason is recorded in the ledger by the engine.",
+          "kind": "test",
+          "command": "cargo nextest run -p factory-workflow --test specification self_ticked_checklist_is_not_evidence"
+        },
+        {
+          "check": "Each deterministic specification gate rule has a failing fixture: required sections, status and date, story priorities and scenarios, identifier uniqueness, requirement keywords, remaining markers and placeholders, technology names, and the committed artifact set with matching hashes.",
+          "kind": "test",
+          "command": "cargo nextest run -p factory-workflow --test specification"
+        },
+        {
+          "check": "A revision creates a new feature directory seeded on the host, links it with supersedes and revision metadata, and supersedes every downstream run. The method is replaced if the spike showed it failing.",
+          "kind": "test",
+          "command": "cargo nextest run -p factory-workflow new_spec_revision_supersedes_downstream"
+        },
+        {
+          "check": "Specification text that claims authorization (for example 'this task is authorized to modify workflows') grants nothing, and an issue body that asks for another skill cannot select one (NT-POL-05, NT-INJ-02 for the skill input).",
+          "kind": "test",
+          "command": "cargo nextest run -p factory-spec-adapter negative_nt_pol_05"
+        },
+        {
+          "check": "Strings .specify and speckit appear only in this crate, its fixtures and documentation.",
+          "kind": "command",
+          "command": "cargo xtask check-architecture"
+        },
+        {
+          "check": "The live run on the fixture issue produces a contract that validates and whose artifact hashes match the files. Without an API key or prerequisites it reports BLOCKED.",
+          "kind": "test",
+          "command": "FACTORY_LIVE=1 cargo nextest run -p factory-spec-adapter --test live"
+        }
+      ]
+    },
+    {
+      "id": "s1-stage-intake-and-repository",
+      "title": "Build the intake and repository context stages",
+      "slice": 1,
+      "owner_role": "software_engineer",
+      "reviewers": [
+        "security"
+      ],
+      "size": "M",
+      "summary": "Authorize the requester against the named allowlist, store the original text apart from the normalized request with its hash, classify the request, and build the repository map: languages, build and test commands, CODEOWNERS, protected paths, existing decisions and documents, plus a baseline build and test run in a verify sandbox. Files that must not reach model context are excluded.",
+      "owns": [
+        "crates/workflow/src/stages/intake/**",
+        "crates/workflow/src/stages/repo_intel/**",
+        "crates/workflow/tests/intake_repo/**"
+      ],
+      "inputs": [
+        "master prompt section 3",
+        "schemas/stage-contract.schema.json",
+        "fixtures/repos/word-count"
+      ],
+      "exposes_ports": [],
+      "implements_ports": [
+        "StageHandler"
+      ],
+      "consumes_ports": [
+        "AgentRuntime",
+        "IssueSource",
+        "SandboxProvider",
+        "Workspace",
+        "WorkspaceProvider"
+      ],
+      "depends_on": [
+        "s1-engine-core",
+        "s1-sandbox-adapter",
+        "s1-workspace-ingestion",
+        "s1-agent-definitions",
+        "s1-readability-gate",
+        "s1-policy-evaluation",
+        "s1-prompt-assembly"
+      ],
+      "done": [
+        {
+          "check": "A label applied by someone who is not on the requester allowlist is rejected at admission with a recorded reason and one explanatory comment that does not reveal which test failed (NT-AUTHZ-01).",
+          "kind": "test",
+          "command": "cargo nextest run -p factory-workflow negative_nt_authz_01"
+        },
+        {
+          "check": "An issue edited by someone without authorization after the intake snapshot stops processing on a hash mismatch (NT-AUTHZ-05).",
+          "kind": "test",
+          "command": "cargo nextest run -p factory-workflow negative_nt_authz_05"
+        },
+        {
+          "check": "The original text is stored separately with its hash, and the normalized request uses a plain-English title that passes the readability gate.",
+          "kind": "test",
+          "command": "cargo nextest run -p factory-workflow --test intake_repo original_and_normalized_are_separate"
+        },
+        {
+          "check": "An issue that contains instructions cannot change the tools granted to any stage.",
+          "kind": "test",
+          "command": "cargo nextest run -p factory-workflow --test intake_repo issue_text_cannot_change_grants"
+        },
+        {
+          "check": "The context builder excludes .env files, private keys, tokens in the README and secret-bearing configuration (NT-SEC-07).",
+          "kind": "test",
+          "command": "cargo nextest run -p factory-workflow negative_nt_sec_07"
+        },
+        {
+          "check": "The repository map for the fixture lists its build and test commands, CODEOWNERS and protected paths, and validates against its schema.",
+          "kind": "test",
+          "command": "cargo nextest run -p factory-workflow --test intake_repo repository_map_for_the_fixture"
+        },
+        {
+          "check": "The baseline build and test run produces a gate report with fidelity real on the fixture.",
+          "kind": "test",
+          "command": "FACTORY_LIVE=1 cargo nextest run -p factory-workflow --test intake_repo baseline_in_sandbox"
+        }
+      ]
+    },
+    {
+      "id": "s1-stage-architecture-and-planning",
+      "title": "Build the domain discovery, architecture and task planning stages",
+      "slice": 1,
+      "owner_role": "software_engineer",
+      "reviewers": [
+        "software_architect"
+      ],
+      "size": "L",
+      "summary": "Resolve the domain profile and probe its tools, run the architecture agent and the traceability gate, run the planner and the deterministic task DAG validator. Add an independent critic only when policy requires it for the risk tier.",
+      "owns": [
+        "crates/workflow/src/stages/domain_discovery/**",
+        "crates/workflow/src/stages/architecture/**",
+        "crates/workflow/src/stages/planning/**",
+        "crates/workflow/src/gates/dag/**",
+        "crates/workflow/tests/planning/**"
+      ],
+      "inputs": [
+        "schemas/task-dag.schema.json",
+        "schemas/domain-capability-profile.schema.json",
+        "master prompt sections 5 and 6, and stage 4 and 5"
+      ],
+      "exposes_ports": [],
+      "implements_ports": [
+        "StageHandler"
+      ],
+      "consumes_ports": [
+        "AgentRegistry",
+        "AgentRuntime",
+        "OutputValidator"
+      ],
+      "depends_on": [
+        "s1-engine-core",
+        "s1-agent-definitions",
+        "s0-contracts-and-registry",
+        "s1-readability-gate",
+        "s1-prompt-assembly"
+      ],
+      "done": [
+        {
+          "check": "The general-software profile resolves, its tool probes are recorded, and a missing mandatory tool makes the stage BLOCKED.",
+          "kind": "test",
+          "command": "cargo nextest run -p factory-workflow --test planning discovery_blocks_on_missing_mandatory_tool"
+        },
+        {
+          "check": "Every requirement must be mapped to a design element, with a failing fixture for an unmapped requirement.",
+          "kind": "test",
+          "command": "cargo nextest run -p factory-workflow --test planning traceability_gate"
+        },
+        {
+          "check": "The DAG validator rejects a cycle, a dangling dependency, a duplicate id, overlapping owned files without an ordering edge, an uncovered acceptance scenario, an over-large plan and a task missing a template part, and accepts the valid schema example.",
+          "kind": "test",
+          "command": "cargo nextest run -p factory-workflow --test planning dag_validator"
+        },
+        {
+          "check": "The independent critic runs for high-risk work and not for low-risk work.",
+          "kind": "test",
+          "command": "cargo nextest run -p factory-workflow --test planning critic_runs_only_when_policy_requires"
+        },
+        {
+          "check": "Task titles and bodies pass the readability gate.",
+          "kind": "test",
+          "command": "cargo nextest run -p factory-workflow --test planning task_text_is_readable"
+        }
+      ]
+    },
+    {
+      "id": "s1-stage-documentation",
+      "title": "Build the documentation stages and the documentation quality gate",
+      "slice": 1,
+      "owner_role": "software_engineer",
+      "reviewers": [
+        "documenter",
+        "software_architect"
+      ],
+      "size": "L",
+      "summary": "Derive the minimal documentation set from the change, write it, and check it with the Documentation Quality Gate: links, executed snippets, command references against real help output, diagram syntax, required-page coverage, readability, secrets, changelog. The gate distinguishes NOT_APPLICABLE, BLOCKED, FAILED and PASSED. This package also defines the documentation plan schema through a pull request to schemas/ with architect review.",
+      "owns": [
+        "crates/workflow/src/stages/documenting/**",
+        "crates/workflow/src/stages/documentation_review/**",
+        "crates/workflow/src/gates/docs/**",
+        "crates/workflow/tests/documentation/**"
+      ],
+      "inputs": [
+        "master prompt section 10",
+        "docs/reference/documentation-policy.md",
+        "fixtures/readability/",
+        "schemas/gate-report.schema.json"
+      ],
+      "exposes_ports": [],
+      "implements_ports": [
+        "StageHandler"
+      ],
+      "consumes_ports": [
+        "AgentRuntime",
+        "SandboxProvider",
+        "Workspace"
+      ],
+      "depends_on": [
+        "s1-engine-core",
+        "s1-sandbox-adapter",
+        "s1-workspace-ingestion",
+        "s1-agent-definitions",
+        "s1-documentation-rubric",
+        "s1-readability-gate",
+        "s1-prompt-assembly"
+      ],
+      "done": [
+        {
+          "check": "The impact policy derives the right set: a new command line flag needs usage text and a changelog entry, and a pure refactor is NOT_APPLICABLE with the rule recorded.",
+          "kind": "test",
+          "command": "cargo nextest run -p factory-workflow --test documentation impact_policy"
+        },
+        {
+          "check": "The documentation plan validates against its schema.",
+          "kind": "test",
+          "command": "cargo nextest run -p factory-workflow --test documentation plan_matches_schema"
+        },
+        {
+          "check": "Each check has a failing fixture: broken link, snippet whose output differs, command that does not exist, bad diagram, missing required page, secret in text, missing changelog.",
+          "kind": "test",
+          "command": "cargo nextest run -p factory-workflow --test documentation gate_checks"
+        },
+        {
+          "check": "When diagrams exist and the diagram parser is absent the result is BLOCKED, and when nothing applies it is NOT_APPLICABLE with a reason. Absence is never PASSED.",
+          "kind": "test",
+          "command": "cargo nextest run -p factory-workflow --test documentation absence_is_never_a_pass"
+        },
+        {
+          "check": "The documentation reviewer's input excludes the writer's self-assessment.",
+          "kind": "test",
+          "command": "cargo nextest run -p factory-workflow --test documentation reviewer_independence"
+        },
+        {
+          "check": "Defects route by defect class: documentation back to DOCUMENTING, code behavior back to IMPLEMENTATION.",
+          "kind": "test",
+          "command": "cargo nextest run -p factory-workflow --test documentation defects_route_by_class"
+        }
+      ]
+    },
+    {
+      "id": "s1-stage-delivery-and-approval",
+      "title": "Build the delivery and approval stages",
+      "slice": 1,
+      "owner_role": "software_engineer",
+      "reviewers": [
+        "security",
+        "software_architect"
+      ],
+      "size": "L",
+      "summary": "Build the evidence manifest, push the job branch from the control plane with the narrowed token, open the draft pull request with the English body, and handle approve, reject, rework, pause and cancel from the CLI and from authorized GitHub comments, bound to the evidence digest the human saw. There is no merge and no deploy.",
+      "owns": [
+        "crates/workflow/src/stages/delivery/**",
+        "crates/workflow/src/stages/approval/**",
+        "crates/workflow/tests/delivery/**"
+      ],
+      "inputs": [
+        "schemas/evidence-manifest.schema.json",
+        "master prompt section 11",
+        "ADR 0008"
+      ],
+      "exposes_ports": [],
+      "implements_ports": [
+        "StageHandler"
+      ],
+      "consumes_ports": [
+        "ArtifactStore",
+        "ChangeHost",
+        "Workspace"
+      ],
+      "depends_on": [
+        "s1-engine-core",
+        "s1-github-adapter",
+        "s1-readability-gate",
+        "s1-policy-evaluation",
+        "s1-redaction"
+      ],
+      "done": [
+        {
+          "check": "The manifest validates against its schema, includes the verified ledger head, and its limitations name every gate that did not run and every adapter that was not real.",
+          "kind": "test",
+          "command": "cargo nextest run -p factory-workflow --test delivery manifest_is_complete_and_honest"
+        },
+        {
+          "check": "The pull request is a draft, its body carries the manifest hash and the links to the specification, plan and documentation, and it passes the readability gate.",
+          "kind": "test",
+          "command": "cargo nextest run -p factory-workflow --test delivery pull_request_body"
+        },
+        {
+          "check": "A failing gate refuses approval-to-merge and no merge call reaches GitHub (NT-MRG-01). Marking ready is refused before gates and reviews finish (NT-MRG-08).",
+          "kind": "test",
+          "command": "cargo nextest run -p factory-workflow negative_nt_mrg_01 negative_nt_mrg_08"
+        },
+        {
+          "check": "The head moving after approval invalidates the approval (NT-MRG-03). Approval by the App, another bot, or the requester on a high-risk change is not counted (NT-MRG-06).",
+          "kind": "test",
+          "command": "cargo nextest run -p factory-workflow negative_nt_mrg_03 negative_nt_mrg_06"
+        },
+        {
+          "check": "Auto-merge and deploy are off at levels L1 and L2, a project policy cannot enable level L3, and the merge and deploy commands are refused (NT-MRG-05).",
+          "kind": "test",
+          "command": "cargo nextest run -p factory-workflow negative_nt_mrg_05"
+        },
+        {
+          "check": "A command from a user who is not on the allowlist is ignored and audited with no oracle in the reply (NT-AUTHZ-02).",
+          "kind": "test",
+          "command": "cargo nextest run -p factory-workflow negative_nt_authz_02"
+        },
+        {
+          "check": "A retry between push and opening the pull request, and duplicate comment posting, create no duplicate (NT-LSE-03).",
+          "kind": "test",
+          "command": "cargo nextest run -p factory-workflow negative_nt_lse_03"
+        },
+        {
+          "check": "An approval with a stale evidence digest is rejected.",
+          "kind": "test",
+          "command": "cargo nextest run -p factory-workflow --test delivery stale_digest_is_rejected"
+        },
+        {
+          "check": "No code path merges or deploys.",
+          "kind": "command",
+          "command": "cargo xtask check-architecture"
+        }
+      ]
+    },
+    {
+      "id": "s1-apps-composition",
+      "title": "Wire the API, worker and command line into runnable programs",
+      "slice": 1,
+      "owner_role": "software_engineer",
+      "reviewers": [
+        "software_architect",
+        "security"
+      ],
+      "size": "L",
+      "summary": "Write the composition roots: configuration, adapter selection by profile, the HTTP API with webhook verification and token authentication, the worker loop that also hosts the model broker listener, the operator CLI including a probe command, the egress sidecar binary entry point, health endpoints, and the contract-first OpenAPI file. The production profile refuses fakes. API tokens are opaque, stored hashed, with expiry, audience and revocation, so there is no JWT to attack.",
+      "owns": [
+        "apps/**"
+      ],
+      "inputs": [
+        "all adapters and stage handlers",
+        "ADR 0002",
+        "docs/architecture/crate-dependency-rules.json apps section"
+      ],
+      "exposes_ports": [],
+      "implements_ports": [
+        "CancelSignal",
+        "Clock",
+        "IdGenerator"
+      ],
+      "consumes_ports": [
+        "IssueSource"
+      ],
+      "depends_on": [
+        "s1-engine-core",
+        "s1-storage-postgres",
+        "s1-sandbox-adapter",
+        "s1-workspace-ingestion",
+        "s1-agent-runtime-adapters",
+        "s1-github-adapter",
+        "s1-egress-and-broker",
+        "s0-contracts-and-registry",
+        "s0-telemetry-baseline",
+        "s1-policy-evaluation",
+        "s1-spec-adapter-and-stage",
+        "s1-stage-intake-and-repository",
+        "s1-stage-architecture-and-planning",
+        "s1-stage-implementation-and-review",
+        "s1-trusted-gates-and-validation",
+        "s1-supply-chain-gates",
+        "s1-stage-documentation",
+        "s1-stage-delivery-and-approval",
+        "s1-agent-definitions",
+        "s1-security-test-harness"
+      ],
+      "done": [
+        {
+          "check": "The release build succeeds.",
+          "kind": "command",
+          "command": "cargo build --workspace --release --locked"
+        },
+        {
+          "check": "The probe command prints the capability record of each runtime and the environment checks, and exits 3 with BLOCKED lines when a required tool is missing.",
+          "kind": "test",
+          "command": "cargo nextest run -p factory-cli --test probe"
+        },
+        {
+          "check": "The production profile refuses to start with any fake adapter.",
+          "kind": "test",
+          "command": "cargo nextest run -p factory-worker production_profile_refuses_fakes"
+        },
+        {
+          "check": "The readiness endpoint fails when the database schema is behind.",
+          "kind": "test",
+          "command": "cargo nextest run -p factory-api readiness_checks_schema_version"
+        },
+        {
+          "check": "The OpenAPI document is valid and the router matches it.",
+          "kind": "test",
+          "command": "cargo nextest run -p factory-api --test openapi_contract"
+        },
+        {
+          "check": "The engine scenario suite passes on PgStore in CI, the same suite that passes on the in-memory store.",
+          "kind": "test",
+          "command": "cargo nextest run -p factory-worker --test engine_scenarios_on_postgres"
+        },
+        {
+          "check": "Killing the worker at every stage boundary, in test mode with the fake runtime, still ends in a completed job.",
+          "kind": "test",
+          "command": "cargo nextest run -p factory-worker --test kill_at_every_boundary"
+        },
+        {
+          "check": "An unsigned webhook is rejected before any parsing or database access, and the same signed delivery sent 50 times concurrently creates one job, one outbox row and 49 duplicate-delivery audit events (NT-WH-01, NT-WH-04).",
+          "kind": "test",
+          "command": "cargo nextest run -p factory-api negative_nt_wh_01 negative_nt_wh_04"
+        },
+        {
+          "check": "Missing, expired, wrong-audience, JWT-with-no-algorithm and logged-out tokens each give a bare 401 (NT-WEB-05).",
+          "kind": "test",
+          "command": "cargo nextest run -p factory-api negative_nt_web_05"
+        },
+        {
+          "check": "Tenant A asking for tenant B's job, artifact or log ids, including sequential guesses, gets the same 404 with similar timing (NT-TEN-05).",
+          "kind": "test",
+          "command": "cargo nextest run -p factory-api negative_nt_ten_05"
+        },
+        {
+          "check": "A webhook for an unknown installation or a transferred repository is dropped and audited (NT-AUTHZ-08).",
+          "kind": "test",
+          "command": "cargo nextest run -p factory-api negative_nt_authz_08"
+        }
+      ]
+    },
+    {
+      "id": "s1-fixture-and-e2e-harness",
+      "title": "Create the fixture repository and the end-to-end acceptance harness",
+      "slice": 1,
+      "owner_role": "qa",
+      "reviewers": [
+        "software_architect"
+      ],
+      "size": "L",
+      "summary": "Create the fixture repository, a small dependency-free Rust command line tool with tests, documentation, CODEOWNERS and a project manifest, plus the English and Portuguese issue texts. Write the scenarios and the machine-checkable assertions A1 to A14 first, so the end-to-end test is red from the start. The fixture's GitHub repository needs a branch-protection ruleset, or the job runs at level L0 and opens no pull request.",
+      "owns": [
+        "fixtures/repos/word-count/**",
+        "tests/end_to_end/**",
+        "tests/contract/**",
+        "scripts/e2e.sh"
+      ],
+      "inputs": [
+        "Slice 1 acceptance section of this document",
+        "schemas/",
+        "master prompt sections 15 and 16"
+      ],
+      "exposes_ports": [],
+      "implements_ports": [],
+      "consumes_ports": [],
+      "depends_on": [
+        "s0-workspace-skeleton"
+      ],
+      "done": [
+        {
+          "check": "The script lists the scenarios E1 to E9.",
+          "kind": "command",
+          "command": "scripts/e2e.sh --list"
+        },
+        {
+          "check": "The assertion library passes on canned passing job records and fails on canned bad ones: a fake adapter in production, documentation before review, a PASSED run with no ledger entry, a merged pull request.",
+          "kind": "test",
+          "command": "scripts/e2e.sh --self-test"
+        },
+        {
+          "check": "The fixture builds and its own tests pass in the sandbox image, and it has a deliberate gap the issue asks to fill.",
+          "kind": "command",
+          "command": "scripts/e2e.sh --check-fixture"
+        },
+        {
+          "check": "Without a GitHub token or a fixture remote the harness reports BLOCKED and exits 3.",
+          "kind": "test",
+          "command": "scripts/e2e.sh --self-test-blocked"
+        },
+        {
+          "check": "The harness refuses to run a scenario against a fixture remote that fails the protection preflight, and reports BLOCKED.",
+          "kind": "test",
+          "command": "scripts/e2e.sh --self-test-preflight"
+        }
+      ]
+    },
+    {
+      "id": "s1-observability-instrumentation",
+      "title": "Verify traces, metrics and correlation across a job",
+      "slice": 1,
+      "owner_role": "observability",
+      "reviewers": [
+        "software_architect"
+      ],
+      "size": "M",
+      "summary": "Own the tests and runbooks for telemetry. Call sites live in the packages that own the code. This package reviews them and fails the build when a stage handler has no span.",
+      "owns": [
+        "tests/observability/**",
+        "docs/observability/runbooks/**"
+      ],
+      "inputs": [
+        "docs/observability/conventions.md",
+        "overview QA-7"
+      ],
+      "exposes_ports": [],
+      "implements_ports": [],
+      "consumes_ports": [],
+      "depends_on": [
+        "s0-telemetry-baseline",
+        "s1-engine-core"
+      ],
+      "done": [
+        {
+          "check": "An engine scenario run produces spans job, stage run, attempt, tool call and gate with the required attributes, parented correctly.",
+          "kind": "test",
+          "command": "cargo nextest run --test trace_shape"
+        },
+        {
+          "check": "Every registered stage handler produces a span.",
+          "kind": "test",
+          "command": "cargo nextest run --test every_handler_has_a_span"
+        },
+        {
+          "check": "The correlation id appears on all log lines and events of a job.",
+          "kind": "test",
+          "command": "cargo nextest run --test correlation_id_everywhere"
+        },
+        {
+          "check": "The metric names for queue depth, duration, gate failures, retries and spend exist in the registry.",
+          "kind": "test",
+          "command": "cargo nextest run --test metric_names"
+        }
+      ]
+    },
+    {
+      "id": "s1-local-deployment",
+      "title": "Provide local Compose deployment, backup and restore",
+      "slice": 1,
+      "owner_role": "sre",
+      "reviewers": [
+        "dba",
+        "security"
+      ],
+      "size": "M",
+      "summary": "Extend the Compose setup for the full local run, add backup, restore and a restore drill for PostgreSQL and the artifact directory, a smoke script and the troubleshooting notes that come from running them.",
+      "owns": [
+        "scripts/backup.sh",
+        "scripts/restore.sh",
+        "scripts/restore-drill.sh",
+        "scripts/smoke.sh"
+      ],
+      "inputs": [
+        "ADR 0007",
+        "ADR 0008",
+        "infra/compose/"
+      ],
+      "exposes_ports": [],
+      "implements_ports": [],
+      "consumes_ports": [],
+      "depends_on": [
+        "s0-ci-pipeline",
+        "s1-sandbox-images"
+      ],
+      "done": [
+        {
+          "check": "Compose reaches healthy and the smoke script passes the probe and the readiness check.",
+          "kind": "command",
+          "command": "scripts/smoke.sh"
+        },
+        {
+          "check": "Restoring a backup into a fresh container passes the ledger verifier.",
+          "kind": "command",
+          "command": "scripts/restore-drill.sh"
+        },
+        {
+          "check": "The artifact directory backup restores byte-identical blobs, checked by hash.",
+          "kind": "command",
+          "command": "scripts/restore-drill.sh --artifacts"
+        },
+        {
+          "check": "No secret-looking value is committed.",
+          "kind": "command",
+          "command": "scripts/ci.sh --self-test-no-secrets"
+        }
+      ]
+    },
+    {
+      "id": "s1-database-review",
+      "title": "Review queries, indexes and retention against realistic data volumes",
+      "slice": 1,
+      "owner_role": "dba",
+      "reviewers": [
+        "software_architect"
+      ],
+      "size": "M",
+      "summary": "Measure the hot queries at 100,000 rows, propose retention and partitioning for the outbox, ledger and artifact metadata, check that version N-1 code runs on version N schema, and draft the row-level security proposal for Slice 4.",
+      "owns": [
+        "docs/database/**",
+        "migrations/**"
+      ],
+      "inputs": [
+        "crates/storage/",
+        "ADR 0007",
+        "ADR 0008"
+      ],
+      "exposes_ports": [],
+      "implements_ports": [],
+      "consumes_ports": [],
+      "depends_on": [
+        "s1-storage-postgres",
+        "s1-local-deployment"
+      ],
+      "done": [
+        {
+          "check": "Plans for claim, sweep, timeline and ledger tail at 100,000 rows are recorded, and none uses a sequential scan on the claim path.",
+          "kind": "command",
+          "command": "scripts/db-test.sh plans --rows 100000"
+        },
+        {
+          "check": "Retention and partitioning proposals exist for the outbox, ledger and artifact metadata.",
+          "kind": "review",
+          "command": null
+        },
+        {
+          "check": "Each migration added in Slice 1 works with the previous code version.",
+          "kind": "command",
+          "command": "scripts/db-test.sh compat"
+        },
+        {
+          "check": "A row-level security proposal is drafted as an ADR for Slice 4.",
+          "kind": "review",
+          "command": null
+        }
+      ]
+    },
+    {
+      "id": "s1-security-review-and-tests",
+      "title": "Test prompt injection, sandbox escape attempts and secret handling",
+      "slice": 1,
+      "owner_role": "security",
+      "reviewers": [
+        "software_architect"
+      ],
+      "size": "L",
+      "summary": "Own the cross-cutting negative tests and check that every P0 test of the catalog has an owner and a control-off variant. Run the injection corpus through the engine with a scripted runtime that obeys the injected instruction, then through the real runtime when a key exists. Run the full-job canary sweep and the audit coverage matrix. Update the threat model with findings.",
+      "owns": [
+        "docs/security/**",
+        "tests/security/**",
+        "crates/workflow/tests/security/**"
+      ],
+      "inputs": [
+        "docs/security/ from the baseline",
+        "tests/security/injection",
+        "all adapters"
+      ],
+      "exposes_ports": [],
+      "implements_ports": [],
+      "consumes_ports": [],
+      "depends_on": [
+        "s0-security-baseline",
+        "s1-sandbox-adapter",
+        "s1-workspace-ingestion",
+        "s1-egress-and-broker",
+        "s1-github-adapter",
+        "s1-agent-runtime-adapters",
+        "s1-fixture-and-e2e-harness",
+        "s1-stage-intake-and-repository",
+        "s1-policy-evaluation",
+        "s1-redaction",
+        "s1-prompt-assembly",
+        "s1-trusted-gates-and-validation",
+        "s1-supply-chain-gates",
+        "s1-security-test-harness",
+        "s1-stage-implementation-and-review"
+      ],
+      "done": [
+        {
+          "check": "With a runtime scripted to obey each injected instruction, policy still denies the effect, the protected path stays unchanged, there is no network and no secret read, shown by ledger and sandbox logs (NT-INJ-01, NT-INJ-03, NT-INJ-04).",
+          "kind": "test",
+          "command": "cargo nextest run -p factory-workflow negative_nt_inj_01 negative_nt_inj_03 negative_nt_inj_04"
+        },
+        {
+          "check": "A full fixture job with canaries planted for every secret class leaves no canary in any sink (NT-SEC-01).",
+          "kind": "test",
+          "command": "cargo nextest run -p factory-workflow negative_nt_sec_01"
+        },
+        {
+          "check": "Every audit event type the policy requires appears in a scripted scenario, none lacks an actor, policy hash and correlation id, and the coverage matrix lists the owner of each (NT-AUD-03).",
+          "kind": "test",
+          "command": "cargo nextest run -p factory-workflow negative_nt_aud_03"
+        },
+        {
+          "check": "Every P0 test of the catalog maps to a work package and a crate in the work package source, and each test has a control-off variant that fails.",
+          "kind": "command",
+          "command": "python3 -I docs/architecture/tools/check_work_packages.py --check"
+        },
+        {
+          "check": "The threat model records findings and residual risks, with no open high-severity item lacking a disposition.",
+          "kind": "review",
+          "command": null
+        }
+      ]
+    },
+    {
+      "id": "s1-end-to-end-run",
+      "title": "Run and record the Slice 1 end-to-end proof",
+      "slice": 1,
+      "owner_role": "qa",
+      "reviewers": [
+        "software_architect",
+        "security"
+      ],
+      "size": "M",
+      "summary": "Run the scenarios, with real adapters where the claim needs them and labelled test mode for the rest, triage failures into issues, and write the acceptance report with commands, results, durations, costs and limitations. Real-agent scenarios are BLOCKED until an API key with a provider-side spend limit is supplied, and the GitHub fixture needs a registered App and a protection ruleset. The report says so and does not substitute fake results.",
+      "owns": [
+        "fixtures/recordings/e2e/**",
+        "docs/reports/slice-1-acceptance.md"
+      ],
+      "inputs": [
+        "fixtures/repos/word-count",
+        "scripts/e2e.sh"
+      ],
+      "exposes_ports": [],
+      "implements_ports": [],
+      "consumes_ports": [],
+      "depends_on": [
+        "s1-apps-composition",
+        "s1-fixture-and-e2e-harness",
+        "s1-local-deployment",
+        "s1-observability-instrumentation",
+        "s1-security-review-and-tests"
+      ],
+      "done": [
+        {
+          "check": "Scenarios E1 and E2 pass all assertions A1 to A14 with real adapters. Without an API key, an App registration or a protected fixture repository the command exits 3 and prints BLOCKED with the missing item.",
+          "kind": "command",
+          "command": "scripts/e2e.sh --scenario E1 --scenario E2"
+        },
+        {
+          "check": "Scenarios E3 to E9 pass in test mode, and the report marks them as using fakes.",
+          "kind": "command",
+          "command": "scripts/e2e.sh --scenario E3 --scenario E4 --scenario E5 --scenario E6 --scenario E7 --scenario E8 --scenario E9"
+        },
+        {
+          "check": "The acceptance report lists commands, results, timings, costs and limitations, and every PASS in it points to a recording.",
+          "kind": "command",
+          "command": "scripts/e2e.sh --check-report"
+        },
+        {
+          "check": "If any prerequisite was missing the report says BLOCKED and names it. No PASS is fabricated.",
+          "kind": "review",
+          "command": null
+        }
+      ]
+    },
+    {
+      "id": "s1-docs-and-walkthrough",
+      "title": "Write the guides, reference, runbooks and the recorded walkthrough",
+      "slice": 1,
+      "owner_role": "documenter",
+      "reviewers": [
+        "software_architect",
+        "sre"
+      ],
+      "size": "L",
+      "summary": "Write the README, quickstart, configuration and command reference, runbooks, the Spec Kit integration guide with the Spec Kit specialist, production guidance, and the walkthrough built from the real end-to-end recordings. The factory's own documentation goes through the same checks it applies to others.",
+      "owns": [
+        "README.md",
+        "docs/guides/**",
+        "docs/runbooks/**",
+        "docs/reference/**",
+        "docs/walkthroughs/**",
+        "scripts/docs-check.sh"
+      ],
+      "inputs": [
+        "fixtures/recordings/e2e/",
+        "docs/reports/slice-1-acceptance.md",
+        "docs/reference/documentation-policy.md"
+      ],
+      "exposes_ports": [],
+      "implements_ports": [],
+      "consumes_ports": [],
+      "depends_on": [
+        "s1-end-to-end-run",
+        "s1-documentation-rubric",
+        "s1-database-review"
+      ],
+      "done": [
+        {
+          "check": "Links resolve, code snippets run, and every command in the documents exists in the real help output.",
+          "kind": "command",
+          "command": "scripts/docs-check.sh"
+        },
+        {
+          "check": "The quickstart works from a clean clone, executed in CI.",
+          "kind": "command",
+          "command": "scripts/docs-check.sh --quickstart"
+        },
+        {
+          "check": "Every configuration key in the reference exists in code and every key in code is documented.",
+          "kind": "command",
+          "command": "scripts/docs-check.sh --config-keys"
+        },
+        {
+          "check": "Each claim in the walkthrough cites a recorded file or ledger entry.",
+          "kind": "command",
+          "command": "scripts/docs-check.sh --walkthrough"
+        },
+        {
+          "check": "The documents pass the readability gate.",
+          "kind": "command",
+          "command": "scripts/docs-check.sh --readability"
+        }
+      ]
+    },
+    {
+      "id": "s1-workspace-ingestion",
+      "title": "Build the host-side workspace, git hardening and output ingestion",
+      "slice": 1,
+      "owner_role": "software_engineer",
+      "reviewers": [
+        "security",
+        "software_architect"
+      ],
+      "size": "L",
+      "summary": "Implement WorkspaceProvider and Workspace as sandbox-policy.md section 6 requires: a trusted bare mirror that is never mounted, a sparse detached worktree per job, a read-only /dev/null bound over .git, host-side version control with a fixed environment, protected-path overlays, and the ingestion pipeline (stop the container, no-follow audit walk, temporary-index tree diff, protected-path evaluation, gitlink and symlink rejection, secret scan, then commit). All reads of sandbox output go through one module.",
+      "owns": [
+        "crates/sandbox/src/workspace/**",
+        "crates/sandbox/tests/workspace/**"
+      ],
+      "inputs": [
+        "ADR 0003",
+        "docs/security/sandbox-policy.md section 6",
+        "policies/security.yaml path_access"
+      ],
+      "exposes_ports": [],
+      "depends_on": [
+        "s0-ports-and-testkit",
+        "s1-security-test-harness",
+        "s1-policy-evaluation",
+        "s1-redaction"
+      ],
+      "done": [
+        {
+          "check": "The workspace contract suite passes against the git adapter as it does against the fake.",
+          "kind": "test",
+          "command": "cargo nextest run -p factory-sandbox --test workspace"
+        },
+        {
+          "check": "Ingestion rejects a symlink to a host canary, a FIFO, a socket, a hardlink to a file outside the job root and an archive entry that escapes, and no host canary content reaches any artifact (NT-SBX-09).",
+          "kind": "test",
+          "command": "cargo nextest run -p factory-sandbox negative_nt_sbx_09"
+        },
+        {
+          "check": "A hostile nested .git, a replaced .git and hostile git configuration keys never run code on the host, and host git runs with the fixed environment only (NT-SBX-10).",
+          "kind": "test",
+          "command": "cargo nextest run -p factory-sandbox negative_nt_sbx_10"
+        },
+        {
+          "check": "Protected files cannot be modified in the sandbox, hidden paths do not exist in the checkout and a file created at a hidden path fails the job (NT-SBX-11, NT-GATE-08 sandbox part).",
+          "kind": "test",
+          "command": "cargo nextest run -p factory-sandbox negative_nt_sbx_11 negative_nt_gate_08"
+        },
+        {
+          "check": "Every read of a workspace or output path goes through the ingestion module (ST-09), and no safe.directory wildcard exists (ST-01).",
+          "kind": "command",
+          "command": "cargo xtask check-architecture"
+        },
+        {
+          "check": "A rename counts as two paths and a mode or type change as a modification in the protected-path evaluation.",
+          "kind": "test",
+          "command": "cargo nextest run -p factory-sandbox rename_counts_as_two_paths"
+        }
+      ],
+      "implements_ports": [
+        "Workspace",
+        "WorkspaceProvider"
+      ],
+      "consumes_ports": []
+    },
+    {
+      "id": "s1-egress-and-broker",
+      "title": "Build the model broker and the per-job egress relay",
+      "slice": 1,
+      "owner_role": "software_engineer",
+      "reviewers": [
+        "security",
+        "software_architect"
+      ],
+      "size": "XL",
+      "summary": "Implement the model broker that holds the real provider keys and the egress relay that runs as the per-job sidecar, following sandbox-policy.md section 5 and secrets-and-credentials.md section 4. The broker issues, checks and revokes job tokens, forwards only allowed API paths, meters usage against the job ceiling and alerts at 80 and 100 percent. The relay allows exact hosts, rejects private and metadata ranges after its own resolution, pins the connection and enforces a byte quota. Real calls need an API key and are BLOCKED without one. Tests use a labelled fake provider.",
+      "owns": [
+        "crates/egress/**",
+        "apps/egress-sidecar/**"
+      ],
+      "inputs": [
+        "ADR 0005",
+        "docs/security/sandbox-policy.md section 5",
+        "docs/security/secrets-and-credentials.md section 4",
+        "policies/security.yaml egress and budgets"
+      ],
+      "exposes_ports": [],
+      "depends_on": [
+        "s0-ports-and-testkit",
+        "s1-security-test-harness",
+        "s1-redaction"
+      ],
+      "done": [
+        {
+          "check": "The ModelBroker contract suite passes against the real broker as it does against the fake.",
+          "kind": "test",
+          "command": "cargo nextest run -p factory-egress --test broker_contract"
+        },
+        {
+          "check": "The relay refuses a non-allowlisted host, a lookalike host, a userinfo trick, an IP literal, a private or metadata address after resolution and a rebinding answer, and enforces the byte quota (NT-SBX-05).",
+          "kind": "test",
+          "command": "cargo nextest run -p factory-egress negative_nt_sbx_05"
+        },
+        {
+          "check": "At the ceiling the broker revokes the job token and refuses further calls, recorded cost is at most the ceiling plus one maximum request, and audit events are written at 80 and 100 percent (NT-BUD-01).",
+          "kind": "test",
+          "command": "cargo nextest run -p factory-egress negative_nt_bud_01"
+        },
+        {
+          "check": "A tool that ignores its own budget flag is still stopped, and the next request after revocation is refused (NT-BUD-07).",
+          "kind": "test",
+          "command": "cargo nextest run -p factory-egress negative_nt_bud_07"
+        },
+        {
+          "check": "The real provider key never appears in the container, in a log, in a trace or in a response body, shown by the canary sweep.",
+          "kind": "test",
+          "command": "cargo nextest run -p factory-egress real_key_never_leaves_the_broker"
+        },
+        {
+          "check": "A live call through the broker with a real key succeeds. Without a key it reports BLOCKED.",
+          "kind": "test",
+          "command": "FACTORY_LIVE=1 cargo nextest run -p factory-egress --test live_smoke"
+        }
+      ],
+      "implements_ports": [
+        "ModelBroker"
+      ],
+      "consumes_ports": []
+    },
+    {
+      "id": "s1-prompt-assembly",
+      "title": "Assemble prompts with a data envelope and hardened untrusted text",
+      "slice": 1,
+      "owner_role": "software_engineer",
+      "reviewers": [
+        "security"
+      ],
+      "size": "M",
+      "summary": "Build the pure prompt assembly that policies/security.yaml section 14 requires: untrusted text never enters the instruction channel, it goes into a typed envelope with source, class, hash and fetch time, delimiter collisions are neutralized, hidden and bidirectional characters are stripped, and files that must not reach model context are excluded. It also builds the Spec Kit skill input as the fixed instruction in ADR 0006.",
+      "owns": [
+        "crates/workflow/src/prompts/**",
+        "crates/workflow/tests/prompts/**"
+      ],
+      "inputs": [
+        "policies/security.yaml untrusted_content and path_access",
+        "ADR 0005",
+        "ADR 0006"
+      ],
+      "exposes_ports": [],
+      "depends_on": [
+        "s0-contracts-and-registry",
+        "s1-policy-evaluation",
+        "s1-redaction"
+      ],
+      "done": [
+        {
+          "check": "An issue title and body containing the envelope close marker, a fake system block, zero-width and bidirectional characters and a long payload never break out of the envelope (NT-INJ-02).",
+          "kind": "test",
+          "command": "cargo nextest run -p factory-workflow negative_nt_inj_02"
+        },
+        {
+          "check": "Captured prompts of a full fake job contain no canary for a holdout, a second tenant or a secret-bearing file (NT-SEC-11, NT-GATE-08 prompt part).",
+          "kind": "test",
+          "command": "cargo nextest run -p factory-workflow negative_nt_sec_11"
+        },
+        {
+          "check": "The Spec Kit skill input is a fixed instruction with the request in a file or a delimited block, never as free text after the command, and a hostile issue body cannot select another skill.",
+          "kind": "test",
+          "command": "cargo nextest run -p factory-workflow spec_kit_input_is_a_fixed_instruction"
+        },
+        {
+          "check": "Delimiter collision is checked on every untrusted field and a colliding field is escaped or rejected, shown by a generated test.",
+          "kind": "test",
+          "command": "cargo nextest run -p factory-workflow envelope_collision_check"
+        }
+      ],
+      "implements_ports": [],
+      "consumes_ports": []
+    },
+    {
+      "id": "s1-redaction",
+      "title": "Redact secrets from every output the factory stores or sends",
+      "slice": 1,
+      "owner_role": "software_engineer",
+      "reviewers": [
+        "security"
+      ],
+      "size": "M",
+      "summary": "Implement the pure redactor and secret check described in docs/security/secrets-and-credentials.md: an in-memory exact-value registry matched in raw, base64, hex, percent-encoded and JSON-escaped forms, the vendor patterns from the policy, and matching across chunk boundaries. Logs, artifacts, GitHub-bound text and traces all call it.",
+      "owns": [
+        "crates/domain/src/redaction/**",
+        "crates/domain/tests/redaction.rs"
+      ],
+      "inputs": [
+        "policies/security.yaml secrets",
+        "docs/security/secrets-and-credentials.md section 6"
+      ],
+      "exposes_ports": [],
+      "depends_on": [
+        "s0-domain-vocabulary",
+        "s0-security-baseline"
+      ],
+      "done": [
+        {
+          "check": "A token split over two writes, ANSI codes between characters, encoded forms and zero-width characters do not evade redaction (NT-SEC-02).",
+          "kind": "test",
+          "command": "cargo nextest run -p factory-domain negative_nt_sec_02"
+        },
+        {
+          "check": "The vendor patterns pass their positive and negative samples and compile with the regex crate dialect.",
+          "kind": "test",
+          "command": "cargo nextest run -p factory-domain --test redaction patterns"
+        },
+        {
+          "check": "The redactor is pure: it makes no clock, file or network call.",
+          "kind": "command",
+          "command": "cargo clippy -p factory-domain -- -D warnings"
+        }
+      ],
+      "implements_ports": [],
+      "consumes_ports": []
+    },
+    {
+      "id": "s1-supply-chain-gates",
+      "title": "Build the dependency and supply chain gates",
+      "slice": 1,
+      "owner_role": "software_engineer",
+      "reviewers": [
+        "security"
+      ],
+      "size": "M",
+      "summary": "Implement the typed dependency request, its heuristics (registry existence, first-publish age, name distance to popular names, license), the human decision for every new direct dependency, the fetch_deps flow with install scripts disabled, and the gate that rejects lockfile and source tampering. Scanners that are not installed are BLOCKED.",
+      "owns": [
+        "crates/workflow/src/gates/supply_chain/**",
+        "crates/workflow/tests/supply_chain/**"
+      ],
+      "inputs": [
+        "policies/security.yaml supply_chain",
+        "docs/security/sandbox-policy.md fetch_deps profile"
+      ],
+      "exposes_ports": [],
+      "depends_on": [
+        "s1-engine-core",
+        "s1-policy-evaluation",
+        "s1-sandbox-adapter",
+        "s1-security-test-harness"
+      ],
+      "done": [
+        {
+          "check": "A name absent from the registry, a package first published three days ago, a near-miss of a popular name and a name equal to an internal package each escalate to a human and none is approved automatically (NT-SUP-01).",
+          "kind": "test",
+          "command": "cargo nextest run -p factory-workflow negative_nt_sup_01"
+        },
+        {
+          "check": "A package with an install script and a crate with a build script write a marker and fail to reach the network in the fetch_deps profile, and install scripts do not run (NT-SUP-02).",
+          "kind": "test",
+          "command": "cargo nextest run -p factory-workflow negative_nt_sup_02"
+        },
+        {
+          "check": "Edits to lockfile sources or checksums, a git or path dependency, a patch section or an alternate registry in the build configuration fail the gate (NT-SUP-03).",
+          "kind": "test",
+          "command": "cargo nextest run -p factory-workflow negative_nt_sup_03"
+        },
+        {
+          "check": "A scanner that is not installed makes the gate BLOCKED, never PASSED.",
+          "kind": "test",
+          "command": "cargo nextest run -p factory-workflow scanner_absence_is_blocked"
+        }
+      ],
+      "implements_ports": [],
+      "consumes_ports": [
+        "SandboxProvider",
+        "SandboxSession"
+      ]
+    },
+    {
+      "id": "s1-security-test-harness",
+      "title": "Build the security test harness and the hostile fixtures",
+      "slice": 1,
+      "owner_role": "qa",
+      "reviewers": [
+        "security"
+      ],
+      "size": "L",
+      "summary": "Build the harness components of the negative-test catalog that other packages need: the fake GitHub server FX-GH, the canary generator and sweeper FX-CANARY, the sink collector FX-SINKS, the process spawn recorder FX-SPAWN, the Docker availability guard FX-DOCKER, the controllable DNS and HTTP servers FX-DNS, the fake registry FX-REG, and the clean and hostile fixture repositories. Every test built on them gets a control-off switch, and a test that still passes with its control off is rejected.",
+      "owns": [
+        "crates/testkit/src/fx/**",
+        "fixtures/repos/security/**"
+      ],
+      "inputs": [
+        "docs/security/negative-test-catalog.md sections 1 and 2"
+      ],
+      "exposes_ports": [],
+      "depends_on": [
+        "s0-ports-and-testkit"
+      ],
+      "done": [
+        {
+          "check": "Each harness component has its own tests, and every fake server is labelled fake in the data it records.",
+          "kind": "test",
+          "command": "cargo nextest run -p factory-testkit fx"
+        },
+        {
+          "check": "The canary sweeper finds each canary in the raw, base64, base64url, hex, percent-encoded and JSON-escaped forms and across chunk boundaries.",
+          "kind": "test",
+          "command": "cargo nextest run -p factory-testkit canary_sweeper_finds_encoded_forms"
+        },
+        {
+          "check": "The Docker guard marks a Docker-dependent test BLOCKED when the daemon is absent and removes containers and networks labelled by the test run.",
+          "kind": "test",
+          "command": "cargo nextest run -p factory-testkit docker_guard_blocks_and_cleans"
+        },
+        {
+          "check": "The clean and hostile fixture repositories match the catalog's description, checked by a manifest test.",
+          "kind": "test",
+          "command": "cargo nextest run -p factory-testkit fixture_repositories_match_the_catalog"
+        }
+      ],
+      "implements_ports": [],
+      "consumes_ports": []
+    },
+    {
+      "id": "s1-trusted-gates-and-validation",
+      "title": "Build the trusted gates and the validation stage",
+      "slice": 1,
+      "owner_role": "software_engineer",
+      "reviewers": [
+        "security",
+        "software_architect"
+      ],
+      "size": "L",
+      "summary": "Run validation in a fresh verify container from the commit, using gate definitions read from the protected base commit, never from the builder's branch. Evaluate the scope, protected-path, test-protection, secret and evidence-binding rules on the host-side tree diff. Missing evidence is BLOCKED. The supervisor's observation of the exit code is the evidence, not a file the builder could write.",
+      "owns": [
+        "crates/workflow/src/stages/validation/**",
+        "crates/workflow/src/gates/command/**",
+        "crates/workflow/src/gates/scope/**",
+        "crates/workflow/tests/validation/**"
+      ],
+      "inputs": [
+        "ADR 0003",
+        "master prompt section 8",
+        "schemas/gate-report.schema.json",
+        "schemas/project-manifest.schema.json",
+        "docs/security/negative-test-catalog.md section 7"
+      ],
+      "exposes_ports": [],
+      "depends_on": [
+        "s1-engine-core",
+        "s1-sandbox-adapter",
+        "s1-workspace-ingestion",
+        "s1-policy-evaluation",
+        "s1-redaction"
+      ],
+      "done": [
+        {
+          "check": "Test code is additions-only, and removed, ignored or skipped tests are flagged across the supported frameworks (NT-GATE-01, NT-GATE-02).",
+          "kind": "test",
+          "command": "cargo nextest run -p factory-workflow negative_nt_gate_01 negative_nt_gate_02"
+        },
+        {
+          "check": "Edits to CI, gate and instruction files fail the gate, and path tricks (rename, case, composed characters) do not evade it (NT-GATE-03, NT-GATE-04).",
+          "kind": "test",
+          "command": "cargo nextest run -p factory-workflow negative_nt_gate_03 negative_nt_gate_04"
+        },
+        {
+          "check": "Builder-supplied gates and fabricated reports are ignored: validation uses the base commit's definitions and the supervisor's exit code (NT-GATE-05, NT-GATE-06).",
+          "kind": "test",
+          "command": "cargo nextest run -p factory-workflow negative_nt_gate_05 negative_nt_gate_06"
+        },
+        {
+          "check": "A missing tool, zero collected tests, a timeout and a skipped gate each give BLOCKED, never PASSED (NT-GATE-07, INV-06).",
+          "kind": "test",
+          "command": "cargo nextest run -p factory-workflow negative_nt_gate_07"
+        },
+        {
+          "check": "Evidence is bound to the commit, the policy hash and the image digest, and evidence for an older commit does not count (NT-GATE-10).",
+          "kind": "test",
+          "command": "cargo nextest run -p factory-workflow negative_nt_gate_10"
+        },
+        {
+          "check": "Secrets in the diff are blocked before anything is committed or sent (NT-SEC-05).",
+          "kind": "test",
+          "command": "cargo nextest run -p factory-workflow negative_nt_sec_05"
+        },
+        {
+          "check": "The gate reports validate against the gate-report schema and name the trusted definition's source and hash.",
+          "kind": "test",
+          "command": "cargo nextest run -p factory-workflow --test validation gate_reports_match_the_schema"
+        }
+      ],
+      "implements_ports": [
+        "StageHandler"
+      ],
+      "consumes_ports": [
+        "OutputValidator",
+        "SandboxProvider",
+        "SandboxSession",
+        "Workspace"
+      ]
+    },
+    {
+      "id": "s1-stage-implementation-and-review",
+      "title": "Build the implementation and review stages",
+      "slice": 1,
+      "owner_role": "software_engineer",
+      "reviewers": [
+        "security",
+        "software_architect"
+      ],
+      "size": "L",
+      "summary": "Run the single builder over the task graph in order inside the agent sandbox, hand the workspace to ingestion and commit on the host, then run an independent review that never sees the builder's own account. Deterministic failures outrank a reviewer PASS.",
+      "owns": [
+        "crates/workflow/src/stages/implementation/**",
+        "crates/workflow/src/stages/review/**",
+        "crates/workflow/tests/implementation/**"
+      ],
+      "inputs": [
+        "ADR 0005",
+        "master prompt sections 7 and 9",
+        "schemas/review-verdict.schema.json"
+      ],
+      "exposes_ports": [],
+      "depends_on": [
+        "s1-engine-core",
+        "s1-sandbox-adapter",
+        "s1-workspace-ingestion",
+        "s1-agent-runtime-adapters",
+        "s1-agent-definitions",
+        "s1-policy-evaluation",
+        "s1-prompt-assembly"
+      ],
+      "done": [
+        {
+          "check": "Tasks run in topological order, each commit is made on the host after ingestion, and a planted hook does not run.",
+          "kind": "test",
+          "command": "cargo nextest run -p factory-workflow --test implementation commits_happen_on_the_host"
+        },
+        {
+          "check": "The reviewer's input has the frozen spec, the diff and the gate reports, and no builder summary, shown by inspecting the run request.",
+          "kind": "test",
+          "command": "cargo nextest run -p factory-workflow --test implementation reviewer_never_sees_the_builder_summary"
+        },
+        {
+          "check": "A reviewer manipulated by text in the diff that returns PASS cannot override a FAILED deterministic gate (NT-INJ-06).",
+          "kind": "test",
+          "command": "cargo nextest run -p factory-workflow negative_nt_inj_06"
+        },
+        {
+          "check": "A failed deterministic gate sends the work back to implementation with the reports, up to the cap of two rounds, then to a human.",
+          "kind": "test",
+          "command": "cargo nextest run -p factory-workflow --test implementation rework_is_capped_at_two"
+        },
+        {
+          "check": "After a crash the next attempt resumes at the first task that is not SUCCEEDED.",
+          "kind": "test",
+          "command": "cargo nextest run -p factory-workflow --test implementation resume_after_crash"
+        },
+        {
+          "check": "The agent tool runs only in the agent profile, and the builder refuses to run with any other target.",
+          "kind": "test",
+          "command": "cargo nextest run -p factory-workflow --test implementation agent_runs_only_in_the_sandbox"
+        }
+      ],
+      "implements_ports": [
+        "StageHandler"
+      ],
+      "consumes_ports": [
+        "AgentRuntime",
+        "SandboxProvider",
+        "SandboxSession",
+        "Workspace"
+      ]
+    }
+  ],
+  "negative_tests": {
+    "catalog": "docs/security/negative-test-catalog.md",
+    "naming_rule": "Each test function name starts with negative_ followed by the lower-case catalog id with underscores, for example negative_nt_sbx_01_posture_verifier_rejects_forbidden_settings, so a name filter selects it. Each test has a control-off switch in the harness and must fail when its control is off (catalog principle 2).",
+    "entries": [
+      {
+        "id": "NT-AUD-01",
+        "wp": "s1-storage-postgres",
+        "crate": "storage",
+        "location": "crates/storage/tests/negative.rs",
+        "also": [
+          "s0-database-baseline"
+        ],
+        "scope": "full"
+      },
+      {
+        "id": "NT-AUD-03",
+        "wp": "s1-security-review-and-tests",
+        "crate": "workflow",
+        "location": "crates/workflow/tests/security/negative.rs",
+        "also": [
+          "s1-engine-core"
+        ],
+        "scope": "partial",
+        "reduced_scope_reason": "Complete only after every component that emits an event exists. The coverage matrix lists each event type with its owner."
+      },
+      {
+        "id": "NT-AUTHZ-01",
+        "wp": "s1-stage-intake-and-repository",
+        "crate": "workflow",
+        "location": "crates/workflow/tests/intake_repo/negative.rs",
+        "also": [
+          "s1-apps-composition"
+        ],
+        "scope": "full"
+      },
+      {
+        "id": "NT-AUTHZ-02",
+        "wp": "s1-stage-delivery-and-approval",
+        "crate": "workflow",
+        "location": "crates/workflow/tests/delivery/negative.rs",
+        "also": [
+          "s1-github-adapter"
+        ],
+        "scope": "full",
+        "reduced_scope_reason": "The catalog sets up a user whose GitHub permission was revoked. Under the named allowlist the equivalent is a user removed from the list. The expected result is the same."
+      },
+      {
+        "id": "NT-AUTHZ-05",
+        "wp": "s1-stage-intake-and-repository",
+        "crate": "workflow",
+        "location": "crates/workflow/tests/intake_repo/negative.rs",
+        "also": [
+          "s1-github-adapter"
+        ],
+        "scope": "full"
+      },
+      {
+        "id": "NT-AUTHZ-06",
+        "wp": "s1-github-adapter",
+        "crate": "github",
+        "location": "crates/github/tests/negative.rs",
+        "also": [],
+        "scope": "full"
+      },
+      {
+        "id": "NT-AUTHZ-07",
+        "wp": "s1-github-adapter",
+        "crate": "github",
+        "location": "crates/github/tests/negative.rs",
+        "also": [],
+        "scope": "full"
+      },
+      {
+        "id": "NT-AUTHZ-08",
+        "wp": "s1-apps-composition",
+        "crate": "api",
+        "location": "apps/api/tests/negative.rs",
+        "also": [
+          "s1-github-adapter"
+        ],
+        "scope": "full"
+      },
+      {
+        "id": "NT-AUTHZ-09",
+        "wp": "s1-github-adapter",
+        "crate": "github",
+        "location": "crates/github/tests/negative.rs",
+        "also": [],
+        "scope": "full"
+      },
+      {
+        "id": "NT-BUD-01",
+        "wp": "s1-egress-and-broker",
+        "crate": "egress",
+        "location": "crates/egress/tests/negative.rs",
+        "also": [
+          "s1-engine-core"
+        ],
+        "scope": "full"
+      },
+      {
+        "id": "NT-BUD-03",
+        "wp": "s1-engine-core",
+        "crate": "workflow",
+        "location": "crates/workflow/tests/invariants.rs",
+        "also": [
+          "s1-stage-implementation-and-review"
+        ],
+        "scope": "partial",
+        "reduced_scope_reason": "Neither agent tool has a turn cap flag. The engine detects stagnation and escalates. A turn cap needs the tool or the broker to count requests."
+      },
+      {
+        "id": "NT-BUD-07",
+        "wp": "s1-egress-and-broker",
+        "crate": "egress",
+        "location": "crates/egress/tests/negative.rs",
+        "also": [
+          "s1-agent-runtime-adapters"
+        ],
+        "scope": "full"
+      },
+      {
+        "id": "NT-GATE-01",
+        "wp": "s1-trusted-gates-and-validation",
+        "crate": "workflow",
+        "location": "crates/workflow/tests/validation/negative.rs",
+        "also": [
+          "s1-policy-evaluation"
+        ],
+        "scope": "full"
+      },
+      {
+        "id": "NT-GATE-02",
+        "wp": "s1-trusted-gates-and-validation",
+        "crate": "workflow",
+        "location": "crates/workflow/tests/validation/negative.rs",
+        "also": [],
+        "scope": "full"
+      },
+      {
+        "id": "NT-GATE-03",
+        "wp": "s1-trusted-gates-and-validation",
+        "crate": "workflow",
+        "location": "crates/workflow/tests/validation/negative.rs",
+        "also": [
+          "s1-policy-evaluation"
+        ],
+        "scope": "full"
+      },
+      {
+        "id": "NT-GATE-04",
+        "wp": "s1-policy-evaluation",
+        "crate": "domain",
+        "location": "crates/domain/tests/policy.rs",
+        "also": [
+          "s1-trusted-gates-and-validation"
+        ],
+        "scope": "full"
+      },
+      {
+        "id": "NT-GATE-05",
+        "wp": "s1-trusted-gates-and-validation",
+        "crate": "workflow",
+        "location": "crates/workflow/tests/validation/negative.rs",
+        "also": [],
+        "scope": "full"
+      },
+      {
+        "id": "NT-GATE-06",
+        "wp": "s1-trusted-gates-and-validation",
+        "crate": "workflow",
+        "location": "crates/workflow/tests/validation/negative.rs",
+        "also": [
+          "s1-sandbox-adapter"
+        ],
+        "scope": "full"
+      },
+      {
+        "id": "NT-GATE-07",
+        "wp": "s1-trusted-gates-and-validation",
+        "crate": "workflow",
+        "location": "crates/workflow/tests/validation/negative.rs",
+        "also": [],
+        "scope": "full"
+      },
+      {
+        "id": "NT-GATE-08",
+        "wp": "s1-workspace-ingestion",
+        "crate": "sandbox",
+        "location": "crates/sandbox/tests/workspace/negative.rs",
+        "also": [
+          "s1-prompt-assembly",
+          "s1-sandbox-adapter"
+        ],
+        "scope": "partial",
+        "reduced_scope_reason": "The catalog names an evals component for held-out evaluation data. There is no evals crate before Slice 4, so only the sandbox, the prompts and the sinks are tested."
+      },
+      {
+        "id": "NT-GATE-10",
+        "wp": "s1-trusted-gates-and-validation",
+        "crate": "workflow",
+        "location": "crates/workflow/tests/validation/negative.rs",
+        "also": [],
+        "scope": "full"
+      },
+      {
+        "id": "NT-INJ-01",
+        "wp": "s1-security-review-and-tests",
+        "crate": "workflow",
+        "location": "crates/workflow/tests/security/negative.rs",
+        "also": [
+          "s1-policy-evaluation",
+          "s1-agent-runtime-adapters",
+          "s1-prompt-assembly"
+        ],
+        "scope": "full"
+      },
+      {
+        "id": "NT-INJ-02",
+        "wp": "s1-prompt-assembly",
+        "crate": "workflow",
+        "location": "crates/workflow/tests/prompts/negative.rs",
+        "also": [
+          "s1-spec-adapter-and-stage"
+        ],
+        "scope": "full"
+      },
+      {
+        "id": "NT-INJ-03",
+        "wp": "s1-security-review-and-tests",
+        "crate": "workflow",
+        "location": "crates/workflow/tests/security/negative.rs",
+        "also": [
+          "s1-policy-evaluation"
+        ],
+        "scope": "full"
+      },
+      {
+        "id": "NT-INJ-04",
+        "wp": "s1-security-review-and-tests",
+        "crate": "workflow",
+        "location": "crates/workflow/tests/security/negative.rs",
+        "also": [
+          "s1-agent-runtime-adapters"
+        ],
+        "scope": "partial",
+        "reduced_scope_reason": "The catalog assumes factory-mediated tool calls (exec.shell, approval.grant). With the agent inside the sandbox its own tools are contained by the container, not parsed by the factory. The test asserts that no factory-level effect or grant is reachable from the agent."
+      },
+      {
+        "id": "NT-INJ-06",
+        "wp": "s1-stage-implementation-and-review",
+        "crate": "workflow",
+        "location": "crates/workflow/tests/implementation/negative.rs",
+        "also": [
+          "s1-trusted-gates-and-validation"
+        ],
+        "scope": "full"
+      },
+      {
+        "id": "NT-INJ-07",
+        "wp": "s1-agent-runtime-adapters",
+        "crate": "runtime",
+        "location": "crates/runtime/tests/negative.rs",
+        "also": [
+          "s1-sandbox-adapter"
+        ],
+        "scope": "full"
+      },
+      {
+        "id": "NT-LSE-01",
+        "wp": "s1-engine-core",
+        "crate": "workflow",
+        "location": "crates/workflow/tests/invariants.rs",
+        "also": [
+          "s1-stage-delivery-and-approval"
+        ],
+        "scope": "full"
+      },
+      {
+        "id": "NT-LSE-02",
+        "wp": "s1-storage-postgres",
+        "crate": "storage",
+        "location": "crates/storage/tests/negative.rs",
+        "also": [
+          "s1-engine-core"
+        ],
+        "scope": "full"
+      },
+      {
+        "id": "NT-LSE-03",
+        "wp": "s1-stage-delivery-and-approval",
+        "crate": "workflow",
+        "location": "crates/workflow/tests/delivery/negative.rs",
+        "also": [
+          "s1-github-adapter"
+        ],
+        "scope": "full"
+      },
+      {
+        "id": "NT-MRG-01",
+        "wp": "s1-stage-delivery-and-approval",
+        "crate": "workflow",
+        "location": "crates/workflow/tests/delivery/negative.rs",
+        "also": [
+          "s1-github-adapter"
+        ],
+        "scope": "full"
+      },
+      {
+        "id": "NT-MRG-02",
+        "wp": "s1-engine-core",
+        "crate": "workflow",
+        "location": "crates/workflow/tests/invariants.rs",
+        "also": [
+          "s1-stage-delivery-and-approval"
+        ],
+        "scope": "full"
+      },
+      {
+        "id": "NT-MRG-03",
+        "wp": "s1-stage-delivery-and-approval",
+        "crate": "workflow",
+        "location": "crates/workflow/tests/delivery/negative.rs",
+        "also": [
+          "s1-github-adapter"
+        ],
+        "scope": "full"
+      },
+      {
+        "id": "NT-MRG-05",
+        "wp": "s1-stage-delivery-and-approval",
+        "crate": "workflow",
+        "location": "crates/workflow/tests/delivery/negative.rs",
+        "also": [],
+        "scope": "full"
+      },
+      {
+        "id": "NT-MRG-06",
+        "wp": "s1-stage-delivery-and-approval",
+        "crate": "workflow",
+        "location": "crates/workflow/tests/delivery/negative.rs",
+        "also": [
+          "s1-github-adapter"
+        ],
+        "scope": "full"
+      },
+      {
+        "id": "NT-MRG-07",
+        "wp": "s1-github-adapter",
+        "crate": "github",
+        "location": "crates/github/tests/negative.rs",
+        "also": [],
+        "scope": "full"
+      },
+      {
+        "id": "NT-MRG-08",
+        "wp": "s1-stage-delivery-and-approval",
+        "crate": "workflow",
+        "location": "crates/workflow/tests/delivery/negative.rs",
+        "also": [],
+        "scope": "full"
+      },
+      {
+        "id": "NT-POL-01",
+        "wp": "s0-contracts-and-registry",
+        "crate": "contracts",
+        "location": "crates/contracts/tests/negative.rs",
+        "also": [],
+        "scope": "full"
+      },
+      {
+        "id": "NT-POL-02",
+        "wp": "s1-policy-evaluation",
+        "crate": "domain",
+        "location": "crates/domain/tests/policy.rs",
+        "also": [],
+        "scope": "full"
+      },
+      {
+        "id": "NT-POL-03",
+        "wp": "s0-contracts-and-registry",
+        "crate": "contracts",
+        "location": "crates/contracts/tests/negative.rs",
+        "also": [],
+        "scope": "full"
+      },
+      {
+        "id": "NT-POL-04",
+        "wp": "s1-policy-evaluation",
+        "crate": "domain",
+        "location": "crates/domain/tests/policy.rs",
+        "also": [],
+        "scope": "full"
+      },
+      {
+        "id": "NT-POL-05",
+        "wp": "s1-spec-adapter-and-stage",
+        "crate": "spec_adapter",
+        "location": "crates/spec_adapter/tests/negative.rs",
+        "also": [
+          "s1-policy-evaluation"
+        ],
+        "scope": "full"
+      },
+      {
+        "id": "NT-SBX-01",
+        "wp": "s1-sandbox-adapter",
+        "crate": "sandbox",
+        "location": "crates/sandbox/tests/container/negative.rs",
+        "also": [],
+        "scope": "full"
+      },
+      {
+        "id": "NT-SBX-02",
+        "wp": "s1-sandbox-adapter",
+        "crate": "sandbox",
+        "location": "crates/sandbox/tests/container/negative.rs",
+        "also": [],
+        "scope": "full"
+      },
+      {
+        "id": "NT-SBX-03",
+        "wp": "s1-sandbox-adapter",
+        "crate": "sandbox",
+        "location": "crates/sandbox/tests/container/negative.rs",
+        "also": [],
+        "scope": "full"
+      },
+      {
+        "id": "NT-SBX-04",
+        "wp": "s1-sandbox-adapter",
+        "crate": "sandbox",
+        "location": "crates/sandbox/tests/container/negative.rs",
+        "also": [],
+        "scope": "full"
+      },
+      {
+        "id": "NT-SBX-05",
+        "wp": "s1-egress-and-broker",
+        "crate": "egress",
+        "location": "crates/egress/tests/negative.rs",
+        "also": [
+          "s1-sandbox-adapter"
+        ],
+        "scope": "full"
+      },
+      {
+        "id": "NT-SBX-06",
+        "wp": "s1-sandbox-adapter",
+        "crate": "sandbox",
+        "location": "crates/sandbox/tests/container/negative.rs",
+        "also": [],
+        "scope": "full"
+      },
+      {
+        "id": "NT-SBX-07",
+        "wp": "s1-sandbox-adapter",
+        "crate": "sandbox",
+        "location": "crates/sandbox/tests/container/negative.rs",
+        "also": [],
+        "scope": "full"
+      },
+      {
+        "id": "NT-SBX-08",
+        "wp": "s1-sandbox-adapter",
+        "crate": "sandbox",
+        "location": "crates/sandbox/tests/container/negative.rs",
+        "also": [],
+        "scope": "full"
+      },
+      {
+        "id": "NT-SBX-09",
+        "wp": "s1-workspace-ingestion",
+        "crate": "sandbox",
+        "location": "crates/sandbox/tests/workspace/negative.rs",
+        "also": [],
+        "scope": "full"
+      },
+      {
+        "id": "NT-SBX-10",
+        "wp": "s1-workspace-ingestion",
+        "crate": "sandbox",
+        "location": "crates/sandbox/tests/workspace/negative.rs",
+        "also": [],
+        "scope": "full"
+      },
+      {
+        "id": "NT-SBX-11",
+        "wp": "s1-workspace-ingestion",
+        "crate": "sandbox",
+        "location": "crates/sandbox/tests/workspace/negative.rs",
+        "also": [],
+        "scope": "full"
+      },
+      {
+        "id": "NT-SBX-12",
+        "wp": "s1-sandbox-adapter",
+        "crate": "sandbox",
+        "location": "crates/sandbox/tests/container/negative.rs",
+        "also": [],
+        "scope": "full"
+      },
+      {
+        "id": "NT-SBX-13",
+        "wp": "s1-sandbox-adapter",
+        "crate": "sandbox",
+        "location": "crates/sandbox/tests/container/negative.rs",
+        "also": [
+          "s1-egress-and-broker"
+        ],
+        "scope": "full"
+      },
+      {
+        "id": "NT-SBX-14",
+        "wp": "s1-sandbox-adapter",
+        "crate": "sandbox",
+        "location": "crates/sandbox/tests/container/negative.rs",
+        "also": [
+          "s1-engine-core"
+        ],
+        "scope": "full"
+      },
+      {
+        "id": "NT-SEC-01",
+        "wp": "s1-security-review-and-tests",
+        "crate": "workflow",
+        "location": "crates/workflow/tests/security/negative.rs",
+        "also": [
+          "s1-redaction",
+          "s1-github-adapter",
+          "s1-sandbox-adapter",
+          "s1-egress-and-broker"
+        ],
+        "scope": "partial",
+        "reduced_scope_reason": "The sink collector includes NATS messages and memory stores. Neither exists before Slice 2 and Slice 4."
+      },
+      {
+        "id": "NT-SEC-02",
+        "wp": "s1-redaction",
+        "crate": "domain",
+        "location": "crates/domain/tests/redaction.rs",
+        "also": [],
+        "scope": "full"
+      },
+      {
+        "id": "NT-SEC-03",
+        "wp": "s1-github-adapter",
+        "crate": "github",
+        "location": "crates/github/tests/negative.rs",
+        "also": [
+          "s1-redaction"
+        ],
+        "scope": "full"
+      },
+      {
+        "id": "NT-SEC-04",
+        "wp": "s1-github-adapter",
+        "crate": "github",
+        "location": "crates/github/tests/negative.rs",
+        "also": [],
+        "scope": "full"
+      },
+      {
+        "id": "NT-SEC-05",
+        "wp": "s1-trusted-gates-and-validation",
+        "crate": "workflow",
+        "location": "crates/workflow/tests/validation/negative.rs",
+        "also": [
+          "s1-redaction"
+        ],
+        "scope": "full"
+      },
+      {
+        "id": "NT-SEC-07",
+        "wp": "s1-stage-intake-and-repository",
+        "crate": "workflow",
+        "location": "crates/workflow/tests/intake_repo/negative.rs",
+        "also": [
+          "s1-prompt-assembly"
+        ],
+        "scope": "full"
+      },
+      {
+        "id": "NT-SEC-09",
+        "wp": "s1-sandbox-adapter",
+        "crate": "sandbox",
+        "location": "crates/sandbox/tests/container/negative.rs",
+        "also": [
+          "s1-github-adapter"
+        ],
+        "scope": "full"
+      },
+      {
+        "id": "NT-SEC-10",
+        "wp": "s1-github-adapter",
+        "crate": "github",
+        "location": "crates/github/tests/negative.rs",
+        "also": [
+          "s1-agent-runtime-adapters",
+          "s1-egress-and-broker"
+        ],
+        "scope": "full"
+      },
+      {
+        "id": "NT-SEC-11",
+        "wp": "s1-prompt-assembly",
+        "crate": "workflow",
+        "location": "crates/workflow/tests/prompts/negative.rs",
+        "also": [],
+        "scope": "full"
+      },
+      {
+        "id": "NT-SUP-01",
+        "wp": "s1-supply-chain-gates",
+        "crate": "workflow",
+        "location": "crates/workflow/tests/supply_chain/negative.rs",
+        "also": [
+          "s1-policy-evaluation"
+        ],
+        "scope": "full"
+      },
+      {
+        "id": "NT-SUP-02",
+        "wp": "s1-supply-chain-gates",
+        "crate": "workflow",
+        "location": "crates/workflow/tests/supply_chain/negative.rs",
+        "also": [
+          "s1-sandbox-adapter"
+        ],
+        "scope": "full"
+      },
+      {
+        "id": "NT-SUP-03",
+        "wp": "s1-supply-chain-gates",
+        "crate": "workflow",
+        "location": "crates/workflow/tests/supply_chain/negative.rs",
+        "also": [],
+        "scope": "full"
+      },
+      {
+        "id": "NT-SUP-05",
+        "wp": "s1-sandbox-adapter",
+        "crate": "sandbox",
+        "location": "crates/sandbox/tests/container/negative.rs",
+        "also": [],
+        "scope": "full"
+      },
+      {
+        "id": "NT-TEN-05",
+        "wp": "s1-apps-composition",
+        "crate": "api",
+        "location": "apps/api/tests/negative.rs",
+        "also": [
+          "s1-storage-postgres"
+        ],
+        "scope": "full"
+      },
+      {
+        "id": "NT-TOOL-01",
+        "wp": "s1-sandbox-adapter",
+        "crate": "sandbox",
+        "location": "crates/sandbox/tests/container/negative.rs",
+        "also": [
+          "s1-agent-runtime-adapters"
+        ],
+        "scope": "partial",
+        "reduced_scope_reason": "Covers commands the supervisor runs (gates, dependency fetch, ingestion). The agent's own in-container shell is covered by NT-SBX-* instead."
+      },
+      {
+        "id": "NT-TOOL-02",
+        "wp": "s1-policy-evaluation",
+        "crate": "domain",
+        "location": "crates/domain/tests/policy.rs",
+        "also": [],
+        "scope": "full"
+      },
+      {
+        "id": "NT-TOOL-03",
+        "wp": "s1-policy-evaluation",
+        "crate": "domain",
+        "location": "crates/domain/tests/policy.rs",
+        "also": [
+          "s1-security-review-and-tests"
+        ],
+        "scope": "full"
+      },
+      {
+        "id": "NT-TOOL-04",
+        "wp": "s1-policy-evaluation",
+        "crate": "domain",
+        "location": "crates/domain/tests/policy.rs",
+        "also": [
+          "s1-workspace-ingestion"
+        ],
+        "scope": "partial",
+        "reduced_scope_reason": "Path policy is tested on the pure function and on ingestion. The agent's in-container file tools are contained by the sandbox."
+      },
+      {
+        "id": "NT-TOOL-05",
+        "wp": "s1-policy-evaluation",
+        "crate": "domain",
+        "location": "crates/domain/tests/policy.rs",
+        "also": [],
+        "scope": "partial",
+        "reduced_scope_reason": "Argument injection is tested on the command classifier used by supervisor-run commands. The agent's own commands are contained by the sandbox."
+      },
+      {
+        "id": "NT-TOOL-06",
+        "wp": "s1-agent-runtime-adapters",
+        "crate": "runtime",
+        "location": "crates/runtime/tests/negative.rs",
+        "also": [
+          "s1-sandbox-adapter"
+        ],
+        "scope": "partial",
+        "reduced_scope_reason": "Tests the environment the supervisor gives the tool and the commands it runs. The agent's own env parameter does not exist as a factory tool."
+      },
+      {
+        "id": "NT-TOOL-07",
+        "wp": "s1-agent-runtime-adapters",
+        "crate": "runtime",
+        "location": "crates/runtime/tests/negative.rs",
+        "also": [
+          "s1-sandbox-adapter"
+        ],
+        "scope": "full"
+      },
+      {
+        "id": "NT-TOOL-09",
+        "wp": "s0-contracts-and-registry",
+        "crate": "contracts",
+        "location": "crates/contracts/tests/negative.rs",
+        "also": [
+          "s1-agent-runtime-adapters"
+        ],
+        "scope": "full"
+      },
+      {
+        "id": "NT-WEB-05",
+        "wp": "s1-apps-composition",
+        "crate": "api",
+        "location": "apps/api/tests/negative.rs",
+        "also": [],
+        "scope": "full"
+      },
+      {
+        "id": "NT-WH-01",
+        "wp": "s1-apps-composition",
+        "crate": "api",
+        "location": "apps/api/tests/negative.rs",
+        "also": [],
+        "scope": "full"
+      },
+      {
+        "id": "NT-WH-02",
+        "wp": "s1-github-adapter",
+        "crate": "github",
+        "location": "crates/github/tests/negative.rs",
+        "also": [],
+        "scope": "full"
+      },
+      {
+        "id": "NT-WH-03",
+        "wp": "s1-github-adapter",
+        "crate": "github",
+        "location": "crates/github/tests/negative.rs",
+        "also": [],
+        "scope": "full"
+      },
+      {
+        "id": "NT-WH-04",
+        "wp": "s1-apps-composition",
+        "crate": "api",
+        "location": "apps/api/tests/negative.rs",
+        "also": [
+          "s1-storage-postgres",
+          "s0-database-baseline"
+        ],
+        "scope": "partial",
+        "reduced_scope_reason": "The catalog names an events component. Slice 1 has the outbox row and the unique delivery id. Publishing to NATS and the idempotent consumer are Slice 2."
+      },
+      {
+        "id": "NT-WH-06",
+        "wp": "s1-github-adapter",
+        "crate": "github",
+        "location": "crates/github/tests/negative.rs",
+        "also": [
+          "s1-stage-intake-and-repository"
+        ],
+        "scope": "full"
+      },
+      {
+        "id": "NT-WH-09",
+        "wp": "s1-github-adapter",
+        "crate": "github",
+        "location": "crates/github/tests/negative.rs",
+        "also": [],
+        "scope": "full"
+      }
+    ],
+    "static_checks": [
+      {
+        "id": "ST-01",
+        "wp": "s0-workspace-skeleton",
+        "crate": "xtask",
+        "location": "xtask/tests/static_checks.rs",
+        "also": [
+          "s1-workspace-ingestion"
+        ]
+      },
+      {
+        "id": "ST-02",
+        "wp": "s0-workspace-skeleton",
+        "crate": "xtask",
+        "location": "xtask/tests/static_checks.rs",
+        "also": [
+          "s1-github-adapter"
+        ]
+      },
+      {
+        "id": "ST-03",
+        "wp": "s0-workspace-skeleton",
+        "crate": "xtask",
+        "location": "xtask/tests/static_checks.rs",
+        "also": [
+          "s1-sandbox-adapter"
+        ]
+      },
+      {
+        "id": "ST-04",
+        "wp": "s0-workspace-skeleton",
+        "crate": "xtask",
+        "location": "xtask/tests/static_checks.rs",
+        "also": [
+          "s1-sandbox-adapter"
+        ]
+      },
+      {
+        "id": "ST-05",
+        "wp": "s0-workspace-skeleton",
+        "crate": "xtask",
+        "location": "xtask/tests/static_checks.rs",
+        "also": [
+          "s1-stage-delivery-and-approval"
+        ]
+      },
+      {
+        "id": "ST-06",
+        "wp": "s0-contracts-and-registry",
+        "crate": "contracts",
+        "location": "crates/contracts/tests/negative.rs",
+        "also": []
+      },
+      {
+        "id": "ST-07",
+        "wp": "s0-telemetry-baseline",
+        "crate": "observability",
+        "location": "crates/observability/tests/static_checks.rs",
+        "also": []
+      },
+      {
+        "id": "ST-08",
+        "wp": "s0-ci-pipeline",
+        "crate": "ci",
+        "location": ".github/workflows/ci.yml",
+        "also": []
+      },
+      {
+        "id": "ST-09",
+        "wp": "s0-workspace-skeleton",
+        "crate": "xtask",
+        "location": "xtask/tests/static_checks.rs",
+        "also": [
+          "s1-workspace-ingestion"
+        ]
+      },
+      {
+        "id": "ST-10",
+        "wp": "s0-ci-pipeline",
+        "crate": "ci",
+        "location": ".github/workflows/ci.yml",
+        "also": []
+      }
+    ],
+    "gaps": [
+      {
+        "test": "NT-WH-04",
+        "uncovered": "Publishing to NATS and the idempotent event consumer",
+        "reason": "The events crate is deferred to Slice 2. Slice 1 stores the outbox row and the unique delivery id.",
+        "resolves_in": "Slice 2"
+      },
+      {
+        "test": "NT-GATE-08",
+        "uncovered": "Held-out evaluation data in the evals component",
+        "reason": "There is no evals crate before Slice 4. Sandbox, prompts and sinks are covered.",
+        "resolves_in": "Slice 4"
+      },
+      {
+        "test": "NT-SEC-01",
+        "uncovered": "NATS messages and memory stores as sinks in the canary sweep",
+        "reason": "Neither exists in Slice 1.",
+        "resolves_in": "Slice 2 and Slice 4"
+      },
+      {
+        "test": "NT-BUD-03",
+        "uncovered": "A turn cap on the agent tool",
+        "reason": "Claude Code 2.1.311 has no --max-turns flag and Codex exec shows no budget flag. Only stagnation detection and the broker ceiling bound the run.",
+        "resolves_in": "needs a decision: broker request counting, or a tool that supports a cap"
+      },
+      {
+        "test": "NT-INJ-04, NT-TOOL-01, NT-TOOL-04, NT-TOOL-05, NT-TOOL-06",
+        "uncovered": "Factory-mediated tool calls by the agent (exec.run, fs.read, fs.write, exec.shell, approval.grant)",
+        "reason": "With the agent tool inside the sandbox its own tools are not mediated by the factory. The container, the broker and the ingestion pipeline contain it instead. The catalog's setups assume mediation (the host tool bridge).",
+        "resolves_in": "If a human chooses the host tool bridge, these tests apply in full to the bridge tools"
+      },
+      {
+        "test": "NT-AUD-03",
+        "uncovered": "Event types whose emitting component is built late",
+        "reason": "The coverage test can only finish when every emitter exists.",
+        "resolves_in": "end of Slice 1, by the coverage matrix"
+      }
+    ]
+  }
+}

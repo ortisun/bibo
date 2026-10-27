@@ -1,0 +1,1518 @@
+{
+  "schema_version": 1,
+  "title": "Factory state machines",
+  "description": "Single source of truth for the legal state transitions of Job, StageRun, Attempt and TaskNode. docs/architecture/state-machine.md renders its tables from this file. The domain crate must accept exactly the (from, event) pairs listed here and reject every other pair.",
+  "actors": {
+    "engine": "The workflow use-case layer. The only component that writes a status, always inside one database transaction. Every transition in this file is applied by the engine; the actor column only says who may request it.",
+    "worker": "A process that holds an attempt lease. May request transitions for its own attempt only, and only with the current lease epoch.",
+    "sweeper": "The timer tick inside the engine. Acts on deadlines, lease expiry and retry back-off.",
+    "gate": "The deterministic gate evaluator called by the engine while a stage run is GATING. Reads evidence, never agent prose.",
+    "requester": "The human who submitted the request. Must appear on the tenant's named requester allowlist in protected configuration. Holding a GitHub role is not enough.",
+    "operator": "A human with operational rights on the tenant: pause, resume, cancel, unblock, grant budget.",
+    "approver": "A human with the approval role defined by the tenant approval policy.",
+    "security_approver": "A human on the explicit security approver list kept in protected central configuration. Required to dispose of a security-class block. Matches the role of the same name in policies/approval.yaml.",
+    "org_admin": "A human organization administrator. May raise a budget above its ceiling, raise autonomy, and enable anything that is off by default. Matches policies/approval.yaml."
+  },
+  "guards": {
+    "G_ADMISSION_OK": "The requester is on the tenant's named requester allowlist in protected configuration, the tenant is within its job quota, the repository is registered and enabled, the repository passed the protection preflight (otherwise the job may only run at autonomy level L0), and policy allows this class of request.",
+    "G_ADMISSION_DENIED": "The requester is not on the allowlist, the quota is exceeded, the repository is not registered or is disabled, or policy forbids this class of request. The reason is recorded and no reply reveals which test failed.",
+    "G_ANY_STAGE_WAITING": "At least one stage run of the job is WAITING_FOR_HUMAN.",
+    "G_NO_STAGE_WAITING": "No stage run of the job is WAITING_FOR_HUMAN.",
+    "G_ACTOR_MAY_PAUSE": "The principal holds the operator role on the tenant.",
+    "G_ANY_STAGE_BLOCKED": "At least one stage run of the job is BLOCKED.",
+    "G_BLOCK_DISPOSITIONS_RECORDED": "Every BLOCKED stage run has a recorded disposition: capability re-probe passed, or an allowed override, or a rework decision.",
+    "G_ACTOR_MAY_CANCEL": "The principal is the requester of the job or holds the operator role.",
+    "G_ALL_ATTEMPTS_TERMINAL": "Every attempt of the job is in a terminal state and every sandbox has been torn down or flagged as leaked.",
+    "G_UNRECOVERABLE": "A stage run is FAILED and no rework route or retry budget remains, or a job-level hard limit was reached under a policy that says fail.",
+    "G_REJECTION_RECORDED": "The intake decision is decline, or an authorized approver recorded a reject decision.",
+    "G_PIPELINE_SCOPE_COMPLETE": "Every stage kind in the job's configured scope has a PASSED run that is not superseded, the approval decision is approve, and the evidence ledger hash chain verifies.",
+    "G_UPSTREAM_PASSED": "Every required upstream stage run is PASSED and not superseded, every consumed artifact hash equals the current version, and the stage contract resolved and validated against its schema.",
+    "G_NOT_APPLICABLE_DECIDED": "A deterministic rule, a domain profile or a policy states that the stage does not apply. The rule and its inputs are recorded in the ledger. An agent opinion is never sufficient.",
+    "G_LEASE_ACQUIRED": "The lease compare-and-swap succeeded, the job is ACTIVE, not_before has passed, the concurrency quota allows it, and the runtime capability check passed.",
+    "G_OUTPUT_SCHEMA_VALID": "The attempt succeeded and its output validates against the stage outputs schema, and the output artifact hash is stored.",
+    "G_RETRY_ALLOWED": "The failure class is retryable, attempts used is below max_attempts, and the budget has room for another attempt.",
+    "G_RETRY_EXHAUSTED_OR_NONRETRYABLE": "The failure class is not retryable, or max_attempts is reached.",
+    "G_ESCALATION_REQUIRED": "A budget limit was hit, the agent returned a structured needs_human request, the stagnation detector fired, or policy requires a human decision here.",
+    "G_GATE_PASS_EVIDENCED": "The gate decision is PASS and is persisted, every acceptance criterion of the stage contract has a ledger entry, and every mandatory gate report is PASSED or NOT_APPLICABLE with a recorded reason. No gate report is BLOCKED.",
+    "G_REWORK_ALLOWED": "The verdict is CHANGES_REQUIRED or a deterministic gate FAILED, rework rounds used are below the cap of two (code and documentation each have their own count), the failing set differs from the previous round, and budget remains. After the second round a human decides.",
+    "G_NEEDS_HUMAN_VERDICT": "The verdict is NEEDS_HUMAN, or the rework limit, the stagnation detector or a budget limit was reached, or the gate itself is a human gate.",
+    "G_BLOCKING_CONDITION": "The verdict is BLOCK, a mandatory gate could not run (tool unavailable or probe failed), or a policy violation was detected.",
+    "G_GATE_FAILED_NO_REWORK": "The gate FAILED and the stage has no rework route, for example an intake record that is still invalid after bounded repair.",
+    "G_ANSWER_RECORDED": "A human answer, clarification, approval of residual input or budget extension is recorded with the principal and becomes a new input hash for the stage.",
+    "G_APPROVER_AUTHORIZED": "The decision is approve, the principal holds the role the approval policy requires for this stage and risk tier, and the evidence digest the human saw equals the current evidence digest.",
+    "G_HUMAN_REWORK_ALLOWED": "The principal holds the approver or operator role and the rework rounds used are below the cap of two. The stagnation detector does not apply to human requests. After the second round a human must choose to continue, with the decision recorded.",
+    "G_HUMAN_REJECTED": "An authorized approver recorded a reject decision with a reason.",
+    "G_BLOCK_CLEARED_RERUN": "The capability re-probe passed or the missing dependency is now available, so the stage can run again.",
+    "G_OVERRIDE_PERMITTED": "Policy permits an override for this block code, the principal holds the required role (security_approver for security-class blocks), a justification is recorded, and the blocked gate is not a mandatory gate of an active domain profile. An override records accepted residual risk. It never creates an assurance level claim.",
+    "G_NO_ACTIVE_ATTEMPT": "The stage run has no attempt in STARTING, RUNNING or CANCELLING.",
+    "G_UPSTREAM_INVALIDATED": "A consumed upstream artifact was superseded by a newer version, or an upstream stage run was reworked.",
+    "G_SANDBOX_PROVISIONED": "The sandbox started within its limits, the policy-approved tool grants are in place, the runtime capability probe satisfies the stage needs, and the lease epoch is current.",
+    "G_LEASE_EPOCH_CURRENT": "The epoch sent by the worker equals the stored epoch and now is not past lease_expires_at.",
+    "G_EPOCH_CURRENT": "The epoch sent by the worker equals the stored epoch.",
+    "G_DEADLINE_PASSED": "Now is past the attempt deadline.",
+    "G_LEASE_EXPIRED": "Now is past lease_expires_at and no heartbeat arrived.",
+    "G_CANCEL_ALLOWED": "The attempt is not terminal and the job is CANCELLING or the stage run is being superseded.",
+    "G_SANDBOX_GONE": "The sandbox no longer exists, confirmed by the sandbox provider.",
+    "G_TEARDOWN_DEADLINE_PASSED": "The teardown grace period elapsed. The sandbox is force-killed and a leaked_resources alert is raised if it cannot be confirmed gone.",
+    "G_TASK_DEPS_SUCCEEDED": "Every task this node depends on is SUCCEEDED.",
+    "G_TASK_STARTED_BY_ATTEMPT": "The IMPLEMENTATION attempt picked this task as the next one in topological order.",
+    "G_TASK_EVIDENCE_RECORDED": "A commit exists for the task, changed paths are inside the task's owned files, no protected path changed, and the per-task checks passed.",
+    "G_TASK_RETRY_ALLOWED": "The task retry count is below the per-task limit and the stage budget has room."
+  },
+  "machines": {
+    "job": {
+      "title": "Job",
+      "description": "Lifecycle of one request. Says whether the factory is still working on it, not how far the work has been verified. Verification maturity is tracked separately as assurance levels.",
+      "initial": "RECEIVED",
+      "states": {
+        "RECEIVED": {
+          "terminal": false,
+          "meaning": "The request passed authorization at the API boundary and is stored. Not yet admitted."
+        },
+        "ACTIVE": {
+          "terminal": false,
+          "meaning": "Stage runs are being scheduled and executed."
+        },
+        "WAITING_FOR_HUMAN": {
+          "terminal": false,
+          "meaning": "At least one stage run needs a human answer, decision or approval."
+        },
+        "PAUSED": {
+          "terminal": false,
+          "meaning": "An operator paused the job. No new attempt is leased. Running attempts finish or time out."
+        },
+        "BLOCKED": {
+          "terminal": false,
+          "meaning": "A stage run cannot proceed or be promoted without an explicit disposition."
+        },
+        "CANCELLING": {
+          "terminal": false,
+          "meaning": "Cancellation was requested. Attempts and sandboxes are being torn down."
+        },
+        "COMPLETED": {
+          "terminal": true,
+          "meaning": "Every stage in the job's configured scope passed and the approval decision is recorded. This does not mean merged, released or deployed, and it says nothing about verification maturity."
+        },
+        "FAILED": {
+          "terminal": true,
+          "meaning": "The job cannot continue and no rework route or budget remains."
+        },
+        "CANCELLED": {
+          "terminal": true,
+          "meaning": "Cancelled by an authorized human and fully torn down."
+        },
+        "REJECTED": {
+          "terminal": true,
+          "meaning": "Refused at admission, declined at intake, or rejected by an approver."
+        }
+      },
+      "transitions": [
+        {
+          "id": "J01",
+          "from": [
+            "RECEIVED"
+          ],
+          "event": "admit",
+          "guard": "G_ADMISSION_OK",
+          "to": "ACTIVE",
+          "actors": [
+            "engine"
+          ],
+          "emits": "job.admitted",
+          "effects": [
+            "create the INTAKE stage run in PENDING"
+          ]
+        },
+        {
+          "id": "J02",
+          "from": [
+            "RECEIVED"
+          ],
+          "event": "reject_at_admission",
+          "guard": "G_ADMISSION_DENIED",
+          "to": "REJECTED",
+          "actors": [
+            "engine"
+          ],
+          "emits": "job.rejected",
+          "effects": [
+            "record the denial reason"
+          ]
+        },
+        {
+          "id": "J03",
+          "from": [
+            "ACTIVE"
+          ],
+          "event": "stage_needs_human",
+          "guard": "G_ANY_STAGE_WAITING",
+          "to": "WAITING_FOR_HUMAN",
+          "actors": [
+            "engine"
+          ],
+          "emits": "job.waiting_for_human",
+          "effects": [
+            "notify the requester and approvers"
+          ]
+        },
+        {
+          "id": "J04",
+          "from": [
+            "WAITING_FOR_HUMAN"
+          ],
+          "event": "human_wait_resolved",
+          "guard": "G_NO_STAGE_WAITING",
+          "to": "ACTIVE",
+          "actors": [
+            "engine"
+          ],
+          "emits": "job.resumed",
+          "effects": []
+        },
+        {
+          "id": "J05",
+          "from": [
+            "ACTIVE",
+            "WAITING_FOR_HUMAN"
+          ],
+          "event": "pause",
+          "guard": "G_ACTOR_MAY_PAUSE",
+          "to": "PAUSED",
+          "actors": [
+            "operator"
+          ],
+          "emits": "job.paused",
+          "effects": [
+            "stop leasing new attempts"
+          ]
+        },
+        {
+          "id": "J06",
+          "from": [
+            "PAUSED"
+          ],
+          "event": "resume",
+          "guard": "G_ACTOR_MAY_PAUSE",
+          "to": "ACTIVE",
+          "actors": [
+            "operator"
+          ],
+          "emits": "job.resumed",
+          "effects": [
+            "engine re-evaluates J03 and J07 immediately"
+          ]
+        },
+        {
+          "id": "J07",
+          "from": [
+            "ACTIVE"
+          ],
+          "event": "block",
+          "guard": "G_ANY_STAGE_BLOCKED",
+          "to": "BLOCKED",
+          "actors": [
+            "engine"
+          ],
+          "emits": "job.blocked",
+          "effects": [
+            "notify operators"
+          ]
+        },
+        {
+          "id": "J08",
+          "from": [
+            "BLOCKED"
+          ],
+          "event": "unblock",
+          "guard": "G_BLOCK_DISPOSITIONS_RECORDED",
+          "to": "ACTIVE",
+          "actors": [
+            "operator",
+            "security_approver"
+          ],
+          "emits": "job.unblocked",
+          "effects": []
+        },
+        {
+          "id": "J09",
+          "from": [
+            "ACTIVE",
+            "WAITING_FOR_HUMAN",
+            "PAUSED",
+            "BLOCKED"
+          ],
+          "event": "request_cancel",
+          "guard": "G_ACTOR_MAY_CANCEL",
+          "to": "CANCELLING",
+          "actors": [
+            "requester",
+            "operator"
+          ],
+          "emits": "job.cancel_requested",
+          "effects": [
+            "request cancel on every non-terminal attempt"
+          ]
+        },
+        {
+          "id": "J10",
+          "from": [
+            "CANCELLING"
+          ],
+          "event": "cancellation_complete",
+          "guard": "G_ALL_ATTEMPTS_TERMINAL",
+          "to": "CANCELLED",
+          "actors": [
+            "engine",
+            "sweeper"
+          ],
+          "emits": "job.cancelled",
+          "effects": [
+            "mark non-terminal stage runs CANCELLED"
+          ]
+        },
+        {
+          "id": "J11",
+          "from": [
+            "ACTIVE"
+          ],
+          "event": "fail_job",
+          "guard": "G_UNRECOVERABLE",
+          "to": "FAILED",
+          "actors": [
+            "engine"
+          ],
+          "emits": "job.failed",
+          "effects": [
+            "record the failing stage run and reason"
+          ]
+        },
+        {
+          "id": "J12",
+          "from": [
+            "ACTIVE",
+            "WAITING_FOR_HUMAN"
+          ],
+          "event": "reject_job",
+          "guard": "G_REJECTION_RECORDED",
+          "to": "REJECTED",
+          "actors": [
+            "engine",
+            "approver"
+          ],
+          "emits": "job.rejected",
+          "effects": [
+            "tear down any sandbox"
+          ]
+        },
+        {
+          "id": "J13",
+          "from": [
+            "ACTIVE"
+          ],
+          "event": "complete",
+          "guard": "G_PIPELINE_SCOPE_COMPLETE",
+          "to": "COMPLETED",
+          "actors": [
+            "engine"
+          ],
+          "emits": "job.completed",
+          "effects": [
+            "write the final evidence manifest hash"
+          ]
+        }
+      ]
+    },
+    "stage_run": {
+      "title": "Stage run",
+      "description": "One execution of one stage kind for a job. Terminal runs are immutable. Rework creates a new run; it never reopens an old one.",
+      "initial": "PENDING",
+      "states": {
+        "PENDING": {
+          "terminal": false,
+          "meaning": "Created. Upstream requirements are not met yet."
+        },
+        "READY": {
+          "terminal": false,
+          "meaning": "Schedulable. Needs an attempt. Also the state during retry back-off, with not_before in the future."
+        },
+        "RUNNING": {
+          "terminal": false,
+          "meaning": "An attempt is in progress."
+        },
+        "GATING": {
+          "terminal": false,
+          "meaning": "Work is done. The deterministic gate or independent evaluator is deciding. Success claimed by an agent has no effect here."
+        },
+        "WAITING_FOR_HUMAN": {
+          "terminal": false,
+          "meaning": "Needs a human answer, budget decision, gate decision or approval."
+        },
+        "BLOCKED": {
+          "terminal": false,
+          "meaning": "Cannot proceed or be promoted. Needs a recorded disposition."
+        },
+        "PASSED": {
+          "terminal": true,
+          "supersedable": true,
+          "meaning": "The gate decision is PASS with evidence. Settled, but becomes SUPERSEDED if its inputs are invalidated."
+        },
+        "REWORK_REQUESTED": {
+          "terminal": true,
+          "meaning": "The gate sent the work back. A new run of the route target stage replaces this one."
+        },
+        "FAILED": {
+          "terminal": true,
+          "meaning": "Retries or rework exhausted, or the failure is not retryable, or a human rejected."
+        },
+        "SKIPPED": {
+          "terminal": true,
+          "meaning": "NOT_APPLICABLE by deterministic rule, profile or policy, with the rule recorded."
+        },
+        "SUPERSEDED": {
+          "terminal": true,
+          "meaning": "Replaced because an upstream input changed."
+        },
+        "CANCELLED": {
+          "terminal": true,
+          "meaning": "Cancelled with the job."
+        }
+      },
+      "transitions": [
+        {
+          "id": "S01",
+          "from": [
+            "PENDING"
+          ],
+          "event": "preconditions_met",
+          "guard": "G_UPSTREAM_PASSED",
+          "to": "READY",
+          "actors": [
+            "engine"
+          ],
+          "emits": "stage_run.ready",
+          "effects": [
+            "resolve and persist the StageContract"
+          ]
+        },
+        {
+          "id": "S02",
+          "from": [
+            "PENDING",
+            "READY"
+          ],
+          "event": "mark_not_applicable",
+          "guard": "G_NOT_APPLICABLE_DECIDED",
+          "to": "SKIPPED",
+          "actors": [
+            "engine"
+          ],
+          "emits": "stage_run.skipped",
+          "effects": [
+            "append a ledger entry with the rule and inputs"
+          ]
+        },
+        {
+          "id": "S03",
+          "from": [
+            "READY"
+          ],
+          "event": "start",
+          "guard": "G_LEASE_ACQUIRED",
+          "to": "RUNNING",
+          "actors": [
+            "worker"
+          ],
+          "emits": "stage_run.started",
+          "effects": [
+            "create the attempt in STARTING with lease epoch + 1"
+          ]
+        },
+        {
+          "id": "S04",
+          "from": [
+            "RUNNING"
+          ],
+          "event": "attempt_succeeded",
+          "guard": "G_OUTPUT_SCHEMA_VALID",
+          "to": "GATING",
+          "actors": [
+            "engine"
+          ],
+          "emits": "stage_run.gating",
+          "effects": [
+            "persist the output artifact hash"
+          ]
+        },
+        {
+          "id": "S05",
+          "from": [
+            "RUNNING"
+          ],
+          "event": "attempt_failed_retryable",
+          "guard": "G_RETRY_ALLOWED",
+          "to": "READY",
+          "actors": [
+            "engine"
+          ],
+          "emits": "stage_run.retry_scheduled",
+          "effects": [
+            "set not_before with exponential back-off and jitter"
+          ]
+        },
+        {
+          "id": "S06",
+          "from": [
+            "RUNNING"
+          ],
+          "event": "attempt_failed_final",
+          "guard": "G_RETRY_EXHAUSTED_OR_NONRETRYABLE",
+          "to": "FAILED",
+          "actors": [
+            "engine"
+          ],
+          "emits": "stage_run.failed",
+          "effects": [
+            "append a ledger entry with the failure class"
+          ]
+        },
+        {
+          "id": "S07",
+          "from": [
+            "RUNNING"
+          ],
+          "event": "escalate_to_human",
+          "guard": "G_ESCALATION_REQUIRED",
+          "to": "WAITING_FOR_HUMAN",
+          "actors": [
+            "engine"
+          ],
+          "emits": "stage_run.waiting_for_human",
+          "effects": [
+            "store the question or the limit that was hit"
+          ]
+        },
+        {
+          "id": "S08",
+          "from": [
+            "GATING"
+          ],
+          "event": "gate_passed",
+          "guard": "G_GATE_PASS_EVIDENCED",
+          "to": "PASSED",
+          "actors": [
+            "gate"
+          ],
+          "emits": "stage_run.passed",
+          "effects": [
+            "append ledger entries and the gate decision"
+          ]
+        },
+        {
+          "id": "S09",
+          "from": [
+            "GATING"
+          ],
+          "event": "gate_requires_rework",
+          "guard": "G_REWORK_ALLOWED",
+          "to": "REWORK_REQUESTED",
+          "actors": [
+            "gate"
+          ],
+          "emits": "stage_run.rework_requested",
+          "effects": [
+            "create a new run of the route target stage",
+            "supersede downstream runs"
+          ]
+        },
+        {
+          "id": "S10",
+          "from": [
+            "GATING"
+          ],
+          "event": "gate_needs_human",
+          "guard": "G_NEEDS_HUMAN_VERDICT",
+          "to": "WAITING_FOR_HUMAN",
+          "actors": [
+            "gate"
+          ],
+          "emits": "stage_run.waiting_for_human",
+          "effects": [
+            "present the evidence digest to the human"
+          ]
+        },
+        {
+          "id": "S11",
+          "from": [
+            "GATING"
+          ],
+          "event": "gate_blocks",
+          "guard": "G_BLOCKING_CONDITION",
+          "to": "BLOCKED",
+          "actors": [
+            "gate"
+          ],
+          "emits": "stage_run.blocked",
+          "effects": [
+            "record the block code"
+          ]
+        },
+        {
+          "id": "S12",
+          "from": [
+            "GATING"
+          ],
+          "event": "gate_failed_final",
+          "guard": "G_GATE_FAILED_NO_REWORK",
+          "to": "FAILED",
+          "actors": [
+            "gate"
+          ],
+          "emits": "stage_run.failed",
+          "effects": []
+        },
+        {
+          "id": "S13",
+          "from": [
+            "WAITING_FOR_HUMAN"
+          ],
+          "event": "human_answered",
+          "guard": "G_ANSWER_RECORDED",
+          "to": "READY",
+          "actors": [
+            "requester",
+            "operator",
+            "approver"
+          ],
+          "emits": "stage_run.ready",
+          "effects": [
+            "new input hash recorded",
+            "next attempt receives the answer as untrusted-but-authorized input"
+          ]
+        },
+        {
+          "id": "S14",
+          "from": [
+            "WAITING_FOR_HUMAN"
+          ],
+          "event": "human_approved",
+          "guard": "G_APPROVER_AUTHORIZED",
+          "to": "PASSED",
+          "actors": [
+            "approver"
+          ],
+          "emits": "stage_run.passed",
+          "effects": [
+            "append a ledger entry of kind expert_judgment with the approver identity"
+          ]
+        },
+        {
+          "id": "S15",
+          "from": [
+            "WAITING_FOR_HUMAN",
+            "BLOCKED"
+          ],
+          "event": "human_requested_rework",
+          "guard": "G_HUMAN_REWORK_ALLOWED",
+          "to": "REWORK_REQUESTED",
+          "actors": [
+            "approver",
+            "operator"
+          ],
+          "emits": "stage_run.rework_requested",
+          "effects": [
+            "create a new run of the route target stage with the human instructions as input"
+          ]
+        },
+        {
+          "id": "S16",
+          "from": [
+            "WAITING_FOR_HUMAN"
+          ],
+          "event": "human_rejected",
+          "guard": "G_HUMAN_REJECTED",
+          "to": "FAILED",
+          "actors": [
+            "approver"
+          ],
+          "emits": "stage_run.failed",
+          "effects": [
+            "record reason REJECTED_BY_HUMAN"
+          ]
+        },
+        {
+          "id": "S17",
+          "from": [
+            "BLOCKED"
+          ],
+          "event": "unblocked_rerun",
+          "guard": "G_BLOCK_CLEARED_RERUN",
+          "to": "READY",
+          "actors": [
+            "operator"
+          ],
+          "emits": "stage_run.ready",
+          "effects": [
+            "re-run the capability probe and record its output"
+          ]
+        },
+        {
+          "id": "S18",
+          "from": [
+            "BLOCKED"
+          ],
+          "event": "override_accepted",
+          "guard": "G_OVERRIDE_PERMITTED",
+          "to": "PASSED",
+          "actors": [
+            "approver",
+            "security_approver"
+          ],
+          "emits": "stage_run.passed",
+          "effects": [
+            "append a ledger entry of kind expert_judgment naming the accepted residual risk",
+            "mark the run disposition ACCEPTED_RESIDUAL_RISK"
+          ]
+        },
+        {
+          "id": "S19",
+          "from": [
+            "PENDING",
+            "READY",
+            "RUNNING",
+            "GATING",
+            "WAITING_FOR_HUMAN",
+            "BLOCKED"
+          ],
+          "event": "cancel",
+          "guard": "G_NO_ACTIVE_ATTEMPT",
+          "to": "CANCELLED",
+          "actors": [
+            "engine"
+          ],
+          "emits": "stage_run.cancelled",
+          "effects": []
+        },
+        {
+          "id": "S20",
+          "from": [
+            "PENDING",
+            "READY",
+            "RUNNING",
+            "GATING",
+            "WAITING_FOR_HUMAN",
+            "BLOCKED",
+            "PASSED"
+          ],
+          "event": "supersede",
+          "guard": "G_UPSTREAM_INVALIDATED",
+          "to": "SUPERSEDED",
+          "actors": [
+            "engine"
+          ],
+          "emits": "stage_run.superseded",
+          "effects": [
+            "request cancel on active attempts",
+            "append invalidating ledger entries for this run"
+          ]
+        }
+      ]
+    },
+    "attempt": {
+      "title": "Attempt",
+      "description": "One try at a stage run, owned by one worker through one lease. The attempt is created together with its lease, so there is no pre-lease state.",
+      "initial": "STARTING",
+      "states": {
+        "STARTING": {
+          "terminal": false,
+          "meaning": "Lease acquired. Sandbox and agent runtime are being prepared."
+        },
+        "RUNNING": {
+          "terminal": false,
+          "meaning": "The agent or tool is executing and the worker is heartbeating."
+        },
+        "CANCELLING": {
+          "terminal": false,
+          "meaning": "Cancel requested. Teardown in progress. Reports are kept for audit and cannot change the outcome."
+        },
+        "SUCCEEDED": {
+          "terminal": true,
+          "meaning": "Output received, validated against the outputs schema and stored. Says nothing about quality; the gate decides that."
+        },
+        "FAILED": {
+          "terminal": true,
+          "meaning": "Ended with a failure class: TOOL_ERROR, INVALID_OUTPUT, BUDGET_EXHAUSTED, POLICY_DENIED, PROVIDER_ERROR, SANDBOX_ERROR or INTERNAL."
+        },
+        "TIMED_OUT": {
+          "terminal": true,
+          "meaning": "The attempt deadline passed. The sandbox is killed."
+        },
+        "LEASE_LOST": {
+          "terminal": true,
+          "meaning": "The lease expired without heartbeat. The worker is presumed dead. Its later writes are rejected by the lease epoch."
+        },
+        "CANCELLED": {
+          "terminal": true,
+          "meaning": "Torn down after a cancel request."
+        }
+      },
+      "transitions": [
+        {
+          "id": "A01",
+          "from": [
+            "STARTING"
+          ],
+          "event": "sandbox_ready",
+          "guard": "G_SANDBOX_PROVISIONED",
+          "to": "RUNNING",
+          "actors": [
+            "worker"
+          ],
+          "emits": "attempt.running",
+          "effects": [
+            "record the sandbox id, image digest and runtime capability record"
+          ]
+        },
+        {
+          "id": "A02",
+          "from": [
+            "STARTING"
+          ],
+          "event": "provision_failed",
+          "guard": "G_EPOCH_CURRENT",
+          "to": "FAILED",
+          "actors": [
+            "worker"
+          ],
+          "emits": "attempt.failed",
+          "effects": [
+            "failure class SANDBOX_ERROR"
+          ]
+        },
+        {
+          "id": "A03",
+          "from": [
+            "RUNNING"
+          ],
+          "event": "heartbeat",
+          "guard": "G_LEASE_EPOCH_CURRENT",
+          "to": "RUNNING",
+          "actors": [
+            "worker"
+          ],
+          "emits": null,
+          "effects": [
+            "extend lease_expires_at",
+            "no domain event; metrics only"
+          ]
+        },
+        {
+          "id": "A04",
+          "from": [
+            "RUNNING"
+          ],
+          "event": "report_success",
+          "guard": "G_OUTPUT_SCHEMA_VALID",
+          "to": "SUCCEEDED",
+          "actors": [
+            "worker"
+          ],
+          "emits": "attempt.succeeded",
+          "effects": [
+            "store the output artifact",
+            "engine validates the output; invalid output takes A05 instead"
+          ]
+        },
+        {
+          "id": "A05",
+          "from": [
+            "RUNNING"
+          ],
+          "event": "report_failure",
+          "guard": "G_EPOCH_CURRENT",
+          "to": "FAILED",
+          "actors": [
+            "worker",
+            "engine"
+          ],
+          "emits": "attempt.failed",
+          "effects": [
+            "record the failure class"
+          ]
+        },
+        {
+          "id": "A06",
+          "from": [
+            "STARTING",
+            "RUNNING"
+          ],
+          "event": "deadline_exceeded",
+          "guard": "G_DEADLINE_PASSED",
+          "to": "TIMED_OUT",
+          "actors": [
+            "sweeper"
+          ],
+          "emits": "attempt.timed_out",
+          "effects": [
+            "request sandbox kill"
+          ]
+        },
+        {
+          "id": "A07",
+          "from": [
+            "STARTING",
+            "RUNNING"
+          ],
+          "event": "lease_expired",
+          "guard": "G_LEASE_EXPIRED",
+          "to": "LEASE_LOST",
+          "actors": [
+            "sweeper"
+          ],
+          "emits": "attempt.lease_lost",
+          "effects": [
+            "increment lease_epoch to fence the old worker",
+            "best-effort sandbox teardown"
+          ]
+        },
+        {
+          "id": "A08",
+          "from": [
+            "STARTING",
+            "RUNNING"
+          ],
+          "event": "request_cancel",
+          "guard": "G_CANCEL_ALLOWED",
+          "to": "CANCELLING",
+          "actors": [
+            "engine"
+          ],
+          "emits": "attempt.cancel_requested",
+          "effects": [
+            "signal the worker",
+            "start the teardown grace period"
+          ]
+        },
+        {
+          "id": "A09",
+          "from": [
+            "CANCELLING"
+          ],
+          "event": "teardown_complete",
+          "guard": "G_SANDBOX_GONE",
+          "to": "CANCELLED",
+          "actors": [
+            "worker",
+            "sweeper"
+          ],
+          "emits": "attempt.cancelled",
+          "effects": []
+        },
+        {
+          "id": "A10",
+          "from": [
+            "CANCELLING"
+          ],
+          "event": "teardown_deadline",
+          "guard": "G_TEARDOWN_DEADLINE_PASSED",
+          "to": "CANCELLED",
+          "actors": [
+            "sweeper"
+          ],
+          "emits": "attempt.cancelled",
+          "effects": [
+            "force kill",
+            "raise a leaked_resources alert when removal cannot be confirmed"
+          ]
+        }
+      ]
+    },
+    "task_node": {
+      "title": "Task node (Slice 1 minimal)",
+      "description": "Status of one node of the task DAG. In Slice 1 the DAG runs sequentially inside a single IMPLEMENTATION attempt, so task nodes are bookkeeping for resume and evidence, not independently leased work. Slice 3 replaces this with independently leased work items and supersedes this section.",
+      "initial": "PENDING",
+      "states": {
+        "PENDING": {
+          "terminal": false,
+          "meaning": "Waiting for dependencies."
+        },
+        "READY": {
+          "terminal": false,
+          "meaning": "All dependencies succeeded. Next in topological order."
+        },
+        "RUNNING": {
+          "terminal": false,
+          "meaning": "The IMPLEMENTATION attempt is working on it."
+        },
+        "SUCCEEDED": {
+          "terminal": true,
+          "meaning": "A commit exists and the per-task checks passed."
+        },
+        "FAILED": {
+          "terminal": false,
+          "meaning": "The attempt could not complete this task. Can be retried."
+        },
+        "CANCELLED": {
+          "terminal": true,
+          "meaning": "Cancelled with the stage run."
+        }
+      },
+      "transitions": [
+        {
+          "id": "T01",
+          "from": [
+            "PENDING"
+          ],
+          "event": "dependencies_satisfied",
+          "guard": "G_TASK_DEPS_SUCCEEDED",
+          "to": "READY",
+          "actors": [
+            "engine"
+          ],
+          "emits": "task_node.ready",
+          "effects": []
+        },
+        {
+          "id": "T02",
+          "from": [
+            "READY"
+          ],
+          "event": "start",
+          "guard": "G_TASK_STARTED_BY_ATTEMPT",
+          "to": "RUNNING",
+          "actors": [
+            "engine"
+          ],
+          "emits": "task_node.started",
+          "effects": []
+        },
+        {
+          "id": "T03",
+          "from": [
+            "RUNNING"
+          ],
+          "event": "task_succeeded",
+          "guard": "G_TASK_EVIDENCE_RECORDED",
+          "to": "SUCCEEDED",
+          "actors": [
+            "engine"
+          ],
+          "emits": "task_node.succeeded",
+          "effects": [
+            "append a ledger entry with the commit and the checks"
+          ]
+        },
+        {
+          "id": "T04",
+          "from": [
+            "RUNNING"
+          ],
+          "event": "task_failed",
+          "guard": "G_EPOCH_CURRENT",
+          "to": "FAILED",
+          "actors": [
+            "engine"
+          ],
+          "emits": "task_node.failed",
+          "effects": []
+        },
+        {
+          "id": "T05",
+          "from": [
+            "RUNNING"
+          ],
+          "event": "attempt_interrupted",
+          "guard": "G_EPOCH_CURRENT",
+          "to": "READY",
+          "actors": [
+            "engine"
+          ],
+          "emits": "task_node.ready",
+          "effects": [
+            "the next attempt resumes from the first task that is not SUCCEEDED"
+          ]
+        },
+        {
+          "id": "T06",
+          "from": [
+            "FAILED"
+          ],
+          "event": "retry_task",
+          "guard": "G_TASK_RETRY_ALLOWED",
+          "to": "READY",
+          "actors": [
+            "engine"
+          ],
+          "emits": "task_node.ready",
+          "effects": []
+        },
+        {
+          "id": "T07",
+          "from": [
+            "PENDING",
+            "READY",
+            "RUNNING",
+            "FAILED"
+          ],
+          "event": "cancel",
+          "guard": "G_NO_ACTIVE_ATTEMPT",
+          "to": "CANCELLED",
+          "actors": [
+            "engine"
+          ],
+          "emits": "task_node.cancelled",
+          "effects": []
+        }
+      ]
+    }
+  },
+  "pipeline": {
+    "description": "Stage kinds in execution order. A stage gate is the GATING phase of its own stage run; gates are not separate stages. requires lists the stage kinds whose PASSED, non-superseded run must exist before this stage can leave PENDING.",
+    "stages": [
+      {
+        "kind": "INTAKE",
+        "requires": [],
+        "executor": "agent",
+        "gate": "deterministic checks on the normalized request plus bounded repair; human clarification when ambiguity is material",
+        "human_gate": "when_ambiguous",
+        "slice": 1
+      },
+      {
+        "kind": "REPOSITORY_INTELLIGENCE",
+        "requires": [
+          "INTAKE"
+        ],
+        "executor": "deterministic",
+        "gate": "reproducible repository map and a build and test baseline run in a sandbox",
+        "human_gate": "never",
+        "slice": 1
+      },
+      {
+        "kind": "SPECIFICATION",
+        "requires": [
+          "INTAKE",
+          "REPOSITORY_INTELLIGENCE"
+        ],
+        "executor": "agent_via_spec_kit",
+        "gate": "deterministic specification gate plus independent specification reviewer; freezes the SpecificationContract",
+        "human_gate": "policy_by_risk",
+        "slice": 1
+      },
+      {
+        "kind": "DOMAIN_DISCOVERY",
+        "requires": [
+          "SPECIFICATION"
+        ],
+        "executor": "deterministic",
+        "gate": "profile resolution and tool capability probes; BLOCKED when a mandatory profile gate cannot run",
+        "human_gate": "never",
+        "slice": 1
+      },
+      {
+        "kind": "ARCHITECTURE",
+        "requires": [
+          "SPECIFICATION",
+          "DOMAIN_DISCOVERY"
+        ],
+        "executor": "agent",
+        "gate": "schema validation, requirement-to-design traceability coverage, independent critic when risk tier is high",
+        "human_gate": "policy_by_risk",
+        "slice": 1
+      },
+      {
+        "kind": "TASK_PLANNING",
+        "requires": [
+          "ARCHITECTURE"
+        ],
+        "executor": "agent",
+        "gate": "deterministic DAG validator: acyclic, every acceptance criterion covered, owned files do not overlap, sizes bounded",
+        "human_gate": "never",
+        "slice": 1
+      },
+      {
+        "kind": "IMPLEMENTATION",
+        "requires": [
+          "TASK_PLANNING"
+        ],
+        "executor": "agent_in_sandbox",
+        "gate": "scope check: changed paths inside owned files, no protected path touched, no test weakening",
+        "human_gate": "never",
+        "slice": 1
+      },
+      {
+        "kind": "VALIDATION",
+        "requires": [
+          "IMPLEMENTATION"
+        ],
+        "executor": "deterministic_in_fresh_sandbox",
+        "gate": "trusted gate definitions from the protected base branch; format, lint, build, tests, secret scan, acceptance evidence mapping",
+        "human_gate": "never",
+        "slice": 1
+      },
+      {
+        "kind": "REVIEW",
+        "requires": [
+          "VALIDATION"
+        ],
+        "executor": "independent_agent",
+        "gate": "ReviewVerdict from a reviewer that receives the frozen spec, the diff and verified gate evidence, and not the builder summary",
+        "human_gate": "on_NEEDS_HUMAN",
+        "slice": 1
+      },
+      {
+        "kind": "DOCUMENTING",
+        "requires": [
+          "REVIEW"
+        ],
+        "executor": "agent",
+        "gate": "documentation plan and traceability recorded; docs committed on the job branch",
+        "human_gate": "never",
+        "slice": 1
+      },
+      {
+        "kind": "DOCUMENTATION_REVIEW",
+        "requires": [
+          "DOCUMENTING"
+        ],
+        "executor": "deterministic_plus_independent_agent",
+        "gate": "Documentation Quality Gate (links, snippets, diagrams, readability, coverage) plus independent documentation reviewer",
+        "human_gate": "on_NEEDS_HUMAN",
+        "slice": 1
+      },
+      {
+        "kind": "DELIVERY",
+        "requires": [
+          "DOCUMENTATION_REVIEW"
+        ],
+        "executor": "deterministic",
+        "gate": "control plane pushes the branch and opens a draft pull request with the evidence manifest; verifies the PR exists and the body carries the manifest hash",
+        "human_gate": "never",
+        "slice": 1
+      },
+      {
+        "kind": "APPROVAL",
+        "requires": [
+          "DELIVERY"
+        ],
+        "executor": "deterministic",
+        "gate": "human decision: approve, reject, rework, pause or cancel",
+        "human_gate": "always",
+        "slice": 1
+      },
+      {
+        "kind": "MERGE",
+        "requires": [
+          "APPROVAL"
+        ],
+        "executor": "deterministic",
+        "gate": "not implemented; disabled by default; requires per-repository policy and final re-validation after merge-base sync",
+        "human_gate": "policy",
+        "slice": 4
+      }
+    ],
+    "rework_routes": [
+      {
+        "from_stage": "SPECIFICATION",
+        "trigger": "gate CHANGES_REQUIRED",
+        "target_stage": "SPECIFICATION",
+        "note": "clarify loop; unresolved product decisions go to a human"
+      },
+      {
+        "from_stage": "ARCHITECTURE",
+        "trigger": "gate CHANGES_REQUIRED",
+        "target_stage": "ARCHITECTURE",
+        "note": ""
+      },
+      {
+        "from_stage": "TASK_PLANNING",
+        "trigger": "validator FAILED",
+        "target_stage": "TASK_PLANNING",
+        "note": "bounded replan"
+      },
+      {
+        "from_stage": "IMPLEMENTATION",
+        "trigger": "scope check FAILED",
+        "target_stage": "IMPLEMENTATION",
+        "note": ""
+      },
+      {
+        "from_stage": "VALIDATION",
+        "trigger": "any mandatory gate FAILED",
+        "target_stage": "IMPLEMENTATION",
+        "note": "the builder receives the gate reports, not a summary"
+      },
+      {
+        "from_stage": "REVIEW",
+        "trigger": "verdict CHANGES_REQUIRED",
+        "target_stage": "IMPLEMENTATION",
+        "note": "findings are deduplicated before the builder sees them"
+      },
+      {
+        "from_stage": "DOCUMENTATION_REVIEW",
+        "trigger": "CHANGES_REQUIRED with defect_class documentation",
+        "target_stage": "DOCUMENTING",
+        "note": ""
+      },
+      {
+        "from_stage": "DOCUMENTATION_REVIEW",
+        "trigger": "CHANGES_REQUIRED with defect_class code_behavior",
+        "target_stage": "IMPLEMENTATION",
+        "note": "the documentation exposed a code or behavior mismatch"
+      },
+      {
+        "from_stage": "APPROVAL",
+        "trigger": "human requests rework",
+        "target_stage": "IMPLEMENTATION",
+        "note": "human instructions are authorized input but still untrusted text"
+      }
+    ],
+    "invalidation_rules": [
+      {
+        "when": "SPECIFICATION produces a new approved spec version",
+        "supersedes": [
+          "DOMAIN_DISCOVERY",
+          "ARCHITECTURE",
+          "TASK_PLANNING",
+          "IMPLEMENTATION",
+          "VALIDATION",
+          "REVIEW",
+          "DOCUMENTING",
+          "DOCUMENTATION_REVIEW",
+          "DELIVERY",
+          "APPROVAL"
+        ]
+      },
+      {
+        "when": "ARCHITECTURE produces a new version",
+        "supersedes": [
+          "TASK_PLANNING",
+          "IMPLEMENTATION",
+          "VALIDATION",
+          "REVIEW",
+          "DOCUMENTING",
+          "DOCUMENTATION_REVIEW",
+          "DELIVERY",
+          "APPROVAL"
+        ]
+      },
+      {
+        "when": "TASK_PLANNING produces a new plan version",
+        "supersedes": [
+          "IMPLEMENTATION",
+          "VALIDATION",
+          "REVIEW",
+          "DOCUMENTING",
+          "DOCUMENTATION_REVIEW",
+          "DELIVERY",
+          "APPROVAL"
+        ]
+      },
+      {
+        "when": "IMPLEMENTATION produces a new commit",
+        "supersedes": [
+          "VALIDATION",
+          "REVIEW",
+          "DOCUMENTING",
+          "DOCUMENTATION_REVIEW",
+          "DELIVERY",
+          "APPROVAL"
+        ]
+      },
+      {
+        "when": "DOCUMENTING produces a new documentation commit",
+        "supersedes": [
+          "DOCUMENTATION_REVIEW",
+          "DELIVERY",
+          "APPROVAL"
+        ]
+      }
+    ]
+  },
+  "assurance_levels": {
+    "description": "Claims about how far the work has been verified. Each is recorded as evidence ledger entries and derived from them. They are not Job states and they are not ordered: VERIFIED_ON_DEVICE does not imply VERIFIED_IN_SIMULATOR.",
+    "levels": [
+      {
+        "level": "SPECIFIED",
+        "requires_evidence": [
+          "frozen SpecificationContract",
+          "specification gate report PASSED"
+        ],
+        "slice": 1
+      },
+      {
+        "level": "IMPLEMENTED",
+        "requires_evidence": [
+          "commit hash on the job branch",
+          "build gate report PASSED"
+        ],
+        "slice": 1
+      },
+      {
+        "level": "VERIFIED_IN_SANDBOX",
+        "requires_evidence": [
+          "trusted gate reports PASSED in a fresh sandbox",
+          "acceptance scenario evidence for every requirement"
+        ],
+        "slice": 1,
+        "note": "Added for software that has no simulator or device. Not named in the master prompt; listed in the open questions."
+      },
+      {
+        "level": "VERIFIED_IN_SIMULATOR",
+        "requires_evidence": [
+          "acceptance results from a simulator or emulator run, with the simulator version"
+        ],
+        "slice": 3
+      },
+      {
+        "level": "VERIFIED_ON_DEVICE",
+        "requires_evidence": [
+          "acceptance results from a physical device run, with device identity"
+        ],
+        "slice": 4
+      },
+      {
+        "level": "PAPER_VALIDATED",
+        "requires_evidence": [
+          "paper-trading results over the period required by the profile"
+        ],
+        "slice": 4
+      },
+      {
+        "level": "PRODUCTION_READY",
+        "requires_evidence": [
+          "every mandatory gate of every active domain profile PASSED",
+          "human release sign-off",
+          "no open blocker without a disposition"
+        ],
+        "slice": 4
+      }
+    ],
+    "release_states": {
+      "description": "A second, independent axis for delivery after approval. Not implemented in Slice 1: the factory stops at APPROVED and a human merges.",
+      "values": [
+        "NONE",
+        "APPROVED",
+        "MERGED",
+        "RELEASED",
+        "DEPLOYED",
+        "OBSERVED"
+      ]
+    }
+  },
+  "invariants": [
+    {
+      "id": "INV-01",
+      "statement": "Only the engine writes a status. A worker or an agent can request a transition but cannot perform one.",
+      "enforced_by": [
+        "workflow use cases are the only callers of the repository write methods",
+        "storage compare-and-swap on (id, version)"
+      ],
+      "verified_by": [
+        "property test: random command sequences never reach a state outside the tables",
+        "storage integration test: a stale version is rejected"
+      ]
+    },
+    {
+      "id": "INV-02",
+      "statement": "A transition not listed in this file is rejected with a typed error and leaves the stored state unchanged.",
+      "enforced_by": [
+        "domain transition functions"
+      ],
+      "verified_by": [
+        "conformance test: the cross product of states and events minus this table is rejected"
+      ]
+    },
+    {
+      "id": "INV-03",
+      "statement": "A stage run is PASSED only when the gate decision and its evidence are persisted in the same transaction as the status change.",
+      "enforced_by": [
+        "storage unit of work"
+      ],
+      "verified_by": [
+        "integration test: failure injected after the status write rolls back the status"
+      ]
+    },
+    {
+      "id": "INV-04",
+      "statement": "A terminal stage run is never edited. Rework and supersession create or mark runs; they do not reopen them.",
+      "enforced_by": [
+        "domain",
+        "database trigger on terminal rows"
+      ],
+      "verified_by": [
+        "database test: UPDATE of a terminal row fails"
+      ]
+    },
+    {
+      "id": "INV-05",
+      "statement": "A write from a worker whose lease epoch is older than the stored epoch is rejected, whatever it contains.",
+      "enforced_by": [
+        "storage compare-and-swap on lease_epoch"
+      ],
+      "verified_by": [
+        "integration test: zombie worker write after LEASE_LOST is rejected"
+      ]
+    },
+    {
+      "id": "INV-06",
+      "statement": "A mandatory gate that did not run is BLOCKED. Missing execution is never converted to PASSED.",
+      "enforced_by": [
+        "gate report schema",
+        "gate evaluator"
+      ],
+      "verified_by": [
+        "schema invalid example; gate evaluator test with the tool removed"
+      ]
+    },
+    {
+      "id": "INV-07",
+      "statement": "An override of a BLOCK never creates an assurance level claim and is never allowed for a mandatory gate of an active domain profile.",
+      "enforced_by": [
+        "guard G_OVERRIDE_PERMITTED"
+      ],
+      "verified_by": [
+        "engine test with a profile whose mandatory tool is absent"
+      ]
+    },
+    {
+      "id": "INV-08",
+      "statement": "Evidence recorded by a fake adapter is accepted only when the job execution mode is test, and never supports an assurance level.",
+      "enforced_by": [
+        "evidence ledger entry schema",
+        "engine"
+      ],
+      "verified_by": [
+        "schema invalid example; engine test in production mode with a fake adapter"
+      ]
+    },
+    {
+      "id": "INV-09",
+      "statement": "Superseding a stage run invalidates its ledger entries by appending new entries. Existing entries are never changed.",
+      "enforced_by": [
+        "append-only ledger with no UPDATE or DELETE privilege"
+      ],
+      "verified_by": [
+        "database test: UPDATE and DELETE on the ledger fail"
+      ]
+    },
+    {
+      "id": "INV-10",
+      "statement": "The number of attempts per stage run and rework rounds per job are bounded by policy (default: three attempts, two rework rounds for code and two for documentation). Exhaustion escalates to a human; it does not loop.",
+      "enforced_by": [
+        "guards G_RETRY_ALLOWED and G_REWORK_ALLOWED"
+      ],
+      "verified_by": [
+        "engine test with an always-failing fake runtime reaches WAITING_FOR_HUMAN in a bounded number of steps"
+      ]
+    },
+    {
+      "id": "INV-11",
+      "statement": "DOCUMENTING and DOCUMENTATION_REVIEW run after REVIEW has passed and before DELIVERY and APPROVAL. A new implementation commit supersedes them.",
+      "enforced_by": [
+        "pipeline requires and invalidation_rules in this file"
+      ],
+      "verified_by": [
+        "engine test: a rework after DOCUMENTATION_REVIEW supersedes both documentation runs"
+      ]
+    }
+  ]
+}

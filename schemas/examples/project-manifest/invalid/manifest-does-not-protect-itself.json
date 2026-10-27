@@ -1,0 +1,58 @@
+{
+  "schema_version": 1,
+  "project": {
+    "name": "word-count",
+    "title": "Word count command line tool",
+    "domain_tags": [
+      "general-software",
+      "command-line-tool"
+    ],
+    "default_branch": "main"
+  },
+  "sandbox": {
+    "image": "rust-fixture",
+    "workdir": "/workspace"
+  },
+  "gates": [
+    {
+      "id": "build",
+      "title": "Build the project",
+      "argv": [
+        "cargo",
+        "build",
+        "--locked"
+      ],
+      "timeout_seconds": 600,
+      "mandatory": true
+    },
+    {
+      "id": "unit-tests",
+      "title": "Run the unit and integration tests",
+      "argv": [
+        "cargo",
+        "test",
+        "--locked"
+      ],
+      "timeout_seconds": 900,
+      "mandatory": true
+    }
+  ],
+  "protected_paths": [
+    ".github/**",
+    "CODEOWNERS"
+  ],
+  "spec_kit": {
+    "cli_version": "1.1.2",
+    "integration": "claude",
+    "may_initialize": true
+  },
+  "documentation": {
+    "required_documents": [
+      {
+        "path": "README.md",
+        "purpose": "Explains what the tool does and how to use every option."
+      }
+    ],
+    "changelog_path": "CHANGELOG.md"
+  }
+}
