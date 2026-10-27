@@ -758,6 +758,89 @@ impl Engine {
 )]
 mod tests {
     use super::*;
+    use crate::redaction::config::{FlagHandling, Limits, PatternAction, PatternSpec};
+    use crate::redaction::encodings::Encoding;
+    use crate::redaction::patterns::PatternSet;
+    use crate::redaction::registry::Registry;
+
+    /// A core with one pattern and a snapshot with one registered value.
+    fn fixture() -> (Core, std::sync::Arc<Snapshot>) {
+        let core = Core {
+            patterns: PatternSet::compile(
+                &[PatternSpec::new(
+                    "token",
+                    r"\btok_[A-Za-z0-9]{32,}\b",
+                    PatternAction::Block,
+                )],
+                None,
+            )
+            .unwrap(),
+            flagged: FlagHandling::ReportOnly,
+            limits: Limits::default(),
+            min_len: 8,
+            encodings: Encoding::ALL.to_vec(),
+        };
+        let mut registry = Registry::new();
+        registry
+            .register(&core, "secret", b"kJ4mP9xQ2vL7wZ")
+            .unwrap();
+        let snapshot = registry.snapshot();
+        (core, snapshot)
+    }
+
+    /// The spans one view reports for `text` fed in pieces cut at `cuts`, sorted.
+    fn spans_of(terminal_view: bool, text: &[u8], cuts: &[usize]) -> Vec<(u64, u64, u32)> {
+        let (core, snapshot) = fixture();
+        let ctx = Context {
+            core: &core,
+            snapshot: &snapshot,
+        };
+        let mut view = ViewScanner::new(terminal_view, &core);
+        let mut spans = Vec::new();
+        let mut at = 0;
+        for &cut in cuts.iter().chain(std::iter::once(&text.len())) {
+            view.feed(&ctx, &text[at..cut], at as u64, &mut spans);
+            at = cut;
+        }
+        view.finish(&ctx, &mut spans);
+        let mut found: Vec<(u64, u64, u32)> =
+            spans.iter().map(|s| (s.start, s.end, s.label)).collect();
+        found.sort_unstable();
+        found.dedup();
+        found
+    }
+
+    #[test]
+    fn each_view_alone_finds_a_registered_value_and_a_token_cut_at_every_position() {
+        // Each view is tested on its own, because the other one would hide a fault in it.
+        let token = format!("tok_{}", "A1b2".repeat(10));
+        let text = format!("xx kJ4mP9xQ2vL7wZ yy {token} zz kJ4mP9xQ2vL7wZ");
+        for terminal_view in [false, true] {
+            let whole = spans_of(terminal_view, text.as_bytes(), &[]);
+            assert_eq!(whole.len(), 3, "terminal view {terminal_view}: {whole:?}");
+            for cut in 0..=text.len() {
+                assert_eq!(
+                    spans_of(terminal_view, text.as_bytes(), &[cut]),
+                    whole,
+                    "terminal view {terminal_view}, cut at {cut}"
+                );
+            }
+            let every_third: Vec<usize> = (0..text.len()).step_by(3).collect();
+            assert_eq!(
+                spans_of(terminal_view, text.as_bytes(), &every_third),
+                whole
+            );
+        }
+    }
+
+    #[test]
+    fn the_terminal_view_finds_what_the_raw_view_cannot_and_reports_the_original_offsets() {
+        let text = "a k\u{200b}J4mP9\u{1b}[0mxQ2vL7wZ b";
+        assert!(spans_of(false, text.as_bytes(), &[]).is_empty());
+        let found = spans_of(true, text.as_bytes(), &[]);
+        // The span runs from the `k` to the `Z` of the original text, noise included.
+        assert_eq!(found, vec![(2, text.len() as u64 - 2, 0)]);
+    }
 
     #[test]
     fn the_origin_map_counts_the_bytes_taken_out() {

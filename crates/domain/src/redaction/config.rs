@@ -74,8 +74,10 @@ pub enum FlagHandling {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Limits {
     /// The most bytes a stream holds back while it waits to learn whether they are part of a
-    /// secret. Ordinary text holds back about 12 KiB. A long unfinished token, a private key
-    /// block with no end line, or a flood of escape sequences holds back more.
+    /// secret. Ordinary text holds back about 8 KiB (measured: at most 8191 bytes). A long
+    /// unfinished token, a private key block with no end line, or a flood of escape sequences
+    /// holds back more. The redactor raises a value below 24 KiB to 24 KiB, because a stream
+    /// needs that much to do its work.
     pub max_pending_bytes: usize,
     /// The largest input the one-shot functions accept. Larger input goes through a stream.
     pub max_input_bytes: usize,

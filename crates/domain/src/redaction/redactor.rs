@@ -473,7 +473,7 @@ impl Pipeline {
 /// A redaction in progress over a stream.
 ///
 /// Push the chunks in order. The output of each push is whatever text is now certain; the rest
-/// is held back, a few KiB at most for ordinary text, until later bytes show whether it is part
+/// is held back, about 8 KiB at most for ordinary text, until later bytes show whether it is part
 /// of a secret. [`RedactStream::finish`] releases the rest. The output is the same whatever the
 /// chunks were.
 pub struct RedactStream {

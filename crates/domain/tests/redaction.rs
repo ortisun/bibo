@@ -1338,6 +1338,21 @@ fn streaming_a_key_block_with_an_end_line_stops_at_the_end_line() {
 }
 
 #[test]
+fn streaming_a_key_inside_a_json_document_is_covered_through_its_end_line() {
+    // A service-account file keeps its key on one line, with the line breaks written as `\n`.
+    let r = redactor();
+    let body = rep('Q', 1_700);
+    let json = format!(
+        "{{\"type\":\"service_account\",\"private_key\":\"-----BEGIN {0} KEY-----\\n{body}\\n-----END {0} KEY-----\\n\",\"client_email\":\"svc@example.test\"}}",
+        "PRIVATE"
+    );
+    let expected = "{\"type\":\"service_account\",\"private_key\":\"[REDACTED:private_key_block]\\n\",\"client_email\":\"svc@example.test\"}";
+    assert_eq!(redact_text(&r, &json), expected);
+    let (chunked, _) = stream_with(&r, json.as_bytes(), &[97]);
+    assert_eq!(String::from_utf8(chunked).unwrap(), expected);
+}
+
+#[test]
 fn streaming_holds_back_only_a_bounded_amount_of_ordinary_text() {
     let r = redactor();
     let mut stream = r.stream();
@@ -2027,22 +2042,45 @@ fn redactor_has_no_pattern_of_its_own() {
 
 #[test]
 fn redactor_source_holds_no_copy_of_the_policy_patterns() {
-    // The sources of the module, read at compile time. No pattern of the policy appears in them.
+    // Every source file of the module, read at compile time, with its module name.
     let sources = [
-        include_str!("../src/redaction/mod.rs"),
-        include_str!("../src/redaction/automaton.rs"),
-        include_str!("../src/redaction/config.rs"),
-        include_str!("../src/redaction/encodings.rs"),
-        include_str!("../src/redaction/error.rs"),
-        include_str!("../src/redaction/redactor.rs"),
-        include_str!("../src/redaction/report.rs"),
-        include_str!("../src/redaction/terminal.rs"),
+        ("mod", include_str!("../src/redaction/mod.rs")),
+        ("automaton", include_str!("../src/redaction/automaton.rs")),
+        ("config", include_str!("../src/redaction/config.rs")),
+        ("core", include_str!("../src/redaction/core.rs")),
+        ("encodings", include_str!("../src/redaction/encodings.rs")),
+        ("error", include_str!("../src/redaction/error.rs")),
+        ("patterns", include_str!("../src/redaction/patterns.rs")),
+        ("redactor", include_str!("../src/redaction/redactor.rs")),
+        ("registry", include_str!("../src/redaction/registry.rs")),
+        ("report", include_str!("../src/redaction/report.rs")),
+        ("scan", include_str!("../src/redaction/scan.rs")),
+        ("sink", include_str!("../src/redaction/sink.rs")),
+        ("terminal", include_str!("../src/redaction/terminal.rs")),
     ];
+    // The list above must name every module that `mod.rs` declares, so a file added later cannot
+    // hide a copy of the policy from this test.
+    let declared: Vec<&str> = sources[0]
+        .1
+        .lines()
+        .filter_map(|line| line.strip_prefix("mod "))
+        .filter_map(|rest| rest.strip_suffix(';'))
+        .collect();
+    let listed: Vec<&str> = sources.iter().skip(1).map(|(name, _)| *name).collect();
+    for module in &declared {
+        assert!(listed.contains(module), "the test does not read `{module}`");
+    }
+    assert_eq!(
+        declared.len(),
+        listed.len(),
+        "{declared:?} against {listed:?}"
+    );
+
     for pattern in policy().patterns {
-        for source in sources {
+        for (name, source) in sources {
             assert!(
                 !source.contains(&pattern.regex),
-                "the source copies the pattern {}",
+                "{name} copies the pattern {}",
                 pattern.id
             );
         }
