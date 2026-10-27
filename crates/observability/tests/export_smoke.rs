@@ -8,6 +8,8 @@
 //! If the test cannot open a local port, it fails with a message that starts with `BLOCKED`. A
 //! blocked run is never a pass.
 
+mod common;
+
 use factory_observability::spans::{self, Job};
 use factory_observability::telemetry::{TelemetryConfig, build_pipeline};
 use std::collections::HashMap;
@@ -215,6 +217,34 @@ fn a_span_reaches_a_local_otlp_receiver() {
         !request.contains("a very private prompt"),
         "an unlisted field left the process"
     );
+    pipeline.shutdown().expect("clean shutdown");
+}
+
+#[test]
+fn a_scrubber_supplied_in_the_config_is_the_one_that_runs_on_exported_spans() {
+    let receiver = Receiver::start();
+    let config = config_for(&receiver).with_scrubber(Arc::new(common::ReplaceScrubber {
+        from: "needle",
+        to: "haystack",
+    }));
+    let pipeline = build_pipeline(&config, io::sink).expect("pipeline builds");
+    pipeline.in_scope(|| {
+        let job = spans::job_span(&Job {
+            correlation_id: CORRELATION,
+            job_id: "a needle",
+            tenant_id: "tenant-1",
+        });
+        drop(job);
+    });
+    pipeline.flush().expect("flush reaches the receiver");
+    let request = receiver
+        .wait_for("/v1/traces", Duration::from_secs(10))
+        .expect("no span reached the receiver");
+    assert!(
+        request.contains("a haystack"),
+        "the supplied scrubber did not run"
+    );
+    assert!(!request.contains("needle"));
     pipeline.shutdown().expect("clean shutdown");
 }
 

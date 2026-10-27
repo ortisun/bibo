@@ -39,6 +39,27 @@ impl Capture {
     }
 }
 
+/// A scrubber that swaps one word for another. It stands in for the real redactor, to prove that
+/// the scrubber handed to the pipeline is the one that runs.
+#[derive(Debug)]
+pub struct ReplaceScrubber {
+    pub from: &'static str,
+    pub to: &'static str,
+}
+
+impl factory_observability::redact::Scrub for ReplaceScrubber {
+    fn scrub<'a>(
+        &self,
+        text: &'a str,
+    ) -> Result<std::borrow::Cow<'a, str>, factory_observability::redact::ScrubError> {
+        Ok(if text.contains(self.from) {
+            std::borrow::Cow::Owned(text.replace(self.from, self.to))
+        } else {
+            std::borrow::Cow::Borrowed(text)
+        })
+    }
+}
+
 /// The conventions page. The tests compare its tables with the constants in the crate, so the
 /// page and the code cannot drift apart without a test failing.
 pub const CONVENTIONS: &str = include_str!("../../../../docs/observability/conventions.md");

@@ -95,6 +95,7 @@ pub struct TelemetryConfig {
     log_filter: String,
     metric_interval: Duration,
     export_timeout: Duration,
+    scrubber: Arc<dyn Scrub>,
 }
 
 impl TelemetryConfig {
@@ -108,7 +109,16 @@ impl TelemetryConfig {
             log_filter: "info".to_string(),
             metric_interval: Duration::from_secs(15),
             export_timeout: Duration::from_secs(10),
+            scrubber: Arc::new(PolicyPatternScrubber::new()),
         }
+    }
+
+    /// Use `scrubber` for every log line and every exported span, instead of the built-in
+    /// [`PolicyPatternScrubber`]. The composition root passes the factory's redactor here once
+    /// it exists.
+    pub fn with_scrubber(mut self, scrubber: Arc<dyn Scrub>) -> Self {
+        self.scrubber = scrubber;
+        self
     }
 
     /// Read the settings from the process environment.
@@ -295,7 +305,7 @@ where
 {
     let filter = EnvFilter::try_new(config.log_filter())
         .map_err(|error| InitError::InvalidLogFilter(error.to_string()))?;
-    let scrubber: Arc<dyn Scrub> = Arc::new(PolicyPatternScrubber::new());
+    let scrubber = Arc::clone(&config.scrubber);
     let guard = AttributeGuard::new(Arc::clone(&scrubber));
     let stats = guard.stats();
     let resource = trace::resource(

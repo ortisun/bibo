@@ -6,11 +6,12 @@
 
 mod common;
 
-use common::{Capture, is_valid_json};
+use common::{Capture, ReplaceScrubber, is_valid_json};
 use factory_observability::telemetry::{
     InitError, TelemetryConfig, build_pipeline, init, is_initialized,
 };
 use std::collections::HashMap;
+use std::sync::Arc;
 use std::time::Duration;
 
 fn lookup(vars: &[(&str, &str)]) -> impl Fn(&str) -> Option<String> {
@@ -144,6 +145,23 @@ fn a_pipeline_without_a_collector_still_logs_with_the_correlation_id() {
     assert!(is_valid_json(&lines[0]));
     assert!(lines[0].contains("\"correlation_id\":\"0192f3a4-7b1c-7d3e-9a52-1c8f0e4b6a77\""));
     pipeline.shutdown().expect("shuts down cleanly");
+}
+
+#[test]
+fn a_scrubber_supplied_in_the_config_is_the_one_that_runs_on_logs() {
+    let config = config(&[])
+        .unwrap()
+        .with_scrubber(Arc::new(ReplaceScrubber {
+            from: "needle",
+            to: "haystack",
+        }));
+    let capture = Capture::default();
+    let pipeline = build_pipeline(&config, capture.clone()).expect("builds");
+    pipeline.in_scope(|| tracing::info!("a needle in the log"));
+    let output = capture.lines().join("\n");
+    assert!(output.contains("a haystack in the log"), "{output}");
+    assert!(!output.contains("needle"), "{output}");
+    pipeline.shutdown().expect("shuts down");
 }
 
 /// The only test that installs the global subscriber.
