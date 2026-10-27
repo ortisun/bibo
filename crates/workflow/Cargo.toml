@@ -7,3 +7,36 @@ publish.workspace = true
 
 [lints]
 workspace = true
+
+# Every external crate below is on the `workflow` allow list in
+# docs/architecture/crate-dependency-rules.json (rule DEP-04). Versions are the releases checked
+# with `cargo info` on 2026-10-27 and match the versions the other crates already pin, so the
+# workspace builds one copy of each. Features are cut down so that this crate has no way to read
+# the clock, make an identifier or touch the network (rule DEP-05): time comes from the `Clock`
+# port, identifiers from the `IdGenerator` port, and `tokio` has no I/O or process feature on.
+[dependencies]
+factory-domain.workspace = true
+factory-ports.workspace = true
+# The stage handler trait is used as `dyn StageHandler`, like the ports. Maintained by dtolnay.
+async-trait = "0.1.92"
+# Output documents of a stage and the payload of an outbox event are JSON values.
+serde_json = { version = "1.0.154", default-features = false, features = ["std"] }
+# Derive for the closed error enums. Maintained by dtolnay.
+thiserror = "2.0.21"
+# Spans and metric events, written with the names of docs/observability/conventions.md as string
+# literals (ADR 0013). This crate cannot import `factory-observability`.
+tracing = { version = "0.1.44", default-features = false, features = ["std", "attributes"] }
+# Identifiers come from the `IdGenerator` port and are wrapped in typed ids. The generator
+# features (`v4`, `v7`) stay off, so this crate cannot make one.
+uuid = { version = "1.29.0", default-features = false, features = ["std"] }
+# `time` for the heartbeat cadence of a running attempt and `macros` for `select!`, which runs the
+# handler next to its heartbeat and its cancellation. `sync` is the only other feature on. No I/O.
+tokio = { version = "1.54.1", default-features = false, features = ["sync", "time", "macros"] }
+
+[dev-dependencies]
+# The in-memory store and the scripted fakes. Dev only (rule DEP-03).
+factory-testkit.workspace = true
+# Property tests of the claim loop. Dev only, so DEP-04 does not apply.
+proptest = { version = "1.12.0", default-features = false, features = ["std"] }
+# `#[tokio::test]` needs `rt`, and `start_paused` needs `test-util`. Dev only.
+tokio = { version = "1.54.1", default-features = false, features = ["sync", "time", "rt", "macros", "test-util"] }

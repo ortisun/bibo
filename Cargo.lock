@@ -274,6 +274,18 @@ version = "0.0.0"
 [[package]]
 name = "factory-workflow"
 version = "0.0.0"
+dependencies = [
+ "async-trait",
+ "factory-domain",
+ "factory-ports",
+ "factory-testkit",
+ "proptest",
+ "serde_json",
+ "thiserror",
+ "tokio",
+ "tracing",
+ "uuid",
+]
 
 [[package]]
 name = "form_urlencoded"
