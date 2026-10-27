@@ -77,8 +77,8 @@ ignore = []
 allow = [
     # Most crates: alone, or as one alternative of "MIT OR Apache-2.0". Permissive.
     "MIT",
-    # Alone (the opentelemetry and prost crates) or as one alternative of an OR. Permissive, with an
-    # express patent grant.
+    # Alone (the opentelemetry crates, prost, prost-derive and sync_wrapper) or as one alternative of an
+    # OR. Permissive, with an express patent grant.
     "Apache-2.0",
     # The ICU4X crates (icu_*, zerovec, yoke, zerofrom, tinystr, writeable, litemap, potential_utf)
     # carry only Unicode-3.0, and unicode-ident is "(MIT OR Apache-2.0) AND Unicode-3.0", so this
