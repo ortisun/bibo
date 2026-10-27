@@ -27,13 +27,35 @@ BEGIN
 END
 $$;
 
+-- Which tenant a statement run as the application role is made for. Since ADR 0012 the application role
+-- sees only the rows of the tenant named by the transaction-local setting factory.tenant_id, which is what
+-- Store::begin sets. dbtest.tenant is the default for the whole test run (tenant 1, set at the end of this
+-- file). A call can name another tenant with as_tenant, or pass 0 for a transaction that made no setting
+-- (the setting then reads as an empty string, as it does on a reused connection).
+CREATE FUNCTION dbtest.use_tenant(t int) RETURNS void LANGUAGE sql AS $$
+  SELECT set_config('dbtest.tenant', t::text, false) IS NOT NULL
+$$;
+
+-- SET LOCAL ROLE for the rest of the transaction (or subtransaction). For the application role it also
+-- makes the tenant setting. Any other role gets an empty setting, so a test of the system scope or a
+-- lookup function cannot lean on a tenant left over from an earlier call.
+CREATE FUNCTION dbtest.become(p_role text, p_tenant int DEFAULT NULL) RETURNS void LANGUAGE plpgsql AS $$
+DECLARE
+  t int := coalesce(p_tenant, nullif(current_setting('dbtest.tenant', true), '')::int, 0);
+  tenant_text text := CASE WHEN p_role = 'factory_app' AND t > 0 THEN dbtest.u(t)::text ELSE '' END;
+BEGIN
+  EXECUTE format('SET LOCAL ROLE %I', p_role);
+  PERFORM set_config('factory.tenant_id', tenant_text, true);
+END
+$$;
+
 -- Run a statement and require it to fail with the given SQLSTATE. The statement runs in a
 -- subtransaction that is always rolled back, so a statement that wrongly succeeds leaves nothing
--- behind. as_role switches to that role for the statement only.
+-- behind. as_role switches to that role for the statement only (see dbtest.become for the tenant).
 -- constraint_like and msg_like are optional LIKE patterns for the constraint name and the message.
 CREATE FUNCTION dbtest.expect_error(
   label text, stmt text, expected_state text,
-  as_role text DEFAULT NULL, constraint_like text DEFAULT NULL, msg_like text DEFAULT NULL
+  as_role text DEFAULT NULL, constraint_like text DEFAULT NULL, msg_like text DEFAULT NULL, as_tenant int DEFAULT NULL
 ) RETURNS void LANGUAGE plpgsql AS $$
 DECLARE
   got_state text;
@@ -42,7 +64,7 @@ DECLARE
 BEGIN
   BEGIN
     IF as_role IS NOT NULL THEN
-      EXECUTE format('SET LOCAL ROLE %I', as_role);
+      PERFORM dbtest.become(as_role, as_tenant);
     END IF;
     EXECUTE stmt;
     RAISE EXCEPTION 'statement succeeded' USING ERRCODE = 'XX999';
@@ -66,10 +88,10 @@ END
 $$;
 
 -- Run a statement that must work, optionally as another role. The effect stays.
-CREATE FUNCTION dbtest.exec(stmt text, as_role text DEFAULT NULL) RETURNS void LANGUAGE plpgsql AS $$
+CREATE FUNCTION dbtest.exec(stmt text, as_role text DEFAULT NULL, as_tenant int DEFAULT NULL) RETURNS void LANGUAGE plpgsql AS $$
 BEGIN
   IF as_role IS NOT NULL THEN
-    EXECUTE format('SET LOCAL ROLE %I', as_role);
+    PERFORM dbtest.become(as_role, as_tenant);
   END IF;
   EXECUTE stmt;
   IF as_role IS NOT NULL THEN
@@ -82,14 +104,14 @@ END
 $$;
 
 -- Run a statement that must work and check it. The effect is rolled back.
-CREATE FUNCTION dbtest.expect_ok(label text, stmt text, as_role text DEFAULT NULL) RETURNS void LANGUAGE plpgsql AS $$
+CREATE FUNCTION dbtest.expect_ok(label text, stmt text, as_role text DEFAULT NULL, as_tenant int DEFAULT NULL) RETURNS void LANGUAGE plpgsql AS $$
 DECLARE
   got_state text;
   got_msg text;
 BEGIN
   BEGIN
     IF as_role IS NOT NULL THEN
-      EXECUTE format('SET LOCAL ROLE %I', as_role);
+      PERFORM dbtest.become(as_role, as_tenant);
     END IF;
     EXECUTE stmt;
     RAISE EXCEPTION 'rollback marker' USING ERRCODE = 'XX998';
@@ -100,6 +122,27 @@ BEGIN
     PERFORM dbtest.fail(label, format('the statement failed with %s (%s): %s', got_state, got_msg, stmt));
   END IF;
   PERFORM dbtest.pass(label);
+END
+$$;
+
+-- Try a statement and report what happened, without failing: 'ok' when it ran, otherwise
+-- '<SQLSTATE>:<constraint name>'. The statement is always rolled back. For a test that compares many
+-- attempts with an expected table and wants one summary line instead of one line per attempt.
+CREATE FUNCTION dbtest.try_stmt(stmt text, as_role text DEFAULT NULL, as_tenant int DEFAULT NULL) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE
+  got_state text;
+  got_constraint text;
+BEGIN
+  BEGIN
+    IF as_role IS NOT NULL THEN
+      PERFORM dbtest.become(as_role, as_tenant);
+    END IF;
+    EXECUTE stmt;
+    RAISE EXCEPTION 'rollback marker' USING ERRCODE = 'XX998';
+  EXCEPTION WHEN OTHERS THEN
+    GET STACKED DIAGNOSTICS got_state = RETURNED_SQLSTATE, got_constraint = CONSTRAINT_NAME;
+  END;
+  RETURN CASE WHEN got_state = 'XX998' THEN 'ok' ELSE got_state || ':' || coalesce(got_constraint, '') END;
 END
 $$;
 
@@ -250,7 +293,20 @@ CREATE FUNCTION dbtest.audit(t int, n int, p_action text DEFAULT 'webhook.receiv
 $$;
 
 -- The application role runs some statements through these helpers (SET LOCAL ROLE), so it needs to
--- reach them. This grants it nothing on the product schema.
+-- reach them. This grants it nothing on the product schema. Once the row-level security migrations exist
+-- the system role runs a few of them too; the roles are cluster wide, so they exist before this file loads.
 GRANT USAGE ON SCHEMA dbtest TO factory_app;
 GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA dbtest TO factory_app;
 ALTER DEFAULT PRIVILEGES IN SCHEMA dbtest GRANT EXECUTE ON FUNCTIONS TO factory_app;
+DO $$
+BEGIN
+  IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'factory_system') THEN
+    GRANT USAGE ON SCHEMA dbtest TO factory_system;
+    GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA dbtest TO factory_system;
+    ALTER DEFAULT PRIVILEGES IN SCHEMA dbtest GRANT EXECUTE ON FUNCTIONS TO factory_system;
+  END IF;
+END
+$$;
+
+-- The default tenant for statements run as the application role: tenant 1 (see dbtest.become).
+SELECT dbtest.use_tenant(1);
