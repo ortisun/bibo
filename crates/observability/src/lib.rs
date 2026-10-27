@@ -4,5 +4,8 @@
 //! `docs/observability/conventions.md`. The tables on that page and the constants here are
 //! checked against each other by the tests.
 
+pub mod guard;
 pub mod names;
 pub mod redact;
+pub mod spans;
+pub mod trace;
