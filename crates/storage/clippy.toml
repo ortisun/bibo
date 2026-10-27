@@ -1,0 +1,29 @@
+# The storage crate touches the file system in one place: `src/artifact_fs`. That module allows
+# these lints for itself. Everywhere else in the crate, and in nothing it exposes, a call to the
+# file system is an error, so a new file access cannot slip into the database code unseen. The
+# paths are the ones `cargo xtask clippy-toml` lists for the inner crates (clippy ignores a path it
+# cannot resolve, so they are spelt as there).
+
+disallowed-methods = [
+    { path = "std::fs::read", reason = "only src/artifact_fs touches the file system" },
+    { path = "std::fs::read_to_string", reason = "only src/artifact_fs touches the file system" },
+    { path = "std::fs::read_dir", reason = "only src/artifact_fs touches the file system" },
+    { path = "std::fs::read_link", reason = "only src/artifact_fs touches the file system" },
+    { path = "std::fs::metadata", reason = "only src/artifact_fs touches the file system" },
+    { path = "std::fs::symlink_metadata", reason = "only src/artifact_fs touches the file system" },
+    { path = "std::fs::canonicalize", reason = "only src/artifact_fs touches the file system" },
+    { path = "std::fs::write", reason = "only src/artifact_fs touches the file system" },
+    { path = "std::fs::copy", reason = "only src/artifact_fs touches the file system" },
+    { path = "std::fs::rename", reason = "only src/artifact_fs touches the file system" },
+    { path = "std::fs::hard_link", reason = "only src/artifact_fs touches the file system" },
+    { path = "std::fs::remove_file", reason = "only src/artifact_fs touches the file system" },
+    { path = "std::fs::remove_dir", reason = "only src/artifact_fs touches the file system" },
+    { path = "std::fs::remove_dir_all", reason = "only src/artifact_fs touches the file system" },
+    { path = "std::fs::create_dir", reason = "only src/artifact_fs touches the file system" },
+    { path = "std::fs::create_dir_all", reason = "only src/artifact_fs touches the file system" },
+]
+
+disallowed-types = [
+    { path = "std::fs::File", reason = "only src/artifact_fs touches the file system" },
+    { path = "std::fs::OpenOptions", reason = "only src/artifact_fs touches the file system" },
+]

@@ -7,3 +7,66 @@ publish.workspace = true
 
 [lints]
 workspace = true
+
+# `storage` is an adapter crate (ring 2). DEP-04 (the external allow list) is enforced for rings 0
+# and 1 and for application crates only, but the `storage` entry of
+# docs/architecture/crate-dependency-rules.json is the reference, and every crate below is on it
+# except the four marked "not on the list". Versions are the releases checked with `cargo info`
+# on 2026-10-27. All of them are MIT or Apache-2.0 (or an OR of those) and pass `cargo deny`.
+[dependencies]
+factory-domain.workspace = true
+factory-ports.workspace = true
+
+# Implements the port traits, which are declared with `#[async_trait]`. Not on the list for
+# `storage` (it is on the list for `ports` and `testkit`), because the ports cannot be implemented
+# without it. Maintained by dtolnay.
+async-trait = "0.1.92"
+
+# The query builder. 2.3.14 is the newest release and the one `diesel-async` 0.9.2 is built
+# against (it asks for `~2.3.0`). `postgres_backend` is the PostgreSQL backend without libpq, so
+# the crate links no C library. `uuid`, `time` and `serde_json` map the column types of
+# schema.rs. `with-deprecated` stays off. The tables need up to 22 columns, so the default
+# 32-column tables stay on.
+diesel = { version = "2.3.14", default-features = false, features = [
+    "postgres_backend",
+    "uuid",
+    "time",
+    "serde_json",
+    "32-column-tables",
+] }
+
+# The async layer over `tokio-postgres`, with the `deadpool` pool. 0.9.2 was published on
+# 2026-06-19 and is 0.x (ADR 0007 records this and the fallback). `deadpool` is the pool that
+# the ADR names first and the pool that the library documents most. TLS is not enabled: the
+# connection is made with `NoTls`, and a TLS setup is a deployment item (see the crate docs).
+diesel-async = { version = "0.9.2", default-features = false, features = ["postgres", "deadpool"] }
+
+# Lists the migrations that the code expects, so the store can refuse to start on a database that
+# is behind (ADR 0007, rule 1). The migrations are embedded only to read their names. The code
+# never runs them.
+diesel_migrations = { version = "2.3.2", default-features = false }
+
+# File system calls relative to an open directory, with no-follow flags, for the local artifact
+# store. Not on the list for `storage`. It is the safe binding to the system calls (the workspace
+# forbids `unsafe`), and the only way to refuse a symbolic link at every step of a path without a
+# race between the check and the use. Apache-2.0 or MIT. The `std` feature is needed for the I/O
+# traits on the descriptors, `fs` for `openat` and its siblings.
+rustix = { version = "1.1.6", default-features = false, features = ["std", "fs"] }
+
+serde_json = { workspace = true, features = ["std"] }
+thiserror = "2.0.21"
+
+# Instant arithmetic for the column type mapping of `diesel`.
+time = { version = "0.3.55", default-features = false, features = ["std"] }
+
+# `rt` for `spawn` (the rollback of a dropped transaction) and `spawn_blocking` (the artifact
+# store), `sync` and `time` for the pool and its timeouts.
+tokio = { version = "1.54.1", default-features = false, features = ["rt", "sync", "time"] }
+
+tracing = "0.1.44"
+uuid = { version = "1.29.0", default-features = false, features = ["std"] }
+
+[dev-dependencies]
+factory-testkit.workspace = true
+# Real database tests: a runtime that runs many tasks at once for the concurrency tests. Dev only.
+tokio = { version = "1.54.1", default-features = false, features = ["rt-multi-thread", "macros", "sync", "time", "process"] }
