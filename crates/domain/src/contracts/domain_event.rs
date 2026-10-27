@@ -11,7 +11,9 @@ use super::common::{SchemaVersion, required_nullable};
 use super::{Violations, contract};
 use crate::ids::{AggregateId, CausationId, CorrelationId, EventId, JobId, TenantId};
 use crate::macros::string_enum;
-use crate::values::{EventType, PositiveInt, Slug, Timestamp, Traceparent, TransitionId};
+use crate::values::{
+    AggregateVersion, EventType, PositiveInt, Slug, Timestamp, Traceparent, TransitionId,
+};
 
 string_enum! {
     /// The kind of aggregate an event is about.
@@ -37,7 +39,7 @@ pub struct Aggregate {
     /// Which one.
     pub id: AggregateId,
     /// The aggregate version after the change. Lets a consumer detect reordering and gaps.
-    pub version: PositiveInt,
+    pub version: AggregateVersion,
 }
 
 /// The name and version of the schema a payload follows.

@@ -96,3 +96,27 @@ pub const ALL: &[&str] = &[
     WORKDIR,
     GATE_CWD,
 ];
+
+#[cfg(test)]
+mod tests {
+    use super::ALL;
+
+    /// The types compile their pattern the first time they parse something. A pattern that does
+    /// not compile would panic then, so every one is compiled here, whether or not an example
+    /// reaches it.
+    #[test]
+    fn every_pattern_compiles() {
+        for pattern in ALL {
+            regex::Regex::new(pattern)
+                .unwrap_or_else(|error| panic!("the pattern {pattern} does not compile: {error}"));
+        }
+    }
+
+    #[test]
+    fn no_pattern_is_listed_twice() {
+        let mut seen = std::collections::BTreeSet::new();
+        for pattern in ALL {
+            assert!(seen.insert(*pattern), "{pattern} is listed twice");
+        }
+    }
+}

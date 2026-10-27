@@ -12,7 +12,12 @@ use serde::{Deserialize, Serialize};
 
 use super::common::SchemaVersion;
 use super::{Violations, contract};
-use crate::macros::patterned_string;
+use std::sync::LazyLock;
+
+use regex::Regex;
+
+use crate::error::ValueError;
+use crate::macros::string_traits;
 use crate::patterns;
 use crate::values::{Bounded, HumanText, HumanTitle, NonEmptyString, NonEmptyVec, Slug, UniqueVec};
 
@@ -31,17 +36,102 @@ const SHELLS: [&str; 8] = [
     "pwsh",
 ];
 
-patterned_string! {
-    /// An absolute working directory inside the sandbox, such as `/workspace`.
-    pub struct Workdir("working directory") = patterns::WORKDIR,
-        "use an absolute path such as /workspace, with letters, digits, dots, underscores, hyphens and slashes only"
+static WORKDIR_SHAPE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(patterns::WORKDIR).expect("a schema pattern is a valid regex"));
+static GATE_CWD_SHAPE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(patterns::GATE_CWD).expect("a schema pattern is a valid regex"));
+
+/// True when a path has a `..` segment, which can leave the directory it is meant to stay in.
+fn climbs(path: &str) -> bool {
+    path.split('/').any(|segment| segment == "..")
 }
 
-patterned_string! {
-    /// A relative working directory for a gate command. May be empty.
-    pub struct GateCwd("gate working directory") = patterns::GATE_CWD,
-        "use a relative path with letters, digits, dots, underscores, hyphens and slashes only"
+/// An absolute working directory inside the sandbox, such as `/workspace`.
+///
+/// The schema pattern allows `..` segments, so `/workspace/../etc` passes it. This type does not.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct Workdir(String);
+
+impl Workdir {
+    /// Checks the pattern and refuses `..` segments.
+    ///
+    /// # Errors
+    /// Returns a [`ValueError`] when the path is not an absolute path without `..`.
+    pub fn parse(text: &str) -> Result<Self, ValueError> {
+        const WHAT: &str = "working directory";
+        if !WORKDIR_SHAPE.is_match(text) {
+            return Err(ValueError::new(
+                WHAT,
+                text,
+                "use an absolute path such as /workspace, with letters, digits, dots, underscores, hyphens and slashes only",
+            ));
+        }
+        if climbs(text) {
+            return Err(ValueError::new(
+                WHAT,
+                text,
+                "use a path with no `..` segment, which could leave the intended directory",
+            ));
+        }
+        Ok(Self(text.to_owned()))
+    }
+
+    /// The path.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
 }
+
+string_traits!(Workdir);
+
+/// A working directory for a gate command, relative to the repository. May be empty, which means
+/// the repository root.
+///
+/// The schema pattern allows a leading slash and `..` segments, so `/etc` and `../outside` pass
+/// it. This type refuses both, because a gate must run inside the repository it checks.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct GateCwd(String);
+
+impl GateCwd {
+    /// Checks the pattern, refuses a leading slash and refuses `..` segments.
+    ///
+    /// # Errors
+    /// Returns a [`ValueError`] when the path is not a relative path without `..`.
+    pub fn parse(text: &str) -> Result<Self, ValueError> {
+        const WHAT: &str = "gate working directory";
+        if !GATE_CWD_SHAPE.is_match(text) {
+            return Err(ValueError::new(
+                WHAT,
+                text,
+                "use a relative path with letters, digits, dots, underscores, hyphens and slashes only",
+            ));
+        }
+        if text.starts_with('/') {
+            return Err(ValueError::new(
+                WHAT,
+                text,
+                "a gate working directory is relative to the repository, so it cannot start with a slash",
+            ));
+        }
+        if climbs(text) {
+            return Err(ValueError::new(
+                WHAT,
+                text,
+                "use a path with no `..` segment, which could leave the repository",
+            ));
+        }
+        Ok(Self(text.to_owned()))
+    }
+
+    /// The path.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+string_traits!(GateCwd);
 
 /// True when `program` is a shell: one of the names the schema lists, written with or without a
 /// directory, in any letter case, with or without `.exe`.

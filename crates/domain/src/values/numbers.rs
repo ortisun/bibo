@@ -69,6 +69,75 @@ impl<'de, const MIN: i64, const MAX: i64> serde::Deserialize<'de> for Bounded<MI
     }
 }
 
+/// The version counter of an aggregate (a job, stage run, attempt or task node), from 1.
+///
+/// ADR 0007: every mutable row carries a version, and an update says which version it read
+/// (`WHERE id = $1 AND version = $2`). Zero rows updated is a conflict. A new aggregate starts at
+/// [`FIRST`](Self::FIRST) and each accepted change moves it to [`next`](Self::next). A domain
+/// event carries the version after the change, so a consumer can spot reordering and gaps.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct AggregateVersion(i64);
+
+impl AggregateVersion {
+    /// The version of a new aggregate.
+    pub const FIRST: Self = Self(1);
+
+    /// Checks that the version is at least 1.
+    ///
+    /// # Errors
+    /// Returns a [`ValueError`] for 0 or a negative number.
+    pub fn new(value: i64) -> Result<Self, ValueError> {
+        if value >= 1 {
+            Ok(Self(value))
+        } else {
+            Err(ValueError::new(
+                "aggregate version",
+                &value.to_string(),
+                "use a whole number of at least 1",
+            ))
+        }
+    }
+
+    /// The version after one more accepted change.
+    ///
+    /// # Errors
+    /// Returns a [`ValueError`] if the counter would overflow, which no real aggregate reaches.
+    pub fn next(self) -> Result<Self, ValueError> {
+        self.0.checked_add(1).map(Self).ok_or_else(|| {
+            ValueError::new(
+                "aggregate version",
+                &self.0.to_string(),
+                "the counter cannot go higher",
+            )
+        })
+    }
+
+    /// The number.
+    #[must_use]
+    pub const fn get(self) -> i64 {
+        self.0
+    }
+}
+
+impl fmt::Display for AggregateVersion {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Display::fmt(&self.0, f)
+    }
+}
+
+impl serde::Serialize for AggregateVersion {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_i64(self.0)
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for AggregateVersion {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let value = <i64 as serde::Deserialize>::deserialize(deserializer)?;
+        Self::new(value).map_err(serde::de::Error::custom)
+    }
+}
+
 /// A whole number of any size that JSON can hold without a fraction, such as a random seed.
 ///
 /// A plain `i64` would refuse a seed above 2^63, which the schema allows. `5.0` is not accepted,

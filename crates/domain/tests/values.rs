@@ -4,8 +4,8 @@
 use factory_domain::ids::{JobId, TenantId};
 use factory_domain::scope::{CrossTenantAccess, TenantScope};
 use factory_domain::values::{
-    Bounded, GitSha, HumanText, HumanTitle, MediaType, NonEmptyVec, SemanticVersion, Sha256Digest,
-    Slug, Timestamp, UniqueVec, UnitInterval,
+    AggregateVersion, Bounded, GitSha, HumanText, HumanTitle, MediaType, NonEmptyVec,
+    SemanticVersion, Sha256Digest, Slug, Timestamp, UniqueVec, UnitInterval,
 };
 
 fn json_error_text<T: serde::de::DeserializeOwned + std::fmt::Debug>(json: &str) -> String {
@@ -348,6 +348,25 @@ fn bounded_integers_check_both_ends() {
     for bad in ["0", "11", "-1", "1.5", "\"3\"", "null"] {
         assert!(serde_json::from_str::<Attempts>(bad).is_err(), "{bad}");
     }
+}
+
+#[test]
+fn aggregate_versions_start_at_one_and_only_count_up() {
+    // ADR 0007: mutable rows carry a version, and a write names the version it read.
+    let first = AggregateVersion::FIRST;
+    assert_eq!(first.get(), 1);
+    let second = first.next().unwrap();
+    assert_eq!(second.get(), 2);
+    assert!(first < second);
+    assert!(AggregateVersion::new(i64::MAX).unwrap().next().is_err());
+    assert!(AggregateVersion::new(0).is_err());
+    assert!(AggregateVersion::new(-1).is_err());
+    assert_eq!(serde_json::to_string(&second).unwrap(), "2");
+    assert_eq!(
+        serde_json::from_str::<AggregateVersion>("7").unwrap().get(),
+        7
+    );
+    assert!(json_error_text::<AggregateVersion>("0").contains("at least 1"));
 }
 
 #[test]
