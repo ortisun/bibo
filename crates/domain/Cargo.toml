@@ -7,3 +7,40 @@ publish.workspace = true
 
 [lints]
 workspace = true
+
+# Every external crate below is on the `domain` allow list in
+# docs/architecture/crate-dependency-rules.json (rule DEP-04). Versions are pinned to the release
+# checked with `cargo info` on 2026-10-27. Features are cut down so that no dependency can read the
+# clock, make a random number or touch the file system (rule DEP-05): the crate has no way to call
+# `now_v7`, `new_v4` or `OffsetDateTime::now_utc`, because the features that provide them are off.
+[dependencies]
+# Derive support for the contract types and the string and number wrappers. Maintained by dtolnay.
+serde = { version = "1.0.229", default-features = false, features = ["std", "derive"] }
+# The JSON value type, `Number` (keeps `5` and `5.0` apart, so documents round-trip exactly) and
+# the wire format of every contract. `float_roundtrip` makes float parsing exact. The
+# `preserve_order` feature stays off so object keys are sorted and output is deterministic.
+serde_json = { version = "1.0.154", default-features = false, features = ["std", "float_roundtrip"] }
+# RFC 8785 canonical JSON, the input to the evidence ledger chain hash (ADR 0008).
+serde_jcs = "0.2.0"
+# Derive for the closed error enums. Maintained by dtolnay.
+thiserror = "2.0.21"
+# SHA-256 for the ledger chain hash and content digests. RustCrypto, pure Rust.
+sha2 = { version = "0.11.1", default-features = false }
+# Lowercase hex encoding of digests.
+hex = { version = "0.4.3", default-features = false, features = ["alloc"] }
+# Typed identifiers. Only parsing and formatting: the `v4` and `v7` generator features are off, so
+# identifiers come in from the `IdGenerator` port.
+uuid = { version = "1.29.0", default-features = false, features = ["std"] }
+# Calendar-checked timestamps. The `std` feature is off, so `now_utc` does not exist here: time
+# comes in from the `Clock` port.
+time = { version = "0.3.55", default-features = false }
+# Semantic versions of contracts, agents and gates.
+semver = "1.0.28"
+# The exact patterns the schemas declare for identifiers, titles and hashes, so the Rust checks
+# and the schemas cannot drift apart.
+regex = { version = "1.13.1", default-features = false, features = ["std", "unicode-perl"] }
+
+[dev-dependencies]
+# Property-based tests for the state machines and the ledger chain. Dev only, so DEP-04 does not
+# apply. The `fork` and `timeout` features stay off.
+proptest = { version = "1.12.0", default-features = false, features = ["std"] }

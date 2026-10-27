@@ -1,0 +1,42 @@
+{
+  "id": "quant-trading",
+  "version": 1,
+  "matches": [
+    "quantitative-finance",
+    "algorithmic-trading"
+  ],
+  "required_skills": [
+    "market-microstructure",
+    "risk-management",
+    "backtesting"
+  ],
+  "optional_skills": [
+    "options-pricing",
+    "statistical-learning"
+  ],
+  "required_tools": [
+    "backtest-engine",
+    "data-quality-checker",
+    "deterministic-replay"
+  ],
+  "required_evidence": [
+    "out-of-sample-results",
+    "cost-model",
+    "risk-report"
+  ],
+  "mandatory_gates": [
+    "point-in-time-integrity",
+    "lookahead-leakage",
+    "transaction-costs",
+    "risk-limits"
+  ],
+  "conditional_gates": [
+    "paper-trading",
+    "broker-simulator"
+  ],
+  "forbidden_autonomous_actions": [
+    "live-orders",
+    "capital-transfer"
+  ],
+  "approval_policy": "human-required-for-live-trading"
+}
