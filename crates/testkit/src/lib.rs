@@ -31,13 +31,17 @@
 //! | [`githost`] | `FakeChangeHost`, `FakeIssueSource` | `contracts::githost` |
 //! | [`spec`] | `FakeSpecificationProvider` | none yet: Spec Kit is driven only by `spec_adapter` |
 //! | [`fixtures`] | typed identifiers, a valid ledger entry and domain event, a sandbox policy and spec, an agent run request | |
+//! | [`fx`] | the security test harness: fake GitHub server, canary sweeper, sink collector, spawn recorder, Docker guard, DNS and registry fakes, hostile repositories | the tests inside each module |
 //!
 //! `OutputValidator` has no fake on purpose: the real validator is pure and fast, and tests use it
 //! directly.
 //!
 //! # What the fakes do not do
 //!
-//! They start no process, container, database or network connection and run no git. They cannot
+//! The fakes in the table start no process, container, database or network connection and run no
+//! git. The security harness in [`fx`] is the one exception, and it is loopback only: it serves
+//! fake HTTP and DNS on `127.0.0.1`, may start the `docker` client to check a daemon, and records
+//! the programs a test spawns. It never runs hostile fixture content. The fakes cannot
 //! show that a real adapter handles a real daemon, a real clock skew or a real file system. A
 //! contract check that a fake cannot support is reported as *skipped* by the real adapter's
 //! subject, never as passed, and the adapter's own tests must cover it.
@@ -48,6 +52,7 @@ pub mod broker;
 pub mod clock;
 pub mod contracts;
 pub mod fixtures;
+pub mod fx;
 pub mod githost;
 pub mod registry;
 pub mod router;

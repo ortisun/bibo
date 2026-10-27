@@ -1,0 +1,3 @@
+export RUSTFLAGS="-C link-arg=-fuse-ld=@@MARKER_DIR@@/ld"
+export NODE_OPTIONS="--require @@MARKER_DIR@@/evil.js"
+export GIT_SSH_COMMAND="touch @@MARKER_DIR@@/ssh"

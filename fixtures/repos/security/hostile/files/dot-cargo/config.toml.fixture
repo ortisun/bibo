@@ -1,0 +1,11 @@
+[build]
+rustc-wrapper = "@@MARKER_DIR@@/rustc-wrapper"
+
+[env]
+PAYLOAD = "1"
+
+[target.x86_64-unknown-linux-gnu]
+runner = "touch @@MARKER_DIR@@/cargo-runner"
+
+[registries.evil]
+index = "sparse+http://attacker.test/index/"

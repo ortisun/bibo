@@ -1,0 +1,16 @@
+use fx_clean_repo::add;
+
+#[test]
+fn adds_zero() {
+    assert_eq!(add(0, 0), 0);
+}
+
+#[test]
+fn adds_negative_numbers() {
+    assert_eq!(add(-2, -3), -5);
+}
+
+#[test]
+fn adds_mixed_signs() {
+    assert_eq!(add(-2, 3), 1);
+}
