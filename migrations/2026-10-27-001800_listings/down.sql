@@ -1,0 +1,1 @@
+DROP INDEX jobs_repository_listing_idx;

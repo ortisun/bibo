@@ -24,13 +24,14 @@ CREATE FUNCTION dbtest.scale() RETURNS int LANGUAGE sql STABLE AS $$ SELECT coal
 SELECT dbtest.mk_tenant(t) FROM generate_series(1, 5) AS t;
 
 -- Many repositories per installation, as an organization-wide GitHub App installation has. The webhook binding
--- looks one up by installation and repository id.
+-- looks one up by installation and repository id. The jobs below are spread over twenty of them per tenant, so a
+-- listing by repository is selective.
 INSERT INTO repositories (tenant_id, id, github_installation_id, github_repository_id, full_name, default_branch)
 SELECT dbtest.u(1 + n % 5), dbtest.u(900000 + n), 9000 + 1 + n % 5, 100000 + n, 'org/repo-' || n, 'main'
   FROM generate_series(1, 2000 * dbtest.scale()) AS n;
 
 INSERT INTO jobs (tenant_id, id, repository_id, requester_principal_id, execution_mode, autonomy_level, pipeline_scope, correlation_id, created_at)
-SELECT dbtest.u(1 + n % 5), dbtest.u(100000 + n), dbtest.u((1 + n % 5) * 1000 + 1), dbtest.u((1 + n % 5) * 1000 + 2),
+SELECT dbtest.u(1 + n % 5), dbtest.u(100000 + n), dbtest.u(900000 + 5 * ((n / 5) % 20) + n % 5 + 5), dbtest.u((1 + n % 5) * 1000 + 2),
        'production', 'L1', ARRAY['INTAKE'], dbtest.u(200000 + n), now() - make_interval(mins => 3000 - n)
   FROM generate_series(1, 2000 * dbtest.scale()) AS n;
 
@@ -132,6 +133,31 @@ SELECT s.tenant_id, s.job_id, s.id, 'input', 'spec', dbtest.sha('artifact-' || (
 INSERT INTO api_tokens (tenant_id, id, principal_id, token_hash, audience, expires_at)
 SELECT dbtest.u(1), dbtest.u(800000 + n), dbtest.u(1002), sha256(convert_to('token-' || n, 'UTF8')), 'factory-api', now() + interval '1 day' FROM generate_series(1, 200) AS n;
 
+-- Rows for the operations that ports v1.1 added (ADR 0014): task graphs of five nodes in a chain, one approval
+-- and one original request per job, and a webhook delivery per job, so that the listings and the duplicate
+-- probes have something to search. Written through every trigger and constraint.
+INSERT INTO artifacts (tenant_id, content_sha256, size_bytes, media_type, backend)
+SELECT dbtest.u(t), dbtest.sha('plan'), 100, 'application/json', 'local-fs' FROM generate_series(1, 5) AS t;
+INSERT INTO task_nodes (tenant_id, id, job_id, stage_run_id, task_key, plan_sha256)
+SELECT dbtest.u(1 + n % 5), dbtest.u(1000000 + n * 5 + k), dbtest.u(100000 + n), dbtest.u(300000 + n * 5 + 5), 't-00' || k, dbtest.sha('plan')
+  FROM generate_series(1, 2000 * dbtest.scale()) AS n, generate_series(1, 5) AS k;
+INSERT INTO task_node_dependencies (tenant_id, stage_run_id, task_node_id, depends_on_task_node_id)
+SELECT dbtest.u(1 + n % 5), dbtest.u(300000 + n * 5 + 5), dbtest.u(1000000 + n * 5 + k), dbtest.u(1000000 + n * 5 + k - 1)
+  FROM generate_series(1, 2000 * dbtest.scale()) AS n, generate_series(2, 5) AS k;
+INSERT INTO approvals (tenant_id, id, job_id, stage_run_id, decision, approver_principal_id, approver_github_user_id, approver_designation,
+                       allowlist_version_hash, policy_hash, reason, channel, expires_at, pr_head_sha, tree_hash, base_sha, evidence_manifest_hash, spec_version)
+SELECT dbtest.u(1 + n % 5), dbtest.u(1200000 + n), dbtest.u(100000 + n), dbtest.u(300000 + n * 5 + 1), 'approve', dbtest.u((1 + n % 5) * 1000 + 2), 7000 + 1 + n % 5,
+       'approver', dbtest.sha('allowlist'), dbtest.sha('policy'), 'Reviewed the evidence.', 'cli', now() + interval '72 hours',
+       lpad(to_hex(n), 40, '0'), repeat('b', 40), repeat('c', 40), dbtest.sha('manifest'), 1
+  FROM generate_series(1, 2000 * dbtest.scale()) AS n;
+INSERT INTO original_requests (tenant_id, id, job_id, revision, source, request_text, content_sha256)
+SELECT dbtest.u(1 + n % 5), dbtest.u(1400000 + n), dbtest.u(100000 + n), 1, 'api', 'request ' || n,
+       'sha256:' || encode(sha256(convert_to('request ' || n, 'UTF8')), 'hex')
+  FROM generate_series(1, 2000 * dbtest.scale()) AS n;
+INSERT INTO webhook_deliveries (tenant_id, id, delivery_id, event_name, github_installation_id, body_sha256, semantic_key)
+SELECT dbtest.u(1 + n % 5), dbtest.u(1300000 + n), 'delivery-' || n || '-abcd', 'issues', 9001, dbtest.sha('body-' || n), dbtest.sha('semantic-' || n)
+  FROM generate_series(1, 2000 * dbtest.scale()) AS n;
+
 ANALYZE;
 
 -- The sizes the criterion asks for.
@@ -209,15 +235,15 @@ BEGIN
   -- on an attempt would block a ledger entry that points at it.
   PERFORM dbtest.expect_plan('sweep: attempts whose lease expired',
     $q$SELECT tenant_id, id, stage_run_id, version, lease_epoch FROM attempts WHERE status IN ('STARTING', 'RUNNING') AND lease_expires_at < now()
-        ORDER BY lease_expires_at LIMIT 100 FOR NO KEY UPDATE SKIP LOCKED$q$,
+        ORDER BY lease_expires_at, id LIMIT 100 FOR NO KEY UPDATE SKIP LOCKED$q$,
     'attempts_lease_expiry_idx', 'attempts', sys);
   PERFORM dbtest.expect_plan('sweep: attempts past their deadline',
     $q$SELECT tenant_id, id, stage_run_id, version, lease_epoch FROM attempts WHERE status IN ('STARTING', 'RUNNING') AND deadline_at < now()
-        ORDER BY deadline_at LIMIT 100 FOR NO KEY UPDATE SKIP LOCKED$q$,
+        ORDER BY deadline_at, id LIMIT 100 FOR NO KEY UPDATE SKIP LOCKED$q$,
     'attempts_deadline_idx', 'attempts', sys);
   PERFORM dbtest.expect_plan('sweep: cancelling attempts past their teardown deadline',
     $q$SELECT tenant_id, id, stage_run_id, version, lease_epoch FROM attempts WHERE status = 'CANCELLING' AND teardown_deadline_at < now()
-        ORDER BY teardown_deadline_at LIMIT 100 FOR NO KEY UPDATE SKIP LOCKED$q$,
+        ORDER BY teardown_deadline_at, id LIMIT 100 FOR NO KEY UPDATE SKIP LOCKED$q$,
     'attempts_teardown_idx', 'attempts', sys);
 
   -- Timeline of one job: events, ledger entries and stage runs, each by tenant and job, as the tenant role.
@@ -319,5 +345,60 @@ BEGIN
   RESET ROLE;
   RAISE NOTICE 'plan | ledger timeline of one job, execution time: as the owner (no policy) %, as the tenant role (policy on) %', as_owner, as_tenant;
   PERFORM dbtest.pass('recorded the execution time of one timeline query with and without the policy');
+END
+$$;
+
+-- ---------------------------------------------------------------------------------------------
+-- 3. The operations that ports v1.1 added: listings, the duplicate probes, the witness, approvals and the task
+-- graph. All as the tenant role for tenant 3, with row-level security on. Each Store method is named.
+
+DO $$
+DECLARE
+  tj text := dbtest.u(3)::text;
+  jb text := dbtest.u(100000 + 7)::text;        -- a job of tenant 3
+  repo text := dbtest.u(900012)::text;           -- one of its twenty repositories
+  run text := dbtest.u(300000 + 7 * 5 + 5)::text;
+  app text := 'factory_app';
+  newest text := 'ORDER BY created_at DESC, id DESC LIMIT 50';
+BEGIN
+  PERFORM dbtest.expect_plan('list_jobs: newest first, one page',
+    format($q$SELECT id, status FROM jobs WHERE tenant_id = %L %s$q$, tj, newest), 'jobs_listing_idx', 'jobs', app, 3);
+  PERFORM dbtest.expect_plan('list_jobs: the next page by keyset (created_at, id)',
+    format($q$SELECT id, status FROM jobs WHERE tenant_id = %L AND (created_at, id) < (now() - interval '1 day', %L) %s$q$, tj, dbtest.u(100500)::text, newest), 'jobs_listing_idx', 'jobs', app, 3);
+  PERFORM dbtest.expect_plan('list_jobs: only some statuses',
+    format($q$SELECT id, status FROM jobs WHERE tenant_id = %L AND status = ANY (ARRAY['ACTIVE', 'PAUSED']) %s$q$, tj, newest), 'jobs_(listing_idx|open_idx|status_listing_idx)', 'jobs', app, 3);
+  PERFORM dbtest.expect_plan('list_jobs: one repository',
+    format($q$SELECT id, status FROM jobs WHERE tenant_id = %L AND repository_id = %L %s$q$, tj, repo, newest), 'jobs_repository_listing_idx', 'jobs', app, 3);
+  PERFORM dbtest.expect_plan('list_stage_runs: the runs of one job, oldest first',
+    format($q$SELECT id, status FROM stage_runs WHERE tenant_id = %L AND job_id = %L ORDER BY created_at, id$q$, tj, jb),
+    'stage_runs_tenant_id_job_id_(id|stage_kind_run_number)_key', 'stage_runs', app, 3);
+  PERFORM dbtest.expect_plan('list_attempts: the attempts of one stage run by number',
+    format($q$SELECT id, status FROM attempts WHERE tenant_id = %L AND stage_run_id = %L ORDER BY attempt_number$q$, tj, dbtest.u(300000 + 7 * 5 + 3)::text),
+    'attempts_tenant_id_stage_run_id_attempt_number_key', 'attempts', app, 3);
+  PERFORM dbtest.expect_plan('list_task_nodes: the nodes of one stage run in key order',
+    format($q$SELECT id, task_key, status FROM task_nodes WHERE tenant_id = %L AND stage_run_id = %L ORDER BY task_key$q$, tj, run),
+    'task_nodes_tenant_id_stage_run_id_task_key_key', 'task_nodes', app, 3);
+  PERFORM dbtest.expect_plan('task_dependencies: the edges of one stage run, reached through its nodes',
+    format($q$SELECT d.task_node_id, d.depends_on_task_node_id FROM task_nodes n
+                JOIN task_node_dependencies d ON d.tenant_id = n.tenant_id AND d.task_node_id = n.id
+               WHERE n.tenant_id = %L AND n.stage_run_id = %L$q$, tj, run),
+    'task_node_dependencies_pkey', 'task_node_dependencies', app, 3);
+  PERFORM dbtest.expect_plan('valid_approvals: the approvals of one job bound to a head, not invalidated, not expired',
+    format($q$SELECT id FROM approvals WHERE tenant_id = %L AND job_id = %L AND decision = 'approve' AND pr_head_sha = %L AND invalidated_at IS NULL AND expires_at > now()$q$, tj, jb, lpad(to_hex(7), 40, '0')),
+    'approvals_job_idx', 'approvals', app, 3);
+  PERFORM dbtest.expect_plan('get_original_request: the latest revision of one job',
+    format($q$SELECT request_text FROM original_requests WHERE tenant_id = %L AND job_id = %L ORDER BY revision DESC LIMIT 1$q$, tj, jb),
+    'original_requests_tenant_id_job_id_revision_key', 'original_requests', app, 3);
+  PERFORM dbtest.expect_plan('record_delivery, the duplicate probe: the three keys in one statement',
+    format($q$SELECT id FROM webhook_deliveries WHERE tenant_id = %L AND (delivery_id = 'delivery-7-abcd' OR body_sha256 = %L OR semantic_key = %L)$q$, tj, dbtest.sha('body-7'), dbtest.sha('semantic-7')),
+    'webhook_deliveries_tenant_id_(delivery_id|body_sha256|semantic_key)_key', 'webhook_deliveries', app, 3);
+  PERFORM dbtest.expect_plan('committed, the witness of an outbox event',
+    format($q$SELECT true FROM outbox WHERE tenant_id = %L AND event_id = %L$q$, tj, dbtest.u(1000)::text), 'outbox_pkey', 'outbox', app, 3);
+  PERFORM dbtest.expect_plan('committed, the witness of an audit record',
+    format($q$SELECT true FROM audit_events WHERE tenant_id = %L AND event_id = %L$q$, tj, dbtest.u(700003)::text), 'audit_events_tenant_id_event_id_key', 'audit_events', app, 3);
+  PERFORM dbtest.expect_plan('read_audit: a tenant''s records after a sequence, in order',
+    format($q$SELECT sequence, action FROM audit_events WHERE tenant_id = %L AND sequence > 1500 ORDER BY sequence LIMIT 100$q$, tj), 'audit_events_pkey', 'audit_events', app, 3);
+  PERFORM dbtest.expect_plan('the tenant-scoped artifact read: the index row of one hash for one tenant',
+    format($q$SELECT size_bytes FROM artifacts WHERE tenant_id = %L AND content_sha256 = %L$q$, dbtest.u(1)::text, dbtest.sha('artifact-17')), 'artifacts_pkey', 'artifacts', app, 1);
 END
 $$;

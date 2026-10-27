@@ -548,6 +548,63 @@ suite_migrations() {
   fi
   ok "the committed schema.rs equals diesel print-schema"
   drop_db "$db"
+  upgrade_check
+}
+
+# The last migration of the schema before ports v1.1. The upgrade test migrates to here, loads rows, runs the rest.
+UPGRADE_FROM="2026-10-27-001400"
+
+# A data-preserving upgrade (docs/database/migration-safety.md, rule 7): build the schema as it was before ports v1.1,
+# write rows into every tenant-owned table with the statements of that time, run the newer migrations, and check that
+# every row is byte for byte what it was (a hash per table over the columns the table had), that the new columns hold
+# their defaults, and that the statements of the earlier code still work on the new schema.
+upgrade_check() {
+  local db="factory_t_${RUN_ID}_upgrade" out="$WORK/upgrade.out" prev="$WORK/migrations-prev" cfg_prev cfg_all d before after kept=0
+  create_db "$db"
+  mkdir -p "$prev"
+  for d in "$MIGRATIONS"/*/; do
+    d="${d%/}"
+    if [[ "$(basename "$d")" < "${UPGRADE_FROM}~" ]]; then
+      cp -R "$d" "$prev/"
+      kept=$((kept + 1))
+    fi
+  done
+  cfg_prev="$WORK/diesel-prev.toml"
+  printf '[migrations_directory]\ndir = "%s"\n' "$prev" >"$cfg_prev"
+  cfg_all="$(plain_diesel_config)"
+  if ! diesel_run "$db" --config-file "$cfg_prev" migration run >"$out" 2>&1; then
+    not_ok "the migrations up to $UPGRADE_FROM did not run"
+    cat "$out" >&2
+    drop_db "$db"
+    return 1
+  fi
+  ok "upgrade: the schema of the earlier version is built ($kept migrations)"
+  if ! psql_db "$db" -f "$TESTS/00_helpers.sql" -f "$TESTS/upgrade_fixture.sql" >/dev/null 2>"$out"; then
+    not_ok "upgrade: loading the rows of the earlier version failed"
+    cat "$out" >&2
+    drop_db "$db"
+    return 1
+  fi
+  before="$(psql_scalar "$db" -f "$TESTS/upgrade_fingerprint.sql")"
+  if ! diesel_run "$db" --config-file "$cfg_all" migration run >"$out" 2>&1; then
+    not_ok "upgrade: the newer migrations did not run on a database with rows"
+    cat "$out" >&2
+    drop_db "$db"
+    return 1
+  fi
+  after="$(psql_scalar "$db" -f "$TESTS/upgrade_fingerprint.sql")"
+  if [ "$before" != "$after" ]; then
+    not_ok "upgrade: rows changed while the newer migrations ran"
+    diff <(printf '%s\n' "$before") <(printf '%s\n' "$after") >&2 || true
+    drop_db "$db"
+    return 1
+  fi
+  ok "upgrade: $(printf '%s\n' "$after" | wc -l | tr -d ' ') tables kept every row, byte for byte, over the columns they had before ($(printf '%s\n' "$after" | awk -F'|' '{ n += $2 } END { print n }') rows)"
+  local rc=0
+  psql_db "$db" -f "$TESTS/upgrade_check.sql" >/dev/null 2>"$out" || rc=$?
+  show_checks "$out"
+  drop_db "$db"
+  return "$rc"
 }
 
 suite_statuses() {
