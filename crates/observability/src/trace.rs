@@ -100,8 +100,44 @@ const EXPORT_MACHINERY: &[&str] = &[
 
 fn is_export_machinery(target: &str) -> bool {
     EXPORT_MACHINERY.iter().any(|prefix| {
-        target
-            .strip_prefix(prefix)
-            .is_some_and(|rest| rest.is_empty() || rest.starts_with("::") || rest.starts_with('_'))
+        target.strip_prefix(prefix).is_some_and(|rest| {
+            rest.is_empty()
+                || rest.starts_with("::")
+                || rest.starts_with('_')
+                || rest.starts_with('-')
+        })
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_export_machinery;
+
+    #[test]
+    fn the_targets_of_the_export_libraries_are_recognised() {
+        for target in [
+            "opentelemetry",
+            "opentelemetry_sdk",
+            "opentelemetry-otlp",
+            "opentelemetry_sdk::trace::span_processor",
+            "hyper_util::client::legacy",
+            "reqwest::connect",
+            "h2::codec",
+        ] {
+            assert!(is_export_machinery(target), "{target} should be excluded");
+        }
+    }
+
+    #[test]
+    fn factory_targets_and_lookalikes_are_kept() {
+        for target in [
+            "factory_workflow::engine",
+            "factory_observability::guard",
+            "my_app",
+            "hypermedia",
+            "httpd_clone",
+        ] {
+            assert!(!is_export_machinery(target), "{target} should stay");
+        }
+    }
 }

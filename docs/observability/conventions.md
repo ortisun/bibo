@@ -193,7 +193,7 @@ A log line is one JSON object. When a line is written inside a job span, or insi
 
 The id must be a lower case UUID. A value in any other form is ignored and never written, so a log line cannot be forged through a bad id.
 
-Log fields use the same names as span attributes, plus `message` and `correlation_id`. Any other field name is outside the allowlist.
+Log fields use the same names as span attributes, plus `message` and `correlation_id`. Any other field name is outside the allowlist. The one exception is the lines that the OpenTelemetry libraries write about their own failures, such as a collector that cannot be reached. They use the library's field names, such as `name`, `operation` and `error`. They describe the telemetry pipeline and hold no factory data.
 
 ## 8. What is deliberately not recorded
 
@@ -217,3 +217,67 @@ Four mechanisms enforce this, each tested:
 4. **Fail closed.** If the scrubber cannot run, the value is replaced and the original is never written. The text of an error status is always blanked.
 
 These mechanisms are a second line of defense. The first line is not putting the secret in the call in the first place.
+
+## 9. Starting telemetry in a program
+
+A binary starts telemetry once, early in `main`, and keeps the guard until it exits. Library crates never start it.
+
+```rust
+let config = TelemetryConfig::from_env("factory-worker", env!("CARGO_PKG_VERSION"))?;
+let _telemetry = factory_observability::telemetry::init(&config)?;
+```
+
+| Variable | Meaning | Default |
+|---|---|---|
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | Base URL of the collector, such as `http://localhost:4318`. The program adds `/v1/traces` and `/v1/metrics`. | Not set: nothing is exported |
+| `OTEL_SDK_DISABLED` | `true` turns export off even when an endpoint is set. | Not set |
+| `FACTORY_LOG` | Which log lines are written, in the `RUST_LOG` syntax. | `info` |
+| `FACTORY_ENV` | The deployment environment, named on every span and metric. | `local` |
+
+How it behaves:
+
+- **It is safe to call twice.** The first call installs the pipeline and returns the guard that owns it. Later calls change nothing and return a guard that owns nothing, even after the first guard is dropped. A process can install its global subscriber only once.
+- **With no collector, the process still logs.** Spans and metric events cost almost nothing, and nothing is sent.
+- **A collector that is down does not stop the process.** The exporters work on their own threads. After three retries the SDK writes a warning and an error line to the diagnostic log, and the spans and metrics of that interval are lost. `flush` returns the error to the caller. This was observed with the sample program pointed at a port where nothing listens.
+- **The collector address is checked when it is read.** Only plain `http://` is accepted, because this build has no TLS support. An address with a user name, password, query or fragment is refused, and the error message does not repeat the address.
+- **Dropping the first guard flushes.** It sends what is buffered and stops the exporters. Call `flush` on the guard earlier to send on demand.
+- **It can be called from async code.** The HTTP client is built on its own thread, so it does not clash with a running Tokio runtime.
+
+## 10. Local stack
+
+[`infra/otel/`](../../infra/otel/README.md) holds a collector configuration, a Docker Compose file that starts the collector, VictoriaMetrics and Jaeger on the loopback address, and a script that checks the configuration with the pinned collector image. Its README says what was verified and when.
+
+## 11. Dependencies
+
+The crate depends only on the external crates that `docs/architecture/crate-dependency-rules.json` allows for `observability`. Versions are pinned in `crates/observability/Cargo.toml`. Release dates are from crates.io and were read on 2026-10-27.
+
+| Crate | Version | Released | Why |
+|---|---|---|---|
+| `tracing` | 0.1.44 | 2025-12-18 | The standard instrumentation API, and the only telemetry crate that application and adapter crates may use. |
+| `tracing-subscriber` | 0.3.23 | 2026-03-13 | Log formatting, filters and layers. Default features are off. It uses `std`, `registry`, `fmt`, `json` and `env-filter`. |
+| `tracing-opentelemetry` | 0.34.0 | 2026-09-23 | Turns `tracing` spans and metric events into OpenTelemetry data. It requires `opentelemetry` 0.33, which fixes the version of the next three. |
+| `opentelemetry` | =0.33.1 | 2026-10-09 | The API. |
+| `opentelemetry_sdk` | =0.33.1 | 2026-10-09 | Providers, processors, views and the in-memory test exporters. |
+| `opentelemetry-otlp` | =0.33.1 | 2026-10-09 | The OTLP exporters, over HTTP with protobuf bodies. |
+
+The three OpenTelemetry crates are pinned with an exact version because they are 0.x crates that must move together. An upgrade changes all of them and `tracing-opentelemetry` in one commit and re-runs the whole test suite.
+
+Choices that go beyond the defaults:
+
+- **OTLP over HTTP with a blocking client, not gRPC.** The gRPC exporter needs `tokio` and `tonic`. The HTTP exporter with a blocking client runs on the batch processor's own thread, so this crate needs no async runtime. The dependency rules do not list `tokio` for `observability`. It is still in the build as a dependency of the HTTP client, but this crate does not name it.
+- **No TLS.** The exporter is built without a TLS feature, which keeps `rustls` and its cryptography libraries out of the build. The collector is expected on the same host or on a private network. A decision to send telemetry over the open network needs a TLS feature and a review.
+- **The SDK's `internal-logs` feature is on.** Without it a dead collector fails silently. With it the SDK writes export failures to the diagnostic log through `tracing`.
+- **The SDK's `spec_unstable_metrics_views` feature is on.** It provides the call that removes unlisted labels from a metric. The name says the specification for that part is not final, so an upgrade of the SDK must re-run the label tests in `crates/observability/tests/metrics.rs`.
+
+The crate does not use the `regex` crate, because the dependency rules do not allow it here. The secret scrubber is written by hand instead, and a test keeps it equal to the patterns in the security policy.
+
+## 12. What is not done
+
+These items are known gaps, not oversights.
+
+- **One redactor.** The security documents call for a single `Redactor` in `domain::redaction`, with a registry of the factory's own secret values and a sliding window for secrets split across chunks. That work belongs to package `s1-redaction`. Until it lands, this crate carries its own scrubber behind the `Scrub` trait. When it lands, the composition root passes the real redactor in, and this crate's scrubber can be removed.
+- **Peer crates cannot use these constants.** The dependency rules forbid a dependency between two crates in the application and adapter ring. `workflow`, `runtime`, `sandbox` and the others therefore write the same strings in their own `tracing` calls. The tables here are the reference, and package `s1-observability-instrumentation` checks the spans they produce with `check_span_shape`. A repository-wide scan for ST-07 does not exist yet.
+- **No trace context in domain events.** The event schema has an optional `traceparent`. Writing it from the current span, and continuing a trace from it after a restart, is not done. A job outlives any one process, so the job span cannot be one long-lived span in memory. How to link the pieces is a Slice 1 design question.
+- **No OTLP logs.** Logs go to standard error. The policy names `otel_log_records` as a sink, and the pipeline would need the `opentelemetry-appender-tracing` crate, which is not on the allow list.
+- **No alert rules or dashboards.** This package fixes the names and the data. Rules and dashboards come after the first end-to-end run shows what values the metrics take.
+- **Example only.** The `emit_sample` example in the crate sends fake identifiers to a collector. No factory service records these spans or metrics yet.
