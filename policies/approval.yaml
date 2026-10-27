@@ -26,7 +26,9 @@
 #                             answer changes with the level. Exactly one of
 #                             `requires` and `requires_by_level` is present.
 #   min_level                 lowest autonomy level at which the action exists
-#   role                      authorization role, resolved live (see `roles`)
+#   role                      a factory designation held by being named on the
+#                             allowlist (see `authority` and `roles`). A GitHub role
+#                             or permission never grants one.
 # =============================================================================
 
 schema_version: 1
@@ -97,31 +99,62 @@ autonomy:
     per_repo_opt_in_only: true
 
 # -----------------------------------------------------------------------------
-# 2. Roles (resolved live; never cached past a single decision)
+# 2. Authority: roles come from a named allowlist (ADR 0009 item 5)
 # -----------------------------------------------------------------------------
-# GitHub repository permission is the source of truth for human identity and
-# access. `author_association` in a webhook payload is a hint, not proof.
+# GitHub repository roles and permissions DO NOT grant factory authority. A person
+# holds a factory designation only by being named on the allowlist below. Holding
+# admin on a repository, being an organization owner, or appearing as OWNER or
+# MEMBER in a webhook `author_association` grants nothing. Requesters, operators,
+# approvers, security approvers and administrators are all designations on the
+# SAME allowlist; an operator is a different designation, not a different list.
+#
+# Why: a named list is explicit and reviewable, and it does not depend on
+# repository settings that a repository administrator can change. Revocation is
+# removing the entry. No GitHub lookup is needed to revoke, and none is used to
+# authorize.
+authority:
+  source: named_allowlist
+  location: protected_configuration       # same protected source as this file; the file name is set by the configuration ADR
+  read_from: [protected_default_branch, signed_release]
+  never_read_from: [target_repository, feature_branch, builder_workspace, dashboard_database, issue_or_comment_text]
+  identity_key: github_user_numeric_id    # the immutable numeric user ID; a login can be renamed or re-registered by someone else
+  login_is_display_only: true
+  scope: tenant                           # an entry belongs to one tenant and may be narrowed to listed repositories
+  entry_fields: [tenant_id, github_user_id, login, designations, repositories, added_by, added_at, expires_at]
+  entry_expiry: optional                  # an entry with expires_at stops granting authority at that time
+  bots_may_be_listed: false               # designations apply to human users only
+  github_permission:
+    can_grant_authority: false
+    additional_condition:                 # optional extra requirement. It can only deny. It never grants.
+      enabled: false
+      at_least: triage
+      can_only_deny: true
+  allowlist_changes:
+    action: change_authority_allowlist    # see `actions`; always a human decision
+    requires_distinct_org_admins: 2       # for any change that adds or widens security_approver or org_admin
+    self_grant_allowed: false
+    audit: every_change_recorded_with_before_and_after_hash
+  evaluated: at_decision_time_not_cached  # membership is read from the loaded allowlist version for each decision; its hash is recorded
 roles:
   - id: requester
-    description: "A human whose action created or labeled a request."
-    github_permission_at_least: triage
+    designation: requester
+    description: "May submit a request (apply the `factory` label, use the API or CLI)."
   - id: operator
-    description: "May pause, resume, cancel and view jobs."
-    github_permission_at_least: write
+    designation: operator
+    description: "May pause, resume, cancel and view jobs. A separate designation on the same allowlist."
   - id: approver
+    designation: approver
     description: "May approve, reject and request rework."
-    github_permission_at_least: write
     must_be_human_user: true          # sender.type == User; bots never approve
   - id: security_approver
+    designation: security_approver
     description: "May approve changes to protected paths, egress, tool grants and sandbox settings."
-    github_permission_at_least: maintain
-    must_be_listed_in: security_approvers   # an explicit list kept in central configuration
   - id: repo_admin
-    description: "May lower autonomy and change repository settings in the factory."
-    github_permission_at_least: admin
+    designation: repo_admin
+    description: "May lower autonomy and change the factory's settings for a repository. A factory designation, not a GitHub role."
   - id: org_admin
-    description: "May raise autonomy, enable auto-merge or deploy, change budgets above ceilings."
-    organization_role: owner
+    designation: org_admin
+    description: "May raise autonomy, enable auto-merge or deploy, change budgets above ceilings, and edit the allowlist."
 separation_of_duties:
   approver_must_differ_from_requester_when:
     - risk_tier_at_least_high
@@ -168,7 +201,7 @@ risk_classification:
 # `requires: human` (the policy default_action).
 #   min_level  lowest autonomy level at which the factory may attempt it
 actions:
-  - { id: accept_issue_for_intake,        min_level: L0, requires: none,             when: "label `factory` applied by a user with permission at least triage, verified live", threats: [T-23] }
+  - { id: accept_issue_for_intake,        min_level: L0, requires: none,             when: "label `factory` applied by a person on the requester allowlist, matched by numeric user ID", threats: [T-23] }
   - { id: post_comment,                   min_level: L0, requires: none,             when: "text passes output_hygiene and secret checks", threats: [T-18] }
   - { id: set_status_or_check,            min_level: L0, requires: none,             when: "result derived from supervisor-observed gate evidence", threats: [T-13] }
   - { id: push_factory_branch,            min_level: L1, requires: none,             when: "branch matches factory/*, diff passes protected_path_check and secret_scan", threats: [T-12, T-24] }
@@ -181,7 +214,7 @@ actions:
   - { id: pause_or_resume_job,            min_level: L1, requires: human,            approver_roles: [operator], threats: [T-23] }
   - { id: cancel_job,                     min_level: L1, requires: human,            approver_roles: [operator], threats: [T-23] }
   - { id: close_or_label_issue,           min_level: L1, requires: none,             when: "limited to labels in the factory namespace" }
-  - { id: add_new_direct_dependency,      min_level: L1, requires: human,            approver_roles: [approver], when: "unless name already in lockfile or on organization allowlist", threats: [T-29] }
+  - { id: add_new_direct_dependency,      min_level: L1, requires: human,            approver_roles: [approver], when: "always, for a package name absent from the base commit lockfile; no allowlist or heuristic approves it; a package first published less than 30 days ago needs a security_approver", threats: [T-29] }
   - { id: run_fetch_deps,                 min_level: L1, requires: none,             when: "after dependency policy decision; allowlisted registries only", threats: [T-29] }
   - { id: change_protected_path,          min_level: L1, requires: human_and_policy, approver_roles: [security_approver], when: "needs spec_authorization AND independent_policy_review AND human_approval", threats: [T-12] }
   - { id: grant_tool_outside_manifest,    min_level: L1, requires: human,            approver_roles: [security_approver], threats: [T-06] }
@@ -189,6 +222,8 @@ actions:
   - { id: widen_egress_allowlist,         min_level: L1, requires: human,            approver_roles: [security_approver], threats: [T-17] }
   - { id: raise_budget_ceiling,           min_level: L1, requires: human,            approver_roles: [org_admin], threats: [T-26] }
   - { id: install_spec_kit_or_tooling,    min_level: L1, requires: human,            approver_roles: [repo_admin], when: "the master prompt forbids running installation scripts without authorization" }
+  - { id: change_authority_allowlist,     min_level: L1, requires: human,            approver_roles: [org_admin], when: "adds, removes or widens a designation; adding or widening security_approver or org_admin needs two distinct org_admins and never self-granted", threats: [T-23, T-24] }
+  - { id: accept_subscription_login_exception, min_level: L1, requires: human,       approver_roles: [org_admin, security_approver], when: "both sign; needs a written provider-terms determination, a named demo profile, a dedicated host, a fixture repository only and an expiry of at most 30 days (secrets-and-credentials.md section 4.5)", threats: [T-19, T-20] }
   - { id: waive_failed_gate,              min_level: L1, requires: human,            approver_roles: [security_approver], when: "only gates NOT listed in security.yaml gate_integrity.nonwaivable_gates; waiver has an owner and an expiry", threats: [T-13] }
   - { id: accept_residual_risk,           min_level: L1, requires: human,            approver_roles: [security_approver], when: "owner and expiry recorded", threats: [T-31] }
   - { id: send_code_to_new_model_provider, min_level: L1, requires: human,           approver_roles: [org_admin], threats: [T-20, T-28] }
@@ -209,7 +244,7 @@ always_human:
   - change_protected_path
   - modify_ci_workflows_or_gate_configuration
   - modify_security_or_approval_policy
-  - add_new_direct_dependency_not_on_allowlist
+  - add_new_direct_dependency
   - widen_egress_allowlist
   - grant_tool_outside_agent_manifest
   - enable_exec_shell_breakglass
@@ -220,6 +255,8 @@ always_human:
   - access_additional_repository_or_organization
   - send_code_to_additional_model_provider
   - install_or_update_spec_kit_or_other_tooling
+  - change_authority_allowlist
+  - accept_subscription_login_exception
   - delete_branch_repository_release_or_data
   - force_push_or_rewrite_history
   - money_movement_live_orders_or_capital_transfer
@@ -247,9 +284,9 @@ approval_binding:
     - policy_change
     - specification_revision
     - any_gate_result_changed
-    - approver_permission_revoked
+    - approver_removed_from_allowlist_or_entry_expired
   step_up_authentication_required_for: [change_protected_path, widen_egress_allowlist, raise_budget_ceiling, raise_autonomy_level, accept_residual_risk, waive_any_gate]
-  record_fields: [approval_id, tenant_id, job_id, action, approver_id, approver_role, permission_checked_at, decision, binds_to, reason, channel, created_at]
+  record_fields: [approval_id, tenant_id, job_id, action, approver_github_user_id, approver_designation, allowlist_version_hash, decision, binds_to, reason, channel, created_at]
 
 # -----------------------------------------------------------------------------
 # 7. Commands (dashboard, CLI, GitHub comments)
@@ -266,7 +303,7 @@ commands:
     ignore_inside: [code_blocks, block_quotes, html_comments]
     ignore_if_sender_type_not: User
     ignore_senders: [self_app_bot, other_bots]
-    authorization: resolve_role_live_via_collaborator_permission_api
+    authorization: allowlist_membership_by_numeric_user_id_with_required_designation
     unauthorized_response: silent_audit_only       # no oracle for outsiders; event is audited, nothing posted
     one_command_per_comment: true
   dashboard_and_cli:
@@ -282,7 +319,8 @@ commands:
 intake:
   trigger_label: factory
   authorizing_actor: label_sender            # the person who applied the label, not the issue author
-  authorizing_actor_requires_role: requester
+  authorizing_actor_requires_designation: requester   # allowlist membership by numeric user ID (see `authority`); a GitHub role is not enough
+  github_permission_is_authorization: false           # a repository permission, role or author_association never admits a request
   label_presence_alone_is_authorization: false   # templates and automation can apply labels for low-privilege authors
   snapshot_content_hash_at_authorization: true
   reauthorize_on_edit_by_actor_other_than_authorizer: true

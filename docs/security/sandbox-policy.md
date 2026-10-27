@@ -2,6 +2,7 @@
 
 Status: DESIGNED baseline. Nothing in this document is implemented in the product yet.
 Date of the Docker experiments: 2026-10-27.
+Revised the same day to match ADR 0003, 0005, 0006 and 0009: the agent CLI runs inside the sandbox, so the factory controls the boundaries and not the CLI's individual tool calls (section 2.2); the skill and slash-command flags are per stage (sections 6.3 and 10); every new direct dependency needs a human.
 Machine-readable form: `policies/security.yaml`, section `sandbox`, `egress`, `path_access`.
 Threat IDs (T-nn) and control IDs (C-nn) refer to `docs/security/threat-model.md`.
 Tests that prove these rules (NT-*) are in `docs/security/negative-test-catalog.md`.
@@ -38,16 +39,29 @@ The sandbox is the primary control for everything the factory runs on behalf of 
 | `agent` | Agent CLI and the commands it requests | Model broker only | Read-write for task-owned files | One job token | Yes |
 | `verify` | Build, test, lint, scan, documentation gates | None | Read-only source, writable build output | None | Yes |
 
-`fetch_deps` runs package-manager download commands only (for example `cargo fetch --locked`, `npm ci --ignore-scripts`). It never runs `build.rs`, `postinstall` or `setup.py`. Dependency changes go through a typed `deps.request` tool call. The policy engine decides, a human decides for new direct dependencies, and only then does a `fetch_deps` run happen. The builder cannot run `cargo add` or `npm install` itself.
+`fetch_deps` runs package-manager download commands only (for example `cargo fetch --locked`, `npm ci --ignore-scripts`). It never runs `build.rs`, `postinstall` or `setup.py`. Dependency changes go through a typed dependency request carried in the agent's structured result. A human decides every new direct dependency (no allowlist or heuristic approves one), and only then does a `fetch_deps` run happen. The builder cannot run `cargo add` or `npm install` itself.
 
 `verify` is a fresh container for each gate run. Gate definitions come from the base commit or from central configuration, never from the builder's workspace. Held-out tests are mounted only here, read-only. The pass or fail result is the supervisor's observation of the exit code and output, not a file the builder could have written.
 
 ### 2.2 Where the agent CLI runs
 
-Two models are possible. The choice belongs to the architect and a human (open question Q1 in `threat-model.md`).
+Decided by default, pending human confirmation (ADR 0005 and ADR 0009 item 1): **the agent CLI runs inside the `agent` sandbox in Slice 1** (Model A). A person can reverse it by choosing the host tool bridge (Model B).
 
-* Model A, recommended for Slice 1: the agent CLI (Claude Code or Codex CLI) and the commands it runs execute together inside the `agent` container. The container is the security boundary. Vendor flags that disable the CLI's own approval prompts and sandbox (`--dangerously-skip-permissions`, `--dangerously-bypass-approvals-and-sandbox`) are acceptable only here, because the container is the external sandbox the Codex help text describes ("environments that are externally sandboxed"). They are forbidden on the host.
-* Model B, hardening target: the CLI runs outside the sandbox with built-in shell and edit tools disabled, and every action goes through factory-provided typed tools that execute inside the sandbox with `docker exec`. This matches the master prompt ("typed command wrappers") and removes the CLI process from the blast radius, at the cost of re-implementing tools. UNVERIFIED that the installed CLIs expose enough control (`--tools`, `--strict-mcp-config`) to make it practical.
+* Model A, in force: the agent CLI (Claude Code or Codex CLI) and the commands it runs execute together inside the `agent` container. The container is the security boundary. Vendor flags that disable the CLI's own approval prompts and sandbox (`--dangerously-skip-permissions`, `--dangerously-bypass-approvals-and-sandbox`) are acceptable only here, because the container is the external sandbox the Codex help text describes ("environments that are externally sandboxed"). They are forbidden on the host.
+* Model B, hardening target, off in Slice 1: the CLI runs outside the sandbox with built-in shell and edit tools disabled, and every action goes through factory-provided typed tools that execute inside the sandbox with `docker exec`. This removes the CLI process from the blast radius, at the cost of re-implementing tools. UNVERIFIED that the installed CLIs expose enough control (`--tools`, `--strict-mcp-config`) to make it practical.
+
+What this means for control and for testing. Under Model A the CLI's own tool calls happen inside the CLI, so **the factory does not mediate them**. It cannot grant or deny an individual shell command or file write. The factory controls the boundaries around the process, and those are where every assertion about an in-sandbox agent must be made:
+
+| Boundary the factory controls | What can be observed there |
+| --- | --- |
+| Sandbox posture | `docker inspect` of the created container (section 9), the runtime self-check, the environment names in `Config.Env`, the mounts |
+| Egress sidecar and broker | Every outbound request and every model request: host, bytes, job token, token and cost counters, the request bodies in test mode against a fake provider |
+| Host-computed diff | The tree diff computed on the host after the container stopped (section 6.5), which is the only account of what changed that the factory believes |
+| Filesystem audit walk | Symlinks, nested `.git`, special files, files at hidden paths, oversize files |
+| Audit log | Posture results, egress requests, gate results, protected-path decisions, approvals, token mint and revoke |
+| Supervisor-run commands | Gates, `fetch_deps`, version control. These are typed commands the factory itself starts, so the argv-array, fixed-environment and command-class rules apply to them in full |
+
+The negative test catalog tags each assertion with the boundary it uses. An assertion that needs the CLI's event stream (Claude Code's `permission_denials` and `system/init` skill list, Codex's `command_execution` items, a base URL the CLI will accept) is checkable only after work package `s0-agent-runtime-spike` proves what the installed CLIs expose.
 
 ### 2.3 Topology for a job
 
@@ -179,6 +193,7 @@ Defaults are in `policies/security.yaml`, `sandbox.profiles`. Projects may lower
 | Largest file | 512 MiB | 512 MiB | 1 GiB | `--ulimit fsize` (VERIFIED) |
 | tmpfs `/tmp` | 256 MiB | 512 MiB | 512 MiB | `--tmpfs size=` (VERIFIED) |
 | Workspace and output disk | 4 GiB | 2 GiB | 4 GiB | See below |
+| Output the supervisor keeps (stdout and stderr) | 64 MiB | 64 MiB | 64 MiB | Supervisor log cap, `sandbox.watchdog.max_log_bytes`; the rest is dropped and the log is marked truncated |
 
 Workspace and output disk. The writable-layer quota is not enforced on the test machine, and the workspace is a host directory, so a per-container flag cannot cap it. In order of preference:
 
@@ -266,6 +281,8 @@ Defense in depth. The authoritative check is the host-side tree diff (section 6.
 * `append_only` groups (fixtures, golden files) cannot be expressed as a read-only overlay without also blocking new files, so the overlay applies to the existing files only and the tree diff enforces "add allowed, modify and delete blocked".
 * UNVERIFIED: when a read-only overlay target does not exist in the checkout, Docker is expected to create an empty directory for the mount point on the host side. That would be harmless for git but means the audit walk must ignore empty directories at overlay targets. The supervisor should create overlay targets itself before `docker create`, and only for paths that exist in the base tree.
 
+Skill roots get the same treatment. In every stage except specification, the supervisor mounts read-only empty directories over `.claude/skills`, `.claude/commands` and `.agents/skills`, so no repository-resident skill or command resolves even where a CLI has no flag to disable them. In the specification stage it mounts the same kind of empty overlay over the six denied Spec Kit skill directories (plan, tasks, analyze, implement, converge, taskstoissues) under each host skill root, so the four allowed skills resolve and the six do not. The overlay mechanism is the one verified in M1. That each CLI starts and lists exactly the expected skills with these overlays in place is UNVERIFIED and is a spike item. The host's own copy of the files is untouched, so `specify integration status --json` on the host still reports the true state.
+
 ### 6.4 Hidden paths
 
 Hidden groups (`evaluation_holdouts`, `secret_bearing_files`) are removed from the checkout with sparse-checkout exclusion, so there is nothing to mount and nothing to read. If the builder creates a file at a hidden path, git silently leaves it out of the staged tree (W3: "paths ... exist outside of your sparse-checkout definition, so will not be updated in the index"). The audit walk therefore fails the job when any file exists under a hidden path. A silent omission would hide the attempt.
@@ -311,7 +328,7 @@ The default seccomp profile denies `unshare(CLONE_NEWUSER)`. Agent CLIs that imp
 1. Authorize: the policy engine confirms the stage, the task, the profile, the mounts and the budget. Missing policy or a failed load stops the job.
 2. Prepare: create the job root, the worktree (sparse), the output directory, the secret tmpfs file, and for proxied profiles the job network and sidecar.
 3. Create: `docker create` with the typed spec. Not started yet.
-4. Verify posture: `docker inspect` the created container and compare these fields with policy. Fields observed on Docker 29.9.2 (P2): `HostConfig.Privileged`, `Config.User`, `HostConfig.ReadonlyRootfs`, `HostConfig.CapAdd`, `HostConfig.CapDrop`, `HostConfig.SecurityOpt`, `HostConfig.PidsLimit`, `HostConfig.Memory`, `HostConfig.MemorySwap`, `HostConfig.NanoCpus`, `HostConfig.NetworkMode`, `HostConfig.IpcMode`, `HostConfig.PidMode`, `HostConfig.UsernsMode`, `HostConfig.Init`, `HostConfig.LogConfig.Type`, `HostConfig.Devices`, `HostConfig.Ulimits`, `HostConfig.Tmpfs`, `Mounts`, `Config.Image`, `HostConfig.RestartPolicy`, `HostConfig.AutoRemove`.
+4. Verify posture: `docker inspect` the created container and compare these fields with policy. Fields observed on Docker 29.9.2 (P2): `HostConfig.Privileged`, `Config.User`, `HostConfig.ReadonlyRootfs`, `HostConfig.CapAdd`, `HostConfig.CapDrop`, `HostConfig.SecurityOpt`, `HostConfig.PidsLimit`, `HostConfig.Memory`, `HostConfig.MemorySwap`, `HostConfig.NanoCpus`, `HostConfig.NetworkMode`, `HostConfig.IpcMode`, `HostConfig.PidMode`, `HostConfig.UsernsMode`, `HostConfig.Init`, `HostConfig.LogConfig.Type`, `HostConfig.Devices`, `HostConfig.Ulimits`, `HostConfig.Tmpfs`, `Mounts`, `Config.Image`, `HostConfig.RestartPolicy`, `HostConfig.AutoRemove`, `Config.Env` (names must be on the supervisor's allowlist, with none of the forbidden names such as `LD_PRELOAD`, `RUSTFLAGS`, `NODE_OPTIONS`, `GIT_SSH_COMMAND`).
    * Reading the output: `CapAdd` printed `<no value>` when unset. An unset seccomp option is an empty `SecurityOpt` (P2), so the verifier cannot confirm "default seccomp" from the field; it rejects any `seccomp=unconfined` or custom path not on the allowlist, and the runtime self-check below confirms the result. `SecurityOpt` showed `[seccomp=unconfined label=disable]` for the privileged test container (P3). `PidMode` and `UsernsMode` print empty for the private default. Tmpfs mounts appear under `HostConfig.Tmpfs`, not under `Mounts`.
    * Any mismatch: remove the container, fail the job, write an audit event with the diff. No retry with relaxed settings.
 5. Start attached (`docker start -a`). The first action of the entrypoint wrapper is a self-check that prints `/proc/self/status` fields `Seccomp`, `NoNewPrivs` and `CapEff`. The supervisor requires `Seccomp: 2`, `NoNewPrivs: 1` and `CapEff` of zero before it releases the workload. This proves the runtime applied what the inspect output promised, including on a daemon whose default seccomp profile has been altered.
@@ -332,6 +349,7 @@ These flags were read from `claude --help` (2.1.311) and `codex exec --help` (0.
 | MCP servers | `--mcp-config` with `--strict-mcp-config` | `codex mcp` config; use `--ignore-user-config` |
 | Tool restriction | `--tools`, `--allowedTools`, `--disallowedTools`, `--permission-mode` | `-s read-only` / `workspace-write` |
 | Authentication | With `--bare`: `ANTHROPIC_API_KEY` or `apiKeyHelper` via `--settings`; OAuth and keychain are never read | `codex login --with-api-key` reads from stdin |
+| Skills and slash commands | `--disable-slash-commands` ("Disable all skills and commands"). Applied per stage: on in every stage except specification, off there so the four Spec Kit skills resolve (`agent_stage_profiles`). `--bare` documents that "Skills still resolve via /skill-name"; that project skills resolve under `--bare` is UNVERIFIED | No verified skill-disable flag. Skill roots (`.agents/skills`) are hidden by read-only empty overlays in stages with no skills |
 | Per-run cost cap | `--max-budget-usd` (only with `--print`) | none seen in `exec --help` |
 | Session persistence | `--no-session-persistence` | `--ephemeral` |
 | Bypass flags | `--dangerously-skip-permissions`, `--allow-dangerously-skip-permissions` | `--dangerously-bypass-approvals-and-sandbox`, `--dangerously-bypass-hook-trust` |

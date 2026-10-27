@@ -440,6 +440,14 @@ forbidden_command_classes:
         - '(?i)\b(gem)\b.*\bpush\b'
       executables: [twine]
     action: deny
+  - id: spec_kit_out_of_scope
+    description: "Spec Kit is confined to the specification stage and its four skills. These subcommands install, upgrade, reach the network or run the full workflow. The control plane runs `specify init` and `specify integration status --json` on the host; an agent never does."
+    match:
+      executables: [specify]
+      argv_regex:
+        - '(?i)\bspecify\b\s+(init|self|extension|preset|bundle|workflow|mcp)\b'
+        - '(?i)\bspecify\b\s+integration\s+(upgrade|search|list\s+--catalog|install|uninstall)\b'
+    action: deny
   - id: process_debug_and_injection
     match: { executables: [gdb, lldb, strace, ltrace, ptrace, perf, bpftrace, bpftool] }
     action: deny
@@ -468,6 +476,21 @@ forbidden_command_classes:
 # An agent receives a tool only if (a) its manifest lists it in `allowed_tools`
 # AND (b) the policy engine issues a grant for the current stage and task.
 # Agents cannot request or create grants. Grants expire with the task.
+#
+# WHO MEDIATES WHAT (ADR 0005, ADR 0009 item 1). The agent CLI runs INSIDE the
+# `agent` sandbox, behind the model broker. Its own tool calls (shell, file read
+# and write) happen inside the CLI, and the factory does not mediate them. For
+# those calls the controls are the sandbox posture, the read-only protected
+# overlays, the hidden paths, the egress sidecar and broker, the filesystem
+# audit walk and the host-computed diff. This table is enforced as a typed
+# gateway for:
+#   * commands the factory itself runs (verify gates, fetch_deps, version control),
+#   * the host tool bridge, if a human ever chooses it (`host_tool_bridge`,
+#     off in Slice 1), and
+#   * the grants the policy engine turns into CLI permission flags
+#     (`--allowedTools`, `--disallowedTools`, `--tools`) where the agent-runtime
+#     spike proves the installed CLI honors them.
+# Tests that depend on mediation are tagged in the negative test catalog.
 #   risk          low | medium | high
 #   profiles      sandbox profiles in which the tool may run
 #   roles         agent roles (from the agents/ manifests) that may hold it
@@ -557,12 +580,12 @@ tools:
       human_gate: none
     - id: deps.request
       risk: medium
-      description: "Typed dependency request. The policy engine decides; a fetch_deps run follows on approval."
+      description: "Typed dependency request. With the agent CLI inside the sandbox this is a field of the agent's structured result, not a mediated call. A human decides every new direct dependency; a fetch_deps run follows only on approval."
       profiles: [agent]
       roles: [builder, integrator]
       args: { ecosystem: { kind: enum, values: [cargo, npm, pip, go] }, name: { kind: bounded_string, max_len: 214 }, version_req: { kind: bounded_string, max_len: 64 }, justification: { kind: bounded_string, max_len: 1000 } }
       limits: { max_calls_per_task: 10, max_result_bytes: 4096, timeout_s: 10 }
-      human_gate: per_call             # default; policy may auto-approve names already in the lockfile
+      human_gate: per_call             # always for a new direct dependency; there is no automatic approval (ADR 0009 item 4)
     - id: net.fetch
       risk: high
       description: "Factory-side fetch through the SSRF guard (see untrusted_content.web_fetch). Never available to builders."
@@ -661,6 +684,12 @@ sandbox:
     pull_policy: never                 # images are pre-pulled and verified; a missing image fails the job
     restart_policy: "no"
     remove_with_rm_flag: false         # supervisor removes after reading exit code and OOM state
+    environment:                       # checked in `Config.Env` of the created container before start
+      names: allowlist_only            # the supervisor's fixed list; the agent CLI cannot add names
+      forbidden_names: [LD_PRELOAD, LD_LIBRARY_PATH, LD_AUDIT, RUSTFLAGS, RUSTC_WRAPPER, CARGO_BUILD_RUSTC_WRAPPER, NODE_OPTIONS, PYTHONPATH, PYTHONSTARTUP, BASH_ENV, ENV, GIT_SSH_COMMAND, GIT_CONFIG_GLOBAL, GIT_EXEC_PATH]
+      proxy_variables: set_only_by_supervisor_to_the_sidecar_address   # fetch_deps tools need them; no other value is acceptable
+      secret_values_forbidden: true    # no value that matches secrets.patterns or the exact-value registry
+      path: fixed_read_only_path
   forbidden_mount_sources:
     - /var/run/docker.sock
     - /run/docker.sock
@@ -725,6 +754,8 @@ sandbox:
   watchdog:
     wall_clock_kill: supervisor        # Docker has no run-time limit flag (verified); supervisor sends kill at the deadline
     disk_poll_interval_s: 5
+    max_log_bytes: 67108864            # stdout and stderr the supervisor keeps per container; the rest is dropped and counted
+    on_log_cap: stop_capturing_and_mark_truncated   # the container keeps running until its own limits; it is never allowed to fill the host with output
     on_breach: kill_and_mark_failed
     record_oom_killed: true
   threats: [T-08, T-09, T-10, T-11, T-19, T-27]
@@ -903,6 +934,25 @@ credentials:
       hard_spend_limit_required: true
       rotation_days: 180
     fallback_if_cli_cannot_use_broker: documented_residual_risk   # see secrets-and-credentials.md section 4.4
+    # Default (ADR 0009 item 2): API keys with a provider-side hard spend limit,
+    # held by the broker. Subscription (OAuth) logins, such as a claude.ai or a
+    # ChatGPT login, cannot be brokered or metered by the factory, and whether
+    # automated use is allowed by the provider's terms is a question for a person.
+    # They are off. The only way they run is a documented exception that a human
+    # signs; its required content is in secrets-and-credentials.md section 4.5.
+    subscription_logins:
+      allowed: false
+      reason: cannot_be_brokered_or_metered
+      never_in_sandbox: true
+      never_for_tenant_or_customer_data: true
+      exception:
+        enabled: false
+        decision_requires: [org_admin, security_approver, written_provider_terms_determination]
+        scope: named_demo_profile_on_a_dedicated_host_with_fixture_repository_only
+        max_days_until_expiry: 30
+        evidence_label: host_subscription_demo
+        counts_as_real_provider_smoke_test: only_if_the_signed_decision_says_so
+        runs_without: [--bare]            # --bare never reads OAuth or keychain (claude --help); the exception must compensate for the lost neutralization
   rotation_slas:
     leaked_or_suspected_hours: 1
     high_privilege_days: 90
@@ -945,7 +995,7 @@ webhook:
     key_fields: [event, action, installation_id, repository_id, subject_node_id, subject_updated_at, sender_id]
     retention_days: 30
   payload_is_hint_only: true           # authoritative state is re-fetched from GitHub before acting
-  refetch_before_acting: [issue_state, labels, sender_permission, pr_head_sha, branch_protection]
+  refetch_before_acting: [issue_state, labels, label_actor_numeric_id, pr_head_sha, branch_protection]   # authority is the named allowlist (approval.yaml), never a GitHub permission
   tenant_binding: [installation_id, repository_id]   # unknown binding: drop and audit
   accepted_events:
     - { event: issues,                 actions: [labeled, edited, closed, reopened, transferred, deleted] }
@@ -966,13 +1016,35 @@ webhook:
 # Enforced by the model broker and the scheduler, outside the agent process.
 # Starting values only; tune with measured data. Raising a ceiling is an
 # always_human decision.
+#
+# Rework cap (ADR 0009 item 6). `max_rework_iterations` and
+# `max_documentation_rework_iterations` are CONFIGURABLE VALUES WHOSE DEFAULT IS 2:
+# after two rework rounds the stage goes to a human, who decides. A project
+# policy may lower either value (tighten-only). Raising either above 2 is a
+# widening and needs the `raise_budget_ceiling` human decision in approval.yaml.
+# The engine takes the lower of this value and the ADR 0009 default, and a test
+# in the policy-evaluation work package fails if this file exceeds 2.
+#
+# Turn and tool-call caps. Claude Code 2.1.311 has no `--max-turns` and Codex
+# `exec` shows no budget flag (ADR 0005), and the agent CLI runs inside the
+# sandbox, so the factory does not see individual tool calls. The broker
+# therefore counts MODEL REQUESTS as turns (`turn_accounting`). The
+# `max_tool_calls` value is enforced only for commands the factory itself
+# runs (gates, dependency fetch, version control) and, if the host tool bridge
+# is ever chosen, for bridge tools. Whether a CLI exposes a turn cap is a
+# question for the agent-runtime spike.
 budgets:
   enforced_by: [model_broker, scheduler]
+  turn_accounting: broker_model_request_count
   hard_ceilings:
     per_task:     { max_usd: 8,   max_input_tokens: 4000000,  max_output_tokens: 400000,  max_turns: 60,  max_tool_calls: 1500, max_wall_clock_s: 3600 }
-    per_job:      { max_usd: 25,  max_rework_iterations: 3, max_wall_clock_s: 14400, max_delegation_depth: 2 }
+    per_job:      { max_usd: 25,  max_rework_iterations: 2, max_documentation_rework_iterations: 2, max_wall_clock_s: 14400, max_delegation_depth: 2 }
     per_repo_day: { max_usd: 100, max_jobs_started: 40 }
     per_org_day:  { max_usd: 500 }
+  rework:
+    on_cap_reached: human_decides      # the stage goes to WAITING_FOR_HUMAN; no automatic third round
+    project_override: lower_only       # a project policy may set 0, 1 or 2, never more
+    default_rounds: 2
   concurrency:
     max_running_jobs_per_repo: 2
     max_queued_jobs_per_repo: 20
@@ -999,7 +1071,7 @@ gate_integrity:
   skipped_gate_is: BLOCKED
   reviewer_verdict_can_override_gate: false
   reviewer_sees_builder_self_justification: false
-  nonwaivable_gates: [protected_path_check, secret_scan, sandbox_posture, evidence_binding, test_regression_check, signature_verification]
+  nonwaivable_gates: [protected_path_check, secret_scan, sandbox_posture, evidence_binding, test_regression_check, signature_verification, stage_profile_check]
   evidence_binding: [head_sha, tree_hash, gate_definition_hash, policy_hash, image_digest, base_sha]
   invalidated_by: [new_commit, rebase, base_moved, policy_change, spec_revision, image_change]
   test_regression:
@@ -1014,7 +1086,7 @@ gate_integrity:
     only_for: central_flaky_registry
     record_every_retry: true
   semantic_checks:                     # ids referenced by protected_paths.sensitive_files
-    - { id: new_dependency,            blocks_until: dependency_policy_decision }
+    - { id: new_dependency,            blocks_until: human_approval }
     - { id: lint_relaxation,           description: "lint level lowered, allow attributes added, ignore lists grown", blocks_until: human_approval }
     - { id: test_harness_disabled,     description: "harness=false, test targets removed, ignore or skip markers, conftest hooks that deselect", blocks_until: human_approval }
     - { id: build_script_added,        description: "new build.rs, setup.py, postinstall or similar", blocks_until: security_review }
@@ -1065,7 +1137,16 @@ untrusted_content:
     # repo-resident configuration MUST be proven by the adapter capability probe
     # and by NT-INJ-07 before the adapter is enabled.
     claude_code:
-      required_flags: [--bare, --strict-mcp-config, --no-session-persistence, --disable-slash-commands]
+      # Flags for EVERY stage. `--disable-slash-commands` is NOT in this list:
+      # it disables all skills and commands (verified in `claude --help`), which
+      # would stop the Spec Kit skills from resolving. It is applied per stage
+      # by `agent_stage_profiles` below: on for every stage except SPECIFICATION.
+      required_flags: [--bare, --strict-mcp-config, --no-session-persistence]
+      per_stage_flags_ref: agent_stage_profiles
+      # Per `claude --help`, "--bare" still resolves skills via /skill-name. That
+      # project skills under .claude/skills resolve with --bare is UNVERIFIED: the
+      # Spec Kit specialist's verified run used --setting-sources project,local
+      # --strict-mcp-config without --bare. The agent-runtime spike decides.
       settings_source: factory_generated_file_via_--settings
       tools_flag: "--tools / --allowedTools / --disallowedTools from the manifest"
       per_run_budget_flag: --max-budget-usd
@@ -1079,6 +1160,89 @@ untrusted_content:
     repo_config_files_never_honored: [".claude/settings.json", ".claude/settings.local.json", ".mcp.json", ".codex/config.toml", "CLAUDE.md", "AGENTS.md"]
     instruction_files_are_data: true   # factory-authored instructions are passed explicitly; repo copies are data
   threats: [T-01, T-02, T-03, T-04, T-05, T-07, T-33]
+
+# -----------------------------------------------------------------------------
+# 14a. Per-stage tool profile for agent CLIs (skills and slash commands)
+# -----------------------------------------------------------------------------
+# Why this exists. Spec Kit 1.1.2 installs ten skills, six of which the factory
+# must never run (master prompt section 4; ADR 0006: "the boundary is one of
+# invocation, not installation"). On Claude Code the skills are slash commands.
+# `--disable-slash-commands` would stop the four allowed ones from resolving, so
+# the control cannot be one flag for every run. The engine picks a profile from
+# the STAGE KIND of the stage run, and the profile fixes the flags and the
+# visible skill set.
+#
+# Selection. The profile is chosen by the workflow engine from the stage kind
+# (names from docs/architecture/state-machine.md). Never by an agent, by
+# repository content, by request text or by a specification.
+#
+# Skill ids. Policy uses the canonical dotted ids (`speckit.specify`). The
+# adapter maps an id to the host spelling by reading `invoke_separator` from
+# `.specify/integration.json` and the sigil from a per-host table (`/` for
+# Claude Code, `$` for Codex); it never hard-codes either. EVERY spelling of a
+# denied id is denied: dotted, hyphenated and with any sigil.
+agent_stage_profiles:
+  selection_authority: engine_from_stage_kind
+  default_profile: no_skills                # a stage kind not named below gets this
+  profiles:
+    - id: no_skills
+      applies_to_stage_kinds: ["*"]         # every agent stage except those named in another profile
+      skills_and_slash_commands: disabled
+      skills_allowed: []
+      claude_code:
+        flags_add: [--disable-slash-commands]
+      codex_cli:
+        skill_visibility: hidden_by_overlay # Codex has no verified skill-disable flag; see hide_skill_roots_in_sandbox
+      hide_skill_roots_in_sandbox:          # read-only empty overlays (mechanism verified, sandbox-policy.md M1)
+        - ".claude/skills"
+        - ".claude/commands"
+        - ".agents/skills"
+      violation: BLOCK
+    - id: specification
+      applies_to_stage_kinds: [SPECIFICATION]
+      skills_and_slash_commands: allowlist_only
+      claude_code:
+        flags_omit: [--disable-slash-commands]
+        skill_permission_rule: unverified   # whether Claude Code accepts a per-skill permission rule is a spike question
+      codex_cli:
+        skill_visibility: allowlist_only
+      skills:
+        deny_wins_over_allow: true
+        allowed:                            # exactly these four, and nothing else (writes follow integration-guide section 8.4)
+          - { id: speckit.constitution, writes: [".specify/memory/constitution.md"], protected_path_exception_required: true }
+          - { id: speckit.specify,      writes: ["specs/*/spec.md", "specs/*/checklists/requirements.md", ".specify/feature.json"] }
+          - { id: speckit.clarify,      writes: ["specs/*/spec.md", "specs/*/checklists/requirements.md"] }
+          - { id: speckit.checklist,    writes: ["specs/*/checklists/*.md"] }
+        denied:                             # installed by `specify init`, never invoked
+          - speckit.plan
+          - speckit.tasks
+          - speckit.analyze
+          - speckit.implement
+          - speckit.converge
+          - speckit.taskstoissues
+      hide_denied_skills_in_sandbox: true   # read-only empty overlays over the six denied skill directories under each host skill root
+      other_project_skills_and_commands: not_honored   # anything in .claude/commands, .claude/skills or .agents/skills outside the four ids does not resolve
+      integrity_before_run:                 # checked on the host, never by the agent
+        integration_status_json: ok
+        recorded_versions_equal_pinned: true
+        extensions_file_absent: true
+        skill_file_hashes_equal_pinned_manifest: true
+      forbidden_artifacts_after_run:        # their presence means a denied skill ran
+        - "specs/*/plan.md"
+        - "specs/*/tasks.md"
+        - "specs/*/research.md"
+        - "specs/*/data-model.md"
+        - "specs/*/quickstart.md"
+        - "specs/*/contracts/**"
+      detection:                            # any one of these is a violation
+        - denied_skill_id_in_cli_event_stream_or_permission_denials
+        - denied_skill_listed_in_cli_init_skills_or_slash_commands   # checkable once the spike proves the event fields
+        - forbidden_artifact_present
+        - skill_not_in_contract_skills_invoked_closed_list
+        - specify_subcommand_outside_the_four_skills                 # see forbidden_command_classes.spec_kit_out_of_scope
+      violation: BLOCK
+      on_violation: [discard_agent_output, audit_forbidden_skill_invoked, mark_stage_BLOCKED]
+  threats: [T-06, T-04, T-15]
 
 # -----------------------------------------------------------------------------
 # 15. Outbound content hygiene (text the factory writes to GitHub)
@@ -1102,11 +1266,18 @@ supply_chain:
   registries_allowed_ref: egress.profiles.fetch_deps
   lockfiles: { required: true, frozen_in_gates: true }      # --locked / --frozen-lockfile equivalents
   install_scripts: disabled_in_fetch
+  # A new direct dependency ALWAYS needs a human (ADR 0009 item 4). There is no
+  # automatic approval condition: no organization allowlist, no popularity or age
+  # threshold, no "approved before" shortcut. Do not add an `auto_approve_when` key.
+  # "New" means the package name is absent from the resolved lockfile at the base
+  # commit (direct or transitive). A name already in that lockfile is not new, so
+  # this rule does not fire for it; a version change to it is still a lockfile
+  # change and goes through the lockfile, source and scanner checks below.
   new_direct_dependency:
-    default: require_human                                  # see approval.yaml
-    auto_approve_when: [name_already_in_lockfile, name_on_org_allowlist]
-    heuristics_recorded: [registry_existence, first_publish_age_days, download_count, repository_link, typosquat_distance_to_popular_names, license]
-    min_first_publish_age_days: 30                          # younger packages escalate to a human, never auto-approve
+    approval: human_always
+    new_means: name_absent_from_base_commit_lockfile
+    heuristics_recorded: [registry_existence, first_publish_age_days, download_count, repository_link, typosquat_distance_to_popular_names, license]   # shown to the human; they never approve anything
+    min_first_publish_age_days: 30                          # a younger package needs a security_approver, not an ordinary approver
   scanners: [cargo-deny, cargo-audit, osv-scanner, gitleaks, semgrep]   # applicable subset per ecosystem; tool absence is BLOCKED
   sbom: { format: cyclonedx, required_for: [release, high_risk_jobs] }
   images: { pinned_by_digest: true, built_from_source_by_factory: true, rebuild_interval_days: 14, vulnerability_scan: required }

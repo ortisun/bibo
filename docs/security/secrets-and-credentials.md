@@ -1,7 +1,7 @@
 # Secrets and credentials
 
 Status: DESIGNED baseline. Nothing here is implemented. Labels: REQUIRED (the product must do it), DESIGNED (specified, no code), VERIFIED (observed on the development machine or confirmed in vendor documentation during this review, not exercised by the factory), UNVERIFIED (assumption).
-Date: 2026-10-27.
+Date: 2026-10-27. Revised the same day to match ADR 0005 and ADR 0009: API keys behind a broker are the default and subscription logins are not used (section 4.1), a subscription login on a host needs a signed exception (section 4.5), and authority comes from a named allowlist and not from GitHub roles (section 3.6).
 Machine-readable form: `policies/security.yaml` sections `secrets`, `credentials`, `output_hygiene`, `budgets`.
 Threat and control IDs refer to `docs/security/threat-model.md`. Test IDs refer to `docs/security/negative-test-catalog.md`.
 
@@ -25,7 +25,8 @@ Threat and control IDs refer to `docs/security/threat-model.md`. Test IDs refer 
 | Job token (`sfjt_...`) | Opaque token, 256-bit random | Broker memory and worker tmpfs | Broker (validates), agent CLI (presents) | One tenant, job and stage; allowed models; token and USD caps; expires at job wall clock plus 5 minutes | Per job | Yes, as a read-only file |
 | Database, NATS and object-store credentials | Service credentials | Secret manager, injected at service start | Control-plane services | Least privilege per service; audit role has INSERT and SELECT only | Every 180 days; 90 for admin roles | Never |
 | Dashboard session and API tokens | User authentication | Cookie or token store | API | Per user, tenant-scoped | Short sessions, step-up for sensitive actions | Never |
-| Spec Kit, package-registry or other tool credentials | Not needed | Not stored | | | | Never. The `fetch_deps` profile uses public, unauthenticated registry reads. Private registry access is a future design with its own review. |
+| Subscription logins (a claude.ai login for Claude Code, a ChatGPT login for Codex) | A person's interactive login for a vendor CLI | The person's own host (keychain or the tool's own files). Never the factory. | The person | Per the vendor's plan | n/a | Never. Only under a signed exception (section 4.5), and then not into a customer job's sandbox. |
+| Spec Kit, package-registry or other tool credentials | Not needed | Not stored | n/a | n/a | n/a | Never. The `fetch_deps` profile uses public, unauthenticated registry reads. Private registry access is a future design with its own review. |
 
 Rotation intervals follow the security specialist's standard: leaked or suspected leaked, revoke immediately (target under one hour from detection); high-privilege long-lived credentials every 90 days; standard service credentials every 180 days. A credential that cannot be rotated without an outage is an architecture defect and gets an issue.
 
@@ -87,13 +88,15 @@ Checked by a preflight at onboarding and at every job start. A repository that f
 ### 3.6 Confused-deputy rules
 
 * A job is bound to one repository for its entire life. Work that touches a second repository is a new job with its own authorization (`approval.yaml`, `write_to_additional_repository`).
-* The actor who applied the `factory` label is authorized by a live permission lookup. The payload's `author_association` is a hint.
+* The actor who applied the `factory` label is authorized only by membership in the named requester allowlist in protected configuration, matched by the immutable numeric GitHub user ID (a login can be renamed or re-registered by someone else). A GitHub repository role or permission (admin, maintain, write), an organization role and the payload's `author_association` never authorize anything. Removing the entry is the revocation; no GitHub lookup is used to authorize or to revoke. Operators, approvers and security approvers are other designations on the same allowlist (`policies/approval.yaml`, section `authority`).
 * Both identities are recorded in audit events: the human who requested or approved, and the App that acted.
 * The factory never uses a user's personal token. If a human wants an action, the human performs it, or approves the factory performing it through the App.
 
 ## 4. Model-provider credentials
 
 ### 4.1 Decision and why
+
+**The default is API keys with a hard provider-side spend limit, held by the model broker. Subscription logins are not used by the factory.** A claude.ai login for Claude Code or a ChatGPT login for Codex cannot be brokered, because the factory cannot put a metering and revoking layer between a person's login and the provider, and it cannot be metered, because the provider's plan and not the factory counts the usage. Whether automated use of a consumer subscription is allowed by the provider's terms is a legal question this document does not answer. ADR 0005 recorded that both tools on the current development machine are logged in by subscription only. Therefore **a real-provider adapter smoke test, and any live end-to-end run with real agents, is BLOCKED until a human supplies API keys with a provider-side spend limit.** Results from the fake runtime in test mode do not substitute for it and must be labelled as fake. This default is decided and pending human confirmation (ADR 0009 item 2); the only way to run a subscription login at all is the documented exception in section 4.5.
 
 REQUIRED: real provider API keys live only in the model broker. The sandbox's agent CLI gets a job token and a base URL that points at the egress sidecar, which relays to the broker. The broker validates the token, meters usage, replaces the credential and forwards only the allowed API paths (`egress.broker_upstreams`).
 
@@ -125,6 +128,25 @@ If an adapter cannot be pointed at the broker, the only remaining option is to g
 * The agent profile still has no GitHub credential and no other route to the network.
 
 Do not ship an adapter in this mode silently.
+
+### 4.5 Exception: a subscription login on the host (not the default)
+
+ADR 0009 names one way to reverse the default: a human accepts subscription logins on the host for a named demo profile, after the legal question is settled. This section says what that written exception must contain. Nothing here enables it. `credentials.model_providers.subscription_logins.exception.enabled` stays `false` until a signed record exists, and accepting one is an always-human action (`approval.yaml`, `accept_subscription_login_exception`).
+
+The record must state every item below. A missing item makes the exception invalid.
+
+1. **Decision.** Signed by one `org_admin` and one `security_approver`, two different people, both on the allowlist.
+2. **Terms determination.** A written statement by a person qualified to read the provider's terms that this use is allowed, with the date and the version of the terms reviewed. This document does not assert what any provider's terms say.
+3. **Named demo profile.** One profile name, one purpose (for example recording the Slice 1 end-to-end demonstration), one owner, and an expiry of at most 30 days. Renewal is a new decision.
+4. **Scope.** A throwaway fixture repository made for the demonstration. No customer repository, no customer data, no tenant other than the demo tenant, no production credential on the machine.
+5. **Host and account.** A dedicated machine or user account that holds no factory secret (no App key, no webhook secret, no provider API key, no database credential), is not the control plane and is not shared. The login belongs to an account made for this purpose, not a person's primary account, with multi-factor authentication on.
+6. **Placement.** The record names where the tool runs. Preferred: the host tool bridge from ADR 0005, where the tool stays on the host with its built-in shell and edit tools disabled and every action runs in the hardened sandbox, so the sandbox never holds the login. If the bridge does not exist, the tool runs inside the sandbox with the login file mounted. Then a prompt-injected agent can read the login and take over the account. The record must say so and accept that for the fixture repository only.
+7. **Controls that are lost, stated plainly.** `--bare` never reads OAuth or the keychain (stated in `claude --help`), so Claude Code runs without it and the neutralization of repository-resident configuration is weaker. The exception compensates by allowing only a fixture repository written by the factory team, and by still applying `--setting-sources`, `--strict-mcp-config` and the per-stage skill profile. Whether those suffice without `--bare` is UNVERIFIED. There is no broker, so there is no factory-side budget for this profile: NT-BUD-01 and NT-BUD-07 do not apply. The only caps are the plan's own limit and the wall-clock and request counts the supervisor can see. The record names the person who watches usage.
+8. **Labelling.** Every result carries `fidelity: host_subscription_demo` in the evidence ledger and in every report. Such a run is a demonstration. It does not count as the real-provider smoke test unless the signed decision says that it does and why.
+9. **Revocation and cleanup.** When the exception ends, or earlier, log out of the tool on the demo host, delete the tool's local credential files, and record that in the audit stream. On any suspicion of compromise, revoke the session from the provider's account page first.
+10. **Audit.** The decision, the start, every run and the end are audit events that carry the decision ID.
+
+What the exception never changes: a subscription login is never used for any tenant or customer, never stored by the factory, never placed in a customer job's sandbox, and never used by the scheduler on its own.
 
 ## 5. Job credential lifecycle
 
@@ -226,6 +248,7 @@ Leak playbook, revoke first, in order:
 * NT-SEC-01 to NT-SEC-11: canary sweep across all sinks, redaction evasion, GitHub-bound blocking, markdown exfiltration, diff secrets, redactor failure, context builder, error messages and telemetry, process arguments and environment, token revocation, model-context exclusions.
 * NT-SBX-13: the sandbox contains no real credential.
 * NT-AUTHZ-06, NT-AUTHZ-07, NT-AUTHZ-09: token narrowing, stage permissions, forbidden App permissions.
+* NT-AUTHZ-01, NT-AUTHZ-02, NT-AUTHZ-04: authority comes from the allowlist by numeric user ID, and GitHub roles, `author_association` and a matching login with a different ID grant nothing.
 * NT-WH-01 to NT-WH-03, NT-WH-08: webhook signature handling and secret rotation.
 
 ## 11. Not verified
@@ -233,5 +256,5 @@ Leak playbook, revoke first, in order:
 * Agent CLI behavior under a broker base URL and a file-based key helper (sections 4.1, 4.2).
 * GitHub's refusal behavior for workflow-file pushes without the `workflows` permission, and check-source pinning to an App ID.
 * The format of crates.io API tokens and NATS credential files used in two redaction patterns.
-* Whether issue templates and automation can apply labels with a low-privilege sender, and what `sender` the label event reports (threat T-23).
+* Whether issue templates and automation can apply labels on behalf of a low-privilege author, and which GitHub API reports the numeric ID of the person who applied a label, so that the factory can compare it with the allowlist (threat T-23).
 * Everything about the secret manager, because none is chosen.
