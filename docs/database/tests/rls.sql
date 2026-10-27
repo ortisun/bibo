@@ -50,12 +50,18 @@ $$;
 -- of everything and that would hide the grants that were really made.
 CREATE FUNCTION dbtest.group_members() RETURNS TABLE (grp text, member text, can_login boolean, is_super boolean, bypass_rls boolean)
 LANGUAGE sql AS $$
-  WITH RECURSIVE walk(grp_oid, member_oid) AS (
+  WITH RECURSIVE usable AS (
+    -- PostgreSQL 16 and later record whether a membership lets the member use the role's privileges (inherit)
+    -- or switch to it (set). A membership with only the ADMIN option, which the role that created a group
+    -- holds, confers neither. Earlier versions have no such columns and every membership counts.
+    SELECT a.roleid, a.member FROM pg_auth_members a
+     WHERE coalesce((to_jsonb(a) ->> 'inherit_option')::boolean, true) OR coalesce((to_jsonb(a) ->> 'set_option')::boolean, true)
+  ), walk(grp_oid, member_oid) AS (
     SELECT g.oid, a.member
-      FROM pg_roles g JOIN pg_auth_members a ON a.roleid = g.oid
+      FROM pg_roles g JOIN usable a ON a.roleid = g.oid
      WHERE g.rolname IN ('factory_app', 'factory_system', 'factory_lookup', 'factory_resolver')
     UNION
-    SELECT w.grp_oid, a.member FROM walk w JOIN pg_auth_members a ON a.roleid = w.member_oid
+    SELECT w.grp_oid, a.member FROM walk w JOIN usable a ON a.roleid = w.member_oid
   )
   SELECT g.rolname::text, m.rolname::text, m.rolcanlogin, m.rolsuper, m.rolbypassrls
     FROM walk w JOIN pg_roles g ON g.oid = w.grp_oid JOIN pg_roles m ON m.oid = w.member_oid
@@ -735,5 +741,87 @@ BEGIN
     (SELECT string_agg(n, ',' ORDER BY sort_key) FROM (SELECT t || '+force' AS n, t AS sort_key FROM dbtest.tenant_tables() t UNION ALL SELECT 'tenants', 'tenants') x));
   PERFORM dbtest.expect_eq('the reference tables carry no policy and no row-level security, and the application role can only read them',
     (SELECT string_agg(relname, ',' ORDER BY relname) FROM pg_class WHERE relnamespace = 'public'::regnamespace AND relkind = 'r' AND NOT relrowsecurity), '__diesel_schema_migrations,state_machine_edges,state_machine_states,state_machine_transitions');
+END
+$$;
+
+-- ---------------------------------------------------------------------------------------------
+-- 7. Questions that ADR 0012 left open, answered on this server, and the limits that stay.
+
+-- (a) FORCE ROW LEVEL SECURITY, the table owner, and a SECURITY DEFINER function that the owner owns. The
+-- test cluster's owner is a superuser, which bypasses row-level security however it is set, so a plain table
+-- owned by a role that is not a superuser stands in. Everything is rolled back.
+DO $$
+DECLARE
+  owner_no_force text;
+  owner_forced text;
+  owner_own_policy text;
+  definer_of_owner text;
+  definer_of_reader text;
+BEGIN
+  BEGIN
+    CREATE ROLE dbtest_owner NOLOGIN;
+    CREATE ROLE dbtest_reader NOLOGIN;
+    GRANT USAGE ON SCHEMA dbtest TO dbtest_owner, dbtest_reader, factory_app;
+    GRANT CREATE ON SCHEMA dbtest TO dbtest_owner;
+    CREATE TABLE dbtest.owned_t (tenant_id uuid NOT NULL, note text);
+    ALTER TABLE dbtest.owned_t OWNER TO dbtest_owner;
+    INSERT INTO dbtest.owned_t VALUES (dbtest.u(1), 'one'), (dbtest.u(2), 'two');
+    GRANT SELECT ON dbtest.owned_t TO factory_app, dbtest_reader;
+    ALTER TABLE dbtest.owned_t ENABLE ROW LEVEL SECURITY;
+    CREATE POLICY by_tenant ON dbtest.owned_t FOR ALL TO factory_app
+      USING (tenant_id = NULLIF(current_setting('factory.tenant_id', true), '')::uuid);
+
+    owner_no_force := dbtest.run_as('SELECT 1 FROM dbtest.owned_t', 'dbtest_owner');
+    ALTER TABLE dbtest.owned_t FORCE ROW LEVEL SECURITY;
+    owner_forced := dbtest.run_as('SELECT 1 FROM dbtest.owned_t', 'dbtest_owner');
+
+    -- A definer function owned by the table owner is bound by FORCE like the owner is.
+    CREATE FUNCTION dbtest.count_as_owner() RETURNS bigint LANGUAGE sql SECURITY DEFINER SET search_path = pg_catalog
+      AS $f$ SELECT count(*) FROM dbtest.owned_t $f$;
+    ALTER FUNCTION dbtest.count_as_owner() OWNER TO dbtest_owner;
+    GRANT EXECUTE ON FUNCTION dbtest.count_as_owner() TO factory_app;
+    definer_of_owner := dbtest.run_as('SELECT 1 FROM (SELECT dbtest.count_as_owner() AS n) x WHERE n = 0', 'factory_app', 1);
+
+    -- A definer function owned by a different role that has its own policy: the design of the lookups.
+    CREATE POLICY reader_all ON dbtest.owned_t FOR SELECT TO dbtest_reader USING (true);
+    CREATE FUNCTION dbtest.count_as_reader() RETURNS bigint LANGUAGE sql SECURITY DEFINER SET search_path = pg_catalog
+      AS $f$ SELECT count(*) FROM dbtest.owned_t $f$;
+    ALTER FUNCTION dbtest.count_as_reader() OWNER TO dbtest_reader;
+    GRANT EXECUTE ON FUNCTION dbtest.count_as_reader() TO factory_app;
+    definer_of_reader := dbtest.run_as('SELECT 1 FROM (SELECT dbtest.count_as_reader() AS n) x WHERE n = 2', 'factory_app', 1);
+
+    -- FORCE binds the owner, it does not shut it out: a policy for the owner role is honoured.
+    CREATE POLICY owner_all ON dbtest.owned_t FOR SELECT TO dbtest_owner USING (true);
+    owner_own_policy := dbtest.run_as('SELECT 1 FROM dbtest.owned_t', 'dbtest_owner');
+    RAISE EXCEPTION 'rollback' USING ERRCODE = 'XX998';
+  EXCEPTION WHEN SQLSTATE 'XX998' THEN NULL;
+  END;
+  PERFORM dbtest.expect_eq('a table owner that is not a superuser sees every row of its table when row-level security is enabled but not forced', owner_no_force, 'rows=2');
+  PERFORM dbtest.expect_eq('with FORCE ROW LEVEL SECURITY the same owner sees no row, because no policy names it', owner_forced, 'rows=0');
+  PERFORM dbtest.expect_eq('a SECURITY DEFINER function owned by that table owner is bound by FORCE too: it counts zero rows, so it is the wrong owner for a lookup', definer_of_owner, 'rows=1');
+  PERFORM dbtest.expect_eq('a SECURITY DEFINER function owned by another role with a read policy of its own counts every row: the owner the lookups have', definer_of_reader, 'rows=1');
+  PERFORM dbtest.expect_eq('FORCE binds the owner, it does not lock it out: a policy for the owner role is honoured', owner_own_policy, 'rows=2');
+END
+$$;
+
+-- (b) What row-level security does not hide. These are recorded as limits, with the evidence, so that a change
+-- in PostgreSQL or in this schema shows up here.
+DO $$
+DECLARE
+  gap_setup text := format($q$SELECT nextval(pg_get_serial_sequence('outbox', 'seq'));
+    INSERT INTO outbox (tenant_id, event_id, event_type, job_id, aggregate_type, aggregate_id, aggregate_version, transition_id, correlation_id, occurred_at, producer, payload)
+    VALUES (%L, %L, 'stage_run.started', %L, 'stage_run', %L, 3, 'S03', %L, now(), 'workflow.engine', '{}')$q$,
+    dbtest.u(1), dbtest.u(1990), dbtest.u(1101), dbtest.u(1201), dbtest.u(1501));
+BEGIN
+  PERFORM dbtest.expect_eq('KNOWN LIMIT: the outbox sequence is global, so a tenant sees gaps where other tenants'' events (and rolled-back ones) took numbers',
+    dbtest.run_as('SELECT 1 FROM (SELECT count(*) AS n, max(seq) - min(seq) + 1 AS span FROM outbox) x WHERE span > n', 'factory_app', 1, gap_setup), 'rows=1');
+  PERFORM dbtest.expect_eq('KNOWN LIMIT: the chain verifiers run under the caller''s policy, so a session for tenant 1 asking about tenant 2 reads no row and the audit verifier answers NULL, "sound"',
+    dbtest.run_as(format('SELECT 1 FROM (SELECT public.audit_verify_chain(%L) AS r) x WHERE r IS NULL', dbtest.u(2)), 'factory_app', 1), 'rows=1');
+  PERFORM dbtest.expect_eq('and the ledger verifier says the same for a job of another tenant',
+    dbtest.run_as(format('SELECT 1 FROM (SELECT public.ledger_verify_chain(%L, %L) AS r) x WHERE r IS NULL', dbtest.u(2), dbtest.u(2101)), 'factory_app', 1), 'rows=1');
+  PERFORM dbtest.expect_eq('while a verifier run for the right tenant reads the chain and answers NULL too when it is intact, so the two answers look alike',
+    dbtest.run_as(format('SELECT 1 FROM (SELECT public.audit_verify_chain(%L) AS r) x WHERE r IS NULL', dbtest.u(2)), 'factory_app', 2), 'rows=1');
+  PERFORM dbtest.expect_eq('KNOWN LIMIT: any SQL a tenant login can run may set the tenant setting itself, here from tenant 1 to tenant 2: the setting is a convention that the Store enforces, not a credential',
+    dbtest.run_as(format('SELECT set_config(''factory.tenant_id'', %L, true); SELECT 1 FROM jobs WHERE tenant_id = %L', dbtest.u(2), dbtest.u(2)), 'factory_app', 1), 'rows=1');
 END
 $$;

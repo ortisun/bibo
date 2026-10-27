@@ -656,6 +656,31 @@ COMMIT;")"
   expect_count "inside a savepoint the setting can be changed, and rolling the savepoint back restores the tenant of the outer transaction" \
     "$out" "$(printf 'in_savepoint:%s\nafter_rollback_to:%s' "$t2" "$t1")" || rc=1
 
+  # A prepared statement is planned once and run for many tenants on a pooled connection (diesel-async keeps a
+  # statement cache per connection). The policy reads the setting when the statement runs, not when it is
+  # planned, so a generic plan made under one tenant must give the next tenant its own rows.
+  out="$(session_output "$app" "SET plan_cache_mode = force_generic_plan;
+PREPARE who AS SELECT coalesce(string_agg(DISTINCT tenant_id::text, ','), 'nobody') FROM jobs;
+BEGIN;
+SELECT set_config('factory.tenant_id', '$t1', true) AS x \\gset
+EXECUTE who;
+COMMIT;
+BEGIN;
+SELECT set_config('factory.tenant_id', '$t2', true) AS x \\gset
+EXECUTE who;
+COMMIT;
+EXECUTE who;")"
+  expect_count "a prepared statement with a generic plan, reused on one connection for tenant 1, tenant 2 and no tenant, gives each its own rows" \
+    "$out" "$(printf '%s\n%s\nnobody' "$t1" "$t2")" || rc=1
+
+  # COPY ... FROM is not supported on a table with row-level security. COPY ... TO obeys the policy.
+  session_refused "$app" "COPY jobs FROM STDIN" 'COPY FROM not supported with row-level security' && ok "COPY FROM into a tenant table is refused: bulk loads must use INSERT" || { not_ok "COPY FROM into a tenant table was not refused"; rc=1; }
+  out="$(session_output "$app" "BEGIN;
+SELECT set_config('factory.tenant_id', '$t1', true) AS x \\gset
+COPY jobs (tenant_id) TO STDOUT;
+COMMIT;")"
+  expect_count "COPY TO from a tenant table returns the rows of the session's tenant only" "$out" "$t1" || rc=1
+
   # The extended protocol with a typed, bound parameter, which is how Store::begin sends it. psql 16 and
   # later have \bind. diesel-async itself was not run (there is no Rust here).
   out="$(session_output "$app" "BEGIN;

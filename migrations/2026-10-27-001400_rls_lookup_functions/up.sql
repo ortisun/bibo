@@ -31,6 +31,22 @@
 -- the tenant is not disabled. It is read by the tenant role under its own policies and by the lookup
 -- under factory_lookup's. Nothing used tenants.disabled_at before this migration.
 
+-- 0. A precondition, stated before anything is changed. Handing the functions to factory_lookup (step 4) needs
+--    the right to become that role. A superuser has it. So does the role that created factory_lookup, on
+--    PostgreSQL 16 and later, because creating a role grants its creator the ADMIN option on it. A migration
+--    role that did not create the roles, and is not a superuser, cannot continue.
+DO $$
+BEGIN
+  IF NOT (SELECT rolsuper FROM pg_catalog.pg_roles WHERE rolname = current_user)
+     AND current_setting('server_version_num')::int >= 160000
+     AND NOT EXISTS (SELECT 1 FROM pg_catalog.pg_auth_members m
+                      WHERE m.roleid = 'factory_lookup'::regrole AND m.member = (SELECT oid FROM pg_catalog.pg_roles WHERE rolname = current_user)
+                        AND m.admin_option) THEN
+    RAISE EXCEPTION 'run this migration as a superuser, or as the role that created factory_lookup: it must grant factory_lookup to itself for a moment to hand it the two lookup functions (docs/database/migration-safety.md)';
+  END IF;
+END
+$$;
+
 -- 1. What factory_lookup may read, column by column, and the policies that let it read every row of them.
 GRANT SELECT (id, disabled_at) ON tenants TO factory_lookup;
 GRANT SELECT (tenant_id, id, disabled_at) ON principals TO factory_lookup;
