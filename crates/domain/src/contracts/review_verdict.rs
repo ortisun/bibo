@@ -294,6 +294,25 @@ impl ReviewVerdict {
             ),
         }
 
+        // FR-023 and SC-008: a finding of a verdict other than PASS cites a file and a line, so
+        // the review gate can check that the line is in the patch. A PASS finding cites them
+        // only when it concerns one.
+        if self.verdict != Verdict::Pass {
+            for (index, finding) in self.findings.iter().enumerate() {
+                match &finding.location {
+                    None => found.push(
+                        format!("findings[{index}].location"),
+                        "a finding of a verdict other than PASS cites a file and a line",
+                    ),
+                    Some(location) => found.require(
+                        location.line_start.is_some(),
+                        format!("findings[{index}].location.line_start"),
+                        "a finding of a verdict other than PASS cites a line",
+                    ),
+                }
+            }
+        }
+
         if self.metadata.execution_mode == ExecutionMode::Production {
             found.require(
                 self.metadata.reviewer.runtime.fidelity == Fidelity::Real,

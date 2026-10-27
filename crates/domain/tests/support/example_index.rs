@@ -208,6 +208,13 @@ pub const EXAMPLES: &[Example] = &[
     Example {
         schema: "evidence-ledger-entry",
         valid: true,
+        file: "measured-fact-with-a-cited-https-source.json",
+        text: include_str!("../../../../schemas/examples/evidence-ledger-entry/valid/measured-fact-with-a-cited-https-source.json"),
+        expect: "",
+    },
+    Example {
+        schema: "evidence-ledger-entry",
+        valid: true,
         file: "sandbox-verification-first-entry.json",
         text: include_str!("../../../../schemas/examples/evidence-ledger-entry/valid/sandbox-verification-first-entry.json"),
         expect: "",
@@ -267,6 +274,13 @@ pub const EXAMPLES: &[Example] = &[
         file: "seed-above-the-largest-exact-integer.json",
         text: include_str!("../../../../schemas/examples/evidence-ledger-entry/invalid/seed-above-the-largest-exact-integer.json"),
         expect: include_str!("../../../../schemas/examples/evidence-ledger-entry/invalid/seed-above-the-largest-exact-integer.expect"),
+    },
+    Example {
+        schema: "evidence-ledger-entry",
+        valid: false,
+        file: "source-url-not-https.json",
+        text: include_str!("../../../../schemas/examples/evidence-ledger-entry/invalid/source-url-not-https.json"),
+        expect: include_str!("../../../../schemas/examples/evidence-ledger-entry/invalid/source-url-not-https.expect"),
     },
     Example {
         schema: "evidence-manifest",
@@ -516,6 +530,20 @@ pub const EXAMPLES: &[Example] = &[
     Example {
         schema: "review-verdict",
         valid: false,
+        file: "non-pass-finding-without-a-line.json",
+        text: include_str!("../../../../schemas/examples/review-verdict/invalid/non-pass-finding-without-a-line.json"),
+        expect: include_str!("../../../../schemas/examples/review-verdict/invalid/non-pass-finding-without-a-line.expect"),
+    },
+    Example {
+        schema: "review-verdict",
+        valid: false,
+        file: "non-pass-finding-without-location.json",
+        text: include_str!("../../../../schemas/examples/review-verdict/invalid/non-pass-finding-without-location.json"),
+        expect: include_str!("../../../../schemas/examples/review-verdict/invalid/non-pass-finding-without-location.expect"),
+    },
+    Example {
+        schema: "review-verdict",
+        valid: false,
         file: "pass-with-blocking-finding.json",
         text: include_str!("../../../../schemas/examples/review-verdict/invalid/pass-with-blocking-finding.json"),
         expect: include_str!("../../../../schemas/examples/review-verdict/invalid/pass-with-blocking-finding.expect"),
@@ -645,6 +673,13 @@ pub const EXAMPLES: &[Example] = &[
         file: "repository-content-marked-trusted.json",
         text: include_str!("../../../../schemas/examples/stage-contract/invalid/repository-content-marked-trusted.json"),
         expect: include_str!("../../../../schemas/examples/stage-contract/invalid/repository-content-marked-trusted.expect"),
+    },
+    Example {
+        schema: "stage-contract",
+        valid: false,
+        file: "retry-on-without-lease-lost.json",
+        text: include_str!("../../../../schemas/examples/stage-contract/invalid/retry-on-without-lease-lost.json"),
+        expect: include_str!("../../../../schemas/examples/stage-contract/invalid/retry-on-without-lease-lost.expect"),
     },
     Example {
         schema: "stage-contract",

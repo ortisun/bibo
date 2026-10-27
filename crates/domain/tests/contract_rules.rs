@@ -782,6 +782,109 @@ fn cases() -> Vec<Case> {
             change: |d| put(d, "/findings/0/confidence", json!(1.5)),
             expect: Rejected("number from 0 to 1"),
         },
+        Case {
+            name: "a changes-required finding with no location",
+            base: "review-verdict/changes-required-missing-test.json",
+            change: |d| remove(d, "/findings/0/location"),
+            expect: Rejected(
+                "findings[0].location: a finding of a verdict other than PASS cites a file and a line",
+            ),
+        },
+        Case {
+            name: "a changes-required finding with a path and no line",
+            base: "review-verdict/changes-required-missing-test.json",
+            change: |d| remove(d, "/findings/0/location/line_start"),
+            expect: Rejected(
+                "findings[0].location.line_start: a finding of a verdict other than PASS cites a line",
+            ),
+        },
+        Case {
+            name: "a block finding with no location",
+            base: "review-verdict/changes-required-missing-test.json",
+            change: |d| {
+                put(d, "/verdict", json!("BLOCK"));
+                put(d, "/findings/0/severity", json!("blocker"));
+                remove(d, "/findings/0/location");
+            },
+            expect: Rejected("a finding of a verdict other than PASS cites a file and a line"),
+        },
+        Case {
+            name: "a pass finding that concerns no file needs no location",
+            base: "review-verdict/changes-required-missing-test.json",
+            change: |d| {
+                put(d, "/verdict", json!("PASS"));
+                remove(d, "/findings/0/location");
+            },
+            expect: Accepted,
+        },
+        // ---- stage contract: retry classes ---------------------------------------------------------
+        Case {
+            name: "a retry list without LEASE_LOST",
+            base: "stage-contract/specification-stage.json",
+            change: |d| {
+                put(
+                    d,
+                    "/timeout_and_retries/retry_on",
+                    json!(["TOOL_ERROR", "TIMED_OUT"]),
+                )
+            },
+            expect: Rejected("timeout_and_retries.retry_on: must list LEASE_LOST and TIMED_OUT"),
+        },
+        Case {
+            name: "a retry list without TIMED_OUT",
+            base: "stage-contract/specification-stage.json",
+            change: |d| {
+                put(
+                    d,
+                    "/timeout_and_retries/retry_on",
+                    json!(["LEASE_LOST", "SANDBOX_ERROR"]),
+                )
+            },
+            expect: Rejected("timeout_and_retries.retry_on: must list LEASE_LOST and TIMED_OUT"),
+        },
+        Case {
+            name: "a retry list with only the two required classes",
+            base: "stage-contract/specification-stage.json",
+            change: |d| {
+                put(
+                    d,
+                    "/timeout_and_retries/retry_on",
+                    json!(["LEASE_LOST", "TIMED_OUT"]),
+                )
+            },
+            expect: Accepted,
+        },
+        // ---- evidence ledger entry: source URLs -----------------------------------------------------
+        Case {
+            name: "a source URL that is plain http",
+            base: "evidence-ledger-entry/measured-fact-with-a-cited-https-source.json",
+            change: |d| put(d, "/evidence/3/url", json!("http://example.org/page")),
+            expect: Rejected("a source URL starts with https://"),
+        },
+        Case {
+            name: "a source URL with a space",
+            base: "evidence-ledger-entry/measured-fact-with-a-cited-https-source.json",
+            change: |d| put(d, "/evidence/3/url", json!("https://example.org/a page")),
+            expect: Rejected("a source URL starts with https://"),
+        },
+        Case {
+            name: "a source URL longer than 2048 characters",
+            base: "evidence-ledger-entry/measured-fact-with-a-cited-https-source.json",
+            change: |d| {
+                put(
+                    d,
+                    "/evidence/3/url",
+                    json!(format!("https://example.org/{}", "a".repeat(2040))),
+                )
+            },
+            expect: Rejected("a source URL starts with https://"),
+        },
+        Case {
+            name: "a source URL that is https",
+            base: "evidence-ledger-entry/measured-fact-with-a-cited-https-source.json",
+            change: |d| put(d, "/evidence/3/url", json!("https://example.org/page")),
+            expect: Accepted,
+        },
         // ---- agent manifest -----------------------------------------------------------------------
         Case {
             name: "an agent that executes commands but has no shell wrapper",

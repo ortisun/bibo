@@ -63,6 +63,9 @@ pub const REPOSITORY_FULL_NAME: &str = r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$";
 pub const WORKDIR: &str = r"^/[A-Za-z0-9._/-]*$";
 /// A relative working directory for a gate command. May be empty.
 pub const GATE_CWD: &str = r"^[A-Za-z0-9._/-]*$";
+/// An `https` URL with no whitespace. The schema engine does not assert `format: uri`, so the rule
+/// is a pattern.
+pub const HTTPS_URL: &str = r"^https://[^\s]+$";
 
 /// Every pattern above. The schema drift test compares this list with the schema files.
 pub const ALL: &[&str] = &[
@@ -95,6 +98,7 @@ pub const ALL: &[&str] = &[
     REPOSITORY_FULL_NAME,
     WORKDIR,
     GATE_CWD,
+    HTTPS_URL,
 ];
 
 #[cfg(test)]
