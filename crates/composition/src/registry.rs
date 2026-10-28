@@ -11,6 +11,9 @@
 //! entry per name, and a test fails if a name is missing. Adding a port means adding a name, a
 //! field and an entry, and the compiler and that test say where.
 //!
+//! The seams of the stages are part of the registry. [`Seams`] exists only when every one was
+//! supplied, and the ones that report a fidelity are checked like any port.
+//!
 //! `OutputValidator` reports no fidelity (it is a pure port, and the port crate gives it no
 //! stand-in label), so the registry cannot refuse a fake validator. That is a gap in the port
 //! crate, listed in the README.
@@ -30,6 +33,15 @@ use factory_ports::store::Store;
 use factory_ports::workspace::WorkspaceProvider;
 use factory_workflow::commands::Authority;
 use factory_workflow::scheduler::Ticker;
+use factory_workflow::stages::approval::ApprovalSources;
+use factory_workflow::stages::architecture::seams::{RiskSource, RoundSource};
+use factory_workflow::stages::delivery::{DeliverySources, EvidenceDrift};
+use factory_workflow::stages::implementation::seams::{ReworkSource, TaskLedger};
+use factory_workflow::stages::intake::seams::{
+    AgentOutputCheck, AllowlistSource, CapabilityProbes, RequestSource,
+};
+use factory_workflow::stages::repo_intel::seams::{JobRepository, ProjectManifestParser};
+use factory_workflow::stages::specification::seams::{SpecApprovals, SpecDrafts, SpecHistory};
 
 use crate::profile::{PortName, Profile};
 
@@ -73,6 +85,8 @@ pub struct PortRegistry {
     pub ticker: Arc<dyn Ticker>,
     /// Who may do what.
     pub authority: Arc<dyn Authority>,
+    /// The seams of the stages. Complete by construction (see [`Seams`]).
+    pub seams: Seams,
 }
 
 impl std::fmt::Debug for PortRegistry {
@@ -126,6 +140,7 @@ impl PortRegistry {
         if let Some(webhooks) = &self.webhooks {
             found.push((PortName::Webhooks, webhooks.fidelity()));
         }
+        found.extend(self.seams.fidelities());
         found
     }
 
@@ -173,6 +188,104 @@ pub fn check_fidelities(
             profile: profile.name(),
             refused,
         })
+    }
+}
+
+// ------------------------------------------------------------------------------------------
+// The seams of the stages
+// ------------------------------------------------------------------------------------------
+
+/// Names a seam that the wiring left out.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[error("the wiring forgot {} seam(s): {}", missing.len(), missing.join(", "))]
+pub struct SeamsIncomplete {
+    /// The label of each seam that was not supplied, in the order of the registry.
+    pub missing: Vec<&'static str>,
+}
+
+macro_rules! seams {
+    ($( $field:ident : $ty:ty = $label:literal, )*) => {
+        /// Every seam the stage handlers and the engine declare, in one value.
+        ///
+        /// A value of this type exists only if every seam was supplied: [`SeamsBuilder::build`]
+        /// refuses an incomplete set and names each seam that is missing. So a seam forgotten at
+        /// wiring stops the process at start-up, in the same place and with the same report as
+        /// a refused stand-in, and not on the first job that reaches the stage that needs it.
+        #[derive(Clone)]
+        pub struct Seams {
+            $(
+                #[doc = $label]
+                pub $field: Arc<$ty>,
+            )*
+        }
+
+        /// Collects the seams. Nothing is optional at the end: see [`Seams`].
+        #[derive(Default)]
+        pub struct SeamsBuilder {
+            $( $field: Option<Arc<$ty>>, )*
+        }
+
+        impl SeamsBuilder {
+            $(
+                #[doc = $label]
+                #[must_use]
+                pub fn $field(mut self, seam: Arc<$ty>) -> Self {
+                    self.$field = Some(seam);
+                    self
+                }
+            )*
+
+            /// The set, when every seam was supplied.
+            ///
+            /// # Errors
+            /// [`SeamsIncomplete`] naming every seam that is missing.
+            pub fn build(self) -> Result<Seams, SeamsIncomplete> {
+                let mut missing = Vec::new();
+                $( if self.$field.is_none() { missing.push($label); } )*
+                if !missing.is_empty() {
+                    return Err(SeamsIncomplete { missing });
+                }
+                Ok(Seams {
+                    $( $field: self.$field.expect("checked above"), )*
+                })
+            }
+        }
+    };
+}
+
+seams! {
+    output_check: dyn AgentOutputCheck = "agent output check",
+    manifests: dyn ProjectManifestParser = "project manifest parser",
+    allowlist: dyn AllowlistSource = "allowlist source",
+    requests: dyn RequestSource = "request source",
+    repositories: dyn JobRepository = "job repository",
+    probes: dyn CapabilityProbes = "capability probes",
+    ledger: dyn TaskLedger = "task ledger",
+    rework: dyn ReworkSource = "rework source",
+    rounds: dyn RoundSource = "round source",
+    risk: dyn RiskSource = "risk source",
+    drift: dyn EvidenceDrift = "evidence drift",
+    spec_approvals: dyn SpecApprovals = "specification approvals",
+    spec_drafts: dyn SpecDrafts = "specification drafts",
+    spec_history: dyn SpecHistory = "specification history",
+    delivery: dyn DeliverySources = "delivery sources",
+    approvals: dyn ApprovalSources = "approval sources",
+}
+
+impl Seams {
+    /// The fidelity of each seam that reports one, under its port name.
+    #[must_use]
+    pub fn fidelities(&self) -> Vec<(PortName, Fidelity)> {
+        vec![
+            (PortName::OutputCheck, self.output_check.fidelity()),
+            (PortName::Allowlist, self.allowlist.fidelity()),
+            (PortName::Requests, self.requests.fidelity()),
+            (PortName::TaskLedger, self.ledger.fidelity()),
+            (PortName::SpecApprovals, self.spec_approvals.fidelity()),
+            (PortName::SpecDrafts, self.spec_drafts.fidelity()),
+            (PortName::Delivery, self.delivery.fidelity()),
+            (PortName::Approvals, self.approvals.fidelity()),
+        ]
     }
 }
 

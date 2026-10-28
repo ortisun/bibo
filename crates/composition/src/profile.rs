@@ -116,11 +116,29 @@ pub enum PortName {
     Ticker,
     /// The engine's `Authority`.
     Authority,
+    /// `AgentOutputCheck`, a seam of the stages.
+    OutputCheck,
+    /// `AllowlistSource`, a seam of the stages.
+    Allowlist,
+    /// `RequestSource`, a seam of the stages.
+    Requests,
+    /// `TaskLedger`, a seam of the implementation stage.
+    TaskLedger,
+    /// `SpecApprovals`, a seam of the specification stage.
+    SpecApprovals,
+    /// `SpecDrafts`, a seam of the specification stage.
+    SpecDrafts,
+    /// `DeliverySources`, a seam of the delivery stage.
+    Delivery,
+    /// `ApprovalSources`, a seam of the approval stage.
+    Approvals,
 }
 
 impl PortName {
-    /// Every port, in a fixed order.
-    pub const ALL: [PortName; 17] = [
+    /// Every port, in a fixed order. The first 17 are the ports of the engine; the last 8 are the
+    /// seams of the stages that report a fidelity, so a stand-in among them is refused like any
+    /// other.
+    pub const ALL: [PortName; 25] = [
         Self::Store,
         Self::Clock,
         Self::Ids,
@@ -138,6 +156,14 @@ impl PortName {
         Self::Process,
         Self::Ticker,
         Self::Authority,
+        Self::OutputCheck,
+        Self::Allowlist,
+        Self::Requests,
+        Self::TaskLedger,
+        Self::SpecApprovals,
+        Self::SpecDrafts,
+        Self::Delivery,
+        Self::Approvals,
     ];
 
     /// The name in a refusal and in the health report.
@@ -161,6 +187,14 @@ impl PortName {
             Self::Process => "process runner",
             Self::Ticker => "ticker",
             Self::Authority => "authority",
+            Self::OutputCheck => "agent output check",
+            Self::Allowlist => "allowlist source",
+            Self::Requests => "request source",
+            Self::TaskLedger => "task ledger",
+            Self::SpecApprovals => "specification approvals",
+            Self::SpecDrafts => "specification drafts",
+            Self::Delivery => "delivery sources",
+            Self::Approvals => "approval sources",
         }
     }
 

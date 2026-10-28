@@ -25,6 +25,8 @@ use std::sync::Arc;
 
 use factory_domain::redaction::Redactor;
 use factory_observability::telemetry::TelemetryGuard;
+use factory_ports::artifact::ArtifactStore;
+use factory_storage::artifact_fs::LocalFsArtifactStore;
 use factory_storage::pg::PgStore;
 
 use crate::config::FactoryConfig;
@@ -52,7 +54,9 @@ pub struct Prepared {
     /// The secret values registered with it.
     pub secrets: FactorySecrets,
     /// The connected store.
-    pub store: PgStore,
+    pub store: Arc<PgStore>,
+    /// The content-addressed artifact store on the local disk, indexing through `store`.
+    pub artifacts: Arc<dyn ArtifactStore>,
     /// The telemetry pipeline, kept alive for the process.
     pub telemetry: Option<TelemetryGuard>,
 }
@@ -67,9 +71,15 @@ pub struct Blocked {
 }
 
 /// The adapters that are not assembled, with the reason for each.
+///
+/// The sandbox, the workspaces and the specification provider are assembled
+/// ([`crate::providers::assemble`]). What is left needs a credential or a file that does not
+/// exist, in the production profile and in the others alike: the local and test profiles may
+/// stand in for these four, but only a test wiring can supply the stand-ins, because the
+/// testkit that holds them may not be linked by a library or a binary (DEP-03).
 #[must_use]
-pub fn blocked_adapters(profile: Profile) -> Vec<Blocked> {
-    let mut blocked = vec![
+pub fn blocked_adapters(_profile: Profile) -> Vec<Blocked> {
+    vec![
         Blocked {
             port: PortName::Runtime,
             reason: "the agent runtime adapters bind one tenant at construction (RunIo takes a TenantScope), the worker serves many, and a live run needs a model credential and the tool in the agent image",
@@ -86,28 +96,31 @@ pub fn blocked_adapters(profile: Profile) -> Vec<Blocked> {
             port: PortName::Changes,
             reason: "the GitHub change host needs a registered GitHub App and its private key",
         },
-        Blocked {
-            port: PortName::Workspaces,
-            reason: "the workspace provider clones from the GitHub remote with an installation token",
+    ]
+}
+
+/// A seam that is only partly implemented, with what is missing and who owns the fix.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BlockedSeam {
+    /// The seam and method.
+    pub seam: &'static str,
+    /// Why it cannot be answered, in a sentence an owner can act on.
+    pub reason: &'static str,
+}
+
+/// The seam methods that fail closed because the thing they need does not exist yet.
+#[must_use]
+pub fn blocked_seams() -> Vec<BlockedSeam> {
+    vec![
+        BlockedSeam {
+            seam: "DeliverySources::tree_of",
+            reason: "no port exposes the tree id of a commit and only the sandbox crate may start git (DEP-10): needs JobRepo::tree_of in the ports and the sandbox adapter",
         },
-        Blocked {
-            port: PortName::Sandbox,
-            reason: "the Docker sandbox provider is not assembled in this part of the work package (the spec builder and the indexing wrapper are)",
+        BlockedSeam {
+            seam: "DeliverySources::current_values",
+            reason: "the gate definition hash is computed by private code of the validation stage: needs a public function there, so that the delivery stage and the validation stage cannot disagree",
         },
-        Blocked {
-            port: PortName::Specification,
-            reason: "the Spec Kit provider is not assembled in this part of the work package",
-        },
-    ];
-    if profile == Profile::Local {
-        // The local profile may use stand-ins for the credentialed ports, but the stand-ins live
-        // in the testkit, which no binary may link (DEP-03). A test wiring provides them.
-        blocked.push(Blocked {
-            port: PortName::Authority,
-            reason: "the local profile needs the testkit's stand-ins, which only tests may link",
-        });
-    }
-    blocked
+    ]
 }
 
 /// Runs the start-up checks and builds the parts that need no credential.
@@ -175,12 +188,23 @@ pub async fn prepare(
         )
     };
 
-    let store = database::connect(&config.database, &mut secrets).await?;
+    let store = Arc::new(database::connect(&config.database, &mut secrets).await?);
+    let artifacts: Arc<dyn ArtifactStore> = Arc::new(
+        LocalFsArtifactStore::open(
+            &config.artifacts.root,
+            config.artifacts.max_bytes,
+            store.clone(),
+        )
+        .map_err(|error| {
+            StartupFailure::Other(format!("the artifact store cannot open: {error}"))
+        })?,
+    );
     Ok(Prepared {
         policies,
         redactor,
         secrets,
         store,
+        artifacts,
         telemetry: guard,
     })
 }

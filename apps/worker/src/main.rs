@@ -11,7 +11,7 @@
 
 use std::process::ExitCode;
 
-use factory_composition::assemble::blocked_adapters;
+use factory_composition::assemble::{blocked_adapters, blocked_seams};
 use factory_composition::config::FactoryConfig;
 use factory_worker::boot::boot;
 
@@ -47,6 +47,9 @@ fn main() -> ExitCode {
         if !blocked.is_empty() {
             for item in &blocked {
                 eprintln!("BLOCKED: {}: {}", item.port.label(), item.reason);
+            }
+            for item in blocked_seams() {
+                eprintln!("BLOCKED: {}: {}", item.seam, item.reason);
             }
             eprintln!("BLOCKED is not a pass: the start-up checks passed, and no job was claimed.");
             booted.broker.shutdown();

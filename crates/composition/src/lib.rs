@@ -13,6 +13,7 @@
 //! | [`commands`] | The pure parsers that turn a comment, command line arguments or a form into an approval command |
 //! | [`config`] | The typed configuration: files and environment, secrets by file reference, defaults that fail closed |
 //! | [`profile`] | `production`, `local`, `test`, and which port may be a fake in each |
+//! | [`providers`] | The real Docker sandbox, host-side workspace and Spec Kit provider, assembled from the configuration |
 //! | [`registry`] | The registry of ports and the check that a profile accepts every one |
 //! | [`startup`] | Start-up checks that need no database: the policy from the protected checkout, hashed, and the image catalog |
 //! | [`redaction`] | The redactor built from the policy, the registry of the factory's secret values, the telemetry scrubber and the broker wrapper that registers job tokens |
@@ -48,6 +49,7 @@ pub mod hooks;
 pub mod indexing;
 pub mod ledger;
 pub mod profile;
+pub mod providers;
 pub mod reading;
 pub mod redaction;
 pub mod registry;
