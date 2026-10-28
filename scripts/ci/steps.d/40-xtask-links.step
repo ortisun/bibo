@@ -1,0 +1,4 @@
+id       = xtask-links
+title    = Relative links between Markdown documents resolve (cargo xtask check-links)
+requires = cargo
+run      = cargo xtask check-links

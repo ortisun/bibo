@@ -1,0 +1,4 @@
+id       = fixture-host
+title    = The word-count fixture builds and passes its own tests offline (scripts/e2e.sh --check-fixture-host)
+requires = cargo
+run      = scripts/e2e.sh --check-fixture-host
