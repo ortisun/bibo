@@ -43,6 +43,7 @@
 //!    port method takes a value that was parsed already, so it can re-check the limits but cannot
 //!    stop a parse that has happened.
 
+pub mod agent_schema;
 pub mod loader;
 pub mod policy;
 pub mod registry;
