@@ -200,3 +200,19 @@ pub fn outside_lines(agent: &Agent) -> Vec<String> {
         .map(str::to_owned)
         .collect()
 }
+
+/// The same agent with another prompt text, whose hash is put in the manifest. For tests that
+/// need a template with something particular in it.
+pub fn with_prompt_text(agent: &Agent, text: &str) -> Agent {
+    let mut manifest = agent.manifest.clone();
+    manifest.prompt.template_sha256 = factory_domain::values::Sha256Digest::of(text.as_bytes());
+    let prompt = LoadedPrompt {
+        template: manifest.prompt.clone(),
+        text: text.to_owned(),
+    };
+    Agent {
+        id: agent.id,
+        manifest,
+        prompt,
+    }
+}

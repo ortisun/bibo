@@ -43,8 +43,12 @@ pub struct InputRecord {
     pub fetched_at: Option<Timestamp>,
     /// The size of the text as it was given, in bytes.
     pub original_bytes: usize,
-    /// The hash of the text as it was given.
+    /// The hash of the text as it was given. When `hash_is_of_redacted_text` is true it is the
+    /// hash of the text after the replacement of the secrets and the cleaning, because a hash of
+    /// text that held a secret would let a reader check a guess at the secret.
     pub original_sha256: Sha256Digest,
+    /// Whether `original_sha256` is of the text after secrets were replaced.
+    pub hash_is_of_redacted_text: bool,
     /// The size of the cleaned text that is in the block, in bytes.
     pub included_bytes: usize,
     /// The size of the block in the prompt, in bytes, opening and closing line included.

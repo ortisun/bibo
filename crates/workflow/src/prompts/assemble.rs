@@ -165,6 +165,8 @@ struct Work<'i> {
     stripped: usize,
     looks: Lookalikes,
     omitted: usize,
+    redacted: u64,
+    hash_is_of_redacted_text: bool,
 }
 
 impl<'a> Assembler<'a> {
@@ -198,7 +200,7 @@ impl<'a> Assembler<'a> {
         scope: &Scope,
         inputs: &[Input],
     ) -> Result<Assembled, AssemblyError> {
-        let _ = (self.redactor, self.paths, scope.repo);
+        let _ = (self.paths, scope.repo);
         if prompt.template != manifest.prompt {
             return Err(AssemblyError::PromptNotForManifest);
         }
@@ -276,7 +278,7 @@ impl<'a> Assembler<'a> {
                 original_bytes: w.original_bytes,
                 original_sha256: &w.original_sha256,
                 stripped: w.stripped,
-                redacted: 0,
+                redacted: w.redacted,
                 omitted: w.omitted,
             };
             let block_text = block::render(&header, &w.text);
@@ -300,6 +302,12 @@ impl<'a> Assembler<'a> {
                     count: found.placeholders,
                 });
             }
+            if w.redacted > 0 {
+                signals.push(Signal::SecretRedacted {
+                    input: w.spec.name().to_owned(),
+                    count: w.redacted,
+                });
+            }
             if w.omitted > 0 {
                 signals.push(Signal::Truncated {
                     input: w.spec.name().to_owned(),
@@ -319,7 +327,8 @@ impl<'a> Assembler<'a> {
                 included_bytes: w.text.len(),
                 block_bytes: block_text.len(),
                 stripped: w.stripped,
-                redacted: 0,
+                redacted: w.redacted,
+                hash_is_of_redacted_text: w.hash_is_of_redacted_text,
                 truncated: w.omitted > 0,
                 omitted_bytes: w.omitted,
             });
@@ -371,6 +380,15 @@ impl<'a> Assembler<'a> {
         verify::check(&template, &trusted, &meant, &text).map_err(AssemblyError::Containment)?;
 
         let sha256 = Sha256Digest::of(text.as_bytes());
+        match self.redactor.contains_secret(text.as_bytes()) {
+            Ok(false) => {}
+            Ok(true) => return Err(AssemblyError::SecretInPrompt),
+            Err(_) => {
+                return Err(AssemblyError::RedactionFailed {
+                    name: "prompt".to_owned(),
+                });
+            }
+        }
         if text.len() > budget {
             return Err(AssemblyError::Containment("the prompt is over its budget"));
         }
@@ -466,6 +484,8 @@ impl<'a> Assembler<'a> {
                 stripped: 0,
                 looks: Lookalikes::default(),
                 omitted: 0,
+                redacted: 0,
+                hash_is_of_redacted_text: false,
             });
         };
         if input.class != spec.class() {
@@ -477,17 +497,41 @@ impl<'a> Assembler<'a> {
             name: spec.name().to_owned(),
             valid_up_to: e.valid_up_to(),
         })?;
-        let neutral = neutralize(text);
-        let looks = lookalikes(&neutral.text);
+        // Redact, then neutralize, then redact again. The first pass sees the text as it was
+        // written, with any hidden characters that a secret was split by. The second sees the text
+        // as the model will, in case removing a character joined the parts of a secret.
+        let failed = || AssemblyError::RedactionFailed {
+            name: spec.name().to_owned(),
+        };
+        let first = self.redactor.redact_str(text).map_err(|_| failed())?;
+        let mut redacted = first.report.replacements();
+        let neutral = neutralize(&first.output);
+        let second = self
+            .redactor
+            .redact_str(&neutral.text)
+            .map_err(|_| failed())?;
+        redacted = redacted.saturating_add(second.report.replacements());
+        let clean = second.output.into_owned();
+        let looks = lookalikes(&clean);
+        // A hash of text that held a secret would let anyone who can guess the rest of the text
+        // check a guess at the secret. So when something was replaced, the hash is of the text
+        // after the replacement, and the record says so.
+        let original_sha256 = if redacted > 0 {
+            Sha256Digest::of(clean.as_bytes())
+        } else {
+            Sha256Digest::of(&input.bytes)
+        };
         Ok(Work {
             spec,
             given,
             original_bytes: input.bytes.len(),
-            original_sha256: Sha256Digest::of(&input.bytes),
-            text: neutral.text,
+            original_sha256,
+            text: clean,
             stripped: neutral.stripped,
             looks,
             omitted: 0,
+            redacted,
+            hash_is_of_redacted_text: redacted > 0,
         })
     }
 }

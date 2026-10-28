@@ -19,6 +19,8 @@ mod prompts_check;
 mod prompts_envelope;
 #[path = "limits.rs"]
 mod prompts_limits;
+#[path = "redaction.rs"]
+mod prompts_redaction;
 #[path = "support.rs"]
 mod prompts_support;
 #[path = "template.rs"]
