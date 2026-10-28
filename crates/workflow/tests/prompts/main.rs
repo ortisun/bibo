@@ -23,8 +23,14 @@ mod prompts_exclusion;
 mod prompts_independence;
 #[path = "limits.rs"]
 mod prompts_limits;
+#[path = "negative.rs"]
+mod prompts_negative;
+#[path = "properties.rs"]
+mod prompts_properties;
 #[path = "provenance.rs"]
 mod prompts_provenance;
+#[path = "real_prompts.rs"]
+mod prompts_real;
 #[path = "redaction.rs"]
 mod prompts_redaction;
 #[path = "speckit.rs"]
