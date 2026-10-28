@@ -315,6 +315,33 @@ fn a_reinclusion_lifts_only_its_own_group() {
 }
 
 #[test]
+fn a_reinclusion_does_not_lift_a_protection_that_another_group_gives() {
+    // The real policy has no path that both a re-inclusion and a second group name, so a second
+    // group is added here: `.env.example` is hidden-exempt in `secret_bearing_files` only.
+    let mut json = security_json();
+    json["protected_paths"]["groups"]
+        .as_array_mut()
+        .expect("groups")
+        .push(serde_json::json!({
+            "id": "project_examples", "mode": "deny_write", "applies_to": "both",
+            "globs": [".env.example"], "reason": "x", "threats": ["T-12"]
+        }));
+    let rules = PathPolicy::from_policy(&security_from(json)).expect("builds");
+    let ev = ChangeEvidence::default();
+    let verdict = rules.check(RepoKind::Target, ".env.example", WRITE, None, &ev);
+    assert_eq!(
+        denied_by(&verdict),
+        Some((PathDenialReason::DenyWrite, "project_examples".to_owned()))
+    );
+    // Reading is fine: the hidden group let go of it, and the second group only forbids writes.
+    assert!(
+        rules
+            .check(RepoKind::Target, ".env.example", Operation::Read, None, &ev)
+            .is_allowed()
+    );
+}
+
+#[test]
 fn the_most_restrictive_group_decides_when_several_match() {
     // `tests/fixtures/x.json` is append_only (fixtures) and additions_only (tests/**):
     // a modification that only adds lines is fine for the second and refused by the first.

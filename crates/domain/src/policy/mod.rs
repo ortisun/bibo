@@ -24,8 +24,10 @@
 //! | [`authority`] | Who holds a designation, who may take an action, the autonomy ladder, overrides | [`authority::ActionVerdict`] |
 //! | [`risk`] | The risk tier of a change, computed from facts and never from an agent's claim | [`risk::RiskAssessment`] |
 //! | [`budget`] | Budget and rework checks against the ceilings, which a project can only lower | [`budget::BudgetVerdict`] |
+//! | [`tighten`] | Whether a project policy only tightens the central one, and the merged policy | [`tighten::TightenReport`] |
 //!
-//! [`PolicyEngine`] builds all of them from one pair of documents.
+//! [`PolicyEngine`] builds all of them from one pair of documents, except [`tighten`], which
+//! compares two pairs.
 //!
 //! # Rules that hold for every evaluator
 //!
