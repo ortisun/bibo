@@ -124,7 +124,7 @@ Run in a row, on the final commit of the work package, under the shared Docker l
 | `scripts/smoke.sh --static` | 12 checks passed; exit 3 with `BLOCKED` when `docker` is not on `PATH`; exit 0 with the daemon unreachable |
 | `scripts/smoke.sh` | 27 checks passed, 8 seconds |
 | `scripts/restore-drill.sh --artifacts` | 5 checks passed, 2 seconds |
-| `scripts/restore-drill.sh` | 45 checks passed, 18 seconds (39 of them are the restore's own) |
+| `scripts/restore-drill.sh` | 45 checks passed, 19 seconds (39 of them are the restore's own) |
 | `scripts/restore-drill.sh --breaks` | 54 checks passed, 36 seconds: the 45 above and 9 more, one per break |
 | `scripts/restore-drill.sh --artifacts --breaks` | 7 checks passed, 3 seconds |
 | operator path: `local-up.sh`, `backup.sh`, `local-up.sh --destroy --yes`, `local-up.sh --bare`, `restore.sh` | restore exit 0 on an empty database; a second backup with `--keep 1` removed the first |
