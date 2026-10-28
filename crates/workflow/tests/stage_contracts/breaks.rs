@@ -323,3 +323,59 @@ async fn break_one_report_where_the_producer_stores_a_list() {
     listed["reports"] = json!([gate["reports"][0].clone()]);
     assert!(DocumentationGate::from_json(&listed).is_ok());
 }
+
+/// The specification the real stage froze is read by the delivery stage as a typed contract. A
+/// specification with a part missing, or that is not the contract any more, is refused with a
+/// typed error.
+#[tokio::test]
+async fn break_a_dropped_part_of_the_specification_is_refused_by_the_consumers() {
+    let whole = Whole::run().await;
+    let delivery = Delivery::over(&whole.pipeline).await;
+    let handler = delivery.delivery_handler();
+
+    // The parts of the specification the consumers read: its metadata (the version, the status),
+    // its requirements and the scenarios that cover them, and its title.
+    for part in ["metadata", "requirements", "title", "provenance"] {
+        let mut upstream = delivery.upstream_of_delivery();
+        delivery
+            .edit(
+                &mut upstream,
+                StageKind::Specification,
+                "specification-contract",
+                |value| {
+                    value
+                        .as_object_mut()
+                        .expect("an object")
+                        .remove(part)
+                        .unwrap_or_else(|| panic!("the specification has no {part}"));
+                },
+            )
+            .await;
+        assert_eq!(
+            delivery
+                .run(&handler, StageKind::Delivery, &upstream)
+                .await
+                .err(),
+            Some(StageError::InvalidOutput),
+            "{part}"
+        );
+    }
+
+    // A requirement that names a scenario the specification does not have breaks the contract.
+    let mut upstream = delivery.upstream_of_delivery();
+    delivery
+        .edit(
+            &mut upstream,
+            StageKind::Specification,
+            "specification-contract",
+            |value| value["requirements"][0]["acceptance_scenario_ids"] = json!(["SC-999"]),
+        )
+        .await;
+    assert_eq!(
+        delivery
+            .run(&handler, StageKind::Delivery, &upstream)
+            .await
+            .err(),
+        Some(StageError::InvalidOutput)
+    );
+}

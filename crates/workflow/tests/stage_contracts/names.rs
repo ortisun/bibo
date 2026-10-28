@@ -7,10 +7,11 @@
 
 use factory_domain::vocabulary::StageKind;
 use factory_workflow::stages::{
-    approval, architecture, delivery, documenting, implementation, planning, review, validation,
+    approval, architecture, delivery, documenting, implementation, planning, review, specification,
+    validation,
 };
 
-use crate::chain::Pipeline;
+use crate::chain::{Pipeline, Specified};
 use crate::registry::PENDING;
 
 /// The constants of different stages that name one deliverable, grouped by the deliverable. Every
@@ -100,8 +101,12 @@ fn the_constants_that_name_one_deliverable_are_equal_in_every_stage_that_has_one
             )],
         ),
         (
-            implementation::input::SPECIFICATION_CONTRACT,
+            specification::SPECIFICATION_CONTRACT,
             vec![
+                (
+                    "implementation::input::SPECIFICATION_CONTRACT",
+                    implementation::input::SPECIFICATION_CONTRACT,
+                ),
                 (
                     "delivery::input::SPECIFICATION_CONTRACT",
                     d::SPECIFICATION_CONTRACT,
@@ -165,6 +170,18 @@ async fn the_real_stages_store_what_delivery_and_approval_ask_them_for() {
         }
     }
     assert!(missing.is_empty(), "{missing:#?}");
+    // The specification stage is real in its own job, and stores what everything after it asks for.
+    let specified = Specified::run().await.universe;
+    for &(kind, name) in delivery::input::SOURCES
+        .iter()
+        .chain(approval::contract::SOURCES.iter())
+        .filter(|(kind, _)| *kind == StageKind::Specification)
+    {
+        assert!(
+            specified.names_of(kind).contains(name),
+            "{kind} does not store {name}"
+        );
+    }
     // The deliverables asked of a stage that is a stand-in in this job are checked in
     // `pairs::pair_*` through the stage that really produces them, or they are pending.
     for (kind, name) in not_verified {

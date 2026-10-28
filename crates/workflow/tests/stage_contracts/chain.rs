@@ -222,6 +222,8 @@ async fn collect(
 /// The job, run through the documentation review stage.
 pub struct Pipeline {
     pub rig: Rig,
+    /// The bytes of the frozen specification the real stages after it were run on.
+    pub specification: Vec<u8>,
     universe: Universe,
 }
 
@@ -284,10 +286,18 @@ impl Pipeline {
     /// Runs the job from the intake stand-in to the documentation review stage, with every real
     /// stage passing.
     pub async fn documented() -> Self {
+        // The stages after the specification read the document the real specification stage
+        // stores, which was written from the document the real intake stage stored.
+        Self::documented_with(Specified::run().await.specification).await
+    }
+
+    /// The same, on a specification the caller already has.
+    pub async fn documented_with(specification: Vec<u8>) -> Self {
         let rig = Rig::build(Options {
             scope: documented_scope(),
             // The real review handler, not the stand-in.
             review: true,
+            specification: Some(specification.clone()),
             ..Options::default()
         })
         .await;
@@ -325,7 +335,11 @@ impl Pipeline {
             ],
         )
         .await;
-        Self { rig, universe }
+        Self {
+            rig,
+            specification,
+            universe,
+        }
     }
 
     /// The scope of the tenant, for reading the store.
@@ -372,8 +386,17 @@ pub struct Planned;
 
 impl Planned {
     pub async fn run() -> Universe {
+        Self::run_with(Specified::run().await.specification).await
+    }
+
+    /// The same, on a specification the caller already has.
+    pub async fn run_with(specification: Vec<u8>) -> Universe {
         use crate::planning_rig::{Options, Rig, design};
-        let rig = Rig::build(Options::default()).await;
+        let rig = Rig::build(Options {
+            specification: String::from_utf8(specification).expect("a stored document is UTF-8"),
+            ..Options::default()
+        })
+        .await;
         rig.run_until_architecture().await;
         rig.architecture_passes(design()).await;
         rig.planner_plans(|_| {});
@@ -388,5 +411,90 @@ impl Planned {
             &[StageKind::Architecture, StageKind::TaskPlanning],
         )
         .await
+    }
+}
+
+// ---- the job through the specification stage ---------------------------------------------------
+
+/// The job through the specification stage, which is real. The intake stage before it is real too:
+/// the request it reads is the document the real intake stage stored. The Spec Kit adapter cannot
+/// be a dependency of this crate (rule DEP-01), so the typed contract is built by the scripted
+/// provider of the stage's own tests from the schema example; the stage's work on it is real:
+/// auditing, committing, judging, asking a person, and freezing.
+pub struct Specified {
+    pub universe: Universe,
+    /// The bytes of the frozen `specification-contract`.
+    pub specification: Vec<u8>,
+}
+
+impl Specified {
+    pub async fn run() -> Self {
+        let intake = Intake::run().await;
+        let request = intake
+            .real(StageKind::Intake, "normalized-request")
+            .bytes
+            .clone();
+        Self::from_request(request).await
+    }
+
+    pub async fn from_request(request: Vec<u8>) -> Self {
+        use crate::spec_rig::{Options, Rig, person_record};
+        use factory_domain::vocabulary::HumanRole;
+        use factory_workflow::commands::{Decision, Subject};
+
+        let rig = Rig::build(Options {
+            request: Some(request),
+            ..Options::default()
+        })
+        .await;
+        rig.run_until_specification().await;
+        rig.a_sound_specification();
+        // The first attempt passes every rule and asks a person; nothing is frozen yet.
+        let (claimed, outcome) = rig.run_next().await;
+        assert_eq!(claimed.kind, StageKind::Specification);
+        assert_eq!(outcome, AttemptOutcome::NeedsHuman);
+        // The approver is recorded, a person answers, and the next attempt freezes the draft.
+        let approver = rig
+            .world
+            .person(
+                "approver-s",
+                &[factory_domain::vocabulary::HumanRole::Approver],
+            )
+            .await;
+        rig.approvals.grant(person_record(approver));
+        let operator = rig.world.person("operator-s", &[HumanRole::Operator]).await;
+        let run = rig.run_of(StageKind::Specification).await;
+        rig.engine
+            .decide(
+                &rig.world.actor(operator),
+                Subject {
+                    job: rig.job,
+                    stage_run: run,
+                },
+                Decision::Answer {
+                    text: "I approve this specification.".to_owned(),
+                    raises_budget_ceiling: false,
+                },
+            )
+            .await
+            .expect("the answer applies");
+        let (_, outcome) = rig.run_next().await;
+        assert_eq!(outcome, AttemptOutcome::Succeeded);
+        let universe = collect(
+            &rig.world,
+            rig.world.tenant,
+            rig.job,
+            &*rig.artifacts,
+            &[StageKind::Specification],
+        )
+        .await;
+        let specification = universe
+            .real(StageKind::Specification, "specification-contract")
+            .bytes
+            .clone();
+        Self {
+            universe,
+            specification,
+        }
     }
 }

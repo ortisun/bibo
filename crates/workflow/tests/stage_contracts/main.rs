@@ -23,7 +23,8 @@
 //! | `IMPLEMENTATION`, `REVIEW`, `DOCUMENTING`, `DOCUMENTATION_REVIEW` | the real handlers through the real engine (`rig`) | real |
 //! | `VALIDATION` | the validation stage's own `evidence_document`, called by the rig's stand-in; the real handler's contract is resolved on the real job | serializer |
 //! | `DELIVERY`, `APPROVAL` | the real handlers, over the repository and the code host of the rig (`deliver`) | real |
-//! | `SPECIFICATION`, `DOMAIN_DISCOVERY` | **pending**: the modules are placeholders in this checkout | none |
+//! | `SPECIFICATION` | the real handler through the real engine, fed the request the real intake stage stored (`spec_rig`); the typed contract comes from the scripted provider of the stage's own tests, because the Spec Kit adapter cannot be a dependency of this crate (rule DEP-01) | real, over a scripted provider |
+//! | `DOMAIN_DISCOVERY` | **pending**: the module is a placeholder in this checkout | none |
 //!
 //! The stand-ins the rigs register for the stages that are not under test store documents their
 //! author chose. [`chain::Universe::real`] refuses to hand one out as a producer's output.
@@ -61,6 +62,10 @@ mod harness;
 #[path = "../intake_repo/repo_rig.rs"]
 #[allow(dead_code)]
 mod repo_rig;
+
+// The job through the specification stage: the real handler, over the seams its own tests use.
+#[path = "../specification/rig.rs"]
+mod spec_rig;
 
 // The job through architecture and task planning: both real handlers.
 #[path = "../planning/rig.rs"]

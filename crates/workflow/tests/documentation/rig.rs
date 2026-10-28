@@ -1191,6 +1191,9 @@ pub struct Options {
     pub reviewer: Option<AgentManifest>,
     /// The limits of the implementation stage, when a test needs smaller ones.
     pub budget: Option<StageBudget>,
+    /// The bytes the specification stand-in stores, when a test wants the document of the real
+    /// specification stage instead of the schema example.
+    pub specification: Option<Vec<u8>>,
 }
 
 impl Default for Options {
@@ -1211,6 +1214,7 @@ impl Default for Options {
             review: false,
             reviewer: None,
             budget: None,
+            specification: None,
         }
     }
 }

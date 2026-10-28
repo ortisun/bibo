@@ -879,6 +879,8 @@ pub struct Rig {
     pub repo: RepoRef,
     pub base: CommitSha,
     pub job: JobId,
+    /// The title the intake stand-in (or the real request) gives the job.
+    pub title: String,
 }
 
 pub struct Options {
@@ -888,6 +890,9 @@ pub struct Options {
     pub policy_principal: Option<PrincipalId>,
     pub scope: Vec<StageKind>,
     pub max_rounds: usize,
+    /// The bytes the intake stand-in stores as `normalized-request`, when a test wants the
+    /// document of the real intake stage instead of the stand-in's own.
+    pub request: Option<Vec<u8>>,
 }
 
 impl Default for Options {
@@ -906,6 +911,7 @@ impl Default for Options {
                 StageKind::Architecture,
             ],
             max_rounds: 2,
+            request: None,
         }
     }
 }
@@ -1063,7 +1069,18 @@ impl Rig {
         );
         let mut handlers = HandlerRegistry::new();
         handlers.register(Arc::new(handler)).expect("one handler");
-        register_around(&mut handlers, &base, &options.description);
+        let title = options
+            .request
+            .as_deref()
+            .and_then(|bytes| serde_json::from_slice::<Value>(bytes).ok())
+            .and_then(|request| request["title"].as_str().map(str::to_owned))
+            .unwrap_or_else(|| "Add a json flag".to_owned());
+        register_around(
+            &mut handlers,
+            &base,
+            &options.description,
+            options.request.clone(),
+        );
         let engine = Engine::new(deps, world.config.clone(), handlers).expect("the engine starts");
         Self {
             world,
@@ -1080,6 +1097,7 @@ impl Rig {
             repo,
             base,
             job,
+            title,
         }
     }
 
@@ -1145,7 +1163,11 @@ impl Rig {
     /// The directory the factory chose for the job's specification.
     pub fn feature(&self) -> String {
         let tail = self.job.to_string();
-        format!("specs/add-a-json-flag-{}", &tail[tail.len() - 8..])
+        format!(
+            "specs/{}-{}",
+            short_name(&self.title),
+            &tail[tail.len() - 8..]
+        )
     }
 
     /// A writer that writes a sound specification, a checklist, and a reviewer that passes.
@@ -1284,13 +1306,20 @@ fn ok(_: &[String], _: &[u8]) -> ProgramOutput {
     }
 }
 
-fn register_around(handlers: &mut HandlerRegistry, base: &CommitSha, description: &str) {
+fn register_around(
+    handlers: &mut HandlerRegistry,
+    base: &CommitSha,
+    description: &str,
+    real_request: Option<Vec<u8>>,
+) {
     let map = serde_json::to_vec(&json!({ "commit_sha": base.as_str() })).expect("serializes");
-    let request = serde_json::to_vec(&json!({
-        "title": "Add a json flag",
-        "description": description,
-    }))
-    .expect("serializes");
+    let request = real_request.unwrap_or_else(|| {
+        serde_json::to_vec(&json!({
+            "title": "Add a json flag",
+            "description": description,
+        }))
+        .expect("serializes")
+    });
     let table = vec![
         Fixed {
             kind: StageKind::Intake,
@@ -1325,6 +1354,28 @@ fn register_around(handlers: &mut HandlerRegistry, base: &CommitSha, description
     ];
     for stand_in in table {
         handlers.register(Arc::new(stand_in)).expect("one handler");
+    }
+}
+
+/// The lower-case letters and digits of a title, joined by hyphens, at most 40 characters: how the
+/// stage names the feature directory.
+fn short_name(title: &str) -> String {
+    let mut name = String::new();
+    for c in title.chars() {
+        if c.is_ascii_alphanumeric() {
+            name.push(c.to_ascii_lowercase());
+        } else if !name.ends_with('-') && !name.is_empty() {
+            name.push('-');
+        }
+        if name.len() >= 40 {
+            break;
+        }
+    }
+    let name = name.trim_matches('-').to_owned();
+    if name.is_empty() {
+        "spec".to_owned()
+    } else {
+        name
     }
 }
 
