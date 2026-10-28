@@ -134,8 +134,22 @@ async fn pass_without_evidence(world: &World, run: factory_domain::ids::StageRun
         .await
         .expect("the store starts it");
     let mut version = started.stage_run.version;
-    // The store takes a pass that names an outcome, so the faulty engine names one. What it never
-    // writes is the gate report or the ledger entry that should stand behind it.
+    // The store takes a pass that names an outcome and a stored report (it refuses a pass with no
+    // report), so the faulty engine names both. What it never writes is the ledger entry that
+    // should stand behind them, and the verifier finds the pass by that absence.
+    let bytes = b"a report that no ledger entry cites";
+    let report = factory_domain::values::Sha256Digest::of(bytes);
+    tx.index_artifact(factory_ports::store::NewArtifactIndexEntry {
+        sha256: report.clone(),
+        media_type: factory_domain::values::MediaType::parse("application/json").expect("a type"),
+        size_bytes: factory_domain::values::NonNegativeInt::new(
+            i64::try_from(bytes.len()).expect("small"),
+        )
+        .expect("a size"),
+        origin: None,
+    })
+    .await
+    .expect("the report is indexed");
     for (from, event, guard, effects) in [
         (
             StageRunStatus::Running,
@@ -150,7 +164,7 @@ async fn pass_without_evidence(world: &World, run: factory_domain::ids::StageRun
             StageRunEffects {
                 gate: Some(GateRecord {
                     outcome: GateOutcome::Passed,
-                    report_sha256: None,
+                    report_sha256: Some(report),
                     failing_set_sha256: None,
                 }),
                 ..StageRunEffects::default()

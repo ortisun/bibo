@@ -2076,6 +2076,115 @@ async fn an_approval_completes_the_job_and_the_ledger_verifies() {
     assert!(last.claim.assurance_level.is_none());
 }
 
+/// Reads the document that a stage run's gate record names, as the tenant would, and parses it.
+async fn gate_report_of(world: &World, run: StageRunId) -> serde_json::Value {
+    let record = world
+        .stage_run(run)
+        .await
+        .gate
+        .expect("the run recorded a gate outcome");
+    let hash = record
+        .report_sha256
+        .expect("a recorded outcome other than NOT_APPLICABLE names its report");
+    let entry = world.index_entry(&hash).await;
+    let bytes = world
+        .deps
+        .artifacts
+        .get(&TenantScope::new(world.tenant), &entry.artifact)
+        .await
+        .expect("the tenant can read the report");
+    assert_eq!(
+        Sha256Digest::of(&bytes),
+        hash,
+        "the report is stored by its hash"
+    );
+    serde_json::from_slice(&bytes).expect("a report is a JSON document")
+}
+
+#[tokio::test]
+async fn an_approval_rests_on_a_stored_report_that_names_the_person_and_the_evidence() {
+    // ADR 0014, amendment 1: no decision is recorded without a document behind it. A person's
+    // approval is a decision, so the gate record names a report: who decided, in which role, and
+    // which evidence they had seen. The store refuses a PASSED record with no report.
+    let world = World::new().await;
+    let (job, run) = at_approval(&world).await;
+    let approver = world.person("approver-1", &[HumanRole::Approver]).await;
+    let seen = head(&world, job).await;
+    world
+        .engine
+        .decide(
+            &world.actor(approver),
+            Subject {
+                job,
+                stage_run: run,
+            },
+            Decision::Approve {
+                evidence_seen: seen.clone(),
+                warnings_decided: true,
+            },
+        )
+        .await
+        .expect("the approval applies");
+    let report = gate_report_of(&world, run).await;
+    assert_eq!(report["kind"], "human-approval");
+    assert_eq!(report["outcome"], "PASSED");
+    assert_eq!(report["stage"], "APPROVAL");
+    assert_eq!(report["stage_run_id"], run.to_string());
+    assert_eq!(report["details"]["decided_by"], approver.to_string());
+    assert_eq!(report["details"]["role"], "approver");
+    assert_eq!(report["details"]["evidence_seen"], seen.to_string());
+}
+
+#[tokio::test]
+async fn an_environment_block_rests_on_a_stored_report_that_names_its_cause() {
+    // The same rule for S21. Without the report the store refuses the block, the cause of the
+    // block is lost with the failed attempt, and nobody can say why the job stopped.
+    use factory_domain::contracts::gate_report::BlockedCode;
+    let world = World::new().await;
+    let job = world.admitted_job().await;
+    world
+        .script(StageKind::Intake)
+        .queue([Step::Fail(StageError::Blocked(
+            BlockedCode::ToolUnavailable,
+        ))]);
+    world.run_next("worker-1").await;
+    let view = world.view(job).await;
+    let run = intake(&view).id;
+    assert_eq!(intake(&view).status, StageRunStatus::Blocked);
+    let report = gate_report_of(&world, run).await;
+    assert_eq!(report["kind"], "environment-block");
+    assert_eq!(report["outcome"], "BLOCKED");
+    assert_eq!(report["cause"], "tool_missing");
+    assert_eq!(report["stage_run_id"], run.to_string());
+    assert!(report["details"]["attempt_id"].is_string());
+}
+
+#[tokio::test]
+async fn a_gate_that_could_not_run_blocks_on_a_report_of_the_engines_own() {
+    // S11 with nothing from the gate: the evidence the handler offered was refused, so there is
+    // no gate report to cite and none may be cited. The engine writes a decision document that
+    // names the cause and never repeats the refused evidence.
+    let world = World::new().await;
+    let job = world.admitted_job().await;
+    world
+        .script(StageKind::Intake)
+        .queue_evals([Eval::NoEvidence]);
+    world.run_next("worker-1").await;
+    let view = world.view(job).await;
+    assert_eq!(intake(&view).status, StageRunStatus::Blocked);
+    let report = gate_report_of(&world, intake(&view).id).await;
+    assert_eq!(report["kind"], "gate-decision");
+    assert_eq!(report["outcome"], "BLOCKED");
+    assert!(
+        report["cause"]
+            .as_str()
+            .is_some_and(|cause| !cause.is_empty()),
+        "the report says why the engine blocked"
+    );
+    assert_eq!(report["details"]["evidence_refused"], false);
+    assert_eq!(report["details"]["gate_could_not_run"], false);
+}
+
 #[tokio::test]
 async fn a_skipped_stage_does_not_stop_the_job_from_completing() {
     let world = World::new().await;
