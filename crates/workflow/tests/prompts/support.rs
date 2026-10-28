@@ -186,7 +186,33 @@ pub fn request<'a>(agent: &'a Agent, inputs: Vec<Input>) -> AssemblyRequest<'a> 
 
 /// Assembles with the default assembler.
 pub fn assemble(agent: &Agent, inputs: Vec<Input>) -> Result<Assembled, AssemblyError> {
-    assembler().assemble(request(agent, inputs))
+    assembler().assemble_any((agent, inputs))
+}
+
+/// Assembles an agent by the path its role requires: reviewers by the independent path, which
+/// takes only inputs that are not an agent's account of its own work.
+pub trait AssembleAny {
+    fn assemble_any(&self, job: (&Agent, Vec<Input>)) -> Result<Assembled, AssemblyError>;
+}
+
+impl AssembleAny for Assembler<'_> {
+    fn assemble_any(&self, job: (&Agent, Vec<Input>)) -> Result<Assembled, AssemblyError> {
+        let (agent, inputs) = job;
+        if factory_workflow::prompts::requires_independence(agent.manifest.role.as_str()) {
+            let inputs = inputs
+                .into_iter()
+                .map(|i| i.into_independent().expect("an ordinary input"))
+                .collect();
+            self.assemble_independent(factory_workflow::prompts::IndependentRequest::new(
+                &agent.manifest,
+                &agent.prompt,
+                scope(),
+                inputs,
+            ))
+        } else {
+            self.assemble(request(agent, inputs))
+        }
+    }
 }
 
 /// The lines of the template that are not placeholders: what must be identical in every prompt of

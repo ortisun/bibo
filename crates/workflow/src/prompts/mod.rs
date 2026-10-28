@@ -21,7 +21,9 @@ mod sanitize;
 mod template;
 mod verify;
 
-pub use assemble::{Assembled, Assembler, AssemblyRequest, Part, Scope};
+pub use assemble::{
+    Assembled, Assembler, AssemblyRequest, IndependentRequest, Part, Scope, requires_independence,
+};
 pub use class::ContentClass;
 pub use error::{AssemblyError, TemplateError};
 pub use input::{IndependentInput, Input, LineRange, Source, Trust};

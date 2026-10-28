@@ -10,8 +10,8 @@ use factory_workflow::prompts::{
 
 use super::prompts_check::{attribute, decode};
 use super::prompts_support::{
-    Agent, agent, agents, all_inputs, input, names, outside_lines, path_policy, redactor, request,
-    tenant, with_prompt_text,
+    Agent, AssembleAny, agent, agents, all_inputs, input, names, outside_lines, path_policy,
+    redactor, tenant, with_prompt_text,
 };
 
 /// The kinds that are secrets. The holdout and second-tenant strings are not secrets: other
@@ -41,7 +41,7 @@ fn assemble_with(
     agent: &Agent,
     inputs: Vec<Input>,
 ) -> Result<Assembled, AssemblyError> {
-    Assembler::new(redactor, path_policy(), Limits::default()).assemble(request(agent, inputs))
+    Assembler::new(redactor, path_policy(), Limits::default()).assemble_any((agent, inputs))
 }
 
 #[test]
@@ -154,7 +154,7 @@ fn prompts_redaction_a_cut_never_leaves_part_of_a_secret() {
             ..Limits::default()
         };
         let assembled = Assembler::new(&redactor, path_policy(), limits)
-            .assemble(request(&roomy, vec![input(&roomy, "request", text)]))
+            .assemble_any((&roomy, vec![input(&roomy, "request", text)]))
             .expect("assembles");
         let hits = sweeper.scan("prompt", assembled.text().as_bytes());
         assert!(hits.is_empty(), "fill {fill}: {hits:?}");

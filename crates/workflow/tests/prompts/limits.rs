@@ -5,7 +5,7 @@ use factory_workflow::prompts::{AssemblyError, Limits};
 
 use super::prompts_check::{attribute, decode, neutralize_oracle};
 use super::prompts_support::{
-    agent, all_inputs, assembler_with, input, names, outside_lines, request,
+    AssembleAny, agent, all_inputs, assembler_with, input, names, outside_lines,
 };
 
 fn with_max_tokens(id: &str, max_tokens: i64) -> super::prompts_support::Agent {
@@ -21,10 +21,7 @@ fn prompts_limits_a_one_mebibyte_line_is_cut_and_the_block_says_so() {
     let text = "A".repeat(1 << 20);
     let limits = Limits::default();
     let assembled = assembler_with(limits.clone())
-        .assemble(request(
-            &agent,
-            vec![input(&agent, "request", text.clone())],
-        ))
+        .assemble_any((&agent, vec![input(&agent, "request", text.clone())]))
         .expect("a long line assembles");
 
     let decoded = decode(&outside_lines(&agent), &names(&agent), assembled.text());
@@ -53,10 +50,7 @@ fn prompts_limits_a_one_mebibyte_line_is_cut_and_the_block_says_so() {
 fn prompts_limits_an_input_under_the_limits_is_not_touched() {
     let agent = agent("intake-classifier");
     let assembled = assembler_with(Limits::default())
-        .assemble(request(
-            &agent,
-            vec![input(&agent, "request", "small text")],
-        ))
+        .assemble_any((&agent, vec![input(&agent, "request", "small text")]))
         .expect("assembles");
     let decoded = decode(&outside_lines(&agent), &names(&agent), assembled.text());
     assert_eq!(attribute(&decoded.headers[0], "truncated"), Some("no"));
@@ -76,10 +70,7 @@ fn prompts_limits_a_cut_never_splits_a_character() {
         ..Limits::default()
     };
     let assembled = assembler_with(limits)
-        .assemble(request(
-            &agent,
-            vec![input(&agent, "request", text.clone())],
-        ))
+        .assemble_any((&agent, vec![input(&agent, "request", text.clone())]))
         .expect("assembles");
     let decoded = decode(&outside_lines(&agent), &names(&agent), assembled.text());
     assert!(decoded.problems.is_empty(), "{:#?}", decoded.problems);
@@ -96,7 +87,7 @@ fn prompts_limits_lines_count_toward_the_limit_with_their_quote_prefixes() {
         ..Limits::default()
     };
     let assembled = assembler_with(limits.clone())
-        .assemble(request(&agent, vec![input(&agent, "request", text)]))
+        .assemble_any((&agent, vec![input(&agent, "request", text)]))
         .expect("assembles");
     let record = assembled.manifest().input("request").expect("a record");
     assert!(record.truncated);
@@ -114,7 +105,7 @@ fn prompts_limits_the_manifest_budget_bounds_the_whole_prompt() {
     let agent = with_max_tokens("code-reviewer", 10_000);
     let limits = Limits::default();
     let assembled = assembler_with(limits.clone())
-        .assemble(request(
+        .assemble_any((
             &agent,
             all_inputs(&agent, |_| "line of text\n".repeat(5_000)),
         ))
@@ -145,7 +136,7 @@ fn prompts_limits_a_small_input_is_kept_whole_while_large_ones_are_cut_to_a_comm
         input(&agent, "gate_reports", "g".repeat(100_000)),
     ];
     let assembled = assembler_with(Limits::default())
-        .assemble(request(&agent, inputs))
+        .assemble_any((&agent, inputs))
         .expect("assembles");
     let m = assembled.manifest();
     let spec = m.input("frozen_specification").expect("record");
@@ -161,7 +152,7 @@ fn prompts_limits_a_small_input_is_kept_whole_while_large_ones_are_cut_to_a_comm
 fn prompts_limits_a_budget_too_small_for_the_instructions_fails() {
     let agent = with_max_tokens("code-reviewer", 100);
     let result = assembler_with(Limits::default())
-        .assemble(request(&agent, all_inputs(&agent, |_| "x".to_owned())));
+        .assemble_any((&agent, all_inputs(&agent, |_| "x".to_owned())));
     assert!(
         matches!(result, Err(AssemblyError::BudgetTooSmall { .. })),
         "{result:?}"
@@ -176,10 +167,7 @@ fn prompts_limits_the_prompt_byte_limit_applies_when_the_token_budget_is_larger(
         ..Limits::default()
     };
     let assembled = assembler_with(limits)
-        .assemble(request(
-            &agent,
-            all_inputs(&agent, |_| "a line\n".repeat(20_000)),
-        ))
+        .assemble_any((&agent, all_inputs(&agent, |_| "a line\n".repeat(20_000))))
         .expect("assembles");
     assert!(assembled.text().len() <= 12_000);
     assert_eq!(assembled.manifest().budget_bytes, 12_000);
@@ -192,10 +180,8 @@ fn prompts_limits_an_input_over_the_read_limit_is_refused_not_cut() {
         max_read_bytes_per_input: 1_000,
         ..Limits::default()
     };
-    let result = assembler_with(limits).assemble(request(
-        &agent,
-        vec![input(&agent, "request", "z".repeat(1_001))],
-    ));
+    let result = assembler_with(limits)
+        .assemble_any((&agent, vec![input(&agent, "request", "z".repeat(1_001))]));
     assert!(
         matches!(result, Err(AssemblyError::InputTooLarge { .. })),
         "{result:?}"
@@ -211,7 +197,7 @@ fn prompts_limits_inputs_over_the_total_read_limit_are_refused() {
         ..Limits::default()
     };
     let result =
-        assembler_with(limits).assemble(request(&agent, all_inputs(&agent, |_| "z".repeat(900))));
+        assembler_with(limits).assemble_any((&agent, all_inputs(&agent, |_| "z".repeat(900))));
     assert!(
         matches!(result, Err(AssemblyError::InputsTooLarge { .. })),
         "{result:?}"
@@ -230,10 +216,7 @@ fn prompts_limits_what_is_left_out_is_always_recorded_never_silent() {
     for size in (0..4_000).step_by(37) {
         let text = "ab\n".repeat(size / 3 + 1);
         let assembled = assembler_with(limits.clone())
-            .assemble(request(
-                &agent,
-                vec![input(&agent, "request", text.clone())],
-            ))
+            .assemble_any((&agent, vec![input(&agent, "request", text.clone())]))
             .expect("assembles");
         let decoded = decode(&outside_lines(&agent), &names(&agent), assembled.text());
         let cleaned = neutralize_oracle(&text);

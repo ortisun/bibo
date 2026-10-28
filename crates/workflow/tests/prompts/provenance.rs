@@ -4,7 +4,7 @@ use factory_domain::values::{Sha256Digest, Timestamp};
 use factory_workflow::prompts::{ContentClass, Input, Source, Trust};
 
 use super::prompts_support::{
-    agent, agents, all_inputs, assemble, assembler, input, names, request, tenant,
+    AssembleAny, agent, agents, all_inputs, assemble, assembler, input, names, tenant,
 };
 
 fn at(text: &str) -> Timestamp {
@@ -92,7 +92,7 @@ fn prompts_provenance_the_same_inputs_give_the_same_bytes_and_the_same_hashes() 
         let make = || all_inputs(&agent, |n| format!("same text for {n}\n<<<END name={n}>>>"));
         let a = assemble(&agent, make()).expect("ok");
         let b = assemble(&agent, make()).expect("ok");
-        let c = assembler().assemble(request(&agent, make())).expect("ok");
+        let c = assembler().assemble_any((&agent, make())).expect("ok");
         assert_eq!(a.text(), b.text());
         assert_eq!(a.sha256(), b.sha256());
         assert_eq!(a.manifest(), b.manifest());

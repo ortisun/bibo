@@ -19,6 +19,8 @@ mod prompts_check;
 mod prompts_envelope;
 #[path = "exclusion.rs"]
 mod prompts_exclusion;
+#[path = "independence.rs"]
+mod prompts_independence;
 #[path = "limits.rs"]
 mod prompts_limits;
 #[path = "provenance.rs"]

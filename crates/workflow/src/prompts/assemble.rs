@@ -12,7 +12,7 @@ use factory_ports::registry::LoadedPrompt;
 
 use super::block::{self, Header};
 use super::error::AssemblyError;
-use super::input::{Input, Trust, is_identifier};
+use super::input::{IndependentInput, Input, Trust, is_identifier};
 use super::limits::{Limits, allowances};
 use super::manifest::{
     ContextManifest, Exclusion, ExclusionReason, InputRecord, Signal, TemplateRecord,
@@ -83,6 +83,80 @@ impl<'a> AssemblyRequest<'a> {
             inputs,
         }
     }
+}
+
+/// Everything an assembly for an agent that reviews independently needs. It takes
+/// [`IndependentInput`], which no agent's account of its own work can become.
+///
+/// ```
+/// use factory_domain::contracts::AgentManifest;
+/// use factory_ports::registry::LoadedPrompt;
+/// use factory_workflow::prompts::{IndependentRequest, Input, Scope};
+///
+/// // The only way in is `into_independent`, which refuses a self-assessment.
+/// fn request<'a>(
+///     manifest: &'a AgentManifest,
+///     prompt: &'a LoadedPrompt,
+///     scope: Scope,
+///     inputs: Vec<Input>,
+/// ) -> Option<IndependentRequest<'a>> {
+///     let inputs = inputs
+///         .into_iter()
+///         .map(Input::into_independent)
+///         .collect::<Result<Vec<_>, _>>()
+///         .ok()?;
+///     Some(IndependentRequest::new(manifest, prompt, scope, inputs))
+/// }
+/// ```
+///
+/// Plain inputs are a type error, so a builder's summary cannot be handed to a reviewer by
+/// mistake:
+///
+/// ```compile_fail
+/// use factory_domain::contracts::AgentManifest;
+/// use factory_ports::registry::LoadedPrompt;
+/// use factory_workflow::prompts::{IndependentRequest, Input, Scope};
+///
+/// fn request<'a>(
+///     manifest: &'a AgentManifest,
+///     prompt: &'a LoadedPrompt,
+///     scope: Scope,
+///     inputs: Vec<Input>,
+/// ) -> IndependentRequest<'a> {
+///     IndependentRequest::new(manifest, prompt, scope, inputs)
+/// }
+/// ```
+#[derive(Debug, Clone)]
+pub struct IndependentRequest<'a> {
+    manifest: &'a AgentManifest,
+    prompt: &'a LoadedPrompt,
+    scope: Scope,
+    inputs: Vec<IndependentInput>,
+}
+
+impl<'a> IndependentRequest<'a> {
+    /// A request for the agent `manifest`, whose prompt is `prompt`, with `inputs`.
+    #[must_use]
+    pub fn new(
+        manifest: &'a AgentManifest,
+        prompt: &'a LoadedPrompt,
+        scope: Scope,
+        inputs: Vec<IndependentInput>,
+    ) -> Self {
+        Self {
+            manifest,
+            prompt,
+            scope,
+            inputs,
+        }
+    }
+}
+
+/// Whether an agent with this role judges work that others did, and so must not be given those
+/// others' account of it. That is every reviewer and critic, and QA.
+#[must_use]
+pub fn requires_independence(role: &str) -> bool {
+    role.ends_with("_reviewer") || role.ends_with("_critic") || role == "qa"
 }
 
 /// A part of a finished prompt.
@@ -203,12 +277,28 @@ impl<'a> Assembler<'a> {
     /// # Errors
     /// An [`AssemblyError`]. No prompt is returned in that case.
     pub fn assemble(&self, request: AssemblyRequest<'_>) -> Result<Assembled, AssemblyError> {
+        if requires_independence(request.manifest.role.as_str()) {
+            return Err(AssemblyError::IndependentRoleNeedsIndependentInputs);
+        }
         self.run(
             request.manifest,
             request.prompt,
             &request.scope,
             &request.inputs,
         )
+    }
+
+    /// Builds the prompt of an agent that reviews independently. The inputs are of a type that no
+    /// agent's account of its own work can have.
+    ///
+    /// # Errors
+    /// An [`AssemblyError`]. No prompt is returned in that case.
+    pub fn assemble_independent(
+        &self,
+        request: IndependentRequest<'_>,
+    ) -> Result<Assembled, AssemblyError> {
+        let inputs: Vec<Input> = request.inputs.into_iter().map(|i| i.0).collect();
+        self.run(request.manifest, request.prompt, &request.scope, &inputs)
     }
 
     fn run(
