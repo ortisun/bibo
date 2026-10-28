@@ -251,24 +251,29 @@ protected_paths:
     - id: secret_bearing_files
       mode: hidden
       applies_to: both
+      # Every glob starts with `**/` so that it matches at any depth. A glob without it
+      # matches only at the repository root, and `apps/web/.env` or `a/b/.aws/credentials`
+      # would stay readable. `**/` also matches the root, so `.env` itself is still hidden.
+      # Matching ignores letter case and the characters that version control ignores in a
+      # name (section 1).
       globs:
-        - ".env"
-        - ".env.*"
-        - "!.env.example"                # a leading "!" re-includes; the loader applies it last
+        - "**/.env"
+        - "**/.env.*"
+        - "!**/.env.example"             # a leading "!" re-includes; the loader applies it last
         - "**/*.pem"
         - "**/*.key"
         - "**/*.p12"
         - "**/*.pfx"
         - "**/id_rsa*"
         - "**/id_ed25519*"
-        - ".netrc"
-        - ".pypirc"
-        - ".git-credentials"
-        - ".aws/**"
-        - ".ssh/**"
-        - ".docker/config.json"
+        - "**/.netrc"
+        - "**/.pypirc"
+        - "**/.git-credentials"
+        - "**/.aws/**"
+        - "**/.ssh/**"
+        - "**/.docker/config.json"
         - "**/credentials*.json"
-      reason: "Never mounted, never read into context, never allowed in a diff."
+      reason: "Never mounted, never read into context, never allowed in a diff. Hidden at any depth, not only at the repository root."
       threats: [T-16, T-19, T-20]
 
     - id: factory_self_protection

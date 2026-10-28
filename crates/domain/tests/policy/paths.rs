@@ -314,6 +314,121 @@ fn a_reinclusion_lifts_only_its_own_group() {
     assert!(!check(".env.local", Operation::Read).is_allowed());
 }
 
+/// Credential files are named the same wherever they sit: a monorepo keeps its `.env` under
+/// `apps/web`, a home directory copy under `a/b/.aws`. The globs of `secret_bearing_files` must
+/// therefore match at any depth, and under any letter case or ignorable-character spelling.
+const SECRET_FILES_AT_ANY_DEPTH: &[&str] = &[
+    // the dot-env family
+    ".env",
+    "apps/web/.env",
+    "a/b/c/d/.env",
+    ".ENV",
+    "apps/web/.ENV",
+    "apps/web/.Env.Production",
+    ".env.production",
+    "apps/web/.env.local",
+    "svc/api/.env.staging",
+    // dot files of tools that keep credentials
+    ".netrc",
+    "tools/ci/.netrc",
+    ".pypirc",
+    "packages/py/.pypirc",
+    ".git-credentials",
+    "a/b/.git-credentials",
+    // directories of credentials, the directory and what is inside
+    ".aws",
+    ".aws/credentials",
+    "a/b/.aws/credentials",
+    "home/user/.AWS/Config",
+    ".ssh",
+    ".ssh/config",
+    "a/b/.ssh/known_hosts",
+    "ops/.SSH/authorized_keys",
+    ".docker/config.json",
+    "svc/.docker/config.json",
+    "svc/.DOCKER/CONFIG.JSON",
+    // aliases of the same names: ignorable characters, trailing dot or space, fullwidth full stop
+    "apps/web/.e\u{200b}nv",
+    "apps/web/.env.",
+    "apps/web/.env ",
+    "apps/web/\u{ff0e}env",
+    "a/b/.a\u{200d}ws/credentials",
+    "a/b/.ne\u{200c}trc",
+];
+
+#[test]
+fn secret_bearing_files_are_hidden_below_the_repository_root_as_well() {
+    for &path in SECRET_FILES_AT_ANY_DEPTH {
+        for op in [Operation::Read, Operation::Add, WRITE, Operation::Delete] {
+            let verdict = check(path, op);
+            assert_eq!(
+                denied_by(&verdict),
+                Some((PathDenialReason::Hidden, "secret_bearing_files".to_owned())),
+                "{path:?} {op:?} gave {verdict:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn a_name_that_only_looks_like_a_secret_file_stays_free() {
+    for path in [
+        "src/environment.rs",
+        "apps/web/environment.rs",
+        "apps/web/envelope.rs",
+        "docs/aws.md",
+        "docs/ssh.md",
+        "src/dotenv.rs",
+        "apps/web/.envrc.md.bak/readme",
+        "infra/.docker/compose.yml",
+        "src/dockerconfig.json",
+        "src/.awsome/x",
+        "src/netrc.rs",
+        // the template is meant to be read and edited, at the root and below it
+        ".env.example",
+        "apps/web/.env.example",
+        "a/b/.ENV.EXAMPLE",
+    ] {
+        assert!(
+            check(path, Operation::Read).is_allowed(),
+            "{path:?} must be readable: {:?}",
+            check(path, Operation::Read)
+        );
+        assert!(
+            check(path, WRITE).is_allowed(),
+            "{path:?} must be writable: {:?}",
+            check(path, WRITE)
+        );
+    }
+}
+
+#[test]
+fn a_diff_that_adds_or_links_a_secret_file_below_the_root_is_blocked() {
+    for &path in SECRET_FILES_AT_ANY_DEPTH {
+        let blocked = diff_blocked_by(&[added(path)])
+            .unwrap_or_else(|| panic!("a diff that adds {path:?} must be blocked"));
+        assert!(
+            blocked.iter().any(|(_, g)| g == "secret_bearing_files"),
+            "{path:?}: {blocked:?}"
+        );
+    }
+    assert!(diff_blocked_by(&[added("apps/web/environment.rs")]).is_none());
+    assert!(diff_blocked_by(&[added("apps/web/.env.example")]).is_none());
+    // A link next to the file would read it through the link.
+    for (link, target) in [
+        ("apps/web/config", ".env"),
+        ("apps/web/creds", "../../.aws/credentials"),
+        ("tools/link", "../apps/web/.env"),
+    ] {
+        assert!(
+            !policy()
+                .check_symlink(RepoKind::Target, link, target)
+                .is_allowed(),
+            "{link} -> {target} must be refused"
+        );
+    }
+}
+
 #[test]
 fn a_reinclusion_does_not_lift_a_protection_that_another_group_gives() {
     // The real policy has no path that both a re-inclusion and a second group name, so a second
