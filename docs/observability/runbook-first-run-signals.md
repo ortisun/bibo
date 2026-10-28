@@ -32,7 +32,7 @@ Two rules for reading it.
 | 2. Stage over deadline | `factory.attempt`, outcome `timed_out`, with `factory.error_class` | `factory_stage_duration_seconds` by stage and outcome; `factory_retries_total` follows | "the sweep recovered attempts" | none | none |
 | 3. Gate blocked by the environment | `factory.gate`, outcome `blocked` | `factory_gate_failures_total` with outcome `blocked` | none | `gate_result` | none for the count; the cause is not in telemetry |
 | 4. Cost over budget | `factory.agent`, with `factory.cost_usd` | `factory_spend_usd_total` by provider and stage | none | `budget_threshold_crossed` | none |
-| 5. Redaction hit | marker `[REDACTED:` in attribute values and names | none | marker `[REDACTED:`, "log line dropped: redactor unavailable" | `secret_redacted_or_blocked` | a counter (OBS-10) |
+| 5. Redaction hit | marker `[REDACTED:` in attribute values and names | `factory_redactions_total` by kind | marker `[REDACTED:`, "log line dropped: redactor unavailable" | `secret_redacted_or_blocked` | a count of the log writer's own redactions |
 
 ## 1. Stuck lease
 
@@ -118,6 +118,7 @@ Two rules for reading it.
 - Log line, level `WARN`, message "the final output was dropped because the redactor could not finish" (`crates/runtime`): an agent's output was dropped for the same reason.
 - Audit record `secret_redacted_or_blocked`, written by the specification, implementation and documenting stages when they redact or block.
 - Log line, level `WARN`, message "telemetry attribute `<key>` is not on the allowlist or has an unknown type; it was dropped", once for each key. It names the key and never the value. It is not a redaction, but it comes from the same guard.
+- Metric `factory_redactions_total{kind}`, a counter that the attribute guard raises each time it changes a span value before export, with `kind` one of `redacted` (a secret was replaced), `truncated` (a string was cut) and `dropped` (an attribute was not on the allowlist or had an unknown type, or the scrubber failed and the original was replaced). Only the kind is recorded: never the text, the pattern id or the key. Any rise in `redacted` is a defect in a call site, as above. A rise in `dropped` is either a new attribute nobody put on the allowlist or a failing scrubber; the first `dropped` line in the log names the key, and the marker `[REDACTED:scrubber_unavailable]` marks the second. Spans only: the log writer's redactions are not in it. The metric was added in the telemetry gap fix; the architect's confirmation is pending.
 
 **First check.**
 
@@ -126,9 +127,9 @@ Two rules for reading it.
 3. Fix the call site so the secret is not passed to the logger at all. The redactor is the second line of defense.
 4. If the marker is `scrubber_unavailable`, or a "log line dropped" line appears, look for the cause in the redactor's limits (the input was larger than the limit) before anything else.
 
-**Not yet emitted.** A counter of redactions (OBS-10). The guard counts the values it redacted, truncated and dropped, and the counts stay inside the process (`GuardStats`). A search for the marker is the only way to find hits. Do not rely on the marker to show that no secret reached a log line: the redactor only knows the shapes in the security policy and the values registered with it.
+**Not yet emitted.** The log writer's own redactions are not counted: a search for the marker in the logs is the only way to find a hit in a log line. Do not rely on the marker, or on the counter, to show that no secret reached a log line or a span: the redactor only knows the shapes in the security policy and the values registered with it.
 
 ## Keeping this page true
 
-- A name on this page that is not in the conventions page, or a signal marked as existing that no code records, is a defect in this page. The tests `span_openers`, `metric_names` and `telemetry_allowlist` check the names and the openers; they do not read this page. After any change to the engine's spans, metrics or log lines, reread the matching section.
+- A name on this page that is not in the conventions page, or a signal marked as existing that no code records, is a defect in this page. The test `runbook_names` checks that each name here is on the conventions page and that production code writes it, that each quoted log message is written, and that each gap number cited has an ignored test; `span_openers`, `metric_names` and `telemetry_allowlist` check the names and the openers. They cannot tell whether a sentence is true. After any change to the engine's spans, metrics or log lines, reread the matching section.
 - When a gap is closed, its ignored test passes. Remove the `ignore` marker, delete the "Not yet emitted" paragraph that names it, and move the signal into the "What exists" list with its exact name.

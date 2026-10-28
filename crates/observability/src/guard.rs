@@ -15,6 +15,7 @@
 //!
 //! [`RedactingSpanExporter`] applies the guard to each batch and then calls the real exporter.
 
+use crate::metrics::{RedactionKind, record_redaction};
 use crate::names::{self, MAX_ATTRIBUTE_VALUE_BYTES};
 use crate::redact::{Scrub, ScrubError};
 use opentelemetry::trace::{Event, Link, Status};
@@ -67,6 +68,36 @@ impl GuardStats {
             dropped_attributes: self.dropped_attributes.load(Ordering::Relaxed),
             scrub_failures: self.scrub_failures.load(Ordering::Relaxed),
         }
+    }
+
+    // Each count below also adds one to `factory_redactions_total`, with the kind and nothing else
+    // (`metrics::record_redaction`). The count and the metric are raised in the same place, so
+    // they cannot drift apart, and the metric never sees the text or the key of the value.
+
+    /// A secret was replaced in a string.
+    fn redacted(&self) {
+        self.redacted_values.fetch_add(1, Ordering::Relaxed);
+        record_redaction(RedactionKind::Redacted);
+    }
+
+    /// A string was cut to the length limit.
+    fn truncated(&self) {
+        self.truncated_values.fetch_add(1, Ordering::Relaxed);
+        record_redaction(RedactionKind::Truncated);
+    }
+
+    /// An attribute was not passed on: its key is not allowed or its type is unknown.
+    fn dropped(&self) {
+        self.dropped_attributes.fetch_add(1, Ordering::Relaxed);
+        record_redaction(RedactionKind::Dropped);
+    }
+
+    /// The scrubber failed and the original value was replaced. The metric counts it as dropped,
+    /// because the original is not passed on; `scrub_failures` keeps it apart for a reader of the
+    /// statistics.
+    fn scrub_failed(&self) {
+        self.scrub_failures.fetch_add(1, Ordering::Relaxed);
+        record_redaction(RedactionKind::Dropped);
     }
 }
 
@@ -204,12 +235,12 @@ impl AttributeGuard {
             Ok(Cow::Borrowed(same)) => Cow::Borrowed(same),
             Ok(Cow::Owned(changed)) => {
                 if changed != text {
-                    self.stats.redacted_values.fetch_add(1, Ordering::Relaxed);
+                    self.stats.redacted();
                 }
                 Cow::Owned(changed)
             }
             Err(ScrubError::Unavailable) => {
-                self.stats.scrub_failures.fetch_add(1, Ordering::Relaxed);
+                self.stats.scrub_failed();
                 // Owned on purpose: callers read `Borrowed` as "the input is unchanged".
                 return Cow::Owned(SCRUBBER_UNAVAILABLE.to_string());
             }
@@ -217,7 +248,7 @@ impl AttributeGuard {
         if scrubbed.len() <= self.max_value_bytes {
             return scrubbed;
         }
-        self.stats.truncated_values.fetch_add(1, Ordering::Relaxed);
+        self.stats.truncated();
         let mut cut = self.max_value_bytes;
         while !scrubbed.is_char_boundary(cut) {
             cut -= 1;
@@ -231,9 +262,7 @@ impl AttributeGuard {
     /// Count a dropped attribute and, the first time a key is seen, say so in the diagnostic log.
     /// Only the key is logged, never the value.
     fn note_dropped(&self, key: &str) {
-        self.stats
-            .dropped_attributes
-            .fetch_add(1, Ordering::Relaxed);
+        self.stats.dropped();
         let Ok(mut seen) = self.reported_keys.lock() else {
             return;
         };

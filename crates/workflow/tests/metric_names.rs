@@ -10,10 +10,11 @@
 //!   that spends, and a recording `Subscriber` reads the metric events back. Each must name a
 //!   metric of the table, with the instrument kind the table gives, and only the labels the table
 //!   lists.
-//! * **What is not emitted yet.** A metric on the page that the engine never records is written as a
-//!   test marked as a confirmed gap and ignored, so the build stays green while the gap stays
-//!   visible. Run them with `cargo nextest run -p factory-workflow --test metric_names
-//!   --run-ignored only`.
+//! * **What the engine used to leave out.** Queue depth, stage duration, spend and the error rate
+//!   were confirmed gaps (OBS-5 to OBS-8), written as ignored tests. They are recorded now, and the
+//!   tests below cover each way a stage run ends, what does not count as an end, the clock of the
+//!   duration and the type of each number. A metric on the page that the engine does not record
+//!   would be written as a test marked as a confirmed gap and ignored.
 
 mod support;
 mod telemetry_support;
@@ -62,6 +63,10 @@ fn the_registry_has_queue_depth_duration_gate_failures_retries_and_spend() {
         ("retries", "factory_retries_total"),
         ("spend", "factory_spend_usd_total"),
         ("error rate", "factory_stage_runs_total"),
+        // Added in the telemetry gap fix (OBS-10). The attribute guard of the observability crate
+        // raises it, not the engine, so this file only checks that it is on the page; the
+        // behavior is tested in `crates/observability/tests/redaction_signal.rs`.
+        ("redactions", "factory_redactions_total"),
     ] {
         assert!(
             metrics().iter().any(|m| m.name == name),
@@ -70,7 +75,7 @@ fn the_registry_has_queue_depth_duration_gate_failures_retries_and_spend() {
     }
     assert_eq!(
         metrics().len(),
-        6,
+        7,
         "a metric was added: say what this file does about it"
     );
 }

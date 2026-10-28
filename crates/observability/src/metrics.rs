@@ -61,6 +61,8 @@ pub mod name {
     pub const GATE_FAILURES_TOTAL: &str = "factory_gate_failures_total";
     pub const RETRIES_TOTAL: &str = "factory_retries_total";
     pub const SPEND_USD_TOTAL: &str = "factory_spend_usd_total";
+    /// Added in the telemetry gap fix (OBS-10); architect confirmation pending.
+    pub const REDACTIONS_TOTAL: &str = "factory_redactions_total";
 }
 
 /// Label names. A label is a single lower case word.
@@ -70,6 +72,59 @@ pub mod label {
     pub const GATE: &str = "gate";
     pub const PROVIDER: &str = "provider";
     pub const QUEUE: &str = "queue";
+    pub const KIND: &str = "kind";
+}
+
+/// What the attribute guard did to a value. This is the whole set of values of the label `kind` of
+/// `factory_redactions_total`.
+///
+/// The set is closed on purpose. The label can only be built from this type, no value of it is
+/// made from text, and [`record_redaction`] takes nothing else. So a secret, a pattern id, a key
+/// or a value that a customer chose can never become a label value, and the metric cannot grow a
+/// series for each of them. The view of the meter provider is the second line: it removes any
+/// label key but `kind` and caps the number of series at `max_label_sets` of the metric.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RedactionKind {
+    /// A secret in a string was replaced by a placeholder.
+    Redacted,
+    /// A string was cut to the length limit.
+    Truncated,
+    /// A value or an attribute was not passed on: its key is not on the allowlist, its type is not
+    /// known, or the scrubber failed and the original was replaced.
+    Dropped,
+}
+
+impl RedactionKind {
+    /// Every kind, in the order the conventions page lists them.
+    pub const ALL: [RedactionKind; REDACTION_KINDS] = [
+        RedactionKind::Redacted,
+        RedactionKind::Truncated,
+        RedactionKind::Dropped,
+    ];
+
+    /// The label value. A fixed word for each kind.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            RedactionKind::Redacted => "redacted",
+            RedactionKind::Truncated => "truncated",
+            RedactionKind::Dropped => "dropped",
+        }
+    }
+}
+
+/// How many kinds there are.
+pub const REDACTION_KINDS: usize = 3;
+
+/// Counts one value that the attribute guard redacted, cut or dropped.
+///
+/// The only input is the kind, so the call carries no text: not the matched secret, not the
+/// pattern id, not the key of the attribute. The event is a metric event, which the log layer and
+/// the span layer skip, and which the meter provider turns into `factory_redactions_total`.
+pub fn record_redaction(kind: RedactionKind) {
+    tracing::info!(
+        monotonic_counter.factory_redactions_total = 1_u64,
+        kind = kind.as_str()
+    );
 }
 
 /// The kind of instrument behind a metric.
@@ -145,6 +200,11 @@ pub const LABELS: &[LabelSpec] = &[
         max_values: 4,
         meaning: "The name of a work queue, such as ready_stage_runs.",
     },
+    LabelSpec {
+        name: label::KIND,
+        max_values: 4,
+        meaning: "What the attribute guard did to a value: redacted, truncated or dropped.",
+    },
 ];
 
 /// Bucket bounds for stage durations, in seconds: from a quick deterministic stage to an hour.
@@ -206,6 +266,15 @@ pub const METRICS: &[MetricSpec] = &[
         max_label_sets: 128,
         buckets: &[],
         meaning: "Model spend in United States dollars as metered by the broker, by provider and stage kind.",
+    },
+    MetricSpec {
+        name: name::REDACTIONS_TOTAL,
+        kind: MetricKind::Counter,
+        unit: "{redaction}",
+        labels: &[label::KIND],
+        max_label_sets: 4,
+        buckets: &[],
+        meaning: "Values the attribute guard redacted, truncated or dropped before a span left the process, by kind.",
     },
 ];
 

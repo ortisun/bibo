@@ -128,7 +128,10 @@ Metrics are for questions about the whole system over time: how deep is the queu
 | `factory_gate_failures_total` | counter | {gate_failure} | `gate`, `outcome` | Gate evaluations that ended failed or blocked, by gate and outcome. |
 | `factory_retries_total` | counter | {retry} | `stage` | Retries scheduled after a retryable attempt failure, by stage kind. |
 | `factory_spend_usd_total` | counter | {USD} | `provider`, `stage` | Model spend in United States dollars as metered by the broker, by provider and stage kind. |
+| `factory_redactions_total` | counter | {redaction} | `kind` | Values the attribute guard redacted, truncated or dropped before a span left the process, by kind. |
 <!-- /table:metrics -->
+
+`factory_redactions_total` was added in the telemetry gap fix (gap OBS-10) at the lead's approval; architect confirmation pending. Its one label, `kind`, takes the fixed words `redacted`, `truncated` and `dropped`, and no other value. It is raised where the guard raises its own counts (`GuardStats`), and only the kind is passed to it: never the matched text, the pattern id, the key or the value, so no customer value can become a label. `dropped` also counts the values the guard replaced because the scrubber failed (`GuardSnapshot::scrub_failures`), since the original is not passed on in either case. The metric covers the span guard only. The log writer's own redactions are not counted yet.
 
 The stage duration histogram has these upper bounds in seconds: 1, 5, 15, 30, 60, 120, 300, 600, 1200, 1800 and 3600. A longer stage lands in the overflow bucket.
 
@@ -167,6 +170,7 @@ A metric event is not a log line and not a span event. The log layer and the spa
 | `gate` | 48 | The gate identifier from the gate catalog. |
 | `provider` | 8 | The model provider the broker reports, such as anthropic. |
 | `queue` | 4 | The name of a work queue, such as ready_stage_runs. |
+| `kind` | 4 | What the attribute guard did to a value: redacted, truncated or dropped. |
 <!-- /table:labels -->
 
 "Max values" is the size of the closed set the label draws from, with some room to grow. It is not a count of values in use today.
@@ -179,7 +183,7 @@ The rules:
 
 1. **Identifiers go on spans and in logs, never on metrics.** The correlation id, the tenant, job, stage run and attempt identifiers, digests and measurements such as token counts are "unbounded" in the attribute table. A trace or a log search finds them. A metric does not carry them.
 2. **A metric label draws from a small closed set.** Each label in the label table has a maximum size, and no label may allow more than 64 values. A label that needs more belongs on a span.
-3. **Each metric states how many label combinations it may hold**, and that number may not exceed the product of its labels' sizes or 500. The six metrics together fit in 5,000 time series, counting each histogram bucket as one.
+3. **Each metric states how many label combinations it may hold**, and that number may not exceed the product of its labels' sizes or 500. The seven metrics together fit in 5,000 time series, counting each histogram bucket as one.
 4. **Spend and queue questions per job are answered from the ledger and from traces.** The master prompt asks for cost per task, job, agent, repository, model and organization. Those views come from the evidence ledger in PostgreSQL and from span attributes such as `factory.cost_usd`. The metric holds spend by provider and stage only.
 5. **The pipeline enforces the rules even when a call site breaks them.** Unlisted labels are removed. A metric that still grows past its limit has the excess folded into one overflow series, marked with the label `otel.metric.overflow`, and no count is lost. An overflow series on a dashboard is a defect to fix at the call site.
 
@@ -311,7 +315,7 @@ The crate depends on one workspace crate, `factory-domain`, which the dependency
   - OBS-7 (fixed): nothing recorded `factory_spend_usd_total`. The engine now adds what the broker metered for an attempt's token, in dollars as a double, right after it reads it (`record_spend` in `crates/workflow/src/engine/attempt.rs`). An attempt that failed or lost its lease is counted, because the money was spent; nothing is added for zero. The broker reports no provider, so the `provider` label carries the name of the runtime the router chose for the stage (`claude-code-cli`, `codex-cli`), a closed set from the routing policy. Until the broker reports a provider, read the label that way. The test `the_spend_counter_is_recorded_when_an_agent_spends` in `crates/workflow/tests/metric_names.rs` is no longer ignored.
   - OBS-8 (fixed): `factory_stage_runs_total` was recorded only for `passed`, so the error-rate query on this page returned zero. It is now recorded for every way a stage run ends: `passed`, `failed`, `blocked` and `rework_requested`. The outcome is the status the stage run holds after the decision, not a guess from the branch taken. A retry and a question to a person leave the run open and are not counted. Cancelled, skipped and superseded runs end in other code paths and are not counted yet. The test `a_failed_stage_run_is_counted_in_the_stage_run_total` in `crates/workflow/tests/metric_names.rs` is no longer ignored.
   - OBS-9: three log fields hold text chosen by a repository or a tool (`crates/sandbox` and `crates/runtime`).
-  - OBS-10: no metric counts redactions (`crates/observability`; adding a metric needs the architect's review).
+  - OBS-10 (fixed): no metric counted redactions. The lead approved a counter, `factory_redactions_total`, with the single label `kind` (`redacted`, `truncated`, `dropped`); it is in the metrics table above, **added in the telemetry gap fix; architect confirmation pending**. It is fed from the guard's `GuardStats` at the place each count is raised (`crates/observability/src/guard.rs`), and only the kind reaches it. The label set is closed: the only source of the label is the `RedactionKind` enum, `record_redaction` takes nothing else, and the meter provider's view drops any other label key and caps the series. Scrubber failures count as `dropped`, and the log writer's redactions are not counted; the architect may want a fourth kind for the first. The test `a_redaction_is_counted_in_a_metric` in `crates/observability/tests/redaction_signal.rs` is no longer ignored, and the tests next to it show the metric equals the guard's counts and that no secret, pattern id or free text reaches a label.
   - OBS-11 (fixed): the attempt span did not record `factory.error_class`. It now declares the field and, when the attempt failed, records the failure class in its wire spelling (`TOOL_ERROR`, `TIMED_OUT` and so on), a closed set. An attempt that did not fail leaves the declared field empty, so `declared_only` checks on the attempt span ignore that one field (see `every_handler_has_a_span.rs`). The test `a_failed_attempt_span_records_the_failure_class` in `crates/workflow/tests/trace_shape.rs` is no longer ignored.
 - **No OTLP logs.** Logs go to standard error. The policy names `otel_log_records` as a sink, and the pipeline would need the `opentelemetry-appender-tracing` crate, which is not on the allow list.
 - **No alert rules or dashboards.** This page fixes the names and the data. Rules and dashboards come after the first end-to-end run shows what values the metrics take.

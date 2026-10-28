@@ -75,6 +75,61 @@ fn every_factory_name_in_the_runbook_is_on_the_conventions_page() {
     );
 }
 
+/// The names the runbook gives in backticks, cut at a brace or an equals sign.
+fn runbook_names() -> BTreeSet<String> {
+    backticked(RUNBOOK)
+        .into_iter()
+        .filter_map(|token| {
+            let name = token.split(['{', '=', ' ']).next().unwrap_or_default();
+            (name.starts_with("factory.") || name.starts_with("factory_")).then(|| name.to_owned())
+        })
+        .collect()
+}
+
+/// Names that production code writes only through a helper of the observability crate, which the
+/// composition root calls: the job span and its tenant attribute. The test below checks the call.
+const WRITTEN_BY_THE_JOB_HELPER: &[&str] = &["factory.job", "factory.tenant_id"];
+
+#[test]
+fn every_name_the_runbook_gives_is_written_by_production_code() {
+    // The runbook lists what exists. A name there that no code writes would be a signal that an
+    // operator looks for and never finds, which is the defect the gap tests exist to prevent. A
+    // span or an attribute must be written as a literal outside the observability crate (the
+    // other crates cannot import its constants); a metric is written as an instrument field,
+    // `monotonic_counter.<name>`, `histogram.<name>` or `gauge.<name>`, in any crate.
+    let sources = production_sources();
+    let names = runbook_names();
+    assert!(names.len() >= 20, "the reader found only {names:?}");
+    for name in &names {
+        if WRITTEN_BY_THE_JOB_HELPER.contains(&name.as_str()) {
+            assert!(
+                sources.iter().any(|(path, text)| {
+                    !path.starts_with("crates/observability/") && text.contains("job_stretch_span")
+                }),
+                "{name} is written by the job helper, and no crate outside observability calls it"
+            );
+        } else if name.starts_with("factory_") {
+            let written = ["monotonic_counter.", "histogram.", "gauge."]
+                .iter()
+                .any(|prefix| {
+                    let field = format!("{prefix}{name}");
+                    sources.iter().any(|(_, text)| text.contains(&field))
+                });
+            assert!(
+                written,
+                "the runbook names the metric `{name}`, which no code records"
+            );
+        } else {
+            assert!(
+                sources.iter().any(|(path, text)| {
+                    !path.starts_with("crates/observability/") && text.contains(name.as_str())
+                }),
+                "the runbook names `{name}`, which no crate outside observability writes"
+            );
+        }
+    }
+}
+
 #[test]
 fn every_log_message_the_runbook_quotes_is_written_by_production_code() {
     let sources = production_sources();
