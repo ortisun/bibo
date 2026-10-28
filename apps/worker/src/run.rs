@@ -48,6 +48,14 @@ pub enum Flow {
     Stop,
 }
 
+/// Work to do before each claim. The loop is single-threaded, so the future need not be `Send`.
+#[async_trait::async_trait(?Send)]
+pub trait BeforeClaim {
+    /// Runs once before each call to `Engine::claim_next`. It must not fail the loop: a hook that
+    /// cannot do its work logs and returns.
+    async fn before_claim(&self);
+}
+
 /// Looks at each finished attempt. Production runs without one.
 pub trait Observer: Send + Sync {
     /// Called after the engine committed the result of `attempt`.
@@ -78,6 +86,7 @@ pub struct WorkerLoop {
     shutdown: Shutdown,
     observer: Option<Arc<dyn Observer>>,
     jobs: Option<Arc<ActiveJobs>>,
+    before_claim: Option<Arc<dyn BeforeClaim>>,
 }
 
 impl WorkerLoop {
@@ -98,6 +107,7 @@ impl WorkerLoop {
             shutdown,
             observer: None,
             jobs: None,
+            before_claim: None,
         }
     }
 
@@ -105,6 +115,14 @@ impl WorkerLoop {
     #[must_use]
     pub fn with_observer(mut self, observer: Arc<dyn Observer>) -> Self {
         self.observer = Some(observer);
+        self
+    }
+
+    /// Runs `hook` before each claim. The request cache of `seams::StoreRequests` is filled this
+    /// way, because `RequestSource::recorded` must answer without waiting while the claim runs.
+    #[must_use]
+    pub fn with_before_claim(mut self, hook: Arc<dyn BeforeClaim>) -> Self {
+        self.before_claim = Some(hook);
         self
     }
 
@@ -155,6 +173,9 @@ impl WorkerLoop {
                 }
                 sweep_due = false;
                 since_sweep = Duration::ZERO;
+            }
+            if let Some(hook) = &self.before_claim {
+                hook.before_claim().await;
             }
             let claimed = match self.engine.claim_next(&self.worker).await {
                 Ok(claimed) => claimed,

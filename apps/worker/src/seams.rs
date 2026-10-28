@@ -304,6 +304,33 @@ impl StoreRequests {
     }
 }
 
+/// Fills the request cache before each claim, for the tenants this worker serves.
+///
+/// The worker is told its tenants in the configuration (`worker.tenants`). The system pool can
+/// find work across tenants but cannot read a request, and a tenant transaction needs the tenant,
+/// so the list is how the composition root learns which tenants to read for.
+pub struct RefreshRequests {
+    requests: Arc<StoreRequests>,
+    tenants: Vec<TenantId>,
+}
+
+impl RefreshRequests {
+    /// A hook that refreshes `requests` for `tenants`.
+    #[must_use]
+    pub fn new(requests: Arc<StoreRequests>, tenants: Vec<TenantId>) -> Self {
+        Self { requests, tenants }
+    }
+}
+
+#[async_trait(?Send)]
+impl crate::run::BeforeClaim for RefreshRequests {
+    async fn before_claim(&self) {
+        if self.requests.refresh(&self.tenants).await.is_err() {
+            tracing::warn!("the request cache could not be refreshed; some jobs wait one poll");
+        }
+    }
+}
+
 /// Parses `owner/name#number`.
 fn issue_of(source_ref: &str) -> Option<IssueRef> {
     let (repo, number) = source_ref.split_once('#')?;

@@ -275,6 +275,30 @@ pub struct LoopConfig {
     /// in seconds.
     #[serde(default = "default_drain_s")]
     pub drain_s: u64,
+    /// The tenants this worker reads requests for (UUIDs). Empty means none: a job whose request
+    /// is not in the cache has no contract and waits.
+    #[serde(default)]
+    pub tenants: Vec<String>,
+}
+
+impl LoopConfig {
+    /// The tenants as identifiers.
+    ///
+    /// # Errors
+    /// [`ConfigError::OutOfRange`] when an entry is not a UUID.
+    pub fn served_tenants(&self) -> Result<Vec<factory_domain::ids::TenantId>, ConfigError> {
+        self.tenants
+            .iter()
+            .map(|text| {
+                text.parse::<uuid::Uuid>()
+                    .map(factory_domain::ids::TenantId::from_uuid)
+                    .map_err(|_| ConfigError::OutOfRange {
+                        field: "worker.tenants",
+                        problem: "every entry must be a UUID",
+                    })
+            })
+            .collect()
+    }
 }
 
 fn default_worker_name() -> String {
@@ -297,6 +321,7 @@ impl Default for LoopConfig {
             poll_interval_ms: default_poll_ms(),
             sweep_interval_s: default_sweep_s(),
             drain_s: default_drain_s(),
+            tenants: Vec::new(),
         }
     }
 }

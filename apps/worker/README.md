@@ -84,7 +84,7 @@ broker:
   prices:
     - { provider: anthropic, model: claude-sonnet-5-5, input: 3000000, cache_write: 3750000, cache_read: 300000, output: 15000000 }
 github: { app_id: 1, key_file: /run/secrets/github_app_key }
-worker: { name_prefix: worker, poll_interval_ms: 1000, sweep_interval_s: 10, drain_s: 120 }
+worker: { name_prefix: worker, poll_interval_ms: 1000, sweep_interval_s: 10, drain_s: 120, tenants: [2f0c7f64-0d1c-4c5e-9f0a-1b2c3d4e5f60] }
 ```
 
 The allowlist is a second file in the protected checkout, `allowlist/allowlist.yaml`, read on every
@@ -267,7 +267,9 @@ Each was found by running the real pieces together. "Fixed" means fixed inside t
    `contract` while it claims, for candidates of every tenant. The composition root cannot read the
    database there. `StoreRequests` answers from a cache filled by `refresh(tenants)` and `remember`. A job
    whose request is not cached has no contract and is deferred as `NoContract` until the next refresh.
-   The worker loop does not call `refresh` yet, and the worker is not told which tenants it serves.
+   The loop calls `refresh` before each claim through `RefreshRequests`, for the tenants listed in
+   `worker.tenants`. A process that records a request and admits the job itself (the API) calls
+   `remember` first.
 5. **`Authority::admission(tenant, requester)` carries no repository**, so `repository_registered_and_enabled`
    and `protection_preflight_passed` cannot be read and the per-repository caps of the policy cannot be
    applied. `StoreAuthority` answers `true` and `false` (the safe side, L0 only) and uses the tenant-wide

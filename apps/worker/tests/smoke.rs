@@ -48,6 +48,7 @@ use factory_worker::system::{RandomIds, Shutdown, TokioTicker};
 use factory_workflow::engine::{AttemptOutcome, Engine};
 use factory_workflow::handlers::HandlerRegistry;
 use factory_workflow::scheduler::ClaimedAttempt;
+use factory_workflow::stages::intake::seams::RequestSource as _;
 use factory_workflow::stages::intake::{IntakeConfig, IntakeDeps, IntakeHandler};
 use factory_workflow::stages::repo_intel::{RepoIntelConfig, RepoIntelDeps, RepoIntelHandler};
 use support::engine::PgWorld;
@@ -392,7 +393,12 @@ async fn smoke_body() {
         .await
         .expect("the request is stored");
     tx.commit().await.expect("commit");
-    requests.remember(job, 1, stored.row.value.content_sha256.clone());
+    // The cache is filled from the stored row, the way the worker fills it before each claim.
+    assert_eq!(requests.refresh(&[tenant]).await, Ok(1));
+    assert_eq!(
+        requests.recorded(job).map(|r| r.sha256),
+        Some(stored.row.value.content_sha256.clone())
+    );
     let admission = engine.admit_job(tenant, job).await.expect("admit");
     println!("admission: {admission:?}");
 
@@ -410,7 +416,11 @@ async fn smoke_body() {
         },
         shutdown.clone(),
     )
-    .with_observer(Arc::new(StopWhenIdle));
+    .with_observer(Arc::new(StopWhenIdle))
+    .with_before_claim(Arc::new(factory_worker::seams::RefreshRequests::new(
+        requests.clone(),
+        vec![tenant],
+    )));
     let watcher = world.restarted_engine();
     let task = tokio::task::spawn_blocking(|| ());
     let _ = task.await;
