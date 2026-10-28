@@ -279,8 +279,8 @@ pub async fn write_platform_audit(
             Err(_elapsed) => None,
         };
         for each in budget.roll(Instant::now()) {
+            // The kind is one of a closed set of fixed words and is in the row that follows.
             tracing::warn!(
-                action = each.action,
                 dropped = each.count,
                 "platform audit events were left out in the last minute"
             );
