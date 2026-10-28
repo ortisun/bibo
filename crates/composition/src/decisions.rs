@@ -527,32 +527,32 @@ fn outcome_code(marked: &Marked) -> &'static str {
 }
 
 impl AuditMarkers {
+    /// Writes one marker in a transaction of the tenant. `build` is given the job (if it exists in
+    /// the tenant), its stage run and the correlation id to use, which is the job's own so that
+    /// every record of the job shares it, or `fallback` when there is no job.
     async fn write(
         &self,
         tenant: TenantId,
-        event: impl FnOnce(Option<(JobId, Option<StageRunId>, CorrelationId)>) -> Option<NewAuditEvent>,
-        job: Option<JobId>,
-        stage_run: Option<StageRunId>,
-        fallback_correlation: CorrelationId,
+        job: Option<(JobId, Option<StageRunId>)>,
+        fallback: CorrelationId,
+        build: impl FnOnce(Option<JobId>, Option<StageRunId>, CorrelationId) -> NewAuditEvent,
     ) -> Result<(), Unreadable> {
         let mut tx = self
             .store
             .begin(TenantScope::new(tenant))
             .await
             .map_err(|_| Unreadable)?;
-        // The job's own correlation id, so every record of the job shares it. A decision for a
-        // job that does not exist is recorded without a job.
         let found = match job {
-            Some(job) => match tx.get_job(job).await {
-                Ok(stored) => Some((job, stage_run, stored.value.correlation_id)),
-                Err(_) => None,
-            },
+            Some((job, run)) => tx
+                .get_job(job)
+                .await
+                .ok()
+                .map(|stored| (job, run, stored.value.correlation_id)),
             None => None,
         };
-        let _ = fallback_correlation;
-        let Some(event) = event(found) else {
-            let _ = tx.rollback().await;
-            return Err(Unreadable);
+        let event = match found {
+            Some((job, run, correlation)) => build(Some(job), run, correlation),
+            None => build(None, None, fallback),
         };
         match tx.record_audit(event).await {
             // A marker that exists with other words is a marker: the decision is dealt with.
@@ -601,27 +601,20 @@ impl DecisionMarkers for AuditMarkers {
         let fallback = CorrelationId::from_uuid(decision.id.as_uuid());
         self.write(
             tenant,
-            move |found| {
-                let (job, run, correlation) = match found {
-                    Some((job, run, correlation)) => (Some(job), run, correlation),
-                    None => (None, None, fallback),
-                };
-                Some(NewAuditEvent {
-                    id,
-                    actor,
-                    action,
-                    subject,
-                    decision: outcome,
-                    reason,
-                    policy_hash,
-                    job,
-                    stage_run: run,
-                    correlation_id: correlation,
-                })
-            },
-            Some(decision.fields.job),
-            decision.fields.stage_run,
+            Some((decision.fields.job, decision.fields.stage_run)),
             fallback,
+            move |job, stage_run, correlation_id| NewAuditEvent {
+                id,
+                actor,
+                action,
+                subject,
+                decision: outcome,
+                reason,
+                policy_hash,
+                job,
+                stage_run,
+                correlation_id,
+            },
         )
         .await
     }
@@ -639,23 +632,20 @@ impl DecisionMarkers for AuditMarkers {
         let correlation = CorrelationId::from_uuid(id.as_uuid());
         self.write(
             tenant,
-            move |_| {
-                Some(NewAuditEvent {
-                    id: marker,
-                    actor,
-                    action,
-                    subject,
-                    decision: AuditDecision::Deny,
-                    reason: Reason::Malformed.text().to_owned(),
-                    policy_hash,
-                    job: None,
-                    stage_run: None,
-                    correlation_id: correlation,
-                })
-            },
-            None,
             None,
             correlation,
+            move |job, stage_run, correlation_id| NewAuditEvent {
+                id: marker,
+                actor,
+                action,
+                subject,
+                decision: AuditDecision::Deny,
+                reason: Reason::Malformed.text().to_owned(),
+                policy_hash,
+                job,
+                stage_run,
+                correlation_id,
+            },
         )
         .await
     }

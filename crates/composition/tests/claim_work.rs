@@ -1066,6 +1066,30 @@ async fn r4_a_principal_disabled_since_the_request_is_not_a_current_user() {
     );
 }
 
+/// R-4. An allowlist entry that has an end date stops granting authority at it, also for a request
+/// that was recorded before.
+#[tokio::test(flavor = "multi_thread")]
+async fn r4_an_entry_that_expired_since_the_request_is_refused() {
+    let rig = Rig::new().await;
+    let job = rig.active().await;
+    rig.request(rig.operator, job, Verb::Pause, None, None, "a short stop")
+        .await;
+    std::fs::write(
+        rig.checkout.join("allowlist/allowlist.yaml"),
+        format!(
+            "{}    expires_at: \"2020-01-01T00:00:00Z\"\n",
+            allowlist_text(rig.tenant, &[(OPERATOR, "operator-one", "operator")])
+        ),
+    )
+    .expect("an expired entry");
+    rig.hook().pass(rig.tenant).await;
+    assert_eq!(rig.status(job).await, JobStatus::Active);
+    assert_eq!(
+        rig.reason_of(job, REJECTED).await.as_deref(),
+        Some(Reason::NotAuthorized.text())
+    );
+}
+
 /// R-10. Two requests for the same thing are two requests, applied in the order of the audit
 /// sequence: the first pauses, the second finds the job paused and is rejected, with a marker.
 #[tokio::test(flavor = "multi_thread")]

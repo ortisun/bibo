@@ -324,7 +324,16 @@ async fn held_webhook_cannot_select_another_tenant_or_borrow_its_people() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore = "held probe: passes today; replay and concurrent duplicates"]
 async fn held_webhook_replays_make_one_delivery() {
-    let env = Env::start().await;
+    // Thirty copies arrive at once from this machine, more than one source may hold by default
+    // (API-6): the share is a setting, and this probe is about replay.
+    let env = Env::start_with(Options {
+        limits: Limits {
+            max_connections_per_source: Some(256),
+            ..Limits::default()
+        },
+        ..Options::default()
+    })
+    .await;
     let a = env.a.clone();
     let first = labeled(&a, "other", a.requester.github_id, 50);
     let second = labeled(&a, "other", a.requester.github_id, 51);

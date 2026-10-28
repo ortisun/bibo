@@ -2450,7 +2450,7 @@ fn generated_password(rng: &mut Rng, bare: bool) -> String {
     let mut password = String::new();
     for _ in 0..(8 + rng.below(14)) {
         let c = if rng.below(9) == 0 {
-            [b'"', b'\'', b'\\'][rng.below(3)]
+            b"\"'\\"[rng.below(3)]
         } else {
             PASSWORD_CHARS[rng.below(PASSWORD_CHARS.len())]
         };
