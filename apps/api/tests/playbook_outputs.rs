@@ -107,6 +107,16 @@ fn every_answer_is_valid_against_the_schema_of_its_agent() {
 }
 
 #[test]
+fn the_plan_is_a_task_graph_the_domain_accepts() {
+    use factory_domain::contracts::{Contract as _, TaskDag};
+    let playbook = Playbook::word_count(&root());
+    let reply = ask(&playbook, "planner");
+    let plan = TaskDag::from_json_value(reply.output["plan"].clone())
+        .unwrap_or_else(|error| panic!("the plan is not a task graph: {error:?}"));
+    assert_eq!(plan.tasks.as_slice().len(), 2);
+}
+
+#[test]
 fn the_builder_gets_the_patch_of_its_task_and_nothing_else() {
     let playbook = Playbook::word_count(&root());
     let first = playbook.answer(

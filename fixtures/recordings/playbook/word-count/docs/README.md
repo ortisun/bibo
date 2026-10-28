@@ -1,4 +1,4 @@
-# word-count
+# Word count
 
 A small command line tool that counts the lines, words and characters of a text file, or of
 standard input. It has no dependencies and builds without a network.

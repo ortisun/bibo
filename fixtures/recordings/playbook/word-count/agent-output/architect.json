@@ -11,7 +11,8 @@
       "kind": "module",
       "satisfies": [
         "FR-001",
-        "FR-004"
+        "FR-004",
+        "SC-001"
       ],
       "touches": [
         "src/lib.rs"
@@ -24,7 +25,8 @@
       "kind": "module",
       "satisfies": [
         "FR-002",
-        "FR-003"
+        "FR-003",
+        "SC-002"
       ],
       "touches": [
         "src/main.rs",

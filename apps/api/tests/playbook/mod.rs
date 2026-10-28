@@ -81,6 +81,8 @@ pub struct Served {
     pub agent: String,
     /// The entry that answered.
     pub entry: String,
+    /// The paths the agent wrote in its checkout, as it was served (after any change a test made).
+    pub wrote: Vec<String>,
 }
 
 type Tweak = Box<dyn Fn(&mut Reply) + Send + Sync>;
@@ -211,9 +213,11 @@ impl Playbook {
         if let Some(change) = self.lock().tweaks.get(&entry) {
             change(&mut reply);
         }
+        let wrote = reply.writes.iter().map(|(path, _)| path.clone()).collect();
         self.lock().served.push(Served {
             agent: agent.to_owned(),
             entry,
+            wrote,
         });
         Ok(reply)
     }
@@ -448,6 +452,15 @@ pub struct PlaybookRuntime {
 }
 
 impl PlaybookRuntime {
+    /// Every prompt the runtime received, as text, oldest first.
+    pub fn prompts(&self) -> Vec<String> {
+        self.inner
+            .recorded_prompts()
+            .into_iter()
+            .map(|prompt| prompt.instructions)
+            .collect()
+    }
+
     /// A runtime over the playbook. `inner` stores transcripts; `workspaces` is the fake provider
     /// that made the workspaces the sandboxes mount.
     pub fn new(

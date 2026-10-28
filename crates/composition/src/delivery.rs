@@ -38,7 +38,7 @@ use factory_domain::vocabulary::{AutonomyLevel as VocabularyLevel, Fidelity, Sta
 use factory_ports::artifact::ArtifactStore;
 use factory_ports::clock::Clock;
 use factory_ports::paths::{BranchName, CommitSha, RepoRef};
-use factory_ports::store::{PrincipalKind, Store};
+use factory_ports::store::{PrincipalKind, Store, StoreError};
 use factory_ports::workspace::WorkspaceProvider;
 use factory_workflow::handlers::RunIdentity;
 use factory_workflow::stages::approval::{ApprovalRequest, ApprovalSources};
@@ -117,9 +117,21 @@ impl ApprovalSources for StoreApprovalSources {
 
     async fn level(&self, tenant: TenantId, job: JobId) -> Result<AutonomyLevel, SeamError> {
         let mut tx = self.reader.begin(tenant).await?;
-        let found = tx.get_job(job).await;
+        let found = async {
+            let stored = tx.get_job(job).await?;
+            let repository = tx.get_repository(stored.value.repository).await?;
+            Ok::<_, StoreError>(repository.value.autonomy_ceiling)
+        }
+        .await;
         let _ = tx.rollback().await;
-        let level = found.map_err(|e| seam(&e))?.value.autonomy_level;
+        // The level a job runs at is the effective ceiling of its repository **now**, not the one
+        // written on the job row. The row is fixed when the job is received, and a job that arrives
+        // before the first protection preflight of its repository is received at L0, because the
+        // store reports L0 for a repository with no passed preflight (ADR 0009). The preflight
+        // then passes before the job is admitted, and the job would stay at L0 for ever, so no
+        // approval of it could pass. Reading the ceiling now also lowers a job whose repository
+        // lost its protection after the job was received, which is the safe direction.
+        let level = found.map_err(|e| seam(&e))?;
         // The store names the level with the vocabulary type and the policy with its own.
         Ok(match level {
             VocabularyLevel::L0 => AutonomyLevel::L0,
