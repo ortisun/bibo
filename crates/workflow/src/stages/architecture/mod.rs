@@ -1,2 +1,9 @@
-//! Placeholder so that the module line declared by the engine package compiles. The package
-//! `s1-stage-architecture-and-planning` replaces this file with its own code and does not need to edit any other file.
+//! The `ARCHITECTURE` stage: a design for the frozen specification, checked by rules and not by
+//! the word of the agent that made it.
+//!
+//! Work package `s1-stage-architecture-and-planning`.
+
+pub mod adr;
+pub mod checks;
+pub mod design;
+pub mod risk;
