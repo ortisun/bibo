@@ -224,9 +224,12 @@ BEGIN
   PERFORM dbtest.expect_error('a terminal status needs finished_at (CANCELLED without it is refused)',
     format('UPDATE stage_runs SET status = ''CANCELLED'', version = version + 1 WHERE id = %L', dbtest.u(1208)),
     '23514', 'factory_app', 'stage_runs_terminal_check');
-  PERFORM dbtest.expect_error('finished_at on a live run is refused',
+  PERFORM dbtest.expect_error('finished_at on a live run is refused by the guard (an update that keeps the status changes only not_before or max_attempts)',
     format('UPDATE stage_runs SET finished_at = now(), version = version + 1 WHERE id = %L', dbtest.u(1208)),
-    '23514', 'factory_app', 'stage_runs_terminal_check');
+    '23514', 'factory_app', 'stage_runs_update_is_a_move_or_a_postponement');
+  PERFORM dbtest.expect_error('and, with the triggers switched off for the statement, by the CHECK on its own',
+    format('SET LOCAL session_replication_role = replica; UPDATE stage_runs SET finished_at = now(), version = version + 1 WHERE id = %L', dbtest.u(1208)),
+    '23514', NULL, 'stage_runs_terminal_check');
   PERFORM dbtest.expect_error('the application role cannot rewrite the job a run belongs to',
     format('UPDATE stage_runs SET job_id = %L, version = version + 1 WHERE id = %L', dbtest.u(1101), dbtest.u(1208)), '42501', 'factory_app');
   PERFORM dbtest.expect_error('the application role cannot change the tenant of a run',

@@ -1,6 +1,6 @@
 # Migration safety
 
-- Status: the Slice 0 baseline (nine migrations) and the five migrations of `s1-database-tenancy-and-state-sync` (supersede edge, then row-level security in four parts). What the fourteen migrations do is tested. The rules for later migrations are guidance from the PostgreSQL documentation and from ADR 0007. They have not been exercised against an earlier schema with data, because there is none. The five new migrations are new files: nothing in the first nine was amended.
+- Status: the Slice 0 baseline (nine migrations), the five migrations of `s1-database-tenancy-and-state-sync` and the four of `s1-database-port-alignment` (state machine rows, claim protocol, Store model, listings) (supersede edge, then row-level security in four parts). What the fourteen migrations do is tested. The rules for later migrations are guidance from the PostgreSQL documentation and from ADR 0007. They have not been exercised against an earlier schema with data, because there is none. The five new migrations are new files: nothing in the first nine was amended.
 - Form: how-to guide and explanation.
 - Source: [ADR 0007](../adr/0007-persistence-access-and-tenancy.md) rules 1 and 2 and the "Required tests" list, the [documentation policy](../reference/documentation-policy.md) row for data and schema migrations.
 
@@ -22,6 +22,10 @@
 | 12 | `2026-10-27-001200_rls_tenant_isolation` | `ENABLE` and `FORCE ROW LEVEL SECURITY` and the policy `tenant_isolation` on the 17 tenant-owned tables; `ENABLE` and `tenant_self` on `tenants`. |
 | 13 | `2026-10-27-001300_rls_system_scope` | The column grants and policies of `factory_system`. |
 | 14 | `2026-10-27-001400_rls_lookup_functions` | The grants and policies of `factory_lookup`, the view `active_api_tokens` with the tenant check, `resolve_token` and `resolve_installation`, and their ownership and execute rights. |
+| 15 | `2026-10-27-001500_state_machine_blocked_and_reauthorization` | The transitions `S21` and `S22` and their edges (ports v1.1). Data only. |
+| 16 | `2026-10-27-001600_claim_protocol` | `stage_runs.attempts_before_last_answer`; the claim index replaced by `(not_before, id)`; `stage_runs_guard`, `attempts_insert_guard`, `attempts_update_guard` and `attempts_epoch_check` replaced by stricter versions; the deferred live-attempt check on `stage_runs` and `attempts`. |
+| 17 | `2026-10-27-001700_store_model` | `stage_runs.failing_set_sha256` and the BLOCKED outcome rule; the two attestation columns on `repositories` with their trigger; the task node rules; `jobs_bump_guard` in place of `bump_guard` on `jobs`; grants for the new columns. Constraints added `NOT VALID` and then validated. |
+| 18 | `2026-10-27-001800_listings` | The index `jobs_repository_listing_idx`. |
 
 The migrations are ordered so that each one creates objects that only depend on earlier ones. The two foreign keys that would otherwise form a cycle (`artifacts` to `stage_runs`, and `jobs` to `ledger_entries`) are added by `ALTER TABLE` in the later migration, and the second one is deferred.
 
@@ -50,7 +54,7 @@ These follow ADR 0007's "expand, migrate, contract", so version N and version N 
 4. **Indexes created concurrently cannot run inside a transaction.** Diesel runs each migration in one. For such a migration add a `metadata.toml` next to `up.sql` and `down.sql` with `run_in_transaction = false`, and keep that migration to the one statement.
 5. **Never edit a migration that has been applied anywhere.** Add a new one. The `migrations` suite would still pass on a clean database, but every other database would have a different history.
 6. **Regenerate `schema.rs` in the same commit** (`scripts/db-test.sh write-schema`).
-7. **Add a data-preserving upgrade test** for each migration after the baseline: load rows with the previous schema, run the new migration, and check the rows. ADR 0007 requires it. The baseline has no earlier version, so none exists yet.
+7. **Add a data-preserving upgrade test** for each migration after the baseline: load rows with the previous schema, run the new migration, and check the rows. ADR 0007 requires it. The `migrations` suite does it for migrations 15 to 18: it builds the schema as it was after migration 14 (`UPGRADE_FROM` in `scripts/db-test.sh`), writes rows into every tenant-owned table with the statements of that time (`tests/upgrade_fixture.sql`), runs the newer migrations, compares a hash of every table over the columns it had before (`tests/upgrade_fingerprint.sql`), and checks that the new columns hold their defaults and that the earlier code's claim, renewal and head move still work (`tests/upgrade_check.sql`). The next package moves `UPGRADE_FROM` forward.
 
 ### Changing the state machine
 
@@ -70,7 +74,7 @@ The state lists are written out in more than one place, because a CHECK cannot r
 | `stage_runs_stage_kind_check`, `jobs_pipeline_scope_check` | The 14 stage kinds |
 | `jobs_open_idx` | The terminal job states, in its predicate |
 | `attempts_one_active_per_stage_run`, `attempts_lease_expiry_idx`, `attempts_deadline_idx`, `attempts_teardown_idx`, and the CHECK `attempts_active_has_lease` | The live attempt states |
-| `stage_runs_claim_idx` | The `READY` state |
+| `stage_runs_claim_order_idx` (migration 16; it replaced `stage_runs_claim_idx`), `stage_run_live_attempt_check` (the states that may hold a live attempt: `RUNNING`, `SUPERSEDED`) | The `READY` state; the states with a live attempt |
 | `stage_runs_guard` | Reads terminal states from `state_machine_states` and the supersede edges from `state_machine_edges`, so it follows the tables. A state that the JSON later marks `supersedable` needs one row in `state_machine_edges` (the way migration 10 added SKIPPED) and no new function |
 
 The `statuses` suite compares the CHECK lists and the terminal lists with the JSON. It does not read the index predicates. Check those by hand.
@@ -141,3 +145,10 @@ The migrations refuse a role of those names that has superuser, create-role, cre
 ## PostgreSQL versions
 
 The full suite passed on 16.15 and 18.6. The schema uses `security_invoker` views (15 and later), `sha256()` (11), `gen_random_uuid()` (13), `hashtextextended()` (11) and identity columns (10). ADR 0007 leaves the choice between 17 and 18 to the DBA. **I recommend 18**, pinned as `postgres:18` in Compose and CI, because it is the version the tests ran on locally and in Docker. 17 sits between two versions that passed and was not run.
+
+## Migrations 15 to 18: what they lock and why they are an expand step
+
+- **Nothing is removed.** One index is replaced by a superset (`stage_runs_claim_idx (not_before)` by `(not_before, id)`), so code that ordered by `not_before` alone still uses it. Functions are replaced by versions that accept everything the old ones accepted except the writes that the new protocol makes wrong (a back-off outside `READY`, a second attempt past the limit counted from the last answer, a live attempt left behind by a run that moved on). No deployed code makes those writes.
+- **Locks.** Each migration sets `lock_timeout = '5s'`. `ADD COLUMN` with a constant default or a nullable column takes a brief `ACCESS EXCLUSIVE` and no rewrite. The new `CHECK` and foreign key constraints are added `NOT VALID` and then validated, which lets reads and writes go on. `CREATE INDEX` in migration 16 and 18 blocks writes to `stage_runs` and `jobs` while it builds: on a busy table run it as `CREATE INDEX CONCURRENTLY` in a migration of its own with `run_in_transaction = false`. Today both tables are small.
+- **Version N and N + 1 on one schema.** The older code's claim (a swap with the epoch raised, then the attempt), its renewal, its head move with a version bump and a raised budget on a run all still work after the upgrade; the `migrations` suite runs them. The newer code on the older schema fails at start-up on the migration count.
+- **A decision to confirm:** migration 17 lets a ledger append leave the job's version alone. Reverting it is `down.sql` of that migration (and nothing else), because no table depends on the change.

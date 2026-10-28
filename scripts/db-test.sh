@@ -37,7 +37,7 @@ DIESEL_CONFIG="$ROOT/crates/storage/diesel.toml"
 SCHEMA_RS="$ROOT/crates/storage/src/schema.rs"
 STATE_MACHINE="$ROOT/docs/architecture/state-machine.json"
 
-SUITES="migrations statuses ledger tenancy rls terminal_rows plans audit webhook_delivery lease outbox approvals tokens privileges contracts"
+SUITES="migrations statuses ledger tenancy rls terminal_rows plans audit webhook_delivery lease outbox approvals tokens privileges contracts store_model"
 
 RUN_ID="$$_$(date +%s)"
 WORK=""
@@ -100,6 +100,9 @@ tokens           API tokens are stored hashed, expire, are audience bound and ca
                  agrees with the view on every case
 privileges       the application role has exactly the grants the design lists
 contracts        the rows can carry the fields the domain-event and evidence-ledger-entry schemas require
+store_model      the tables carry what the Store port of ports v1.1 needs and the rules it states are rules of the data:
+                 gate record, attestation, task nodes and graph, ledger head; the recipes of the operations that
+                 need only the existing tables
 EOF
 }
 
@@ -545,6 +548,63 @@ suite_migrations() {
   fi
   ok "the committed schema.rs equals diesel print-schema"
   drop_db "$db"
+  upgrade_check
+}
+
+# The last migration of the schema before ports v1.1. The upgrade test migrates to here, loads rows, runs the rest.
+UPGRADE_FROM="2026-10-27-001400"
+
+# A data-preserving upgrade (docs/database/migration-safety.md, rule 7): build the schema as it was before ports v1.1,
+# write rows into every tenant-owned table with the statements of that time, run the newer migrations, and check that
+# every row is byte for byte what it was (a hash per table over the columns the table had), that the new columns hold
+# their defaults, and that the statements of the earlier code still work on the new schema.
+upgrade_check() {
+  local db="factory_t_${RUN_ID}_upgrade" out="$WORK/upgrade.out" prev="$WORK/migrations-prev" cfg_prev cfg_all d before after kept=0
+  create_db "$db"
+  mkdir -p "$prev"
+  for d in "$MIGRATIONS"/*/; do
+    d="${d%/}"
+    if [[ "$(basename "$d")" < "${UPGRADE_FROM}~" ]]; then
+      cp -R "$d" "$prev/"
+      kept=$((kept + 1))
+    fi
+  done
+  cfg_prev="$WORK/diesel-prev.toml"
+  printf '[migrations_directory]\ndir = "%s"\n' "$prev" >"$cfg_prev"
+  cfg_all="$(plain_diesel_config)"
+  if ! diesel_run "$db" --config-file "$cfg_prev" migration run >"$out" 2>&1; then
+    not_ok "the migrations up to $UPGRADE_FROM did not run"
+    cat "$out" >&2
+    drop_db "$db"
+    return 1
+  fi
+  ok "upgrade: the schema of the earlier version is built ($kept migrations)"
+  if ! psql_db "$db" -f "$TESTS/00_helpers.sql" -f "$TESTS/upgrade_fixture.sql" >/dev/null 2>"$out"; then
+    not_ok "upgrade: loading the rows of the earlier version failed"
+    cat "$out" >&2
+    drop_db "$db"
+    return 1
+  fi
+  before="$(psql_scalar "$db" -f "$TESTS/upgrade_fingerprint.sql")"
+  if ! diesel_run "$db" --config-file "$cfg_all" migration run >"$out" 2>&1; then
+    not_ok "upgrade: the newer migrations did not run on a database with rows"
+    cat "$out" >&2
+    drop_db "$db"
+    return 1
+  fi
+  after="$(psql_scalar "$db" -f "$TESTS/upgrade_fingerprint.sql")"
+  if [ "$before" != "$after" ]; then
+    not_ok "upgrade: rows changed while the newer migrations ran"
+    diff <(printf '%s\n' "$before") <(printf '%s\n' "$after") >&2 || true
+    drop_db "$db"
+    return 1
+  fi
+  ok "upgrade: $(printf '%s\n' "$after" | wc -l | tr -d ' ') tables kept every row, byte for byte, over the columns they had before ($(printf '%s\n' "$after" | awk -F'|' '{ n += $2 } END { print n }') rows)"
+  local rc=0
+  psql_db "$db" -f "$TESTS/upgrade_check.sql" >/dev/null 2>"$out" || rc=$?
+  show_checks "$out"
+  drop_db "$db"
+  return "$rc"
 }
 
 suite_statuses() {
@@ -805,10 +865,12 @@ SELECT count(*) FROM (SELECT tenant_id, id FROM stage_runs) x;")"
   return "$rc"
 }
 
-# The claim as the engine makes it: two transactions with two logins (ADR 0012). Several workers find the same
-# READY run through the system login at the same moment; each then tries the compare and swap through the tenant
-# login, in its own transaction. The version check and the unique index of one live attempt per stage run must
-# leave exactly one winner. Every worker's find holds FOR NO KEY UPDATE SKIP LOCKED only until its transaction ends,
+# The claim as the engine makes it (ADR 0012, ADR 0014): two transactions with two logins. Several workers find
+# the same READY run through the system login at the same moment (find_claim_candidates); each then runs the
+# start_attempt statement sequence through the tenant login, in its own transaction: share-lock the job, lock the
+# stage run, decide, move READY to RUNNING with the epoch raised, insert the attempt. The lock on the run makes the
+# later workers wait, and the version check and the unique index of one live attempt per stage run must leave
+# exactly one winner. Every worker's find holds FOR NO KEY UPDATE SKIP LOCKED only until its transaction ends,
 # which is before the swap, so more than one worker can hold the same candidate: that is the case being tried.
 rls_claim_race() {
   local rounds="${FACTORY_DB_LEASE_ROUNDS:-25}" workers=4 r i rc=0 wins=0 bad=0 multi=0 candidates winners live line tid sid ver
@@ -819,7 +881,7 @@ rls_claim_race() {
     psql_db "$CLONE" -c "SELECT dbtest.mk_stage_run(8, 1, $r, 'INTAKE', $r)" -c "SELECT dbtest.set_status('stage_runs', 8, dbtest.u($((8200 + r))), 'READY')" >/dev/null 2>"$WORK/claim-race.err" || { cat "$WORK/claim-race.err" >&2; return 1; }
     # Step 1, released together: the system role finds the candidate (tenant 8 only, so the READY runs of the
     # other tenants in this database do not get in the way).
-    race "$workers" "SET LOCAL ROLE factory_system; SELECT s.tenant_id || ' ' || s.id || ' ' || s.version FROM stage_runs s JOIN jobs j ON j.tenant_id = s.tenant_id AND j.id = s.job_id AND j.status = 'ACTIVE' WHERE s.tenant_id = dbtest.u(8) AND s.status = 'READY' ORDER BY s.not_before FOR NO KEY UPDATE OF s SKIP LOCKED" || bad=$((bad + 1))
+    race "$workers" "SET LOCAL ROLE factory_system; SELECT s.tenant_id || ' ' || s.id || ' ' || s.version FROM stage_runs s JOIN jobs j ON j.tenant_id = s.tenant_id AND j.id = s.job_id AND j.status = 'ACTIVE' WHERE s.tenant_id = dbtest.u(8) AND s.status = 'READY' AND s.not_before <= now() ORDER BY s.not_before, s.id LIMIT 10 FOR NO KEY UPDATE OF s SKIP LOCKED" || bad=$((bad + 1))
     candidates=0
     pids=()
     rm -f "$WORK"/cas.*
@@ -833,13 +895,20 @@ rls_claim_race() {
         psql_as "$app" -At >"$WORK/cas.$i.out" 2>&1 <<EOF || true
 BEGIN;
 SELECT set_config('factory.tenant_id', '$tid', true) AS x \\gset
-WITH c AS (
-  UPDATE stage_runs SET status = 'RUNNING', lease_epoch = lease_epoch + 1, version = version + 1
-   WHERE tenant_id = '$tid' AND id = '$sid' AND version = $ver AND status = 'READY'
-   RETURNING tenant_id, id, job_id, lease_epoch)
+SELECT job_id AS job FROM stage_runs WHERE tenant_id = '$tid' AND id = '$sid' \\gset
+SELECT status = 'ACTIVE' AS job_active FROM jobs WHERE tenant_id = '$tid' AND id = :'job' FOR SHARE \\gset
+SELECT (s.status = 'READY' AND s.version = $ver AND s.not_before <= now()) AS startable,
+       (SELECT coalesce(max(a.attempt_number), 0) + 1 FROM attempts a WHERE a.tenant_id = s.tenant_id AND a.stage_run_id = s.id) AS next_number
+  FROM stage_runs s WHERE s.tenant_id = '$tid' AND s.id = '$sid' FOR NO KEY UPDATE \\gset
+\\if :job_active
+\\if :startable
+UPDATE stage_runs SET status = 'RUNNING', lease_epoch = lease_epoch + 1, version = version + 1
+ WHERE tenant_id = '$tid' AND id = '$sid' AND version = $ver AND status = 'READY' RETURNING lease_epoch AS granted \\gset
 INSERT INTO attempts (tenant_id, id, job_id, stage_run_id, attempt_number, lease_owner, lease_epoch, lease_expires_at, deadline_at)
-SELECT c.tenant_id, gen_random_uuid(), c.job_id, c.id, 1, 'worker-$i', c.lease_epoch, now() + interval '30 seconds', now() + interval '1 hour' FROM c
+VALUES ('$tid', gen_random_uuid(), :'job', '$sid', :next_number, 'worker-$i', :granted, now() + interval '30 seconds', now() + interval '1 hour')
 RETURNING 'won';
+\\endif
+\\endif
 COMMIT;
 EOF
       ) &
@@ -954,14 +1023,19 @@ SELECT dbtest.mk_job(7, 1);
 SELECT dbtest.mk_job(7, 2);
 SELECT dbtest.mk_stage_run(7, 1, 1);
 SELECT dbtest.mk_stage_run(7, 2, 2);
+SELECT dbtest.mk_job(7, 3);
+SELECT dbtest.mk_stage_run(7, 3, 3);
 EOF
   # The claimers are the system role; the writer is the tenant role for tenant 7 (ADR 0012).
   psql_db "$CLONE" -At -c "BEGIN; SET LOCAL ROLE factory_system; SELECT 1 FROM stage_runs WHERE id = dbtest.u(7201) FOR NO KEY UPDATE; SELECT pg_sleep(2); COMMIT" >/dev/null 2>&1 &
   local holder_a=$!
   psql_db "$CLONE" -At -c "BEGIN; SET LOCAL ROLE factory_system; SELECT 1 FROM stage_runs WHERE id = dbtest.u(7202) FOR UPDATE; SELECT pg_sleep(2); COMMIT" >/dev/null 2>&1 &
   local holder_b=$!
+  # start_attempt share-locks the job (FOR SHARE) and holds the lock to the end of its transaction.
+  psql_db "$CLONE" -At -c "BEGIN; SET LOCAL ROLE factory_app; SELECT set_config('factory.tenant_id', dbtest.u(7)::text, true); SELECT 1 FROM jobs WHERE tenant_id = dbtest.u(7) AND id = dbtest.u(7103) FOR SHARE; SELECT pg_sleep(2); COMMIT" >/dev/null 2>&1 &
+  local holder_c=$!
   for i in $(seq 1 100); do
-    [ "$(psql_scalar "$CLONE" -c "SELECT count(*) FROM pg_stat_activity WHERE wait_event = 'PgSleep' AND datname = current_database()")" = 2 ] && break
+    [ "$(psql_scalar "$CLONE" -c "SELECT count(*) FROM pg_stat_activity WHERE wait_event = 'PgSleep' AND datname = current_database()")" = 3 ] && break
     sleep 0.05
   done
   local as_tenant_7="SET ROLE factory_app; SELECT set_config('factory.tenant_id', dbtest.u(7)::text, false)"
@@ -980,8 +1054,26 @@ EOF
     not_ok "lock modes: the append failed for another reason: $(cat "$WORK/lock-b.err")"
     rc=1
   fi
+  # The job share lock of start_attempt: an insert that only needs KEY SHARE on the job (a ledger entry) goes
+  # through, and a change of the job's status (a pause, a cancel) waits for the decision that holds the lock.
+  if psql_db "$CLONE" -At -c "SET lock_timeout = '500ms'" -c "$as_tenant_7" -c "SELECT dbtest.append_entry(7, dbtest.u(7103), dbtest.u(7203), 1)" >/dev/null 2>"$WORK/lock-c.err"; then
+    ok "lock modes: a ledger append is not blocked while start_attempt share-locks the job (FOR SHARE)"
+  else
+    not_ok "lock modes: a ledger append was blocked by the job share lock: $(cat "$WORK/lock-c.err")"
+    rc=1
+  fi
+  if psql_db "$CLONE" -At -c "SET lock_timeout = '500ms'" -c "UPDATE jobs SET policy_hash = NULL, version = version + 1 WHERE tenant_id = dbtest.u(7) AND id = dbtest.u(7103)" >/dev/null 2>"$WORK/lock-d.err"; then
+    not_ok "lock modes: a change of the job did not wait for the share lock, so a pause could slip between the check and the start"
+    rc=1
+  elif grep -q 'lock timeout' "$WORK/lock-d.err"; then
+    ok "lock modes: a change of the job waits while start_attempt holds it FOR SHARE (lock timeout), so a pause and a start are serialized"
+  else
+    not_ok "lock modes: the job change failed for another reason: $(cat "$WORK/lock-d.err")"
+    rc=1
+  fi
   wait "$holder_a" || true
   wait "$holder_b" || true
+  wait "$holder_c" || true
   return "$rc"
 }
 
@@ -1036,6 +1128,8 @@ suite_tokens() { simple_suite tokens tokens.sql; }
 suite_privileges() { simple_suite privileges privileges.sql; }
 
 suite_approvals() { simple_suite approvals approvals.sql; }
+
+suite_store_model() { simple_suite store_model store_model.sql; }
 
 suite_contracts() {
   ensure_template || return 1

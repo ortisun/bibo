@@ -1,6 +1,6 @@
 # Running the migrations and the database tests
 
-- Status: every command below was run on 2026-10-27 on a macOS laptop. Results are in the last section. Written for the baseline and revised for the work package `s1-database-tenancy-and-state-sync`.
+- Status: every command below was run on 2026-10-27 on a macOS laptop. Results are in the last section. Written for the baseline and revised for the work packages `s1-database-tenancy-and-state-sync` and `s1-database-port-alignment`.
 - Form: how-to guide.
 - Goal: apply the migrations to a PostgreSQL database, run the database tests, and regenerate `schema.rs`.
 
@@ -35,7 +35,7 @@ The script warns when the installed CLI has another version, because `schema.rs`
 3. To check the down migrations, run `diesel migration redo --all --config-file crates/storage/diesel.toml`. It reverts every migration and applies them again.
 4. Never run the migrations from the application. Applications check the schema version at start-up and refuse to become ready if it is behind (ADR 0007).
 
-Expected result of step 2: fourteen `Running migration` lines, the last one `2026-10-27-001400_rls_lookup_functions`. Verify with `psql "$DATABASE_URL" -c 'select version from __diesel_schema_migrations order by version'`.
+Expected result of step 2: eighteen `Running migration` lines, the last one `2026-10-27-001800_listings`. Verify with `psql "$DATABASE_URL" -c 'select version from __diesel_schema_migrations order by version'`.
 
 The role that runs them must be a superuser or the role that created the four groups ([migration-safety.md](migration-safety.md)). After they ran, create the logins: [for-the-storage-crate.md](for-the-storage-crate.md).
 
@@ -47,8 +47,8 @@ The role that runs them must be a superuser or the role that created the four gr
    scripts/db-test.sh
    ```
 
-   It provides a database, migrates it, runs the fifteen suites, drops everything it created (the databases, and the login roles the `rls` suite makes), and prints a last line that starts with `PASS` or `FAIL`.
-2. To run some suites only, name them. `scripts/db-test.sh ledger audit` runs two. `scripts/db-test.sh --list` prints all fifteen with one line each on what they prove.
+   It provides a database, migrates it, runs the sixteen suites, drops everything it created (the databases, and the login roles the `rls` suite makes), and prints a last line that starts with `PASS` or `FAIL`.
+2. To run some suites only, name them. `scripts/db-test.sh ledger audit` runs two. `scripts/db-test.sh --list` prints all sixteen with one line each on what they prove.
 3. To keep the server for inspection use `--keep`. It prints the URL of the maintenance database and leaves the process running, and you stop it yourself.
 
 ### Where the database comes from
@@ -76,8 +76,12 @@ The `rls` suite opens sessions as real login roles (`dbtest_app_*`, `dbtest_syst
 
 | Command | What it proves |
 |---|---|
-| `scripts/db-test.sh migrations` | Up, revert all, up again and redo on an empty database; the catalog is identical afterwards; the committed `schema.rs` equals `diesel print-schema`. |
-| `scripts/db-test.sh statuses` | An unknown status is rejected on every status column; the allowed values equal `state-machine.json`. |
+| `scripts/db-test.sh migrations` | Up, revert all, up again and redo on an empty database; the catalog is identical afterwards, also after reverting only the newest `j` migrations; the committed `schema.rs` equals `diesel print-schema`; **a data-preserving upgrade**: the schema as it was after migration 14, a row in every tenant-owned table, the newer migrations, every row unchanged over its old columns, the earlier code's statements still working. |
+| `scripts/db-test.sh statuses` | An unknown status is rejected on every status column; the allowed values, the transitions (`S21` and `S22` included), the edges and the event names equal `state-machine.json`. |
+| `scripts/db-test.sh outbox` | The outbox is atomic with the state change, immutable and consumer idempotent; the foreign key accepts `stage_run.blocked` for `S21` and `stage_run.waiting_for_human` for `S22`, and no other pairing. |
+| `scripts/db-test.sh lease rls` | `lease`: the candidate search and the `start_attempt` statement sequence as the system and application roles, the three due-attempt queries and their moves, postponement, the window after a human answer, S21, S22, and four-worker races with one winner. `rls`: the same sequence through two real logins, 12 rounds of four workers, and the due queries as the system role. |
+| `scripts/db-test.sh privileges tenancy` | The tenant role may write the new columns and the system role may not; composite keys include the tenant. |
+| `scripts/db-test.sh store_model` | The tables carry what the Store port of ports v1.1 needs, and the SQL of each operation that needs only the existing tables runs as the application role. |
 | `scripts/db-test.sh ledger` | `UPDATE` and `DELETE` on the ledger fail for the application role, and a gapped insert fails. |
 | `scripts/db-test.sh tenancy` | A foreign key into another tenant's row is rejected, also for a session under row-level security, and unique keys include the tenant. Foreign key checks bypass row security. |
 | `scripts/db-test.sh rls` | Every table with a tenant column, found from the catalog, is isolated; the roles, the system scope and the two lookup functions; real logins, a reused connection and a claim race through two logins (NT-TEN-01, database part). |
@@ -86,7 +90,7 @@ The `rls` suite opens sessions as real login roles (`dbtest_app_*`, `dbtest_syst
 | `scripts/db-test.sh audit` | The application role can only `INSERT` and `SELECT` on the audit table (NT-AUD-01). |
 | `scripts/db-test.sh webhook_delivery` | A second delivery with the same id violates a unique constraint and creates no second job or outbox row. |
 
-Seven more suites go beyond the original criteria: `lease`, `outbox`, `approvals`, `tokens`, `privileges`, `contracts` and `rls`.
+Eight more suites go beyond the original criteria: `lease`, `outbox`, `approvals`, `tokens`, `privileges`, `contracts`, `rls` and `store_model`.
 
 ## Regenerate `schema.rs`
 
@@ -98,7 +102,7 @@ Seven more suites go beyond the original criteria: `lease`, `outbox`, `approvals
 A passing run ends like this (the number of checks changes when a test is added):
 
 ```text
-PASS: migrations statuses ledger tenancy rls terminal_rows plans audit webhook_delivery lease outbox approvals tokens privileges contracts (679 checks, PostgreSQL 18.6 (Debian 18.6-1.pgdg13+2), docker)
+PASS: migrations statuses ledger tenancy rls terminal_rows plans audit webhook_delivery lease outbox approvals tokens privileges contracts store_model (923 checks, PostgreSQL 18.6 (Homebrew), local)
 ```
 
 A failing check prints `NOT OK - <what was expected>: <what happened>` and the statement, and the run exits 1.
@@ -159,3 +163,50 @@ Each was made by editing one migration, running the suites that should notice, a
 | The edge `SKIPPED` to `SUPERSEDED` left out of the migration | `statuses`, `terminal_rows` | `state_machine_edges equals state-machine.json ...: expected 0, got 1` |
 | The down script of the system migration forgets one policy | `migrations` | **Not seen by the first version**: a full revert drops the table and the policy with it, so the run passed. The suite now reverts the newest `j` migrations and runs them again; the break then fails with `running the 2 newest migrations again after reverting them failed (a down script left something behind?)` |
 
+### Runs of the work package `s1-database-port-alignment`
+
+Run on 2026-10-27 on the local Homebrew cluster, PostgreSQL 18.6. Docker and PostgreSQL 16 were not run for this package.
+
+| Command | Result |
+|---|---|
+| `scripts/db-test.sh`, twice in a row | pass both times, 923 checks in 16 suites, 24 and 23 seconds |
+| `scripts/db-test.sh statuses outbox` (the starting point failed by design on `S21` and `S22`) | pass, 86 checks after migration 15 |
+| `scripts/db-test.sh plans` | pass, 43 checks at 10,000 rows |
+| `FACTORY_DB_PLANS_SCALE=10 scripts/db-test.sh plans` | pass, 43 checks (plans in [query-plans.md](query-plans.md)). The data now includes 100,000 task nodes and 80,000 edges, 20,000 approvals, original requests and deliveries, so the run is slower than the 191 seconds of the earlier package |
+| `pyright docs/database/tools/*.py`; `shellcheck --severity=warning scripts/db-test.sh` | 0 errors, 0 warnings; clean |
+| `cargo fmt --all -- --check`; `cargo xtask check-architecture` | pass; pass |
+
+### Deliberate breaks of the port alignment work
+
+Each was made in a copy of the package (migrations, tests and script), by changing one thing, running the suite that should notice, and discarding the copy. All 26 exited 1 and each failing check is the one that names the damaged rule. The runner is a 150-line script kept outside the repository (it is a tool for this review, not part of the build); the table is its output.
+
+| Break | Suite | First failing check |
+|---|---|---|
+| The live-attempt rule never fires | `lease` | `S05 while the attempt is still live is refused at commit: the statement succeeded but had to fail` |
+| The attempt limit counts every attempt again | `lease` | `stage run allows 1 attempts since the last human answer, this would be number 2` (the first attempt after an answer is refused) |
+| `not_before` may change on any run | `lease` | `not_before cannot change on a RUNNING run: the statement succeeded but had to fail` |
+| An update that keeps the status may change anything | `lease` | `a READY run cannot change anything else without a status move: the statement succeeded but had to fail` |
+| A leaked sandbox can be recorded as gone | `lease` | `leaked cannot go back to false: the statement succeeded but had to fail` |
+| The epoch check judges the row as queued again | `lease` | `attempt ... holds lease epoch 1 but the stage run is at epoch 2` |
+| The claim index is dropped | `plans` | `claim: READY stage runs ...: the plan does not use index stage_runs_claim_order_idx` |
+| The edge READY to S22 is left out | `statuses` | `state_machine_edges equals state-machine.json: expected 0, got 1` |
+| The outbox may announce S21 under the wrong event | `outbox` | `S21 (RUNNING to BLOCKED) can emit stage_run.blocked: the foreign key accepts it: the statement failed with 23503` |
+| A failing set is accepted with any outcome | `store_model` | `failing_set_sha256 with the PASSED outcome is refused: the statement succeeded but had to fail` |
+| A BLOCKED run may carry any outcome | `store_model` | `S21 without a gate outcome is refused: the statement succeeded but had to fail` |
+| A service principal may attest | `store_model` | `a service principal cannot attest: the statement succeeded but had to fail` |
+| The caller's attestation time is kept | `store_model` | `attesting again after clearing stamps the database time: expected true, got false` (**not caught by the first version of the suite**, which only tried the caller's time when the attestor did not change) |
+| A RUNNING task node may have no attempt | `store_model` | `T02 without the attempt is refused: the statement succeeded but had to fail` |
+| A SUCCEEDED task node may have no commit | `store_model` | `T03 without a commit is refused: the statement succeeded but had to fail` |
+| A ledger head move cannot skip the version bump | `store_model` | `jobs version must rise by exactly one (was 2, update set 2), or stay when only the ledger head moves` |
+| The ledger head may move back | `store_model` | `the head never moves back, with or without a version bump: the statement succeeded but had to fail` |
+| The repository listing index is dropped | `plans` | `list_jobs: one repository: the plan does not use index jobs_repository_listing_idx` |
+| The system role may write the failing set | `rls` | `factory_system holds no column privilege beyond the expected list: got stage_runs.failing_set_sha256:UPDATE` |
+| The system role may read the attestation | `rls` | `factory_system holds no column privilege beyond the expected list: got repositories.bypass_attested_at:SELECT` |
+| The tenant role is not given the new column grant | `privileges` | `factory_app holds every column UPDATE privilege on the expected list: got stage_runs.failing_set_sha256` |
+| A new tenant table with no row-level security (the suite's own count and fixtures updated, so the per-table check is what fails) | `rls` | `all 17 tenant-owned tables are isolated ...: got [probe_notes] row-level security is not enabled ...` |
+| A new tenant table with row-level security enabled but not forced | `rls` | `... got [probe_notes] FORCE ROW LEVEL SECURITY is not set ...` |
+| A new tenant table whose foreign key does not carry the tenant | `tenancy` | `all 33 foreign keys between tenant-owned tables join tenant_id to tenant_id: got probe_notes.probe_notes_repo_fkey` |
+| A migration that changes an existing row while it upgrades | `migrations` | `upgrade: rows changed while the newer migrations ran` (the migration rewrites a column of a repository; the hash of the table over its old columns differs) |
+| A migration that breaks a statement of the earlier code | `migrations` | `the earlier head move with a version bump is still accepted: expected rows=1, got ERR:23514 ...` |
+
+Two things the first version of the breaks showed. The break of the attestation time passed (rc 0) and drove a new check. And three of the breaks (the two index drops and the foreign key without the tenant) first failed at the template migration for a bad patch, which proves nothing about the suite: they were rewritten so that the migration runs and the suite's own check is what fails.
