@@ -18,7 +18,7 @@
 //! | `openssl` command line through a process runner | DEP-10 allows only `docker` and `git` to be spawned, and the private key would have to be written to disk or piped. Rejected. |
 //! | **`ring` 0.17.14 for RS256, `ureq` 3.5.0 (`rustls` feature only) for HTTP and TLS** | Passes deny (`advisories ok, bans ok, licenses ok, sources ok`) and audit. `ring` is also the crypto provider of `rustls`, so one crypto library does both jobs. About 25 new crates, no `unsafe` in this crate. **Chosen.** |
 //!
-//! `ring` and `ureq` and `async-trait` are not yet in the `github` `external_allow` list of
+//! `ring`, `ureq` and `async-trait` are not yet in the `github` `external_allow` list of
 //! `docs/architecture/crate-dependency-rules.json`, so `cargo xtask check-architecture` reports
 //! DEP-04 for them until the architect amends that file. That file is outside this package.
 //!
@@ -26,18 +26,53 @@
 //! different signer (a signing service, a hardware module) replaces [`RingRs256Signer`] and
 //! nothing else changes.
 //!
+//! # Map
+//!
+//! | Module | Job |
+//! |---|---|
+//! | `wire` | The transport seam and the checked API base URL. |
+//! | `ureq_transport` | The real transport: TLS, no redirects, no proxies, size and time limits. |
+//! | `jwt` | The App JWT and the RS256 signer. |
+//! | `permissions` | Permission sets per stage and the audit of the App's own permissions. |
+//! | `token` | Installation tokens: mint, narrow, check, refresh, revoke, sweep. |
+//! | `core`, `client` | Back-off from rate limit headers, conditional reads, pagination with caps. |
+//! | `text` | Secret check and markdown hygiene for everything sent to GitHub. |
+//! | `issues`, `changes`, `protection` | The two ports and the ruleset reader. |
+//! | `webhook` | The webhook verifier and the replay filter. |
+//! | `adapter` | The composition. |
+//!
 //! # What is not verified
 //!
 //! Nothing here has run against the real GitHub: no App is registered. The tests run against the
 //! fake GitHub server of the test kit (FX-GH) over the loopback interface, with keys made at run
-//! time. See the "UNVERIFIED" notes on each module.
+//! time. Each module lists what it assumes about the real service under "UNVERIFIED". The live
+//! tests (`tests/live_smoke.rs`, `tests/live_pinning.rs`) report `BLOCKED:` without credentials.
 
+mod adapter;
+mod changes;
+mod client;
+mod core;
 mod encoding;
+mod issues;
 mod jwt;
+mod parse;
+mod permissions;
+mod protection;
+mod text;
+mod token;
 mod ureq_transport;
 mod wire;
 
+pub use adapter::{DEFAULT_REFRESH_MARGIN, GithubAdapter, GithubConfig, GithubParts};
+pub use changes::{GithubChangeHost, conclusion_for_gate, conclusion_for_gates};
+pub use client::PageLimits;
+pub use core::{BackoffPolicy, Sleeper, TokioSleeper};
 pub use encoding::{base64_decode, base64url_encode, percent_encode_component};
+pub use issues::{GithubIssueSource, NormalizedText, normalize_untrusted_text};
 pub use jwt::{AppJwt, JwtError, JwtSigner, RingRs256Signer};
+pub use permissions::{AppAudit, AppPolicy, Level, PermissionSet, audit_app, may_write};
+pub use protection::protection_from_rules;
+pub use text::OutboundPolicy;
+pub use token::{InstallationDirectory, StaticInstallations};
 pub use ureq_transport::{MAX_RESPONSE_BYTES, REQUEST_TIMEOUT, UreqTransport};
 pub use wire::{ApiBase, BadApiBase, Method, Transport, TransportError, WireRequest, WireResponse};
