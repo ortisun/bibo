@@ -102,8 +102,9 @@ services:
       # read from a file, never from the environment (docs/security/secrets-and-credentials.md).
       POSTGRES_USER: factory_admin
       POSTGRES_DB: factory
-      POSTGRES_PASSWORD_FILE: /run/secrets/pg_superuser_password
-    secrets: [pg_superuser_password]
+      POSTGRES_PASSWORD_FILE: ${FACTORY_RUN_SECRETS_DIR:-/run/secrets}/pg_superuser_password
+    secrets:
+      - pg_superuser_password
     # Bound to the loopback address only. Without the "127.0.0.1:" prefix Docker would publish the
     # port on every network interface of this machine.
     ports:
@@ -200,9 +201,10 @@ services:
       FACTORY_DB_PORT: "5432"
       FACTORY_DB_NAME: factory
       FACTORY_DB_API_USER: factory_api
-      FACTORY_DB_API_PASSWORD_FILE: /run/secrets/pg_password_api
+      FACTORY_DB_API_PASSWORD_FILE: ${FACTORY_RUN_SECRETS_DIR:-/run/secrets}/pg_password_api
       FACTORY_ARTIFACT_DIR: /var/lib/factory/artifacts
-    secrets: [pg_password_api]
+    secrets:
+      - pg_password_api
     ports:
       - "127.0.0.1:${FACTORY_API_PORT:-8080}:8080"
     volumes:
@@ -241,9 +243,9 @@ services:
       FACTORY_DB_NAME: factory
       # Two logins, two pools (ADR 0012): the tenant pool and the system pool never share a login.
       FACTORY_DB_TENANT_USER: factory_worker
-      FACTORY_DB_TENANT_PASSWORD_FILE: /run/secrets/pg_password_worker
+      FACTORY_DB_TENANT_PASSWORD_FILE: ${FACTORY_RUN_SECRETS_DIR:-/run/secrets}/pg_password_worker
       FACTORY_DB_SYSTEM_USER: factory_engine
-      FACTORY_DB_SYSTEM_PASSWORD_FILE: /run/secrets/pg_password_engine
+      FACTORY_DB_SYSTEM_PASSWORD_FILE: ${FACTORY_RUN_SECRETS_DIR:-/run/secrets}/pg_password_engine
       FACTORY_ARTIFACT_DIR: /var/lib/factory/artifacts
       # The model broker listens here. Per-job egress sidecars reach it over the "broker" network, whose
       # name the supervisor needs to attach each sidecar to it. scripts/local-up.sh sets the variable.
@@ -259,7 +261,9 @@ services:
       # sandbox policy asks for. The options (run the worker on the host, or a reviewed socket proxy)
       # are in docs/operations/local-deployment.md.
       DOCKER_HOST: ${FACTORY_WORKER_DOCKER_HOST:-}
-    secrets: [pg_password_worker, pg_password_engine]
+    secrets:
+      - pg_password_worker
+      - pg_password_engine
     volumes:
       - artifacts:/var/lib/factory/artifacts
     networks: [data, broker]

@@ -36,6 +36,8 @@
 #
 # Exit codes: 0 done, 1 failed, 2 wrong arguments, 3 BLOCKED (Docker is missing or not running).
 
+# The OPS_* variables set below are read by scripts/lib/ops.sh, which this script sources.
+# shellcheck disable=SC2034
 set -euo pipefail
 OPS_TOOL=backup
 # shellcheck source=lib/ops.sh

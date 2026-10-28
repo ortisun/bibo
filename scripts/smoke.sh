@@ -28,6 +28,8 @@
 # Exit codes: 0 every check passed, 1 a check failed, 2 wrong arguments, 3 BLOCKED (Docker, psql, diesel, python3 or the
 # sandbox image is missing, or the lock was not free in time). BLOCKED is never a pass.
 
+# The OPS_* variables set below are read by scripts/lib/ops.sh, which this script sources.
+# shellcheck disable=SC2034
 set -euo pipefail
 OPS_TOOL=smoke
 # shellcheck source=lib/ops.sh
@@ -50,7 +52,7 @@ ops_install_traps
 ops_new_run
 started=$SECONDS
 OPS_TEST=true
-OPS_PROFILE=test
+OPS_PROFILE="test"
 OPS_PROJECT="factory-smoke-$OPS_RUN_ID"
 OPS_SECRETS_DIR="$OPS_RUN_DIR/secrets"
 
@@ -138,6 +140,8 @@ smoke_dynamic() {
   done
 
   # 3. Exposure.
+  # The container ids are hexadecimal words, so splitting them is what is wanted.
+  # shellcheck disable=SC2046
   docker inspect $(docker ps -aq --filter "label=com.docker.compose.project=$OPS_PROJECT") >"$OPS_RUN_DIR/inspect.json"
   got=$(python3 -I -c 'import json, sys
 bad = []

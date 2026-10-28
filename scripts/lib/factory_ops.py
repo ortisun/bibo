@@ -204,12 +204,12 @@ def cmd_verify_ledger(args):
             if problem:
                 break
             previous = row
-        if problem:
+        if problem or previous is None:
             break
         heads.append({"tenant": key[0], "job": key[1], "sequence": previous["sequence"], "hash": previous["entry_hash"]})
     ok = problem is None
     emit("ledger-chain-rebuilt-outside-postgresql", ok,
-         ("%d chains, %d entries" % (len(chains), len(rows))) if ok else problem)
+         ("%d chains, %d entries" % (len(chains), len(rows))) if ok else str(problem))
     if ok and args.manifest:
         want = sorted(load(args.manifest)["heads"]["ledger"], key=lambda h: (h["tenant"], h["job"]))
         ok = emit("ledger-heads-equal-manifest", want == heads, "%d chains" % len(heads))

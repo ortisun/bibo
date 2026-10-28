@@ -425,6 +425,7 @@ class LockCase(TempDirCase):
             env=dict(os.environ, FACTORY_DOCKER_LOCK_DIR=self.dir, FACTORY_DOCKER_HOLD_SECONDS="20", OPS_TOOL="holder"),
             stdout=subprocess.PIPE, text=True)
         try:
+            assert holder.stdout is not None
             self.assertEqual(holder.stdout.readline().strip(), "held")
             done = self.script("ops_lock_acquire 2; echo got-it")
             self.assertEqual(done.returncode, 3, done.stderr)
@@ -433,7 +434,8 @@ class LockCase(TempDirCase):
         finally:
             holder.kill()
             holder.wait()
-            holder.stdout.close()
+            if holder.stdout is not None:
+                holder.stdout.close()
 
     def test_the_full_address_pool_is_recognised_in_dockers_own_words_and_nothing_else_is(self):
         for text in ("failed to create network x: Error response from daemon: all predefined address pools have been fully subnetted",

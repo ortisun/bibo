@@ -28,6 +28,8 @@
 # Exit codes: 0 restored and every check passed, 1 a check failed or the restore failed, 2 wrong arguments,
 # 3 BLOCKED (Docker or psql is missing or not running).
 
+# The OPS_* variables set below are read by scripts/lib/ops.sh, which this script sources.
+# shellcheck disable=SC2034
 set -euo pipefail
 OPS_TOOL=restore
 # shellcheck source=lib/ops.sh

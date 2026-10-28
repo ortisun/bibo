@@ -37,6 +37,8 @@
 # Exit codes: 0 every check passed (and every break was caught), 1 a check failed, 2 wrong arguments, 3 BLOCKED (Docker,
 # psql, diesel or python3 is missing, or the lock was not free in time).
 
+# The OPS_* variables set below are read by scripts/lib/ops.sh, which this script sources.
+# shellcheck disable=SC2034
 set -euo pipefail
 OPS_TOOL=restore-drill
 # shellcheck source=lib/ops.sh
@@ -64,7 +66,7 @@ ops_new_run
 started=$SECONDS
 
 OPS_TEST=true
-OPS_PROFILE=test
+OPS_PROFILE="test"
 OPS_PROJECT="factory-drill-$OPS_RUN_ID"
 OPS_SECRETS_DIR="$OPS_RUN_DIR/secrets"
 BACKUPS="$OPS_RUN_DIR/backups"

@@ -1,4 +1,6 @@
 # shellcheck shell=bash
+# shellcheck disable=SC2034,SC2154
+# (Variables set here are read by the scripts that source this file, and the exit trap assigns its own variable.)
 # scripts/lib/ops.sh - helpers shared by local-up.sh, backup.sh, restore.sh, restore-drill.sh and smoke.sh
 # (work package s1-local-deployment). Source it; do not run it.
 #
