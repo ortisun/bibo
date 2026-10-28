@@ -453,3 +453,42 @@ fn the_rate_limit_answers_429_with_a_delay_and_does_not_forward() {
         TokenState::Active
     );
 }
+
+#[test]
+fn the_broker_forwards_only_to_the_configured_upstream_whatever_the_request_names() {
+    // A listener on the loopback address that must never be reached: the host the request names.
+    let bait = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+    bait.set_nonblocking(true).expect("nonblocking");
+    let bait_addr = bait.local_addr().expect("addr");
+    let rig = HttpRig::new();
+    let token = rig.claude_token(CEILING);
+    let response = send_request(
+        rig.addr(),
+        "POST",
+        "/v1/messages",
+        &[
+            ("Content-Type", "application/json"),
+            ("x-api-key", token.secret.expose()),
+            ("Host", &bait_addr.to_string()),
+            ("X-Forwarded-Host", &bait_addr.to_string()),
+            ("Forwarded", &format!("host={bait_addr}")),
+            ("X-Original-URL", &format!("http://{bait_addr}/v1/messages")),
+        ],
+        br#"{"model":"claude-test-model","max_tokens":5}"#,
+    )
+    .expect("an answer");
+    assert_eq!(response.status, 200);
+    assert_eq!(
+        rig.provider.hits(),
+        1,
+        "the configured upstream got the request"
+    );
+    assert!(
+        bait.accept().is_err(),
+        "the host named in the request was connected to"
+    );
+    let seen = &rig.provider.requests()[0];
+    for dropped in ["x-forwarded-host", "forwarded", "x-original-url"] {
+        assert_eq!(seen.header(dropped), None, "{dropped} must not cross");
+    }
+}
