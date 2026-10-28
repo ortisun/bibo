@@ -612,6 +612,23 @@ impl FactoryConfig {
     }
 }
 
+/// Reads any configuration type the way [`FactoryConfig::from_yaml`] reads the worker's: the
+/// restricted YAML reader (no anchors, no tags, no merge keys, size and depth limits), a refusal of
+/// a value that looks like a URL with a password, then the decoding. The type should carry
+/// `deny_unknown_fields`, so a misspelled setting is an error and not a weaker run. The API uses
+/// this for its own configuration type.
+///
+/// # Errors
+/// A [`ConfigError`].
+pub fn read_document<T: serde::de::DeserializeOwned>(text: &str) -> Result<T, ConfigError> {
+    let document = yaml::read(text, YamlLimits::POLICY)
+        .map_err(|error| ConfigError::Invalid(error.to_string()))?;
+    refuse_inline_credentials(&document.to_json(), "")?;
+    document
+        .decode()
+        .map_err(|error| ConfigError::Invalid(error.to_string()))
+}
+
 /// Walks a decoded document and refuses a string that has the shape of a URL with a password.
 fn refuse_inline_credentials(value: &serde_json::Value, at: &str) -> Result<(), ConfigError> {
     match value {

@@ -33,6 +33,7 @@
 //! | [`ledger`] | The task ledger of the implementation stage, over the store, fenced by attempt and epoch |
 //! | [`hooks`] | The work a binary's loop does before it claims |
 //! | [`assemble`] | Start-up in order, and the list of adapters that are not assembled |
+//! | [`webhook`] | The webhook verifier of the API, built from secret files (one per secret in the rotation window) |
 //!
 //! Composition is the one job of this crate, so no module here contains a business rule. The
 //! engine decides, the adapters act, and this crate chooses and connects them.
@@ -62,3 +63,4 @@ pub mod specs;
 pub mod startup;
 pub mod system;
 pub mod telemetry;
+pub mod webhook;

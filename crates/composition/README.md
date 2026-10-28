@@ -31,6 +31,7 @@ CLI, are made of before each adds its own shell. A ring 3 **library**
 | `indexing` | Indexes what a sandbox writes and what a workspace exports, for the tenant, when it is written |
 | `hooks` | The work a loop does before it claims (`BeforeClaim`) |
 | `assemble` | Start-up in order (`prepare`), the list of adapters not assembled (`blocked_adapters`) and of seam methods that fail closed (`blocked_seams`) |
+| `webhook` | The webhook verifier of the API, built from secret files (one per secret in the rotation window) |
 
 ## What a binary does with it
 
@@ -134,10 +135,11 @@ Checked by `tests/examples.rs` against `infra/compose/config/*.example.yaml`. Th
 1. **The worker example parses.** It is a valid configuration of the `local` profile with no credential, so the
    worker is BLOCKED until the deployment adds `broker.upstreams`, `broker.prices`, `github` and
    `worker.tenants`. It may add `sandbox.remote` and `sandbox.sidecar_command`.
-2. **The API example is refused.** It names `database.api` and `listen`, which the configuration does not have
-   (the API has no configuration type yet; the placeholder says so), and it lacks `protected_checkout` and
-   `definitions_root`, which are required. Until the API part defines its own type, do not point a worker
-   at that file. When it does, it will need the protected checkout for the policy and the allowlist.
+2. **The API example is refused by the worker's parser, and is the API's own.** It names `database.api` and
+   `listen`, which `FactoryConfig` does not have, and lacks `protected_checkout` and `definitions_root`. The API
+   has its own type (`apps/api/src/config.rs`, `ApiConfig`), which reads `database.api` and `listen` as the
+   placeholder spells them and needs only one more setting, `protected_checkout`: see `apps/api/README.md`. Do not
+   point a worker at that file.
 3. **Secret files.** The worker refuses a secret file that is a symbolic link, is not a regular file, or is readable
    by group or others (mode bits `0o077`); `tests/examples.rs` shows `0600` and `0400` accepted and `0640`,
    `0644` and `0604` refused. Compose mounts a secret with the mode and owner of the host file, so

@@ -90,6 +90,35 @@ pub async fn connect(
     PgStore::connect(config).await.map_err(describe)
 }
 
+/// Builds the store configuration of the API: the API login on the one pool, which is a member of
+/// `factory_app` and of `factory_resolver`, and no system pool. The API cannot find work across
+/// tenants, and the three calls that run before a tenant is known are refused to any other login
+/// (`TenantLogin::Api`).
+///
+/// # Errors
+/// [`StartupFailure::Store`] when the URL file is unsafe, unreadable or names another login.
+pub fn api_store_config(
+    api: &PoolConfig,
+    secrets: &mut FactorySecrets,
+) -> Result<PgStoreConfig, StartupFailure> {
+    let mut config = PgStoreConfig::new(settings(api, secrets)?);
+    config.tenant_login = TenantLogin::Api;
+    config.system = None;
+    Ok(config)
+}
+
+/// Connects the API's pool, checks its role and the schema, and returns a ready store.
+///
+/// # Errors
+/// [`StartupFailure::Store`].
+pub async fn connect_api(
+    api: &PoolConfig,
+    secrets: &mut FactorySecrets,
+) -> Result<PgStore, StartupFailure> {
+    let config = api_store_config(api, secrets)?;
+    PgStore::connect(config).await.map_err(describe)
+}
+
 /// A start-up error as plain text, without any URL.
 fn describe(error: StartupError) -> StartupFailure {
     StartupFailure::Store(error.to_string())

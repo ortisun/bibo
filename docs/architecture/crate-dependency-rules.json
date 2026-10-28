@@ -380,7 +380,28 @@
       "name": "api",
       "path": "apps/api",
       "slice": 1,
-      "responsibility": "HTTP API: GitHub webhook endpoint with signature verification, job submission, decisions, status and timeline queries, health endpoints."
+      "responsibility": "HTTP API: GitHub webhook endpoint with signature verification, job submission, decisions, status and timeline queries, health endpoints.",
+      "external_dependencies": [
+        "axum[http1,tokio]",
+        "hyper[server,http1]",
+        "hyper-util[server,http1,tokio,service]",
+        "http-body-util",
+        "tower[util]",
+        "tokio[rt,rt-multi-thread,net,time,sync,macros,signal]",
+        "serde",
+        "serde_json",
+        "thiserror",
+        "tracing",
+        "uuid[std]"
+      ],
+      "external_dependencies_notes": {
+        "axum": "NEW DIRECT DEPENDENCY, pending confirmation by a person (policies/security.yaml, supply_chain.new_direct_dependency). The master prompt and the overview name Axum on Tokio for the API. 0.8.9, MIT. Routing by method and path only: no JSON, form, query or websocket extractor, so an error answer never carries a library message. It adds axum 0.8.9 (MIT), axum-core 0.5.6 (MIT), matchit 0.8.4 (MIT and BSD-3-Clause) and mime 0.3.17 (MIT or Apache-2.0) to Cargo.lock; every other crate it needs was already there through reqwest and tower-http. cargo deny passes with the unchanged deny.toml.",
+        "hyper": "NEW DIRECT DEPENDENCY, pending confirmation. 1.12.0, MIT. Already in Cargo.lock (through reqwest). The API serves its own connections so that the header read timeout, the limit on open connections and the TCP peer address are under its control; axum::serve offers none of them.",
+        "hyper-util": "NEW DIRECT DEPENDENCY, pending confirmation. 0.1.21, MIT. Already in Cargo.lock. TokioIo and TokioTimer for hyper's server connection.",
+        "http-body-util": "NEW DIRECT DEPENDENCY, pending confirmation. 0.1.5, MIT. Already in Cargo.lock. Limited, the body reader with a hard size limit.",
+        "tower": "NEW DIRECT DEPENDENCY, pending confirmation. 0.5.3, MIT. Already in Cargo.lock. ServiceExt::oneshot, the interface between the router and the connection.",
+        "tokio": "DEP-05 resolved features: rt-multi-thread and net are enabled by this app. Both are already in the allowed list in source_scans.dep_05.resolved_features, so no change is needed there."
+      }
     },
     {
       "name": "worker",
@@ -392,7 +413,14 @@
       "name": "cli",
       "path": "apps/cli",
       "slice": 1,
-      "responsibility": "Operator command line: submit, status, timeline, approve, reject, rework, pause, resume, cancel, probe. Calls the same use cases in process in Slice 1."
+      "responsibility": "Operator command line: submit, status, timeline, approve, reject, rework, pause, resume, cancel, probe. Calls the same use cases in process in Slice 1.",
+      "external_dependencies": [
+        "ureq[rustls]",
+        "serde_json"
+      ],
+      "external_dependencies_notes": {
+        "ureq": "NEW DIRECT DEPENDENCY FOR THIS APP, pending confirmation by a person (policies/security.yaml, supply_chain.new_direct_dependency). 3.5.0, MIT or Apache-2.0, with default features off and rustls only: the same crate and the same feature set the github and egress crates already use, so nothing is new to Cargo.lock. The command talks to the API over HTTP with a token read from a file (https, or http to a loopback address; no redirects, no proxy, a 30 second timeout). It starts no process (DEP-10): probe runs the composition start-up checks in process and lists the rest as BLOCKED."
+      }
     },
     {
       "name": "egress-sidecar",

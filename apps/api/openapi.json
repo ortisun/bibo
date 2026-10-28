@@ -1,0 +1,386 @@
+{
+  "openapi": "3.0.3",
+  "info": {
+    "title": "Factory API",
+    "version": "1.0.0",
+    "description": "Receives GitHub webhooks, accepts jobs and decisions from people, and answers status and timeline queries. Authority comes from the numeric GitHub id of the principal behind the token, mapped to the protected allowlist. A decision is recorded here and applied by the engine in the worker."
+  },
+  "servers": [{ "url": "/" }],
+  "tags": [
+    { "name": "health" },
+    { "name": "jobs" },
+    { "name": "decisions" },
+    { "name": "webhooks" },
+    { "name": "contract" }
+  ],
+  "paths": {
+    "/healthz": {
+      "get": {
+        "operationId": "liveness",
+        "tags": ["health"],
+        "summary": "The process is running. Never reads the database.",
+        "security": [],
+        "responses": {
+          "200": { "description": "Live.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Live" } } } },
+          "429": { "$ref": "#/components/responses/RateLimited" }
+        }
+      }
+    },
+    "/readyz": {
+      "get": {
+        "operationId": "readiness",
+        "tags": ["health"],
+        "summary": "Every check passes: the schema is not behind the code, the policy is loaded and every port is acceptable to the profile.",
+        "security": [],
+        "responses": {
+          "200": { "description": "Ready.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Ready" } } } },
+          "503": { "description": "Not ready.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Ready" } } } },
+          "429": { "$ref": "#/components/responses/RateLimited" }
+        }
+      }
+    },
+    "/openapi.json": {
+      "get": {
+        "operationId": "openapi",
+        "tags": ["contract"],
+        "summary": "This document.",
+        "security": [],
+        "responses": {
+          "200": { "description": "The OpenAPI document.", "content": { "application/json": { "schema": { "type": "object" } } } },
+          "429": { "$ref": "#/components/responses/RateLimited" }
+        }
+      }
+    },
+    "/v1/jobs": {
+      "post": {
+        "operationId": "submitJob",
+        "tags": ["jobs"],
+        "summary": "Stores a request as a RECEIVED job. Admission is the engine's decision.",
+        "description": "Needs the requester designation. A repeat of the same Idempotency-Key with the same request finds the first job; the same key with a different request is a conflict.",
+        "security": [{ "bearerToken": [] }],
+        "parameters": [{ "$ref": "#/components/parameters/IdempotencyKey" }],
+        "requestBody": {
+          "required": true,
+          "content": { "application/json": { "schema": { "$ref": "#/components/schemas/SubmitJob" } } }
+        },
+        "responses": {
+          "201": { "description": "A new job.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/SubmittedJob" } } } },
+          "200": { "description": "The job this key made before.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/SubmittedJob" } } } },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "408": { "$ref": "#/components/responses/RequestTimeout" },
+          "409": { "$ref": "#/components/responses/Conflict" },
+          "413": { "$ref": "#/components/responses/PayloadTooLarge" },
+          "415": { "$ref": "#/components/responses/UnsupportedMediaType" },
+          "429": { "$ref": "#/components/responses/RateLimited" },
+          "503": { "$ref": "#/components/responses/Unavailable" }
+        }
+      },
+      "get": {
+        "operationId": "listJobs",
+        "tags": ["jobs"],
+        "summary": "The jobs of the caller's tenant, newest first.",
+        "security": [{ "bearerToken": [] }],
+        "parameters": [
+          { "name": "limit", "in": "query", "required": false, "schema": { "type": "integer", "minimum": 1, "maximum": 100, "default": 25 } },
+          { "name": "after", "in": "query", "required": false, "schema": { "type": "string", "maxLength": 200 } }
+        ],
+        "responses": {
+          "200": { "description": "A page of jobs.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/JobPage" } } } },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "429": { "$ref": "#/components/responses/RateLimited" },
+          "503": { "$ref": "#/components/responses/Unavailable" }
+        }
+      }
+    },
+    "/v1/jobs/{job_id}": {
+      "get": {
+        "operationId": "getJob",
+        "tags": ["jobs"],
+        "summary": "The status of a job and of its stage runs.",
+        "description": "A job of another tenant and a job that does not exist have the same answer.",
+        "security": [{ "bearerToken": [] }],
+        "parameters": [{ "$ref": "#/components/parameters/JobId" }],
+        "responses": {
+          "200": { "description": "The job.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Job" } } } },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "429": { "$ref": "#/components/responses/RateLimited" },
+          "503": { "$ref": "#/components/responses/Unavailable" }
+        }
+      }
+    },
+    "/v1/jobs/{job_id}/timeline": {
+      "get": {
+        "operationId": "getJobTimeline",
+        "tags": ["jobs"],
+        "summary": "The state transitions of a job with their reasons, and its audit records, in time order.",
+        "security": [{ "bearerToken": [] }],
+        "parameters": [{ "$ref": "#/components/parameters/JobId" }],
+        "responses": {
+          "200": { "description": "The timeline.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Timeline" } } } },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "429": { "$ref": "#/components/responses/RateLimited" },
+          "503": { "$ref": "#/components/responses/Unavailable" }
+        }
+      }
+    },
+    "/v1/jobs/{job_id}/decisions": {
+      "post": {
+        "operationId": "decideJob",
+        "tags": ["decisions"],
+        "summary": "Records a decision of a person: approve, reject, rework, pause, resume or cancel.",
+        "description": "Approve, reject and rework need the approver designation; pause, resume and cancel need the operator designation (policies/approval.yaml, actions). The designation is read from the allowlist by the numeric GitHub id of the principal behind the token. The decision is recorded and acknowledged with 202; the engine applies it. There is no merge and no deployment.",
+        "security": [{ "bearerToken": [] }],
+        "parameters": [
+          { "$ref": "#/components/parameters/JobId" },
+          { "$ref": "#/components/parameters/IdempotencyKey" }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Decision" } } }
+        },
+        "responses": {
+          "202": { "description": "Recorded.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/DecisionRecorded" } } } },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "408": { "$ref": "#/components/responses/RequestTimeout" },
+          "409": { "$ref": "#/components/responses/Conflict" },
+          "413": { "$ref": "#/components/responses/PayloadTooLarge" },
+          "415": { "$ref": "#/components/responses/UnsupportedMediaType" },
+          "429": { "$ref": "#/components/responses/RateLimited" },
+          "503": { "$ref": "#/components/responses/Unavailable" }
+        }
+      }
+    },
+    "/v1/webhooks/github": {
+      "post": {
+        "operationId": "receiveGithubWebhook",
+        "tags": ["webhooks"],
+        "summary": "A GitHub delivery. Verified on the raw body before anything is parsed.",
+        "description": "The signature is HMAC-SHA256 of the exact bytes received, in X-Hub-Signature-256, compared in constant time against every secret in the rotation window. Every failure of the checks is the same 401. After a valid signature every outcome is 202: a new delivery, a repeat, an unknown installation and an event the factory does not act on look the same.",
+        "security": [{ "githubSignature": [] }],
+        "parameters": [
+          { "name": "X-GitHub-Event", "in": "header", "required": true, "schema": { "type": "string" } },
+          { "name": "X-GitHub-Delivery", "in": "header", "required": true, "schema": { "type": "string", "minLength": 8, "maxLength": 128 } }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": { "application/json": { "schema": { "type": "object" } } }
+        },
+        "responses": {
+          "202": { "description": "Acknowledged.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/WebhookAccepted" } } } },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "408": { "$ref": "#/components/responses/RequestTimeout" },
+          "413": { "$ref": "#/components/responses/PayloadTooLarge" },
+          "429": { "$ref": "#/components/responses/RateLimited" },
+          "503": { "$ref": "#/components/responses/Unavailable" }
+        }
+      }
+    }
+  },
+  "components": {
+    "securitySchemes": {
+      "bearerToken": {
+        "type": "http",
+        "scheme": "bearer",
+        "description": "An opaque token: sfat_ and 43 URL-safe characters. Stored only as a SHA-256 hash, with an audience, an expiry and a revocation time. It identifies a principal and grants no role."
+      },
+      "githubSignature": {
+        "type": "apiKey",
+        "in": "header",
+        "name": "X-Hub-Signature-256",
+        "description": "sha256= and the hex HMAC-SHA256 of the raw body."
+      }
+    },
+    "parameters": {
+      "JobId": { "name": "job_id", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } },
+      "IdempotencyKey": {
+        "name": "Idempotency-Key",
+        "in": "header",
+        "required": true,
+        "description": "1 to 128 characters from A-Z a-z 0-9 . _ : ~ -. A retry with the same key does not repeat the effect.",
+        "schema": { "type": "string", "minLength": 1, "maxLength": 128 }
+      }
+    },
+    "responses": {
+      "BadRequest": { "description": "The request is not valid.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/FieldError" } } } },
+      "Unauthorized": { "description": "No usable credential. One answer for every reason.", "headers": { "WWW-Authenticate": { "schema": { "type": "string" } } }, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
+      "Forbidden": { "description": "Known, and not permitted.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
+      "NotFound": { "description": "No such route or object. Another tenant's object has this answer.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
+      "Conflict": { "description": "The request conflicts with a recorded one.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
+      "PayloadTooLarge": { "description": "The body is over the limit.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
+      "UnsupportedMediaType": { "description": "The content type is not application/json.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
+      "RequestTimeout": { "description": "The body was too slow.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
+      "RateLimited": { "description": "A rate limit is exceeded.", "headers": { "Retry-After": { "schema": { "type": "string" } } }, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
+      "Unavailable": { "description": "The service cannot answer now.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } }
+    },
+    "schemas": {
+      "Error": {
+        "type": "object",
+        "required": ["error"],
+        "additionalProperties": false,
+        "properties": {
+          "error": { "type": "string", "enum": ["bad_request", "unauthorized", "forbidden", "not_found", "method_not_allowed", "conflict", "payload_too_large", "unsupported_media_type", "request_timeout", "rate_limited", "unavailable"] }
+        }
+      },
+      "FieldError": {
+        "type": "object",
+        "required": ["error", "field"],
+        "additionalProperties": false,
+        "properties": {
+          "error": { "type": "string", "enum": ["bad_request"] },
+          "field": { "type": "string" }
+        }
+      },
+      "Live": { "type": "object", "required": ["status"], "properties": { "status": { "type": "string", "enum": ["live"] } } },
+      "Ready": {
+        "type": "object",
+        "required": ["ready", "checks"],
+        "properties": {
+          "ready": { "type": "boolean" },
+          "checks": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["name", "status"],
+              "properties": { "name": { "type": "string" }, "status": { "type": "string", "enum": ["pass", "fail", "blocked"] } }
+            }
+          }
+        }
+      },
+      "SubmitJob": {
+        "type": "object",
+        "required": ["repository_id", "text"],
+        "additionalProperties": false,
+        "properties": {
+          "repository_id": { "type": "string", "format": "uuid", "description": "A repository registered for the caller's tenant." },
+          "text": { "type": "string", "minLength": 1, "description": "The request exactly as written. At most 200 KiB; no control character except line breaks and tabs." },
+          "source_ref": { "type": "string", "maxLength": 2048, "description": "A pointer such as an issue URL. Untrusted like the text." }
+        }
+      },
+      "SubmittedJob": {
+        "type": "object",
+        "required": ["job_id", "status", "repository_id", "correlation_id", "created"],
+        "properties": {
+          "job_id": { "type": "string", "format": "uuid" },
+          "status": { "type": "string" },
+          "repository_id": { "type": "string", "format": "uuid" },
+          "correlation_id": { "type": "string", "format": "uuid" },
+          "created": { "type": "boolean" }
+        }
+      },
+      "Job": {
+        "type": "object",
+        "required": ["job_id", "status", "repository_id", "requester_id", "autonomy_level", "execution_mode", "pipeline_scope", "correlation_id", "created_at", "stages"],
+        "properties": {
+          "job_id": { "type": "string", "format": "uuid" },
+          "status": { "type": "string" },
+          "repository_id": { "type": "string", "format": "uuid" },
+          "requester_id": { "type": "string", "format": "uuid" },
+          "autonomy_level": { "type": "string", "enum": ["L0", "L1", "L2", "L3"] },
+          "execution_mode": { "type": "string", "enum": ["production", "test"] },
+          "pipeline_scope": { "type": "array", "items": { "type": "string" } },
+          "correlation_id": { "type": "string", "format": "uuid" },
+          "created_at": { "type": "string", "format": "date-time" },
+          "terminal_at": { "type": "string", "format": "date-time", "nullable": true },
+          "stages": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["stage_run_id", "kind", "status", "run_number", "created_at"],
+              "properties": {
+                "stage_run_id": { "type": "string", "format": "uuid" },
+                "kind": { "type": "string" },
+                "status": { "type": "string" },
+                "run_number": { "type": "integer" },
+                "created_at": { "type": "string", "format": "date-time" },
+                "finished_at": { "type": "string", "format": "date-time", "nullable": true }
+              }
+            }
+          }
+        }
+      },
+      "JobPage": {
+        "type": "object",
+        "required": ["jobs"],
+        "properties": {
+          "jobs": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["job_id", "status", "repository_id", "created_at"],
+              "properties": {
+                "job_id": { "type": "string", "format": "uuid" },
+                "status": { "type": "string" },
+                "repository_id": { "type": "string", "format": "uuid" },
+                "created_at": { "type": "string", "format": "date-time" }
+              }
+            }
+          },
+          "next": { "type": "string", "nullable": true }
+        }
+      },
+      "Timeline": {
+        "type": "object",
+        "required": ["job_id", "entries", "truncated"],
+        "properties": {
+          "job_id": { "type": "string", "format": "uuid" },
+          "truncated": { "type": "boolean" },
+          "entries": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["at", "kind"],
+              "properties": {
+                "at": { "type": "string", "format": "date-time" },
+                "kind": { "type": "string", "enum": ["transition", "audit"] },
+                "event": { "type": "string" },
+                "transition": { "type": "string" },
+                "reason": { "type": "string", "nullable": true },
+                "action": { "type": "string" },
+                "decision": { "type": "string", "enum": ["allow", "deny", "record"] }
+              }
+            }
+          }
+        }
+      },
+      "Decision": {
+        "type": "object",
+        "required": ["verb"],
+        "additionalProperties": false,
+        "properties": {
+          "verb": { "type": "string", "enum": ["approve", "reject", "rework", "pause", "resume", "cancel"] },
+          "stage_run_id": { "type": "string", "format": "uuid", "description": "Required for approve, reject and rework." },
+          "head": { "type": "string", "description": "The pull request head the person saw: 40 or 64 hex characters. Required for approve." },
+          "evidence": { "type": "string", "description": "The ledger digest the person read: sha256: and 64 hex characters. Required for approve." },
+          "target": { "type": "string", "description": "The stage that gets new work. Required for rework." },
+          "reason": { "type": "string", "maxLength": 2000, "description": "Why. Optional for approve, required for every other verb." }
+        }
+      },
+      "DecisionRecorded": {
+        "type": "object",
+        "required": ["decision_id", "status", "applied"],
+        "properties": {
+          "decision_id": { "type": "string", "format": "uuid" },
+          "status": { "type": "string", "enum": ["recorded"] },
+          "applied": { "type": "boolean", "description": "False: the engine has not applied it yet." }
+        }
+      },
+      "WebhookAccepted": {
+        "type": "object",
+        "required": ["status"],
+        "properties": { "status": { "type": "string", "enum": ["accepted"] } }
+      }
+    }
+  }
+}
