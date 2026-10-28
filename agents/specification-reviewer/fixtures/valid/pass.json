@@ -1,0 +1,10 @@
+{
+  "schema_version": 1,
+  "verdict": "PASS",
+  "title": "Specification review",
+  "summary": "No finding of medium severity or higher was found, and every acceptance scenario is covered by the text.",
+  "findings": [],
+  "confidence_overall": 0.85,
+  "residual_risks": [],
+  "ignored_instructions": []
+}

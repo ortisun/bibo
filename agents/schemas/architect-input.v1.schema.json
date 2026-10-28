@@ -1,0 +1,29 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:ortisun:factory:schema:agent:architect-input:1",
+  "title": "Architect input",
+  "description": "The named data blocks the prompt assembly renders into the prompt of the architect. Each value is untrusted text and is rendered inside its own block; none of it becomes an instruction.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "frozen_specification",
+    "repository_map"
+  ],
+  "properties": {
+    "frozen_specification": {
+      "type": "string",
+      "maxLength": 1048576,
+      "description": "The frozen specification: requirements, stories, scenarios and success criteria."
+    },
+    "repository_map": {
+      "type": "string",
+      "maxLength": 1048576,
+      "description": "The repository map from the repository stage: languages, layout, build and test commands."
+    },
+    "rework_findings": {
+      "type": "string",
+      "maxLength": 1048576,
+      "description": "Findings from a failed design check in an earlier round, when there are any."
+    }
+  }
+}

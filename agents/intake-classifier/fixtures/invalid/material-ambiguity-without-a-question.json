@@ -1,0 +1,17 @@
+{
+  "schema_version": 1,
+  "status": "CLASSIFIED",
+  "request_kind": "feature",
+  "summary": "The request asks for a new output option but does not say which format is wanted.",
+  "domain_tags": [
+    "general-software"
+  ],
+  "risk_hint": "low",
+  "risk_reasons": [],
+  "ambiguity": {
+    "material": true,
+    "questions": []
+  },
+  "confidence": 0.4,
+  "ignored_instructions": []
+}

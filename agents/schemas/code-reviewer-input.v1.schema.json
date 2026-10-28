@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:ortisun:factory:schema:agent:code-reviewer-input:1",
+  "title": "Code reviewer input",
+  "description": "The named data blocks the prompt assembly renders into the prompt of the code reviewer. Each value is untrusted text and is rendered inside its own block; none of it becomes an instruction.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "frozen_specification",
+    "diff",
+    "gate_reports"
+  ],
+  "properties": {
+    "frozen_specification": {
+      "type": "string",
+      "maxLength": 1048576,
+      "description": "The frozen specification."
+    },
+    "diff": {
+      "type": "string",
+      "maxLength": 1048576,
+      "description": "The exported patch that the builder produced."
+    },
+    "gate_reports": {
+      "type": "string",
+      "maxLength": 1048576,
+      "description": "The reports of the deterministic gates that ran on the change."
+    }
+  }
+}

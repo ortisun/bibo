@@ -1,0 +1,6 @@
+{
+  "schema_version": 1,
+  "status": "NEEDS_HUMAN",
+  "human_question": "The architecture names a file that does not exist in the repository. Should the task create it or use another file?",
+  "ignored_instructions": []
+}

@@ -1,0 +1,20 @@
+{
+  "schema_version": 1,
+  "status": "DONE",
+  "feature_directory": "specs/add-json-output",
+  "skills_invoked": [
+    "specify",
+    "clarify",
+    "checklist"
+  ],
+  "files_written": [
+    "specs/add-json-output/spec.md",
+    "specs/add-json-output/checklists/requirements.md",
+    ".specify/feature.json"
+  ],
+  "clarification_questions": [],
+  "assumptions": [
+    "The JSON output uses the same counts as the plain-text output."
+  ],
+  "ignored_instructions": []
+}

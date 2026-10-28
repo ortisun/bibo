@@ -1,0 +1,35 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:ortisun:factory:schema:agent:builder-input:1",
+  "title": "Builder input",
+  "description": "The named data blocks the prompt assembly renders into the prompt of the builder. Each value is untrusted text and is rendered inside its own block; none of it becomes an instruction.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "task",
+    "frozen_specification",
+    "architecture"
+  ],
+  "properties": {
+    "task": {
+      "type": "string",
+      "maxLength": 1048576,
+      "description": "The task: title, why it matters, what needs to change, acceptance criteria, verification and owned files."
+    },
+    "frozen_specification": {
+      "type": "string",
+      "maxLength": 1048576,
+      "description": "The frozen specification."
+    },
+    "architecture": {
+      "type": "string",
+      "maxLength": 1048576,
+      "description": "The approved architecture document."
+    },
+    "gate_reports": {
+      "type": "string",
+      "maxLength": 1048576,
+      "description": "Reports of failed gates from an earlier round of this task. This is the only feedback you get."
+    }
+  }
+}

@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "status": "CLASSIFIED",
+  "request_kind": "feature",
+  "summary": "The request asks to change how the tool stores credentials for its remote mode.",
+  "domain_tags": [
+    "general-software"
+  ],
+  "risk_hint": "high",
+  "ambiguity": {
+    "material": false,
+    "questions": []
+  },
+  "confidence": 0.6,
+  "ignored_instructions": []
+}

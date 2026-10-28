@@ -10,9 +10,10 @@
 #![allow(dead_code)]
 
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use factory_contracts::policy::{PolicyLoader, ProtectedPolicySource, SecurityPolicy};
+use factory_contracts::schema_engine::Schema;
 use serde_json::Value;
 
 use crate::support::{read_text, repo_root};
@@ -83,4 +84,83 @@ pub fn profile_files() -> Vec<ProfileFile> {
 pub fn profile_value(file: &ProfileFile) -> Value {
     serde_json::from_str(&file.text)
         .unwrap_or_else(|e| panic!("{} is not JSON: {e}", file.path.display()))
+}
+
+/// The output schema each agent returns, by agent directory name. The manifests must agree.
+pub const OUTPUT_SCHEMA_OF: [(&str, &str); 9] = [
+    ("intake-classifier", "intake-classification"),
+    ("specification-writer", "specification-report"),
+    ("specification-reviewer", "review-findings"),
+    ("architect", "architecture-design"),
+    ("planner", "planner-result"),
+    ("builder", "builder-report"),
+    ("code-reviewer", "review-findings"),
+    ("documentation-writer", "documentation-report"),
+    ("documentation-reviewer", "review-findings"),
+];
+
+/// The file of an agent input or output schema: `agents/schemas/<name>.v<version>.schema.json`.
+pub fn agent_schema_path(name: &str, version: u64) -> PathBuf {
+    agents_dir()
+        .join("schemas")
+        .join(format!("{name}.v{version}.schema.json"))
+}
+
+/// Compiles an agent schema with the crate's own closed schema engine.
+pub fn compile_schema(path: &Path) -> Schema {
+    Schema::compile_text(&read_text(path))
+        .unwrap_or_else(|e| panic!("{} does not compile: {e}", path.display()))
+}
+
+/// The violations of `instance` against `schema`, each as `path: message`.
+pub fn violations(schema: &Schema, instance: &Value) -> Vec<String> {
+    schema
+        .validate(instance)
+        .0
+        .into_iter()
+        .map(|v| format!("{}: {}", v.path, v.message))
+        .collect()
+}
+
+/// A fixture: its file name without the extension, and the JSON it holds.
+pub struct Fixture {
+    pub name: String,
+    pub value: Value,
+}
+
+/// Like [`fixtures`], but fails when there are none, so a loop over the result cannot pass
+/// without checking anything.
+pub fn some_fixtures(agent: &str, kind: &str) -> Vec<Fixture> {
+    let found = fixtures(agent, kind);
+    assert!(
+        !found.is_empty(),
+        "{agent} has no fixture under fixtures/{kind}/"
+    );
+    found
+}
+
+/// The fixtures of an agent in `agents/<agent>/fixtures/<kind>/`, where `kind` is `valid` or
+/// `invalid`, sorted by name.
+pub fn fixtures(agent: &str, kind: &str) -> Vec<Fixture> {
+    let dir = agents_dir().join(agent).join("fixtures").join(kind);
+    let mut found: Vec<Fixture> = fs::read_dir(&dir)
+        .map(|entries| {
+            entries
+                .filter_map(Result::ok)
+                .map(|e| e.path())
+                .filter(|p| p.extension().is_some_and(|e| e == "json"))
+                .map(|p| Fixture {
+                    name: p
+                        .file_stem()
+                        .and_then(|n| n.to_str())
+                        .unwrap_or_default()
+                        .to_owned(),
+                    value: serde_json::from_str(&read_text(&p))
+                        .unwrap_or_else(|e| panic!("{} is not JSON: {e}", p.display())),
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    found.sort_by(|a, b| a.name.cmp(&b.name));
+    found
 }

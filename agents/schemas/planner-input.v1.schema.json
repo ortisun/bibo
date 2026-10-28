@@ -1,0 +1,41 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:ortisun:factory:schema:agent:planner-input:1",
+  "title": "Planner input",
+  "description": "The named data blocks the prompt assembly renders into the prompt of the planner. Each value is untrusted text and is rendered inside its own block; none of it becomes an instruction.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "frozen_specification",
+    "architecture",
+    "repository_map",
+    "plan_metadata"
+  ],
+  "properties": {
+    "frozen_specification": {
+      "type": "string",
+      "maxLength": 1048576,
+      "description": "The frozen specification."
+    },
+    "architecture": {
+      "type": "string",
+      "maxLength": 1048576,
+      "description": "The approved architecture document."
+    },
+    "repository_map": {
+      "type": "string",
+      "maxLength": 1048576,
+      "description": "The repository map from the repository stage."
+    },
+    "plan_metadata": {
+      "type": "string",
+      "maxLength": 1048576,
+      "description": "The identifiers, hashes and time the factory assigned to this plan. Copy them unchanged into `metadata`."
+    },
+    "rework_findings": {
+      "type": "string",
+      "maxLength": 1048576,
+      "description": "Findings from a failed plan check in an earlier round, when there are any."
+    }
+  }
+}
