@@ -510,3 +510,14 @@ These are the places where the database is as far as it goes and something outsi
 | `attempts_within_stage_run_limit` right after a human answered | The answer did not move the run from `WAITING_FOR_HUMAN` to `READY` (S13), so the window did not restart |
 | `jobs_version_bump` after an append | The update changed something besides the head pointer without raising the version by one |
 | A `40P01` deadlock between a decision and a start | A transaction took its locks out of the order job, stage run, attempt, task node |
+
+## From the review at realistic volume (`s1-database-review`, 2026-10-28)
+
+Measured, with the numbers and the method in [performance.md](performance.md) and [operating-settings.md](operating-settings.md). Three changes belong to this crate; none is made here.
+
+1. **Send the three transaction settings in one statement.** `start` in `tx.rs` sends `set_config('factory.tenant_id', ...)` and then a second `set_config` for the two timeouts. One statement, `SELECT set_config('factory.tenant_id', $1, true), set_config('statement_timeout', $2, true), set_config('lock_timeout', $3, true)`, does both: it saves one round trip, 24 microseconds on loopback and 0.3 to 1 ms across a network. The tenant must still be set before any other statement; it is.
+2. **Run `resolve_token`, `resolve_installation` and `schema_version` inside a short transaction that sets the limits**, like every other call. They run today on a bare pooled connection with no `statement_timeout` and no `lock_timeout`.
+3. **Make `refuses_a_role_that_bypasses_rls` delete a migration version the code embeds**, not the newest row of `__diesel_schema_migrations`. Once the schema is ahead of the code, the newest row is not one the code lists and the test stops proving that a database behind the code is refused (it failed for the earlier code at every schema from 15 on).
+
+Also from the review: the claim slows when many READY runs belong to jobs that are not `ACTIVE` (finding F-01 of [../reviews/database-review.md](../reviews/database-review.md)); nothing for the crate to do, but a count of READY runs of non-active jobs is worth exporting as a metric.
+

@@ -8,7 +8,7 @@
 ## Run it
 
 ```bash
-scripts/db-perf.sh                                   # 100,000 rows in each hot table, about 15 minutes
+scripts/db-perf.sh                                   # 100,000 rows in each hot table, about 25 minutes
 scripts/db-perf.sh --rows 20000 --quick              # a smoke run, about 2 minutes
 scripts/db-perf.sh --report r.json --markdown r.md   # the machine-readable report and the table
 scripts/db-perf.sh --prototype partitions            # the partitioning prototypes (retention-and-partitioning.md)
