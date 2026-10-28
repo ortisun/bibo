@@ -295,7 +295,11 @@ mod tests {
             package("c", "1.0.0", "cc"),
         ]);
         let mut moved = package("c", "1.0.0", "cc");
-        moved.origin = Origin::Git("example.test".to_owned());
+        moved.origin = Origin::Git {
+            host: "example.test".to_owned(),
+            repository: "/org/c".to_owned(),
+            revision: "1".to_owned(),
+        };
         let head = lock(vec![
             package("a", "1.1.0", "xx"),
             package("b", "1.0.0", "other"),
@@ -366,6 +370,39 @@ mod tests {
         let diff = LockDiff::between(&base, &head);
         assert_eq!(diff.changed.len(), 1);
         assert_eq!(diff.changed[0].kind, ChangeKind::SourceChanged);
+    }
+
+    fn from_git(name: &str, repository: &str, revision: &str) -> LockedPackage {
+        LockedPackage {
+            name: name.to_owned(),
+            version: "1.0.0".to_owned(),
+            origin: Origin::Git {
+                host: "example.test".to_owned(),
+                repository: repository.to_owned(),
+                revision: revision.to_owned(),
+            },
+            checksum: None,
+            dependencies: Vec::new(),
+        }
+    }
+
+    /// A package that stays a git package on the same host, with the same name and version and no
+    /// checksum, is still another package when the repository or the revision changed: the code
+    /// is not the code the base commit had.
+    #[test]
+    fn a_git_package_on_the_same_host_in_another_repository_or_revision_is_a_source_change() {
+        let base = lock(vec![from_git("odd", "/org/odd", "1111")]);
+        let same = LockDiff::between(&base, &base.clone());
+        assert!(same.is_empty());
+        for (repository, revision, what) in [
+            ("/someone-else/odd", "1111", "another repository"),
+            ("/org/odd", "2222", "another revision"),
+        ] {
+            let diff = LockDiff::between(&base, &lock(vec![from_git("odd", repository, revision)]));
+            assert!(!diff.is_empty(), "{what} looks unchanged");
+            assert_eq!(diff.changed.len(), 1, "{what}");
+            assert_eq!(diff.changed[0].kind, ChangeKind::SourceChanged, "{what}");
+        }
     }
 
     #[test]

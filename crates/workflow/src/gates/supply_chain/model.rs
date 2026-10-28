@@ -58,8 +58,18 @@ pub enum Origin {
     Registry,
     /// Another registry. The text is its host.
     OtherRegistry(String),
-    /// A git repository. The text is its host.
-    Git(String),
+    /// A git repository. The host alone is not an identity: a package that stays a git package
+    /// on the same host and moves to another repository or another revision is another source,
+    /// and a git package has no checksum to show it.
+    Git {
+        /// The host, without credentials or port.
+        host: String,
+        /// The repository: the path of the URL, without credentials, query or fragment.
+        repository: String,
+        /// The revision the lockfile pins: the commit after `#` and, when the lockfile names none,
+        /// the selector after `?` (`rev=`, `tag=`, `branch=`).
+        revision: String,
+    },
     /// A path: a workspace member, or a path dependency. The lockfile cannot tell them apart.
     Path,
     /// A source the reader does not know.
@@ -79,7 +89,9 @@ impl Origin {
         match self {
             Self::Registry => "the default registry".to_owned(),
             Self::OtherRegistry(host) => format!("another registry ({host})"),
-            Self::Git(host) => format!("a git repository ({host})"),
+            Self::Git {
+                host, repository, ..
+            } => format!("a git repository ({host}{repository})"),
             Self::Path => "a path".to_owned(),
             Self::Unknown => "an unknown source".to_owned(),
         }
