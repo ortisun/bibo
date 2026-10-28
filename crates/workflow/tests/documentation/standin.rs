@@ -505,7 +505,13 @@ pub fn register_around(
             StageKind::Specification,
             "stage-contract.specification",
             "stage.specification",
-            vec![("specification-contract", SPECIFICATION.as_bytes().to_vec())],
+            vec![(
+                "specification-contract",
+                options
+                    .specification
+                    .clone()
+                    .unwrap_or_else(|| SPECIFICATION.as_bytes().to_vec()),
+            )],
         ),
         fixed(
             StageKind::Architecture,

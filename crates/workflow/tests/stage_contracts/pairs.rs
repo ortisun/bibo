@@ -8,7 +8,10 @@
 //! |---|---|---|
 //! | `INTAKE` to `REPOSITORY_INTELLIGENCE` | real to real | `pair_intake_to_repository_intelligence` |
 //! | `REPOSITORY_INTELLIGENCE` to `ARCHITECTURE`, `TASK_PLANNING`, `IMPLEMENTATION` | real to real reader | `pair_repository_intelligence_to_its_readers` |
-//! | `SPECIFICATION` to its readers | **pending**: the producer is a placeholder | `pair_specification_is_pending` |
+//! | `INTAKE` to `SPECIFICATION` | real to real | `pair_intake_to_specification` |
+//! | `REPOSITORY_INTELLIGENCE` to `SPECIFICATION` | real to real reader | `pair_repository_intelligence_to_its_readers` |
+//! | `SPECIFICATION` to `ARCHITECTURE`, `TASK_PLANNING`, `IMPLEMENTATION`, `VALIDATION`, `REVIEW`, `DOCUMENTING`, `DOCUMENTATION_REVIEW`, `DELIVERY`, `APPROVAL` | real to real | `pair_specification_to_the_stages_that_read_it` |
+//! | `DOMAIN_DISCOVERY` to its readers | **pending**: the producer is a placeholder | `pair_domain_discovery_is_pending` |
 //! | `ARCHITECTURE` to `TASK_PLANNING` | real to real | `pair_architecture_to_task_planning` |
 //! | `TASK_PLANNING` to `IMPLEMENTATION` | real to real reader | `pair_task_planning_to_implementation` |
 //! | `IMPLEMENTATION` to `VALIDATION` | real to real contract | `pair_implementation_to_validation` |
@@ -41,12 +44,8 @@ use factory_workflow::stages::review::evidence::Evidence;
 use factory_workflow::stages::validation::Binding;
 use serde_json::Value;
 
-use crate::chain::{Intake, Pipeline, Planned, Universe};
+use crate::chain::{Intake, Pipeline, Planned, Specified, Universe};
 use crate::deliver::{Delivery, Ran, validation_handler};
-
-const SPECIFICATION_EXAMPLE: &str = include_str!(
-    "../../../../schemas/examples/specification-contract/valid/approved-json-output-flag.json"
-);
 
 fn text(bytes: &[u8]) -> &str {
     std::str::from_utf8(bytes).expect("a stored document is UTF-8")
@@ -74,7 +73,10 @@ pub struct Whole {
 
 impl Whole {
     pub async fn run() -> Self {
-        let pipeline = Pipeline::documented().await;
+        Self::on(Pipeline::documented().await).await
+    }
+
+    pub async fn on(pipeline: Pipeline) -> Self {
         let (delivered, approved) = {
             let delivery = Delivery::over(&pipeline).await;
             let handler = delivery.delivery_handler();
@@ -135,22 +137,167 @@ async fn pair_repository_intelligence_to_its_readers() {
     // Architecture, task planning and implementation all read the commit the map was read at.
     let commit = implementation_input::map_commit(&map.bytes).expect("the map names its commit");
     assert_eq!(document["commit_sha"], commit.as_str());
+    // The specification stage reads the same commit with the same reader.
+    let by_specification =
+        factory_workflow::stages::specification::input::map_commit(&map.bytes).expect("a commit");
+    assert_eq!(by_specification, commit);
     // The name is the one the three readers ask for.
     assert_eq!(map.name, implementation_input::REPOSITORY_MAP);
 }
 
 #[test]
-fn pair_specification_is_pending() {
-    // No producer exists, so the pair is not run. What can be checked is that the readers accept a
-    // document that follows the contract of the specification, under the name they all ask for.
-    let specification =
-        SpecificationContract::from_json_str(SPECIFICATION_EXAMPLE).expect("a valid specification");
-    assert!(specification.metadata.spec_version.get() >= 1);
+fn pair_domain_discovery_is_pending() {
+    // No producer exists, so the pair is not run. The name the readers ask for is the one the
+    // registry expects, and the readers (documenting and architecture) read it only when it exists.
     assert!(
         crate::registry::PENDING
             .iter()
-            .any(|(stage, name)| *stage == StageKind::Specification
-                && *name == implementation_input::SPECIFICATION_CONTRACT)
+            .any(|(stage, name)| *stage == StageKind::DomainDiscovery
+                && *name == factory_workflow::stages::documenting::DOMAIN_PROFILE)
+    );
+}
+
+#[tokio::test]
+async fn pair_intake_to_specification() {
+    let intake = Intake::run().await;
+    let request = intake.real(StageKind::Intake, "normalized-request");
+    let specified = Specified::from_request(request.bytes.clone()).await;
+    // The real specification stage was run on the very bytes the real intake stage stored: the
+    // contract it was resolved with pins the same content hash.
+    assert_eq!(
+        pinned(
+            &specified.universe,
+            StageKind::Specification,
+            "normalized-request"
+        ),
+        request.artifact.sha256
+    );
+    // The stage reads a title and a description from the document, and the feature directory it
+    // chose comes from that title.
+    let document = request.json();
+    let title = document["title"].as_str().expect("a title");
+    assert!(document["description"].is_string());
+    let stored: Value = serde_json::from_slice(&specified.specification).expect("JSON");
+    let directory = stored["provenance"]["feature_directory"]
+        .as_str()
+        .expect("a feature directory");
+    let short: String = title
+        .chars()
+        .filter(char::is_ascii_alphanumeric)
+        .take(3)
+        .collect::<String>()
+        .to_ascii_lowercase();
+    assert!(
+        directory.starts_with("specs/") && directory.contains(&short),
+        "{directory} for {title}"
+    );
+}
+
+#[tokio::test]
+async fn pair_specification_to_the_stages_that_read_it() {
+    use factory_domain::contracts::specification_contract::SpecStatus;
+    use factory_workflow::stages::specification::{
+        Evidence as SpecificationEvidence, SPECIFICATION_CONTRACT,
+    };
+
+    let specified = Specified::run().await;
+    let stored = specified
+        .universe
+        .real(StageKind::Specification, SPECIFICATION_CONTRACT);
+    let sha = stored.artifact.sha256.clone();
+    let contract = SpecificationContract::from_json_str(text(&stored.bytes))
+        .expect("the stored specification follows its contract");
+    contract.validate().expect("and breaks none of its rules");
+
+    // What the validation stage relies on: a frozen specification, approved by a person, whose
+    // requirements each name the scenarios that cover them.
+    assert_eq!(contract.metadata.status, SpecStatus::Approved);
+    assert!(contract.metadata.approved_by.is_some());
+    assert!(contract.requirements.iter().next().is_some());
+    for requirement in contract.requirements.iter() {
+        assert!(
+            requirement.acceptance_scenario_ids.iter().next().is_some(),
+            "{} names no scenario",
+            requirement.id.as_str()
+        );
+    }
+    // The other deliverable of the stage reads back with the stage's own reader.
+    let evidence = specified
+        .universe
+        .real(StageKind::Specification, "specification-evidence");
+    SpecificationEvidence::from_json(&evidence.json()).expect("the evidence reads back");
+
+    // The stages after it ran on exactly these bytes, under contracts that pin their hash.
+    let pipeline = Pipeline::documented_with(specified.specification.clone()).await;
+    let planned = Planned::run_with(specified.specification.clone()).await;
+    for consumer in [StageKind::Architecture, StageKind::TaskPlanning] {
+        assert_eq!(pinned(&planned, consumer, SPECIFICATION_CONTRACT), sha);
+    }
+    for consumer in [
+        StageKind::Implementation,
+        StageKind::Review,
+        StageKind::Documenting,
+        StageKind::DocumentationReview,
+    ] {
+        assert_eq!(
+            pinned(&pipeline, consumer, SPECIFICATION_CONTRACT),
+            sha,
+            "{consumer}"
+        );
+    }
+    assert_eq!(pipeline.specification, specified.specification);
+    assert_eq!(
+        pipeline
+            .find(StageKind::Specification, SPECIFICATION_CONTRACT)
+            .bytes,
+        specified.specification
+    );
+    let gate = pipeline
+        .real(StageKind::DocumentationReview, "documentation-gate-report")
+        .json();
+    assert_eq!(gate["binding"]["specification_sha256"], sha.as_str());
+
+    // The validation stage resolves its contract on it and pins it.
+    let delivery = Delivery::over(&pipeline).await;
+    let resolved = delivery
+        .contract(
+            &validation_handler(),
+            StageKind::Validation,
+            &pipeline.upstream(),
+        )
+        .expect("the validation stage finds the specification");
+    let input = resolved
+        .inputs
+        .iter()
+        .find(|input| input.name.as_str() == SPECIFICATION_CONTRACT)
+        .expect("the specification is an input");
+    assert_eq!(input.artifact.sha256, sha);
+
+    // The delivery stage reads it in its dossier, and the approval stage shows its version.
+    let whole = Whole::on(pipeline).await;
+    let delivery = Delivery::over(&whole.pipeline).await;
+    let handler = delivery.delivery_handler();
+    let upstream = delivery.upstream_of_delivery();
+    let contract_of_delivery = delivery
+        .contract(&handler, StageKind::Delivery, &upstream)
+        .expect("the delivery stage finds the specification");
+    let dossier = delivery_input::read(
+        &*whole.pipeline.rig.artifacts,
+        &whole.pipeline.scope(),
+        &contract_of_delivery,
+    )
+    .await
+    .expect("the delivery stage reads the specification the real stage stored");
+    assert_eq!(dossier.specification_sha256, sha);
+    assert_eq!(
+        dossier.specification.metadata.spec_version,
+        contract.metadata.spec_version
+    );
+    let request = ApprovalRequest::from_json(&whole.approved.find("approval-request").json())
+        .expect("a request");
+    assert_eq!(
+        u64::from(request.spec_version),
+        u64::try_from(contract.metadata.spec_version.get()).expect("a version")
     );
 }
 

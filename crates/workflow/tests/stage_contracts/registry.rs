@@ -18,24 +18,25 @@ use factory_workflow::handlers::UpstreamRun;
 use factory_workflow::stages::{architecture, documenting, implementation};
 use serde_json::Value;
 
-use crate::chain::{Intake, Pipeline, Planned};
+use crate::chain::{Intake, Pipeline, Planned, Specified};
 use crate::deliver::{Delivery, validation_handler};
 
 /// Stages whose module is a placeholder in this checkout, with the deliverable the stages after
 /// them read by name. The producer cannot be run, so the pair is **pending**: the expected name is
 /// taken from the constants of the consumers, and `the_pending_producers_are_still_placeholders`
-/// fails the day a producer exists and this list is not emptied.
-pub const PENDING: [(StageKind, &str); 2] = [
-    (
-        StageKind::Specification,
-        implementation::input::SPECIFICATION_CONTRACT,
-    ),
-    (StageKind::DomainDiscovery, documenting::DOMAIN_PROFILE),
-];
+/// fails the day a producer exists and this list is not emptied. The specification stage was in
+/// this list until its package was merged; it is run for real in `chain::Specified`.
+pub const PENDING: [(StageKind, &str); 1] =
+    [(StageKind::DomainDiscovery, documenting::DOMAIN_PROFILE)];
 
 /// Deliverables that are stored and never read by a stage of this crate. Each is a record for a
 /// person or for the audit, or is read outside this crate.
-pub const TERMINAL: [(StageKind, &str, &str); 10] = [
+pub const TERMINAL: [(StageKind, &str, &str); 11] = [
+    (
+        StageKind::Specification,
+        "specification-evidence",
+        "read by the stage's own gates, which judge what the host measured",
+    ),
     (
         StageKind::Intake,
         "intake-decision",
@@ -99,7 +100,11 @@ pub const OTHER_READS: [(StageKind, &str, StageKind); 1] = [(
 
 /// Optional deliverables that a later stage requires. Each producer's gate fails when the
 /// deliverable is absent, so a passed run always has it.
-pub const OPTIONAL_BUT_GATED: [(StageKind, &str); 3] = [
+pub const OPTIONAL_BUT_GATED: [(StageKind, &str); 4] = [
+    (
+        StageKind::Specification,
+        implementation::input::SPECIFICATION_CONTRACT,
+    ),
     (StageKind::TaskPlanning, implementation::input::TASK_PLAN),
     (StageKind::Review, "review-verdict"),
     (StageKind::DocumentationReview, "documentation-review"),
@@ -152,8 +157,9 @@ pub async fn rows() -> Vec<Row> {
     let docs = Pipeline::documented().await;
     let intake = Intake::run().await;
     let planned = Planned::run().await;
+    let specified = Specified::run().await.universe;
     let mut rows = Vec::new();
-    for universe in [&*docs, &intake, &planned] {
+    for universe in [&*docs, &intake, &specified, &planned] {
         let upstream = universe.upstream();
         for &kind in &universe.real {
             rows.push(row(kind, universe.contract_of(kind), &upstream));
@@ -361,29 +367,32 @@ async fn every_deliverable_nobody_reads_is_listed_as_terminal() {
     );
 }
 
-/// The pending producers are still pending. The day a package replaces the placeholder of the
-/// specification or domain discovery stage, this fails, and the pair has to be tested for real:
-/// empty `PENDING`, run the stage in `chain`, and cover the pair in `pairs`.
+/// The pending producer is still pending. The day a package replaces the placeholder of the domain
+/// discovery stage, this fails, and the pair has to be tested for real: empty `PENDING`, run the
+/// stage in `chain`, and cover its pairs in `pairs`. The specification stage was replaced, and the
+/// second test says so, so that it cannot go back to a placeholder unseen.
 #[test]
 fn the_pending_producers_are_still_placeholders() {
     const PLACEHOLDER: &str =
         "Placeholder so that the module line declared by the engine package compiles.";
-    for (stage, source) in [
-        (
-            StageKind::Specification,
-            include_str!("../../src/stages/specification/mod.rs"),
-        ),
-        (
-            StageKind::DomainDiscovery,
-            include_str!("../../src/stages/domain_discovery/mod.rs"),
-        ),
-    ] {
-        assert!(
-            source.contains(PLACEHOLDER),
-            "the {stage} module is no longer a placeholder: run it in `chain`, empty PENDING, and cover its pairs"
-        );
-    }
-    assert_eq!(PENDING.len(), 2);
+    let source = include_str!("../../src/stages/domain_discovery/mod.rs");
+    assert!(
+        source.contains(PLACEHOLDER),
+        "the DOMAIN_DISCOVERY module is no longer a placeholder: run it in `chain`, empty PENDING, and cover its pairs"
+    );
+    assert_eq!(PENDING, [(StageKind::DomainDiscovery, "domain-profile")]);
+}
+
+#[test]
+fn the_specification_stage_is_real_and_is_not_pending() {
+    const PLACEHOLDER: &str =
+        "Placeholder so that the module line declared by the engine package compiles.";
+    assert!(!include_str!("../../src/stages/specification/mod.rs").contains(PLACEHOLDER));
+    assert!(
+        !PENDING
+            .iter()
+            .any(|(stage, _)| *stage == StageKind::Specification)
+    );
 }
 
 #[test]
