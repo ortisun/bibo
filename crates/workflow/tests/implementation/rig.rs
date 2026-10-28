@@ -327,6 +327,9 @@ impl WorkspaceAgentSpecs for RigSpecs {
     ) -> Result<SandboxSpec, SeamError> {
         let profile = lock(&self.profile).unwrap_or(SandboxProfile::Agent);
         let mut spec = sandbox_spec(&Ids::new(), profile);
+        // A spec for another profile still carries the job token, so that the profile is the only
+        // thing about it that is wrong.
+        spec.job_token = sandbox_spec(&Ids::new(), SandboxProfile::Agent).job_token;
         spec.job = job;
         spec.attempt = attempt;
         lock(&self.dirs).push(mounts.workspace.clone());
@@ -790,6 +793,7 @@ impl SandboxProvider for SpySandbox {
         cancel: &dyn CancelSignal,
     ) -> Result<Box<dyn SandboxSession>, SandboxError> {
         let profile = spec.profile.as_str();
+        note(&self.log, format!("sandbox.attempt:{profile}"));
         let inner = self.inner.create_verified(spec, cancel).await?;
         note(&self.log, format!("sandbox.create:{profile}"));
         Ok(Box::new(SpySession {

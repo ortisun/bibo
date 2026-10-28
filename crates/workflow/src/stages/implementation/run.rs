@@ -69,7 +69,12 @@ struct Shared {
     architecture: Vec<u8>,
     architecture_sha: Sha256Digest,
     feedback: Option<String>,
+    /// The answers people gave to a question of this stage run, as text for the task block.
+    answers: String,
 }
+
+/// The most bytes of one human answer that go into a prompt.
+const ANSWER_MAX_BYTES: usize = 8 * 1024;
 
 /// One unit of work for the builder.
 struct Unit {
@@ -299,6 +304,7 @@ pub(super) async fn execute(
         architecture,
         architecture_sha: arch_ref.sha256.clone(),
         feedback: rework.as_ref().map(super::feedback::render),
+        answers: human_answers(ctx).await?,
     };
 
     let repo = ports
@@ -430,6 +436,30 @@ pub(super) async fn execute(
         permission_denials: tally.denials,
         ..StageOutput::default()
     })
+}
+
+/// The answers people gave to a question of this stage run, oldest first. The builder asked for a
+/// decision with `NEEDS_HUMAN`; the answer is untrusted text and goes into the task block.
+async fn human_answers(ctx: &StageContext<'_>) -> Result<String, StageError> {
+    let scope = TenantScope::new(ctx.identity.tenant);
+    let mut text = String::new();
+    for (index, answer) in ctx.human_inputs.iter().enumerate() {
+        let bytes = ctx
+            .ports
+            .artifacts
+            .get(&scope, answer)
+            .await
+            .map_err(|_| StageError::Tool)?;
+        let bounded = bytes
+            .get(..bytes.len().min(ANSWER_MAX_BYTES))
+            .unwrap_or(&bytes);
+        text.push_str(&format!(
+            "\n\nAnswer {} from a person to your question:\n{}",
+            index + 1,
+            String::from_utf8_lossy(bounded)
+        ));
+    }
+    Ok(text)
 }
 
 /// The units of work: the tasks of the plan in order, or, for a rework run, the one task that
@@ -712,7 +742,7 @@ async fn build_in(
                 ContentClass::ModelOutput,
                 artifact("task-plan", &shared.plan_sha),
                 tenant,
-                unit.text.clone().into_bytes(),
+                format!("{}{}", unit.text, shared.answers).into_bytes(),
             )
             .fetched_at(now),
             Input::untrusted(

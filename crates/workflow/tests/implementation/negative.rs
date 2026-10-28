@@ -363,3 +363,53 @@ async fn the_stage_budget_stops_the_next_task_and_keeps_the_commits() {
     assert_eq!(statuses[1].1, TaskNodeStatus::Pending);
     assert_eq!(rig.ledger.commits(run).len(), 1);
 }
+
+/// The builder asks a question, a person answers it, and the answer reaches the next run of the
+/// builder as data in its task block.
+#[tokio::test]
+async fn a_person_answer_reaches_the_builder_that_asked() {
+    let rig = Rig::new().await;
+    rig.run_until_implementation().await;
+    let mut ask = done(FIRST, &["src/main.rs"]);
+    ask["status"] = json!("NEEDS_HUMAN");
+    ask["human_question"] = json!("Which flag name does the specification mean?");
+    ask["files_changed"] = json!([]);
+    rig.builder_will(vec![], ask);
+    assert_eq!(rig.run_next().await.1, AttemptOutcome::NeedsHuman);
+    let operator = rig
+        .world
+        .person(
+            "operator-1",
+            &[factory_domain::vocabulary::HumanRole::Operator],
+        )
+        .await;
+    let run = rig.run_of(StageKind::Implementation).await;
+    rig.engine
+        .decide(
+            &rig.world.actor(operator),
+            factory_workflow::commands::Subject {
+                job: rig.job,
+                stage_run: run,
+            },
+            factory_workflow::commands::Decision::Answer {
+                text: "Use the flag named --json.".to_owned(),
+                raises_budget_ceiling: false,
+            },
+        )
+        .await
+        .expect("the answer applies");
+    rig.builder_does_the_plan();
+    assert_eq!(rig.run_next().await.1, AttemptOutcome::Succeeded);
+    let prompts = rig.runtime.prompts("builder");
+    let first = &prompts[0].instructions;
+    let second = &prompts[1].instructions;
+    assert!(!first.contains("Use the flag named --json."));
+    let answer_line = second
+        .lines()
+        .find(|line| line.contains("Use the flag named --json."))
+        .expect("the answer is in the prompt");
+    assert!(
+        answer_line.starts_with("> "),
+        "it is quoted data: {answer_line}"
+    );
+}

@@ -356,6 +356,7 @@ async fn a_reviewer_never_gets_write_access() {
             _ => {}
         }
         let sandboxes = rig.events_of("sandbox.create").len();
+        let attempts = rig.events_of("sandbox.attempt").len();
         rig.reviewer_returns(pass());
         let (claimed, outcome) = rig.run_next().await;
         assert_eq!(claimed.kind, StageKind::Review);
@@ -373,6 +374,13 @@ async fn a_reviewer_never_gets_write_access() {
             rig.events_of("sandbox.create").len(),
             sandboxes,
             "{sabotage}"
+        );
+        // The stage refuses a manifest with a tool that writes, and a spec for another profile or
+        // workspace, itself. It never asks the sandbox port for a sandbox it would then refuse.
+        assert_eq!(
+            rig.events_of("sandbox.attempt").len(),
+            attempts,
+            "{sabotage}: the stage asked the port for a sandbox"
         );
         assert_eq!(rig.runtime.runs("code-reviewer"), 0, "{sabotage}");
         assert_eq!(

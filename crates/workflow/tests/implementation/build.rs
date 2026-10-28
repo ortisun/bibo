@@ -238,6 +238,12 @@ async fn agent_runs_only_in_the_sandbox() {
             rig.events_of("sandbox.create").is_empty(),
             "{sabotage}: no sandbox was made"
         );
+        // The stage refuses a spec for another profile, or one that mounts something other than
+        // the workspace it made, itself, before it asks the sandbox port.
+        assert!(
+            rig.events_of("sandbox.attempt").is_empty(),
+            "{sabotage}: the stage asked the port for a sandbox it should have refused"
+        );
         assert!(
             rig.events_of("runtime.run").is_empty(),
             "{sabotage}: the builder did not run"
