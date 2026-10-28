@@ -39,7 +39,6 @@ fn policy_redactor() -> Redactor {
 /// `StoreAuthority::designations` reads the entry's `repositories` and drops it, so the narrowing
 /// grants nothing less than the whole tenant.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[ignore = "confirmed defect API-1: an allowlist entry narrowed to some repositories still grants its designation on every repository of the tenant"]
 async fn api_1_a_designation_narrowed_to_one_repository_does_not_reach_another() {
     let env = Env::start().await;
     let a = env.a.clone();

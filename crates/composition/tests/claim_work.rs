@@ -78,7 +78,7 @@ struct PermitsEveryone;
 
 #[async_trait(?Send)]
 impl DecisionAuthority for PermitsEveryone {
-    async fn permits(&self, _: TenantId, _: u64, _: Verb) -> Result<bool, Unreadable> {
+    async fn permits(&self, _: TenantId, _: u64, _: Verb, _: &str) -> Result<bool, Unreadable> {
         Ok(true)
     }
 }
@@ -88,7 +88,7 @@ struct Unreadable_;
 
 #[async_trait(?Send)]
 impl DecisionAuthority for Unreadable_ {
-    async fn permits(&self, _: TenantId, _: u64, _: Verb) -> Result<bool, Unreadable> {
+    async fn permits(&self, _: TenantId, _: u64, _: Verb, _: &str) -> Result<bool, Unreadable> {
         Err(Unreadable)
     }
 }
@@ -530,6 +530,87 @@ async fn a_person_who_left_the_allowlist_since_the_api_checked_is_refused_and_no
     assert_eq!(rig.trail(job).await, [REQUESTED, REJECTED]);
     let reason = rig.reason_of(job, REJECTED).await.expect("a reason");
     assert_eq!(reason, "The person may not take this decision now.");
+}
+
+/// API-1 at apply time (R-14, R-4): the narrowing of an allowlist entry is read when the worker
+/// applies the decision, not when the API recorded it. An operator who was narrowed to some other
+/// repository after the request was made is refused, and nothing moves. The same entry narrowed to
+/// the job's own repository (spelled in another case) still works.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_operator_narrowed_to_another_repository_since_the_request_is_refused_at_apply_time() {
+    let rig = Rig::new().await;
+    let job = rig.active().await;
+    rig.request(rig.operator, job, Verb::Pause, None, None, "a short stop")
+        .await;
+    // Narrowed, after the API let the request in, to a repository that is not the job's.
+    std::fs::write(
+        rig.checkout.join("allowlist/allowlist.yaml"),
+        format!(
+            "{}    repositories: [\"org/somewhere-else\"]\n",
+            allowlist_text(rig.tenant, &[(OPERATOR, "operator-one", "operator")])
+        ),
+    )
+    .expect("narrowed");
+    rig.hook().pass(rig.tenant).await;
+    assert_eq!(rig.status(job).await, JobStatus::Active, "nothing moved");
+    assert_eq!(rig.trail(job).await, [REQUESTED, REJECTED]);
+    assert_eq!(
+        rig.reason_of(job, REJECTED).await.as_deref(),
+        Some("The person may not take this decision now."),
+        "the same plain words as any other refusal of authority"
+    );
+
+    // Narrowed to the job's own repository, in capitals: the same request, asked again, is applied.
+    std::fs::write(
+        rig.checkout.join("allowlist/allowlist.yaml"),
+        format!(
+            "{}    repositories: [\"ORG/REPO-0\"]\n",
+            allowlist_text(rig.tenant, &[(OPERATOR, "operator-one", "operator")])
+        ),
+    )
+    .expect("narrowed to this repository");
+    rig.request(rig.operator, job, Verb::Pause, None, None, "again")
+        .await;
+    rig.hook().pass(rig.tenant).await;
+    assert_eq!(rig.status(job).await, JobStatus::Paused);
+}
+
+/// The approver's side of the same defect: an approver narrowed to another repository never reaches
+/// the approval service.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_approver_narrowed_to_another_repository_never_reaches_the_service() {
+    let rig = Rig::new().await;
+    let job = rig.active().await;
+    let view = rig.engine.job_view(rig.tenant, job).await.expect("a view");
+    rig.write_allowlist(&[(REQUESTER, "requester-one", "requester")]);
+    std::fs::write(
+        rig.checkout.join("allowlist/allowlist.yaml"),
+        format!(
+            "{}{}    repositories: [\"org/somewhere-else\"]\n",
+            allowlist_text(rig.tenant, &[(REQUESTER, "requester-one", "requester")]),
+            allowlist_text(rig.tenant, &[(APPROVER, "approver-one", "approver")]).replacen(
+                "version: 1\nentries:\n",
+                "",
+                1
+            ),
+        ),
+    )
+    .expect("narrowed");
+    rig.request(
+        rig.approver,
+        job,
+        Verb::Reject,
+        Some(view.stage_runs[0].id),
+        None,
+        "not for this repository",
+    )
+    .await;
+    rig.hook().pass(rig.tenant).await;
+    assert!(
+        rig.submitter.seen.lock().expect("lock").is_empty(),
+        "a narrowed approver reached the approval service"
+    );
+    assert_eq!(rig.trail(job).await, [REQUESTED, REJECTED]);
 }
 
 #[tokio::test(flavor = "multi_thread")]

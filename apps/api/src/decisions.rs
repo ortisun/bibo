@@ -41,7 +41,7 @@ use serde::Deserialize;
 use serde_json::json;
 
 use crate::answers::{Answer, ApiError, Reply};
-use crate::auth::Caller;
+use crate::auth::{Caller, require_repository};
 use crate::jobs::{
     audit_action, clean_line, clean_text, commit, decode, idempotency_key, parse_id,
 };
@@ -188,11 +188,24 @@ pub async fn decide(
     // the answer does not depend on whether the job exists: an unlisted person learns nothing
     // about the tenant's jobs. The record names the job as text and does not reference it.
     let needed = required_roles(state, decision.verb);
-    let allowed = caller.require_any(&needed).is_ok();
+    let mut allowed = caller.require_any(&needed).is_ok();
 
     let mut tx = state.ports.store.begin(caller.scope()).await?;
-    let (job_ref, correlation_id) = if allowed {
+    let mut found_job = None;
+    if allowed {
         let job = tx.get_job(job_id).await?;
+        // The designation holds on the repositories the allowlist entry names (API-1). A person
+        // narrowed to other repositories is refused as one without the designation: audited, no
+        // reason, and the record names no job.
+        let repository = tx.get_repository(job.value.repository).await?;
+        match require_repository(state, caller, &repository.value.full_name) {
+            Ok(()) => {}
+            Err(ApiError::Forbidden) => allowed = false,
+            Err(other) => return Err(other),
+        }
+        found_job = Some(job);
+    }
+    let (job_ref, correlation_id) = if let (true, Some(job)) = (allowed, found_job) {
         if let Some(run) = stage_run {
             let found = tx.get_stage_run(run).await?;
             if found.value.job_id != job.value.id {

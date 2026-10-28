@@ -23,7 +23,7 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 
 use crate::answers::{Answer, ApiError, Reply};
-use crate::auth::Caller;
+use crate::auth::{Caller, require_repository};
 use crate::state::ApiState;
 
 /// The longest request text the API accepts, in bytes. The store allows 1 MiB; the API's body
@@ -154,6 +154,8 @@ pub async fn submit(
     if !registered.value.enabled {
         return Err(ApiError::NotFound);
     }
+    // A requester narrowed to some repositories asks for work there and nowhere else (API-1).
+    require_repository(state, caller, &registered.value.full_name)?;
     let pipeline_scope =
         PipelineScope::new(SLICE_ONE_SCOPE.to_vec()).map_err(|_| ApiError::Unavailable)?;
     let inserted = tx

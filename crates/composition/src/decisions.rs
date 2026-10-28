@@ -212,7 +212,8 @@ pub enum Marked {
 #[async_trait(?Send)]
 pub trait DecisionAuthority: Send + Sync {
     /// True when the person with this GitHub id holds, for the tenant and now, a designation the
-    /// policy names for the verb.
+    /// policy names for the verb, on `repository` (`owner/name`): an allowlist entry narrowed to
+    /// other repositories grants nothing here (API-1).
     ///
     /// # Errors
     /// [`Unreadable`] when the allowlist cannot be read. The decision then waits.
@@ -221,6 +222,7 @@ pub trait DecisionAuthority: Send + Sync {
         tenant: TenantId,
         github_user_id: u64,
         verb: Verb,
+        repository: &str,
     ) -> Result<bool, Unreadable>;
 }
 
@@ -271,19 +273,14 @@ impl DecisionAuthority for AllowlistAuthority {
         tenant: TenantId,
         github_user_id: u64,
         verb: Verb,
+        repository: &str,
     ) -> Result<bool, Unreadable> {
         let needed = self.needed(verb);
-        let (_, entries) = self.allowlist.entries().map_err(|_| Unreadable)?;
-        let now = self.clock.now();
-        Ok(entries.iter().any(|entry| {
-            entry.tenant == tenant
-                && entry.github_user_id.get() == github_user_id
-                && entry.expires_at.as_ref().is_none_or(|end| *end > now)
-                && entry
-                    .designations
-                    .iter()
-                    .any(|designation| needed.contains(designation))
-        }))
+        let held = self
+            .allowlist
+            .designations_on(tenant, github_user_id, Some(repository), self.clock.now())
+            .map_err(|_| Unreadable)?;
+        Ok(held.iter().any(|designation| needed.contains(designation)))
     }
 }
 
@@ -662,18 +659,22 @@ impl ClaimWork {
         };
 
         // 3. Is the job still open to a decision?
-        match self.job_status(tenant, fields.job).await {
-            Ok(Some(status)) if status.is_terminal() => {
+        let repository = match self.job_facts(tenant, fields.job).await {
+            Ok(Some((status, _))) if status.is_terminal() => {
                 return Verdict::Done(Marked::Rejected("The job has ended."));
             }
-            Ok(Some(_)) => {}
+            Ok(Some((_, repository))) => repository,
             Ok(None) => return Verdict::Done(Marked::Rejected("The job does not exist.")),
             Err(Unreadable) => return Verdict::Later,
-        }
+        };
 
-        // 4. May they, now? The allowlist is read at this moment and the sender is found by the
-        // numeric id of the principal, never by a login.
-        match self.authority.permits(tenant, sender.id, fields.verb).await {
+        // 4. May they, now, on this repository? The allowlist is read at this moment and the sender
+        // is found by the numeric id of the principal, never by a login.
+        match self
+            .authority
+            .permits(tenant, sender.id, fields.verb, &repository)
+            .await
+        {
             Ok(true) => {}
             Ok(false) => {
                 return Verdict::Done(Marked::Rejected(
@@ -852,20 +853,26 @@ impl ClaimWork {
         }
     }
 
-    async fn job_status(
+    /// The status of the job and the full name (`owner/name`) of its repository, as they are now.
+    async fn job_facts(
         &self,
         tenant: TenantId,
         job: JobId,
-    ) -> Result<Option<JobStatus>, Unreadable> {
+    ) -> Result<Option<(JobStatus, String)>, Unreadable> {
         let mut tx = self
             .store
             .begin(TenantScope::new(tenant))
             .await
             .map_err(|_| Unreadable)?;
-        let found = tx.get_job(job).await;
+        let found = async {
+            let stored = tx.get_job(job).await?;
+            let repository = tx.get_repository(stored.value.repository).await?;
+            Ok::<_, StoreError>((stored.value.status, repository.value.full_name))
+        }
+        .await;
         let _ = tx.rollback().await;
         match found {
-            Ok(stored) => Ok(Some(stored.value.status)),
+            Ok(facts) => Ok(Some(facts)),
             Err(StoreError::NotFound) => Ok(None),
             Err(_) => Err(Unreadable),
         }

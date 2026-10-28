@@ -1143,3 +1143,58 @@ fn override_and_dependency_rules_an_override_is_refused_for_the_gates_the_policy
         Err(OverrideDenial::Action(d)) if d.reason == ActionDenialReason::Authority(AuthorityDenial::NotOnAllowlist)
     ));
 }
+
+// ---- API-1: the narrowing of an allowlist entry, as one question -------------------------------
+
+#[test]
+fn an_entry_covers_the_repositories_it_lists_and_no_others() {
+    let plain = entry(APPROVER, "mallory", &[Designation::Approver]);
+    for repository in ["acme/repo", "acme/other", "anything/at-all"] {
+        assert!(plain.covers_repository(repository), "{repository}");
+    }
+    let mut narrow = entry(OTHER_REPO_ONLY, "narrow", &[Designation::Approver]);
+    narrow.repositories = Some(BTreeSet::from(["Acme/Other".to_owned()]));
+    assert!(
+        narrow.covers_repository("acme/other"),
+        "case is not compared"
+    );
+    assert!(narrow.covers_repository("ACME/OTHER"));
+    for not_listed in [
+        "acme/repo",
+        "acme/othe",
+        "acme/other2",
+        "acme/other/",
+        " acme/other",
+        "acme/other\n",
+        "",
+    ] {
+        assert!(!narrow.covers_repository(not_listed), "{not_listed:?}");
+    }
+    // An empty list is a narrowing to nothing, not to everything.
+    narrow.repositories = Some(BTreeSet::new());
+    assert!(!narrow.covers_repository("acme/other"));
+}
+
+#[test]
+fn the_policy_and_the_entry_agree_on_which_repository_a_designation_reaches() {
+    let mut narrow = entry(OTHER_REPO_ONLY, "narrow", &[Designation::Approver]);
+    narrow.repositories = Some(BTreeSet::from(["acme/other".to_owned()]));
+    let list = Allowlist::new("sha256:narrow", vec![narrow.clone()]).expect("list");
+    let now = Timestamp::parse("2026-10-27T12:00:00Z").expect("time");
+    for repository in ["acme/repo", "acme/other", "ACME/Other"] {
+        let reached = authority()
+            .designations(
+                &list,
+                &tenant(),
+                repository,
+                &human(OTHER_REPO_ONLY, "narrow"),
+                &now,
+            )
+            .is_ok();
+        assert_eq!(
+            reached,
+            narrow.covers_repository(repository),
+            "{repository}"
+        );
+    }
+}

@@ -26,7 +26,6 @@ use factory_domain::policy::PolicyEngine;
 use factory_domain::policy::decision::Designation;
 use factory_domain::scope::TenantScope;
 use factory_domain::state::Status;
-use factory_domain::values::Timestamp;
 use factory_domain::vocabulary::{Fidelity, HumanRole};
 use factory_ports::clock::Clock;
 use factory_ports::store::{JobFilter, PrincipalKind, Store, StoreError};
@@ -81,23 +80,18 @@ impl StoreAuthority {
         }
     }
 
-    /// The designations a person holds for a tenant now: listed, for that tenant, not expired.
+    /// The designations a person holds for a tenant now: listed, for that tenant, not expired, and,
+    /// when `repository` is given, naming it if the entry is narrowed to some repositories. With
+    /// `None` the question is "anywhere in the tenant".
     fn designations(
         &self,
         tenant: TenantId,
         github_user: u64,
+        repository: Option<&str>,
     ) -> Result<BTreeSet<Designation>, AuthorityError> {
-        let (_, entries) = self
-            .allowlist
-            .entries()
-            .map_err(|_| AuthorityError::Unavailable)?;
-        let now: Timestamp = self.clock.now();
-        Ok(entries
-            .into_iter()
-            .filter(|entry| entry.tenant == tenant && entry.github_user_id.get() == github_user)
-            .filter(|entry| entry.expires_at.as_ref().is_none_or(|end| *end > now))
-            .flat_map(|entry| entry.designations)
-            .collect())
+        self.allowlist
+            .designations_on(tenant, github_user, repository, self.clock.now())
+            .map_err(|_| AuthorityError::Unavailable)
     }
 }
 
@@ -113,13 +107,7 @@ impl Authority for StoreAuthority {
         requester: PrincipalId,
         repository: RepositoryId,
     ) -> Result<AdmissionFacts, AuthorityError> {
-        let requester_on_allowlist = match self.github_user(tenant, requester).await? {
-            Some(user) => self
-                .designations(tenant, user)?
-                .contains(&Designation::Requester),
-            None => false,
-        };
-        let (active, enabled, preflight_passed) = {
+        let (active, enabled, preflight_passed, full_name) = {
             let mut tx = self
                 .store
                 .begin(TenantScope::new(tenant))
@@ -150,10 +138,20 @@ impl Authority for StoreAuthority {
                     active,
                     found.value.enabled,
                     found.value.protection_preflight_passed,
+                    Some(found.value.full_name),
                 ),
-                Err(StoreError::NotFound) => (active, false, false),
+                Err(StoreError::NotFound) => (active, false, false, None),
                 Err(_) => return Err(AuthorityError::Unavailable),
             }
+        };
+        // The requester designation is asked for this repository: an entry narrowed to other
+        // repositories does not make its person a requester here (API-1). A repository that does not
+        // exist fails the registered fact below, so what the narrowing says about it does not matter.
+        let requester_on_allowlist = match self.github_user(tenant, requester).await? {
+            Some(user) => self
+                .designations(tenant, user, full_name.as_deref())?
+                .contains(&Designation::Requester),
+            None => false,
         };
         let cap = self.policy.budget.max_running_jobs_per_repo()
             + self.policy.budget.max_queued_jobs_per_repo();
@@ -175,7 +173,7 @@ impl Authority for StoreAuthority {
             return Ok(Vec::new());
         };
         Ok(self
-            .designations(tenant, user)?
+            .designations(tenant, user, None)?
             .into_iter()
             .filter_map(|designation| match designation {
                 Designation::Requester => Some(HumanRole::Requester),

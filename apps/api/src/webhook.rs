@@ -186,7 +186,15 @@ pub async fn receive(state: &ApiState, headers: &HeaderMap, body: &[u8]) -> Answ
         && *label == state.github.factory_label
     {
         let registered = tx.get_repository(bound.repository).await?;
-        if registered.value.enabled {
+        // The label of a requester who is narrowed to other repositories makes no job (API-1).
+        let in_reach = match delivery.sender_github_user_id {
+            Some(sender) => state
+                .allowlist_file
+                .covers(bound.tenant, sender, &registered.value.full_name)
+                .map_err(|_| ApiError::Unavailable)?,
+            None => false,
+        };
+        if registered.value.enabled && in_reach {
             let job_id = JobId::from_uuid(ids.new_uuid());
             let pipeline_scope =
                 PipelineScope::new(SLICE_ONE_SCOPE.to_vec()).map_err(|_| ApiError::Unavailable)?;
