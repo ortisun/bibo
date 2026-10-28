@@ -39,6 +39,7 @@ use factory_ports::artifact::ArtifactStore;
 use factory_ports::paths::CommitSha;
 use serde_json::Value;
 
+use super::documentation_gate::{DocumentationGate, Expected, GateProblem};
 use crate::gates::docs::plan::DocPlan;
 use crate::handlers::UpstreamRun;
 use crate::stages::validation::Binding;
@@ -122,8 +123,10 @@ pub enum DossierError {
     /// reports a refusal. Delivery follows work that passed.
     #[error("the evidence does not allow a delivery")]
     NotDeliverable,
-    /// The documentation was written for other commits than the implementation result names.
-    /// Nothing changed in the world: the documents disagree, and no one waives that.
+    /// The documentation was written for other commits than the implementation result names, or
+    /// the reports of the documentation gate were made for other commits or another plan than the
+    /// ones that are delivered. Nothing changed in the world: the documents disagree, and no one
+    /// waives that.
     #[error("the documentation was written for other commits than the implementation result")]
     Stale,
 }
@@ -351,7 +354,22 @@ pub async fn read(
         &candidate,
         &documentation_plan_document,
     )?;
-    let (_, documentation_gate) = bytes(artifacts, scope, contract, DOCUMENTATION_GATE).await?;
+    // The gate report is read, not only hashed: a report made for other commits or another plan
+    // than the ones that are delivered is stale, whatever its hash.
+    let (gate_bytes, documentation_gate) =
+        bytes(artifacts, scope, contract, DOCUMENTATION_GATE).await?;
+    DocumentationGate::from_bytes(&gate_bytes)
+        .map_err(|_| DossierError::Invalid)?
+        .check(&Expected {
+            base_commit: &candidate.base,
+            code_head: &candidate.head,
+            documentation_head: &pushed_head,
+            plan_sha256: &documentation_plan.sha256,
+        })
+        .map_err(|problem| match problem {
+            GateProblem::Invalid => DossierError::Invalid,
+            GateProblem::Stale(_) => DossierError::Stale,
+        })?;
     let (_, documentation_review) = bytes(artifacts, scope, contract, DOCUMENTATION_REVIEW).await?;
 
     Ok(Dossier {

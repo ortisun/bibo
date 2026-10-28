@@ -8,7 +8,7 @@ use serde_json::{Value, json};
 use crate::handlers::{ContractContext, StageError};
 use crate::stages::delivery::contract::{MANIFEST, RESULT as DELIVERY_RESULT};
 use crate::stages::delivery::input::{
-    DOCUMENTATION_GATE, POLICY_INPUT, VALIDATION_EVIDENCE, upstream_output,
+    DOCUMENTATION_GATE, DOCUMENTATION_PLAN, POLICY_INPUT, VALIDATION_EVIDENCE, upstream_output,
 };
 
 /// The deliverable: what the person is asked to decide.
@@ -16,11 +16,14 @@ pub const REQUEST: &str = "approval-request";
 /// The gate report of the stage.
 pub const GATE: &str = "approval-evidence-clear";
 
-/// Which stage produces each input.
-const SOURCES: [(StageKind, &str); 4] = [
+/// Which stage produces each input, in the order the contract lists them. The documentation plan
+/// is here for its hash: the reports of the documentation gate are bound to it, and the stage
+/// compares the two.
+pub const SOURCES: [(StageKind, &str); 5] = [
     (StageKind::Delivery, DELIVERY_RESULT),
     (StageKind::Delivery, MANIFEST),
     (StageKind::Validation, VALIDATION_EVIDENCE),
+    (StageKind::Documenting, DOCUMENTATION_PLAN),
     (StageKind::DocumentationReview, DOCUMENTATION_GATE),
 ];
 

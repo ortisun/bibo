@@ -40,6 +40,7 @@
 pub mod binding;
 pub mod checks;
 pub mod contract;
+pub mod documentation_gate;
 pub mod handler;
 pub mod input;
 pub mod manifest;

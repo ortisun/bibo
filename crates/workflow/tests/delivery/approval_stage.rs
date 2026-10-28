@@ -437,3 +437,123 @@ async fn a_delivery_that_opened_no_pull_request_is_not_approved() {
     // The block cause the engine would see for a missing gate is unrelated to this refusal.
     let _ = BlockCause::MissingEvidence;
 }
+
+/// Changes a field of the stored documentation gate report.
+async fn edit_documentation_gate(stage: &mut Stage, edit: impl FnOnce(&mut Value)) {
+    stage
+        .world
+        .edit_upstream(
+            &mut stage.upstream,
+            StageKind::DocumentationReview,
+            "documentation-gate-report",
+            edit,
+        )
+        .await;
+}
+
+#[tokio::test]
+async fn the_approval_stage_reads_the_document_the_documentation_stage_stores() {
+    // The document is not one gate report: it holds a binding and a report for every gate of the
+    // Documentation Quality Gate. The warnings of all of them are counted.
+    let mut stage = after_delivery(Scenario {
+        translation_warnings: 3,
+        ..Scenario::default()
+    })
+    .await;
+    edit_documentation_gate(&mut stage, |document| {
+        assert!(document["reports"].as_array().expect("a list").len() > 1);
+        assert!(document["binding"]["documentation_head"].is_string());
+    })
+    .await;
+    let ran = stage.run().await.expect("the stage runs");
+    assert_eq!(ran.request.open_translation_warnings, 3);
+    assert_eq!(ran.resolution, Resolution::HumanGate);
+}
+
+#[tokio::test]
+async fn reports_made_for_other_commits_or_another_plan_are_not_evidence() {
+    // The stored document is read by its hash, so it is the bytes that were stored. The reports in
+    // it must also have been made for the commits that were delivered and for this plan.
+    let other = "9".repeat(40);
+    let other_plan = factory_domain::values::Sha256Digest::of(b"a plan nobody delivered");
+    for field in [
+        "base_commit",
+        "code_head",
+        "documentation_head",
+        "plan_sha256",
+    ] {
+        let mut stage = after_delivery(Scenario::default()).await;
+        edit_documentation_gate(&mut stage, |document| {
+            document["binding"][field] = if field == "plan_sha256" {
+                json!(other_plan)
+            } else {
+                json!(other)
+            };
+        })
+        .await;
+        assert_eq!(
+            stage.execute().await.err(),
+            Some(StageError::PolicyDenied),
+            "{field}"
+        );
+        // A contradiction between documents is not a change in the world: nothing is superseded.
+        assert!(stage.world.drift.told.lock().expect("lock").is_empty());
+    }
+}
+
+#[tokio::test]
+async fn a_documentation_gate_report_that_is_not_the_stored_document_is_not_read() {
+    // A single gate report, the shape this stage read before it read the document as it is.
+    let mut stage = after_delivery(Scenario::default()).await;
+    let single = stage
+        .world
+        .report("documentation-gate", "PASSED")
+        .to_json_value()
+        .expect("JSON");
+    edit_documentation_gate(&mut stage, |document| *document = single).await;
+    assert_eq!(stage.execute().await.err(), Some(StageError::InvalidOutput));
+
+    let broken: [fn(&mut Value); 3] = [
+        |document| document["reports"] = json!([]),
+        |document| {
+            document.as_object_mut().expect("object").remove("binding");
+        },
+        |document| document["kind"] = json!("documentation-result"),
+    ];
+    for edit in broken {
+        let mut stage = after_delivery(Scenario::default()).await;
+        edit_documentation_gate(&mut stage, edit).await;
+        assert_eq!(stage.execute().await.err(), Some(StageError::InvalidOutput));
+    }
+}
+
+#[tokio::test]
+async fn the_contract_of_the_approval_stage_pins_the_documentation_plan() {
+    let mut stage = after_delivery(Scenario::default()).await;
+    let contract = stage.contract(&handler(&stage.world)).expect("a contract");
+    for name in [
+        "delivery-result",
+        "evidence-manifest",
+        "validation-evidence",
+        "documentation-plan",
+        "documentation-gate-report",
+        "policy-bundle",
+    ] {
+        assert!(
+            contract
+                .inputs
+                .iter()
+                .any(|input| input.name.as_str() == name),
+            "{name}"
+        );
+    }
+    stage
+        .upstream
+        .retain(|run| run.kind != StageKind::Documenting);
+    assert_eq!(
+        stage.execute().await.err(),
+        Some(StageError::Blocked(
+            factory_domain::contracts::gate_report::BlockedCode::DependencyUnavailable
+        ))
+    );
+}

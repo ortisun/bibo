@@ -63,6 +63,7 @@ use factory_workflow::stages::documentation_review::{
 use factory_workflow::stages::documenting::{
     DocumentingConfig, DocumentingDeps, DocumentingHandler,
 };
+use factory_workflow::stages::review::{ReviewConfig, ReviewDeps, ReviewHandler};
 use factory_workflow::stages::validation::VerifySandbox;
 
 const SECURITY_POLICY: &str = include_str!("../../../domain/tests/fixtures/policy/security.json");
@@ -1060,16 +1061,6 @@ fn register_documentation(
     specs: &Arc<RigSpecs>,
     doc_rework: &Arc<RigRework>,
 ) {
-    if options.scope.contains(&StageKind::Review) {
-        handlers
-            .register(Arc::new(crate::standin::Fixed {
-                kind: StageKind::Review,
-                contract_id: "stage-contract.review",
-                span: "stage.review",
-                deliverables: vec![("review-verdict", b"{\"verdict\":\"PASS\"}".to_vec())],
-            }))
-            .expect("one handler per stage");
-    }
     let budget = StageBudget {
         wall_time_seconds: 3_600,
         max_tokens: 400_000,
@@ -1080,6 +1071,39 @@ fn register_documentation(
     let broker = BrokerEndpoint {
         base_url: Uri::parse("https://model-broker.sandbox.internal:8443").expect("a URI"),
     };
+    if options.scope.contains(&StageKind::Review) && options.review {
+        // The real review handler, as `tests/implementation` registers it. The cross-stage
+        // contract suite asks for it, so that the stages after the review read what it stores.
+        let handler = ReviewHandler::new(
+            ReviewConfig {
+                agent: Slug::parse("code-reviewer").expect("a slug"),
+                agent_version: "1.0.0".to_owned(),
+                definition_commit: definition_commit(),
+                broker: broker.clone(),
+                max_output_bytes: 524_288,
+                path_rules: rules(),
+                max_patch_bytes: 1_048_576,
+                budget,
+            },
+            ReviewDeps {
+                policy: policy_engine(),
+                redactor: redactor(),
+                schemas: check.clone(),
+                specs: specs.clone(),
+                probes: Arc::new(FixedProbes),
+            },
+        );
+        handlers.register(Arc::new(handler)).expect("one handler");
+    } else if options.scope.contains(&StageKind::Review) {
+        handlers
+            .register(Arc::new(crate::standin::Fixed {
+                kind: StageKind::Review,
+                contract_id: "stage-contract.review",
+                span: "stage.review",
+                deliverables: vec![("review-verdict", b"{\"verdict\":\"PASS\"}".to_vec())],
+            }))
+            .expect("one handler per stage");
+    }
     if options.scope.contains(&StageKind::Documenting) {
         let handler = DocumentingHandler::new(
             DocumentingConfig {

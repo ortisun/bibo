@@ -25,7 +25,7 @@ use factory_workflow::stages::intake::common::{
     ContractBudget, ContractCriterion, ContractDeliverable, ContractInput, ContractSpec, Executor,
     GateDefinition, GateFacts, GateSubject, gate_report, stage_contract,
 };
-use factory_workflow::stages::validation::Binding;
+use factory_workflow::stages::validation::{Binding, evidence_document};
 use serde_json::{Value, json};
 
 use crate::rig::{Log, Options, SPECIFICATION, definition_commit, lock, note};
@@ -392,22 +392,16 @@ impl StageHandler for StandInValidation {
             .rounds
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
             + 1;
-        let listed: Vec<Value> = reports(ctx, pass, round)?
-            .iter()
-            .map(|r| r.to_json_value().map_err(|_| StageError::Internal))
-            .collect::<Result<_, _>>()?;
+        // The document is written by the validation stage's own function, so the stages that read
+        // it in these tests read what the real stage writes. Only the reports are stand-ins.
+        let document = evidence_document(&binding, false, &reports(ctx, pass, round)?)?;
         Ok(StageOutput {
             documents: vec![OutputDocument {
                 name: Slug::parse(EVIDENCE).map_err(|_| StageError::Internal)?,
                 contract: None,
                 media_type: MediaType::parse("application/json")
                     .map_err(|_| StageError::Internal)?,
-                value: json!({
-                    "kind": EVIDENCE,
-                    "binding": binding.to_json(),
-                    "policy_violation": false,
-                    "reports": listed,
-                }),
+                value: document,
             }],
             ..StageOutput::default()
         })

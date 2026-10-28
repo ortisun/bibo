@@ -5,6 +5,7 @@
 //! and shows it to the person. The gates ran on the code head, so the evidence binding stays
 //! there; everything a person sees and approves is the pushed head.
 
+use factory_domain::contracts::Contract;
 use factory_domain::contracts::gate_report::BlockedCode;
 use factory_domain::vocabulary::{GateOutcome, StageKind};
 use factory_ports::githost::{ChangeHost, GitScope, PullRequestRef, PullRequestState};
@@ -443,4 +444,65 @@ async fn a_restart_pushes_the_same_commit_and_opens_no_second_pull_request() {
         );
     }
     assert_eq!(second.resolution, Resolution::Pass);
+}
+
+#[tokio::test]
+async fn reports_made_for_other_commits_or_another_plan_are_stale_and_are_not_pushed() {
+    let other = "9".repeat(40);
+    let other_plan = factory_domain::values::Sha256Digest::of(b"a plan nobody delivered");
+    for field in [
+        "base_commit",
+        "code_head",
+        "documentation_head",
+        "plan_sha256",
+    ] {
+        let world = World::new();
+        let result = execute_after(&world, async |world, upstream| {
+            world
+                .edit_upstream(
+                    upstream,
+                    StageKind::DocumentationReview,
+                    "documentation-gate-report",
+                    |document| {
+                        document["binding"][field] = if field == "plan_sha256" {
+                            json!(other_plan)
+                        } else {
+                            json!(other)
+                        };
+                    },
+                )
+                .await;
+        })
+        .await;
+        assert_eq!(result, Err(StageError::PolicyDenied), "{field}");
+        assert!(
+            world.host.calls().is_empty(),
+            "{field}: the host was not touched"
+        );
+        assert!(tip(&world).is_none(), "{field}: nothing was pushed");
+        assert!(world.drift.told.lock().expect("lock").is_empty(), "{field}");
+    }
+}
+
+#[tokio::test]
+async fn a_documentation_gate_report_that_is_not_the_stored_document_is_not_delivered() {
+    let world = World::new();
+    let single = world
+        .report("documentation-gate", "PASSED")
+        .to_json_value()
+        .expect("JSON");
+    let result = execute_after(&world, async |world, upstream| {
+        world
+            .edit_upstream(
+                upstream,
+                StageKind::DocumentationReview,
+                "documentation-gate-report",
+                |document| *document = single,
+            )
+            .await;
+    })
+    .await;
+    assert_eq!(result, Err(StageError::InvalidOutput));
+    assert!(world.host.calls().is_empty());
+    assert!(tip(&world).is_none());
 }
