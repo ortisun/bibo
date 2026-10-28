@@ -100,11 +100,12 @@ struct Context<'a> {
 
 impl Context<'_> {
     fn say(&mut self, text: &str) {
-        let _ = self.out.write_all(text.as_bytes());
+        // Whatever reaches the terminal passes here last (API-10).
+        let _ = self.out.write_all(render::printable_block(text).as_bytes());
     }
 
     fn complain(&mut self, text: &str) {
-        let _ = writeln!(self.err, "factory-cli: {text}");
+        let _ = writeln!(self.err, "factory-cli: {}", render::printable_block(text));
     }
 }
 
@@ -399,7 +400,7 @@ fn probe_command(args: &[String], ctx: &mut Context<'_>) -> Exit {
         if line.starts_with("OK:") {
             ctx.say(&format!("{line}\n"));
         } else {
-            let _ = writeln!(ctx.err, "{line}");
+            let _ = writeln!(ctx.err, "{}", render::printable_block(line));
         }
     }
     result.exit
