@@ -39,6 +39,7 @@ use factory_workflow::stages::implementation::plan as implementation_plan;
 use factory_workflow::stages::repo_intel::map as repository_map;
 use factory_workflow::stages::review::evidence::Evidence;
 use factory_workflow::stages::validation::Binding;
+use serde_json::Value;
 
 use crate::chain::{Intake, Pipeline, Planned, Universe};
 use crate::deliver::{Delivery, Ran, validation_handler};
@@ -296,6 +297,63 @@ async fn pair_review_to_delivery() {
     assert_eq!(read.verdict, Verdict::Pass);
     // The delivery stage names the verdict by the name the review stage stores it under.
     assert_eq!(verdict.name, delivery_input::REVIEW_VERDICT);
+}
+
+/// A verdict says which reports it was given, by id and by hash. Those are the reports of the
+/// document the stage before the review stored, and the specification the job froze, so a verdict
+/// cannot be read as the judgement of some other set of reports.
+#[tokio::test]
+async fn pair_the_verdicts_name_the_reports_and_the_specification_they_judged() {
+    let pipeline = Pipeline::documented().await;
+    let specification = &pipeline
+        .find(StageKind::Specification, "specification-contract")
+        .artifact
+        .sha256;
+    let judged = |verdict: &Value, document: &Value| {
+        let given = verdict["inputs_reviewed"]["gate_reports"]
+            .as_array()
+            .expect("a list of reports");
+        let stored = document["reports"].as_array().expect("a list of reports");
+        assert_eq!(given.len(), stored.len());
+        for report in stored {
+            let id = report["metadata"]["gate_report_id"]
+                .as_str()
+                .expect("an id");
+            let hash = Sha256Digest::of(&serde_json::to_vec(report).expect("JSON"));
+            assert!(
+                given.iter().any(|reference| {
+                    reference["gate_report_id"] == id && reference["sha256"] == hash.as_str()
+                }),
+                "the verdict does not name report {id} with its hash"
+            );
+        }
+    };
+
+    let verdict = pipeline.real(StageKind::Review, "review-verdict").json();
+    let evidence = pipeline
+        .find(StageKind::Validation, "validation-evidence")
+        .json();
+    judged(&verdict, &evidence);
+    assert_eq!(
+        verdict["inputs_reviewed"]["frozen_spec_sha256"],
+        specification.as_str()
+    );
+
+    let verdict = pipeline
+        .real(StageKind::DocumentationReview, "documentation-review")
+        .json();
+    let gate = pipeline
+        .real(StageKind::DocumentationReview, "documentation-gate-report")
+        .json();
+    judged(&verdict, &gate);
+    assert_eq!(
+        verdict["inputs_reviewed"]["frozen_spec_sha256"],
+        gate["binding"]["specification_sha256"]
+    );
+    assert_eq!(
+        gate["binding"]["specification_sha256"],
+        specification.as_str()
+    );
 }
 
 // ---- documentation -----------------------------------------------------------------------------
