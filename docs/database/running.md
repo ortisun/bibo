@@ -35,9 +35,9 @@ The script warns when the installed CLI has another version, because `schema.rs`
 3. To check the down migrations, run `diesel migration redo --all --config-file crates/storage/diesel.toml`. It reverts every migration and applies them again.
 4. Never run the migrations from the application. Applications check the schema version at start-up and refuse to become ready if it is behind (ADR 0007).
 
-Expected result of step 2: nineteen `Running migration` lines, the last one `2026-10-28-001900_lease_renewal_is_heap_only`. Verify with `psql "$DATABASE_URL" -c 'select version from __diesel_schema_migrations order by version'`.
+Expected result of step 2: twenty `Running migration` lines, the last one `2026-10-28-002000_api_login_narrow_group` (it creates the fifth group, `factory_api_app`, and needs the same powers as migration 11: a superuser, or a role that can create roles; a login made before it must be moved out of `factory_app` into `factory_api_app`, see [tenancy.md](tenancy.md)). Verify with `psql "$DATABASE_URL" -c 'select version from __diesel_schema_migrations order by version'`.
 
-The role that runs them must be a superuser or the role that created the four groups ([migration-safety.md](migration-safety.md)). After they ran, create the logins: [for-the-storage-crate.md](for-the-storage-crate.md).
+The role that runs them must be a superuser or the role that created the five groups ([migration-safety.md](migration-safety.md)). After they ran, create the logins: [for-the-storage-crate.md](for-the-storage-crate.md).
 
 ## Run the database tests
 
@@ -47,8 +47,8 @@ The role that runs them must be a superuser or the role that created the four gr
    scripts/db-test.sh
    ```
 
-   It provides a database, migrates it, runs the seventeen suites, drops everything it created (the databases, and the login roles the `rls` suite makes), and prints a last line that starts with `PASS` or `FAIL`.
-2. To run some suites only, name them. `scripts/db-test.sh ledger audit` runs two. `scripts/db-test.sh --list` prints all seventeen with one line each on what they prove.
+   It provides a database, migrates it, runs the eighteen suites, drops everything it created (the databases, and the login roles the `rls` suite makes), and prints a last line that starts with `PASS` or `FAIL`.
+2. To run some suites only, name them. `scripts/db-test.sh ledger audit` runs two. `scripts/db-test.sh --list` prints all eighteen with one line each on what they prove.
 3. To keep the server for inspection use `--keep`. It prints the URL of the maintenance database and leaves the process running, and you stop it yourself.
 
 ### Where the database comes from

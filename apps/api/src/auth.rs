@@ -79,6 +79,34 @@ impl Caller {
     }
 }
 
+/// Refuses unless the caller's allowlist entry reaches `repository` (`owner/name`).
+///
+/// The roles of [`Caller`] are the tenant-wide answer: a person narrowed to some repositories is
+/// listed, and holds their designations, but only there (API-1). This is the second step, asked
+/// wherever the caller acts on one repository. It can only take authority away, so it runs after
+/// the role check and never instead of it. The file is read at every call, like the roles.
+///
+/// # Errors
+/// [`ApiError::Forbidden`] when the entry is narrowed to other repositories;
+/// [`ApiError::Unavailable`] when the allowlist cannot be read (the request is refused).
+pub fn require_repository(
+    state: &ApiState,
+    caller: &Caller,
+    repository: &str,
+) -> Result<(), ApiError> {
+    let Some(github_user_id) = caller.github_user_id else {
+        return Err(ApiError::Forbidden);
+    };
+    match state
+        .allowlist_file
+        .covers(caller.tenant, github_user_id, repository)
+    {
+        Ok(true) => Ok(()),
+        Ok(false) => Err(ApiError::Forbidden),
+        Err(_) => Err(ApiError::Unavailable),
+    }
+}
+
 /// Authenticates a request.
 ///
 /// # Errors

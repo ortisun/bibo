@@ -217,7 +217,18 @@ async fn the_signature_is_checked_on_the_raw_bytes() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn negative_nt_wh_04() {
-    let env = Arc::new(Env::start().await);
+    // Fifty copies arrive at once from one address (this machine), which is more connections than
+    // one source may hold by default (API-6). The cap is a setting; this test is about replay.
+    let env = Arc::new(
+        Env::start_with(Options {
+            limits: factory_api::config::Limits {
+                max_connections_per_source: Some(256),
+                ..factory_api::config::Limits::default()
+            },
+            ..Options::default()
+        })
+        .await,
+    );
     let body = payload(&env.a, "factory", env.a.requester.github_id, 11);
     let id = delivery_id(11);
 
@@ -349,6 +360,85 @@ async fn a_label_from_an_allowlisted_requester_makes_a_job_and_nothing_else_does
     // not in the payload, and the API holds no GitHub credential to fetch it.
     assert_eq!(rows(&env, "original_requests").await, 0);
     env.stop().await;
+}
+
+/// API-1 on the webhook path: a requester whose allowlist entry is narrowed to other repositories
+/// labels an issue of this one, and no job is made. Narrowed to this repository, the label works.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_label_from_a_requester_narrowed_to_another_repository_makes_no_job() {
+    let env = Env::start().await;
+    let a = &env.a;
+    let plain = format!(
+        "  - tenant: {}\n    github_user_id: {}\n    login: {}\n    designations: [requester]\n",
+        a.id.as_uuid(),
+        a.requester.github_id,
+        a.requester.login
+    );
+    let all = support::allowlist_text(&[&env.a, &env.b]);
+    assert!(all.contains(&plain), "the entry to narrow is in the file");
+    let narrowed = |repository: &str| {
+        all.replacen(
+            &plain,
+            &format!("{plain}    repositories: [\"{repository}\"]\n"),
+            1,
+        )
+    };
+    let path = env.checkout.join("allowlist/allowlist.yaml");
+
+    std::fs::write(&path, narrowed("org/elsewhere")).expect("narrowed elsewhere");
+    let reply = env
+        .send(env.delivery(
+            "issues",
+            &delivery_id(50),
+            &payload(a, "factory", a.requester.github_id, 61),
+        ))
+        .await;
+    assert_eq!(reply.status, 202);
+    assert_eq!(rows(&env, "webhook_deliveries").await, 1, "it is recorded");
+    assert_eq!(rows(&env, "jobs").await, 0, "and starts no job");
+
+    std::fs::write(&path, narrowed(&a.full_name.to_ascii_uppercase())).expect("narrowed here");
+    let reply = env
+        .send(env.delivery(
+            "issues",
+            &delivery_id(51),
+            &payload(a, "factory", a.requester.github_id, 62),
+        ))
+        .await;
+    assert_eq!(reply.status, 202);
+    assert_eq!(rows(&env, "jobs").await, 1);
+    env.stop().await;
+}
+
+/// R-15. The issue a webhook job comes from is named by the registered repository row, resolved from
+/// the installation and repository ids, and not by the `full_name` in the payload, which is stale
+/// after a rename and is text the sender chose.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_webhook_job_names_the_registered_repository_and_not_the_one_in_the_payload() {
+    let env = Env::start().await;
+    let a = &env.a.clone();
+    let mut value: serde_json::Value =
+        serde_json::from_slice(&payload(a, "factory", a.requester.github_id, 71)).expect("json");
+    value["repository"]["full_name"] = json!("renamed-since/elsewhere");
+    let reply = env
+        .send(env.delivery(
+            "issues",
+            &delivery_id(60),
+            &serde_json::to_vec(&value).expect("json"),
+        ))
+        .await;
+    assert_eq!(reply.status, 202);
+    assert_eq!(rows(&env, "jobs").await, 1);
+    let subject = env
+        .db
+        .text("SELECT subject FROM audit_events WHERE action = 'job.received_from_webhook'")
+        .await;
+    env.stop().await;
+    assert_eq!(
+        subject,
+        Some(format!("issue {}#71", a.full_name)),
+        "the registered name, with the number of the issue"
+    );
 }
 
 // ---- NT-AUTHZ-08: an unknown binding -----------------------------------------------------------

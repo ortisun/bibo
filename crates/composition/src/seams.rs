@@ -169,6 +169,50 @@ impl FileAllowlist {
         }
     }
 
+    /// The designations a person holds on `repository` (`owner/name`) now: the entry of this
+    /// tenant and this numeric id, not expired, whose `repositories` narrowing (if it has one)
+    /// names the repository. `None` for the repository asks "anywhere in the tenant", so a person
+    /// narrowed to one repository is still listed. Read from the file at every call.
+    ///
+    /// # Errors
+    /// [`SeamError::Unavailable`] when the file cannot be read: the caller fails closed.
+    pub fn designations_on(
+        &self,
+        tenant: TenantId,
+        github_user_id: u64,
+        repository: Option<&str>,
+        now: Timestamp,
+    ) -> Result<BTreeSet<Designation>, SeamError> {
+        let (_, entries) = self.entries()?;
+        Ok(entries
+            .into_iter()
+            .filter(|entry| entry.tenant == tenant && entry.github_user_id.get() == github_user_id)
+            .filter(|entry| entry.expires_at.as_ref().is_none_or(|end| *end > now))
+            .filter(|entry| repository.is_none_or(|name| entry.covers_repository(name)))
+            .flat_map(|entry| entry.designations)
+            .collect())
+    }
+
+    /// Whether the narrowing of this person's entry leaves `repository` in reach. A person with no
+    /// entry for the tenant, or an entry that lists no repositories, is not narrowed, and the answer
+    /// is true: this question only ever takes authority away, so the designation check (which says
+    /// whether the person holds anything at all) stays a separate, conjunctive step.
+    ///
+    /// # Errors
+    /// [`SeamError::Unavailable`] when the file cannot be read: the caller fails closed.
+    pub fn covers(
+        &self,
+        tenant: TenantId,
+        github_user_id: u64,
+        repository: &str,
+    ) -> Result<bool, SeamError> {
+        let (_, entries) = self.entries()?;
+        Ok(entries
+            .iter()
+            .filter(|entry| entry.tenant == tenant && entry.github_user_id.get() == github_user_id)
+            .all(|entry| entry.covers_repository(repository)))
+    }
+
     /// Reads the whole list.
     ///
     /// # Errors

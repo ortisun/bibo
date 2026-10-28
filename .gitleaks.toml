@@ -179,6 +179,12 @@ regex = '''\bsfjt_[A-Za-z0-9_-]{32,}\b'''
 keywords = ["sfjt_"]
 
 [[rules]]
+id = "policy_api_token"
+description = "policies/security.yaml secrets.patterns[api_token], action block. The API token (apps/api/src/tokens.rs) is sfat_ and 43 URL-safe base64 characters. There is no trailing word boundary on purpose: a token may end in a hyphen, which is not a word character."
+regex = '''\bsfat_[A-Za-z0-9_-]{43}'''
+keywords = ["sfat_"]
+
+[[rules]]
 id = "policy_nats_credentials"
 description = "policies/security.yaml secrets.patterns[nats_credentials], action block. The policy marks this format as unverified."
 regex = '''-----BEGIN (?:NATS )?USER (?:JWT|NKEY SEED)-----'''

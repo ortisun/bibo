@@ -39,7 +39,6 @@ fn policy_redactor() -> Redactor {
 /// `StoreAuthority::designations` reads the entry's `repositories` and drops it, so the narrowing
 /// grants nothing less than the whole tenant.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[ignore = "confirmed defect API-1: an allowlist entry narrowed to some repositories still grants its designation on every repository of the tenant"]
 async fn api_1_a_designation_narrowed_to_one_repository_does_not_reach_another() {
     let env = Env::start().await;
     let a = env.a.clone();
@@ -108,7 +107,6 @@ async fn api_1_a_designation_narrowed_to_one_repository_does_not_reach_another()
 /// the caller. A second requester who sends the same key and the same text is handed the first
 /// requester's job (`200`, `created: false`), which is attributed to the first requester.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[ignore = "confirmed defect API-2: an idempotency key is shared by every caller of the tenant, so another user is answered with the first user's job"]
 async fn api_2_an_idempotency_key_of_one_caller_does_not_find_the_job_of_another() {
     let env = Env::start().await;
     let a = env.a.clone();
@@ -149,6 +147,81 @@ async fn api_2_an_idempotency_key_of_one_caller_does_not_find_the_job_of_another
     );
 }
 
+/// API-2 for a job, with a body that differs: before the fix the second caller learned, from the
+/// answer, whether their guess of the first caller's text was exact (`200` or `409`). Now the key
+/// of one caller is not found by another at all, so both are `201`; and the first caller, asking
+/// again with the same key, finds their own job.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn api_2b_a_key_is_found_again_by_its_own_caller_and_by_nobody_else() {
+    let env = Env::start().await;
+    let a = env.a.clone();
+    let plain = entry_of(&a, &a.operator, "operator");
+    let both = entry_of(&a, &a.operator, "operator, requester");
+    write_allowlist(
+        &env,
+        &allowlist_with(&env, |t| t.replacen(&plain, &both, 1)),
+    );
+    let send = |person: &crate::support::Person, text: &str| {
+        env.send(
+            Req::post("/v1/jobs")
+                .bearer(&person.token)
+                .header("Idempotency-Key", "same-key")
+                .json(&json!({"repository_id": a.repository.as_text(), "text": text})),
+        )
+    };
+    let first = send(&a.requester, "The first caller's text.").await;
+    // Another text, under a key the first caller used: no oracle, no conflict, a job of their own.
+    let guess = send(&a.operator, "A guess at the first caller's text.").await;
+    let again = send(&a.requester, "The first caller's text.").await;
+    let changed = send(&a.requester, "A different text under my own key.").await;
+    env.stop().await;
+    assert_eq!(first.status, 201, "{}", first.text());
+    assert_eq!(guess.status, 201, "{}", guess.text());
+    assert_ne!(first.json()["job_id"], guess.json()["job_id"]);
+    assert_eq!(again.status, 200, "{}", again.text());
+    assert_eq!(first.json()["job_id"], again.json()["job_id"]);
+    assert_eq!(changed.status, 409, "my own key, another text: a conflict");
+}
+
+/// API-2 for a decision: two approvers who send the same key for the same job write one record
+/// each. Before the fix the second was answered `409`, a conflict with a record that was not theirs.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn api_2c_two_approvers_with_the_same_key_write_two_records() {
+    let env = Env::start().await;
+    let a = env.a.clone();
+    let plain = entry_of(&a, &a.operator, "operator");
+    let both = entry_of(&a, &a.operator, "operator, approver");
+    write_allowlist(
+        &env,
+        &allowlist_with(&env, |t| t.replacen(&plain, &both, 1)),
+    );
+    let job = new_job(&env, &a, "api2c").await;
+    let run = stage_run(&env, &a, &job).await;
+    let first = env
+        .send(decide(&a.approver, &job, "shared", &approval(&run)))
+        .await;
+    let second = env
+        .send(decide(&a.operator, &job, "shared", &approval(&run)))
+        .await;
+    let retried = env
+        .send(decide(&a.approver, &job, "shared", &approval(&run)))
+        .await;
+    let rows = env
+        .db
+        .number("SELECT count(*) FROM audit_events WHERE action = 'decision.requested'")
+        .await;
+    env.stop().await;
+    assert_eq!(first.status, 202, "{}", first.text());
+    assert_eq!(second.status, 202, "{}", second.text());
+    assert_ne!(first.json()["decision_id"], second.json()["decision_id"]);
+    assert_eq!(
+        retried.status, 202,
+        "the same caller's retry is the same record"
+    );
+    assert_eq!(retried.json()["decision_id"], first.json()["decision_id"]);
+    assert_eq!(rows, 2, "one record for each caller");
+}
+
 // ---- API-3 -------------------------------------------------------------------------------------
 
 #[derive(diesel::QueryableByName)]
@@ -157,11 +230,12 @@ struct Flag {
     yes: bool,
 }
 
-/// API-3a. The API login is a member of `factory_app`, which holds `INSERT` on 17 tables. The API
-/// writes four of them (`jobs`, `original_requests`, `audit_events`, `webhook_deliveries`). The
-/// rest are the worker's and the operator's.
+/// API-3a. The API login used to be a member of `factory_app`, which holds `INSERT` on 17 tables.
+/// The API writes four of them (`jobs`, `original_requests`, `audit_events`,
+/// `webhook_deliveries`). The rest are the worker's and the operator's. Fixed by migration
+/// `2026-10-28-002000_api_login_narrow_group`: the API login belongs to `factory_api_app` and
+/// `factory_resolver` and not to `factory_app`.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[ignore = "confirmed defect API-3: the internet-facing API login can INSERT into tables it never writes (tokens, principals, approvals, the evidence ledger, the outbox, stage runs)"]
 async fn api_3a_the_api_login_holds_only_the_insert_privileges_the_api_uses() {
     let env = Env::start().await;
     let logins = env.db.server.logins().await;
@@ -199,7 +273,6 @@ async fn api_3a_the_api_login_holds_only_the_insert_privileges_the_api_uses() {
 /// API-3b. The same fact end to end: the API login names a tenant by hand, inserts a token for
 /// that tenant's approver, and the new token authenticates over HTTP.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[ignore = "confirmed defect API-3: with the API login's own credentials a token for any principal of any tenant can be minted, and it works"]
 async fn api_3b_the_api_login_cannot_mint_a_token() {
     let env = Env::start().await;
     let logins = env.db.server.logins().await;
@@ -234,7 +307,6 @@ async fn api_3b_the_api_login_cannot_mint_a_token() {
 /// API-4a. The README says the `sfat_` prefix "makes a token recognizable to a secret scanner".
 /// `policies/security.yaml` has a rule for the job token (`sfjt_`) and none for the API token.
 #[test]
-#[ignore = "confirmed defect API-4: no redaction rule and no gitleaks rule recognises an API token (sfat_)"]
 fn api_4a_the_redactor_recognises_an_api_token() {
     let redactor = policy_redactor();
     let token = runtime_token();
@@ -264,7 +336,6 @@ fn api_4a_the_redactor_recognises_an_api_token() {
 /// API-4b. `jobs::submit` refuses "a secret in a request" so that it is not stored. An API token
 /// pasted into the text is stored, and later goes wherever the request text goes.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[ignore = "confirmed defect API-4: a job request that contains an API token is accepted and stored"]
 async fn api_4b_a_job_request_that_contains_an_api_token_is_refused() {
     let env = Env::start().await;
     let token = runtime_token();
@@ -300,7 +371,6 @@ async fn api_4b_a_job_request_that_contains_an_api_token_is_refused() {
 /// caught before commit 8215375 and is not now (a regression of the OBS-1 change); the second group
 /// was never caught.
 #[test]
-#[ignore = "confirmed defect API-5: url_with_credentials misses passwords with a quote or a slash, userinfo without a user name, upper-case schemes and escaped or encoded URLs"]
 fn api_5_url_credentials_the_policy_pattern_misses() {
     const OLD: &str = r"\b[a-z][a-z0-9+.-]*://[^\s:/@]+:[^\s@/]{3,}@[^\s/]+";
     let current = policy_redactor();
@@ -389,7 +459,6 @@ fn api_5_url_credentials_the_policy_pattern_misses() {
 /// A second peer, here `::1` against the attacker's `127.0.0.1` on a dual-stack listener, is
 /// closed unread.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[ignore = "confirmed defect API-6: one source address can occupy every connection slot; there is no per-peer cap"]
 async fn api_6_one_peer_cannot_take_every_connection_slot() {
     let env = Env::start().await;
     let limits = Limits {
@@ -446,7 +515,6 @@ async fn api_6_one_peer_cannot_take_every_connection_slot() {
 /// delivery for an unregistered installation (NT-AUTHZ-08, "dropped, audited, acknowledged") is
 /// then dropped.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[ignore = "confirmed defect API-7: an unauthenticated flood of forged deliveries uses up the shared platform audit budget and a genuine unbound delivery is no longer audited"]
 async fn api_7_forged_deliveries_do_not_use_up_the_audit_of_a_real_one() {
     let env = Env::start().await;
     let a = env.a.clone();
@@ -509,7 +577,6 @@ async fn api_7_forged_deliveries_do_not_use_up_the_audit_of_a_real_one() {
 /// API-8. Every refused decision writes an audit row with a fresh id. A token holder who is not on
 /// the allowlist can write as many as the per-address rate limit lets through (600 a minute).
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[ignore = "confirmed defect API-8: an authenticated caller with no designation writes one audit row per refused request, without a bound per principal"]
 async fn api_8_refused_decisions_of_one_principal_are_bounded() {
     let env = Env::start().await;
     let a = env.a.clone();
@@ -542,7 +609,6 @@ async fn api_8_refused_decisions_of_one_principal_are_bounded() {
 /// API-9. The rate limiter keys on the whole address. A client that holds an IPv6 /64 has 2^64 of
 /// them, so the per-address limit never applies, and the map grows by one entry per address.
 #[test]
-#[ignore = "confirmed defect API-9: the per-source rate limit is per IPv6 address, not per prefix, and does not apply to a client with a /64"]
 fn api_9_the_rate_limit_holds_for_a_client_with_a_whole_ipv6_prefix() {
     let limiter = RateLimiter::new();
     let now = Instant::now();
@@ -568,7 +634,6 @@ fn api_9_the_rate_limit_holds_for_a_client_with_a_whole_ipv6_prefix() {
 /// store. Any caller with a token can produce either at will, which is a way to raise 5xx rates
 /// and warnings (and, behind a proxy that ejects a host on consecutive 5xx, to take the host out).
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[ignore = "confirmed defect API-11: a repeated X-Correlation-Id and a malformed pagination cursor are answered 503 and logged as store faults"]
 async fn api_11_a_repeated_correlation_id_is_the_callers_error_not_the_services() {
     let env = Env::start().await;
     let a = env.a.clone();

@@ -105,6 +105,9 @@ async fn setup(db: &support::TestDb) -> Setup {
             world.store.clone(),
             policies.hash.clone(),
         )),
+        clock: world.deps.clock.clone(),
+        max_age: std::time::Duration::from_secs(72 * 3600),
+        per_pass: factory_composition::decisions::DECISIONS_PER_PASS,
     }));
     Setup {
         world,

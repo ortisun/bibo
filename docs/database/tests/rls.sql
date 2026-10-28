@@ -59,7 +59,7 @@ LANGUAGE sql AS $$
   ), walk(grp_oid, member_oid) AS (
     SELECT g.oid, a.member
       FROM pg_roles g JOIN usable a ON a.roleid = g.oid
-     WHERE g.rolname IN ('factory_app', 'factory_system', 'factory_lookup', 'factory_resolver')
+     WHERE g.rolname IN ('factory_app', 'factory_system', 'factory_lookup', 'factory_resolver', 'factory_api_app')
     UNION
     SELECT w.grp_oid, a.member FROM walk w JOIN usable a ON a.roleid = w.member_oid
   )
@@ -70,25 +70,28 @@ $$;
 -- Pairs of groups that no role may belong to together. Permissive policies are combined with OR, so a
 -- login in both factory_app and factory_system would see every row. factory_resolver is for the login
 -- that authenticates requests and must not also be the engine's system login. factory_lookup owns the
--- two lookup functions and nobody may be it.
+-- two lookup functions and nobody may be it. factory_api_app is the API's own narrow group (finding API-3):
+-- the API login holds it with factory_resolver and with nothing else, because privileges add up and a
+-- login that is also in factory_app would hold everything factory_app can write.
 CREATE FUNCTION dbtest.membership_conflicts() RETURNS text LANGUAGE sql AS $$
   SELECT coalesce(string_agg(DISTINCT a.member || ' is a member of both ' || least(a.grp, b.grp) || ' and ' || greatest(a.grp, b.grp), '; '), '')
        || coalesce((SELECT '; ' || string_agg(DISTINCT member || ' is a member of factory_lookup', '; ') FROM dbtest.group_members() WHERE grp = 'factory_lookup' AND NOT is_super), '')
     FROM dbtest.group_members() a
     JOIN dbtest.group_members() b ON a.member = b.member AND a.grp < b.grp
-   WHERE a.grp IN ('factory_app', 'factory_system', 'factory_resolver') AND b.grp IN ('factory_app', 'factory_system', 'factory_resolver')
-     AND (a.grp, b.grp) <> ('factory_app', 'factory_resolver')
+   WHERE a.grp IN ('factory_app', 'factory_system', 'factory_resolver', 'factory_api_app')
+     AND b.grp IN ('factory_app', 'factory_system', 'factory_resolver', 'factory_api_app')
+     AND (a.grp, b.grp) <> ('factory_api_app', 'factory_resolver')
 $$;
 
 DO $$
 DECLARE
   g text;
 BEGIN
-  FOREACH g IN ARRAY ARRAY['factory_app', 'factory_system', 'factory_lookup', 'factory_resolver'] LOOP
+  FOREACH g IN ARRAY ARRAY['factory_app', 'factory_system', 'factory_lookup', 'factory_resolver', 'factory_api_app'] LOOP
     PERFORM dbtest.expect_eq(g || ' is a NOLOGIN group with no superuser, BYPASSRLS, CREATEROLE, CREATEDB or REPLICATION, owns nothing and cannot create in public',
       dbtest.group_role_problems(g), '');
   END LOOP;
-  PERFORM dbtest.expect_eq('no login belongs to both factory_app and factory_system, to factory_system and factory_resolver, or to factory_lookup',
+  PERFORM dbtest.expect_eq('no login belongs to both factory_app and factory_system, to factory_system and factory_resolver, to factory_api_app and factory_app or factory_system, or to factory_lookup',
     dbtest.membership_conflicts(), '');
   PERFORM dbtest.expect_eq('no member of any group is a superuser or has BYPASSRLS',
     (SELECT coalesce(string_agg(grp || ':' || member, ', '), '') FROM dbtest.group_members() WHERE is_super OR bypass_rls), '');
@@ -108,6 +111,23 @@ BEGIN
   EXCEPTION WHEN SQLSTATE 'XX998' THEN NULL;
   END;
   PERFORM dbtest.expect_true('control: a login in both factory_app and factory_system is reported', seen LIKE '%dbtest_both is a member of both factory_app and factory_system%', seen);
+
+  BEGIN
+    CREATE ROLE dbtest_api_and_worker LOGIN IN ROLE factory_api_app, factory_app;
+    seen := dbtest.membership_conflicts();
+    RAISE EXCEPTION 'rollback' USING ERRCODE = 'XX998';
+  EXCEPTION WHEN SQLSTATE 'XX998' THEN NULL;
+  END;
+  PERFORM dbtest.expect_true('control: the old shape of the API login, factory_app and factory_api_app together, is reported',
+    seen LIKE '%dbtest_api_and_worker is a member of both factory_api_app and factory_app%', seen);
+
+  BEGIN
+    CREATE ROLE dbtest_api_login LOGIN IN ROLE factory_api_app, factory_resolver;
+    seen := dbtest.membership_conflicts();
+    RAISE EXCEPTION 'rollback' USING ERRCODE = 'XX998';
+  EXCEPTION WHEN SQLSTATE 'XX998' THEN NULL;
+  END;
+  PERFORM dbtest.expect_eq('control: the API login as designed (factory_api_app and factory_resolver) is not a conflict', seen, '');
 
   BEGIN
     CREATE ROLE dbtest_lookup_member LOGIN IN ROLE factory_lookup;
@@ -220,7 +240,14 @@ BEGIN
   END IF;
   IF p.polcmd <> '*' THEN problems := problems || 'the policy does not cover all commands; '; END IF;
   IF NOT p.polpermissive THEN problems := problems || 'the policy is not permissive; '; END IF;
-  IF p.polroles <> ARRAY['factory_app'::regrole::oid] THEN problems := problems || 'the policy is not for factory_app alone; '; END IF;
+  -- factory_app, and also factory_api_app for the eight tables the HTTP API reads or writes (migration 2026-10-28-002000).
+  IF (SELECT array_agg(r ORDER BY r) FROM unnest(p.polroles) r) IS DISTINCT FROM
+     (SELECT array_agg(r ORDER BY r) FROM unnest(CASE
+        WHEN p_tbl IN ('repositories', 'principals', 'jobs', 'original_requests', 'stage_runs', 'audit_events', 'outbox', 'webhook_deliveries')
+        THEN ARRAY['factory_app'::regrole::oid, 'factory_api_app'::regrole::oid]
+        ELSE ARRAY['factory_app'::regrole::oid] END) r) THEN
+    problems := problems || 'the policy does not name exactly the roles it should (factory_app, and factory_api_app on the eight tables of the API); ';
+  END IF;
   qual := pg_get_expr(p.polqual, p.polrelid);
   check_text := pg_get_expr(p.polwithcheck, p.polrelid);
   IF qual IS DISTINCT FROM expected THEN problems := problems || format('USING is %s, not the NULLIF form; ', qual); END IF;
@@ -726,10 +753,15 @@ $$;
 -- missing one: the list is the review surface of the design.
 
 CREATE TEMP TABLE expected_policies (tbl text, policy text, cmd text, role text);
+-- The roles of a policy are listed by name, joined with '+'. The eight tables the HTTP API reads or writes
+-- name factory_api_app too (migration 2026-10-28-002000, finding API-3).
 INSERT INTO expected_policies
-SELECT t, 'tenant_isolation', '*', 'factory_app' FROM dbtest.tenant_tables() AS t;
+SELECT t, 'tenant_isolation', '*',
+       CASE WHEN t IN ('repositories', 'principals', 'jobs', 'original_requests', 'stage_runs', 'audit_events', 'outbox', 'webhook_deliveries')
+            THEN 'factory_api_app+factory_app' ELSE 'factory_app' END
+  FROM dbtest.tenant_tables() AS t;
 INSERT INTO expected_policies VALUES
-  ('tenants', 'tenant_self', 'r', 'factory_app'),
+  ('tenants', 'tenant_self', 'r', 'factory_api_app+factory_app'),
   ('tenants', 'lookup_read', 'r', 'factory_lookup'),
   ('principals', 'lookup_read', 'r', 'factory_lookup'),
   ('api_tokens', 'lookup_read', 'r', 'factory_lookup'),
@@ -745,7 +777,7 @@ INSERT INTO expected_policies VALUES
 CREATE FUNCTION dbtest.policy_set() RETURNS text LANGUAGE sql AS $$
   SELECT coalesce(string_agg(c.relname || '.' || p.polname || ' ' || p.polcmd::text || ' ' ||
                              CASE WHEN p.polpermissive THEN '' ELSE 'RESTRICTIVE ' END ||
-                             (SELECT string_agg(CASE WHEN r = 0 THEN 'PUBLIC' ELSE r::regrole::text END, '+' ORDER BY r) FROM unnest(p.polroles) r), E'\n' ORDER BY c.relname, p.polname), '')
+                             (SELECT string_agg(CASE WHEN r = 0 THEN 'PUBLIC' ELSE r::regrole::text END, '+' ORDER BY CASE WHEN r = 0 THEN 'PUBLIC' ELSE r::regrole::text END) FROM unnest(p.polroles) r), E'\n' ORDER BY c.relname, p.polname), '')
     FROM pg_policy p JOIN pg_class c ON c.oid = p.polrelid WHERE c.relnamespace = 'public'::regnamespace
 $$;
 

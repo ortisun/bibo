@@ -11,11 +11,12 @@ Two layers keep tenants apart, and each catches a fault the other misses. The **
 
 ## The roles
 
-Four groups, none of which can log in. The deployment creates one or more **logins** as members of them.
+Five groups, none of which can log in. The deployment creates one or more **logins** as members of them.
 
 | Group | Used for | What it can do | Who may be a member |
 |---|---|---|---|
-| `factory_app` | Everything done for one tenant | The grants in [privileges](tests/privileges.sql), filtered to one tenant by the policies below | The API login and the tenant pool of the worker login |
+| `factory_app` | Everything done for one tenant | The grants in [privileges](tests/privileges.sql), filtered to one tenant by the policies below | The tenant pool of the worker login |
+| `factory_api_app` | What the HTTP API reads and writes (finding API-3 of the [API security review](../reviews/api-security-review.md)) | Read `tenants`, `repositories`, `principals`, `jobs`, `stage_runs`, `original_requests`, `audit_events`, `outbox`, `webhook_deliveries` and the reference tables; INSERT into `jobs`, `original_requests`, `audit_events`, `webhook_deliveries`. No UPDATE, no DELETE, no column grant, no token, approval, ledger or outbox write. The list is [api_privileges](tests/api_privileges.sql) | The API login only |
 | `factory_system` | The engine's cross-tenant loops: claim, sweep, relay | Read the columns those queries need on `stage_runs`, `jobs`, `attempts`; lock `stage_runs` and `attempts`; read the outbox and mark events published. No insert, no delete, no status change. See [the system scope](#the-system-scope) | One login, used by `Store::begin_system` in the `workflow` crate |
 | `factory_resolver` | The two lookups before a tenant is known | Execute `resolve_token` and `resolve_installation`. No table access | The API login only |
 | `factory_lookup` | Owns the two lookup functions | Read the columns they use, through policies of its own | Nobody. The migration role holds it for a moment to hand the functions over |
@@ -24,12 +25,12 @@ What the suite checks about the roles (`rls`, section 1, and the shell part):
 
 - None has `SUPERUSER`, `BYPASSRLS`, `CREATEROLE`, `CREATEDB`, `REPLICATION` or `LOGIN`. None owns a table, a view, a sequence or a schema. None can create objects in `public`.
 - **No login is a member of both `factory_app` and `factory_system`.** Permissive policies are combined with OR, so a login in both would see every row. The suite builds such a login and shows it reads every tenant's jobs, then shows that the membership check reports it. The same rule keeps `factory_system` apart from `factory_resolver`, and `factory_lookup` free of members.
-- The API login is the one login that belongs to two groups (`factory_app` and `factory_resolver`). That pair is allowed.
+- The API login is the one login that belongs to two groups (`factory_api_app` and `factory_resolver`). That pair is allowed. A login in `factory_api_app` and `factory_app` would hold the union of both, which is the shape that let the API login mint a token (finding API-3), so the membership check reports it and the storage crate refuses to start on it.
 - A membership that carries only the ADMIN option, which the role that created a group gets on PostgreSQL 16 and later, is not counted as a member: it confers neither the privileges nor the right to switch to the role.
 
 ```sql
 -- What a deployment creates. Passwords come from the secret store; none is written in the repository.
-CREATE ROLE factory_api    LOGIN PASSWORD '...' IN ROLE factory_app, factory_resolver;
+CREATE ROLE factory_api    LOGIN PASSWORD '...' IN ROLE factory_api_app, factory_resolver;
 CREATE ROLE factory_worker LOGIN PASSWORD '...' IN ROLE factory_app;
 CREATE ROLE factory_engine LOGIN PASSWORD '...' IN ROLE factory_system;
 ```

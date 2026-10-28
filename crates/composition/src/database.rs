@@ -91,7 +91,7 @@ pub async fn connect(
 }
 
 /// Builds the store configuration of the API: the API login on the one pool, which is a member of
-/// `factory_app` and of `factory_resolver`, and no system pool. The API cannot find work across
+/// `factory_api_app` and of `factory_resolver` (not of `factory_app`), and no system pool. The API cannot find work across
 /// tenants, and the three calls that run before a tenant is known are refused to any other login
 /// (`TenantLogin::Api`).
 ///

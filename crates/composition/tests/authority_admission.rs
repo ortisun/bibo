@@ -177,3 +177,74 @@ async fn the_facts_about_the_repository_are_read_from_the_repository() {
     );
     let _ = std::fs::remove_dir_all(&checkout);
 }
+
+/// API-1 at admission (R-14): an allowlist entry narrowed to some repositories makes its person a
+/// requester there and nowhere else, and the answer is read from the file at every call.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_requester_narrowed_to_one_repository_is_not_admitted_on_another() {
+    let (db, world, tenant) = pg_world().await;
+    let policies = load_policy(&root(), &[]).expect("the real policies load");
+    let checkout = root()
+        .join("target/authority-admission")
+        .join(world.ids.new_uuid().simple().to_string());
+    std::fs::create_dir_all(checkout.join("allowlist")).expect("a directory");
+    let file = checkout.join("allowlist/allowlist.yaml");
+    let entry = |extra: &str| {
+        format!(
+            "version: 1\nentries:\n  - tenant: {}\n    github_user_id: 1001\n    login: requester-one\n    designations: [requester]\n{extra}",
+            tenant.as_uuid()
+        )
+    };
+    std::fs::write(&file, entry("")).expect("the allowlist file");
+    let authority = StoreAuthority::new(
+        world.store.clone(),
+        Arc::new(FileAllowlist::in_checkout(&checkout)),
+        Arc::clone(&policies.engine),
+        world.deps.clock.clone(),
+    );
+    let first = world.repository;
+    let second = RepositoryId::from_uuid(world.ids.new_uuid());
+    db.run(&format!(
+        "INSERT INTO repositories (tenant_id, id, github_installation_id, github_repository_id, full_name, default_branch) \
+         VALUES ('{}', '{}', 1000, 2999, 'org/repo-second', 'main');",
+        tenant.as_uuid(),
+        second.as_uuid()
+    ))
+    .await;
+    let listed = |repository: RepositoryId| {
+        let authority = &authority;
+        async move {
+            authority
+                .admission(tenant, world.requester, repository)
+                .await
+                .expect("facts")
+                .requester_on_allowlist
+        }
+    };
+
+    // Not narrowed: both.
+    assert!(listed(first).await && listed(second).await);
+
+    // Narrowed to the second repository, spelled in another case: the first is no longer reached.
+    std::fs::write(&file, entry("    repositories: [\"ORG/Repo-Second\"]\n")).expect("narrowed");
+    assert!(
+        !listed(first).await,
+        "a requester narrowed to org/repo-second was admitted on org/repo-0"
+    );
+    assert!(listed(second).await);
+
+    // Narrowed to nothing: neither. A list that is present and empty is not "everything".
+    std::fs::write(&file, entry("    repositories: []\n")).expect("narrowed to nothing");
+    assert!(!listed(first).await && !listed(second).await);
+
+    // The tenant-wide question (a listed person, for the read routes) still says they are listed.
+    let roles = authority
+        .roles(tenant, world.requester)
+        .await
+        .expect("roles");
+    assert!(
+        roles.contains(&factory_domain::vocabulary::HumanRole::Requester),
+        "a narrowed person is still on the list: the roles are the tenant-wide answer"
+    );
+    let _ = std::fs::remove_dir_all(&checkout);
+}

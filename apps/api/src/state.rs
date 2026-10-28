@@ -25,7 +25,7 @@ use factory_workflow::commands::Authority;
 use factory_workflow::stages::intake::seams::AllowlistSource;
 
 use crate::config::{GithubSettings, Limits};
-use crate::limits::{PlatformAudit, RateLimiter};
+use crate::limits::{PlatformAudit, RateLimiter, RefusalBudget};
 
 /// Every port of the API, chosen by the composition root.
 #[derive(Clone)]
@@ -91,6 +91,8 @@ pub struct ApiState {
     pub limits: Limits,
     /// The rate limits.
     pub limiter: RateLimiter,
+    /// How many refused decisions of one person are written as audit rows (API-8).
+    pub refusals: RefusalBudget,
     /// The queue of audit events for deliveries that belong to no tenant.
     pub platform_audit: PlatformAudit,
     /// Lets a test change what readiness reports as the expected schema.

@@ -34,17 +34,18 @@ use factory_composition::decisions::DecisionFields;
 use factory_domain::ids::{AuditEventId, CorrelationId, JobId, StageRunId};
 use factory_domain::vocabulary::HumanRole;
 use factory_ports::store::{
-    AuditActor, AuditDecision, ConstraintRule, NewAuditEvent, StoreError, Witness,
+    AuditActor, AuditDecision, ConstraintRule, NewAuditEvent, StoreError, Tx, Witness,
 };
 use factory_workflow::stages::approval::Verb;
 use serde::Deserialize;
 use serde_json::json;
 
 use crate::answers::{Answer, ApiError, Reply};
-use crate::auth::Caller;
+use crate::auth::{Caller, require_repository};
 use crate::jobs::{
     audit_action, clean_line, clean_text, commit, decode, idempotency_key, parse_id,
 };
+use crate::limits::Refusal;
 use crate::state::ApiState;
 use crate::tokens;
 
@@ -96,11 +97,13 @@ fn required_roles(state: &ApiState, verb: Verb) -> Vec<HumanRole> {
         .unwrap_or_default()
 }
 
-/// A UUID derived from the tenant, the job and the caller's key: the same three always give the
-/// same id, so a retried request is the same record.
-fn derived_id(tenant: &str, job: &str, key: &str) -> uuid::Uuid {
+/// A UUID derived from the tenant, the caller, the job and the caller's key: the same four always
+/// give the same id, so a retried request is the same record, and two people who send the same key
+/// for the same job write two records, not one record that the second of them is told is theirs
+/// (API-2).
+fn derived_id(tenant: &str, principal: &str, job: &str, key: &str) -> uuid::Uuid {
     let digest = factory_domain::values::Sha256Digest::of(
-        format!("decision\n{tenant}\n{job}\n{key}").as_bytes(),
+        format!("decision\n{tenant}\n{principal}\n{job}\n{key}").as_bytes(),
     );
     let hash = tokens::digest_bytes(&digest);
     let mut bytes = [0_u8; 16];
@@ -182,17 +185,35 @@ pub async fn decide(
     }
 
     let ids = &state.ports.ids;
-    let command = derived_id(&caller.tenant.as_text(), &job_id.as_text(), key.as_str());
+    let command = derived_id(
+        &caller.tenant.as_text(),
+        &caller.principal.as_text(),
+        &job_id.as_text(),
+        key.as_str(),
+    );
 
     // 1. Who. The attempt of someone without the role is audited and refused with no reason, and
     // the answer does not depend on whether the job exists: an unlisted person learns nothing
     // about the tenant's jobs. The record names the job as text and does not reference it.
     let needed = required_roles(state, decision.verb);
-    let allowed = caller.require_any(&needed).is_ok();
+    let mut allowed = caller.require_any(&needed).is_ok();
 
     let mut tx = state.ports.store.begin(caller.scope()).await?;
-    let (job_ref, correlation_id) = if allowed {
+    let mut found_job = None;
+    if allowed {
         let job = tx.get_job(job_id).await?;
+        // The designation holds on the repositories the allowlist entry names (API-1). A person
+        // narrowed to other repositories is refused as one without the designation: audited, no
+        // reason, and the record names no job.
+        let repository = tx.get_repository(job.value.repository).await?;
+        match require_repository(state, caller, &repository.value.full_name) {
+            Ok(()) => {}
+            Err(ApiError::Forbidden) => allowed = false,
+            Err(other) => return Err(other),
+        }
+        found_job = Some(job);
+    }
+    let (job_ref, correlation_id) = if let (true, Some(job)) = (allowed, found_job) {
         if let Some(run) = stage_run {
             let found = tx.get_stage_run(run).await?;
             if found.value.job_id != job.value.id {
@@ -221,30 +242,20 @@ pub async fn decide(
         target: decision.target.map(|t| t.as_str().to_owned()),
     }
     .subject();
-    let (action, outcome, reason) = if allowed {
-        (
-            "decision.requested",
-            AuditDecision::Record,
-            format!("requested: {}", kept(&decision.reason)),
-        )
-    } else {
-        (
-            "decision.denied",
-            AuditDecision::Deny,
-            "The caller does not hold the designation this decision needs.".to_owned(),
-        )
-    };
+    if !allowed {
+        return refuse(state, caller, tx, subject, correlation_id).await;
+    }
     let written = tx
         .record_audit(NewAuditEvent {
             id: audit_id,
             actor: AuditActor::Human(caller.principal),
-            action: audit_action(action)?,
+            action: audit_action("decision.requested")?,
             subject,
-            decision: outcome,
-            reason,
+            decision: AuditDecision::Record,
+            reason: format!("requested: {}", kept(&decision.reason)),
             policy_hash: state.policy_hash(),
             job: job_ref,
-            stage_run: if allowed { stage_run } else { None },
+            stage_run,
             correlation_id,
         })
         .await;
@@ -256,9 +267,6 @@ pub async fn decide(
         Err(other) => return Err(other.into()),
     }
     commit(state, caller.scope(), tx, Witness::Audit(audit_id)).await?;
-    if !allowed {
-        return Err(ApiError::Forbidden);
-    }
     Ok(Reply::new(
         StatusCode::ACCEPTED,
         json!({
@@ -269,17 +277,89 @@ pub async fn decide(
     ))
 }
 
+/// The refusal of someone who does not hold the designation: audited, within what the audit log
+/// takes from one person (API-8), and answered `403` with no reason.
+///
+/// A refused caller used to leave one row with a new id for every request, so any token holder, listed
+/// or not, could grow the tenant's hash-chained audit log by thousands of rows an hour, and the
+/// chain serialises its writers. A person now has a few rows a minute, then one row that says the
+/// rest are counted, and the count is written when the next minute opens.
+async fn refuse(
+    state: &ApiState,
+    caller: &Caller,
+    mut tx: Box<dyn Tx>,
+    subject: String,
+    correlation_id: CorrelationId,
+) -> Answer {
+    let rows: Vec<(&str, String, &str)> = match state
+        .refusals
+        .admit(caller.principal, std::time::Instant::now())
+    {
+        Refusal::Count => {
+            let _ = tx.rollback().await;
+            return Err(ApiError::Forbidden);
+        }
+        Refusal::Record { carried } => {
+            let mut rows = vec![(
+                "decision.denied",
+                subject,
+                "The caller does not hold the designation this decision needs.",
+            )];
+            if carried > 0 {
+                rows.push((
+                        "decision.denied_summary",
+                        format!("decision refusals: {carried} not recorded"),
+                        "Refusals of this person in the minute before went past what the audit log records one by one; the count is in the subject.",
+                    ));
+            }
+            rows
+        }
+        Refusal::Suppress => vec![(
+            "decision.denied_suppressed",
+            "decision refusals".to_owned(),
+            "More refusals of this person follow in this minute; they are counted, not recorded one by one.",
+        )],
+    };
+    let mut last = None;
+    for (action, subject, reason) in rows {
+        let id = AuditEventId::from_uuid(state.ports.ids.new_uuid());
+        tx.record_audit(NewAuditEvent {
+            id,
+            actor: AuditActor::Human(caller.principal),
+            action: audit_action(action)?,
+            subject,
+            decision: AuditDecision::Deny,
+            reason: reason.to_owned(),
+            policy_hash: state.policy_hash(),
+            job: None,
+            stage_run: None,
+            correlation_id,
+        })
+        .await?;
+        last = Some(id);
+    }
+    if let Some(id) = last {
+        commit(state, caller.scope(), tx, Witness::Audit(id)).await?;
+    }
+    Err(ApiError::Forbidden)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn the_same_tenant_job_and_key_give_the_same_id_and_a_different_key_does_not() {
-        let a = derived_id("t1", "j1", "k1");
-        assert_eq!(a, derived_id("t1", "j1", "k1"));
-        assert_ne!(a, derived_id("t1", "j1", "k2"));
-        assert_ne!(a, derived_id("t1", "j2", "k1"));
-        assert_ne!(a, derived_id("t2", "j1", "k1"));
+    fn the_same_tenant_caller_job_and_key_give_the_same_id_and_a_different_one_does_not() {
+        let a = derived_id("t1", "p1", "j1", "k1");
+        assert_eq!(a, derived_id("t1", "p1", "j1", "k1"));
+        assert_ne!(a, derived_id("t1", "p1", "j1", "k2"));
+        assert_ne!(a, derived_id("t1", "p1", "j2", "k1"));
+        assert_ne!(a, derived_id("t2", "p1", "j1", "k1"));
+        assert_ne!(
+            a,
+            derived_id("t1", "p2", "j1", "k1"),
+            "another caller, the same key"
+        );
         assert_eq!(a.get_version_num(), 4);
     }
 

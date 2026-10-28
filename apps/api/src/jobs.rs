@@ -9,21 +9,21 @@
 //!   security hides the row and the scope hides it again.
 
 use axum::http::{HeaderMap, StatusCode};
-use factory_domain::ids::{AuditEventId, CorrelationId, JobId, RepositoryId};
+use factory_domain::ids::{AuditEventId, CorrelationId, JobId, PrincipalId, RepositoryId};
 use factory_domain::scope::TenantScope;
 use factory_domain::values::Sha256Digest;
 use factory_domain::vocabulary::{HumanRole, StageKind};
 use factory_ports::store::{
-    AuditAction, AuditActor, AuditDecision, AuditFilter, IdempotencyKey, JobFilter, JobOrigin,
-    NewAuditEvent, NewJob, NewOriginalRequest, OutboxSeq, PageCursor, PipelineScope, RequestSource,
-    StoreError, Tx, Witness,
+    AuditAction, AuditActor, AuditDecision, AuditFilter, ConstraintRule, IdempotencyKey, JobFilter,
+    JobOrigin, NewAuditEvent, NewJob, NewOriginalRequest, OutboxSeq, PageCursor, PipelineScope,
+    RequestSource, StoreError, Tx, Witness,
 };
 use factory_workflow::engine::config::SLICE_ONE_SCOPE;
 use serde::Deserialize;
 use serde_json::{Value, json};
 
 use crate::answers::{Answer, ApiError, Reply};
-use crate::auth::Caller;
+use crate::auth::{Caller, require_repository};
 use crate::state::ApiState;
 
 /// The longest request text the API accepts, in bytes. The store allows 1 MiB; the API's body
@@ -60,6 +60,26 @@ pub(crate) fn clean_text(text: &str) -> bool {
 /// Text on one line with no control character.
 pub(crate) fn clean_line(text: &str) -> bool {
     !text.chars().any(char::is_control)
+}
+
+/// The key a job is stored under: the caller's key bound to the principal behind the token (API-2).
+///
+/// The store makes a key unique per tenant. Left as the caller wrote it, a second person of the
+/// tenant who sent the same key and text was answered with the first person's job, which stays the
+/// first person's, and a different text under a taken key told them whether a guess of the first
+/// person's text was right. The stored key is the principal and the SHA-256 of the caller's key,
+/// 32 + 1 + 64 characters, inside the store's 128: two callers cannot meet on one key, and a
+/// caller still finds their own job again.
+pub(crate) fn caller_key(
+    principal: PrincipalId,
+    key: &IdempotencyKey,
+) -> Result<IdempotencyKey, ApiError> {
+    IdempotencyKey::new(&format!(
+        "{}:{}",
+        principal.as_uuid().simple(),
+        Sha256Digest::of(key.as_str().as_bytes()).hex()
+    ))
+    .map_err(|_| ApiError::Unavailable)
 }
 
 /// The caller's idempotency key: exactly one header of 1 to 128 characters from a small alphabet.
@@ -154,6 +174,8 @@ pub async fn submit(
     if !registered.value.enabled {
         return Err(ApiError::NotFound);
     }
+    // A requester narrowed to some repositories asks for work there and nowhere else (API-1).
+    require_repository(state, caller, &registered.value.full_name)?;
     let pipeline_scope =
         PipelineScope::new(SLICE_ONE_SCOPE.to_vec()).map_err(|_| ApiError::Unavailable)?;
     let inserted = tx
@@ -165,14 +187,24 @@ pub async fn submit(
             execution_mode: state.profile.execution_mode(),
             autonomy_level: registered.value.autonomy_ceiling,
             pipeline_scope,
-            origin: Some(JobOrigin::Request(key)),
+            origin: Some(JobOrigin::Request(caller_key(caller.principal, &key)?)),
         })
-        .await?;
+        .await
+        .map_err(|error| match error {
+            // The only other way for a new job to clash is its correlation id, which the caller
+            // may choose with X-Correlation-Id (API-11). That is the caller's mistake.
+            StoreError::Constraint(ConstraintRule::IdReusedWithDifferentContent) => {
+                ApiError::BadRequest("x-correlation-id")
+            }
+            other => other.into(),
+        })?;
     let job = inserted.row.value;
     if !inserted.created {
         // The key was used before. It finds its job if the request is the same one.
         let first = tx.get_original_request(job.id, Some(1)).await?;
-        let same = job.repository == repository && first.content_sha256 == text_hash;
+        let same = job.repository == repository
+            && job.requester == caller.principal
+            && first.content_sha256 == text_hash;
         let _ = tx.rollback().await;
         if !same {
             return Err(ApiError::Conflict);
@@ -307,9 +339,16 @@ pub async fn list(state: &ApiState, caller: &Caller, query: Option<&str>) -> Ans
     caller.require_listed()?;
     let (limit, after) = list_query(query)?;
     let mut tx = state.ports.store.begin(caller.scope()).await?;
+    let had_cursor = after.is_some();
     let page = tx.list_jobs(JobFilter::default(), after, limit).await;
     let _ = tx.rollback().await;
-    let page = page?;
+    let page = page.map_err(|error| match error {
+        // The cursor is opaque to the API, so only the store can say it is not one (API-11).
+        StoreError::Constraint(ConstraintRule::TextBounds) if had_cursor => {
+            ApiError::BadRequest("after")
+        }
+        other => other.into(),
+    })?;
     let jobs: Vec<Value> = page
         .rows
         .iter()

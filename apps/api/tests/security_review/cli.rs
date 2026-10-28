@@ -72,7 +72,6 @@ fn json_response(status: &str, body: &str) -> String {
 /// today; a server that is wrong, replaced or compromised can clear the screen, retitle the
 /// window or rewrite earlier lines.
 #[test]
-#[ignore = "confirmed defect API-10: the CLI writes control characters from the server to the terminal"]
 fn api_10_the_cli_does_not_print_terminal_escapes_sent_by_the_server() {
     let binary = cli_binary();
     let token = runtime_token();

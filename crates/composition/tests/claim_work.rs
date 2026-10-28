@@ -9,22 +9,25 @@ mod support;
 
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use async_trait::async_trait;
 use factory_composition::authority::StoreAuthority;
 use factory_composition::decisions::{
     APPLIED, AllowlistAuthority, ApprovalSubmitter, AuditMarkers, ClaimWork, ClaimWorkDeps,
-    DecisionAuthority, DecisionFields, DecisionMarkers, MAX_TRIES, Marked, Pending, REJECTED,
-    REQUESTED, Unreadable,
+    DECISIONS_PER_PASS, DecisionAuthority, DecisionFields, DecisionMarkers, MAX_TRIES, Marked,
+    Pending, REJECTED, REQUESTED, Reason, Unreadable,
 };
 use factory_composition::delivery::StoreApprovalSources;
 use factory_composition::seams::FileAllowlist;
 use factory_composition::startup::{LoadedPolicies, load_policy};
+use factory_composition::system::SystemClock;
 use factory_domain::ids::{AuditEventId, CausationId, JobId, PrincipalId, StageRunId, TenantId};
 use factory_domain::scope::TenantScope;
 use factory_domain::state::{JobStatus, StageRunStatus};
-use factory_domain::values::Slug;
-use factory_ports::clock::IdGenerator;
+use factory_domain::values::{Slug, Timestamp};
+use factory_domain::vocabulary::Fidelity;
+use factory_ports::clock::{Clock, IdGenerator};
 use factory_ports::store::{
     AuditAction, AuditActor, AuditDecision, AuditFilter, NewAuditEvent, NewPrincipal, OutboxSeq,
     PrincipalKind, Store,
@@ -78,7 +81,7 @@ struct PermitsEveryone;
 
 #[async_trait(?Send)]
 impl DecisionAuthority for PermitsEveryone {
-    async fn permits(&self, _: TenantId, _: u64, _: Verb) -> Result<bool, Unreadable> {
+    async fn permits(&self, _: TenantId, _: u64, _: Verb, _: &str) -> Result<bool, Unreadable> {
         Ok(true)
     }
 }
@@ -88,7 +91,7 @@ struct Unreadable_;
 
 #[async_trait(?Send)]
 impl DecisionAuthority for Unreadable_ {
-    async fn permits(&self, _: TenantId, _: u64, _: Verb) -> Result<bool, Unreadable> {
+    async fn permits(&self, _: TenantId, _: u64, _: Verb, _: &str) -> Result<bool, Unreadable> {
         Err(Unreadable)
     }
 }
@@ -105,6 +108,23 @@ struct Rig {
     operator: PrincipalId,
     approver: PrincipalId,
     stranger: PrincipalId,
+    /// The clock the hook reads. A test moves it to age a request.
+    clock: Arc<dyn Clock>,
+    /// How many decisions a pass deals with for the tenant.
+    per_pass: usize,
+}
+
+/// The system clock, `ahead` of itself: how a request looks after it has waited.
+struct Ahead(Duration);
+
+impl Clock for Ahead {
+    fn fidelity(&self) -> Fidelity {
+        Fidelity::Fake
+    }
+
+    fn now(&self) -> Timestamp {
+        SystemClock.now().checked_add(self.0).expect("a time")
+    }
 }
 
 impl Drop for Rig {
@@ -145,6 +165,8 @@ impl Rig {
             operator: world.requester,
             approver: world.requester,
             stranger: world.requester,
+            clock: world.deps.clock.clone(),
+            per_pass: DECISIONS_PER_PASS,
             world,
         };
         rig.write_allowlist(&[
@@ -217,6 +239,9 @@ impl Rig {
             )),
             authority,
             markers,
+            clock: self.clock.clone(),
+            max_age: Duration::from_secs(72 * 3600),
+            per_pass: self.per_pass,
         })
     }
 
@@ -532,6 +557,87 @@ async fn a_person_who_left_the_allowlist_since_the_api_checked_is_refused_and_no
     assert_eq!(reason, "The person may not take this decision now.");
 }
 
+/// API-1 at apply time (R-14, R-4): the narrowing of an allowlist entry is read when the worker
+/// applies the decision, not when the API recorded it. An operator who was narrowed to some other
+/// repository after the request was made is refused, and nothing moves. The same entry narrowed to
+/// the job's own repository (spelled in another case) still works.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_operator_narrowed_to_another_repository_since_the_request_is_refused_at_apply_time() {
+    let rig = Rig::new().await;
+    let job = rig.active().await;
+    rig.request(rig.operator, job, Verb::Pause, None, None, "a short stop")
+        .await;
+    // Narrowed, after the API let the request in, to a repository that is not the job's.
+    std::fs::write(
+        rig.checkout.join("allowlist/allowlist.yaml"),
+        format!(
+            "{}    repositories: [\"org/somewhere-else\"]\n",
+            allowlist_text(rig.tenant, &[(OPERATOR, "operator-one", "operator")])
+        ),
+    )
+    .expect("narrowed");
+    rig.hook().pass(rig.tenant).await;
+    assert_eq!(rig.status(job).await, JobStatus::Active, "nothing moved");
+    assert_eq!(rig.trail(job).await, [REQUESTED, REJECTED]);
+    assert_eq!(
+        rig.reason_of(job, REJECTED).await.as_deref(),
+        Some("The person may not take this decision now."),
+        "the same plain words as any other refusal of authority"
+    );
+
+    // Narrowed to the job's own repository, in capitals: the same request, asked again, is applied.
+    std::fs::write(
+        rig.checkout.join("allowlist/allowlist.yaml"),
+        format!(
+            "{}    repositories: [\"ORG/REPO-0\"]\n",
+            allowlist_text(rig.tenant, &[(OPERATOR, "operator-one", "operator")])
+        ),
+    )
+    .expect("narrowed to this repository");
+    rig.request(rig.operator, job, Verb::Pause, None, None, "again")
+        .await;
+    rig.hook().pass(rig.tenant).await;
+    assert_eq!(rig.status(job).await, JobStatus::Paused);
+}
+
+/// The approver's side of the same defect: an approver narrowed to another repository never reaches
+/// the approval service.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_approver_narrowed_to_another_repository_never_reaches_the_service() {
+    let rig = Rig::new().await;
+    let job = rig.active().await;
+    let view = rig.engine.job_view(rig.tenant, job).await.expect("a view");
+    rig.write_allowlist(&[(REQUESTER, "requester-one", "requester")]);
+    std::fs::write(
+        rig.checkout.join("allowlist/allowlist.yaml"),
+        format!(
+            "{}{}    repositories: [\"org/somewhere-else\"]\n",
+            allowlist_text(rig.tenant, &[(REQUESTER, "requester-one", "requester")]),
+            allowlist_text(rig.tenant, &[(APPROVER, "approver-one", "approver")]).replacen(
+                "version: 1\nentries:\n",
+                "",
+                1
+            ),
+        ),
+    )
+    .expect("narrowed");
+    rig.request(
+        rig.approver,
+        job,
+        Verb::Reject,
+        Some(view.stage_runs[0].id),
+        None,
+        "not for this repository",
+    )
+    .await;
+    rig.hook().pass(rig.tenant).await;
+    assert!(
+        rig.submitter.seen.lock().expect("lock").is_empty(),
+        "a narrowed approver reached the approval service"
+    );
+    assert_eq!(rig.trail(job).await, [REQUESTED, REJECTED]);
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn a_person_who_never_held_the_designation_is_refused() {
     let rig = Rig::new().await;
@@ -665,39 +771,551 @@ async fn a_rejection_by_someone_who_is_not_an_approver_never_reaches_the_service
     assert_eq!(rig.trail(job).await, [REQUESTED, REJECTED]);
 }
 
+// ===== The requirements of the review (R-1 to R-17), proved on PostgreSQL ============================
+//
+// `docs/reviews/api-security-review.md`, section 8, lists what the hook must do with a record it did
+// not write. The tests below are the ones that are not in the older part of this file.
+
+impl Rig {
+    /// Writes any `decision.requested` record, as a login of the application group could: the actor,
+    /// the subject and the columns are the caller's to choose. Returns its id.
+    async fn raw_request(
+        &self,
+        actor: AuditActor,
+        subject: &str,
+        job: Option<JobId>,
+        stage_run: Option<StageRunId>,
+        reason: &str,
+    ) -> AuditEventId {
+        let id = AuditEventId::from_uuid(self.world.ids.new_uuid());
+        let mut tx = self
+            .world
+            .store
+            .begin(TenantScope::new(self.tenant))
+            .await
+            .expect("a tx");
+        tx.record_audit(NewAuditEvent {
+            id,
+            actor,
+            action: AuditAction::new(REQUESTED).expect("an action"),
+            subject: subject.to_owned(),
+            decision: AuditDecision::Record,
+            reason: reason.to_owned(),
+            policy_hash: self.policies.hash.clone(),
+            job,
+            stage_run,
+            correlation_id: factory_domain::ids::CorrelationId::from_uuid(
+                self.world.ids.new_uuid(),
+            ),
+        })
+        .await
+        .expect("the record is written");
+        tx.commit().await.expect("commit");
+        id
+    }
+
+    /// Every audit record of the tenant that the hook writes, as `(action, subject, reason)`.
+    async fn markers(&self) -> Vec<(String, String, String)> {
+        let mut tx = self
+            .world
+            .store
+            .begin(TenantScope::new(self.tenant))
+            .await
+            .expect("a tx");
+        let records = tx
+            .read_audit(AuditFilter::Tenant, 0, 1000)
+            .await
+            .expect("audit");
+        let _ = tx.rollback().await;
+        records
+            .into_iter()
+            .filter(|record| matches!(record.event.action.as_str(), APPLIED | REJECTED))
+            .map(|record| {
+                (
+                    record.event.action.as_str().to_owned(),
+                    record.event.subject,
+                    record.event.reason,
+                )
+            })
+            .collect()
+    }
+}
+
+/// R-2. The record is untrusted input. A subject that reads like a decision but is not byte for byte
+/// the text the API writes is not a decision: it is rejected with a marker, so that it stops being a
+/// candidate, and nothing moves.
 #[tokio::test(flavor = "multi_thread")]
-async fn a_record_that_is_not_a_decision_is_left_alone() {
+async fn r2_a_subject_that_is_not_the_canonical_text_is_rejected_and_nothing_moves() {
     let rig = Rig::new().await;
     let job = rig.active().await;
-    let mut tx = rig
-        .world
-        .store
-        .begin(TenantScope::new(rig.tenant))
-        .await
-        .expect("a tx");
-    let correlation = tx.get_job(job).await.expect("a job").value.correlation_id;
-    tx.record_audit(NewAuditEvent {
-        id: AuditEventId::from_uuid(rig.world.ids.new_uuid()),
-        actor: AuditActor::System(Slug::parse("someone-else").expect("a slug")),
-        action: AuditAction::new(REQUESTED).expect("an action"),
-        subject: "this is not the grammar of a decision".to_owned(),
-        decision: AuditDecision::Record,
-        reason: "requested: nothing".to_owned(),
-        policy_hash: rig.policies.hash.clone(),
-        job: Some(job),
+    let human = AuditActor::Human(rig.operator);
+    let canonical = DecisionFields {
+        verb: Verb::Cancel,
+        job,
         stage_run: None,
-        correlation_id: correlation,
-    })
-    .await
-    .expect("recorded");
-    tx.commit().await.expect("commit");
+        head: None,
+        evidence: None,
+        target: None,
+    }
+    .subject();
+    let id = job.as_text();
+    let shapes = [
+        // Same words, another order.
+        format!("job={id} verb=cancel run=none head=none evidence=none target=none"),
+        // White space that the lenient reader ignores.
+        canonical.replace(' ', "  "),
+        format!("{canonical} "),
+        format!(" {canonical}"),
+        // A key twice: the lenient reader keeps the last.
+        format!("verb=pause {canonical}"),
+        // Another case.
+        canonical.replace("verb=cancel", "verb=CANCEL"),
+        // An extra word.
+        format!("{canonical} extra=1"),
+        // Not a decision at all.
+        "this is not the grammar of a decision".to_owned(),
+    ];
+    for subject in &shapes {
+        rig.raw_request(
+            human.clone(),
+            subject,
+            Some(job),
+            None,
+            "requested: not needed",
+        )
+        .await;
+    }
     rig.hook().pass(rig.tenant).await;
+    assert_eq!(rig.status(job).await, JobStatus::Active, "nothing moved");
+    let markers = rig.markers().await;
+    assert_eq!(
+        markers.len(),
+        shapes.len(),
+        "one marker for each: {markers:#?}"
+    );
+    for (action, subject, reason) in &markers {
+        assert_eq!(action, REJECTED);
+        assert_eq!(reason, Reason::Malformed.text());
+        assert!(subject.contains("code=malformed"), "{subject}");
+    }
+    // The records are no longer candidates: a worker that starts from nothing writes no more markers.
+    rig.hook().pass(rig.tenant).await;
+    assert_eq!(rig.markers().await.len(), shapes.len());
+    // And the same words in the canonical order, from the same actor, are a decision.
+    rig.raw_request(human, &canonical, Some(job), None, "requested: not needed")
+        .await;
+    rig.hook().pass(rig.tenant).await;
+    assert!(matches!(
+        rig.status(job).await,
+        JobStatus::Cancelling | JobStatus::Cancelled
+    ));
+}
+
+/// R-2. The columns must say what the subject says, and the actor must be a human principal.
+#[tokio::test(flavor = "multi_thread")]
+async fn r2_the_columns_and_the_actor_must_agree_with_the_subject() {
+    let rig = Rig::new().await;
+    let job = rig.active().await;
+    let other = rig.active().await;
+    let run = rig
+        .engine
+        .job_view(rig.tenant, job)
+        .await
+        .expect("a view")
+        .stage_runs[0]
+        .id;
+    let subject_for = |job: JobId, stage_run: Option<StageRunId>| {
+        DecisionFields {
+            verb: Verb::Pause,
+            job,
+            stage_run,
+            head: None,
+            evidence: None,
+            target: None,
+        }
+        .subject()
+    };
+    let human = AuditActor::Human(rig.operator);
+    // The subject names one job and the column another.
+    rig.raw_request(
+        human.clone(),
+        &subject_for(job, None),
+        Some(other),
+        None,
+        "requested: x",
+    )
+    .await;
+    // The subject names a job and the column names none.
+    rig.raw_request(
+        human.clone(),
+        &subject_for(job, None),
+        None,
+        None,
+        "requested: x",
+    )
+    .await;
+    // The subject names a stage run and the column names none.
+    rig.raw_request(
+        human.clone(),
+        &subject_for(job, Some(run)),
+        Some(job),
+        None,
+        "requested: x",
+    )
+    .await;
+    // A service, not a person, asks.
+    rig.raw_request(
+        AuditActor::System(Slug::parse("api-bot").expect("a slug")),
+        &subject_for(job, None),
+        Some(job),
+        None,
+        "requested: x",
+    )
+    .await;
+    rig.hook().pass(rig.tenant).await;
+    assert_eq!(rig.status(job).await, JobStatus::Active);
+    assert_eq!(rig.status(other).await, JobStatus::Active);
+    let markers = rig.markers().await;
+    assert_eq!(markers.len(), 4, "{markers:#?}");
+    assert!(
+        markers
+            .iter()
+            .all(|(action, _, reason)| action == REJECTED && reason == Reason::Malformed.text())
+    );
+}
+
+/// R-3. A request that names a job of another tenant finds nothing in its own: it is rejected with a
+/// marker (not skipped), and the other tenant's job does not move.
+#[tokio::test(flavor = "multi_thread")]
+async fn r3_a_request_for_a_job_of_another_tenant_is_rejected_and_that_job_does_not_move() {
+    let rig = Rig::new().await;
+    let other_tenant = TenantId::from_uuid(rig.world.ids.new_uuid());
+    let (repository, principal, job) = (
+        rig.world.ids.new_uuid(),
+        rig.world.ids.new_uuid(),
+        rig.world.ids.new_uuid(),
+    );
+    rig._db
+        .run(&format!(
+            "INSERT INTO tenants (id, slug, display_name) VALUES ('{t}', 'tenant-b-{s}', 'B'); \
+             INSERT INTO repositories (tenant_id, id, github_installation_id, github_repository_id, full_name, default_branch) \
+               VALUES ('{t}', '{repository}', 7001, 7002, 'other/repo', 'main'); \
+             INSERT INTO principals (tenant_id, id, kind, github_user_id, login) VALUES ('{t}', '{principal}', 'human', 7003, 'other-person'); \
+             INSERT INTO jobs (tenant_id, id, repository_id, requester_principal_id, execution_mode, autonomy_level, pipeline_scope, correlation_id) \
+               VALUES ('{t}', '{job}', '{repository}', '{principal}', 'test', 'L1', ARRAY['INTAKE'], '{c}')",
+            t = other_tenant.as_uuid(),
+            s = &job.simple().to_string()[..8],
+            c = rig.world.ids.new_uuid(),
+        ))
+        .await;
+    let foreign = JobId::from_uuid(job);
+    let ours = rig.active().await;
+    let subject = DecisionFields {
+        verb: Verb::Cancel,
+        job: foreign,
+        stage_run: None,
+        head: None,
+        evidence: None,
+        target: None,
+    }
+    .subject();
+    // The record lives in our tenant; it can name the job only in its text, because the column is a
+    // foreign key into our own jobs.
+    rig.raw_request(
+        AuditActor::Human(rig.operator),
+        &subject,
+        None,
+        None,
+        "requested: x",
+    )
+    .await;
+    rig.hook().pass(rig.tenant).await;
+    let markers = rig.markers().await;
+    assert_eq!(markers.len(), 1, "{markers:#?}");
+    assert_eq!(markers[0].0, REJECTED);
+    let status = rig
+        ._db
+        .text(&format!("SELECT status FROM jobs WHERE id = '{job}'"))
+        .await;
+    assert_eq!(
+        status.as_deref(),
+        Some("RECEIVED"),
+        "the other tenant's job did not move"
+    );
+    assert_eq!(rig.status(ours).await, JobStatus::Active);
+}
+
+/// R-4. The person is resolved to a principal now, and a disabled one is not a current user.
+#[tokio::test(flavor = "multi_thread")]
+async fn r4_a_principal_disabled_since_the_request_is_not_a_current_user() {
+    let rig = Rig::new().await;
+    let job = rig.active().await;
+    rig.request(rig.operator, job, Verb::Pause, None, None, "a short stop")
+        .await;
+    rig._db
+        .run(&format!(
+            "UPDATE principals SET disabled_at = now() WHERE id = '{}'",
+            rig.operator.as_uuid()
+        ))
+        .await;
+    rig.hook().pass(rig.tenant).await;
+    assert_eq!(rig.status(job).await, JobStatus::Active);
+    assert_eq!(
+        rig.reason_of(job, REJECTED).await.as_deref(),
+        Some(Reason::NotCurrentUser.text())
+    );
+}
+
+/// R-4. An allowlist entry that has an end date stops granting authority at it, also for a request
+/// that was recorded before.
+#[tokio::test(flavor = "multi_thread")]
+async fn r4_an_entry_that_expired_since_the_request_is_refused() {
+    let rig = Rig::new().await;
+    let job = rig.active().await;
+    rig.request(rig.operator, job, Verb::Pause, None, None, "a short stop")
+        .await;
+    std::fs::write(
+        rig.checkout.join("allowlist/allowlist.yaml"),
+        format!(
+            "{}    expires_at: \"2020-01-01T00:00:00Z\"\n",
+            allowlist_text(rig.tenant, &[(OPERATOR, "operator-one", "operator")])
+        ),
+    )
+    .expect("an expired entry");
+    rig.hook().pass(rig.tenant).await;
+    assert_eq!(rig.status(job).await, JobStatus::Active);
+    assert_eq!(
+        rig.reason_of(job, REJECTED).await.as_deref(),
+        Some(Reason::NotAuthorized.text())
+    );
+}
+
+/// R-10. Two requests for the same thing are two requests, applied in the order of the audit
+/// sequence: the first pauses, the second finds the job paused and is rejected, with a marker.
+#[tokio::test(flavor = "multi_thread")]
+async fn r10_two_requests_for_the_same_pause_are_two_requests_in_order() {
+    let rig = Rig::new().await;
+    let job = rig.active().await;
+    let first = rig
+        .request(rig.operator, job, Verb::Pause, None, None, "once")
+        .await;
+    let second = rig
+        .request(rig.operator, job, Verb::Pause, None, None, "twice")
+        .await;
+    rig.hook().pass(rig.tenant).await;
+    assert_eq!(rig.status(job).await, JobStatus::Paused);
     assert_eq!(
         rig.trail(job).await,
-        [REQUESTED],
-        "no marker for a non-decision"
+        [REQUESTED, REQUESTED, APPLIED, REJECTED]
     );
-    assert_eq!(rig.status(job).await, JobStatus::Active);
+    assert_eq!(rig.effects_of(job, first).await, 1);
+    assert_eq!(rig.effects_of(job, second).await, 0);
+}
+
+/// R-9. Two hooks that take the same request at the same moment (two workers) apply it once and write
+/// one marker, and the marker says it was applied, not that it was out of place.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn r9_two_hooks_racing_for_one_request_apply_it_once() {
+    let rig = Rig::new().await;
+    for round in 0..8 {
+        let job = rig.active().await;
+        let pause = rig
+            .request(rig.operator, job, Verb::Pause, None, None, "a short stop")
+            .await;
+        let (a, b) = (rig.hook(), rig.hook());
+        tokio::join!(a.pass(rig.tenant), b.pass(rig.tenant));
+        // A request that one hook gave up on for this pass is picked up on the next.
+        a.pass(rig.tenant).await;
+        b.pass(rig.tenant).await;
+        assert_eq!(rig.status(job).await, JobStatus::Paused, "round {round}");
+        assert_eq!(
+            rig.effects_of(job, pause).await,
+            1,
+            "round {round}: the engine did the work once"
+        );
+        assert_eq!(
+            rig.trail(job).await,
+            [REQUESTED, APPLIED],
+            "round {round}: one marker, and it says applied"
+        );
+    }
+}
+
+/// R-11. A request that waited longer than the approval window is rejected as expired and never
+/// applied late. One that was applied in time and found without its marker after the window is still
+/// an applied request: the check for "already applied" comes before the check of age.
+#[tokio::test(flavor = "multi_thread")]
+async fn r11_an_old_request_is_rejected_as_expired_but_an_applied_one_stays_applied() {
+    let mut rig = Rig::new().await;
+    let job = rig.active().await;
+    let pause = rig
+        .request(rig.operator, job, Verb::Pause, None, None, "a short stop")
+        .await;
+    rig.clock = Arc::new(Ahead(Duration::from_secs(73 * 3600)));
+    rig.hook().pass(rig.tenant).await;
+    assert_eq!(rig.status(job).await, JobStatus::Active, "not applied late");
+    assert_eq!(rig.trail(job).await, [REQUESTED, REJECTED]);
+    assert_eq!(
+        rig.reason_of(job, REJECTED).await.as_deref(),
+        Some(Reason::Expired.text())
+    );
+    assert_eq!(rig.effects_of(job, pause).await, 0);
+
+    // Applied in time, the marker lost, found a week later.
+    rig.clock = Arc::new(SystemClock);
+    let second = rig.active().await;
+    let cancel = rig
+        .request(rig.operator, second, Verb::Pause, None, None, "again")
+        .await;
+    rig.hook_with(rig.real_authority(), Arc::new(StopsBeforeTheMarker))
+        .pass(rig.tenant)
+        .await;
+    assert_eq!(rig.status(second).await, JobStatus::Paused);
+    rig.clock = Arc::new(Ahead(Duration::from_secs(24 * 7 * 3600)));
+    rig.hook().pass(rig.tenant).await;
+    assert_eq!(rig.trail(second).await, [REQUESTED, APPLIED]);
+    assert_eq!(rig.effects_of(second, cancel).await, 1);
+}
+
+/// R-12. One pass deals with a bounded number of requests; the rest wait for the next. No request is
+/// lost and none is dealt with twice.
+#[tokio::test(flavor = "multi_thread")]
+async fn r12_a_pass_deals_with_a_bounded_number_and_the_rest_wait() {
+    let mut rig = Rig::new().await;
+    rig.per_pass = 3;
+    let job = rig.active().await;
+    for n in 0..7 {
+        rig.request(
+            rig.operator,
+            job,
+            Verb::Pause,
+            None,
+            None,
+            &format!("stop {n}"),
+        )
+        .await;
+    }
+    let hook = rig.hook();
+    for expected in [3, 6, 7] {
+        hook.pass(rig.tenant).await;
+        assert_eq!(rig.markers().await.len(), expected);
+    }
+    hook.pass(rig.tenant).await;
+    assert_eq!(rig.markers().await.len(), 7, "nothing is done twice");
+    assert_eq!(rig.status(job).await, JobStatus::Paused);
+}
+
+/// R-13. The marker of every outcome names the request, a fixed code, the numeric id of the person
+/// and the version of the allowlist, and nothing the person wrote. The person is told the same plain
+/// words whatever failed.
+#[tokio::test(flavor = "multi_thread")]
+async fn r13_a_marker_has_a_code_the_numeric_id_and_the_allowlist_version_and_no_request_text() {
+    let rig = Rig::new().await;
+    let job = rig.active().await;
+    let canary = "reason-text-that-must-not-be-copied";
+    let applied = rig
+        .request(rig.operator, job, Verb::Pause, None, None, canary)
+        .await;
+    let refused = rig
+        .request(rig.stranger, job, Verb::Resume, None, None, canary)
+        .await;
+    rig.hook().pass(rig.tenant).await;
+    let markers = rig.markers().await;
+    assert_eq!(markers.len(), 2, "{markers:#?}");
+    let version = rig
+        .allowlist
+        .read()
+        .expect("the allowlist")
+        .version_hash()
+        .to_owned();
+    for (_, subject, reason) in &markers {
+        assert!(!subject.contains(canary) && !reason.contains(canary));
+        assert!(
+            subject.contains(&format!("allowlist={}", &version[7..23])),
+            "{subject}"
+        );
+    }
+    let applied_marker = markers
+        .iter()
+        .find(|(_, subject, _)| subject.contains(&applied.as_uuid().hyphenated().to_string()))
+        .expect("the marker of the pause");
+    assert!(
+        applied_marker.1.contains("code=applied")
+            && applied_marker.1.contains(&format!("actor={OPERATOR}"))
+    );
+    let refused_marker = markers
+        .iter()
+        .find(|(_, subject, _)| subject.contains(&refused.as_uuid().hyphenated().to_string()))
+        .expect("the marker of the refusal");
+    assert!(
+        refused_marker.1.contains("code=not_authorized")
+            && refused_marker.1.contains(&format!("actor={STRANGER}"))
+    );
+    assert_eq!(
+        refused_marker.2,
+        "The person may not take this decision now."
+    );
+}
+
+/// R-17. Nothing the person wrote reaches a log line of the hook.
+#[tokio::test(flavor = "multi_thread")]
+async fn r17_no_log_line_of_the_hook_holds_the_text_of_a_request() {
+    let seen = Arc::new(Mutex::new(Vec::<String>::new()));
+    let _ = tracing::subscriber::set_global_default(Lines(seen.clone()));
+    let rig = Rig::new().await;
+    let job = rig.active().await;
+    let canary = "text-of-a-request-that-must-stay-out-of-logs";
+    rig.request(rig.operator, job, Verb::Pause, None, None, canary)
+        .await;
+    rig.request(rig.stranger, job, Verb::Cancel, None, None, canary)
+        .await;
+    rig.raw_request(
+        AuditActor::Human(rig.operator),
+        canary,
+        Some(job),
+        None,
+        canary,
+    )
+    .await;
+    rig.hook().pass(rig.tenant).await;
+    let lines = seen.lock().expect("lines").clone();
+    assert!(
+        lines
+            .iter()
+            .any(|line| line.contains("a decision was dealt with")),
+        "the hook logs its outcomes: {lines:#?}"
+    );
+    assert!(
+        lines.iter().all(|line| !line.contains(canary)),
+        "a log line holds the text of a request: {lines:#?}"
+    );
+}
+
+/// A subscriber that keeps every event as one line of text.
+struct Lines(Arc<Mutex<Vec<String>>>);
+
+impl tracing::Subscriber for Lines {
+    fn enabled(&self, _: &tracing::Metadata<'_>) -> bool {
+        true
+    }
+    fn new_span(&self, _: &tracing::span::Attributes<'_>) -> tracing::span::Id {
+        tracing::span::Id::from_u64(1)
+    }
+    fn record(&self, _: &tracing::span::Id, _: &tracing::span::Record<'_>) {}
+    fn record_follows_from(&self, _: &tracing::span::Id, _: &tracing::span::Id) {}
+    fn enter(&self, _: &tracing::span::Id) {}
+    fn exit(&self, _: &tracing::span::Id) {}
+    fn event(&self, event: &tracing::Event<'_>) {
+        struct Text(String);
+        impl tracing::field::Visit for Text {
+            fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+                self.0.push_str(&format!("{}={value:?} ", field.name()));
+            }
+        }
+        let mut text = Text(String::new());
+        event.record(&mut text);
+        self.0.lock().expect("lines").push(text.0);
+    }
 }
 
 /// The break. The authority check is the thing that stops a removed person; take it out of both

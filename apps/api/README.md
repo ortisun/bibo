@@ -6,8 +6,10 @@ queries. It chooses its adapters through the composition library
 ([`factory-composition`](../../crates/composition/README.md), [ADR 0015](../../docs/adr/0015-composition-library.md)),
 depends on the `WebhookVerifier` port and not on the `github` crate ([ADR 0014](../../docs/adr/0014-ports-v1-1-claim-protocol-and-port-revision.md)),
 and connects to PostgreSQL as the **API login only** ([ADR 0012](../../docs/adr/0012-row-level-security-in-slice-1.md)):
-a member of `factory_app` and `factory_resolver`, with no system pool. It cannot find work across tenants and
-it cannot do what the engine login does. `tests/database_logins.rs` shows both directions.
+a member of `factory_api_app` and `factory_resolver` and not of `factory_app`, with no system pool. It cannot find
+work across tenants, it cannot do what the engine login does, and it can write only the four tables the API writes
+(`jobs`, `original_requests`, `audit_events`, `webhook_deliveries`): it cannot insert a token, a principal, an
+approval, a ledger entry or an outbox row (finding API-3). `tests/database_logins.rs` shows both directions.
 
 The package is a library (`src/lib.rs`, crate `factory_api`) and a thin binary (`src/main.rs`).
 
@@ -120,6 +122,7 @@ limits:                                 # all optional
   body_timeout_ms: 10000
   request_timeout_ms: 30000
   max_connections: 256
+  max_connections_per_source: 16          # absent: a sixteenth of max_connections
   drain_s: 15
   per_ip_per_minute: 600
   webhook_per_installation_per_minute: 120
@@ -144,7 +147,10 @@ placeholder chose (`database.api`, `listen`, `artifacts`) are the names the API 
 
 A body is read only after the token is checked, with a hard cap and a deadline; a declared length over the cap
 is refused without reading a byte. hyper's header read timeout closes a slow-loris connection; a stalled body is
-`408`. Open connections are bounded and the ones over the limit are closed unread. Every string is checked: no
+`408`. Open connections are bounded, in all and per source (an address, or an IPv6 /64; an IPv4 client of a
+dual-stack listener is its IPv4 address), and the ones over either limit are closed unread, so one source cannot
+hold the table with silent connections. The per-source request rate counts under the same grouping. Behind a proxy
+every connection comes from the proxy: set `max_connections_per_source` to `max_connections` and cap clients there. Every string is checked: no
 NUL or other control character (line breaks and tabs allowed in request text only), an idempotency key from a
 small alphabet, ids parsed as UUIDs, an unknown JSON field or a repeated key is `400`. Request text is stored
 as received and never interpreted. `tests/http_api.rs`, `malformed_and_hostile_input_is_a_400_and_never_a_500`.
