@@ -1084,14 +1084,22 @@ webhook:
 # The engine takes the lower of this value and the ADR 0009 default, and a test
 # in the policy-evaluation work package fails if this file exceeds 2.
 #
-# Turn and tool-call caps. Claude Code 2.1.311 has no `--max-turns` and Codex
-# `exec` shows no budget flag (ADR 0005), and the agent CLI runs inside the
-# sandbox, so the factory does not see individual tool calls. The broker
-# therefore counts MODEL REQUESTS as turns (`turn_accounting`). The
-# `max_tool_calls` value is enforced only for commands the factory itself
-# runs (gates, dependency fetch, version control) and, if the host tool bridge
-# is ever chosen, for bridge tools. Whether a CLI exposes a turn cap is a
-# question for the agent-runtime spike.
+# Turn and tool-call caps. The agent CLI runs inside the sandbox, so the factory
+# does not see individual tool calls. The broker therefore counts MODEL REQUESTS
+# as turns (`turn_accounting`), and that count is the cap. The agent-runtime
+# spike (docs/spikes/agent-runtime.md section 4.7) found that Claude Code 2.1.311
+# does have a turn cap, the hidden `--max-turns` flag and the `CLAUDE_CODE_MAX_TURNS`
+# variable, and that both work. It is a second line, set from `per_task.max_turns`,
+# and the probe tests it by behavior because a hidden flag can vanish. Codex 0.163.0
+# has no turn or budget flag, so only the broker and the supervisor cap it. The
+# `max_tool_calls` value is enforced only for commands the factory itself runs
+# (gates, dependency fetch, version control) and, if the host tool bridge is ever
+# chosen, for bridge tools.
+#
+# Exhaustion (ADR 0010, ADR 0009 item 3). A limit reached sends the work to a
+# person; it does not fail the stage and it does not mark it BLOCKED. BLOCKED
+# stays for gates that cannot run and for violations a deterministic check
+# detects. See `on_exhaustion` below.
 budgets:
   enforced_by: [model_broker, scheduler]
   turn_accounting: broker_model_request_count
@@ -1112,7 +1120,12 @@ budgets:
     window_iterations: 3
     action_on_no_new_passing_evidence: escalate_needs_human
   thresholds: { warn_at_fraction: 0.8, stop_at_fraction: 1.0 }
-  on_exhaustion: stop_job_revoke_job_token_mark_BLOCKED
+  # The running stage run goes to WAITING_FOR_HUMAN and the job follows. No new attempt
+  # is leased while the job is not active. The broker revokes the job token, and the
+  # supervisor kills the container, because a CLI retries a refused token for a minute or
+  # more (docs/spikes/agent-runtime.md section 4.7). A person then answers: an org_admin
+  # raises the ceiling (`raise_budget_ceiling`), or the job ends.
+  on_exhaustion: stop_job_revoke_job_token_wait_for_human
   per_request_caps: { max_input_tokens: 200000, max_output_tokens: 32000 }
   threats: [T-26]
 
@@ -1171,6 +1184,10 @@ untrusted_content:
   structured_output:
     schema_validated: true
     unknown_fields: reject
+    # A repair is a retry after an invalid output, and it counts as an attempt. A project may
+    # lower this number and never raise it, at most 2 (ADR 0010); the engine refuses a larger
+    # value and the tighten rules treat it as a ceiling. After the last repair the stage goes to
+    # a person, or fails when its contract does not list INVALID_OUTPUT in `retry_on`.
     bounded_repair_attempts: 2
     max_output_bytes: 524288
   injection_signal_detector:

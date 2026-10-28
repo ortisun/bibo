@@ -212,7 +212,7 @@
         "max_wall_clock_s": 3600
       }
     },
-    "on_exhaustion": "stop_job_revoke_job_token_mark_BLOCKED",
+    "on_exhaustion": "stop_job_revoke_job_token_wait_for_human",
     "per_request_caps": {
       "max_input_tokens": 200000,
       "max_output_tokens": 32000

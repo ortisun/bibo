@@ -11,7 +11,9 @@ mod support;
 use std::collections::BTreeSet;
 use std::sync::LazyLock;
 
-use factory_contracts::policy::{PolicyLoader, ProtectedPolicySource, SecurityPolicy};
+use factory_contracts::policy::{
+    ApprovalPolicy, PolicyLoader, ProtectedPolicySource, SecurityPolicy,
+};
 use factory_domain::policy::SandboxProfileKind;
 use factory_domain::policy::commands::{CommandDenialReason, CommandPolicy, CommandVerdict};
 use factory_domain::policy::tools::{GrantRequest, ToolDenial, ToolPolicy};
@@ -27,6 +29,15 @@ fn security() -> &'static SecurityPolicy {
     static POLICY: LazyLock<SecurityPolicy> = LazyLock::new(|| {
         PolicyLoader::load_security(&source())
             .expect("the security policy loads")
+            .document
+    });
+    &POLICY
+}
+
+fn approval() -> &'static ApprovalPolicy {
+    static POLICY: LazyLock<ApprovalPolicy> = LazyLock::new(|| {
+        PolicyLoader::load_approval(&source())
+            .expect("the approval policy loads")
             .document
     });
     &POLICY
@@ -575,4 +586,66 @@ fn only_the_fetch_profile_may_use_the_network_and_the_others_stay_offline() {
         );
         assert!(a.argv.iter().any(|x| x == "--offline"), "{:?}", a.argv);
     }
+}
+
+// ---------------------------------------------------------------------------------------------
+// Budget exhaustion goes to a person (A4)
+// ---------------------------------------------------------------------------------------------
+
+#[test]
+fn budget_exhaustion_stops_the_job_revokes_the_token_and_waits_for_a_human() {
+    let policy = security();
+    // ADR 0010: exhaustion is escalated, not failed and not blocked. BLOCKED is for gates that
+    // cannot run and for violations a deterministic check finds.
+    assert_eq!(
+        policy.budgets.on_exhaustion,
+        "stop_job_revoke_job_token_wait_for_human"
+    );
+    assert!(!policy.budgets.on_exhaustion.contains("BLOCKED"));
+    // The token is revoked on exhaustion, and an org_admin, not the policy, raises a ceiling.
+    assert!(
+        policy
+            .credentials
+            .model_providers
+            .job_token
+            .revoked_on
+            .iter()
+            .any(|r| r == "budget_exhausted")
+    );
+    let raise = approval()
+        .actions
+        .iter()
+        .find(|a| a.id == "raise_budget_ceiling")
+        .expect("the action that raises a ceiling has a row");
+    assert_eq!(
+        raise.approver_roles.as_deref(),
+        Some(&strings(&["org_admin"])[..])
+    );
+    assert_eq!(
+        raise.requires,
+        Some(factory_contracts::policy::approval::Requirement::Human)
+    );
+}
+
+#[test]
+fn the_rework_and_repair_caps_are_two_and_a_project_can_only_lower_them() {
+    let policy = security();
+    let per_job = &policy.budgets.hard_ceilings.per_job;
+    assert_eq!(per_job.max_rework_iterations, 2);
+    assert_eq!(per_job.max_documentation_rework_iterations, 2);
+    assert_eq!(policy.budgets.rework.default_rounds, 2);
+    assert_eq!(policy.budgets.rework.project_override, "lower_only");
+    assert_eq!(policy.budgets.rework.on_cap_reached, "human_decides");
+    assert_eq!(
+        policy
+            .untrusted_content
+            .structured_output
+            .bounded_repair_attempts,
+        2
+    );
+
+    // The engine builds from the real pair, so it accepts these values and would refuse a third.
+    let engine = factory_domain::policy::PolicyEngine::new(policy, approval())
+        .expect("the real pair builds");
+    assert_eq!(engine.budget.repair_cap().get(), 2);
 }
