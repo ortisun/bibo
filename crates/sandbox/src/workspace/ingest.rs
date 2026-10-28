@@ -23,7 +23,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use factory_domain::values::Sha256Digest;
 use factory_ports::clock::CancelSignal;
-use factory_ports::paths::{CommitSha, Finding, PathRules};
+use factory_ports::paths::{CommitSha, Finding, PathMode, PathRules};
 use factory_ports::process::EnvValue;
 use factory_ports::workspace::{
     ChangeKind, ChangedPath, GitOperation, IngestedChange, IoOperation, WorkspaceError,
@@ -124,6 +124,24 @@ async fn run(
         return Err(WorkspaceError::TooLarge);
     }
 
+    // A path the sandbox never saw cannot be part of its change. A directory made where a hidden
+    // file is would replace that file in the tree without a file ever being written there, so
+    // the difference is checked against what the checkout held.
+    for fact in &facts {
+        let text = fact.path.as_str();
+        if let Some(gitlink) = ws.tree.gitlink_above(text) {
+            return Err(WorkspaceError::Gitlink(super::audit::report_path(
+                gitlink.as_bytes(),
+            )));
+        }
+        let unseen = ws.tree.absent.contains(text)
+            || (ws.rules.classify(&fact.path) == Some(PathMode::Hidden)
+                && !ws.tree.visible.contains_key(text));
+        if unseen {
+            return Err(WorkspaceError::HiddenPathPresent(fact.path.clone()));
+        }
+    }
+
     // 5. The rules.
     let evaluation = evaluate(&ws.rules, shared.layer.as_ref(), &facts);
     if let Some(path) = evaluation.gitlink {
@@ -157,9 +175,20 @@ async fn run(
     ))
 }
 
+/// Sets the stop flag when it is dropped, so that a walk whose caller went away (a timeout, a
+/// dropped future) ends by itself.
+struct StopOnDrop(Arc<AtomicBool>);
+
+impl Drop for StopOnDrop {
+    fn drop(&mut self) {
+        self.0.store(true, Ordering::Relaxed);
+    }
+}
+
 /// Runs the walk on a blocking thread, under the caller's cancel signal.
 async fn audit(ws: &GitWorkspace, cancel: &dyn CancelSignal) -> Result<Manifest, WorkspaceError> {
     let stop = Arc::new(AtomicBool::new(false));
+    let _stop_on_drop = StopOnDrop(Arc::clone(&stop));
     let root = ws.attempt_dirs.checkout.clone();
     let limits = ws.shared.settings.limits.clone();
     let rules: PathRules = ws.rules.clone();
@@ -181,10 +210,7 @@ async fn audit(ws: &GitWorkspace, cancel: &dyn CancelSignal) -> Result<Manifest,
     });
     let joined = match race(handle, cancel.cancelled()).await {
         Either::First(joined) => joined,
-        Either::Second(()) => {
-            stop.store(true, Ordering::Relaxed);
-            return Err(WorkspaceError::Cancelled);
-        }
+        Either::Second(()) => return Err(WorkspaceError::Cancelled),
     };
     match joined {
         Ok(Ok(manifest)) => Ok(manifest),

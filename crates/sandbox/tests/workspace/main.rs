@@ -13,8 +13,18 @@
 #[path = "../support/mod.rs"]
 mod support;
 
+// The real-Docker lab of the container tests: BLOCKED without a daemon or an image, labelled
+// objects, cleanup. Only part of it is used here.
+#[allow(dead_code)]
+#[path = "../container/harness.rs"]
+mod lab;
+
 mod behavior;
+mod breaks;
 mod contract;
+mod docker;
 mod harness;
 mod hostile;
+mod policy_layer;
+mod replace;
 mod world;
