@@ -42,11 +42,13 @@
 //! person. A failed deterministic check has no class and counts as a documentation defect. Two
 //! rounds at most, then a person.
 
+pub mod document;
 mod gates;
 pub mod handler;
 pub(crate) mod run;
 pub mod verify;
 
+pub use document::{GateBinding, gate_document};
 pub use handler::{
     DocumentationReviewConfig, DocumentationReviewDeps, DocumentationReviewHandler, GRANTED_TOOLS,
     gate_ids,

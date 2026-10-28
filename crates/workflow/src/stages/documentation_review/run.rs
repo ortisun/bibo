@@ -38,6 +38,7 @@ use factory_ports::registry::VersionReq;
 use factory_ports::workspace::{WorkspacePurpose, WorkspaceRequest};
 use serde_json::{Value, json};
 
+use super::document::{GateBinding, gate_document};
 use super::handler::DocumentationReviewHandler;
 use super::verify::{Io, observe_all};
 use crate::gates::command::report::{Subject, image_digest};
@@ -362,20 +363,18 @@ pub(super) async fn execute(
         .iter()
         .find(|result| result.gate == check::LINKS)
         .map_or(0, |result| result.warnings.len());
-    let gate_document = json!({
-        "schema_version": 1,
-        "kind": DOCUMENTATION_GATE_REPORT,
-        "binding": {
-            "base_commit": candidate.base.as_str(),
-            "code_head": candidate.head.as_str(),
-            "documentation_head": docs_head.as_str(),
-            "plan_sha256": plan_ref.sha256,
-            "specification_sha256": spec_ref.sha256,
+    let gate_document = gate_document(
+        &GateBinding {
+            base_commit: &candidate.base,
+            code_head: &candidate.head,
+            documentation_head: &docs_head,
+            plan_sha256: &plan_ref.sha256,
+            specification_sha256: &spec_ref.sha256,
         },
-        "sandbox_id": observations.sandbox_id,
-        "external_links_not_checked": external,
-        "reports": report_values,
-    });
+        observations.sandbox_id.as_deref(),
+        external,
+        &report_values,
+    );
     let gate_artifact = put(ctx, DOCUMENTATION_GATE_REPORT, &gate_document).await?;
 
     // The agent and the words it is given.
