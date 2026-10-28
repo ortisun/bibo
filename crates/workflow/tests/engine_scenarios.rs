@@ -2802,6 +2802,40 @@ async fn the_job_budget_stops_retries_and_asks_a_person() {
 }
 
 #[tokio::test]
+async fn what_attempts_spent_counts_once_against_the_job_budget() {
+    // Two attempts spend 800,000 of a budget of 1,000,000. Both retry, and a third attempt may
+    // start. Counting an attempt's cost twice would reach the budget at the second failure.
+    let world = World::with_config(|config| config.job_budget_micro_usd = 1_000_000).await;
+    let job = world.admitted_job().await;
+    world.script(StageKind::Intake).agent_spending(400_000);
+    world
+        .script(StageKind::Intake)
+        .otherwise(Step::Fail(StageError::Tool));
+    for _ in 0..2 {
+        world.advance(600);
+        let (_, outcome) = world.run_next("worker-1").await;
+        assert_eq!(
+            outcome,
+            AttemptOutcome::Failed {
+                class: FailureClass::ToolError,
+                then: AttemptDisposition::Retry
+            }
+        );
+    }
+    assert_eq!(
+        status_of(&world.view(job).await, StageKind::Intake),
+        StageRunStatus::Ready
+    );
+    world.advance(600);
+    let claimed = world
+        .engine
+        .claim_next(&World::worker("worker-1"))
+        .await
+        .expect("claim");
+    assert_eq!(claimed.started.len(), 1, "{claimed:?}");
+}
+
+#[tokio::test]
 async fn a_job_that_spent_its_budget_starts_no_new_stage() {
     let world = World::with_config(|config| config.job_budget_micro_usd = 1_000_000).await;
     let job = world.admitted_job().await;

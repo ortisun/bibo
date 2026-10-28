@@ -184,25 +184,13 @@ async fn read_answers(
     Ok(answers)
 }
 
-/// What the last successful attempt produced: the output links of the highest attempt number.
+/// What the last successful attempt produced, with its media types from the tenant's index.
 async fn read_outputs(
     tx: &mut dyn Tx,
     linked: &[StageRunArtifact],
 ) -> Result<Vec<NamedArtifact>, EngineError> {
-    let mut produced: Vec<(u32, &StageRunArtifact, factory_domain::values::Slug)> = linked
-        .iter()
-        .filter(|link| link.direction == ArtifactDirection::Output)
-        .filter_map(|link| {
-            links::parse_output_role(link.role.as_str())
-                .map(|(name, attempt)| (attempt, link, name))
-        })
-        .collect();
-    let Some(last) = produced.iter().map(|(attempt, ..)| *attempt).max() else {
-        return Ok(Vec::new());
-    };
-    produced.retain(|(attempt, ..)| *attempt == last);
-    let mut outputs = Vec::with_capacity(produced.len());
-    for (_, link, name) in produced {
+    let mut outputs = Vec::new();
+    for (name, link) in last_outputs(linked) {
         let entry = tx.get_artifact_index(&link.sha256).await?;
         outputs.push(NamedArtifact {
             name,
@@ -210,6 +198,29 @@ async fn read_outputs(
         });
     }
     Ok(outputs)
+}
+
+/// The output links of the highest attempt number, with the deliverable name each one carries. A
+/// stage run can reach its gate more than once, and each attempt that did has its own links.
+fn last_outputs(
+    linked: &[StageRunArtifact],
+) -> Vec<(factory_domain::values::Slug, &StageRunArtifact)> {
+    let produced: Vec<_> = linked
+        .iter()
+        .filter(|link| link.direction == ArtifactDirection::Output)
+        .filter_map(|link| {
+            links::parse_output_role(link.role.as_str())
+                .map(|(name, attempt)| (attempt, name, link))
+        })
+        .collect();
+    let Some(last) = produced.iter().map(|(attempt, ..)| *attempt).max() else {
+        return Vec::new();
+    };
+    produced
+        .into_iter()
+        .filter(|(attempt, ..)| *attempt == last)
+        .map(|(_, name, link)| (name, link))
+        .collect()
 }
 
 /// The window of attempts since the last answer, for `attempts` (by number) and `answers` (by
@@ -464,7 +475,7 @@ fn aggregate_run(event: &DomainEvent) -> StageRunId {
 mod tests {
     use super::*;
     use factory_domain::contracts::Contract;
-    use factory_domain::values::MediaType;
+    use factory_domain::values::{MediaType, Slug};
 
     fn attempt(number: u32, end: Option<AttemptEnd>) -> AttemptRecord {
         AttemptRecord {
@@ -844,6 +855,42 @@ mod tests {
             None,
         );
         assert!(timeline.apply(&unknown).is_ok());
+    }
+
+    fn link(direction: ArtifactDirection, role: &str, content: &[u8]) -> StageRunArtifact {
+        StageRunArtifact {
+            stage_run: StageRunId::from_uuid(uuid::Uuid::from_u128(1)),
+            direction,
+            role: Slug::parse(role).expect("a role"),
+            sha256: Sha256Digest::of(content),
+            created_at: factory_domain::values::Timestamp::parse("2026-10-27T08:00:00Z")
+                .expect("a time"),
+        }
+    }
+
+    #[test]
+    fn the_outputs_of_a_stage_run_are_those_of_its_last_attempt_that_produced_any() {
+        let links = [
+            link(ArtifactDirection::Output, "spec.a1", b"first spec"),
+            link(ArtifactDirection::Output, "plan.a1", b"first plan"),
+            link(ArtifactDirection::Input, "human-answer-1", b"an answer"),
+            link(ArtifactDirection::Output, "spec.a3", b"third spec"),
+            link(ArtifactDirection::Output, "plan.a3", b"third plan"),
+            // Not a role of the engine's: skipped.
+            link(ArtifactDirection::Output, "other", b"foreign"),
+        ];
+        let last: Vec<_> = last_outputs(&links)
+            .into_iter()
+            .map(|(name, link)| (name.as_str().to_owned(), link.sha256.clone()))
+            .collect();
+        assert_eq!(
+            last,
+            [
+                ("spec".to_owned(), Sha256Digest::of(b"third spec")),
+                ("plan".to_owned(), Sha256Digest::of(b"third plan")),
+            ]
+        );
+        assert!(last_outputs(&[]).is_empty());
     }
 
     #[test]
