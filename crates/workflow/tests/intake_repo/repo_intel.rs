@@ -731,3 +731,32 @@ fn codeowners_is_read_as_data_with_line_numbers() {
     let big = "/p @o\n".repeat(10_000);
     assert_eq!(codeowners::parse(&big).len(), codeowners::MAX_RULES);
 }
+
+#[tokio::test]
+async fn a_long_readme_still_gives_a_title_and_the_summary_stays_compact() {
+    let mut repo = word_count();
+    repo.retain(|(path, _)| path != "README.md");
+    repo.push((
+        "README.md".to_owned(),
+        format!(
+            "# Word count\n\n{}",
+            "A line of text that makes the file long.\n".repeat(600)
+        ),
+    ));
+    let rig = Rig::build(Options {
+        real_repo: true,
+        repo_files: Some(repo),
+        ..Options::default()
+    })
+    .await;
+    let (job, outcome) = repository_stage(&rig).await;
+    assert_eq!(outcome, AttemptOutcome::Succeeded);
+    let map = the_map(&rig, job).await;
+    let readme = map["documents"]
+        .as_array()
+        .expect("documents")
+        .iter()
+        .find(|d| d["path"] == "README.md")
+        .expect("the README");
+    assert_eq!(readme["title"], "Word count");
+}

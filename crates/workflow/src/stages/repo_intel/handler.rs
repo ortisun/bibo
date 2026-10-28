@@ -63,9 +63,6 @@ const BASELINE_GATE_TEXT: &str = "baseline-build-and-test 1.0.0: the build and t
 /// The path of the project manifest at the protected base.
 const MANIFEST_PATH: &str = ".factory/project.yaml";
 
-/// Where the stage looks for a title: the first bytes of a document.
-const TITLE_BYTES: u64 = 4096;
-
 /// How many documents get a title read.
 const TITLE_DOCUMENTS: usize = 20;
 
@@ -262,7 +259,8 @@ fn manifest_commands(
 #[async_trait]
 impl StageHandler for RepoIntelHandler {
     fn fidelity(&self) -> Fidelity {
-        Fidelity::Real
+        // The handler holds no state. It is as real as the code host it reads through.
+        self.changes.fidelity()
     }
 
     fn kind(&self) -> StageKind {
@@ -560,8 +558,7 @@ impl StageHandler for RepoIntelHandler {
             {
                 let mut title = None;
                 if titles < TITLE_DOCUMENTS
-                    && let Some(text) =
-                        read_text(&*repo, &commit, path, TITLE_BYTES.min(max)).await?
+                    && let Some(text) = read_text(&*repo, &commit, path, max).await?
                 {
                     titles += 1;
                     title = first_line(&text);

@@ -138,6 +138,36 @@ async fn original_and_normalized_are_separate() {
 }
 
 #[tokio::test]
+async fn a_request_in_portuguese_is_stored_as_written_and_normalized_in_english() {
+    // FR-008: the original keeps its words, the normalized request is English.
+    let original = "Adicione uma op\u{e7}\u{e3}o --json \u{e0} ferramenta de contagem de palavras.\n\nElas devem sair em formato JSON para outros programas.";
+    let rig = Rig::new().await;
+    let job = rig.job(original).await;
+    rig.classifier_returns(usual());
+    let (_, outcome) = rig.run_next().await;
+    assert_eq!(outcome, AttemptOutcome::Succeeded);
+    let stored = rig.artifacts_of(job, StageKind::Intake).await;
+    assert!(
+        stored.iter().any(|(_, bytes)| bytes == original.as_bytes()),
+        "the Portuguese original is stored unchanged"
+    );
+    let normalized = rig
+        .documents_with(job, StageKind::Intake, "original")
+        .await
+        .remove(0);
+    let text = normalized.to_string();
+    assert!(!text.contains("Adicione") && !text.contains("palavras"));
+    assert!(
+        normalized["title"]
+            .as_str()
+            .expect("a title")
+            .starts_with("The request asks")
+    );
+    let view = rig.world.view(job).await;
+    assert_eq!(status_of(&view, StageKind::Intake), StageRunStatus::Passed);
+}
+
+#[tokio::test]
 async fn a_title_with_a_machine_prefix_fails_the_readability_gate_and_the_stage_does_not_pass() {
     // The classifier's summary begins with a pipeline tag. The stage writes no words of its own,
     // so the title carries the tag, the gate fails it, and the stage does not pass.
