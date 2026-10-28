@@ -203,7 +203,7 @@ fn resolve(
             "domains": ["general-software"],
         },
         "methods": [{
-            "name": "Deterministic checks in a verify sandbox, then an independent reviewer with inputs of a type that excludes the writer's account",
+            "name": "Deterministic checks in a sandbox, then an independent reviewer",
             "rationale": "Examples run against the built program and names are compared with its help output, so a page cannot claim what the code does not do. The reviewer's prompt is assembled from inputs that cannot be a writer summary.",
             "alternatives_considered": [{
                 "name": "Show the reviewer the writer's summary to save time",
