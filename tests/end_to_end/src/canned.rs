@@ -89,6 +89,12 @@ pub fn uid(kind: u16, n: u32) -> String {
     format!("018f3a7e-{kind:04x}-7000-8000-{n:012x}")
 }
 
+/// The id of the approver in the canned run.
+#[must_use]
+pub fn approver_id() -> String {
+    uid(6, 2)
+}
+
 /// `sha256:` and the hash of `bytes`.
 #[must_use]
 pub fn sha(bytes: &[u8]) -> String {
@@ -280,7 +286,7 @@ pub fn specification_document() -> Document {
 
 /// The pull request as a human-facing text. `head_hash` is the ledger head the body must carry.
 #[must_use]
-pub fn pull_request_document(head_hash: &str) -> Document {
+pub fn pull_request_document(head_hash: &str, issue: u64) -> Document {
     Document {
         kind: "pull_request".to_owned(),
         path: "pull_request".to_owned(),
@@ -300,7 +306,7 @@ pub fn pull_request_document(head_hash: &str) -> Document {
                 "- The documentation gate passed.\n\n",
                 "A person still has to approve this pull request. Nothing is merged or deployed by the factory."
             ),
-            issue = ISSUE,
+            issue = issue,
             head = head_hash
         ),
         doc_type: None,
@@ -365,9 +371,10 @@ fn ledger_entry(
         claim,
         evidence,
     } = *spec;
-    let (component, fidelity) = match mode {
-        Mode::Production => ("workflow.gate-evaluator", "real"),
-        Mode::Test => ("testkit.fake-agent-runtime", "fake"),
+    let (component, fidelity) = match (mode, claim["kind"].as_str()) {
+        (_, Some("expert_judgment")) => ("workflow.approval", "real"),
+        (Mode::Production, _) => ("workflow.gate-evaluator", "real"),
+        (Mode::Test, _) => ("testkit.fake-agent-runtime", "fake"),
     };
     let draft = json!({
         "schema_version": 1,
@@ -390,6 +397,122 @@ fn ledger_entry(
     let mut entry = EvidenceLedgerEntry::from_json_value(draft).expect("the ledger draft is valid");
     entry.prev_entry_hash = previous.map(|p| p.entry_hash.clone());
     entry.sealed().expect("the entry can be sealed")
+}
+
+/// The files the specification cites, with the hash of each, as they are on the head branch.
+#[must_use]
+pub fn spec_files() -> BTreeMap<String, String> {
+    let mut files = BTreeMap::new();
+    for (path, text) in [
+        ("specs/001-json-output/spec.md", "spec text"),
+        (
+            "specs/001-json-output/checklists/requirements.md",
+            "checklist text",
+        ),
+        (".specify/memory/constitution.md", "constitution text"),
+    ] {
+        files.insert(path.to_owned(), sha(text.as_bytes()));
+    }
+    files
+}
+
+/// The ledger head the manifest and the pull request cite.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Head {
+    /// The `entry_hash` of the entry.
+    pub hash: String,
+    /// Its sequence in the chain.
+    pub sequence: u64,
+}
+
+/// The evidence manifest for the job, patched from the valid example. In test mode every adapter
+/// is a labelled fake and no assurance level is attained. In production mode the levels in
+/// `attained` (a level and the id of the ledger entry that supports it) are attained.
+#[must_use]
+pub fn manifest(
+    job: &str,
+    o: &Options,
+    head: &Head,
+    spec_hash: &str,
+    dag_hash: &str,
+    attained: &[(&str, String)],
+) -> Value {
+    let mut manifest = parse(MANIFEST_EXAMPLE);
+    patch(&mut manifest, "/metadata/job_id", json!(job));
+    patch(
+        &mut manifest,
+        "/metadata/execution_mode",
+        json!(o.mode.as_str()),
+    );
+    patch(
+        &mut manifest,
+        "/metadata/repository/full_name",
+        json!(REPOSITORY),
+    );
+    patch(
+        &mut manifest,
+        "/ledger",
+        json!({
+            "entry_count": head.sequence,
+            "head_sequence": head.sequence,
+            "head_hash": head.hash,
+            "chain_verified_at": "2026-10-27T10:19:58Z"
+        }),
+    );
+    patch(&mut manifest, "/specification/sha256", json!(spec_hash));
+    patch(&mut manifest, "/plan/sha256", json!(dag_hash));
+    patch(
+        &mut manifest,
+        "/metadata/repository/head_commit",
+        json!(sha_hex40("head")),
+    );
+    patch(
+        &mut manifest,
+        "/metadata/repository/base_commit",
+        json!(sha_hex40("base")),
+    );
+    if o.mode == Mode::Test {
+        let fake_names = [
+            ("fake-agent-runtime", "agent_runtime"),
+            ("fake-sandbox", "sandbox"),
+            ("fake-github", "change_host"),
+            ("in-memory-artifacts", "artifact_store"),
+            ("in-memory-store", "store"),
+        ];
+        let adapters: Vec<Value> = fake_names
+            .iter()
+            .map(|(name, kind)| json!({ "name": name, "kind": kind, "fidelity": "fake", "version": "testkit" }))
+            .collect();
+        patch(&mut manifest, "/adapters", Value::Array(adapters));
+        patch(
+            &mut manifest,
+            "/assurance",
+            json!({
+                "attained": [],
+                "not_attained": [
+                    { "level": "SPECIFIED", "reason": "A fake component recorded the evidence, and a fake never supports an assurance level." },
+                    { "level": "IMPLEMENTED", "reason": "A fake component recorded the evidence, and a fake never supports an assurance level." },
+                    { "level": "VERIFIED_IN_SANDBOX", "reason": "A fake component recorded the evidence, and a fake never supports an assurance level." },
+                    { "level": "PRODUCTION_READY", "reason": "The run used fakes in test mode and no human release sign-off exists." }
+                ]
+            }),
+        );
+        patch(
+            &mut manifest,
+            "/limitations",
+            json!([
+                "Every adapter in this run is a labelled fake, so the run shows the engine and the contracts and nothing about a real agent, sandbox or GitHub.",
+                "No assurance level is attained."
+            ]),
+        );
+    } else {
+        let levels: Vec<Value> = attained
+            .iter()
+            .map(|(level, entry)| json!({ "level": level, "ledger_entry_id": entry }))
+            .collect();
+        patch(&mut manifest, "/assurance/attained", Value::Array(levels));
+    }
+    manifest
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -462,17 +585,7 @@ pub fn honest(env: &Env, o: Options) -> RunEvidence {
     });
 
     // The documents come first so the ledger head can go into the pull request body.
-    let mut files: BTreeMap<String, String> = BTreeMap::new();
-    for (path, text) in [
-        ("specs/001-json-output/spec.md", "spec text"),
-        (
-            "specs/001-json-output/checklists/requirements.md",
-            "checklist text",
-        ),
-        (".specify/memory/constitution.md", "constitution text"),
-    ] {
-        files.insert(path.to_owned(), sha(text.as_bytes()));
-    }
+    let files = spec_files();
     let spec = specification(&job, &o, &files);
     let spec_hash = sha(spec.to_string().as_bytes());
     let dag = task_dag(&job, &o, &spec_hash);
@@ -541,9 +654,9 @@ pub fn honest(env: &Env, o: Options) -> RunEvidence {
             push_audit(
                 &mut audit,
                 &mut correlated,
-                "approval.recorded",
-                "reviewer-ana",
-                "role=approver; evidence_seen=ledger head",
+                "approval_granted_or_rejected.granted",
+                &format!("human:{}", approver_id()),
+                "approved after reading the evidence",
             );
             timeline.push(TimelineEntry {
                 seq: next(),
@@ -631,7 +744,22 @@ pub fn honest(env: &Env, o: Options) -> RunEvidence {
             "VALIDATION" => Some("VERIFIED_IN_SANDBOX"),
             _ => None,
         };
-        let (claim, evidence) = claim_for(level);
+        let (claim, evidence) = if stage.kind == "APPROVAL" {
+            (
+                json!({
+                    "statement": "An approver read the evidence and accepted the draft pull request for review.",
+                    "kind": "expert_judgment"
+                }),
+                json!([{
+                    "type": "expert_judgment",
+                    "attestor": { "principal_id": approver_id(), "role": "approver" },
+                    "scope": "The evidence manifest, the specification and the draft pull request.",
+                    "recorded_at": "2026-10-27T10:30:00Z"
+                }]),
+            )
+        } else {
+            claim_for(level)
+        };
         let entry = ledger_entry(
             &EntrySpec {
                 job: &job,
@@ -647,101 +775,42 @@ pub fn honest(env: &Env, o: Options) -> RunEvidence {
         ledger_typed.push(entry);
     }
 
-    // The head the pull request body and the manifest cite is the DELIVERY entry.
     let delivery_index = env
         .stages
         .iter()
         .position(|s| s.kind == "DELIVERY")
         .expect("the pipeline has a DELIVERY stage");
-    let head_entry = &ledger_typed[delivery_index];
+    // The manifest and the pull request are made while DELIVERY runs, so the head they cite is the
+    // last entry written before it: the one of the stage that came before.
+    let head_entry = &ledger_typed[delivery_index - 1];
     let head_hash = head_entry.entry_hash.as_str().to_owned();
     let head_sequence = head_entry.sequence();
 
     // The manifest.
-    let mut manifest = parse(MANIFEST_EXAMPLE);
-    patch(&mut manifest, "/metadata/job_id", json!(job));
-    patch(
-        &mut manifest,
-        "/metadata/execution_mode",
-        json!(o.mode.as_str()),
-    );
-    patch(
-        &mut manifest,
-        "/metadata/repository/full_name",
-        json!(REPOSITORY),
-    );
-    patch(
-        &mut manifest,
-        "/ledger",
-        json!({
-            "entry_count": head_sequence,
-            "head_sequence": head_sequence,
-            "head_hash": head_hash,
-            "chain_verified_at": "2026-10-27T10:19:58Z"
-        }),
-    );
-    patch(&mut manifest, "/specification/sha256", json!(spec_hash));
-    patch(&mut manifest, "/plan/sha256", json!(dag_hash));
-    patch(
-        &mut manifest,
-        "/metadata/repository/head_commit",
-        json!(sha_hex40("head")),
-    );
-    patch(
-        &mut manifest,
-        "/metadata/repository/base_commit",
-        json!(sha_hex40("base")),
-    );
-    if o.mode == Mode::Test {
-        let fake_names = [
-            ("fake-agent-runtime", "agent_runtime"),
-            ("fake-sandbox", "sandbox"),
-            ("fake-github", "change_host"),
-            ("in-memory-artifacts", "artifact_store"),
-            ("in-memory-store", "store"),
-        ];
-        let adapters: Vec<Value> = fake_names
-            .iter()
-            .map(|(name, kind)| json!({ "name": name, "kind": kind, "fidelity": "fake", "version": "testkit" }))
-            .collect();
-        patch(&mut manifest, "/adapters", Value::Array(adapters));
-        patch(
-            &mut manifest,
-            "/assurance",
-            json!({
-                "attained": [],
-                "not_attained": [
-                    { "level": "SPECIFIED", "reason": "A fake component recorded the evidence, and a fake never supports an assurance level." },
-                    { "level": "IMPLEMENTED", "reason": "A fake component recorded the evidence, and a fake never supports an assurance level." },
-                    { "level": "VERIFIED_IN_SANDBOX", "reason": "A fake component recorded the evidence, and a fake never supports an assurance level." },
-                    { "level": "PRODUCTION_READY", "reason": "The run used fakes in test mode and no human release sign-off exists." }
-                ]
-            }),
-        );
-        patch(
-            &mut manifest,
-            "/limitations",
-            json!([
-                "Every adapter in this run is a labelled fake, so the run shows the engine and the contracts and nothing about a real agent, sandbox or GitHub.",
-                "No assurance level is attained."
-            ]),
-        );
-    } else {
-        // The three levels cite the entries that claim them.
+    let attained: Vec<(&str, String)> = if o.mode == Mode::Production {
         let cite = |kind: &str| -> String {
             let index = env.stages.iter().position(|s| s.kind == kind).unwrap_or(0);
             ledger_typed[index].metadata.entry_id.to_string()
         };
-        patch(
-            &mut manifest,
-            "/assurance/attained",
-            json!([
-                { "level": "SPECIFIED", "ledger_entry_id": cite("SPECIFICATION") },
-                { "level": "IMPLEMENTED", "ledger_entry_id": cite("IMPLEMENTATION") },
-                { "level": "VERIFIED_IN_SANDBOX", "ledger_entry_id": cite("VALIDATION") }
-            ]),
-        );
-    }
+        vec![
+            ("SPECIFIED", cite("SPECIFICATION")),
+            ("IMPLEMENTED", cite("IMPLEMENTATION")),
+            ("VERIFIED_IN_SANDBOX", cite("VALIDATION")),
+        ]
+    } else {
+        Vec::new()
+    };
+    let manifest = manifest(
+        &job,
+        &o,
+        &Head {
+            hash: head_hash.clone(),
+            sequence: head_sequence,
+        },
+        &spec_hash,
+        &dag_hash,
+        &attained,
+    );
 
     // The approval entry, after the manifest, extends the chain.
     let approval_index = env
@@ -788,7 +857,7 @@ pub fn honest(env: &Env, o: Options) -> RunEvidence {
     // Documents.
     let mut documents = vec![specification_document()];
     documents.extend(task_documents(&dag));
-    documents.push(pull_request_document(&head_hash));
+    documents.push(pull_request_document(&head_hash, ISSUE));
     documents.extend(documentation_documents());
 
     // GitHub.
@@ -839,7 +908,7 @@ pub fn honest(env: &Env, o: Options) -> RunEvidence {
             head_branch: "factory/json-output".to_owned(),
             head_sha: head_sha.clone(),
             title: "Add a JSON output option to the word count tool".to_owned(),
-            body: pull_request_document(&head_hash).body,
+            body: pull_request_document(&head_hash, ISSUE).body,
         }],
         head_commits: commits,
         head_files: files,
@@ -905,7 +974,7 @@ pub fn honest(env: &Env, o: Options) -> RunEvidence {
             id: job,
             status: "COMPLETED".to_owned(),
             correlation_id: CORRELATION.to_owned(),
-            requester: "requester-bruno".to_owned(),
+            requester: format!("human:{}", uid(6, 1)),
             issue_number: ISSUE,
         },
         stage_runs,
@@ -928,8 +997,29 @@ pub fn honest(env: &Env, o: Options) -> RunEvidence {
             calls_after_exhaustion: 0,
         },
         hostile: None,
-        facts: BTreeMap::new(),
+        facts: request_facts(o.source_language),
     }
+}
+
+/// The hashes of the original and the normalized request, which `X.original-kept` compares.
+#[must_use]
+pub fn request_facts(source_language: &str) -> BTreeMap<String, Value> {
+    let id = if source_language == "en" {
+        "json-output-en"
+    } else {
+        "json-output-pt"
+    };
+    let original =
+        crate::issues::load(id).map_or_else(|_| String::new(), |i| i.first().body_text());
+    let original_hash = sha(original.as_bytes());
+    let mut facts = BTreeMap::new();
+    facts.insert("original_request_sha256".to_owned(), json!(original_hash));
+    facts.insert("stored_original_sha256".to_owned(), json!(original_hash));
+    facts.insert(
+        "normalized_request_sha256".to_owned(),
+        json!(sha(b"the normalized request in English")),
+    );
+    facts
 }
 
 /// A 40-character commit id made from a label, the same every time.

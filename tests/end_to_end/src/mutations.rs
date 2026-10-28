@@ -812,42 +812,51 @@ pub fn all() -> Vec<Mutation> {
                 for record in ev
                     .audit
                     .iter_mut()
-                    .filter(|r| r.action == "approval.recorded")
+                    .filter(|r| r.action == "approval_granted_or_rejected.granted")
                 {
                     record.actor.clone_from(&requester);
                 }
             },
         },
         Mutation {
-            name: "a-bot-approved",
+            name: "a-service-account-approved",
             assertion: "A9",
-            what: "The approval is recorded for a bot account.",
+            what: "The approval is recorded for a service account, not a person.",
             expect: "not a person",
             base: Production,
             apply: |ev| {
                 for record in ev
                     .audit
                     .iter_mut()
-                    .filter(|r| r.action == "approval.recorded")
+                    .filter(|r| r.action == "approval_granted_or_rejected.granted")
                 {
-                    record.actor = "factory-app[bot]".to_owned();
+                    record.actor = format!("service:{}", canned::uid(6, 9));
                 }
             },
         },
         Mutation {
-            name: "the-approval-does-not-record-the-role",
+            name: "the-approver-did-not-hold-the-approver-role",
             assertion: "A9",
-            what: "The approval record does not say the approver held the approver role.",
-            expect: "does not record the approver role",
+            what: "The ledger records the approval judgment under the requester role.",
+            expect: "with the approver role",
             base: Production,
             apply: |ev| {
-                for record in ev
-                    .audit
-                    .iter_mut()
-                    .filter(|r| r.action == "approval.recorded")
-                {
-                    record.detail.clear();
-                }
+                let index = ledger_index(ev, "APPROVAL");
+                ev.ledger[index]["evidence"][0]["attestor"]["role"] = json!("requester");
+                reseal(ev);
+            },
+        },
+        Mutation {
+            name: "the-approval-judgment-is-by-someone-else",
+            assertion: "A9",
+            what: "The ledger judgment is by a different person than the audit record names.",
+            expect: "with the approver role",
+            base: Production,
+            apply: |ev| {
+                let index = ledger_index(ev, "APPROVAL");
+                ev.ledger[index]["evidence"][0]["attestor"]["principal_id"] =
+                    json!(canned::uid(6, 77));
+                reseal(ev);
             },
         },
         Mutation {
@@ -856,7 +865,10 @@ pub fn all() -> Vec<Mutation> {
             what: "No approval is recorded in the audit stream.",
             expect: "holds 0 approval records",
             base: Production,
-            apply: |ev| ev.audit.retain(|r| r.action != "approval.recorded"),
+            apply: |ev| {
+                ev.audit
+                    .retain(|r| r.action != "approval_granted_or_rejected.granted")
+            },
         },
         Mutation {
             name: "the-job-never-waited-for-a-person",

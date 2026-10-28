@@ -23,6 +23,12 @@ pub mod check;
 pub mod evidence;
 pub mod issues;
 pub mod mutations;
+pub mod preflight;
+pub mod runner;
+pub mod scenario_checks;
+pub mod scenarios;
+#[cfg(feature = "scripted")]
+pub mod scripted;
 
 pub use check::{Check, Env, StageSpec, Verdict};
 pub use evidence::{Mode, RunEvidence};

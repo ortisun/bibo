@@ -165,9 +165,10 @@ pub fn a2(ev: &RunEvidence, _env: &Env) -> Verdict {
 pub fn a13(ev: &RunEvidence, env: &Env) -> Verdict {
     const ID: &str = "A13";
     let delivery_runs = runs_of(ev, "DELIVERY");
-    let started = delivery_runs.iter().any(|run| {
-        !run.attempts.is_empty() || !matches!(run.status.as_str(), "PENDING" | "CANCELLED")
-    });
+    // A run that is only queued, or that was superseded before it began, has not started.
+    let started = delivery_runs
+        .iter()
+        .any(|run| !run.attempts.is_empty() || run.status == PASSED);
     let mut blockers: Vec<String> = Vec::new();
     for stage in &env.stages {
         if stage.kind == "DELIVERY" {

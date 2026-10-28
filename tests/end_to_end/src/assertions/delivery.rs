@@ -4,7 +4,7 @@ use crate::check::{Env, Verdict};
 use crate::evidence::RunEvidence;
 
 use super::support::{
-    is_documentation_path, job_reached, mentions_issue, passed_at, the_passed_run,
+    is_documentation_path, job_reached, mentions_issue, passed_at, text_at, the_passed_run,
 };
 
 /// A3: the pull request exists on GitHub, is a draft, links the issue, and its head branch holds
@@ -146,7 +146,7 @@ pub fn a9(ev: &RunEvidence, _env: &Env) -> Verdict {
     let approvals: Vec<_> = ev
         .audit
         .iter()
-        .filter(|record| record.action == "approval.recorded")
+        .filter(|record| record.action == "approval_granted_or_rejected.granted")
         .collect();
     let [record] = approvals.as_slice() else {
         return Verdict::fail(
@@ -157,10 +157,7 @@ pub fn a9(ev: &RunEvidence, _env: &Env) -> Verdict {
             ),
         );
     };
-    if record.actor == ev.job.requester {
-        return Verdict::fail(ID, "the requester approved their own request");
-    }
-    if record.actor == "factory" || record.actor == "system" || record.actor.ends_with("[bot]") {
+    let Some(approver_id) = record.actor.strip_prefix("human:") else {
         return Verdict::fail(
             ID,
             format!(
@@ -168,13 +165,29 @@ pub fn a9(ev: &RunEvidence, _env: &Env) -> Verdict {
                 record.actor
             ),
         );
+    };
+    if record.actor == ev.job.requester {
+        return Verdict::fail(ID, "the requester approved their own request");
     }
-    if !record.detail.contains("role=approver") {
+    // The audit record names who. The ledger holds the judgment and the role that allowed it.
+    let judged = ev.ledger.iter().any(|entry| {
+        text_at(entry, "/metadata/stage_run_id") == Some(approval.id.as_str())
+            && text_at(entry, "/claim/kind") == Some("expert_judgment")
+            && entry
+                .pointer("/evidence")
+                .and_then(serde_json::Value::as_array)
+                .is_some_and(|items| {
+                    items.iter().any(|item| {
+                        text_at(item, "/attestor/role") == Some("approver")
+                            && text_at(item, "/attestor/principal_id") == Some(approver_id)
+                    })
+                })
+    });
+    if !judged {
         return Verdict::fail(
             ID,
             format!(
-                "the approval by {} does not record the approver role",
-                record.actor
+                "the ledger does not hold the approver's judgment by {approver_id} with the approver role"
             ),
         );
     }

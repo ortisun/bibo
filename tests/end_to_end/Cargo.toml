@@ -30,7 +30,7 @@ path = "src/bin/e2e.rs"
 # exist. The testkit appears only here, as the rules for test doubles require. A caller that brings
 # its own wiring turns it off with `default-features = false`.
 default = ["scripted"]
-scripted = ["dep:factory-ports", "dep:factory-testkit", "dep:tokio", "dep:async-trait"]
+scripted = ["dep:factory-ports", "dep:factory-testkit", "dep:tokio", "dep:async-trait", "dep:tracing"]
 
 [dependencies]
 # Contract types and their rules (the evidence ledger chain, the manifest, the specification, the
@@ -45,6 +45,7 @@ serde_json = { version = "1.0.154", default-features = false, features = ["std",
 factory-ports = { path = "../../crates/ports", optional = true }
 factory-testkit = { path = "../../crates/testkit", optional = true }
 async-trait = { version = "0.1.92", optional = true }
+tracing = { version = "0.1.44", default-features = false, features = ["std"], optional = true }
 tokio = { version = "1.54.1", default-features = false, features = ["sync", "time", "rt", "macros"], optional = true }
 
 [lints.rust]
