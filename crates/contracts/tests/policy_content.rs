@@ -414,3 +414,165 @@ fn the_specification_stage_allows_exactly_four_skills_and_denies_the_rest() {
             .is_empty()
     );
 }
+
+// ---------------------------------------------------------------------------------------------
+// The fetch profile (A3)
+// ---------------------------------------------------------------------------------------------
+
+fn class_of(verdict: &CommandVerdict) -> Option<&str> {
+    match verdict {
+        CommandVerdict::Denied(d) if d.reason == CommandDenialReason::ForbiddenClass => {
+            d.matched_classes.first().map(String::as_str)
+        }
+        _ => None,
+    }
+}
+
+#[test]
+fn the_fetch_profile_can_run_cargo_fetch_and_the_wrapper_adds_locked() {
+    use SandboxProfileKind::FetchDeps;
+    // The supervisor writes `cargo fetch`; the wrapper adds `--locked`. Passing `--locked` as well
+    // would repeat it, and cargo refuses a repeated flag, so the supervisor leaves it to the wrapper.
+    let CommandVerdict::Allowed(a) = run(FetchDeps, &["cargo", "fetch"]) else {
+        panic!("cargo fetch must be allowed in the fetch profile");
+    };
+    assert_eq!(a.argv, ["cargo", "fetch", "--locked"]);
+    // The metadata of a dependency-free command-line tool fixture is allowed too.
+    assert!(run(FetchDeps, &["cargo", "metadata"]).is_allowed());
+}
+
+#[test]
+fn cargo_fetch_is_denied_outside_the_fetch_profile_by_the_install_class() {
+    for profile in [SandboxProfileKind::Agent, SandboxProfileKind::Verify] {
+        let verdict = run(profile, &["cargo", "fetch"]);
+        assert_eq!(
+            class_of(&verdict),
+            Some("install_scripts_outside_fetch"),
+            "{profile:?}: {verdict:?}"
+        );
+    }
+}
+
+#[test]
+fn the_fetch_profile_runs_no_install_no_update_and_no_repository_code() {
+    use SandboxProfileKind::FetchDeps;
+    // No install, add, update or vendor: the command set lists none of them.
+    for words in [
+        &["cargo", "install", "ripgrep"][..],
+        &["cargo", "add", "serde"][..],
+        &["cargo", "update"][..],
+        &["cargo", "vendor"][..],
+        &["npm", "install", "left-pad"][..],
+        &["npm", "ci"][..],
+    ] {
+        let verdict = run(FetchDeps, words);
+        assert!(
+            matches!(&verdict, CommandVerdict::Denied(d) if d.reason == CommandDenialReason::SubcommandNotAllowed),
+            "{words:?}: {verdict:?}"
+        );
+    }
+    // The fetch profile runs no code of the repository: a build script, a procedural macro, a test
+    // binary or a project script would run with the network switched on.
+    for words in [
+        &["cargo", "build"][..],
+        &["cargo", "check"][..],
+        &["cargo", "test"][..],
+        &["cargo", "clippy"][..],
+        &["cargo", "doc"][..],
+        &["cargo", "nextest", "run"][..],
+        &["npm", "run", "build"][..],
+        &["npm", "test"][..],
+        &["rustc", "src/main.rs"][..],
+        &["node", "script.js"][..],
+        &["python", "setup.py"][..],
+        &["go", "test"][..],
+    ] {
+        let verdict = run(FetchDeps, words);
+        assert_eq!(
+            class_of(&verdict),
+            Some("repository_code_in_fetch_deps"),
+            "{words:?}: {verdict:?}"
+        );
+    }
+    // The same commands still run where they belong.
+    for profile in [SandboxProfileKind::Agent, SandboxProfileKind::Verify] {
+        for words in [&["cargo", "build"][..], &["cargo", "test"][..]] {
+            assert!(run(profile, words).is_allowed(), "{profile:?} {words:?}");
+        }
+    }
+}
+
+#[test]
+fn the_arguments_that_could_redirect_a_fetch_stay_forbidden_in_the_fetch_profile() {
+    use SandboxProfileKind::FetchDeps;
+    for words in [
+        &[
+            "cargo",
+            "fetch",
+            "--config",
+            "source.crates-io.replace-with=x",
+        ][..],
+        &["cargo", "fetch", "--registry", "evil"][..],
+        &["cargo", "fetch", "--index", "http://evil.test"][..],
+        &["cargo", "fetch", "-Z", "unstable-options"][..],
+        &["cargo", "fetch", "--manifest-path=/etc/x/Cargo.toml"][..],
+    ] {
+        let verdict = run(FetchDeps, words);
+        assert!(
+            matches!(&verdict, CommandVerdict::Denied(d) if matches!(d.reason, CommandDenialReason::ForbiddenArgument(_))),
+            "{words:?}: {verdict:?}"
+        );
+    }
+}
+
+#[test]
+fn only_the_fetch_profile_may_use_the_network_and_the_others_stay_offline() {
+    let rust = security()
+        .command_sets
+        .sets
+        .iter()
+        .find(|s| s.id == "rust")
+        .expect("the rust command set");
+    // The set is offline by default, and `--offline` is forced where the network is off.
+    assert_eq!(
+        rust.env.get("CARGO_NET_OFFLINE").map(String::as_str),
+        Some("true")
+    );
+    let cargo = &rust.executables["cargo"];
+    let forced = cargo.forced_args.as_ref().expect("forced arguments");
+    for profile in ["agent", "verify"] {
+        assert!(
+            forced[profile].iter().any(|a| a == "--offline"),
+            "{profile} must force --offline"
+        );
+    }
+    assert!(
+        !forced["fetch_deps"].iter().any(|a| a == "--offline"),
+        "the fetch profile reaches the registries through the proxy"
+    );
+    // Only the fetch profile may override the offline default.
+    let overrides = rust
+        .env_by_profile
+        .as_ref()
+        .expect("per-profile environment");
+    assert_eq!(
+        overrides.keys().map(String::as_str).collect::<Vec<_>>(),
+        ["fetch_deps"]
+    );
+    assert_eq!(
+        overrides["fetch_deps"]
+            .get("CARGO_NET_OFFLINE")
+            .map(String::as_str),
+        Some("false")
+    );
+    for profile in [SandboxProfileKind::Agent, SandboxProfileKind::Verify] {
+        let CommandVerdict::Allowed(a) = run(profile, &["cargo", "build"]) else {
+            panic!("cargo build is allowed in {profile:?}");
+        };
+        assert_eq!(
+            a.env.get("CARGO_NET_OFFLINE").map(String::as_str),
+            Some("true")
+        );
+        assert!(a.argv.iter().any(|x| x == "--offline"), "{:?}", a.argv);
+    }
+}

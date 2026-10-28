@@ -466,7 +466,7 @@ forbidden_command_classes:
       executables: [nohup, setsid, disown, daemonize, screen, tmux]
     action: deny
   - id: install_scripts_outside_fetch
-    description: "Package installs may run only in the fetch_deps profile with scripts disabled."
+    description: "Package installs and downloads may run only in the fetch_deps profile. Inside that profile the command sets decide which of them exist: `cargo fetch` and `cargo metadata` for Slice 1, no install, add, update or vendor, and the next class keeps repository code out."
     match:
       argv_regex:
         - '(?i)\b(npm|pnpm|yarn)\b\s+(install|i|add|ci)\b'
@@ -475,6 +475,16 @@ forbidden_command_classes:
         - '(?i)\bgo\b\s+(get|install)\b'
     action: deny
     except_profiles: [fetch_deps]
+  - id: repository_code_in_fetch_deps
+    description: "The fetch_deps profile downloads and runs no repository code: no build script, procedural macro, test binary, project script or interpreter, because it is the one profile with a network. Applies to fetch_deps only (the other two profiles are excepted)."
+    match:
+      executables: [rustc, node, npx, python, pytest, mypy, ruff]
+      argv_regex:
+        - '(?i)\bcargo\b\s+(build|check|test|clippy|doc|nextest|run|bench|rustc|rustdoc|fix|miri)\b'
+        - '(?i)\b(npm|pnpm|yarn)\b\s+(run|test|pack|exec|start|rebuild)\b'
+        - '(?i)\bgo\b\s+(build|test|vet|run|generate)\b'
+    action: deny
+    except_profiles: [agent, verify]
 
 # -----------------------------------------------------------------------------
 # 5. Tool allowlist (typed tools only; no ambient authority)
@@ -650,12 +660,21 @@ command_sets:
     - id: rust
       executables:
         cargo:
-          allowed_subcommands: [build, check, test, clippy, fmt, doc, tree, metadata, nextest, deny, audit]
+          # `fetch` is in the list so that the fetch_deps profile can run `cargo fetch`. Outside
+          # that profile the class `install_scripts_outside_fetch` denies it before this list is
+          # read. The caller writes `cargo fetch`; the wrapper adds `--locked` (a second
+          # `--locked` is an error in cargo, because the wrapper does not remove duplicates).
+          # Dependency-free fixtures (the Slice 1 command-line tool) need nothing else here.
+          allowed_subcommands: [build, check, test, clippy, fmt, doc, tree, metadata, nextest, deny, audit, fetch]
           forbidden_args: ["--config", "--manifest-path=/", "-Z", "--registry", "--index"]
           forced_args: { agent: ["--offline", "--locked"], verify: ["--offline", "--locked"], fetch_deps: ["--locked"] }
         rustc: { allowed_subcommands: [], forbidden_args: ["-C", "--codegen", "-Z"] }
         rustfmt: { allowed_subcommands: [] }
+      # Offline by default. The fetch_deps profile is the one place cargo may use the network,
+      # and only through the egress proxy (section 8, profile fetch_deps).
       env: { CARGO_TERM_COLOR: never, CARGO_NET_OFFLINE: "true", RUST_BACKTRACE: "1" }
+      env_by_profile:
+        fetch_deps: { CARGO_NET_OFFLINE: "false" }
     - id: node
       executables:
         node: { allowed_subcommands: [], forbidden_args: ["--require", "-r", "--import", "--eval", "-e", "--inspect", "--inspect-brk"] }

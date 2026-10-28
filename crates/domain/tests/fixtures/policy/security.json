@@ -245,6 +245,11 @@
           "CARGO_TERM_COLOR": "never",
           "RUST_BACKTRACE": "1"
         },
+        "env_by_profile": {
+          "fetch_deps": {
+            "CARGO_NET_OFFLINE": "false"
+          }
+        },
         "executables": {
           "cargo": {
             "allowed_subcommands": [
@@ -258,7 +263,8 @@
               "metadata",
               "nextest",
               "deny",
-              "audit"
+              "audit",
+              "fetch"
             ],
             "forbidden_args": [
               "--config",
@@ -1005,7 +1011,7 @@
     },
     {
       "action": "deny",
-      "description": "Package installs may run only in the fetch_deps profile with scripts disabled.",
+      "description": "Package installs and downloads may run only in the fetch_deps profile. Inside that profile the command sets decide which of them exist: `cargo fetch` and `cargo metadata` for Slice 1, no install, add, update or vendor, and the next class keeps repository code out.",
       "except_profiles": [
         "fetch_deps"
       ],
@@ -1016,6 +1022,31 @@
           "(?i)\\bpip[0-9.]*\\b\\s+(install|download)\\b",
           "(?i)\\bcargo\\b\\s+(install|add|update|fetch|vendor)\\b",
           "(?i)\\bgo\\b\\s+(get|install)\\b"
+        ]
+      }
+    },
+    {
+      "action": "deny",
+      "description": "The fetch_deps profile downloads and runs no repository code: no build script, procedural macro, test binary, project script or interpreter, because it is the one profile with a network. Applies to fetch_deps only (the other two profiles are excepted).",
+      "except_profiles": [
+        "agent",
+        "verify"
+      ],
+      "id": "repository_code_in_fetch_deps",
+      "match": {
+        "argv_regex": [
+          "(?i)\\bcargo\\b\\s+(build|check|test|clippy|doc|nextest|run|bench|rustc|rustdoc|fix|miri)\\b",
+          "(?i)\\b(npm|pnpm|yarn)\\b\\s+(run|test|pack|exec|start|rebuild)\\b",
+          "(?i)\\bgo\\b\\s+(build|test|vet|run|generate)\\b"
+        ],
+        "executables": [
+          "rustc",
+          "node",
+          "npx",
+          "python",
+          "pytest",
+          "mypy",
+          "ruff"
         ]
       }
     }

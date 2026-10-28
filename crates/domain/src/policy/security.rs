@@ -442,6 +442,11 @@ strict! {
         pub executables: BTreeMap<String, CommandExecutable>,
         /// The environment the supervisor sets.
         pub env: BTreeMap<String, String>,
+        /// Values that replace the same names in `env` for one sandbox profile, by profile name.
+        /// The fetch profile uses it to switch the network on where every other profile keeps it
+        /// off.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub env_by_profile: Option<BTreeMap<String, BTreeMap<String, String>>>,
         /// Notes.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub notes: Option<String>,
