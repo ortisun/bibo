@@ -36,9 +36,10 @@ use crate::handlers::{
 };
 use crate::stages::delivery::binding::{self, Now};
 use crate::stages::delivery::contract::RESULT as DELIVERY_RESULT;
+use crate::stages::delivery::documentation_gate::{DocumentationGate, Expected, GateProblem};
 use crate::stages::delivery::handler::{fidelity_of, host_error, seam_error, slug};
 use crate::stages::delivery::input::{
-    DOCUMENTATION_GATE, POLICY_INPUT, VALIDATION_EVIDENCE, contract_input,
+    DOCUMENTATION_GATE, DOCUMENTATION_PLAN, POLICY_INPUT, VALIDATION_EVIDENCE, contract_input,
 };
 use crate::stages::delivery::{DeliverySources, EvidenceDrift};
 use crate::stages::intake::common::{
@@ -150,6 +151,9 @@ impl StageHandler for ApprovalHandler {
         let delivery = read(DELIVERY_RESULT).await?;
         let evidence = read(VALIDATION_EVIDENCE).await?;
         let documentation = read(DOCUMENTATION_GATE).await?;
+        let documentation_plan = contract_input(ctx.contract, DOCUMENTATION_PLAN)
+            .ok_or_else(unavailable)?
+            .sha256;
         let policy_hash = contract_input(ctx.contract, POLICY_INPUT)
             .ok_or(StageError::Blocked(BlockedCode::PolicyUnresolvable))?
             .sha256;
@@ -196,6 +200,25 @@ impl StageHandler for ApprovalHandler {
             .and_then(Value::as_u64)
             .and_then(|v| u32::try_from(v).ok())
             .ok_or(StageError::InvalidOutput)?;
+
+        // The documentation gate report is one document with a binding and the typed report of
+        // every gate. Its reports must have been made for the commits that were delivered and for
+        // the plan this run was resolved with: a report made for other documents is not evidence
+        // for these. This is a contradiction between documents, not a change in the world, so it
+        // is refused and not treated as drift.
+        let documentation =
+            DocumentationGate::from_json(&documentation).map_err(|_| StageError::InvalidOutput)?;
+        documentation
+            .check(&Expected {
+                base_commit: &base_commit,
+                code_head: &code_head,
+                documentation_head: &head_commit,
+                plan_sha256: &documentation_plan,
+            })
+            .map_err(|problem| match problem {
+                GateProblem::Invalid => StageError::InvalidOutput,
+                GateProblem::Stale(_) => StageError::PolicyDenied,
+            })?;
 
         // The pull request must still be the open draft at the delivered commit.
         let git = GitScope {
@@ -283,11 +306,9 @@ impl StageHandler for ApprovalHandler {
                 GateOutcome::Blocked => decided(&report.metadata.gate_id),
                 GateOutcome::Failed => false,
             });
-        let documentation_report =
-            GateReport::from_json_value(documentation).map_err(|_| StageError::InvalidOutput)?;
         let open_translation_warnings = reports
             .iter()
-            .chain(std::iter::once(&documentation_report))
+            .chain(documentation.reports.iter())
             .map(translation_warnings)
             .fold(0u32, u32::saturating_add);
 

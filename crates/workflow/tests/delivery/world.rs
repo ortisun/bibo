@@ -52,6 +52,7 @@ use factory_workflow::stages::delivery::{
     DeliveryConfig, DeliveryDeps, DeliveryHandler, DeliverySources, DeliveryTarget, EvidenceDrift,
     LedgerState, SeamError,
 };
+use factory_workflow::stages::documentation_review::{GateBinding, gate_document, gate_ids};
 use factory_workflow::stages::intake::common::{
     Executor, GateDefinition, GateFacts, GateSubject, gate_report,
 };
@@ -662,12 +663,20 @@ impl World {
                 documented.as_ref().unwrap_or(head),
             ))
             .await;
-        let mut documentation_report = self
-            .report("documentation-gate", "PASSED")
-            .to_json_value()
-            .expect("a report is JSON");
+        // The document the documentation review stage stores, written by that stage's own
+        // function: every gate of the stage has a report, and the document says which commits and
+        // which plan the reports are about.
+        let docs_head = documented.as_ref().unwrap_or(head);
+        let mut documentation_reports: Vec<serde_json::Value> = gate_ids()
+            .into_iter()
+            .map(|gate| {
+                self.report(gate, "PASSED")
+                    .to_json_value()
+                    .expect("a report is JSON")
+            })
+            .collect();
         if self.scenario.translation_warnings > 0 {
-            documentation_report["warnings"] = serde_json::json!(
+            documentation_reports[0]["warnings"] = serde_json::json!(
                 (0..self.scenario.translation_warnings)
                     .map(|n| serde_json::json!({
                         "check_id": "translation-unfaithful",
@@ -677,7 +686,20 @@ impl World {
                     .collect::<Vec<_>>()
             );
         }
-        let documentation_gate = self.store_json(&documentation_report).await;
+        let documentation_gate = self
+            .store_json(&gate_document(
+                &GateBinding {
+                    base_commit: base,
+                    code_head: head,
+                    documentation_head: docs_head,
+                    plan_sha256: &documentation.sha256,
+                    specification_sha256: &spec.sha256,
+                },
+                Some("sandbox-1"),
+                0,
+                &documentation_reports,
+            ))
+            .await;
         let documentation_review = self.store_json(&blob("documentation review")).await;
 
         let mut add = |kind: StageKind, name: &'static str, artifact: ArtifactRef| {
