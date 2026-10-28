@@ -1,0 +1,310 @@
+# The full local run of the software factory (work package s1-local-deployment).
+#
+# This file is separate from docker-compose.yml, which is the small "PostgreSQL only" development
+# stack of scripts/dev-up.sh. Use this one when you want the database, the artifact volume and,
+# once their programs exist, the factory services, laid out the way docs/security/sandbox-policy.md
+# asks for. The two stacks use different project names and different volumes, so they never touch
+# each other's data.
+#
+# HOW TO START IT
+#   scripts/local-up.sh              the "local" profile: PostgreSQL 18 and the artifact volume
+#   scripts/local-up.sh --factory    also the "factory" profile (only once the images exist)
+#   scripts/smoke.sh                 starts a throwaway copy with the "test" profile and checks it
+#   Every setting comes from the environment (see the list below). Nothing is read from a file
+#   that is committed, and no secret is in this file.
+#
+# PROFILES (a service with no profile would start in every case, so every service names its own)
+#   local    what a person runs for development: fixed loopback port, restarts after a reboot.
+#   test     what scripts/smoke.sh and scripts/restore-drill.sh run: a random-looking project name,
+#            a loopback port chosen by the script, no restart, every object labelled
+#            factory.test=true. Adds "sandbox-probe", a container that behaves like a sandbox so
+#            the smoke script can prove it has no route to PostgreSQL.
+#   factory  the factory's own services, "api" and "worker". ENABLED WHEN THE BINARIES EXIST: today
+#            apps/api and apps/worker print "not implemented yet" and exit, so nothing builds an
+#            image for them. They are written down here so the composition work has one place to
+#            plug in. The contract (image names, command, environment variables) is in
+#            docs/operations/local-deployment.md, section "Contract for the factory services".
+#
+# NETWORK LAYOUT (docs/security/sandbox-policy.md section 5)
+#   data       PostgreSQL, api, worker. The only network PostgreSQL is on. Sandbox containers and
+#              egress sidecars are never attached to it.
+#   broker     internal, so it has no route out. The worker (which hosts the model broker) and the
+#              per-job egress sidecars that the worker's supervisor starts. The sidecars also join
+#              their own per-job "--internal" network, which the supervisor creates at run time.
+#   probe_net  internal. Test profile only. Stands in for a per-job sandbox network.
+#   A sandbox therefore reaches the sidecar and nothing else. It has no address on "data", and an
+#   internal network has no route to this machine, so it cannot reach the published database
+#   port either. scripts/smoke.sh tests all of this with the real agent sandbox image.
+#
+# SETTINGS (environment variables, all optional unless marked)
+#   FACTORY_SECRETS_DIR   REQUIRED. A folder holding the secret files named under "secrets:" below.
+#                         scripts/local-up.sh creates it (mode 0700, files 0600).
+#   FACTORY_PG_PORT       Loopback port for PostgreSQL. Default 55432.
+#   FACTORY_API_PORT      Loopback port for the API (factory profile). Default 8080.
+#   FACTORY_PG_IMAGE      Override the PostgreSQL image. Keep it pinned by digest.
+#   FACTORY_TEST          "true" in the test profile. Becomes the label factory.test.
+#   FACTORY_RUN_ID        Names one run. Becomes the label factory.run.
+#   FACTORY_RESTART       Restart policy. Default unless-stopped; the test profile sets "no".
+#   FACTORY_API_IMAGE, FACTORY_WORKER_IMAGE            images of the factory profile
+#   FACTORY_SANDBOX_AGENT_IMAGE, FACTORY_SANDBOX_VERIFY_IMAGE, FACTORY_SANDBOX_SIDECAR_IMAGE
+#                         images the worker starts as sandboxes, by digest, from
+#                         infra/sandbox-images/images.json
+#   FACTORY_WORKER_DOCKER_HOST   how the worker reaches Docker. See the note at the worker service.
+#   FACTORY_SANDBOX_PROBE_IMAGE  image of the probe (test profile). scripts/smoke.sh sets it to the
+#                         agent sandbox image.
+
+name: factory-local
+
+# ---- Pieces shared by several services ------------------------------------------------------
+
+# Labels on every object this file creates. factory.test=true is how a test run is told apart from
+# a person's stack, and factory.run names the one run, so a cleanup can remove exactly what that
+# run made and nothing else.
+x-labels: &labels
+  factory.managed: "true"
+  factory.test: "${FACTORY_TEST:-false}"
+  factory.run: "${FACTORY_RUN_ID:-local}"
+
+# The hardening every container gets (the same stance as docs/security/sandbox-policy.md section 3).
+# A service adds back only what it proves it needs.
+x-hardened: &hardened
+  cap_drop: [ALL]
+  security_opt: ["no-new-privileges:true"]
+  read_only: true
+  init: true
+  logging:
+    driver: json-file
+    options:
+      max-size: 10m
+      max-file: "3"
+
+# The user the factory services and the artifact volume use. A number, not a name, so it means the
+# same thing in every image. 10001 to 10003 are taken by the sandbox images.
+x-factory-user: &factory-user "10010:10010"
+
+# The PostgreSQL image: 18.6 on Debian, pinned by the digest of its multi-platform index, as ADR 0007
+# (revised by ADR 0012) requires. It is the image the database tests ran on (docs/database/running.md).
+# To move to a newer 18.x: run "docker buildx imagetools inspect postgres:18", copy the top-level
+# Digest, change this line, run scripts/restore-drill.sh, and review the change like any dependency
+# update. A major version change is a dump and restore, not an image swap (docs/operations/troubleshooting.md).
+x-postgres-image: &postgres-image ${FACTORY_PG_IMAGE:-postgres:18.6@sha256:edb0c08dc33befd0262ab3b5cf1c4f3f8cfd8b09e88c05b45adee29d6761ddb6}
+
+services:
+  # ---- PostgreSQL ---------------------------------------------------------------------------
+  postgres:
+    image: *postgres-image
+    <<: *hardened
+    profiles: [local, test]
+    restart: ${FACTORY_RESTART:-unless-stopped}
+    labels: *labels
+    environment:
+      # The image creates this superuser and this database on the first start only. The password is
+      # read from a file, never from the environment (docs/security/secrets-and-credentials.md).
+      POSTGRES_USER: factory_admin
+      POSTGRES_DB: factory
+      POSTGRES_PASSWORD_FILE: /run/secrets/pg_superuser_password
+    secrets: [pg_superuser_password]
+    # Bound to the loopback address only. Without the "127.0.0.1:" prefix Docker would publish the
+    # port on every network interface of this machine.
+    ports:
+      - "127.0.0.1:${FACTORY_PG_PORT:-55432}:5432"
+    volumes:
+      # The PostgreSQL 18 image keeps its data in a versioned folder below /var/lib/postgresql
+      # (PGDATA is /var/lib/postgresql/18/docker). Mounting the parent is what the image documents.
+      # Mounting the old /var/lib/postgresql/data path would leave the data in an anonymous volume.
+      - pgdata:/var/lib/postgresql
+    networks: [data]
+    healthcheck:
+      # Over TCP on 127.0.0.1, not the socket: during first-time setup the image runs a temporary
+      # server that listens only on the socket, and a socket check would say "healthy" too early.
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U factory_admin -d factory"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 10s
+    # The image starts as root only to fix the ownership of the data folder, then drops to the
+    # "postgres" user. These four capabilities are what that first step needs.
+    cap_add: [CHOWN, DAC_OVERRIDE, SETGID, SETUID]
+    tmpfs:
+      - /tmp
+      - /run/postgresql
+    mem_limit: 2g
+    cpus: 2
+    pids_limit: 512
+    # Time to flush and shut down cleanly. The image stops on SIGINT (PostgreSQL's fast shutdown).
+    stop_grace_period: 30s
+
+  # ---- The artifact volume --------------------------------------------------------------------
+  # A one-shot job that gives the volume the owner and mode the storage crate expects. The crate
+  # (crates/storage/src/artifact_fs) creates its directories as 0700 and its blobs as 0400, and it
+  # opens the root with no way to fix permissions, so the root must already belong to the factory user
+  # and be closed to everyone else. The job changes only the top folder, never the blobs inside, so
+  # it is safe to run on a volume that already holds data. It has no network at all.
+  artifacts-init:
+    image: *postgres-image
+    profiles: [local, test, factory]
+    restart: "no"
+    labels: *labels
+    network_mode: none
+    user: "0:0"
+    entrypoint: ["/bin/sh", "-c"]
+    command: ["install -d -m 0700 -o 10010 -g 10010 /artifacts && chown 10010:10010 /artifacts && chmod 0700 /artifacts"]
+    volumes:
+      - artifacts:/artifacts
+    cap_drop: [ALL]
+    cap_add: [CHOWN, DAC_OVERRIDE, FOWNER]
+    security_opt: ["no-new-privileges:true"]
+    read_only: true
+    mem_limit: 64m
+    pids_limit: 32
+
+  # ---- The sandbox probe (test profile only) --------------------------------------------------
+  # The real agent sandbox image, run the way the sandbox policy runs it (non-root, no
+  # capabilities, read-only root, no new privileges) on a network that stands in for a per-job
+  # network. scripts/smoke.sh runs connection attempts from inside it and requires every one to fail.
+  sandbox-probe:
+    image: ${FACTORY_SANDBOX_PROBE_IMAGE:-factory-sandbox/agent:unset}
+    # The name belongs to this project's own build. Never pull a stranger's image by that name.
+    pull_policy: never
+    <<: *hardened
+    profiles: [test]
+    restart: "no"
+    labels: *labels
+    user: "10001:10001"
+    entrypoint: ["/bin/bash", "-c"]
+    command: ["while true; do sleep 3600; done"]
+    networks: [probe_net]
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=16m
+    mem_limit: 256m
+    cpus: 0.5
+    pids_limit: 64
+
+  # ---- The factory services (profile "factory": ENABLED WHEN THE BINARIES EXIST) ---------------
+  # Nothing builds these images yet. The names, the user, the ports and the variables below are the
+  # contract the composition work must honor. They are not guesses to be fixed later: change them
+  # here and in docs/operations/local-deployment.md together.
+  api:
+    image: ${FACTORY_API_IMAGE:-factory-api:local}
+    # Built on this machine, never pulled.
+    pull_policy: never
+    <<: *hardened
+    profiles: [factory]
+    restart: ${FACTORY_RESTART:-unless-stopped}
+    labels: *labels
+    user: *factory-user
+    environment:
+      FACTORY_PROFILE: local
+      FACTORY_LISTEN_ADDR: 0.0.0.0:8080
+      FACTORY_DB_HOST: postgres
+      FACTORY_DB_PORT: "5432"
+      FACTORY_DB_NAME: factory
+      FACTORY_DB_API_USER: factory_api
+      FACTORY_DB_API_PASSWORD_FILE: /run/secrets/pg_password_api
+      FACTORY_ARTIFACT_DIR: /var/lib/factory/artifacts
+    secrets: [pg_password_api]
+    ports:
+      - "127.0.0.1:${FACTORY_API_PORT:-8080}:8080"
+    volumes:
+      - artifacts:/var/lib/factory/artifacts
+    networks: [data]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      artifacts-init:
+        condition: service_completed_successfully
+    healthcheck:
+      # The binary answers its own health check, because the image has no shell and no curl.
+      test: ["CMD", "/usr/local/bin/factory-api", "healthcheck"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 10s
+    tmpfs:
+      - /tmp
+    mem_limit: 512m
+    cpus: 1
+    pids_limit: 256
+
+  worker:
+    image: ${FACTORY_WORKER_IMAGE:-factory-worker:local}
+    pull_policy: never
+    <<: *hardened
+    profiles: [factory]
+    restart: ${FACTORY_RESTART:-unless-stopped}
+    labels: *labels
+    user: *factory-user
+    environment:
+      FACTORY_PROFILE: local
+      FACTORY_DB_HOST: postgres
+      FACTORY_DB_PORT: "5432"
+      FACTORY_DB_NAME: factory
+      # Two logins, two pools (ADR 0012): the tenant pool and the system pool never share a login.
+      FACTORY_DB_TENANT_USER: factory_worker
+      FACTORY_DB_TENANT_PASSWORD_FILE: /run/secrets/pg_password_worker
+      FACTORY_DB_SYSTEM_USER: factory_engine
+      FACTORY_DB_SYSTEM_PASSWORD_FILE: /run/secrets/pg_password_engine
+      FACTORY_ARTIFACT_DIR: /var/lib/factory/artifacts
+      # The model broker listens here. Per-job egress sidecars reach it over the "broker" network.
+      FACTORY_BROKER_LISTEN_ADDR: 0.0.0.0:8181
+      # The sandbox images the supervisor starts, by digest (infra/sandbox-images/images.json).
+      FACTORY_SANDBOX_AGENT_IMAGE: ${FACTORY_SANDBOX_AGENT_IMAGE:-}
+      FACTORY_SANDBOX_VERIFY_IMAGE: ${FACTORY_SANDBOX_VERIFY_IMAGE:-}
+      FACTORY_SANDBOX_SIDECAR_IMAGE: ${FACTORY_SANDBOX_SIDECAR_IMAGE:-}
+      # How the worker reaches Docker to start sandboxes. This file mounts NO Docker socket: a
+      # container that can talk to the Docker daemon controls the whole machine. With nothing set the
+      # worker cannot start a sandbox and the job is BLOCKED, which is the fail-closed answer the
+      # sandbox policy asks for. The options (run the worker on the host, or a reviewed socket proxy)
+      # are in docs/operations/local-deployment.md.
+      DOCKER_HOST: ${FACTORY_WORKER_DOCKER_HOST:-}
+    secrets: [pg_password_worker, pg_password_engine]
+    volumes:
+      - artifacts:/var/lib/factory/artifacts
+    networks: [data, broker]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      artifacts-init:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/factory-worker", "healthcheck"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 10s
+    tmpfs:
+      - /tmp
+    mem_limit: 1g
+    cpus: 2
+    pids_limit: 512
+
+# ---- Networks, volumes and secrets ------------------------------------------------------------
+
+networks:
+  data:
+    labels: *labels
+  broker:
+    internal: true
+    labels: *labels
+  probe_net:
+    internal: true
+    labels: *labels
+
+volumes:
+  pgdata:
+    labels: *labels
+  artifacts:
+    labels: *labels
+
+# Each secret is a file. Docker mounts it read-only at /run/secrets/<name> inside the container that
+# lists it. The files are created by scripts/local-up.sh with random values and mode 0600 and are
+# never committed (infra/compose/.gitignore). A service gets only the secrets it lists.
+secrets:
+  pg_superuser_password:
+    file: ${FACTORY_SECRETS_DIR:?Set FACTORY_SECRETS_DIR to a folder of secret files, or run scripts/local-up.sh}/pg_superuser_password
+  pg_password_api:
+    file: ${FACTORY_SECRETS_DIR:?Set FACTORY_SECRETS_DIR to a folder of secret files, or run scripts/local-up.sh}/pg_password_api
+  pg_password_worker:
+    file: ${FACTORY_SECRETS_DIR:?Set FACTORY_SECRETS_DIR to a folder of secret files, or run scripts/local-up.sh}/pg_password_worker
+  pg_password_engine:
+    file: ${FACTORY_SECRETS_DIR:?Set FACTORY_SECRETS_DIR to a folder of secret files, or run scripts/local-up.sh}/pg_password_engine
