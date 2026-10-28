@@ -18,6 +18,7 @@
 //! | [`contracts`] | One type for each schema in `schemas/` |
 //! | [`ledger`] | The evidence ledger hash chain |
 //! | [`patterns`] | The regular expressions the schemas declare, which the types compile |
+//! | [`policy`] | The typed policy documents and the pure rules that apply them |
 //!
 //! # How the code is kept equal to the documents
 //!
@@ -42,6 +43,7 @@ pub mod ids;
 pub mod ledger;
 pub mod machines;
 pub mod patterns;
+pub mod policy;
 pub mod redaction;
 pub mod scope;
 pub mod state;

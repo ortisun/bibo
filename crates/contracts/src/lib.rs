@@ -33,11 +33,12 @@
 //!    licences, and `deny.toml` may not be edited by this work package.
 //! 2. **The YAML parser is `saphyr-parser`, used for events only.** See [`yaml`] for the comparison
 //!    and the evidence.
-//! 3. **The typed policy documents live here, not in `factory-domain`.** `domain::policy` is
-//!    ring 0 and cannot depend on this crate, so `s1-policy-evaluation` cannot name these types.
-//!    Moving `policy::{common, security, approval}` into `factory-domain` is mechanical, because
-//!    they depend only on `serde`, `regex` and `globset`, which the domain allow list already
-//!    names. That move is an architect decision and is left open.
+//! 3. **The typed policy documents live in `factory-domain`, and this crate re-exports them.**
+//!    `domain::policy` is ring 0 and cannot depend on this crate, and the evaluators of
+//!    `s1-policy-evaluation` must name the types. So `policy::{common, security, approval}` moved
+//!    into `factory-domain` (`crates/domain/src/policy/`). They use only `serde`, `regex` and
+//!    `globset`, which the domain allow list names. [`policy`] keeps the loader, the cross-reference
+//!    checks, the hash and the error type, and exposes the documents under their old paths.
 //! 4. **Untrusted bytes go through [`validator::SchemaOutputValidator::parse_and_validate`].** The
 //!    port method takes a value that was parsed already, so it can re-check the limits but cannot
 //!    stop a parse that has happened.

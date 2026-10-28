@@ -7,7 +7,7 @@
 
 use std::collections::BTreeMap;
 
-use factory_domain::vocabulary::RiskTier;
+use crate::vocabulary::RiskTier;
 
 use super::common::{
     ConfigSource, ConflictResolution, PolicyStatus, ProjectOverrides, SchemaVersionOne, ThreatId,
