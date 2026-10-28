@@ -14,6 +14,7 @@
 //! | [`links`] | Internal links and anchors. External links are counted and never called valid |
 //! | [`claims`] | The commands, flags and variables a page names, and the examples it shows |
 //! | [`check`] | The nine checks and their four outcomes |
+//! | [`report`] | From a check result to the typed gate report |
 //!
 //! The readability of the text is checked by [`crate::gates::readability`], not here.
 
@@ -22,6 +23,7 @@ pub mod claims;
 pub mod links;
 pub mod markdown;
 pub mod plan;
+pub mod report;
 
 pub use check::{
     CheckResult, DiagramBlock, DiagramRun, Finding, Inputs, Needs, Observations, Observed, Ran,

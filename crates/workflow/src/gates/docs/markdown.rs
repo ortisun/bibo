@@ -83,7 +83,6 @@ pub fn scan(text: &str) -> Scan {
         }
         if let Some(marker) = fence_marker(trimmed) {
             let lang = trimmed[marker.len()..]
-                .trim()
                 .split_whitespace()
                 .next()
                 .unwrap_or("")

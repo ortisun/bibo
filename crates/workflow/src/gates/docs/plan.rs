@@ -893,6 +893,107 @@ fn commit(value: Option<&Value>, at: &str) -> Result<(), PlanError> {
     ok.then_some(()).ok_or_else(|| PlanError(at.to_owned()))
 }
 
+impl DocPlan {
+    /// Reads a stored plan.
+    ///
+    /// # Errors
+    /// [`PlanError`] when the document breaks the schema.
+    pub fn from_json(document: &Value) -> Result<Self, PlanError> {
+        validate(document)?;
+        let text = |value: &Value| value.as_str().unwrap_or("").to_owned();
+        let list = |value: &Value| -> Vec<String> {
+            value
+                .as_array()
+                .map(|items| items.iter().map(&text).collect())
+                .unwrap_or_default()
+        };
+        let set = |value: &Value| -> BTreeSet<String> { list(value).into_iter().collect() };
+        let kind_of = |name: &str| {
+            [
+                ItemKind::Usage,
+                ItemKind::Reference,
+                ItemKind::Changelog,
+                ItemKind::Upgrade,
+                ItemKind::Operations,
+                ItemKind::Update,
+                ItemKind::Check,
+                ItemKind::Domain,
+            ]
+            .into_iter()
+            .find(|kind| kind.as_str() == name)
+            .unwrap_or(ItemKind::Check)
+        };
+        let form_of = |name: &str| {
+            [
+                Form::Tutorial,
+                Form::HowTo,
+                Form::Reference,
+                Form::Explanation,
+                Form::Changelog,
+            ]
+            .into_iter()
+            .find(|form| form.as_str() == name)
+            .unwrap_or(Form::Explanation)
+        };
+        let audience_of = |name: &str| {
+            [
+                Audience::EndUsers,
+                Audience::Developers,
+                Audience::Operators,
+                Audience::Integrators,
+            ]
+            .into_iter()
+            .find(|audience| audience.as_str() == name)
+            .unwrap_or(Audience::Developers)
+        };
+        let interface = &document["interface"];
+        let items = document["items"]
+            .as_array()
+            .map(|items| {
+                items
+                    .iter()
+                    .map(|item| Item {
+                        id: text(&item["id"]),
+                        kind: kind_of(item["kind"].as_str().unwrap_or("")),
+                        page: text(&item["page"]),
+                        form: form_of(item["form"].as_str().unwrap_or("")),
+                        audience: list(&item["audience"])
+                            .iter()
+                            .map(|name| audience_of(name))
+                            .collect(),
+                        sources: list(&item["sources"]),
+                        terms: list(&item["terms"]),
+                        acceptance: list(&item["acceptance"]),
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        Ok(Self {
+            binding: Binding {
+                base_commit: text(&document["base_commit"]),
+                code_head: text(&document["code_head"]),
+                specification_sha256: text(&document["specification_sha256"]),
+            },
+            change_types: list(&document["change_types"]),
+            interface: Interface {
+                new_flags: set(&interface["new_flags"]),
+                removed_flags: set(&interface["removed_flags"]),
+                new_env: set(&interface["new_env"]),
+                removed_env: set(&interface["removed_env"]),
+                new_api: set(&interface["new_api"]),
+                removed_api: set(&interface["removed_api"]),
+            },
+            program: document["program"].as_str().map(str::to_owned),
+            breaking: document["breaking"].as_bool().unwrap_or(false),
+            items,
+            not_applicable: document.get("not_applicable").map(|rule| NotApplicable {
+                rule: text(&rule["rule"]),
+                reason: text(&rule["reason"]),
+            }),
+        })
+    }
+}
+
 /// Checks a stored plan against its schema (`documentation-plan.v1.schema.json`).
 ///
 /// # Errors
@@ -1221,6 +1322,21 @@ mod tests {
         assert_eq!(listed(&item["properties"]["kind"]), ITEM_KINDS);
         assert_eq!(listed(&item["properties"]["form"]), FORMS);
         assert_eq!(listed(&schema["$defs"]["audience"]), AUDIENCES);
+    }
+
+    #[test]
+    fn a_plan_survives_a_round_trip_through_its_document() {
+        let plan = derive(
+            &facts(vec![file(
+                "src/main.rs",
+                Kind::Modified,
+                &["\"--json\""],
+                &[],
+            )]),
+            binding(),
+        );
+        let again = DocPlan::from_json(&plan.to_json()).expect("it reads back");
+        assert_eq!(again, plan);
     }
 
     #[test]
