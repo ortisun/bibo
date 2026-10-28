@@ -61,6 +61,7 @@ mod protection;
 mod text;
 mod token;
 mod ureq_transport;
+mod webhook;
 mod wire;
 
 pub use adapter::{DEFAULT_REFRESH_MARGIN, GithubAdapter, GithubConfig, GithubParts};
@@ -75,4 +76,8 @@ pub use protection::protection_from_rules;
 pub use text::OutboundPolicy;
 pub use token::{InstallationDirectory, StaticInstallations};
 pub use ureq_transport::{MAX_RESPONSE_BYTES, REQUEST_TIMEOUT, UreqTransport};
+pub use webhook::{
+    BadSecret, GithubWebhookVerifier, MAX_BODY_BYTES, MAX_DEPTH, MIN_SECRET_BYTES, NoSecrets,
+    Replay, WebhookSecret, accept_delivery,
+};
 pub use wire::{ApiBase, BadApiBase, Method, Transport, TransportError, WireRequest, WireResponse};

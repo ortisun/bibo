@@ -1,0 +1,30 @@
+{
+  "generator": "make_webhook_vectors.py (python hmac + hashlib)",
+  "vectors": [
+    {
+      "name": "short object",
+      "key_text": "known answer vector one, thirty-two bytes plus",
+      "mac_hex": "abb1a53a3419ea9173020d21ccb62f784aaf44419d7f3ab6f6c42370388831f9",
+      "body_text": "{\"action\":\"edited\",\"installation\":{\"id\":42}}"
+    },
+    {
+      "name": "pretty printed with a newline at the end",
+      "key_text": "known answer vector two, a longer sentence than the first one is",
+      "mac_hex": "96c1aa9f6426220f930c2874f59f88ffe19ad306f7cb732ad1cba0b713136f26",
+      "body_text": "{\n  \"action\": \"labeled\",\n  \"installation\": {\"id\": 7},\n  \"label\": {\"name\": \"factory\"}\n}\n"
+    },
+    {
+      "name": "non-ascii text in the body",
+      "key_text": "known answer vector three, with words only and no digits at all here",
+      "mac_hex": "a0a786c0aefc7bbd77c78154afb79fa4952ecd0e65a6133b199a0ed302697b19",
+      "body_text": "{\"action\":\"edited\",\"installation\":{\"id\":1},\"issue\":{\"title\":\"caf\u00e9 \u2603 \u4e2d\u6587\"}}"
+    },
+    {
+      "name": "body at the size limit",
+      "key_text": "known answer vector four, the key is a sentence of plain words",
+      "mac_hex": "3391d985c6c73129a09c5a61101250cd6bbbddbb0d4c5c6a373b0dacc748b7fd",
+      "body_pad_to": 1048576,
+      "body_start": "{\"action\":\"edited\",\"installation\":{\"id\":9}}"
+    }
+  ]
+}
