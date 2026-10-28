@@ -11,6 +11,7 @@ use factory_domain::scope::TenantScope;
 use factory_domain::values::{NonEmptyString, Sha256Digest};
 use factory_domain::vocabulary::{ExecutionMode, HumanRole, StageKind};
 use factory_ports::agent::{ModelSelection, RuntimeId};
+use factory_ports::artifact::ArtifactStore;
 use factory_ports::clock::{Clock, IdGenerator};
 use factory_ports::paths::RepoRef;
 use factory_ports::registry::{ContractKind, OutputValidator, ValidatedOutput};
@@ -19,7 +20,6 @@ use factory_ports::store::{
     StageRunArtifact, Store, SystemScope, SystemTx, WorkerId,
 };
 use factory_testkit::agent::FakeAgentRuntime;
-use factory_testkit::artifact::InMemoryArtifactStore;
 use factory_testkit::broker::FakeModelBroker;
 use factory_testkit::clock::FakeClock;
 use factory_testkit::contracts::workspace::fixture_rules;
@@ -27,7 +27,7 @@ use factory_testkit::fixtures::sandbox_policy;
 use factory_testkit::registry::InMemoryAgentRegistry;
 use factory_testkit::router::{RouteRule, StaticModelRouter};
 use factory_testkit::sandbox::FakeSandbox;
-use factory_testkit::store::{InMemoryStore, StoreDefect};
+use factory_testkit::store::StoreDefect;
 use factory_testkit::workspace::{FakeRemote, FakeWorkspaceProvider};
 use factory_workflow::commands::{Actor, Decision, Subject};
 use factory_workflow::engine::{
@@ -38,6 +38,7 @@ use factory_workflow::scheduler::ClaimedAttempt;
 
 use super::artifacts::SwitchedArtifacts;
 use super::authority::StaticAuthority;
+use super::backend::{Backend, InMemoryBackend};
 use super::handler::{ScriptHandle, ScriptedHandler};
 use super::ids::FaultyIds;
 use super::ticker::ManualTicker;
@@ -84,11 +85,17 @@ impl OutputValidator for ScriptedValidator {
 }
 
 /// The pieces of a test engine.
+///
+/// The store is whatever the [`Backend`] provides, and the scenarios use it through the `Store`
+/// port only. `clock` is the engine's clock. On the in-memory backend it is also the store's, so
+/// moving it moves the database time; on another backend [`World::advance_time`] moves both.
 pub struct World {
     pub clock: Arc<FakeClock>,
     pub ids: Arc<FaultyIds>,
-    pub store: Arc<InMemoryStore>,
-    pub artifacts: Arc<InMemoryArtifactStore>,
+    pub store: Arc<dyn Store>,
+    /// The levers a scenario needs around the store, and its name for messages.
+    pub backend: Arc<dyn Backend>,
+    pub artifacts: Arc<dyn ArtifactStore>,
     /// The artifact store the engine writes through. A test can make its writes fail.
     pub artifact_switch: Arc<SwitchedArtifacts>,
     pub broker: Arc<FakeModelBroker>,
@@ -113,24 +120,29 @@ impl World {
 
     /// The same, after `tune` changed the configuration.
     pub async fn with_config(tune: impl FnOnce(&mut EngineConfig)) -> Self {
-        Self::build(None, tune).await
+        let clock = Arc::new(FakeClock::new());
+        let backend = InMemoryBackend::new(clock.clone());
+        Self::on(backend, clock, Arc::new(FaultyIds::new()), tune).await
     }
 
     /// The same, over a store that breaks one rule of the `Store` contract on purpose.
     pub async fn with_store_defect(defect: StoreDefect) -> Self {
-        Self::build(Some(defect), |_| {}).await
+        let clock = Arc::new(FakeClock::new());
+        let backend = InMemoryBackend::with_defect(clock.clone(), defect);
+        Self::on(backend, clock, Arc::new(FaultyIds::new()), |_| {}).await
     }
 
-    async fn build(defect: Option<StoreDefect>, tune: impl FnOnce(&mut EngineConfig)) -> Self {
-        let clock = Arc::new(FakeClock::new());
-        let ids = Arc::new(FaultyIds::new());
-        let store = Arc::new(match defect {
-            Some(defect) => InMemoryStore::with_defect(clock.clone(), defect),
-            None => InMemoryStore::new(clock.clone()),
-        });
+    /// A world over any backend. `clock` is the engine's clock and `ids` its identifier source.
+    pub async fn on(
+        backend: Arc<dyn Backend>,
+        clock: Arc<FakeClock>,
+        ids: Arc<FaultyIds>,
+        tune: impl FnOnce(&mut EngineConfig),
+    ) -> Self {
+        let store = backend.store();
         // The artifact store answers for a tenant from the store's index rows, as the database
         // adapter does, so an artifact the engine indexed is readable with no extra grant.
-        let artifacts = Arc::new(InMemoryArtifactStore::new().indexed_by((*store).clone()));
+        let artifacts = backend.artifacts();
         let artifact_switch = Arc::new(SwitchedArtifacts::new(artifacts.clone()));
         let authority = Arc::new(StaticAuthority::new());
         let ticker = Arc::new(ManualTicker::new());
@@ -189,7 +201,7 @@ impl World {
 
         let tenant = TenantId::from_uuid(ids.new_uuid());
         let requester = PrincipalId::from_uuid(ids.new_uuid());
-        let repository = store.seed_repository(tenant);
+        let repository = backend.seed_tenant(tenant).await;
         let mut tx = store.begin(TenantScope::new(tenant)).await.expect("a tx");
         tx.insert_principal(NewPrincipal {
             id: requester,
@@ -206,6 +218,7 @@ impl World {
             clock,
             ids,
             store,
+            backend,
             artifacts,
             artifact_switch,
             broker,
@@ -244,9 +257,42 @@ impl World {
         WorkerId::new(name).expect("a worker id")
     }
 
-    /// Moves the clock, which is also the database clock.
+    /// The time that the store's own rules compare stored times with (leases, deadlines,
+    /// back-off): what a time written now is relative to. On the in-memory store it is the clock;
+    /// on a real database it keeps running between two reads.
+    pub async fn database_time(&self) -> factory_domain::values::Timestamp {
+        let mut tx = self
+            .store
+            .begin(TenantScope::new(self.tenant))
+            .await
+            .expect("a tx");
+        let now = tx.database_time().await.expect("the database time");
+        tx.rollback().await.expect("rollback");
+        now
+    }
+
+    /// The concrete in-memory store. The stage rigs build more fakes on top of it.
+    ///
+    /// # Panics
+    /// On any other backend.
+    pub fn memory_store(&self) -> Arc<factory_testkit::store::InMemoryStore> {
+        self.backend
+            .in_memory_store()
+            .expect("this rig needs the in-memory store")
+    }
+
+    /// Moves the clock, which is also the database clock. Only on the in-memory backend, whose
+    /// store reads this clock; on another backend use [`World::advance_time`].
     pub fn advance(&self, seconds: u64) {
         self.clock.advance(Duration::from_secs(seconds));
+    }
+
+    /// Moves the time of the engine and of the store forward by `seconds`, on any backend. A
+    /// real database has a clock of its own, so its backend moves the stored times back by the
+    /// same amount instead (see the PostgreSQL backend in `apps/worker/tests`).
+    pub async fn advance_time(&self, seconds: u64) {
+        self.clock.advance(Duration::from_secs(seconds));
+        self.backend.advance_database_time(seconds).await;
     }
 
     /// Moves the engine's ticker, which ends the heartbeat and teardown waits that are due, and

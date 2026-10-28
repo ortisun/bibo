@@ -33,6 +33,7 @@ use factory_ports::store::{
 use serde_json::json;
 
 use super::Engine;
+use super::decision::{DecisionKind, DecisionReport};
 use super::error::EngineError;
 use super::gate::ReworkMove;
 use super::ledger::ClaimSpec;
@@ -203,7 +204,27 @@ impl Engine {
                     "approved",
                 )
                 .await?;
-                // A person's approval has no gate report. The record names the outcome only.
+                // No gate ran, but the decision still rests on a document: the person, the role
+                // and the evidence they had seen. The gate record names it by hash, as the store
+                // requires for every outcome but NOT_APPLICABLE.
+                let mut details = serde_json::Map::new();
+                details.insert("decided_by".to_owned(), json!(actor.principal.to_string()));
+                details.insert("role".to_owned(), json!(HumanRole::Approver.as_str()));
+                details.insert("evidence_seen".to_owned(), json!(evidence_seen.to_string()));
+                details.insert("warnings_decided".to_owned(), json!(warnings_decided));
+                let report = cx
+                    .record_decision(
+                        tx,
+                        &DecisionReport {
+                            kind: DecisionKind::HumanApproval,
+                            outcome: GateOutcome::Passed,
+                            stage_run: run.value.id,
+                            stage: run.value.kind,
+                            cause: "approved",
+                            details,
+                        },
+                    )
+                    .await?;
                 cx.move_stage_run(
                     tx,
                     run,
@@ -213,7 +234,7 @@ impl Engine {
                     StageRunEffects {
                         gate: Some(GateRecord {
                             outcome: GateOutcome::Passed,
-                            report_sha256: None,
+                            report_sha256: Some(report),
                             failing_set_sha256: None,
                         }),
                         ..StageRunEffects::default()

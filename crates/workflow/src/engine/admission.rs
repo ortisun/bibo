@@ -112,6 +112,22 @@ impl Engine {
 
         match evaluate(Guard::AdmissionOk, &GuardFacts::Admission(facts)) {
             Ok(cleared) => {
+                // The job moves first. The state machine lists no admission from any status but
+                // `RECEIVED`, so a job that was already admitted is refused here as `Illegal`,
+                // before a single stage run is planned. Planning them first would put the answer
+                // in the store's hands: PostgreSQL refuses a second set of runs with a key
+                // violation, which is not what the caller asked about (ADR 0014, amendment 2).
+                let mut event = serde_json::Map::new();
+                event.insert(
+                    "autonomy_limited_to_l0".to_owned(),
+                    json!(facts.autonomy_limited_to_l0()),
+                );
+                cx.move_job(
+                    &mut *tx,
+                    &stored,
+                    Step::new(JobEvent::Admit, cleared).payload(event),
+                )
+                .await?;
                 let mut created = Vec::with_capacity(self.config.scope.len());
                 for kind in &self.config.scope {
                     let id = self.new_stage_run_id();
@@ -126,17 +142,6 @@ impl Engine {
                     .await?;
                     created.push((*kind, id));
                 }
-                let mut event = serde_json::Map::new();
-                event.insert(
-                    "autonomy_limited_to_l0".to_owned(),
-                    json!(facts.autonomy_limited_to_l0()),
-                );
-                cx.move_job(
-                    &mut *tx,
-                    &stored,
-                    Step::new(JobEvent::Admit, cleared).payload(event),
-                )
-                .await?;
                 cx.audit_engine(
                     &mut *tx,
                     AuditAction::new(AuditKind::AuthorizationDecision, AuditDecision::Granted),

@@ -943,7 +943,7 @@ impl Rig {
         let world = World::with_config(|config| config.scope.clone_from(&scope)).await;
         let log: Log = Arc::new(Mutex::new(Vec::new()));
         let artifacts = Arc::new(Granting::new(
-            InMemoryArtifactStore::new().indexed_by((*world.store).clone()),
+            InMemoryArtifactStore::new().indexed_by((*world.memory_store()).clone()),
             world.tenant,
         ));
         let repo = RepoRef::parse("example-org/fixture").expect("a repository");

@@ -92,6 +92,23 @@ The `rls` suite opens sessions as real login roles (`dbtest_app_*`, `dbtest_syst
 
 Eight more suites go beyond the original criteria: `lease`, `outbox`, `approvals`, `tokens`, `privileges`, `contracts`, `rls` and `store_model`.
 
+## Run the Rust suites that need this database
+
+Two Rust suites run on `PgStore` with a database of their own per check or scenario. They use the same server rules as `scripts/db-test.sh` (a local PostgreSQL install, then Docker, and a `BLOCKED:` panic when neither exists, never a pass).
+
+```bash
+# The Store contract suite, the same checks the in-memory fake passes.
+cargo nextest run -p factory-storage --test store_contract
+
+# The engine scenario suite on PostgreSQL: the same source as the in-memory run
+# (crates/workflow/tests/engine_scenarios/body.rs), 96 of its 97 scenarios.
+cargo nextest run -p factory-worker --test engine_scenarios_all_on_postgres
+```
+
+The scenario suite connects with the API login, because one scenario records a webhook rejection under the platform tenant and only that login may. `FACTORY_SCENARIO_LOGIN=worker` connects as the worker does; that scenario is then refused by design and the rest pass.
+
+The server's clock cannot be set, so a scenario that waits past a lease, a deadline, a back-off or an approval's expiry moves every stored time that those rules read back by the same amount (the same repair the contract runner makes, with the triggers off for one transaction). The engine must therefore decide on the row it read in its transaction, never on a copy it carried from before the clock moved.
+
 ## Regenerate `schema.rs`
 
 1. Run `scripts/db-test.sh write-schema`. It migrates a throwaway database and writes the output of `diesel print-schema` to `crates/storage/src/schema.rs`.

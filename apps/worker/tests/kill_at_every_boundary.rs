@@ -1,11 +1,10 @@
-//! Killing the worker at every stage boundary, in test mode with the fake runtime, still reaches
-//! the approval with every earlier stage passed exactly once.
+//! Killing the worker at every stage boundary, in test mode with the fake runtime, still ends in
+//! a completed job: every earlier stage passed exactly once, then a person approves and the job
+//! is `COMPLETED`.
 //!
-//! The done criterion says "ends in a completed job". On PostgreSQL it cannot, today: a job
-//! completes only after a person's approval, and the store refuses that approval (the engine
-//! records it with no gate report, which `PgStore` rejects as `GateRecordRule`).
-//! `tests/known_defects.rs` shows the refusal, so the gap is a test and not a remark. These cases
-//! prove everything up to that point and flip to "completed" when the engine is fixed.
+//! Until the engine stored a report for a person's approval (ADR 0014, amendment 1), these cases
+//! could prove everything up to the approval and no further: `PgStore` refused the approval as
+//! `GateRecordRule`. They now go on to the approval and the completed job.
 //!
 //! Each case has a database of its own and a job that runs the 13 stages of the Slice 1 scope on
 //! the real PostgreSQL store. "Killing" is not a polite stop: the loop is dropped where it stands,
@@ -66,8 +65,7 @@ async fn world() -> (TestDb, PgWorld, TenantId) {
         .expect("the store becomes ready");
     let world = PgWorld::new(store, tenant, seeded_repository(tenant), |_| {}).await;
     // The approval waits for a person, as in production. A job completes only after a person's
-    // approval, and the PostgreSQL store refuses that approval today (tests/known_defects.rs), so
-    // these cases end at the approval and say so.
+    // approval, which the cases give once the job waits at it.
     world
         .script(StageKind::Approval)
         .evals_otherwise(Eval::HumanGate);
@@ -135,6 +133,24 @@ async fn check_completed(world: &PgWorld, job: JobId) {
             "{kind} must have {expected} PASSED run(s) before the approval"
         );
     }
+    // A person approves, and the store records it: the job completes.
+    let approval = view
+        .newest(StageKind::Approval)
+        .expect("an approval run")
+        .id;
+    world
+        .approve(&world.restarted_engine(), job, approval)
+        .await;
+    let done = world.view(job).await;
+    assert_eq!(done.status, JobStatus::Completed, "{:?}", done.stage_runs);
+    assert_eq!(
+        done.newest(StageKind::Approval).map(|run| run.status),
+        Some(StageRunStatus::Passed)
+    );
+    assert_eq!(
+        factory_domain::ledger::verify_chain(&world.ledger(job).await),
+        Ok(())
+    );
 }
 
 async fn kill_after(k: u32) {

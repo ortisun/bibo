@@ -21,6 +21,7 @@ use factory_ports::store::{GateRecord, StageRunEffects, Tx};
 use serde_json::json;
 
 use super::Engine;
+use super::decision::{DecisionKind, DecisionReport};
 use super::error::EngineError;
 use super::payload::{self, key};
 use super::progress::{Board, clear, upstream_runs};
@@ -182,6 +183,24 @@ impl Engine {
                 )?;
                 let code = cause.as_str();
                 let payload = payload::with(base, key::CAUSE, json!(code));
+                // No gate ran. The block still rests on a document that names the cause, so the
+                // reason is not lost with the failed attempt.
+                let mut details = serde_json::Map::new();
+                details.insert("attempt_id".to_owned(), json!(attempt.to_string()));
+                details.insert("failure_class".to_owned(), json!(class.as_str()));
+                let report = cx
+                    .record_decision(
+                        tx,
+                        &DecisionReport {
+                            kind: DecisionKind::EnvironmentBlock,
+                            outcome: GateOutcome::Blocked,
+                            stage_run: run_id,
+                            stage: run.value.kind,
+                            cause: code,
+                            details,
+                        },
+                    )
+                    .await?;
                 cx.move_stage_run(
                     tx,
                     run,
@@ -191,7 +210,7 @@ impl Engine {
                     StageRunEffects {
                         gate: Some(GateRecord {
                             outcome: GateOutcome::Blocked,
-                            report_sha256: None,
+                            report_sha256: Some(report),
                             failing_set_sha256: None,
                         }),
                         ..StageRunEffects::default()
