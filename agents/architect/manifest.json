@@ -99,6 +99,6 @@
   "prompt": {
     "template_path": "agents/architect/prompt.md",
     "template_version": "1.0.0",
-    "template_sha256": "sha256:2892507225f75638041982ea775ee322899ba46af30f1dc8732d4469e0bff7ee"
+    "template_sha256": "sha256:e1a74e059157726dded4e024b6f40fd1f37a5e2e2eea155df97dfec9d206ec84"
   }
 }

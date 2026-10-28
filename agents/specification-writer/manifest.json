@@ -131,6 +131,6 @@
   "prompt": {
     "template_path": "agents/specification-writer/prompt.md",
     "template_version": "1.0.0",
-    "template_sha256": "sha256:eea7bdf01676c8a6cbc76951cbab274e37ffab2497d9dd967a24271db153e74a"
+    "template_sha256": "sha256:d80f0b0b50bb1fee98e7fc8273732f336ad4cf88b087b3504639702569d08d9f"
   }
 }

@@ -105,6 +105,6 @@
   "prompt": {
     "template_path": "agents/documentation-writer/prompt.md",
     "template_version": "1.0.0",
-    "template_sha256": "sha256:2567747131fa98fd970f0be1fb82bfc8b3b0c9b10339399ff061d87e9a40a185"
+    "template_sha256": "sha256:a1e27975d794438cdcc61099a603bd1e92f3778a0f5ecdcf840319bb03ca0228"
   }
 }

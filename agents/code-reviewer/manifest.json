@@ -101,6 +101,6 @@
   "prompt": {
     "template_path": "agents/code-reviewer/prompt.md",
     "template_version": "1.0.0",
-    "template_sha256": "sha256:fb4aaca98c940db1dc58ba8954ac2887f3b1ddb94b2f44323ba079145639e2e6"
+    "template_sha256": "sha256:8af18a91939c246d53fb5a4549cf6d57cd5c9d3c54e1d6afb897baefe46f697b"
   }
 }

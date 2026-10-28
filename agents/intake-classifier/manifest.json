@@ -74,6 +74,6 @@
   "prompt": {
     "template_path": "agents/intake-classifier/prompt.md",
     "template_version": "1.0.0",
-    "template_sha256": "sha256:909cb077ed801b1df72e9dfdd2e562138b43ef92c0533cdd581ae41f572bd002"
+    "template_sha256": "sha256:d91bce6759902078e4858d18573112f888cb800628a88e2efc76e346c412424c"
   }
 }

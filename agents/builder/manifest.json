@@ -115,6 +115,6 @@
   "prompt": {
     "template_path": "agents/builder/prompt.md",
     "template_version": "1.0.0",
-    "template_sha256": "sha256:cb4aa6379bd387153fb956b3d5b58c9555754dc2db1d6f89a954bbfdf42385c4"
+    "template_sha256": "sha256:473637b20edc5537cac76af2da5594105e2eee054db171a900e50dc3102a494e"
   }
 }

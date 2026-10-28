@@ -323,6 +323,26 @@ fn manifests_name_their_schemas_by_the_hash_of_the_schema_files() {
     }
 }
 
+#[test]
+fn every_manifest_names_a_conformance_suite_that_has_fixtures() {
+    for agent in agents() {
+        let suite = &agent.manifest["evaluation_suite"];
+        assert_eq!(
+            suite["id"],
+            format!("{}-conformance", agent.dir_name).as_str(),
+            "{}",
+            agent.dir_name
+        );
+        // These are conformance checks, so every fixture must pass.
+        assert_eq!(suite["min_pass_rate"], json!(1.0), "{}", agent.dir_name);
+        let dir = repo_root()
+            .join("agents")
+            .join(&agent.dir_name)
+            .join("fixtures");
+        assert!(dir.join("valid").is_dir() && dir.join("invalid").is_dir());
+    }
+}
+
 // ---------------------------------------------------------------------------------------------
 // Rules on the real manifests and prompts
 // ---------------------------------------------------------------------------------------------

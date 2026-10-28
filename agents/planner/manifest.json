@@ -99,6 +99,6 @@
   "prompt": {
     "template_path": "agents/planner/prompt.md",
     "template_version": "1.0.0",
-    "template_sha256": "sha256:5aa39c4ebc85e417c79f574c67b1b56c2f7a847ea2a5abb96de7e191001bca6a"
+    "template_sha256": "sha256:cb37f1c995e55f34bfbb397cad27ad56c6dfc1242aa26bbf04f96514524167e0"
   }
 }

@@ -94,6 +94,6 @@
   "prompt": {
     "template_path": "agents/documentation-reviewer/prompt.md",
     "template_version": "1.0.0",
-    "template_sha256": "sha256:d2bba24da57a82f42ea7d03278f8a3502f5d9340d29ef722d4c8a542e6bdcc1b"
+    "template_sha256": "sha256:39595fd3b37bd745a3c38a55fd49b207fdc5c09466b38d0a30f6f50a56e842eb"
   }
 }
