@@ -367,6 +367,29 @@ async fn index_bytes(tx: &mut dyn Tx, bytes: &[u8]) -> Result<Sha256Digest, Stri
     Ok(sha256)
 }
 
+/// Moves the job, inside `tx`, through legal moves until its version is at least `version` and it
+/// is `ACTIVE`: admit it, then pause and resume it as often as it takes. An outbox event announces
+/// a version the aggregate has reached, and the database refuses to commit one that it has not, so
+/// a fixture moves the job first and then announces the version.
+async fn job_reaches(tx: &mut dyn Tx, job: JobId, version: i64) -> Result<(), String> {
+    loop {
+        let row = tx.get_job(job).await.ctx("read the job")?;
+        let status = row.value.status;
+        if row.version.get() >= version && status == JobStatus::Active {
+            return Ok(());
+        }
+        let next = match status {
+            JobStatus::Received => plan(status, JobEvent::Admit, Guard::AdmissionOk)?,
+            JobStatus::Active => plan(status, JobEvent::Pause, Guard::ActorMayPause)?,
+            JobStatus::Paused => plan(status, JobEvent::Resume, Guard::ActorMayPause)?,
+            other => return Err(format!("the job cannot move on from {other:?}")),
+        };
+        tx.transition_job(job, row.version, next)
+            .await
+            .ctx("move the job")?;
+    }
+}
+
 fn plan<S: Status>(from: S, event: S::Event, guard: Guard) -> Result<AppliedTransition<S>, String> {
     let at = Timestamp::parse("2026-10-27T10:00:00Z").expect("a valid time");
     AppliedTransition::plan(from, event, at, cleared(guard)).ctx("plan a transition")
@@ -527,19 +550,12 @@ async fn status_ledger_and_outbox_commit_together_or_not_at_all(
 ) -> Result<(), String> {
     let w = World::new(subject);
     let job = w.job(w.a).await?;
-    let run = w.ids.stage_run();
+    let run = w.stage_run(w.a, job, 3).await?;
     let at = Timestamp::parse("2026-10-27T10:00:00Z").expect("time");
 
     // All three, rolled back: none remains.
     let mut tx = w.tx(w.a).await?;
-    let row = tx.get_job(job).await.ctx("read")?;
-    tx.transition_job(
-        job,
-        row.version,
-        plan(JobStatus::Received, JobEvent::Admit, Guard::AdmissionOk)?,
-    )
-    .await
-    .ctx("transition")?;
+    job_reaches(&mut *tx, job, 3).await?;
     tx.append_ledger_entry(ledger_entry(&w.ids, job, run, 1, None, &at, "First."))
         .await
         .ctx("append")?;
@@ -568,14 +584,7 @@ async fn status_ledger_and_outbox_commit_together_or_not_at_all(
 
     // All three, committed: all are there, and every queued event.
     let mut tx = w.tx(w.a).await?;
-    let row = tx.get_job(job).await.ctx("read")?;
-    tx.transition_job(
-        job,
-        row.version,
-        plan(JobStatus::Received, JobEvent::Admit, Guard::AdmissionOk)?,
-    )
-    .await
-    .ctx("transition")?;
+    job_reaches(&mut *tx, job, 3).await?;
     tx.append_ledger_entry(ledger_entry(&w.ids, job, run, 1, None, &at, "First."))
         .await
         .ctx("append")?;
@@ -676,6 +685,7 @@ async fn an_unknown_commit_outcome_is_resolved_by_the_witness(
         "nothing is committed yet"
     );
     let mut tx = w.tx(w.a).await?;
+    job_reaches(&mut *tx, job, 2).await?;
     tx.enqueue_event(event).await.ctx("enqueue")?;
     subject.lose_next_commit_answer().await;
     ensure_err!(
@@ -2336,7 +2346,7 @@ async fn a_ledger_entry_that_does_not_extend_the_chain_is_refused(
 ) -> Result<(), String> {
     let w = World::new(subject);
     let job = w.job(w.a).await?;
-    let run = w.ids.stage_run();
+    let run = w.stage_run(w.a, job, 3).await?;
     let at = Timestamp::parse("2026-10-27T10:00:00Z").expect("time");
     let mut tx = w.tx(w.a).await?;
     let first = ledger_entry(&w.ids, job, run, 1, None, &at, "First.");
@@ -2384,7 +2394,7 @@ async fn a_ledger_position_can_be_taken_only_once(
 ) -> Result<(), String> {
     let w = World::new(subject);
     let job = w.job(w.a).await?;
-    let run = w.ids.stage_run();
+    let run = w.stage_run(w.a, job, 3).await?;
     let at = Timestamp::parse("2026-10-27T10:00:00Z").expect("time");
     let mut tx = w.tx(w.a).await?;
     tx.append_ledger_entry(ledger_entry(&w.ids, job, run, 1, None, &at, "First."))
@@ -2416,10 +2426,13 @@ async fn events_read_back_in_the_order_they_were_queued(
     let at = Timestamp::parse("2026-10-27T10:00:00Z").expect("time");
     let mut tx = w.tx(w.a).await?;
     let mut queued = Vec::new();
-    // Another job's event goes first, so that the last row of the transaction is this job's.
+    // Another job's event goes first, so that the last row of the transaction is this job's. Each
+    // job reaches the versions its events announce.
+    job_reaches(&mut *tx, other, 2).await?;
     tx.enqueue_event(domain_event(&w.ids, w.a, other, 2, &at))
         .await
         .ctx("another job's event")?;
+    job_reaches(&mut *tx, job, 4).await?;
     for version in 2..=4 {
         let event = domain_event(&w.ids, w.a, job, version, &at);
         queued.push(event.event_id);

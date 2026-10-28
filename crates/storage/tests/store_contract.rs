@@ -325,29 +325,7 @@ async fn run_all() -> Report {
 /// final report of the work package `s1-storage-postgres` lists them as disagreements for the
 /// architect to settle.
 ///
-/// * `VERSION`: the fixture queues events that announce versions of a job that never reached them
-///   (an event for version 2 of a job at version 1). The schema refuses such an event at commit
-///   (`outbox_aggregate_has_reached_version`).
-const EXCLUDED: &[(&str, &str, &str, &str)] = &[
-    (
-        "events_read_back_in_the_order_they_were_queued",
-        "VERSION",
-        "Constraint(EventAggregateMismatch)",
-        "atomicity.rs: the_outbox_reads_back_in_order_and_resumes",
-    ),
-    (
-        "status_ledger_and_outbox_commit_together_or_not_at_all",
-        "VERSION",
-        "Constraint(EventAggregateMismatch)",
-        "atomicity.rs: a_decision_commits_or_vanishes_as_one",
-    ),
-    (
-        "an_unknown_commit_outcome_is_resolved_by_the_witness",
-        "VERSION",
-        "Constraint(EventAggregateMismatch)",
-        "atomicity.rs: a_lost_commit_answer_is_settled_by_the_witness",
-    ),
-];
+const EXCLUDED: &[(&str, &str, &str, &str)] = &[];
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn the_shared_store_contract_suite_against_postgres() {
