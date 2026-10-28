@@ -182,10 +182,12 @@ ops_new_run() {
 # FACTORY_COMPOSE_OVERRIDE names one more Compose file, merged over local.yml. scripts/smoke.sh uses it to prove that it
 # notices a layout that breaks the rules (docs/operations/local-deployment.md). A person can use it to change a limit.
 ops_compose() {
+  local -a profiles=(--profile "$OPS_PROFILE")
+  [ -z "${OPS_EXTRA_PROFILE:-}" ] || profiles+=(--profile "$OPS_EXTRA_PROFILE")
   if [ -n "${FACTORY_COMPOSE_OVERRIDE:-}" ]; then
-    docker compose --progress quiet -p "$OPS_PROJECT" -f "$OPS_COMPOSE_FILE" -f "$FACTORY_COMPOSE_OVERRIDE" --profile "$OPS_PROFILE" "$@"
+    docker compose --progress quiet -p "$OPS_PROJECT" -f "$OPS_COMPOSE_FILE" -f "$FACTORY_COMPOSE_OVERRIDE" "${profiles[@]}" "$@"
   else
-    docker compose --progress quiet -p "$OPS_PROJECT" -f "$OPS_COMPOSE_FILE" --profile "$OPS_PROFILE" "$@"
+    docker compose --progress quiet -p "$OPS_PROJECT" -f "$OPS_COMPOSE_FILE" "${profiles[@]}" "$@"
   fi
 }
 
@@ -199,6 +201,13 @@ ops_make_secrets() {
       (umask 077 && python3 -I -c 'import secrets; print(secrets.token_hex(24))' >"$dir/$name")
     fi
     chmod 0600 "$dir/$name"
+  done
+  # The worker wants each database URL in a file of its own (url_file in its configuration). The URLs are made from
+  # the password files, every time, so the two never disagree. No newline at the end: the file is exactly the URL.
+  local pair
+  for pair in api:factory_api worker:factory_worker engine:factory_engine; do
+    (umask 077 && printf 'postgres://%s:%s@postgres:5432/factory' "${pair#*:}" "$(tr -d '\n' <"$dir/pg_password_${pair%%:*}")" >"$dir/pg_url_${pair%%:*}")
+    chmod 0600 "$dir/pg_url_${pair%%:*}"
   done
 }
 
@@ -405,5 +414,8 @@ ops_pgdata_guard() {
 # Remove the compose project's containers, network and volumes. Only this project, only what it created.
 ops_stack_down() {
   [ -n "${OPS_PROJECT:-}" ] || return 0
-  ops_compose down --volumes --remove-orphans --timeout 10 >/dev/null 2>&1 || true
+  # Every profile is named, because a network belongs to the services of a profile: `down` with the "local" profile
+  # alone does not know the "broker" network of the "factory" services and leaves it behind (seen once, 2026-10-28,
+  # when a start of the factory profile failed for want of an image).
+  (OPS_EXTRA_PROFILE=factory; ops_compose down --volumes --remove-orphans --timeout 10 >/dev/null 2>&1) || true
 }

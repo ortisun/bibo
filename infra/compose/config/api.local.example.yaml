@@ -1,0 +1,17 @@
+# A PLACEHOLDER for the API's configuration file (infra/compose/local.yml, profile "factory").
+#
+# apps/api prints "not implemented yet" and has no configuration schema. The worker's README says the API will
+# reuse the same typed configuration core (profile, database, artifacts), one YAML file whose path comes from
+# FACTORY_CONFIG, with secrets as files. This file records only the values this stack decides for the API, so that
+# the composition work has them in one place. It has NOT been run through any parser. Replace it when the API's
+# configuration exists, and copy it to a file of your own (FACTORY_API_CONFIG) to change it.
+
+profile: local
+
+database:
+  # The API process uses the login that is also in the resolver group (docs/database/for-the-storage-crate.md).
+  api: { url_file: /run/secrets/db_api, login: factory_api, max_connections: 8 }
+
+artifacts: { root: /var/lib/factory/artifacts }
+
+listen: 0.0.0.0:8080

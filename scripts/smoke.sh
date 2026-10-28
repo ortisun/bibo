@@ -99,7 +99,7 @@ smoke_dynamic() {
   export FACTORY_SANDBOX_PROBE_IMAGE=$image
   FACTORY_PG_PORT=$(ops_free_port)
   export FACTORY_PG_PORT
-  OPS_PG_IMAGE_REF=$(ops_compose config --images 2>/dev/null | grep '^postgres:' | head -n1)
+  OPS_PG_IMAGE_REF=$(ops_compose config --images 2>/dev/null | grep '^postgres:' | head -n1) || true
 
   smoke_cleanup() {
     ops_stack_down

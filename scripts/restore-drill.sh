@@ -74,7 +74,7 @@ mkdir -m 0700 "$BACKUPS"
 ops_make_secrets "$OPS_SECRETS_DIR"
 export FACTORY_SECRETS_DIR=$OPS_SECRETS_DIR FACTORY_TEST=true FACTORY_RUN_ID=$OPS_RUN_ID FACTORY_RESTART=no
 export FACTORY_PROJECT=$OPS_PROJECT COMPOSE_PROFILES=test
-OPS_PG_IMAGE_REF=$(ops_compose config --images 2>/dev/null | grep '^postgres:' | head -n1)
+OPS_PG_IMAGE_REF=$(ops_compose config --images 2>/dev/null | grep '^postgres:' | head -n1) || true
 [ -n "$OPS_PG_IMAGE_REF" ] || ops_die "cannot read the PostgreSQL image from $OPS_COMPOSE_FILE"
 OPS_ARTIFACT_VOLUME="${OPS_PROJECT}_artifacts"
 

@@ -56,8 +56,9 @@ export FACTORY_PG_PORT=${FACTORY_PG_PORT:-55432}
 export FACTORY_TEST=${FACTORY_TEST:-false}
 export FACTORY_RUN_ID=${FACTORY_RUN_ID:-local}
 OPS_RUN_ID=$FACTORY_RUN_ID
-# The "factory" profile adds to "local"; Compose takes several profiles through COMPOSE_PROFILES.
-if [ "$profile" = factory ]; then export COMPOSE_PROFILES=local,factory; OPS_PROFILE=factory; else OPS_PROFILE=local; fi
+# The "factory" profile adds to "local".
+OPS_PROFILE=local
+if [ "$profile" = factory ]; then OPS_EXTRA_PROFILE=factory; fi
 
 case "$action" in
   status)
@@ -65,12 +66,16 @@ case "$action" in
     exit 0
     ;;
   down)
+    # Both profiles are named, whatever was started: a network belongs to the services of a profile, and `down`
+    # leaves behind the networks of a profile it was not told about.
+    OPS_EXTRA_PROFILE=factory
     ops_compose down --remove-orphans
     ops_say "local-up: stopped. The data volumes are kept. Start again with scripts/local-up.sh"
     exit 0
     ;;
   destroy)
     [ "$yes" = 1 ] || ops_usage_error "--destroy deletes the database and the artifacts. Add --yes to confirm."
+    OPS_EXTRA_PROFILE=factory
     ops_compose down --volumes --remove-orphans
     ops_say "local-up: removed the containers, the network and the data volumes."
     exit 0
@@ -82,14 +87,13 @@ ops_require_diesel
 ops_install_traps
 ops_new_run
 OPS_TEST=$FACTORY_TEST
-OPS_PG_IMAGE_REF=$(ops_compose config --images 2>/dev/null | grep '^postgres' | head -n1)
+OPS_PG_IMAGE_REF=$(ops_compose config --images 2>/dev/null | grep '^postgres' | head -n1) || true
 [ -n "$OPS_PG_IMAGE_REF" ] || ops_die "cannot read the PostgreSQL image from $OPS_COMPOSE_FILE"
 ops_make_secrets "$OPS_SECRETS_DIR"
 ops_pgdata_guard
 
 # Only the creation of the networks needs the lock. The stack outlives this script, so the lock is handed on
 # as soon as the stack is up.
-export FACTORY_BROKER_NETWORK="${OPS_PROJECT}_broker"
 ops_lock_acquire
 ops_say "local-up: starting the '$profile' profile on 127.0.0.1:$FACTORY_PG_PORT"
 ops_stack_up postgres

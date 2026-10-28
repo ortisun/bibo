@@ -31,6 +31,19 @@ Exit codes of every script here, the same as `scripts/ci.sh`: `0` done, `1` fail
 - **Why.** The artifact volume is prepared by a one-shot job that finishes at once. Compose 5.6.1 treats a finished container as a failure while `--wait` is waiting, though it ended with 0.
 - **Do.** Use `scripts/local-up.sh`, which runs the job first (`docker compose run --rm --no-deps artifacts-init`) and then starts the long-running services by name with `--no-deps`. By hand: those two commands.
 
+### `--factory` says `No such image: factory-api:local`
+
+- **You see** (provoked, `scripts/local-up.sh --factory`), exit 1, after PostgreSQL started, the migrations ran and the logins were checked:
+
+  ```text
+  local-up: applying migrations (none of 18 are applied)
+  Error response from daemon: No such image: factory-api:local
+  local-up: error: the stack did not start or did not become healthy (the reason is in the lines above; ...)
+  ```
+
+- **Why.** The factory images are built on this machine and are never pulled (`pull_policy: never`), and nobody builds them yet: `apps/api` prints "not implemented yet", and the worker binary exits 3. So the profile cannot start. This is the expected state until the composition work produces images.
+- **Do.** Run `scripts/local-up.sh` without `--factory`. To try your own build, tag it `factory-worker:local` / `factory-api:local`, or set `FACTORY_WORKER_IMAGE` / `FACTORY_API_IMAGE`. What the failed start already created (PostgreSQL, the `data` and `broker` networks) is removed by `scripts/local-up.sh --down` or `--destroy --yes`. An earlier version of the script named only the `local` profile when it removed things and left the `broker` network behind; that is fixed, and the smoke and drill scripts name every profile when they clean up.
+
 ### `waiting for the Docker lock (held by: pid ... thread ...)`
 
 - **You see.** One line, then a pause. Seen when the drill started while the sandbox tests of another agent were running:
@@ -134,7 +147,7 @@ Each of these is a failed check in the report of `scripts/restore.sh`. The targe
 
 - **You see:** `FAIL database-restored  pg_restore stopped and rolled back: ...` followed by the first two error lines of `pg_restore`.
 - **Why.** Two causes were provoked. A flipped byte inside the compressed dump with the checksums fixed to match: `pg_restore` stopped on the damaged data. A `globals.sql` with the roles removed (a restore without the roles): the dump names owners and grantees such as `factory_lookup`, which did not exist. Either way `--single-transaction` rolled everything back, so the target holds no half database.
-- **Do.** For a missing role, use the `globals.sql` of the same backup; do not restore the dump by itself with `pg_restore` by hand. Otherwise use another backup.
+- **Do.** For a missing role, use the `globals.sql` of the same backup; do not restore the dump by itself with `pg_restore` by hand. Otherwise use another backup. The roles from step one stay in the target after a failed restore, so the target is no longer fresh: destroy it and start `scripts/local-up.sh --bare` again before the next try.
 
 ### `fingerprint-constraints` fails on a correct restore
 
@@ -153,7 +166,7 @@ Each of these is a failed check in the report of `scripts/restore.sh`. The targe
 
 ## What stays unverified until the binaries exist
 
-- `api` and `worker` have not started. Nothing was checked about their health checks, their use of the `FACTORY_*` variables, the way they read the secret files, the artifact directory permissions as seen by the storage crate (the volume is `10010:10010 700` and the crate's modes are 0700 and 0400, but no Rust code wrote to it), or how the worker reaches Docker.
+- `api` and `worker` have not started. Nothing was checked about their configuration files, the way they read the secret files (and whether uid 10010 can read a file secret that is mode 0600 on the host), the artifact directory permissions as seen by the storage crate (the volume is `10010:10010 700` and the crate's modes are 0700 and 0400, but no Rust code wrote to it), or how the worker reaches Docker.
 - The model broker, the per-job sidecars on the `broker` network, and a sandbox that is started by the supervisor. The smoke test uses the real agent image as a probe on a similar network; it is not the supervisor.
 - `docker compose up` of the `factory` profile without the script.
 - A Linux host, and the pool-exhaustion case above.

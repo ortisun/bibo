@@ -182,32 +182,32 @@ services:
     pids_limit: 64
 
   # ---- The factory services (profile "factory": ENABLED WHEN THE BINARIES EXIST) ---------------
-  # Nothing builds these images yet. The names, the user, the ports and the variables below are the
-  # contract the composition work must honor. They are not guesses to be fixed later: change them
-  # here and in docs/operations/local-deployment.md together.
+  # State on 2026-10-28, read from feat/slice-0-foundation (apps/worker/README.md): the worker is a library and a
+  # binary. The binary runs its start-up checks and exits with code 3 (BLOCKED) because several adapters are
+  # not assembled yet. apps/api still prints "not implemented yet". Nothing builds an image for either.
+  #
+  # How they are configured is the composition work's decision, and this file follows it: ONE YAML file named
+  # by FACTORY_CONFIG, an environment that can only tighten it (FACTORY_PROFILE, FACTORY_LOG), and every secret
+  # a path to a file. The contract is in docs/operations/local-deployment.md, "Contract for the factory services".
   api:
     image: ${FACTORY_API_IMAGE:-factory-api:local}
     # Built on this machine, never pulled.
     pull_policy: never
     <<: *hardened
     profiles: [factory]
-    restart: ${FACTORY_RESTART:-unless-stopped}
+    restart: on-failure:5
     labels: *labels
     user: *factory-user
     environment:
+      FACTORY_CONFIG: /etc/factory/api.yaml
       FACTORY_PROFILE: local
-      FACTORY_LISTEN_ADDR: 0.0.0.0:8080
-      FACTORY_DB_HOST: postgres
-      FACTORY_DB_PORT: "5432"
-      FACTORY_DB_NAME: factory
-      FACTORY_DB_API_USER: factory_api
-      FACTORY_DB_API_PASSWORD_FILE: ${FACTORY_RUN_SECRETS_DIR:-/run/secrets}/pg_password_api
-      FACTORY_ARTIFACT_DIR: /var/lib/factory/artifacts
     secrets:
-      - pg_password_api
+      - source: pg_url_api
+        target: db_api
     ports:
       - "127.0.0.1:${FACTORY_API_PORT:-8080}:8080"
     volumes:
+      - ${FACTORY_API_CONFIG:-./config/api.local.example.yaml}:/etc/factory/api.yaml:ro
       - artifacts:/var/lib/factory/artifacts
     networks: [data]
     depends_on:
@@ -215,13 +215,8 @@ services:
         condition: service_healthy
       artifacts-init:
         condition: service_completed_successfully
-    healthcheck:
-      # The binary answers its own health check, because the image has no shell and no curl.
-      test: ["CMD", "/usr/local/bin/factory-api", "healthcheck"]
-      interval: 5s
-      timeout: 3s
-      retries: 12
-      start_period: 10s
+    # No health check yet: the binary does not exist. When it offers one, add it here. The image will have no
+    # shell and no curl, so the check has to be a subcommand of the binary.
     tmpfs:
       - /tmp
     mem_limit: 512m
@@ -233,51 +228,43 @@ services:
     pull_policy: never
     <<: *hardened
     profiles: [factory]
-    restart: ${FACTORY_RESTART:-unless-stopped}
+    # Exit code 3 is BLOCKED (adapters not assembled): try a few times, then stop. A worker that restarts for ever
+    # on a condition that only a person can fix hides the condition.
+    restart: on-failure:5
     labels: *labels
     user: *factory-user
     environment:
+      FACTORY_CONFIG: /etc/factory/worker.yaml
       FACTORY_PROFILE: local
-      FACTORY_DB_HOST: postgres
-      FACTORY_DB_PORT: "5432"
-      FACTORY_DB_NAME: factory
-      # Two logins, two pools (ADR 0012): the tenant pool and the system pool never share a login.
-      FACTORY_DB_TENANT_USER: factory_worker
-      FACTORY_DB_TENANT_PASSWORD_FILE: ${FACTORY_RUN_SECRETS_DIR:-/run/secrets}/pg_password_worker
-      FACTORY_DB_SYSTEM_USER: factory_engine
-      FACTORY_DB_SYSTEM_PASSWORD_FILE: ${FACTORY_RUN_SECRETS_DIR:-/run/secrets}/pg_password_engine
-      FACTORY_ARTIFACT_DIR: /var/lib/factory/artifacts
-      # The model broker listens here. Per-job egress sidecars reach it over the "broker" network, whose
-      # name the supervisor needs to attach each sidecar to it. scripts/local-up.sh sets the variable.
-      FACTORY_BROKER_LISTEN_ADDR: 0.0.0.0:8181
-      FACTORY_BROKER_NETWORK: ${FACTORY_BROKER_NETWORK:-factory-local_broker}
-      # The sandbox images the supervisor starts, by digest (infra/sandbox-images/images.json).
-      FACTORY_SANDBOX_AGENT_IMAGE: ${FACTORY_SANDBOX_AGENT_IMAGE:-}
-      FACTORY_SANDBOX_VERIFY_IMAGE: ${FACTORY_SANDBOX_VERIFY_IMAGE:-}
-      FACTORY_SANDBOX_SIDECAR_IMAGE: ${FACTORY_SANDBOX_SIDECAR_IMAGE:-}
-      # How the worker reaches Docker to start sandboxes. This file mounts NO Docker socket: a
-      # container that can talk to the Docker daemon controls the whole machine. With nothing set the
-      # worker cannot start a sandbox and the job is BLOCKED, which is the fail-closed answer the
-      # sandbox policy asks for. The options (run the worker on the host, or a reviewed socket proxy)
-      # are in docs/operations/local-deployment.md.
+      FACTORY_LOG: ${FACTORY_LOG:-info}
+      # How the worker reaches Docker to start sandboxes. This file mounts NO Docker socket: a container that can
+      # talk to the Docker daemon controls the whole machine. With nothing set the worker cannot start a sandbox
+      # and the job is BLOCKED, which is the fail-closed answer the sandbox policy asks for. The options are in
+      # docs/operations/local-deployment.md.
       DOCKER_HOST: ${FACTORY_WORKER_DOCKER_HOST:-}
+    # Two logins, two pools (ADR 0012). Each file holds the database URL for that login; the worker refuses a file
+    # that group or others can read, and a URL whose login is not the one the configuration names.
     secrets:
-      - pg_password_worker
-      - pg_password_engine
+      - source: pg_url_worker
+        target: db_worker
+      - source: pg_url_engine
+        target: db_engine
     volumes:
+      - ${FACTORY_WORKER_CONFIG:-./config/worker.local.example.yaml}:/etc/factory/worker.yaml:ro
       - artifacts:/var/lib/factory/artifacts
+      # The protected checkout: only what the worker reads, read-only. The repository root is not mounted, because
+      # it holds the secrets folder.
+      - ../../policies:/srv/factory/protected/policies:ro
+      - ../../agents:/srv/factory/protected/agents:ro
+      - ../../profiles:/srv/factory/protected/profiles:ro
+      - ../../schemas:/srv/factory/protected/schemas:ro
+      - ../sandbox-images/images.json:/srv/factory/protected/infra/sandbox-images/images.json:ro
     networks: [data, broker]
     depends_on:
       postgres:
         condition: service_healthy
       artifacts-init:
         condition: service_completed_successfully
-    healthcheck:
-      test: ["CMD", "/usr/local/bin/factory-worker", "healthcheck"]
-      interval: 5s
-      timeout: 3s
-      retries: 12
-      start_period: 10s
     tmpfs:
       - /tmp
     mem_limit: 1g
@@ -302,15 +289,17 @@ volumes:
   artifacts:
     labels: *labels
 
-# Each secret is a file. Docker mounts it read-only at /run/secrets/<name> inside the container that
-# lists it. The files are created by scripts/local-up.sh with random values and mode 0600 and are
-# never committed (infra/compose/.gitignore). A service gets only the secrets it lists.
+# Each secret is a file. Docker mounts it read-only at /run/secrets/<target> inside the container that lists it. The
+# files are created by scripts/local-up.sh with random values and mode 0600 and are never committed
+# (infra/compose/secrets/.gitignore). A service gets only the secrets it lists.
+#   pg_superuser_password   the bootstrap superuser; only the postgres image reads it
+#   pg_url_*                the database URL of one login, in the form the worker's configuration wants (url_file)
 secrets:
   pg_superuser_password:
     file: ${FACTORY_SECRETS_DIR:?Set FACTORY_SECRETS_DIR to a folder of secret files, or run scripts/local-up.sh}/pg_superuser_password
-  pg_password_api:
-    file: ${FACTORY_SECRETS_DIR:?Set FACTORY_SECRETS_DIR to a folder of secret files, or run scripts/local-up.sh}/pg_password_api
-  pg_password_worker:
-    file: ${FACTORY_SECRETS_DIR:?Set FACTORY_SECRETS_DIR to a folder of secret files, or run scripts/local-up.sh}/pg_password_worker
-  pg_password_engine:
-    file: ${FACTORY_SECRETS_DIR:?Set FACTORY_SECRETS_DIR to a folder of secret files, or run scripts/local-up.sh}/pg_password_engine
+  pg_url_api:
+    file: ${FACTORY_SECRETS_DIR:?Set FACTORY_SECRETS_DIR to a folder of secret files, or run scripts/local-up.sh}/pg_url_api
+  pg_url_worker:
+    file: ${FACTORY_SECRETS_DIR:?Set FACTORY_SECRETS_DIR to a folder of secret files, or run scripts/local-up.sh}/pg_url_worker
+  pg_url_engine:
+    file: ${FACTORY_SECRETS_DIR:?Set FACTORY_SECRETS_DIR to a folder of secret files, or run scripts/local-up.sh}/pg_url_engine
