@@ -38,6 +38,7 @@ use serde_json::{Value, json};
 use tracing::Instrument;
 
 use super::Engine;
+use super::agent_span::ObservedRuntime;
 use super::cancel::AttemptCancel;
 use super::error::EngineError;
 use super::failure::HumanReason;
@@ -261,6 +262,9 @@ impl Engine {
 
         let cancel = AttemptCancel::new();
         let notes = notes.clone();
+        // The handler runs its agents through this wrapper, so each run is a `factory.agent` span.
+        let observed =
+            ObservedRuntime::new(self.deps.runtime.as_ref(), claimed.correlation, claimed.job);
         let mut ctx = StageContext::new(
             prepared.identity,
             claimed.attempt,
@@ -268,7 +272,7 @@ impl Engine {
             claimed.epoch,
             self.config.mode,
             &prepared.contract,
-            self.stage_ports(),
+            self.stage_ports(&observed),
             &cancel,
             job_token,
             &prepared.human_inputs,
@@ -753,7 +757,9 @@ impl Engine {
             attempt: claimed.attempt,
             mode: self.config.mode,
             contract: &prepared.contract,
-            ports: self.stage_ports(),
+            // The gate gets the same ports as `execute`, so an agent that judges the output is
+            // also a `factory.agent` span.
+            ports: ctx.ports,
             cancel,
             outputs: &outputs,
             human_inputs: &prepared.human_inputs,

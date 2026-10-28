@@ -62,19 +62,11 @@ fn some_code_opens_the_stage_run_span() {
     assert!(some_code_opens("factory.stage_run", None));
 }
 
-/// Confirmed gap OBS-3. The conventions page has a `factory.agent` span for one agent invocation
-/// inside an attempt, with the agent id, the model, the token counts and the cost. No production
-/// code opens one, so there is nothing to join the cost and the tokens of an invocation to its
-/// attempt.
-///
-/// Owner: `crates/workflow`, `src/engine` (where `stage_ports` builds the ports a handler gets).
-/// Seven handler sites call `ports.runtime.run`. Smallest change: `stage_ports` hands over a
-/// runtime port that wraps `AgentRuntime::run` in `info_span!("factory.agent",
-/// factory.correlation_id, factory.job_id, factory.attempt_id, factory.agent_id, factory.outcome
-/// = Empty)` and records `factory.outcome`, `factory.model` and the metered tokens and cost when
-/// the call returns.
+/// Gap OBS-3, closed (the test of its behavior is in `crates/workflow/tests/trace_shape.rs`). The
+/// engine hands every handler a runtime that wraps `AgentRuntime::run` in `factory.agent`
+/// (`crates/workflow/src/engine/agent_span.rs`), so the seven handler sites that call
+/// `ports.runtime.run` need no span of their own.
 #[test]
-#[ignore = "confirmed gap OBS-3: no code opens a factory.agent span"]
 fn some_code_opens_the_agent_span() {
     assert!(some_code_opens("factory.agent", None));
 }

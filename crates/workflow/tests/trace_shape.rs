@@ -410,3 +410,128 @@ async fn the_error_class_is_always_one_of_the_failure_classes_and_only_on_failed
     assert_eq!(attempt.text("factory.error_class"), None);
     assert_eq!(attempt.declared_only, ["factory.error_class"]);
 }
+
+// ---- The agent span (gap OBS-3, closed) ----------------------------------------------------
+
+use factory_ports::agent::{AgentRunError, CostMicroUsd, Usage};
+use factory_testkit::agent::AdversarialScript;
+use serde_json::json;
+
+/// What the fake runtime reports for a run that used these tokens and this much money.
+fn used(input: u64, output: u64, micro_usd: u64) -> Usage {
+    Usage {
+        input_tokens: input,
+        output_tokens: output,
+        cost: CostMicroUsd(micro_usd),
+        requests: 2,
+    }
+}
+
+/// Gap OBS-3, closed. The conventions page has a `factory.agent` span for one agent invocation
+/// inside an attempt. The engine hands each handler a runtime that wraps `AgentRuntime::run` in it,
+/// so a stage that runs an agent gets the span without code of its own.
+#[tokio::test]
+async fn an_agent_run_is_a_span_under_the_attempt_with_its_model_tokens_and_cost() {
+    let recorder = Recorder::new();
+    let _installed = recorder.install();
+    let world = World::new().await;
+    world.admitted_job().await;
+    world.script(StageKind::Intake).runs_an_agent();
+    world.runtime.queue(AdversarialScript {
+        usage: used(1200, 340, 1_500_000),
+        ..AdversarialScript::returning(json!({ "stage": "INTAKE" }))
+    });
+    let (claimed, _) = run_one(&world, &recorder).await;
+
+    let spans = recorder.spans();
+    let agents = named(&spans, "factory.agent");
+    assert_eq!(agents.len(), 1, "one agent run, one span: {spans:?}");
+    let agent = agents[0];
+    assert_eq!(shape_problems(agent), Vec::<String>::new(), "{agent:?}");
+    let attempt = named(&spans, "factory.attempt")[0];
+    assert_eq!(
+        agent.parent,
+        Some(attempt.id),
+        "the agent hangs from the attempt"
+    );
+    assert_eq!(
+        agent.text("factory.attempt_id").as_deref(),
+        Some(claimed.attempt.to_string().as_str())
+    );
+    assert_eq!(
+        agent.text("factory.job_id").as_deref(),
+        Some(claimed.job.to_string().as_str())
+    );
+    assert_eq!(
+        agent.text("factory.correlation_id").as_deref(),
+        Some(claimed.correlation.to_string().as_str())
+    );
+    assert_eq!(agent.text("factory.outcome").as_deref(), Some("succeeded"));
+    assert_eq!(agent.text("factory.model").as_deref(), Some("fake-model"));
+    assert!(
+        !agent
+            .text("factory.agent_id")
+            .unwrap_or_default()
+            .is_empty(),
+        "the agent span names the agent"
+    );
+    // Counts are signed integers and the cost is dollars, a double.
+    assert_eq!(
+        agent.fields.get("factory.tokens_input"),
+        Some(&Value::I64(1200))
+    );
+    assert_eq!(
+        agent.fields.get("factory.tokens_output"),
+        Some(&Value::I64(340))
+    );
+    assert_eq!(agent.fields.get("factory.cost_usd"), Some(&Value::F64(1.5)));
+    assert_eq!(
+        agent.declared_only,
+        ["error.type"],
+        "a run that worked leaves error.type empty and nothing else"
+    );
+}
+
+#[tokio::test]
+async fn a_failed_agent_run_says_how_it_failed_with_a_fixed_word_and_never_the_tools_text() {
+    for (error, outcome, kind) in [
+        (AgentRunError::Timeout, "timed_out", "timeout"),
+        (AgentRunError::Cancelled, "cancelled", "cancelled"),
+        (
+            AgentRunError::ProviderUnavailable,
+            "failed",
+            "provider_unavailable",
+        ),
+        (AgentRunError::BudgetRefused, "failed", "budget_refused"),
+    ] {
+        let recorder = Recorder::new();
+        let _installed = recorder.install();
+        let world = World::new().await;
+        world.admitted_job().await;
+        world.script(StageKind::Intake).runs_an_agent();
+        world
+            .runtime
+            .queue(AdversarialScript::returning(json!({})).failing_with(error));
+        run_one(&world, &recorder).await;
+
+        let spans = recorder.spans();
+        let agent = named(&spans, "factory.agent")[0];
+        assert_eq!(shape_problems(agent), Vec::<String>::new());
+        assert_eq!(agent.text("factory.outcome").as_deref(), Some(outcome));
+        assert_eq!(agent.text("error.type").as_deref(), Some(kind));
+        assert!(
+            outcome_values().contains(&outcome.to_owned()),
+            "{outcome} is an outcome value of the page"
+        );
+    }
+}
+
+#[tokio::test]
+async fn a_stage_that_runs_no_agent_opens_no_agent_span() {
+    let recorder = Recorder::new();
+    let _installed = recorder.install();
+    let world = World::new().await;
+    world.admitted_job().await;
+    run_one(&world, &recorder).await;
+    assert!(named(&recorder.spans(), "factory.agent").is_empty());
+}

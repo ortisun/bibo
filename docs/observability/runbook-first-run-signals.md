@@ -31,7 +31,7 @@ Two rules for reading it.
 | 1. Stuck lease | `factory.attempt`, outcome `lease_lost` | `factory_retries_total` follows | "the sweep recovered attempts" | none | `factory_queue_depth` (OBS-5). Nothing shows a lease while it is stuck. |
 | 2. Stage over deadline | `factory.attempt`, outcome `timed_out`, with `factory.error_class` | `factory_stage_duration_seconds` by stage and outcome; `factory_retries_total` follows | "the sweep recovered attempts" | none | none |
 | 3. Gate blocked by the environment | `factory.gate`, outcome `blocked` | `factory_gate_failures_total` with outcome `blocked` | none | `gate_result` | none for the count; the cause is not in telemetry |
-| 4. Cost over budget | none | none | none | `budget_threshold_crossed` | `factory_spend_usd_total` (OBS-7); `factory.agent` span with `factory.cost_usd` (OBS-3) |
+| 4. Cost over budget | `factory.agent`, with `factory.cost_usd` | none | none | `budget_threshold_crossed` | `factory_spend_usd_total` (OBS-7) |
 | 5. Redaction hit | marker `[REDACTED:` in attribute values and names | none | marker `[REDACTED:`, "log line dropped: redactor unavailable" | `secret_redacted_or_blocked` | a counter (OBS-10) |
 
 ## 1. Stuck lease
@@ -94,8 +94,9 @@ Two rules for reading it.
 
 **What it means.** The spend of a job reached its limit, or a threshold of it. The broker meters every model call through the job token and refuses spend at the ceiling. The engine records a threshold in the audit log, defers a stage run whose job has no budget left, and escalates a stage run to a person with the cause `budget-limit`.
 
-**What exists.** Only records, no span or metric.
+**What exists.** A span for each agent run, and records.
 
+- Span `factory.agent`, one for each agent run, a child of the attempt (or of its gate, for an agent that judges the output). It carries `factory.job_id`, `factory.attempt_id`, `factory.agent_id`, `factory.model`, `factory.tokens_input`, `factory.tokens_output`, `factory.cost_usd` (dollars, as the adapter reported them) and `factory.outcome` (`succeeded`, `timed_out`, `cancelled` or `failed`). A failed run also has `error.type`, a fixed word such as `provider_unavailable` or `budget_refused`. Search `factory.job_id=<id>` and sum `factory.cost_usd` over the `factory.agent` spans for the cost of a job as the adapters saw it. The broker's meter is the source of truth, so the numbers can differ; a run that was cut before the adapter read its usage shows zero here.
 - Audit record `budget_threshold_crossed`, written at the end of an attempt whose token crossed the warning fraction of its ceiling (`budgets.thresholds.warn_at_fraction`, 80 percent by default in the engine configuration).
 - The escalation to a person with the cause `budget-limit`, in the stage run's events and ledger.
 - A stage run that does not start because the job's spend is at or over its limit: the claim defers it with the reason `BudgetExhausted`. Nothing is logged at `info` or higher for this.
@@ -105,7 +106,6 @@ Two rules for reading it.
 **Not yet emitted.**
 
 - `factory_spend_usd_total{provider,stage}` (OBS-7). The engine reads the metered cost of each attempt (`token_cost`) and writes it into the attempt's events, but does not record the metric. No alert on spend can be written until it does.
-- The `factory.agent` span with `factory.cost_usd`, `factory.tokens_input` and `factory.tokens_output` (OBS-3). No code opens it.
 
 ## 5. Redaction hit
 
