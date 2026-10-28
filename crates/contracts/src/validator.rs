@@ -165,7 +165,11 @@ pub struct Issue {
 }
 
 impl Issue {
-    fn new(path: impl Into<String>, kind: IssueKind, message: impl Into<String>) -> Self {
+    pub(crate) fn new(
+        path: impl Into<String>,
+        kind: IssueKind,
+        message: impl Into<String>,
+    ) -> Self {
         Self {
             path: path.into(),
             kind,
@@ -279,31 +283,36 @@ impl SchemaOutputValidator {
     }
 
     fn check_value(&self, kind: ContractKind, instance: &Value) -> Result<(), Vec<Issue>> {
-        let mut issues = Vec::new();
-        if let Some(schema) = self.schemas.get(&kind) {
-            let (violations, dropped) = schema.validate(instance);
-            issues.extend(violations.into_iter().map(|violation| Issue {
-                path: violation.path,
-                kind: IssueKind::Schema(violation.keyword),
-                property: violation.property,
-                message: violation.message,
-            }));
-            if dropped > 0 {
-                issues.push(Issue::new(
-                    "$",
-                    IssueKind::MoreProblems,
-                    format!(
-                        "{dropped} more problems were found and are not listed; fix these first"
-                    ),
-                ));
-            }
+        check_document(self.schemas.get(&kind), instance)
+    }
+}
+
+/// Runs a compiled schema over a value, then the path-safety rule, and lists every problem. The
+/// step both [`SchemaOutputValidator`] and `crate::agent_schema::AgentSchema` end with, so an
+/// agent's own schema is held to exactly the rules the contract kinds are.
+pub(crate) fn check_document(schema: Option<&Schema>, instance: &Value) -> Result<(), Vec<Issue>> {
+    let mut issues = Vec::new();
+    if let Some(schema) = schema {
+        let (violations, dropped) = schema.validate(instance);
+        issues.extend(violations.into_iter().map(|violation| Issue {
+            path: violation.path,
+            kind: IssueKind::Schema(violation.keyword),
+            property: violation.property,
+            message: violation.message,
+        }));
+        if dropped > 0 {
+            issues.push(Issue::new(
+                "$",
+                IssueKind::MoreProblems,
+                format!("{dropped} more problems were found and are not listed; fix these first"),
+            ));
         }
-        check_paths(instance, &mut Vec::new(), &mut issues);
-        if issues.is_empty() {
-            Ok(())
-        } else {
-            Err(issues)
-        }
+    }
+    check_paths(instance, &mut Vec::new(), &mut issues);
+    if issues.is_empty() {
+        Ok(())
+    } else {
+        Err(issues)
     }
 }
 
@@ -419,7 +428,7 @@ fn too_many(limits: OutputLimits) -> Issue {
 
 /// Measures an already-parsed value against the limits with an explicit stack, so a deeply nested
 /// value cannot overflow the call stack. The size is estimated from the text it would take.
-fn measure(root: &Value, limits: OutputLimits) -> Result<(), Issue> {
+pub(crate) fn measure(root: &Value, limits: OutputLimits) -> Result<(), Issue> {
     let mut stack: Vec<(&Value, usize)> = vec![(root, 1)];
     let mut nodes = 0usize;
     let mut bytes = 0usize;
@@ -617,7 +626,7 @@ impl<'de> Visitor<'de> for StrictVisitor<'_> {
 
 /// Parses JSON text into a value. Counts values against the budget, refuses duplicate keys and
 /// refuses data after the document.
-fn parse_strict(text: &str, limits: OutputLimits) -> Result<Value, Issue> {
+pub(crate) fn parse_strict(text: &str, limits: OutputLimits) -> Result<Value, Issue> {
     let state = RefCell::new(State {
         nodes_left: limits.max_nodes,
         stop: None,

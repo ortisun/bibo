@@ -491,7 +491,7 @@ fn from_issues(file: &str, issues: &[Issue], located: &Located) -> LoadError {
 // Reading files
 // ------------------------------------------------------------------------------------------
 
-enum ResolveFailure {
+pub(crate) enum ResolveFailure {
     Missing,
     Outside,
     Unreadable,
@@ -499,7 +499,7 @@ enum ResolveFailure {
 
 /// Joins `relative` to `root`, resolves symbolic links, and requires the result to lie inside the
 /// resolved root.
-fn resolve_inside(root: &Path, relative: &str) -> Result<PathBuf, ResolveFailure> {
+pub(crate) fn resolve_inside(root: &Path, relative: &str) -> Result<PathBuf, ResolveFailure> {
     let root = fs::canonicalize(root).map_err(|_| ResolveFailure::Unreadable)?;
     let candidate = root.join(relative);
     let resolved = match fs::canonicalize(&candidate) {

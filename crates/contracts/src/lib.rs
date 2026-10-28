@@ -12,6 +12,7 @@
 //! | [`schemas`] | The eleven schemas of `schemas/`, embedded at compile time | |
 //! | [`schema_engine`] | A closed JSON Schema (draft 2020-12) engine for exactly the keywords those schemas use | |
 //! | [`validator`] | `SchemaOutputValidator`, the hard limits, the strict JSON parse, the path-safety rule | `OutputValidator` |
+//! | [`agent_schema`] | `AgentSchema` and `AgentSchemaLoader`: an agent's output checked against ITS OWN schema in `agents/schemas/`, with the same limits and strict parse | |
 //! | [`yaml`] | The restricted YAML reader, and the record of the YAML parser decision | parser contract in `policies/security.yaml` |
 //! | [`loader`] | Agent manifests, capability profiles and project manifests into typed values, with file and field in every error | |
 //! | [`registry`] | `FileAgentRegistry`: manifests, prompts with checked hashes, profiles by tag | `AgentRegistry` |

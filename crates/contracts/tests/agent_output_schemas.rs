@@ -232,7 +232,7 @@ fn the_intake_conditions_are_enforced_and_the_messages_say_what_to_change() {
 fn the_planner_envelope_and_the_reviewer_verdict_are_checked_on_their_own_schemas() {
     let planner = output_schema_of("planner");
     let mut envelope = valid_fixture("planner", "needs-a-person");
-    envelope["status"] = json!("DONE");
+    envelope["status"] = json!("FINISHED");
     assert!(
         refuse(&planner, &bytes_of(&envelope))
             .iter()
