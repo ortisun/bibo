@@ -46,7 +46,52 @@ pub const FORBIDDEN_ENV: [&str; 6] = [
     "PYTHONSTARTUP",
 ];
 /// The only names a sandbox environment may hold.
-pub const ALLOWED_ENV: [&str; 4] = ["HOME", "PATH", "TERM", "LANG"];
+pub const ALLOWED_ENV: [&str; 8] = [
+    "HOME",
+    "PATH",
+    "TERM",
+    "LANG",
+    "CARGO_TARGET_DIR",
+    "CARGO_HOME",
+    "CARGO_NET_OFFLINE",
+    "TMPDIR",
+];
+
+/// The environment a sandbox of `profile` is given, besides `HOME`.
+///
+/// The `verify` image mounts the workspace read-only and has a writable output directory, and a
+/// Rust project's gate commands (`cargo build`, `cargo test`) write a `target` directory beside the
+/// manifest unless they are told where. The image's README says what to set: the target directory
+/// in the output directory, the cargo home in the tmpfs home, offline behind `--network none`, and
+/// a temporary directory that is not `noexec` (`/tmp` is, and `rustdoc` runs the programs it
+/// builds from there). Without them the first `cargo build` of the first job ended with "Read-only
+/// file system", found by running the project's own gates in the real image
+/// (`tests/real_verify_of_the_patch.rs`). A command cannot carry an environment, so it is the
+/// sandbox's. The `fetch_deps` sandbox is the one that may reach the registry.
+fn profile_env(profile: SandboxProfile) -> Vec<(String, String)> {
+    let pairs: &[(&str, &str)] = match profile {
+        SandboxProfile::Agent => &[],
+        SandboxProfile::Verify => &[
+            ("CARGO_TARGET_DIR", "/out/target"),
+            ("CARGO_HOME", "/home/agent/.cargo"),
+            ("CARGO_NET_OFFLINE", "true"),
+            ("TMPDIR", "/out"),
+        ],
+        SandboxProfile::FetchDeps => &[
+            ("CARGO_TARGET_DIR", "/out/target"),
+            ("CARGO_HOME", "/home/agent/.cargo"),
+            ("CARGO_NET_OFFLINE", "false"),
+            ("TMPDIR", "/out"),
+        ],
+    };
+    let mut env = vec![("HOME".to_owned(), "/home/agent".to_owned())];
+    env.extend(
+        pairs
+            .iter()
+            .map(|(name, value)| ((*name).to_owned(), (*value).to_owned())),
+    );
+    env
+}
 /// The alias of the egress sidecar on the per-job network. The broker URL the agent uses names it.
 pub const SIDECAR_ALIAS: &str = "egress";
 
@@ -173,8 +218,7 @@ impl PolicySpecs {
                 caches: Vec::new(),
             },
             job_token,
-            env: FixedEnv::new(vec![("HOME".to_owned(), "/home/agent".to_owned())])
-                .map_err(|_| SeamError::Unavailable)?,
+            env: FixedEnv::new(profile_env(profile)).map_err(|_| SeamError::Unavailable)?,
             hardening: Hardening::strict(ready.uid, ready.gid),
         })
     }
@@ -221,8 +265,7 @@ impl PolicySpecs {
         Ok((
             image,
             limits_of(limits).ok_or(SeamError::Unavailable)?,
-            FixedEnv::new(vec![("HOME".to_owned(), "/home/agent".to_owned())])
-                .map_err(|_| SeamError::Unavailable)?,
+            FixedEnv::new(profile_env(profile)).map_err(|_| SeamError::Unavailable)?,
             Hardening::strict(ready.uid, ready.gid),
             arch,
         ))
