@@ -11,13 +11,14 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use async_trait::async_trait;
 use factory_domain::redaction::Redactor;
 use factory_domain::vocabulary::Fidelity;
 use factory_ports::clock::CancelSignal;
 use factory_ports::process::{
     EnvValue, ProcessRunner, Program, SpawnError, SpawnOutput, SpawnRequest, SpawnStep,
 };
+
+use crate::race::BoxFuture;
 
 /// How a control command to the daemon is run. The values are the adapter's configuration; none
 /// is a secret.
@@ -114,7 +115,6 @@ fn daemon_unreachable(text: &str) -> bool {
 #[derive(Debug, Clone, Copy, Default)]
 pub struct NeverCancel;
 
-#[async_trait]
 impl CancelSignal for NeverCancel {
     fn fidelity(&self) -> Fidelity {
         Fidelity::Real
@@ -124,8 +124,13 @@ impl CancelSignal for NeverCancel {
         false
     }
 
-    async fn cancelled(&self) {
-        std::future::pending::<()>().await;
+    // The signature `#[async_trait]` would write; see `crate::race`.
+    fn cancelled<'life0, 'async_trait>(&'life0 self) -> BoxFuture<'async_trait, ()>
+    where
+        'life0: 'async_trait,
+        Self: 'async_trait,
+    {
+        Box::pin(std::future::pending::<()>())
     }
 }
 

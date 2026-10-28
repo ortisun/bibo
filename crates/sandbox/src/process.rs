@@ -28,7 +28,6 @@ use std::path::PathBuf;
 use std::process::{ExitStatus, Stdio};
 use std::time::Duration;
 
-use async_trait::async_trait;
 use factory_domain::vocabulary::Fidelity;
 use factory_ports::clock::CancelSignal;
 use factory_ports::process::{
@@ -37,6 +36,8 @@ use factory_ports::process::{
 use rustix::process::{Pid, Signal};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::process::Command;
+
+use crate::race::{BoxFuture, Either, race};
 
 /// The `PATH` every child gets when the runner is not configured with another one.
 pub const DEFAULT_PATH: &str = "/usr/local/bin:/usr/bin:/bin";
@@ -155,13 +156,28 @@ fn exit_parts(status: ExitStatus) -> (Option<i32>, Option<i32>) {
     }
 }
 
-#[async_trait]
 impl ProcessRunner for SystemProcessRunner {
     fn fidelity(&self) -> Fidelity {
         Fidelity::Real
     }
 
-    async fn run(
+    // The signature `#[async_trait]` would write; see `crate::race`.
+    fn run<'life0, 'life1, 'async_trait>(
+        &'life0 self,
+        req: SpawnRequest,
+        cancel: &'life1 dyn CancelSignal,
+    ) -> BoxFuture<'async_trait, Result<SpawnOutput, SpawnError>>
+    where
+        'life0: 'async_trait,
+        'life1: 'async_trait,
+        Self: 'async_trait,
+    {
+        Box::pin(self.run_process(req, cancel))
+    }
+}
+
+impl SystemProcessRunner {
+    async fn run_process(
         &self,
         req: SpawnRequest,
         cancel: &dyn CancelSignal,
@@ -226,10 +242,15 @@ impl ProcessRunner for SystemProcessRunner {
             })
         });
 
-        let outcome = tokio::select! {
-            status = child.wait() => Outcome::Exited(status),
-            () = tokio::time::sleep(req.timeout) => Outcome::TimedOut,
-            () = cancel.cancelled() => Outcome::Cancelled,
+        let outcome = match race(
+            race(child.wait(), tokio::time::sleep(req.timeout)),
+            cancel.cancelled(),
+        )
+        .await
+        {
+            Either::First(Either::First(status)) => Outcome::Exited(status),
+            Either::First(Either::Second(())) => Outcome::TimedOut,
+            Either::Second(()) => Outcome::Cancelled,
         };
 
         match outcome {
