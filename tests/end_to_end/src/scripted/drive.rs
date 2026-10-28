@@ -644,22 +644,19 @@ impl<'a> Flow<'a> {
         work.instrument(self.span.clone()).await
     }
 
-    /// The worker loop: claims one stage run and runs its attempt inside a stage run span.
+    /// The worker loop: claims one stage run and runs its attempt inside the job span.
+    ///
+    /// This loop used to open the `factory.stage_run` span itself, because the engine opened none
+    /// (confirmed gap OBS-2). `Engine::run_attempt` opens it now, as the conventions page says
+    /// (section 3), so a span opened here as well would give each stage run two, and assertion A11
+    /// asks for one.
     async fn step(&self) -> (ClaimedAttempt, AttemptOutcome) {
         let work = async {
             let claimed = self.world.claim_one(WORKER).await;
-            let span = tracing::info_span!(
-                "factory.stage_run",
-                factory.correlation_id = %claimed.correlation,
-                factory.job_id = %claimed.job,
-                factory.stage_run_id = %claimed.stage_run,
-                factory.stage_kind = claimed.kind.as_str(),
-            );
             let outcome = self
                 .world
                 .engine
                 .run_attempt(&claimed)
-                .instrument(span)
                 .await
                 .expect("the attempt runs");
             (claimed, outcome)
