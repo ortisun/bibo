@@ -767,3 +767,21 @@ BEGIN
   PERFORM dbtest.expect_eq('after the answer (S13) the run starts as any READY run, as attempt 1 at epoch 1', r.outcome || ' ' || dbtest.attempts_of(asked), 'started 1:1:STARTING');
 END
 $$;
+
+-- ---------------------------------------------------------------------------------------------
+-- 14. A lease renewal is a heap-only (HOT) update (work package s1-database-review, migration 19).
+-- A heartbeat changes lease_expires_at, last_heartbeat_at and version, and nothing else. If an index is keyed on one of
+-- those columns the update cannot be heap-only: PostgreSQL then writes a new entry to every index of the table for every
+-- renewal and leaves a dead one behind in each. Measured on 90 seconds of heartbeats on 600 live attempts: 0.01 percent
+-- heap-only with the index `attempts_lease_expiry_idx`, 99.9 percent without it (docs/database/performance.md). The
+-- counter read here is the transaction's own, so the check does not wait for the statistics collector.
+DO $$
+DECLARE
+  att uuid := dbtest.mk_attempt(41, interval '10 minutes', interval '1 hour');
+  before bigint := pg_stat_get_xact_tuples_hot_updated('attempts'::regclass);
+BEGIN
+  PERFORM dbtest.expect_true('a renewal of a live lease succeeds', dbtest.renew(dbtest.u(1), att, 'worker-q', 1));
+  PERFORM dbtest.expect_eq('and it is a heap-only update: no index is keyed on a column that a renewal changes',
+    pg_stat_get_xact_tuples_hot_updated('attempts'::regclass) - before, 1::bigint);
+END
+$$;
