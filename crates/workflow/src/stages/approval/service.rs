@@ -252,13 +252,17 @@ impl ApprovalService {
             .delivery
             .current_values(&run, &commit_sha(&request.base)?)
             .await?;
+        // The evidence is bound to the code head the gates ran on. The head the person was shown
+        // may be the documentation commit on top of it, and a move of that head is judged below
+        // against what they saw.
+        let code_head = commit_sha(&request.evidence_binding.head_commit)?;
         let drift = binding::differences(
             &request.evidence_binding,
             &Now {
                 live_base: &base_tip,
                 current: &current,
                 policy_hash: &d.policy_hash,
-                head: &shown,
+                head: &code_head,
                 implementation_sha256: &request.evidence_binding.implementation_result,
             },
         )

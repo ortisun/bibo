@@ -6,9 +6,11 @@
 //! | Open the pull request | `ChangeHost::open_draft_pull_request` | The same open head branch gives the same pull request |
 //! | Write the body | `ChangeHost::update_pull_request_body` with the current tag | The same body changes nothing visible |
 //!
-//! The pull request is opened as a draft and read back: if the host reports it as anything else,
-//! or at another commit than the one that was delivered, the stage stops. The port has no call
-//! that marks a pull request ready, so there is nothing here that could.
+//! The commit pushed is the documentation commit when the documenting stage made one, and the code
+//! head otherwise ([`Dossier::pushed_head`]). The pull request is opened as a draft and read back:
+//! if the host reports it as anything else, or at another commit than the one that was pushed, the
+//! stage stops. The port has no call that marks a pull request ready, so there is nothing here that
+//! could.
 
 use factory_domain::ids::StageRunId;
 use factory_domain::values::Slug;
@@ -53,7 +55,7 @@ pub async fn deliver(
         .push_target(git, &target.head)
         .await
         .map_err(|e| host_error(&e))?;
-    repo.push(&push, &dossier.candidate.head, cancel)
+    repo.push(&push, &dossier.pushed_head, cancel)
         .await
         .map_err(|e| workspace_error(&e))?;
     let pr = host
@@ -96,7 +98,7 @@ pub async fn deliver(
     let as_delivered = state.lifecycle == PullRequestLifecycle::Open
         && state.draft
         && state.head == target.head
-        && state.head_sha == dossier.candidate.head;
+        && state.head_sha == dossier.pushed_head;
     if !as_delivered {
         return Err(StageError::PolicyDenied);
     }

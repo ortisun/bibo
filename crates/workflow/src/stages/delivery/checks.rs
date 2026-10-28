@@ -72,11 +72,28 @@ fn name(text: &str) -> Option<Slug> {
     Slug::parse(text).ok()
 }
 
-/// The check run for the validation reports of a commit. `None` only if a name is not a slug,
+/// Where the work a check reports was done, in words. A check is attached to the head of the pull
+/// request, which is where the host shows it. When the documentation commit is the head, the gates
+/// ran and the reviewer read the code commit under it, and the check says so instead of claiming
+/// that the head itself was validated.
+fn where_it_was_done(head: &CommitSha, done_on: &CommitSha) -> (String, &'static str) {
+    if head == done_on {
+        ("this commit".to_owned(), "")
+    } else {
+        (
+            format!("the code commit {done_on}"),
+            " The commit after it holds documentation only.",
+        )
+    }
+}
+
+/// The check run for the validation reports. It is attached to `commit`, the head of the pull
+/// request; `validated` is the code commit the gates ran on. `None` only if a name is not a slug,
 /// which no constant here is.
 #[must_use]
 pub fn validation_check(
     commit: &CommitSha,
+    validated: &CommitSha,
     external_id: &Slug,
     reports: &[GateReport],
 ) -> Option<CheckRequest> {
@@ -86,8 +103,9 @@ pub fn validation_check(
         .iter()
         .filter(|o| **o == GateOutcome::Passed)
         .count();
+    let (place, note) = where_it_was_done(commit, validated);
     let mut summary = format!(
-        "{passed} of {} validation gates passed on this commit.\n",
+        "{passed} of {} validation gates passed on {place}.{note}\n",
         outcomes.len()
     );
     for report in reports {
@@ -108,14 +126,22 @@ pub fn validation_check(
     })
 }
 
-/// The check run for the independent review of a commit.
+/// The check run for the independent review. It is attached to `commit`, the head of the pull
+/// request; `reviewed` is the code commit the reviewer read.
 #[must_use]
 pub fn review_check(
     commit: &CommitSha,
+    reviewed: &CommitSha,
     external_id: &Slug,
     verdict: Verdict,
     findings: usize,
 ) -> Option<CheckRequest> {
+    let (place, note) = where_it_was_done(commit, reviewed);
+    let of = if note.is_empty() {
+        String::new()
+    } else {
+        format!(" for {place}")
+    };
     Some(CheckRequest {
         commit: commit.clone(),
         name: name(CHECK_REVIEW)?,
@@ -123,7 +149,7 @@ pub fn review_check(
         status: CheckStatus::Completed(conclusion_for_verdict(verdict)),
         title: format!("Independent review: {}", verdict.as_str()),
         summary: truncate(&format!(
-            "The independent reviewer gave the verdict {} with {findings} finding(s).",
+            "The independent reviewer gave the verdict {} with {findings} finding(s){of}.{note}",
             verdict.as_str()
         )),
         details_url: None,

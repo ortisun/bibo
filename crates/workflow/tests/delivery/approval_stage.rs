@@ -29,7 +29,7 @@ use factory_workflow::stages::approval::{
 use factory_workflow::stages::delivery::SeamError;
 use serde_json::{Value, json};
 
-use crate::world::{Scenario, World};
+use crate::world::{Documentation, Scenario, World};
 
 struct Approvals;
 
@@ -239,10 +239,19 @@ async fn the_approval_stage_stores_what_the_person_will_see() {
     assert!(request.gates_clear);
     assert_eq!(request.open_translation_warnings, 0);
     assert_eq!(request.tier, factory_domain::vocabulary::RiskTier::Low);
-    // The binding names the delivered commits, and the evidence binding is the validation one.
-    assert_eq!(
+    // The person is shown the pushed head, the documentation commit on top of the code. The
+    // evidence binding is the validation one and names the code head the gates ran on.
+    let docs_head = stage.world.documented.lock().expect("lock").clone();
+    let docs_head = docs_head.expect("the documenting stage made a commit");
+    assert_eq!(request.pr_head.as_str(), docs_head.as_str());
+    assert_ne!(
         request.evidence_binding.head_commit.as_str(),
         request.pr_head.as_str()
+    );
+    assert_eq!(
+        stage.world.sources.trees_asked.lock().expect("lock").last(),
+        Some(&docs_head),
+        "the tree is the tree of the pushed head"
     );
     assert_eq!(
         request.evidence_binding.base_commit.as_str(),
@@ -339,6 +348,54 @@ async fn evidence_binding_is_rechecked_before_a_person_is_asked() {
         .definition_hash = factory_domain::values::Sha256Digest::of(b"definitions two");
     assert_eq!(stage.execute().await.err(), Some(StageError::Cancelled));
     assert_eq!(stage.world.drift.told.lock().expect("lock").len(), 1);
+}
+
+/// Changes a field of the stored delivery result.
+async fn edit_delivery(stage: &mut Stage, edit: impl FnOnce(&mut Value)) {
+    stage
+        .world
+        .edit_upstream(
+            &mut stage.upstream,
+            StageKind::Delivery,
+            "delivery-result",
+            edit,
+        )
+        .await;
+}
+
+#[tokio::test]
+async fn the_evidence_binding_is_checked_against_the_code_head_and_not_the_pushed_head() {
+    // The delivery says the gates ran on another commit than the evidence is bound to: the
+    // documents contradict each other, and no one is asked to approve.
+    let mut stage = after_delivery(Scenario::default()).await;
+    edit_delivery(&mut stage, |result| {
+        result["code_head"] = result["base_commit"].clone();
+    })
+    .await;
+    assert_eq!(stage.execute().await.err(), Some(StageError::PolicyDenied));
+
+    // A delivery that does not name the code head cannot be checked, and is not read.
+    let mut stage = after_delivery(Scenario::default()).await;
+    edit_delivery(&mut stage, |result| {
+        result.as_object_mut().expect("object").remove("code_head");
+    })
+    .await;
+    assert_eq!(stage.execute().await.err(), Some(StageError::InvalidOutput));
+}
+
+#[tokio::test]
+async fn without_a_documentation_commit_the_person_is_shown_the_code_head() {
+    let stage = after_delivery(Scenario {
+        documentation: Documentation::NotApplicable,
+        ..Scenario::default()
+    })
+    .await;
+    let ran = stage.run().await.expect("the stage runs");
+    assert_eq!(
+        ran.request.pr_head.as_str(),
+        ran.request.evidence_binding.head_commit.as_str()
+    );
+    assert_eq!(ran.resolution, Resolution::HumanGate);
 }
 
 #[tokio::test]

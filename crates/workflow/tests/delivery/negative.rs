@@ -3,6 +3,7 @@
 
 use factory_domain::contracts::gate_report::BlockedCode;
 use factory_domain::values::Sha256Digest;
+use factory_domain::vocabulary::StageKind;
 use factory_ports::paths::CommitSha;
 use factory_workflow::gates::framework::{BlockCause, Resolution};
 use factory_workflow::handlers::StageError;
@@ -94,6 +95,7 @@ async fn evidence_for_another_commit_is_a_violation_and_not_a_drift() {
     let other = CommitSha::parse(&"c".repeat(40)).expect("a sha");
     let handler = world.handler();
     // The reports were made for `head`, and the implementation result now names another commit.
+    // The documentation follows the implementation result, so that only the reports disagree.
     let mut upstream = world.upstream(&base, &head).await;
     let forged = world
         .store_json(&serde_json::json!({
@@ -108,6 +110,28 @@ async fn evidence_for_another_commit_is_a_violation_and_not_a_drift() {
             }
         }
     }
+    for (name, field) in [
+        ("documentation-result", "code_head"),
+        ("documentation-result", "head_commit"),
+        ("documentation-plan", "code_head"),
+    ] {
+        world
+            .edit_upstream(&mut upstream, StageKind::Documenting, name, |document| {
+                document[field] = serde_json::json!(other.as_str());
+            })
+            .await;
+    }
+    world
+        .edit_upstream(
+            &mut upstream,
+            StageKind::Documenting,
+            "documentation-result",
+            |document| {
+                document["writer_ran"] = serde_json::json!(false);
+                document["changes"] = serde_json::json!([]);
+            },
+        )
+        .await;
     let contract = world
         .resolve_contract(&handler, &upstream)
         .expect("a contract");
@@ -143,22 +167,33 @@ async fn negative_nt_lse_03_a_retry_between_push_and_open_makes_one_pull_request
     );
 
     // The retry pushes the same commit again, opens the pull request once and publishes each
-    // check run once.
+    // check run once, on the head of the pull request: the documentation commit.
+    let docs_head = world
+        .documented
+        .lock()
+        .expect("lock")
+        .clone()
+        .expect("a documentation commit");
+    assert_ne!(docs_head, head);
     let outputs = world
         .execute(&handler, &contract, &upstream)
         .await
         .expect("the retry works");
     let result = world.read_output(&outputs, "delivery-result").await;
     assert_eq!(result["delivered"], true);
+    assert_eq!(result["head_commit"], docs_head.as_str());
     assert_eq!(
         world
             .host
             .inner()
-            .check_run_count(&head, "factory-validation"),
+            .check_run_count(&docs_head, "factory-validation"),
         1
     );
     assert_eq!(
-        world.host.inner().check_run_count(&head, "factory-review"),
+        world
+            .host
+            .inner()
+            .check_run_count(&docs_head, "factory-review"),
         1
     );
     // A second full run changes nothing either.
@@ -170,7 +205,7 @@ async fn negative_nt_lse_03_a_retry_between_push_and_open_makes_one_pull_request
         world
             .host
             .inner()
-            .check_run_count(&head, "factory-validation"),
+            .check_run_count(&docs_head, "factory-validation"),
         1
     );
     let numbers: std::collections::BTreeSet<u64> =
@@ -443,6 +478,7 @@ async fn a_missing_input_blocks_the_stage_before_anything_is_done() {
         "task-plan",
         "architecture-design",
         "documentation-plan",
+        "documentation-result",
         "documentation-gate-report",
         "documentation-review",
     ] {

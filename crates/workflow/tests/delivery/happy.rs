@@ -4,6 +4,7 @@
 use factory_domain::contracts::{Contract, EvidenceManifest};
 use factory_domain::vocabulary::GateOutcome;
 use factory_ports::githost::{CheckConclusion, CheckStatus, PullRequestRef};
+use factory_ports::paths::CommitSha;
 use factory_workflow::gates::framework::Resolution;
 use factory_workflow::gates::readability::{Artifact, Options, ReadabilityGate, Severity};
 use factory_workflow::stages::validation::GATES;
@@ -215,15 +216,22 @@ async fn the_stage_restarts_without_a_second_pull_request_or_check_run() {
     let first = world.run_on(&base, &head).await;
     let second = world.run_on(&base, &head).await;
     assert_eq!(first.result["pull_request"], second.result["pull_request"]);
+    // The check runs are on the head of the pull request, which is the documentation commit.
+    let pushed = second.result["head_commit"].as_str().expect("a commit");
+    let pushed = CommitSha::parse(pushed).expect("a sha");
+    assert_ne!(pushed, head);
     assert_eq!(
         world
             .host
             .inner()
-            .check_run_count(&head, "factory-validation"),
+            .check_run_count(&pushed, "factory-validation"),
         1
     );
     assert_eq!(
-        world.host.inner().check_run_count(&head, "factory-review"),
+        world
+            .host
+            .inner()
+            .check_run_count(&pushed, "factory-review"),
         1
     );
     // Both runs asked to open it, and the host kept one. The body was written again with the

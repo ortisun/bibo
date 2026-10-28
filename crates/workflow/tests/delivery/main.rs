@@ -22,6 +22,7 @@ mod world;
 
 mod approval;
 mod approval_stage;
+mod documented;
 mod happy;
 mod judging;
 mod negative;

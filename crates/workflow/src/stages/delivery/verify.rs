@@ -33,7 +33,7 @@ use crate::stages::intake::common::{
 use factory_domain::contracts::gate_report::{BlockedCode, DefinitionSource};
 
 const PULL_REQUEST_TEXT: &str = "delivery-pull-request 1.0.0: the pull request exists on the code host, is open, is a draft, is on the factory branch and points at the delivered commit.";
-const MANIFEST_TEXT: &str = "delivery-manifest 1.0.0: the stored evidence manifest follows its contract, and its hash is the one written in the pull request body.";
+const MANIFEST_TEXT: &str = "delivery-manifest 1.0.0: the stored evidence manifest follows its contract, it cites the commit the pull request was opened from, and its hash is the one written in the pull request body.";
 
 /// What `execute` stored about the delivery.
 struct Stored {
@@ -162,6 +162,15 @@ impl DeliveryHandler {
                     manifest_failures.push((
                         "manifest-invalid".to_owned(),
                         "The stored manifest breaks a rule of the evidence manifest contract."
+                            .to_owned(),
+                    ));
+                }
+                // The manifest and the pull request must name the same head: the commit that was
+                // pushed, which is the documentation commit when there is one.
+                if parsed.metadata.repository.head_commit.as_str() != result.head_commit {
+                    manifest_failures.push((
+                        "manifest-head-differs".to_owned(),
+                        "The stored manifest cites another commit than the one the pull request was opened from."
                             .to_owned(),
                     ));
                 }

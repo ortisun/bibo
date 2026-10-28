@@ -322,9 +322,9 @@ pub fn build(i: &ManifestInputs<'_>) -> Result<EvidenceManifest, ManifestError> 
                 base_commit: factory_domain::values::GitSha::parse(
                     dossier.candidate.base.as_str(),
                 )?,
-                head_commit: factory_domain::values::GitSha::parse(
-                    dossier.candidate.head.as_str(),
-                )?,
+                // The commit the pull request points at, which the links in its body resolve at.
+                // The gates ran on the code head under it; the evidence binding names that one.
+                head_commit: factory_domain::values::GitSha::parse(dossier.pushed_head.as_str())?,
             },
         },
         title,

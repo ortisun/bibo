@@ -36,6 +36,9 @@ use factory_testkit::registry::InMemoryAgentRegistry;
 use factory_testkit::router::StaticModelRouter;
 use factory_testkit::sandbox::FakeSandbox;
 use factory_testkit::workspace::{FakeRemote, FakeWorkspaceProvider};
+use factory_workflow::gates::docs::plan::{
+    Audience, Binding as PlanBinding, DocPlan, Form, Interface, Item, ItemKind, NotApplicable,
+};
 use factory_workflow::gates::framework::{
     EvidenceProblem, Expectation, GateDecision, Resolution, check_evidence, resolve,
 };
@@ -142,6 +145,8 @@ pub struct Sources {
     pub values: Mutex<CurrentValues>,
     pub ledger: Mutex<LedgerState>,
     pub tree: GitSha,
+    /// The commits whose tree the stage asked for.
+    pub trees_asked: Mutex<Vec<CommitSha>>,
     pub fidelity: Fidelity,
 }
 
@@ -163,7 +168,8 @@ impl DeliverySources for Sources {
     async fn ledger(&self, _run: &RunIdentity) -> Result<LedgerState, SeamError> {
         Ok(self.ledger.lock().expect("lock").clone())
     }
-    async fn tree_of(&self, _run: &RunIdentity, _commit: &CommitSha) -> Result<GitSha, SeamError> {
+    async fn tree_of(&self, _run: &RunIdentity, commit: &CommitSha) -> Result<GitSha, SeamError> {
+        self.trees_asked.lock().expect("lock").push(commit.clone());
         Ok(self.tree.clone())
     }
 }
@@ -180,6 +186,15 @@ impl EvidenceDrift for Drift {
         self.told.lock().expect("lock").push((tenant, job));
         Ok(())
     }
+}
+
+/// What the documenting stage left behind.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Documentation {
+    /// The writer committed a page on top of the code head.
+    Committed,
+    /// The plan is not applicable: nothing was written and the documentation head is the code head.
+    NotApplicable,
 }
 
 /// What a test changes before the stage runs.
@@ -201,6 +216,8 @@ pub struct Scenario {
     pub risk: RiskFacts,
     /// Open warnings of the rule `translation-unfaithful` in the documentation gate report.
     pub translation_warnings: u32,
+    /// What the documenting stage did.
+    pub documentation: Documentation,
 }
 
 impl Default for Scenario {
@@ -220,6 +237,7 @@ impl Default for Scenario {
                 ..RiskFacts::default()
             },
             translation_warnings: 0,
+            documentation: Documentation::Committed,
         }
     }
 }
@@ -268,6 +286,8 @@ pub struct World {
     pub scenario: Scenario,
     /// The policy hash the contract is resolved with, when a test changes the policy.
     pub contract_policy: Mutex<Option<Sha256Digest>>,
+    /// The commit the documenting stage made on top of the code head, once `commits` has run.
+    pub documented: Mutex<Option<CommitSha>>,
     runtime: FakeAgentRuntime,
     router: StaticModelRouter,
     registry: InMemoryAgentRegistry,
@@ -368,6 +388,7 @@ impl World {
             }),
             ledger: Mutex::new(ledger),
             tree: GitSha::parse(&"d".repeat(40)).expect("a tree"),
+            trees_asked: Mutex::default(),
             fidelity: scenario.sources_fidelity,
         });
         Self {
@@ -398,6 +419,7 @@ impl World {
             redactor,
             scenario,
             contract_policy: Mutex::default(),
+            documented: Mutex::default(),
         }
     }
 
@@ -462,7 +484,53 @@ impl World {
             .await
             .expect("a commit");
         workspace.dispose().await.expect("dispose");
+        if self.scenario.documentation == Documentation::Committed {
+            let documented = self.document(&head).await;
+            *self.documented.lock().expect("lock") = Some(documented);
+        }
         (fetched.commit, head)
+    }
+
+    /// One commit on top of `code_head` that adds a page under `docs`, made the way the
+    /// documenting stage makes its own: through a workspace, after the audit.
+    pub async fn document(&self, code_head: &CommitSha) -> CommitSha {
+        let workspace = self
+            .workspaces
+            .create(
+                WorkspaceRequest {
+                    job: self.job,
+                    attempt: self.attempt,
+                    base: code_head.clone(),
+                    rules: fixture_rules(),
+                    purpose: WorkspacePurpose::Agent,
+                },
+                &self.cancel,
+            )
+            .await
+            .expect("a workspace");
+        self.workspaces
+            .edit_tree(
+                &workspace.mounts().workspace,
+                TreeEdit::Write(
+                    RepoPath::new("docs/guide.md").expect("a path"),
+                    b"# Guide\n\nCall two to add the second number.\n".to_vec(),
+                ),
+            )
+            .expect("an edit");
+        let change = workspace.ingest(&self.cancel).await.expect("ingest");
+        let head = workspace
+            .commit(
+                &change,
+                CommitRequest {
+                    message: "Document the change".to_owned(),
+                    author_name: "Software Factory".to_owned(),
+                    author_email: "factory@example.test".to_owned(),
+                },
+            )
+            .await
+            .expect("a commit");
+        workspace.dispose().await.expect("dispose");
+        head
     }
 
     pub async fn store_json(&self, value: &serde_json::Value) -> ArtifactRef {
@@ -578,7 +646,22 @@ impl World {
             .await;
         let blob = |text: &str| serde_json::json!({ "document": text });
         let architecture = self.store_json(&blob("architecture")).await;
-        let documentation = self.store_json(&blob("documentation plan")).await;
+        let documented = self.documented.lock().expect("lock").clone();
+        let documentation = self
+            .store_json(&documentation_plan(
+                base,
+                head,
+                &spec.sha256,
+                documented.is_some(),
+            ))
+            .await;
+        let documentation_result = self
+            .store_json(&documentation_result(
+                base,
+                head,
+                documented.as_ref().unwrap_or(head),
+            ))
+            .await;
         let mut documentation_report = self
             .report("documentation-gate", "PASSED")
             .to_json_value()
@@ -618,6 +701,11 @@ impl World {
         add(StageKind::Validation, "validation-evidence", evidence);
         add(StageKind::Review, "review-verdict", verdict);
         add(StageKind::Documenting, "documentation-plan", documentation);
+        add(
+            StageKind::Documenting,
+            "documentation-result",
+            documentation_result,
+        );
         add(
             StageKind::DocumentationReview,
             "documentation-gate-report",
@@ -748,6 +836,31 @@ impl World {
         serde_json::from_slice(&bytes).expect("JSON")
     }
 
+    /// Changes a stored deliverable of an earlier stage: reads it, lets `edit` change it, stores
+    /// the result and points the upstream run at the new document.
+    pub async fn edit_upstream(
+        &self,
+        upstream: &mut [UpstreamRun],
+        kind: StageKind,
+        name: &str,
+        edit: impl FnOnce(&mut serde_json::Value),
+    ) {
+        let slot = upstream
+            .iter_mut()
+            .rev()
+            .filter(|run| run.kind == kind)
+            .find_map(|run| run.outputs.iter_mut().find(|o| o.name.as_str() == name))
+            .unwrap_or_else(|| panic!("no output {name}"));
+        let bytes = self
+            .artifacts
+            .get(&TenantScope::new(self.tenant), &slot.artifact)
+            .await
+            .expect("readable");
+        let mut value: serde_json::Value = serde_json::from_slice(&bytes).expect("JSON");
+        edit(&mut value);
+        slot.artifact = self.store_json(&value).await;
+    }
+
     /// `evaluate`, the engine's evidence check and `resolve`.
     pub async fn evaluate(
         &self,
@@ -809,6 +922,78 @@ impl World {
             .await
             .expect("evaluate works")
     }
+}
+
+/// The plan the documenting stage stores, as it writes it.
+fn documentation_plan(
+    base: &CommitSha,
+    code_head: &CommitSha,
+    specification: &Sha256Digest,
+    applicable: bool,
+) -> serde_json::Value {
+    let binding = PlanBinding {
+        base_commit: base.as_str().to_owned(),
+        code_head: code_head.as_str().to_owned(),
+        specification_sha256: specification.to_string(),
+    };
+    let item = Item {
+        id: "update-guide".to_owned(),
+        kind: ItemKind::Usage,
+        page: "docs/guide.md".to_owned(),
+        form: Form::HowTo,
+        audience: vec![Audience::Developers],
+        sources: vec!["src/lib.rs".to_owned()],
+        terms: vec!["two".to_owned()],
+        acceptance: vec!["The page says what the new function does.".to_owned()],
+    };
+    DocPlan {
+        binding,
+        change_types: Vec::new(),
+        interface: Interface::default(),
+        program: None,
+        breaking: false,
+        items: if applicable { vec![item] } else { Vec::new() },
+        not_applicable: (!applicable).then(|| NotApplicable {
+            rule: "no-user-visible-change".to_owned(),
+            reason: "The change adds no interface that a reader sees.".to_owned(),
+        }),
+    }
+    .to_json()
+}
+
+/// The result the documenting stage stores. `head` is the code head when it committed nothing.
+fn documentation_result(
+    base: &CommitSha,
+    code_head: &CommitSha,
+    head: &CommitSha,
+) -> serde_json::Value {
+    let committed = head != code_head;
+    serde_json::json!({
+        "schema_version": 1,
+        "kind": "documentation-result",
+        "base_commit": base.as_str(),
+        "code_head": code_head.as_str(),
+        "head_commit": head.as_str(),
+        "writer_ran": committed,
+        "changes": if committed {
+            serde_json::json!([{ "path": "docs/guide.md", "kind": "added" }])
+        } else {
+            serde_json::json!([])
+        },
+        "additions": if committed { 3 } else { 0 },
+        "deletions": 0,
+        "reported": {
+            "claims": [],
+            "plan_coverage": [],
+            "files_written": [],
+            "ignored_instructions": [],
+        },
+        "unresolved_claims": [],
+        "refusal": null,
+        "out_of_scope": [],
+        "spent": { "input_tokens": 0, "output_tokens": 0, "cost_micro_usd": 0, "requests": 0 },
+        "fake": true,
+    })
 }
 
 /// A secret-shaped text built at run time, so that no source file holds one.

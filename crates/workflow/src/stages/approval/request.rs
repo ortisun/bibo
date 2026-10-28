@@ -31,7 +31,8 @@ pub struct ApprovalRequest {
     pub head_branch: String,
     /// The protected branch.
     pub base_branch: String,
-    /// The head of the pull request.
+    /// The head of the pull request: the documentation commit when the documenting stage made
+    /// one, and the code head otherwise. An approval is bound to this commit.
     pub pr_head: GitSha,
     /// The git tree of that head.
     pub tree: GitSha,
@@ -56,7 +57,8 @@ pub struct ApprovalRequest {
     /// The numeric GitHub id of the person who asked for the job.
     pub requester: u64,
     /// The values the gate reports are bound to. They are compared with the world again when an
-    /// approval is recorded (ADR 0010).
+    /// approval is recorded (ADR 0010). Its head is the code head the gates ran on, which is under
+    /// `pr_head` when documentation was committed.
     pub evidence_binding: Binding,
     /// When the request was made.
     pub created_at: Timestamp,
