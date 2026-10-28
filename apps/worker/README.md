@@ -142,6 +142,87 @@ the store, the providers, the example configurations) are in `crates/composition
 
 ## How far the job gets
 
+### The full run (`apps/api/tests/full_run.rs`)
+
+One `word-count` job from a signed webhook to `COMPLETED` in test mode, with the **real handler of
+every stage** of Slice 1: `IntakeHandler`, `RepoIntelHandler`, `SpecificationHandler`,
+`DomainDiscoveryHandler`, `ArchitectureHandler`, `PlanningHandler`, `ImplementationHandler`,
+`ValidationHandler`, `ReviewHandler`, `DocumentingHandler`, `DocumentationReviewHandler`,
+`DeliveryHandler` and `ApprovalHandler`. It does not use the engine suite's scripted handlers for
+any stage. It lives in the API package for the reason `complete_run.rs` does (`DEP-01`), runs on a
+real PostgreSQL behind the real API server on loopback (the two people's tokens are written to
+files and read back, as a command line client reads them), and the person's two decisions go
+through `POST /v1/jobs/{id}/decisions`: first the specification draft, then the pull request. The
+loop is the same few lines as in `complete_run.rs`, with the evidence-drift pump served next to the
+attempt.
+
+**Real:** PostgreSQL, the API, the signed webhook, the allowlist and policy files, the engine,
+`ClaimWork`, `ProtectionPreflight`, the approval service and its judge, the ledger, the schema check
+of every agent's output, the Spec Kit provider (`SpecKitProvider`) and the installation of this
+repository's Spec Kit, the composition seams, and the 13 handlers.
+
+**Scripted and labelled** (each reports itself as a fake, and the run prints which stages used it):
+
+| What | Stand-in | Used by |
+|---|---|---|
+| The nine agents | the playbook (`apps/api/tests/playbook/`, data in `fixtures/recordings/playbook/word-count/`), played by a runtime that reports fidelity `fake` and writes the files an agent would write into the workspace of its sandbox | every agent stage |
+| The sandbox | the testkit's fake, with `cargo` and the tool answering with output **recorded from a real run** of the patched fixture, and `mkdir`, `tee`, `rm` and `cp` that succeed and change nothing | `REPOSITORY_INTELLIGENCE`, `SPECIFICATION`, `VALIDATION`, `DOCUMENTATION_REVIEW` run commands in it; the agent stages run the playbook in it |
+| Workspaces and the code host | the testkit's fakes over the files of the fixture, with the patch exported in the shape of `git diff` (`apps/api/tests/full/gitshape.rs`) | all |
+| The supply chain's registry, advisory database and recorded approvals | empty or recent stand-ins; the patch adds no dependency, so the gate does not apply | `VALIDATION` |
+| The administrator's statement that the App is on no bypass list | the tenant's operator, in the rig | `ProtectionPreflight` |
+
+**Real Docker.** The commands that the fake sandbox answers were also run in the real pinned `verify`
+image, offline, on the fixture with the playbook's patch: `crates/composition/tests/real_verify_of_the_patch.rs`
+(ignored by default like `docker_sandbox.rs`, `BLOCKED` and never a pass without Docker). It passed
+three runs of three and left nothing with the test labels. The full run itself does not use Docker:
+the real git workspace cannot be mixed with the fake code host (see the paragraph on the real Docker
+sandbox below), and a whole-job run on the real sandbox needs the agent stages to run an agent in a
+container, which a scripted agent cannot.
+
+State by state, from the run (durations are the sum of the attempts of the stage on one machine):
+
+| Stage | Handler | Real or scripted | Sandbox | Result | Duration |
+|---|---|---|---|---|---|
+| `INTAKE` | `IntakeHandler` | real handler, scripted agent | fake | `PASSED`, 1 attempt | 0.11 s |
+| `REPOSITORY_INTELLIGENCE` | `RepoIntelHandler` | real | fake | `PASSED`, 1 attempt | 0.11 s |
+| `SPECIFICATION` | `SpecificationHandler` | real handler, real Spec Kit provider, scripted skills and reviewer | fake | `NEEDS_HUMAN` (draft approval) then `PASSED`, 2 attempts | 1.2 s |
+| `DOMAIN_DISCOVERY` | `DomainDiscoveryHandler` | real | none | `SKIPPED` by `static-general-software-profile` | 0 |
+| `ARCHITECTURE` | `ArchitectureHandler` | real handler, scripted architect | fake | `PASSED`, 1 attempt | 0.24 s |
+| `TASK_PLANNING` | `PlanningHandler` | real handler, scripted planner | fake | `PASSED`, 1 attempt | 0.24 s |
+| `IMPLEMENTATION` | `ImplementationHandler` | real handler, scripted builder, two tasks | fake | `PASSED`, 1 attempt | 0.47 s |
+| `VALIDATION` | `ValidationHandler` | real, recorded `cargo` output | fake | `PASSED`, 1 attempt | 0.42 s |
+| `REVIEW` | `ReviewHandler` | real handler, scripted reviewer | fake | `PASSED`, 1 attempt | 0.25 s |
+| `DOCUMENTING` | `DocumentingHandler` | real handler, scripted writer | fake | `PASSED`, 1 attempt | 0.22 s |
+| `DOCUMENTATION_REVIEW` | `DocumentationReviewHandler` | real handler, scripted reviewer, recorded tool output | fake | `PASSED`, 1 attempt | 0.33 s |
+| `DELIVERY` | `DeliveryHandler` | real, fake code host | none | `PASSED`, 1 attempt | 0.14 s |
+| `APPROVAL` | `ApprovalHandler` | real, fake code host | none | `WAITING_FOR_HUMAN`, then `PASSED` by the person's decision | 0.09 s |
+
+The job ends `COMPLETED`, the evidence manifest, the documentation gate report and the pull request
+description are stored and readable, and the run asserts, besides completion: the ledger chain
+verifies for the job; every gate decision has a stored report the tenant can read; the validation
+binding, the implementation result and the approval request agree about the code head, and the pull
+request head is the documentation commit above it; the reviewer is another agent than the builder;
+the documentation gate ran and passed; the specification came from the Spec Kit writer and only that
+agent wrote under `.specify` or `specs`; a set of canary secrets planted in hidden paths of the
+fixture reached no stored blob, prompt, log line or audit record; the pull request text passes the
+readability gate; and the timeline shows both decisions requested and applied once each.
+
+**Two runs of the same job agree.** The run is repeated and 27 deliverables are compared. The bytes
+of 17 differ; with the identifiers (job, stage run, attempt, report), the times and the hashes and
+commit ids that follow from them taken out, all 27 agree. What differs is only: UUIDs, timestamps,
+the last eight characters of the job id in the feature directory name, and every hash of a document
+that embeds one of those (the commits, trees, contracts, reports, the manifest).
+
+**Deliberate breaks, shown caught** (all in `full_run.rs`): a stage that stores a deliverable under
+another name (the engine refuses the undeclared name and nothing is stored); a builder patch that
+touches `.github/workflows/ci.yml` (the ingestion refuses it, the audit records the denial, the
+evidence names the path); a reviewer of the same type as the builder (the review stage refuses an
+agent that can write); a documentation README that names an option the program does not have (the
+documentation gate fails, the stored report names the option, delivery never starts); a canary secret
+in the builder's output (the ingestion refuses it, and the sweep finds it nowhere); a missing evidence
+artifact before delivery (the job stops before delivery); an approval given for a stale head (refused,
+in the timeline, nothing moves).
+
 ### The complete run (`apps/api/tests/complete_run.rs`)
 
 One `word-count` job, from a signed webhook to `COMPLETED`, in test mode. It lives in the API package
@@ -312,9 +393,10 @@ All are in `crates/composition/src/`.
 | `ReworkSource`, `RoundSource` | implemented | `feedback::StoreFeedback` | stage runs, the ledger, stored gate reports and verdicts |
 | `RiskSource` | implemented | `risk::StoreRisk` | the stored intake |
 | `EvidenceDrift` | implemented | `drift::ChannelDrift` and `DriftPump` | a channel to the loop that owns the engine |
-| `SpecApprovals`, `SpecDrafts`, `SpecHistory` | implemented | `specs::StoreSpecApprovals`, `StoreSpecDrafts`, `StoreSpecHistory` | stage run links, the artifact store, the ledger |
+| `SpecApprovals`, `SpecDrafts`, `SpecHistory` | implemented | `specs::StoreSpecApprovals`, `StoreSpecDrafts`, `StoreSpecHistory` | stage run links, the artifact store, the ledger; a person's approval reaches them through `ClaimWork::with_specification` and the engine (mismatch 26) |
+| Protection preflight | implemented | `preflight::ProtectionPreflight` | the code host's protection of the default branch and the administrator's statement (`BypassAttestations`, no production source: mismatch 36) |
 | `ApprovalSources` | implemented | `delivery::StoreApprovalSources` | the principal row, the allowlist, the stored `approval-request` |
-| `DeliverySources` | **partly BLOCKED** | `delivery::StoreDeliverySources` | `target` and `ledger` answered; `current_values` and `tree_of` fail closed |
+| `DeliverySources` | implemented, **wired only where the handlers are registered** | `delivery::StoreDeliverySources` | `target` and `ledger` from the store; `tree_of` and `current_values` once `with_repository` gave it the job's object store and the validation configuration (mismatch 35); without it they fail closed |
 | Workspace patch indexing | implemented | `indexing::IndexingWorkspaces` | wraps the workspace provider |
 | `GateContext` reading engine-stored documents | fixed in the engine | `Engine::produce` | see "Cross-stage mismatches", 14 |
 | Constitution skill grant | **not in this crate** | | `agents/**` and a flow; see "How far the job gets" |
@@ -400,7 +482,7 @@ package. Statuses were checked on 2026-10-28 against the merged foundation.
     when, not which draft. `StoreSpecApprovals` binds by time window (an approval counts for the draft that
     was current when it was recorded) using the engine clock and the database clock of one machine.
     *Smallest change, owner `workflow`:* carry the draft hash on the decision.
-16. **The delivery stage needs two things that do not exist.** `DeliverySources::tree_of`: no port exposes a
+16. **Fixed by the full run (see 25 to 36).** *Original text:* **The delivery stage needs two things that do not exist.** `DeliverySources::tree_of`: no port exposes a
     tree id and only `sandbox` may start `git` (needs `JobRepo::tree_of`, owner `ports` and `sandbox`).
     `DeliverySources::current_values`: the gate definition hash is computed by private code of the validation
     stage (needs a public function there, owner `workflow`). Both fail closed and are listed by `blocked_seams`.
@@ -408,7 +490,7 @@ package. Statuses were checked on 2026-10-28 against the merged foundation.
     lacks `protected_checkout` and `definitions_root`; the API has no configuration type yet (`infra/**` is
     not edited here). The worker example parses. See "What the deployment must do" in the composition README.
 
-18. **Nothing records the protection preflight. Open.** A repository with no passed preflight runs at level L0
+18. **Fixed by the full run: `factory_composition::preflight::ProtectionPreflight`** is a step before each claim, with the production source of the administrator's statement still undecided (36). *Original text:* **Nothing records the protection preflight.** A repository with no passed preflight runs at level L0
     (the store reports L0, ADR 0009), and at L0 `approve_pr` is refused as below its minimum level, so no job of
     such a repository can ever be approved. No process calls `record_protection_preflight`. The complete run
     records it in the database as an administrator would. *Smallest change, owner `workflow` or the worker
@@ -418,9 +500,9 @@ package. Statuses were checked on 2026-10-28 against the merged foundation.
     engine's guard `G_APPROVER_AUTHORIZED` wants it true, so no approval could pass. It is now true when the
     stored request has no open translation warning, and false otherwise. No path of the API records a
     decision about a warning, so an approval with one open is refused. *Open, owner `api`:* an endpoint for it.
-20. **A person cannot answer the specification stage's human gate through the API.** See "Where it stops and
+20. **Fixed by the full run: `ClaimWork::with_specification` and an engine change** (26). *Original text:* **A person cannot answer the specification stage's human gate through the API.** See "Where it stops and
     why", item 3.
-21. **A job from the API with no `source_ref` cannot pass `INTAKE`.** Intake authorizes the person who applied the
+21. **Fixed by the full run: the API refuses it with a 400** (decision below). *Original text:* **A job from the API with no `source_ref` cannot pass `INTAKE`.** Intake authorizes the person who applied the
     factory label on an issue, and reads the issue pointer from `source_ref`. A job submitted without one has
     no issue. *Decision for the owner:* require a `source_ref` that names an issue at submission, or give
     intake a way to authorize a request that has none.
@@ -436,6 +518,66 @@ package. Statuses were checked on 2026-10-28 against the merged foundation.
     `github-issue:<owner>/<name>#<number>` until the stage stores revision 1. The contract is stored when the
     run becomes ready; it is not the contract the next attempt resolves after the text exists.
 
+### Found by the full run (25 to 39)
+
+Each was found by running the real handlers together. "Fixed" says where; "Open" says the owner and the
+smallest change.
+
+25. **The policy protects `.specify/**` and lists `.specify/feature.json` among the writes of the specify skill. Fixed** in
+    `composition::providers::specification_path_rules`: the host refused the pointer, and the specification stage was
+    blocked on its first run. The writes the policy lists for that stage, except the one that needs a person's
+    exception (the constitution), are lifted for that stage only. *Owner `security`:* confirm that reading the lifted
+    writes from `agent_stage_profiles` is the intended way, or add the re-inclusion to the policy file.
+26. **An approval of a specification went nowhere. Fixed** in `Engine::decide`: a specification run waits with its draft
+    kept aside, and its next attempt reads the approval from the ledger. S14 would have passed a run that had stored
+    nothing, so an approval of a specification records the judgment and returns the run to `READY` as S13 does.
+    `ClaimWork::with_specification` applies it, bound to the commit of the draft the person names (the hook's answer
+    for any other commit is the new reason `draft_moved`). *Owner `architect`:* the state machine document says S14
+    for every stage; it needs a sentence for this one. No endpoint lets a person read the draft or the ledger head
+    they must name (`head`, `evidence`): *Owner `api`.*
+27. **The specification stage handed the engine no transcript to index. Fixed:** the gate could not read the transcripts
+    of the skills back, and blocked every run, while the first read of the same transcripts in `execute` quietly found
+    nothing (so the check for a skill outside the profile was blind there). `StageContext::note_transcript` lets a
+    handler ask the engine to keep any number of transcripts. *Owner `workflow`:* `execute` still ignores a transcript
+    it cannot read; it should refuse.
+28. **The architecture gate demands a design element for each success criterion (`SC-001`), and the task graph accepts
+    only `FR-` ids in `requirement_ids`. Open.** The plan passes without citing them, so the two stages disagree about
+    what a requirement is. *Owner `contracts` and `workflow`:* decide whether success criteria are requirements.
+29. **The validation stage read the project manifest as JSON only, and every manifest is YAML. Fixed:** `YamlManifests`
+    implements `ManifestReader`. Without it the stage reported "the gate definitions could not be read from the
+    protected base commit" for a good manifest.
+30. **A job's autonomy level was read from the job row, fixed when the job is received, before the first preflight. Fixed**
+    for the approval (`StoreApprovalSources::level` reads the repository's effective ceiling now, and so also lowers a
+    job whose repository lost its protection). The row itself still holds L0 for such a job. *Owner `architect`,
+    `storage`:* decide whether the level of a job should be set at admission.
+31. **The documenting stage read back the plan it had just stored, before the engine had indexed it for the tenant,
+    and ended with a tool error on every run. Fixed.**
+32. **The testkit's `FakeJobRepo::export_patch` is not git-shaped, and the documenting stage treats a patch it cannot
+    read as "nothing to document" and passes without calling the writer.** The run proved nothing until the rig wrapped
+    the fake (`full/gitshape.rs`). *Owner `testkit`:* give the fake the shape. *Owner `workflow`:* a plan that reads no
+    changed file from a patch that lists changes should be refused, not passed as not applicable.
+33. **The `verify` sandbox spec set only `HOME`; the first `cargo build` in the real image ended with "Read-only file
+    system". Fixed** in `composition::sandbox_specs` (the image README lists what to set).
+34. **The README's title of the fixture, `word-count`, fails the readability gate's title rule ("no ordinary word").**
+    Any change that touches it must retitle it. The playbook retitles it "Word count". *Owner `readability` rules:*
+    treat a compound of ordinary words as words, or the fixture's README should change.
+35. **`DeliverySources::tree_of` and `current_values` are answered** (`JobRepo::tree_of`, pending architect confirmation;
+    `validation::current_values`), but only where the handlers are registered with
+    `StoreDeliverySources::with_repository`, and no worker assembly registers them yet; `blocked_seams` says so.
+36. **The production source of the administrator's statement that the App is on no bypass list does not exist.**
+    `NoAttestations` fails closed, so a deployment that passes nothing caps every repository at L0. *Owner `architect`
+    and `security`.*
+37. **The factory has no function that builds the registry of handlers.** The full run builds all thirteen in
+    `apps/api/tests/full/mod.rs`; the worker binary still stops at BLOCKED before it would. *Owner `composition`:* move
+    that construction into the library once the configuration for the stage settings (budgets, word lists, limits,
+    the commit of the gate definitions) has a home. The numbers in the rig are the ones the stage tests use.
+38. **The reviewer of the code is checked for independence only by what it may do** (`verify_read_only_tools`), not by
+    its agent id or role. Configuring the builder as reviewer is caught; configuring a second agent of the same role is
+    not. *Owner `workflow`.*
+39. **Decision: a job needs an issue.** The API refuses a submission whose `source_ref` is missing, is not
+    `owner/name#number`, or names another repository than the job's. The spec says a job is for one accepted issue
+    (FR-001, FR-027), and a job with no issue could not pass intake or be delivered.
+
 ## Blocked
 
 | Port or seam | Reason |
@@ -443,7 +585,7 @@ package. Statuses were checked on 2026-10-28 against the merged foundation.
 | Agent runtime | a live run needs a model credential and the tool in the agent image |
 | Model router | `policies/model_routing.yaml` does not exist |
 | Issue source, change host | need a registered GitHub App and its key |
-| `DeliverySources::tree_of`, `current_values` | see mismatch 16 |
+| `DeliverySources::tree_of`, `current_values` | implemented; no worker assembly registers the handlers yet (mismatches 35 and 37) |
 | The real Docker sandbox, run in a test | the pinned images are present; the one test of it is ignored because the daemon did not see its bind sources on four runs of five (see "How far the job gets") |
 
 Everything about a live provider or live GitHub is BLOCKED and was not attempted.

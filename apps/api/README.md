@@ -38,7 +38,7 @@ The contract is [`openapi.json`](openapi.json), written first and served on `GET
 | `GET /healthz` | none | none | read |
 | `GET /readyz` | none | none | read |
 | `GET /openapi.json` | none | none | read |
-| `POST /v1/jobs` | bearer token | `requester` | `Idempotency-Key` required: the same key and request finds the first job (`200`), the same key and another request is `409` |
+| `POST /v1/jobs` | bearer token | `requester` | `Idempotency-Key` required: the same key and request finds the first job (`200`), the same key and another request is `409`. `source_ref` is required and must be `owner/name#number` of an issue of the repository the job is for, or the answer is `400` naming the field: a job is for one issue (FR-001), intake reads it from the pointer and delivery links the pull request to it |
 | `GET /v1/jobs` | bearer token | any designation | read |
 | `GET /v1/jobs/{job_id}` | bearer token | any designation | read |
 | `GET /v1/jobs/{job_id}/timeline` | bearer token | any designation | read |
@@ -173,6 +173,9 @@ The tests start the real server on a loopback port and a real PostgreSQL (the st
 | `tests/database_logins.rs` | the three-logins rule from the API login and from the engine login |
 | `tests/telemetry.rs` | work on a job runs in a `factory.job` span; the real redactor reaches telemetry |
 | `tests/breaks.rs` | the deliberate breaks |
+| `tests/complete_run.rs` | one job from a signed webhook to `COMPLETED` with the engine suite's stand-in handlers after the first three stages, and the decision path on its own |
+| `tests/full_run.rs` | one job through the real handler of every stage, the person's two approvals through this API, the assertions that matter, two runs compared, and seven deliberate breaks (the worker README, "The full run") |
+| `tests/playbook_outputs.rs` | the scripted agent playbook on its own: every answer valid against its agent's schema, an answer it does not have fails loudly |
 
 ### Deliberate breaks
 
@@ -227,9 +230,13 @@ redactor).
   records revision 1 when it runs. The issue is found in the audit record `job.received_from_webhook`, which is why
   that record's subject (`issue <owner>/<name>#<number>`) is now part of the contract between the API and the
   worker.
-* **Still open:** a person cannot answer the specification stage's human gate through this endpoint, an approval
-  with an open translation warning is refused because no endpoint records a decision about a warning, and a job
-  submitted without a `source_ref` cannot pass intake (worker README, mismatches 19 to 21).
+* **Done by the full run** (`tests/full_run.rs`, worker README "The full run"): a person approves the specification
+  draft through this endpoint (`verb: approve` on the specification stage run, `head` the commit of the draft the
+  person read, `evidence` the ledger head they saw; the worker's `ClaimWork::with_specification` applies it), and a job
+  submitted without a `source_ref` is refused with a `400` at the door.
+* **Still open:** an approval with an open translation warning is refused because no endpoint records a decision
+  about a warning (worker README, mismatch 19), and no endpoint lets a person read the specification draft or the ledger
+  head that a decision must name (mismatch 26).
 * **The outbox criterion of the package** ("one job, one outbox row and 49 duplicate-delivery audit events") is met
   for the job and the audit events and not for the outbox: `state-machine.json` has no event for a received job
   (the first event of a job is `job.admitted`, written by the engine), and the API invents no event type. The
