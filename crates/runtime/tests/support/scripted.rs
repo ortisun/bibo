@@ -383,3 +383,38 @@ impl SandboxSession for ScriptedSession {
         })
     }
 }
+
+/// Runs one request against the real adapter for `tool` on a scripted session whose tool command
+/// does `main`. Returns the report and a watch on what the session saw.
+pub async fn run(
+    h: &Harness,
+    tool: Tool,
+    main: Step,
+    edit: impl FnOnce(&mut factory_ports::agent::AgentRunRequest),
+) -> (factory_ports::agent::AgentRunReport, Watch) {
+    use factory_ports::agent::AgentRuntime;
+    let mut session = ScriptedSession::new(h, tool, main);
+    let watch = session.watch();
+    let (runtime, name): (Box<dyn AgentRuntime>, &str) = match tool {
+        Tool::Claude => (
+            Box::new(factory_runtime::ClaudeCodeRuntime::new(
+                factory_runtime::ClaudeCodeConfig::default(),
+                h.io.clone(),
+            )),
+            "claude-code-cli",
+        ),
+        Tool::Codex => (
+            Box::new(factory_runtime::CodexRuntime::new(
+                factory_runtime::CodexConfig::default(),
+                h.io.clone(),
+            )),
+            "codex-cli",
+        ),
+    };
+    let mut req = super::request(h, name, "some-model", "http://egress:8080");
+    edit(&mut req);
+    let report = runtime
+        .run(&mut session, req, &factory_runtime::probe::NeverCancelled)
+        .await;
+    (report, watch)
+}

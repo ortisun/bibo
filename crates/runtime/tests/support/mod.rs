@@ -47,6 +47,18 @@ pub mod recorded {
     pub const CODEX_FEATURES: &str = include_str!(
         "../../../../fixtures/recordings/agent-cli/runs/codex-features-list/stdout.txt"
     );
+
+    /// The standard output the spike recorded for one case (a directory under `runs/`).
+    ///
+    /// # Panics
+    /// When the case is not in the recordings.
+    pub fn stdout(case: &str) -> String {
+        let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../fixtures/recordings/agent-cli/runs")
+            .join(case)
+            .join("stdout.txt");
+        std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()))
+    }
 }
 
 /// The agent image of the catalog, by digest.
