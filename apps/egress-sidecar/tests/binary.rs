@@ -61,6 +61,25 @@ impl Sidecar {
         serde_json::from_str(&line).expect("a JSON line")
     }
 
+    /// Starts the program on a port that was free a moment ago. Another process may take the port
+    /// between the check and the bind, so a program that exits before it says ready is started
+    /// again on another port. Returns the program and its ready line.
+    fn start_ready(make_args: impl Fn(u16) -> String) -> (Self, serde_json::Value) {
+        for _ in 0..8 {
+            let mut sidecar = Self::start(&args(&make_args(free_port())));
+            let deadline = std::time::Instant::now() + Duration::from_secs(5);
+            while std::time::Instant::now() < deadline {
+                if let Ok(line) = sidecar.lines.recv_timeout(Duration::from_millis(100)) {
+                    return (sidecar, serde_json::from_str(&line).expect("a JSON line"));
+                }
+                if sidecar.child.try_wait().ok().flatten().is_some() {
+                    break;
+                }
+            }
+        }
+        panic!("the sidecar never said ready on any of eight ports");
+    }
+
     fn connect(&self) -> TcpStream {
         let stream =
             TcpStream::connect_timeout(&self.listen, Duration::from_secs(5)).expect("connect");
@@ -153,11 +172,9 @@ fn broker_mode_says_ready_and_relays_to_the_upstream_address_and_nowhere_else() 
         }
         count
     });
-    let port = free_port();
-    let sidecar = Sidecar::start(&args(&format!(
-        "--mode broker --listen 127.0.0.1:{port} --upstream {up_addr} --job job-1"
-    )));
-    let ready = sidecar.next_line();
+    let (sidecar, ready) = Sidecar::start_ready(|port| {
+        format!("--mode broker --listen 127.0.0.1:{port} --upstream {up_addr} --job job-1")
+    });
     assert_eq!(ready["event"], "ready");
     assert_eq!(ready["mode"], "broker");
     assert_eq!(ready["job"], "job-1");
@@ -182,11 +199,10 @@ fn connect_mode_with_the_system_resolver_refuses_a_name_that_resolves_to_loopbac
     let target = TcpListener::bind("127.0.0.1:0").expect("bind");
     target.set_nonblocking(true).expect("nonblocking");
     let target_port = target.local_addr().expect("addr").port();
-    let port = free_port();
-    let sidecar = Sidecar::start(&args(&format!(
-        "--mode connect --listen 127.0.0.1:{port} --allow localhost:{target_port}"
-    )));
-    assert_eq!(sidecar.next_line()["event"], "ready");
+    let (sidecar, ready) = Sidecar::start_ready(|port| {
+        format!("--mode connect --listen 127.0.0.1:{port} --allow localhost:{target_port}")
+    });
+    assert_eq!(ready["event"], "ready");
 
     let ask = |authority: &str| -> String {
         let mut stream = sidecar.connect();
