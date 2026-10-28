@@ -558,3 +558,24 @@ fn string_map(value: &Value) -> BTreeMap<String, String> {
         })
         .unwrap_or_default()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_bearer_and_a_live_token_print_nothing_of_the_token() {
+        let live = Live {
+            key: TokenKey {
+                class: TokenClass::Stage,
+                repo: RepoRef::parse("example-org/fixture").unwrap(),
+                permissions: Vec::new(),
+            },
+            bearer: Bearer("TOKENVALUE0123456789".to_owned()),
+            expires_at: Timestamp::parse("2026-10-28T11:00:00Z").unwrap(),
+            handle: None,
+        };
+        let shown = format!("{:?} {live:?}", live.bearer);
+        assert!(!shown.contains("TOKENVALUE"), "{shown}");
+    }
+}
