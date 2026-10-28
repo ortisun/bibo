@@ -21,6 +21,7 @@
 //! Composition is the one job of this package, so no module here contains a business rule. The
 //! engine decides, the adapters act, and this package chooses and connects them.
 
+pub mod authority;
 pub mod config;
 pub mod database;
 pub mod health;
@@ -28,6 +29,8 @@ pub mod profile;
 pub mod redaction;
 pub mod registry;
 pub mod run;
+pub mod sandbox_specs;
+pub mod seams;
 pub mod startup;
 pub mod system;
 pub mod telemetry;

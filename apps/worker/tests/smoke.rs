@@ -1,0 +1,499 @@
+//! The first end-to-end smoke in test mode: a job for the fixture repository `word-count`, driven
+//! with the scripted runtime through the real stage handlers the wiring supports.
+//!
+//! What is real: the PostgreSQL store with both pools, the local artifact store, the file agent
+//! registry (`agents/`), the policy files (`policies/*.yaml`), the schema check, the allowlist
+//! file, the authority, the sandbox spec builder, the redactor, the worker loop, and the stage
+//! handlers named in `STAGES`. What is a fake: the agent runtime (scripted), the sandbox (the
+//! testkit's, which runs `cargo` as a scripted program), the workspace provider and the change
+//! host (the testkit's, over the files of `fixtures/repos/word-count`), the issue source and the
+//! model broker.
+//!
+//! The test reports how far the job gets. The result is printed, and the assertions pin it, so a
+//! later change that moves the stopping point shows up as a failure with a plain message.
+
+mod support;
+
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::time::Duration;
+
+use factory_contracts::registry::FileAgentRegistry;
+use factory_domain::ids::TenantId;
+use factory_domain::scope::TenantScope;
+use factory_domain::state::StageRunStatus;
+use factory_domain::values::{GitSha, Uri};
+use factory_domain::vocabulary::StageKind;
+use factory_ports::agent::BrokerEndpoint;
+use factory_ports::clock::IdGenerator;
+use factory_ports::githost::{ActorLogin, GithubActor, IssueRef};
+use factory_ports::paths::{BranchName, RepoRef};
+use factory_ports::store::{NewOriginalRequest, RequestSource as StoreRequestSource, Store};
+use factory_testkit::agent::{AdversarialScript, FakeAgentRuntime};
+use factory_testkit::clock::FakeClock;
+use factory_testkit::contracts::githost::IssueSourceSubject;
+use factory_testkit::githost::{FakeChangeHost, FakeIssueSource};
+use factory_testkit::router::probed;
+use factory_testkit::sandbox::{FakeSandbox, ProgramOutput};
+use factory_testkit::workspace::{FakeRemote, FakeWorkspaceProvider};
+use factory_worker::config::{LoopConfig, SecretFile};
+use factory_worker::redaction::{FactorySecrets, redactor_from_policy};
+use factory_worker::run::{Flow, Observer, WorkerLoop};
+use factory_worker::sandbox_specs::{PolicySpecs, sandbox_policy_from};
+use factory_worker::seams::{
+    CachedProbes, FileAllowlist, SchemaChecker, StoreRepositories, StoreRequests, YamlManifests,
+};
+use factory_worker::startup::load_policy;
+use factory_worker::system::{RandomIds, Shutdown, TokioTicker};
+use factory_workflow::engine::{AttemptOutcome, Engine};
+use factory_workflow::handlers::HandlerRegistry;
+use factory_workflow::scheduler::ClaimedAttempt;
+use factory_workflow::stages::intake::{IntakeConfig, IntakeDeps, IntakeHandler};
+use factory_workflow::stages::repo_intel::{RepoIntelConfig, RepoIntelDeps, RepoIntelHandler};
+use support::engine::PgWorld;
+use support::{seed_tenant, seeded_repository, server, worker_config};
+
+const REPOSITORY: &str = "example-org/word-count";
+const LABEL: &str = "factory";
+const REQUESTER: u64 = 1001;
+
+fn repository_root() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../..")
+        .canonicalize()
+        .expect("the repository root")
+}
+
+/// The files of `fixtures/repos/word-count`, as `(path, content)`.
+fn fixture_files() -> Vec<(String, String)> {
+    fn walk(root: &Path, dir: &Path, out: &mut Vec<(String, String)>) {
+        let mut entries: Vec<_> = std::fs::read_dir(dir)
+            .expect("the fixture is readable")
+            .map(|entry| entry.expect("an entry").path())
+            .collect();
+        entries.sort();
+        for path in entries {
+            if path.is_dir() {
+                walk(root, &path, out);
+            } else if let Ok(text) = std::fs::read_to_string(&path) {
+                let relative = path.strip_prefix(root).expect("inside the root");
+                out.push((relative.to_string_lossy().into_owned(), text));
+            }
+        }
+    }
+    let root = repository_root().join("fixtures/repos/word-count");
+    let mut files = Vec::new();
+    walk(&root, &root, &mut files);
+    files
+}
+
+/// Wraps a real handler and prints what it returns, so the smoke can say why a stage stopped.
+struct Traced(Arc<dyn factory_workflow::handlers::StageHandler>);
+
+#[async_trait::async_trait]
+impl factory_workflow::handlers::StageHandler for Traced {
+    fn fidelity(&self) -> factory_domain::vocabulary::Fidelity {
+        self.0.fidelity()
+    }
+
+    fn kind(&self) -> StageKind {
+        self.0.kind()
+    }
+
+    fn applicability(
+        &self,
+        ctx: &factory_workflow::handlers::ContractContext<'_>,
+    ) -> factory_workflow::handlers::Applicability {
+        self.0.applicability(ctx)
+    }
+
+    fn routing_need(
+        &self,
+        ctx: &factory_workflow::handlers::ContractContext<'_>,
+    ) -> Option<factory_ports::agent::RoutingNeed> {
+        self.0.routing_need(ctx)
+    }
+
+    fn contract(
+        &self,
+        ctx: &factory_workflow::handlers::ContractContext<'_>,
+    ) -> Result<factory_domain::contracts::StageContract, factory_workflow::handlers::StageError>
+    {
+        self.0.contract(ctx)
+    }
+
+    async fn execute(
+        &self,
+        ctx: &mut factory_workflow::handlers::StageContext<'_>,
+    ) -> Result<factory_workflow::handlers::StageOutput, factory_workflow::handlers::StageError>
+    {
+        let result = self.0.execute(ctx).await;
+        match &result {
+            Ok(_) => println!("TRACE {:?} execute: ok", self.kind()),
+            Err(error) => println!("TRACE {:?} execute: {error:?}", self.kind()),
+        }
+        result
+    }
+
+    async fn evaluate(
+        &self,
+        ctx: &factory_workflow::handlers::GateContext<'_>,
+    ) -> Result<
+        factory_workflow::gates::framework::GateDecision,
+        factory_workflow::handlers::StageError,
+    > {
+        let result = self.0.evaluate(ctx).await;
+        match &result {
+            Ok(_) => println!("TRACE {:?} evaluate: ok", self.kind()),
+            Err(error) => println!("TRACE {:?} evaluate: {error:?}", self.kind()),
+        }
+        result
+    }
+}
+
+struct StopWhenIdle;
+
+impl Observer for StopWhenIdle {
+    fn after_attempt(&self, _: &ClaimedAttempt, _: &AttemptOutcome) -> Flow {
+        Flow::Continue
+    }
+}
+
+async fn smoke_body() {
+    // ---- database, tenant, store, scratch ----
+    let db = server().clone_database().await;
+    let ids = RandomIds::new().expect("random");
+    let tenant = TenantId::from_uuid(ids.new_uuid());
+    seed_tenant(&db, tenant, 0, REPOSITORY).await;
+    let store = factory_storage::pg::PgStore::connect(worker_config(&db).await)
+        .await
+        .expect("the store becomes ready");
+
+    // ---- policy, redactor, allowlist file ----
+    let root = repository_root();
+    let policies = load_policy(&root, &[]).expect("the real policies load");
+    let redactor = Arc::new(redactor_from_policy(&policies.security).expect("redactor"));
+    let _secrets = FactorySecrets::new(Arc::clone(&redactor), &policies.security);
+    // Not under the system temporary directory: on macOS that is below /var, which the policy lists
+    // as a forbidden mount source.
+    let checkout = repository_root()
+        .join("target/smoke")
+        .join(ids.new_uuid().simple().to_string());
+    std::fs::create_dir_all(checkout.join("allowlist")).expect("dir");
+    std::fs::write(
+        checkout.join("allowlist/allowlist.yaml"),
+        format!(
+            "version: 1\nentries:\n  - tenant: {}\n    github_user_id: {REQUESTER}\n    login: requester-one\n    designations: [requester]\n",
+            tenant.as_uuid()
+        ),
+    )
+    .expect("the allowlist file");
+    let _ = SecretFile::at(checkout.join("none"));
+
+    // ---- the world: store, artifacts, fakes for model, sandbox, workspaces, GitHub ----
+    let world = PgWorld::new(store, tenant, seeded_repository(tenant), |config| {
+        config.scope = vec![StageKind::Intake, StageKind::RepositoryIntelligence];
+    })
+    .await;
+    let store_dyn: Arc<dyn Store> = world.store.clone();
+    let fake_clock = Arc::new(FakeClock::new());
+
+    let repo = RepoRef::parse(REPOSITORY).expect("a repository");
+    let remote = FakeRemote::new();
+    let files = fixture_files();
+    let borrowed: Vec<(&str, &str)> = files
+        .iter()
+        .map(|(p, c)| (p.as_str(), c.as_str()))
+        .collect();
+    remote.commit_on_branch(&repo, &BranchName::new("main").expect("main"), &borrowed);
+
+    let derived = sandbox_policy_from(&policies.security, true).expect("limits fit");
+    let catalog_json = std::fs::read_to_string(root.join("infra/sandbox-images/images.json"))
+        .expect("the catalog");
+    let catalog =
+        factory_sandbox::container::images::ImageCatalog::from_json(&catalog_json, "linux/arm64")
+            .expect("a catalog");
+    let cargo = |argv: &[String], _: &[u8]| {
+        let _ = argv;
+        ProgramOutput {
+            exit_code: Some(0),
+            stdout: b"test result: ok. 1 passed\n".to_vec(),
+            stderr: Vec::new(),
+        }
+    };
+    let sandbox = FakeSandbox::new(fake_clock.clone(), world.deps.artifacts.clone(), derived)
+        .with_program("cargo", cargo);
+
+    let runtime = FakeAgentRuntime::new(world.deps.artifacts.clone());
+    let classification: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(
+            root.join("agents/intake-classifier/fixtures/valid/feature-with-json-flag.json"),
+        )
+        .expect("the valid fixture"),
+    )
+    .expect("JSON");
+    runtime.queue(AdversarialScript::returning(classification));
+
+    let agents = Arc::new(FileAgentRegistry::load(&root).expect("the real agent registry"));
+    let issues = Arc::new(FakeIssueSource::new());
+    let issue = IssueRef {
+        repo: repo.clone(),
+        number: 12,
+    };
+    issues
+        .seed_label(
+            &issue,
+            LABEL,
+            &GithubActor {
+                id: REQUESTER,
+                login: ActorLogin::new("requester-one").expect("a login"),
+            },
+        )
+        .await;
+
+    // The broker wrapper that keeps token secrets, over the world's broker.
+    let broker = Arc::new(factory_worker::redaction::RegisteringBroker::new(
+        world.deps.broker.clone(),
+        Arc::clone(&redactor),
+    ));
+    let specs = Arc::new(PolicySpecs::new(
+        Arc::clone(&policies.security),
+        catalog,
+        Arc::clone(&broker),
+        checkout.join("scratch"),
+    ));
+    {
+        // Diagnostic: the agent spec the stage will ask for, checked against the policy.
+        use factory_ports::agent::{CostMicroUsd, JobTokenRef, JobTokenRequest, ModelBroker};
+        use factory_workflow::stages::intake::seams::AgentSandboxSpecs;
+        let issued = broker
+            .issue(JobTokenRequest {
+                tenant,
+                job: factory_domain::ids::JobId::from_uuid(ids.new_uuid()),
+                stage: StageKind::Intake,
+                cost_ceiling: CostMicroUsd(1_000_000),
+                allowed_models: vec![factory_ports::agent::ModelSelection {
+                    runtime: factory_ports::agent::RuntimeId::new("fake").expect("runtime"),
+                    model: factory_domain::values::NonEmptyString::parse("m").expect("model"),
+                }],
+                ttl: Duration::from_secs(60),
+            })
+            .await
+            .expect("a token");
+        let spec = specs
+            .agent_spec(
+                factory_domain::ids::JobId::from_uuid(ids.new_uuid()),
+                factory_domain::ids::AttemptId::from_uuid(ids.new_uuid()),
+                JobTokenRef { id: issued.id },
+            )
+            .expect("a spec");
+        let checked = spec.validate(&sandbox_policy_from(&policies.security, true).expect("fits"));
+        assert!(
+            checked.is_ok(),
+            "the agent spec built from the real policy must pass its own check: {checked:?}"
+        );
+    }
+    let requests = Arc::new(StoreRequests::new(store_dyn.clone()));
+    let allowlist = Arc::new(FileAllowlist::in_checkout(&checkout));
+    let authority = Arc::new(factory_worker::authority::StoreAuthority::new(
+        store_dyn.clone(),
+        allowlist.clone(),
+        Arc::clone(&policies.engine),
+        world.deps.clock.clone(),
+    ));
+    let probes = Arc::new(CachedProbes::new(probed(&["fake"])));
+    let checker = Arc::new(SchemaChecker::new(&root));
+    let commit = GitSha::parse("1405df66cbe219b0bf6355bc3d60361a8376b6b4").expect("a commit");
+    let endpoint = BrokerEndpoint {
+        base_url: Uri::parse("https://model-broker.sandbox.internal:8443").expect("a URI"),
+    };
+
+    let mut handlers = HandlerRegistry::new();
+    handlers
+        .register(Arc::new(Traced(Arc::new(IntakeHandler::new(
+            IntakeConfig {
+                label: LABEL.to_owned(),
+                agent: factory_domain::values::Slug::parse("intake-classifier").expect("a slug"),
+                rules: factory_workflow::stages::intake::IntakeRules::default(),
+                definition_commit: commit.clone(),
+                broker: endpoint.clone(),
+                max_output_bytes: 524_288,
+            },
+            IntakeDeps {
+                requests: requests.clone(),
+                issues: issues.clone(),
+                allowlists: allowlist.clone(),
+                policy: Arc::clone(&policies.engine),
+                redactor: Arc::clone(&redactor),
+                schemas: checker.clone(),
+                sandboxes: specs.clone(),
+                probes: probes.clone(),
+            },
+        )))))
+        .expect("one handler per stage");
+    handlers
+        .register(Arc::new(Traced(Arc::new(RepoIntelHandler::new(
+            RepoIntelConfig {
+                definition_commit: commit,
+                path_rules: factory_testkit::contracts::workspace::fixture_rules(),
+                default_timeout_seconds: 900,
+                max_file_bytes: 64 * 1024,
+                max_paths: 5000,
+            },
+            RepoIntelDeps {
+                changes: Arc::new(FakeChangeHost::sharing(remote.clone())),
+                repos: Arc::new(StoreRepositories::new(store_dyn.clone())),
+                specs: specs.clone(),
+                manifests: Arc::new(YamlManifests::new().expect("manifests")),
+                policy: Arc::clone(&policies.engine),
+                redactor: Arc::clone(&redactor),
+            },
+        )))))
+        .expect("one handler per stage");
+
+    let mut deps = world.deps.clone();
+    deps.registry = agents;
+    deps.runtime = Arc::new(runtime.clone());
+    deps.authority = authority;
+    deps.broker = broker;
+    deps.sandbox = Arc::new(sandbox);
+    deps.workspaces = Arc::new(FakeWorkspaceProvider::new(
+        repo.clone(),
+        remote.clone(),
+        world.deps.artifacts.clone(),
+        factory_testkit::contracts::workspace::fixture_rules(),
+    ));
+    deps.validator = Arc::new(
+        factory_contracts::validator::SchemaOutputValidator::new()
+            .expect("the embedded schemas load"),
+    );
+    let engine = Engine::new(deps, world.config.clone(), handlers).expect("the engine starts");
+
+    // ---- submit the job through the store, as the API will ----
+    let job = engine
+        .receive_job(tenant, world.requester, world.repository)
+        .await
+        .expect("receive");
+    let mut tx = store_dyn
+        .begin(TenantScope::new(tenant))
+        .await
+        .expect("a tx");
+    let stored = tx
+        .record_original_request(NewOriginalRequest {
+            id: ids.new_uuid(),
+            job,
+            revision: 1,
+            source: StoreRequestSource::GithubIssue,
+            source_ref: Some(format!("{REPOSITORY}#12")),
+            author_github_user_id: Some(REQUESTER),
+            text: "Please add a --json flag to the word count tool so other programs can read the counts."
+                .to_owned(),
+        })
+        .await
+        .expect("the request is stored");
+    tx.commit().await.expect("commit");
+    requests.remember(job, 1, stored.row.value.content_sha256.clone());
+    let admission = engine.admit_job(tenant, job).await.expect("admit");
+    println!("admission: {admission:?}");
+
+    // ---- drive it with the worker loop until it settles or a time budget ends ----
+    let shutdown = Shutdown::new();
+    let worker_loop = WorkerLoop::new(
+        engine,
+        Arc::new(TokioTicker),
+        PgWorld::worker("worker-smoke"),
+        LoopConfig {
+            poll_interval_ms: 50,
+            sweep_interval_s: 1,
+            drain_s: 10,
+            ..LoopConfig::default()
+        },
+        shutdown.clone(),
+    )
+    .with_observer(Arc::new(StopWhenIdle));
+    let watcher = world.restarted_engine();
+    let task = tokio::task::spawn_blocking(|| ());
+    let _ = task.await;
+    // The engine futures are not `Send`; drive the loop on this task, and poll from a local
+    // future with `select!`.
+    let poll = async {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(45);
+        loop {
+            let view = watcher.job_view(tenant, job).await.expect("a view");
+            let settled = view.stage_runs.iter().all(|r| {
+                matches!(
+                    r.status,
+                    StageRunStatus::Passed
+                        | StageRunStatus::Failed
+                        | StageRunStatus::WaitingForHuman
+                        | StageRunStatus::Blocked
+                        | StageRunStatus::Skipped
+                )
+            });
+            if (settled && !view.stage_runs.is_empty()) || tokio::time::Instant::now() > deadline {
+                return view;
+            }
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        }
+    };
+    let view = tokio::select! {
+        view = poll => view,
+        summary = worker_loop.run() => {
+            let view = watcher.job_view(tenant, job).await.expect("a view");
+            panic!("the loop ended on its own: {summary:?}\n{view:#?}")
+        }
+    };
+    shutdown.raise();
+
+    println!("job status: {:?}", view.status);
+    for run in &view.stage_runs {
+        println!(
+            "  {:?}: {:?} ({} attempts)",
+            run.kind,
+            run.status,
+            run.attempts.len()
+        );
+    }
+    let _ = std::fs::remove_dir_all(&checkout);
+    let _ = runtime;
+    // How far it gets: both real stages pass and, because the scope of this smoke ends at the
+    // repository stage, the job completes. The stage after (`SPECIFICATION`) has no seam wiring
+    // yet: its approvals, drafts and history seams are not implemented (README, "Seams").
+    for kind in [StageKind::Intake, StageKind::RepositoryIntelligence] {
+        let run = view.newest(kind).expect("a run of the stage");
+        assert_eq!(run.status, StageRunStatus::Passed, "{kind}: {view:#?}");
+        assert_eq!(
+            run.attempts.len(),
+            1,
+            "{kind} must pass at the first attempt"
+        );
+    }
+    assert_eq!(view.status, factory_domain::state::JobStatus::Completed);
+}
+
+/// Runs the body with the telemetry pipeline of a worker as the current subscriber, so the
+/// engine's own log lines show on standard error.
+#[test]
+fn smoke_word_count_runs_the_real_intake_and_repository_stages() {
+    let policies = load_policy(&repository_root(), &[]).expect("the real policies load");
+    let redactor = Arc::new(redactor_from_policy(&policies.security).expect("redactor"));
+    let config = factory_worker::telemetry::config_for(
+        "factory-worker-smoke",
+        "0.0.0",
+        factory_worker::profile::Profile::Test,
+        &factory_worker::config::TelemetryConfig {
+            otlp_endpoint: None,
+            log_filter: Some("warn,factory_workflow=debug".to_owned()),
+        },
+        &redactor,
+    )
+    .expect("config");
+    let pipeline = factory_observability::telemetry::build_pipeline(&config, std::io::stderr)
+        .expect("pipeline");
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .enable_all()
+        .build()
+        .expect("runtime");
+    pipeline.in_scope(|| runtime.block_on(smoke_body()));
+}

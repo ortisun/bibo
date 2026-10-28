@@ -33,8 +33,8 @@ use factory_domain::redaction::{
 };
 use factory_domain::vocabulary::Fidelity;
 use factory_observability::redact::{Scrub, ScrubError};
-use factory_ports::agent::JobTokenId;
 use factory_ports::agent::{BrokerError, IssuedJobToken, JobTokenRequest, ModelBroker, TokenUsage};
+use factory_ports::agent::{JobTokenId, JobTokenSecret};
 
 use crate::config::{ConfigError, SecretFile, SecretText, login_of_url};
 
@@ -298,7 +298,7 @@ impl Scrub for RedactorScrubber {
 pub struct RegisteringBroker {
     inner: Arc<dyn ModelBroker>,
     redactor: Arc<Redactor>,
-    held: Mutex<BTreeMap<String, (JobId, SecretHandle)>>,
+    held: Mutex<BTreeMap<String, (JobId, SecretHandle, JobTokenSecret)>>,
 }
 
 impl RegisteringBroker {
@@ -310,6 +310,21 @@ impl RegisteringBroker {
             redactor,
             held: Mutex::new(BTreeMap::new()),
         }
+    }
+
+    /// The secret of a token that is still held, by its id.
+    ///
+    /// `AgentSandboxSpecs::agent_spec` receives only a `JobTokenRef` (the id), and the sandbox
+    /// spec needs the secret to write the token file. The engine never passes the secret to a
+    /// handler, so the composition root keeps it here from `issue` until `revoke`, and the spec
+    /// builder looks it up by id.
+    #[must_use]
+    pub fn secret_of(&self, token: &JobTokenId) -> Option<JobTokenSecret> {
+        self.held
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get(&token.to_string())
+            .map(|(_, _, secret)| secret.clone())
     }
 
     /// How many tokens are registered right now.
@@ -339,7 +354,7 @@ impl ModelBroker for RegisteringBroker {
                 self.held
                     .lock()
                     .unwrap_or_else(PoisonError::into_inner)
-                    .insert(issued.id.to_string(), (job, handle));
+                    .insert(issued.id.to_string(), (job, handle, issued.secret.clone()));
             }
             Ok(factory_domain::redaction::Registered::TooShort) | Err(_) => {
                 // A token the redactor cannot hold is a token nobody may use: fail closed.
@@ -353,7 +368,7 @@ impl ModelBroker for RegisteringBroker {
     async fn revoke(&self, token: &JobTokenId) -> Result<(), BrokerError> {
         let result = self.inner.revoke(token).await;
         if result.is_ok()
-            && let Some((_, handle)) = self
+            && let Some((_, handle, _)) = self
                 .held
                 .lock()
                 .unwrap_or_else(PoisonError::into_inner)
@@ -370,11 +385,11 @@ impl ModelBroker for RegisteringBroker {
             let mut held = self.held.lock().unwrap_or_else(PoisonError::into_inner);
             let ids: Vec<String> = held
                 .iter()
-                .filter(|(_, (owner, _))| *owner == job)
+                .filter(|(_, (owner, _, _))| *owner == job)
                 .map(|(id, _)| id.clone())
                 .collect();
             for id in ids {
-                if let Some((_, handle)) = held.remove(&id) {
+                if let Some((_, handle, _)) = held.remove(&id) {
                     self.redactor.forget(handle);
                 }
             }

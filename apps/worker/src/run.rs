@@ -189,8 +189,8 @@ impl WorkerLoop {
     }
 
     fn fail(&self, mut summary: LoopSummary, error: &EngineError) -> LoopSummary {
-        tracing::error!(%error, "worker loop ended with an error");
-        summary.failure = Some(error.to_string());
+        tracing::error!(%error, detail = ?error, "worker loop ended with an error");
+        summary.failure = Some(format!("{error} ({error:?})"));
         summary
     }
 
@@ -201,7 +201,23 @@ impl WorkerLoop {
             &attempt.job.to_string(),
             &attempt.tenant.to_string(),
         );
-        let work = self.engine.run_attempt(attempt).instrument(span);
+        let work = async {
+            let result = self.engine.run_attempt(attempt).await;
+            match &result {
+                Ok(outcome) => tracing::info!(
+                    stage = attempt.kind.as_str(),
+                    outcome = ?outcome,
+                    "attempt finished"
+                ),
+                Err(error) => tracing::warn!(
+                    stage = attempt.kind.as_str(),
+                    %error,
+                    "attempt ended with an engine error"
+                ),
+            }
+            result
+        }
+        .instrument(span);
         tokio::pin!(work);
         // Phase 1: no stop request yet. The attempt runs; a stop request starts the drain clock.
         let stop = self.shutdown.raised();
