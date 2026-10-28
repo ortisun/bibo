@@ -21,6 +21,7 @@ mod spy;
 mod world;
 
 mod approval;
+mod approval_stage;
 mod happy;
 mod judging;
 mod negative;

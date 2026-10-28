@@ -197,8 +197,10 @@ pub struct Scenario {
     pub dispositions: Vec<String>,
     /// The fidelity the sources report.
     pub sources_fidelity: Fidelity,
-    /// A secret-shaped text to put into the specification title.
+    /// What the factory measured about the change.
     pub risk: RiskFacts,
+    /// Open warnings of the rule `translation-unfaithful` in the documentation gate report.
+    pub translation_warnings: u32,
 }
 
 impl Default for Scenario {
@@ -217,6 +219,7 @@ impl Default for Scenario {
                 single_module_change_without_sensitive_or_protected_paths: true,
                 ..RiskFacts::default()
             },
+            translation_warnings: 0,
         }
     }
 }
@@ -472,7 +475,7 @@ impl World {
             .expect("the artifact is stored")
     }
 
-    fn report(&self, gate: &'static str, outcome: &'static str) -> GateReport {
+    pub fn report(&self, gate: &'static str, outcome: &'static str) -> GateReport {
         let now = self.clock.now();
         gate_report(
             &GateSubject {
@@ -576,7 +579,22 @@ impl World {
         let blob = |text: &str| serde_json::json!({ "document": text });
         let architecture = self.store_json(&blob("architecture")).await;
         let documentation = self.store_json(&blob("documentation plan")).await;
-        let documentation_gate = self.store_json(&blob("documentation gate")).await;
+        let mut documentation_report = self
+            .report("documentation-gate", "PASSED")
+            .to_json_value()
+            .expect("a report is JSON");
+        if self.scenario.translation_warnings > 0 {
+            documentation_report["warnings"] = serde_json::json!(
+                (0..self.scenario.translation_warnings)
+                    .map(|n| serde_json::json!({
+                        "check_id": "translation-unfaithful",
+                        "message": format!("The English text may not say what the original says, case {n}."),
+                        "suggested_fix": "Ask the requester to read the English text and confirm it.",
+                    }))
+                    .collect::<Vec<_>>()
+            );
+        }
+        let documentation_gate = self.store_json(&documentation_report).await;
         let documentation_review = self.store_json(&blob("documentation review")).await;
 
         let mut add = |kind: StageKind, name: &'static str, artifact: ArtifactRef| {

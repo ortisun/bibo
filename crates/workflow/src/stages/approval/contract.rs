@@ -105,12 +105,20 @@ pub fn resolve(ctx: &ContractContext<'_>) -> Result<StageContract, StageError> {
             "media_type": "application/json",
             "required": true,
         }],
-        "acceptance_criteria": [{
-            "id": "a-person-decides",
-            "description": "An authorized person approves the exact head, tree, base and evidence manifest they saw.",
-            "machine_verifiable": false,
-            "verification": { "kind": "human_decision", "ref": "approve_pr" },
-        }],
+        "acceptance_criteria": [
+            {
+                "id": "evidence-is-clear",
+                "description": "Every gate in the evidence passed or does not apply, or was blocked and then decided by a person.",
+                "machine_verifiable": true,
+                "verification": { "kind": "gate", "ref": GATE },
+            },
+            {
+                "id": "a-person-decides",
+                "description": "An authorized person approves the exact head, tree, base and evidence manifest they saw.",
+                "machine_verifiable": false,
+                "verification": { "kind": "human_decision", "ref": "approve_pr" },
+            },
+        ],
         "evaluator": { "kind": "human" },
         "evidence_refs": [],
         "confidence": {
