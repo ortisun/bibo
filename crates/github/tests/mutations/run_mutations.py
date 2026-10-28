@@ -71,7 +71,7 @@ BREAKS = [
     ),
     (
         "print a header value (the request wrapper shows its headers)",
-        [("wire.rs", '            .field(\n                "header_names",\n                &self.headers.iter().map(|(name, _)| name).collect::<Vec<_>>(),\n            )', '            .field("headers", &self.headers)')],
+        [("wire.rs", '            .field(\n                "header_names",\n                &self\n                    .headers\n                    .iter()\n                    .map(|(name, _)| name)\n                    .collect::<Vec<_>>(),\n            )', '            .field("headers", &self.headers)')],
         ["a_request_prints_no_header_value"],
     ),
     (
