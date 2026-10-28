@@ -106,6 +106,8 @@ struct Rig {
     job: JobId,
     run: StageRunId,
     approver: PrincipalId,
+    /// Another person who holds the same designation as `approver`.
+    other_approver: PrincipalId,
     security: PrincipalId,
     operator: PrincipalId,
 }
@@ -129,6 +131,7 @@ impl Rig {
         assert_eq!(run.status, StageRunStatus::Blocked);
         let run = run.id;
         let approver = world.person("approver-1", &[HumanRole::Approver]).await;
+        let other_approver = world.person("approver-2", &[HumanRole::Approver]).await;
         let security = world
             .person("security-1", &[HumanRole::SecurityApprover])
             .await;
@@ -139,6 +142,7 @@ impl Rig {
             job,
             run,
             approver,
+            other_approver,
             security,
             operator,
         }
@@ -181,6 +185,11 @@ impl Rig {
                 entry(
                     self.github(self.approver).await,
                     "approver",
+                    &[Designation::Approver],
+                ),
+                entry(
+                    self.github(self.other_approver).await,
+                    "other-approver",
                     &[Designation::Approver],
                 ),
                 entry(
@@ -525,8 +534,18 @@ async fn a_decision_is_recorded_only_for_a_package_the_evidence_shows() {
 #[tokio::test]
 async fn a_proof_made_for_another_person_is_refused() {
     let rig = Rig::new().await;
-    // The approver's proof, presented by the security approver's principal: the numeric ids
-    // differ. Neither the role nor the proof alone is enough.
+    // The approver's proof, presented by a second person who holds the same designation: both
+    // hold the role, so only the numeric GitHub id on the proof tells them apart. The proof is
+    // a statement about one person, and it is not a bearer token.
+    let proof = rig
+        .dependency_proof(rig.approver, Designation::Approver)
+        .await;
+    let refused = rig.record(rig.other_approver, proof, some_crate()).await;
+    assert!(
+        matches!(refused, Err(EngineError::NotAuthorized(_))),
+        "{refused:?}"
+    );
+    // Presented by a person of another designation, the role check refuses it as well.
     let proof = rig
         .dependency_proof(rig.approver, Designation::Approver)
         .await;
