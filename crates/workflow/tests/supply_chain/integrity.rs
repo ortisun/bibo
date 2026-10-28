@@ -4,56 +4,11 @@
 use factory_workflow::gates::supply_chain::cargo::CargoFormat;
 use factory_workflow::gates::supply_chain::findings::{Finding, Severity, check};
 use factory_workflow::gates::supply_chain::integrity::{Context, Integrity, inspect};
-use factory_workflow::gates::supply_chain::model::Side;
 use factory_workflow::gates::supply_chain::names::PopularNames;
 
-use super::files::{CRATES_IO, Pkg, files, lock, manifest, member, reg, sum};
-
-type Files = Vec<(String, String)>;
-
-/// The base commit: an application that depends on `serde`, which depends on `serde_derive`.
-fn base() -> Files {
-    files(&[
-        (
-            "Cargo.toml",
-            manifest("app", "[dependencies]\nserde = \"1\"\n"),
-        ),
-        (
-            "Cargo.lock",
-            lock(&[
-                member("app", &["serde"]),
-                reg("serde", "1.0.100", 'a').with_deps(&["serde_derive"]),
-                reg("serde_derive", "1.0.100", 'b'),
-            ]),
-        ),
-    ])
-}
-
-fn with(mut list: Files, path: &str, text: &str) -> Files {
-    list.retain(|(existing, _)| existing != path);
-    list.push((path.to_owned(), text.to_owned()));
-    list
-}
-
-fn side(list: &Files) -> Side {
-    Side::of(
-        &CargoFormat,
-        list.iter().map(|(p, t)| (p.as_str(), t.as_str())),
-    )
-}
-
-fn judge_with(base: &Files, head: &Files, internal: &[String]) -> Integrity {
-    let popular = PopularNames::bundled().expect("the bundled list");
-    let cx = Context {
-        internal_names: internal,
-        popular: &popular,
-    };
-    inspect(&CargoFormat, &side(base), &side(head), &cx).expect("the base is readable")
-}
-
-fn judge(base: &Files, head: &Files) -> Integrity {
-    judge_with(base, head, &[])
-}
+use super::files::{
+    CRATES_IO, Pkg, base, files, judge, judge_with, lock, manifest, member, reg, side, sum, with,
+};
 
 fn violations(found: &Integrity) -> Vec<&'static str> {
     found

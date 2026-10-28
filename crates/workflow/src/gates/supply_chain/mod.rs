@@ -9,11 +9,16 @@
 //! and compares them. Only Cargo is implemented; [`model::DependencyFormat`] is the seam for npm,
 //! pip and Go.
 
+pub mod approval;
 pub mod cargo;
 pub mod diff;
+pub mod facts;
 pub mod findings;
 pub mod integrity;
+pub mod licenses;
 pub mod model;
 pub mod names;
+pub mod review;
 pub mod toml;
+pub mod tools;
 pub mod version;

@@ -13,3 +13,5 @@
 
 mod files;
 mod integrity;
+mod people;
+mod review;
