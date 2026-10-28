@@ -17,7 +17,6 @@ use serde_json::json;
 use super::Engine;
 use super::config::STORE_ATTEMPT_CEILING;
 use super::error::EngineError;
-use super::payload::{self, key};
 use super::progress::clear;
 use super::record::{Cx, Step};
 use crate::audit::{AuditAction, AuditDecision, AuditKind};
@@ -127,12 +126,7 @@ impl Engine {
                     .await?;
                     created.push((*kind, id));
                 }
-                let listed: Vec<_> = created
-                    .iter()
-                    .map(|(kind, id)| payload::run_ref(*id, *kind))
-                    .collect();
                 let mut event = serde_json::Map::new();
-                event.insert(key::STAGE_RUNS.to_owned(), json!(listed));
                 event.insert(
                     "autonomy_limited_to_l0".to_owned(),
                     json!(facts.autonomy_limited_to_l0()),

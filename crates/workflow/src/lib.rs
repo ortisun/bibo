@@ -28,14 +28,13 @@
 //! | [`audit`] | The audit stream with actor, policy hash and correlation id, and the verifier that re-reads a job |
 //! | [`stages`] | The module lines of every stage directory. Each stage package fills its own directory |
 //!
-//! # Where the engine keeps what the ports cannot hold
+//! # Where the engine keeps what it knows about a job
 //!
-//! The `Store` port holds jobs, stage runs, attempts, the ledger, the outbox and the audit log. It
-//! has no call that lists the stage runs of a job or the attempts of a stage run, and no column for
-//! a retry back-off. The engine therefore writes the few facts it needs back into the payload of
-//! the outbox event that announces each transition (identifiers, counts, failure classes and
-//! instants, never prompts, issue text or secrets) and rebuilds its view of a job by reading that
-//! job's events in order. See `engine::timeline`. A restart needs no memory of the old process.
+//! In the store, and nowhere else. The engine rebuilds its view of a job from the rows that the
+//! listing operations of the `Store` port return: the stage runs, the attempts of each one, and the
+//! artifacts each one consumed and produced. A restart needs no memory of the old process. The
+//! outbox is a notification record, and the engine reads it only for the few facts that the store
+//! has no row for yet. `engine::timeline` names each of them and says what is missing.
 
 pub mod audit;
 pub mod commands;

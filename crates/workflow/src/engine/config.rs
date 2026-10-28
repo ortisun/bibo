@@ -26,10 +26,25 @@ pub const DEFAULT_TEARDOWN_GRACE: Duration = Duration::from_secs(30);
 /// The most stage runs one claim call leases.
 pub const DEFAULT_CLAIM_BATCH: u32 = 8;
 
-/// The most attempts the store lets a stage run hold over its whole life (`NewStageRun::
-/// max_attempts`, INV-10). It is the largest value the port accepts. The attempt limit that decides
-/// a retry is the one in the stage contract, counted from the last human answer, so the store's
-/// number is the backstop and never the first limit to be reached.
+/// The `max_attempts` the engine gives every stage run it creates (`NewStageRun::max_attempts`):
+/// the largest value the port accepts. Two limits apply to the attempts of a stage run, and they
+/// have different owners (INV-10).
+///
+/// * **The stage contract decides.** Its `max_attempts` (1 to 10) is the limit that turns a failed
+///   attempt into a retry or a question for a person. The engine counts it from the last human
+///   answer (`Timeline`, which reads the answers from the store). The contract is resolved from
+///   what the upstream stages produced, after the run exists, and the port has no call that sets
+///   `max_attempts` of an existing run, so the store cannot hold the contract's number.
+/// * **The store backstops.** `start_attempt` refuses attempt `n` when
+///   `n - attempts_before_last_answer > max_attempts`. The database sets
+///   `attempts_before_last_answer` itself when a person answers (`S13`), so this limit also counts
+///   from the last answer: a person who answers gets a fresh window from the store as well, and
+///   the store never refuses the first attempts after an answer.
+///
+/// The contract's window holds at most ten failed attempts, and the attempts that are not failures
+/// (a success, which ends the window, or a cancellation, which replaces the run) add at most a few
+/// more, so the contract's limit is always reached long before 20. The store's refusal
+/// (`Deferral::AttemptLimit`) is therefore a sign of a bug in the engine and never a normal stop.
 pub const STORE_ATTEMPT_CEILING: u8 = 20;
 
 /// What one job may spend, in millionths of a US dollar: 25 dollars

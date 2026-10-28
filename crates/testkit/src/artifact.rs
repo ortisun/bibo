@@ -16,6 +16,7 @@ use factory_domain::vocabulary::Fidelity;
 use factory_ports::artifact::{ArtifactBackend, ArtifactError, ArtifactStore, BackendStep};
 
 use crate::contracts::artifact::ArtifactStoreSubject;
+use crate::store::InMemoryStore;
 
 /// The size limit of a store built with [`InMemoryArtifactStore::new`]: 1 MiB.
 pub const DEFAULT_LIMIT: u64 = 1024 * 1024;
@@ -90,6 +91,7 @@ pub struct InMemoryArtifactStore {
     state: Mutex<State>,
     limit: u64,
     defect: Option<ArtifactDefect>,
+    index: Option<InMemoryStore>,
 }
 
 impl InMemoryArtifactStore {
@@ -106,6 +108,7 @@ impl InMemoryArtifactStore {
             state: Mutex::new(State::default()),
             limit,
             defect: None,
+            index: None,
         }
     }
 
@@ -136,9 +139,23 @@ impl InMemoryArtifactStore {
         state.indexed.insert((tenant, sha256.to_string()));
     }
 
+    /// Makes the tenant's index rows in `store` decide who may read, as the database adapter does
+    /// (ports-v1.1, `ArtifactStore`: "reads the index through the same store"). A row that a
+    /// transaction of `store` committed grants the tenant its artifact with no call to
+    /// [`grant`](Self::grant). Rows granted by hand still count.
+    #[must_use]
+    pub fn indexed_by(mut self, store: InMemoryStore) -> Self {
+        self.index = Some(store);
+        self
+    }
+
     fn allowed(&self, state: &State, tenant: TenantId, sha256: &Sha256Digest) -> bool {
         self.is(ArtifactDefect::IgnoresTenantIndex)
             || state.indexed.contains(&(tenant, sha256.to_string()))
+            || self
+                .index
+                .as_ref()
+                .is_some_and(|store| store.holds_artifact(tenant, sha256))
     }
 
     fn is(&self, defect: ArtifactDefect) -> bool {

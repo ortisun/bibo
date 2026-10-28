@@ -27,13 +27,16 @@ use factory_domain::machines::rework::{
 use factory_domain::state::{Guard, StageRunEvent};
 use factory_domain::values::{HumanText, MediaType};
 use factory_domain::vocabulary::{ConfidenceLevel, GateOutcome, HumanRole};
-use factory_ports::store::{AuditActor, GateRecord, StageRun, StageRunEffects, Tx, Versioned};
+use factory_ports::store::{
+    ArtifactDirection, AuditActor, GateRecord, StageRun, StageRunEffects, Tx, Versioned,
+};
 use serde_json::json;
 
 use super::Engine;
 use super::error::EngineError;
 use super::gate::ReworkMove;
 use super::ledger::ClaimSpec;
+use super::links;
 use super::payload::{self, key};
 use super::progress::clear;
 use super::record::{Cx, Step, index_entry};
@@ -156,14 +159,13 @@ impl Engine {
                 let cleared = clear(Guard::AnswerRecorded, &GuardFacts::Answer(facts))?;
                 let answer = stored.ok_or(EngineError::Corrupt("an answer was not stored"))?;
                 self.index_for(tx, cx, run.value.id, &answer).await?;
-                let payload = payload::with(base, key::ANSWER, json!(answer.sha256.to_string()));
-                let payload = payload::with(payload, key::ANSWER_MEDIA_TYPE, json!("text/plain"));
+                self.link_answer(tx, run.value.id, &answer).await?;
                 cx.move_stage_run(
                     tx,
                     run,
                     Step::new(StageRunEvent::HumanAnswered, cleared)
                         .cause("answered")
-                        .payload(payload),
+                        .payload(base),
                     StageRunEffects::default(),
                 )
                 .await?;
@@ -279,7 +281,6 @@ impl Engine {
                             cx,
                             run,
                             &plan,
-                            None,
                             ReworkMove {
                                 event: StageRunEvent::HumanRequestedRework,
                                 cleared,
@@ -405,6 +406,33 @@ impl Engine {
     ) -> Result<(), EngineError> {
         tx.index_artifact(index_entry(artifact, cx.job, run)?)
             .await?;
+        Ok(())
+    }
+
+    /// Links the answer to the stage run as an input, in the transaction that records the move
+    /// (`S13`). The role says how many attempts the run had, which is where the window of attempts
+    /// starts again (see [`links`](super::links)). The database computes the same number into
+    /// `stage_runs.attempts_before_last_answer` when the run moves to `READY`.
+    async fn link_answer(
+        &self,
+        tx: &mut dyn Tx,
+        run: StageRunId,
+        answer: &ArtifactRef,
+    ) -> Result<(), EngineError> {
+        let attempts_before = tx
+            .list_attempts(run)
+            .await?
+            .iter()
+            .map(|attempt| attempt.value.number)
+            .max()
+            .unwrap_or(0);
+        tx.link_stage_run_artifact(
+            run,
+            ArtifactDirection::Input,
+            links::answer_role(attempts_before)?,
+            answer.sha256.clone(),
+        )
+        .await?;
         Ok(())
     }
 

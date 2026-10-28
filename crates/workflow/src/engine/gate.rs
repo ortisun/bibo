@@ -34,12 +34,15 @@ use factory_domain::machines::snapshot::StageRunSnapshot;
 use factory_domain::state::{Guard, StageRunEvent, StageRunStatus};
 use factory_domain::values::{HumanText, MediaType, Sha256Digest};
 use factory_domain::vocabulary::{ConfidenceLevel, GateOutcome, Verdict};
-use factory_ports::store::{GateRecord, StageRun, StageRunEffects, Tx, Versioned};
-use serde_json::{Value, json};
+use factory_ports::store::{
+    ArtifactDirection, GateRecord, StageRun, StageRunEffects, Tx, Versioned,
+};
+use serde_json::json;
 
 use super::Engine;
 use super::error::EngineError;
 use super::ledger::ClaimSpec;
+use super::links;
 use super::payload::{self, key};
 use super::progress::clear;
 use super::record::{Cx, Step};
@@ -73,6 +76,7 @@ impl Engine {
     ///
     /// # Errors
     /// Any error of a guard, a move or a read. The caller drops the transaction.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) async fn gate_stage(
         &self,
         tx: &mut dyn Tx,
@@ -81,22 +85,20 @@ impl Engine {
         contract: &StageContract,
         judged: &Judged,
         outputs: &[NamedArtifact],
+        attempt_number: u32,
     ) -> Result<(), EngineError> {
-        let listed: Vec<Value> = outputs
-            .iter()
-            .map(|named| {
-                json!({
-                    "name": named.name.as_str(),
-                    "sha256": named.artifact.sha256.as_str(),
-                    "media_type": named.artifact.media_type.as_str(),
-                })
-            })
-            .collect();
-        let gating_payload = payload::with(
-            payload::for_run(run.value.kind, run.value.id),
-            key::OUTPUTS,
-            Value::Array(listed),
-        );
+        // What the attempt produced is linked to the stage run in the transaction that moves it to
+        // its gate, so a later read of the store finds the outputs with the status (see `links`).
+        for named in outputs {
+            tx.link_stage_run_artifact(
+                run.value.id,
+                ArtifactDirection::Output,
+                links::output_role(&named.name, attempt_number)?,
+                named.artifact.sha256.clone(),
+            )
+            .await?;
+        }
+        let gating_payload = payload::for_run(run.value.kind, run.value.id);
         // `S04` and `A04` share the guard `G_OUTPUT_SCHEMA_VALID`, checked here on the facts of
         // the stored output.
         let output_cleared = clear(
@@ -560,7 +562,6 @@ impl Engine {
                     cx,
                     gating,
                     &plan,
-                    Some(failing),
                     ReworkMove {
                         event: StageRunEvent::GateRequiresRework,
                         cleared,
@@ -613,7 +614,6 @@ impl Engine {
         cx: &Cx<'_>,
         failing_run: &Versioned<StageRun>,
         plan: &ReworkPlan,
-        failing: Option<&Sha256Digest>,
         step: ReworkMove,
     ) -> Result<(), EngineError> {
         let snaps: Vec<StageRunSnapshot> = self.snapshots_of(tx, cx).await?;
@@ -622,28 +622,19 @@ impl Engine {
             plan.target,
             failing_run.value.id,
         );
-        let created = self
-            .supersede_and_replace(
-                tx,
-                cx,
-                &to_supersede,
-                &plan.replaced_stages(),
-                super::replace::Why::Rework,
-                "rework",
-            )
-            .await?;
-        let listed: Vec<Value> = created
-            .iter()
-            .map(|(kind, id)| payload::run_ref(*id, *kind))
-            .collect();
+        self.supersede_and_replace(
+            tx,
+            cx,
+            &to_supersede,
+            &plan.replaced_stages(),
+            super::replace::Why::Rework,
+            "rework",
+        )
+        .await?;
         let mut payload = payload::for_run(failing_run.value.kind, failing_run.value.id);
-        payload = payload::with(payload, key::CREATED, Value::Array(listed));
         payload = payload::with(payload, "rework_target", json!(plan.target.as_str()));
-        payload = payload::with(payload, key::REWORK_TRACK, json!(plan.track.as_str()));
+        payload = payload::with(payload, "rework_track", json!(plan.track.as_str()));
         payload = payload::with(payload, "rework_round", json!(plan.round));
-        if let Some(failing) = failing {
-            payload = payload::with(payload, key::FAILING_SET, json!(failing.to_string()));
-        }
         cx.move_stage_run(
             tx,
             failing_run,

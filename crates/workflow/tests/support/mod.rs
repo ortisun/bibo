@@ -4,6 +4,7 @@
 //! one file does not use is not a warning.
 #![allow(dead_code, unused_imports)]
 
+pub mod artifacts;
 pub mod authority;
 pub mod handler;
 pub mod ids;

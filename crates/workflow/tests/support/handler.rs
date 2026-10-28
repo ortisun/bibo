@@ -9,8 +9,8 @@ use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 use factory_domain::contracts::agent_manifest::RecommendedTier;
-use factory_domain::contracts::{Contract, GateReport, ReviewVerdict, StageContract};
-use factory_domain::values::{HumanText, MediaType, Slug};
+use factory_domain::contracts::{ArtifactRef, Contract, GateReport, ReviewVerdict, StageContract};
+use factory_domain::values::{HumanText, MediaType, Sha256Digest, Slug};
 use factory_domain::vocabulary::RiskTier;
 use factory_domain::vocabulary::{Fidelity, StageKind};
 use factory_ports::agent::{
@@ -20,8 +20,8 @@ use factory_ports::registry::ContractKind;
 use factory_workflow::audit::AuditAction;
 use factory_workflow::gates::framework::GateDecision;
 use factory_workflow::handlers::{
-    Applicability, ContractContext, GateContext, NeedsHumanRequest, OutputDocument, SandboxReady,
-    SkipBasis, SkipRule, StageContext, StageError, StageHandler, StageOutput,
+    Applicability, ContractContext, GateContext, NamedArtifact, NeedsHumanRequest, OutputDocument,
+    SandboxReady, SkipBasis, SkipRule, StageContext, StageError, StageHandler, StageOutput,
 };
 use serde_json::{Value, json};
 
@@ -30,6 +30,11 @@ use serde_json::{Value, json};
 pub enum Step {
     /// Returns a valid output.
     Succeed,
+    /// Returns the deliverable as an artifact that a tool made, instead of as a document: a blob
+    /// that was written to the artifact store with `put`, and not indexed for the tenant.
+    SucceedWithStoredArtifact,
+    /// Returns the deliverable as an artifact that was never written to the artifact store.
+    SucceedWithUnstoredArtifact,
     /// Returns this error.
     Fail(StageError),
     /// Returns a structured request for a person.
@@ -421,6 +426,31 @@ impl StageHandler for ScriptedHandler {
                     .collect(),
                 ..StageOutput::default()
             }),
+            Step::SucceedWithStoredArtifact | Step::SucceedWithUnstoredArtifact => {
+                let artifact = if matches!(step, Step::SucceedWithStoredArtifact) {
+                    ctx.ports
+                        .artifacts
+                        .put(
+                            br#"{"made":"by a tool"}"#.to_vec(),
+                            MediaType::parse("application/json").expect("a media type"),
+                        )
+                        .await
+                        .expect("the artifact is stored")
+                } else {
+                    ArtifactRef {
+                        sha256: Sha256Digest::of(b"a blob that was never stored"),
+                        media_type: MediaType::parse("application/json").expect("a media type"),
+                        size_bytes: None,
+                    }
+                };
+                Ok(StageOutput {
+                    artifacts: vec![NamedArtifact {
+                        name: Slug::parse(name).expect("a slug"),
+                        artifact,
+                    }],
+                    ..StageOutput::default()
+                })
+            }
             Step::Fail(error) => {
                 let failed = self.script.with(|script| script.failed_run);
                 if let Some((denied, transcript)) = failed {

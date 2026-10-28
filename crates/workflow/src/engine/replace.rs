@@ -90,16 +90,11 @@ impl Engine {
                 Guard::UpstreamInvalidated,
                 &GuardFacts::Supersede(why.facts()),
             )?;
-            let mut payload = payload::for_run(run.value.kind, *id);
-            payload = payload::with(payload, key::CAUSE, json!(cause));
-            if let Some((_, replacement)) = created.iter().find(|(kind, _)| *kind == run.value.kind)
-            {
-                payload = payload::with(
-                    payload,
-                    key::REPLACED_BY,
-                    payload::run_ref(*replacement, run.value.kind),
-                );
-            }
+            let payload = payload::with(
+                payload::for_run(run.value.kind, *id),
+                key::CAUSE,
+                json!(cause),
+            );
             cx.move_stage_run(
                 tx,
                 &run,
@@ -166,7 +161,7 @@ impl Engine {
         cx: &Cx<'_>,
     ) -> Result<Vec<factory_domain::machines::snapshot::StageRunSnapshot>, EngineError> {
         let timeline = Timeline::load(tx, cx.job).await?;
-        let board = Board::load(tx, &timeline).await?;
+        let board = Board::of(&timeline);
         Ok(board.snapshots())
     }
 }

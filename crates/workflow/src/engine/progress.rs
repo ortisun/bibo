@@ -34,19 +34,22 @@ use crate::handlers::{
     Applicability, ContractContext, RunIdentity, SkipBasis, SkipRule, UpstreamRun,
 };
 
-/// The stage runs of a job with their rows, in the order they were created.
+/// The stage runs of a job with their rows, in the order the store lists them.
 pub(crate) struct Board {
     pub(crate) runs: Vec<Versioned<StageRun>>,
 }
 
 impl Board {
-    /// Reads the row of every stage run in the timeline.
-    pub(crate) async fn load(tx: &mut dyn Tx, timeline: &Timeline) -> Result<Self, EngineError> {
-        let mut runs = Vec::with_capacity(timeline.runs.len());
-        for record in &timeline.runs {
-            runs.push(tx.get_stage_run(record.id).await?);
+    /// The row of every stage run in the timeline, as the timeline read them. The board is only
+    /// as current as the timeline, so a caller that moves a run reads both again.
+    pub(crate) fn of(timeline: &Timeline) -> Self {
+        Self {
+            runs: timeline
+                .runs
+                .iter()
+                .map(|record| record.row.clone())
+                .collect(),
         }
-        Ok(Self { runs })
     }
 
     /// The read-only views the guards take.
@@ -162,7 +165,7 @@ impl Engine {
         for _ in 0..MAX_ROUNDS {
             let job = tx.get_job(cx.job).await?;
             let timeline = Timeline::load(tx, cx.job).await?;
-            let board = Board::load(tx, &timeline).await?;
+            let board = Board::of(&timeline);
             match self.settle_round(tx, cx, &job, &timeline, &board).await? {
                 Round::Settled => return Ok(()),
                 Round::Moved => {}
@@ -548,9 +551,10 @@ impl Engine {
         Ok(())
     }
 
-    /// Stores the resolved contract by its content hash and records that the tenant holds it, so
-    /// that `S01` can name it (`StageRunEffects::contract_sha256`). A `put` is idempotent and
-    /// bounded, and the index row is written in this transaction.
+    /// Records the resolved contract by its content hash and that the tenant holds it, so that
+    /// `S01` can name it (`StageRunEffects::contract_sha256`). The index row is written in this
+    /// transaction. The bytes are written to the artifact store after the commit
+    /// ([`Cx::defer_blob`]): a transaction awaits the store and nothing else.
     async fn store_contract(
         &self,
         tx: &mut dyn Tx,
@@ -560,12 +564,7 @@ impl Engine {
     ) -> Result<Sha256Digest, EngineError> {
         let bytes = serde_json::to_vec(contract)
             .map_err(|error| EngineError::Invalid(error.to_string()))?;
-        let stored = self
-            .deps
-            .artifacts
-            .put(bytes, MediaType::parse("application/json")?)
-            .await
-            .map_err(|error| EngineError::Artifacts(error.to_string()))?;
+        let stored = cx.defer_blob(bytes, MediaType::parse("application/json")?);
         tx.index_artifact(index_entry(&stored, cx.job, run)?)
             .await?;
         Ok(stored.sha256)

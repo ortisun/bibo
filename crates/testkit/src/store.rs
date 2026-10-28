@@ -522,6 +522,17 @@ impl InMemoryStore {
         }
     }
 
+    /// True when a committed transaction indexed the artifact for the tenant. The in-memory
+    /// artifact store reads this to answer for a tenant, as the database adapter reads the index
+    /// (`InMemoryArtifactStore::indexed_by`).
+    #[must_use]
+    pub fn holds_artifact(&self, tenant: TenantId, sha256: &Sha256Digest) -> bool {
+        lock(&self.inner)
+            .committed
+            .index
+            .contains_key(&(tenant, sha256.clone()))
+    }
+
     /// Sets a stage run's fencing counter, to reach the largest epoch without 2^63 starts.
     pub fn force_lease_epoch(&self, stage_run: StageRunId, epoch: LeaseEpoch) {
         let mut g = lock(&self.inner);

@@ -1,13 +1,16 @@
 //! The facts the engine writes into the payload of the outbox event that announces a transition,
 //! and the one place that names them.
 //!
-//! The `Store` port holds the status of every aggregate, but it has no call that lists the stage
-//! runs of a job or the attempts of a stage run, and no column for a retry back-off. The engine
-//! therefore records what it needs later in the event that it writes in the same transaction as
-//! the change, and [`timeline`](super::timeline) reads it back. A payload carries identifiers,
-//! counts, failure classes, hashes and instants. It never carries a prompt, issue text, model
-//! output or a secret (ADR 0004), and the database refuses a payload over 16 KiB, so a list in a
-//! payload stays short.
+//! The outbox is a notification record, not the source of truth for what exists (ports-v1.1,
+//! `OutboxOps`). The engine reads the stage runs, the attempts and what they produced from the
+//! rows, through the listing operations of the `Store` (see [`timeline`](super::timeline)), so a
+//! payload does not list them. A payload names the stage run an event is about, the guard that
+//! held, a short machine code for why, and a few identifiers, counts and hashes for the consumers
+//! of the event. It never carries a prompt, issue text, model output or a secret (ADR 0004), and
+//! the database refuses a payload over 16 KiB.
+//!
+//! One key is still read back by the engine, because the store has no row for what it carries:
+//! [`key::COST`]. The code that reads it says what is missing.
 
 use factory_domain::ids::StageRunId;
 use factory_domain::vocabulary::StageKind;
@@ -19,28 +22,12 @@ pub(crate) mod key {
     pub const STAGE_KIND: &str = "stage_kind";
     /// The stage run an event is about, when the aggregate is an attempt or a job.
     pub const STAGE_RUN: &str = "stage_run_id";
-    /// `job.admitted`: every stage run created at admission, as `{id, kind}`.
-    pub const STAGE_RUNS: &str = "stage_runs";
-    /// The stage runs a rework or a supersession created, as `{id, kind}`.
-    pub const CREATED: &str = "created_stage_runs";
-    /// `stage_run.superseded`: the run that replaces it, as `{id, kind}`.
-    pub const REPLACED_BY: &str = "replaced_by";
-    /// The attempt a `stage_run.started` event created.
+    /// The attempt a `stage_run.started` event created. For the consumers of the event.
     pub const ATTEMPT: &str = "attempt_id";
-    /// Which try the attempt is for its stage run.
+    /// Which try the attempt is for its stage run. For the consumers of the event.
     pub const ATTEMPT_NUMBER: &str = "attempt_number";
-    /// The failure class of an attempt that ended badly.
+    /// The failure class of an attempt that ended badly. For the consumers of the event.
     pub const FAILURE_CLASS: &str = "failure_class";
-    /// `stage_run.rework_requested`: the count the round is charged to.
-    pub const REWORK_TRACK: &str = "rework_track";
-    /// `stage_run.rework_requested`: digest of what failed, for the stagnation detector.
-    pub const FAILING_SET: &str = "failing_set_sha256";
-    /// `stage_run.gating`: what the attempt produced, as `{name, sha256, media_type}`.
-    pub const OUTPUTS: &str = "outputs";
-    /// `stage_run.ready` after an answer: the hash of the answer.
-    pub const ANSWER: &str = "answer_sha256";
-    /// `stage_run.ready` after an answer: the media type of the answer.
-    pub const ANSWER_MEDIA_TYPE: &str = "answer_media_type";
     /// What an attempt spent, in millionths of a US dollar, as the broker metered it.
     pub const COST: &str = "cost_micro_usd";
     /// A short machine code for why a move happened.
@@ -51,12 +38,6 @@ pub(crate) mod key {
     pub const GUARD: &str = "guard";
     /// The SHA-256 of the facts that guard held on.
     pub const GUARD_FACTS: &str = "guard_facts_sha256";
-}
-
-/// A stage run as the payload lists it.
-#[must_use]
-pub(crate) fn run_ref(id: StageRunId, kind: StageKind) -> Value {
-    json!({ "id": id.to_string(), "kind": kind.as_str() })
 }
 
 /// A payload that starts with the stage kind and the stage run an event is about.

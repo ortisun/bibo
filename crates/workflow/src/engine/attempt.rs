@@ -321,7 +321,7 @@ impl Engine {
         let mut tx = self.tenant_tx(claimed.tenant).await?;
         let job = tx.get_job(claimed.job).await?;
         let timeline = Timeline::load(&mut *tx, claimed.job).await?;
-        let board = Board::load(&mut *tx, &timeline).await?;
+        let board = Board::of(&timeline);
         tx.rollback().await?;
         let run = board.run(claimed.stage_run).ok_or(EngineError::NotFound)?;
         let record = timeline
@@ -340,6 +340,8 @@ impl Engine {
             .map_err(|_| EngineError::Corrupt("the stage contract no longer resolves"))?;
         let identity = Self::identity(&cx, &run.value);
         let need = handler.routing_need(&ccx);
+        self.ensure_contract_stored(claimed.tenant, &run.value, &contract)
+            .await?;
         Ok(Prepared {
             contract,
             need,
@@ -348,6 +350,53 @@ impl Engine {
             handler,
             identity,
         })
+    }
+
+    /// Stores the contract the stage run recorded at `S01` when the artifact store does not hold it.
+    ///
+    /// The bytes of the contract are written after the commit that recorded its hash
+    /// ([`Cx::defer_blob`]), so a process that stopped in between, or a write that failed, leaves
+    /// a record that names a blob not stored yet. An attempt does not start until the blob is
+    /// there. The contract is resolved again, and it is stored only when it is the one recorded:
+    /// a contract that now resolves to another document is not the one the record names, and the
+    /// write would not repair it. Storing is idempotent by hash.
+    ///
+    /// # Errors
+    /// [`EngineError::Artifacts`] when the artifact store cannot be asked or cannot store the blob.
+    async fn ensure_contract_stored(
+        &self,
+        tenant: factory_domain::ids::TenantId,
+        run: &factory_ports::store::StageRun,
+        contract: &StageContract,
+    ) -> Result<(), EngineError> {
+        let Some(recorded) = &run.contract_sha256 else {
+            return Ok(());
+        };
+        let bytes = serde_json::to_vec(contract)
+            .map_err(|error| EngineError::Invalid(error.to_string()))?;
+        if factory_domain::values::Sha256Digest::of(&bytes) != *recorded {
+            return Ok(());
+        }
+        let media_type = factory_domain::values::MediaType::parse("application/json")?;
+        let reference = ArtifactRef {
+            sha256: recorded.clone(),
+            media_type: media_type.clone(),
+            size_bytes: None,
+        };
+        let stored = self
+            .deps
+            .artifacts
+            .exists(&TenantScope::new(tenant), &reference)
+            .await
+            .map_err(|error| EngineError::Artifacts(error.to_string()))?;
+        if !stored {
+            self.deps
+                .artifacts
+                .put(bytes, media_type)
+                .await
+                .map_err(|error| EngineError::Artifacts(error.to_string()))?;
+        }
+        Ok(())
     }
 
     /// Polls the handler and renews the lease while it runs. A heartbeat that finds the lease
@@ -954,8 +1003,16 @@ impl Engine {
                 },
             )
             .await?;
-            self.gate_stage(&mut *tx, &cx, &run, contract, judged, &outputs)
-                .await?;
+            self.gate_stage(
+                &mut *tx,
+                &cx,
+                &run,
+                contract,
+                judged,
+                &outputs,
+                claimed.attempt_number,
+            )
+            .await?;
             self.record_handler_notes(&mut *tx, &cx, claimed, notes, output)
                 .await
         }

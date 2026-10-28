@@ -41,7 +41,7 @@ pub struct StageRunView {
     pub not_before: Option<Timestamp>,
     /// How many answers people gave it.
     pub human_answers: usize,
-    /// The run that replaced it after a supersession.
+    /// The run that replaced it after a supersession: the next run of the same stage.
     pub replaced_by: Option<StageRunId>,
 }
 
@@ -84,7 +84,7 @@ impl Engine {
         let timeline = Timeline::load(&mut *tx, job).await?;
         let mut stage_runs = Vec::with_capacity(timeline.runs.len());
         for record in &timeline.runs {
-            let run = tx.get_stage_run(record.id).await?;
+            let run = &record.row;
             let mut attempts = Vec::with_capacity(record.attempts.len());
             for attempt in &record.attempts {
                 let row = tx.get_attempt(attempt.id).await?;
@@ -112,7 +112,7 @@ impl Engine {
                 attempts,
                 not_before: backing_off.then_some(run.value.not_before),
                 human_answers: record.human_inputs.len(),
-                replaced_by: record.replaced_by,
+                replaced_by: timeline.replacement_of(record),
             });
         }
         tx.rollback().await?;

@@ -6,9 +6,12 @@
 
 mod support;
 
+use factory_domain::scope::TenantScope;
 use factory_domain::state::{AttemptStatus, JobStatus, StageRunStatus};
 use factory_domain::vocabulary::StageKind;
-use factory_ports::store::LeaseEpoch;
+use factory_ports::artifact::ArtifactStore;
+use factory_ports::clock::IdGenerator;
+use factory_ports::store::{ArtifactDirection, LeaseEpoch, StageRunArtifact};
 use factory_workflow::engine::{Admission, EngineError};
 use factory_workflow::scheduler::{Deferral, Pulse};
 use support::World;
@@ -373,15 +376,143 @@ async fn a_valid_output_is_stored_by_hash_and_the_attempt_succeeds() {
         StageRunStatus::Ready
     );
 
-    // The output is in the artifact store under its hash, and the event says which.
+    // The output is in the artifact store under its hash, and the store links it to the stage run
+    // under the name of the deliverable and the number of the attempt that produced it.
+    let links = world.links(run.id).await;
+    let outputs: Vec<_> = links
+        .iter()
+        .filter(|link| link.direction == ArtifactDirection::Output)
+        .collect();
+    assert_eq!(outputs.len(), 1);
+    assert_eq!(outputs[0].role.as_str(), "scripted-output.a1");
     let events = world.events(job).await;
     let gating = events
         .iter()
         .find(|event| event.event_type.as_str() == "stage_run.gating")
         .expect("a gating event");
-    let outputs = gating.payload["outputs"].as_array().expect("a list");
-    assert_eq!(outputs.len(), 1);
-    assert_eq!(outputs[0]["name"], "scripted-output");
+    assert!(
+        gating.payload.get("outputs").is_none(),
+        "an event does not list what the rows already say"
+    );
+}
+
+#[tokio::test]
+async fn an_artifact_a_tool_made_is_indexed_for_the_tenant_and_linked_to_the_stage_run() {
+    // A tool stores a blob and the handler declares it as the deliverable. The blob is the
+    // tenant's only once the engine has indexed it, and the artifact store answers for a tenant
+    // only through that row (ADR 0008).
+    let world = World::new().await;
+    let job = world.admitted_job().await;
+    world
+        .script(StageKind::Intake)
+        .queue([Step::SucceedWithStoredArtifact]);
+    let (_, outcome) = world.run_next("worker-1").await;
+    assert_eq!(outcome, AttemptOutcome::Succeeded);
+
+    let run = intake(&world.view(job).await).id;
+    let links = world.links(run).await;
+    let output = links
+        .iter()
+        .find(|link| link.role.as_str() == "scripted-output.a1")
+        .expect("the artifact is linked as the output");
+    let entry = world.index_entry(&output.sha256).await;
+    assert_eq!(entry.origin, Some((job, run)));
+    let scope = TenantScope::new(world.tenant);
+    assert!(
+        world
+            .artifacts
+            .exists(&scope, &entry.artifact)
+            .await
+            .expect("an answer")
+    );
+    let stranger = TenantScope::new(factory_domain::ids::TenantId::from_uuid(
+        world.ids.new_uuid(),
+    ));
+    assert!(
+        !world
+            .artifacts
+            .exists(&stranger, &entry.artifact)
+            .await
+            .expect("an answer"),
+        "another tenant has no index row, so the blob does not exist for it"
+    );
+}
+
+#[tokio::test]
+async fn an_artifact_a_handler_declares_but_never_stored_is_an_invalid_output() {
+    let world = World::new().await;
+    let job = world.admitted_job().await;
+    world
+        .script(StageKind::Intake)
+        .queue([Step::SucceedWithUnstoredArtifact]);
+    let (_, outcome) = world.run_next("worker-1").await;
+    assert!(matches!(
+        outcome,
+        AttemptOutcome::Failed {
+            class: FailureClass::InvalidOutput,
+            ..
+        }
+    ));
+    let run = intake(&world.view(job).await).id;
+    assert!(
+        world
+            .links(run)
+            .await
+            .iter()
+            .all(|link| link.direction != ArtifactDirection::Output),
+        "nothing is linked as an output of a failed attempt"
+    );
+}
+
+#[tokio::test]
+async fn the_contract_blob_is_written_after_the_commit_and_a_refused_write_does_not_undo_the_decision()
+ {
+    // The contract is recorded by its hash in the transaction of the move to READY (S01), and its
+    // bytes are written after the commit. A store that cannot write must not stop the decision,
+    // which a write inside the transaction would, and the attempt that follows stores the blob
+    // before it starts.
+    let world = World::new().await;
+    world.artifact_switch.refuse_writes(true);
+    let job = world
+        .engine
+        .receive_job(world.tenant, world.requester, world.repository)
+        .await
+        .expect("receive");
+    world
+        .engine
+        .admit_job(world.tenant, job)
+        .await
+        .expect("the job is admitted although the artifact store refuses writes");
+    let view = world.view(job).await;
+    let run = intake(&view);
+    assert_eq!(run.status, StageRunStatus::Ready);
+    let recorded = world
+        .stage_run(run.id)
+        .await
+        .contract_sha256
+        .expect("the contract is recorded on the stage run");
+    let scope = TenantScope::new(world.tenant);
+    let entry = world.index_entry(&recorded).await;
+    assert!(
+        !world
+            .artifacts
+            .exists(&scope, &entry.artifact)
+            .await
+            .expect("an answer"),
+        "the bytes are not stored yet"
+    );
+
+    world.artifact_switch.refuse_writes(false);
+    let (_, outcome) = world.run_next("worker-1").await;
+    assert_eq!(outcome, AttemptOutcome::Succeeded);
+    assert!(
+        world
+            .artifacts
+            .exists(&scope, &entry.artifact)
+            .await
+            .expect("an answer"),
+        "the blob is stored before the attempt runs"
+    );
 }
 
 #[tokio::test]
@@ -1606,6 +1737,119 @@ async fn human_answer_starts_a_new_window() {
     );
 }
 
+/// The roles of the links of one direction, in the order the store lists them.
+fn roles_of(links: &[StageRunArtifact], direction: ArtifactDirection) -> Vec<String> {
+    links
+        .iter()
+        .filter(|link| link.direction == direction)
+        .map(|link| link.role.as_str().to_owned())
+        .collect()
+}
+
+#[tokio::test]
+async fn the_contract_limit_decides_and_the_stores_cumulative_limit_is_only_a_backstop() {
+    // The contract allows three attempts for each window. The store was told the port maximum
+    // (20), which is a backstop for the whole life of the run: it counts from the last answer
+    // (`attempts_before_last_answer`) and is never the first limit to be reached.
+    let world = World::new().await;
+    let (job, run) = waiting_intake(&world).await;
+    assert_eq!(world.stage_run(run).await.max_attempts, 20);
+    let operator = world.person("operator-1", &[HumanRole::Operator]).await;
+    let subject = Subject {
+        job,
+        stage_run: run,
+    };
+    world
+        .engine
+        .decide(&world.actor(operator), subject, answer("Try again."))
+        .await
+        .expect("the first answer applies");
+    // The fourth, fifth and sixth attempts are past the contract's limit of three counted from
+    // the start, and the store does not refuse them: the window starts at the answer.
+    for _ in 0..3 {
+        world.advance(600);
+        world.run_next("worker-1").await;
+    }
+    let view = world.view(job).await;
+    assert_eq!(
+        view.newest(StageKind::Intake).expect("run").attempts.len(),
+        6
+    );
+    assert_eq!(
+        status_of(&view, StageKind::Intake),
+        StageRunStatus::WaitingForHuman,
+        "the contract's limit of three in the window asks a person again"
+    );
+    world
+        .engine
+        .decide(&world.actor(operator), subject, answer("And again."))
+        .await
+        .expect("the second answer applies");
+    world.advance(600);
+    let (_, outcome) = world.run_next("worker-1").await;
+    assert!(matches!(
+        outcome,
+        AttemptOutcome::Failed {
+            then: AttemptDisposition::Retry,
+            ..
+        }
+    ));
+    // Each answer is linked as an input, named by the attempts that came before it.
+    let links = world.links(run).await;
+    assert_eq!(
+        roles_of(&links, ArtifactDirection::Input),
+        ["human-answer-3", "human-answer-6"]
+    );
+    assert_eq!(world.stage_run(run).await.max_attempts, 20);
+}
+
+#[tokio::test]
+async fn a_stage_run_that_reaches_its_gate_twice_links_the_outputs_of_each_attempt() {
+    // A gate that asks a person sends the run back to READY after the answer. The second attempt
+    // produces the same deliverable again, and the store never replaces a link, so each attempt
+    // has its own.
+    let world = World::new().await;
+    let job = world.admitted_job().await;
+    world
+        .script(StageKind::Intake)
+        .queue_evals([Eval::ReviewerNeedsHuman]);
+    world.run_next("worker-1").await;
+    let run = world
+        .view(job)
+        .await
+        .newest(StageKind::Intake)
+        .expect("run")
+        .id;
+    assert_eq!(
+        roles_of(&world.links(run).await, ArtifactDirection::Output),
+        ["scripted-output.a1"]
+    );
+    let operator = world.person("operator-1", &[HumanRole::Operator]).await;
+    world
+        .engine
+        .decide(
+            &world.actor(operator),
+            Subject {
+                job,
+                stage_run: run,
+            },
+            answer("Looks right to me."),
+        )
+        .await
+        .expect("the answer applies");
+    world.advance(600);
+    let (_, outcome) = world.run_next("worker-1").await;
+    assert_eq!(outcome, AttemptOutcome::Succeeded);
+    assert_eq!(
+        roles_of(&world.links(run).await, ArtifactDirection::Output),
+        ["scripted-output.a1", "scripted-output.a2"]
+    );
+    assert_eq!(
+        status_of(&world.view(job).await, StageKind::Intake),
+        StageRunStatus::Passed
+    );
+}
+
 #[tokio::test]
 async fn only_people_with_a_listed_role_may_answer_and_a_refusal_is_audited() {
     let world = World::new().await;
@@ -2391,6 +2635,55 @@ async fn the_sweeper_times_out_an_attempt_whose_worker_went_quiet() {
     assert_eq!(intake.status, StageRunStatus::Ready);
 }
 
+#[tokio::test]
+async fn one_sweep_ends_every_attempt_that_is_due_whatever_the_reason() {
+    // `sweep` asks the store for the attempts that are due for each of the three reasons and moves
+    // them in one call: a lapsed lease, a passed deadline with a lease still held, and a teardown
+    // that ran out of time. Each lands in its own field of the result.
+    let world = World::new().await;
+    world
+        .script(StageKind::Intake)
+        .with(|s| s.tweaks.attempt_timeout_seconds = 30);
+    let operator = world.person("operator-1", &[HumanRole::Operator]).await;
+
+    let quiet_job = world.admitted_job().await;
+    let quiet = world.claim_one("worker-1").await;
+    let slow_job = world.admitted_job().await;
+    let slow = world.claim_one("worker-2").await;
+    let cancelled_job = world.admitted_job().await;
+    let stuck = world.claim_one("worker-3").await;
+    world
+        .engine
+        .control(&world.actor(operator), cancelled_job, JobCommand::Cancel)
+        .await
+        .expect("cancels");
+
+    // The slow worker keeps its lease. The quiet one and the one asked to stop do not heartbeat.
+    world.advance(25);
+    assert_eq!(world.engine.heartbeat(&slow).await, Ok(Pulse::Alive));
+    world.advance(36);
+    let swept = world.engine.sweep().await.expect("sweep");
+    assert_eq!(swept.lease_lost, vec![quiet.attempt]);
+    assert_eq!(swept.timed_out, vec![slow.attempt]);
+    assert_eq!(swept.forced, vec![stuck.attempt]);
+    assert!(swept.skipped.is_empty());
+
+    for (job, expected) in [
+        (quiet_job, AttemptStatus::LeaseLost),
+        (slow_job, AttemptStatus::TimedOut),
+        (cancelled_job, AttemptStatus::Cancelled),
+    ] {
+        let view = world.view(job).await;
+        let first = &view.newest(StageKind::Intake).expect("run").attempts[0];
+        assert_eq!(first.status, expected);
+    }
+    // A second sweep finds nothing more to do.
+    assert_eq!(
+        world.engine.sweep().await.expect("sweep"),
+        factory_workflow::scheduler::Swept::default()
+    );
+}
+
 // ---- credentials and budgets ----------------------------------------------------------------
 
 use factory_ports::agent::{ModelBroker, TokenState};
@@ -2506,6 +2799,40 @@ async fn the_job_budget_stops_retries_and_asks_a_person() {
         status_of(&world.view(job).await, StageKind::Intake),
         StageRunStatus::WaitingForHuman
     );
+}
+
+#[tokio::test]
+async fn what_attempts_spent_counts_once_against_the_job_budget() {
+    // Two attempts spend 800,000 of a budget of 1,000,000. Both retry, and a third attempt may
+    // start. Counting an attempt's cost twice would reach the budget at the second failure.
+    let world = World::with_config(|config| config.job_budget_micro_usd = 1_000_000).await;
+    let job = world.admitted_job().await;
+    world.script(StageKind::Intake).agent_spending(400_000);
+    world
+        .script(StageKind::Intake)
+        .otherwise(Step::Fail(StageError::Tool));
+    for _ in 0..2 {
+        world.advance(600);
+        let (_, outcome) = world.run_next("worker-1").await;
+        assert_eq!(
+            outcome,
+            AttemptOutcome::Failed {
+                class: FailureClass::ToolError,
+                then: AttemptDisposition::Retry
+            }
+        );
+    }
+    assert_eq!(
+        status_of(&world.view(job).await, StageKind::Intake),
+        StageRunStatus::Ready
+    );
+    world.advance(600);
+    let claimed = world
+        .engine
+        .claim_next(&World::worker("worker-1"))
+        .await
+        .expect("claim");
+    assert_eq!(claimed.started.len(), 1, "{claimed:?}");
 }
 
 #[tokio::test]
