@@ -1036,3 +1036,424 @@ fn repeated_refused_tool_requests_send_the_stage_to_a_person() {
     assert_eq!(threshold.max_denied_requests_per_task, 3);
     assert_eq!(threshold.on_threshold, "needs_human");
 }
+
+// ---------------------------------------------------------------------------------------------
+// Approval rows, always-human names and invalidation reasons (A7, B)
+// ---------------------------------------------------------------------------------------------
+
+use factory_domain::ids::TenantId;
+use factory_domain::policy::PolicyEngine;
+use factory_domain::policy::authority::{
+    ActionContext, ActionDenialReason, ActionVerdict, Actor, ActorKind, Allowlist, AllowlistEntry,
+    AutonomyLevel, ChangeFacts,
+};
+use factory_domain::policy::decision::{Designation, GithubUserId};
+use factory_domain::values::Timestamp;
+use factory_domain::vocabulary::RiskTier;
+use factory_ports::store::ApprovalInvalidation;
+
+const REPO: &str = "acme/widgets";
+const ORG_ADMIN: u64 = 11;
+const REPO_ADMIN: u64 = 12;
+const APPROVER: u64 = 13;
+const SECURITY_APPROVER: u64 = 14;
+const OPERATOR: u64 = 15;
+const REQUESTER: u64 = 16;
+
+fn user_id(n: u64) -> GithubUserId {
+    GithubUserId::new(n).expect("a GitHub id")
+}
+
+fn tenant() -> TenantId {
+    TenantId::parse("018f3a00-0000-7000-8000-00000000c001").expect("a tenant id")
+}
+
+fn allowlist() -> Allowlist {
+    let person = |id: u64, login: &str, designation: Designation| AllowlistEntry {
+        tenant: tenant(),
+        github_user_id: user_id(id),
+        login: login.to_owned(),
+        designations: std::iter::once(designation).collect(),
+        repositories: None,
+        expires_at: None,
+    };
+    Allowlist::new(
+        "sha256:test-allowlist",
+        vec![
+            person(ORG_ADMIN, "gina", Designation::OrgAdmin),
+            person(REPO_ADMIN, "rita", Designation::RepoAdmin),
+            person(APPROVER, "mallory", Designation::Approver),
+            person(SECURITY_APPROVER, "sam", Designation::SecurityApprover),
+            person(OPERATOR, "olga", Designation::Operator),
+            person(REQUESTER, "alice", Designation::Requester),
+        ],
+    )
+    .expect("no person is listed twice")
+}
+
+fn engine() -> PolicyEngine {
+    PolicyEngine::new(security(), approval()).expect("the real pair builds")
+}
+
+/// Asks the engine whether a person may take an action at a level.
+fn decide(engine: &PolicyEngine, who: u64, action: &str, level: AutonomyLevel) -> ActionVerdict {
+    let list = allowlist();
+    let (tenant, now) = (
+        tenant(),
+        Timestamp::parse("2026-10-27T12:00:00Z").expect("a time"),
+    );
+    let login = "someone";
+    let actor = Actor {
+        github_user_id: user_id(who),
+        login,
+        kind: ActorKind::User,
+        github_permission: None,
+        author_association: None,
+    };
+    engine.authority.authorize_action(&ActionContext {
+        action,
+        level,
+        tenant: &tenant,
+        repository: REPO,
+        actor: &actor,
+        allowlist: &list,
+        now: &now,
+        requester: Some(user_id(REQUESTER)),
+        change: ChangeFacts {
+            risk_tier: RiskTier::Low,
+            protected_path_change: false,
+            sensitive_file_change: false,
+            new_dependency: false,
+        },
+        require_designation: None,
+        step_up_done: true,
+    })
+}
+
+/// Asks the engine whether a person may move a repository between two levels.
+fn decide_change(
+    engine: &PolicyEngine,
+    who: u64,
+    from: AutonomyLevel,
+    to: AutonomyLevel,
+) -> ActionVerdict {
+    let list = allowlist();
+    let (tenant, now) = (
+        tenant(),
+        Timestamp::parse("2026-10-27T12:00:00Z").expect("a time"),
+    );
+    let actor = Actor {
+        github_user_id: user_id(who),
+        login: "someone",
+        kind: ActorKind::User,
+        github_permission: None,
+        author_association: None,
+    };
+    engine.authority.authorize_autonomy_change(
+        &ActionContext {
+            action: "raise_autonomy_level",
+            level: from,
+            tenant: &tenant,
+            repository: REPO,
+            actor: &actor,
+            allowlist: &list,
+            now: &now,
+            requester: Some(user_id(REQUESTER)),
+            change: ChangeFacts {
+                risk_tier: RiskTier::Low,
+                protected_path_change: false,
+                sensitive_file_change: false,
+                new_dependency: false,
+            },
+            require_designation: None,
+            step_up_done: true,
+        },
+        from,
+        to,
+    )
+}
+
+fn authorized(verdict: &ActionVerdict) -> bool {
+    matches!(verdict, ActionVerdict::Authorized(_))
+}
+
+fn row<'a>(
+    policy: &'a ApprovalPolicy,
+    id: &str,
+) -> &'a factory_contracts::policy::approval::ActionRule {
+    policy
+        .actions
+        .iter()
+        .find(|a| a.id == id)
+        .unwrap_or_else(|| panic!("approval.yaml has no row for `{id}`"))
+}
+
+#[test]
+fn raising_and_lowering_autonomy_have_rows_that_agree_with_the_engine() {
+    use AutonomyLevel::{L0, L1, L2};
+    use factory_contracts::policy::approval::Requirement;
+    let policy = approval();
+    let raise = row(policy, "raise_autonomy_level");
+    let lower = row(policy, "lower_autonomy_level");
+    for r in [raise, lower] {
+        assert_eq!(r.requires, Some(Requirement::Human));
+        // A repository capped at L0 can be raised, so the action exists from L0.
+        assert_eq!(r.min_level, "L0");
+    }
+    assert_eq!(
+        raise.approver_roles.as_deref(),
+        Some(&strings(&["org_admin"])[..])
+    );
+    // The engine lets a repo_admin lower, and an org_admin too.
+    assert_eq!(
+        lower.approver_roles.as_deref(),
+        Some(&strings(&["repo_admin", "org_admin"])[..])
+    );
+    assert!(
+        policy
+            .always_human
+            .iter()
+            .any(|a| a == "raise_autonomy_level")
+    );
+    assert!(
+        policy
+            .approval_binding
+            .step_up_authentication_required_for
+            .iter()
+            .any(|a| a == "raise_autonomy_level")
+    );
+
+    // The row and the engine's own check say the same thing for every designation.
+    let engine = engine();
+    for (who, may_raise, may_lower) in [
+        (ORG_ADMIN, true, true),
+        (REPO_ADMIN, false, true),
+        (APPROVER, false, false),
+        (SECURITY_APPROVER, false, false),
+        (OPERATOR, false, false),
+        (REQUESTER, false, false),
+    ] {
+        let by_row_raise = decide(&engine, who, "raise_autonomy_level", L1);
+        let by_engine_raise = decide_change(&engine, who, L1, L2);
+        assert_eq!(authorized(&by_row_raise), may_raise, "row, raise, {who}");
+        assert_eq!(
+            authorized(&by_engine_raise),
+            may_raise,
+            "engine, raise, {who}"
+        );
+        let by_row_lower = decide(&engine, who, "lower_autonomy_level", L2);
+        let by_engine_lower = decide_change(&engine, who, L2, L0);
+        assert_eq!(authorized(&by_row_lower), may_lower, "row, lower, {who}");
+        assert_eq!(
+            authorized(&by_engine_lower),
+            may_lower,
+            "engine, lower, {who}"
+        );
+    }
+}
+
+#[test]
+fn every_open_translation_warning_needs_an_approvers_decision() {
+    use AutonomyLevel::{L1, L2};
+    use factory_contracts::policy::approval::Requirement;
+    let policy = approval();
+    let r = row(policy, "acknowledge_documentation_warning");
+    assert_eq!(r.requires, Some(Requirement::Human));
+    assert_eq!(
+        r.approver_roles.as_deref(),
+        Some(&strings(&["approver"])[..])
+    );
+    assert!(
+        r.when
+            .as_deref()
+            .is_some_and(|w| w.contains("translation-unfaithful")),
+        "{:?}",
+        r.when
+    );
+    // It is a human decision at every level, and no setting can turn it into none.
+    assert!(
+        policy
+            .always_human
+            .iter()
+            .any(|a| a == "acknowledge_documentation_warning")
+    );
+    let engine = engine();
+    assert!(
+        engine
+            .authority
+            .always_needs_human("acknowledge_documentation_warning")
+    );
+    for level in [L1, L2] {
+        assert!(authorized(&decide(
+            &engine,
+            APPROVER,
+            "acknowledge_documentation_warning",
+            level
+        )));
+        for who in [OPERATOR, REQUESTER, REPO_ADMIN] {
+            let verdict = decide(&engine, who, "acknowledge_documentation_warning", level);
+            assert!(
+                matches!(
+                    &verdict,
+                    ActionVerdict::Denied(d) if matches!(d.reason, ActionDenialReason::MissingDesignation { .. })
+                ),
+                "{who} {level:?}: {verdict:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn the_always_human_list_uses_the_real_action_ids() {
+    let policy = approval();
+    let engine = engine();
+    let ids: BTreeSet<&str> = policy.actions.iter().map(|a| a.id.as_str()).collect();
+    // The descriptive names that stood for an action with a row, and the id each one meant. A name
+    // that is not an id is not checked against its row, so the engine would not notice a row that
+    // lets the action happen with no human.
+    for (old, id) in [
+        ("waive_any_gate", "waive_failed_gate"),
+        (
+            "grant_tool_outside_agent_manifest",
+            "grant_tool_outside_manifest",
+        ),
+        ("enable_exec_shell_breakglass", "use_exec_shell_breakglass"),
+        (
+            "access_additional_repository_or_organization",
+            "write_to_additional_repository",
+        ),
+        (
+            "send_code_to_additional_model_provider",
+            "send_code_to_new_model_provider",
+        ),
+        (
+            "install_or_update_spec_kit_or_other_tooling",
+            "install_spec_kit_or_tooling",
+        ),
+    ] {
+        assert!(
+            !policy.always_human.iter().any(|a| a == old),
+            "`{old}` is a descriptive name; the action is `{id}`"
+        );
+        assert!(
+            policy.always_human.iter().any(|a| a == id),
+            "`{id}` is missing from always_human"
+        );
+        assert!(ids.contains(id), "{id}");
+        assert!(
+            engine.authority.always_needs_human(id),
+            "`{id}` must need a human at every level"
+        );
+    }
+    // Every step-up action is an action with a row.
+    for action in &policy.approval_binding.step_up_authentication_required_for {
+        assert!(
+            ids.contains(action.as_str()),
+            "step-up names `{action}`, which has no row"
+        );
+    }
+    // The actions the other evaluators rely on are on the list under their real ids.
+    for id in [
+        "change_protected_path",
+        "add_new_direct_dependency",
+        "waive_failed_gate",
+    ] {
+        assert!(policy.always_human.iter().any(|a| a == id), "{id}");
+    }
+}
+
+#[test]
+fn an_approval_stops_counting_for_the_five_reasons_of_the_store_port() {
+    // An exhaustive match: a sixth reason in the port stops this file from compiling, and
+    // whoever adds it has to say what the policy does with it.
+    fn name(reason: ApprovalInvalidation) -> &'static str {
+        match reason {
+            ApprovalInvalidation::NewCommit => "new_commit",
+            ApprovalInvalidation::BaseMoved => "base_moved",
+            ApprovalInvalidation::PolicyChange => "policy_change",
+            ApprovalInvalidation::ImageChange => "image_change",
+            ApprovalInvalidation::SpecRevision => "spec_revision",
+        }
+    }
+    let port: BTreeSet<&str> = [
+        ApprovalInvalidation::NewCommit,
+        ApprovalInvalidation::BaseMoved,
+        ApprovalInvalidation::PolicyChange,
+        ApprovalInvalidation::ImageChange,
+        ApprovalInvalidation::SpecRevision,
+    ]
+    .into_iter()
+    .map(name)
+    .collect();
+    let listed: BTreeSet<&str> = approval()
+        .approval_binding
+        .invalidated_by
+        .iter()
+        .map(String::as_str)
+        .collect();
+    assert_eq!(
+        listed, port,
+        "approval.yaml and the store port list different reasons"
+    );
+    assert_eq!(approval().approval_binding.invalidated_by.len(), 5);
+
+    // The gate evidence list uses the same names, and `rebase` is a new commit.
+    let gates: BTreeSet<&str> = security()
+        .gate_integrity
+        .invalidated_by
+        .iter()
+        .map(String::as_str)
+        .collect();
+    let expected: BTreeSet<&str> = port.iter().copied().chain(["rebase"]).collect();
+    assert_eq!(gates, expected);
+
+    // The two conditions the old list had are checks made when an approval is used, not stored
+    // reasons, and the policy still lists them.
+    let checked = approval()
+        .approval_binding
+        .checked_when_used
+        .as_ref()
+        .expect("approval_binding.checked_when_used");
+    for condition in [
+        "evidence_manifest_hash_differs_from_the_one_the_approver_saw",
+        "approver_removed_from_allowlist_or_entry_expired",
+    ] {
+        assert!(
+            checked.iter().any(|c| c == condition),
+            "{condition}: {checked:?}"
+        );
+    }
+}
+
+#[test]
+fn row_level_security_is_required_from_slice_one() {
+    // ADR 0012. The value is `required`; the file says the first pass is in Slice 1, not Slice 4.
+    assert_eq!(security().tenancy.database_row_level_security, "required");
+    let text = read_text(&repo_root().join("policies/security.yaml"));
+    let tenancy = &text[text.find("\ntenancy:").expect("the tenancy section")..];
+    assert!(tenancy.contains("ADR 0012"), "tenancy must cite ADR 0012");
+    assert!(
+        tenancy.contains("Slice 1"),
+        "tenancy must say RLS is Slice 1"
+    );
+    assert!(
+        !tenancy[..tenancy.find("\naudit:").unwrap_or(tenancy.len())].contains("Slice 4"),
+        "tenancy no longer defers RLS to Slice 4"
+    );
+}
+
+#[test]
+fn gate_evidence_invalidation_points_at_the_state_machine_mapping() {
+    let text = read_text(&repo_root().join("policies/security.yaml"));
+    let at = text
+        .find("  invalidated_by: [new_commit")
+        .expect("the list");
+    let before = &text[..at];
+    let comment: Vec<&str> = before.lines().rev().take(4).collect();
+    assert!(
+        comment
+            .iter()
+            .any(|l| l.contains("docs/architecture/state-machine.md")),
+        "the comment above invalidated_by must point at the mapping: {comment:?}"
+    );
+}

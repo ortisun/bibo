@@ -15,7 +15,7 @@
 # -----------------------------------------------------------------------------
 # PARSER CONTRACT (for the future Rust policy crate)
 # -----------------------------------------------------------------------------
-# * Plain YAML 1.2 subset: block style, scalars, lists, maps. No anchors, no
+# * Plain YAML 1.2 subset: block or flow style, scalars, lists, maps. No anchors, no
 #   aliases, no merge keys (<<), no custom tags, a single document.
 # * Deserialize into typed structs with serde and `#[serde(deny_unknown_fields)]`.
 #   An unknown key is a load error, never silently ignored.
@@ -1182,6 +1182,10 @@ gate_integrity:
   reviewer_sees_builder_self_justification: false
   nonwaivable_gates: [protected_path_check, secret_scan, sandbox_posture, evidence_binding, test_regression_check, signature_verification, stage_profile_check]
   evidence_binding: [head_sha, tree_hash, gate_definition_hash, policy_hash, image_digest, base_sha]
+  # Each item maps to a row of the invalidation table in docs/architecture/state-machine.md
+  # (section Invalidation, "How each item of gate_integrity.invalidated_by maps to a row"),
+  # with the point at which it is checked. A rebase writes new commits, so `rebase` is a
+  # `new_commit`. The approval list in approval.yaml uses the same names without `rebase`.
   invalidated_by: [new_commit, rebase, base_moved, policy_change, spec_revision, image_change]
   test_regression:
     baseline_from: trusted_run_on_base_commit
@@ -1479,6 +1483,9 @@ supply_chain:
 # -----------------------------------------------------------------------------
 tenancy:
   tenant_id_on_every_row: true
+  # Row-level security is part of Slice 1 (ADR 0012); it is not deferred. The tenant setting is
+  # made in every transaction, the system scope has its own role, and two narrow functions
+  # serve the lookups that happen before a tenant is known. NT-TEN-01 has its first pass in Slice 1.
   database_row_level_security: required
   object_store: { prefix_per_tenant: true, key_per_tenant: recommended }
   messaging: { subject_prefix_per_tenant: true, per_tenant_publish_subscribe_permissions: true }
