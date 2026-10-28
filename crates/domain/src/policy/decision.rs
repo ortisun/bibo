@@ -106,8 +106,6 @@ pub struct AuthorizedApproval {
 }
 
 impl AuthorizedApproval {
-    // Only the authority evaluator calls this; it arrives in the next commit of this work package.
-    #[allow(dead_code)]
     pub(crate) fn new(
         action: &str,
         approver: GithubUserId,

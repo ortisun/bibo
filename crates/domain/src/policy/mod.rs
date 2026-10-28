@@ -24,7 +24,6 @@
 //! | [`authority`] | Who holds a designation, who may take an action, the autonomy ladder, overrides | [`authority::ActionVerdict`] |
 //! | [`risk`] | The risk tier of a change, computed from facts and never from an agent's claim | [`risk::RiskAssessment`] |
 //! | [`budget`] | Budget and rework checks against the ceilings, which a project can only lower | [`budget::BudgetVerdict`] |
-//! | [`tighten`] | Whether a project policy only tightens the central one | [`tighten::TightenReport`] |
 //!
 //! [`PolicyEngine`] builds all of them from one pair of documents.
 //!
@@ -44,13 +43,23 @@
 //!   nothing.
 
 pub mod approval;
+pub mod authority;
+pub mod budget;
+pub mod commands;
 pub mod common;
 pub mod decision;
+pub mod dependency;
+pub mod egress;
 pub mod paths;
+pub mod risk;
 pub mod security;
+pub mod tools;
+
+mod engine;
 
 pub use approval::ApprovalPolicy;
 pub use common::{ConfigSource, GlobText, PolicyStatus, RegexText, ThreatId};
+pub use engine::PolicyEngine;
 pub use security::SecurityPolicy;
 
 use std::fmt;

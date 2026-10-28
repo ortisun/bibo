@@ -552,6 +552,7 @@ pub struct WriteScope {
     owned: Vec<GlobMatcher>,
 }
 
+#[derive(Debug)]
 struct Group {
     id: String,
     mode: ProtectionMode,
@@ -560,6 +561,7 @@ struct Group {
     reincludes: Vec<GlobMatcher>,
 }
 
+#[derive(Debug)]
 struct Sensitive {
     hit: SensitiveHit,
     applies_to: Option<AppliesTo>,
@@ -567,6 +569,7 @@ struct Sensitive {
 }
 
 /// The protected-path rules of one security policy, compiled once.
+#[derive(Debug)]
 pub struct PathPolicy {
     groups: Vec<Group>,
     sensitive: Vec<Sensitive>,

@@ -11,5 +11,17 @@
 #[path = "policy/support.rs"]
 mod support;
 
+#[path = "policy/authority.rs"]
+mod authority;
+#[path = "policy/commands.rs"]
+mod commands;
+#[path = "policy/dependency_risk_budget.rs"]
+mod dependency_risk_budget;
+#[path = "policy/egress.rs"]
+mod egress;
+#[path = "policy/engine.rs"]
+mod engine;
 #[path = "policy/paths.rs"]
 mod paths;
+#[path = "policy/tools.rs"]
+mod tools;
