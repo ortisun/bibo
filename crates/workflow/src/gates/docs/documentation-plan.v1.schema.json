@@ -1,0 +1,83 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:ortisun:factory:schema:stage:documentation-plan:1",
+  "title": "Documentation plan",
+  "description": "The smallest set of documents a change needs, derived by the documentation impact policy from the change itself. Stored as the deliverable documentation-plan of the DOCUMENTING stage. The plan is bound to the commits and the frozen specification it was derived from, so a plan for another commit is stale. A plan that is not applicable carries the rule that says so and no pages. This schema is proposed by the package s1-stage-documentation and needs the review of the software architect before it moves to schemas/.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "kind",
+    "base_commit",
+    "code_head",
+    "specification_sha256",
+    "applicable",
+    "change_types",
+    "breaking",
+    "program",
+    "interface",
+    "items"
+  ],
+  "properties": {
+    "schema_version": { "const": 1 },
+    "kind": { "const": "documentation-plan" },
+    "base_commit": { "$ref": "#/$defs/gitSha" },
+    "code_head": { "$ref": "#/$defs/gitSha" },
+    "specification_sha256": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+    "applicable": { "type": "boolean" },
+    "change_types": { "type": "array", "items": { "type": "string" } },
+    "breaking": { "type": "boolean" },
+    "program": { "type": ["string", "null"] },
+    "interface": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["new_flags", "removed_flags", "new_env", "removed_env", "new_api", "removed_api"],
+      "properties": {
+        "new_flags": { "$ref": "#/$defs/names" },
+        "removed_flags": { "$ref": "#/$defs/names" },
+        "new_env": { "$ref": "#/$defs/names" },
+        "removed_env": { "$ref": "#/$defs/names" },
+        "new_api": { "$ref": "#/$defs/names" },
+        "removed_api": { "$ref": "#/$defs/names" }
+      }
+    },
+    "not_applicable": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["rule", "reason"],
+      "properties": {
+        "rule": { "type": "string", "minLength": 1 },
+        "reason": { "type": "string", "minLength": 1 }
+      }
+    },
+    "items": { "type": "array", "items": { "$ref": "#/$defs/item" } }
+  },
+  "allOf": [
+    {
+      "if": { "properties": { "applicable": { "const": false } }, "required": ["applicable"] },
+      "then": { "required": ["not_applicable"], "properties": { "items": { "maxItems": 0 } } },
+      "else": { "properties": { "items": { "minItems": 1 } }, "not": { "required": ["not_applicable"] } }
+    }
+  ],
+  "$defs": {
+    "gitSha": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+    "names": { "type": "array", "items": { "type": "string" } },
+    "audience": { "enum": ["end-users", "developers", "operators", "integrators"] },
+    "item": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "kind", "page", "form", "audience", "sources", "terms", "acceptance", "owner"],
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "kind": { "enum": ["usage", "reference", "changelog", "upgrade", "operations", "update", "check", "domain"] },
+        "page": { "type": "string", "pattern": "^[A-Za-z0-9._/-]+\\.md$", "description": "A page of the repository. Every kind except check is a page the writer may write: README.md, CHANGELOG.md or a Markdown file under docs." },
+        "form": { "enum": ["tutorial", "how-to", "reference", "explanation", "changelog"] },
+        "audience": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/audience" } },
+        "sources": { "type": "array", "items": { "type": "string" } },
+        "terms": { "type": "array", "items": { "type": "string" } },
+        "acceptance": { "type": "array", "minItems": 1, "items": { "type": "string", "minLength": 1 } },
+        "owner": { "const": "documentation-writer" }
+      }
+    }
+  }
+}
