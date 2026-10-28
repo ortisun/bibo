@@ -1,0 +1,208 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:ortisun:factory:schema:stage:repository-map:1",
+  "title": "Repository map",
+  "description": "What the repository intelligence stage learned about one repository at one commit: its languages, build systems, build and test commands, owners, protected paths, files, tests, documents and the paths kept out of model context. Every claim carries the file, the commit and the lines it was read from. The rule that a line range ends at or after its start, and that every commit equals the top-level commit_sha, is checked by the stage and not by this schema.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "repository",
+    "commit_sha",
+    "languages",
+    "build_systems",
+    "commands",
+    "codeowners",
+    "protected_paths",
+    "files",
+    "test_mapping",
+    "documents",
+    "excluded_paths",
+    "baseline",
+    "counts"
+  ],
+  "properties": {
+    "schema_version": { "const": 1 },
+    "repository": { "type": "string", "minLength": 3, "maxLength": 140 },
+    "commit_sha": { "$ref": "#/$defs/commit" },
+    "languages": { "type": "array", "maxItems": 50, "items": { "$ref": "#/$defs/language" } },
+    "build_systems": { "type": "array", "maxItems": 20, "items": { "$ref": "#/$defs/named" } },
+    "commands": { "type": "array", "maxItems": 10, "items": { "$ref": "#/$defs/command" } },
+    "codeowners": { "type": "array", "maxItems": 500, "items": { "$ref": "#/$defs/owner" } },
+    "protected_paths": { "type": "array", "maxItems": 400, "items": { "$ref": "#/$defs/protected" } },
+    "files": { "type": "array", "maxItems": 400, "items": { "$ref": "#/$defs/file" } },
+    "test_mapping": { "type": "array", "maxItems": 200, "items": { "$ref": "#/$defs/testLink" } },
+    "documents": { "type": "array", "maxItems": 100, "items": { "$ref": "#/$defs/document" } },
+    "excluded_paths": { "type": "array", "maxItems": 100, "items": { "$ref": "#/$defs/excluded" } },
+    "project_manifest": { "$ref": "#/$defs/manifest" },
+    "baseline": { "$ref": "#/$defs/baseline" },
+    "counts": { "$ref": "#/$defs/counts" }
+  },
+  "$defs": {
+    "commit": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$"
+    },
+    "evidence": {
+      "description": "Where a fact was read: the file, the commit and the lines.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "commit_sha", "line_range"],
+      "properties": {
+        "path": { "type": "string", "minLength": 1, "maxLength": 1024 },
+        "commit_sha": { "$ref": "#/$defs/commit" },
+        "line_range": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["start", "end"],
+          "properties": {
+            "start": { "type": "integer", "minimum": 1 },
+            "end": { "type": "integer", "minimum": 1 }
+          }
+        }
+      }
+    },
+    "named": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "evidence"],
+      "properties": {
+        "name": { "type": "string", "minLength": 1, "maxLength": 64 },
+        "evidence": { "$ref": "#/$defs/evidence" }
+      }
+    },
+    "language": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "files", "evidence"],
+      "properties": {
+        "name": { "type": "string", "minLength": 1, "maxLength": 64 },
+        "files": { "type": "integer", "minimum": 0 },
+        "evidence": { "$ref": "#/$defs/evidence" }
+      }
+    },
+    "command": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["role", "argv", "origin", "timeout_seconds", "evidence"],
+      "properties": {
+        "role": { "enum": ["build", "test"] },
+        "argv": { "type": "array", "minItems": 1, "maxItems": 32, "items": { "type": "string", "minLength": 1, "maxLength": 512 } },
+        "origin": { "enum": ["project-manifest", "detected"] },
+        "timeout_seconds": { "type": "integer", "minimum": 1, "maximum": 7200 },
+        "evidence": { "$ref": "#/$defs/evidence" }
+      }
+    },
+    "owner": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["pattern", "owners", "evidence"],
+      "properties": {
+        "pattern": { "type": "string", "minLength": 1, "maxLength": 256 },
+        "owners": { "type": "array", "minItems": 1, "maxItems": 50, "items": { "type": "string", "minLength": 1, "maxLength": 256 } },
+        "evidence": { "$ref": "#/$defs/evidence" }
+      }
+    },
+    "protected": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["pattern", "mode", "origin"],
+      "properties": {
+        "pattern": { "type": "string", "minLength": 1, "maxLength": 1024 },
+        "mode": { "enum": ["deny_write", "append_only", "additions_only", "sensitive"] },
+        "origin": { "enum": ["project-manifest", "policy"] },
+        "evidence": { "$ref": "#/$defs/evidence" }
+      }
+    },
+    "file": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "role", "evidence"],
+      "properties": {
+        "path": { "type": "string", "minLength": 1, "maxLength": 1024 },
+        "role": { "enum": ["manifest", "source", "test", "document", "configuration"] },
+        "evidence": { "$ref": "#/$defs/evidence" }
+      }
+    },
+    "testLink": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["test", "covers", "evidence"],
+      "properties": {
+        "test": { "type": "string", "minLength": 1, "maxLength": 1024 },
+        "covers": { "type": "array", "maxItems": 50, "items": { "type": "string", "minLength": 1, "maxLength": 1024 } },
+        "evidence": { "$ref": "#/$defs/evidence" }
+      }
+    },
+    "document": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "kind", "evidence"],
+      "properties": {
+        "path": { "type": "string", "minLength": 1, "maxLength": 1024 },
+        "kind": { "enum": ["readme", "decision", "guide", "contributing"] },
+        "title": { "type": "string", "maxLength": 400 },
+        "evidence": { "$ref": "#/$defs/evidence" }
+      }
+    },
+    "excluded": {
+      "description": "A path the policy keeps out of model context. Only its name is here, never its content.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "reason"],
+      "properties": {
+        "path": { "type": "string", "minLength": 1, "maxLength": 1024 },
+        "reason": { "enum": ["hidden-by-policy"] }
+      }
+    },
+    "manifest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "sha256", "evidence"],
+      "properties": {
+        "path": { "type": "string", "minLength": 1, "maxLength": 1024 },
+        "sha256": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+        "evidence": { "$ref": "#/$defs/evidence" }
+      }
+    },
+    "baseline": {
+      "description": "Whether the baseline build and test can run. When there is no command, the reason is here and the stage does not guess one.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status"],
+      "properties": {
+        "status": { "enum": ["ready", "blocked"] },
+        "toolchain": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "blocked": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["code", "missing"],
+          "properties": {
+            "code": { "type": "string", "minLength": 1, "maxLength": 64 },
+            "missing": { "type": "string", "minLength": 1, "maxLength": 1000 }
+          }
+        }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "status": { "const": "blocked" } }, "required": ["status"] },
+          "then": { "required": ["blocked"] }
+        },
+        {
+          "if": { "properties": { "status": { "const": "ready" } }, "required": ["status"] },
+          "then": { "required": ["toolchain"] }
+        }
+      ]
+    },
+    "counts": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["files_seen", "files_listed", "truncated"],
+      "properties": {
+        "files_seen": { "type": "integer", "minimum": 0 },
+        "files_listed": { "type": "integer", "minimum": 0 },
+        "truncated": { "type": "boolean" }
+      }
+    }
+  }
+}
