@@ -4,7 +4,7 @@
 //! This is a ring 3 **library** (ADR 0015). The worker, and later the API and the operator CLI,
 //! depend on it. It chooses adapters, reads the protected configuration, runs the start-up
 //! checks and implements the seams that the stage handlers and the engine declare. It holds no
-//! `main`, no HTTP routes, no command parser and no worker loop: those belong to the binary.
+//! `main`, no HTTP routes, no handling of process arguments and no worker loop: those belong to the binary.
 //!
 //! # Map
 //!

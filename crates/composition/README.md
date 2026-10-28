@@ -3,7 +3,7 @@
 The shared composition core of the factory: what the worker, and later the API and the operator
 CLI, are made of before each adds its own shell. A ring 3 **library**
 ([ADR 0015](../../docs/adr/0015-composition-library.md)). Only binaries in `apps/` may depend on it
-(rule `DEP-11`), and it has no `main`, no HTTP route, no command parser and no loop.
+(rule `DEP-11`), and it has no `main`, no HTTP route, no handling of process arguments and no loop (the grammar of an approval decision is pure text and lives here).
 
 ## Modules
 

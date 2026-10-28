@@ -19,7 +19,7 @@ On 2026-10-28, in this repository.
 
 - `xtask/src/topology.rs` allows an edge from a binary to any library, and refuses an edge from a binary to another binary.
 - `DEP-02` computes the ring of a binary as one above the highest library ring. A library in ring 3 would have pushed the binaries to ring 4 unless the computation changed.
-- The shared core uses no `main`, no HTTP route and no command parser. The worker loop (`run`) and the broker listener (`broker_host`) are the only modules that are specific to a process that claims work.
+- The shared core uses no `main`, no HTTP route and no handling of process arguments. The worker loop (`run`) and the broker listener (`broker_host`) are the only modules that are specific to a process that claims work.
 - After the extraction 81 tests ran before and 81 after, all passing, and `cargo xtask check-architecture` passes with the new entry.
 
 Not checked: how much longer a build of the CLI takes when it links every adapter through this crate. No measurement was taken.
@@ -42,7 +42,7 @@ Chosen: **option 5.** A new crate `crates/composition`, package `factory-composi
 - **`DEP-08`** says binaries and the composition library are the only crates that depend on more than one adapter.
 - **`ST-13`.** The library may call `TenantScope::new`, as the worker could. `PlatformScope::receiver` stays allowed in the API alone, and the library does not use it. `DEP-10` and `ST-03` still apply: only `sandbox` starts processes, and the library only calls the sandbox through the ports.
 - **`DEP-09`, one narrow exemption.** Building the Spec Kit provider means writing the adapter's two public type names, which contain the word the rule keeps out of every crate but the adapter. The rules file gains `spec_kit_public_names` (`SpecKitConfig`, `SpecKitProvider`); the scan blanks exactly those two names before it looks for a term. A path in a string, `.specify` or `speckit-specify` in the composition library is still a finding, and `xtask` tests show both. The library finds the installation file through the adapter's own constant, not a path of its own.
-- **What stays in a binary.** `main`, the worker loop and the broker listener in `apps/worker`; HTTP routing and webhook handling in `apps/api`; command parsing in `apps/cli`. The library holds no business rule: the engine decides, the adapters act, and the library chooses and connects them.
+- **What stays in a binary.** `main`, the worker loop and the broker listener in `apps/worker`; HTTP routing and webhook handling in `apps/api`; the handling of process arguments and the commands in `apps/cli`. The library holds no business rule: the engine decides, the adapters act, and the library chooses and connects them.
 
 The generated overview and the rules table are regenerated from the rules file (`python3 -I docs/architecture/tools/check_crate_rules.py --write`).
 
@@ -56,7 +56,7 @@ The generated overview and the rules table are regenerated from the rules file (
 **Costs.**
 - A thirteenth library to maintain, and ring 3 now holds two kinds of thing (binaries and a library). The rules file and the overview say so.
 - Every binary that depends on the library links every adapter. The CLI gains the Docker and GitHub adapters in its binary whether it uses them or not. If that matters, the library can grow features for the adapters later; nothing here prevents it.
-- The library can grow into a catch-all. The guard is the rule that it holds no `main`, no HTTP route, no command parser and no loop, plus review. A business rule found in it is a defect to move to the engine.
+- The library can grow into a catch-all. The guard is the rule that it holds no `main`, no HTTP route, no handling of process arguments and no loop, plus review. A business rule found in it is a defect to move to the engine.
 - ADR 0002 says "twelve library crates"; it now carries a revision note that points here.
 
 ## Revisit when
