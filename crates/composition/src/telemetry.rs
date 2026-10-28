@@ -7,15 +7,17 @@
 //! * [`config_for`] passes the real redactor to `TelemetryConfig::new`, which takes the scrubber as
 //!   a required argument. Nothing in the workspace can start telemetry without one, so this module
 //!   is not the only thing standing between a binary and a missing scrubber.
-//! * [`job_stretch`] opens the `factory.job` span with the three required attributes. The span has
-//!   **no remote parent** yet: the helper in the observability crate that sets the derived trace
-//!   context comes in the next change. The derived `traceparent` is already written into each
-//!   outbox event by the engine (`Traceparent::for_job`).
+//! * [`job_stretch`] opens the `factory.job` span with the three required attributes and the remote
+//!   parent derived from the job id (`factory_observability::spans::job_stretch_span`). Every
+//!   process that works on a job writes into that job's one trace: the API while it handles a
+//!   command, the worker while it holds a claim, and any process after a restart. The derived
+//!   `traceparent` is also written into each outbox event by the engine (`Traceparent::for_job`).
 
 use std::sync::Arc;
 
+use factory_domain::ids::JobId;
 use factory_domain::redaction::Redactor;
-use factory_observability::spans::{Job, job_span};
+use factory_observability::spans::{Job, JobStretch, job_span, job_stretch_span};
 use factory_observability::telemetry::{InitError, TelemetryConfig, TelemetryGuard};
 use tracing::Span;
 
@@ -57,13 +59,25 @@ pub fn init(config: &TelemetryConfig) -> Result<TelemetryGuard, InitError> {
     factory_observability::telemetry::init(config)
 }
 
-/// The `factory.job` span for one stretch of work on a job: the worker while it holds a claim.
-/// Everything the engine does for the job runs inside it.
+/// The `factory.job` span for one stretch of work on a job: the worker while it holds a claim, the
+/// API while it handles a command on the job. Everything the engine does for the job runs inside
+/// it.
+///
+/// The span's remote parent is derived from the job id, so every stretch of one job, in any
+/// process, is in one trace. `job_id` that is not a job id (the API passes `none` for a request
+/// that names no job) gives a stretch with no derived parent: there is no job to join.
 #[must_use]
 pub fn job_stretch(correlation_id: &str, job_id: &str, tenant_id: &str) -> Span {
-    job_span(&Job {
-        correlation_id,
-        job_id,
-        tenant_id,
-    })
+    match JobId::parse(job_id) {
+        Ok(job) => job_stretch_span(&JobStretch {
+            correlation_id,
+            job,
+            tenant_id,
+        }),
+        Err(_) => job_span(&Job {
+            correlation_id,
+            job_id,
+            tenant_id,
+        }),
+    }
 }
