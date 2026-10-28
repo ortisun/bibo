@@ -7,8 +7,6 @@
 
 use std::fmt;
 
-use sha2::{Digest, Sha256};
-
 /// The prefix that lets the secret scanner find a job token (`secrets.patterns`,
 /// `factory_job_token`).
 pub const TOKEN_PREFIX: &str = "sfjt_";
@@ -50,9 +48,9 @@ impl TokenHash {
     /// Hashes a secret.
     #[must_use]
     pub fn of(secret: &str) -> Self {
-        let digest = Sha256::digest(secret.as_bytes());
+        let digest = ring::digest::digest(&ring::digest::SHA256, secret.as_bytes());
         let mut out = [0_u8; 32];
-        out.copy_from_slice(&digest);
+        out.copy_from_slice(digest.as_ref());
         Self(out)
     }
 }

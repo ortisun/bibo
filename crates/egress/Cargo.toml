@@ -27,7 +27,6 @@ default = ["broker"]
 broker = [
   "dep:factory-domain",
   "dep:factory-ports",
-  "dep:sha2",
   "dep:ring",
   "dep:httparse",
   "dep:ureq",
@@ -43,12 +42,11 @@ serde_json = { version = "1.0.154", default-features = false, features = ["std"]
 # On the `egress` list.
 thiserror = "2.0.21"
 
-# NEEDS ARCHITECT. SHA-256 of the job token, so only a hash is kept. Already on the `github` and
-# `domain` lists; RustCrypto, pure Rust.
-sha2 = { version = "0.11.1", default-features = false, optional = true }
-# NEEDS ARCHITECT. `ring::rand::SystemRandom`: the operating system's random source for the 256-bit
-# job token, behind the `TokenEntropy` trait. The same crate is the crypto provider of `ureq`'s TLS
-# below, so no second crypto stack. 0.17.14, "Apache-2.0 AND ISC", no open advisory.
+# NEEDS ARCHITECT. `ring::rand::SystemRandom`, the operating system's random source for the
+# 256-bit job token (behind the `TokenEntropy` trait), and `ring::digest::SHA256`, the hash that
+# is all the broker keeps of a token. The same crate is the crypto provider of `ureq`'s TLS below,
+# so there is no second crypto stack and no separate hashing crate. 0.17.14, "Apache-2.0 AND
+# ISC", no open advisory.
 ring = { version = "0.17.14", optional = true }
 # NEEDS ARCHITECT. Parses the request head the sandbox sends to the broker (zero-copy, no
 # dependencies, MIT OR Apache-2.0, maintained by the hyper maintainers). It is already in the

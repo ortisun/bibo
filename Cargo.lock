@@ -406,7 +406,6 @@ dependencies = [
  "httparse",
  "ring",
  "serde_json",
- "sha2",
  "thiserror",
  "tokio",
  "ureq",
@@ -415,6 +414,10 @@ dependencies = [
 [[package]]
 name = "factory-egress-sidecar"
 version = "0.0.0"
+dependencies = [
+ "factory-egress",
+ "serde_json",
+]
 
 [[package]]
 name = "factory-github"

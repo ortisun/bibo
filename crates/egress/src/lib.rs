@@ -20,3 +20,4 @@
 pub mod broker;
 #[cfg(feature = "broker")]
 pub mod http;
+pub mod relay;
