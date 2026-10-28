@@ -32,6 +32,7 @@ mod failure;
 mod gate;
 mod ledger;
 pub(crate) mod payload;
+mod platform;
 pub(crate) mod progress;
 pub(crate) mod record;
 mod replace;
@@ -59,6 +60,7 @@ pub use attempt::AttemptOutcome;
 pub use changes::ChangeApplied;
 pub use config::EngineConfig;
 pub use error::EngineError;
+pub use platform::PlatformEvent;
 pub use view::{AttemptView, JobView, StageRunView};
 
 use crate::commands::Authority;

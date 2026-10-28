@@ -1132,6 +1132,19 @@ impl Engine {
         for action in notes.take_audit() {
             cx.audit(tx, actor.clone(), action).await?;
         }
+        // A run that failed still reports the tool calls policy denied and its transcript.
+        for _ in 0..notes.take_denials() {
+            cx.audit(
+                tx,
+                actor.clone(),
+                AuditAction::new(AuditKind::ToolCallDenied, AuditDecision::Denied),
+            )
+            .await?;
+        }
+        if let Some(transcript) = notes.take_transcript() {
+            self.index(tx, cx, claimed, std::slice::from_ref(&transcript))
+                .await?;
+        }
         for _ in &output.permission_denials {
             cx.audit(
                 tx,

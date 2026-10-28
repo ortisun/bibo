@@ -138,6 +138,11 @@ pub struct Script {
     pub extra_document: bool,
     /// Whether the output leaves out the required deliverable.
     pub omit_deliverable: bool,
+    /// What a failing run leaves behind: the number of denied tool calls and whether it stored a
+    /// transcript. The handler reports them with `note_failed_run` before it returns the error.
+    pub failed_run: Option<(u32, bool)>,
+    /// The transcripts that failing runs stored, so a test can ask whether the engine kept them.
+    pub transcripts: Vec<factory_domain::contracts::ArtifactRef>,
 }
 
 impl Default for Script {
@@ -160,6 +165,8 @@ impl Default for Script {
             report_sandbox: true,
             extra_document: false,
             omit_deliverable: false,
+            failed_run: None,
+            transcripts: Vec::new(),
         }
     }
 }
@@ -414,7 +421,41 @@ impl StageHandler for ScriptedHandler {
                     .collect(),
                 ..StageOutput::default()
             }),
-            Step::Fail(error) => Err(error),
+            Step::Fail(error) => {
+                let failed = self.script.with(|script| script.failed_run);
+                if let Some((denied, transcript)) = failed {
+                    let stored = if transcript {
+                        let reference = ctx
+                            .ports
+                            .artifacts
+                            .put(
+                                b"the redacted transcript of a run that failed".to_vec(),
+                                MediaType::parse("text/plain").expect("a media type"),
+                            )
+                            .await
+                            .expect("the transcript is stored");
+                        self.script
+                            .with(|script| script.transcripts.push(reference.clone()));
+                        Some(reference)
+                    } else {
+                        None
+                    };
+                    ctx.note_failed_run(&factory_ports::agent::AgentRunReport {
+                        outcome: Err(factory_ports::agent::AgentRunError::Timeout),
+                        transcript: stored,
+                        usage: Usage::default(),
+                        runtime_version: None,
+                        exit: None,
+                        permission_denials: (0..denied)
+                            .map(|_| Denial {
+                                tool: "write-file".to_owned(),
+                                reason: "the path is protected".to_owned(),
+                            })
+                            .collect(),
+                    });
+                }
+                Err(error)
+            }
             Step::NeedsHuman => Ok(StageOutput {
                 needs_human: Some(NeedsHumanRequest {
                     reason: Slug::parse("ambiguous-requirement").expect("a slug"),

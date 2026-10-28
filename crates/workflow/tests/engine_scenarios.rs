@@ -2801,6 +2801,115 @@ async fn every_move_names_the_guard_that_cleared_it_and_the_facts_it_held_on() {
     assert!(passes.iter().all(|guard| *guard == "G_GATE_PASS_EVIDENCED"));
 }
 
+// ---- events that belong to no job ----------------------------------------------------------------
+
+#[tokio::test]
+async fn an_event_with_no_job_is_recorded_in_the_platform_chain_and_not_under_a_tenant() {
+    // A webhook with a bad signature has no tenant and no job. The caller, which alone may make a
+    // platform scope, passes it in; the engine adds the identifier, the policy and a correlation
+    // id of the event's own.
+    use factory_domain::scope::PlatformScope;
+    use factory_ports::store::AuditActor;
+    use factory_workflow::audit::{AuditAction, AuditDecision, AuditKind};
+    use factory_workflow::engine::PlatformEvent;
+    let world = World::new().await;
+    let record = world
+        .engine
+        .record_platform_event(
+            PlatformScope::receiver(),
+            PlatformEvent {
+                actor: AuditActor::Anonymous(
+                    factory_domain::values::Slug::parse("webhook").expect("a slug"),
+                ),
+                action: AuditAction::new(
+                    AuditKind::WebhookAcceptedOrRejected,
+                    AuditDecision::Denied,
+                ),
+                subject: "a delivery with a bad signature".to_owned(),
+                reason: "the signature did not verify".to_owned(),
+            },
+        )
+        .await
+        .expect("the platform event is recorded");
+    assert_eq!(record.event.job, None);
+    assert_eq!(
+        record.event.action.as_str(),
+        "webhook_accepted_or_rejected.denied"
+    );
+    assert_eq!(record.event.policy_hash, world.config.policy_hash);
+    let platform = world.store.platform_audit();
+    assert_eq!(platform.len(), 1);
+    assert!(
+        world.store.tenant_audit(world.tenant).is_empty(),
+        "nothing landed under a tenant"
+    );
+}
+
+// ---- what a failed run leaves behind -------------------------------------------------------------
+
+#[tokio::test]
+async fn a_failed_run_keeps_its_denied_tool_calls_and_its_transcript() {
+    // Ports v1.1: an agent run always returns a report, with usage, transcript and denials, even
+    // when it has no output. The handler hands the report to the engine before it returns the
+    // error, and the engine records each denial in the audit log and indexes the transcript for
+    // the tenant, together with the failure of the attempt.
+    use factory_domain::scope::TenantScope;
+    use factory_ports::store::Store;
+
+    let world = World::new().await;
+    let job = world.admitted_job().await;
+    world.script(StageKind::Intake).with(|s| {
+        s.failed_run = Some((2, true));
+        s.steps.push_back(Step::Fail(StageError::Tool));
+    });
+    let (_, outcome) = world.run_next("worker-1").await;
+    assert!(
+        matches!(outcome, AttemptOutcome::Failed { .. }),
+        "{outcome:?}"
+    );
+    let denials = world
+        .audit(job)
+        .await
+        .iter()
+        .filter(|r| r.event.action.as_str().starts_with("tool_call_denied"))
+        .count();
+    assert_eq!(
+        denials, 2,
+        "each denied tool call of the failed run is audited"
+    );
+    let transcripts = world
+        .script(StageKind::Intake)
+        .with(|s| s.transcripts.clone());
+    assert_eq!(transcripts.len(), 1);
+    // The tenant's index names the transcript, so the tenant may read the blob.
+    let mut tx = world
+        .store
+        .begin(TenantScope::new(world.tenant))
+        .await
+        .expect("a tx");
+    let row = tx
+        .get_artifact_index(&transcripts[0].sha256)
+        .await
+        .expect("the tenant holds the transcript of the failed run");
+    assert_eq!(row.tenant_id, world.tenant);
+    tx.rollback().await.expect("rollback");
+
+    // A failing run that reports nothing leaves nothing extra behind.
+    let other = World::new().await;
+    let job = other.admitted_job().await;
+    other
+        .script(StageKind::Intake)
+        .queue([Step::Fail(StageError::Tool)]);
+    other.run_next("worker-1").await;
+    assert!(
+        other.audit(job).await.iter().all(|r| !r
+            .event
+            .action
+            .as_str()
+            .starts_with("tool_call_denied"))
+    );
+}
+
 // ---- assurance claims of a gate decision --------------------------------------------------------
 
 #[tokio::test]

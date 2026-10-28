@@ -12,7 +12,7 @@ use factory_domain::ids::{AttemptId, CorrelationId, JobId, StageRunId, TenantId}
 use factory_domain::state::StageRunStatus;
 use factory_domain::values::{Sha256Digest, Timestamp};
 use factory_domain::vocabulary::{ExecutionMode, StageKind};
-use factory_ports::agent::{AgentRuntime, JobTokenRef, ModelBroker, ModelRouter};
+use factory_ports::agent::{AgentRunReport, AgentRuntime, JobTokenRef, ModelBroker, ModelRouter};
 use factory_ports::artifact::ArtifactStore;
 use factory_ports::clock::{CancelSignal, Clock, IdGenerator};
 use factory_ports::registry::{AgentRegistry, OutputValidator};
@@ -123,6 +123,10 @@ pub(crate) struct AttemptNotes {
     pub(crate) audit: Vec<AuditAction>,
     pub(crate) sandbox_ready: Option<SandboxReady>,
     pub(crate) cost_micro_usd: u64,
+    /// The transcript of a run that failed, which the engine keeps for the tenant.
+    pub(crate) transcript: Option<ArtifactRef>,
+    /// How many tool calls policy denied in a run that failed.
+    pub(crate) denials: usize,
 }
 
 /// The notes of one attempt, shared between the handler that writes them and the engine that
@@ -152,6 +156,16 @@ impl Notes {
     /// What the attempt spent, in millionths of a US dollar.
     pub(crate) fn cost(&self) -> u64 {
         self.lock().cost_micro_usd
+    }
+
+    /// Takes the transcript of a failed run, leaving none behind.
+    pub(crate) fn take_transcript(&self) -> Option<ArtifactRef> {
+        self.lock().transcript.take()
+    }
+
+    /// Takes the number of denied tool calls of a failed run, leaving none behind.
+    pub(crate) fn take_denials(&self) -> usize {
+        std::mem::take(&mut self.lock().denials)
     }
 
     /// Takes the audit actions the handler noted, leaving none behind.
@@ -245,6 +259,22 @@ impl<'a> StageContext<'a> {
     /// needs no sandbox never calls this.
     pub fn report_sandbox_ready(&mut self, ready: SandboxReady) {
         self.notes.lock().sandbox_ready = Some(ready);
+    }
+
+    /// Keeps what a run that failed left behind. An agent run always returns a report, with its
+    /// usage, its transcript and the tool calls policy denied, even when it has no output
+    /// (ports v1.1). A handler that turns a failed report into a `StageError` calls this first, so
+    /// the failure does not discard the evidence: the engine records each denial in the audit
+    /// log and indexes the transcript for the tenant, with the result of the attempt. What the
+    /// run spent is read from the broker, so it is not repeated here.
+    pub fn note_failed_run(&mut self, report: &AgentRunReport) {
+        let mut notes = self.notes.lock();
+        if let Some(transcript) = &report.transcript {
+            notes.transcript = Some(transcript.clone());
+        }
+        notes.denials = notes
+            .denials
+            .saturating_add(report.permission_denials.len());
     }
 
     /// Asks the engine to record an audit event of a kind that only the handler sees, such as a
