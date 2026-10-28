@@ -1482,6 +1482,25 @@
           "T-15",
           "T-12"
         ]
+      },
+      {
+        "applies_to": "factory_repo",
+        "globs": [
+          "xtask/**",
+          "schemas/validate.sh",
+          "docs/architecture/crate-dependency-rules.json",
+          "docs/architecture/tools/**",
+          "fixtures/readability/**",
+          "crates/domain/tests/oracle/**",
+          "crates/domain/tests/tools/**"
+        ],
+        "id": "factory_gate_tooling",
+        "mode": "deny_write",
+        "reason": "When the factory works on its own repository, the tools and test oracles that its gates run are protected, as the CI entry point and the gate configuration are.",
+        "threats": [
+          "T-12",
+          "T-13"
+        ]
       }
     ],
     "sensitive_files": [
@@ -1534,7 +1553,9 @@
           "infra/**",
           "**/*.tf",
           "k8s/**",
-          "helm/**"
+          "helm/**",
+          "scripts/dev-up.sh",
+          ".env.example"
         ],
         "id": "container_and_infrastructure"
       },
@@ -1547,7 +1568,10 @@
           "security_reviewer"
         ],
         "globs": [
-          "crates/policy/**",
+          "crates/domain/src/policy/**",
+          "crates/domain/src/redaction/**",
+          "crates/contracts/**",
+          "crates/egress/**",
           "crates/sandbox/**",
           "crates/github/**",
           "crates/runtime/**"

@@ -649,3 +649,205 @@ fn the_rework_and_repair_caps_are_two_and_a_project_can_only_lower_them() {
         .expect("the real pair builds");
     assert_eq!(engine.budget.repair_cap().get(), 2);
 }
+
+// ---------------------------------------------------------------------------------------------
+// Protected paths of the factory's own tooling (A5)
+// ---------------------------------------------------------------------------------------------
+
+use factory_domain::policy::RepoKind;
+use factory_domain::policy::paths::{
+    ChangeEvidence, Operation, PathDenialReason, PathPolicy, PathVerdict,
+};
+
+const MODIFY: Operation = Operation::Modify {
+    gained_lines_only: false,
+};
+
+fn path_policy() -> PathPolicy {
+    PathPolicy::from_policy(security()).expect("the path rules build")
+}
+
+fn check(paths: &PathPolicy, repo: RepoKind, path: &str, op: Operation) -> PathVerdict {
+    paths.check(repo, path, op, None, &ChangeEvidence::default())
+}
+
+/// The reason and the rule that denied, or `None` when the path is allowed.
+fn denied_by(verdict: &PathVerdict) -> Option<(PathDenialReason, String)> {
+    match verdict {
+        PathVerdict::Denied(d) => Some((d.reason.clone(), d.rule.id().to_owned())),
+        PathVerdict::Allowed(_) => None,
+    }
+}
+
+/// The sensitive groups an allowed change touches.
+fn sensitive_groups(paths: &PathPolicy, repo: RepoKind, path: &str) -> Vec<String> {
+    match check(paths, repo, path, MODIFY) {
+        PathVerdict::Allowed(a) => a.sensitive.iter().map(|h| h.group.clone()).collect(),
+        PathVerdict::Denied(d) => panic!("{path} is denied: {d:?}"),
+    }
+}
+
+/// The directory or file a glob starts with, before its first wildcard.
+fn literal_prefix(glob: &str) -> String {
+    let end = glob.find(['*', '?', '{', '[']).unwrap_or(glob.len());
+    glob[..end].trim_end_matches('/').to_owned()
+}
+
+#[test]
+fn the_tooling_that_decides_what_a_pass_means_is_write_protected_in_the_factory_repository() {
+    let paths = path_policy();
+    for path in [
+        "xtask/src/main.rs",
+        "xtask/Cargo.toml",
+        "xtask/tests/review_bypasses.rs",
+        "schemas/validate.sh",
+        "docs/architecture/crate-dependency-rules.json",
+        "docs/architecture/tools/check_work_packages.py",
+        "fixtures/readability/rules.json",
+        "fixtures/readability/cases/translations.json",
+        "crates/domain/tests/oracle/expected.rs",
+        "crates/domain/tests/tools/support.rs",
+    ] {
+        for op in [
+            MODIFY,
+            Operation::Add,
+            Operation::Delete,
+            Operation::RenameFrom,
+            Operation::ModeChange,
+        ] {
+            let verdict = check(&paths, RepoKind::Factory, path, op);
+            assert_eq!(
+                denied_by(&verdict),
+                Some((
+                    PathDenialReason::DenyWrite,
+                    "factory_gate_tooling".to_owned()
+                )),
+                "{path} {op:?}: {verdict:?}"
+            );
+        }
+        // Reading is fine: only a change is refused.
+        assert!(check(&paths, RepoKind::Factory, path, Operation::Read).is_allowed());
+    }
+}
+
+#[test]
+fn a_target_repository_is_not_covered_by_the_factory_tooling_group() {
+    let paths = path_policy();
+    // The group names the factory's own files. A tenant's repository may have a directory with
+    // one of these names, and the factory has no business forbidding it there.
+    for path in [
+        "xtask/src/main.rs",
+        "schemas/validate.sh",
+        "docs/architecture/crate-dependency-rules.json",
+        "docs/architecture/tools/check.py",
+        "fixtures/readability/rules.json",
+    ] {
+        let verdict = check(&paths, RepoKind::Target, path, MODIFY);
+        assert!(verdict.is_allowed(), "{path}: {verdict:?}");
+    }
+    // The test directories are additions-only in a target (the test_code group), so a new file is
+    // fine there and an edit is not. In the factory repository both are refused.
+    for path in [
+        "crates/domain/tests/oracle/new.rs",
+        "crates/domain/tests/tools/new.rs",
+    ] {
+        assert!(check(&paths, RepoKind::Target, path, Operation::Add).is_allowed());
+        assert!(!check(&paths, RepoKind::Target, path, MODIFY).is_allowed());
+        assert!(!check(&paths, RepoKind::Factory, path, Operation::Add).is_allowed());
+    }
+}
+
+#[test]
+fn the_dev_script_and_the_example_environment_file_are_sensitive_infrastructure() {
+    let paths = path_policy();
+    for repo in [RepoKind::Factory, RepoKind::Target] {
+        for path in ["scripts/dev-up.sh", ".env.example"] {
+            let groups = sensitive_groups(&paths, repo, path);
+            assert!(
+                groups.iter().any(|g| g == "container_and_infrastructure"),
+                "{repo:?} {path}: {groups:?}"
+            );
+        }
+    }
+    // The example file stays readable: it is a template, not a secret.
+    assert!(check(&paths, RepoKind::Factory, ".env.example", Operation::Read).is_allowed());
+}
+
+#[test]
+fn security_critical_code_lists_paths_that_exist() {
+    let policy = security();
+    let group = policy
+        .protected_paths
+        .sensitive_files
+        .iter()
+        .find(|g| g.id == "security_critical_code")
+        .expect("the security-critical group");
+    let globs: Vec<&str> = group.globs.iter().map(|g| g.pattern()).collect();
+    for expected in [
+        "crates/domain/src/policy/**",
+        "crates/domain/src/redaction/**",
+        "crates/contracts/**",
+        "crates/egress/**",
+        "crates/sandbox/**",
+    ] {
+        assert!(
+            globs.contains(&expected),
+            "{expected} is missing: {globs:?}"
+        );
+    }
+    // Every entry points at something in the repository, so none of them is a name that guards
+    // nothing (the old `crates/policy/**` did not exist).
+    for glob in &globs {
+        let prefix = literal_prefix(glob);
+        assert!(
+            repo_root().join(&prefix).exists(),
+            "`{glob}` names `{prefix}`, which does not exist"
+        );
+    }
+    assert!(!globs.iter().any(|g| g.starts_with("crates/policy")));
+
+    let paths = path_policy();
+    for path in [
+        "crates/domain/src/policy/paths.rs",
+        "crates/domain/src/redaction/scan.rs",
+        "crates/contracts/src/policy/check.rs",
+        "crates/egress/src/lib.rs",
+        "crates/sandbox/src/lib.rs",
+        "crates/runtime/src/lib.rs",
+    ] {
+        let groups = sensitive_groups(&paths, RepoKind::Factory, path);
+        assert!(
+            groups.iter().any(|g| g == "security_critical_code"),
+            "{path}: {groups:?}"
+        );
+        // The group is for the factory's own crates. A target repository's `crates/sandbox` is not
+        // the factory's.
+        let target = sensitive_groups(&paths, RepoKind::Target, path);
+        assert!(
+            !target.iter().any(|g| g == "security_critical_code"),
+            "{path}: {target:?}"
+        );
+    }
+}
+
+#[test]
+fn the_new_group_lists_real_paths() {
+    use factory_contracts::policy::security::{AppliesTo, ProtectionMode};
+    let policy = security();
+    let group = policy
+        .protected_paths
+        .groups
+        .iter()
+        .find(|g| g.id == "factory_gate_tooling")
+        .expect("the factory tooling group");
+    assert_eq!(group.mode, ProtectionMode::DenyWrite);
+    assert_eq!(group.applies_to, AppliesTo::FactoryRepo);
+    for glob in &group.globs {
+        let prefix = literal_prefix(glob.pattern());
+        assert!(
+            repo_root().join(&prefix).exists(),
+            "`{}` names `{prefix}`, which does not exist",
+            glob.0
+        );
+    }
+}

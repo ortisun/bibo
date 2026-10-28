@@ -287,6 +287,26 @@ protected_paths:
       reason: "When the factory works on its own repository, its policies, security documents and agent manifests are protected."
       threats: [T-15, T-12]
 
+    - id: factory_gate_tooling
+      mode: deny_write
+      applies_to: factory_repo
+      # The tooling that decides what a PASS means in the factory's own repository: the xtask
+      # architecture and link checks, the schema validator, the dependency rules they read, the
+      # tools that check the work-package plan, the readability corpus, and the oracle and tool
+      # helpers of the domain tests. A change here moves a gate, so it is a protected change.
+      # In a target repository the same names are ordinary paths (the test directories there
+      # fall under `test_code`).
+      globs:
+        - "xtask/**"
+        - "schemas/validate.sh"
+        - "docs/architecture/crate-dependency-rules.json"
+        - "docs/architecture/tools/**"
+        - "fixtures/readability/**"
+        - "crates/domain/tests/oracle/**"
+        - "crates/domain/tests/tools/**"
+      reason: "When the factory works on its own repository, the tools and test oracles that its gates run are protected, as the CI entry point and the gate configuration are."
+      threats: [T-12, T-13]
+
   # Allowed to change, but every change runs the listed semantic checks (see
   # `gate_integrity.semantic_checks`) and requires the listed extra reviewer.
   sensitive_files:
@@ -322,11 +342,19 @@ protected_paths:
         - "**/*.tf"
         - "k8s/**"
         - "helm/**"
+        - "scripts/dev-up.sh"            # starts the local services and writes their settings
+        - ".env.example"                 # the template of the settings that dev-up.sh reads
       checks: [privilege_or_network_widening, secret_in_diff]
       extra_review: [security_reviewer]
     - id: security_critical_code
+      # The crates that enforce the policy, redact secrets, read the policy files, run the
+      # egress proxy and the sandbox, or hold a credential. Each path is a real directory
+      # (a test checks it): the policy evaluators and the redactor are inside the domain crate.
       globs:
-        - "crates/policy/**"
+        - "crates/domain/src/policy/**"
+        - "crates/domain/src/redaction/**"
+        - "crates/contracts/**"
+        - "crates/egress/**"
         - "crates/sandbox/**"
         - "crates/github/**"
         - "crates/runtime/**"
