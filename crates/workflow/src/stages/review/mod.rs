@@ -1,2 +1,6 @@
-//! Placeholder so that the module line declared by the engine package compiles. The package
-//! `s1-stage-implementation-and-review` replaces this file with its own code and does not need to edit any other file.
+//! The `REVIEW` stage: an independent reviewer judges the change from evidence.
+//!
+//! Work package `s1-stage-implementation-and-review`.
+
+pub mod findings;
+pub mod locate;
