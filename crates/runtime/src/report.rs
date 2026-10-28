@@ -81,10 +81,9 @@ pub fn capture_floor(max_output_bytes: u64) -> u64 {
 pub fn cost_limit_micro(req: &AgentRunRequest) -> u64 {
     let micro = (req.limits.max_cost_usd.as_f64() * 1_000_000.0).ceil();
     if micro.is_finite() && micro >= 0.0 {
-        // The value is finite and not negative; saturating at the top is the right edge.
-        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-        let limit = micro as u64;
-        limit
+        // The value is finite and not negative; the cast saturates at the top, which is the
+        // right edge for a limit.
+        micro as u64
     } else {
         0
     }

@@ -240,6 +240,31 @@ mod tests {
     }
 
     #[test]
+    fn the_broker_address_is_an_origin_and_nothing_more() {
+        assert_eq!(
+            broker_origin("http://egress:8080/").as_deref(),
+            Ok("http://egress:8080")
+        );
+        assert_eq!(
+            broker_origin("https://broker.internal").as_deref(),
+            Ok("https://broker.internal")
+        );
+        for bad in [
+            "http://egress:8080/v1",
+            "http://egress:8080?x=1",
+            "http://user:pw@egress",
+            "http://egress#frag",
+            "ftp://egress",
+            "egress:8080",
+            "http://",
+            "http://a b",
+            "http://a\nb",
+        ] {
+            assert_eq!(broker_origin(bad), Err(BadBrokerUrl), "{bad:?}");
+        }
+    }
+
+    #[test]
     fn the_closed_set_has_no_credential_and_no_loader_variable() {
         for name in EnvName::ALL {
             let text = name.as_str();
