@@ -410,6 +410,24 @@ fn negative_nt_pol_02_each_widening_is_refused_and_names_its_key() {
             }),
         ),
         (
+            "removes the block nobody may override",
+            "gate_integrity.non_overridable_blocks[dependency-review-policy-unresolvable]",
+            Box::new(|j| {
+                j["gate_integrity"]["non_overridable_blocks"]
+                    .as_array_mut()
+                    .expect("list")
+                    .remove(0);
+            }),
+        ),
+        (
+            "points the block nobody may override at another code",
+            "gate_integrity.non_overridable_blocks[dependency-review-policy-unresolvable].code",
+            Box::new(|j| {
+                j["gate_integrity"]["non_overridable_blocks"][0]["code"] =
+                    "tool_unavailable".into();
+            }),
+        ),
+        (
             "raises the age the advisory database may have",
             "supply_chain.advisory_database.max_age_days",
             Box::new(|j| {
@@ -878,6 +896,20 @@ fn negative_nt_pol_02_tightenings_are_accepted() {
             "raises the minimum age",
             Box::new(|j| {
                 j["supply_chain"]["new_direct_dependency"]["min_first_publish_age_days"] = 90.into()
+            }),
+        ),
+        (
+            "adds a block nobody may override",
+            Box::new(|j| {
+                j["gate_integrity"]["non_overridable_blocks"]
+                    .as_array_mut()
+                    .expect("list")
+                    .push(json!({
+                        "id": "advisories-unavailable",
+                        "gate": "dependency-advisories",
+                        "code": "dependency_unavailable",
+                        "reason": "a project that wants it stricter"
+                    }));
             }),
         ),
         (

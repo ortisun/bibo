@@ -1188,6 +1188,20 @@ gate_integrity:
   reviewer_verdict_can_override_gate: false
   reviewer_sees_builder_self_justification: false
   nonwaivable_gates: [protected_path_check, secret_scan, sandbox_posture, evidence_binding, test_regression_check, signature_verification, stage_profile_check]
+  # Blocks that no override may pass (state machine transition S18, guard G_OVERRIDE_PERMITTED,
+  # `policy_permits_override_for_block_code`). The gate itself may be waived for another reason;
+  # only this gate with this block code may not. A new direct dependency with no recorded decision
+  # blocks `dependency-review` with `policy_unresolvable`. An override would pass the stage without
+  # a decision bound to a package, a version and a checksum, so a person records that decision
+  # (`add_new_direct_dependency`, or `approve_build_code` for build code) and the stage is run
+  # again (`UnblockRerun`, guard alternative "a dependency decision is recorded"). The engine
+  # refuses to build when the first entry is missing, and a project policy may add entries and
+  # never remove one. `code` is a block code of the gate report schema.
+  non_overridable_blocks:
+    - id: dependency-review-policy-unresolvable
+      gate: dependency-review
+      code: policy_unresolvable
+      reason: "The block waits for a recorded human decision bound to the exact name, version and checksum; an override would pass the stage with none."
   evidence_binding: [head_sha, tree_hash, gate_definition_hash, policy_hash, image_digest, base_sha]
   # Each item maps to a row of the invalidation table in docs/architecture/state-machine.md
   # (section Invalidation, "How each item of gate_integrity.invalidated_by maps to a row"),

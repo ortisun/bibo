@@ -229,6 +229,77 @@ async fn a_new_dependency_with_no_recorded_decision_stops_the_stage_for_a_person
     assert_eq!(shown["approval"], serde_json::Value::Null);
 }
 
+/// A new direct dependency with no recorded decision blocks `dependency-review` with the code
+/// `policy_unresolvable`. The facts of an override of that block are computed from the policy and
+/// from the reports the stage made, and the policy says there is no override for it: a security
+/// approver, who can waive other gates, cannot pass this one, and the domain guard the engine
+/// evaluates for the override (`G_OVERRIDE_PERMITTED`) says no for the same facts.
+#[tokio::test]
+async fn nobody_overrides_the_block_of_a_dependency_that_waits_for_a_decision() {
+    use factory_domain::machines::guards::OverrideFacts as GuardFacts;
+    use factory_domain::machines::guards::stage_run::override_permitted;
+    use factory_domain::vocabulary::HumanRole;
+    use factory_workflow::commands::OverrideFacts;
+
+    let (w, base, head) = adding_a_dependency().await;
+    let ran = w.run(&base, &head).await;
+    assert_eq!(ran.outcome(gate::REVIEW), GateOutcome::Blocked);
+    assert_eq!(
+        ran.report(gate::REVIEW)
+            .blocked_reason
+            .as_ref()
+            .map(|reason| reason.code),
+        Some(BlockedCode::PolicyUnresolvable)
+    );
+
+    // The facts come from the policy and the stage's reports. Nothing here is asserted.
+    let facts = OverrideFacts::for_reports(&w.policy.authority, &ran.decision.reports, true, false);
+    assert!(
+        !facts.policy_permits,
+        "the policy has no override for this block"
+    );
+    let roles = [HumanRole::SecurityApprover];
+    let guard = override_permitted(&GuardFacts {
+        policy_permits_override_for_block_code: facts.policy_permits,
+        block_is_security_class: facts.security_class,
+        principal_roles: &roles,
+        role_required_by_policy: HumanRole::SecurityApprover,
+        justification_recorded: true,
+        blocked_gate_is_mandatory_of_active_profile: facts.mandatory_of_active_profile,
+    });
+    assert!(guard.is_err(), "the guard of S18 holds the override back");
+
+    // The control: the same stage with the audit tool missing is blocked for another gate and
+    // another code, and the policy does not hold that override back. The rule is the pair and not
+    // every block.
+    let (w, base, head) = adding_a_dependency().await;
+    w.approvals
+        .record(decided(Designation::Approver, APPROVER, "bob"));
+    w.cargo.lacks("audit");
+    let ran = w.run(&base, &head).await;
+    assert_eq!(ran.outcome(gate::ADVISORIES), GateOutcome::Blocked);
+    let facts = OverrideFacts::for_reports(&w.policy.authority, &ran.decision.reports, true, false);
+    assert!(facts.policy_permits);
+}
+
+/// Nothing that is not a block can be overridden: no report is blocked, so there is nothing the
+/// policy could permit.
+#[tokio::test]
+async fn the_facts_of_an_override_with_no_block_to_pass_do_not_permit_it() {
+    use factory_workflow::commands::OverrideFacts;
+    let (w, base, head) = project(&[]).await;
+    let ran = w.run(&base, &head).await;
+    assert!(
+        ran.decision
+            .reports
+            .iter()
+            .all(|report| report.outcome != GateOutcome::Blocked)
+    );
+    let facts =
+        OverrideFacts::for_reports(&w.policy.authority, &ran.decision.reports, false, false);
+    assert!(!facts.policy_permits);
+}
+
 #[tokio::test]
 async fn a_decision_bound_to_the_job_and_the_policy_lets_the_stage_pass() {
     let (w, base, head) = adding_a_dependency().await;

@@ -1447,6 +1447,20 @@ strict! {
 }
 
 strict! {
+    /// A block of a gate that no override may pass.
+    pub struct NonOverridableBlock {
+        /// The entry, for a project policy that adds one.
+        pub id: String,
+        /// The gate that is blocked, such as `dependency-review`.
+        pub gate: String,
+        /// The block code of the gate report, one of the codes of the gate report schema.
+        pub code: String,
+        /// Why no override may pass it.
+        pub reason: String,
+    }
+}
+
+strict! {
     /// Merge rules.
     pub struct MergeRules {
         /// A merge must name the expected head SHA.
@@ -1483,6 +1497,10 @@ strict! {
         pub reviewer_sees_builder_self_justification: bool,
         /// Gates that cannot be waived.
         pub nonwaivable_gates: Vec<String>,
+        /// Blocks that no override may pass, though the gate may be waived for another reason: a
+        /// gate that waits for a recorded decision is not passed by a decision nobody recorded
+        /// on the subject. A person records the decision and the stage runs again.
+        pub non_overridable_blocks: Vec<NonOverridableBlock>,
         /// What evidence is bound to.
         pub evidence_binding: Vec<String>,
         /// What invalidates evidence.

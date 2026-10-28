@@ -1153,12 +1153,65 @@ fn override_with(
 }
 
 #[test]
+fn nobody_overrides_a_dependency_review_that_waits_for_a_recorded_decision() {
+    // The review of the supply chain gates, "How a person is asked", point 4. A new direct
+    // dependency with no recorded decision makes
+    // `dependency-review` BLOCKED with the code `policy_unresolvable`. An override would pass the
+    // stage without a decision bound to a package, a version and a checksum, so the policy says
+    // there is none: a person records the decision, and the stage is run again.
+    let list = allowlist();
+    let expiry = Timestamp::parse("2026-11-27T00:00:00Z").expect("time");
+    let waiver = OverrideContext {
+        gate: "dependency-review",
+        block_code: "policy_unresolvable",
+        block_is_security_class: true,
+        gate_is_mandatory_of_active_profile: false,
+        justification: "the package is fine, we looked at it together",
+        owner: Some(uid(SECURITY)),
+        expires_at: Some(&expiry),
+    };
+    // Nobody: not the security approver who can waive other gates, not the org admin.
+    for actor in [
+        human(SECURITY, "sam"),
+        human(ORG_ONE, "gina"),
+        human(APPROVER, "mallory"),
+    ] {
+        assert_eq!(
+            override_with(&actor, &waiver, &list),
+            Err(OverrideDenial::NoOverrideForBlock),
+            "{}",
+            actor.login
+        );
+    }
+    assert!(!authority().block_may_be_overridden("dependency-review", "policy_unresolvable"));
+    // The same gate with another code, and the same code on another gate, are not on the list:
+    // the rule is the pair, and it is the only one the policy names.
+    let tool_missing = OverrideContext {
+        block_code: "tool_unavailable",
+        ..waiver
+    };
+    assert_eq!(
+        override_with(&human(SECURITY, "sam"), &tool_missing, &list),
+        Ok(false)
+    );
+    let other_gate = OverrideContext {
+        gate: "dependency-advisories",
+        ..waiver
+    };
+    assert_eq!(
+        override_with(&human(SECURITY, "sam"), &other_gate, &list),
+        Ok(false)
+    );
+}
+
+#[test]
 fn override_and_dependency_rules_an_override_is_refused_for_the_gates_the_policy_protects() {
     let list = allowlist();
     let sam = human(SECURITY, "sam");
     let expiry = Timestamp::parse("2026-11-27T00:00:00Z").expect("time");
     let ok = OverrideContext {
         gate: "lint_gate",
+        block_code: "tool_unavailable",
         block_is_security_class: true,
         gate_is_mandatory_of_active_profile: false,
         justification: "known false positive, tracked in the risk register",

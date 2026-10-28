@@ -395,6 +395,12 @@ fn table() -> Vec<(&'static str, Rule)> {
         ("budgets.per_request_caps.*", AtMost),
         // gate integrity
         ("gate_integrity.nonwaivable_gates", Superset),
+        // A block that no override may pass: a project may add one and never take one away. The
+        // gate and the code of an entry are not in the table, so they must stay equal.
+        (
+            "gate_integrity.non_overridable_blocks",
+            by_id(ALLOW_ADD, FORBID),
+        ),
         ("gate_integrity.test_regression.forbid_removed_tests", on()),
         (
             "gate_integrity.test_regression.forbid_newly_ignored_tests",

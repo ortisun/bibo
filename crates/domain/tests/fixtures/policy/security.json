@@ -1113,6 +1113,14 @@
       "rerun_critical_gates_after_sync": true
     },
     "missing_evidence_is": "BLOCKED",
+    "non_overridable_blocks": [
+      {
+        "code": "policy_unresolvable",
+        "gate": "dependency-review",
+        "id": "dependency-review-policy-unresolvable",
+        "reason": "The block waits for a recorded human decision bound to the exact name, version and checksum; an override would pass the stage with none."
+      }
+    ],
     "nonwaivable_gates": [
       "protected_path_check",
       "secret_scan",

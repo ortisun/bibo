@@ -6,9 +6,11 @@
 //! as it was. Text a person writes (an answer, a reason) is untrusted: it is stored as an artifact
 //! and only its hash goes into an event.
 
+use factory_domain::contracts::GateReport;
 use factory_domain::ids::{CausationId, JobId, PrincipalId, StageRunId, TenantId};
+use factory_domain::policy::authority::AuthorityPolicy;
 use factory_domain::values::{HumanText, Sha256Digest};
-use factory_domain::vocabulary::StageKind;
+use factory_domain::vocabulary::{GateOutcome, StageKind};
 
 /// Who is asking, for which tenant, under which command id.
 ///
@@ -26,7 +28,9 @@ pub struct Actor {
 
 /// What policy says about an override, as the policy evaluator computed it. The engine does not
 /// evaluate policy files itself: these facts come from the caller, and the engine refuses an
-/// override that they do not allow.
+/// override that they do not allow. A caller makes them with [`OverrideFacts::from_policy`] or
+/// [`OverrideFacts::for_reports`], which read the policy, and does not write `policy_permits` by
+/// hand.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct OverrideFacts {
     /// Policy permits an override for the code of this block.
@@ -36,6 +40,63 @@ pub struct OverrideFacts {
     /// The blocked gate is a mandatory gate of an active domain profile. No override applies to
     /// such a gate (INV-07).
     pub mandatory_of_active_profile: bool,
+}
+
+impl OverrideFacts {
+    /// The facts of an override of blocks the policy has an opinion on, computed from the policy
+    /// and not asserted by the caller. `blocks` are the (gate, block code) pairs that blocked the
+    /// stage run. Policy permits the override only when there is at least one block and the
+    /// policy lists none of them as a block no override may pass
+    /// (`gate_integrity.non_overridable_blocks`); a stage run with no known block has nothing
+    /// that policy could permit.
+    ///
+    /// `security_class` and `mandatory_of_active_profile` are facts about the blocked gate that
+    /// the caller reads from the gate's definition and the active domain profile.
+    #[must_use]
+    pub fn from_policy(
+        authority: &AuthorityPolicy,
+        blocks: &[(&str, &str)],
+        security_class: bool,
+        mandatory_of_active_profile: bool,
+    ) -> Self {
+        Self {
+            policy_permits: !blocks.is_empty()
+                && blocks
+                    .iter()
+                    .all(|(gate, code)| authority.block_may_be_overridden(gate, code)),
+            security_class,
+            mandatory_of_active_profile,
+        }
+    }
+
+    /// The same, for the gate reports of the stage run: every report that is `BLOCKED` is a block,
+    /// with the code it carries. A blocked report that carries no code cannot be told apart from
+    /// a block policy holds back, and counts as one.
+    #[must_use]
+    pub fn for_reports(
+        authority: &AuthorityPolicy,
+        reports: &[GateReport],
+        security_class: bool,
+        mandatory_of_active_profile: bool,
+    ) -> Self {
+        let mut permitted = true;
+        let mut blocks = 0_usize;
+        for report in reports
+            .iter()
+            .filter(|report| report.outcome == GateOutcome::Blocked)
+        {
+            blocks += 1;
+            permitted &= report.blocked_reason.as_ref().is_some_and(|reason| {
+                authority
+                    .block_may_be_overridden(report.metadata.gate_id.as_str(), reason.code.as_str())
+            });
+        }
+        Self {
+            policy_permits: blocks > 0 && permitted,
+            security_class,
+            mandatory_of_active_profile,
+        }
+    }
 }
 
 /// A decision on a stage run that waits for a person or is blocked.
