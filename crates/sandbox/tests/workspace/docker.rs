@@ -26,11 +26,6 @@ use crate::world::{Options, World};
 
 const WALL: Duration = Duration::from_secs(120);
 
-/// Docker hands out the addresses of per-job networks from a small pool. The container tests lock
-/// a file for it across processes; within one process (`cargo test` runs the tests of a target as
-/// threads) these tests take turns.
-static SERIAL: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
-
 /// Runs one command in the sandbox and returns the exit code and the text it printed.
 async fn run(lab: &Lab, session: &mut dyn SandboxSession, words: &[&str]) -> (Option<i32>, String) {
     let result = lab.run(session, words).await;
@@ -49,7 +44,6 @@ fn kinds(ws: &GitWorkspace) -> Vec<(AuditKind, String)> {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn negative_nt_sbx_09_a_real_sandbox_plants_hostile_entries_and_the_audit_rejects_them() {
-    let _one_at_a_time = SERIAL.lock().await;
     let lab = Lab::new(true);
     let world = World::with(Options::default()).await;
     let (ws, _) = world.open(1).await;
@@ -250,7 +244,6 @@ async fn negative_nt_sbx_09_a_real_sandbox_plants_hostile_entries_and_the_audit_
 
 #[tokio::test(flavor = "multi_thread")]
 async fn negative_nt_gate_08_the_holdout_is_read_only_in_verify_and_a_clean_run_ingests() {
-    let _one_at_a_time = SERIAL.lock().await;
     let lab = Lab::new(true);
     let world = World::with(Options::default()).await;
     let base = world.fetch(1).await;
@@ -341,7 +334,6 @@ async fn negative_nt_sbx_11_moving_a_protected_directory_is_not_stopped_inside_a
     // The overlays are single files, so the directory that holds them can be renamed inside the
     // sandbox (a directory overlay would make that fail with "busy"). The overlay is defense in
     // depth; the host-side difference is the control, and it counts the old path of a rename.
-    let _one_at_a_time = SERIAL.lock().await;
     let lab = Lab::new(true);
     let world = World::with(Options::default()).await;
     let (ws, _) = world.open(1).await;

@@ -260,6 +260,7 @@ protected_paths:
         - "**/.env"
         - "**/.env.*"
         - "!**/.env.example"             # a leading "!" re-includes; the loader applies it last
+        - "**/.envrc"                    # direnv's file; `.env.*` needs a dot after `env`
         - "**/*.pem"
         - "**/*.key"
         - "**/*.p12"
@@ -697,12 +698,18 @@ command_sets:
         cargo:
           # `fetch` is in the list so that the fetch_deps profile can run `cargo fetch`. Outside
           # that profile the class `install_scripts_outside_fetch` denies it before this list is
-          # read. The caller writes `cargo fetch`; the wrapper adds `--locked` (a second
-          # `--locked` is an error in cargo, because the wrapper does not remove duplicates).
+          # read. The caller writes `cargo fetch`; the wrapper adds `--locked` and does not add
+          # an argument the caller already wrote (a second `--locked` is an error in cargo).
           # Dependency-free fixtures (the Slice 1 command-line tool) need nothing else here.
           allowed_subcommands: [build, check, test, clippy, fmt, doc, tree, metadata, nextest, deny, audit, fetch]
           forbidden_args: ["--config", "--manifest-path=/", "-Z", "--registry", "--index"]
           forced_args: { agent: ["--offline", "--locked"], verify: ["--offline", "--locked"], fetch_deps: ["--locked"] }
+          # A forced argument reaches only the subcommands listed for it. `cargo fmt` and
+          # `cargo audit` reject both flags ("unexpected argument '--offline' found", exit 2,
+          # observed for fmt in the pinned verify image), so they receive neither.
+          forced_arg_subcommands:
+            "--offline": [build, check, test, clippy, doc, tree, metadata, nextest, deny]
+            "--locked": [build, check, test, clippy, doc, tree, metadata, nextest, deny, fetch]
         rustc: { allowed_subcommands: [], forbidden_args: ["-C", "--codegen", "-Z"] }
         rustfmt: { allowed_subcommands: [] }
       # Offline by default. The fetch_deps profile is the one place cargo may use the network,

@@ -444,6 +444,13 @@ strict! {
         /// Arguments the wrapper appends, by sandbox profile.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub forced_args: Option<BTreeMap<String, Vec<String>>>,
+        /// Narrows `forced_args`: an argument named here, by its text (`--offline`), is added only
+        /// to the listed subcommands, because a subcommand that does not accept the argument
+        /// (`cargo fmt` refuses `--offline` and `--locked`) fails when it receives it. An argument
+        /// not named here is added to every allowed subcommand, as before. Every key must be
+        /// forced for some profile and every subcommand must be one of `allowed_subcommands`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub forced_arg_subcommands: Option<BTreeMap<String, Vec<String>>>,
     }
 }
 

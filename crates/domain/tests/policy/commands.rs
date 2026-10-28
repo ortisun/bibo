@@ -1,5 +1,6 @@
 //! Command classification: forbidden classes, command sets, forbidden arguments, forced arguments.
 
+use std::collections::BTreeMap;
 use std::sync::LazyLock;
 
 use factory_domain::policy::SandboxProfileKind::{Agent, FetchDeps, Verify};
@@ -9,7 +10,7 @@ use factory_domain::policy::commands::{
 use factory_domain::policy::{RuleRef, SandboxProfileKind};
 use proptest::prelude::*;
 
-use crate::support::security;
+use crate::support::{security, security_from, security_json};
 
 fn policy() -> &'static CommandPolicy {
     static POLICY: LazyLock<CommandPolicy> =
@@ -317,6 +318,199 @@ fn the_profile_forced_arguments_are_inserted_before_the_double_dash() {
     };
     assert_eq!(a.argv, ["cargo", "metadata", "--locked"]);
     assert_eq!(a.rule, RuleRef::new("command_sets", "rust:cargo"));
+}
+
+/// The argument vector the policy would run, or a panic naming why it would not.
+fn allowed_argv(words: &[&str], profile: SandboxProfileKind) -> Vec<String> {
+    match run(words, profile) {
+        CommandVerdict::Allowed(a) => a.argv,
+        other => panic!("{words:?} under {profile:?} must be allowed, got {other:?}"),
+    }
+}
+
+/// The environment the policy sets for a command, or a panic naming why it would not run.
+fn allowed_env(words: &[&str], profile: SandboxProfileKind) -> BTreeMap<String, String> {
+    match run(words, profile) {
+        CommandVerdict::Allowed(a) => a.env,
+        other => panic!("{words:?} under {profile:?} must be allowed, got {other:?}"),
+    }
+}
+
+#[test]
+fn forced_arguments_reach_only_the_subcommands_that_accept_them() {
+    // Observed in the pinned verify image: `cargo fmt --offline` and `cargo fmt --locked` both
+    // fail with "unexpected argument found" (exit 2), so the format gate could never pass.
+    for profile in [Agent, Verify, FetchDeps] {
+        assert_eq!(
+            allowed_argv(&["cargo", "fmt", "--check"], profile),
+            ["cargo", "fmt", "--check"],
+            "cargo fmt takes no forced argument under {profile:?}"
+        );
+    }
+    // `cargo audit` has neither flag either, so the policy leaves it out of both scopes.
+    for profile in [Agent, Verify, FetchDeps] {
+        assert_eq!(
+            allowed_argv(&["cargo", "audit"], profile),
+            ["cargo", "audit"],
+            "cargo audit under {profile:?}"
+        );
+    }
+    for sub in [
+        "build", "test", "clippy", "check", "doc", "tree", "metadata", "nextest", "deny",
+    ] {
+        for profile in [Agent, Verify] {
+            assert_eq!(
+                allowed_argv(&["cargo", sub], profile),
+                ["cargo", sub, "--offline", "--locked"],
+                "cargo {sub} under {profile:?}"
+            );
+        }
+    }
+    // The fetch profile runs no repository code (the class `repository_code_in_fetch_deps`), so
+    // only the subcommands that read the manifest are open to it. It is online and locked.
+    for sub in ["tree", "metadata", "fetch"] {
+        assert_eq!(
+            allowed_argv(&["cargo", sub], FetchDeps),
+            ["cargo", sub, "--locked"],
+            "cargo {sub} under fetch_deps"
+        );
+    }
+    assert_eq!(
+        allowed_argv(&["cargo", "fetch"], FetchDeps),
+        ["cargo", "fetch", "--locked"]
+    );
+}
+
+#[test]
+fn a_forced_argument_that_is_not_scoped_reaches_every_subcommand() {
+    // The scope is opt-in per argument. A policy that names no scope for an argument keeps the old
+    // behaviour: every allowed subcommand gets it, so a scope can only be an explicit narrowing.
+    let mut json = security_json();
+    json["command_sets"]["sets"][0]["executables"]["cargo"]["forced_args"]["agent"] =
+        serde_json::json!(["--offline", "--locked", "--frozen"]);
+    let commands = CommandPolicy::from_policy(&security_from(json)).expect("the policy builds");
+    let CommandVerdict::Allowed(a) = commands.evaluate(&argv(&["cargo", "fmt"]), Agent) else {
+        panic!("cargo fmt is allowed");
+    };
+    assert_eq!(
+        a.argv,
+        ["cargo", "fmt", "--frozen"],
+        "the scoped arguments skip fmt and the unscoped one does not"
+    );
+}
+
+#[test]
+fn a_forced_argument_the_caller_already_wrote_is_not_added_twice() {
+    // `cargo fetch --locked --locked` is an error in cargo ("cannot be used multiple times").
+    assert_eq!(
+        allowed_argv(&["cargo", "fetch", "--locked"], FetchDeps),
+        ["cargo", "fetch", "--locked"]
+    );
+    // Only the missing argument is added; the caller's own stays where it was written.
+    assert_eq!(
+        allowed_argv(&["cargo", "test", "--locked"], Agent),
+        ["cargo", "test", "--locked", "--offline"]
+    );
+    for profile in [Agent, Verify] {
+        assert_eq!(
+            allowed_argv(&["cargo", "build", "--offline", "--locked"], profile),
+            ["cargo", "build", "--offline", "--locked"],
+            "{profile:?}"
+        );
+    }
+    // Repeating a forced argument twice in the policy list does not repeat it on the command line.
+    let mut json = security_json();
+    json["command_sets"]["sets"][0]["executables"]["cargo"]["forced_args"]["agent"] =
+        serde_json::json!(["--offline", "--locked", "--locked"]);
+    let commands = CommandPolicy::from_policy(&security_from(json)).expect("the policy builds");
+    let CommandVerdict::Allowed(a) = commands.evaluate(&argv(&["cargo", "build"]), Agent) else {
+        panic!("cargo build is allowed");
+    };
+    assert_eq!(a.argv, ["cargo", "build", "--offline", "--locked"]);
+}
+
+#[test]
+fn an_argument_after_the_double_dash_does_not_stand_in_for_a_forced_one() {
+    // What follows `--` belongs to the test binary, not to cargo. A `--locked` there is not the
+    // cargo flag, so the forced one is still added before the `--`.
+    assert_eq!(
+        allowed_argv(&["cargo", "test", "--", "--locked", "--offline"], Agent),
+        [
+            "cargo",
+            "test",
+            "--offline",
+            "--locked",
+            "--",
+            "--locked",
+            "--offline"
+        ]
+    );
+}
+
+#[test]
+fn the_environment_of_a_command_depends_on_the_profile() {
+    // `command_sets.sets[].env_by_profile` replaces names of `env` for one profile. The fetch
+    // profile is the one place cargo may use the network, so its `CARGO_NET_OFFLINE` is false.
+    let online = allowed_env(&["cargo", "fetch"], FetchDeps);
+    assert_eq!(
+        online.get("CARGO_NET_OFFLINE").map(String::as_str),
+        Some("false")
+    );
+    for profile in [Agent, Verify] {
+        let offline = allowed_env(&["cargo", "build"], profile);
+        assert_eq!(
+            offline.get("CARGO_NET_OFFLINE").map(String::as_str),
+            Some("true"),
+            "{profile:?}"
+        );
+    }
+    // The rest of the set's environment is kept in every profile.
+    for profile in [Agent, Verify, FetchDeps] {
+        let env = allowed_env(&["cargo", "metadata"], profile);
+        assert_eq!(
+            env.get("CARGO_TERM_COLOR").map(String::as_str),
+            Some("never")
+        );
+        assert_eq!(env.get("RUST_BACKTRACE").map(String::as_str), Some("1"));
+    }
+    // A set with no override answers the same in every profile.
+    for profile in [Agent, Verify, FetchDeps] {
+        let env = allowed_env(&["npm", "ls"], profile);
+        assert_eq!(env.get("CI").map(String::as_str), Some("true"));
+    }
+}
+
+#[test]
+fn a_profile_override_that_names_an_unknown_profile_does_not_build() {
+    let mut json = security_json();
+    json["command_sets"]["sets"][0]["env_by_profile"]["not_a_profile"] =
+        serde_json::json!({ "CARGO_NET_OFFLINE": "false" });
+    let error = CommandPolicy::from_policy(&security_from(json))
+        .expect_err("an unknown profile name is refused, not skipped");
+    assert!(
+        error.to_string().contains("not_a_profile"),
+        "the error names the profile: {error}"
+    );
+}
+
+#[test]
+fn a_forced_argument_scope_that_does_not_point_at_anything_does_not_build() {
+    // A scope for an argument that no profile forces would be dead text that looks like a rule.
+    let mut json = security_json();
+    json["command_sets"]["sets"][0]["executables"]["cargo"]["forced_arg_subcommands"]["--ofline"] =
+        serde_json::json!(["build"]);
+    assert!(
+        CommandPolicy::from_policy(&security_from(json)).is_err(),
+        "a scope for an argument nobody forces is refused"
+    );
+    // A scope that lists a subcommand the program does not allow would never be read.
+    let mut json = security_json();
+    json["command_sets"]["sets"][0]["executables"]["cargo"]["forced_arg_subcommands"]["--offline"] =
+        serde_json::json!(["build", "install"]);
+    assert!(
+        CommandPolicy::from_policy(&security_from(json)).is_err(),
+        "a scoped subcommand the program does not allow is refused"
+    );
 }
 
 #[test]

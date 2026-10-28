@@ -328,6 +328,11 @@ const SECRET_FILES_AT_ANY_DEPTH: &[&str] = &[
     ".env.production",
     "apps/web/.env.local",
     "svc/api/.env.staging",
+    // direnv loads its secrets from `.envrc`, which `.env.*` does not match (no dot after `env`)
+    ".envrc",
+    "apps/web/.envrc",
+    "a/b/c/d/.ENVRC",
+    "apps/web/.e\u{200b}nvrc",
     // dot files of tools that keep credentials
     ".netrc",
     "tools/ci/.netrc",
@@ -376,6 +381,7 @@ fn a_name_that_only_looks_like_a_secret_file_stays_free() {
         "src/environment.rs",
         "apps/web/environment.rs",
         "apps/web/envelope.rs",
+        "apps/web/envrc.md",
         "docs/aws.md",
         "docs/ssh.md",
         "src/dotenv.rs",
