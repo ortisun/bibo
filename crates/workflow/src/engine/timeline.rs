@@ -327,13 +327,16 @@ fn failing_sets_of<'a>(
 pub(crate) struct Timeline {
     /// The stage runs, in the order the store lists them (oldest first).
     pub(crate) runs: Vec<RunRecord>,
-    /// Rework rounds used by the job, for each count.
+    /// Rework rounds used by the job, for each count. Derived from the stage runs
+    /// ([`rework_ledger`]).
     pub(crate) rework: ReworkLedger,
-    /// What the job's attempts spent, in millionths of a US dollar.
+    /// What the job's attempts spent, in millionths of a US dollar. Read from the outbox, because
+    /// the store has no cost on an attempt ([`Timeline::read_outbox`]).
     pub(crate) spent_micro_usd: u64,
-    /// The digest of what failed in the last rework round of each stage kind.
+    /// The digest of what failed in the last rework round of each stage kind, from the stage runs.
     pub(crate) failing_sets: BTreeMap<usize, Sha256Digest>,
-    /// The ids of the commands already applied, for duplicate detection.
+    /// The ids of the commands already applied, for duplicate detection. Read from the outbox
+    /// ([`Timeline::read_outbox`]).
     pub(crate) commands: BTreeSet<CausationId>,
 }
 
