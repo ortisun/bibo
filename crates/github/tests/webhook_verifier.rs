@@ -362,3 +362,45 @@ fn a_secret_in_the_rotation_window_verifies_and_the_two_secrets_are_both_tried()
         Err(WebhookRejection::BadSignature)
     );
 }
+
+// ---- deliveries written from the documented shape ----------------------------------------------
+
+#[test]
+fn a_comment_on_a_pull_request_is_told_from_one_on_an_issue_and_payload_state_is_not_read() {
+    use factory_ports::githost::CommentTarget;
+    let subject = Subject::new();
+    let read = |text: &str| {
+        let body = text.as_bytes();
+        subject
+            .verifier
+            .verify(
+                body,
+                &headers("issue_comment", "delivery-0001", subject.sign_current(body)),
+            )
+            .expect("the delivery verifies")
+    };
+    let on_a_pull_request = read(include_str!("fixtures/issue_comment_on_pull_request.json"));
+    let on_an_issue = read(include_str!("fixtures/issue_comment_on_issue.json"));
+    match on_a_pull_request.hint {
+        WebhookHint::CommentCreated { comment } => {
+            assert_eq!(comment.id, 501);
+            assert!(
+                matches!(comment.target, CommentTarget::PullRequest(ref pr) if pr.number == 12)
+            );
+        }
+        other => panic!("expected a comment hint, got {other:?}"),
+    }
+    match on_an_issue.hint {
+        WebhookHint::CommentCreated { comment } => {
+            assert_eq!(comment.id, 502);
+            assert!(
+                matches!(comment.target, CommentTarget::Issue(ref issue) if issue.number == 12)
+            );
+        }
+        other => panic!("expected a comment hint, got {other:?}"),
+    }
+    // The payloads say the author is an OWNER, that the issue is closed and what its labels are.
+    // Only identifiers reached the delivery: none of that state was read.
+    assert_eq!(on_a_pull_request.sender_github_user_id, Some(77));
+    assert_eq!(on_an_issue.sender_github_user_id, Some(77));
+}
