@@ -6,7 +6,14 @@
 //! * The authority is the policy engine. [`authorize`] asks `AuthorityPolicy::authorize_action`
 //!   for the action `add_new_direct_dependency`, with the dependency flag set so that separation
 //!   of duties applies, and with the security approver required when the policy decision named
-//!   one. The proof, an `AuthorizedApproval`, can only be made by that engine.
+//!   one. [`authorize_build_code`] asks for the action `approve_build_code`, whose row names the
+//!   designation that may decide it. The proof, an `AuthorizedApproval`, can only be made by that
+//!   engine.
+//! * There are two kinds of decision ([`ApprovalKind`]) and one never stands for the other. A
+//!   decision on a new direct dependency says that a person accepts the package. A decision on
+//!   build code says that a person accepts the build script or the procedural macro of a package
+//!   that is new to the build, and it is given for that package, whether or not it came in as a
+//!   direct dependency.
 //! * [`DependencyApproval::record`] takes that proof. A person is identified by the **numeric
 //!   GitHub id** the engine checked against the allowlist, never by a login, which can be
 //!   renamed and registered again by someone else.
@@ -34,8 +41,41 @@ use serde_json::{Value, json};
 
 use super::model::normalize;
 
-/// The action row of `approval.yaml` that this decision is.
+/// The action row of `approval.yaml` for a new direct dependency.
 pub const ACTION: &str = "add_new_direct_dependency";
+
+/// The action row of `approval.yaml` for the build code of a package that is new to the build.
+pub const BUILD_CODE_ACTION: &str = "approve_build_code";
+
+/// What a recorded decision is about. Each kind is one action row of `approval.yaml`, and a
+/// decision of one kind never counts for the other.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum ApprovalKind {
+    /// A person accepts a new direct dependency (`add_new_direct_dependency`).
+    NewDependency,
+    /// A person accepts the build script or the procedural macro of a package that is new to the
+    /// build (`approve_build_code`).
+    BuildCode,
+}
+
+impl ApprovalKind {
+    /// The action row of the policy.
+    #[must_use]
+    pub const fn action(self) -> &'static str {
+        match self {
+            Self::NewDependency => ACTION,
+            Self::BuildCode => BUILD_CODE_ACTION,
+        }
+    }
+
+    /// The kind of an action row, or `None` for any other action.
+    #[must_use]
+    pub fn of_action(action: &str) -> Option<Self> {
+        [Self::NewDependency, Self::BuildCode]
+            .into_iter()
+            .find(|kind| kind.action() == action)
+    }
+}
 
 /// The shortest reason accepted, in characters. A person says why.
 pub const MIN_REASON_CHARS: usize = 10;
@@ -89,6 +129,8 @@ pub enum ApprovalError {
 /// The record of one authorized decision.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DependencyApproval {
+    /// What the decision is about: the package, or its build code.
+    pub kind: ApprovalKind,
     /// What was approved.
     pub subject: Subject,
     /// The numeric id of the person.
@@ -124,9 +166,8 @@ impl DependencyApproval {
         scope: DecisionScope,
         reason: &str,
     ) -> Result<Self, ApprovalError> {
-        if authorization.action() != ACTION {
-            return Err(ApprovalError::WrongAction);
-        }
+        let kind =
+            ApprovalKind::of_action(authorization.action()).ok_or(ApprovalError::WrongAction)?;
         let reason = reason.trim();
         if reason.chars().count() < MIN_REASON_CHARS {
             return Err(ApprovalError::NoReason);
@@ -135,6 +176,7 @@ impl DependencyApproval {
             return Err(ApprovalError::NoChecksum);
         }
         Ok(Self {
+            kind,
             subject,
             approver: authorization.approver(),
             designation: authorization.designation(),
@@ -150,6 +192,21 @@ impl DependencyApproval {
     #[must_use]
     pub fn covers(&self, subject: &Subject) -> bool {
         self.subject.same_as(subject)
+    }
+
+    /// True when this is a decision of `kind` about exactly `subject`.
+    #[must_use]
+    pub fn is_for(&self, kind: ApprovalKind, subject: &Subject) -> bool {
+        self.kind == kind && self.covers(subject)
+    }
+
+    /// True when the person who decided holds one of the designations in `needed`, as
+    /// [`satisfies`](Self::satisfies) reads each one. An empty list is satisfied by nobody.
+    #[must_use]
+    pub fn satisfies_any(&self, needed: &[Designation]) -> bool {
+        needed
+            .iter()
+            .any(|designation| self.satisfies(*designation))
     }
 
     /// True when the decision was taken for this tenant and job, under this policy bundle.
@@ -177,7 +234,7 @@ impl DependencyApproval {
     #[must_use]
     pub fn to_json(&self) -> Value {
         json!({
-            "action": ACTION,
+            "action": self.kind.action(),
             "ecosystem": "cargo",
             "name": self.subject.name,
             "version": self.subject.version,
@@ -198,7 +255,8 @@ impl DependencyApproval {
     #[must_use]
     pub fn from_json(value: &Value) -> Option<Self> {
         let text = |name: &str| value.get(name).and_then(Value::as_str);
-        if text("action")? != ACTION || text("ecosystem")? != "cargo" {
+        let kind = ApprovalKind::of_action(text("action")?)?;
+        if text("ecosystem")? != "cargo" {
             return None;
         }
         let checksum = text("checksum")?;
@@ -207,6 +265,7 @@ impl DependencyApproval {
             return None;
         }
         Some(Self {
+            kind,
             subject: Subject {
                 name: text("name")?.to_owned(),
                 version: text("version")?.to_owned(),
@@ -281,13 +340,34 @@ pub struct Request<'a> {
     pub sensitive_file_change: bool,
 }
 
+/// Asks the policy engine whether `request.actor` may approve the build code of a package that is
+/// new to the build. The row `approve_build_code` says who may, and the engine refuses to be
+/// built when it names anyone but the security approver. The change is marked as adding a
+/// dependency so that separation of duties applies as it does for the dependency itself.
+#[must_use]
+pub fn authorize_build_code(request: &Request<'_>) -> ActionVerdict {
+    ask(request, BUILD_CODE_ACTION, None)
+}
+
 /// Asks the policy engine whether `request.actor` may approve a new direct dependency that needs
 /// the designation `needed`. The change is marked as adding a dependency so that separation of
 /// duties applies, and the security approver is required when `needed` is that designation.
 #[must_use]
 pub fn authorize(request: &Request<'_>, needed: Designation) -> ActionVerdict {
+    ask(
+        request,
+        ACTION,
+        (needed == Designation::SecurityApprover).then_some(Designation::SecurityApprover),
+    )
+}
+
+fn ask(
+    request: &Request<'_>,
+    action: &str,
+    require_designation: Option<Designation>,
+) -> ActionVerdict {
     request.policy.authorize_action(&ActionContext {
-        action: ACTION,
+        action,
         level: request.level,
         tenant: request.tenant,
         repository: request.repository,
@@ -301,8 +381,7 @@ pub fn authorize(request: &Request<'_>, needed: Designation) -> ActionVerdict {
             sensitive_file_change: request.sensitive_file_change,
             new_dependency: true,
         },
-        require_designation: (needed == Designation::SecurityApprover)
-            .then_some(Designation::SecurityApprover),
+        require_designation,
         step_up_done: false,
     })
 }

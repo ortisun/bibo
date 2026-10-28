@@ -606,6 +606,104 @@ fn an_action_needs_the_level_the_requirement_and_a_designation_the_row_names() {
 }
 
 #[test]
+fn approving_build_code_is_a_security_approvers_decision_and_nobody_elses() {
+    // B-2, SC-10. A build script or a procedural macro of a package that is new to the build
+    // runs on the machines that build the project. The decision is a human's at every level,
+    // the designation is the security approver's alone, and the requester cannot make it.
+    use AutonomyLevel::{L0, L1, L2, L3};
+    let list = allowlist();
+    let change = ChangeFacts {
+        new_dependency: true,
+        ..LOW
+    };
+    let security = human(SECURITY, "sam");
+    for level in [L1, L2] {
+        let proof = authorized(decide(
+            &list,
+            &security,
+            "approve_build_code",
+            level,
+            Some(REQUESTER),
+            change,
+        ));
+        assert_eq!(proof.action(), "approve_build_code");
+        assert_eq!(proof.designation(), Designation::SecurityApprover);
+        assert_eq!(proof.approver(), uid(SECURITY));
+    }
+    // Nobody without the designation, whatever else they hold: the approver of a dependency,
+    // the operator, an organization administrator, a repository administrator, the requester.
+    for (id, login) in [
+        (APPROVER, "mallory"),
+        (APPROVER_TWO, "bob"),
+        (OPERATOR, "olga"),
+        (ORG_ONE, "gina"),
+        (REPO_ADMIN, "rita"),
+        (REQUESTER, "alice"),
+    ] {
+        let verdict = decide(
+            &list,
+            &human(id, login),
+            "approve_build_code",
+            L1,
+            Some(SECURITY),
+            change,
+        );
+        assert!(
+            matches!(
+                reason(&verdict),
+                Some(ActionDenialReason::MissingDesignation { .. })
+            ),
+            "{login}: {verdict:?}"
+        );
+    }
+    // A security approver who asked for the job does not approve the build code of its change.
+    assert_eq!(
+        reason(&decide(
+            &list,
+            &security,
+            "approve_build_code",
+            L1,
+            Some(SECURITY),
+            change
+        )),
+        Some(ActionDenialReason::SelfApproval)
+    );
+    // The action does not exist below L1, and the level that is off stays off.
+    assert_eq!(
+        reason(&decide(
+            &list,
+            &security,
+            "approve_build_code",
+            L0,
+            Some(REQUESTER),
+            change
+        )),
+        Some(ActionDenialReason::BelowMinLevel)
+    );
+    assert_eq!(
+        reason(&decide(
+            &list,
+            &security,
+            "approve_build_code",
+            L3,
+            Some(REQUESTER),
+            change
+        )),
+        Some(ActionDenialReason::LevelDisabled)
+    );
+    // The engine knows the designations of the row, so a gate can ask it instead of naming one.
+    assert_eq!(
+        authority().approver_designations("approve_build_code"),
+        [Designation::SecurityApprover]
+    );
+    assert!(
+        authority()
+            .approver_designations("no_such_action")
+            .is_empty()
+    );
+}
+
+#[test]
 fn an_action_with_no_row_needs_an_org_admin_and_a_forbidden_one_is_never_allowed() {
     let list = allowlist();
     use AutonomyLevel::L1;

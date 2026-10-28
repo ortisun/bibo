@@ -17,7 +17,8 @@ use factory_workflow::handlers::StageError;
 
 use super::files::{Files, base, head_adding, lock, manifest, member, reg, sum, with};
 use super::people::{
-    APPROVER, REQUESTER, SECURITY, approve, authorized, decide, engine, human, policy_hash, scope,
+    APPROVER, REQUESTER, SECURITY, approve, approve_build_code, authorized, decide, engine, human,
+    policy_hash, scope,
 };
 use super::review::{at, old_and_licensed, plan_with, record, table};
 use super::world::{
@@ -42,6 +43,11 @@ fn by_approver() -> DependencyApproval {
 
 fn by_security() -> DependencyApproval {
     approve(SECURITY, "sam", Designation::SecurityApprover, &subject()).expect("recorded")
+}
+
+/// The decision `approve_build_code` of a security approver on the package of `subject()`.
+fn code_by_security() -> DependencyApproval {
+    approve_build_code(SECURITY, "sam", &subject()).expect("recorded")
 }
 
 fn head() -> Files {
@@ -324,8 +330,9 @@ fn hostile() -> Script {
 async fn negative_nt_sup_02_a_build_script_and_an_install_script_never_run_in_the_fetch_profile() {
     let world = World::new();
     world.tools.set(hostile());
-    // A security approver decided, so the fetch runs and reads a package that has a build script.
-    let ran = run(&world, &head(), &[by_security()]).await;
+    // A security approver decided on the package and on its build code, so the fetch runs and
+    // reads a package that has a build script.
+    let ran = run(&world, &head(), &[by_security(), code_by_security()]).await;
     assert!(ran.done.fetched);
     assert!(
         world.tools.markers().is_empty(),
@@ -787,23 +794,30 @@ async fn a_fetch_that_the_lockfile_does_not_survive_fails_the_review() {
 }
 
 #[tokio::test]
-async fn build_code_under_an_approver_decision_blocks_until_a_security_approver_decides() {
+async fn build_code_blocks_until_the_build_code_decision_is_recorded_and_the_dependency_decision_is_not_it()
+ {
     let world = World::new();
     world.tools.set(hostile());
     let ran = run(&world, &head(), &[by_approver()]).await;
     assert_eq!(ran.outcome(gate::REVIEW), GateOutcome::Blocked);
+    let missing = ran.missing(gate::REVIEW);
     assert!(
-        ran.missing(gate::REVIEW)
-            .contains("security approver's decision"),
-        "{}",
-        ran.missing(gate::REVIEW)
+        missing.contains("approve_build_code") && missing.contains("security approver"),
+        "{missing}"
     );
     assert!(!ran.done.scanned);
     assert!(world.tools.markers().is_empty());
 
+    // The old carrier: a security approver's decision on the dependency. It is not enough.
+    let carried = World::new();
+    carried.tools.set(hostile());
+    let ran = run(&carried, &head(), &[by_security()]).await;
+    assert_eq!(ran.outcome(gate::REVIEW), GateOutcome::Blocked);
+    assert!(!ran.done.scanned);
+
     let cleared = World::new();
     cleared.tools.set(hostile());
-    let ran = run(&cleared, &head(), &[by_approver(), by_security()]).await;
+    let ran = run(&cleared, &head(), &[by_approver(), code_by_security()]).await;
     assert_eq!(ran.outcome(gate::REVIEW), GateOutcome::Passed);
     assert!(ran.done.scanned);
 }

@@ -846,6 +846,17 @@ impl AuthorityPolicy {
             .is_some_and(|a| a.by_level.values().all(|n| *n != Need::Nothing))
     }
 
+    /// The designations the action row names as approvers, in the order of the row. Empty when
+    /// the action has no row (such an action needs an organization administrator by the policy's
+    /// default). A caller that must know who may decide an action asks here instead of naming a
+    /// designation of its own, so the row is the one place that says it.
+    #[must_use]
+    pub fn approver_designations(&self, action: &str) -> &[Designation] {
+        self.actions
+            .get(action)
+            .map_or(&[], |row| row.roles.as_slice())
+    }
+
     /// True when the name is on the list of things nobody may do through the factory.
     #[must_use]
     pub fn is_never_allowed(&self, name: &str) -> bool {

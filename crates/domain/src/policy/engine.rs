@@ -5,6 +5,7 @@ use super::approval::ApprovalPolicy;
 use super::authority::AuthorityPolicy;
 use super::budget::BudgetPolicy;
 use super::commands::CommandPolicy;
+use super::decision::Designation;
 use super::dependency::DependencyPolicy;
 use super::egress::EgressPolicy;
 use super::paths::PathPolicy;
@@ -13,12 +14,19 @@ use super::security::SecurityPolicy;
 use super::tools::ToolPolicy;
 
 /// The actions the other evaluators depend on. Each must need a human whatever the level: the
-/// protected-path exception, a new direct dependency and the waiver of a gate.
-const ALWAYS_HUMAN_ACTIONS: [&str; 3] = [
+/// protected-path exception, a new direct dependency, the build code of a new package and the
+/// waiver of a gate.
+const ALWAYS_HUMAN_ACTIONS: [&str; 4] = [
     "change_protected_path",
     "add_new_direct_dependency",
+    "approve_build_code",
     "waive_failed_gate",
 ];
+
+/// The actions only a security approver may decide, and nobody else, whatever else the row says.
+/// Build code runs on the machines that build the project; the dependency gate asks the engine
+/// who may approve it and relies on this answer.
+const SECURITY_APPROVER_ONLY_ACTIONS: [&str; 1] = ["approve_build_code"];
 
 /// All the pure evaluators for one pair of policies. Building it is the check that the pair is
 /// something the engine can honour: it fails, and no evaluator exists, when a document turns off a
@@ -54,6 +62,13 @@ impl PolicyEngine {
             if !authority.always_needs_human(action) {
                 return Err(BuildError::Contradiction(format!(
                     "the action {action} must need a human at every level, because the path, dependency and override rules rely on it"
+                )));
+            }
+        }
+        for action in SECURITY_APPROVER_ONLY_ACTIONS {
+            if authority.approver_designations(action) != [Designation::SecurityApprover] {
+                return Err(BuildError::Contradiction(format!(
+                    "the action {action} must name the security approver and no other designation as its approver, because the dependency gate relies on it"
                 )));
             }
         }

@@ -107,6 +107,7 @@ pub async fn run(io: &Io<'_>, inputs: &Inputs<'_>) -> Result<Done, StageError> {
     }
     let settings = Settings {
         dependency: &cfg.policy.dependency,
+        authority: &cfg.policy.authority,
         licenses: &cfg.licenses,
         internal_names: &cfg.internal_names,
         popular,

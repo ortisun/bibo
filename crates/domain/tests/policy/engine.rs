@@ -105,6 +105,51 @@ fn an_action_row_that_contradicts_always_human_does_not_build() {
 }
 
 #[test]
+fn a_policy_that_lets_anyone_but_a_security_approver_approve_build_code_does_not_build() {
+    // The rules about build code rely on one human decision by one designation. A row that is
+    // missing, that lets the action happen with no human, or that adds a designation is found
+    // when the engine is built.
+    type Change = fn(&mut serde_json::Value);
+    fn row(json: &mut serde_json::Value) -> &mut serde_json::Value {
+        json["actions"]
+            .as_array_mut()
+            .expect("actions")
+            .iter_mut()
+            .find(|row| row["id"] == "approve_build_code")
+            .expect("the real policy has the row")
+    }
+    let cases: [(&str, Change); 5] = [
+        ("an ordinary approver may approve it", |j| {
+            row(j)["approver_roles"] = serde_json::json!(["approver", "security_approver"]);
+        }),
+        ("only an ordinary approver may approve it", |j| {
+            row(j)["approver_roles"] = serde_json::json!(["approver"]);
+        }),
+        ("an organization administrator may approve it", |j| {
+            row(j)["approver_roles"] = serde_json::json!(["security_approver", "org_admin"]);
+        }),
+        ("no human is needed", |j| {
+            row(j)["requires"] = "none".into();
+        }),
+        ("there is no row", |j| {
+            j["actions"]
+                .as_array_mut()
+                .expect("actions")
+                .retain(|row| row["id"] != "approve_build_code");
+        }),
+    ];
+    for (name, change) in cases {
+        assert!(
+            matches!(
+                builds_with_approval(change),
+                Err(BuildError::Contradiction(_))
+            ),
+            "{name} must not build"
+        );
+    }
+}
+
+#[test]
 fn a_rework_or_repair_cap_above_two_does_not_build() {
     for set in [
         (|j: &mut serde_json::Value| {

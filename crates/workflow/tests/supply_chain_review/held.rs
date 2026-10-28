@@ -30,6 +30,7 @@ fn plan_for(base: &Files, head: &Files, registry: &RegistryTable) -> Plan {
         &[],
         &Settings {
             dependency: &engine().dependency,
+            authority: &engine().authority,
             licenses: &licenses,
             internal_names: &[],
             popular: &popular,

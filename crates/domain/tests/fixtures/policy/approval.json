@@ -153,7 +153,20 @@
       "threats": [
         "T-29"
       ],
-      "when": "always, for a package name absent from the base commit lockfile; no allowlist or heuristic approves it; a package first published less than 30 days ago needs a security_approver"
+      "when": "always, for a package name absent from the base commit lockfile as anything but a member of the project; no allowlist or heuristic approves it; a package first published less than 30 days ago needs a security_approver; the decision is bound to the exact name, version and checksum, and it does not cover the build code of a new package: a build script or a procedural macro that comes in needs its own decision, approve_build_code"
+    },
+    {
+      "approver_roles": [
+        "security_approver"
+      ],
+      "id": "approve_build_code",
+      "min_level": "L1",
+      "requires": "human",
+      "threats": [
+        "T-29",
+        "T-30"
+      ],
+      "when": "always, for each package that is new to the build and has a build script or is a procedural macro, whoever asked for it (new direct dependency or not); the decision is bound to the exact name, version and checksum of that package, and nothing else lifts the block of the semantic check build_script_added"
     },
     {
       "id": "run_fetch_deps",
@@ -349,6 +362,7 @@
     "raise_autonomy_level",
     "change_protected_path",
     "add_new_direct_dependency",
+    "approve_build_code",
     "widen_egress_allowlist",
     "grant_tool_outside_manifest",
     "use_exec_shell_breakglass",

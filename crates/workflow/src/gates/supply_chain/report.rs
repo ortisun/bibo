@@ -175,10 +175,22 @@ fn review_state(ev: &Evaluation<'_>) -> Review {
                 )
             })
             .collect();
+        // Who decides is what the policy says for the action, not a name written here.
+        let who: Vec<String> = conclusion
+            .needs
+            .iter()
+            .map(|designation| designation.as_str().replace('_', " "))
+            .collect();
+        let who = if who.is_empty() {
+            "nobody the policy names".to_owned()
+        } else {
+            format!("a {}", who.join(" or a "))
+        };
         return Review::Blocked(
             BlockedCode::PolicyUnresolvable,
             format!(
-                "a security approver's decision, because build code comes in with: {}",
+                "the recorded decision {} of {who}, because build code comes in with: {}",
+                super::approval::BUILD_CODE_ACTION,
                 names.join(", ")
             ),
         );

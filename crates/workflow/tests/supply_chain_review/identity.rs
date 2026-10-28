@@ -274,6 +274,7 @@ fn plan_with(integrity: Integrity, internal: &[String]) -> Plan {
         &[],
         &Settings {
             dependency: &engine().dependency,
+            authority: &engine().authority,
             licenses: &licenses,
             internal_names: internal,
             popular: &popular,
