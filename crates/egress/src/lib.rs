@@ -18,3 +18,5 @@
 
 #[cfg(feature = "broker")]
 pub mod broker;
+#[cfg(feature = "broker")]
+pub mod http;
