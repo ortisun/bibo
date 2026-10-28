@@ -601,12 +601,19 @@ fn links_check(inputs: &Inputs<'_>) -> CheckResult {
         pages: inputs.pages,
     };
     let report = links::check(&pages, &tree);
-    if report.internal_checked == 0 && report.external_unchecked.is_empty() {
+    if report.internal_checked == 0 {
+        let external = report.external_unchecked.len();
         return CheckResult::not_applicable(
             LINKS,
             title,
             NotApplicableCode::NoMatchingFiles,
-            "The changed documents contain no links.",
+            &if external == 0 {
+                "The changed documents contain no links.".to_owned()
+            } else {
+                format!(
+                    "The changed documents contain no internal links. {external} external link(s) were not checked, because the gate does not fetch them, and none is reported as valid."
+                )
+            },
         );
     }
     let findings = report
