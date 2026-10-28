@@ -43,6 +43,43 @@ pub(super) fn instruction_line(pieces: &[Piece], trusted: &BTreeMap<String, Stri
     out
 }
 
+/// Reads one block from the next lines of `got` and checks it against what was meant.
+pub(super) fn check_block<'a>(
+    got: &mut impl Iterator<Item = &'a str>,
+    meant: &Meant<'_>,
+) -> Result<(), &'static str> {
+    if got.next() != Some(meant.header) {
+        return Err("an opening line changed");
+    }
+    let closing = closing_line(meant.name);
+    let mut data: Vec<&str> = Vec::new();
+    loop {
+        let next = got.next().ok_or("a block is never closed")?;
+        if next == closing {
+            break;
+        }
+        data.push(
+            next.strip_prefix(QUOTE)
+                .ok_or("a line of data is not quoted")?,
+        );
+    }
+    if meant.text.chars().any(is_hidden) {
+        return Err("a block holds a hidden character");
+    }
+    if neutralize(meant.text).text != meant.text {
+        return Err("a block holds a line break of another kind");
+    }
+    let expected_lines = if meant.text.is_empty() {
+        0
+    } else {
+        meant.text.split('\n').count()
+    };
+    if data.len() != expected_lines || data.join("\n") != meant.text {
+        return Err("the data of a block was changed");
+    }
+    Ok(())
+}
+
 /// Checks `rendered`.
 pub(super) fn check(
     template: &Template,
@@ -60,35 +97,7 @@ pub(super) fn check(
             }
             Line::Block(index) => {
                 let meant = blocks.get(*index).ok_or("a block is missing")?;
-                if got.next() != Some(meant.header) {
-                    return Err("an opening line changed");
-                }
-                let closing = closing_line(meant.name);
-                let mut data: Vec<&str> = Vec::new();
-                loop {
-                    let next = got.next().ok_or("a block is never closed")?;
-                    if next == closing {
-                        break;
-                    }
-                    data.push(
-                        next.strip_prefix(QUOTE)
-                            .ok_or("a line of data is not quoted")?,
-                    );
-                }
-                if meant.text.chars().any(is_hidden) {
-                    return Err("a block holds a hidden character");
-                }
-                if neutralize(meant.text).text != meant.text {
-                    return Err("a block holds a line break of another kind");
-                }
-                let expected_lines = if meant.text.is_empty() {
-                    0
-                } else {
-                    meant.text.split('\n').count()
-                };
-                if data.len() != expected_lines || data.join("\n") != meant.text {
-                    return Err("the data of a block was changed");
-                }
+                check_block(&mut got, meant)?;
             }
         }
     }

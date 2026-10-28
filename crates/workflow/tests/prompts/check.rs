@@ -173,6 +173,28 @@ pub fn hidden_count_oracle(text: &str) -> usize {
         .count()
 }
 
+/// Reads text that is exactly one block, such as a request file. Gives the opening line and the
+/// data, or says what is wrong.
+pub fn decode_block(text: &str, name: &str) -> Result<(String, String), String> {
+    let lines: Vec<&str> = text.trim_end_matches('\n').split('\n').collect();
+    let (first, rest) = lines.split_first().ok_or("empty")?;
+    if !first.starts_with(&format!("{OPEN}{name} ")) || !first.ends_with(">>>") {
+        return Err(format!("the first line is not the opening line: {first:?}"));
+    }
+    let (last, middle) = rest.split_last().ok_or("no closing line")?;
+    if *last != format!("{CLOSE}{name}>>>") {
+        return Err(format!("the last line is not the closing line: {last:?}"));
+    }
+    let mut data = Vec::new();
+    for line in middle {
+        data.push(
+            line.strip_prefix("> ")
+                .ok_or_else(|| format!("a line is not quoted: {line:?}"))?,
+        );
+    }
+    Ok(((*first).to_owned(), data.join("\n")))
+}
+
 /// The value of an attribute in an opening line, such as `stripped` in `stripped=3`.
 pub fn attribute<'a>(header: &'a str, key: &str) -> Option<&'a str> {
     let marker = format!(" {key}=");

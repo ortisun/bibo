@@ -18,6 +18,7 @@ mod input;
 mod limits;
 mod manifest;
 mod sanitize;
+pub mod speckit;
 mod template;
 mod verify;
 

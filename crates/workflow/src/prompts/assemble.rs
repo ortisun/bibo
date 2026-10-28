@@ -241,24 +241,48 @@ impl Assembled {
 /// reads no clock, file or environment: the same inputs give the same prompt.
 #[derive(Debug, Clone)]
 pub struct Assembler<'a> {
-    redactor: &'a Redactor,
+    pub(super) redactor: &'a Redactor,
     paths: &'a PathPolicy,
-    limits: Limits,
+    pub(super) limits: Limits,
 }
 
 /// An input after its text was made ready.
-struct Work<'i> {
-    spec: &'i InputSpec,
-    given: Option<&'i Input>,
-    original_bytes: usize,
-    original_sha256: Sha256Digest,
-    text: String,
-    stripped: usize,
-    looks: Lookalikes,
-    omitted: usize,
-    redacted: u64,
-    hash_is_of_redacted_text: bool,
-    exclusion: Option<Exclusion>,
+pub(super) struct Work<'i> {
+    pub(super) spec: &'i InputSpec,
+    pub(super) given: Option<&'i Input>,
+    pub(super) original_bytes: usize,
+    pub(super) original_sha256: Sha256Digest,
+    pub(super) text: String,
+    pub(super) stripped: usize,
+    pub(super) looks: Lookalikes,
+    pub(super) omitted: usize,
+    pub(super) redacted: u64,
+    pub(super) hash_is_of_redacted_text: bool,
+    pub(super) exclusion: Option<Exclusion>,
+}
+
+impl Work<'_> {
+    /// The record of this input for the context manifest.
+    pub(super) fn record(&self, block_bytes: usize) -> InputRecord {
+        InputRecord {
+            name: self.spec.name().to_owned(),
+            class: self.spec.class(),
+            trust: self.given.map_or(Trust::Untrusted, |g| g.trust),
+            source: self.given.map(|g| g.source.clone()),
+            provided: self.given.is_some(),
+            paths: self.given.map(|g| g.paths.clone()).unwrap_or_default(),
+            fetched_at: self.given.and_then(|g| g.fetched_at),
+            original_bytes: self.original_bytes,
+            original_sha256: self.original_sha256.clone(),
+            hash_is_of_redacted_text: self.hash_is_of_redacted_text,
+            included_bytes: self.text.len(),
+            block_bytes,
+            stripped: self.stripped,
+            redacted: self.redacted,
+            truncated: self.omitted > 0,
+            omitted_bytes: self.omitted,
+        }
+    }
 }
 
 impl<'a> Assembler<'a> {
@@ -421,24 +445,7 @@ impl<'a> Assembler<'a> {
                     omitted_bytes: w.omitted,
                 });
             }
-            records.push(InputRecord {
-                name: w.spec.name().to_owned(),
-                class: w.spec.class(),
-                trust: w.given.map_or(Trust::Untrusted, |g| g.trust),
-                source: w.given.map(|g| g.source.clone()),
-                provided: w.given.is_some(),
-                paths: w.given.map(|g| g.paths.clone()).unwrap_or_default(),
-                fetched_at: w.given.and_then(|g| g.fetched_at),
-                original_bytes: w.original_bytes,
-                original_sha256: w.original_sha256.clone(),
-                included_bytes: w.text.len(),
-                block_bytes: block_text.len(),
-                stripped: w.stripped,
-                redacted: w.redacted,
-                hash_is_of_redacted_text: w.hash_is_of_redacted_text,
-                truncated: w.omitted > 0,
-                omitted_bytes: w.omitted,
-            });
+            records.push(w.record(block_text.len()));
             rendered.push(block_text);
         }
 
@@ -571,7 +578,7 @@ impl<'a> Assembler<'a> {
     }
 
     /// Makes the text of one input ready, or notes that it was not given.
-    fn prepare<'i>(
+    pub(super) fn prepare<'i>(
         &self,
         spec: &'i InputSpec,
         given: Option<&'i Input>,
@@ -696,6 +703,6 @@ impl<'a> Assembler<'a> {
 }
 
 /// A name from outside, safe to put in an error message: escaped and cut.
-fn shown(name: &str) -> String {
+pub(super) fn shown(name: &str) -> String {
     name.chars().take(64).flat_map(char::escape_debug).collect()
 }

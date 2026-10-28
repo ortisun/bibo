@@ -27,6 +27,8 @@ mod prompts_limits;
 mod prompts_provenance;
 #[path = "redaction.rs"]
 mod prompts_redaction;
+#[path = "speckit.rs"]
+mod prompts_speckit;
 #[path = "support.rs"]
 mod prompts_support;
 #[path = "template.rs"]

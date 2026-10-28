@@ -48,6 +48,14 @@ pub struct InputSpec {
 }
 
 impl InputSpec {
+    pub(super) fn new(name: &str, class: ContentClass, required: bool) -> Self {
+        Self {
+            name: name.to_owned(),
+            class,
+            required,
+        }
+    }
+
     /// The name, which is also the name in the placeholder line and in the block.
     #[must_use]
     pub fn name(&self) -> &str {
