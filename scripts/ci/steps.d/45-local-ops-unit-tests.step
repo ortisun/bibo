@@ -1,0 +1,4 @@
+id       = local-ops-unit-tests
+title    = The backup, restore and smoke checks catch each damage they exist for (scripts/tests/test_factory_ops.py, no Docker)
+requires = python3 bash
+run      = python3 -I scripts/tests/test_factory_ops.py

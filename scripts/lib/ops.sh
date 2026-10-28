@@ -40,22 +40,25 @@ OPS_CLEANING=0
 ops_on_exit() { OPS_CLEANUPS+=("$1"); }
 
 ops_run_cleanups() {
-  local i rc=$?
-  [ "$OPS_CLEANING" = 1 ] && return
+  local ops_i
+  [ "$OPS_CLEANING" = 1 ] && return 0
   OPS_CLEANING=1
   set +e
-  i=${#OPS_CLEANUPS[@]}
-  while [ "$i" -gt 0 ]; do
-    i=$((i - 1))
-    eval "${OPS_CLEANUPS[$i]}" || ops_warn "cleanup step failed: ${OPS_CLEANUPS[$i]}"
+  ops_i=${#OPS_CLEANUPS[@]}
+  while [ "$ops_i" -gt 0 ]; do
+    ops_i=$((ops_i - 1))
+    eval "${OPS_CLEANUPS[$ops_i]}" || ops_warn "cleanup step failed: ${OPS_CLEANUPS[$ops_i]}"
   done
-  return "$rc"
+  return 0
 }
 
 ops_install_traps() {
-  trap 'rc=$?; ops_run_cleanups; exit $rc' EXIT
+  # A cleanup step may set OPS_EXIT_CODE to turn a clean exit into a failure (for example, objects left over).
+  # The status gets its own name: a script function that has a local "rc" would otherwise be written to by this
+  # trap (bash scoping is dynamic), and the exit code would be lost.
+  trap 'ops_exit_status=$?; ops_run_cleanups; exit "${OPS_EXIT_CODE:-$ops_exit_status}"' EXIT
   trap 'exit 130' INT
-  trap 'exit 143' TERM
+  trap 'ops_warn "terminated (also what the Docker lock watchdog does to a run that holds the lock too long)"; exit 143' TERM
 }
 
 # ---- prerequisites ------------------------------------------------------------------------------
@@ -134,12 +137,15 @@ except OSError:
 os.ftruncate(9, 0)
 os.write(9, ("pid %d thread %s since %d" % (int(sys.argv[1]), sys.argv[2], time.time())).encode())' "$$" "$OPS_TOOL" 2>/dev/null || true
   OPS_LOCK_HELD=1
-  # The watchdog closes descriptor 9 so that it never holds the lock itself.
+  # The watchdog closes descriptor 9 so that it never holds the lock itself, and has no output of its own, so a
+  # caller that reads this script's output through a pipe is not kept waiting for it. The TERM trap of
+  # ops_install_traps reports that the run was ended.
   (
-    exec 9>&-
+    exec 9>&- >/dev/null 2>&1
     n=0
-    while [ "$n" -lt "$hold" ]; do sleep 1; n=$((n + 1)); done
-    printf '%s: the Docker lock was held for %ss; ending this run so the lock is handed on\n' "$OPS_TOOL" "$hold" >&2
+    # Stop at once if the script is gone (it may have been killed without running its traps), so a recycled
+    # process id is never sent a signal.
+    while [ "$n" -lt "$hold" ]; do kill -0 $$ 2>/dev/null || exit 0; sleep 1; n=$((n + 1)); done
     kill -TERM $$
   ) &
   OPS_WATCHDOG=$!
@@ -160,7 +166,7 @@ ops_lock_release() {
 # Names one run. Used in the project name and in the factory.run label, so cleanup can find exactly what
 # this run created.
 ops_new_run() {
-  OPS_RUN_ID="${OPS_RUN_ID:-$(date +%H%M%S)-$$}"
+  OPS_RUN_ID="${FACTORY_RUN_ID:-${OPS_RUN_ID:-$(date +%H%M%S)-$$}}"
   OPS_RUN_DIR=$(mktemp -d "${TMPDIR:-/tmp}/factory-ops.XXXXXX") || ops_die "cannot make a temporary folder"
   chmod 0700 "$OPS_RUN_DIR"
   OPS_CHECKS="$OPS_RUN_DIR/checks.tsv"
@@ -171,7 +177,7 @@ ops_new_run() {
 
 # ---- compose, secrets and the database -------------------------------------------------------------
 
-ops_compose() { docker compose -p "$OPS_PROJECT" -f "$OPS_COMPOSE_FILE" --profile "$OPS_PROFILE" "$@"; }
+ops_compose() { docker compose --progress quiet -p "$OPS_PROJECT" -f "$OPS_COMPOSE_FILE" --profile "$OPS_PROFILE" "$@"; }
 
 # Create the secret files that do not exist yet. Existing ones are never changed: a changed password
 # would no longer match the one stored inside the database volume.
