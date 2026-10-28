@@ -151,8 +151,6 @@ pub(super) fn workspace_error(error: WorkspaceError) -> StageError {
 /// Makes a verify workspace of `commit` and a fresh sandbox over it, runs `gates` in it and
 /// removes both.
 ///
-/// `ready` is called once, when the container exists and its posture matched the spec.
-///
 /// # Errors
 /// [`StageError`]: the environment is missing or unsafe, the call was cancelled, or the host
 /// could not make or remove the workspace.
@@ -160,7 +158,6 @@ pub async fn in_sandbox(
     io: &Io<'_>,
     commit: &CommitSha,
     gates: &[&CommandGate],
-    ready: &mut (dyn FnMut() + Send),
 ) -> Result<Sandboxed, StageError> {
     let workspace = io
         .ports
@@ -202,7 +199,6 @@ pub async fn in_sandbox(
             return Err(StageError::from(error));
         }
     };
-    ready();
     let sandbox_id = session.id().as_str().to_owned();
     let outcome = run_all(&mut *session, io, gates).await;
     let reason = if outcome.is_ok() {

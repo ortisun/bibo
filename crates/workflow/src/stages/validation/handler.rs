@@ -37,8 +37,8 @@ use crate::gates::command::{
 use crate::gates::framework::GateDecision;
 use crate::gates::scope::acceptance::Requirement;
 use crate::handlers::{
-    ContractContext, GateContext, OutputDocument, SandboxReady, StageContext, StageError,
-    StageHandler, StageOutput,
+    ContractContext, GateContext, OutputDocument, StageContext, StageError, StageHandler,
+    StageOutput,
 };
 
 /// The gates whose failure is a violation of policy that no one waives.
@@ -284,16 +284,9 @@ impl StageHandler for ValidationHandler {
         let mut head: Option<Sandboxed> = None;
         let mut baseline: Option<Sandboxed> = None;
         if host.clean() && !gates.is_empty() {
-            let mut announce = || {
-                ctx.report_sandbox_ready(SandboxReady {
-                    posture_verified: true,
-                    tool_grants_recorded: true,
-                    probe_satisfies_stage: true,
-                });
-            };
-            head = Some(in_sandbox(&io, &candidate.head, &gates, &mut announce).await?);
+            head = Some(in_sandbox(&io, &candidate.head, &gates).await?);
             if let Some(tests) = gates.iter().find(|gate| gate.role == Role::Tests) {
-                baseline = Some(in_sandbox(&io, &candidate.base, &[*tests], &mut || {}).await?);
+                baseline = Some(in_sandbox(&io, &candidate.base, &[*tests]).await?);
             }
         }
 
@@ -408,7 +401,15 @@ impl StageHandler for ValidationHandler {
             image_digest: image.clone(),
             definition_hash,
         };
-        let differences = recorded.differences(&expected);
+        let mut differences = recorded.differences(&expected);
+        // Each report also names the definitions it was made from, and they must be these.
+        if !differences.contains(&"definition_hash")
+            && reports
+                .iter()
+                .any(|report| report.metadata.trusted_definition != trusted)
+        {
+            differences.push("definition_hash");
+        }
 
         let asm = Assembler {
             cx: ReportContext {

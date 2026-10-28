@@ -87,6 +87,11 @@ async fn a_clean_change_passes_every_gate() {
     }
     assert_eq!(ran.resolution, Resolution::Pass);
     assert_eq!(ran.problem, None, "the engine accepts the evidence");
+    assert_eq!(
+        factory_workflow::gates::framework::uncovered_criteria(&ran.contract, &ran.decision),
+        0,
+        "every acceptance criterion of the contract has a report behind it"
+    );
     assert!(!ran.decision.policy_violation);
     // Two fresh containers over two checkouts: the candidate, then the base for the baseline.
     assert_eq!(w.sandbox.created(), 2);

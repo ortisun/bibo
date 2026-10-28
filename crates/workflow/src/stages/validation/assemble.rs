@@ -400,3 +400,72 @@ fn test_problem(check: &'static str, message: &str) -> Violation {
         line: None,
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The reading of a run with one binary and these tests.
+    fn run(tests: &[(&str, &str)]) -> Outcomes {
+        let mut stdout = format!("\nrunning {} tests\n", tests.len());
+        let count = |status: &str| tests.iter().filter(|(_, s)| *s == status).count();
+        for (name, status) in tests {
+            stdout.push_str(&format!("test {name} ... {status}\n"));
+        }
+        stdout.push_str(&format!(
+            "\ntest result: ok. {} passed; {} failed; {} ignored; 0 measured\n",
+            count("ok"),
+            count("FAILED"),
+            count("ignored")
+        ));
+        let parsed = Outcomes::parse(&stdout, "     Running tests/it.rs (x)\n");
+        assert!(parsed.is_consistent());
+        parsed
+    }
+
+    fn checks(problems: &[Violation]) -> Vec<&'static str> {
+        problems.iter().map(|problem| problem.check).collect()
+    }
+
+    #[test]
+    fn identical_runs_show_no_change_and_new_tests_are_allowed() {
+        let base = run(&[("a", "ok"), ("b", "ok")]);
+        assert_eq!(compare(&base, &base), (BaselineDelta::None, Vec::new()));
+        let head = run(&[("a", "ok"), ("b", "ok"), ("c", "ok")]);
+        assert_eq!(compare(&base, &head), (BaselineDelta::None, Vec::new()));
+    }
+
+    #[test]
+    fn a_removed_or_newly_ignored_test_is_a_regression() {
+        let base = run(&[("a", "ok"), ("b", "ok")]);
+        let (delta, problems) = compare(&base, &run(&[("a", "ok")]));
+        assert_eq!(delta, BaselineDelta::Regressed);
+        assert_eq!(checks(&problems), ["test-removed"]);
+        let (delta, problems) = compare(&base, &run(&[("a", "ok"), ("b", "ignored")]));
+        assert_eq!(delta, BaselineDelta::Regressed);
+        assert_eq!(
+            checks(&problems),
+            ["test-ignored", "test-ignored"],
+            "once for the test that stopped passing, once for the test that is newly ignored"
+        );
+    }
+
+    #[test]
+    fn a_new_ignored_test_is_flagged_but_one_that_was_ignored_before_is_not() {
+        let base = run(&[("a", "ok"), ("slow", "ignored")]);
+        let head = run(&[("a", "ok"), ("slow", "ignored"), ("x", "ignored")]);
+        let (delta, problems) = compare(&base, &head);
+        assert_eq!(delta, BaselineDelta::Regressed);
+        assert_eq!(problems.len(), 1);
+        assert_eq!(compare(&base, &base).0, BaselineDelta::None);
+    }
+
+    #[test]
+    fn a_test_that_starts_failing_or_is_fixed_is_named_in_the_delta() {
+        let base = run(&[("a", "ok"), ("b", "FAILED")]);
+        let broken = run(&[("a", "FAILED"), ("b", "FAILED")]);
+        assert_eq!(compare(&base, &broken).0, BaselineDelta::NewFailures);
+        let fixed = run(&[("a", "ok"), ("b", "ok")]);
+        assert_eq!(compare(&base, &fixed).0, BaselineDelta::Improved);
+    }
+}

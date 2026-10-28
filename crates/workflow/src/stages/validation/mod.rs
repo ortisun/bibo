@@ -23,6 +23,15 @@
 //!    sources, adds the `evidence-binding` report and hands the reports to the engine, which
 //!    decides with `resolve`.
 //!
+//! # Why the contract says the placement is not applicable
+//!
+//! The engine fails a stage that declares a sandbox placement and never reports a ready sandbox.
+//! This stage may legitimately never create one: a change that a host-side rule refuses must not
+//! reach a container. The posture of each sandbox the stage does create is still checked, by the
+//! port: `SandboxProvider::create_verified` returns a session only for a container that matches
+//! its spec and the policy, and a sandbox that cannot be created blocks the stage run
+//! (`StageError::Environment`, rule `S21`) instead of running anything on the host.
+//!
 //! # What is evidence and what is not
 //!
 //! | Evidence | Not evidence |

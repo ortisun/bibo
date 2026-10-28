@@ -174,7 +174,7 @@ pub fn resolve(ctx: &ContractContext<'_>) -> Result<StageContract, StageError> {
                 "network": "none",
                 "shell": "none",
             },
-            "placement": "sandbox",
+            "placement": "not_applicable",
         },
         "deliverables": [{
             "name": EVIDENCE,
