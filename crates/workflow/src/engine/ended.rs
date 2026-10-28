@@ -4,9 +4,9 @@
 //! `REWORK_REQUESTED`: the gate judged it ([`gate`](super::gate)), or its last attempt failed in a
 //! way that retrying cannot fix ([`failure`](super::failure)). Both paths call
 //! [`Engine::note_stage_end`] once the moves are written, and it reads the status the row now
-//! holds. It does not guess the outcome from the branch that was taken, so a path that ends the
-//! run in a way nobody listed here is still counted, and a path that only pauses it (a retry, a
-//! question to a person) is not.
+//! holds. It does not guess the outcome from the branch that was taken, so every branch that
+//! leaves the run in one of those four statuses is counted, whichever branch it is, and a branch
+//! that only pauses the run (a retry, a question to a person) is not.
 //!
 //! The counter and the histogram are recorded when the decision commits, through
 //! [`Cx::stage_ended`], so a decision that loses a race counts nothing.
