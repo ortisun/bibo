@@ -66,10 +66,14 @@ ignore = []
 # copyleft license, and any crate whose license cannot be read. cargo-deny 0.19 has no deny list for
 # licenses, so leaving a license off this list IS the denial.
 #
-# The list is small on purpose. Adding a license is a decision for a person and happens in the same
-# pull request as the dependency that needs it (policies/security.yaml: a new direct dependency
-# always needs a human). Common licenses such as BSD-3-Clause, ISC, Zlib, CC0-1.0, 0BSD and MPL-2.0
-# are NOT pre-approved. The first crate that needs one fails the check and the reviewer decides.
+# The list stays small and every addition is a decision for a person (policies/security.yaml: a new
+# direct dependency always needs a human). On 2026-10-27 the project owner approved a set of common
+# PERMISSIVE licenses, because the GitHub adapter, the egress broker and the API need an HTTP stack,
+# TLS and JWT signing, and those libraries carry them: BSD-2-Clause, BSD-3-Clause, ISC, Zlib, 0BSD,
+# CC0-1.0, MIT-0 and CDLA-Permissive-2.0. GPL, LGPL and AGPL, any other copyleft license, MPL-2.0 and
+# any crate whose license cannot be read stay denied. MPL-2.0 (weak, file-level copyleft) was NOT
+# part of the approval: a crate that needs it fails the check and the owner decides that one case.
+# Approving a license does not approve a dependency: each new direct dependency is still reviewed.
 #
 # "OR" expressions: cargo-deny passes a crate when at least one alternative is on this list, and we
 # then use the crate under that alternative. That is how the license terms work, and it is how every
@@ -85,6 +89,17 @@ allow = [
     # entry is required and has no alternative. Permissive: keep the copyright and permission
     # notice with the Unicode data files.
     "Unicode-3.0",
+    # Approved by the project owner on 2026-10-27 (see the paragraph above). All permissive: they ask
+    # to keep the copyright and license notice, and some forbid using the author's name to endorse
+    # a product. None restricts how this project is licensed or distributed.
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Zlib",
+    "0BSD",
+    "CC0-1.0",
+    "MIT-0",
+    "CDLA-Permissive-2.0",
 ]
 
 # Licenses that appear in an OR expression, are NOT on the list, and are not needed because MIT or
