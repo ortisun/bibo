@@ -401,6 +401,17 @@ strict! {
 }
 
 strict! {
+    /// What happens when an agent keeps asking for tools it cannot have.
+    pub struct MisuseThreshold {
+        /// The most refused requests (an unknown tool, a never-grantable tool or a self-grant)
+        /// that one task may make. The request after the last one sends the stage to a person.
+        pub max_denied_requests_per_task: u32,
+        /// What happens then. The value used is `needs_human`.
+        pub on_threshold: String,
+    }
+}
+
+strict! {
     /// Section 5: the tool allow list.
     pub struct Tools {
         /// What a tool with no entry gets.
@@ -411,6 +422,9 @@ strict! {
         pub agents_may_self_grant: bool,
         /// Tools that are never granted to any agent.
         pub never_grantable: Vec<String>,
+        /// When repeated refused requests send the stage to a person.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub misuse_threshold: Option<MisuseThreshold>,
         /// The tools.
         pub entries: Vec<ToolEntry>,
         /// Threats.
@@ -1568,6 +1582,10 @@ strict! {
         pub forbidden_flags_outside_verified_sandbox: Vec<String>,
         /// How it authenticates.
         pub auth: String,
+        /// Environment settings the supervisor makes for every run, as `NAME=value`. The
+        /// credential is never one of them.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub required_environment: Option<Vec<String>>,
     }
 }
 

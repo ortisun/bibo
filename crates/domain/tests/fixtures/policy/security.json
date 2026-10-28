@@ -12,7 +12,7 @@
           ]
         },
         "codex_cli": {
-          "skill_visibility": "hidden_by_overlay"
+          "skill_visibility": "hidden_by_overlay_and_skills.bundled.enabled=false"
         },
         "hide_skill_roots_in_sandbox": [
           ".claude/skills",
@@ -32,10 +32,10 @@
           "flags_omit": [
             "--disable-slash-commands"
           ],
-          "skill_permission_rule": "unverified"
+          "skill_permission_rule": "supported_for_the_Skill_tool_not_for_a_typed_slash_command"
         },
         "codex_cli": {
-          "skill_visibility": "allowlist_only"
+          "skill_visibility": "allowlist_only_by_overlay_and_skills.bundled.enabled=false"
         },
         "detection": [
           "denied_skill_id_in_cli_event_stream_or_permission_denials",
@@ -2501,6 +2501,10 @@
       }
     ],
     "grant_authority": "policy_engine",
+    "misuse_threshold": {
+      "max_denied_requests_per_task": 3,
+      "on_threshold": "needs_human"
+    },
     "never_grantable": [
       "github.write",
       "vcs.push",
@@ -2521,32 +2525,48 @@
   "untrusted_content": {
     "agent_runtimes": {
       "claude_code": {
-        "auth": "ANTHROPIC_API_KEY_or_apiKeyHelper_pointing_at_job_token",
+        "auth": "apiKeyHelper_reading_/run/factory/job-token_never_an_environment_variable",
         "forbidden_flags_outside_verified_sandbox": [
           "--dangerously-skip-permissions",
-          "--allow-dangerously-skip-permissions"
+          "--allow-dangerously-skip-permissions",
+          "--permission-mode bypassPermissions"
         ],
-        "per_run_budget_flag": "--max-budget-usd",
+        "per_run_budget_flag": "--max-turns (also CLAUDE_CODE_MAX_TURNS) and --max-budget-usd",
         "per_stage_flags_ref": "agent_stage_profiles",
-        "required_flags": [
-          "--bare",
-          "--strict-mcp-config",
-          "--no-session-persistence"
+        "required_environment": [
+          "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1",
+          "CLAUDE_CODE_MAX_RETRIES=2",
+          "HOME=/tmp"
         ],
-        "settings_source": "factory_generated_file_via_--settings",
-        "tools_flag": "--tools / --allowedTools / --disallowedTools from the manifest"
+        "required_flags": [
+          "--model <the explicit model of the manifest's recommended_models>",
+          "--max-turns <budgets.hard_ceilings.per_task.max_turns>",
+          "--setting-sources user",
+          "--strict-mcp-config",
+          "--no-session-persistence",
+          "--settings <factory-generated JSON whose apiKeyHelper is `cat /run/factory/job-token`>"
+        ],
+        "settings_source": "factory_generated_json_via_--settings_and_--setting-sources_user_only",
+        "tools_flag": "--tools=, --allowedTools=, --disallowedTools= from the manifest and the grants"
       },
       "codex_cli": {
-        "env_policy": "shell_environment_policy.inherit=none plus explicit allowlist (key exists per --help example; exact syntax to confirm)",
+        "env_policy": "the credential is never an environment variable: it is read from /run/factory/job-token by the provider's auth command, because Codex passes its whole environment, a key variable included, to the shell the model drives (spike 4.5)",
         "forbidden_flags_outside_verified_sandbox": [
           "--dangerously-bypass-approvals-and-sandbox",
           "--dangerously-bypass-hook-trust"
         ],
         "required_flags": [
+          "-m <the explicit model of the manifest's recommended_models>",
+          "-c model_provider=\"factory_broker\"",
+          "-c model_providers.factory_broker={name=\"factory_broker\", base_url=\"<sidecar address>/v1\", wire_api=\"responses\", supports_websockets=false, auth={command=\"cat\", args=[\"/run/factory/job-token\"]}}",
+          "--disable plugins",
+          "-c analytics.enabled=false",
+          "--disable unbounded_connection_retries",
+          "-c project_doc_max_bytes=0",
+          "--ephemeral",
           "--ignore-user-config",
           "--ignore-rules",
-          "--ephemeral",
-          "--sandbox read-only|workspace-write"
+          "--dangerously-bypass-approvals-and-sandbox"
         ]
       },
       "instruction_files_are_data": true,

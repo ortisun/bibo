@@ -554,6 +554,13 @@ tools:
     - secrets.read
     - docker.any
     - audit.write
+  # Repeated refused requests are a signal (NT-TOOL-03). Each request for an unknown tool,
+  # a never-grantable tool or a self-grant is refused and audited. The fourth one in a task
+  # sends the stage to a person (NEEDS_HUMAN) instead of being refused again. A project may
+  # lower the number and never raise it.
+  misuse_threshold:
+    max_denied_requests_per_task: 3
+    on_threshold: needs_human
   entries:
     - id: fs.read
       risk: low
@@ -1020,6 +1027,8 @@ credentials:
       dedicated_per_deployment: true
       hard_spend_limit_required: true
       rotation_days: 180
+    # Not needed for the two accepted tools: both can be redirected to the broker and both read the
+    # credential from a file (spike 4.3 and 4.5). It applies only to a future CLI that cannot be.
     fallback_if_cli_cannot_use_broker: documented_residual_risk   # see secrets-and-credentials.md section 4.4
     # Default (ADR 0009 item 2): API keys with a provider-side hard spend limit,
     # held by the broker. Subscription (OAuth) logins, such as a claude.ai or a
@@ -1039,7 +1048,7 @@ credentials:
         max_days_until_expiry: 30
         evidence_label: host_subscription_demo
         counts_as_real_provider_smoke_test: only_if_the_signed_decision_says_so
-        runs_without: [--bare]            # --bare never reads OAuth or keychain (claude --help); the exception must compensate for the lost neutralization
+        runs_without: [--bare]            # --bare never reads OAuth or keychain (claude --help), so a login cannot use it. The factory flags do not rely on --bare, so nothing is lost: the run keeps --setting-sources user and --strict-mcp-config
   rotation_slas:
     leaked_or_suspected_hours: 1
     high_privilege_days: 90
@@ -1236,30 +1245,83 @@ untrusted_content:
     source: structured_field_written_by_authenticated_human
     parsed_from_prose: never
   agent_runtimes:
-    # Verified against `claude --help` (2.1.311) and `codex exec --help` (0.163.0)
-    # on 2026-10-27: these flags exist. Whether each one fully neutralizes
-    # repo-resident configuration MUST be proven by the adapter capability probe
-    # and by NT-INJ-07 before the adapter is enabled.
+    # Verified by the agent-runtime spike (docs/spikes/agent-runtime.md section 4) for
+    # Claude Code 2.1.311 and Codex 0.163.0, in the real hardened container profile
+    # against a labelled fake provider, on 2026-10-27. A real provider is not verified.
+    # The adapter capability probe and NT-INJ-07 still run before an adapter is enabled,
+    # and the probe tests behavior, not flag presence: the turn cap of Claude Code is a
+    # hidden flag. Only these two versions are accepted until a probe run proves another.
     claude_code:
-      # Flags for EVERY stage. `--disable-slash-commands` is NOT in this list:
-      # it disables all skills and commands (verified in `claude --help`), which
-      # would stop the Spec Kit skills from resolving. It is applied per stage
-      # by `agent_stage_profiles` below: on for every stage except SPECIFICATION.
-      required_flags: [--bare, --strict-mcp-config, --no-session-persistence]
+      # Flags for EVERY stage. `--disable-slash-commands` is NOT in this list: it
+      # disables all skills and commands, which would stop the Spec Kit skills from
+      # resolving. It is applied per stage by `agent_stage_profiles` below: on for
+      # every stage except SPECIFICATION.
+      # `--bare` is NOT in this list and nothing relies on it (spike 4.6). In a hostile
+      # workspace it still honored the `env` block of `.claude/settings.json`, which sent
+      # the model traffic to an attacker host, and it resolves no project or user skills.
+      # What neutralizes the repository's own configuration is `--setting-sources user`
+      # together with `--strict-mcp-config`: the settings source is the user one only, and
+      # the user home is the empty scratch tmpfs (`HOME=/tmp`), so no repository hook,
+      # `env` block, MCP server or CLAUDE.md is read. Those files are also write-denied
+      # (`agent_instruction_files`). `--model` is always given, because the tool's default
+      # is the most expensive model.
+      required_flags:
+        - "--model <the explicit model of the manifest's recommended_models>"
+        - "--max-turns <budgets.hard_ceilings.per_task.max_turns>"
+        - "--setting-sources user"
+        - "--strict-mcp-config"
+        - "--no-session-persistence"
+        - "--settings <factory-generated JSON whose apiKeyHelper is `cat /run/factory/job-token`>"
       per_stage_flags_ref: agent_stage_profiles
-      # Per `claude --help`, "--bare" still resolves skills via /skill-name. That
-      # project skills under .claude/skills resolve with --bare is UNVERIFIED: the
-      # Spec Kit specialist's verified run used --setting-sources project,local
-      # --strict-mcp-config without --bare. The agent-runtime spike decides.
-      settings_source: factory_generated_file_via_--settings
-      tools_flag: "--tools / --allowedTools / --disallowedTools from the manifest"
-      per_run_budget_flag: --max-budget-usd
-      forbidden_flags_outside_verified_sandbox: [--dangerously-skip-permissions, --allow-dangerously-skip-permissions]
-      auth: ANTHROPIC_API_KEY_or_apiKeyHelper_pointing_at_job_token   # --bare never reads OAuth or keychain (documented in --help)
+      # The one setting that stops the background traffic (telemetry and a registry fetch to
+      # api.anthropic.com) is an environment setting, not a flag. `--bare` and the three
+      # DISABLE_* variables do not stop it (spike 4.4). The credential is never in this list.
+      required_environment:
+        - "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1"
+        - "CLAUDE_CODE_MAX_RETRIES=2"
+        - "HOME=/tmp"
+      settings_source: factory_generated_json_via_--settings_and_--setting-sources_user_only
+      # Written with an equals sign: a variadic option swallows the prompt. These are a
+      # filter on what the model may ask for, not a boundary: a nested shell reads a file
+      # that a deny rule protects (spike 4.8). A deny rule path is `./path` (relative) or
+      # `//path` (absolute); `/path` with one slash silently matches nothing.
+      tools_flag: "--tools=, --allowedTools=, --disallowedTools= from the manifest and the grants"
+      # A second line only. The broker counts requests and tokens and the supervisor kills the
+      # container; the tool's own price list means nothing behind a broker (spike 4.7).
+      per_run_budget_flag: "--max-turns (also CLAUDE_CODE_MAX_TURNS) and --max-budget-usd"
+      forbidden_flags_outside_verified_sandbox: [--dangerously-skip-permissions, --allow-dangerously-skip-permissions, "--permission-mode bypassPermissions"]
+      # The helper reads the token file at the fixed path. An environment variable is
+      # forbidden: the shell the model drives sees it, and so does the parent (spike 4.5).
+      auth: apiKeyHelper_reading_/run/factory/job-token_never_an_environment_variable
     codex_cli:
-      required_flags: [--ignore-user-config, --ignore-rules, --ephemeral, "--sandbox read-only|workspace-write"]
+      # `-m` is always given (the default is the most expensive model). The provider is a
+      # custom entry, because Codex ignores OPENAI_BASE_URL and its built-in provider tries a
+      # WebSocket first. The entry sets wire_api="responses", supports_websockets=false, the
+      # sidecar's plain-HTTP base_url and auth={command="cat", args=["/run/factory/job-token"]}.
+      # `--disable plugins` and `-c analytics.enabled=false` together stop the traffic to other
+      # hosts; each alone does not (spike 4.4). `--disable unbounded_connection_retries` makes
+      # an unreachable broker end the run, where the default retries forever.
+      # `--ignore-user-config` and `--ignore-rules` do NOT stop AGENTS.md; `project_doc_max_bytes=0`
+      # does (spike 4.6). They stay as harmless extra layers.
+      # Codex's own sandbox cannot start inside the container (no user namespace under the
+      # default seccomp profile), so a `--sandbox` mode runs nothing. The bypass flag is
+      # required, and it is acceptable only because the container is the boundary: it is
+      # forbidden everywhere else. Standard input is closed or /dev/null, because Codex appends
+      # it to the prompt.
+      required_flags:
+        - "-m <the explicit model of the manifest's recommended_models>"
+        - "-c model_provider=\"factory_broker\""
+        - "-c model_providers.factory_broker={name=\"factory_broker\", base_url=\"<sidecar address>/v1\", wire_api=\"responses\", supports_websockets=false, auth={command=\"cat\", args=[\"/run/factory/job-token\"]}}"
+        - "--disable plugins"
+        - "-c analytics.enabled=false"
+        - "--disable unbounded_connection_retries"
+        - "-c project_doc_max_bytes=0"
+        - "--ephemeral"
+        - "--ignore-user-config"
+        - "--ignore-rules"
+        - "--dangerously-bypass-approvals-and-sandbox"
       forbidden_flags_outside_verified_sandbox: [--dangerously-bypass-approvals-and-sandbox, --dangerously-bypass-hook-trust]
-      env_policy: "shell_environment_policy.inherit=none plus explicit allowlist (key exists per --help example; exact syntax to confirm)"
+      env_policy: "the credential is never an environment variable: it is read from /run/factory/job-token by the provider's auth command, because Codex passes its whole environment, a key variable included, to the shell the model drives (spike 4.5)"
     probe_required_before_enable: true
     repo_config_files_never_honored: [".claude/settings.json", ".claude/settings.local.json", ".mcp.json", ".codex/config.toml", "CLAUDE.md", "AGENTS.md"]
     instruction_files_are_data: true   # factory-authored instructions are passed explicitly; repo copies are data
@@ -1296,8 +1358,12 @@ agent_stage_profiles:
       claude_code:
         flags_add: [--disable-slash-commands]
       codex_cli:
-        skill_visibility: hidden_by_overlay # Codex has no verified skill-disable flag; see hide_skill_roots_in_sandbox
-      hide_skill_roots_in_sandbox:          # read-only empty overlays (mechanism verified, sandbox-policy.md M1)
+        # Hidden by overlay, and the bundled skills are switched off with
+        # `-c skills.bundled.enabled=false`. A per-path `-c skills.config=[{path=..., enabled=false}]`
+        # also hides a skill. Both verified (spike 4.6); `codex debug prompt-input` lists what is
+        # visible with no model call.
+        skill_visibility: hidden_by_overlay_and_skills.bundled.enabled=false
+      hide_skill_roots_in_sandbox:          # read-only empty overlays (mechanism verified for both tools, sandbox-policy.md M1)
         - ".claude/skills"
         - ".claude/commands"
         - ".agents/skills"
@@ -1307,9 +1373,22 @@ agent_stage_profiles:
       skills_and_slash_commands: allowlist_only
       claude_code:
         flags_omit: [--disable-slash-commands]
-        skill_permission_rule: unverified   # whether Claude Code accepts a per-skill permission rule is a spike question
+        # `--setting-sources user` (every stage) hides the project skill root, and `--bare` also
+        # resolves no skill, so the supervisor mounts the four pinned, hash-checked skill
+        # directories read-only in the USER skill root, `~/.claude/skills/speckit-<name>` (the
+        # home is `/tmp`; spike 4.6). The model then sees exactly four skills under their normal
+        # names, and a prompt that starts with `/speckit-specify` expands. The six empty overlays
+        # are the tool to use only where project skills must stay visible. A mount inside the
+        # tmpfs home leaves root-owned parent directories, which Claude Code tolerates and Codex
+        # does not, so nothing is mounted below `~/.codex`.
+        # A `Skill(speckit-plan)` deny rule blocks the model's Skill tool call and does not block a
+        # prompt that begins with the slash command; the adapter writes the prompt, so it is a
+        # second layer.
+        skill_permission_rule: supported_for_the_Skill_tool_not_for_a_typed_slash_command
       codex_cli:
-        skill_visibility: allowlist_only
+        # Six read-only empty overlays over the denied directories under `.agents/skills`, plus
+        # `-c skills.bundled.enabled=false`. A prompt that starts with `$speckit-specify` expands.
+        skill_visibility: allowlist_only_by_overlay_and_skills.bundled.enabled=false
       skills:
         deny_wins_over_allow: true
         allowed:                            # exactly these four, and nothing else (writes follow integration-guide section 8.4)

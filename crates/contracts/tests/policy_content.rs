@@ -851,3 +851,188 @@ fn the_new_group_lists_real_paths() {
         );
     }
 }
+
+// ---------------------------------------------------------------------------------------------
+// Agent runtime flags (A6), from docs/spikes/agent-runtime.md sections 4 to 7
+// ---------------------------------------------------------------------------------------------
+
+fn has_flag(flags: &[String], start: &str) -> bool {
+    flags
+        .iter()
+        .any(|f| f == start || f.starts_with(&format!("{start} ")))
+}
+
+#[test]
+fn claude_code_runs_with_the_flags_the_spike_proved_and_does_not_rely_on_bare() {
+    let runtime = &security().untrusted_content.agent_runtimes.claude_code;
+    let flags = &runtime.required_flags;
+    // An explicit model (the tool's own default is the most expensive), a turn cap, the one
+    // source of settings, no repository MCP configuration, no session on disk.
+    assert!(has_flag(flags, "--model"), "{flags:?}");
+    assert!(has_flag(flags, "--max-turns"), "{flags:?}");
+    assert!(
+        flags.iter().any(|f| f == "--setting-sources user"),
+        "{flags:?}"
+    );
+    assert!(has_flag(flags, "--strict-mcp-config"), "{flags:?}");
+    assert!(has_flag(flags, "--no-session-persistence"), "{flags:?}");
+    // The credential comes from a helper that reads the token file, at the path the ports crate
+    // fixes, and never from an environment variable.
+    let settings = flags
+        .iter()
+        .find(|f| f.starts_with("--settings"))
+        .unwrap_or_else(|| panic!("no --settings flag: {flags:?}"));
+    assert!(settings.contains("apiKeyHelper"), "{settings}");
+    assert!(
+        settings.contains(factory_ports::sandbox::JOB_TOKEN_TARGET),
+        "{settings}"
+    );
+    // `--bare` neither loads the skills nor stops the `env` block of a repository settings file
+    // (spike 4.6), so it is not what neutralizes anything and is not required.
+    assert!(
+        !flags.iter().any(|f| f.contains("--bare")),
+        "--bare must not be relied on: {flags:?}"
+    );
+    // The switch that stops background traffic is an environment setting, and the credential is
+    // not.
+    let env = runtime
+        .required_environment
+        .as_ref()
+        .expect("required_environment");
+    assert!(
+        env.iter()
+            .any(|e| e == "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1"),
+        "{env:?}"
+    );
+    assert!(env.iter().any(|e| e == "HOME=/tmp"), "{env:?}");
+    for credential in ["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"] {
+        assert!(
+            !env.iter().any(|e| e.starts_with(credential)),
+            "the credential is delivered by the helper: {env:?}"
+        );
+    }
+    assert!(runtime.auth.contains("apiKeyHelper"), "{}", runtime.auth);
+    assert!(runtime.per_run_budget_flag.contains("--max-turns"));
+    // The permission bypass is acceptable only in a container that passed the posture check.
+    for flag in [
+        "--dangerously-skip-permissions",
+        "--allow-dangerously-skip-permissions",
+    ] {
+        assert!(
+            runtime
+                .forbidden_flags_outside_verified_sandbox
+                .iter()
+                .any(|f| f == flag),
+            "{flag}"
+        );
+    }
+}
+
+#[test]
+fn codex_runs_with_the_flags_the_spike_proved_and_its_own_sandbox_is_not_a_control() {
+    let runtime = &security().untrusted_content.agent_runtimes.codex_cli;
+    let flags = &runtime.required_flags;
+    assert!(has_flag(flags, "-m"), "an explicit model: {flags:?}");
+    // A custom provider entry, because the tool ignores OPENAI_BASE_URL.
+    assert!(
+        flags.iter().any(|f| f.starts_with("-c model_provider=")),
+        "{flags:?}"
+    );
+    assert!(
+        flags.iter().any(|f| f.starts_with("-c model_providers.")),
+        "{flags:?}"
+    );
+    // The two switches that stop the traffic to other hosts, and the bound on retries.
+    assert!(flags.iter().any(|f| f == "--disable plugins"), "{flags:?}");
+    assert!(
+        flags.iter().any(|f| f == "-c analytics.enabled=false"),
+        "{flags:?}"
+    );
+    assert!(
+        flags
+            .iter()
+            .any(|f| f == "--disable unbounded_connection_retries"),
+        "{flags:?}"
+    );
+    // `--ignore-user-config` and `--ignore-rules` do not stop AGENTS.md; this setting does.
+    assert!(
+        flags.iter().any(|f| f == "-c project_doc_max_bytes=0"),
+        "{flags:?}"
+    );
+    assert!(flags.iter().any(|f| f == "--ephemeral"), "{flags:?}");
+    // The tool's own sandbox cannot start in the container, so a `--sandbox` mode is not a
+    // control; the bypass flag is used because the container is the boundary.
+    assert!(
+        !flags.iter().any(|f| f.starts_with("--sandbox")),
+        "a --sandbox mode fails in the hardened container: {flags:?}"
+    );
+    assert!(
+        flags
+            .iter()
+            .any(|f| f == "--dangerously-bypass-approvals-and-sandbox")
+    );
+    assert!(
+        runtime
+            .forbidden_flags_outside_verified_sandbox
+            .iter()
+            .any(|f| f == "--dangerously-bypass-approvals-and-sandbox")
+    );
+    // The key stays out of the environment the model's shell sees.
+    assert!(
+        runtime.env_policy.contains("job-token"),
+        "{}",
+        runtime.env_policy
+    );
+    assert!(
+        runtime.env_policy.contains("never"),
+        "{}",
+        runtime.env_policy
+    );
+}
+
+#[test]
+fn the_runtime_notes_no_longer_say_what_the_spike_disproved() {
+    let text = read_text(&repo_root().join("policies/security.yaml"));
+    for stale in [
+        "has no `--max-turns`",
+        "Codex has no verified skill-disable flag",
+        "key exists per --help example; exact syntax to confirm",
+        "--bare, --strict-mcp-config, --no-session-persistence",
+        "--sandbox read-only|workspace-write",
+        "skill_permission_rule: unverified",
+        "ANTHROPIC_API_KEY_or_apiKeyHelper",
+        "Whether each one fully neutralizes",
+        "The agent-runtime spike decides",
+    ] {
+        assert!(!text.contains(stale), "stale claim: {stale}");
+    }
+    // The answers the spike gave are in the file.
+    let profile = security()
+        .agent_stage_profiles
+        .profiles
+        .iter()
+        .find(|p| p.id == "specification")
+        .expect("the specification profile");
+    assert_eq!(
+        profile.claude_code.skill_permission_rule.as_deref(),
+        Some("supported_for_the_Skill_tool_not_for_a_typed_slash_command")
+    );
+    assert!(
+        profile
+            .codex_cli
+            .skill_visibility
+            .contains("skills.bundled.enabled=false")
+    );
+}
+
+#[test]
+fn repeated_refused_tool_requests_send_the_stage_to_a_person() {
+    // NT-TOOL-03: "after N attempts the stage is NEEDS_HUMAN". N is a number in the policy.
+    let threshold = security()
+        .tools
+        .misuse_threshold
+        .as_ref()
+        .expect("tools.misuse_threshold");
+    assert_eq!(threshold.max_denied_requests_per_task, 3);
+    assert_eq!(threshold.on_threshold, "needs_human");
+}
