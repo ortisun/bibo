@@ -34,6 +34,7 @@ use factory_workflow::scheduler::{ClaimedAttempt, Ticker};
 use tracing::Instrument;
 
 use factory_composition::config::LoopConfig;
+use factory_composition::drift::DriftPump;
 use factory_composition::hooks::BeforeClaim;
 use factory_composition::indexing::ActiveJobs;
 use factory_composition::system::Shutdown;
@@ -80,6 +81,7 @@ pub struct WorkerLoop {
     observer: Option<Arc<dyn Observer>>,
     jobs: Option<Arc<ActiveJobs>>,
     before_claim: Option<Arc<dyn BeforeClaim>>,
+    drift: Option<Arc<DriftPump>>,
 }
 
 impl WorkerLoop {
@@ -101,6 +103,7 @@ impl WorkerLoop {
             observer: None,
             jobs: None,
             before_claim: None,
+            drift: None,
         }
     }
 
@@ -125,6 +128,27 @@ impl WorkerLoop {
     pub fn with_active_jobs(mut self, jobs: Arc<ActiveJobs>) -> Self {
         self.jobs = Some(jobs);
         self
+    }
+
+    /// Serves the evidence-drift requests of the stage handlers while an attempt runs. The
+    /// handlers' futures are `Send` and the engine's are not, so the delivery stage reports a
+    /// changed binding through a channel and this loop, which owns the engine, makes the call
+    /// (`factory_composition::drift`).
+    #[must_use]
+    pub fn with_drift_pump(mut self, pump: Arc<DriftPump>) -> Self {
+        self.drift = Some(pump);
+        self
+    }
+
+    /// Serves one drift request, or never completes when there is no pump or it has no sender
+    /// left. The loop selects on it next to the attempt.
+    async fn serve_drift(&self) {
+        if let Some(pump) = &self.drift
+            && pump.serve_next(&self.engine).await
+        {
+            return;
+        }
+        std::future::pending::<()>().await;
     }
 
     /// The engine, for a caller that needs to read a job between runs.
@@ -251,22 +275,31 @@ impl WorkerLoop {
         // Phase 1: no stop request yet. The attempt runs; a stop request starts the drain clock.
         let stop = self.shutdown.raised();
         tokio::pin!(stop);
-        tokio::select! {
-            result = &mut work => return Ran::from(result),
-            () = &mut stop => {
-                tracing::info!(attempt = %attempt.attempt, drain_s = self.settings.drain_s, "stop requested; letting the running attempt finish");
+        loop {
+            tokio::select! {
+                result = &mut work => return Ran::from(result),
+                () = &mut stop => {
+                    tracing::info!(attempt = %attempt.attempt, drain_s = self.settings.drain_s, "stop requested; letting the running attempt finish");
+                    break;
+                }
+                () = self.serve_drift() => {}
             }
         }
         // Phase 2: drain.
-        tokio::select! {
-            result = &mut work => Ran::from(result),
-            () = self.ticker.sleep(self.settings.drain()) => {
-                tracing::error!(
-                    attempt = %attempt.attempt,
-                    stage_run = %attempt.stage_run,
-                    "the drain budget ended before the attempt did; its lease is left to expire and the sweeper will recover it"
-                );
-                Ran::Abandoned
+        let drain = self.ticker.sleep(self.settings.drain());
+        tokio::pin!(drain);
+        loop {
+            tokio::select! {
+                result = &mut work => return Ran::from(result),
+                () = self.serve_drift() => {}
+                () = &mut drain => {
+                    tracing::error!(
+                        attempt = %attempt.attempt,
+                        stage_run = %attempt.stage_run,
+                        "the drain budget ended before the attempt did; its lease is left to expire and the sweeper will recover it"
+                    );
+                    return Ran::Abandoned;
+                }
             }
         }
     }

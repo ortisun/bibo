@@ -100,7 +100,7 @@ mod support {
             // does. `FACTORY_SCENARIO_LOGIN=worker` connects as the worker does instead, and that
             // scenario is then refused by design.
             let config = if std::env::var("FACTORY_SCENARIO_LOGIN").as_deref() == Ok("worker") {
-                factory_worker::database::pools(
+                factory_composition::database::pools(
                     small_pool(db.url(&logins.worker)),
                     small_pool(db.url(&logins.engine)),
                 )

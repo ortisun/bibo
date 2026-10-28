@@ -16,6 +16,11 @@
 //! | [`startup`] | Start-up checks that need no database: the policy from the protected checkout, hashed, and the image catalog |
 //! | [`redaction`] | The redactor built from the policy, the registry of the factory's secret values, the telemetry scrubber and the broker wrapper that registers job tokens |
 //! | [`database`] | The two pools and the two logins (ADR 0012) |
+//! | [`drift`] | The evidence-drift seam: a channel from the stage handlers to the thread that owns the engine |
+//! | [`feedback`] | `ReworkSource` and `RoundSource`: why a run replaces another, read from the evidence the engine stored |
+//! | [`risk`] | `RiskSource`: the agent's risk claim from the stored intake, and the facts of the domain profile |
+//! | [`reading`] | Shared reads of stage run outputs, the ledger and the artifact store |
+//! | [`specs`] | The specification stage's `SpecDrafts`, `SpecApprovals` and `SpecHistory` over the store |
 //! | [`health`] | Health and readiness as plain data |
 //! | [`telemetry`] | The telemetry configuration with the real scrubber, and the `factory.job` stretch span |
 //! | [`system`] | The real clock, identifier source, `Ticker` and the shutdown signal |
@@ -32,15 +37,20 @@ pub mod assemble;
 pub mod authority;
 pub mod config;
 pub mod database;
+pub mod drift;
+pub mod feedback;
 pub mod health;
 pub mod hooks;
 pub mod indexing;
 pub mod ledger;
 pub mod profile;
+pub mod reading;
 pub mod redaction;
 pub mod registry;
+pub mod risk;
 pub mod sandbox_specs;
 pub mod seams;
+pub mod specs;
 pub mod startup;
 pub mod system;
 pub mod telemetry;

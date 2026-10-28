@@ -14,8 +14,7 @@ use factory_domain::values::{MediaType, Sha256Digest, Slug};
 use factory_ports::clock::Clock;
 use factory_ports::paths::CommitSha;
 use factory_ports::store::{
-    AppliedTransition, ArtifactIndexOps, Fence, LeaseEpoch, NewArtifactIndexEntry, Store,
-    StoreError, TaskNodeEffects, TaskNodeOps,
+    AppliedTransition, Fence, LeaseEpoch, NewArtifactIndexEntry, Store, StoreError, TaskNodeEffects,
 };
 use factory_workflow::handlers::RunIdentity;
 use factory_workflow::scheduler::ClaimedAttempt;
@@ -133,7 +132,6 @@ async fn statuses(world: &PgWorld, run: &RunIdentity) -> Vec<(String, TaskNodeSt
 async fn open_creates_every_node_in_the_order_of_the_plan_and_is_idempotent() {
     let h = held().await;
     let plan_1 = plan_artifact(&h.world, &h.run, "{\"plan\": 1}").await;
-    let plan_2 = plan_artifact(&h.world, &h.run, "{\"plan\": 2}").await;
     let first = h
         .ledger
         .open(&h.run, &plan_1, &tasks())
@@ -177,7 +175,6 @@ async fn a_different_plan_for_a_stage_run_that_has_nodes_is_refused() {
 async fn a_task_runs_and_finishes_and_then_its_dependant_can_start() {
     let h = held().await;
     let plan_1 = plan_artifact(&h.world, &h.run, "{\"plan\": 1}").await;
-    let plan_2 = plan_artifact(&h.world, &h.run, "{\"plan\": 2}").await;
     h.ledger
         .open(&h.run, &plan_1, &tasks())
         .await
@@ -224,7 +221,6 @@ async fn a_task_runs_and_finishes_and_then_its_dependant_can_start() {
 async fn a_node_left_running_is_returned_to_ready_and_taken_again() {
     let h = held().await;
     let plan_1 = plan_artifact(&h.world, &h.run, "{\"plan\": 1}").await;
-    let plan_2 = plan_artifact(&h.world, &h.run, "{\"plan\": 2}").await;
     h.ledger
         .open(&h.run, &plan_1, &tasks())
         .await
@@ -284,7 +280,6 @@ async fn a_failed_task_is_retried_until_the_limit_and_then_refused() {
 async fn a_write_with_a_stale_epoch_is_fenced_and_changes_nothing() {
     let h = held().await;
     let plan_1 = plan_artifact(&h.world, &h.run, "{\"plan\": 1}").await;
-    let plan_2 = plan_artifact(&h.world, &h.run, "{\"plan\": 2}").await;
     h.ledger
         .open(&h.run, &plan_1, &tasks())
         .await
@@ -357,7 +352,6 @@ fn start_move(node: factory_domain::ids::TaskNodeId) -> AppliedTransition<TaskNo
 async fn an_unfenced_task_write_is_refused_by_the_store() {
     let h = held().await;
     let plan_1 = plan_artifact(&h.world, &h.run, "{\"plan\": 1}").await;
-    let plan_2 = plan_artifact(&h.world, &h.run, "{\"plan\": 2}").await;
     h.ledger
         .open(&h.run, &plan_1, &tasks())
         .await
