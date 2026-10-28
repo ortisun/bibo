@@ -1752,12 +1752,19 @@ fn control_off_redacting_each_chunk_alone_would_miss_a_secret_cut_by_a_chunk_bou
 
 // ===== Properties ====================================================================================
 
+/// The number of cases `proptest` uses when `PROPTEST_CASES` is not set.
+const PROPTEST_BUILT_IN_CASES: u32 = 256;
+
 /// 96 cases by default, which keeps the suite fast. `PROPTEST_CASES=5000` runs a long search.
+///
+/// `Config::default()` reads `PROPTEST_CASES` itself, so this test code does not read the
+/// environment (the domain crate bans `std::env::var`). When the variable is unset the built-in
+/// number comes back, and this helper replaces it with 96.
 fn runner() -> TestRunner {
-    let cases = std::env::var("PROPTEST_CASES")
-        .ok()
-        .and_then(|n| n.parse().ok())
-        .unwrap_or(96);
+    let cases = match Config::default().cases {
+        PROPTEST_BUILT_IN_CASES => 96,
+        chosen => chosen,
+    };
     TestRunner::new(Config {
         cases,
         failure_persistence: None,
