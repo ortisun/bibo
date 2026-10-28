@@ -296,7 +296,9 @@ impl ClaudeCodeRuntime {
                     EnvName::ClaudeMaxRetries,
                     self.config.max_retries.to_string(),
                 )
-            });
+            })
+            // The tool's own skills are not the factory's to offer; the stage sees the pinned ones.
+            .and_then(|e| e.set(EnvName::ClaudeDisableBundledSkills, "1"));
         let Ok(env) = env else {
             return early(never_started(), version);
         };

@@ -630,6 +630,24 @@ impl RealSession {
         )
     }
 
+    /// Runs a command and returns the sandbox's own answer, for a test that expects the session to
+    /// be over.
+    pub async fn exec_text_result(&mut self, argv: &[&str]) -> Result<Option<i32>, SandboxError> {
+        let request = ExecRequest {
+            argv: factory_ports::sandbox::ExecArgv::new(
+                argv.iter().map(|a| (*a).to_owned()).collect(),
+            )
+            .expect("a command"),
+            cwd: None,
+            stdin: None,
+            timeout: Duration::from_secs(30),
+            max_output_bytes: 1 << 20,
+        };
+        self.exec(request, &factory_runtime::probe::NeverCancelled)
+            .await
+            .map(|result| result.exit_code)
+    }
+
     fn tenant(&self) -> factory_domain::ids::TenantId {
         self.store.tenant()
     }
