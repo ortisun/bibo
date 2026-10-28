@@ -1,0 +1,12 @@
+Usage: word-count [FILE]
+
+Counts the lines, words and characters of FILE, or of standard input when FILE is
+missing or is a single dash.
+
+Options:
+  -h, --help     Show this help and exit.
+  -V, --version  Show the version and exit.
+      --json     Print the counts as one JSON object.
+
+Exit status: 0 on success, 1 when the input cannot be read, 2 when the command
+line is wrong.

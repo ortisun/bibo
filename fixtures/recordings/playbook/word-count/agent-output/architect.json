@@ -1,0 +1,54 @@
+{
+  "schema_version": 1,
+  "status": "DONE",
+  "title": "Add a JSON output mode to the word count tool",
+  "summary": "The counting library gets one function that writes the counts as a JSON object, and the command line reads the new option and chooses between the two output functions.",
+  "design_elements": [
+    {
+      "element_id": "json-formatter",
+      "title": "Write the counts as a JSON object",
+      "responsibility": "Turns the three counts into the text of one JSON object with the keys lines, words and characters, in that order, with no other text.",
+      "kind": "module",
+      "satisfies": [
+        "FR-001",
+        "FR-004"
+      ],
+      "touches": [
+        "src/lib.rs"
+      ]
+    },
+    {
+      "element_id": "json-option",
+      "title": "Read the JSON option and keep the old path",
+      "responsibility": "Reads the --json option, prints the JSON text when it is present, leaves the plain line and the error messages as they were, and ignores a repeated option.",
+      "kind": "module",
+      "satisfies": [
+        "FR-002",
+        "FR-003"
+      ],
+      "touches": [
+        "src/main.rs",
+        "tests/json_output.rs"
+      ]
+    }
+  ],
+  "decisions": [
+    {
+      "decision_id": "hand-written-json",
+      "title": "Write the JSON text by hand",
+      "choice": "Build the JSON text with the standard library, because the tool has no dependencies and the object has three numeric fields.",
+      "alternatives": [
+        "Add a JSON library as a dependency.",
+        "Print the counts with a format string in the main program only."
+      ],
+      "consequences": "No new dependency is needed. The formatter lives in the library, so a unit test can check it without running the program.",
+      "needs_person": false
+    }
+  ],
+  "risks": [
+    "The option parser may change how an unknown option is reported, so the existing usage tests must still pass."
+  ],
+  "open_questions": [],
+  "uncovered_requirements": [],
+  "ignored_instructions": []
+}

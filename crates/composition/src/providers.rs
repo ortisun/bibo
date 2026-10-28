@@ -170,9 +170,20 @@ pub fn spec_kit_config(
     config: &FactoryConfig,
     profile: Profile,
 ) -> Result<SpecKitConfig, ProviderError> {
-    let path = config
-        .protected_checkout
-        .join(factory_spec_adapter::integrity::INTEGRATION);
+    spec_kit_config_at(&config.protected_checkout, profile.execution_mode())
+}
+
+/// The Spec Kit configuration for an execution mode, from the installation in `checkout`.
+///
+/// The same reading serves the assembly above and a test wiring that has no [`FactoryConfig`].
+///
+/// # Errors
+/// [`ProviderError::Installation`].
+pub fn spec_kit_config_at(
+    checkout: &std::path::Path,
+    mode: factory_domain::vocabulary::ExecutionMode,
+) -> Result<SpecKitConfig, ProviderError> {
+    let path = checkout.join(factory_spec_adapter::integrity::INTEGRATION);
     let shown = path.display().to_string();
     let bytes = std::fs::read(&path)
         .map_err(|error| ProviderError::Installation(shown.clone(), error.kind().to_string()))?;
@@ -181,11 +192,48 @@ pub fn spec_kit_config(
     Ok(SpecKitConfig {
         host: integration.host,
         separator: integration.separator,
-        mode: profile.execution_mode(),
+        mode,
         fallback_adapter: factory_domain::values::Slug::parse("claude-code")
             .map_err(|_| ProviderError::Installation(String::new(), "adapter name".to_owned()))?,
         fallback_adapter_version: integration.version,
     })
+}
+
+/// The Spec Kit provider for an installation in `checkout`.
+///
+/// # Errors
+/// [`ProviderError::Installation`].
+pub fn spec_kit_provider(
+    checkout: &std::path::Path,
+    mode: factory_domain::vocabulary::ExecutionMode,
+) -> Result<Arc<dyn SpecificationProvider>, ProviderError> {
+    Ok(Arc::new(SpecKitProvider::new(spec_kit_config_at(
+        checkout, mode,
+    )?)))
+}
+
+/// The files of the Spec Kit installation in `checkout`, as `(path, bytes)`: exactly the files
+/// the adapter checks against its pins. A repository the factory works on must hold them before
+/// the specification stage runs, and a test that builds such a repository in memory copies them
+/// from here.
+///
+/// # Errors
+/// [`ProviderError::Installation`] when the installation file is unreadable or a listed file is
+/// missing.
+pub fn spec_kit_installation(
+    checkout: &std::path::Path,
+) -> Result<Vec<(String, Vec<u8>)>, ProviderError> {
+    let config = spec_kit_config_at(checkout, factory_domain::vocabulary::ExecutionMode::Test)?;
+    factory_spec_adapter::integrity::installation_paths(config.host)
+        .into_iter()
+        .map(|path| {
+            std::fs::read(checkout.join(path))
+                .map(|bytes| (path.to_owned(), bytes))
+                .map_err(|error| {
+                    ProviderError::Installation(path.to_owned(), error.kind().to_string())
+                })
+        })
+        .collect()
 }
 
 /// Assembles the real sandbox, workspace and specification providers.

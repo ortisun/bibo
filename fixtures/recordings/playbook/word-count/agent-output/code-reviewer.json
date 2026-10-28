@@ -1,0 +1,10 @@
+{
+  "schema_version": 1,
+  "verdict": "PASS",
+  "title": "Code review of the JSON option",
+  "summary": "The change does what the specification asks. The JSON text has the three keys in order, the plain line and the error path are untouched, and the new tests run the real program. No finding of medium severity or higher was found.",
+  "findings": [],
+  "confidence_overall": 0.85,
+  "residual_risks": [],
+  "ignored_instructions": []
+}

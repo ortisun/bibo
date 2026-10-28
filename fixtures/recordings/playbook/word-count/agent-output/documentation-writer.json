@@ -1,0 +1,36 @@
+{
+  "schema_version": 1,
+  "status": "DONE",
+  "summary": "Documented the --json option in the README, with its key order, an example and the error behaviour, and added a changelog entry under Unreleased.",
+  "files_written": [
+    "README.md",
+    "CHANGELOG.md"
+  ],
+  "plan_coverage": [
+    {
+      "plan_item": "usage-json",
+      "status": "covered",
+      "files": [
+        "README.md"
+      ]
+    },
+    {
+      "plan_item": "changelog-entry",
+      "status": "covered",
+      "files": [
+        "CHANGELOG.md"
+      ]
+    }
+  ],
+  "claims": [
+    {
+      "claim": "With the --json option the program prints one JSON object with the keys lines, words and characters, in that order.",
+      "evidence_path": "tests/json_output.rs"
+    },
+    {
+      "claim": "A file that cannot be read gives no output and exit status 1, with and without the --json option.",
+      "evidence_path": "tests/json_output.rs"
+    }
+  ],
+  "ignored_instructions": []
+}

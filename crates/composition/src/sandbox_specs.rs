@@ -179,6 +179,93 @@ impl PolicySpecs {
         })
     }
 
+    /// The fixed part of a sandbox of `profile`, which the validation and documentation review
+    /// stages carry in their own configuration and complete with a workspace per attempt. The
+    /// numbers are the policy's and the image is the catalog's, the same ones [`Self::verify_spec`]
+    /// uses, so the stage and this seam cannot disagree.
+    fn fixed_part(
+        &self,
+        profile: SandboxProfile,
+    ) -> Result<
+        (
+            factory_ports::sandbox::ImageDigest,
+            SandboxLimits,
+            FixedEnv,
+            Hardening,
+            String,
+        ),
+        SeamError,
+    > {
+        let profiles = &self.policy.sandbox.profiles;
+        let limits = match profile {
+            SandboxProfile::Agent => &profiles.agent.limits,
+            SandboxProfile::FetchDeps => &profiles.fetch_deps.limits,
+            SandboxProfile::Verify => &profiles.verify.limits,
+        };
+        let image = self
+            .catalog
+            .reference_for(profile)
+            .ok_or(SeamError::Unavailable)?
+            .clone();
+        let ready = self
+            .catalog
+            .check_spec_image(profile, &image)
+            .map_err(|_| SeamError::Unavailable)?;
+        let arch = self
+            .catalog
+            .platform()
+            .rsplit('/')
+            .next()
+            .unwrap_or_default()
+            .to_owned();
+        Ok((
+            image,
+            limits_of(limits).ok_or(SeamError::Unavailable)?,
+            FixedEnv::new(vec![("HOME".to_owned(), "/home/agent".to_owned())])
+                .map_err(|_| SeamError::Unavailable)?,
+            Hardening::strict(ready.uid, ready.gid),
+            arch,
+        ))
+    }
+
+    /// The `verify` sandbox the validation and documentation review stages are configured with.
+    ///
+    /// # Errors
+    /// [`SeamError::Unavailable`] when the catalog has no verify image or the policy limits do not fit.
+    pub fn verify_sandbox(
+        &self,
+    ) -> Result<factory_workflow::stages::validation::VerifySandbox, SeamError> {
+        let (image, limits, env, hardening, arch) = self.fixed_part(SandboxProfile::Verify)?;
+        Ok(factory_workflow::stages::validation::VerifySandbox {
+            image,
+            limits,
+            env,
+            hardening,
+            caches: Vec::new(),
+            arch,
+        })
+    }
+
+    /// The `fetch_deps` sandbox the supply chain gate is configured with, behind the per-job
+    /// egress sidecar.
+    ///
+    /// # Errors
+    /// [`SeamError::Unavailable`] when the catalog has no fetch image or the policy limits do not fit.
+    pub fn fetch_sandbox(
+        &self,
+    ) -> Result<factory_workflow::gates::supply_chain::run::FetchSandbox, SeamError> {
+        let (image, limits, env, hardening, arch) = self.fixed_part(SandboxProfile::FetchDeps)?;
+        Ok(factory_workflow::gates::supply_chain::run::FetchSandbox {
+            image,
+            limits,
+            env,
+            hardening,
+            caches: Vec::new(),
+            sidecar: SIDECAR_ALIAS.to_owned(),
+            arch,
+        })
+    }
+
     /// An empty workspace for an attempt whose stage reads no repository.
     fn scratch(&self, attempt: AttemptId) -> WorkspaceMounts {
         let root = self.scratch_root.join(attempt.to_string());

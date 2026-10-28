@@ -1,0 +1,7 @@
+   Compiling word-count v0.1.0 (/workspace)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.31s
+     Running unittests src/lib.rs (/out/target/debug/deps/word_count-d16ba7b36859ae2c)
+     Running unittests src/main.rs (/out/target/debug/deps/word_count-b6d4b04d52d1c03e)
+     Running tests/cli_usage.rs (/out/target/debug/deps/cli_usage-221cf1236e65373b)
+     Running tests/plain_output.rs (/out/target/debug/deps/plain_output-f5934b493ee1efb9)
+   Doc-tests word_count
