@@ -92,3 +92,17 @@ impl TestUuid for Uuid {
         factory_ports::clock::IdGenerator::new_uuid(&ids)
     }
 }
+
+/// A database of its own, a tenant with a repository, and a whole engine over the real store. The
+/// stage handlers are the engine suite's scripted ones.
+pub async fn pg_world() -> (TestDb, engine::PgWorld, TenantId) {
+    let db = server().clone_database().await;
+    let ids = factory_composition::system::RandomIds::new().expect("the random source opens");
+    let tenant = TenantId::from_uuid(factory_ports::clock::IdGenerator::new_uuid(&ids));
+    seed_tenant(&db, tenant, 0, "org/repo-0").await;
+    let store = PgStore::connect(worker_config(&db).await)
+        .await
+        .expect("the store becomes ready");
+    let world = engine::PgWorld::new(store, tenant, seeded_repository(tenant), |_| {}).await;
+    (db, world, tenant)
+}

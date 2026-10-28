@@ -21,6 +21,7 @@
 //! | [`system`] | The real clock, identifier source, `Ticker` and the shutdown signal |
 //! | [`seams`], [`authority`], [`sandbox_specs`] | The seams the stages declare |
 //! | [`indexing`] | Indexes the artifacts a sandbox writes, for the tenant, when they are written |
+//! | [`ledger`] | The task ledger of the implementation stage, over the store, fenced by attempt and epoch |
 //! | [`hooks`] | The work a binary's loop does before it claims |
 //! | [`assemble`] | Start-up in order, and the list of adapters that are not assembled |
 //!
@@ -34,6 +35,7 @@ pub mod database;
 pub mod health;
 pub mod hooks;
 pub mod indexing;
+pub mod ledger;
 pub mod profile;
 pub mod redaction;
 pub mod registry;
