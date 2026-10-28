@@ -106,7 +106,7 @@ impl Engine {
         let facts = self
             .deps
             .authority
-            .admission(tenant, stored.value.requester)
+            .admission(tenant, stored.value.requester, stored.value.repository)
             .await
             .map_err(|_| EngineError::Refused("the protected configuration cannot be read"))?;
 

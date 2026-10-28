@@ -30,6 +30,7 @@ CLI, are made of before each adds its own shell. A ring 3 **library**
 | `runtimes` | One agent runtime that serves every tenant |
 | `indexing` | Indexes what a sandbox writes and what a workspace exports, for the tenant, when it is written |
 | `hooks` | The work a loop does before it claims (`BeforeClaim`) |
+| `decisions` | `ClaimWork`, the step that admits received jobs and applies the decisions people asked for, once, with the allowlist read again by numeric id; the grammar of a decision record shared with the API |
 | `assemble` | Start-up in order (`prepare`), the list of adapters not assembled (`blocked_adapters`) and of seam methods that fail closed (`blocked_seams`) |
 | `webhook` | The webhook verifier of the API, built from secret files (one per secret in the rotation window) |
 

@@ -56,9 +56,15 @@ and, for a pull request approval, the change host and the binding checks of `App
 tree, base and evidence as they are now). The engine runs in the worker, which holds the sandbox, the agent
 runtime and the GitHub App; the API holds none of them and cannot build an engine without a fake. So the answer
 is `202` with `"applied": false`, and the record is an audit event `decision.requested` in the caller's tenant
-whose subject carries the verb, the job, the stage run, the head, the evidence digest and the target. A caller who
-does not hold the designation gets `403` with no reason and a `decision.denied` audit record, whether or not
-the job exists. See "What is not done" for the missing reader.
+whose subject carries the verb, the job, the stage run, the head, the evidence digest and the target (the grammar
+is `factory_composition::decisions::DecisionFields`, shared with the worker). A caller who does not hold the
+designation gets `403` with no reason and a `decision.denied` audit record, whether or not the job exists.
+
+`"applied": false` is true of the moment of the answer and says nothing about what comes after. The worker
+(`factory_composition::decisions::ClaimWork`, a step before each claim) reads the record, checks the allowlist again by
+numeric id, applies the decision once and writes `decision.applied` or `decision.rejected` for the same job. Both
+show in `GET /v1/jobs/{id}/timeline`, and a person polls it to learn the outcome. `apps/api/tests/complete_run.rs`
+shows the whole path against the real server.
 
 ## Authentication and authority
 
@@ -208,16 +214,16 @@ redactor).
 
 ## What is not done, and what is not verified
 
-* **Nothing applies a recorded decision.** The records are in the audit log and no process reads them.
-  *Smallest change, owner `workflow` and `apps/worker`:* a step in the worker loop (`hooks::BeforeClaim`) that
-  reads `decision.requested` records it has not applied, builds the `ApprovalCommand` with
-  `ParsedDecision::into_command`, and calls `ApprovalService::submit` or `Engine::control`. The grammar is
-  already shared.
-* **Nothing admits a received job.** `Engine::admit_job` is called by no process: the API stores a `RECEIVED` job,
-  as the engine's own documentation says it should, and the worker loop does not look for one. *Smallest
-  change, owner `apps/worker`:* the same hook, listing `RECEIVED` jobs of the served tenants and admitting them.
-* **A job from a webhook has no original request.** See "Webhooks". *Smallest change:* intake fetches the issue with
-  `IssueSource` from the delivery row and the job's origin, and records revision 1.
+* **Applying a recorded decision: done.** The worker applies it (see "What a decision does, and does not").
+* **Admitting a received job: done.** `ClaimWork` lists the `RECEIVED` jobs of the tenants the worker serves and
+  admits them.
+* **A job from a webhook has no original request: done.** The intake stage fetches the issue with `IssueSource` and
+  records revision 1 when it runs. The issue is found in the audit record `job.received_from_webhook`, which is why
+  that record's subject (`issue <owner>/<name>#<number>`) is now part of the contract between the API and the
+  worker.
+* **Still open:** a person cannot answer the specification stage's human gate through this endpoint, an approval
+  with an open translation warning is refused because no endpoint records a decision about a warning, and a job
+  submitted without a `source_ref` cannot pass intake (worker README, mismatches 19 to 21).
 * **The outbox criterion of the package** ("one job, one outbox row and 49 duplicate-delivery audit events") is met
   for the job and the audit events and not for the outbox: `state-machine.json` has no event for a received job
   (the first event of a job is `job.admitted`, written by the engine), and the API invents no event type. The

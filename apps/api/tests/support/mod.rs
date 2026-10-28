@@ -752,6 +752,7 @@ impl Authority for FixedAuthority {
         &self,
         _: TenantId,
         _: PrincipalId,
+        _: RepositoryId,
     ) -> Result<AdmissionFacts, AuthorityError> {
         Err(AuthorityError::Unavailable)
     }
@@ -796,6 +797,7 @@ impl Authority for LoginAuthority {
         &self,
         _: TenantId,
         _: PrincipalId,
+        _: RepositoryId,
     ) -> Result<AdmissionFacts, AuthorityError> {
         Err(AuthorityError::Unavailable)
     }

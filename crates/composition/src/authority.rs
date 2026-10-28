@@ -5,25 +5,22 @@
 //! takes effect on the next decision. A file that cannot be read is `AuthorityError::Unavailable`,
 //! which the engine treats as a denial.
 //!
-//! # What the seam cannot answer
+//! # Admission
 //!
-//! `Authority::admission(tenant, requester)` is asked without the repository, so the two facts
-//! that depend on it cannot be read here:
+//! `Authority::admission(tenant, requester, repository)` is asked with the repository, so the three
+//! facts that depend on it are read from its row and its jobs:
 //!
-//! * `repository_registered_and_enabled` is `true`, because a job cannot be received for a
-//!   repository row that does not exist. The `enabled` flag is not checked.
-//! * `protection_preflight_passed` is `false`, the safe side: the job is admitted and limited to
-//!   level L0 until a preflight is recorded.
-//!
-//! The per-repository job caps of the policy cannot be applied for the same reason. The quota used
-//! is the tenant-wide sum of the two caps. These are listed in the README as a mismatch between
-//! the engine and the policy.
+//! * `repository_registered_and_enabled` is true when the row exists and is switched on.
+//! * `protection_preflight_passed` is the result recorded for the repository. A repository with no
+//!   passed preflight is admitted and limited to level L0 (ADR 0009).
+//! * `tenant_within_job_quota` counts the repository's jobs that have not ended against the sum of
+//!   the policy's running and queued caps per repository.
 
 use std::collections::BTreeSet;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use factory_domain::ids::{JobId, PrincipalId, TenantId};
+use factory_domain::ids::{JobId, PrincipalId, RepositoryId, TenantId};
 use factory_domain::machines::guards::AdmissionFacts;
 use factory_domain::policy::PolicyEngine;
 use factory_domain::policy::decision::Designation;
@@ -114,6 +111,7 @@ impl Authority for StoreAuthority {
         &self,
         tenant: TenantId,
         requester: PrincipalId,
+        repository: RepositoryId,
     ) -> Result<AdmissionFacts, AuthorityError> {
         let requester_on_allowlist = match self.github_user(tenant, requester).await? {
             Some(user) => self
@@ -121,7 +119,7 @@ impl Authority for StoreAuthority {
                 .contains(&Designation::Requester),
             None => false,
         };
-        let active = {
+        let (active, enabled, preflight_passed) = {
             let mut tx = self
                 .store
                 .begin(TenantScope::new(tenant))
@@ -131,27 +129,40 @@ impl Authority for StoreAuthority {
                 .list_jobs(
                     JobFilter {
                         statuses: Vec::new(),
-                        repository: None,
+                        repository: Some(repository),
                     },
                     None,
                     1000,
                 )
                 .await;
+            let row = tx.get_repository(repository).await;
             let _ = tx.rollback().await;
-            jobs.map_err(|_| AuthorityError::Unavailable)?
+            let active = jobs
+                .map_err(|_| AuthorityError::Unavailable)?
                 .rows
                 .iter()
                 .filter(|job| !job.value.status.is_terminal())
-                .count() as u64
+                .count() as u64;
+            // A repository the tenant does not have is not registered. Only a store that cannot
+            // answer is an error.
+            match row {
+                Ok(found) => (
+                    active,
+                    found.value.enabled,
+                    found.value.protection_preflight_passed,
+                ),
+                Err(StoreError::NotFound) => (active, false, false),
+                Err(_) => return Err(AuthorityError::Unavailable),
+            }
         };
         let cap = self.policy.budget.max_running_jobs_per_repo()
             + self.policy.budget.max_queued_jobs_per_repo();
         Ok(AdmissionFacts {
             requester_on_allowlist,
             tenant_within_job_quota: active < cap,
-            repository_registered_and_enabled: true,
+            repository_registered_and_enabled: enabled,
             policy_allows_request_class: true,
-            protection_preflight_passed: false,
+            protection_preflight_passed: preflight_passed,
         })
     }
 

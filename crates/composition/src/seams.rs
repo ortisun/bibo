@@ -28,16 +28,20 @@ use factory_domain::ids::{JobId, TenantId};
 use factory_domain::policy::authority::{Allowlist, AllowlistEntry};
 use factory_domain::policy::decision::{Designation, GithubUserId};
 use factory_domain::scope::TenantScope;
+use factory_domain::state::Status as _;
 use factory_domain::values::{Sha256Digest, Timestamp};
 use factory_domain::vocabulary::Fidelity;
 use factory_ports::agent::ProbedCapabilities;
 use factory_ports::githost::IssueRef;
 use factory_ports::paths::{BranchName, RepoRef};
 use factory_ports::registry::ValidatedOutput;
-use factory_ports::store::{JobFilter, Store};
+use factory_ports::store::{
+    AuditFilter, JobFilter, JobOrigin, NewOriginalRequest, RequestSource as StoredSource, Store,
+    StoreError, Tx,
+};
 use factory_workflow::stages::intake::seams::{
-    AgentOutputCheck, AllowlistSource, CapabilityProbes, RecordedRequest, RequestSnapshot,
-    RequestSource, SeamError,
+    AgentOutputCheck, AllowlistSource, CapabilityProbes, FetchedRequest, RecordedRequest,
+    RequestSnapshot, RequestSource, SeamError,
 };
 use factory_workflow::stages::repo_intel::seams::{
     JobRepository, ManifestProblem, ProjectManifestParser, TargetRepository,
@@ -137,7 +141,7 @@ struct EntryFile {
     expires_at: Option<String>,
 }
 
-fn designation(name: &str) -> Option<Designation> {
+pub(crate) fn designation(name: &str) -> Option<Designation> {
     Some(match name {
         "requester" => Designation::Requester,
         "operator" => Designation::Operator,
@@ -243,6 +247,30 @@ impl AllowlistSource for FileAllowlist {
 pub struct StoreRequests {
     store: Arc<dyn Store>,
     cache: RwLock<HashMap<JobId, (u32, Sha256Digest)>>,
+    /// Jobs that a webhook created and that have no text yet, with the issue each came from.
+    waiting: RwLock<HashMap<JobId, IssueRef>>,
+}
+
+/// The audit action the API writes when a labelled issue makes a job (`apps/api/src/webhook.rs`).
+/// Its subject is `issue <owner>/<name>#<number>`, which is the only place the issue of a job that
+/// a webhook created is stored.
+pub const WEBHOOK_JOB_ACTION: &str = "job.received_from_webhook";
+
+/// The id of revision 1 of a job's request: derived from the job, so a stage that fetches the
+/// issue twice (a retry, a second worker) writes one row.
+fn first_request_id(job: JobId) -> uuid::Uuid {
+    let digest = Sha256Digest::of(format!("original-request\n{job}\n1").as_bytes());
+    let number = u128::from_str_radix(&digest.hex()[..32], 16).unwrap_or(0);
+    uuid::Builder::from_random_bytes(number.to_be_bytes()).into_uuid()
+}
+
+/// The issue a webhook job came from, read from the audit record the API wrote for it.
+async fn webhook_issue(tx: &mut dyn Tx, job: JobId) -> Option<IssueRef> {
+    let records = tx.read_audit(AuditFilter::Job(job), 0, 100).await.ok()?;
+    records
+        .iter()
+        .filter(|record| record.event.action.as_str() == WEBHOOK_JOB_ACTION)
+        .find_map(|record| issue_of(record.event.subject.strip_prefix("issue ")?))
 }
 
 impl StoreRequests {
@@ -252,7 +280,16 @@ impl StoreRequests {
         Self {
             store,
             cache: RwLock::new(HashMap::new()),
+            waiting: RwLock::new(HashMap::new()),
         }
+    }
+
+    /// Notes that `job` came from a webhook for `issue` and has no text yet.
+    pub fn await_issue(&self, job: JobId, issue: IssueRef) {
+        self.waiting
+            .write()
+            .unwrap_or_else(PoisonError::into_inner)
+            .insert(job, issue);
     }
 
     /// Notes the revision and hash of a job's newest request.
@@ -261,6 +298,10 @@ impl StoreRequests {
             .write()
             .unwrap_or_else(PoisonError::into_inner)
             .insert(job, (revision, sha256));
+        self.waiting
+            .write()
+            .unwrap_or_else(PoisonError::into_inner)
+            .remove(&job);
     }
 
     /// Reads the newest request of every job in these statuses, for each tenant, into the cache.
@@ -293,9 +334,22 @@ impl StoreRequests {
                 }
             };
             for job in jobs {
-                if let Ok(request) = tx.get_original_request(job.value.id, None).await {
-                    self.remember(job.value.id, request.revision, request.content_sha256);
-                    found += 1;
+                match tx.get_original_request(job.value.id, None).await {
+                    Ok(request) => {
+                        self.remember(job.value.id, request.revision, request.content_sha256);
+                        found += 1;
+                    }
+                    // A job that a webhook created has no text until its intake stage fetches
+                    // the issue. The issue is named in the audit record of the job.
+                    Err(StoreError::NotFound)
+                        if matches!(job.value.origin, Some(JobOrigin::Webhook(_)))
+                            && !job.value.status.is_terminal() =>
+                    {
+                        if let Some(issue) = webhook_issue(&mut *tx, job.value.id).await {
+                            self.await_issue(job.value.id, issue);
+                        }
+                    }
+                    Err(_) => {}
                 }
             }
             let _ = tx.rollback().await;
@@ -355,6 +409,70 @@ impl RequestSource for StoreRequests {
                 revision: *revision,
                 sha256: sha256.clone(),
             })
+    }
+
+    fn awaiting(&self, job: JobId) -> Option<IssueRef> {
+        if self
+            .cache
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
+            .contains_key(&job)
+        {
+            return None;
+        }
+        self.waiting
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get(&job)
+            .cloned()
+    }
+
+    async fn record_first(
+        &self,
+        tenant: TenantId,
+        job: JobId,
+        request: FetchedRequest,
+    ) -> Result<RequestSnapshot, SeamError> {
+        let mut tx = self
+            .store
+            .begin(TenantScope::new(tenant))
+            .await
+            .map_err(|_| SeamError::Unavailable)?;
+        // Idempotent by id and content: the same fetch twice finds its row, and other words under
+        // the same id are refused by the store. A stored revision never changes.
+        let stored = tx
+            .record_original_request(NewOriginalRequest {
+                id: first_request_id(job),
+                job,
+                revision: 1,
+                source: StoredSource::GithubIssue,
+                source_ref: Some(format!(
+                    "{}/{}#{}",
+                    request.issue.repo.owner(),
+                    request.issue.repo.name(),
+                    request.issue.number
+                )),
+                author_github_user_id: Some(request.author),
+                text: request.text.clone(),
+            })
+            .await;
+        let stored = match stored {
+            Ok(stored) => stored,
+            Err(_) => {
+                let _ = tx.rollback().await;
+                return Err(SeamError::Unavailable);
+            }
+        };
+        tx.commit().await.map_err(|_| SeamError::Unavailable)?;
+        let sha256 = stored.row.value.content_sha256.clone();
+        self.remember(job, 1, sha256.clone());
+        Ok(RequestSnapshot {
+            revision: 1,
+            text: request.text,
+            sha256,
+            author: Some(request.author),
+            issue: request.issue,
+        })
     }
 
     async fn latest(&self, tenant: TenantId, job: JobId) -> Result<RequestSnapshot, SeamError> {

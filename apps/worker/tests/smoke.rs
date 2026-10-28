@@ -87,6 +87,23 @@ fn fixture_files() -> Vec<(String, String)> {
     files
 }
 
+/// The Spec Kit installation of this repository, as `(path, content)`: the files the adapter checks
+/// against its pins. Copied into the smoke's own copy of the fixture, in memory.
+fn spec_kit_installation() -> Vec<(String, String)> {
+    let integration = factory_spec_adapter::invocation::IntegrationConfig::parse(
+        &std::fs::read(repository_root().join(".specify/integration.json")).expect("the file"),
+    )
+    .expect("the installation file");
+    factory_spec_adapter::integrity::installation_paths(integration.host)
+        .into_iter()
+        .map(|path| {
+            let text = std::fs::read_to_string(repository_root().join(path))
+                .unwrap_or_else(|error| panic!("{path} is part of the installation: {error}"));
+            (path.to_owned(), text)
+        })
+        .collect()
+}
+
 /// Wraps a real handler and prints what it returns, so the smoke can say why a stage stopped.
 struct Traced(Arc<dyn factory_workflow::handlers::StageHandler>);
 
@@ -167,6 +184,15 @@ struct Options {
     /// Whether the fixture repository already holds a project constitution. The word-count fixture
     /// has none, and nothing in the pipeline writes one.
     constitution: bool,
+    /// Whether the fixture repository holds the Spec Kit installation the specification stage
+    /// checks (the pinned files the adapter lists). The word-count fixture has none. The smoke
+    /// copies the installation of this repository into its own copy of the fixture, in memory; the
+    /// fixture directory is never edited.
+    installation: bool,
+    /// Whether the scripted sandbox has the small file programs the specification stage runs in
+    /// it (`mkdir`, `tee`, `rm`, `cp`). Without them each exits 127, the way the testkit's sandbox
+    /// treats any program it does not know, and the stage ends with the closed error `Sandbox`.
+    file_programs: bool,
 }
 
 impl Options {
@@ -174,6 +200,8 @@ impl Options {
         Self {
             scope: vec![StageKind::Intake, StageKind::RepositoryIntelligence],
             constitution: false,
+            installation: false,
+            file_programs: false,
         }
     }
 }
@@ -231,6 +259,9 @@ async fn smoke_body(options: Options) -> factory_workflow::engine::JobView {
             CONSTITUTION_TEXT.to_owned(),
         ));
     }
+    if options.installation {
+        files.extend(spec_kit_installation());
+    }
     let borrowed: Vec<(&str, &str)> = files
         .iter()
         .map(|(p, c)| (p.as_str(), c.as_str()))
@@ -251,8 +282,19 @@ async fn smoke_body(options: Options) -> factory_workflow::engine::JobView {
             stderr: Vec::new(),
         }
     };
-    let sandbox = FakeSandbox::new(fake_clock.clone(), world.deps.artifacts.clone(), derived)
+    let mut sandbox = FakeSandbox::new(fake_clock.clone(), world.deps.artifacts.clone(), derived)
         .with_program("cargo", cargo);
+    if options.file_programs {
+        // A stand-in: these succeed and change nothing. The files the skills write are a separate
+        // matter (the scripted runtime writes none).
+        for program in ["mkdir", "tee", "rm", "cp"] {
+            sandbox = sandbox.with_program(program, |_: &[String], _: &[u8]| ProgramOutput {
+                exit_code: Some(0),
+                stdout: Vec::new(),
+                stderr: Vec::new(),
+            });
+        }
+    }
 
     let runtime = FakeAgentRuntime::new(world.deps.artifacts.clone());
     let classification: serde_json::Value = serde_json::from_str(
@@ -654,6 +696,18 @@ fn three(constitution: bool) -> Options {
             StageKind::Specification,
         ],
         constitution,
+        installation: false,
+        file_programs: false,
+    }
+}
+
+/// The specification stage with everything its inputs need: the constitution and the installation
+/// in the repository, and the file programs in the scripted sandbox.
+fn three_ready() -> Options {
+    Options {
+        installation: true,
+        file_programs: true,
+        ..three(true)
     }
 }
 
@@ -697,14 +751,12 @@ fn smoke_stops_at_the_specification_for_a_constitution() {
     );
 }
 
-/// With a constitution committed to the repository the stage goes on to run the Spec Kit skills,
-/// and **stops there**: the scripted runtime writes no specification files, the provider's
-/// post-conditions do not hold, and the attempt fails with a sandbox-side error twice (the
-/// attempt limit of the stage), after which the engine asks a person (ADR 0010). To pass the
-/// stage the runtime must be scripted to write the files of a feature directory
-/// (`spec.md`, the checklists); the engine suite does that with its own rig
-/// (`crates/workflow/tests/specification/rig.rs`) over a scripted provider, and the recorded real
-/// output is proved in `factory-spec_adapter`. Neither is available to this crate's tests.
+/// With a constitution committed to the repository the stage goes on, and **stops in its own
+/// sandbox**: the attempt fails with the closed error `Sandbox` twice (the attempt limit of the
+/// stage), after which the engine asks a person (ADR 0010). The cause is the sandbox of this smoke,
+/// not the repository: see `smoke_the_sandbox_error_came_from_the_sandbox_not_from_the_installation`
+/// below, which gives it with evidence. This test keeps the old setup (no installation, no file
+/// programs) and pins that the stop is the same.
 #[test]
 fn smoke_with_a_constitution_stops_when_the_skills_write_no_files() {
     let view = run(three(true));
@@ -722,5 +774,44 @@ fn smoke_with_a_constitution_stops_when_the_skills_write_no_files() {
             .all(|attempt| attempt.status == factory_domain::state::AttemptStatus::Failed),
         "{:?}",
         spec.attempts
+    );
+}
+
+/// Why the old smoke ended its specification stage with the closed error `Sandbox`, found with
+/// evidence, and where the stage stops once that is out of the way: at the first skill, because the
+/// scripted runtime has no script queued for it (`OutputMissing`, which the stage maps to `Tool`)
+/// and writes no Spec Kit file. To pass the stage the runtime must be scripted for the three skills
+/// and the reviewer, and must write `spec.md`, the checklists and the feature pointer into the
+/// workspace through `FakeWorkspaceProvider::edit_tree`, which the testkit's runtime cannot do; that
+/// is not done (see the README, "How far the job gets"). Evidence. The stage runs `mkdir`, `tee` and `rm` in its sandbox (`run_command` in
+/// `crates/workflow/src/stages/specification/run.rs`) and ends with `Sandbox` when one exits with a
+/// code other than 0. The testkit's sandbox answers exit code 127 and "command not found" for any
+/// program it was not told about, so the first of them fails. The installation of Spec Kit was
+/// not the cause: the provider reads it only after those commands. With the programs present and
+/// everything else as before, the stage goes on to the skills, which is where the next test picks
+/// it up.
+#[test]
+fn smoke_the_sandbox_error_came_from_the_sandbox_not_from_the_installation() {
+    // Everything the stage needs from the repository, and a sandbox without the file programs.
+    let without = run(Options {
+        file_programs: false,
+        ..three_ready()
+    });
+    print_states("installation and constitution, no file programs", &without);
+    let spec = without.newest(StageKind::Specification).expect("a run");
+    assert_eq!(spec.status, StageRunStatus::WaitingForHuman, "{without:#?}");
+    assert_eq!(
+        spec.attempts.len(),
+        2,
+        "both attempts end in the closed error Sandbox, as before"
+    );
+    // The same repository with the programs: the attempts no longer end in `Sandbox`. Where they
+    // end is printed, and pinned by the next test.
+    let with = run(three_ready());
+    print_states("installation, constitution and file programs", &with);
+    let spec = with.newest(StageKind::Specification).expect("a run");
+    assert!(
+        !spec.attempts.is_empty(),
+        "the stage ran at least one attempt: {with:#?}"
     );
 }

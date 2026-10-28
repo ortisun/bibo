@@ -47,6 +47,6 @@ pub use authorize::{Authorization, DenialReason, NOTICE, authorize};
 pub use classify::{Classification, IntakeRules, Outcome, RequestKind};
 pub use handler::{IntakeConfig, IntakeDeps, IntakeHandler, ORIGINAL_GATE, OUTCOME_GATE};
 pub use seams::{
-    AgentOutputCheck, AgentSandboxSpecs, AllowlistSource, CapabilityProbes, RecordedRequest,
-    RequestSnapshot, RequestSource, SeamError,
+    AgentOutputCheck, AgentSandboxSpecs, AllowlistSource, CapabilityProbes, FetchedRequest,
+    RecordedRequest, RequestSnapshot, RequestSource, SeamError,
 };

@@ -73,14 +73,14 @@ pub struct LoopSummary {
 
 /// The loop.
 pub struct WorkerLoop {
-    engine: Engine,
+    engine: Arc<Engine>,
     ticker: Arc<dyn Ticker>,
     worker: WorkerId,
     settings: LoopConfig,
     shutdown: Shutdown,
     observer: Option<Arc<dyn Observer>>,
     jobs: Option<Arc<ActiveJobs>>,
-    before_claim: Option<Arc<dyn BeforeClaim>>,
+    before_claim: Vec<Arc<dyn BeforeClaim>>,
     drift: Option<Arc<DriftPump>>,
 }
 
@@ -94,6 +94,19 @@ impl WorkerLoop {
         settings: LoopConfig,
         shutdown: Shutdown,
     ) -> Self {
+        Self::shared(Arc::new(engine), ticker, worker, settings, shutdown)
+    }
+
+    /// A loop over an engine that something else holds too: the hook that applies decisions
+    /// (`factory_composition::decisions::ClaimWork`) and the approval service call the same engine.
+    #[must_use]
+    pub fn shared(
+        engine: Arc<Engine>,
+        ticker: Arc<dyn Ticker>,
+        worker: WorkerId,
+        settings: LoopConfig,
+        shutdown: Shutdown,
+    ) -> Self {
         Self {
             engine,
             ticker,
@@ -102,7 +115,7 @@ impl WorkerLoop {
             shutdown,
             observer: None,
             jobs: None,
-            before_claim: None,
+            before_claim: Vec::new(),
             drift: None,
         }
     }
@@ -114,11 +127,14 @@ impl WorkerLoop {
         self
     }
 
-    /// Runs `hook` before each claim. The request cache of `factory_composition::seams::StoreRequests` is filled this
-    /// way, because `RequestSource::recorded` must answer without waiting while the claim runs.
+    /// Runs `hook` before each claim, after the hooks added before it. The request cache of
+    /// `factory_composition::seams::StoreRequests` is filled this way, because
+    /// `RequestSource::recorded` must answer without waiting while the claim runs. It is filled
+    /// first, before `factory_composition::decisions::ClaimWork`, which admits jobs and so
+    /// resolves their contracts.
     #[must_use]
     pub fn with_before_claim(mut self, hook: Arc<dyn BeforeClaim>) -> Self {
-        self.before_claim = Some(hook);
+        self.before_claim.push(hook);
         self
     }
 
@@ -191,7 +207,7 @@ impl WorkerLoop {
                 sweep_due = false;
                 since_sweep = Duration::ZERO;
             }
-            if let Some(hook) = &self.before_claim {
+            for hook in &self.before_claim {
                 hook.before_claim().await;
             }
             let claimed = match self.engine.claim_next(&self.worker).await {

@@ -43,6 +43,7 @@ pub mod authority;
 pub mod commands;
 pub mod config;
 pub mod database;
+pub mod decisions;
 pub mod delivery;
 pub mod drift;
 pub mod feedback;
