@@ -282,7 +282,6 @@ impl Engine {
                             cx,
                             run,
                             &plan,
-                            None,
                             ReworkMove {
                                 event: StageRunEvent::HumanRequestedRework,
                                 cleared,

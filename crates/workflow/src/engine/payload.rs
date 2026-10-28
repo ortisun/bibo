@@ -9,9 +9,8 @@
 //! of the event. It never carries a prompt, issue text, model output or a secret (ADR 0004), and
 //! the database refuses a payload over 16 KiB.
 //!
-//! Two keys are still read back by the engine, because the store has no row for what they carry:
-//! [`key::COST`] and [`key::REWORK_TRACK`] with [`key::FAILING_SET`]. The code that reads them says
-//! what is missing.
+//! One key is still read back by the engine, because the store has no row for what it carries:
+//! [`key::COST`]. The code that reads it says what is missing.
 
 use factory_domain::ids::StageRunId;
 use factory_domain::vocabulary::StageKind;
@@ -29,10 +28,6 @@ pub(crate) mod key {
     pub const ATTEMPT_NUMBER: &str = "attempt_number";
     /// The failure class of an attempt that ended badly. For the consumers of the event.
     pub const FAILURE_CLASS: &str = "failure_class";
-    /// `stage_run.rework_requested`: the count the round is charged to.
-    pub const REWORK_TRACK: &str = "rework_track";
-    /// `stage_run.rework_requested`: digest of what failed, for the stagnation detector.
-    pub const FAILING_SET: &str = "failing_set_sha256";
     /// What an attempt spent, in millionths of a US dollar, as the broker metered it.
     pub const COST: &str = "cost_micro_usd";
     /// A short machine code for why a move happened.

@@ -14,6 +14,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use factory_domain::contracts::{ArtifactRef, DomainEvent};
 use factory_domain::ids::{AttemptId, CausationId, JobId, StageRunId};
 use factory_domain::machines::failure::FailureClass;
+use factory_domain::machines::invalidation::rework_stages;
 use factory_domain::machines::limits::{ReworkLedger, ReworkTrack};
 use factory_domain::machines::retry::{AttemptWindow, WindowEvent};
 use factory_domain::state::{AttemptStatus, StageRunStatus};
@@ -235,6 +236,81 @@ pub(crate) fn window_of(attempts: &[AttemptRecord], answers: &[AnswerRecord]) ->
     AttemptWindow::from_history(&history)
 }
 
+/// The rework rounds a job has used, for each count, read from its stage runs.
+///
+/// A round that sends work back to `target` creates one new run for each stage of
+/// `rework_stages(target)`, and each of them names the run it replaces (`rework_of`). A change from
+/// outside the pipeline creates runs too, but names none (`Why::External`, `Why::ArtifactChanged`
+/// in `replace`), so it is not a round. For one stage, the runs that name a predecessor are
+/// therefore the rounds whose set holds that stage, and a round is charged to the stage it
+/// targeted: walking the stages in pipeline order, the rounds that targeted a stage are the runs
+/// it has with a predecessor, less the rounds of earlier targets that also replaced it. The count
+/// it is charged to is `ReworkTrack::for_target`, the rule that charged it when it was made.
+///
+/// This inverts `rework_stages`, the function that created the runs, and holds while every target
+/// replaces only itself and the stages after it (the `rework_stages_replace_only_later_stages`
+/// test pins that). A stage that a round replaced but the job never ran has no predecessor, and
+/// the subtraction saturates at zero for it.
+pub(crate) fn rework_ledger<'a>(runs: impl IntoIterator<Item = &'a StageRun>) -> ReworkLedger {
+    let mut replaced: BTreeMap<usize, u32> = BTreeMap::new();
+    for run in runs {
+        if run.rework_of.is_some() {
+            *replaced.entry(position(run.kind)).or_default() += 1;
+        }
+    }
+    let (mut code, mut documentation) = (0_u32, 0_u32);
+    let mut rounds: Vec<(StageKind, u32)> = Vec::new();
+    for kind in StageKind::ALL.iter().copied() {
+        let seen = replaced.get(&position(kind)).copied().unwrap_or(0);
+        let carried: u32 = rounds
+            .iter()
+            .filter(|(target, _)| rework_stages(*target).contains(&kind))
+            .map(|(_, count)| *count)
+            .sum();
+        let targeted = seen.saturating_sub(carried);
+        match ReworkTrack::for_target(kind) {
+            ReworkTrack::Code => code = code.saturating_add(targeted),
+            ReworkTrack::Documentation => documentation = documentation.saturating_add(targeted),
+        }
+        rounds.push((kind, targeted));
+    }
+    ReworkLedger::new(
+        u8::try_from(code).unwrap_or(u8::MAX),
+        u8::try_from(documentation).unwrap_or(u8::MAX),
+    )
+}
+
+/// The digest of what failed in the last rework round of each stage kind, by pipeline position.
+/// The run that sent work back records it with its gate outcome (`GateRecord::failing_set_sha256`),
+/// and the newest such run of a kind is its last round.
+fn failing_sets_of<'a>(
+    runs: impl IntoIterator<Item = &'a StageRun>,
+) -> BTreeMap<usize, Sha256Digest> {
+    let mut newest: BTreeMap<usize, (u32, Sha256Digest)> = BTreeMap::new();
+    for run in runs {
+        if run.status != StageRunStatus::ReworkRequested {
+            continue;
+        }
+        let Some(digest) = run
+            .gate
+            .as_ref()
+            .and_then(|gate| gate.failing_set_sha256.as_ref())
+        else {
+            continue;
+        };
+        let slot = newest
+            .entry(position(run.kind))
+            .or_insert((0, digest.clone()));
+        if run.run_number >= slot.0 {
+            *slot = (run.run_number, digest.clone());
+        }
+    }
+    newest
+        .into_iter()
+        .map(|(at, (_, digest))| (at, digest))
+        .collect()
+}
+
 /// Everything the engine knows about one job.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub(crate) struct Timeline {
@@ -252,7 +328,7 @@ pub(crate) struct Timeline {
 
 impl Timeline {
     /// Reads the job from the store: its stage runs, their attempts and their links, and then the
-    /// events the store has no row for.
+    /// events for the few facts the store has no row for ([`Self::read_outbox`]).
     ///
     /// # Errors
     /// [`EngineError::Corrupt`] when a row or an event the engine wrote cannot be read back, and
@@ -263,25 +339,42 @@ impl Timeline {
         for row in rows {
             runs.push(RunRecord::read(tx, row).await?);
         }
+        let rework = rework_ledger(runs.iter().map(|record| &record.row.value));
+        let failing_sets = failing_sets_of(runs.iter().map(|record| &record.row.value));
         let mut timeline = Self {
             runs,
+            rework,
+            failing_sets,
             ..Self::default()
         };
+        timeline.read_outbox(tx, job).await?;
+        Ok(timeline)
+    }
+
+    /// Reads the three facts that the store has no row for yet, from the job's outbox events.
+    /// Everything else in the timeline comes from rows, so these are the only reads of events, and
+    /// each is a plain fold that skips an event type it does not know.
+    ///
+    /// | Fact | Read from | What the store lacks |
+    /// |---|---|---|
+    /// | Commands already applied | `causation_id` of every event: the envelope, not the payload | A record of applied commands that outlives the outbox. The event is written in the same transaction as the move (INV-03), so it is as durable as the move; it stops being enough if old events are ever archived. |
+    /// | What the job spent | `cost_micro_usd` in the payload of each attempt event | A cost on the attempt: `Attempt::cost_micro_usd`, written by `AttemptEnd::cost_micro_usd` in the transition that ends it (column `attempts.cost_micro_usd bigint not null default 0`). The job's spend is then the sum over `list_attempts`. The broker meters each token, but the store does not link an attempt to its token, so the broker cannot be summed per job either. |
+    /// | Who approved or rejected | `transition_id` (`S14`, `S16`) of the stage run events: the envelope | The row says `PASSED` or `FAILED`, not whether a person decided. `ApprovalOps::record_approval` is the place, and an approval needs the pull request binding (head, tree, base) that Slice 1 does not have yet. |
+    async fn read_outbox(&mut self, tx: &mut dyn Tx, job: JobId) -> Result<(), EngineError> {
         let mut from = OutboxSeq::START;
         loop {
             let rows = tx.read_events(job, from, PAGE).await?;
             let count = rows.len();
             for row in &rows {
-                timeline.apply(row)?;
+                self.apply(row)?;
             }
             match rows.last() {
                 Some(last) if count == PAGE as usize => {
                     from = OutboxSeq::new(last.seq.get().saturating_add(1));
                 }
-                _ => break,
+                _ => return Ok(()),
             }
         }
-        Ok(timeline)
     }
 
     /// The record of a stage run.
@@ -334,7 +427,6 @@ impl Timeline {
         }
         let transition = event.transition_id.as_str();
         match (event.event_type.as_str(), transition) {
-            ("stage_run.rework_requested", _) => self.rework_requested(event),
             ("stage_run.passed", "S14") => {
                 let id = aggregate_run(event);
                 self.run_mut(id)?.approved = true;
@@ -362,31 +454,6 @@ impl Timeline {
             _ => Ok(()),
         }
     }
-
-    fn rework_requested(&mut self, event: &DomainEvent) -> Result<(), EngineError> {
-        let id = aggregate_run(event);
-        if let Some(Value::String(track)) = event.payload.get(key::REWORK_TRACK) {
-            let track = ReworkTrack::parse(track)
-                .map_err(|_| EngineError::Corrupt("a rework track in an event is unknown"))?;
-            let (code, documentation) = (
-                self.rework.used(ReworkTrack::Code),
-                self.rework.used(ReworkTrack::Documentation),
-            );
-            self.rework = match track {
-                ReworkTrack::Code => ReworkLedger::new(code.saturating_add(1), documentation),
-                ReworkTrack::Documentation => {
-                    ReworkLedger::new(code, documentation.saturating_add(1))
-                }
-            };
-        }
-        if let Some(Value::String(text)) = event.payload.get(key::FAILING_SET) {
-            let digest = Sha256Digest::parse(text)
-                .map_err(|_| EngineError::Corrupt("a failing set digest in an event is invalid"))?;
-            let kind = self.run_mut(id)?.kind;
-            self.failing_sets.insert(position(kind), digest);
-        }
-        Ok(())
-    }
 }
 
 fn aggregate_run(event: &DomainEvent) -> StageRunId {
@@ -396,6 +463,7 @@ fn aggregate_run(event: &DomainEvent) -> StageRunId {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use factory_domain::contracts::Contract;
     use factory_domain::values::MediaType;
 
     fn attempt(number: u32, end: Option<AttemptEnd>) -> AttemptRecord {
@@ -419,6 +487,363 @@ mod tests {
                 size_bytes: None,
             },
         }
+    }
+
+    fn run(kind: StageKind, run_number: u32, rework_of: bool, status: StageRunStatus) -> StageRun {
+        let at = factory_domain::values::Timestamp::parse("2026-10-27T08:00:00Z").expect("a time");
+        StageRun {
+            id: StageRunId::from_uuid(uuid::Uuid::from_u128(
+                (u128::from(run_number) << 8) | position(kind) as u128,
+            )),
+            tenant_id: factory_domain::ids::TenantId::from_uuid(uuid::Uuid::from_u128(1)),
+            job_id: JobId::from_uuid(uuid::Uuid::from_u128(2)),
+            kind,
+            run_number,
+            status,
+            lease_epoch: factory_ports::store::LeaseEpoch::new(0),
+            max_attempts: 20,
+            not_before: at,
+            rework_of: rework_of.then(|| StageRunId::from_uuid(uuid::Uuid::from_u128(3))),
+            contract_sha256: None,
+            gate: None,
+            created_at: at,
+            finished_at: None,
+            superseded_at: None,
+        }
+    }
+
+    /// The first run of every stage, then a round for each target in `targets`: one new run of
+    /// each stage of `rework_stages(target)`, naming a predecessor, as `supersede_and_replace`
+    /// makes them.
+    fn job_with_rounds(targets: &[StageKind]) -> Vec<StageRun> {
+        let mut runs: Vec<StageRun> = StageKind::ALL
+            .iter()
+            .map(|kind| run(*kind, 1, false, StageRunStatus::Superseded))
+            .collect();
+        for target in targets {
+            for kind in rework_stages(*target) {
+                let number = u32::try_from(runs.iter().filter(|r| r.kind == kind).count())
+                    .expect("a small count")
+                    + 1;
+                runs.push(run(kind, number, true, StageRunStatus::Superseded));
+            }
+        }
+        runs
+    }
+
+    fn used(runs: &[StageRun]) -> (u8, u8) {
+        let ledger = rework_ledger(runs);
+        (
+            ledger.used(ReworkTrack::Code),
+            ledger.used(ReworkTrack::Documentation),
+        )
+    }
+
+    #[test]
+    fn a_job_that_was_never_sent_back_has_used_no_round() {
+        assert_eq!(used(&job_with_rounds(&[])), (0, 0));
+    }
+
+    #[test]
+    fn a_round_is_charged_to_the_count_of_its_target() {
+        assert_eq!(used(&job_with_rounds(&[StageKind::Implementation])), (1, 0));
+        assert_eq!(used(&job_with_rounds(&[StageKind::Documenting])), (0, 1));
+        assert_eq!(used(&job_with_rounds(&[StageKind::Architecture])), (1, 0));
+    }
+
+    #[test]
+    fn rounds_of_different_targets_are_told_apart_although_they_replace_the_same_later_stages() {
+        // A round that targets IMPLEMENTATION replaces DOCUMENTING too, and so does one that
+        // targets DOCUMENTING. Only the second is a documentation round.
+        let runs = job_with_rounds(&[
+            StageKind::Implementation,
+            StageKind::Documenting,
+            StageKind::Implementation,
+            StageKind::TaskPlanning,
+        ]);
+        assert_eq!(used(&runs), (3, 1));
+    }
+
+    #[test]
+    fn a_change_from_outside_the_pipeline_is_not_a_round() {
+        // A new run that names no predecessor was made by an external change.
+        let mut runs = job_with_rounds(&[StageKind::Implementation]);
+        runs.push(run(StageKind::Intake, 2, false, StageRunStatus::Passed));
+        runs.push(run(
+            StageKind::Specification,
+            2,
+            false,
+            StageRunStatus::Passed,
+        ));
+        runs.push(run(
+            StageKind::Implementation,
+            3,
+            false,
+            StageRunStatus::Passed,
+        ));
+        assert_eq!(used(&runs), (1, 0));
+    }
+
+    #[test]
+    fn a_stage_a_round_replaced_but_the_job_never_ran_does_not_make_a_negative_count() {
+        // The round replaced IMPLEMENTATION and the stages after it, but only IMPLEMENTATION has a
+        // run that names a predecessor.
+        let mut runs = vec![run(
+            StageKind::Implementation,
+            1,
+            false,
+            StageRunStatus::Superseded,
+        )];
+        runs.push(run(
+            StageKind::Implementation,
+            2,
+            true,
+            StageRunStatus::Passed,
+        ));
+        runs.push(run(
+            StageKind::Validation,
+            1,
+            false,
+            StageRunStatus::Pending,
+        ));
+        assert_eq!(used(&runs), (1, 0));
+    }
+
+    #[test]
+    fn rework_stages_replace_only_later_stages() {
+        // `rework_ledger` walks the stages in pipeline order and subtracts what earlier targets
+        // replaced. That is exact only while no target replaces an earlier stage.
+        for target in StageKind::ALL.iter().copied() {
+            for replaced in rework_stages(target) {
+                assert!(
+                    position(replaced) >= position(target),
+                    "a round that targets {target} replaces the earlier stage {replaced}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn the_failing_set_of_a_kind_is_the_newest_rework_requested_run_that_recorded_one() {
+        let failed = |digest: &[u8]| {
+            Some(factory_ports::store::GateRecord {
+                outcome: factory_domain::vocabulary::GateOutcome::Failed,
+                report_sha256: None,
+                failing_set_sha256: Some(Sha256Digest::of(digest)),
+            })
+        };
+        let mut first = run(
+            StageKind::Validation,
+            1,
+            false,
+            StageRunStatus::ReworkRequested,
+        );
+        first.gate = failed(b"first");
+        let mut second = run(
+            StageKind::Validation,
+            2,
+            true,
+            StageRunStatus::ReworkRequested,
+        );
+        second.gate = failed(b"second");
+        // A person's rework has no gate record and leaves the digest of the last gate round.
+        let by_person = run(
+            StageKind::Validation,
+            3,
+            true,
+            StageRunStatus::ReworkRequested,
+        );
+        // A run that failed for good also recorded a digest, but it is not a rework round.
+        let mut final_failure = run(StageKind::Review, 1, false, StageRunStatus::Failed);
+        final_failure.gate = failed(b"final");
+        let sets = failing_sets_of([&second, &first, &by_person, &final_failure]);
+        assert_eq!(
+            sets.get(&position(StageKind::Validation)),
+            Some(&Sha256Digest::of(b"second"))
+        );
+        assert_eq!(sets.get(&position(StageKind::Review)), None);
+    }
+
+    const JOB: &str = "00000000-0000-7000-8000-000000000001";
+    const RUN_A: &str = "00000000-0000-7000-8000-0000000000a1";
+    const RUN_C: &str = "00000000-0000-7000-8000-0000000000c1";
+    const ATTEMPT_1: &str = "00000000-0000-7000-8000-0000000000d1";
+
+    fn event(
+        seq: u64,
+        event_type: &str,
+        transition: &str,
+        aggregate: (&str, &str),
+        payload: serde_json::Value,
+        causation: Option<&str>,
+    ) -> OutboxRow {
+        let document = serde_json::json!({
+            "schema_version": 1,
+            "event_id": format!("00000000-0000-7000-8000-{seq:012x}"),
+            "event_type": event_type,
+            "event_version": 1,
+            "tenant_id": "00000000-0000-7000-8000-0000000000ff",
+            "job_id": JOB,
+            "aggregate": { "type": aggregate.0, "id": aggregate.1, "version": 2 },
+            "transition_id": transition,
+            "correlation_id": JOB,
+            "causation_id": causation,
+            "occurred_at": "2026-10-27T08:30:00Z",
+            "producer": "workflow.engine",
+            "payload": payload,
+        });
+        OutboxRow {
+            seq: OutboxSeq::new(seq),
+            event: DomainEvent::from_json_value(document).expect("a valid event"),
+        }
+    }
+
+    /// A timeline that lists one run, `RUN_A`, as the store would.
+    fn timeline_with_run_a() -> Timeline {
+        let mut row = run(StageKind::Approval, 1, false, StageRunStatus::Passed);
+        row.id = StageRunId::parse(RUN_A).expect("an id");
+        Timeline {
+            runs: vec![RunRecord {
+                id: row.id,
+                kind: row.kind,
+                row: Versioned {
+                    value: row,
+                    version: factory_ports::store::Version::FIRST,
+                },
+                attempts: Vec::new(),
+                answers: Vec::new(),
+                outputs: Vec::new(),
+                human_inputs: Vec::new(),
+                reauthorize: false,
+                approved: false,
+                rejected: false,
+            }],
+            ..Timeline::default()
+        }
+    }
+
+    #[test]
+    fn a_repeated_command_is_recognised_by_its_id() {
+        let command = "00000000-0000-7000-8000-0000000000e1";
+        let mut timeline = Timeline::default();
+        timeline
+            .apply(&event(
+                1,
+                "job.admitted",
+                "J01",
+                ("job", JOB),
+                serde_json::json!({}),
+                Some(command),
+            ))
+            .expect("folds");
+        assert!(timeline.has_applied(CausationId::parse(command).expect("id")));
+        assert!(
+            !timeline.has_applied(
+                CausationId::parse("00000000-0000-7000-8000-0000000000e2").expect("id")
+            )
+        );
+    }
+
+    #[test]
+    fn what_attempts_spent_is_the_sum_of_the_costs_of_their_events() {
+        let mut timeline = Timeline::default();
+        for (seq, kind, cost) in [
+            (1, "attempt.failed", 300),
+            (2, "attempt.succeeded", 700),
+            (3, "attempt.cancelled", 0),
+        ] {
+            timeline
+                .apply(&event(
+                    seq,
+                    kind,
+                    "A05",
+                    ("attempt", ATTEMPT_1),
+                    serde_json::json!({ "cost_micro_usd": cost }),
+                    None,
+                ))
+                .expect("folds");
+        }
+        // Another event type with the same key is not spend.
+        timeline
+            .apply(&event(
+                4,
+                "job.admitted",
+                "J01",
+                ("job", JOB),
+                serde_json::json!({ "cost_micro_usd": 5_000 }),
+                None,
+            ))
+            .expect("folds");
+        assert_eq!(timeline.spent_micro_usd, 1_000);
+    }
+
+    #[test]
+    fn a_person_s_approval_and_rejection_are_read_from_the_transition_of_the_event() {
+        let mut timeline = timeline_with_run_a();
+        timeline
+            .apply(&event(
+                1,
+                "stage_run.passed",
+                "S08",
+                ("stage_run", RUN_A),
+                serde_json::json!({}),
+                None,
+            ))
+            .expect("folds");
+        assert!(!timeline.runs[0].approved, "a gate pass is not an approval");
+        timeline
+            .apply(&event(
+                2,
+                "stage_run.passed",
+                "S14",
+                ("stage_run", RUN_A),
+                serde_json::json!({}),
+                None,
+            ))
+            .expect("folds");
+        assert!(timeline.runs[0].approved);
+        timeline
+            .apply(&event(
+                3,
+                "stage_run.failed",
+                "S16",
+                ("stage_run", RUN_A),
+                serde_json::json!({}),
+                None,
+            ))
+            .expect("folds");
+        assert!(timeline.runs[0].rejected);
+    }
+
+    #[test]
+    fn an_event_that_names_a_run_the_store_does_not_list_is_a_corrupt_timeline() {
+        let mut timeline = timeline_with_run_a();
+        let orphan = event(
+            1,
+            "stage_run.passed",
+            "S14",
+            ("stage_run", RUN_C),
+            serde_json::json!({}),
+            None,
+        );
+        assert!(matches!(
+            timeline.apply(&orphan),
+            Err(EngineError::Corrupt(_))
+        ));
+    }
+
+    #[test]
+    fn an_event_type_the_engine_does_not_know_is_skipped() {
+        let mut timeline = Timeline::default();
+        let unknown = event(
+            2,
+            "task_node.ready",
+            "T01",
+            ("task_node", RUN_C),
+            serde_json::json!({}),
+            None,
+        );
+        assert!(timeline.apply(&unknown).is_ok());
     }
 
     #[test]

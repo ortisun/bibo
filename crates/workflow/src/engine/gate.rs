@@ -562,7 +562,6 @@ impl Engine {
                     cx,
                     gating,
                     &plan,
-                    Some(failing),
                     ReworkMove {
                         event: StageRunEvent::GateRequiresRework,
                         cleared,
@@ -615,7 +614,6 @@ impl Engine {
         cx: &Cx<'_>,
         failing_run: &Versioned<StageRun>,
         plan: &ReworkPlan,
-        failing: Option<&Sha256Digest>,
         step: ReworkMove,
     ) -> Result<(), EngineError> {
         let snaps: Vec<StageRunSnapshot> = self.snapshots_of(tx, cx).await?;
@@ -635,11 +633,8 @@ impl Engine {
         .await?;
         let mut payload = payload::for_run(failing_run.value.kind, failing_run.value.id);
         payload = payload::with(payload, "rework_target", json!(plan.target.as_str()));
-        payload = payload::with(payload, key::REWORK_TRACK, json!(plan.track.as_str()));
+        payload = payload::with(payload, "rework_track", json!(plan.track.as_str()));
         payload = payload::with(payload, "rework_round", json!(plan.round));
-        if let Some(failing) = failing {
-            payload = payload::with(payload, key::FAILING_SET, json!(failing.to_string()));
-        }
         cx.move_stage_run(
             tx,
             failing_run,
