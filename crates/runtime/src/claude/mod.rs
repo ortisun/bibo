@@ -43,8 +43,8 @@ use crate::probe::{
 };
 use crate::prompt;
 use crate::report::{
-    ExecEnd, RunEnd, assemble, early, exec_prep, exec_tool, exit_info, soft_deadline_passed,
-    usage_of,
+    ExecEnd, RunEnd, assemble, capture_floor, early, exec_prep, exec_tool, exit_info,
+    soft_deadline_passed, usage_of,
 };
 use crate::skills::SkillBundle;
 use crate::target::VerifiedTarget;
@@ -313,7 +313,7 @@ impl ClaudeCodeRuntime {
         let cap = self
             .config
             .transcript_cap_bytes
-            .max(req.max_output_bytes.saturating_add(1024 * 1024));
+            .max(capture_floor(req.max_output_bytes));
         let ended = exec_tool(
             session,
             &self.io,

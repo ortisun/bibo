@@ -6,6 +6,7 @@
 #![allow(dead_code)]
 
 pub mod docker;
+pub mod hostile;
 pub mod scripted;
 
 use std::sync::Arc;
@@ -210,6 +211,39 @@ pub fn request(h: &Harness, runtime: &str, model: &str, broker: &str) -> AgentRu
     };
     req.flag_set = FlagSet::Standard;
     req
+}
+
+/// The JSON events of a transcript or a tool's standard output, one per line.
+pub fn events_of(text: &str) -> Vec<serde_json::Value> {
+    text.lines()
+        .filter_map(|l| serde_json::from_str(l).ok())
+        .collect()
+}
+
+/// The `system/init` event of a Claude Code transcript.
+///
+/// # Panics
+/// When the transcript has none.
+pub fn init_of(text: &str) -> serde_json::Value {
+    events_of(text)
+        .into_iter()
+        .find(|e| e["type"] == "system" && e["subtype"] == "init")
+        .expect("an init event")
+}
+
+/// The text of every `tool_result` in a Claude Code transcript.
+pub fn tool_results_of(text: &str) -> Vec<String> {
+    events_of(text)
+        .iter()
+        .filter(|e| e["type"] == "user")
+        .filter_map(|e| e["message"]["content"].as_array().cloned())
+        .flatten()
+        .filter(|part| part["type"] == "tool_result")
+        .map(|part| match &part["content"] {
+            serde_json::Value::String(s) => s.clone(),
+            other => other.to_string(),
+        })
+        .collect()
 }
 
 /// A secret-shaped value made at run time, so that no literal sits in the source.

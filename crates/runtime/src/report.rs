@@ -67,6 +67,15 @@ pub fn early(error: AgentRunError, version: Option<String>) -> AgentRunReport {
     }
 }
 
+/// The least the capture of standard output may be for a final output of `max_output_bytes`: the
+/// output appears twice in a Claude Code stream (the last message and the result), and the stream
+/// has events around it. Below this the result event could be cut off for a run that is within its
+/// limits.
+#[must_use]
+pub fn capture_floor(max_output_bytes: u64) -> u64 {
+    max_output_bytes.saturating_mul(2).saturating_add(64 * 1024)
+}
+
 /// The cost limit of a request in millionths of a dollar, rounded up.
 #[must_use]
 pub fn cost_limit_micro(req: &AgentRunRequest) -> u64 {
