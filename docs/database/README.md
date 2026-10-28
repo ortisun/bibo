@@ -2,8 +2,8 @@
 
 PostgreSQL is the source of truth for the factory's jobs, stage runs, attempts, leases, evidence, approvals and audit trail. This directory documents the first schema, how to run its migrations, and what its tests prove.
 
-- Status: the Slice 0 baseline (`s0-database-baseline`), row-level security and the revised state machine (`s1-database-tenancy-and-state-sync`, [ADR 0012](../adr/0012-row-level-security-in-slice-1.md) and [ADR 0010](../adr/0010-failure-escalation-routing-and-invalidation.md)), and the alignment with the ports v1.1 store (`s1-database-port-alignment`, [ADR 0014](../adr/0014-ports-v1-1-claim-protocol-and-port-revision.md)). Not yet reviewed by the software architect or the security specialist.
-- Verified: see the table of runs in [running.md](running.md). Eighteen migrations applied, reverted and upgraded from the fourteenth with Diesel 2.3.11, and 923 checks in sixteen suites passed twice on PostgreSQL 18.6 (local cluster). The earlier package also passed on 18.6 and 16.15 in Docker; this one was not run there.
+- Status: the Slice 0 baseline (`s0-database-baseline`), row-level security and the revised state machine (`s1-database-tenancy-and-state-sync`, [ADR 0012](../adr/0012-row-level-security-in-slice-1.md) and [ADR 0010](../adr/0010-failure-escalation-routing-and-invalidation.md)), the alignment with the ports v1.1 store (`s1-database-port-alignment`, [ADR 0014](../adr/0014-ports-v1-1-claim-protocol-and-port-revision.md)), and the review at realistic volume (`s1-database-review`: measurements, one migration, the compatibility check, a retention proposal). Not yet reviewed by the software architect or the security specialist.
+- Verified: see the table of runs in [running.md](running.md). Nineteen migrations applied, reverted and upgraded from the fourteenth with Diesel 2.3.11, and 967 checks in seventeen suites passed on PostgreSQL 18.6 (local cluster) on 2026-10-28. Docker and PostgreSQL 16 were not run for the last three packages.
 
 ## Where to start
 
@@ -17,17 +17,24 @@ PostgreSQL is the source of truth for the factory's jobs, stage runs, attempts, 
 | Write the storage crate against this schema: the recipes, and a table of the SQL, the pool and the constraint behind each `Store` method of ports v1.1 | [for-the-storage-crate.md](for-the-storage-crate.md) |
 | Change the schema safely later | [migration-safety.md](migration-safety.md) |
 | See the query plans on 10,000 and 100,000 rows, with row-level security on | [query-plans.md](query-plans.md) |
+| See how long the hot queries take at 100,000 rows as the real logins, what row-level security costs, and what the concurrent appends, finders, relays and heartbeats do | [performance.md](performance.md) |
+| Plan retention, archive and partitioning of the outbox, the ledger and the artifact metadata | [retention-and-partitioning.md](retention-and-partitioning.md) |
+| Set connections, timeouts, statistics, autovacuum and backups | [operating-settings.md](operating-settings.md) |
+| See what was found about each item ADR 0012 left unverified | [adr-0012-open-items.md](adr-0012-open-items.md) |
+| Read the review that ties these together | [../reviews/database-review.md](../reviews/database-review.md) |
 | Know what this work does not cover | [not-covered.md](not-covered.md) |
 
 ## What is in the repository
 
 | Path | What it is |
 |---|---|
-| [`migrations/`](../../migrations/) | Eighteen Diesel migrations, each with `up.sql` and `down.sql`. Nine are the baseline, five came with row-level security (the supersede edge for skipped stage runs, then roles, tenant isolation, system scope, lookup functions), and four are new for ports v1.1: the state machine rows `S21` and `S22`, the claim protocol, the Store model columns and rules, and the listing index. |
+| [`migrations/`](../../migrations/) | Nineteen Diesel migrations, each with `up.sql` and `down.sql`. Nine are the baseline, five came with row-level security (the supersede edge for skipped stage runs, then roles, tenant isolation, system scope, lookup functions), four are for ports v1.1 (the state machine rows `S21` and `S22`, the claim protocol, the Store model columns and rules, and the listing index) and one is from the review at realistic volume (the lease renewal as a heap-only update). |
 | [`crates/storage/diesel.toml`](../../crates/storage/diesel.toml) | Diesel configuration: migrations directory and the generated schema path. |
 | [`crates/storage/src/schema.rs`](../../crates/storage/src/schema.rs) | The schema as `diesel print-schema` writes it. Generated, never edited by hand. |
 | [`scripts/db-test.sh`](../../scripts/db-test.sh) | Builds a throwaway database, migrates it and runs the suites. |
-| [`tests/`](tests/) | The SQL for each suite, the test helpers, two catalog queries, `role_readiness.sql` (the start-up check of a pool's role), and the three files of the data-preserving upgrade test (`upgrade_fixture.sql`, `upgrade_fingerprint.sql`, `upgrade_check.sql`). |
+| [`scripts/db-perf.sh`](../../scripts/db-perf.sh), [`scripts/db-perf/`](../../scripts/db-perf/) | The measurement harness: a scratch cluster, deterministic data at 100,000 rows, the hot queries timed as the real logins, concurrency, churn, the partitioning prototypes, the dump and restore check. |
+| [`scripts/db-compat-rust.sh`](../../scripts/db-compat-rust.sh) | Runs the storage crate of an earlier revision against later schemas. |
+| [`tests/`](tests/) | The SQL for each suite, the test helpers, two catalog queries, `role_readiness.sql` (the start-up check of a pool's role), the files of the data-preserving upgrade test (`upgrade_fixture.sql`, `upgrade_fingerprint.sql`, `upgrade_check.sql`) and `compat_earlier_code.sql` (the earlier code's statements, run after each migration by the `compat` suite). |
 | [`tools/`](tools/) | `state_machine_sql.py` (reference rows and expected values from `state-machine.json`) and `verify_audit_chain.py` (rebuilds an audit chain outside PostgreSQL). |
 
 The SQL tests live under `docs/database/tests/` because the work package owns `docs/database/**` and does not own a separate tests directory. That is a placement the architect may want to change.
@@ -51,3 +58,4 @@ These are the points I could not settle alone. Details are in the pages linked.
 9. **A ledger append does not raise the job's version** (migration 17), which departs from the wording of ADR 0008. The port's `append_ledger_entry` returns no version, so otherwise a transition after an append in one transaction would always conflict. See [constraints-and-indexes.md](constraints-and-indexes.md).
 10. **The attempt limit counts from the last human answer** (migration 16), through a column the database sets when S13 moves a run to `READY`. The old absolute count would have refused the first attempt after an answer. See [constraints-and-indexes.md](constraints-and-indexes.md).
 11. **The points that need the architect**, listed at the end of [for-the-storage-crate.md](for-the-storage-crate.md): the port cannot read or write the attestation, `ConstraintRule` lacks four codes, `update_job_facts` is write-once in the port and not in the data, and the A07 effect text in `state-machine.json` still says the epoch rises on a lost lease, which ADR 0014 says it does not.
+12. **The retention and partitioning decisions D1 to D5** (is the outbox the long-term record, may an archived append-only record leave the live database, the retention periods, who builds the external anchor, and what replaces the ledger's two foreign keys), in [retention-and-partitioning.md](retention-and-partitioning.md); and **the claim's slowdown with READY runs of paused jobs** (finding F-01 of [../reviews/database-review.md](../reviews/database-review.md)): a state machine or protocol choice, not a schema one.

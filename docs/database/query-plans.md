@@ -1,9 +1,9 @@
 # Query plans with row-level security on, at 10,000 and 100,000 rows
 
-- Status: recorded from `scripts/db-test.sh plans` on 2026-10-27, PostgreSQL 18.6 (Homebrew), one laptop, `EXPLAIN (COSTS OFF)`. The 10,000 row run is the default. The 100,000 row run is `FACTORY_DB_PLANS_SCALE=10 scripts/db-test.sh plans` and took 191 seconds, almost all of it generating the data through the ledger and audit triggers. Both passed. The plans are text from one run each; the suite asserts only that the named index is used and that the large table is not scanned sequentially.
+- Status: recorded from `scripts/db-test.sh plans` on 2026-10-27, PostgreSQL 18.6 (Homebrew), one laptop, `EXPLAIN (COSTS OFF)`. The 10,000 row run is the default. The 100,000 row run is `FACTORY_DB_PLANS_SCALE=10 scripts/db-test.sh plans` and took 191 seconds, almost all of it generating the data through the ledger and audit triggers. Both passed. The plans are text from one run each; the suite asserts only that the named index is used and that the large table is not scanned sequentially. **Re-run for `s1-database-review` on 2026-10-28** after migration 19: `scripts/db-test.sh plans --rows 100000` passed (43 checks), `scripts/db-test.sh plans` passed. The only plan that changed is the expired-lease sweep, now a scan of the live attempts through `attempts_deadline_idx` with a filter and a sort. Timings of every query at 100,000 rows, as the real logins, with row-level security on, with p50 and p95 and the cost of the policy itself, are in [performance.md](performance.md).
 - Update by `s1-database-port-alignment` (2026-10-27): the claim uses `stage_runs_claim_order_idx (not_before, id)`, the relay locks with `FOR NO KEY UPDATE`, and the section "Listings and the other operations of ports v1.1" at the end records the plans of the operations that ports v1.1 added, at 10,000 and 100,000 rows. The other tables below were not re-recorded.
 - Form: reference.
-- Limits: this is the shape of the plans on a small, freshly analysed data set. It says nothing about timing, cache behaviour or bloat under load. The `s1-database-review` package measures those once there is a store to measure.
+- Limits: this is the shape of the plans on a small, freshly analysed data set. It says nothing about timing, cache behaviour or bloat under load. [performance.md](performance.md) measures those (one machine, relative numbers).
 - What changed from the baseline: every plan is made **as the role that runs the query** with the policies on. The claim, the sweep and the relay run as `factory_system`. The timelines and lookups run as `factory_app` with the tenant setting. The two authentication lookups run as `factory_lookup`, the owner of the lookup functions (EXPLAIN cannot enter a function, so the body of each one is run as that role).
 
 ## The data
@@ -28,7 +28,7 @@ Bulk status changes on `jobs`, `stage_runs`, `attempts` and `outbox` ran with tr
 | Query | Role | At 10,000 rows | At 100,000 rows |
 |---|---|---|---|
 | **Claim**: `READY` runs of `ACTIVE` jobs, `ORDER BY not_before, id LIMIT 10 FOR NO KEY UPDATE SKIP LOCKED` (index `stage_runs_claim_order_idx` since migration 16; it was `stage_runs_claim_idx`) | system | Index Scan `stage_runs_claim_order_idx`, hash join to a sequential scan of `jobs` (2,000 rows) | Index Scan `stage_runs_claim_order_idx`, **nested loop with a memoized Index Scan `jobs_open_idx`** |
-| **Sweep**: leases that expired, `FOR NO KEY UPDATE SKIP LOCKED` | system | Index Scan `attempts_lease_expiry_idx` | the same |
+| **Sweep**: leases that expired, `FOR NO KEY UPDATE SKIP LOCKED` | system | Index Scan `attempts_lease_expiry_idx` (until migration 19) | since migration 19: the live attempts through `attempts_deadline_idx`, filtered and sorted; see below |
 | **Sweep**: deadlines that passed | system | Index Scan `attempts_deadline_idx` | the same |
 | **Sweep**: teardown deadlines that passed | system | Index Scan `attempts_teardown_idx` | the same |
 | **Relay**: unpublished outbox rows, `FOR NO KEY UPDATE SKIP LOCKED` | system | Index Scan `outbox_unpublished_idx` | the same |
@@ -87,11 +87,14 @@ The partial index holds only `READY` rows: 160 of 10,000, 1,600 of 100,000. The 
 ### The sweep and the relay
 
 ```text
+-- Since migration 19 (before it: Index Scan using attempts_lease_expiry_idx, Index Cond: (lease_expires_at < now())).
+-- As recorded by `scripts/db-test.sh plans --rows 100000`, 2026-10-28:
 Limit
   ->  LockRows
-        ->  Index Scan using attempts_lease_expiry_idx on attempts
-              Index Cond: (lease_expires_at < now())
-              Filter: (status = ANY ('{STARTING,RUNNING}'::text[]))
+        ->  Sort
+              Sort Key: lease_expires_at
+              ->  Index Scan using attempts_deadline_idx on attempts
+                    Filter: ((status = ANY ('{STARTING,RUNNING}'::text[])) AND (lease_expires_at < now()))
 
 Limit
   ->  LockRows
@@ -137,7 +140,7 @@ Added by the work package `s1-database-port-alignment`. Same method, same roles,
 | Store method and query | Role | At 10,000 rows | At 100,000 rows |
 |---|---|---|---|
 | `find_claim_candidates`: `ORDER BY not_before, id LIMIT 10 FOR NO KEY UPDATE OF s SKIP LOCKED` | system | Index Scan `stage_runs_claim_order_idx`; a hash join to `jobs` and a sort of the 10 candidates (the join does not keep the order). Forced to a nested loop (as the 100,000 run chooses it): Index Scan `stage_runs_claim_order_idx`, memoized Index Scan `jobs_open_idx`, **no sort** | Index Scan `stage_runs_claim_order_idx`, nested loop with a memoized Index Scan `jobs_open_idx`, no sort |
-| `find_due_attempts`, lease expired | system | Incremental Sort over Index Scan `attempts_lease_expiry_idx` | Index Scan `attempts_lease_expiry_idx`, no sort |
+| `find_due_attempts`, lease expired | system | Incremental Sort over Index Scan `attempts_lease_expiry_idx` (until migration 19) | Index Scan `attempts_lease_expiry_idx`, no sort (until migration 19) |
 | `find_due_attempts`, deadline passed | system | Bitmap Heap Scan on `attempts_deadline_idx` and a sort (about 7 percent of the live attempts in this data are past their deadline) | Index Scan `attempts_deadline_idx`, no sort |
 | `find_due_attempts`, teardown deadline passed | system | Incremental Sort over Index Scan `attempts_teardown_idx` | Index Scan `attempts_teardown_idx`, no sort |
 | `list_jobs`, newest first, one page | tenant | Index Scan `jobs_listing_idx` | the same |

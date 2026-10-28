@@ -1,6 +1,6 @@
 # Migration safety
 
-- Status: the Slice 0 baseline (nine migrations), the five migrations of `s1-database-tenancy-and-state-sync` and the four of `s1-database-port-alignment` (state machine rows, claim protocol, Store model, listings) (supersede edge, then row-level security in four parts). What the fourteen migrations do is tested. The rules for later migrations are guidance from the PostgreSQL documentation and from ADR 0007. They have not been exercised against an earlier schema with data, because there is none. The five new migrations are new files: nothing in the first nine was amended.
+- Status: the Slice 0 baseline (nine migrations), the five migrations of `s1-database-tenancy-and-state-sync` (supersede edge, then row-level security in four parts), the four of `s1-database-port-alignment` (state machine rows, claim protocol, Store model, listings) and the one of `s1-database-review` (migration 19). What the nineteen migrations do is tested. The rules for later migrations are guidance from the PostgreSQL documentation and from ADR 0007; since `s1-database-review` they are exercised, one migration at a time, against the earlier code (`scripts/db-test.sh compat`, and the section "Version N-1 code on version N schema" below). Nothing already applied was amended.
 - Form: how-to guide and explanation.
 - Source: [ADR 0007](../adr/0007-persistence-access-and-tenancy.md) rules 1 and 2 and the "Required tests" list, the [documentation policy](../reference/documentation-policy.md) row for data and schema migrations.
 
@@ -26,6 +26,7 @@
 | 16 | `2026-10-27-001600_claim_protocol` | `stage_runs.attempts_before_last_answer`; the claim index replaced by `(not_before, id)`; `stage_runs_guard`, `attempts_insert_guard`, `attempts_update_guard` and `attempts_epoch_check` replaced by stricter versions; the deferred live-attempt check on `stage_runs` and `attempts`. |
 | 17 | `2026-10-27-001700_store_model` | `stage_runs.failing_set_sha256` and the BLOCKED outcome rule; the two attestation columns on `repositories` with their trigger; the task node rules; `jobs_bump_guard` in place of `bump_guard` on `jobs`; grants for the new columns. Constraints added `NOT VALID` and then validated. |
 | 18 | `2026-10-27-001800_listings` | The index `jobs_repository_listing_idx`. |
+| 19 | `2026-10-28-001900_lease_renewal_is_heap_only` | Drops the index `attempts_lease_expiry_idx`, so that a lease renewal can be a heap-only update (`s1-database-review`; measured in [performance.md](performance.md)). Changes a plan, not a statement. |
 
 The migrations are ordered so that each one creates objects that only depend on earlier ones. The two foreign keys that would otherwise form a cycle (`artifacts` to `stage_runs`, and `jobs` to `ledger_entries`) are added by `ALTER TABLE` in the later migration, and the second one is deferred.
 
@@ -73,7 +74,7 @@ The state lists are written out in more than one place, because a CHECK cannot r
 | `jobs_terminal_check`, `stage_runs_terminal_check`, `attempts_terminal_check`, `task_nodes_terminal_check` | The terminal states |
 | `stage_runs_stage_kind_check`, `jobs_pipeline_scope_check` | The 14 stage kinds |
 | `jobs_open_idx` | The terminal job states, in its predicate |
-| `attempts_one_active_per_stage_run`, `attempts_lease_expiry_idx`, `attempts_deadline_idx`, `attempts_teardown_idx`, and the CHECK `attempts_active_has_lease` | The live attempt states |
+| `attempts_one_active_per_stage_run`, `attempts_deadline_idx`, `attempts_teardown_idx`, and the CHECK `attempts_active_has_lease` (the lease expiry sweep reads the live set through one of the first two since migration 19) | The live attempt states |
 | `stage_runs_claim_order_idx` (migration 16; it replaced `stage_runs_claim_idx`), `stage_run_live_attempt_check` (the states that may hold a live attempt: `RUNNING`, `SUPERSEDED`) | The `READY` state; the states with a live attempt |
 | `stage_runs_guard` | Reads terminal states from `state_machine_states` and the supersede edges from `state_machine_edges`, so it follows the tables. A state that the JSON later marks `supersedable` needs one row in `state_machine_edges` (the way migration 10 added SKIPPED) and no new function |
 
@@ -111,6 +112,42 @@ A non-superuser that did not create the groups stops at migration 14 with a mess
 - **Older code on a newer schema.** The application role has column-level `UPDATE` grants and inserts name their columns, so a new nullable column does not break old code. A new `NOT NULL` column without a default would, so avoid it in an expand step.
 - **Newer code on an older schema** fails at start-up, because the application checks `__diesel_schema_migrations` (the role may read it).
 - **Triggers that reject a new value.** The status machine trigger and the CHECK lists reject a state they do not know. That is the point, and it is why widening comes first.
+
+## Version N-1 code on version N schema: the rule, the check and the matrix
+
+Added by `s1-database-review` (2026-10-28).
+
+### The rule for every later migration
+
+1. **The order of a deploy is: migrate, then roll out the code.** The migration is a deploy step, not part of the application (ADR 0007, rule 1). While the new code rolls out, and for as long as anyone wants to be able to roll the code back, **the code of the previous release runs on the new schema**. A migration is therefore allowed to add and to relax, in one step, and to nothing else.
+2. **One step (compatible with the earlier code):** a new table; a new nullable column or a column with a constant default; a new index (created `CONCURRENTLY` on a busy table); a `CHECK` or foreign key added `NOT VALID` and validated; a wider `CHECK` list; a new function under a new name; a function replaced by one that accepts everything the old one accepted; a trigger that rejects only what the earlier code never writes; an index dropped that no earlier statement needs by name (a plan changes, a statement does not); a new grant.
+3. **Two steps (expand now, contract in a later release):** dropping or renaming a column, table or index the earlier code names; narrowing a `CHECK` list; `NOT NULL` on an existing column; a changed type; a function whose result or effect changes for an input the earlier code sends; a trigger or constraint that rejects a write the earlier code makes; a `REVOKE`; a removed state machine value or edge. The expand migration ships with the code that stops using the old shape; the contract migration ships a release later, and its pull request names the release whose code is gone.
+4. **The exception that is on purpose:** migrations 12 to 14 (row-level security). Code that never sets `factory.tenant_id` sees no row after them (the `rls` suite shows it), so they are compatible only with code that sets it. The order that makes them safe is the reverse of the usual one: the code that sets the tenant ships first (the setting is harmless before the policies exist), then the migration.
+5. **Start-up check.** The storage crate refuses a database that is *behind* its migration list and accepts one that is *ahead* (`readiness::check_schema`). An earlier binary therefore starts on a newer schema; this was run (the matrix below).
+
+### The check
+
+- **At SQL level, one migration at a time: `scripts/db-test.sh compat`.** It builds the schema as it was after migration 14, writes a row in every tenant-owned table with the statements of that time, applies migrations 15 to 19 **one by one**, and after each one checks that every table still holds its rows byte for byte over the columns it had, and that the statements of the code written for migration 14 (the claim as a swap and an attempt, the lease renewal, the ledger head move with a version bump, a raised budget, the timeline reads, in [tests/compat_earlier_code.sql](tests/compat_earlier_code.sql)) still run. The first line is a control: the same statements on the schema they were written for. A migration that renames a column the earlier code uses fails both checks (shown: a `RENAME COLUMN last_heartbeat_at` migration, added for the run and removed, failed with `column "last_heartbeat_at" of relation "attempts" does not exist` and with changed rows over the old columns).
+- **With real earlier code: `scripts/db-compat-rust.sh`.** It exports the storage crate as it was at the revision `53c0938` (the last commit written for the schema after migration 14, ports v1) with `git archive`, builds its 11 integration test binaries offline, replaces the migrations folder its tests read by the first *S* migrations of this checkout, and runs the binaries at S = 14 (the control) to 19. The tests connect as the three real logins. It leaves the working tree alone.
+- **Moving the baseline.** `UPGRADE_FROM` in `scripts/db-test.sh` names the schema the earlier code was written for. When a release is cut, the release package moves it to that release's last migration, replaces `compat_earlier_code.sql` and `upgrade_fixture.sql` with the statements and rows of that release's code, and passes `--code-rev <release tag>` to the Rust runner.
+
+### The matrix
+
+Earlier code = the code written for the schema after migration 14. "SQL" is `scripts/db-test.sh compat`; "Rust" is `scripts/db-compat-rust.sh` (49 tests at the control; the full table is in [../reviews/database-review.md](../reviews/database-review.md)).
+
+| Migration | What it does | Kind | Earlier code on it |
+|---|---|---|---|
+| 1 to 9 | The baseline | no earlier code | not applicable |
+| 10 | Supersede edge for skipped runs; one function replaced | expand | no code existed before it; not tested |
+| 11 | The three more group roles | expand | not tested (no code existed) |
+| 12, 13, 14 | Row-level security: tenant isolation, system scope, lookups | **coordinated**, rule 4 | not compatible with code that does not set the tenant, by design (ADR 0012); the `rls` suite proves it |
+| 15 | `S21`, `S22` rows | expand, data only | SQL pass; Rust pass |
+| 16 | Claim protocol: a column with a default, a superset index, stricter guards | expand (the guards reject only writes no earlier code makes) | SQL pass; Rust pass, including the 13 claim and lease tests |
+| 17 | Store model: nullable columns, constraints added `NOT VALID` and validated, `jobs_bump_guard` in place of `bump_guard` | expand | SQL pass; Rust pass |
+| 18 | `jobs_repository_listing_idx` | expand | SQL pass; Rust pass |
+| 19 | Drops `attempts_lease_expiry_idx` | one step, a plan changes | SQL pass; Rust pass |
+
+One Rust test fails from schema 15 on: `tenant_isolation::refuses_a_role_that_bypasses_rls`. It is the test's simulation, not the code: to show that a database *behind* the code is refused, it deletes the newest row of `__diesel_schema_migrations`. Once the schema is ahead of the code, that row is one the old code does not list, and the code correctly starts (`Ok`, expected `SchemaBehind { missing: 1 }`). The test must delete a version the code embeds. The same line is in the current test, where it passes only because the code and the schema agree on 19; it will fail the day a migration lands without a code change. `crates/storage/tests` belongs to the storage package, so it is reported, not changed.
 
 ## Going back
 
