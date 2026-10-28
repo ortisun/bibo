@@ -306,9 +306,9 @@ The crate depends on one workspace crate, `factory-domain`, which the dependency
   - OBS-3: no code opens a `factory.agent` span (`crates/workflow`, where the engine builds the ports of a handler).
   - OBS-4: no code opens a `factory.tool_call` span (`crates/runtime`).
   - OBS-5: nothing records `factory_queue_depth` (`crates/workflow`, `src/scheduler/claim.rs`).
-  - OBS-6: nothing records `factory_stage_duration_seconds` (`crates/workflow`, `src/engine/gate.rs` and `failure.rs`).
+  - OBS-6 (fixed): nothing recorded `factory_stage_duration_seconds`. The engine now records it, with `factory_stage_runs_total`, when a decision ends a stage run (`crates/workflow`, `src/engine/ended.rs`, called from `gate.rs` and `failure.rs`). The time runs from the first start of the stage run, so it includes failed attempts, retry back-offs and waits for a person. The metrics are recorded when the decision commits, so a decision that loses a race counts nothing. The test `the_stage_duration_histogram_is_recorded_when_a_stage_run_ends` in `crates/workflow/tests/metric_names.rs` is no longer ignored.
   - OBS-7: nothing records `factory_spend_usd_total` (`crates/workflow`, `src/engine/attempt.rs`).
-  - OBS-8: `factory_stage_runs_total` is recorded only for `passed`, so the error-rate query on this page returns zero (`crates/workflow`, `src/engine/gate.rs`).
+  - OBS-8 (fixed): `factory_stage_runs_total` was recorded only for `passed`, so the error-rate query on this page returned zero. It is now recorded for every way a stage run ends: `passed`, `failed`, `blocked` and `rework_requested`. The outcome is the status the stage run holds after the decision, not a guess from the branch taken. A retry and a question to a person leave the run open and are not counted. Cancelled, skipped and superseded runs end in other code paths and are not counted yet. The test `a_failed_stage_run_is_counted_in_the_stage_run_total` in `crates/workflow/tests/metric_names.rs` is no longer ignored.
   - OBS-9: three log fields hold text chosen by a repository or a tool (`crates/sandbox` and `crates/runtime`).
   - OBS-10: no metric counts redactions (`crates/observability`; adding a metric needs the architect's review).
   - OBS-11: the attempt span does not record `factory.error_class` (`crates/workflow`, `src/engine/attempt.rs`).

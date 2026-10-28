@@ -219,6 +219,9 @@ impl Engine {
                 .await?;
             }
         }
+        // A failure that retrying cannot fix, or that blocks the run, ends it; a retry and a
+        // question to a person do not.
+        self.note_stage_end(tx, cx, run_id).await?;
         self.settle(tx, cx).await?;
         Ok(Some(disposition))
     }

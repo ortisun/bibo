@@ -29,7 +29,7 @@ Two rules for reading it.
 | Signal | Span | Metric | Log | Audit | Missing |
 |---|---|---|---|---|---|
 | 1. Stuck lease | `factory.attempt`, outcome `lease_lost` | `factory_retries_total` follows | "the sweep recovered attempts" | none | `factory_queue_depth` (OBS-5). Nothing shows a lease while it is stuck. |
-| 2. Stage over deadline | `factory.attempt`, outcome `timed_out` | `factory_retries_total` follows | "the sweep recovered attempts" | none | `factory_stage_duration_seconds` (OBS-6); `factory.error_class` on the attempt (OBS-11) |
+| 2. Stage over deadline | `factory.attempt`, outcome `timed_out` | `factory_stage_duration_seconds` by stage and outcome; `factory_retries_total` follows | "the sweep recovered attempts" | none | `factory.error_class` on the attempt (OBS-11) |
 | 3. Gate blocked by the environment | `factory.gate`, outcome `blocked` | `factory_gate_failures_total` with outcome `blocked` | none | `gate_result` | none for the count; the cause is not in telemetry |
 | 4. Cost over budget | none | none | none | `budget_threshold_crossed` | `factory_spend_usd_total` (OBS-7); `factory.agent` span with `factory.cost_usd` (OBS-3) |
 | 5. Redaction hit | marker `[REDACTED:` in attribute values and names | none | marker `[REDACTED:`, "log line dropped: redactor unavailable" | `secret_redacted_or_blocked` | a counter (OBS-10) |
@@ -62,6 +62,7 @@ Two rules for reading it.
 - Span `factory.attempt` with `factory.outcome` = `timed_out`. Search `factory.outcome=timed_out`. The span's duration is the time the attempt ran.
 - Log line, level `WARN`, message "the sweep recovered attempts", field `timed_out`. This one is written when the sweep, and not the owner, found the attempt past its deadline.
 - Metric `factory_retries_total{stage}`, as for signal 1.
+- Metric `factory_stage_duration_seconds{stage,outcome}`, a histogram of the wall-clock seconds from the first start of a stage run to its end, recorded when the run ends as `passed`, `failed`, `blocked` or `rework_requested`. The time includes failed attempts, retry back-offs and waits for a person, so a stage that is retried after timeouts shows as one long run. A run that is only paused (a retry, a question to a person) is not recorded until it ends. Runs longer than an hour land in the overflow bucket. Its companion `factory_stage_runs_total{stage,outcome}` counts the same runs, and the error rate of a stage is the share of `outcome="failed"`.
 
 **First check.**
 
@@ -70,7 +71,6 @@ Two rules for reading it.
 
 **Not yet emitted.**
 
-- `factory_stage_duration_seconds{stage,outcome}` (OBS-6). Without it there is no latency percentile per stage and no way to see a stage getting slower before it times out.
 - `factory.error_class` on the attempt span (OBS-11). A failed or timed out attempt says what happened but not the failure class.
 
 ## 3. Gate blocked by the environment
