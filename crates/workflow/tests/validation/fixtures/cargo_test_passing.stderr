@@ -1,0 +1,4 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.04s
+     Running unittests src/lib.rs (/out/target/debug/deps/word_count-6dcf66b12d2f0846)
+     Running tests/it.rs (/out/target/debug/deps/it-67492f5c7f7ebe92)
+   Doc-tests word_count
