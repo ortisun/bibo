@@ -10,6 +10,7 @@
 //!
 //! | Module | What it holds |
 //! |---|---|
+//! | [`commands`] | The pure parsers that turn a comment, command line arguments or a form into an approval command |
 //! | [`config`] | The typed configuration: files and environment, secrets by file reference, defaults that fail closed |
 //! | [`profile`] | `production`, `local`, `test`, and which port may be a fake in each |
 //! | [`registry`] | The registry of ports and the check that a profile accepts every one |
@@ -36,6 +37,7 @@
 
 pub mod assemble;
 pub mod authority;
+pub mod commands;
 pub mod config;
 pub mod database;
 pub mod delivery;
