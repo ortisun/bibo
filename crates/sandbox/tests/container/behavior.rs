@@ -18,6 +18,7 @@ use factory_testkit::fx::canary::{Canary, CanaryKind, CanarySet, Sweeper};
 use factory_testkit::fx::rng::FxRng;
 use factory_testkit::fx::spawn::{Behavior, SpawnPolicy, SpawnRecorder};
 
+use crate::hand_made::{create_network_outside_pool, seed_of};
 use crate::harness::{DriftRunner, Lab, daemon_lacks_apparmor};
 use crate::support::{self, Scratch, attempt};
 
@@ -948,47 +949,32 @@ async fn janitor_removes_orphans() {
 
     // A crash between making the network and the container leaves a network and a token directory.
     // The name carries this lab's own number, so no other run can make or sweep the same one.
-    let stray = format!(
-        "aaaaaaaa-bbbbbbbb-{:08x}",
-        lab.scope
-            .label()
-            .value()
-            .bytes()
-            .fold(0u32, |h, b| h.wrapping_mul(31).wrapping_add(u32::from(b)))
-    );
+    // The network comes from outside Docker's address pool: this test already needs two blocks of
+    // the pool for its two sandboxes, and a busy machine has little more than that to give.
+    let number = seed_of(lab.scope.label().value());
+    let stray = format!("aaaaaaaa-bbbbbbbb-{number:08x}");
     let stray = stray.as_str();
     let label = lab.scope.label();
-    lab.scope
-        .cli()
-        .run(&[
-            "network",
-            "create",
-            "--internal",
-            "--label",
-            "sf.sandbox=network",
-            "--label",
-            &format!("factory.attempt_id={}", attempt(9)),
-            "--label",
-            &label.assignment(),
-            &format!("sf-net-{stray}"),
-        ])
-        .expect("a stray network");
+    create_network_outside_pool(
+        lab.scope.cli(),
+        &format!("sf-net-{stray}"),
+        &[
+            "sf.sandbox=network".to_owned(),
+            format!("factory.attempt_id={}", attempt(9)),
+            label.assignment(),
+        ],
+    );
     std::fs::create_dir_all(lab.token_root.join(stray)).expect("a stray token directory");
     std::fs::write(lab.token_root.join(stray).join("job-token"), b"stray").expect("a stray token");
 
-    // A network that carries the marker but not this provider's owner label is not touched.
-    let foreign = format!("sf-net-ffffffff-ffffffff-{:08x}", std::process::id());
-    lab.scope
-        .cli()
-        .run(&[
-            "network",
-            "create",
-            "--internal",
-            "--label",
-            "sf.sandbox=network",
-            &foreign,
-        ])
-        .expect("a foreign network");
+    // A network that carries the marker but not this provider's owner label is not touched. Its
+    // name carries the run label (this process and a random part), so no other run makes the same.
+    let foreign = format!("sf-net-ffffffff-ffffffff-{number:08x}");
+    create_network_outside_pool(
+        lab.scope.cli(),
+        &foreign,
+        &["sf.sandbox=network".to_owned()],
+    );
     // The janitor must leave this one alone, so the lab's cleanup (by owner label) cannot remove it
     // either. This guard removes it, whether the test passes or fails.
     struct RemoveNetwork(factory_testkit::fx::docker::DockerCli, String);
@@ -1050,10 +1036,12 @@ async fn janitor_removes_orphans() {
     );
     assert!(lab.leftovers().is_empty(), "{:?}", lab.leftovers());
     assert_eq!(lab.token_files(), 0);
-    lab.scope
+    let removed = lab
+        .scope
         .cli()
         .run(&["network", "rm", &foreign])
         .expect("remove the foreign network");
+    assert!(removed.success(), "remove the foreign network: {removed:?}");
     lab.world.provider.finish_background_cleanups().await;
 }
 
