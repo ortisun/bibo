@@ -2,7 +2,7 @@
 
 use std::sync::LazyLock;
 
-use factory_domain::ids::TenantId;
+use factory_domain::ids::{JobId, TenantId};
 use factory_domain::policy::authority::{
     ActionVerdict, Actor, ActorKind, Allowlist, AllowlistEntry, AutonomyLevel,
 };
@@ -11,7 +11,7 @@ use factory_domain::policy::{ApprovalPolicy, PolicyEngine, SecurityPolicy};
 use factory_domain::values::{Sha256Digest, Timestamp};
 use factory_domain::vocabulary::RiskTier;
 use factory_workflow::gates::supply_chain::approval::{
-    ApprovalError, DependencyApproval, Request, Subject, authorize,
+    ApprovalError, DecisionScope, DependencyApproval, Request, Subject, authorize,
 };
 
 const SECURITY_POLICY: &str = include_str!("../../../domain/tests/fixtures/policy/security.json");
@@ -60,6 +60,19 @@ pub fn build_engine(extra_cargo_subcommands: &[&str]) -> PolicyEngine {
     let approval: ApprovalPolicy =
         serde_json::from_str(APPROVAL_POLICY).expect("the approval policy fixture");
     PolicyEngine::new(&security, &approval).expect("a policy engine")
+}
+
+/// The job every decision of the tests is for.
+pub fn job() -> JobId {
+    JobId::parse("018f3a00-0000-7000-8000-00000000d001").expect("a job")
+}
+
+/// The tenant and the job a decision of the tests is for.
+pub fn scope() -> DecisionScope {
+    DecisionScope {
+        tenant: tenant(),
+        job: job(),
+    }
 }
 
 pub fn tenant() -> TenantId {
@@ -154,6 +167,7 @@ pub fn approve(
         &proof,
         subject.clone(),
         policy_hash(),
+        scope(),
         "Reviewed the package, its maintainers and its license.",
     )
 }

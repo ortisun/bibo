@@ -16,12 +16,12 @@
 //! document, and the recorded approvals it hands back to the next run are what let step 3 start.
 
 use factory_domain::contracts::GateReport;
-use factory_domain::values::Timestamp;
+use factory_domain::values::{Sha256Digest, Timestamp};
 use factory_ports::paths::CommitSha;
 use serde_json::Value;
 
-use super::approval::DependencyApproval;
-use super::facts::RegistryMetadata;
+use super::approval::{DecisionScope, DependencyApproval};
+use super::facts::{AdvisoryDatabase, DatabaseAge, RegistryMetadata};
 use super::integrity::{BaseUnreadable, Context, inspect};
 use super::model::{DependencyFormat, Side, normalize};
 use super::report::{Evaluation, Reporter};
@@ -44,6 +44,10 @@ pub struct Inputs<'a> {
     pub approvals: &'a [DependencyApproval],
     /// Where the facts about the new packages come from.
     pub registry: &'a dyn RegistryMetadata,
+    /// The advisory database the audit reads: its age is a fact the advisory gate requires.
+    pub advisory_db: &'a dyn AdvisoryDatabase,
+    /// The hash of the policy bundle in force. A decision taken under another one is not valid.
+    pub policy_hash: &'a Sha256Digest,
     /// What every report shares: the run, the definition, the binding.
     pub report: ReportContext,
 }
@@ -96,6 +100,11 @@ pub async fn run(io: &Io<'_>, inputs: &Inputs<'_>) -> Result<Done, StageError> {
         internal_names: &cfg.internal_names,
         popular,
         now,
+        scope: DecisionScope {
+            tenant: io.scope.tenant_id(),
+            job: io.job,
+        },
+        policy_hash: inputs.policy_hash,
     };
     let plan = Plan::new(integrity, &registry, inputs.approvals, &settings);
 
@@ -118,12 +127,18 @@ pub async fn run(io: &Io<'_>, inputs: &Inputs<'_>) -> Result<Done, StageError> {
         None
     };
 
+    let database = DatabaseAge::judge(
+        &now,
+        inputs.advisory_db.updated_at().await,
+        cfg.advisory_db_max_age_days,
+    );
     let evaluation = Evaluation {
         plan: Ok(&plan),
         fetched: fetched.as_ref(),
         conclusion: conclusion.as_ref(),
         scanned: scanned.as_ref(),
         sbom_required: cfg.sbom.required,
+        database,
     };
     let reports = reporter(io, inputs, now)?
         .reports(&evaluation)
@@ -148,6 +163,7 @@ fn unreadable_base(
         conclusion: None,
         scanned: None,
         sbom_required: io.cfg.sbom.required,
+        database: DatabaseAge::Unknown,
     };
     let reports = reporter(io, inputs, now)?
         .reports(&evaluation)

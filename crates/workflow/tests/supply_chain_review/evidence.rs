@@ -15,7 +15,7 @@ use factory_workflow::gates::supply_chain::names::PopularNames;
 use factory_workflow::gates::supply_chain::review::{Plan, RegistryTable, Settings};
 
 use crate::files::{base, head_adding, side};
-use crate::people::{engine, now};
+use crate::people::{engine, now, policy_hash, scope};
 
 fn plan_for(record: RegistryRecord) -> Plan {
     let popular = PopularNames::bundled().expect("the bundled list");
@@ -38,6 +38,8 @@ fn plan_for(record: RegistryRecord) -> Plan {
             internal_names: &[],
             popular: &popular,
             now: now(),
+            scope: scope(),
+            policy_hash: &policy_hash(),
         },
     )
 }

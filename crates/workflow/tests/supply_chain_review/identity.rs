@@ -25,7 +25,7 @@ use factory_workflow::gates::supply_chain::report::gate;
 use factory_workflow::gates::supply_chain::review::{Plan, RegistryTable, Settings};
 
 use crate::files::{Files, files, judge, judge_with, lock, manifest, member, reg};
-use crate::people::{engine, now};
+use crate::people::{engine, now, policy_hash, scope};
 use crate::world::{Script, World, metadata};
 
 const WORKSPACE_APP: &str = "[workspace]\nmembers = [\"app\"]\nresolver = \"2\"\n";
@@ -278,6 +278,8 @@ fn plan_with(integrity: Integrity, internal: &[String]) -> Plan {
             internal_names: internal,
             popular: &popular,
             now: now(),
+            scope: scope(),
+            policy_hash: &policy_hash(),
         },
     )
 }

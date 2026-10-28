@@ -25,10 +25,10 @@ use factory_domain::policy::decision::Designation;
 use factory_domain::policy::dependency::{
     DependencyDecision, DependencyFlag, DependencyPolicy, DependencyRequest, RegistryFacts,
 };
-use factory_domain::values::Timestamp;
+use factory_domain::values::{Sha256Digest, Timestamp};
 use serde_json::{Value, json};
 
-use super::approval::{DependencyApproval, Subject};
+use super::approval::{DecisionScope, DependencyApproval, Subject};
 use super::facts::RegistryRecord;
 use super::findings::{Finding, check};
 use super::integrity::{Integrity, NewDirect};
@@ -53,6 +53,12 @@ pub struct Settings<'a> {
     pub popular: &'a PopularNames,
     /// The time of the review, from the clock port.
     pub now: Timestamp,
+    /// The tenant and the job under review. A recorded decision for another tenant or job does
+    /// not count.
+    pub scope: DecisionScope,
+    /// The hash of the policy bundle in force now. A decision taken under another bundle does not
+    /// count: the policy may have tightened since, and a decision is not a standing waiver.
+    pub policy_hash: &'a Sha256Digest,
 }
 
 /// One new direct dependency and what it needs.
@@ -114,7 +120,11 @@ impl Plan {
         let mut plan = Self {
             needs: Vec::new(),
             findings: Vec::new(),
-            approvals: approvals.to_vec(),
+            approvals: approvals
+                .iter()
+                .filter(|approval| approval.is_valid_for(&settings.scope, settings.policy_hash))
+                .cloned()
+                .collect(),
             internal_names,
             integrity,
         };

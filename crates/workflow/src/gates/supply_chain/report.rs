@@ -21,6 +21,7 @@ use factory_domain::redaction::Redactor;
 use factory_domain::values::{Sha256Digest, Timestamp};
 use factory_ports::clock::IdGenerator;
 
+use super::facts::DatabaseAge;
 use super::findings::{Finding, check};
 use super::integrity::BaseUnreadable;
 use super::model::plain;
@@ -63,6 +64,8 @@ pub struct Evaluation<'a> {
     pub scanned: Option<&'a Scanned>,
     /// True when the job requires an SBOM (a release or a high-risk job).
     pub sbom_required: bool,
+    /// How old the advisory database the audit read is.
+    pub database: DatabaseAge,
 }
 
 /// Builds the reports of one run.
@@ -653,6 +656,31 @@ impl Reporter<'_> {
                 Vec::new(),
                 Outcome::Blocked(*code, self.clean(missing)),
             ),
+            // A clean answer from a database of unknown age or beyond the limit is not a clean
+            // audit: with `--no-fetch` the tool checks nothing about the age and prints no date.
+            AuditEnd::Clean(_) if !matches!(ev.database, DatabaseAge::Fresh { .. }) => {
+                let (code, missing, reason) = match ev.database {
+                    DatabaseAge::Stale { days, limit } => (
+                        BlockedCode::DependencyUnavailable,
+                        format!("an advisory database updated within the last {limit} day(s) (this one is {days} day(s) old)"),
+                        format!("The audit found nothing, but its advisory database is more than {limit} day(s) old, so the answer says nothing about advisories published since."),
+                    ),
+                    _ => (
+                        BlockedCode::DependencyUnavailable,
+                        "the date of the advisory database the audit read".to_owned(),
+                        "The audit found nothing, but nothing says how old its advisory database is, and an audit that cannot say so is not a clean one.".to_owned(),
+                    ),
+                };
+                self.make(
+                    gate::ADVISORIES,
+                    TITLE,
+                    &reason,
+                    self.verify_environment(scanned, seen)?,
+                    seen,
+                    Vec::new(),
+                    Outcome::Blocked(code, self.clean(&missing)),
+                )
+            }
             AuditEnd::Clean(result) => {
                 let warnings = if result.warnings > 0 {
                     vec![warning(
@@ -663,10 +691,14 @@ impl Reporter<'_> {
                 } else {
                     Vec::new()
                 };
+                let age = match ev.database {
+                    DatabaseAge::Fresh { days } => days,
+                    _ => 0,
+                };
                 self.make(
                     gate::ADVISORIES,
                     TITLE,
-                    "The audit found no advisory against the locked packages.",
+                    &format!("The audit found no advisory against the locked packages, in an advisory database updated {age} day(s) ago."),
                     self.verify_environment(scanned, seen)?,
                     seen,
                     warnings,

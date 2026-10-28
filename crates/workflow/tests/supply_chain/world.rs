@@ -16,7 +16,7 @@ use factory_domain::contracts::{ArtifactRef, Contract, GateReport, Violation};
 use factory_domain::ids::{AttemptId, JobId, StageRunId, TenantId};
 use factory_domain::redaction::{PatternAction, Redactor};
 use factory_domain::scope::TenantScope;
-use factory_domain::values::{GitSha, MediaType, Sha256Digest};
+use factory_domain::values::{GitSha, MediaType, Sha256Digest, Timestamp};
 use factory_domain::vocabulary::{ExecutionMode, Fidelity, GateOutcome};
 use factory_ports::artifact::{ArtifactBackend, ArtifactError, ArtifactStore};
 use factory_ports::clock::CancelSignal;
@@ -43,14 +43,16 @@ use factory_testkit::workspace::{FakeRemote, FakeWorkspaceProvider};
 use factory_workflow::gates::command::report::{ReportContext, Subject};
 use factory_workflow::gates::supply_chain::approval::DependencyApproval;
 use factory_workflow::gates::supply_chain::cargo::CargoFormat;
-use factory_workflow::gates::supply_chain::facts::{RegistryMetadata, StaticRegistry};
+use factory_workflow::gates::supply_chain::facts::{
+    RegistryMetadata, StaticDatabase, StaticRegistry,
+};
 use factory_workflow::gates::supply_chain::gate::{Done, Inputs, run};
 use factory_workflow::gates::supply_chain::licenses::LicensePolicy;
 use factory_workflow::gates::supply_chain::model::Side;
 use factory_workflow::gates::supply_chain::names::PopularNames;
 use factory_workflow::gates::supply_chain::review::Plan;
 use factory_workflow::gates::supply_chain::run::{
-    Bounds, FetchSandbox, Io, SbomRule, SupplyChainConfig,
+    Bounds, DEFAULT_ADVISORY_DB_MAX_AGE_DAYS, FetchSandbox, Io, SbomRule, SupplyChainConfig,
 };
 use factory_workflow::gates::supply_chain::run::{
     Fetched, Scanned, fetch, fetch_spec, scan, verify_spec,
@@ -580,6 +582,7 @@ pub struct World {
     pub branch: BranchName,
     pub redactor: Arc<Redactor>,
     pub sbom_subcommands: Vec<&'static str>,
+    database: Mutex<Option<Timestamp>>,
     runtime: FakeAgentRuntime,
     router: StaticModelRouter,
     registry: InMemoryAgentRegistry,
@@ -608,7 +611,9 @@ fn limits() -> SandboxLimits {
 impl World {
     pub fn new() -> Self {
         let fixture = Ids::new();
-        let tenant = fixture.tenant();
+        // The tenant and the job of the decisions in `people`, so that a recorded decision is for
+        // the run the world makes.
+        let tenant = super::people::tenant();
         let clock = Arc::new(FakeClock::starting_at("2026-10-28T12:00:00Z"));
         let ids = Arc::new(SequentialIdGenerator::new());
         let artifacts = Arc::new(Granting {
@@ -650,11 +655,15 @@ impl World {
             registry: InMemoryAgentRegistry::new(),
             broker: Arc::new(FakeModelBroker::new(clock.clone(), ids.clone())),
             validator: SchemaValidator,
-            job: fixture.job(),
+            job: super::people::job(),
             stage_run: fixture.stage_run(),
             attempt: fixture.attempt(),
             branch: BranchName::new("main").expect("a branch"),
             sbom_subcommands: Vec::new(),
+            // One day old at the time of the fake clock.
+            database: Mutex::new(Some(
+                Timestamp::parse("2026-10-27T12:00:00Z").expect("a time"),
+            )),
             clock,
             ids,
             artifacts,
@@ -727,8 +736,14 @@ impl World {
                 required: sbom_required,
                 tool: SbomTool::default(),
             },
+            advisory_db_max_age_days: DEFAULT_ADVISORY_DB_MAX_AGE_DAYS,
             bounds: Bounds::default(),
         }
+    }
+
+    /// Sets the date of the advisory database the audit reads, or says it is not known.
+    pub fn database_updated(&self, at: Option<Timestamp>) {
+        *lock(&self.database) = at;
     }
 
     pub fn ports(&self) -> StagePorts<'_> {
@@ -785,6 +800,8 @@ impl World {
             fidelity: Fidelity::Fake,
             binding: Sha256Digest::of(b"binding"),
         };
+        let database = StaticDatabase(*lock(&self.database));
+        let policy_hash = super::people::policy_hash();
         let inputs = Inputs {
             format: &format,
             base: &base_side,
@@ -792,6 +809,8 @@ impl World {
             head_commit: &head_commit,
             approvals,
             registry,
+            advisory_db: &database,
+            policy_hash: &policy_hash,
             report,
         };
         let done = run(&io, &inputs).await?;

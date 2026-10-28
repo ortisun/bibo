@@ -127,9 +127,18 @@ pub struct SupplyChainConfig {
     pub internal_names: Vec<String>,
     /// The SBOM rule.
     pub sbom: SbomRule,
+    /// The most whole days old the advisory database may be. `policies/security.yaml` has no row
+    /// for this yet, so it is configuration with a conservative default
+    /// ([`DEFAULT_ADVISORY_DB_MAX_AGE_DAYS`], the 7 days `deny.toml` demands of the factory's
+    /// own CI). A database older than this, or of unknown age, blocks the advisory gate.
+    pub advisory_db_max_age_days: u64,
     /// Bounds.
     pub bounds: Bounds,
 }
+
+/// The default limit on the age of the advisory database, equal to `maximum-db-staleness = "P7D"`
+/// in `deny.toml`.
+pub const DEFAULT_ADVISORY_DB_MAX_AGE_DAYS: u64 = 7;
 
 impl std::fmt::Debug for SupplyChainConfig {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
