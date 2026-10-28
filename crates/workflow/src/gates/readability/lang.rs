@@ -233,9 +233,10 @@ fn english_strong(word: &str) -> bool {
     )
 }
 
-/// Points for Portuguese and for English in one word, which is already in lower case and has no
-/// punctuation around it.
-fn points(word: &str) -> (u32, u32) {
+/// What one word says: points for Portuguese, whether they are strong evidence (a word of the
+/// Portuguese list or a letter English does not use), and points for English. The word is already
+/// in lower case and has no punctuation around it.
+fn points(word: &str) -> (u32, bool, u32) {
     let accent = if word.contains(['ã', 'õ', 'ç']) {
         2
     } else if word.contains(['á', 'é', 'í', 'ó', 'ú', 'â', 'ê', 'ô', 'à']) {
@@ -243,26 +244,36 @@ fn points(word: &str) -> (u32, u32) {
     } else {
         0
     };
+    let strong = portuguese_strong(word) || accent == 2;
     let listed = if portuguese_strong(word) {
         2
     } else {
         u32::from(portuguese_weak(word))
     };
-    (listed.max(accent), if english_strong(word) { 2 } else { 0 })
+    (
+        listed.max(accent),
+        strong,
+        if english_strong(word) { 2 } else { 0 },
+    )
 }
 
 /// True when the text is Portuguese by the count of function words.
+///
+/// The words that English shares (`no`, `do`, `e`, `o`, `os`, `com`) only add to the count. They
+/// never decide alone: "No I/O, no clock, no randomness" has three `no` and is English. At least
+/// one word has to be Portuguese and not English.
 pub(super) fn is_portuguese(text: &str) -> bool {
-    let (mut portuguese, mut english) = (0_u32, 0_u32);
+    let (mut portuguese, mut english, mut strong) = (0_u32, 0_u32, 0_u32);
     for token in text.split_whitespace() {
         let word = token
             .trim_matches(|c: char| !c.is_alphanumeric())
             .to_lowercase();
-        let (pt, en) = points(&word);
+        let (pt, is_strong, en) = points(&word);
         portuguese = portuguese.saturating_add(pt);
         english = english.saturating_add(en);
+        strong = strong.saturating_add(u32::from(is_strong));
     }
-    portuguese >= 3 && portuguese > english
+    portuguese >= 3 && strong >= 1 && portuguese > english
 }
 
 #[cfg(test)]
@@ -276,6 +287,10 @@ mod tests {
             "Corrigir movimento do personagem em rampas",
             "Quando o personagem sobe uma rampa suave, ele perde velocidade.",
             "Quem esquece a senha hoje precisa falar com o suporte.",
+            "Adicionar um botão de pausa na tela do jogo.",
+            "O sistema deve enviar um e-mail de confirmação quando o usuário se cadastrar.",
+            "Corrigir o cálculo do imposto para clientes com mais de um endereço.",
+            "Criar uma tela de login com autenticação por senha.",
         ] {
             assert!(is_portuguese(text), "{text}");
         }
@@ -288,6 +303,9 @@ mod tests {
             "Keep the names IPCA and Selic as they are, because they are the terms the team uses.",
             "Use the same coyote time of 0.1 seconds.",
             "Do not touch the movement of the enemies in the app.",
+            // Found by reading the repository's own documents: three `no` are not Portuguese.
+            "No I/O, no clock, no randomness.",
+            "Do no harm, and do it on the first run.",
             "",
         ] {
             assert!(!is_portuguese(text), "{text}");
