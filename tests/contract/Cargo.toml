@@ -1,0 +1,39 @@
+[package]
+name = "factory-fixture-contract"
+version = "0.0.0"
+edition = "2024"
+rust-version = "1.98"
+publish = false
+description = "Contract tests that pin the word-count fixture repository."
+
+# A standalone cargo project, not a member of the factory workspace: the root manifest lists its
+# members by name (`xtask`, `crates/*`, `apps/*`) and this package belongs to the QA work package
+# `s1-fixture-and-e2e-harness`, which does not own the root manifest. The empty table below makes
+# this directory its own workspace root. To bring it into the factory workspace later, delete the
+# table and add `tests/contract` to the members of the root manifest.
+[workspace]
+
+[lib]
+name = "fixture_contract"
+path = "src/lib.rs"
+
+[[bin]]
+name = "check-fixture"
+path = "src/bin/check_fixture.rs"
+
+# The loader that reads `.factory/project.yaml` the way the intake stage does, and the redactor
+# that finds secret-shaped text. Both are path dependencies on the factory's own crates, so a
+# change to the schema or the loader moves this check with them.
+[dependencies]
+factory-contracts = { path = "../../crates/contracts" }
+factory-domain = { path = "../../crates/domain" }
+# Reads `infra/sandbox-images/images.json` to find the pinned verify image. The version and the
+# feature set are the ones the factory workspace already resolves.
+serde_json = { version = "1.0.154", default-features = false, features = ["std"] }
+
+[lints.rust]
+unsafe_code = "forbid"
+rust_2018_idioms = { level = "warn", priority = -1 }
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }
