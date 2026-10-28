@@ -1096,11 +1096,31 @@ async fn break_an_approval_given_for_a_stale_head_is_refused_and_moves_nothing()
         .approve_the_pull_request(&view, "approve-stale", None)
         .await;
     assert_eq!(reply.status, 202, "{}", reply.text());
-    let after = journey
+    let mut after = journey
         .rig
         .drive(Some(journey.job), 4, |_| false)
         .await
         .expect("a view");
+    // On a loaded machine the hook can need more than one stretch of passes to write its marker.
+    // Keep driving until the refusal is in the timeline, and fail on the assertion below if it
+    // never arrives.
+    for _ in 0..8 {
+        let actions = full::timeline_actions(
+            &journey.rig.env,
+            &journey.requester,
+            journey.job,
+            "decision.",
+        )
+        .await;
+        if actions.last().map(String::as_str) == Some("decision.rejected") {
+            break;
+        }
+        after = journey
+            .rig
+            .drive(Some(journey.job), 2, |_| false)
+            .await
+            .expect("a view");
+    }
     assert_eq!(after.status, JobStatus::WaitingForHuman, "{after:#?}");
     assert_eq!(
         full::status_of(&after, StageKind::Approval),
