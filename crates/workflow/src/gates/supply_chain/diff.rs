@@ -1,14 +1,27 @@
 //! The difference between two lockfiles: which packages came, went and changed.
 //!
-//! Packages are matched by name (as cargo compares names) and, when a name has several versions,
-//! by version. A version that exists on both sides is compared for its source and checksum. A
-//! version that exists on one side only is paired with a version of the same compatibility series
-//! on the other side, and the pair is an upgrade or a downgrade. A version with no partner is an
-//! added or a removed package, which is how a second, incompatible copy of a crate looks.
+//! A package is identified by its **name** (as cargo compares names), its **version** and its
+//! **source**. Two packages with the same name and version from different sources are two
+//! packages: a workspace member and a registry package can sit side by side in one lockfile, and
+//! the diff must not take one for the other.
+//!
+//! The packages of both sides are matched in three steps:
+//!
+//! 1. A package whose name, version and source exist on both sides is the same package, and its
+//!    checksum is compared. Equal identities pair off one to one, in file order.
+//! 2. What is left is grouped by name, and a leftover of the new side is paired with the first
+//!    leftover of the old side in the same compatibility series: an upgrade, a downgrade, or a
+//!    change of source when the versions are equal. A version that cannot be ordered pairs with
+//!    any leftover of its name and is flagged.
+//! 3. A leftover with no partner is an added or a removed package, which is how a second,
+//!    incompatible copy of a crate looks.
+//!
+//! Every step works on maps built once, so the cost grows with the size of the lockfiles and not
+//! with its square.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 
-use super::model::{LockedPackage, Lockfile, normalize};
+use super::model::{LockedPackage, Lockfile, Origin, normalize};
 use super::version::Version;
 
 /// How a package that stayed changed.
@@ -48,6 +61,13 @@ pub struct LockDiff {
     pub changed: Vec<Change>,
 }
 
+/// The identity of a package inside its name group: version and source.
+type Identity<'a> = (&'a str, &'a Origin);
+
+fn identity(package: &LockedPackage) -> Identity<'_> {
+    (package.version.as_str(), &package.origin)
+}
+
 impl LockDiff {
     /// True when the two lockfiles resolve the same packages from the same places.
     #[must_use]
@@ -58,70 +78,72 @@ impl LockDiff {
     /// Compares the lockfile of the base commit with the one of the candidate.
     #[must_use]
     pub fn between(base: &Lockfile, head: &Lockfile) -> Self {
-        let names: BTreeSet<String> = base
-            .packages
-            .iter()
-            .chain(&head.packages)
-            .map(|package| normalize(&package.name))
-            .collect();
+        let before = group(base);
+        let after = group(head);
+        let names: BTreeSet<&String> = before.keys().chain(after.keys()).collect();
         let mut diff = Self::default();
+        let none: Vec<&LockedPackage> = Vec::new();
         for name in names {
-            let of = |lock: &Lockfile| -> Vec<LockedPackage> {
-                lock.packages
-                    .iter()
-                    .filter(|package| normalize(&package.name) == name)
-                    .cloned()
-                    .collect()
-            };
-            diff.compare_name(&of(base), &of(head));
+            diff.compare_name(
+                before.get(name).unwrap_or(&none),
+                after.get(name).unwrap_or(&none),
+            );
         }
         diff
     }
 
-    fn compare_name(&mut self, before: &[LockedPackage], after: &[LockedPackage]) {
+    fn compare_name(&mut self, before: &[&LockedPackage], after: &[&LockedPackage]) {
+        // Step 1: the same name, version and source on both sides.
+        let mut waiting: HashMap<Identity<'_>, VecDeque<usize>> = HashMap::new();
+        for (position, new) in after.iter().enumerate() {
+            waiting
+                .entry(identity(new))
+                .or_default()
+                .push_back(position);
+        }
+        let mut taken = vec![false; after.len()];
         let mut unmatched_before: Vec<&LockedPackage> = Vec::new();
         for old in before {
-            match after.iter().find(|new| new.version == old.version) {
-                Some(new) => {
-                    if new.origin != old.origin {
-                        self.change(old, new, ChangeKind::SourceChanged);
-                    } else if new.checksum != old.checksum {
-                        self.change(old, new, ChangeKind::ChecksumOnly);
+            let partner = waiting
+                .get_mut(&identity(old))
+                .and_then(VecDeque::pop_front);
+            match partner {
+                Some(position) => {
+                    taken[position] = true;
+                    if after[position].checksum != old.checksum {
+                        self.change(old, after[position], ChangeKind::ChecksumOnly);
                     }
                 }
                 None => unmatched_before.push(old),
             }
         }
-        for new in after
-            .iter()
-            .filter(|new| !before.iter().any(|old| old.version == new.version))
-        {
-            let partner = unmatched_before.iter().position(|old| {
-                match (Version::parse(&old.version), Version::parse(&new.version)) {
-                    (Some(a), Some(b)) => a.series() == b.series(),
-                    // A version that is not a version cannot be told apart from another one
-                    // of its package, so it is paired and flagged.
-                    _ => true,
-                }
-            });
-            match partner {
-                Some(index) => {
-                    let old = unmatched_before.remove(index);
-                    let kind = if new.origin != old.origin {
-                        ChangeKind::SourceChanged
-                    } else {
-                        match (Version::parse(&old.version), Version::parse(&new.version)) {
-                            (Some(a), Some(b)) if b > a => ChangeKind::Upgrade,
-                            (Some(a), Some(b)) if b < a => ChangeKind::Downgrade,
-                            _ => ChangeKind::Unordered,
-                        }
-                    };
-                    self.change(old, new, kind);
-                }
-                None => self.added.push(new.clone()),
+
+        // Steps 2 and 3: what is left, paired by series.
+        let mut pool = Pool::new(&unmatched_before);
+        for (position, new) in after.iter().enumerate() {
+            if taken[position] {
+                continue;
+            }
+            match pool.take_partner(new) {
+                Some(old) => self.pair(old, new),
+                None => self.added.push((*new).clone()),
             }
         }
-        self.removed.extend(unmatched_before.into_iter().cloned());
+        self.removed
+            .extend(pool.rest().into_iter().map(Clone::clone));
+    }
+
+    fn pair(&mut self, old: &LockedPackage, new: &LockedPackage) {
+        let kind = if new.origin != old.origin {
+            ChangeKind::SourceChanged
+        } else {
+            match (Version::parse(&old.version), Version::parse(&new.version)) {
+                (Some(a), Some(b)) if b > a => ChangeKind::Upgrade,
+                (Some(a), Some(b)) if b < a => ChangeKind::Downgrade,
+                _ => ChangeKind::Unordered,
+            }
+        };
+        self.change(old, new, kind);
     }
 
     fn change(&mut self, before: &LockedPackage, after: &LockedPackage, kind: ChangeKind) {
@@ -133,10 +155,89 @@ impl LockDiff {
     }
 }
 
+/// The packages of a lockfile by normalized name, in file order.
+fn group(lock: &Lockfile) -> BTreeMap<String, Vec<&LockedPackage>> {
+    let mut groups: BTreeMap<String, Vec<&LockedPackage>> = BTreeMap::new();
+    for package in &lock.packages {
+        groups
+            .entry(normalize(&package.name))
+            .or_default()
+            .push(package);
+    }
+    groups
+}
+
+/// The packages of the old side that no package of the new side matched, indexed so that the
+/// first partner of a new package is found without a scan.
+struct Pool<'a> {
+    /// By position in the file.
+    all: BTreeMap<usize, &'a LockedPackage>,
+    /// Positions of orderable versions, by compatibility series.
+    by_series: BTreeMap<(u64, u64, u64), BTreeSet<usize>>,
+    /// Positions of versions that cannot be ordered.
+    unordered: BTreeSet<usize>,
+}
+
+impl<'a> Pool<'a> {
+    fn new(packages: &[&'a LockedPackage]) -> Self {
+        let mut pool = Self {
+            all: BTreeMap::new(),
+            by_series: BTreeMap::new(),
+            unordered: BTreeSet::new(),
+        };
+        for (position, package) in packages.iter().enumerate() {
+            pool.all.insert(position, package);
+            match Version::parse(&package.version) {
+                Some(version) => {
+                    pool.by_series
+                        .entry(version.series())
+                        .or_default()
+                        .insert(position);
+                }
+                None => {
+                    pool.unordered.insert(position);
+                }
+            }
+        }
+        pool
+    }
+
+    /// The first old package that `new` replaces: one of its series, or any when either version
+    /// cannot be ordered.
+    fn take_partner(&mut self, new: &LockedPackage) -> Option<&'a LockedPackage> {
+        let position = match Version::parse(&new.version) {
+            None => self.all.keys().next().copied(),
+            Some(version) => {
+                let in_series = self
+                    .by_series
+                    .get(&version.series())
+                    .and_then(|set| set.iter().next().copied());
+                let unordered = self.unordered.iter().next().copied();
+                match (in_series, unordered) {
+                    (Some(a), Some(b)) => Some(a.min(b)),
+                    (a, b) => a.or(b),
+                }
+            }
+        }?;
+        let package = self.all.remove(&position)?;
+        self.unordered.remove(&position);
+        if let Some(version) = Version::parse(&package.version)
+            && let Some(set) = self.by_series.get_mut(&version.series())
+        {
+            set.remove(&position);
+        }
+        Some(package)
+    }
+
+    /// What no new package replaced, in file order.
+    fn rest(self) -> Vec<&'a LockedPackage> {
+        self.all.into_values().collect()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::gates::supply_chain::model::Origin;
 
     fn package(name: &str, version: &str, checksum: &str) -> LockedPackage {
         LockedPackage {
@@ -144,6 +245,16 @@ mod tests {
             version: version.to_owned(),
             origin: Origin::Registry,
             checksum: Some(checksum.to_owned()),
+            dependencies: Vec::new(),
+        }
+    }
+
+    fn member(name: &str, version: &str) -> LockedPackage {
+        LockedPackage {
+            name: name.to_owned(),
+            version: version.to_owned(),
+            origin: Origin::Path,
+            checksum: None,
             dependencies: Vec::new(),
         }
     }
@@ -229,5 +340,68 @@ mod tests {
         let base = lock(vec![package("foo-bar", "1.0.0", "aa")]);
         let head = lock(vec![package("foo_bar", "1.0.0", "aa")]);
         assert!(LockDiff::between(&base, &head).is_empty());
+    }
+
+    /// SC-2. The identity of a package is name, version and source. A registry package with the
+    /// name and version of a workspace member is a new package, whichever of the two comes first
+    /// in the file.
+    #[test]
+    fn a_registry_package_beside_a_member_of_the_same_name_and_version_is_added() {
+        let base = lock(vec![member("foo", "0.1.0")]);
+        for order in [0, 1] {
+            let mut packages = vec![member("foo", "0.1.0"), package("foo", "0.1.0", "aa")];
+            if order == 1 {
+                packages.reverse();
+            }
+            let diff = LockDiff::between(&base, &lock(packages));
+            assert_eq!(diff.added.len(), 1, "order {order}");
+            assert_eq!(diff.added[0].origin, Origin::Registry, "order {order}");
+            assert!(diff.changed.is_empty() && diff.removed.is_empty());
+        }
+    }
+
+    #[test]
+    fn a_member_replaced_by_a_registry_package_of_the_same_version_is_a_source_change() {
+        let base = lock(vec![member("foo", "0.1.0")]);
+        let head = lock(vec![package("foo", "0.1.0", "aa")]);
+        let diff = LockDiff::between(&base, &head);
+        assert_eq!(diff.changed.len(), 1);
+        assert_eq!(diff.changed[0].kind, ChangeKind::SourceChanged);
+    }
+
+    #[test]
+    fn a_repeated_package_is_matched_once_for_each_copy() {
+        let base = lock(vec![package("a", "1.0.0", "aa")]);
+        let head = lock(vec![
+            package("a", "1.0.0", "aa"),
+            package("a", "1.0.0", "aa"),
+        ]);
+        let diff = LockDiff::between(&base, &head);
+        assert_eq!(diff.added.len(), 1, "the second copy is new");
+    }
+
+    #[test]
+    fn many_versions_of_one_name_are_paired_by_series_and_in_file_order() {
+        let base = lock(vec![
+            package("a", "1.0.0", "a1"),
+            package("a", "2.0.0", "a2"),
+            package("a", "0.3.0", "a3"),
+        ]);
+        let head = lock(vec![
+            package("a", "1.5.0", "b1"),
+            package("a", "2.4.0", "b2"),
+            package("a", "0.3.2", "b3"),
+            package("a", "3.0.0", "b4"),
+        ]);
+        let diff = LockDiff::between(&base, &head);
+        assert_eq!(diff.changed.len(), 3);
+        assert!(
+            diff.changed
+                .iter()
+                .all(|change| change.kind == ChangeKind::Upgrade)
+        );
+        assert_eq!(diff.added.len(), 1);
+        assert_eq!(diff.added[0].version, "3.0.0");
+        assert!(diff.removed.is_empty());
     }
 }

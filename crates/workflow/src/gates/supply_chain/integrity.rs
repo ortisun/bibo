@@ -16,7 +16,8 @@
 //! | An older version than before; a version that cannot be ordered | `version-downgrade`, `unordered-version` |
 //! | Packages added or removed in the lockfile with no change to a manifest | `lockfile-only-edit` |
 //! | A manifest dependency the lockfile does not hold; no lockfile at all | `lockfile-out-of-date`, `lockfile-missing` |
-//! | A transitive package with the name of an internal package | `dependency-confusion` |
+//! | A transitive package with the name of an internal package; a registry package with the name and version of a member | `dependency-confusion` |
+//! | A lockfile reference that names several packages or none | `lockfile-reference-ambiguous`, `lockfile-reference-dangling` |
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -24,7 +25,7 @@ use super::diff::{ChangeKind, LockDiff};
 use super::findings::{Finding, check};
 use super::model::{
     BuildConfig, ConfigClass, DeclaredSource, DependencyFormat, FileKind, LockedPackage, Lockfile,
-    Manifest, Origin, ParseError, Side, normalize, plain,
+    Manifest, Origin, ParseError, Resolved, Side, normalize, plain,
 };
 use super::names::PopularNames;
 
@@ -70,6 +71,39 @@ impl Snapshot {
     #[must_use]
     pub fn package_names(&self) -> BTreeSet<String> {
         self.locks.values().flat_map(Lockfile::names).collect()
+    }
+
+    /// The normalized name of every package that is not a member of the project: the packages
+    /// that came from somewhere else. A registry package that has the name of a member is **not**
+    /// known by that name, because the member is the project's own code and the registry package
+    /// is somebody else's.
+    #[must_use]
+    pub fn external_names(&self) -> BTreeSet<String> {
+        self.locks
+            .values()
+            .flat_map(|lock| &lock.packages)
+            .filter(|package| package.origin != Origin::Path)
+            .map(|package| normalize(&package.name))
+            .collect()
+    }
+
+    /// The normalized name of every member of the project (a package with no source).
+    #[must_use]
+    pub fn member_names(&self) -> BTreeSet<String> {
+        self.locks
+            .values()
+            .flat_map(Lockfile::members)
+            .map(|package| normalize(&package.name))
+            .collect()
+    }
+
+    /// The normalized name and the version of every member of the project.
+    fn member_keys(&self) -> BTreeSet<(String, String)> {
+        self.locks
+            .values()
+            .flat_map(Lockfile::members)
+            .map(|package| (normalize(&package.name), package.version.clone()))
+            .collect()
     }
 
     /// The registry package names that manifests declare, with the workspace table resolved.
@@ -143,8 +177,13 @@ pub struct Integrity {
     pub new_direct: Vec<NewDirect>,
     /// The candidate's files.
     pub head: Snapshot,
-    /// The names of the packages of the base commit's lockfiles.
+    /// The normalized names of the packages of the base commit's lockfiles that are not members
+    /// of the project. A registry package with the name of a member is not "known" by it.
     pub base_names: Vec<String>,
+    /// The normalized names that count as the organization's own: the names the operator listed
+    /// and the name of every member of the project at the base commit, so that the list does not
+    /// depend on a person remembering to extend it.
+    pub internal_names: Vec<String>,
 }
 
 impl Integrity {
@@ -191,11 +230,18 @@ pub fn inspect(
         return Err(BaseUnreadable { path });
     }
     let (head_snapshot, head_bad) = Snapshot::read(format, head);
+    let internal: BTreeSet<String> = cx
+        .internal_names
+        .iter()
+        .map(|name| normalize(name))
+        .chain(base_snapshot.member_names())
+        .collect();
     let mut run = Run {
         format,
         cx,
         base: &base_snapshot,
         head: &head_snapshot,
+        internal: &internal,
         findings: Vec::new(),
         diff: LockDiff::default(),
     };
@@ -219,7 +265,8 @@ pub fn inspect(
         findings,
         diff,
         new_direct,
-        base_names: base_snapshot.package_names().into_iter().collect(),
+        base_names: base_snapshot.external_names().into_iter().collect(),
+        internal_names: internal.into_iter().collect(),
         head: head_snapshot,
     })
 }
@@ -229,6 +276,7 @@ struct Run<'a> {
     cx: &'a Context<'a>,
     base: &'a Snapshot,
     head: &'a Snapshot,
+    internal: &'a BTreeSet<String>,
     findings: Vec<Finding>,
     diff: LockDiff,
 }
@@ -236,6 +284,7 @@ struct Run<'a> {
 impl Run<'_> {
     fn run(&mut self) -> Vec<NewDirect> {
         self.lockfiles();
+        self.references();
         let new_direct = self.new_direct_dependencies();
         self.lockfile_only();
         self.manifests();
@@ -367,26 +416,81 @@ impl Run<'_> {
         }
     }
 
+    /// Every reference of a candidate lockfile must name exactly one package. A reference that
+    /// names several would let a check pick the wrong one, and a gate that skips it would not see
+    /// a package that came in: the answer is a finding, never a `continue`.
+    fn references(&mut self) {
+        for (path, lock) in &self.head.locks {
+            let index = lock.index();
+            let (mut ambiguous, mut dangling) = (None, None);
+            for package in &lock.packages {
+                for reference in &package.dependencies {
+                    match index.resolve(reference) {
+                        Resolved::One(_) => {}
+                        Resolved::Ambiguous => {
+                            ambiguous.get_or_insert((package, reference));
+                        }
+                        Resolved::Dangling => {
+                            dangling.get_or_insert((package, reference));
+                        }
+                    }
+                }
+            }
+            for (found, id, what) in [
+                (
+                    ambiguous,
+                    check::REFERENCE_AMBIGUOUS,
+                    "names more than one package",
+                ),
+                (dangling, check::REFERENCE_DANGLING, "names no package"),
+            ] {
+                if let Some((package, reference)) = found {
+                    self.findings.push(Finding::violation(
+                        id,
+                        Some(path),
+                        format!(
+                            "In the lockfile {}, the package {} {} lists a dependency on {} that {what}, so the packages that came in cannot be told apart.",
+                            plain(path, 200),
+                            plain(&package.name, 80),
+                            plain(&package.version, 40),
+                            plain(&reference.name, 80),
+                        ),
+                    ));
+                }
+            }
+        }
+    }
+
     /// The direct dependencies that the base lockfiles do not hold: the packages that a member
-    /// of the project depends on, whose name is in no base lockfile.
+    /// of the project depends on, whose name is in no base lockfile as something other than a
+    /// member. A registry package with the name of a member is therefore new.
     fn new_direct_dependencies(&self) -> Vec<NewDirect> {
-        let known = self.base.package_names();
+        let known = self.base.external_names();
+        let mut seen: BTreeSet<(String, String, String, Origin)> = BTreeSet::new();
         let mut found: Vec<NewDirect> = Vec::new();
         for (path, lock) in &self.head.locks {
+            let index = lock.index();
             for member in lock.members() {
                 for reference in &member.dependencies {
-                    let Some(package) = lock.resolve(reference) else {
+                    // A reference that does not name one package is a finding of its own
+                    // ([`Run::references`]); it is never taken for a package it may not mean.
+                    let Resolved::One(package) = index.resolve(reference) else {
                         continue;
                     };
                     if package.origin == Origin::Path || known.contains(&normalize(&package.name)) {
                         continue;
                     }
-                    let entry = NewDirect {
-                        lockfile: path.clone(),
-                        package: package.clone(),
-                    };
-                    if !found.contains(&entry) {
-                        found.push(entry);
+                    let key = (
+                        path.clone(),
+                        normalize(&package.name),
+                        package.version.clone(),
+                        package.origin.clone(),
+                    );
+                    if seen.insert(key) {
+                        found.push(NewDirect {
+                            lockfile: path.clone(),
+                            package: package.clone(),
+                        });
                     }
                 }
             }
@@ -541,11 +645,33 @@ impl Run<'_> {
     }
 
     /// Names that look like another name: a transitive package with an internal name is a
-    /// violation; a package one edit from a popular name is a warning.
+    /// violation; a package one edit from a popular name is a warning. A registry package with
+    /// the name **and version** of a member of the project is a violation whether or not it is a
+    /// new direct dependency: nobody has a reason to take the registry copy of a package they
+    /// build themselves, so a person is not asked.
     fn names(&mut self, new_direct: &[NewDirect]) {
-        let direct: BTreeSet<(String, String)> = new_direct
+        let direct: BTreeSet<(String, String, Origin)> = new_direct
             .iter()
-            .map(|d| (normalize(&d.package.name), d.package.version.clone()))
+            .map(|d| {
+                (
+                    normalize(&d.package.name),
+                    d.package.version.clone(),
+                    d.package.origin.clone(),
+                )
+            })
+            .collect();
+        let members: BTreeSet<(String, String)> = self
+            .base
+            .member_keys()
+            .union(&self.head.member_keys())
+            .cloned()
+            .collect();
+        let popular: Vec<(String, &String)> = self
+            .cx
+            .popular
+            .names()
+            .iter()
+            .map(|p| (normalize(p), p))
             .collect();
         let touched: Vec<LockedPackage> = self
             .diff
@@ -555,38 +681,43 @@ impl Run<'_> {
             .chain(self.diff.changed.iter().map(|c| c.after.clone()))
             .collect();
         for package in touched {
-            if direct.contains(&(normalize(&package.name), package.version.clone())) {
-                // The policy engine decides these, with a security approver.
-                continue;
-            }
             let wanted = normalize(&package.name);
             let name = plain(&package.name, 80);
             if package.origin.is_default_registry()
-                && self
-                    .cx
-                    .internal_names
-                    .iter()
-                    .any(|internal| normalize(internal) == wanted)
+                && members.contains(&(wanted.clone(), package.version.clone()))
             {
+                self.push(Finding::violation(
+                    check::CONFUSION,
+                    None,
+                    format!(
+                        "The package {name} {} comes from the public registry and has the name and version of a package of the project itself.",
+                        plain(&package.version, 40)
+                    ),
+                ));
+                continue;
+            }
+            if direct.contains(&(
+                wanted.clone(),
+                package.version.clone(),
+                package.origin.clone(),
+            )) {
+                // The policy engine decides these, with a security approver.
+                continue;
+            }
+            if package.origin.is_default_registry() && self.internal.contains(&wanted) {
                 self.push(Finding::violation(
                     check::CONFUSION,
                     None,
                     format!("The package {name} comes from the public registry and has the name of an internal package."),
                 ));
             }
-            if let Some(popular) = self
-                .cx
-                .popular
-                .names()
-                .iter()
-                .find(|popular| near_miss(&normalize(popular), &wanted))
-            {
+            if let Some((_, lookalike)) = popular.iter().find(|(p, _)| near_miss(p, &wanted)) {
                 self.push(Finding::warning(
                     check::SUSPECT_NAME,
                     None,
                     format!(
                         "The package {name} is one edit away from the popular name {}.",
-                        plain(popular, 80)
+                        plain(lookalike, 80)
                     ),
                 ));
             }

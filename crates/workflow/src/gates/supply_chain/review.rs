@@ -33,7 +33,7 @@ use super::facts::RegistryRecord;
 use super::findings::{Finding, check};
 use super::integrity::{Integrity, NewDirect};
 use super::licenses::{Denial, LicensePolicy};
-use super::model::{LockedPackage, Lockfile, Origin, normalize, plain};
+use super::model::{LockedPackage, Lockfile, Origin, Resolved, normalize, plain};
 use super::names::PopularNames;
 use super::tools::PackageMeta;
 
@@ -92,6 +92,8 @@ pub struct Plan {
     /// What the review found besides the integrity checks.
     pub findings: Vec<Finding>,
     approvals: Vec<DependencyApproval>,
+    /// The names that count as internal: the operator's list and the members of the project.
+    internal_names: Vec<String>,
 }
 
 impl Plan {
@@ -103,10 +105,17 @@ impl Plan {
         approvals: &[DependencyApproval],
         settings: &Settings<'_>,
     ) -> Self {
+        let internal_names: Vec<String> = settings
+            .internal_names
+            .iter()
+            .cloned()
+            .chain(integrity.internal_names.iter().cloned())
+            .collect();
         let mut plan = Self {
             needs: Vec::new(),
             findings: Vec::new(),
             approvals: approvals.to_vec(),
+            internal_names,
             integrity,
         };
         // A change the integrity checks refuse asks nobody anything.
@@ -143,7 +152,7 @@ impl Plan {
             exists_in_registry: record.exists,
             first_publish_age_days: age_days,
             popular_names: settings.popular.names(),
-            internal_names: settings.internal_names,
+            internal_names: &self.internal_names,
         };
         let decision = settings
             .dependency
@@ -397,19 +406,34 @@ pub fn conclude(plan: &Plan, metadata: &[PackageMeta], licenses: &LicensePolicy)
     conclusion
 }
 
-/// The (normalized name, version) of the subject and of everything it reaches in `lock`.
+/// The (normalized name, version) of the subject and of everything it reaches in `lock`. The
+/// subject is the registry package with that checksum, not a member of the project of the same
+/// name and version.
 fn closure(lock: &Lockfile, subject: &Subject) -> BTreeSet<(String, String)> {
+    let index = lock.index();
     let mut seen: BTreeSet<(String, String)> = BTreeSet::new();
     let mut queue: Vec<&LockedPackage> = lock
         .packages
         .iter()
-        .filter(|p| normalize(&p.name) == normalize(&subject.name) && p.version == subject.version)
+        .filter(|p| {
+            normalize(&p.name) == normalize(&subject.name)
+                && p.version == subject.version
+                && p.origin != Origin::Path
+        })
         .collect();
     while let Some(package) = queue.pop() {
         if !seen.insert((normalize(&package.name), package.version.clone())) {
             continue;
         }
-        queue.extend(package.dependencies.iter().filter_map(|r| lock.resolve(r)));
+        queue.extend(
+            package
+                .dependencies
+                .iter()
+                .filter_map(|r| match index.resolve(r) {
+                    Resolved::One(found) => Some(found),
+                    Resolved::Ambiguous | Resolved::Dangling => None,
+                }),
+        );
     }
     seen
 }
@@ -430,6 +454,7 @@ mod tests {
                 .map(|d| super::super::model::LockedRef {
                     name: (*d).to_owned(),
                     version: None,
+                    origin: None,
                 })
                 .collect(),
         };

@@ -179,12 +179,16 @@ fn locked_package(value: &Value) -> Result<LockedPackage, ParseError> {
     })
 }
 
-/// `name`, `name 1.2.3` or `name 1.2.3 (source)`.
+/// `name`, `name 1.2.3` or `name 1.2.3 (source)`. The source is kept: it is what tells a
+/// workspace member from a registry package of the same name and version.
 fn reference(text: &str) -> LockedRef {
-    let mut words = text.split(' ');
+    let mut words = text.splitn(3, ' ');
     LockedRef {
         name: words.next().unwrap_or_default().to_owned(),
         version: words.next().map(str::to_owned),
+        origin: words
+            .next()
+            .map(|source| origin_of(source.trim_start_matches('(').trim_end_matches(')'))),
     }
 }
 
@@ -366,6 +370,35 @@ mod tests {
             Origin::Git("example.test".to_owned())
         );
         assert_eq!(lock.members().count(), 1);
+    }
+
+    #[test]
+    fn a_reference_keeps_its_source_so_a_member_and_a_registry_package_are_told_apart() {
+        let text = format!(
+            "version = 4\n\n[[package]]\nname = \"app\"\nversion = \"0.1.0\"\ndependencies = [\"evil 0.1.0 ({CRATES_IO})\", \"serde\", \"log 0.4.0\"]\n\n[[package]]\nname = \"evil\"\nversion = \"0.1.0\"\n\n[[package]]\nname = \"evil\"\nversion = \"0.1.0\"\nsource = \"{CRATES_IO}\"\nchecksum = \"{}\"\n",
+            "e".repeat(64)
+        );
+        let lock = CargoFormat.parse_lockfile(&text).expect("a lockfile");
+        let refs = &lock.packages[0].dependencies;
+        assert_eq!(refs[0].origin, Some(Origin::Registry));
+        assert_eq!(refs[1].origin, None);
+        assert_eq!(refs[2].version.as_deref(), Some("0.4.0"));
+        let index = lock.index();
+        match index.resolve(&refs[0]) {
+            super::super::model::Resolved::One(package) => {
+                assert_eq!(package.origin, Origin::Registry);
+            }
+            other => panic!("expected one package, got {other:?}"),
+        }
+        // The same reference without its source names both and is not resolved.
+        let bare = LockedRef {
+            origin: None,
+            ..refs[0].clone()
+        };
+        assert_eq!(
+            index.resolve(&bare),
+            super::super::model::Resolved::Ambiguous
+        );
     }
 
     #[test]

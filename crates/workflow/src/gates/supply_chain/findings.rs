@@ -51,8 +51,14 @@ pub mod check {
     pub const DOWNGRADE: &str = "version-downgrade";
     /// A package version could not be ordered.
     pub const UNORDERED: &str = "unordered-version";
-    /// A transitive package carries the name of an internal package.
+    /// A transitive package carries the name of an internal package, or a registry package has
+    /// the name and version of a member of the project.
     pub const CONFUSION: &str = "dependency-confusion";
+    /// A reference in the lockfile names more than one package, so it does not say which one the
+    /// project depends on. Cargo never writes such a lockfile.
+    pub const REFERENCE_AMBIGUOUS: &str = "lockfile-reference-ambiguous";
+    /// A reference in the lockfile names no package. `cargo fetch --locked` refuses such a file.
+    pub const REFERENCE_DANGLING: &str = "lockfile-reference-dangling";
     /// A new dependency request is not a valid request.
     pub const INVALID_REQUEST: &str = "invalid-dependency-request";
     /// A license outside the owner-approved list.

@@ -7,7 +7,7 @@
 //! writing another format. Only [`CargoFormat`](super::cargo::CargoFormat) exists in this slice;
 //! there is no npm, pip or Go reader, and a change in those ecosystems reaches no check here.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 
 use factory_domain::policy::dependency::Ecosystem;
 
@@ -43,7 +43,7 @@ impl From<TomlError> for ParseError {
 }
 
 /// Where a locked package comes from.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum Origin {
     /// The default public registry (crates.io), the only source the policy allows.
     Registry,
@@ -78,12 +78,32 @@ impl Origin {
 }
 
 /// A reference from one locked package to another.
+///
+/// Cargo writes `name`, `name version` or `name version (source)`: a part is added only when the
+/// shorter form would name two packages. A package is therefore identified by its name, its
+/// version **and its source**, and a reference that leaves a part out names the one package that
+/// still matches.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LockedRef {
     /// The package name.
     pub name: String,
     /// The version, when the lockfile names one (it does when two versions of a name exist).
     pub version: Option<String>,
+    /// The source, when the lockfile names one (it does when two sources have the same name and
+    /// version, such as a workspace member and a registry package).
+    pub origin: Option<Origin>,
+}
+
+/// What a reference resolves to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Resolved<'a> {
+    /// Exactly one package matches.
+    One(&'a LockedPackage),
+    /// More than one package matches. Cargo never writes such a lockfile, so a candidate that has
+    /// one is not a lockfile cargo wrote, and a gate must not pick one of the packages.
+    Ambiguous,
+    /// No package matches.
+    Dangling,
 }
 
 /// One package of a lockfile.
@@ -115,6 +135,42 @@ pub fn normalize(name: &str) -> String {
     name.to_ascii_lowercase().replace('-', "_")
 }
 
+/// The packages of a lockfile by name, so that a reference is resolved without a scan of the
+/// whole file. Build it once for a lockfile and resolve every reference through it: the cost is
+/// then linear in the size of the lockfile, however many references it holds.
+#[derive(Debug, Clone)]
+pub struct LockIndex<'a> {
+    by_name: HashMap<&'a str, Vec<&'a LockedPackage>>,
+}
+
+impl<'a> LockIndex<'a> {
+    /// The package a reference names: exactly one, more than one, or none.
+    #[must_use]
+    pub fn resolve(&self, reference: &LockedRef) -> Resolved<'a> {
+        let mut found = self
+            .by_name
+            .get(reference.name.as_str())
+            .into_iter()
+            .flatten()
+            .copied()
+            .filter(|package| {
+                reference
+                    .version
+                    .as_ref()
+                    .is_none_or(|version| *version == package.version)
+                    && reference
+                        .origin
+                        .as_ref()
+                        .is_none_or(|origin| *origin == package.origin)
+            });
+        match (found.next(), found.next()) {
+            (None, _) => Resolved::Dangling,
+            (Some(package), None) => Resolved::One(package),
+            (Some(_), Some(_)) => Resolved::Ambiguous,
+        }
+    }
+}
+
 impl Lockfile {
     /// The packages that belong to the project itself or are path dependencies.
     pub fn members(&self) -> impl Iterator<Item = &LockedPackage> {
@@ -123,18 +179,24 @@ impl Lockfile {
             .filter(|package| package.origin == Origin::Path)
     }
 
-    /// The package a reference names, when there is exactly one.
+    /// The index to resolve references with.
     #[must_use]
-    pub fn resolve(&self, reference: &LockedRef) -> Option<&LockedPackage> {
-        let mut found = self.packages.iter().filter(|package| {
-            package.name == reference.name
-                && reference
-                    .version
-                    .as_ref()
-                    .is_none_or(|version| *version == package.version)
-        });
-        let first = found.next()?;
-        found.next().is_none().then_some(first)
+    pub fn index(&self) -> LockIndex<'_> {
+        let mut by_name: HashMap<&str, Vec<&LockedPackage>> = HashMap::new();
+        for package in &self.packages {
+            by_name
+                .entry(package.name.as_str())
+                .or_default()
+                .push(package);
+        }
+        LockIndex { by_name }
+    }
+
+    /// What a reference names. This builds an index, so it is for a single lookup; resolve many
+    /// references through [`index`](Self::index).
+    #[must_use]
+    pub fn resolve(&self, reference: &LockedRef) -> Resolved<'_> {
+        self.index().resolve(reference)
     }
 
     /// The normalized names of every package.
