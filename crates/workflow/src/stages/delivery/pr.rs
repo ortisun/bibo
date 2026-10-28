@@ -21,7 +21,7 @@ use factory_domain::vocabulary::GateOutcome;
 use super::input::Dossier;
 use super::manifest::{ChangeFacts, score_of};
 use super::seams::DeliveryTarget;
-use super::text::{TextRefused, finish, fragment};
+use super::text::{TextRefused, ensure_no_secret, finish, fragment};
 
 /// The hosts a link in the pull request may point to.
 pub const LINK_HOSTS: [&str; 1] = ["github.com"];
@@ -69,6 +69,24 @@ fn plural(count: u64, one: &str, many: &str) -> String {
     }
 }
 
+/// The title of the pull request and of the manifest: the title of the frozen specification with
+/// everything that is not plain words removed. A title that holds a secret, or is too short after
+/// cleaning, is replaced by a fixed sentence about the issue, and the answer says the original was
+/// not clean, so the caller can refuse the text. The raw title is never returned.
+#[must_use]
+pub fn safe_title(raw: &str, issue: u64, redactor: &Redactor) -> (String, bool) {
+    let fallback = || format!("Resolve issue {issue}");
+    if ensure_no_secret(raw, redactor).is_err() {
+        return (fallback(), false);
+    }
+    let cleaned = fragment(raw);
+    if cleaned.chars().count() >= 3 {
+        (cleaned, true)
+    } else {
+        (fallback(), true)
+    }
+}
+
 /// Writes the title and the body, and checks them.
 ///
 /// # Errors
@@ -77,12 +95,13 @@ fn plural(count: u64, one: &str, many: &str) -> String {
 pub fn compose(facts: &PrFacts<'_>, redactor: &Redactor) -> Result<PrText, TextRefused> {
     let d = facts.dossier;
     let issue = facts.target.issue.number;
-    let spec_title = fragment(d.specification.title.as_str());
-    let title = if spec_title.chars().count() >= 3 {
-        spec_title.clone()
-    } else {
-        format!("Resolve issue {issue}")
-    };
+    // The raw pieces of earlier text are scanned as they were written, before they are cleaned.
+    ensure_no_secret(d.specification.title.as_str(), redactor)?;
+    for link in &facts.target.links {
+        ensure_no_secret(&link.label, redactor)?;
+    }
+    let (title, _) = safe_title(d.specification.title.as_str(), issue, redactor);
+    let spec_title = title.clone();
 
     let mut body = String::new();
     body.push_str(&format!(

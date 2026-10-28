@@ -104,6 +104,19 @@ fn url_hosts(text: &str) -> Vec<&str> {
     hosts
 }
 
+/// Checks a raw piece of untrusted text for a secret **before** it is cleaned. Cleaning drops
+/// characters, and a secret with one character dropped is still most of a secret, only no longer
+/// recognizable, so the scan must see the text as it was written.
+///
+/// # Errors
+/// [`TextRefused::Secret`] when the text holds a secret or the scan could not decide.
+pub fn ensure_no_secret(text: &str, redactor: &Redactor) -> Result<(), TextRefused> {
+    match redactor.contains_secret(text.as_bytes()) {
+        Ok(false) => Ok(()),
+        Ok(true) | Err(_) => Err(TextRefused::Secret),
+    }
+}
+
 /// Checks a finished title or body.
 ///
 /// # Errors
@@ -111,10 +124,7 @@ fn url_hosts(text: &str) -> Vec<&str> {
 /// HTML, an HTML comment, a hidden character, a link to a host that is not on `allowed_hosts`, or
 /// a mention that would notify someone.
 pub fn finish(text: &str, redactor: &Redactor, allowed_hosts: &[&str]) -> Result<(), TextRefused> {
-    match redactor.contains_secret(text.as_bytes()) {
-        Ok(false) => {}
-        Ok(true) | Err(_) => return Err(TextRefused::Secret),
-    }
+    ensure_no_secret(text, redactor)?;
     if text.trim().is_empty() || text.len() > MAX_BODY_BYTES {
         return Err(TextRefused::Size);
     }

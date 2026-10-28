@@ -89,6 +89,10 @@ pub struct ManifestInputs<'a> {
     pub adapters: Vec<AdapterReport>,
     /// The gates the validation stage always reports.
     pub expected_gates: &'a [&'a str],
+    /// The title of the manifest. It is the cleaned title of the pull request
+    /// ([`safe_title`](super::pr::safe_title)), never the raw title of the specification, so a
+    /// secret or markup in that title is not stored with the evidence.
+    pub title: String,
 }
 
 /// Why no manifest can be made. The set is closed and carries no document text.
@@ -298,7 +302,7 @@ pub fn build(i: &ManifestInputs<'_>) -> Result<EvidenceManifest, ManifestError> 
 
     let spec = &dossier.specification;
     let plan = &dossier.plan;
-    let title = HumanTitle::parse(spec.title.as_str())?;
+    let title = HumanTitle::parse(&i.title)?;
     let summary = text(&format!(
         "This change implements version {} of the frozen specification. {} gate report(s) are attached and an independent review passed.",
         spec.metadata.spec_version.get(),

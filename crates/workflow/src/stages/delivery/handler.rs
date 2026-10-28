@@ -283,6 +283,12 @@ impl StageHandler for DeliveryHandler {
                 adapter("store", AdapterKind::Store, self.deps.sources.fidelity()),
             ],
             expected_gates: &VALIDATION_GATES.map(|(gate, _)| gate),
+            title: pr::safe_title(
+                dossier.specification.title.as_str(),
+                target.issue.number,
+                &self.config.redactor,
+            )
+            .0,
         })
         .map_err(|e| match e {
             ManifestError::GateNotCleared(_) | ManifestError::ReviewNotPass => {
