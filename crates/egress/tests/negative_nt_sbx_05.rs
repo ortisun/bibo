@@ -389,12 +389,21 @@ fn negative_nt_sbx_05_the_byte_quota_ends_a_transfer_at_the_cap() {
         cap,
         "the relay moved exactly the cap and no more"
     );
-    let closed = world
-        .log
-        .events()
-        .into_iter()
-        .find(|e| e["event"] == "egress_closed")
-        .expect("a close line");
+    // The relay writes the close line when its connection thread ends, which can be a moment
+    // after the client has read its last byte, so wait for it instead of assuming it is there.
+    let closed = (0..500)
+        .find_map(|_| {
+            let found = world
+                .log
+                .events()
+                .into_iter()
+                .find(|e| e["event"] == "egress_closed");
+            if found.is_none() {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            found
+        })
+        .expect("a close line within five seconds");
     assert_eq!(closed["quota_exhausted"], true);
     // With the allowance gone, a new connection is refused and nothing more moves.
     let registry_hits = world.registry.hit_count();
