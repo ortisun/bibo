@@ -356,7 +356,10 @@ pub fn run_in_image(copy: &Path, reference: &str) -> Vec<CommandResult> {
                 reference,
             ]);
             command.args(*argv);
-            run(label, command)
+            let mut result = run(label, command);
+            // Show the command that ran in the container, not the long docker line around it.
+            result.argv = argv.iter().map(|part| (*part).to_owned()).collect();
+            result
         })
         .collect()
 }

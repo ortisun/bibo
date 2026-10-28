@@ -20,10 +20,13 @@
 pub mod assertions;
 pub mod canned;
 pub mod check;
+pub mod cli;
 pub mod evidence;
+pub mod external;
 pub mod issues;
 pub mod mutations;
 pub mod preflight;
+pub mod report_check;
 pub mod runner;
 pub mod scenario_checks;
 pub mod scenarios;
