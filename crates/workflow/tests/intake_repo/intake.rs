@@ -528,7 +528,7 @@ async fn a_request_over_the_tag_limit_is_split_and_blocked() {
             declined_kinds: Vec::new(),
             max_tags_per_job: Some(1),
         }),
-        scope: None,
+        ..crate::harness::Options::default()
     })
     .await;
     let job = rig.job("Add JSON output and rewrite the build.").await;

@@ -1,0 +1,369 @@
+{
+  "baseline": {
+    "status": "ready",
+    "toolchain": "cargo"
+  },
+  "build_systems": [
+    {
+      "evidence": {
+        "commit_sha": "bee8108cc294e12ae705e980810b55e0ed6ad292",
+        "line_range": {
+          "end": 1,
+          "start": 1
+        },
+        "path": "Cargo.toml"
+      },
+      "name": "cargo"
+    }
+  ],
+  "codeowners": [
+    {
+      "evidence": {
+        "commit_sha": "bee8108cc294e12ae705e980810b55e0ed6ad292",
+        "line_range": {
+          "end": 2,
+          "start": 2
+        },
+        "path": "CODEOWNERS"
+      },
+      "owners": [
+        "@example-org/maintainers"
+      ],
+      "pattern": "*"
+    },
+    {
+      "evidence": {
+        "commit_sha": "bee8108cc294e12ae705e980810b55e0ed6ad292",
+        "line_range": {
+          "end": 3,
+          "start": 3
+        },
+        "path": "CODEOWNERS"
+      },
+      "owners": [
+        "@example-org/core"
+      ],
+      "pattern": "/src/"
+    }
+  ],
+  "commands": [
+    {
+      "argv": [
+        "cargo",
+        "build",
+        "--locked"
+      ],
+      "evidence": {
+        "commit_sha": "bee8108cc294e12ae705e980810b55e0ed6ad292",
+        "line_range": {
+          "end": 18,
+          "start": 18
+        },
+        "path": ".factory/project.yaml"
+      },
+      "origin": "project-manifest",
+      "role": "build",
+      "timeout_seconds": 600
+    },
+    {
+      "argv": [
+        "cargo",
+        "test",
+        "--locked"
+      ],
+      "evidence": {
+        "commit_sha": "bee8108cc294e12ae705e980810b55e0ed6ad292",
+        "line_range": {
+          "end": 29,
+          "start": 29
+        },
+        "path": ".factory/project.yaml"
+      },
+      "origin": "project-manifest",
+      "role": "test",
+      "timeout_seconds": 900
+    }
+  ],
+  "commit_sha": "bee8108cc294e12ae705e980810b55e0ed6ad292",
+  "counts": {
+    "files_listed": 11,
+    "files_seen": 11,
+    "truncated": false
+  },
+  "documents": [
+    {
+      "evidence": {
+        "commit_sha": "bee8108cc294e12ae705e980810b55e0ed6ad292",
+        "line_range": {
+          "end": 1,
+          "start": 1
+        },
+        "path": "README.md"
+      },
+      "kind": "readme",
+      "path": "README.md",
+      "title": "Word count"
+    },
+    {
+      "evidence": {
+        "commit_sha": "bee8108cc294e12ae705e980810b55e0ed6ad292",
+        "line_range": {
+          "end": 1,
+          "start": 1
+        },
+        "path": "docs/adr/0001-record-decisions.md"
+      },
+      "kind": "decision",
+      "path": "docs/adr/0001-record-decisions.md",
+      "title": "Record architecture decisions"
+    }
+  ],
+  "excluded_paths": [
+    {
+      "path": ".env",
+      "reason": "hidden-by-policy"
+    },
+    {
+      "path": "config/secrets.json",
+      "reason": "hidden-by-policy"
+    },
+    {
+      "path": "id_rsa",
+      "reason": "hidden-by-policy"
+    }
+  ],
+  "files": [
+    {
+      "evidence": {
+        "commit_sha": "bee8108cc294e12ae705e980810b55e0ed6ad292",
+        "line_range": {
+          "end": 1,
+          "start": 1
+        },
+        "path": ".factory/project.yaml"
+      },
+      "path": ".factory/project.yaml",
+      "role": "manifest"
+    },
+    {
+      "evidence": {
+        "commit_sha": "bee8108cc294e12ae705e980810b55e0ed6ad292",
+        "line_range": {
+          "end": 1,
+          "start": 1
+        },
+        "path": ".github/workflows/ci.yml"
+      },
+      "path": ".github/workflows/ci.yml",
+      "role": "configuration"
+    },
+    {
+      "evidence": {
+        "commit_sha": "bee8108cc294e12ae705e980810b55e0ed6ad292",
+        "line_range": {
+          "end": 1,
+          "start": 1
+        },
+        "path": "CODEOWNERS"
+      },
+      "path": "CODEOWNERS",
+      "role": "configuration"
+    },
+    {
+      "evidence": {
+        "commit_sha": "bee8108cc294e12ae705e980810b55e0ed6ad292",
+        "line_range": {
+          "end": 1,
+          "start": 1
+        },
+        "path": "Cargo.lock"
+      },
+      "path": "Cargo.lock",
+      "role": "configuration"
+    },
+    {
+      "evidence": {
+        "commit_sha": "bee8108cc294e12ae705e980810b55e0ed6ad292",
+        "line_range": {
+          "end": 1,
+          "start": 1
+        },
+        "path": "Cargo.toml"
+      },
+      "path": "Cargo.toml",
+      "role": "manifest"
+    },
+    {
+      "evidence": {
+        "commit_sha": "bee8108cc294e12ae705e980810b55e0ed6ad292",
+        "line_range": {
+          "end": 1,
+          "start": 1
+        },
+        "path": "README.md"
+      },
+      "path": "README.md",
+      "role": "document"
+    },
+    {
+      "evidence": {
+        "commit_sha": "bee8108cc294e12ae705e980810b55e0ed6ad292",
+        "line_range": {
+          "end": 1,
+          "start": 1
+        },
+        "path": "docs/adr/0001-record-decisions.md"
+      },
+      "path": "docs/adr/0001-record-decisions.md",
+      "role": "document"
+    },
+    {
+      "evidence": {
+        "commit_sha": "bee8108cc294e12ae705e980810b55e0ed6ad292",
+        "line_range": {
+          "end": 1,
+          "start": 1
+        },
+        "path": "src/count.rs"
+      },
+      "path": "src/count.rs",
+      "role": "source"
+    },
+    {
+      "evidence": {
+        "commit_sha": "bee8108cc294e12ae705e980810b55e0ed6ad292",
+        "line_range": {
+          "end": 1,
+          "start": 1
+        },
+        "path": "src/lib.rs"
+      },
+      "path": "src/lib.rs",
+      "role": "source"
+    },
+    {
+      "evidence": {
+        "commit_sha": "bee8108cc294e12ae705e980810b55e0ed6ad292",
+        "line_range": {
+          "end": 1,
+          "start": 1
+        },
+        "path": "src/main.rs"
+      },
+      "path": "src/main.rs",
+      "role": "source"
+    },
+    {
+      "evidence": {
+        "commit_sha": "bee8108cc294e12ae705e980810b55e0ed6ad292",
+        "line_range": {
+          "end": 1,
+          "start": 1
+        },
+        "path": "tests/count.rs"
+      },
+      "path": "tests/count.rs",
+      "role": "test"
+    }
+  ],
+  "languages": [
+    {
+      "evidence": {
+        "commit_sha": "bee8108cc294e12ae705e980810b55e0ed6ad292",
+        "line_range": {
+          "end": 1,
+          "start": 1
+        },
+        "path": "src/count.rs"
+      },
+      "files": 4,
+      "name": "rust"
+    }
+  ],
+  "project_manifest": {
+    "evidence": {
+      "commit_sha": "bee8108cc294e12ae705e980810b55e0ed6ad292",
+      "line_range": {
+        "end": 59,
+        "start": 1
+      },
+      "path": ".factory/project.yaml"
+    },
+    "path": ".factory/project.yaml",
+    "sha256": "sha256:32412ae8c3535aa02d52161b699377c052e5c4e7a3ebe91d68665739a1ee445f"
+  },
+  "protected_paths": [
+    {
+      "evidence": {
+        "commit_sha": "bee8108cc294e12ae705e980810b55e0ed6ad292",
+        "line_range": {
+          "end": 41,
+          "start": 41
+        },
+        "path": ".factory/project.yaml"
+      },
+      "mode": "deny_write",
+      "origin": "project-manifest",
+      "pattern": ".factory/**"
+    },
+    {
+      "evidence": {
+        "commit_sha": "bee8108cc294e12ae705e980810b55e0ed6ad292",
+        "line_range": {
+          "end": 42,
+          "start": 42
+        },
+        "path": ".factory/project.yaml"
+      },
+      "mode": "deny_write",
+      "origin": "project-manifest",
+      "pattern": ".github/**"
+    },
+    {
+      "evidence": {
+        "commit_sha": "bee8108cc294e12ae705e980810b55e0ed6ad292",
+        "line_range": {
+          "end": 43,
+          "start": 43
+        },
+        "path": ".factory/project.yaml"
+      },
+      "mode": "deny_write",
+      "origin": "project-manifest",
+      "pattern": "CODEOWNERS"
+    },
+    {
+      "mode": "deny_write",
+      "origin": "policy",
+      "pattern": ".factory/project.yaml"
+    },
+    {
+      "mode": "deny_write",
+      "origin": "policy",
+      "pattern": ".github/workflows/ci.yml"
+    },
+    {
+      "mode": "deny_write",
+      "origin": "policy",
+      "pattern": "CODEOWNERS"
+    }
+  ],
+  "repository": "example-org/fixture",
+  "schema_version": 1,
+  "test_mapping": [
+    {
+      "covers": [
+        "src/count.rs"
+      ],
+      "evidence": {
+        "commit_sha": "bee8108cc294e12ae705e980810b55e0ed6ad292",
+        "line_range": {
+          "end": 1,
+          "start": 1
+        },
+        "path": "tests/count.rs"
+      },
+      "test": "tests/count.rs"
+    }
+  ]
+}

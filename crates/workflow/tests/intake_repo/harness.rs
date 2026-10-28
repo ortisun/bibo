@@ -42,7 +42,17 @@ use factory_workflow::stages::intake::{
 };
 use serde_json::{Value, json};
 
+use crate::repo_rig::{
+    CargoBehavior, FixedRepository, JsonManifests, Reads, RecordingWorkspaces, TestVerifySpecs,
+    publish, rules as repo_rules, word_count,
+};
 use crate::support::world::World;
+use factory_ports::paths::CommitSha;
+use factory_testkit::fixtures::sandbox_policy;
+use factory_testkit::githost::FakeChangeHost;
+use factory_testkit::sandbox::FakeSandbox;
+use factory_testkit::workspace::{FakeRemote, FakeWorkspaceProvider};
+use factory_workflow::stages::repo_intel::{RepoIntelConfig, RepoIntelDeps, RepoIntelHandler};
 
 const SECURITY_POLICY: &str = include_str!("../../../domain/tests/fixtures/policy/security.json");
 const APPROVAL_POLICY: &str = include_str!("../../../domain/tests/fixtures/policy/approval.json");
@@ -326,6 +336,11 @@ pub struct Rig {
     pub allowlist: Arc<FixedAllowlist>,
     pub check: Arc<StandInCheck>,
     pub issue: IssueRef,
+    pub remote: FakeRemote,
+    pub reads: Arc<Reads>,
+    pub cargo: CargoBehavior,
+    pub commit: CommitSha,
+    pub repo: RepoRef,
 }
 
 /// What differs from one test to the next.
@@ -333,6 +348,14 @@ pub struct Rig {
 pub struct Options {
     pub rules: Option<IntakeRules>,
     pub scope: Option<Vec<StageKind>>,
+    /// Register the real repository stage, over the fixture. Without it the stage is scripted.
+    pub real_repo: bool,
+    /// The files of the repository, instead of the Rust fixture.
+    pub repo_files: Option<Vec<(String, String)>>,
+    /// `cargo` is missing from the image.
+    pub no_cargo: bool,
+    /// `cargo` fails on this subcommand.
+    pub cargo_fails_on: Option<&'static str>,
 }
 
 impl Rig {
@@ -389,14 +412,60 @@ impl Rig {
         );
         let mut handlers = HandlerRegistry::new();
         handlers.register(Arc::new(handler)).expect("one handler");
-        // The stages after intake are the scripted ones of the engine tests, until a test
-        // registers the real repository stage.
+        // The repository the stage reads, on a fake remote that the workspace provider and the
+        // change host share.
+        let remote = FakeRemote::new();
+        let files = options.repo_files.clone().unwrap_or_else(word_count);
+        let commit = publish(&remote, &repo, &files);
+        let recording = Arc::new(RecordingWorkspaces::new(FakeWorkspaceProvider::new(
+            repo.clone(),
+            remote.clone(),
+            world.artifacts.clone(),
+            repo_rules(),
+        )));
+        let reads = Arc::clone(&recording.reads);
+        let cargo = CargoBehavior::working();
+        let mut sandbox = FakeSandbox::new(
+            world.clock.clone(),
+            world.artifacts.clone(),
+            sandbox_policy(),
+        );
+        if !options.no_cargo {
+            sandbox = sandbox.with_program("cargo", cargo.program(options.cargo_fails_on));
+        }
+        if options.real_repo {
+            deps.workspaces = recording;
+            deps.sandbox = Arc::new(sandbox);
+        }
         for kind in scope.iter().filter(|kind| **kind != StageKind::Intake) {
-            handlers
-                .register(Arc::clone(
-                    world.handlers.get(*kind).expect("a scripted handler"),
-                ))
-                .expect("one handler per stage");
+            if options.real_repo && *kind == StageKind::RepositoryIntelligence {
+                let repo_handler = RepoIntelHandler::new(
+                    RepoIntelConfig {
+                        definition_commit: definition_commit(),
+                        path_rules: repo_rules(),
+                        default_timeout_seconds: 900,
+                        max_file_bytes: 64 * 1024,
+                        max_paths: 5000,
+                    },
+                    RepoIntelDeps {
+                        changes: Arc::new(FakeChangeHost::sharing(remote.clone())),
+                        repos: Arc::new(FixedRepository { repo: repo.clone() }),
+                        specs: Arc::new(TestVerifySpecs),
+                        manifests: Arc::new(JsonManifests),
+                        policy: policy_engine(),
+                        redactor: redactor(),
+                    },
+                );
+                handlers
+                    .register(Arc::new(repo_handler))
+                    .expect("one handler per stage");
+            } else {
+                handlers
+                    .register(Arc::clone(
+                        world.handlers.get(*kind).expect("a scripted handler"),
+                    ))
+                    .expect("one handler per stage");
+            }
         }
         let engine = Engine::new(deps, world.config.clone(), handlers).expect("the engine starts");
         Self {
@@ -408,6 +477,11 @@ impl Rig {
             allowlist,
             check,
             issue,
+            remote,
+            reads,
+            cargo,
+            commit,
+            repo,
         }
     }
 
@@ -522,6 +596,55 @@ impl Rig {
             }
         }
         found
+    }
+
+    /// Every gate report the ledger of the job cites, read back through the artifact store.
+    pub async fn gate_reports(&self, job: JobId) -> Vec<Value> {
+        fn hashes(value: &Value, found: &mut Vec<String>) {
+            match value {
+                Value::String(text) if text.starts_with("sha256:") => found.push(text.clone()),
+                Value::Array(items) => items.iter().for_each(|item| hashes(item, found)),
+                Value::Object(map) => map.values().for_each(|item| hashes(item, found)),
+                _ => {}
+            }
+        }
+        let tenant = TenantScope::new(self.world.tenant);
+        let mut seen = Vec::new();
+        let mut reports = Vec::new();
+        for entry in self.world.ledger(job).await {
+            let mut found = Vec::new();
+            hashes(
+                &serde_json::to_value(&entry).expect("an entry serializes"),
+                &mut found,
+            );
+            for text in found {
+                if seen.contains(&text) {
+                    continue;
+                }
+                seen.push(text.clone());
+                let Ok(sha256) = Sha256Digest::parse(&text) else {
+                    continue;
+                };
+                let reference = factory_domain::contracts::ArtifactRef {
+                    sha256,
+                    media_type: factory_domain::values::MediaType::parse("application/json")
+                        .expect("a media type"),
+                    size_bytes: None,
+                };
+                if let Ok(bytes) = factory_ports::artifact::ArtifactStore::get(
+                    &*self.world.artifacts,
+                    &tenant,
+                    &reference,
+                )
+                .await
+                    && let Ok(value) = serde_json::from_slice::<Value>(&bytes)
+                    && value.pointer("/metadata/gate_id").is_some()
+                {
+                    reports.push(value);
+                }
+            }
+        }
+        reports
     }
 
     /// The JSON documents of the newest run of `kind` that have this top-level field.

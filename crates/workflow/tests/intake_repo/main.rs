@@ -18,3 +18,4 @@ mod harness;
 mod intake;
 mod pair;
 mod repo_intel;
+mod repo_rig;
