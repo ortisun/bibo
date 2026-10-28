@@ -13,7 +13,12 @@ use factory_ports::paths::CommitSha;
 
 use crate::handlers::UpstreamRun;
 
-pub use crate::stages::validation::{IMPLEMENTATION_RESULT, SPECIFICATION_CONTRACT};
+// The implementation result is read by one function for every stage that takes it (validation,
+// delivery and the stages that follow implementation), so the commits a stage verifies, delivers
+// and documents cannot come from three readers that drift apart.
+pub use crate::stages::validation::{
+    Candidate, IMPLEMENTATION_RESULT, SPECIFICATION_CONTRACT, parse_candidate,
+};
 
 /// The validated task plan (`task-dag`), written by the task planning stage.
 pub const TASK_PLAN: &str = "task-plan";
@@ -53,26 +58,6 @@ pub fn input_artifact(contract: &StageContract, name: &str) -> Option<ArtifactRe
         .map(|input| input.artifact.clone())
 }
 
-/// The two commits the implementation result names.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Candidate {
-    /// The protected branch tip the change is relative to.
-    pub base: CommitSha,
-    /// The commit to verify and review.
-    pub head: CommitSha,
-}
-
-/// Reads the implementation result. `None` for anything that is not two commit identifiers.
-#[must_use]
-pub fn parse_candidate(bytes: &[u8]) -> Option<Candidate> {
-    let value: serde_json::Value = serde_json::from_slice(bytes).ok()?;
-    let field = |name: &str| value.get(name).and_then(serde_json::Value::as_str);
-    Some(Candidate {
-        base: CommitSha::parse(field("base_commit")?).ok()?,
-        head: CommitSha::parse(field("head_commit")?).ok()?,
-    })
-}
-
 /// The commit the repository map was read at: the base of the job.
 #[must_use]
 pub fn map_commit(bytes: &[u8]) -> Option<CommitSha> {
@@ -84,14 +69,19 @@ pub fn map_commit(bytes: &[u8]) -> Option<CommitSha> {
 mod tests {
     use super::*;
 
+    /// C-d: validation, delivery and implementation read the implementation result with one
+    /// function and one type. The binding below does not compile when the implementation stage
+    /// has a candidate of its own, and the refusals are the validation stage's own test.
     #[test]
-    fn the_candidate_is_two_commits_and_nothing_else_is() {
+    fn the_candidate_is_the_one_the_validation_stage_reads() {
         let good = format!(
             r#"{{"base_commit":"{}","head_commit":"{}"}}"#,
             "a".repeat(40),
             "b".repeat(40)
         );
-        assert!(parse_candidate(good.as_bytes()).is_some());
+        let candidate: crate::stages::validation::Candidate =
+            parse_candidate(good.as_bytes()).expect("a candidate");
+        assert_eq!(candidate.head.as_str(), "b".repeat(40));
         for bad in ["{}", r#"{"base_commit":"zz","head_commit":"zz"}"#, "no"] {
             assert_eq!(parse_candidate(bad.as_bytes()), None, "{bad}");
         }
