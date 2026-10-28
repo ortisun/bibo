@@ -22,8 +22,8 @@ use factory_domain::vocabulary::{ExecutionMode, Fidelity};
 use factory_ports::agent::{AgentRunReport, AgentRunRequest, AssembledPrompt};
 use factory_ports::paths::RepoPath;
 use factory_ports::spec::{
-    PostCondition, SkillRun, SpecContext, SpecError, SpecFileSet, SpecOutcome, SpecRequest,
-    SpecRunReport, SpecificationProvider,
+    PostCondition, SkillRun, SpecContext, SpecError, SpecFileSet, SpecOperation, SpecOutcome,
+    SpecRequest, SpecRunReport, SpecificationProvider,
 };
 use serde_json::Value;
 
@@ -186,13 +186,23 @@ impl SpecKitProvider {
                 .notes
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
-            let entry = notes.entry(Self::key(req)).or_insert_with(|| RunNotes {
+            // The first skill of a feature starts its notes again: what an earlier attempt heard
+            // or ran is not a fact about this one.
+            let starts = req.op == SpecOperation::Specify
+                || (req.op == SpecOperation::Clarify && req.revision.is_some());
+            let key = Self::key(req);
+            if starts {
+                notes.remove(&key);
+            }
+            let entry = notes.entry(key).or_insert_with(|| RunNotes {
                 run_succeeded: true,
                 ..RunNotes::default()
             });
             entry.skills.push(req.op);
             entry.run_succeeded &= failed.is_none();
-            entry.questions.extend(heard);
+            // The stage assembles after every skill, so the questions that matter are the ones
+            // the latest skill left.
+            entry.questions = heard;
             entry.adapter = Some(ctx.runtime.id().as_str().to_owned());
             entry.adapter_version = report.runtime_version.clone();
             entry.fidelity = Some(ctx.runtime.fidelity());

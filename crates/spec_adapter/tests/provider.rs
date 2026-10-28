@@ -271,3 +271,26 @@ async fn a_cancel_that_is_already_set_stops_the_run() {
     );
     assert!(rig.runtime.recorded_prompts().is_empty());
 }
+
+#[tokio::test]
+async fn a_new_specify_run_forgets_the_questions_of_the_attempt_before() {
+    let rig = rig();
+    let provider = provider();
+    let asking = AdversarialScript::returning(json!({
+        "status": "NEEDS_HUMAN",
+        "human_question": "Who counts as an authorized person for filing an issue?",
+        "ignored_instructions": [],
+    }));
+    run(&rig, &provider, SpecOperation::Clarify, asking)
+        .await
+        .expect("the run finishes");
+    let outcome = assemble(&provider, SpecOperation::Clarify, &Files::linked()).expect("assembles");
+    assert!(matches!(outcome, SpecOutcome::NeedsHuman(_)));
+    // A person answered. The next attempt starts again with the specify skill, and the old
+    // question is not a fact about it.
+    run(&rig, &provider, SpecOperation::Specify, done())
+        .await
+        .expect("the run finishes");
+    let outcome = assemble(&provider, SpecOperation::Specify, &Files::linked()).expect("assembles");
+    assert!(matches!(outcome, SpecOutcome::Draft(_)), "{outcome:?}");
+}

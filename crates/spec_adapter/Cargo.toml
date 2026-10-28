@@ -21,8 +21,6 @@ factory-ports.workspace = true
 serde_json = { version = "1.0.154", default-features = false, features = ["std"] }
 # Derive for the closed error enums. Maintained by dtolnay.
 thiserror = "2.0.21"
-# Spans for the run of a skill, written with the names of docs/observability/conventions.md.
-tracing = { version = "0.1.44", default-features = false, features = ["std", "attributes"] }
 # The recognizers of the parser (a heading, a requirement line, a scenario line, a marker). The
 # same features as the domain, so the workspace builds one copy.
 regex = { version = "1.13.1", default-features = false, features = ["std", "unicode-perl", "perf"] }

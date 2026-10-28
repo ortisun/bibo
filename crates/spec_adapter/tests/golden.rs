@@ -257,7 +257,12 @@ fn a_marker_in_the_specification_sends_the_questions_to_a_person() {
 #[test]
 fn a_damaged_recording_is_a_parse_error_and_never_a_guess() {
     type Damage = fn(String) -> String;
-    let cases: [(&str, Damage, ParseReason); 5] = [
+    let cases: [(&str, Damage, ParseReason); 6] = [
+        (
+            "a priority outside P1 to P3 is not read as a lower one",
+            |t| t.replacen("(Priority: P1)", "(Priority: P4)", 1),
+            ParseReason::BadId,
+        ),
         (
             "a story without a priority",
             |t| t.replacen("(Priority: P1)", "", 1),
