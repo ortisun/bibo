@@ -528,8 +528,15 @@ pub(crate) fn read_file(
     if !open.file_type().is_file() || (open.dev(), open.ino()) != identity || open.nlink() != 1 {
         return Err(ReadFailure::Changed);
     }
+    read_bounded(file, limit)
+}
+
+/// Reads at most `limit` bytes and says `TooLarge` when the source has more. It never pulls more
+/// than `limit + 1` bytes from the source, however large the source is.
+fn read_bounded(source: impl Read, limit: u64) -> Result<Vec<u8>, ReadFailure> {
     let mut bytes = Vec::new();
-    file.take(limit.saturating_add(1))
+    source
+        .take(limit.saturating_add(1))
         .read_to_end(&mut bytes)
         .map_err(|_| ReadFailure::Io)?;
     if bytes.len() as u64 > limit {
@@ -701,6 +708,35 @@ mod tests {
                 .iter()
                 .any(|(kind, _)| *kind == AttackKind::ManyTinyFiles)
         );
+    }
+
+    #[test]
+    fn a_path_over_the_limit_is_rejected_although_each_name_is_short() {
+        // The kernel will not make a path of 4,096 bytes, so the limit is lowered to show the rule.
+        let dir = FxTempDir::new("audit-long-path").expect("tmp");
+        fs::create_dir_all(dir.join("aaaaaaaa/bbbbbbbb")).expect("dirs");
+        fs::write(dir.join("aaaaaaaa/bbbbbbbb/cccccccc.txt"), b"x").expect("file");
+        let rules = PathRules::default();
+        let base = BaseTree::default();
+        let stop = AtomicBool::new(false);
+        let short = AuditLimits {
+            max_path_bytes: 20,
+            ..limits()
+        };
+        let result = walk(
+            dir.path(),
+            &WalkContext {
+                limits: &short,
+                rules: &rules,
+                base: &base,
+                policy: None,
+                mask_at_root: false,
+                stop: &stop,
+            },
+        );
+        let found = kinds(result);
+        assert_eq!(found.len(), 1, "{found:?}");
+        assert_eq!(found[0].0, AuditKind::PathTooLong);
     }
 
     #[test]
@@ -948,6 +984,33 @@ mod tests {
         fs::remove_file(&file).expect("remove");
         symlink(&secret, &file).expect("swap");
         assert_eq!(read_file(&file, identity, 100), Err(ReadFailure::Changed));
+    }
+
+    /// A source with no end that fails the read once it has been asked for far more than any
+    /// bound allows, so a read without a bound cannot finish quietly.
+    struct Endless {
+        served: u64,
+    }
+
+    impl Read for Endless {
+        fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+            if self.served > 64 * 1024 {
+                return Err(std::io::Error::other("read past any sensible bound"));
+            }
+            buf.fill(b'x');
+            self.served += buf.len() as u64;
+            Ok(buf.len())
+        }
+    }
+
+    #[test]
+    fn a_read_never_pulls_more_than_the_limit_from_a_source_without_an_end() {
+        assert_eq!(
+            read_bounded(Endless { served: 0 }, 1000),
+            Err(ReadFailure::TooLarge)
+        );
+        assert_eq!(read_bounded(&b"abc"[..], 3), Ok(b"abc".to_vec()));
+        assert_eq!(read_bounded(&b"abcd"[..], 3), Err(ReadFailure::TooLarge));
     }
 
     #[test]
