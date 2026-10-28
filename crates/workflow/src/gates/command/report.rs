@@ -29,6 +29,12 @@ pub const GATE_VERSION: &str = "1.0.0";
 /// The tool name recorded for a gate that runs inside the control plane.
 pub const IN_PROCESS_TOOL: &str = "factory-validation-gates";
 
+/// What a shell adds to a signal number to report a process that a signal ended.
+const SHELL_SIGNAL_BASE: i64 = 128;
+
+/// The signal the supervisor kills a command with.
+const SIGKILL: i64 = 9;
+
 /// A report could not be built.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub enum ReportError {
@@ -176,11 +182,24 @@ pub fn observed_command(
     cwd: Option<&str>,
     exec: &ExecResult,
 ) -> Result<GateCommand, ReportError> {
+    // The schema wants an integer for a command that ran. A process the supervisor killed has no
+    // exit code of its own, so it gets the number a shell reports for it: 128 plus the signal.
+    // The supervisor kills with SIGKILL, so a timeout or a memory kill without a signal is 137.
+    // A result with neither an exit code nor a reason is recorded as a command that did not
+    // complete, which the gate then cannot pass.
+    let (executed, exit_code) = match (exec.exit_code, exec.signal) {
+        (Some(code), _) => (true, Some(i64::from(code))),
+        (None, Some(signal)) => (true, Some(SHELL_SIGNAL_BASE + i64::from(signal))),
+        (None, None) if exec.timed_out || exec.oom_killed => {
+            (true, Some(SHELL_SIGNAL_BASE + SIGKILL))
+        }
+        (None, None) => (false, None),
+    };
     Ok(GateCommand {
         argv: NonEmptyVec::new(argv.to_vec())?,
         cwd: cwd.map(str::to_owned),
-        executed: true,
-        exit_code: exec.exit_code.map(i64::from),
+        executed,
+        exit_code,
         terminated_by_signal: exec.signal.map(i64::from),
         timed_out: exec.timed_out,
         started_at: exec.started_at,
