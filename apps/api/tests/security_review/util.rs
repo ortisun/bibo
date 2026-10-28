@@ -61,7 +61,7 @@ pub async fn new_job(env: &Env, tenant: &Tenant, key: &str) -> String {
             Req::post("/v1/jobs")
                 .bearer(&tenant.requester.token)
                 .header("Idempotency-Key", key)
-                .json(&json!({"repository_id": tenant.repository.as_text(), "text": "Add a word count."})),
+                .json(&json!({"repository_id": tenant.repository.as_text(), "source_ref": format!("{}#1", tenant.full_name), "text": "Add a word count."})),
         )
         .await;
     assert_eq!(reply.status, 201, "{}", reply.text());

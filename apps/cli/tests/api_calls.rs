@@ -247,7 +247,7 @@ fn submit_sends_the_text_the_repository_and_a_key_it_prints() {
     let text = file.with_file_name("request.txt");
     std::fs::write(&text, "Add a word count.\nSecond line.").expect("write");
     let ran = cli(&format!(
-        "submit --api http://{} --token-file {} --repository {JOB} --text-file {} --key retry-1",
+        "submit --api http://{} --token-file {} --repository {JOB} --text-file {} --source-ref org/repo-0#12 --key retry-1",
         api.addr,
         file.display(),
         text.display()
@@ -267,13 +267,14 @@ fn submit_sends_the_text_the_repository_and_a_key_it_prints() {
         "{sent}"
     );
     assert!(sent.contains(&format!(r#""repository_id":"{JOB}""#)));
+    assert!(sent.contains(r#""source_ref":"org/repo-0#12""#), "{sent}");
     // Without --key a fresh one is made and shown, so the operator can retry with it.
     let again = fake(vec![(
         200,
         r#"{"job_id":"j-2","status":"RECEIVED","created":false}"#,
     )]);
     let ran = cli(&format!(
-        "submit --api http://{} --token-file {} --repository {JOB} --text-file {}",
+        "submit --api http://{} --token-file {} --repository {JOB} --text-file {} --source-ref org/repo-0#12",
         again.addr,
         file.display(),
         text.display()

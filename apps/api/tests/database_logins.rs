@@ -90,7 +90,7 @@ async fn the_api_login_cannot_do_what_the_engine_login_does_and_the_reverse() {
                 support::Req::post("/v1/jobs")
                     .bearer(&tenant.requester.token)
                     .header("Idempotency-Key", "k")
-                    .json(&serde_json::json!({"repository_id": tenant.repository.as_text(), "text": "x"})),
+                    .json(&serde_json::json!({"repository_id": tenant.repository.as_text(), "source_ref": format!("{}#1", tenant.full_name), "text": "x"})),
             )
             .await;
         assert_eq!(reply.status, 201, "{}", reply.text());

@@ -149,7 +149,7 @@ async fn no_token_is_logged(env: &Env, leak: impl FnOnce(&str)) -> Check {
             Req::post("/v1/jobs")
                 .bearer(&token)
                 .header("Idempotency-Key", "log")
-                .json(&json!({"repository_id": env.a.repository.as_text(), "text": "x"})),
+                .json(&json!({"repository_id": env.a.repository.as_text(), "source_ref": format!("{}#1", env.a.full_name), "text": "x"})),
         )
         .await;
     let id = job.json()["job_id"].as_str().unwrap_or_default().to_owned();
@@ -240,7 +240,7 @@ async fn a_login_does_not_make_an_approver(env: &Env) -> Check {
             Req::post("/v1/jobs")
                 .bearer(&env.a.requester.token)
                 .header("Idempotency-Key", "j")
-                .json(&json!({"repository_id": env.a.repository.as_text(), "text": "x"})),
+                .json(&json!({"repository_id": env.a.repository.as_text(), "source_ref": format!("{}#1", env.a.full_name), "text": "x"})),
         )
         .await;
     let id = job.json()["job_id"].as_str().unwrap_or_default().to_owned();
@@ -291,7 +291,7 @@ async fn tenant_a_cannot_read_tenant_b_job(env: &Env) -> Check {
                 .bearer(&env.b.requester.token)
                 .header("Idempotency-Key", "b")
                 .json(
-                    &json!({"repository_id": env.b.repository.as_text(), "text": "B's request."}),
+                    &json!({"repository_id": env.b.repository.as_text(), "source_ref": format!("{}#1", env.b.full_name), "text": "B's request."}),
                 ),
         )
         .await;

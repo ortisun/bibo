@@ -19,7 +19,7 @@ const USAGE: &str = "\
 usage: factory-cli <command> [options]
 
   health   --api URL
-  submit   --api URL --token-file FILE --repository ID --text-file FILE [--key K] [--source-ref R]
+  submit   --api URL --token-file FILE --repository ID --text-file FILE --source-ref OWNER/NAME#N [--key K]
   status   --api URL --token-file FILE JOB
   timeline --api URL --token-file FILE JOB
   approve  --api URL --token-file FILE [--key K] JOB STAGE_RUN head=H evidence=sha256:D [reason...]
@@ -228,11 +228,14 @@ fn submit(args: &[String], env: &dyn Fn(&str) -> Option<String>, ctx: &mut Conte
             return Exit::Failed;
         }
     };
-    let (Some(repository), Some(text_file)) = (
+    let (Some(repository), Some(text_file), Some(source)) = (
         parsed.options.get("repository"),
         parsed.options.get("text-file"),
+        parsed.options.get("source-ref"),
     ) else {
-        ctx.complain("submit needs --repository and --text-file");
+        ctx.complain(
+            "submit needs --repository, --text-file and --source-ref (the issue, as owner/name#number): a job is for one issue",
+        );
         return Exit::Failed;
     };
     if !is_uuid(repository) {
@@ -259,10 +262,7 @@ fn submit(args: &[String], env: &dyn Fn(&str) -> Option<String>, ctx: &mut Conte
         Err(exit) => return exit,
     };
     let key = idempotency_key(&parsed.options);
-    let mut body = json!({"repository_id": repository, "text": text});
-    if let Some(source) = parsed.options.get("source-ref") {
-        body["source_ref"] = json!(source);
-    }
+    let body = json!({"repository_id": repository, "text": text, "source_ref": source});
     let shown = key.clone();
     finish(client.post("/v1/jobs", &key, &body), ctx, move |body| {
         render::submitted(body, &shown)

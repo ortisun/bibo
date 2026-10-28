@@ -515,11 +515,11 @@ async fn held_authorization_matrix() {
             Req::post("/v1/jobs")
                 .bearer(&person.token)
                 .header("Idempotency-Key", &format!("sa-{name}"))
-                .json(&json!({"repository_id": a.repository.as_text(), "text": "x"})),
+                .json(&json!({"repository_id": a.repository.as_text(), "source_ref": format!("{}#1", a.full_name), "text": "x"})),
             Req::post("/v1/jobs")
                 .bearer(&person.token)
                 .header("Idempotency-Key", &format!("sb-{name}"))
-                .json(&json!({"repository_id": b.repository.as_text(), "text": "x"})),
+                .json(&json!({"repository_id": b.repository.as_text(), "source_ref": format!("{}#1", b.full_name), "text": "x"})),
             decide(person, &job, &format!("ap-{name}"), &approve),
             decide(person, &job, &format!("ca-{name}"), &cancel),
             decide(person, &job_b, &format!("ab-{name}"), &approve),

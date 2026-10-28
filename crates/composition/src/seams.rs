@@ -450,8 +450,10 @@ impl crate::hooks::BeforeClaim for RefreshRequests {
     }
 }
 
-/// Parses `owner/name#number`.
-pub(crate) fn issue_of(source_ref: &str) -> Option<IssueRef> {
+/// Parses `owner/name#number`, the pointer to the issue a job is for. The API checks a submission
+/// against it, and the intake stage and the delivery stage read the issue from it.
+#[must_use]
+pub fn issue_of(source_ref: &str) -> Option<IssueRef> {
     let (repo, number) = source_ref.split_once('#')?;
     Some(IssueRef {
         repo: RepoRef::parse(repo).ok()?,
