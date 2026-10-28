@@ -208,7 +208,7 @@ mod named {
     };
     use factory_domain::values::Timestamp;
     use factory_domain::vocabulary::{HumanRole, StageKind};
-    use factory_ports::store::{AppliedTransition, Store, StoreError};
+    use factory_ports::store::{AppliedTransition, StoreError};
     use factory_testkit::fixtures::cleared;
     use factory_testkit::store::StoreDefect;
     use factory_workflow::commands::{Decision, OverrideFacts, Subject};
@@ -561,7 +561,7 @@ mod named {
                 .script(StageKind::Approval)
                 .evals_otherwise(Eval::HumanGate);
             let job = world.admitted_job().await;
-            let store = world.store.clone();
+            let store = world.memory_store();
             world.ids.arm_hook(n, move || store.stall_next_call());
             let broke = drive_to_the_approval(&world).await;
             crashed += usize::from(broke);

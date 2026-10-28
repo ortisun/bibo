@@ -22,9 +22,7 @@ use factory_ports::githost::{
     GitScope, GithubActor, Issue, IssueRef, IssueSource, ProtectionReport, PullRequestRef,
 };
 use factory_ports::paths::{BranchName, CommitSha, RepoRef};
-use factory_ports::store::{
-    ApprovalChannel, ApprovalInvalidation, AuditFilter, PrincipalKind, Store,
-};
+use factory_ports::store::{ApprovalChannel, ApprovalInvalidation, AuditFilter, PrincipalKind};
 use factory_testkit::githost::FakeChangeHost;
 use factory_testkit::workspace::FakeRemote;
 use factory_workflow::handlers::RunIdentity;

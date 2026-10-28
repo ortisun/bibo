@@ -13,7 +13,7 @@ use factory_domain::state::{Guard, StageRunEvent, StageRunStatus};
 use factory_domain::values::{Sha256Digest, Timestamp};
 use factory_domain::vocabulary::{ExecutionMode, GateOutcome, HumanRole, StageKind};
 use factory_ports::clock::{Clock, IdGenerator};
-use factory_ports::store::{AppliedTransition, GateRecord, StageRunEffects, StartAttempt, Store};
+use factory_ports::store::{AppliedTransition, GateRecord, StageRunEffects, StartAttempt};
 use factory_testkit::fixtures::{Ids, cleared, ledger_entry};
 use factory_testkit::store::StoreDefect;
 use factory_workflow::audit::{

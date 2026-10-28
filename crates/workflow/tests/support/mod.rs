@@ -6,12 +6,14 @@
 
 pub mod artifacts;
 pub mod authority;
+pub mod backend;
 pub mod handler;
 pub mod ids;
 pub mod ticker;
 pub mod world;
 
 pub use authority::StaticAuthority;
+pub use backend::{Backend, InMemoryBackend};
 pub use handler::{Eval, ScriptHandle, ScriptedHandler, Step, Tweaks};
 pub use ticker::ManualTicker;
 pub use world::{ScriptedValidator, World};
