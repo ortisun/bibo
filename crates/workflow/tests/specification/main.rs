@@ -11,4 +11,10 @@
 //! and `new_spec_revision_supersedes_downstream`. The negative tests of the catalog that this
 //! package owns have a function whose name starts `negative_nt_`.
 
+#[path = "../support/mod.rs"]
+mod support;
+
 mod gate;
+mod negative;
+mod rig;
+mod stage;
