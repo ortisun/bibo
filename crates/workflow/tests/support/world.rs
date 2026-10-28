@@ -15,8 +15,8 @@ use factory_ports::clock::{Clock, IdGenerator};
 use factory_ports::paths::RepoRef;
 use factory_ports::registry::{ContractKind, OutputValidator, ValidatedOutput};
 use factory_ports::store::{
-    AuditFilter, AuditRecord, NewPrincipal, OutboxSeq, PrincipalKind, Store, SystemScope, SystemTx,
-    WorkerId,
+    AuditFilter, AuditRecord, NewPrincipal, OutboxSeq, PrincipalKind, StageRun, StageRunArtifact,
+    Store, SystemScope, SystemTx, WorkerId,
 };
 use factory_testkit::agent::FakeAgentRuntime;
 use factory_testkit::artifact::InMemoryArtifactStore;
@@ -407,6 +407,30 @@ impl World {
             .expect("events");
         tx.rollback().await.expect("rollback");
         rows.into_iter().map(|row| row.event).collect()
+    }
+
+    /// The stored row of a stage run.
+    pub async fn stage_run(&self, run: StageRunId) -> StageRun {
+        let mut tx = self
+            .store
+            .begin(TenantScope::new(self.tenant))
+            .await
+            .expect("a tx");
+        let row = tx.get_stage_run(run).await.expect("a stage run");
+        tx.rollback().await.expect("rollback");
+        row.value
+    }
+
+    /// What a stage run consumed and produced, as the store links it.
+    pub async fn links(&self, run: StageRunId) -> Vec<StageRunArtifact> {
+        let mut tx = self
+            .store
+            .begin(TenantScope::new(self.tenant))
+            .await
+            .expect("a tx");
+        let links = tx.list_stage_run_artifacts(run).await.expect("links");
+        tx.rollback().await.expect("rollback");
+        links
     }
 
     /// The audit records of a job.

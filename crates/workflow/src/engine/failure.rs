@@ -74,7 +74,7 @@ impl Engine {
         environment: Option<EnvironmentCause>,
     ) -> Result<Option<AttemptDisposition>, EngineError> {
         let timeline = Timeline::load(tx, cx.job).await?;
-        let board = Board::load(tx, &timeline).await?;
+        let board = Board::of(&timeline);
         let (Some(run), Some(record)) = (board.run(run_id), timeline.run(run_id)) else {
             return Err(EngineError::NotFound);
         };
@@ -217,7 +217,7 @@ impl Engine {
         reason: HumanReason,
     ) -> Result<(), EngineError> {
         let timeline = Timeline::load(tx, cx.job).await?;
-        let board = Board::load(tx, &timeline).await?;
+        let board = Board::of(&timeline);
         let run = board.run(run_id).ok_or(EngineError::NotFound)?;
         let cleared = clear(
             Guard::EscalationRequired,

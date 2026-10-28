@@ -1,14 +1,13 @@
-//! The engine's view of one job, rebuilt by reading that job's outbox events in order.
+//! The engine's view of one job, read from the store.
 //!
-//! The status of each stage run, attempt and job is read from its row, which is the source of
-//! truth. What the rows cannot say, the events do: which stage runs the job has, which attempts
-//! each one had and how they ended, when a retry back-off ends, how many rework rounds the job
-//! has used, what each stage run produced and which answers a person gave it. Each transition
-//! writes those facts into its own event in the same transaction (see [`payload`]), so the view
-//! is exactly as durable as the transition, and a new process rebuilds the same view.
+//! The rows are the source of truth, and the listing operations of the `Store` port give them:
+//! `list_stage_runs` for the stage runs, `list_attempts` for the attempts of each one, and
+//! `list_stage_run_artifacts` for what each one produced and which answers a person gave it. The
+//! status of a stage run, an attempt and a job is read from its row, so a new process reads the
+//! same view and the view cannot drift from the rows.
 //!
-//! [`Timeline::fold`] is a pure function of the events. An event type that it does not know is
-//! skipped, which keeps the engine compatible with events that a later version adds.
+//! A few facts are still read from the outbox in [`Timeline::load`], because the store has no row
+//! for them yet. Each is named in the code that reads it, with what is missing.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -17,13 +16,17 @@ use factory_domain::ids::{AttemptId, CausationId, JobId, StageRunId};
 use factory_domain::machines::failure::FailureClass;
 use factory_domain::machines::limits::{ReworkLedger, ReworkTrack};
 use factory_domain::machines::retry::{AttemptWindow, WindowEvent};
-use factory_domain::values::{MediaType, Sha256Digest, Slug};
+use factory_domain::state::{AttemptStatus, StageRunStatus};
+use factory_domain::values::Sha256Digest;
 use factory_domain::vocabulary::StageKind;
-use factory_ports::store::{OutboxRow, OutboxSeq, Tx};
-use serde_json::{Map, Value};
+use factory_ports::store::{
+    ArtifactDirection, Attempt, OutboxRow, OutboxSeq, StageRun, StageRunArtifact, Tx, Versioned,
+};
+use serde_json::Value;
 
 use super::config::position;
 use super::error::EngineError;
+use super::links;
 use super::payload::key;
 use crate::handlers::NamedArtifact;
 
@@ -46,25 +49,59 @@ pub(crate) enum AttemptEnd {
 pub(crate) struct AttemptRecord {
     pub(crate) id: AttemptId,
     pub(crate) number: u32,
+    /// `None` while the attempt is live (`STARTING`, `RUNNING`, `CANCELLING`).
     pub(crate) end: Option<AttemptEnd>,
 }
 
-/// One stage run of the job and what the engine recorded about it.
+impl AttemptRecord {
+    /// Reads the end of an attempt from its row. `TIMED_OUT` and `LEASE_LOST` are statuses and not
+    /// failure classes in the column (`attempt_end_rule`), so the status names the class.
+    fn from_row(row: &Attempt) -> Result<Self, EngineError> {
+        let end = match row.status {
+            AttemptStatus::Starting | AttemptStatus::Running | AttemptStatus::Cancelling => None,
+            AttemptStatus::Succeeded => Some(AttemptEnd::Succeeded),
+            AttemptStatus::Failed => Some(AttemptEnd::Failed(row.failure_class.ok_or(
+                EngineError::Corrupt("a failed attempt has no failure class"),
+            )?)),
+            AttemptStatus::TimedOut => Some(AttemptEnd::Failed(FailureClass::TimedOut)),
+            AttemptStatus::LeaseLost => Some(AttemptEnd::Failed(FailureClass::LeaseLost)),
+            AttemptStatus::Cancelled => Some(AttemptEnd::Cancelled),
+        };
+        Ok(Self {
+            id: row.id,
+            number: row.number,
+            end,
+        })
+    }
+}
+
+/// An answer a person gave a stage run, as its input link says.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct AnswerRecord {
+    /// How many attempts the stage run had when the person answered.
+    pub(crate) attempts_before: u32,
+    pub(crate) artifact: ArtifactRef,
+}
+
+/// One stage run of the job and what the engine knows about it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct RunRecord {
+    /// The row, as it was read.
+    pub(crate) row: Versioned<StageRun>,
     pub(crate) id: StageRunId,
     pub(crate) kind: StageKind,
+    /// The attempts, by number.
     pub(crate) attempts: Vec<AttemptRecord>,
-    /// Attempt failures and human answers, in order. The attempt window starts at the last answer.
-    pub(crate) window: Vec<WindowEvent>,
+    /// The answers people gave, oldest first.
+    pub(crate) answers: Vec<AnswerRecord>,
     /// What the last successful attempt produced.
     pub(crate) outputs: Vec<NamedArtifact>,
-    /// The answers people gave, oldest first.
+    /// The answers as artifacts, oldest first.
     pub(crate) human_inputs: Vec<ArtifactRef>,
-    /// The run that replaced this one after a supersession.
-    pub(crate) replaced_by: Option<StageRunId>,
-    /// The source request was edited after the intake snapshot, so this run must ask for
-    /// re-authorization before an agent reads the new text (NT-AUTHZ-05).
+    /// The source request was edited after the intake snapshot, so this `INTAKE` run, which
+    /// replaced an earlier one, must ask for re-authorization before an agent reads the new text
+    /// (NT-AUTHZ-05). Only an edit of the request replaces an `INTAKE` run: it consumes nothing
+    /// that the pipeline produces, and no rework route leads to it.
     pub(crate) reauthorize: bool,
     /// An approver approved the run (`S14`).
     pub(crate) approved: bool,
@@ -73,24 +110,48 @@ pub(crate) struct RunRecord {
 }
 
 impl RunRecord {
-    fn new(id: StageRunId, kind: StageKind) -> Self {
-        Self {
+    /// Reads the attempts and the links of a stage run row.
+    async fn read(tx: &mut dyn Tx, row: Versioned<StageRun>) -> Result<Self, EngineError> {
+        let (id, kind) = (row.value.id, row.value.kind);
+        // A `PENDING` run has never started, so it has no attempt and no link.
+        let (attempt_rows, linked) = if row.value.status == StageRunStatus::Pending {
+            (Vec::new(), Vec::new())
+        } else {
+            (
+                tx.list_attempts(id).await?,
+                tx.list_stage_run_artifacts(id).await?,
+            )
+        };
+        let mut attempts = attempt_rows
+            .iter()
+            .map(|attempt| AttemptRecord::from_row(&attempt.value))
+            .collect::<Result<Vec<_>, _>>()?;
+        attempts.sort_by_key(|attempt| attempt.number);
+        let answers = read_answers(tx, &linked).await?;
+        let human_inputs = answers
+            .iter()
+            .map(|answer| answer.artifact.clone())
+            .collect();
+        let outputs = read_outputs(tx, &linked).await?;
+        let reauthorize =
+            kind == StageKind::Intake && row.value.run_number > 1 && row.value.rework_of.is_none();
+        Ok(Self {
+            row,
             id,
             kind,
-            attempts: Vec::new(),
-            window: Vec::new(),
-            outputs: Vec::new(),
-            human_inputs: Vec::new(),
-            replaced_by: None,
-            reauthorize: false,
+            attempts,
+            answers,
+            outputs,
+            human_inputs,
+            reauthorize,
             approved: false,
             rejected: false,
-        }
+        })
     }
 
     /// The attempts and invalid outputs counted since the last human answer.
     pub(crate) fn window(&self) -> AttemptWindow {
-        AttemptWindow::from_history(&self.window)
+        window_of(&self.attempts, &self.answers)
     }
 
     /// The attempt with this id.
@@ -99,10 +160,85 @@ impl RunRecord {
     }
 }
 
-/// Everything the engine knows about one job from its events.
+/// The answers among the links of a stage run, oldest first. An answer given after `k` attempts
+/// comes before one given after `k + 1`; two with the same `k` keep the order of the links.
+async fn read_answers(
+    tx: &mut dyn Tx,
+    linked: &[StageRunArtifact],
+) -> Result<Vec<AnswerRecord>, EngineError> {
+    let mut answers = Vec::new();
+    for link in linked
+        .iter()
+        .filter(|link| link.direction == ArtifactDirection::Input)
+    {
+        if let Some(attempts_before) = links::answer_attempts_before(link.role.as_str()) {
+            let entry = tx.get_artifact_index(&link.sha256).await?;
+            answers.push(AnswerRecord {
+                attempts_before,
+                artifact: entry.artifact,
+            });
+        }
+    }
+    answers.sort_by_key(|answer| answer.attempts_before);
+    Ok(answers)
+}
+
+/// What the last successful attempt produced: the output links of the highest attempt number.
+async fn read_outputs(
+    tx: &mut dyn Tx,
+    linked: &[StageRunArtifact],
+) -> Result<Vec<NamedArtifact>, EngineError> {
+    let mut produced: Vec<(u32, &StageRunArtifact, factory_domain::values::Slug)> = linked
+        .iter()
+        .filter(|link| link.direction == ArtifactDirection::Output)
+        .filter_map(|link| {
+            links::parse_output_role(link.role.as_str())
+                .map(|(name, attempt)| (attempt, link, name))
+        })
+        .collect();
+    let Some(last) = produced.iter().map(|(attempt, ..)| *attempt).max() else {
+        return Ok(Vec::new());
+    };
+    produced.retain(|(attempt, ..)| *attempt == last);
+    let mut outputs = Vec::with_capacity(produced.len());
+    for (_, link, name) in produced {
+        let entry = tx.get_artifact_index(&link.sha256).await?;
+        outputs.push(NamedArtifact {
+            name,
+            artifact: entry.artifact,
+        });
+    }
+    Ok(outputs)
+}
+
+/// The window of attempts since the last answer, for `attempts` (by number) and `answers` (by
+/// the attempts that came before each).
+///
+/// An answer that came after `k` attempts sits between attempt `k` and attempt `k + 1`. The
+/// domain's [`AttemptWindow`] then starts again at it, so the restart at an answer is one rule in
+/// one place (INV-10).
+pub(crate) fn window_of(attempts: &[AttemptRecord], answers: &[AnswerRecord]) -> AttemptWindow {
+    let mut history = Vec::new();
+    let mut pending = answers
+        .iter()
+        .map(|answer| answer.attempts_before)
+        .peekable();
+    for attempt in attempts {
+        while pending.next_if(|before| *before < attempt.number).is_some() {
+            history.push(WindowEvent::HumanAnswered);
+        }
+        if let Some(AttemptEnd::Failed(class)) = attempt.end {
+            history.push(WindowEvent::AttemptFailed(class));
+        }
+    }
+    history.extend(pending.map(|_| WindowEvent::HumanAnswered));
+    AttemptWindow::from_history(&history)
+}
+
+/// Everything the engine knows about one job.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub(crate) struct Timeline {
-    /// The stage runs, in the order they were created.
+    /// The stage runs, in the order the store lists them (oldest first).
     pub(crate) runs: Vec<RunRecord>,
     /// Rework rounds used by the job, for each count.
     pub(crate) rework: ReworkLedger,
@@ -115,13 +251,22 @@ pub(crate) struct Timeline {
 }
 
 impl Timeline {
-    /// Reads every event of `job` and folds them.
+    /// Reads the job from the store: its stage runs, their attempts and their links, and then the
+    /// events the store has no row for.
     ///
     /// # Errors
-    /// [`EngineError::Corrupt`] when an event the engine wrote cannot be read back, and the store
-    /// errors of the read.
+    /// [`EngineError::Corrupt`] when a row or an event the engine wrote cannot be read back, and
+    /// the store errors of the reads.
     pub(crate) async fn load(tx: &mut dyn Tx, job: JobId) -> Result<Self, EngineError> {
-        let mut timeline = Self::default();
+        let rows = tx.list_stage_runs(job).await?;
+        let mut runs = Vec::with_capacity(rows.len());
+        for row in rows {
+            runs.push(RunRecord::read(tx, row).await?);
+        }
+        let mut timeline = Self {
+            runs,
+            ..Self::default()
+        };
         let mut from = OutboxSeq::START;
         loop {
             let rows = tx.read_events(job, from, PAGE).await?;
@@ -139,16 +284,6 @@ impl Timeline {
         Ok(timeline)
     }
 
-    /// Folds a list of rows, oldest first. Used by the tests.
-    #[cfg(test)]
-    pub(crate) fn fold(rows: &[OutboxRow]) -> Result<Self, EngineError> {
-        let mut timeline = Self::default();
-        for row in rows {
-            timeline.apply(row)?;
-        }
-        Ok(timeline)
-    }
-
     /// The record of a stage run.
     pub(crate) fn run(&self, id: StageRunId) -> Option<&RunRecord> {
         self.runs.iter().find(|run| run.id == id)
@@ -159,8 +294,20 @@ impl Timeline {
             .iter_mut()
             .find(|run| run.id == id)
             .ok_or(EngineError::Corrupt(
-                "an event names a stage run the job never created",
+                "an event names a stage run the job does not list",
             ))
+    }
+
+    /// The run that replaced a superseded run: the next run of the same stage kind. `None` for a
+    /// run that was not superseded.
+    pub(crate) fn replacement_of(&self, record: &RunRecord) -> Option<StageRunId> {
+        if record.row.value.status != StageRunStatus::Superseded {
+            return None;
+        }
+        self.runs_of(record.kind)
+            .filter(|run| run.row.value.run_number > record.row.value.run_number)
+            .min_by_key(|run| run.row.value.run_number)
+            .map(|run| run.id)
     }
 
     /// The stage runs of one stage kind, oldest first.
@@ -178,6 +325,8 @@ impl Timeline {
         self.commands.contains(&command)
     }
 
+    /// Folds one event. An event type that the engine does not know is skipped, so events that a
+    /// later version adds do not break an older reader.
     fn apply(&mut self, row: &OutboxRow) -> Result<(), EngineError> {
         let event = &row.event;
         if let Some(cause) = event.causation_id {
@@ -185,79 +334,37 @@ impl Timeline {
         }
         let transition = event.transition_id.as_str();
         match (event.event_type.as_str(), transition) {
-            ("job.admitted", _) => self.create_runs(&event.payload, key::STAGE_RUNS),
-            ("stage_run.started", _) => self.attempt_started(event),
-            ("stage_run.gating", _) => self.gating(event),
             ("stage_run.rework_requested", _) => self.rework_requested(event),
-            ("stage_run.superseded", _) => self.superseded(event),
-            ("stage_run.ready", "S13") => self.answered(event),
             ("stage_run.passed", "S14") => {
-                let id = aggregate_run(event)?;
+                let id = aggregate_run(event);
                 self.run_mut(id)?.approved = true;
                 Ok(())
             }
             ("stage_run.failed", "S16") => {
-                let id = aggregate_run(event)?;
+                let id = aggregate_run(event);
                 self.run_mut(id)?.rejected = true;
                 Ok(())
             }
-            ("attempt.succeeded", _) => self.attempt_ended(event, AttemptEnd::Succeeded),
-            ("attempt.failed" | "attempt.timed_out" | "attempt.lease_lost", _) => {
-                let class = failure_class(&event.payload)?;
-                self.attempt_ended(event, AttemptEnd::Failed(class))
+            (
+                "attempt.succeeded" | "attempt.failed" | "attempt.timed_out" | "attempt.lease_lost"
+                | "attempt.cancelled",
+                _,
+            ) => {
+                self.spent_micro_usd = self.spent_micro_usd.saturating_add(
+                    event
+                        .payload
+                        .get(key::COST)
+                        .and_then(Value::as_u64)
+                        .unwrap_or(0),
+                );
+                Ok(())
             }
-            ("attempt.cancelled", _) => self.attempt_ended(event, AttemptEnd::Cancelled),
             _ => Ok(()),
         }
     }
 
-    fn create_runs(&mut self, payload: &Map<String, Value>, name: &str) -> Result<(), EngineError> {
-        let Some(list) = payload.get(name) else {
-            return Ok(());
-        };
-        let list = list.as_array().ok_or(EngineError::Corrupt(
-            "a list of stage runs in an event is not a list",
-        ))?;
-        for entry in list {
-            let (id, kind) = parse_run_ref(entry)?;
-            if self.run(id).is_none() {
-                self.runs.push(RunRecord::new(id, kind));
-            }
-        }
-        Ok(())
-    }
-
-    fn attempt_started(&mut self, event: &DomainEvent) -> Result<(), EngineError> {
-        let id = aggregate_run(event)?;
-        let attempt = parse_attempt_id(&event.payload, key::ATTEMPT)?;
-        let number = u32::try_from(number(&event.payload, key::ATTEMPT_NUMBER)?)
-            .map_err(|_| EngineError::Corrupt("an attempt number is out of range"))?;
-        let run = self.run_mut(id)?;
-        if run.attempt(attempt).is_none() {
-            run.attempts.push(AttemptRecord {
-                id: attempt,
-                number,
-                end: None,
-            });
-        }
-        Ok(())
-    }
-
-    fn gating(&mut self, event: &DomainEvent) -> Result<(), EngineError> {
-        let id = aggregate_run(event)?;
-        let mut outputs = Vec::new();
-        if let Some(Value::Array(list)) = event.payload.get(key::OUTPUTS) {
-            for entry in list {
-                outputs.push(parse_output(entry)?);
-            }
-        }
-        self.run_mut(id)?.outputs = outputs;
-        Ok(())
-    }
-
     fn rework_requested(&mut self, event: &DomainEvent) -> Result<(), EngineError> {
-        let id = aggregate_run(event)?;
-        self.create_runs(&event.payload, key::CREATED)?;
+        let id = aggregate_run(event);
         if let Some(Value::String(track)) = event.payload.get(key::REWORK_TRACK) {
             let track = ReworkTrack::parse(track)
                 .map_err(|_| EngineError::Corrupt("a rework track in an event is unknown"))?;
@@ -280,380 +387,136 @@ impl Timeline {
         }
         Ok(())
     }
-
-    fn superseded(&mut self, event: &DomainEvent) -> Result<(), EngineError> {
-        let id = aggregate_run(event)?;
-        if let Some(entry) = event.payload.get(key::REPLACED_BY) {
-            let (replacement, kind) = parse_run_ref(entry)?;
-            if self.run(replacement).is_none() {
-                self.runs.push(RunRecord::new(replacement, kind));
-            }
-            self.run_mut(id)?.replaced_by = Some(replacement);
-            let edited =
-                event.payload.get(key::CAUSE) == Some(&Value::String("request-edited".to_owned()));
-            if edited {
-                self.run_mut(replacement)?.reauthorize = true;
-            }
-        }
-        Ok(())
-    }
-
-    fn answered(&mut self, event: &DomainEvent) -> Result<(), EngineError> {
-        let id = aggregate_run(event)?;
-        let run = self.run_mut(id)?;
-        run.window.push(WindowEvent::HumanAnswered);
-        if let Some(Value::String(text)) = event.payload.get(key::ANSWER) {
-            let sha256 = Sha256Digest::parse(text)
-                .map_err(|_| EngineError::Corrupt("an answer digest in an event is invalid"))?;
-            let media = match event.payload.get(key::ANSWER_MEDIA_TYPE) {
-                Some(Value::String(media)) => MediaType::parse(media)
-                    .map_err(|_| EngineError::Corrupt("an answer media type is invalid"))?,
-                _ => MediaType::parse("text/plain")?,
-            };
-            run.human_inputs.push(ArtifactRef {
-                sha256,
-                media_type: media,
-                size_bytes: None,
-            });
-        }
-        Ok(())
-    }
-
-    fn attempt_ended(&mut self, event: &DomainEvent, end: AttemptEnd) -> Result<(), EngineError> {
-        let run_id = parse_run_id(&event.payload, key::STAGE_RUN)?;
-        let attempt_id = AttemptId::from_uuid(event.aggregate.id.as_uuid());
-        let cost = event
-            .payload
-            .get(key::COST)
-            .and_then(Value::as_u64)
-            .unwrap_or(0);
-        self.spent_micro_usd = self.spent_micro_usd.saturating_add(cost);
-        let run = self.run_mut(run_id)?;
-        if let Some(attempt) = run.attempts.iter_mut().find(|a| a.id == attempt_id) {
-            attempt.end = Some(end);
-        }
-        if let AttemptEnd::Failed(class) = end {
-            run.window.push(WindowEvent::AttemptFailed(class));
-        }
-        Ok(())
-    }
 }
 
-// ---- reading payload values -------------------------------------------------------------------
-
-fn aggregate_run(event: &DomainEvent) -> Result<StageRunId, EngineError> {
-    Ok(StageRunId::from_uuid(event.aggregate.id.as_uuid()))
-}
-
-fn number(payload: &Map<String, Value>, name: &str) -> Result<u64, EngineError> {
-    payload
-        .get(name)
-        .and_then(Value::as_u64)
-        .ok_or(EngineError::Corrupt("a number in an event is missing"))
-}
-
-fn parse_run_id(payload: &Map<String, Value>, name: &str) -> Result<StageRunId, EngineError> {
-    match payload.get(name) {
-        Some(Value::String(text)) => StageRunId::parse(text)
-            .map_err(|_| EngineError::Corrupt("a stage run id in an event is invalid")),
-        _ => Err(EngineError::Corrupt(
-            "a stage run id in an event is missing",
-        )),
-    }
-}
-
-fn parse_attempt_id(payload: &Map<String, Value>, name: &str) -> Result<AttemptId, EngineError> {
-    match payload.get(name) {
-        Some(Value::String(text)) => AttemptId::parse(text)
-            .map_err(|_| EngineError::Corrupt("an attempt id in an event is invalid")),
-        _ => Err(EngineError::Corrupt("an attempt id in an event is missing")),
-    }
-}
-
-fn parse_run_ref(entry: &Value) -> Result<(StageRunId, StageKind), EngineError> {
-    let id = entry
-        .get("id")
-        .and_then(Value::as_str)
-        .ok_or(EngineError::Corrupt("a stage run reference has no id"))?;
-    let kind = entry
-        .get("kind")
-        .and_then(Value::as_str)
-        .ok_or(EngineError::Corrupt("a stage run reference has no kind"))?;
-    Ok((
-        StageRunId::parse(id).map_err(|_| EngineError::Corrupt("a stage run id is invalid"))?,
-        StageKind::parse(kind).map_err(|_| EngineError::Corrupt("a stage kind is unknown"))?,
-    ))
-}
-
-fn parse_output(entry: &Value) -> Result<NamedArtifact, EngineError> {
-    let field = |name: &str| {
-        entry
-            .get(name)
-            .and_then(Value::as_str)
-            .ok_or(EngineError::Corrupt("an output reference is incomplete"))
-    };
-    Ok(NamedArtifact {
-        name: Slug::parse(field("name")?)
-            .map_err(|_| EngineError::Corrupt("an output name is invalid"))?,
-        artifact: ArtifactRef {
-            sha256: Sha256Digest::parse(field("sha256")?)
-                .map_err(|_| EngineError::Corrupt("an output digest is invalid"))?,
-            media_type: MediaType::parse(field("media_type")?)
-                .map_err(|_| EngineError::Corrupt("an output media type is invalid"))?,
-            size_bytes: None,
-        },
-    })
-}
-
-fn failure_class(payload: &Map<String, Value>) -> Result<FailureClass, EngineError> {
-    match payload.get(key::FAILURE_CLASS) {
-        Some(Value::String(text)) => FailureClass::parse(text)
-            .map_err(|_| EngineError::Corrupt("a failure class in an event is unknown")),
-        _ => Err(EngineError::Corrupt(
-            "a failure class in an event is missing",
-        )),
-    }
+fn aggregate_run(event: &DomainEvent) -> StageRunId {
+    StageRunId::from_uuid(event.aggregate.id.as_uuid())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use factory_domain::contracts::Contract;
-    use serde_json::json;
+    use factory_domain::values::MediaType;
 
-    const JOB: &str = "00000000-0000-7000-8000-000000000001";
-    const RUN_A: &str = "00000000-0000-7000-8000-0000000000a1";
-    const RUN_B: &str = "00000000-0000-7000-8000-0000000000b1";
-    const RUN_C: &str = "00000000-0000-7000-8000-0000000000c1";
-    const ATTEMPT_1: &str = "00000000-0000-7000-8000-0000000000d1";
-    const ATTEMPT_2: &str = "00000000-0000-7000-8000-0000000000d2";
-
-    fn row(
-        seq: u64,
-        event_type: &str,
-        transition: &str,
-        aggregate: (&str, &str),
-        payload: Value,
-        causation: Option<&str>,
-    ) -> OutboxRow {
-        let document = json!({
-            "schema_version": 1,
-            "event_id": format!("00000000-0000-7000-8000-{seq:012x}"),
-            "event_type": event_type,
-            "event_version": 1,
-            "tenant_id": "00000000-0000-7000-8000-0000000000ff",
-            "job_id": JOB,
-            "aggregate": { "type": aggregate.0, "id": aggregate.1, "version": 2 },
-            "transition_id": transition,
-            "correlation_id": JOB,
-            "causation_id": causation,
-            "occurred_at": "2026-10-27T08:30:00Z",
-            "producer": "workflow.engine",
-            "payload": payload,
-        });
-        OutboxRow {
-            seq: OutboxSeq::new(seq),
-            event: DomainEvent::from_json_value(document).expect("a valid event"),
+    fn attempt(number: u32, end: Option<AttemptEnd>) -> AttemptRecord {
+        AttemptRecord {
+            id: AttemptId::from_uuid(uuid::Uuid::from_u128(u128::from(number))),
+            number,
+            end,
         }
     }
 
-    fn admitted() -> OutboxRow {
-        row(
-            1,
-            "job.admitted",
-            "J01",
-            ("job", JOB),
-            json!({ "stage_runs": [
-                { "id": RUN_A, "kind": "INTAKE" },
-                { "id": RUN_B, "kind": "REPOSITORY_INTELLIGENCE" },
-            ]}),
-            None,
-        )
+    fn failed(number: u32, class: FailureClass) -> AttemptRecord {
+        attempt(number, Some(AttemptEnd::Failed(class)))
     }
 
-    fn started(seq: u64, attempt: &str, number: u32) -> OutboxRow {
-        row(
-            seq,
-            "stage_run.started",
-            "S03",
-            ("stage_run", RUN_A),
-            json!({
-                "attempt_id": attempt,
-                "attempt_number": number,
-                "deadline_at": "2026-10-27T08:45:00Z",
-            }),
-            None,
-        )
-    }
-
-    fn failed(seq: u64, attempt: &str, class: &str) -> OutboxRow {
-        row(
-            seq,
-            "attempt.failed",
-            "A05",
-            ("attempt", attempt),
-            json!({ "stage_run_id": RUN_A, "failure_class": class }),
-            None,
-        )
+    fn answer(attempts_before: u32) -> AnswerRecord {
+        AnswerRecord {
+            attempts_before,
+            artifact: ArtifactRef {
+                sha256: Sha256Digest::of(b"an answer"),
+                media_type: MediaType::parse("text/plain").expect("a media type"),
+                size_bytes: None,
+            },
+        }
     }
 
     #[test]
-    fn admission_lists_the_stage_runs_in_order() {
-        let timeline = Timeline::fold(&[admitted()]).expect("folds");
-        let kinds: Vec<_> = timeline.runs.iter().map(|run| run.kind).collect();
-        assert_eq!(
-            kinds,
-            vec![StageKind::Intake, StageKind::RepositoryIntelligence]
-        );
-    }
-
-    #[test]
-    fn failures_count_in_the_window_and_an_answer_starts_it_again() {
-        let rows = [
-            admitted(),
-            started(2, ATTEMPT_1, 1),
-            failed(3, ATTEMPT_1, "TOOL_ERROR"),
-            started(4, ATTEMPT_2, 2),
-            failed(5, ATTEMPT_2, "INVALID_OUTPUT"),
+    fn failures_count_in_the_window() {
+        let attempts = [
+            failed(1, FailureClass::ToolError),
+            failed(2, FailureClass::InvalidOutput),
         ];
-        let timeline = Timeline::fold(&rows).expect("folds");
-        let run = timeline
-            .run(StageRunId::parse(RUN_A).expect("id"))
-            .expect("run");
-        assert_eq!(run.window().attempts_used(), 2);
-        assert_eq!(run.window().invalid_output_failures(), 1);
-        assert_eq!(run.attempts.len(), 2);
-
-        let mut with_answer = rows.to_vec();
-        with_answer.push(row(
-            6,
-            "stage_run.ready",
-            "S13",
-            ("stage_run", RUN_A),
-            json!({ "answer_sha256": Sha256Digest::of(b"more time").to_string() }),
-            None,
-        ));
-        let timeline = Timeline::fold(&with_answer).expect("folds");
-        let run = timeline
-            .run(StageRunId::parse(RUN_A).expect("id"))
-            .expect("run");
-        assert_eq!(run.window().attempts_used(), 0, "the window starts again");
-        assert_eq!(run.human_inputs.len(), 1);
+        let window = window_of(&attempts, &[]);
+        assert_eq!(window.attempts_used(), 2);
+        assert_eq!(window.invalid_output_failures(), 1);
     }
 
     #[test]
-    fn a_cancelled_attempt_is_not_a_failure() {
-        let rows = [
-            admitted(),
-            started(2, ATTEMPT_1, 1),
-            row(
-                3,
-                "attempt.cancelled",
-                "A09",
-                ("attempt", ATTEMPT_1),
-                json!({ "stage_run_id": RUN_A }),
-                None,
-            ),
+    fn an_answer_starts_the_window_again() {
+        let attempts = [
+            failed(1, FailureClass::ToolError),
+            failed(2, FailureClass::ToolError),
         ];
-        let timeline = Timeline::fold(&rows).expect("folds");
-        let run = timeline
-            .run(StageRunId::parse(RUN_A).expect("id"))
-            .expect("run");
-        assert_eq!(run.window().attempts_used(), 0);
-        assert_eq!(run.attempts[0].end, Some(AttemptEnd::Cancelled));
+        let window = window_of(&attempts, &[answer(2)]);
+        assert_eq!(window.attempts_used(), 0, "the window starts again");
     }
 
     #[test]
-    fn rework_charges_a_round_to_its_count_and_lists_the_new_run() {
-        let rework = row(
-            2,
-            "stage_run.rework_requested",
-            "S09",
-            ("stage_run", RUN_B),
-            json!({
-                "rework_track": "documentation",
-                "failing_set_sha256": Sha256Digest::of(b"links").to_string(),
-                "created_stage_runs": [ { "id": RUN_C, "kind": "REPOSITORY_INTELLIGENCE" } ],
-            }),
-            None,
-        );
-        let timeline = Timeline::fold(&[admitted(), rework]).expect("folds");
-        assert_eq!(timeline.rework.used(ReworkTrack::Documentation), 1);
-        assert_eq!(timeline.rework.used(ReworkTrack::Code), 0);
-        assert_eq!(timeline.runs.len(), 3);
+    fn only_the_attempts_after_the_last_answer_count() {
+        let attempts = [
+            failed(1, FailureClass::ToolError),
+            failed(2, FailureClass::ToolError),
+            failed(3, FailureClass::InvalidOutput),
+            failed(4, FailureClass::ToolError),
+        ];
+        // One answer after attempt 2 and a later one after attempt 3.
+        let window = window_of(&attempts, &[answer(2), answer(3)]);
+        assert_eq!(window.attempts_used(), 1);
+        assert_eq!(window.invalid_output_failures(), 0);
+        let window = window_of(&attempts, &[answer(2)]);
+        assert_eq!(window.attempts_used(), 2);
+        assert_eq!(window.invalid_output_failures(), 1);
+    }
+
+    #[test]
+    fn an_answer_before_any_attempt_leaves_the_window_empty_for_the_first_try() {
+        let attempts = [failed(1, FailureClass::ToolError)];
+        let window = window_of(&attempts, &[answer(0)]);
+        assert_eq!(window.attempts_used(), 1);
+    }
+
+    #[test]
+    fn a_cancelled_or_live_attempt_is_not_a_failure() {
+        let attempts = [
+            attempt(1, Some(AttemptEnd::Cancelled)),
+            attempt(2, None),
+            attempt(3, Some(AttemptEnd::Succeeded)),
+        ];
+        assert_eq!(window_of(&attempts, &[]).attempts_used(), 0);
+    }
+
+    #[test]
+    fn a_timed_out_or_lease_lost_status_is_the_failure_class_of_the_same_name() {
+        let row = |status, failure_class| Attempt {
+            id: AttemptId::from_uuid(uuid::Uuid::from_u128(1)),
+            tenant_id: factory_domain::ids::TenantId::from_uuid(uuid::Uuid::from_u128(2)),
+            job_id: JobId::from_uuid(uuid::Uuid::from_u128(3)),
+            stage_run_id: StageRunId::from_uuid(uuid::Uuid::from_u128(4)),
+            number: 1,
+            status,
+            worker: factory_ports::store::WorkerId::new("worker-1").expect("a worker"),
+            epoch: factory_ports::store::LeaseEpoch::new(1),
+            lease_expires_at: factory_domain::values::Timestamp::parse("2026-10-27T08:30:00Z")
+                .expect("a time"),
+            last_heartbeat_at: None,
+            deadline_at: factory_domain::values::Timestamp::parse("2026-10-27T08:45:00Z")
+                .expect("a time"),
+            teardown_deadline_at: None,
+            failure_class,
+            output: None,
+            sandbox: None,
+            created_at: factory_domain::values::Timestamp::parse("2026-10-27T08:00:00Z")
+                .expect("a time"),
+            ended_at: None,
+        };
+        let end = |status, class| AttemptRecord::from_row(&row(status, class)).map(|a| a.end);
         assert_eq!(
-            timeline.last_failing_set(StageKind::RepositoryIntelligence),
-            Some(&Sha256Digest::of(b"links"))
+            end(AttemptStatus::TimedOut, None),
+            Ok(Some(AttemptEnd::Failed(FailureClass::TimedOut)))
         );
-    }
-
-    #[test]
-    fn a_supersession_links_the_old_run_to_its_replacement() {
-        let superseded = row(
-            2,
-            "stage_run.superseded",
-            "S20",
-            ("stage_run", RUN_B),
-            json!({ "replaced_by": { "id": RUN_C, "kind": "REPOSITORY_INTELLIGENCE" } }),
-            None,
-        );
-        let timeline = Timeline::fold(&[admitted(), superseded]).expect("folds");
-        let old = timeline
-            .run(StageRunId::parse(RUN_B).expect("id"))
-            .expect("run");
-        assert_eq!(old.replaced_by, Some(StageRunId::parse(RUN_C).expect("id")));
         assert_eq!(
-            timeline.runs_of(StageKind::RepositoryIntelligence).count(),
-            2
+            end(AttemptStatus::LeaseLost, None),
+            Ok(Some(AttemptEnd::Failed(FailureClass::LeaseLost)))
         );
-    }
-
-    #[test]
-    fn a_repeated_command_is_recognised_by_its_id() {
-        let command = "00000000-0000-7000-8000-0000000000e1";
-        let rows = [row(
-            1,
-            "job.admitted",
-            "J01",
-            ("job", JOB),
-            json!({ "stage_runs": [] }),
-            Some(command),
-        )];
-        let timeline = Timeline::fold(&rows).expect("folds");
-        assert!(timeline.has_applied(CausationId::parse(command).expect("id")));
-        assert!(
-            !timeline.has_applied(
-                CausationId::parse("00000000-0000-7000-8000-0000000000e2").expect("id")
-            )
+        assert_eq!(
+            end(AttemptStatus::Failed, Some(FailureClass::ToolError)),
+            Ok(Some(AttemptEnd::Failed(FailureClass::ToolError)))
         );
-    }
-
-    #[test]
-    fn an_event_that_names_an_unknown_run_is_a_corrupt_timeline() {
-        let orphan = row(
-            1,
-            "stage_run.gating",
-            "S04",
-            ("stage_run", RUN_A),
-            json!({}),
-            None,
-        );
+        assert_eq!(end(AttemptStatus::Cancelling, None), Ok(None));
         assert!(matches!(
-            Timeline::fold(&[orphan]),
+            end(AttemptStatus::Failed, None),
             Err(EngineError::Corrupt(_))
         ));
-    }
-
-    #[test]
-    fn an_event_type_the_engine_does_not_know_is_skipped() {
-        let unknown = row(
-            2,
-            "task_node.ready",
-            "T01",
-            ("task_node", RUN_C),
-            json!({}),
-            None,
-        );
-        assert!(Timeline::fold(&[admitted(), unknown]).is_ok());
     }
 }

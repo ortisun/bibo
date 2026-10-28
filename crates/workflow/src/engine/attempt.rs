@@ -321,7 +321,7 @@ impl Engine {
         let mut tx = self.tenant_tx(claimed.tenant).await?;
         let job = tx.get_job(claimed.job).await?;
         let timeline = Timeline::load(&mut *tx, claimed.job).await?;
-        let board = Board::load(&mut *tx, &timeline).await?;
+        let board = Board::of(&timeline);
         tx.rollback().await?;
         let run = board.run(claimed.stage_run).ok_or(EngineError::NotFound)?;
         let record = timeline
@@ -957,8 +957,16 @@ impl Engine {
                 },
             )
             .await?;
-            self.gate_stage(&mut *tx, &cx, &run, contract, judged, &outputs)
-                .await?;
+            self.gate_stage(
+                &mut *tx,
+                &cx,
+                &run,
+                contract,
+                judged,
+                &outputs,
+                claimed.attempt_number,
+            )
+            .await?;
             self.record_handler_notes(&mut *tx, &cx, claimed, notes, output)
                 .await
         }

@@ -99,7 +99,9 @@ pub struct ContractContext<'a> {
     /// resolving the contract again with a new answer gives a new input hash.
     pub human_inputs: &'a [ArtifactRef],
     /// The source request was edited after the intake snapshot. The intake stage must ask for
-    /// re-authorization before an agent reads the new text (NT-AUTHZ-05).
+    /// re-authorization before an agent reads the new text (NT-AUTHZ-05). It is true only for an
+    /// `INTAKE` run that replaced an earlier one: the engine reads it from the run number, since
+    /// an edit is the only thing that replaces an `INTAKE` run.
     pub request_edited: bool,
 }
 

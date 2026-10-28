@@ -161,7 +161,7 @@ impl Engine {
             .handlers
             .get(run.value.kind)
             .ok_or(EngineError::NoHandler(run.value.kind))?;
-        let board = Board::load(&mut *tx, &timeline).await?;
+        let board = Board::of(&timeline);
         let upstream = upstream_runs(&timeline, &board);
         let ccx = self.contract_context(&cx, &run.value, record, &upstream);
         let contract = handler.contract(&ccx);

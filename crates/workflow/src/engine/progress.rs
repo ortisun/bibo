@@ -36,19 +36,22 @@ use crate::handlers::{
     Applicability, ContractContext, RunIdentity, SkipBasis, SkipRule, UpstreamRun,
 };
 
-/// The stage runs of a job with their rows, in the order they were created.
+/// The stage runs of a job with their rows, in the order the store lists them.
 pub(crate) struct Board {
     pub(crate) runs: Vec<Versioned<StageRun>>,
 }
 
 impl Board {
-    /// Reads the row of every stage run in the timeline.
-    pub(crate) async fn load(tx: &mut dyn Tx, timeline: &Timeline) -> Result<Self, EngineError> {
-        let mut runs = Vec::with_capacity(timeline.runs.len());
-        for record in &timeline.runs {
-            runs.push(tx.get_stage_run(record.id).await?);
+    /// The row of every stage run in the timeline, as the timeline read them. The board is only
+    /// as current as the timeline, so a caller that moves a run reads both again.
+    pub(crate) fn of(timeline: &Timeline) -> Self {
+        Self {
+            runs: timeline
+                .runs
+                .iter()
+                .map(|record| record.row.clone())
+                .collect(),
         }
-        Ok(Self { runs })
     }
 
     /// The read-only views the guards take.
@@ -164,7 +167,7 @@ impl Engine {
         for _ in 0..MAX_ROUNDS {
             let job = tx.get_job(cx.job).await?;
             let timeline = Timeline::load(tx, cx.job).await?;
-            let board = Board::load(tx, &timeline).await?;
+            let board = Board::of(&timeline);
             match self.settle_round(tx, cx, &job, &timeline, &board).await? {
                 Round::Settled => return Ok(()),
                 Round::Moved => {}

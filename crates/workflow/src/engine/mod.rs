@@ -31,6 +31,7 @@ mod error;
 mod failure;
 mod gate;
 mod ledger;
+mod links;
 pub(crate) mod payload;
 mod platform;
 pub(crate) mod progress;
