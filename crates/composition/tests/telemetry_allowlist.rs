@@ -214,6 +214,31 @@ const NEVER: &[&str] = &[
 /// new file is a new line here, on purpose.
 const REVIEWED: &[(&str, &str, &str)] = &[
     (
+        "crates/composition/src/decisions.rs",
+        "admitted",
+        "a boolean: whether the engine admitted the job",
+    ),
+    (
+        "crates/composition/src/decisions.rs",
+        "code",
+        "the refusal code of the approval service, a closed set of static strings",
+    ),
+    (
+        "crates/composition/src/decisions.rs",
+        "decision",
+        "the identifier of a decision record, a UUID",
+    ),
+    (
+        "crates/composition/src/decisions.rs",
+        "error",
+        "StoreError and EngineError: static sentences written by the code; the one String payload, EngineError::Invalid, wraps a domain or serde error about a value the engine built itself and means a bug in the engine",
+    ),
+    (
+        "crates/composition/src/decisions.rs",
+        "job",
+        "the identifier of a job, a UUID",
+    ),
+    (
         "apps/api/src/answers.rs",
         "error",
         "StoreError, a closed set",
