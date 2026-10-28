@@ -6,14 +6,16 @@
 -- a new entry to every index of attempts that covers a live row (six of them) and left a dead tuple in the heap and in
 -- each index for vacuum to remove.
 --
--- Measured with scripts/db-perf.sh on 600 live attempts renewed by four clients for 20 seconds, then the same with the
--- index dropped (docs/database/performance.md, "Churn"):
+-- Measured with scripts/db-perf.sh at 100,000 rows in each hot table: four clients renewing 200 live attempts as fast as they
+-- could, with the index (45 seconds) and without it (90 seconds) (docs/database/performance.md, section 6):
 --
 --                                 with the index    without it
---   renewals that were heap-only        0.01 %         99.9 %
---   dead tuples left behind            325,278          1,063
---   index bytes after the run       20,209,664      6,881,280    (8,019,968 before)
---   sweeper, lease expired, p95          0.14 ms        0.18 ms   (alone, one client, 20,000 rows)
+--   renewals                            492,609      1,154,376
+--   renewals that were heap-only          0.00 %        99.84 %
+--   dead tuples left behind            416,647          3,192
+--   attempts heap after the run         +43 %           +0.8 %
+--   attempts indexes after the run      +47 %           +0.02 %
+--   sweeper, lease expired, p95          0.76 ms        0.45 ms   (alone, one client)
 --
 -- What the sweeper does instead. The query of find_due_attempts for an expired lease keeps its text:
 --   WHERE status IN ('STARTING', 'RUNNING') AND lease_expires_at < now() ORDER BY lease_expires_at, id LIMIT n

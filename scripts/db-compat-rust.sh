@@ -138,11 +138,11 @@ for level in $SCHEMAS; do
     rc=0
     # Run from the old crate's folder so any relative path the tests use resolves there.
     (cd "$CODE/crates/storage" && FACTORY_DB_PROVISION=local "$bin" --test-threads=4 >"$out" 2>&1) || rc=$?
-    passed="$(grep -E '^test result:' "$out" | sed -E 's/.* ([0-9]+) passed.*/\1/' | tail -n 1)"
-    failed="$(grep -E '^test result:' "$out" | sed -E 's/.* ([0-9]+) failed.*/\1/' | tail -n 1)"
+    passed="$(grep -E '^test result:' "$out" | sed -E 's/.* ([0-9]+) passed.*/\1/' | tail -n 1 || true)"
+    failed="$(grep -E '^test result:' "$out" | sed -E 's/.* ([0-9]+) failed.*/\1/' | tail -n 1 || true)"
     [ -n "$passed" ] || passed=0
     [ -n "$failed" ] || failed="?"
-    names="$(grep -E '^test .* \.\.\. FAILED$' "$out" | sed -E 's/^test (.*) \.\.\. FAILED$/\1/' | tr '\n' ',' | sed 's/,$//')"
+    names="$(grep -E '^test .* \.\.\. FAILED$' "$out" | sed -E 's/^test (.*) \.\.\. FAILED$/\1/' | tr '\n' ',' | sed 's/,$//' || true)"
     blocked_msg="$(grep -m1 'BLOCKED:' "$out" || true)"
     printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$level" "$name" "$rc" "$passed" "$failed" "$names" "$blocked_msg" >>"$RESULTS"
     say "   $name: exit $rc, $passed passed, $failed failed${names:+ ($names)}${blocked_msg:+ $blocked_msg}"

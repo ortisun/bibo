@@ -1,15 +1,15 @@
 # What the database work does not cover
 
-- Status: after the work package `s1-database-tenancy-and-state-sync`. This list is part of the deliverable, so a reader does not mistake the tests for more than they prove.
+- Status: after the work package `s1-database-tenancy-and-state-sync`, updated by `s1-database-port-alignment` and by `s1-database-review` (2026-10-28, marked below). This list is part of the deliverable, so a reader does not mistake the tests for more than they prove.
 - Form: reference.
 
 ## In short
 
 1. Row-level security is on, and it stops a forgotten `WHERE`, not an attacker who can run SQL as a tenant login. The tenant setting is not a credential.
-2. `diesel-async`, a transaction-mode pooler and PostgreSQL 17 were not run. No Rust code touches the database yet.
-3. Nothing is ever deleted, and there is no retention design.
+2. A transaction-mode pooler and PostgreSQL 17 were not run. `diesel-async` has run since `s1-storage-postgres` (the storage crate's tests, 63 of them, pass against a real server as the three real logins; [adr-0012-open-items.md](adr-0012-open-items.md)).
+3. Nothing is ever deleted. **A retention and partitioning proposal exists** ([retention-and-partitioning.md](retention-and-partitioning.md)); none of it is built, and it names five decisions for a person.
 4. The audit anchor, the hourly verifier and the Rust chain verifier do not exist, and the chain verifiers answer "sound" to a session set to the wrong tenant.
-5. Nothing was measured under load. The plans are on 10,000 and 100,000 rows on one laptop.
+5. **Measured since `s1-database-review`, on one laptop with the client on the same machine:** the hot queries at 100,000 rows as the real logins ([performance.md](performance.md)), concurrency up to 16 clients, ninety seconds of churn. Not measured: a network between the application and the database, production hardware, a database that has run for months, more than 16 clients.
 6. A superuser rewrite and a deleted audit tail get past the database.
 7. Several limits are my sanity bounds, not policy figures.
 
@@ -19,8 +19,8 @@ The tables below give the detail.
 
 | Not covered | Where it is decided | Why it matters |
 |---|---|---|
-| **Retention and deletion.** Nothing deletes anything. The application role has no `DELETE`. `webhook_deliveries` should be trimmed at 30 days, the outbox needs a retention rule (ADR 0004), and `jobs` can never be deleted while ledger entries exist, because the ledger is append-only and points at them. | A maintenance role and a retention design, with `s1-database-review`. Archiving or redacting a job, rather than deleting it, may be the answer. A maintenance role will need its own policies, since `FORCE ROW LEVEL SECURITY` binds the owner too | Storage grows without limit. A request for deletion of personal data has no path yet. |
-| **Partitioning** of the outbox, the audit log and the ledger. | Before the Slice 2 load tests (ADR 0004). | The tables are not partitioned and the audit chain is per tenant, which partitioning by tenant would fit. Partitioned tables need their policies on the parent and checks of how `FORCE` and the foreign keys behave. |
+| **Retention and deletion.** Nothing deletes anything. The application role has no `DELETE`. `webhook_deliveries` should be trimmed at 30 days, the outbox needs a retention rule (ADR 0004), and `jobs` can never be deleted while ledger entries exist, because the ledger is append-only and points at them. | **Proposed, not built:** [retention-and-partitioning.md](retention-and-partitioning.md) (2026-10-28), with prototypes of a maintenance role, of partitioning and of the archive of a ledger range. It names five decisions for a person. | Storage grows without limit (about 400 KB per completed job, an estimate). A request for deletion of personal data has no path yet. |
+| **Partitioning** of the outbox, the audit log and the ledger. | **Proposed, not built.** Prototyped on a scratch cluster: the outbox cannot be partitioned by time without weakening its keys; the ledger can, by range of `job_id`, after three changes; the audit log can only be cut by sequence range per tenant. See [retention-and-partitioning.md](retention-and-partitioning.md). | No table is near a size where partitioning helps (all hot queries are inside their budgets at 100,000 rows). The first partitioned table costs a rewrite of the ledger guard function, a new unique key and an update of five suites. |
 | **Other database roles.** There are four groups (`factory_app`, `factory_system`, `factory_resolver`, `factory_lookup`). A maintenance role, a read-only role for the dashboard and a role for the verification job would each hold less. | With the services that need them. | The relay and the sweeper share `factory_system`, which can read the outbox and the claim columns. A dashboard that only reads would still need its own policies. |
 | **Further loops of the system scope.** The policies list the claim, the sweep and the relay. A timer for paused jobs, a quota counter or a cleanup would need a migration and a line in the `rls` suite. | With the engine package. | An undeclared cross-tenant query fails with `permission denied`, which is the intended behaviour, and also a surprise for the author. |
 | **Tenant provisioning.** Creating a tenant is an `INSERT` by the owner. Everything after it (principals, repositories) is written by `factory_app` with the setting made. There is no onboarding procedure, and no function that creates a tenant together with its first rows. | The API and admin work. | The owner sees no row of a tenant table under `FORCE`, so a script run as the owner cannot create them. |
@@ -37,20 +37,20 @@ The tables below give the detail.
 | **Job tokens of the model broker.** | The broker stores its own hash, binding and counters (`secrets-and-credentials.md`, section 4.2). `api_tokens` is not that table. |
 | **Stage contracts, gate reports, review verdicts, specifications and plans as tables.** | They are artifacts named by hash. The database stores the hash and the metadata. Their schemas are validated by the code that writes them. |
 | **The named allowlist** that gives a person authority. | Deliberately absent. Policy says it is read from protected configuration and never from the database. |
-| **Backups, point-in-time recovery, replication, connection pooling, TLS, encryption at rest, `pg_audit`.** | `sre` items. The suite tests none of them. Row-level security is not tested on a replica or after a restore. |
+| **Backups, point-in-time recovery, replication, connection pooling, TLS, encryption at rest, `pg_audit`.** | `sre` items. The suites test none of them. Since `s1-database-review`, a dump and restore round trip is checked on a scratch cluster (rows, catalog, triggers, policies, grants, chains and isolation through a real login survive; no planner statistics do): [operating-settings.md](operating-settings.md). Not tested: a replica, point-in-time recovery (there is none), the Docker drill. |
 
 ## Not proven by these tests
 
 | Not covered | Note |
 |---|---|
-| **`diesel-async` running `set_config` as the first statement of a transaction.** | Not run: there is no Rust here. Tried with `psql \bind`, which sends the tenant as a bound parameter of the extended protocol, and with a prepared statement that has a generic plan. A Rust driver that sends the same messages behaves the same. The `s1-storage-postgres` isolation tests are the proof. |
+| **`diesel-async` running `set_config` as the first statement of a transaction.** | **Checked** by `s1-database-review`: the storage crate's `tenant_isolation` and `pool_reset` tests pass against a real server as the three real logins; see [adr-0012-open-items.md](adr-0012-open-items.md). | |
 | **A transaction-mode connection pooler** (PgBouncer and the like). | None is planned for Slice 1 and none was run. The setting is transaction-local, which is what a transaction pooler needs, provided every statement runs inside a transaction that began with it. A session-level `SET` would leak between clients (shown in the suite). |
-| **Behaviour under real load.** | The plans are on 10,000 and 100,000 rows on one laptop. There is no timing under concurrency beyond four to fifty sessions, no bloat measurement and no check of `autovacuum` on the hot tables. `fillfactor` is at its default. The cost of the extra `set_config` round trip per transaction is for `s1-database-review`. |
+| **Behaviour under real load.** | **Measured on one laptop** (`s1-database-review`): [performance.md](performance.md) has the timing of every hot statement at 100,000 rows, concurrency up to 16 clients, ninety seconds of heartbeats, the autovacuum defaults and the bloat. `fillfactor` is at its default, and the review found no reason to change it. The cost of the extra `set_config` round trips per transaction is measured there (two statements, 20 to 40 microseconds on loopback). | Not measured: a network between the application and the database, production hardware, a database that has run for months. |
 | **Isolation levels other than `READ COMMITTED`**, replicas and failover. | The audit chain's advisory lock reasoning for `REPEATABLE READ` is untested. |
 | **PostgreSQL 17.** | 16.15 and 18.6 are the versions that ran. 17 was not run. |
 | **A migration role that is neither a superuser nor the creator of the groups.** | Migration 14 refuses it with a message. Tried: a plain `CREATEROLE` owner that created the roles migrates, reverts and migrates again. One that did not create them stops. |
-| **The Rust code.** | `schema.rs` is generated and committed but not compiled yet: the `storage` crate has no Diesel dependency until `s1-storage-postgres`. No Rust test touches the database. |
-| **Upgrade from an earlier schema.** | There is none. Each later migration needs a data-preserving test (ADR 0007). The `migrations` suite now also reverts the newest `j` migrations and runs them again, for every `j`, which finds a down script that leaves something behind. |
+| **The Rust code.** | Compiled and tested since `s1-storage-postgres`. The tests that touch the database are the crate's own; this directory's SQL suites do not run Rust. | |
+| **Upgrade from an earlier schema.** | The `migrations` suite upgrades from migration 14 with a row in every table; since `s1-database-review` the `compat` suite does it one migration at a time and runs the earlier code's statements after each, and `scripts/db-compat-rust.sh` runs the earlier release's real integration tests against each schema. Migrations 10 to 14 have no earlier code to run. See [migration-safety.md](migration-safety.md). | |
 | **Tenant scoping in the Rust code.** | The tests prove the keys and the policies. They cannot prove that every repository call opens its transaction for the right tenant. |
 | **`pg_stat_activity`, logs and error messages as side channels.** | Not examined. The tenant is sent as a bound parameter, not as a literal. The two global unique keys do name the key in an error (tested). |
 | **Business rules above the schema.** | Transition guards, gate decisions, pipeline order (INV-06, INV-11), rework counts, who may do what. These are in the domain and the engine. |

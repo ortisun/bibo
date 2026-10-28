@@ -371,7 +371,7 @@ Columns are those of [`schema.rs`](../../crates/storage/src/schema.rs). Every me
 |---|---|---|---|
 | `database_time` | `SELECT now()` | S | none needed |
 | `find_claim_candidates(limit)` | the step 1 query above | S | no write grant; `FOR NO KEY UPDATE` needs the `UPDATE (updated_at)` grant and policy `system_lock` (`WITH CHECK (false)`); index `stage_runs_claim_order_idx` [`lease`, `rls`, `plans`] |
-| `find_due_attempts(reason, limit)` | the three queries above | S | the same, on `attempts`; indexes `attempts_lease_expiry_idx`, `attempts_deadline_idx`, `attempts_teardown_idx` [`lease` section 11, `rls`, `plans`] |
+| `find_due_attempts(reason, limit)` | the three queries above | S | the same, on `attempts`; indexes `attempts_deadline_idx`, `attempts_teardown_idx`, and for an expired lease the live attempts through `attempts_deadline_idx` or `attempts_one_active_per_stage_run` (no index is keyed on the lease since migration 19, so that a renewal is a heap-only update) [`lease` sections 11 and 14, `rls`, `plans`] |
 | `finish` | `COMMIT` or `ROLLBACK` | S | none |
 
 ### `Tx`

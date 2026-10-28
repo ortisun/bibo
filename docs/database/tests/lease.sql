@@ -772,8 +772,8 @@ $$;
 -- 14. A lease renewal is a heap-only (HOT) update (work package s1-database-review, migration 19).
 -- A heartbeat changes lease_expires_at, last_heartbeat_at and version, and nothing else. If an index is keyed on one of
 -- those columns the update cannot be heap-only: PostgreSQL then writes a new entry to every index of the table for every
--- renewal and leaves a dead one behind in each. Measured on 90 seconds of heartbeats on 600 live attempts: 0.01 percent
--- heap-only with the index `attempts_lease_expiry_idx`, 99.9 percent without it (docs/database/performance.md). The
+-- renewal and leaves a dead one behind in each. Measured at 100,000 rows, four clients renewing 200 live attempts: 0.00
+-- percent heap-only with the index `attempts_lease_expiry_idx`, 99.84 percent without it (docs/database/performance.md). The
 -- counter read here is the transaction's own, so the check does not wait for the statistics collector.
 DO $$
 DECLARE

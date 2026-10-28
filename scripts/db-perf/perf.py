@@ -1354,7 +1354,8 @@ def catalog_report(cl: Cluster, db: str) -> dict:
       SELECT relname, pg_relation_size(oid), pg_indexes_size(oid), coalesce(pg_total_relation_size(reltoastrelid), 0), reltuples::bigint
         FROM pg_class WHERE relnamespace = 'public'::regnamespace AND relkind = 'r' ORDER BY pg_total_relation_size(oid) DESC""")
     return {"foreign_keys_without_an_index": [{"table": r[0], "constraint": r[1], "columns": r[2]} for r in unindexed],
-            "largest_indexes": [{"table": r[0], "index": r[1], "bytes": int(r[2]), "scans": int(r[3]), "unique": r[4] == "t", "partial": r[5] == "t"} for r in indexes],
+            # No scan counts: the statistics of the clone are reset by the churn run, and one synthetic workload cannot say an index is unused.
+            "largest_indexes": [{"table": r[0], "index": r[1], "bytes": int(r[2]), "unique": r[4] == "t", "partial": r[5] == "t"} for r in indexes],
             "tables": [{"table": r[0], "heap_bytes": int(r[1]), "index_bytes": int(r[2]), "toast_bytes": int(r[3]), "rows": int(r[4])} for r in tables]}
 
 
@@ -1578,6 +1579,61 @@ def idle_demo(cl: Cluster, with_timeout: bool) -> dict:
             "second_session_said": out.strip().splitlines()[-1][:160] if out.strip() else "", "first_session_said": first_err.strip()[:200]}
 
 
+def frame_script(statements: list[tuple[str, str, list[str]]], iterations: int) -> tuple[str, int, int]:
+    """psql script: `iterations` transactions of BEGIN, the given statements (name, sql, params), SELECT 1, COMMIT."""
+    lines = ["\\set ON_ERROR_STOP on", "\\o /dev/null", GUARD, "\\timing on"]
+    for name, sql, _ in statements:
+        lines.append(f"{sql} \\parse {name}")
+    lines.append("SELECT 1 \\parse q")
+    for _ in range(iterations):
+        lines.append("BEGIN;")
+        for name, _, params in statements:
+            lines.append(f"\\bind_named {name} " + " ".join(psql_param(p) for p in params) + " \\g")
+        lines.append("\\bind_named q \\g")
+        lines.append("COMMIT;")
+    return "\n".join(lines) + "\n", len(statements) + 1, 3 + len(statements)
+
+
+def run_check_frame(args: argparse.Namespace) -> int:
+    """What a transaction costs before any statement of its own, with the variants interleaved so a slow minute hits all of them."""
+    cl = Cluster(find_bin(), args.keep, [], deployed_defaults=True)
+    atexit.register(cl.destroy)
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        signal.signal(sig, lambda *_: (cl.destroy(), sys.exit(130)))
+    cl.start()
+    provision(cl, 10000)
+    login = LOGINS["worker"][0]
+    tenant = uid("tenant", 1)
+    variants: dict[str, list[tuple[str, str, list[str]]]] = {
+        "bare: BEGIN, SELECT 1, COMMIT": [],
+        "set the tenant only (1 statement)": [("a", S_TENANT, [tenant])],
+        "as Store::begin does: set the tenant, then the limits (2 statements)": [("a", S_TENANT, [tenant]), ("b", S_LIMITS, [TX_LIMITS[0], TX_LIMITS[1]])],
+        "tenant and limits in one statement (1 statement)": [("a", S_COMBINED, [tenant, TX_LIMITS[0], TX_LIMITS[1]])],
+    }
+    rounds, iterations, warm = (3, 800, 100) if args.quick else (7, 3000, 300)
+    samples: dict[str, list[tuple[float, float]]] = {k: [] for k in variants}
+    for _ in range(rounds):
+        for label, statements in variants.items():
+            script, prelude, per = frame_script(statements, iterations + warm)
+            path = cl.root / "frame.sql"
+            path.write_text(script)
+            proc = subprocess.run([str(cl.bin / "psql"), "-X", "-q", "-v", "ON_ERROR_STOP=1", "-v", f"who={login}", "-U", login, "-d", DB, "-f", str(path)],
+                                  capture_output=True, text=True, env=cl.env(login))
+            if proc.returncode != 0:
+                raise RuntimeError(f"frame run failed: {proc.stderr[:400]}")
+            times = [float(m.group(1)) for line in proc.stdout.splitlines() if (m := TIME_RE.match(line))][prelude:]
+            totals = [sum(times[i * per:(i + 1) * per]) for i in range(iterations + warm)][warm:]
+            samples[label].append((pct(totals, 50), pct(totals, 95)))
+    report: dict[str, Any] = {"schema": "factory-db-frame/1", "postgres": cl.version, "rounds": rounds, "iterations_per_round": iterations, "variants": {}}
+    for label, rs in samples.items():
+        report["variants"][label] = {"p50_ms_median_of_rounds": round(statistics.median(r[0] for r in rs), 4), "p95_ms_median_of_rounds": round(statistics.median(r[1] for r in rs), 4),
+                                     "p50_ms_by_round": [round(r[0], 4) for r in rs]}
+    print(json.dumps(report, indent=1))
+    if args.report:
+        Path(args.report).write_text(json.dumps(report, indent=1))
+    return 0
+
+
 def run_check_settings(args: argparse.Namespace) -> int:
     """Settings of the server as deployed (no flags beyond the address), and what they allow: extensions, timeouts, autovacuum."""
     cl = Cluster(find_bin(), args.keep, [], deployed_defaults=True)
@@ -1752,7 +1808,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     p.add_argument("--skip-churn", action="store_true")
     p.add_argument("--break", dest="break_", help="a deliberate break that the harness must catch: superuser | chain | drop-index=NAME")
     p.add_argument("--prototype", choices=["partitions"], help="run the partitioning prototypes instead of the measurements")
-    p.add_argument("--check", choices=["settings", "backup"], help="settings: the server as deployed (timeouts, extensions, autovacuum, an idle transaction that holds a lock); backup: a dump and restore round trip")
+    p.add_argument("--check", choices=["settings", "backup", "frame"], help="settings: the server as deployed (timeouts, extensions, autovacuum, an idle transaction that holds a lock); backup: a dump and restore round trip")
     p.add_argument("--pg-setting", action="append", default=[], help="an extra server setting, name=value (repeatable)")
     p.add_argument("--combined-for", action="append", default=["job_get@big"], help="series that are also timed with one set statement in place of two")
     a = p.parse_args(argv)
@@ -1767,6 +1823,8 @@ def main(argv: list[str]) -> int:
         if args.check:
             if args.rows == 100000:
                 args.rows = 20000
+            if args.check == "frame":
+                return run_check_frame(args)
             return run_check_settings(args) if args.check == "settings" else run_check_backup(args)
         if args.prototype:
             if args.rows == 100000:
