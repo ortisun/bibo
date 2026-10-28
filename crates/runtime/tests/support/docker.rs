@@ -37,6 +37,15 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 use super::{GrantingStore, Harness, IMAGES_JSON, PLATFORM, agent_image, runtime_secret};
 
+// The lock that keeps real-Docker tests from using Docker's network address pool at the same time.
+// It is the sandbox crate's file, included here (the dependency rules keep `runtime` from naming
+// the `sandbox` crate), so both crates take the same lock file in the system temporary directory
+// and a sandbox run and a runtime run wait for each other.
+#[path = "../../../sandbox/tests/support/docker_lock.rs"]
+mod docker_lock;
+
+use docker_lock::{DockerLock, is_network_pool_exhausted, retry_while_pool_exhausted};
+
 /// The alias of the stand-in sidecar on the job network, as in the sandbox crate's tests.
 pub const SIDECAR_ALIAS: &str = "egress";
 
@@ -138,7 +147,8 @@ impl HostWorkspace {
 /// The world of one test: a job network, the fake provider on it, and the key it accepts.
 pub struct Lab {
     scope: DockerScope,
-    _permit: std::fs::File,
+    /// Held for the whole life of the lab, so nothing else makes a network meanwhile.
+    _lock: DockerLock,
     network: String,
     provider: String,
     pub key: String,
@@ -163,10 +173,10 @@ impl Lab {
             }
         }
         // Docker hands out an address block to every network from a small pool. Tests that make
-        // a network run one at a time across processes.
-        let lock_path = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("runtime-docker.lock");
-        let permit = std::fs::File::create(lock_path).expect("a lock file");
-        permit.lock().expect("the lock");
+        // a network run one at a time on the whole machine, whatever the process or the crate,
+        // and a test that holds the lock for too long is ended (see `docker_lock`).
+        let lock = DockerLock::take();
+        lock.register_label(scope.label().value());
 
         let dirs = Scratch::new("lab");
         let key = runtime_secret("FAKE");
@@ -182,17 +192,26 @@ impl Lab {
         let network = format!("rt-net-{unique}");
         let provider = format!("rt-fake-{unique}");
         let labels = scope.label_args();
-        let created = scope
-            .cli()
-            .run(&[
-                "network",
-                "create",
-                "--internal",
-                &labels[0],
-                &labels[1],
-                &network,
-            ])
-            .expect("docker network create");
+        // A full address pool is the one transient error of this command, and the only one retried.
+        let created = retry_while_pool_exhausted(
+            || {
+                scope.cli().run(&[
+                    "network",
+                    "create",
+                    "--internal",
+                    &labels[0],
+                    &labels[1],
+                    &network,
+                ])
+            },
+            |result| {
+                result
+                    .as_ref()
+                    .is_ok_and(|out| !out.success() && is_network_pool_exhausted(&out.stderr))
+            },
+            std::thread::sleep,
+        )
+        .expect("docker network create");
         assert!(created.success(), "network create: {}", created.stderr);
 
         let fake_dir = repo_root().join("fixtures/recordings/agent-cli/fake");
@@ -239,7 +258,7 @@ impl Lab {
         assert!(started.success(), "the fake provider: {}", started.stderr);
         let lab = Self {
             scope,
-            _permit: permit,
+            _lock: lock,
             network,
             provider,
             key,

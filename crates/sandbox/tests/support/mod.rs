@@ -4,6 +4,7 @@
 //! Compiled into each test target with `mod support;`, so a target uses only part of it.
 #![allow(dead_code)]
 
+pub mod docker_lock;
 pub mod sim;
 
 use std::fs;
@@ -269,11 +270,19 @@ pub fn spec(
 }
 
 /// Identifiers that are unique across processes and across calls.
-pub struct UniqueIds(AtomicU64);
+///
+/// The last eight hex digits of an identifier are the random part of a sandbox's name, so they
+/// must differ for every sandbox of every lab, not only within one generator. The counter is
+/// therefore shared by all generators of the process, and the process id keeps two processes
+/// apart.
+pub struct UniqueIds;
+
+/// Counts the identifiers made by every generator of this process.
+static ID_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 impl UniqueIds {
     pub fn new() -> Self {
-        Self(AtomicU64::new(0))
+        Self
     }
 }
 
@@ -286,7 +295,7 @@ impl IdGenerator for UniqueIds {
         let nanos = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map_or(0, |d| d.as_nanos());
-        let counter = u128::from(self.0.fetch_add(1, Ordering::SeqCst));
+        let counter = u128::from(ID_COUNTER.fetch_add(1, Ordering::SeqCst));
         Uuid::from_u128((nanos << 32) ^ (u128::from(std::process::id()) << 8) ^ counter)
     }
 }

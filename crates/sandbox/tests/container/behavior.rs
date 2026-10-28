@@ -551,6 +551,8 @@ async fn negative_nt_sbx_14_a_stopped_daemon_a_missing_image_and_a_skeleton_side
     );
 
     // The skeleton sidecar of the real images.json: an agent job is blocked before anything is made.
+    // One lab at a time: the first one goes before the second is made.
+    drop(lab);
     let lab = lab_with(vec![], support::IMAGES_JSON);
     let outcome = lab.create(lab.spec(SandboxProfile::Agent, 3, WALL)).await;
     assert_eq!(
@@ -755,6 +757,9 @@ async fn posture_covers_every_part() {
             }
             other => panic!("{:?}", other.map(|_| "a sandbox")),
         }
+        // One lab at a time: the production lab goes before the development lab is made.
+        production.world.provider.finish_background_cleanups().await;
+        drop(production);
         let development = Lab::new(true);
         let session = development
             .create(development.spec(SandboxProfile::Verify, 1, WALL))
@@ -941,7 +946,16 @@ async fn janitor_removes_orphans() {
     std::mem::forget(two);
 
     // A crash between making the network and the container leaves a network and a token directory.
-    let stray = "aaaaaaaa-bbbbbbbb-cccccccc";
+    // The name carries this lab's own number, so no other run can make or sweep the same one.
+    let stray = format!(
+        "aaaaaaaa-bbbbbbbb-{:08x}",
+        lab.scope
+            .label()
+            .value()
+            .bytes()
+            .fold(0u32, |h, b| h.wrapping_mul(31).wrapping_add(u32::from(b)))
+    );
+    let stray = stray.as_str();
     let label = lab.scope.label();
     lab.scope
         .cli()

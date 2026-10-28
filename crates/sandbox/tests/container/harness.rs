@@ -8,7 +8,7 @@ use std::time::Duration;
 use async_trait::async_trait;
 use factory_domain::vocabulary::Fidelity;
 use factory_ports::clock::CancelSignal;
-use factory_ports::process::{ProcessRunner, SpawnError, SpawnOutput, SpawnRequest};
+use factory_ports::process::{ProcessRunner, Program, SpawnError, SpawnOutput, SpawnRequest};
 use factory_ports::sandbox::{
     ExecArgv, ExecRequest, SandboxError, SandboxProfile, SandboxProvider, SandboxSession,
     SandboxSpec,
@@ -18,47 +18,63 @@ use factory_testkit::clock::FakeCancel;
 use factory_testkit::contracts::sandbox::DriftPart;
 use factory_testkit::fx::docker::{DockerGuard, DockerScope, blocked};
 
+use crate::support::docker_lock::{BACKOFF, DockerLock, is_network_pool_exhausted};
 use crate::support::{self, HostWorkspace, Scratch, World};
 
-/// Docker hands out a /16 or /20 to every user-defined network from a small default pool, and a
-/// development machine with a few compose stacks has used most of it (this one had room for six
-/// more). Tests that make per-job networks therefore run one at a time, across processes: each
-/// holds an exclusive lock on a file while its lab lives, and a process takes the file once for
-/// however many labs it makes.
-struct PermitState {
-    file: Option<std::fs::File>,
-    holders: usize,
+/// A runner over another one that retries a `docker network create` which finds Docker's address
+/// pool full, and nothing else. The pool is small and shared with the user's own stacks, so a
+/// create can fail for a moment while another run removes its networks. Every other command, and
+/// every other failure of a network create, goes through once and is returned as it is.
+pub struct PoolRetryRunner {
+    inner: Arc<dyn ProcessRunner>,
+    backoff: Vec<Duration>,
 }
 
-static PERMIT: Mutex<PermitState> = Mutex::new(PermitState {
-    file: None,
-    holders: 0,
-});
+impl PoolRetryRunner {
+    pub fn new(inner: Arc<dyn ProcessRunner>) -> Self {
+        Self::with_backoff(inner, BACKOFF.to_vec())
+    }
 
-pub struct Permit;
-
-impl Permit {
-    pub fn take() -> Self {
-        let mut state = PERMIT.lock().expect("lock");
-        if state.holders == 0 {
-            let path = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("docker-networks.lock");
-            let file = std::fs::File::create(path).expect("a lock file");
-            file.lock().expect("the lock");
-            state.file = Some(file);
-        }
-        state.holders += 1;
-        Self
+    /// Another series of waits, for a test of the runner itself.
+    pub fn with_backoff(inner: Arc<dyn ProcessRunner>, backoff: Vec<Duration>) -> Self {
+        Self { inner, backoff }
     }
 }
 
-impl Drop for Permit {
-    fn drop(&mut self) {
-        let mut state = PERMIT.lock().expect("lock");
-        state.holders -= 1;
-        if state.holders == 0 {
-            // Dropping the file releases the lock.
-            state.file = None;
+fn creates_a_network(req: &SpawnRequest) -> bool {
+    req.program == Program::Docker
+        && req.args.first().map(String::as_str) == Some("network")
+        && req.args.get(1).map(String::as_str) == Some("create")
+}
+
+fn pool_is_full(result: &Result<SpawnOutput, SpawnError>) -> bool {
+    matches!(result, Ok(out)
+        if out.exit_code != Some(0)
+            && is_network_pool_exhausted(&String::from_utf8_lossy(&out.stderr)))
+}
+
+#[async_trait]
+impl ProcessRunner for PoolRetryRunner {
+    fn fidelity(&self) -> Fidelity {
+        self.inner.fidelity()
+    }
+
+    async fn run(
+        &self,
+        req: SpawnRequest,
+        cancel: &dyn CancelSignal,
+    ) -> Result<SpawnOutput, SpawnError> {
+        if !creates_a_network(&req) {
+            return self.inner.run(req, cancel).await;
         }
+        for wait in &self.backoff {
+            let result = self.inner.run(req.clone(), cancel).await;
+            if !pool_is_full(&result) {
+                return result;
+            }
+            tokio::time::sleep(*wait).await;
+        }
+        self.inner.run(req, cancel).await
     }
 }
 
@@ -261,7 +277,7 @@ pub struct Lab {
     pub images_json: String,
     pub workspaces: Mutex<Vec<HostWorkspace>>,
     /// Last, so the lock is released after everything above has been cleaned up.
-    pub _permit: Permit,
+    pub _lock: DockerLock,
 }
 
 impl Lab {
@@ -274,8 +290,12 @@ impl Lab {
         apparmor_may_be_unavailable: bool,
         runner: Option<Arc<dyn ProcessRunner>>,
     ) -> Self {
-        let permit = Permit::take();
+        // One lab at a time on the whole machine: the lock is taken before anything is made and
+        // let go after everything is removed. A second lab in the same test would wait for the
+        // first and fail with BLOCKED, so a test drops one lab before it makes the next.
+        let lock = DockerLock::take();
         let scope = require_docker();
+        lock.register_label(scope.label().value());
         let scratch = Scratch::new("lab");
         let token_root = scratch.path().join("tokens");
         let images_json = support::images_json_with_stand_in_sidecar();
@@ -294,7 +314,7 @@ impl Lab {
             world,
             images_json,
             workspaces: Mutex::new(Vec::new()),
-            _permit: permit,
+            _lock: lock,
         }
     }
 
@@ -327,6 +347,8 @@ impl Lab {
             .expect("open the cache directory");
         config.caches = vec![("cargo-registry".to_owned(), cache)];
         let runner = runner.unwrap_or_else(|| Arc::new(SystemProcessRunner::new()));
+        // A full address pool is the one transient error of creating a job network.
+        let runner = Arc::new(PoolRetryRunner::new(runner));
         support::provider_with(config, runner, artifacts)
     }
 

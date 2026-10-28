@@ -14,6 +14,8 @@ mod behavior;
 mod breaks;
 mod contract;
 mod harness;
+mod isolation;
+mod retry;
 
 use factory_testkit::contracts::sandbox;
 
