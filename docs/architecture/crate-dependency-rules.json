@@ -227,9 +227,16 @@
         "sha2",
         "subtle",
         "hex",
-        "a JWT signing crate and an HTTP client, both chosen in work package s1-github-adapter and reviewed with cargo deny"
+        "async-trait",
+        "ring",
+        "ureq[rustls]"
       ],
-      "responsibility": "IssueSource and ChangeHost against the GitHub REST API as a GitHub App: signs the App JWT, mints per-job, per-stage installation tokens narrowed to one repository, revokes them, verifies webhook signatures, deduplicates deliveries, checks the repository protection preflight, writes only sanitized text. Merging is not implemented."
+      "responsibility": "IssueSource and ChangeHost against the GitHub REST API as a GitHub App: signs the App JWT, mints per-job, per-stage installation tokens narrowed to one repository, revokes them, verifies webhook signatures, deduplicates deliveries, checks the repository protection preflight, writes only sanitized text. Merging is not implemented.",
+      "external_allow_notes": {
+        "ring": "RS256 signing of the App JWT and the TLS crypto provider, so one crypto library does both jobs. Chosen in s1-github-adapter over rsa (RUSTSEC-2023-0071, an unfixed timing side channel that cargo deny rejects), over jsonwebtoken with aws-lc-rs (a second crypto stack) and over the openssl command line (DEP-10 allows only docker and git to be started). Signing sits behind the JwtSigner trait so a signing service can replace it. cargo deny and cargo audit pass with the unchanged deny.toml. A new direct dependency needs a human decision: applied by the lead at integration, pending confirmation by the project owner.",
+        "ureq": "Blocking HTTP client with rustls only, behind the transport trait, so tests use plain HTTP over loopback to the fake GitHub server and production uses TLS. Same decision record as ring.",
+        "async-trait": "The adapter implements port traits that are declared with async_trait, as the storage adapter does."
+      }
     },
     {
       "name": "contracts",
