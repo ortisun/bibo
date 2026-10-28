@@ -68,3 +68,101 @@ impl Limits {
         u64::try_from(bytes.div_ceil(per)).unwrap_or(u64::MAX)
     }
 }
+
+/// How much of `available` bytes each input gets, when the inputs want `sizes` bytes.
+///
+/// When everything fits, each input gets what it wants. When it does not, the inputs are taken
+/// from the smallest to the largest, and each gets the smaller of what it wants and an equal
+/// share of what is left among the inputs not yet served. So an input below the common level is
+/// kept whole, and every input above it is cut to that level, give or take one byte. Ties go by
+/// position, so the answer is a function of the sizes only.
+#[must_use]
+pub(super) fn allowances(sizes: &[usize], available: usize) -> Vec<usize> {
+    let wanted: usize = sizes
+        .iter()
+        .fold(0usize, |sum, size| sum.saturating_add(*size));
+    if wanted <= available {
+        return sizes.to_vec();
+    }
+    let mut order: Vec<usize> = (0..sizes.len()).collect();
+    order.sort_by_key(|at| (sizes.get(*at).copied().unwrap_or(0), *at));
+    let mut given = vec![0usize; sizes.len()];
+    let mut remaining = available;
+    let mut left = sizes.len();
+    for at in order {
+        let size = sizes.get(at).copied().unwrap_or(0);
+        let share = remaining / left.max(1);
+        let take = size.min(share);
+        if let Some(slot) = given.get_mut(at) {
+            *slot = take;
+        }
+        remaining -= take;
+        left -= 1;
+    }
+    given
+}
+
+#[cfg(test)]
+#[allow(
+    clippy::indexing_slicing,
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic
+)]
+mod tests {
+    use super::*;
+    use proptest::prelude::*;
+
+    #[test]
+    fn prompts_limits_everything_fits_so_everything_is_kept() {
+        assert_eq!(allowances(&[10, 20, 30], 60), vec![10, 20, 30]);
+        assert_eq!(allowances(&[], 0), Vec::<usize>::new());
+    }
+
+    #[test]
+    fn prompts_limits_large_inputs_are_cut_to_a_common_level() {
+        assert_eq!(allowances(&[5, 100, 100], 55), vec![5, 25, 25]);
+        assert_eq!(allowances(&[100, 100, 100], 10), vec![3, 3, 4]);
+        assert_eq!(allowances(&[100, 100], 0), vec![0, 0]);
+    }
+
+    #[test]
+    fn prompts_limits_the_budget_is_a_share_of_the_run_tokens_and_a_byte_limit() {
+        let limits = Limits::default();
+        assert_eq!(limits.prompt_budget_bytes(10_000), 7_500);
+        assert_eq!(limits.prompt_budget_bytes(400_000), 300_000);
+        assert_eq!(limits.prompt_budget_bytes(4_000_000), 1 << 20);
+        assert_eq!(limits.prompt_budget_bytes(0), 0);
+        assert_eq!(limits.prompt_budget_bytes(u64::MAX), 1 << 20);
+        assert_eq!(limits.estimate_tokens(0), 0);
+        assert_eq!(limits.estimate_tokens(7), 3);
+    }
+
+    proptest! {
+        #[test]
+        fn prompts_limits_allowances_never_exceed_the_budget_or_the_wish(
+            sizes in proptest::collection::vec(0usize..1_000_000, 0..12),
+            available in 0usize..2_000_000,
+        ) {
+            let given = allowances(&sizes, available);
+            prop_assert_eq!(given.len(), sizes.len());
+            let total: usize = given.iter().sum();
+            let wanted: usize = sizes.iter().sum();
+            prop_assert!(total <= available);
+            for (g, s) in given.iter().zip(&sizes) {
+                prop_assert!(g <= s);
+            }
+            if wanted <= available {
+                prop_assert_eq!(&given, &sizes);
+            } else {
+                // The budget is used up, give or take what rounding leaves.
+                prop_assert!(available - total < sizes.len().max(1));
+                // Fair: two inputs that were both cut differ by at most one byte.
+                let cut: Vec<usize> = given.iter().zip(&sizes).filter(|(g, s)| g < s).map(|(g, _)| *g).collect();
+                if let (Some(lo), Some(hi)) = (cut.iter().min(), cut.iter().max()) {
+                    prop_assert!(hi - lo <= 1);
+                }
+            }
+        }
+    }
+}

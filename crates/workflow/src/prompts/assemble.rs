@@ -13,9 +13,9 @@ use factory_ports::registry::LoadedPrompt;
 use super::block::{self, Header};
 use super::error::AssemblyError;
 use super::input::{Input, Trust, is_identifier};
-use super::limits::Limits;
+use super::limits::{Limits, allowances};
 use super::manifest::{ContextManifest, InputRecord, Signal, TemplateRecord};
-use super::sanitize::{lookalikes, neutralize};
+use super::sanitize::{Lookalikes, lookalikes, neutralize};
 use super::template::{InputSpec, Line, Template};
 use super::verify::{self, Meant, instruction_line};
 
@@ -163,6 +163,8 @@ struct Work<'i> {
     original_sha256: Sha256Digest,
     text: String,
     stripped: usize,
+    looks: Lookalikes,
+    omitted: usize,
 }
 
 impl<'a> Assembler<'a> {
@@ -239,10 +241,29 @@ impl<'a> Assembler<'a> {
             trusted.insert(slot.clone(), value.to_owned());
         }
 
+        let mut read_total = 0usize;
+        for input in inputs {
+            if input.bytes.len() > self.limits.max_read_bytes_per_input {
+                return Err(AssemblyError::InputTooLarge {
+                    name: shown(input.name()),
+                    limit: self.limits.max_read_bytes_per_input,
+                });
+            }
+            read_total = read_total.saturating_add(input.bytes.len());
+        }
+        if read_total > self.limits.max_read_bytes_total {
+            return Err(AssemblyError::InputsTooLarge {
+                limit: self.limits.max_read_bytes_total,
+            });
+        }
+
         let mut work: Vec<Work<'_>> = Vec::with_capacity(template.inputs().len());
         for spec in template.inputs() {
             work.push(self.prepare(spec, by_name.get(spec.name()).copied())?);
         }
+        let max_tokens = u64::try_from(manifest.resource_limits.max_tokens.get()).unwrap_or(0);
+        let budget = self.limits.prompt_budget_bytes(max_tokens);
+        self.fit(&template, &trusted, &mut work, budget)?;
 
         let mut records: Vec<InputRecord> = Vec::with_capacity(work.len());
         let mut signals: Vec<Signal> = Vec::new();
@@ -256,7 +277,7 @@ impl<'a> Assembler<'a> {
                 original_sha256: &w.original_sha256,
                 stripped: w.stripped,
                 redacted: 0,
-                omitted: 0,
+                omitted: w.omitted,
             };
             let block_text = block::render(&header, &w.text);
             headers.push(header.line());
@@ -266,7 +287,7 @@ impl<'a> Assembler<'a> {
                     count: w.stripped,
                 });
             }
-            let found = lookalikes(&w.text);
+            let found = w.looks;
             if found.delimiters > 0 {
                 signals.push(Signal::DelimiterLookalike {
                     input: w.spec.name().to_owned(),
@@ -277,6 +298,12 @@ impl<'a> Assembler<'a> {
                 signals.push(Signal::PlaceholderSyntax {
                     input: w.spec.name().to_owned(),
                     count: found.placeholders,
+                });
+            }
+            if w.omitted > 0 {
+                signals.push(Signal::Truncated {
+                    input: w.spec.name().to_owned(),
+                    omitted_bytes: w.omitted,
                 });
             }
             records.push(InputRecord {
@@ -293,8 +320,8 @@ impl<'a> Assembler<'a> {
                 block_bytes: block_text.len(),
                 stripped: w.stripped,
                 redacted: 0,
-                truncated: false,
-                omitted_bytes: 0,
+                truncated: w.omitted > 0,
+                omitted_bytes: w.omitted,
             });
             rendered.push(block_text);
         }
@@ -344,7 +371,9 @@ impl<'a> Assembler<'a> {
         verify::check(&template, &trusted, &meant, &text).map_err(AssemblyError::Containment)?;
 
         let sha256 = Sha256Digest::of(text.as_bytes());
-        let max_tokens = u64::try_from(manifest.resource_limits.max_tokens.get()).unwrap_or(0);
+        if text.len() > budget {
+            return Err(AssemblyError::Containment("the prompt is over its budget"));
+        }
         let context = ContextManifest {
             agent_id: manifest.id.to_string(),
             agent_version: manifest.version.to_string(),
@@ -356,7 +385,7 @@ impl<'a> Assembler<'a> {
             prompt_sha256: sha256.clone(),
             prompt_bytes: text.len(),
             estimated_tokens: self.limits.estimate_tokens(text.len()),
-            budget_bytes: self.limits.prompt_budget_bytes(max_tokens),
+            budget_bytes: budget,
             inputs: records,
             exclusions: Vec::new(),
             signals,
@@ -367,6 +396,53 @@ impl<'a> Assembler<'a> {
             sha256,
             manifest: context,
         })
+    }
+
+    /// Cuts the inputs so that the prompt fits `budget` bytes and no block is over its limit. The
+    /// room is shared out by `allowances`, and what is cut is recorded in `omitted`.
+    fn fit(
+        &self,
+        template: &Template,
+        trusted: &BTreeMap<String, String>,
+        work: &mut [Work<'_>],
+        budget: usize,
+    ) -> Result<(), AssemblyError> {
+        let mut fixed = template.lines().len().saturating_sub(1);
+        for line in template.lines() {
+            if let Line::Text(pieces) = line {
+                fixed = fixed.saturating_add(instruction_line(pieces, trusted).len());
+            }
+        }
+        let mut overheads: Vec<usize> = Vec::with_capacity(work.len());
+        for w in work.iter() {
+            let overhead = block::header_reserve(w.spec.name(), w.spec.class())
+                .saturating_add(1)
+                .saturating_add(block::closing_line(w.spec.name()).len());
+            fixed = fixed.saturating_add(overhead);
+            overheads.push(overhead);
+        }
+        let available = budget
+            .checked_sub(fixed)
+            .ok_or(AssemblyError::BudgetTooSmall {
+                needed: fixed,
+                available: budget,
+            })?;
+        let caps: Vec<usize> = work
+            .iter()
+            .zip(&overheads)
+            .map(|(w, overhead)| {
+                block::quoted_len(&w.text)
+                    .min(self.limits.max_block_bytes.saturating_sub(*overhead))
+            })
+            .collect();
+        for (w, allowance) in work.iter_mut().zip(allowances(&caps, available)) {
+            if block::quoted_len(&w.text) > allowance {
+                let kept = block::longest_prefix(&w.text, allowance).to_owned();
+                w.omitted = w.text.len().saturating_sub(kept.len());
+                w.text = kept;
+            }
+        }
+        Ok(())
     }
 
     /// Makes the text of one input ready, or notes that it was not given.
@@ -388,6 +464,8 @@ impl<'a> Assembler<'a> {
                 original_sha256: Sha256Digest::of(b""),
                 text: String::new(),
                 stripped: 0,
+                looks: Lookalikes::default(),
+                omitted: 0,
             });
         };
         if input.class != spec.class() {
@@ -400,6 +478,7 @@ impl<'a> Assembler<'a> {
             valid_up_to: e.valid_up_to(),
         })?;
         let neutral = neutralize(text);
+        let looks = lookalikes(&neutral.text);
         Ok(Work {
             spec,
             given,
@@ -407,6 +486,8 @@ impl<'a> Assembler<'a> {
             original_sha256: Sha256Digest::of(&input.bytes),
             text: neutral.text,
             stripped: neutral.stripped,
+            looks,
+            omitted: 0,
         })
     }
 }

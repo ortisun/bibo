@@ -84,6 +84,63 @@ pub(super) fn closing_line(name: &str) -> String {
     format!("{CLOSE}{name}{TAIL}")
 }
 
+/// The most bytes the opening line of an input with this name and class can have, whatever the
+/// numbers in it are. Used to reserve room before the numbers are known.
+#[must_use]
+pub(super) fn header_reserve(name: &str, class: ContentClass) -> usize {
+    let digest = Sha256Digest::of(b"");
+    Header {
+        name,
+        class,
+        original_bytes: usize::MAX,
+        original_sha256: &digest,
+        stripped: usize::MAX,
+        redacted: u64::MAX,
+        omitted: usize::MAX,
+    }
+    .line()
+    .len()
+}
+
+/// The size of the lines between the opening and the closing line for `text`, with their line
+/// breaks. `text` must already be neutralized. An empty text has no lines.
+#[must_use]
+pub(super) fn quoted_len(text: &str) -> usize {
+    if text.is_empty() {
+        return 0;
+    }
+    let lines = text.matches('\n').count().saturating_add(1);
+    // Each line gets the prefix, the text keeps its own line breaks between lines, and the last
+    // line is followed by the break that comes before the closing line.
+    text.len()
+        .saturating_add(lines.saturating_mul(QUOTE.len()))
+        .saturating_add(1)
+}
+
+/// The longest start of `text` (ending at a character boundary) whose quoted size is at most
+/// `allowance`.
+#[must_use]
+pub(super) fn longest_prefix(text: &str, allowance: usize) -> &str {
+    // The empty text costs nothing. A non-empty prefix costs its length, a prefix for each line,
+    // and the closing break.
+    let mut cost = QUOTE.len().saturating_add(1);
+    if cost > allowance {
+        return "";
+    }
+    let mut end = 0usize;
+    for (at, c) in text.char_indices() {
+        let step = c
+            .len_utf8()
+            .saturating_add(if c == '\n' { QUOTE.len() } else { 0 });
+        cost = cost.saturating_add(step);
+        if cost > allowance {
+            break;
+        }
+        end = at.saturating_add(c.len_utf8());
+    }
+    text.get(..end).unwrap_or_default()
+}
+
 /// The lines of a block: the opening line, the quoted lines of `text`, the closing line.
 /// `text` must be neutralized.
 #[must_use]
@@ -154,6 +211,41 @@ mod tests {
             header(&digest, 7)
                 .line()
                 .contains(" truncated=yes omitted=7>>>")
+        );
+    }
+
+    #[test]
+    fn prompts_block_quoted_len_is_exact_and_longest_prefix_fits() {
+        for text in ["", "a", "ab\ncd", "\n\n", "caf\u{E9}\n\u{1F600}x", "a\n"] {
+            let digest = Sha256Digest::of(text.as_bytes());
+            let h = header(&digest, 0);
+            let block = render(&h, text);
+            let fixed = h.line().len() + 1 + closing_line("diff").len();
+            // The fixed part (opening line, its break, closing line) plus the quoted lines.
+            assert_eq!(block.len(), fixed + quoted_len(text), "{text:?}");
+            for allowance in 0..quoted_len(text) + 3 {
+                let cut = longest_prefix(text, allowance);
+                assert!(text.starts_with(cut));
+                assert!(quoted_len(cut) <= allowance, "{text:?} {allowance}");
+                if cut.len() < text.len() {
+                    let next = text[cut.len()..].chars().next().expect("a character");
+                    let longer = &text[..cut.len() + next.len_utf8()];
+                    assert!(quoted_len(longer) > allowance, "{text:?} {allowance}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn prompts_block_the_header_reserve_is_never_exceeded() {
+        let digest = Sha256Digest::of(b"x");
+        let mut h = header(&digest, usize::MAX);
+        h.stripped = usize::MAX;
+        h.redacted = u64::MAX;
+        h.original_bytes = usize::MAX;
+        assert!(h.line().len() <= header_reserve("diff", ContentClass::ModelOutput));
+        assert!(
+            header(&digest, 0).line().len() <= header_reserve("diff", ContentClass::ModelOutput)
         );
     }
 }
