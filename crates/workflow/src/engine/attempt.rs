@@ -686,6 +686,16 @@ impl Engine {
             )
             .await?
             .artifact;
+        // The gate reads these documents through the artifact store, which answers only for a hash
+        // the tenant has indexed. The result transaction indexes them too, but it comes after the
+        // gate, so they are indexed here first (idempotent by hash). Without this a gate gets
+        // `NotFound` for a document the engine itself stored.
+        let produced: Vec<ArtifactRef> = outputs
+            .iter()
+            .map(|named| named.artifact.clone())
+            .chain(std::iter::once(manifest.clone()))
+            .collect();
+        self.index_declared(claimed, &produced).await?;
 
         let gate = GateContext {
             identity: prepared.identity,
