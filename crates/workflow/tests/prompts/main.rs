@@ -21,6 +21,8 @@ mod prompts_envelope;
 mod prompts_exclusion;
 #[path = "limits.rs"]
 mod prompts_limits;
+#[path = "provenance.rs"]
+mod prompts_provenance;
 #[path = "redaction.rs"]
 mod prompts_redaction;
 #[path = "support.rs"]

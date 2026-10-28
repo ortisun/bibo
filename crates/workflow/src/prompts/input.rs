@@ -129,6 +129,43 @@ impl Source {
     }
 }
 
+impl Source {
+    /// The source as a JSON value for the audit record.
+    #[must_use]
+    pub fn to_json(&self) -> serde_json::Value {
+        use serde_json::json;
+        match self {
+            Self::Issue { number } => json!({"kind": "issue", "number": number}),
+            Self::IssueComment { issue, comment } => {
+                json!({"kind": "issue_comment", "issue": issue, "comment": comment})
+            }
+            Self::PullRequest { number } => json!({"kind": "pull_request", "number": number}),
+            Self::RepoFile {
+                path,
+                commit,
+                lines,
+            } => json!({
+                "kind": "repo_file",
+                "path": path,
+                "commit": commit.as_ref().map(ToString::to_string),
+                "lines": lines.map(|r| [r.start, r.end]),
+            }),
+            Self::CommitMessage { commit } => {
+                json!({"kind": "commit_message", "commit": commit.to_string()})
+            }
+            Self::ToolOutput { producer } => json!({"kind": "tool_output", "producer": producer}),
+            Self::WebPage { url } => json!({"kind": "web_page", "url": url}),
+            Self::HostArtifact { kind, id } => {
+                json!({"kind": "host_artifact", "artifact_kind": kind, "id": id})
+            }
+            Self::HumanAnswer { principal } => {
+                json!({"kind": "human_answer", "principal": principal})
+            }
+            Self::SelfAssessment { agent } => json!({"kind": "self_assessment", "agent": agent}),
+        }
+    }
+}
+
 impl std::fmt::Display for Source {
     /// A short form for the audit record. Text a person or a program chose is written with its
     /// special characters escaped, so a line of a log stays one line.

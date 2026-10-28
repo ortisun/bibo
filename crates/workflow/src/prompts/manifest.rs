@@ -8,6 +8,7 @@
 //! and it holds no text of the inputs.
 
 use factory_domain::values::{Sha256Digest, Timestamp};
+use serde_json::{Value, json};
 
 use super::class::ContentClass;
 use super::input::{Source, Trust};
@@ -166,7 +167,91 @@ pub struct ContextManifest {
     pub signals: Vec<Signal>,
 }
 
+impl Signal {
+    fn to_json(&self) -> Value {
+        match self {
+            Self::HiddenTextDetected { input, count }
+            | Self::DelimiterLookalike { input, count }
+            | Self::PlaceholderSyntax { input, count } => {
+                json!({"name": self.name(), "input": input, "count": count})
+            }
+            Self::SecretRedacted { input, count } => {
+                json!({"name": self.name(), "input": input, "count": count})
+            }
+            Self::Truncated {
+                input,
+                omitted_bytes,
+            } => json!({"name": self.name(), "input": input, "count": omitted_bytes}),
+        }
+    }
+}
+
+impl InputRecord {
+    fn to_json(&self) -> Value {
+        json!({
+            "name": self.name,
+            "class": self.class.as_str(),
+            "trust": self.trust.as_str(),
+            "source": self.source.as_ref().map(Source::to_json),
+            "provided": self.provided,
+            "paths": self.paths,
+            "fetched_at": self.fetched_at.map(|t| t.as_text()),
+            "original_bytes": self.original_bytes,
+            "original_sha256": self.original_sha256.as_str(),
+            "hash_is_of_redacted_text": self.hash_is_of_redacted_text,
+            "included_bytes": self.included_bytes,
+            "block_bytes": self.block_bytes,
+            "stripped": self.stripped,
+            "redacted": self.redacted,
+            "truncated": self.truncated,
+            "omitted_bytes": self.omitted_bytes,
+        })
+    }
+}
+
+impl Exclusion {
+    fn to_json(&self) -> Value {
+        let reason = match &self.reason {
+            ExclusionReason::HiddenPath { rule, path } => {
+                json!({"kind": "hidden_path", "rule": rule, "path": path})
+            }
+        };
+        json!({"name": self.name, "source": self.source.to_json(), "reason": reason})
+    }
+}
+
 impl ContextManifest {
+    /// The record as a JSON value, for the audit ledger. Keys are in alphabetical order, so the
+    /// same record always gives the same text. It holds no text of any input.
+    #[must_use]
+    pub fn to_json(&self) -> Value {
+        json!({
+            "agent": {"id": self.agent_id, "version": self.agent_version},
+            "template": {
+                "path": self.template.path,
+                "version": self.template.version,
+                "sha256": self.template.sha256.as_str(),
+            },
+            "prompt": {
+                "sha256": self.prompt_sha256.as_str(),
+                "bytes": self.prompt_bytes,
+                "estimated_tokens": self.estimated_tokens,
+                "budget_bytes": self.budget_bytes,
+            },
+            "inputs": self.inputs.iter().map(InputRecord::to_json).collect::<Vec<_>>(),
+            "exclusions": self.exclusions.iter().map(Exclusion::to_json).collect::<Vec<_>>(),
+            "signals": self.signals.iter().map(Signal::to_json).collect::<Vec<_>>(),
+        })
+    }
+
+    /// The hash of the record. The ledger stores it to bind a run to what the model saw: the
+    /// prompt hash is in it, and so are the template version and hash and the source of every
+    /// input.
+    #[must_use]
+    pub fn sha256(&self) -> Sha256Digest {
+        Sha256Digest::of(self.to_json().to_string().as_bytes())
+    }
+
     /// The record of the input with this name.
     #[must_use]
     pub fn input(&self, name: &str) -> Option<&InputRecord> {

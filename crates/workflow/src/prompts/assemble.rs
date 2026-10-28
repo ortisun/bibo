@@ -135,6 +135,21 @@ impl Assembled {
             .join("\n")
     }
 
+    /// The prompt in the shape the `AgentRuntime` port takes.
+    ///
+    /// The whole text goes in `instructions` and `data` is empty. This is deliberate. The prompt
+    /// of an agent already holds its data blocks, each in the place the template gives it and
+    /// with the rules for reading them stated in the same text, so the runtime must send the
+    /// text as it is. Splitting the blocks out into `data` would make the runtime wrap them a
+    /// second time in another delimiter format that the fixed instruction does not describe.
+    #[must_use]
+    pub fn to_port_prompt(&self) -> factory_ports::agent::AssembledPrompt {
+        factory_ports::agent::AssembledPrompt {
+            instructions: self.text.clone(),
+            data: Vec::new(),
+        }
+    }
+
     /// The hash of the prompt text.
     #[must_use]
     pub const fn sha256(&self) -> &Sha256Digest {
