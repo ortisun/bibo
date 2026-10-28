@@ -1271,6 +1271,15 @@ impl Rig {
         });
     }
 
+    /// The names of the schemas the stages asked the check about, in order.
+    pub fn asked_schema_names(&self) -> Vec<String> {
+        self.check
+            .asked()
+            .iter()
+            .map(|schema| schema.name.as_str().to_owned())
+            .collect()
+    }
+
     pub fn events(&self) -> Vec<String> {
         lock(&self.log).clone()
     }
@@ -1315,9 +1324,38 @@ impl Rig {
         self.world.view(self.job).await.runs_of(kind).count()
     }
 
+    /// The oldest run of `kind`: the one a gate sent back, once a rework run exists.
+    pub async fn first_run_of(&self, kind: StageKind) -> StageRunId {
+        self.world
+            .view(self.job)
+            .await
+            .runs_of(kind)
+            .next()
+            .expect("a run of that kind")
+            .id
+    }
+
     /// The artifact the newest run of `kind` stored as `name`.
     pub async fn artifact_named(&self, kind: StageKind, name: &str) -> Option<ArtifactRef> {
         let run = self.run_of(kind).await;
+        self.artifact_in(run, name).await
+    }
+
+    /// The deliverable `name` of one stage run, read back from the artifact store.
+    pub async fn deliverable_in(&self, run: StageRunId, name: &str) -> Option<Value> {
+        let reference = self.artifact_in(run, name).await?;
+        let bytes = ArtifactStore::get(
+            &*self.artifacts,
+            &TenantScope::new(self.world.tenant),
+            &reference,
+        )
+        .await
+        .ok()?;
+        serde_json::from_slice(&bytes).ok()
+    }
+
+    /// The artifact one stage run stored as `name`.
+    pub async fn artifact_in(&self, run: StageRunId, name: &str) -> Option<ArtifactRef> {
         let mut best: Option<(u32, ArtifactRef)> = None;
         for link in self.world.links(run).await {
             let role = link.role.as_str();
@@ -1412,10 +1450,8 @@ impl Rig {
             .collect()
     }
 
-    /// The typed reports of the newest run of `kind` that did not pass, as the next round needs
-    /// them.
-    pub async fn failed_reports(&self, kind: StageKind) -> Vec<GateReport> {
-        let run = self.run_of(kind).await;
+    /// The typed reports of one stage run that failed, as the next round needs them.
+    pub async fn failed_reports(&self, run: StageRunId) -> Vec<GateReport> {
         self.gate_reports()
             .await
             .into_iter()

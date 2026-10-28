@@ -20,6 +20,7 @@
 #[path = "../support/mod.rs"]
 mod support;
 
+mod architecture;
 mod dag;
 mod flow;
 mod rig;
