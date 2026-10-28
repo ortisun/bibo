@@ -94,6 +94,13 @@ pub struct Limits {
     /// The most connections open at once.
     #[serde(default = "default_connections")]
     pub max_connections: usize,
+    /// The most connections one source may hold open at once (API-6). A source is a client
+    /// address, grouped as [`crate::limits::source_of`] groups it: an IPv6 client is its /64.
+    /// Absent, it is a sixteenth of `max_connections`, at least 1, so no single source can take
+    /// the table. Behind a proxy every connection comes from the proxy: set it to
+    /// `max_connections` there and cap clients at the proxy, which sees them (the README, D-3).
+    #[serde(default)]
+    pub max_connections_per_source: Option<usize>,
     /// How long a stop request lets open requests finish.
     #[serde(default = "default_drain_s")]
     pub drain_s: u64,
@@ -139,6 +146,7 @@ impl Default for Limits {
             body_timeout_ms: default_body_ms(),
             request_timeout_ms: default_request_ms(),
             max_connections: default_connections(),
+            max_connections_per_source: None,
             drain_s: default_drain_s(),
             per_ip_per_minute: default_per_ip(),
             webhook_per_installation_per_minute: default_per_installation(),
@@ -147,6 +155,15 @@ impl Default for Limits {
 }
 
 impl Limits {
+    /// The most connections one source may hold: the configured value, or a sixteenth of the
+    /// total, and never less than 1 or more than the total.
+    #[must_use]
+    pub fn connections_per_source(&self) -> usize {
+        self.max_connections_per_source
+            .unwrap_or(self.max_connections / 16)
+            .clamp(1, self.max_connections.max(1))
+    }
+
     /// The header read timeout.
     #[must_use]
     pub const fn header_timeout(&self) -> Duration {
@@ -294,6 +311,15 @@ impl ApiConfig {
         if limits.max_connections == 0 || limits.max_connections > 65_536 {
             return out_of_range("limits.max_connections", "must be between 1 and 65536");
         }
+        if limits
+            .max_connections_per_source
+            .is_some_and(|each| each == 0 || each > limits.max_connections)
+        {
+            return out_of_range(
+                "limits.max_connections_per_source",
+                "must be between 1 and limits.max_connections",
+            );
+        }
         for (field, value) in [
             ("limits.header_timeout_ms", limits.header_timeout_ms),
             ("limits.body_timeout_ms", limits.body_timeout_ms),
@@ -321,6 +347,46 @@ mod tests {
              database:\n  api: {{ url_file: /run/secrets/db_api, login: factory_api }}\n\
              listen: 127.0.0.1:8080\n"
         )
+    }
+
+    #[test]
+    fn one_source_may_hold_a_sixteenth_of_the_connections_unless_the_file_says_otherwise() {
+        let mut limits = Limits::default();
+        assert_eq!(limits.connections_per_source(), 16, "256 connections");
+        limits.max_connections = 16;
+        assert_eq!(
+            limits.connections_per_source(),
+            1,
+            "a small table: one each"
+        );
+        limits.max_connections = 4;
+        assert_eq!(limits.connections_per_source(), 1, "never zero");
+        limits.max_connections_per_source = Some(3);
+        assert_eq!(limits.connections_per_source(), 3);
+        limits.max_connections_per_source = Some(99);
+        assert_eq!(
+            limits.connections_per_source(),
+            4,
+            "never more than the table"
+        );
+        for bad in [0_usize, 257] {
+            let text = format!(
+                "{}limits:\n  max_connections_per_source: {bad}\n",
+                minimal("local")
+            );
+            assert!(
+                ApiConfig::from_yaml(&text).is_err(),
+                "{bad} connections for one source are refused"
+            );
+        }
+        let ok = format!(
+            "{}limits:\n  max_connections_per_source: 256\n",
+            minimal("local")
+        );
+        assert!(
+            ApiConfig::from_yaml(&ok).is_ok(),
+            "equal to the table is allowed behind a proxy"
+        );
     }
 
     #[test]

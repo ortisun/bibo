@@ -122,6 +122,7 @@ limits:                                 # all optional
   body_timeout_ms: 10000
   request_timeout_ms: 30000
   max_connections: 256
+  max_connections_per_source: 16          # absent: a sixteenth of max_connections
   drain_s: 15
   per_ip_per_minute: 600
   webhook_per_installation_per_minute: 120
@@ -146,7 +147,10 @@ placeholder chose (`database.api`, `listen`, `artifacts`) are the names the API 
 
 A body is read only after the token is checked, with a hard cap and a deadline; a declared length over the cap
 is refused without reading a byte. hyper's header read timeout closes a slow-loris connection; a stalled body is
-`408`. Open connections are bounded and the ones over the limit are closed unread. Every string is checked: no
+`408`. Open connections are bounded, in all and per source (an address, or an IPv6 /64; an IPv4 client of a
+dual-stack listener is its IPv4 address), and the ones over either limit are closed unread, so one source cannot
+hold the table with silent connections. The per-source request rate counts under the same grouping. Behind a proxy
+every connection comes from the proxy: set `max_connections_per_source` to `max_connections` and cap clients there. Every string is checked: no
 NUL or other control character (line breaks and tabs allowed in request text only), an idempotency key from a
 small alphabet, ids parsed as UUIDs, an unknown JSON field or a repeated key is `400`. Request text is stored
 as received and never interpreted. `tests/http_api.rs`, `malformed_and_hostile_input_is_a_400_and_never_a_500`.

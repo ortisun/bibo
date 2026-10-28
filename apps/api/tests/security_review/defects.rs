@@ -385,7 +385,6 @@ fn api_5_url_credentials_the_policy_pattern_misses() {
 /// A second peer, here `::1` against the attacker's `127.0.0.1` on a dual-stack listener, is
 /// closed unread.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[ignore = "confirmed defect API-6: one source address can occupy every connection slot; there is no per-peer cap"]
 async fn api_6_one_peer_cannot_take_every_connection_slot() {
     let env = Env::start().await;
     let limits = Limits {
@@ -538,7 +537,6 @@ async fn api_8_refused_decisions_of_one_principal_are_bounded() {
 /// API-9. The rate limiter keys on the whole address. A client that holds an IPv6 /64 has 2^64 of
 /// them, so the per-address limit never applies, and the map grows by one entry per address.
 #[test]
-#[ignore = "confirmed defect API-9: the per-source rate limit is per IPv6 address, not per prefix, and does not apply to a client with a /64"]
 fn api_9_the_rate_limit_holds_for_a_client_with_a_whole_ipv6_prefix() {
     let limiter = RateLimiter::new();
     let now = Instant::now();

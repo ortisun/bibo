@@ -217,7 +217,18 @@ async fn the_signature_is_checked_on_the_raw_bytes() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn negative_nt_wh_04() {
-    let env = Arc::new(Env::start().await);
+    // Fifty copies arrive at once from one address (this machine), which is more connections than
+    // one source may hold by default (API-6). The cap is a setting; this test is about replay.
+    let env = Arc::new(
+        Env::start_with(Options {
+            limits: factory_api::config::Limits {
+                max_connections_per_source: Some(256),
+                ..factory_api::config::Limits::default()
+            },
+            ..Options::default()
+        })
+        .await,
+    );
     let body = payload(&env.a, "factory", env.a.requester.github_id, 11);
     let id = delivery_id(11);
 

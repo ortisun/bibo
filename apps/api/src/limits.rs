@@ -10,7 +10,7 @@
 //!   rest, so a flood of forged deliveries cannot become a flood of audit rows (NT-WH-10).
 
 use std::collections::HashMap;
-use std::net::IpAddr;
+use std::net::{IpAddr, Ipv6Addr};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
@@ -24,10 +24,33 @@ use tokio::sync::mpsc;
 /// What a count is kept for.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Key {
-    /// A source address.
+    /// A source address, as [`source_of`] groups it.
     Ip(IpAddr),
     /// A GitHub installation.
     Installation(u64),
+    /// Every source that arrived while the table was full: they share one count.
+    Overflow,
+}
+
+/// The address a source is counted under, for requests and for open connections.
+///
+/// * An IPv4 address is itself.
+/// * An IPv4-mapped IPv6 address (`::ffff:a.b.c.d`, how a dual-stack listener reports an IPv4 peer)
+///   is the IPv4 address, so one client is not two sources.
+/// * Any other IPv6 address is its /64, the smallest block a provider hands to one subscriber: a
+///   client that holds a prefix has 2^64 addresses and must not get a count for each (API-9).
+#[must_use]
+pub fn source_of(address: IpAddr) -> IpAddr {
+    match address {
+        IpAddr::V4(_) => address,
+        IpAddr::V6(v6) => v6.to_ipv4_mapped().map_or_else(
+            || {
+                let [a, b, c, d, ..] = v6.segments();
+                IpAddr::V6(Ipv6Addr::new(a, b, c, d, 0, 0, 0, 0))
+            },
+            IpAddr::V4,
+        ),
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -38,11 +61,20 @@ struct Window {
 
 const WINDOW: Duration = Duration::from_secs(60);
 const PRUNE_ABOVE: usize = 50_000;
+/// The most distinct sources counted at once. Past it, new sources share [`Key::Overflow`].
+const MAX_KEYS: usize = 100_000;
 
 /// Fixed-window counters.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct RateLimiter {
     windows: Mutex<HashMap<Key, Window>>,
+    max_keys: usize,
+}
+
+impl Default for RateLimiter {
+    fn default() -> Self {
+        Self::with_capacity(MAX_KEYS)
+    }
 }
 
 impl RateLimiter {
@@ -52,13 +84,33 @@ impl RateLimiter {
         Self::default()
     }
 
+    /// An empty limiter that counts at most `max_keys` sources at once.
+    #[must_use]
+    pub fn with_capacity(max_keys: usize) -> Self {
+        Self {
+            windows: Mutex::new(HashMap::new()),
+            max_keys,
+        }
+    }
+
     /// Counts one request for `key` at `now` and says whether it is within `limit` for the
-    /// current window.
+    /// current window. A source address is counted under [`source_of`] it. When the table is full
+    /// of live windows a source it has not seen is counted with every other such source, so the
+    /// table cannot be grown without bound and the newcomers are limited together.
     pub fn allow(&self, key: Key, limit: u32, now: Instant) -> bool {
+        let key = match key {
+            Key::Ip(address) => Key::Ip(source_of(address)),
+            other => other,
+        };
         let mut windows = self.windows.lock().unwrap_or_else(PoisonError::into_inner);
-        if windows.len() > PRUNE_ABOVE {
+        if windows.len() > PRUNE_ABOVE.min(self.max_keys) {
             windows.retain(|_, window| now.duration_since(window.started) < WINDOW);
         }
+        let key = if windows.len() >= self.max_keys && !windows.contains_key(&key) {
+            Key::Overflow
+        } else {
+            key
+        };
         let window = windows.entry(key).or_insert(Window {
             started: now,
             count: 0,
@@ -160,6 +212,7 @@ pub async fn write_platform_audit(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::net::Ipv4Addr;
 
     #[test]
     fn a_window_counts_up_to_the_limit_and_then_refuses() {
@@ -181,6 +234,50 @@ mod tests {
         assert!(limiter.allow(key, 1, start));
         assert!(!limiter.allow(key, 1, start));
         assert!(limiter.allow(key, 1, start + WINDOW));
+    }
+
+    #[test]
+    fn an_ipv6_source_is_its_64_bit_prefix_and_a_mapped_address_is_the_ipv4_one() {
+        let in_prefix = |last: u16| IpAddr::V6(Ipv6Addr::new(0x2001, 0xdb8, 0, 1, 0, 0, 0, last));
+        assert_eq!(source_of(in_prefix(1)), source_of(in_prefix(65_535)));
+        assert_ne!(
+            source_of(in_prefix(1)),
+            source_of(IpAddr::V6(Ipv6Addr::new(0x2001, 0xdb8, 0, 2, 0, 0, 0, 1))),
+            "another /64 is another source"
+        );
+        let plain = IpAddr::from([192, 0, 2, 7]);
+        assert_eq!(source_of(plain), plain);
+        assert_eq!(
+            source_of(IpAddr::V6(Ipv4Addr::new(192, 0, 2, 7).to_ipv6_mapped())),
+            plain
+        );
+        // The two spellings of one client share a count.
+        let limiter = RateLimiter::new();
+        let now = Instant::now();
+        assert!(limiter.allow(Key::Ip(plain), 1, now));
+        assert!(!limiter.allow(
+            Key::Ip(IpAddr::V6(Ipv4Addr::new(192, 0, 2, 7).to_ipv6_mapped())),
+            1,
+            now
+        ));
+    }
+
+    #[test]
+    fn a_full_table_does_not_grow_and_the_newcomers_share_one_count() {
+        let limiter = RateLimiter::with_capacity(3);
+        let now = Instant::now();
+        for last in 1..=3_u8 {
+            assert!(limiter.allow(Key::Ip(IpAddr::from([10, 0, 0, last])), 1, now));
+        }
+        // Three sources fill the table. Two more are new: they share the overflow count of 1.
+        assert!(limiter.allow(Key::Ip(IpAddr::from([10, 0, 0, 4])), 1, now));
+        assert!(!limiter.allow(Key::Ip(IpAddr::from([10, 0, 0, 5])), 1, now));
+        // A source that was counted keeps its own count.
+        assert!(!limiter.allow(Key::Ip(IpAddr::from([10, 0, 0, 1])), 1, now));
+        let size = limiter.windows.lock().expect("lock").len();
+        assert_eq!(size, 4, "three sources and the overflow entry");
+        // A minute later the old windows are pruned and a new source is counted on its own.
+        assert!(limiter.allow(Key::Ip(IpAddr::from([10, 0, 0, 6])), 1, now + WINDOW));
     }
 
     #[tokio::test]
