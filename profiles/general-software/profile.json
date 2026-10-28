@@ -1,0 +1,21 @@
+{
+  "schema_version": 1,
+  "id": "general-software",
+  "version": 1,
+  "title": "General software, universal gates",
+  "description": "The gates every software job must pass, whatever the language: build, tests, protected paths, secret scan and documentation quality. The project's own manifest says which commands run the build and the tests. This profile does not know any language.",
+  "status": "draft",
+  "matches": ["general-software", "library", "command-line-tool"],
+  "required_skills": [],
+  "optional_skills": [],
+  "required_tools": ["git", "container-sandbox"],
+  "required_evidence": ["unit-test-result", "gate-report", "diff"],
+  "mandatory_gates": ["build", "unit-tests", "protected-paths-unchanged", "secret-scan", "documentation-quality"],
+  "conditional_gates": ["format", "lint", "type-check"],
+  "forbidden_autonomous_actions": ["merge", "deploy", "publish-package", "change-protected-paths", "add-direct-dependency"],
+  "approval_policy": "human-required-before-merge",
+  "tool_probes": [
+    { "tool": "git", "argv": ["git", "--version"], "version_regex": "^git version 2\\." },
+    { "tool": "container-sandbox", "argv": ["docker", "version", "--format", "{{.Server.Version}}"] }
+  ]
+}

@@ -1,0 +1,21 @@
+{
+  "schema_version": 1,
+  "id": "rust-command-line-tool",
+  "version": 1,
+  "title": "Small Rust command line tool with no dependencies",
+  "description": "Adds the Rust toolchain to the universal gates for a command line tool that builds offline from its own source. The Slice 1 fixture, a word counting tool, is the reference case. A missing toolchain blocks the job; it is never reported as a warning.",
+  "status": "draft",
+  "matches": ["rust", "command-line-tool"],
+  "required_skills": [],
+  "optional_skills": [],
+  "required_tools": ["cargo", "rustc"],
+  "required_evidence": ["unit-test-result", "gate-report"],
+  "mandatory_gates": ["build", "unit-tests"],
+  "conditional_gates": ["format", "lint"],
+  "forbidden_autonomous_actions": ["merge", "deploy", "publish-package", "add-direct-dependency"],
+  "approval_policy": "human-required-before-merge",
+  "tool_probes": [
+    { "tool": "cargo", "argv": ["cargo", "--version"], "version_regex": "^cargo 1\\." },
+    { "tool": "rustc", "argv": ["rustc", "--version"], "version_regex": "^rustc 1\\." }
+  ]
+}
