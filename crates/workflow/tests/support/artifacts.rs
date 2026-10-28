@@ -1,4 +1,4 @@
-//! An artifact store that a test can make refuse writes, around the in-memory one.
+//! An artifact store that a test can make refuse writes, around the one a backend provides.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -9,16 +9,15 @@ use factory_domain::scope::TenantScope;
 use factory_domain::values::MediaType;
 use factory_domain::vocabulary::Fidelity;
 use factory_ports::artifact::{ArtifactBackend, ArtifactError, ArtifactStore, BackendStep};
-use factory_testkit::artifact::InMemoryArtifactStore;
 
-/// Delegates to an in-memory store, and refuses every `put` while `refusing` is set.
+/// Delegates to another artifact store, and refuses every `put` while `refusing` is set.
 pub struct SwitchedArtifacts {
-    inner: Arc<InMemoryArtifactStore>,
+    inner: Arc<dyn ArtifactStore>,
     refusing: AtomicBool,
 }
 
 impl SwitchedArtifacts {
-    pub fn new(inner: Arc<InMemoryArtifactStore>) -> Self {
+    pub fn new(inner: Arc<dyn ArtifactStore>) -> Self {
         Self {
             inner,
             refusing: AtomicBool::new(false),

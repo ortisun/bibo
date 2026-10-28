@@ -40,6 +40,7 @@ use factory_ports::store::{
 use serde_json::json;
 
 use super::Engine;
+use super::decision::{DecisionKind, DecisionReport};
 use super::error::EngineError;
 use super::ledger::ClaimSpec;
 use super::links;
@@ -171,12 +172,22 @@ impl Engine {
                         "gate_report_sha256s",
                         json!(hashes),
                     );
+                    let record = gate_record(
+                        tx,
+                        cx,
+                        &gating,
+                        judged,
+                        GateOutcome::Passed,
+                        None,
+                        "gate-passed",
+                    )
+                    .await?;
                     cx.move_stage_run(
                         tx,
                         &gating,
                         Step::new(StageRunEvent::GatePassed, cleared).payload(payload),
                         StageRunEffects {
-                            gate: Some(gate_record(judged, GateOutcome::Passed, None)),
+                            gate: Some(record),
                             ..StageRunEffects::default()
                         },
                     )
@@ -479,6 +490,16 @@ impl Engine {
             key::CAUSE,
             json!(cause.code()),
         );
+        let record = gate_record(
+            tx,
+            cx,
+            gating,
+            judged,
+            GateOutcome::Blocked,
+            None,
+            cause.code(),
+        )
+        .await?;
         cx.move_stage_run(
             tx,
             gating,
@@ -486,7 +507,7 @@ impl Engine {
                 .cause(cause.code())
                 .payload(payload),
             StageRunEffects {
-                gate: Some(gate_record(judged, GateOutcome::Blocked, None)),
+                gate: Some(record),
                 ..StageRunEffects::default()
             },
         )
@@ -557,6 +578,16 @@ impl Engine {
                     budget_remains: request.budget_remains,
                 };
                 let cleared = clear(Guard::ReworkAllowed, &GuardFacts::Rework(facts))?;
+                let record = gate_record(
+                    tx,
+                    cx,
+                    gating,
+                    judged,
+                    GateOutcome::Failed,
+                    Some(failing),
+                    "gate-failed",
+                )
+                .await?;
                 self.apply_rework(
                     tx,
                     cx,
@@ -566,7 +597,7 @@ impl Engine {
                         event: StageRunEvent::GateRequiresRework,
                         cleared,
                         effects: StageRunEffects {
-                            gate: Some(gate_record(judged, GateOutcome::Failed, Some(failing))),
+                            gate: Some(record),
                             ..StageRunEffects::default()
                         },
                     },
@@ -588,6 +619,16 @@ impl Engine {
                     key::CAUSE,
                     json!("no-rework-route"),
                 );
+                let record = gate_record(
+                    tx,
+                    cx,
+                    gating,
+                    judged,
+                    GateOutcome::Failed,
+                    Some(failing),
+                    "no-rework-route",
+                )
+                .await?;
                 cx.move_stage_run(
                     tx,
                     gating,
@@ -595,7 +636,7 @@ impl Engine {
                         .cause("no-rework-route")
                         .payload(payload),
                     StageRunEffects {
-                        gate: Some(gate_record(judged, GateOutcome::Failed, Some(failing))),
+                        gate: Some(record),
                         ..StageRunEffects::default()
                     },
                 )
@@ -661,22 +702,48 @@ pub(crate) struct ReworkMove {
 
 /// The gate record the store keeps with a move: the outcome, the report that backs it and, for a
 /// failure, the digest of what failed. The report is the first gate report the gate produced, or
-/// the review verdict when there is no gate report. A gate that produced neither (a refused
-/// document, a gate that could not run) has none.
-fn gate_record(
+/// the review verdict when there is no gate report.
+///
+/// A gate that produced neither (a refused document, a gate that could not run) still gets a
+/// report, because a decision is never recorded without one (ADR 0014, amendment 1): the engine
+/// writes a decision document that names its cause, with `cause` as the short code of why.
+async fn gate_record(
+    tx: &mut dyn Tx,
+    cx: &Cx<'_>,
+    run: &Versioned<StageRun>,
     judged: &Judged,
     outcome: GateOutcome,
     failing: Option<&Sha256Digest>,
-) -> GateRecord {
-    GateRecord {
+    cause: &str,
+) -> Result<GateRecord, EngineError> {
+    let report_sha256 = match judged.reports.first().or(judged.review.as_ref()) {
+        Some(artifact) => artifact.sha256.clone(),
+        None => {
+            let mut details = serde_json::Map::new();
+            details.insert("gate_could_not_run".to_owned(), json!(judged.could_not_run));
+            details.insert(
+                "evidence_refused".to_owned(),
+                json!(judged.problem.is_some()),
+            );
+            cx.record_decision(
+                tx,
+                &DecisionReport {
+                    kind: DecisionKind::GateDecision,
+                    outcome,
+                    stage_run: run.value.id,
+                    stage: run.value.kind,
+                    cause,
+                    details,
+                },
+            )
+            .await?
+        }
+    };
+    Ok(GateRecord {
         outcome,
-        report_sha256: judged
-            .reports
-            .first()
-            .or(judged.review.as_ref())
-            .map(|artifact| artifact.sha256.clone()),
+        report_sha256: Some(report_sha256),
         failing_set_sha256: failing.cloned(),
-    }
+    })
 }
 
 fn needs_human_facts(cause: NeedsHumanCause) -> (NeedsHumanFacts, &'static str) {

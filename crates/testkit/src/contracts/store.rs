@@ -135,6 +135,9 @@ pub fn checks() -> Vec<StoreCheck> {
         an_unknown_commit_outcome_is_resolved_by_the_witness,
         a_dropped_call_poisons_the_transaction,
         the_gate_record_is_required_where_the_table_says,
+        a_gate_record_names_its_report_except_when_not_applicable,
+        a_gate_report_and_a_contract_must_be_artifacts_the_tenant_holds,
+        a_second_stage_run_of_the_same_kind_and_number_is_refused,
         the_attempt_end_is_required_where_the_table_says,
         a_terminal_row_is_not_edited,
         a_duplicate_task_key_is_refused,
@@ -2081,6 +2084,331 @@ async fn the_gate_record_is_required_where_the_table_says(
         stored.value.gate.is_some() && stored.value.finished_at.is_some(),
         "the record and the end are stored"
     );
+    Ok(())
+}
+
+/// A fresh job whose one stage run is started, committed before any transaction of the check
+/// opens (a transaction of the fake sees the tables as they were when it began).
+async fn started_run(w: &World<'_>, tenant: TenantId) -> Result<StageRunId, String> {
+    let r = w.ready(tenant, 3).await?;
+    w.start(r, "worker-1")
+        .await
+        .map_err(|e| format!("start: {e:?}"))?;
+    Ok(r.run)
+}
+
+/// Moves a started run to `GATING` inside `tx` and returns the new version.
+async fn to_gating(tx: &mut dyn Tx, run: StageRunId) -> Result<Version, String> {
+    let row = tx.get_stage_run(run).await.ctx("read")?;
+    let plan = plan(
+        StageRunStatus::Running,
+        StageRunEvent::AttemptSucceeded,
+        Guard::OutputSchemaValid,
+    )?;
+    tx.transition_stage_run(run, row.version, plan, StageRunEffects::default())
+        .await
+        .ctx("to gating")
+}
+
+/// The gate record effects of a move: the outcome, the report and the failing set.
+fn gate_effects(
+    outcome: factory_domain::vocabulary::GateOutcome,
+    report: Option<&Sha256Digest>,
+    failing: Option<&Sha256Digest>,
+) -> StageRunEffects {
+    StageRunEffects {
+        gate: Some(GateRecord {
+            outcome,
+            report_sha256: report.cloned(),
+            failing_set_sha256: failing.cloned(),
+        }),
+        ..StageRunEffects::default()
+    }
+}
+
+/// The port says a report hash is `None` only for `NOT_APPLICABLE` (`GateRecord`), and the table
+/// of `ports-v1.1` section 5.2 says `S08`, `S14`, `S09`, `S12`, `S11` and `S21` record their
+/// outcome "with the report". Every decision rests on a stored document: this is the rule that
+/// keeps the factory from deciding without evidence. A record with no report is refused with
+/// `GateRecordRule`, and the run does not move.
+async fn a_gate_record_names_its_report_except_when_not_applicable(
+    subject: &dyn StoreSubject,
+) -> Result<(), String> {
+    use factory_domain::vocabulary::GateOutcome;
+    let w = World::new(subject).await;
+    let runs = [
+        started_run(&w, w.a).await?,
+        started_run(&w, w.a).await?,
+        started_run(&w, w.a).await?,
+        started_run(&w, w.a).await?,
+    ];
+    let mut tx = w.tx(w.a).await?;
+    let report = index_bytes(&mut *tx, b"gate report").await?;
+    let failing = index_bytes(&mut *tx, b"failing set").await?;
+
+    // S08: a gate passes the run.
+    let run = runs[0];
+    let v = to_gating(&mut *tx, run).await?;
+    let pass = plan(
+        StageRunStatus::Gating,
+        StageRunEvent::GatePassed,
+        Guard::GatePassEvidenced,
+    )?;
+    ensure_err!(
+        tx.transition_stage_run(
+            run,
+            v,
+            pass.clone(),
+            gate_effects(GateOutcome::Passed, None, None)
+        )
+        .await,
+        StoreError::Constraint(ConstraintRule::GateRecordRule),
+        "S08 PASSED with no report"
+    );
+    ensure_eq!(
+        tx.get_stage_run(run).await.ctx("read")?.value.status,
+        StageRunStatus::Gating,
+        "a refused record does not move the run"
+    );
+    tx.transition_stage_run(
+        run,
+        v,
+        pass,
+        gate_effects(GateOutcome::Passed, Some(&report), None),
+    )
+    .await
+    .ctx("S08 with the report")?;
+
+    // S11: a gate blocks the run.
+    let run = runs[1];
+    let v = to_gating(&mut *tx, run).await?;
+    let block = plan(
+        StageRunStatus::Gating,
+        StageRunEvent::GateBlocks,
+        Guard::BlockingCondition,
+    )?;
+    ensure_err!(
+        tx.transition_stage_run(
+            run,
+            v,
+            block.clone(),
+            gate_effects(GateOutcome::Blocked, None, None)
+        )
+        .await,
+        StoreError::Constraint(ConstraintRule::GateRecordRule),
+        "S11 BLOCKED with no report"
+    );
+    tx.transition_stage_run(
+        run,
+        v,
+        block,
+        gate_effects(GateOutcome::Blocked, Some(&report), None),
+    )
+    .await
+    .ctx("S11 with the report")?;
+
+    // S09: a gate asks for rework.
+    let run = runs[2];
+    let v = to_gating(&mut *tx, run).await?;
+    let rework = plan(
+        StageRunStatus::Gating,
+        StageRunEvent::GateRequiresRework,
+        Guard::ReworkAllowed,
+    )?;
+    ensure_err!(
+        tx.transition_stage_run(
+            run,
+            v,
+            rework.clone(),
+            gate_effects(GateOutcome::Failed, None, Some(&failing))
+        )
+        .await,
+        StoreError::Constraint(ConstraintRule::GateRecordRule),
+        "S09 FAILED with no report"
+    );
+    tx.transition_stage_run(
+        run,
+        v,
+        rework,
+        gate_effects(GateOutcome::Failed, Some(&report), Some(&failing)),
+    )
+    .await
+    .ctx("S09 with the report")?;
+
+    // S14: a person approves. The approval is a decision like any other and rests on a document.
+    let run = runs[3];
+    let v = to_gating(&mut *tx, run).await?;
+    let ask = plan(
+        StageRunStatus::Gating,
+        StageRunEvent::GateNeedsHuman,
+        Guard::NeedsHumanVerdict,
+    )?;
+    let v = tx
+        .transition_stage_run(run, v, ask, StageRunEffects::default())
+        .await
+        .ctx("S10 ask a person")?;
+    let approve = plan(
+        StageRunStatus::WaitingForHuman,
+        StageRunEvent::HumanApproved,
+        Guard::ApproverAuthorized,
+    )?;
+    ensure_err!(
+        tx.transition_stage_run(
+            run,
+            v,
+            approve.clone(),
+            gate_effects(GateOutcome::Passed, None, None)
+        )
+        .await,
+        StoreError::Constraint(ConstraintRule::GateRecordRule),
+        "S14 PASSED with no report"
+    );
+    tx.transition_stage_run(
+        run,
+        v,
+        approve,
+        gate_effects(GateOutcome::Passed, Some(&report), None),
+    )
+    .await
+    .ctx("S14 with the report")?;
+    Ok(())
+}
+
+/// A hash that a stage run names (its contract, its gate report) must be an artifact the tenant
+/// holds: the database has a foreign key on `(tenant, hash)`. A hash that was never indexed, or
+/// that only another tenant indexed, is a missing object.
+async fn a_gate_report_and_a_contract_must_be_artifacts_the_tenant_holds(
+    subject: &dyn StoreSubject,
+) -> Result<(), String> {
+    use factory_domain::vocabulary::GateOutcome;
+    let w = World::new(subject).await;
+    let run = started_run(&w, w.a).await?;
+    let job = w.active_job(w.a).await?;
+    let mut other = w.tx(w.b).await?;
+    let foreign = index_bytes(&mut *other, b"held by the other tenant").await?;
+    other
+        .commit()
+        .await
+        .ctx("commit the other tenant's artifact")?;
+
+    let never = Sha256Digest::of(b"never indexed");
+    let pass = plan(
+        StageRunStatus::Gating,
+        StageRunEvent::GatePassed,
+        Guard::GatePassEvidenced,
+    )?;
+    // A refusal by the database aborts its transaction, so each refusal gets a transaction of
+    // its own and is dropped.
+    for (what, report) in [
+        ("a report that was never indexed", &never),
+        ("a report that only another tenant holds", &foreign),
+    ] {
+        let mut tx = w.tx(w.a).await?;
+        let v = to_gating(&mut *tx, run).await?;
+        ensure_err!(
+            tx.transition_stage_run(
+                run,
+                v,
+                pass.clone(),
+                gate_effects(GateOutcome::Passed, Some(report), None)
+            )
+            .await,
+            StoreError::NotFound,
+            "{what}"
+        );
+    }
+    let mut tx = w.tx(w.a).await?;
+    let v = to_gating(&mut *tx, run).await?;
+    let held = index_bytes(&mut *tx, b"held").await?;
+    tx.transition_stage_run(
+        run,
+        v,
+        pass,
+        gate_effects(GateOutcome::Passed, Some(&held), None),
+    )
+    .await
+    .ctx("a report the tenant holds")?;
+    drop(tx);
+
+    // The contract of S01 is the same kind of reference.
+    let id = w.ids.stage_run();
+    let mut tx = w.tx(w.a).await?;
+    let row = tx
+        .insert_stage_run(NewStageRun {
+            id,
+            job_id: job,
+            kind: StageKind::Intake,
+            run_number: 1,
+            max_attempts: 3,
+            rework_of: None,
+        })
+        .await
+        .ctx("insert a stage run")?
+        .row;
+    let ready = plan(
+        StageRunStatus::Pending,
+        StageRunEvent::PreconditionsMet,
+        Guard::UpstreamPassed,
+    )?;
+    ensure_err!(
+        tx.transition_stage_run(
+            id,
+            row.version,
+            ready,
+            StageRunEffects {
+                contract_sha256: Some(never),
+                ..StageRunEffects::default()
+            }
+        )
+        .await,
+        StoreError::NotFound,
+        "a contract that was never indexed"
+    );
+    Ok(())
+}
+
+/// A job has one run of a kind for each run number (`UNIQUE (tenant, job, kind, run_number)`).
+/// The same id with the same content is the idempotent replay and returns the row; any other id
+/// for the same kind and number is a different run claiming the same place, and is refused as
+/// `IdReusedWithDifferentContent`. The engine relies on this to refuse a second admission.
+async fn a_second_stage_run_of_the_same_kind_and_number_is_refused(
+    subject: &dyn StoreSubject,
+) -> Result<(), String> {
+    let w = World::new(subject).await;
+    let job = w.active_job(w.a).await?;
+    let first = w.ids.stage_run();
+    let new = |id| NewStageRun {
+        id,
+        job_id: job,
+        kind: StageKind::Intake,
+        run_number: 1,
+        max_attempts: 3,
+        rework_of: None,
+    };
+    let mut tx = w.tx(w.a).await?;
+    tx.insert_stage_run(new(first)).await.ctx("the first run")?;
+    ensure!(
+        !tx.insert_stage_run(new(first))
+            .await
+            .ctx("a replay")?
+            .created,
+        "the same id and content is a replay"
+    );
+    ensure_err!(
+        tx.insert_stage_run(new(w.ids.stage_run())).await,
+        StoreError::Constraint(ConstraintRule::IdReusedWithDifferentContent),
+        "another id for the same kind and run number"
+    );
+    let mut second = new(w.ids.stage_run());
+    second.run_number = 2;
+    tx.insert_stage_run(second)
+        .await
+        .ctx("the next run number is free")?;
+    let mut other_kind = new(w.ids.stage_run());
+    other_kind.kind = StageKind::Specification;
+    tx.insert_stage_run(other_kind)
+        .await
+        .ctx("another kind is free")?;
     Ok(())
 }
 

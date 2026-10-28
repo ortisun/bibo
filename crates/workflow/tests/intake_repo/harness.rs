@@ -381,7 +381,7 @@ impl Rig {
             number: 12,
         };
         let issues = Arc::new(FakeIssueSource::new());
-        let requests = Arc::new(StoreRequests::new(world.store.clone()));
+        let requests = Arc::new(StoreRequests::new(world.memory_store()));
         let allowlist = Arc::new(FixedAllowlist::new(world.tenant));
         let check = Arc::new(StandInCheck {
             mode: Mutex::new(CheckMode::Permissive),

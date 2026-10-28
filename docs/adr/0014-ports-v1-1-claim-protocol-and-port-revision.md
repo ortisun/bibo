@@ -232,3 +232,32 @@ Each is decided by default above so that work proceeds. None is settled. A numbe
 6. **The platform tenant** holds audit events that belong to no tenant (decision 2; `tenancy.md` asked the same).
 7. **The specification says eleven stages; the machine has thirteen in Slice 1.** Exact edits are in ports-v1.1 (F-18).
 8. **Whether to tag `ports-v1.1-rc1`** after the Store, workspace, sandbox and agent parts (option 3 above).
+
+## Amendments
+
+### Amendment 1 (2026-10-28): a gate decision always rests on a stored report
+
+**What was found.** The worker composition ran the engine on `PgStore` for the first time. No job could reach `COMPLETED`, and an environment block could not be recorded. `Engine::decide` (the approval, `S14`) and the environment-blocked path (`S21`) wrote `GateRecord { report_sha256: None }`. `PgStore::transition_stage_run` refused both as `ConstraintRule::GateRecordRule`. The in-memory store accepted them, so the engine suite passed. A third site had the same flaw and had not been reported: `engine/gate.rs` built its record from the first gate report or the review verdict, and when the gate produced neither (a gate that could not run, evidence the engine refused) the record carried `None` for `PASSED`, `FAILED` and `BLOCKED` alike.
+
+**Which side is wrong: the engine and the fake, not the store.** The evidence:
+
+- `GateRecord::report_sha256` is documented as "the gate report, stored as an artifact. `None` only for `NOT_APPLICABLE`" (`crates/ports/src/store.rs`, ports-v1.1 section 5.2).
+- The table of effects in ports-v1.1 section 5.2 says `S08` and `S14` record `PASSED` "with the report", `S09` and `S12` `FAILED` "with the report and `failing_set_sha256`", and `S11` and `S21` `BLOCKED` "with the report". Only `S02` is "no report".
+- `docs/database/for-the-storage-crate.md` shows the `S21` statement as `gate_outcome = 'BLOCKED', gate_report_sha256 = $report`.
+- The column has a composite foreign key `(tenant_id, gate_report_sha256)` to `artifacts`, so a report is an artifact the tenant holds. The database does not force the column to be non-null (`constraints-and-indexes.md`: "the port types it optional"); the adapter does (`check_effects`), and says so in its module notes.
+- The Store contract suite tested "`PASSED` with no gate record at all" and "`PASSED` with a `FAILED` record", never "`PASSED` with a record and no report". The fake therefore drifted from the port without a check failing, and the engine drifted with it.
+
+**Decision.** The store is right. A decision with no document behind it is exactly what the factory forbids: "approved" or "blocked" would be a bare claim, and for a block the cause would be lost with the failed attempt. Making the store accept `None` would legalise decisions made without evidence, against the port's own text. So:
+
+1. The engine stores a small JSON document for every decision that no gate reported, indexes it for the tenant in the transaction that records the decision (as it does for the stage contract), writes the bytes after the commit, and passes the hash as the report. Three kinds exist: `human-approval` (who decided, in which role, which evidence they had seen), `environment-block` (the cause and the failed attempt) and `gate-decision` (the engine's own cause, when a gate gave it nothing to cite). The document holds identifiers, codes and times and no text a person wrote. It never repeats evidence the engine refused. The code is `crates/workflow/src/engine/decision.rs`.
+2. The Store contract suite gains three checks, each with a seeded defect in the fake: a gate record names its report except for `NOT_APPLICABLE` (`S08`, `S09`, `S11`, `S14`); a gate report and a contract must be artifacts the tenant holds (the foreign key, which the fake also ignored); and a second stage run of one job, kind and run number is refused. Both stores pass them. The fake now refuses what `PgStore` refuses.
+
+**Cost and what remains.** One small artifact per approval, block or report-less gate decision. The documents are not yet governed by a JSON Schema: a schema needs a Rust type in `factory-domain` and a registration in `factory-contracts`, which this change did not touch. Until then their shape is fixed by `decision.rs` and by the scenarios that read them back.
+
+### Amendment 2 (2026-10-28): a second admission is `Illegal`, decided by the state machine
+
+**What was found.** Admitting a job twice returned `EngineError::Illegal` on the in-memory store and `Store(Constraint(IdReusedWithDifferentContent))` on PostgreSQL. The job was safe either way, but a caller could not tell "already admitted" from a fault of the store.
+
+**Root cause.** `admit_job` inserted the 13 stage runs first and moved the job second. The only thing that stopped a second admission on the in-memory store was the move, which the state machine refuses from any status but `RECEIVED`. PostgreSQL has a unique key on `(tenant, job, stage_kind, run_number)`, so it refused the insert before the move was reached. The in-memory store had no such key: another way the fake was more lenient than the port's tables (ports-v1.1 and migration 000500).
+
+**Decision.** The engine answers `Illegal`, and a store constraint must not be what a caller sees for this case. The job moves first; the state machine is the authority on which statuses can be admitted, and it refuses before a single stage run is planned. The unique key is now part of the contract (`a_second_stage_run_of_the_same_kind_and_number_is_refused`) and of the fake, so the key can no longer be what hides an engine mistake on one store and not the other.

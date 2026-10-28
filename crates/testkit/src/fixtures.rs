@@ -15,13 +15,14 @@ use factory_domain::ids::{
 };
 use factory_domain::machines::failure::FailureClass;
 use factory_domain::machines::guards::{
-    AdmissionFacts, AttemptsFacts, CancelFacts, DeadlineFacts, EnvironmentCause, EnvironmentFacts,
-    EpochFacts, EscalationFacts, GatePassFacts, GuardCleared, GuardFacts, LeaseExpiryFacts,
-    LeaseGrantFacts, NotApplicableBasis, NotApplicableFacts, OutputFacts, RetryFacts,
-    SandboxGoneFacts, SandboxProvisionFacts, TaskDepsFacts, TaskEvidenceFacts, TaskStartFacts,
-    TeardownFacts, UnrecoverableFacts, UpstreamFacts, evaluate,
+    AdmissionFacts, ApprovalFacts, AttemptsFacts, BlockingFacts, CancelFacts, DeadlineFacts,
+    EnvironmentCause, EnvironmentFacts, EpochFacts, EscalationFacts, GatePassFacts, GuardCleared,
+    GuardFacts, LeaseExpiryFacts, LeaseGrantFacts, NeedsHumanFacts, NotApplicableBasis,
+    NotApplicableFacts, OutputFacts, RetryFacts, ReworkFacts, SandboxGoneFacts,
+    SandboxProvisionFacts, TaskDepsFacts, TaskEvidenceFacts, TaskStartFacts, TeardownFacts,
+    UnrecoverableFacts, UpstreamFacts, evaluate,
 };
-use factory_domain::machines::limits::RepairCap;
+use factory_domain::machines::limits::{RepairCap, ReworkCap};
 use factory_domain::state::{Guard, JobStatus};
 use factory_domain::values::{NonEmptyString, Sha256Digest, Timestamp, Uri};
 use factory_domain::vocabulary::StageKind;
@@ -421,6 +422,33 @@ pub fn cleared(guard: Guard) -> GuardCleared {
             decision_is_pass_and_persisted: true,
             criteria_without_ledger_entry: 0,
             mandatory_gate_reports: &[],
+        }),
+        Guard::BlockingCondition => GuardFacts::Blocking(BlockingFacts {
+            verdict_is_block: false,
+            mandatory_gate_could_not_run: true,
+            policy_violation_detected: false,
+        }),
+        Guard::ReworkAllowed => GuardFacts::Rework(ReworkFacts {
+            verdict_is_changes_required: false,
+            deterministic_gate_failed: true,
+            rounds_used: 0,
+            cap: ReworkCap::DEFAULT,
+            failing_set_differs_from_previous_round: true,
+            budget_remains: true,
+        }),
+        Guard::NeedsHumanVerdict => GuardFacts::NeedsHuman(NeedsHumanFacts {
+            verdict_is_needs_human: false,
+            rework_limit_reached: false,
+            stagnation_detected: false,
+            budget_limit_reached: false,
+            gate_is_a_human_gate: true,
+            defect_needs_a_person: false,
+        }),
+        Guard::ApproverAuthorized => GuardFacts::Approval(ApprovalFacts {
+            decision_is_approve: true,
+            principal_holds_required_role: true,
+            evidence_digest_seen_equals_current: true,
+            translation_warnings_decided: true,
         }),
         Guard::Unrecoverable => GuardFacts::Unrecoverable(UnrecoverableFacts {
             stage_run_failed: true,

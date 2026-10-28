@@ -1990,6 +1990,8 @@ Which effects each transition carries, as a table (the code is `stage_run_effect
 | `A08` | n/a | `teardown_grace` required |
 | `A01`, `A03`, `A06`, `A07`, `A09`, `A10` | n/a | none (`A01`, `A09`, `A10` may carry `sandbox`) |
 
+"With the report" is a rule of the port and not a hint: every store refuses a gate record that has an outcome other than `NOT_APPLICABLE` and no report, and refuses a report that is not an artifact the tenant holds (the Store contract suite checks both). A decision that no gate reported (a person's approval, an environment block, a gate that could not run) is still recorded on a document: the engine stores a small decision record and passes its hash (ADR 0014, amendment 1).
+
 ### 5.3 Paths
 
 `RepoPath::new` also refuses the aliases of `.git` listed in `is_git_directory_alias`. `RepoGlob` keeps `matches` (exact) and gains `matches_folded`. Nothing outside `PathRules::classify` decides what a path is.

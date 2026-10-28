@@ -91,6 +91,12 @@ pub enum StoreDefect {
     ContinuesAfterDrop,
     /// A move to `PASSED` is accepted with no gate record.
     AcceptsPassedWithoutOutcome,
+    /// A gate record is accepted with no report although its outcome is not `NOT_APPLICABLE`.
+    AcceptsGateWithoutReport,
+    /// A stage run may name a contract or a gate report that the tenant has not indexed.
+    AcceptsUnindexedHash,
+    /// A second stage run of one job, kind and run number is accepted under another id.
+    AllowsDuplicateRunNumber,
     /// A failed attempt is accepted with no failure class.
     AcceptsFailedWithoutClass,
     /// A terminal row can be edited.
@@ -233,6 +239,18 @@ pub const DEFECTS: &[(StoreDefect, &[&str])] = &[
     (
         StoreDefect::AcceptsPassedWithoutOutcome,
         &["the_gate_record_is_required_where_the_table_says"],
+    ),
+    (
+        StoreDefect::AcceptsGateWithoutReport,
+        &["a_gate_record_names_its_report_except_when_not_applicable"],
+    ),
+    (
+        StoreDefect::AcceptsUnindexedHash,
+        &["a_gate_report_and_a_contract_must_be_artifacts_the_tenant_holds"],
+    ),
+    (
+        StoreDefect::AllowsDuplicateRunNumber,
+        &["a_second_stage_run_of_the_same_kind_and_number_is_refused"],
     ),
     (
         StoreDefect::AcceptsFailedWithoutClass,
@@ -1559,6 +1577,18 @@ impl StageRunOps for InMemoryTx {
                     ))
                 };
             }
+            // One run of a kind for each run number in a job, as the table's unique key says.
+            let place_taken = self.work.stage_runs.values().any(|r| {
+                self.sees(r.value.tenant_id)
+                    && r.value.job_id == new.job_id
+                    && r.value.kind == new.kind
+                    && r.value.run_number == new.run_number
+            });
+            if place_taken && !self.has(StoreDefect::AllowsDuplicateRunNumber) {
+                return Err(StoreError::Constraint(
+                    ConstraintRule::IdReusedWithDifferentContent,
+                ));
+            }
             self.new_stage_run(new)
         })
     }
@@ -1603,7 +1633,15 @@ impl StageRunOps for InMemoryTx {
             }
             let rule = stage_run_effects_rule(t.transition_id());
             match (rule.gate, &effects.gate) {
-                (Some(want), Some(have)) if have.outcome == want => {}
+                (Some(want), Some(have)) if have.outcome == want => {
+                    // Every outcome but NOT_APPLICABLE rests on a stored report.
+                    if have.report_sha256.is_none()
+                        && want != GateOutcome::NotApplicable
+                        && !self.has(StoreDefect::AcceptsGateWithoutReport)
+                    {
+                        return Err(StoreError::Constraint(ConstraintRule::GateRecordRule));
+                    }
+                }
                 (Some(GateOutcome::Passed), None)
                     if self.has(StoreDefect::AcceptsPassedWithoutOutcome) => {}
                 (None, None) => {}
@@ -1611,6 +1649,18 @@ impl StageRunOps for InMemoryTx {
             }
             if rule.contract != effects.contract_sha256.is_some() {
                 return Err(StoreError::Constraint(ConstraintRule::GateRecordRule));
+            }
+            // The contract and the report are foreign keys to the tenant's artifact index.
+            if !self.has(StoreDefect::AcceptsUnindexedHash) {
+                let named = effects
+                    .contract_sha256
+                    .iter()
+                    .chain(effects.gate.iter().filter_map(|g| g.report_sha256.as_ref()));
+                for hash in named {
+                    if !self.work.index.contains_key(&(self.tenant, hash.clone())) {
+                        return Err(StoreError::NotFound);
+                    }
+                }
             }
             let mut next = row;
             next.value.status = t.to_status();
