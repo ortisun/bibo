@@ -332,7 +332,7 @@ impl crate::hooks::BeforeClaim for RefreshRequests {
 }
 
 /// Parses `owner/name#number`.
-fn issue_of(source_ref: &str) -> Option<IssueRef> {
+pub(crate) fn issue_of(source_ref: &str) -> Option<IssueRef> {
     let (repo, number) = source_ref.split_once('#')?;
     Some(IssueRef {
         repo: RepoRef::parse(repo).ok()?,

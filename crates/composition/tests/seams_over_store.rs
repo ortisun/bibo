@@ -367,3 +367,74 @@ async fn a_first_specification_has_no_history() {
     let history = StoreSpecHistory::new(world.store.clone(), world.deps.artifacts.clone());
     assert!(matches!(history.previous(&run).await, Ok(None)));
 }
+
+fn allowlist_in(
+    dir: &std::path::Path,
+) -> std::sync::Arc<factory_composition::seams::FileAllowlist> {
+    std::fs::create_dir_all(dir.join("allowlist")).expect("a directory");
+    std::fs::write(
+        dir.join("allowlist/allowlist.yaml"),
+        "version: 1\nentries: []\n",
+    )
+    .expect("the allowlist");
+    std::sync::Arc::new(factory_composition::seams::FileAllowlist::in_checkout(dir))
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_approval_sources_read_the_requester_the_level_and_the_allowlist() {
+    use factory_composition::delivery::StoreApprovalSources;
+    use factory_workflow::stages::approval::ApprovalSources;
+    let (_db, world, _) = pg_world().await;
+    let job = world.admitted_job().await;
+    run_through(&world, StageKind::Intake).await;
+    let intake = identity_of(&world, job, StageKind::Intake, 0).await;
+    let dir = std::env::temp_dir().join(format!("composition-allowlist-{}", std::process::id()));
+    let sources = StoreApprovalSources::new(
+        world.store.clone(),
+        world.deps.artifacts.clone(),
+        allowlist_in(&dir),
+    );
+    // The requester of the job is the principal the world made, with GitHub user id 1001.
+    assert_eq!(sources.requester(&intake).await, Ok(1001));
+    assert!(sources.level(world.tenant, job).await.is_ok());
+    assert!(sources.allowlist(world.tenant).await.is_ok());
+    // No approval request was stored for this run.
+    assert_eq!(
+        sources.request(world.tenant, intake.stage_run).await.err(),
+        Some(SeamError::NotFound)
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_delivery_ledger_is_verified_and_the_two_blocked_methods_fail_closed() {
+    use factory_composition::delivery::StoreDeliverySources;
+    use factory_composition::system::SystemClock;
+    use factory_workflow::stages::delivery::DeliverySources;
+    let (_db, world, _) = pg_world().await;
+    let job = world.admitted_job().await;
+    run_through(&world, StageKind::Intake).await;
+    let intake = identity_of(&world, job, StageKind::Intake, 0).await;
+    let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let policies =
+        factory_composition::startup::load_policy(&root, &[]).expect("the repository policy loads");
+    let sources = StoreDeliverySources::new(
+        world.store.clone(),
+        world.deps.artifacts.clone(),
+        policies.engine.clone(),
+        std::sync::Arc::new(SystemClock),
+    );
+    let state = sources.ledger(&intake).await.expect("the chain verifies");
+    assert!(state.entry_count >= 1);
+    assert_eq!(state.head_sequence, state.entry_count);
+    // BLOCKED: no port exposes a tree id, and the gate definition hash lives in the validation
+    // stage. The stage must fail closed there.
+    assert_eq!(
+        sources.tree_of(&intake, &commit('a')).await,
+        Err(SeamError::Unavailable)
+    );
+    assert_eq!(
+        sources.current_values(&intake, &commit('a')).await.err(),
+        Some(SeamError::Unavailable)
+    );
+}

@@ -16,6 +16,7 @@
 //! | [`startup`] | Start-up checks that need no database: the policy from the protected checkout, hashed, and the image catalog |
 //! | [`redaction`] | The redactor built from the policy, the registry of the factory's secret values, the telemetry scrubber and the broker wrapper that registers job tokens |
 //! | [`database`] | The two pools and the two logins (ADR 0012) |
+//! | [`delivery`] | `ApprovalSources` and `DeliverySources` over the store (two delivery methods are BLOCKED, see the module) |
 //! | [`drift`] | The evidence-drift seam: a channel from the stage handlers to the thread that owns the engine |
 //! | [`feedback`] | `ReworkSource` and `RoundSource`: why a run replaces another, read from the evidence the engine stored |
 //! | [`risk`] | `RiskSource`: the agent's risk claim from the stored intake, and the facts of the domain profile |
@@ -37,6 +38,7 @@ pub mod assemble;
 pub mod authority;
 pub mod config;
 pub mod database;
+pub mod delivery;
 pub mod drift;
 pub mod feedback;
 pub mod health;

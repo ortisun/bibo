@@ -133,14 +133,13 @@ impl Reader {
             })
     }
 
-    /// The ledger entries of one stage run, oldest first.
+    /// Every ledger entry of the job, oldest first.
     ///
     /// # Errors
     /// [`SeamError::Unavailable`].
-    pub async fn run_ledger(
+    pub async fn job_ledger(
         tx: &mut dyn Tx,
         job: JobId,
-        stage_run: StageRunId,
     ) -> Result<Vec<EvidenceLedgerEntry>, SeamError> {
         let mut found = Vec::new();
         let mut from = 1_u64;
@@ -151,10 +150,7 @@ impl Reader {
                 .map_err(|_| SeamError::Unavailable)?;
             let count = page.len();
             let last = page.last().map(|entry| entry.metadata.sequence.get());
-            found.extend(
-                page.into_iter()
-                    .filter(|entry| entry.metadata.stage_run_id == stage_run),
-            );
+            found.extend(page);
             match last {
                 Some(last) if count == PAGE as usize => {
                     from = u64::try_from(last).unwrap_or(u64::MAX).saturating_add(1);
@@ -163,5 +159,21 @@ impl Reader {
             }
         }
         Ok(found)
+    }
+
+    /// The ledger entries of one stage run, oldest first.
+    ///
+    /// # Errors
+    /// [`SeamError::Unavailable`].
+    pub async fn run_ledger(
+        tx: &mut dyn Tx,
+        job: JobId,
+        stage_run: StageRunId,
+    ) -> Result<Vec<EvidenceLedgerEntry>, SeamError> {
+        Ok(Self::job_ledger(tx, job)
+            .await?
+            .into_iter()
+            .filter(|entry| entry.metadata.stage_run_id == stage_run)
+            .collect())
     }
 }
