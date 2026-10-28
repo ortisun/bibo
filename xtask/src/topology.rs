@@ -1,5 +1,5 @@
-//! The rules that `cargo metadata` can prove: DEP-01 to DEP-04 and DEP-08, plus a check that the
-//! workspace holds the crates the rules file lists, in the directories it lists.
+//! The rules that `cargo metadata` can prove: DEP-01 to DEP-04, DEP-08 and DEP-11, plus a check
+//! that the workspace holds the crates the rules file lists, in the directories it lists.
 
 use crate::finding::Finding;
 use crate::metadata::{DepKind, Dependency, Member, Workspace};
@@ -54,9 +54,11 @@ pub fn check(rules: &Rules, ws: &Workspace, options: Options) -> Vec<Finding> {
         only_listed_edges(edge, &mut findings);
         points_inward(rules, edge, &mut findings);
         testkit_is_dev_only(edge, &mut findings);
+        only_binaries_use_composition(edge, &mut findings);
     }
     no_cycle(&edges, &mut findings);
     only_binaries_wire_adapters(&known, &edges, &mut findings);
+    composition_is_not_a_program(&known, &mut findings);
     for from in &known {
         if let Role::Library(rule) = from.role {
             external_crates_and_features(rule, from, ws, &mut findings);
@@ -170,6 +172,13 @@ fn points_inward(rules: &Rules, edge: &Edge<'_>, findings: &mut Vec<Finding>) {
     else {
         return;
     };
+    // A binary and the composition library share the ring of the composition roots (ADR 0015).
+    // The binary may depend on the library; DEP-11 stops every other edge into it.
+    if matches!(edge.from.role, Role::App(_))
+        && matches!(edge.to.role, Role::Library(c) if c.is_composition())
+    {
+        return;
+    }
     if to >= from {
         findings.push(Finding::new(
             "DEP-02",
@@ -266,14 +275,62 @@ fn visit<'a>(
     path.pop();
 }
 
-/// DEP-08: a library crate depends on at most one adapter. Only binaries wire several.
+/// DEP-11: only a binary may depend on the composition library. A library crate in rings 0 to 2
+/// that did would invert the rule that dependencies point inward (DEP-02 reports the ring as
+/// well; this names the reason).
+fn only_binaries_use_composition(edge: &Edge<'_>, findings: &mut Vec<Finding>) {
+    let Role::Library(to) = edge.to.role else {
+        return;
+    };
+    if !to.is_composition() || matches!(edge.from.role, Role::App(_)) {
+        return;
+    }
+    findings.push(Finding::new(
+        "DEP-11",
+        &edge.from.location,
+        format!(
+            "{} has a {} dependency on the composition library {}; only a binary in apps/ may use it",
+            edge.from.member.name,
+            kind_word(edge.kind),
+            edge.to.member.name
+        ),
+    ));
+}
+
+/// DEP-11: the composition library is a library. It has no binary target, so no `main`, and a
+/// build script is the only program-like file it may hold.
+fn composition_is_not_a_program(known: &[Known<'_>], findings: &mut Vec<Finding>) {
+    for from in known {
+        let Role::Library(rule) = from.role else {
+            continue;
+        };
+        if !rule.is_composition() {
+            continue;
+        }
+        for target in &from.member.binary_targets {
+            findings.push(Finding::new(
+                "DEP-11",
+                &from.location,
+                format!(
+                    "{} is the composition library but has the binary target {}; a binary belongs in apps/ and the library must not contain main",
+                    from.member.name,
+                    target.display()
+                ),
+            ));
+        }
+    }
+}
+
+/// DEP-08: a library crate depends on at most one adapter. Only binaries and the composition
+/// library wire several.
 fn only_binaries_wire_adapters(
     known: &[Known<'_>],
     edges: &[Edge<'_>],
     findings: &mut Vec<Finding>,
 ) {
     for from in known {
-        if !matches!(from.role, Role::Library(_)) {
+        // The composition library exists to wire adapters (ADR 0015).
+        if !matches!(from.role, Role::Library(c) if !c.is_composition()) {
             continue;
         }
         let adapters: BTreeSet<&str> = edges

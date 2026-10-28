@@ -176,6 +176,13 @@ pub struct DatabaseConfig {
 pub struct ArtifactsConfig {
     /// The root of the content-addressed store.
     pub root: PathBuf,
+    /// The largest single artifact, in bytes.
+    #[serde(default = "default_max_artifact")]
+    pub max_bytes: u64,
+}
+
+const fn default_max_artifact() -> u64 {
+    64 * 1024 * 1024
 }
 
 /// The sandbox side.
@@ -194,10 +201,73 @@ pub struct SandboxConfig {
     /// Label value that marks the containers this factory created, for the janitor.
     #[serde(default = "default_owner")]
     pub owner: String,
+    /// More labels for every object this factory creates in Docker, beside the owner label. The
+    /// janitor touches only objects that carry all of them, so a test run labels its objects
+    /// with its own and removes only those.
+    #[serde(default)]
+    pub labels: std::collections::BTreeMap<String, String>,
+    /// Where the target repositories are fetched from and pushed to.
+    #[serde(default)]
+    pub remote: RemoteConfig,
+    /// The arguments of the egress sidecar's program (`--mode`, `--listen`, `--upstream`, ...).
+    /// The sidecar image names the program; these say where the broker is, as the sidecar sees it,
+    /// and what the relay may do. Empty means the sidecar is started with no arguments, which the
+    /// real sidecar refuses, so a deployment that runs agents must set them.
+    #[serde(default)]
+    pub sidecar_command: Vec<String>,
 }
 
 fn default_owner() -> String {
     "factory-worker".to_owned()
+}
+
+/// Where the repositories live, and with that which transport the host-side version control may
+/// use. Set at most one of the two fields; none means `https` to `github.com`.
+///
+/// (The restricted YAML reader decodes only plain structs and unit variants, so this is two
+/// optional fields and not a tagged choice.)
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RemoteConfig {
+    /// The host of `https://<host>/<owner>/<name>.git`. The only transport the production
+    /// profile allows.
+    #[serde(default)]
+    pub https_host: Option<String>,
+    /// A directory of bare repositories (`file://<directory>/<owner>/<name>.git`), for the local
+    /// and test profiles.
+    #[serde(default)]
+    pub directory: Option<PathBuf>,
+}
+
+/// The remote after the choice is made.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Remote {
+    /// `https` to this host.
+    Https(String),
+    /// Bare repositories in this directory.
+    Directory(PathBuf),
+}
+
+impl RemoteConfig {
+    /// The remote this setting names.
+    ///
+    /// # Errors
+    /// [`ConfigError::OutOfRange`] when both fields are set, or the directory is not absolute.
+    pub fn remote(&self) -> Result<Remote, ConfigError> {
+        match (&self.https_host, &self.directory) {
+            (Some(_), Some(_)) => Err(ConfigError::OutOfRange {
+                field: "sandbox.remote",
+                problem: "set https_host or directory, not both",
+            }),
+            (None, Some(directory)) if !directory.is_absolute() => Err(ConfigError::OutOfRange {
+                field: "sandbox.remote.directory",
+                problem: "must be an absolute path",
+            }),
+            (None, Some(directory)) => Ok(Remote::Directory(directory.clone())),
+            (Some(host), None) => Ok(Remote::Https(host.clone())),
+            (None, None) => Ok(Remote::Https("github.com".to_owned())),
+        }
+    }
 }
 
 /// A provider the broker forwards to.
@@ -494,7 +564,15 @@ impl FactoryConfig {
                 });
             }
         }
+        // A conflict between the two fields is an error in every profile.
+        self.sandbox.remote.remote()?;
         if self.profile == Profile::Production {
+            if matches!(self.sandbox.remote.remote()?, Remote::Directory(_)) {
+                return Err(ConfigError::OutOfRange {
+                    field: "sandbox.remote",
+                    problem: "the production profile fetches over https only",
+                });
+            }
             if self.broker.upstreams.is_empty() {
                 return Err(ConfigError::OutOfRange {
                     field: "broker.upstreams",

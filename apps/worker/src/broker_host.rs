@@ -8,7 +8,7 @@
 //! `RegisteringBroker`), so a token the engine issues is the token the listener accepts.
 //!
 //! The provider keys come from files named in the configuration, are read through
-//! [`SecretFile`](crate::config::SecretFile) (private, regular, not a link) and are registered
+//! [`SecretFile`](factory_composition::config::SecretFile) (private, regular, not a link) and are registered
 //! with the redactor before the listener starts.
 
 use std::sync::Arc;
@@ -23,9 +23,9 @@ use factory_egress::http::{
 };
 use factory_ports::clock::{Clock, IdGenerator};
 
-use crate::config::BrokerConfig;
-use crate::redaction::{FactorySecrets, SecretKind};
-use crate::startup::StartupFailure;
+use factory_composition::config::BrokerConfig;
+use factory_composition::redaction::{FactorySecrets, SecretKind};
+use factory_composition::startup::StartupFailure;
 
 fn provider(name: &str) -> Result<Provider, StartupFailure> {
     match name {

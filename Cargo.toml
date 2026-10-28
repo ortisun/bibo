@@ -42,3 +42,5 @@ factory-contracts = { path = "crates/contracts" }
 factory-egress = { path = "crates/egress" }
 factory-observability = { path = "crates/observability" }
 factory-testkit = { path = "crates/testkit" }
+# The shared composition core, ring 3, a library (ADR 0015). Only apps/* may depend on it.
+factory-composition = { path = "crates/composition" }

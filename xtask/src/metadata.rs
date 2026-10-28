@@ -40,6 +40,9 @@ pub struct Member {
     /// build script. Tests, benches and examples are left out. A root can sit outside `src`
     /// when the manifest sets a `path`.
     pub production_targets: Vec<PathBuf>,
+    /// The root source file of every binary target. A library that must not be a program (the
+    /// composition library, DEP-11) has none.
+    pub binary_targets: Vec<PathBuf>,
     /// For each package this member depends on, the features Cargo resolved for it with the
     /// whole workspace unified (`resolve.nodes[].features`). A crate that enables a feature in
     /// its own manifest changes this set for every other crate that uses the package.
@@ -196,11 +199,27 @@ pub fn parse(json: &str) -> Result<Workspace, String> {
             .filter_map(|t| t["src_path"].as_str())
             .map(PathBuf::from)
             .collect();
+        let binary_targets = package["targets"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter(|t| {
+                t["kind"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter_map(Value::as_str)
+                    .any(|k| k == "bin")
+            })
+            .filter_map(|t| t["src_path"].as_str())
+            .map(PathBuf::from)
+            .collect();
         members.push(Member {
             name: name.to_string(),
             dir,
             dependencies,
             production_targets,
+            binary_targets,
             resolved_dependency_features: resolved_features_of(&doc, id),
         });
     }

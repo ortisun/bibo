@@ -52,12 +52,22 @@ impl WorkspaceLint {
 pub struct CrateRule {
     pub name: String,
     pub ring: u64,
-    /// `domain`, `ports`, `application`, `adapter` or `test-support`.
+    /// `domain`, `ports`, `application`, `adapter`, `test-support` or `composition`.
     pub layer: String,
     pub path: String,
     pub depends_on: Vec<String>,
     pub dev_depends_on: Vec<String>,
     pub external_allow: Vec<AllowEntry>,
+}
+
+impl CrateRule {
+    /// The layer of the one library that composes adapters (ADR 0015).
+    pub const COMPOSITION_LAYER: &'static str = "composition";
+
+    /// True for the composition library: ring 3, a library, depended on by binaries only.
+    pub fn is_composition(&self) -> bool {
+        self.layer == Self::COMPOSITION_LAYER
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -229,6 +239,21 @@ impl Rules {
                 .to_string()
         })?;
         let source_scans = SourceScans::parse(&doc)?;
+        let composition_ring = crates
+            .iter()
+            .filter(|c| !c.is_composition())
+            .map(|c| c.ring)
+            .max()
+            .map_or(0, |r| r + 1);
+        if let Some(wrong) = crates
+            .iter()
+            .find(|c| c.is_composition() && c.ring != composition_ring)
+        {
+            return Err(format!(
+                "rules file: the composition library {} is in ring {} but must sit in ring {composition_ring}, the ring of the binaries (one above the highest ring of the other libraries)",
+                wrong.name, wrong.ring
+            ));
+        }
         for named in &source_scans.named_crates {
             let listed =
                 crates.iter().any(|c| &c.name == named) || apps.iter().any(|a| &a.name == named);
@@ -280,10 +305,13 @@ impl Rules {
             .map(Role::Tooling)
     }
 
-    /// Binaries sit one ring above the highest library ring.
+    /// Binaries sit one ring above the highest ring of the other libraries. The composition
+    /// library (ADR 0015) sits in that same ring, so it is a composition root that is not a
+    /// binary.
     pub fn app_ring(&self) -> u64 {
         self.crates
             .iter()
+            .filter(|c| !c.is_composition())
             .map(|c| c.ring)
             .max()
             .map_or(0, |r| r + 1)
@@ -306,9 +334,18 @@ mod tests {
     }
 
     #[test]
-    fn the_real_rules_file_parses_with_twelve_libraries_four_binaries_and_xtask() {
+    fn the_real_rules_file_parses_with_thirteen_libraries_four_binaries_and_xtask() {
         let rules = Rules::parse(&real_rules_text()).expect("the real rules file parses");
-        assert_eq!(rules.crates.len(), 12);
+        assert_eq!(rules.crates.len(), 13);
+        assert_eq!(
+            rules
+                .crates
+                .iter()
+                .filter(|c| c.is_composition())
+                .map(|c| c.name.as_str())
+                .collect::<Vec<_>>(),
+            ["composition"]
+        );
         assert_eq!(rules.apps.len(), 4);
         assert_eq!(
             rules
@@ -344,6 +381,25 @@ mod tests {
     fn binaries_sit_one_ring_above_the_libraries() {
         let rules = Rules::parse(&real_rules_text()).expect("parse");
         assert_eq!(rules.app_ring(), 3);
+    }
+
+    #[test]
+    fn the_composition_library_sits_in_the_ring_of_the_binaries() {
+        let rules = Rules::parse(&real_rules_text()).expect("parse");
+        let composition = rules.crate_named("composition").expect("composition");
+        assert_eq!(composition.ring, rules.app_ring());
+    }
+
+    #[test]
+    fn a_composition_library_in_another_ring_is_refused() {
+        let broken = real_rules_text().replacen(
+            "\"name\": \"composition\",\n      \"ring\": 3",
+            "\"name\": \"composition\",\n      \"ring\": 2",
+            1,
+        );
+        assert_ne!(broken, real_rules_text(), "the replacement must apply");
+        let error = Rules::parse(&broken).unwrap_err();
+        assert!(error.contains("composition library"), "{error}");
     }
 
     #[test]

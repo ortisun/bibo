@@ -15,12 +15,12 @@ mod support;
 
 use std::time::Duration;
 
+use factory_composition::system::RandomIds;
 use factory_domain::ids::TenantId;
 use factory_domain::state::{AttemptStatus, JobStatus, StageRunStatus};
 use factory_domain::vocabulary::StageKind;
 use factory_ports::clock::IdGenerator;
 use factory_ports::store::{LeaseEpoch, Store, SystemScope};
-use factory_worker::system::RandomIds;
 use factory_workflow::engine::{Admission, AttemptOutcome, EngineError};
 use factory_workflow::scheduler::{Deferral, Pulse};
 use support::engine::PgWorld;

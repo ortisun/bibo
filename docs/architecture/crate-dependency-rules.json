@@ -22,7 +22,7 @@
     {
       "ring": 3,
       "name": "Composition roots",
-      "rule": "Binaries. The only place where adapters are chosen and wired to use cases."
+      "rule": "Binaries, and the one composition library they share (ADR 0015). The only place where adapters are chosen and wired to use cases. The library has no main and only binaries may depend on it."
     }
   ],
   "crates": [
@@ -318,6 +318,45 @@
       "responsibility": "Initializes tracing and OpenTelemetry for the binaries and owns span and attribute naming."
     },
     {
+      "name": "composition",
+      "ring": 3,
+      "layer": "composition",
+      "path": "crates/composition",
+      "slice": 1,
+      "depends_on": [
+        "domain",
+        "ports",
+        "workflow",
+        "spec_adapter",
+        "storage",
+        "runtime",
+        "sandbox",
+        "github",
+        "contracts",
+        "egress",
+        "observability"
+      ],
+      "dev_depends_on": [
+        "testkit"
+      ],
+      "external_allow": [
+        "async-trait",
+        "serde",
+        "serde_json",
+        "thiserror",
+        "tracing",
+        "tokio[rt,time,sync,macros,signal]",
+        "time[std]",
+        "uuid[std]"
+      ],
+      "external_allow_notes": {
+        "tokio": "The engine's futures are not Send, so the binaries run on the current-thread runtime (rt). time is for the production Ticker, sync for the shutdown channel, macros for select!, signal for SIGTERM and SIGINT. These are the features the worker used before the extraction; nothing was added.",
+        "time": "OffsetDateTime::now_utc for the real Clock. The std feature is the only one.",
+        "uuid": "Identifiers are built from 16 random bytes read from the operating system with Builder::from_random_bytes. No generator feature (v4, v7) is on, because DEP-05 keeps them away from the inner crates that share the one uuid."
+      },
+      "responsibility": "The shared composition core, as a library (ADR 0015): the typed configuration, the profiles, the registry of ports with require_permitted, the start-up checks, the redactor and the registry of secret values, health reporting, the seams over the store, the sandbox output and workspace patch indexing wrappers, the telemetry configuration helper, and the providers assembled by profile. The only library that wires more than one adapter. It has no main, no HTTP routes, no handling of process arguments and no loop: those belong to the binary that uses it (the grammar of an approval decision is pure text and is in the library)."
+    },
+    {
       "name": "testkit",
       "ring": 2,
       "layer": "test-support",
@@ -408,7 +447,7 @@
     },
     {
       "id": "DEP-08",
-      "statement": "Binaries are the only crates that depend on more than one adapter.",
+      "statement": "Binaries and the composition library are the only crates that depend on more than one adapter.",
       "enforced_by": "xtask check-architecture"
     },
     {
@@ -420,6 +459,11 @@
       "id": "DEP-10",
       "statement": "Only the sandbox crate spawns docker or git. Only the runtime crate spawns an agent command line tool. No crate spawns a shell. The set of allowed spawned binaries is docker and git.",
       "enforced_by": "xtask check-architecture by source scan, plus the process spawn recorder in the end-to-end tests (negative test ST-03 and FX-SPAWN)"
+    },
+    {
+      "id": "DEP-11",
+      "statement": "The composition library (layer composition, ring 3, ADR 0015) may be depended on by binaries in apps/ only; no crate in rings 0 to 2 may depend on it. It has no binary target and defines no function named main.",
+      "enforced_by": "xtask check-architecture, from cargo metadata (the edge and the targets) and by source scan (main)"
     }
   ],
   "source_scans": {
@@ -521,6 +565,10 @@
       "spec_kit_terms": [
         ".specify",
         "speckit"
+      ],
+      "spec_kit_public_names": [
+        "SpecKitConfig",
+        "SpecKitProvider"
       ],
       "change_host_trait": "ChangeHost",
       "forbidden_method_prefixes": [
@@ -653,6 +701,7 @@
           "workflow",
           "storage",
           "testkit",
+          "composition",
           "api",
           "worker"
         ]

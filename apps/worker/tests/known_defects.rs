@@ -27,7 +27,7 @@ use support::{seed_tenant, seeded_repository, server, worker_config};
 #[tokio::test(flavor = "multi_thread")]
 async fn defect_1_fixed_a_persons_approval_is_recorded_on_postgres_and_the_job_completes() {
     let db = server().clone_database().await;
-    let ids = factory_worker::system::RandomIds::new().expect("random");
+    let ids = factory_composition::system::RandomIds::new().expect("random");
     let tenant =
         factory_domain::ids::TenantId::from_uuid(factory_ports::clock::IdGenerator::new_uuid(&ids));
     seed_tenant(&db, tenant, 0, "org/repo-0").await;
@@ -89,7 +89,7 @@ async fn defect_1_fixed_a_persons_approval_is_recorded_on_postgres_and_the_job_c
 #[tokio::test(flavor = "multi_thread")]
 async fn defect_2_fixed_a_second_admission_is_a_typed_illegal_error_on_postgres() {
     let db = server().clone_database().await;
-    let ids = factory_worker::system::RandomIds::new().expect("random");
+    let ids = factory_composition::system::RandomIds::new().expect("random");
     let tenant =
         factory_domain::ids::TenantId::from_uuid(factory_ports::clock::IdGenerator::new_uuid(&ids));
     seed_tenant(&db, tenant, 0, "org/repo-0").await;
