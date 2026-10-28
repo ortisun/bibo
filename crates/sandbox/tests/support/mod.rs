@@ -86,6 +86,19 @@ pub fn images_json_with_stand_in_sidecar() -> String {
     root.to_string()
 }
 
+/// `images.json` with the egress sidecar entry put back into the state it had before its program
+/// existed: a skeleton that has no binary. The real file now lists a ready sidecar, so the tests
+/// that prove a skeleton is REFUSED build their catalog from it with this function and no longer
+/// depend on the state of the real file.
+pub fn images_json_with_skeleton_sidecar() -> String {
+    let mut root: serde_json::Value = serde_json::from_str(IMAGES_JSON).expect("images.json");
+    let sidecar = &mut root["platforms"][PLATFORM]["images"]["egress-sidecar"];
+    sidecar["status"] = "awaiting-binary".into();
+    sidecar["binary_sha256"] = "".into();
+    sidecar["tag"] = "skeleton".into();
+    root.to_string()
+}
+
 pub fn catalog(json: &str) -> ImageCatalog {
     ImageCatalog::from_json(json, PLATFORM).expect("a catalog")
 }

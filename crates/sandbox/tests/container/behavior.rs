@@ -550,8 +550,9 @@ async fn negative_nt_sbx_14_a_stopped_daemon_a_missing_image_and_a_skeleton_side
         Some(SandboxError::DaemonUnavailable)
     );
 
-    // The skeleton sidecar of the real images.json: an agent job is blocked before anything is made.
-    let lab = lab_with(vec![], support::IMAGES_JSON);
+    // A skeleton sidecar (the real catalog with its sidecar put back to the skeleton state): an
+    // agent job is blocked before anything is made.
+    let lab = lab_with(vec![], &support::images_json_with_skeleton_sidecar());
     let outcome = lab.create(lab.spec(SandboxProfile::Agent, 3, WALL)).await;
     assert_eq!(
         outcome.err(),
@@ -1098,12 +1099,22 @@ async fn negative_nt_sec_09_the_recorded_processes_hold_no_secret_and_start_no_s
 // ---- sanity: the catalog the tests run is the one the image build wrote --------------------------------------------------
 
 #[test]
-fn the_real_catalog_lists_a_skeleton_sidecar_and_two_ready_images() {
+fn a_catalog_with_a_skeleton_sidecar_refuses_it() {
+    let json = support::images_json_with_skeleton_sidecar();
+    let catalog = ImageCatalog::from_json(&json, support::PLATFORM).expect("catalog");
+    assert!(
+        catalog.sidecar().is_err(),
+        "a sidecar without its program must be refused"
+    );
+}
+
+#[test]
+fn the_real_catalog_lists_a_ready_sidecar_and_the_other_images() {
     let catalog =
         ImageCatalog::from_json(support::IMAGES_JSON, support::PLATFORM).expect("catalog");
     assert!(
-        catalog.sidecar().is_err(),
-        "the egress sidecar is still a skeleton"
+        catalog.sidecar().is_ok(),
+        "the egress sidecar has its program and is listed as ready"
     );
     for profile in [
         SandboxProfile::Agent,

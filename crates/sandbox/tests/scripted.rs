@@ -727,12 +727,14 @@ async fn negative_nt_sbx_14_a_stopped_daemon_a_bad_catalog_and_a_failed_sidecar_
     );
     assert!(rig.sim.created().is_empty());
 
-    // The skeleton sidecar of the real images.json blocks an agent before anything is made.
-    let rig = rig_with(support::IMAGES_JSON, false);
+    // A skeleton sidecar (the real catalog with its sidecar put back to the skeleton state)
+    // blocks an agent before anything is made.
+    let skeleton = support::images_json_with_skeleton_sidecar();
+    let rig = rig_with(&skeleton, false);
     let host = host_workspace(false, &[]);
     let spec = support::spec(
         SandboxProfile::Agent,
-        &support::catalog(support::IMAGES_JSON),
+        &support::catalog(&skeleton),
         &host.mounts,
         attempt(1),
         WALL,
