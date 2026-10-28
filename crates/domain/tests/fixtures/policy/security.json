@@ -403,6 +403,21 @@
           }
         },
         "id": "go"
+      },
+      {
+        "env": {
+          "LC_ALL": "C"
+        },
+        "executables": {
+          "check-prerequisites.sh": {
+            "allowed_subcommands": []
+          },
+          "resolve-template.sh": {
+            "allowed_subcommands": []
+          }
+        },
+        "id": "spec_kit_helpers",
+        "notes": "Held only by the specification_writer role (tools.entries exec.run, role_scopes). Network is off in the agent profile whatever the script does."
       }
     ],
     "threats": [
@@ -2028,6 +2043,20 @@
           "verify"
         ],
         "risk": "low",
+        "role_scopes": {
+          "specification_reviewer": {
+            "paths": [
+              "specs/**"
+            ]
+          },
+          "specification_writer": {
+            "paths": [
+              "specs/**",
+              ".specify/**",
+              "inputs/**"
+            ]
+          }
+        },
         "roles": [
           "builder",
           "integrator",
@@ -2046,7 +2075,9 @@
           "architecture_documentation",
           "operations_writer",
           "documentation_reviewer",
-          "repository_analyst"
+          "repository_analyst",
+          "specification_writer",
+          "specification_reviewer"
         ]
       },
       {
@@ -2068,6 +2099,20 @@
           "verify"
         ],
         "risk": "low",
+        "role_scopes": {
+          "specification_reviewer": {
+            "paths": [
+              "specs/**"
+            ]
+          },
+          "specification_writer": {
+            "paths": [
+              "specs/**",
+              ".specify/**",
+              "inputs/**"
+            ]
+          }
+        },
         "roles": [
           "builder",
           "integrator",
@@ -2086,7 +2131,9 @@
           "architecture_documentation",
           "operations_writer",
           "documentation_reviewer",
-          "repository_analyst"
+          "repository_analyst",
+          "specification_writer",
+          "specification_reviewer"
         ]
       },
       {
@@ -2145,18 +2192,28 @@
           "max_result_bytes": 4096,
           "timeout_s": 10
         },
-        "notes": "Writes go through path_access and protected_paths. Atomic temp-file plus rename.",
+        "notes": "Writes go through path_access and protected_paths. Atomic temp-file plus rename. A role scope narrows further and never widens: a path must pass the scope, the task's owned files and the protected paths.",
         "profiles": [
           "agent"
         ],
         "risk": "medium",
+        "role_scopes": {
+          "specification_writer": {
+            "paths": [
+              "specs/*/spec.md",
+              "specs/*/checklists/*.md",
+              ".specify/feature.json"
+            ]
+          }
+        },
         "roles": [
           "builder",
           "integrator",
           "technical_writer",
           "api_documentation",
           "architecture_documentation",
-          "operations_writer"
+          "operations_writer",
+          "specification_writer"
         ]
       },
       {
@@ -2211,11 +2268,19 @@
           "fetch_deps"
         ],
         "risk": "high",
+        "role_scopes": {
+          "specification_writer": {
+            "command_sets": [
+              "spec_kit_helpers"
+            ]
+          }
+        },
         "roles": [
           "builder",
           "integrator",
           "qa",
-          "adversarial_reviewer"
+          "adversarial_reviewer",
+          "specification_writer"
         ]
       },
       {

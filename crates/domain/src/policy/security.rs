@@ -350,6 +350,23 @@ strict! {
 }
 
 strict! {
+    /// What one role may do with a tool, on top of holding it. A role that is on the entry's
+    /// `roles` and has no scope here has no extra limit from this entry: the task's owned files,
+    /// the protected paths and the command sets still apply.
+    pub struct RoleScope {
+        /// The paths the role may touch with the tool. A path outside them is refused even when
+        /// `path_access` and the protected paths would allow it. They are repository-relative
+        /// globs in the same dialect as the protected paths.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub paths: Option<Vec<GlobText>>,
+        /// The ids of the `command_sets.sets` the role may run with the tool. A command in another
+        /// set is refused for this role.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub command_sets: Option<Vec<String>>,
+    }
+}
+
+strict! {
     /// One tool.
     pub struct ToolEntry {
         /// The tool.
@@ -372,6 +389,9 @@ strict! {
         /// Its caps.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub limits: Option<ToolLimits>,
+        /// Narrower limits for named roles, by role. Every key is a role on `roles`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub role_scopes: Option<BTreeMap<String, RoleScope>>,
         /// When a human must approve.
         pub human_gate: HumanGate,
         /// Notes.

@@ -520,16 +520,25 @@ tools:
     - id: fs.read
       risk: low
       profiles: [agent, verify]
-      roles: [builder, integrator, qa, code_reviewer, security_reviewer, reliability_reviewer, ux_reviewer, adversarial_reviewer, architect, architecture_critic, planner, documentation_planner, technical_writer, api_documentation, architecture_documentation, operations_writer, documentation_reviewer, repository_analyst]
+      roles: [builder, integrator, qa, code_reviewer, security_reviewer, reliability_reviewer, ux_reviewer, adversarial_reviewer, architect, architecture_critic, planner, documentation_planner, technical_writer, api_documentation, architecture_documentation, operations_writer, documentation_reviewer, repository_analyst, specification_writer, specification_reviewer]
       args: { path: { kind: workspace_path, access: read } }
       limits: { max_calls_per_task: 3000, max_result_bytes: 262144, timeout_s: 10 }
+      # The specification roles read the feature directory, and the writer also reads the Spec
+      # Kit templates and the request inputs. The reviewer reads the specification only. Both
+      # match the manifests in agents/ (a test compares them).
+      role_scopes:
+        specification_writer: { paths: ["specs/**", ".specify/**", "inputs/**"] }
+        specification_reviewer: { paths: ["specs/**"] }
       human_gate: none
     - id: fs.list
       risk: low
       profiles: [agent, verify]
-      roles: [builder, integrator, qa, code_reviewer, security_reviewer, reliability_reviewer, ux_reviewer, adversarial_reviewer, architect, architecture_critic, planner, documentation_planner, technical_writer, api_documentation, architecture_documentation, operations_writer, documentation_reviewer, repository_analyst]
+      roles: [builder, integrator, qa, code_reviewer, security_reviewer, reliability_reviewer, ux_reviewer, adversarial_reviewer, architect, architecture_critic, planner, documentation_planner, technical_writer, api_documentation, architecture_documentation, operations_writer, documentation_reviewer, repository_analyst, specification_writer, specification_reviewer]
       args: { path: { kind: workspace_path, access: read } }
       limits: { max_calls_per_task: 1000, max_result_bytes: 131072, timeout_s: 10 }
+      role_scopes:
+        specification_writer: { paths: ["specs/**", ".specify/**", "inputs/**"] }
+        specification_reviewer: { paths: ["specs/**"] }
       human_gate: none
     - id: fs.search
       risk: low
@@ -541,11 +550,17 @@ tools:
     - id: fs.write
       risk: medium
       profiles: [agent]
-      roles: [builder, integrator, technical_writer, api_documentation, architecture_documentation, operations_writer]
+      roles: [builder, integrator, technical_writer, api_documentation, architecture_documentation, operations_writer, specification_writer]
       args: { path: { kind: workspace_path, access: write }, content: { kind: bounded_string, max_len: 5242880 } }
       limits: { max_calls_per_task: 500, max_result_bytes: 4096, timeout_s: 10 }
+      # The specification writer writes only what its three Spec Kit skills write (section 14a,
+      # agent_stage_profiles.specification.skills.allowed): the specification, the checklist
+      # files and the active-feature pointer. It does not write the constitution; that is a
+      # protected-path exception a human approves (change_protected_path).
+      role_scopes:
+        specification_writer: { paths: ["specs/*/spec.md", "specs/*/checklists/*.md", ".specify/feature.json"] }
       human_gate: none
-      notes: "Writes go through path_access and protected_paths. Atomic temp-file plus rename."
+      notes: "Writes go through path_access and protected_paths. Atomic temp-file plus rename. A role scope narrows further and never widens: a path must pass the scope, the task's owned files and the protected paths."
     - id: fs.delete
       risk: medium
       profiles: [agent]
@@ -556,12 +571,16 @@ tools:
     - id: exec.run
       risk: high
       profiles: [agent, verify, fetch_deps]
-      roles: [builder, integrator, qa, adversarial_reviewer]
+      roles: [builder, integrator, qa, adversarial_reviewer, specification_writer]
       args:
         argv: { kind: argv_array, policy: command_sets }   # array of strings, never one shell string
         cwd: { kind: workspace_path, access: read }
         env: { kind: fixed_by_supervisor }                 # agent cannot add environment variables
       limits: { max_calls_per_task: 300, max_result_bytes: 262144, timeout_s: 600, kill_process_group: true }
+      # The specification writer runs the Spec Kit helper scripts and nothing else: not cargo,
+      # not a package manager, not a shell, and not the helper scripts of the denied skills.
+      role_scopes:
+        specification_writer: { command_sets: [spec_kit_helpers] }
       human_gate: none
       notes: "In fetch_deps the commands are chosen by the supervisor after the dependency decision, not requested by an agent. The same wrapper and command_sets apply."
     - id: exec.shell
@@ -656,6 +675,21 @@ command_sets:
       executables:
         go: { allowed_subcommands: [build, test, vet, fmt, list], forbidden_args: ["-toolexec", "-exec", "-overlay"] }
       env: { GOFLAGS: "-mod=readonly", GOPROXY: "off", GONOSUMDB: "", GOTOOLCHAIN: "local" }
+    - id: spec_kit_helpers
+      # The helper scripts the allowed Spec Kit skills call (integration guide section 11.1). The
+      # name is bare, as for every other set: the supervisor's fixed read-only PATH holds the
+      # hash-checked `.specify/scripts/bash` directory in the specification stage and nowhere
+      # else. A path (`.specify/scripts/bash/x.sh`) is refused as not bare, and an interpreter
+      # (`bash x.sh`) is the forbidden class `shell_interpreters`.
+      # Left out on purpose: setup-plan.sh and setup-tasks.sh belong to the denied plan and tasks
+      # skills, create-new-feature.sh makes a branch and numbers a directory (the factory chooses
+      # the feature directory and never reads the branch, ADR 0006), and common.sh is sourced by
+      # the others and never run.
+      executables:
+        check-prerequisites.sh: { allowed_subcommands: [] }
+        resolve-template.sh: { allowed_subcommands: [] }
+      env: { LC_ALL: "C" }
+      notes: "Held only by the specification_writer role (tools.entries exec.run, role_scopes). Network is off in the agent profile whatever the script does."
   threats: [T-06, T-13, T-29]
 
 # -----------------------------------------------------------------------------
