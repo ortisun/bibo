@@ -1,79 +1,24 @@
-//! The rules that need a scan of the source text: DEP-09 and DEP-10 from the rules file, and the
-//! static checks ST-01 to ST-05 and ST-09 from the negative-test catalog.
+//! The rules that need a scan of the source: DEP-09 and DEP-10 from the rules file, and the static
+//! checks ST-01 to ST-05, ST-09, ST-13 and ST-14 from the negative-test catalog.
 //!
-//! These scans are guard rails, not proofs. They read text, so they miss code that builds a name
-//! at run time. The process spawn recorder in the end-to-end tests covers that side (ST-03).
+//! These scans are guard rails, not proofs. Most read the token stream of `syntax`, a few read
+//! masked text, and none expands a macro or follows a path through a re-export in another file,
+//! so code that builds a name at run time is not seen. The process spawn recorder in the
+//! end-to-end tests covers that side (ST-03).
 //!
-//! The rules file says what each rule means in prose. The parameters here (which crate may spawn
-//! which program, where the posture verifier and the ingestion module live) come from that prose
-//! and from the catalog. A test checks that every crate named below still exists in the file.
+//! Every parameter (which crate may spawn which program, where the posture verifier and the
+//! ingestion module live, the shells, the container flags) is read from the `source_scans`
+//! section of the rules file. Nothing is listed in this file.
 
 use crate::finding::Finding;
 use crate::metadata::Workspace;
 use crate::rules::{Role, Rules};
 use crate::scan::{self, Source, brace_block, find_word, is_ident, next_ident};
+use crate::source_scans::SourceScans;
+use crate::st07;
+use crate::syntax::{Kind, Resolver, ends_with, is_under};
 use std::fs;
 use std::path::Path;
-
-const WORKFLOW: &str = "workflow";
-const SPEC_ADAPTER: &str = "spec_adapter";
-const SANDBOX: &str = "sandbox";
-const RUNTIME: &str = "runtime";
-
-/// Every crate these scans name. A test checks they are all in the rules file.
-pub const NAMED_CRATES: [&str; 4] = [WORKFLOW, SPEC_ADAPTER, SANDBOX, RUNTIME];
-
-/// ST-09 applies to the crates that handle workspace content or agent output.
-const WORKSPACE_READERS: [&str; 4] = [SANDBOX, RUNTIME, SPEC_ADAPTER, WORKFLOW];
-/// The ingestion module, relative to the sandbox crate. Every read of sandbox output goes here.
-const INGESTION_DIR: &str = "src/workspace/";
-
-const SHELLS: [&str; 11] = [
-    "sh",
-    "bash",
-    "zsh",
-    "dash",
-    "fish",
-    "ksh",
-    "csh",
-    "tcsh",
-    "cmd",
-    "powershell",
-    "pwsh",
-];
-const AGENT_TOOLS: [&str; 2] = ["claude", "codex"];
-const SANDBOX_PROGRAMS: [&str; 2] = ["docker", "git"];
-
-const DANGEROUS_STRINGS: [&str; 5] = [
-    "--privileged",
-    "--cap-add",
-    "seccomp=unconfined",
-    "apparmor=unconfined",
-    "docker.sock",
-];
-const HOST_NAMESPACE_FLAGS: [&str; 3] = ["--network", "--net", "--pid"];
-
-const FS_READ_CALLS: [&str; 9] = [
-    "fs::read(",
-    "fs::read_to_string(",
-    "fs::read_dir(",
-    "fs::metadata(",
-    "fs::symlink_metadata(",
-    "fs::canonicalize(",
-    "fs::read_link(",
-    "File::open(",
-    "OpenOptions::new(",
-];
-const FS_READ_METHODS: [&str; 8] = [
-    ".read_dir(",
-    ".metadata(",
-    ".symlink_metadata(",
-    ".canonicalize(",
-    ".read_link(",
-    ".exists()",
-    ".is_file()",
-    ".is_dir()",
-];
 
 struct Scanned {
     /// The name in the rules file, such as `sandbox` or `api`.
@@ -84,6 +29,7 @@ struct Scanned {
 }
 
 pub fn check(rules: &Rules, ws: &Workspace) -> Result<Vec<Finding>, String> {
+    let scans = &rules.source_scans;
     let mut scanned = Vec::new();
     for member in &ws.members {
         let name = match rules.role_of_package(&member.name) {
@@ -95,24 +41,40 @@ pub fn check(rules: &Rules, ws: &Workspace) -> Result<Vec<Finding>, String> {
         scanned.push(Scanned {
             name,
             dir: ws.relative_dir(member),
-            sources: scan::production_sources(&ws.root, &member.dir)?,
+            sources: scan::production_sources(&ws.root, &member.dir, &member.production_targets)?,
         });
     }
+
+    let conventions_path = ws.root.join(&scans.st_07.conventions);
+    let conventions =
+        st07::Conventions::parse(&fs::read_to_string(&conventions_path).map_err(|e| {
+            format!(
+                "cannot read the conventions page {}: {e}",
+                conventions_path.display()
+            )
+        })?)
+        .map_err(|e| format!("{}: {e}", conventions_path.display()))?;
 
     let mut findings = Vec::new();
     for krate in &scanned {
         for source in &krate.sources {
-            begin_system_only_in_workflow(krate, source, &mut findings);
-            spec_kit_layout_only_in_spec_adapter(krate, source, &mut findings);
-            change_host_has_no_merge_method(source, &mut findings);
-            process_spawning(krate, source, &mut findings);
+            if !scans.st_07.skip_crates.contains(&krate.name) {
+                findings.extend(st07::check(&conventions, &krate.name, source));
+            }
+            let resolver = Resolver::new(&source.syntax);
+            begin_system_only_in_workflow(scans, krate, source, &mut findings);
+            spec_kit_layout_only_in_spec_adapter(scans, krate, source, &mut findings);
+            change_host_has_no_merge_method(scans, source, &mut findings);
+            process_spawning(scans, krate, source, &resolver, &mut findings);
             no_equality_on_signatures(source, &mut findings);
-            container_flags_only_in_the_posture_verifier(krate, source, &mut findings);
-            no_merge_or_deploy_path(source, &mut findings);
-            workspace_reads_go_through_ingestion(krate, source, &mut findings);
+            container_flags_only_in_the_posture_verifier(scans, krate, source, &mut findings);
+            no_merge_or_deploy_path(scans, source, &mut findings);
+            workspace_reads_go_through_ingestion(scans, krate, source, &resolver, &mut findings);
+            constructors_only_where_allowed(scans, krate, source, &resolver, &mut findings);
+            no_metering_in_workflow(scans, krate, source, &mut findings);
         }
     }
-    tree_checks(&ws.root, &mut findings)?;
+    tree_checks(scans, &ws.root, &mut findings)?;
     Ok(findings)
 }
 
@@ -121,18 +83,24 @@ pub fn check(rules: &Rules, ws: &Workspace) -> Result<Vec<Finding>, String> {
 
 /// `Store::begin_system` is called only from the workflow crate. Defining or implementing it is
 /// not a call.
-fn begin_system_only_in_workflow(krate: &Scanned, source: &Source, findings: &mut Vec<Finding>) {
-    if krate.name == WORKFLOW {
+fn begin_system_only_in_workflow(
+    scans: &SourceScans,
+    krate: &Scanned,
+    source: &Source,
+    findings: &mut Vec<Finding>,
+) {
+    let rule = &scans.dep_09;
+    if krate.name == rule.begin_system_crate {
         return;
     }
-    for at in find_word(&source.code, "begin_system") {
+    for at in find_word(&source.code, &rule.begin_system_function) {
         if !preceded_by_fn(&source.code, at) {
             findings.push(Finding::new(
                 "DEP-09",
                 source.location(at),
                 format!(
-                    "{} calls begin_system; only the workflow crate may open a system transaction",
-                    krate.name
+                    "{} calls {}; only the {} crate may open a system transaction",
+                    krate.name, rule.begin_system_function, rule.begin_system_crate
                 ),
             ));
         }
@@ -146,32 +114,43 @@ fn preceded_by_fn(code: &str, at: usize) -> bool {
 
 /// The Spec Kit file layout (`.specify`, `speckit`) appears only in the spec_adapter crate.
 fn spec_kit_layout_only_in_spec_adapter(
+    scans: &SourceScans,
     krate: &Scanned,
     source: &Source,
     findings: &mut Vec<Finding>,
 ) {
-    if krate.name == SPEC_ADAPTER {
+    let rule = &scans.dep_09;
+    if krate.name == rule.spec_kit_crate {
         return;
     }
     let lowercase = source.with_strings.to_ascii_lowercase();
-    for term in [".specify", "speckit"] {
-        for (at, _) in lowercase.match_indices(term) {
+    for term in &rule.spec_kit_terms {
+        for (at, _) in lowercase.match_indices(term.as_str()) {
             findings.push(Finding::new(
                 "DEP-09",
                 source.location(at),
-                format!("{} mentions {term:?}; only the spec_adapter crate may know the Spec Kit layout", krate.name),
+                format!(
+                    "{} mentions {term:?}; only the {} crate may know the Spec Kit layout",
+                    krate.name, rule.spec_kit_crate
+                ),
             ));
         }
     }
 }
 
-/// `ChangeHost` has no method whose name starts with `merge`. The factory never merges.
-fn change_host_has_no_merge_method(source: &Source, findings: &mut Vec<Finding>) {
+/// `ChangeHost` has no method whose name starts with `merge`, `ready` or `undraft`. The factory
+/// never merges and never marks a pull request ready for review.
+fn change_host_has_no_merge_method(
+    scans: &SourceScans,
+    source: &Source,
+    findings: &mut Vec<Finding>,
+) {
+    let rule = &scans.dep_09;
     for at in find_word(&source.code, "trait") {
         let Some((name_at, name)) = next_ident(&source.code, at + "trait".len()) else {
             continue;
         };
-        if !name.starts_with("ChangeHost") {
+        if !name.starts_with(&rule.change_host_trait) {
             continue;
         }
         let Some((open, end)) = brace_block(&source.code, name_at + name.len()) else {
@@ -180,12 +159,18 @@ fn change_host_has_no_merge_method(source: &Source, findings: &mut Vec<Finding>)
         let body = &source.code[open..end];
         for fn_at in find_word(body, "fn") {
             if let Some((method_at, method)) = next_ident(body, fn_at + 2)
-                && method.starts_with("merge")
+                && rule
+                    .forbidden_method_prefixes
+                    .iter()
+                    .any(|prefix| method.starts_with(prefix.as_str()))
             {
                 findings.push(Finding::new(
                     "DEP-09",
                     source.location(open + method_at),
-                    format!("trait {name} has a method named {method}; the factory never merges"),
+                    format!(
+                        "trait {name} has a method named {method}; the factory never merges and never marks a pull request ready, so no method starts with {}",
+                        rule.forbidden_method_prefixes.join(", ")
+                    ),
                 ));
             }
         }
@@ -195,113 +180,131 @@ fn change_host_has_no_merge_method(source: &Source, findings: &mut Vec<Finding>)
 // ---------------------------------------------------------------------------------------------
 // DEP-10 and ST-03
 
-/// Only the sandbox crate spawns docker or git, only the runtime crate spawns an agent tool, and
-/// no crate spawns a shell.
-fn process_spawning(krate: &Scanned, source: &Source, findings: &mut Vec<Finding>) {
-    for spawn in spawn_calls(source) {
-        let location = source.location(spawn.at);
-        let Some(program) = spawn.program else {
-            if krate.name != SANDBOX && krate.name != RUNTIME {
-                findings.push(Finding::new(
-                    "DEP-10",
-                    location,
-                    format!("{} spawns a program that is not a string literal, so the allowed-program rule cannot be checked", krate.name),
-                ));
-            }
+/// Only one file contains a process-spawning path (ST-03). In it, only the crate that owns the
+/// program may spawn it, and nobody spawns a shell (DEP-10).
+///
+/// Names are resolved first: `use std::process::Command as Cmd` and `use std::process::*` are
+/// the same as the plain path. A mention counts wherever it is, import or call, so a re-export
+/// of the type cannot carry it into another file.
+fn process_spawning(
+    scans: &SourceScans,
+    krate: &Scanned,
+    source: &Source,
+    resolver: &Resolver,
+    findings: &mut Vec<Finding>,
+) {
+    let rule = &scans.dep_10;
+    let in_spawn_file = source.relative == rule.spawn_file;
+    let banned = |path: &[String]| rule.spawn_paths.iter().any(|b| is_under(path, b));
+    let mut reported = std::collections::BTreeSet::new();
+    let mut mention = |at: usize, path: &[String], findings: &mut Vec<Finding>| {
+        if in_spawn_file || !reported.insert(at) {
+            return;
+        }
+        findings.push(Finding::new(
+            "ST-03",
+            source.location(at),
+            format!(
+                "{} mentions {}; only {} may contain a process-spawning path",
+                krate.name,
+                path.join("::"),
+                rule.spawn_file
+            ),
+        ));
+    };
+
+    for import in source.syntax.imports() {
+        let resolved = resolver
+            .candidates(&import.path)
+            .into_iter()
+            .find(|c| banned(c));
+        if let Some(path) = resolved {
+            mention(import.at, &path, findings);
+        }
+    }
+    for used in source.syntax.path_uses() {
+        let Some(path) = resolver
+            .candidates(&used.segments)
+            .into_iter()
+            .find(|c| banned(c))
+        else {
             continue;
         };
-        if SHELLS.contains(&program.as_str()) {
-            findings.push(Finding::new(
-                "ST-03",
-                location,
-                format!("{} spawns the shell {program}", krate.name),
-            ));
-        } else if SANDBOX_PROGRAMS.contains(&program.as_str()) {
-            if krate.name != SANDBOX {
-                findings.push(Finding::new(
-                    "DEP-10",
-                    location,
-                    format!(
-                        "{} spawns {program}; only the sandbox crate may spawn docker or git",
-                        krate.name
-                    ),
-                ));
-            }
-        } else if AGENT_TOOLS.contains(&program.as_str()) {
-            if krate.name != RUNTIME {
-                findings.push(Finding::new(
-                    "DEP-10",
-                    location,
-                    format!(
-                        "{} spawns the agent tool {program}; only the runtime crate may",
-                        krate.name
-                    ),
-                ));
-            }
-        } else {
+        mention(used.at, &path, findings);
+        if !ends_with(&path, &["Command", "new"]) {
+            continue;
+        }
+        let program = source
+            .syntax
+            .tokens
+            .get(used.next + 1)
+            .filter(|t| t.kind == Kind::Str && source.syntax.is_punct(used.next, "("));
+        program_rules(
+            scans,
+            krate,
+            source.location(used.at),
+            program.map(|t| program_name(&t.text)),
+            findings,
+        );
+    }
+}
+
+/// DEP-10 and ST-03 for one `Command::new` call. `program` is `None` when the argument is not a
+/// string literal.
+fn program_rules(
+    scans: &SourceScans,
+    krate: &Scanned,
+    location: String,
+    program: Option<String>,
+    findings: &mut Vec<Finding>,
+) {
+    let rule = &scans.dep_10;
+    let own = rule.programs.iter().find(|p| p.krate == krate.name);
+    let Some(program) = program else {
+        if own.is_none() {
             findings.push(Finding::new(
                 "DEP-10",
                 location,
-                format!("{} spawns {program}, which is not an allowed program (docker and git in sandbox, agent tools in runtime)", krate.name),
+                format!("{} spawns a program that is not a string literal, so the allowed-program rule cannot be checked", krate.name),
             ));
         }
+        return;
+    };
+    if rule.shells.contains(&program) {
+        findings.push(Finding::new(
+            "ST-03",
+            location,
+            format!("{} spawns the shell {program}", krate.name),
+        ));
+    } else if own.is_some_and(|o| o.programs.contains(&program)) {
+        // The crate owns this program.
+    } else if let Some(owner) = rule.programs.iter().find(|p| p.programs.contains(&program)) {
+        findings.push(Finding::new(
+            "DEP-10",
+            location,
+            format!(
+                "{} spawns {program}; only the {} crate may spawn {}",
+                krate.name,
+                owner.krate,
+                owner.programs.join(" or ")
+            ),
+        ));
+    } else {
+        let allowed: Vec<String> = rule
+            .programs
+            .iter()
+            .map(|p| format!("{} in {}", p.programs.join(" and "), p.krate))
+            .collect();
+        findings.push(Finding::new(
+            "DEP-10",
+            location,
+            format!(
+                "{} spawns {program}, which is not an allowed program ({})",
+                krate.name,
+                allowed.join(", ")
+            ),
+        ));
     }
-}
-
-struct Spawn {
-    at: usize,
-    /// The program name, lower case, without directory or `.exe`. `None` when the argument is
-    /// not a string literal.
-    program: Option<String>,
-}
-
-/// Calls of `Command::new` that spawn a process. A `Command` from another crate, such as a
-/// command line parser, is not a spawn.
-fn spawn_calls(source: &Source) -> Vec<Spawn> {
-    let text = &source.with_strings;
-    let imports_process_command =
-        text.contains("process::Command") || process_brace_import_has_command(text);
-    let mut spawns = Vec::new();
-    for (at, _) in text.match_indices("Command::new") {
-        let qualified = text[..at].ends_with("process::");
-        let standalone = at == 0 || !is_ident(text.as_bytes()[at - 1]);
-        if !(standalone && (qualified || imports_process_command)) {
-            continue;
-        }
-        let rest = text[at + "Command::new".len()..].trim_start();
-        let Some(argument) = rest.strip_prefix('(') else {
-            continue;
-        };
-        spawns.push(Spawn {
-            at,
-            program: string_literal_at_start(argument.trim_start()).map(|p| program_name(&p)),
-        });
-    }
-    spawns
-}
-
-/// True for `use std::process::{Child, Command};`.
-fn process_brace_import_has_command(text: &str) -> bool {
-    text.match_indices("process::{").any(|(at, found)| {
-        text[at + found.len()..]
-            .split('}')
-            .next()
-            .is_some_and(|list| !find_word(list, "Command").is_empty())
-    })
-}
-
-fn string_literal_at_start(text: &str) -> Option<String> {
-    let body = text.strip_prefix('"')?;
-    let mut value = String::new();
-    let mut chars = body.chars();
-    while let Some(c) = chars.next() {
-        match c {
-            '"' => return Some(value),
-            '\\' => value.extend(chars.next()),
-            other => value.push(other),
-        }
-    }
-    None
 }
 
 fn program_name(literal: &str) -> String {
@@ -376,13 +379,17 @@ fn looks_like_a_mac(name: &str) -> bool {
 // ST-04
 
 /// Dangerous container flags appear only in the posture verifier's deny list: a file or
-/// directory whose name starts with `posture`, under the sandbox crate's `src`.
+/// directory whose name starts with the verifier prefix, under the verifier crate's `src`.
 fn container_flags_only_in_the_posture_verifier(
+    scans: &SourceScans,
     krate: &Scanned,
     source: &Source,
     findings: &mut Vec<Finding>,
 ) {
-    if krate.name == SANDBOX && is_posture_verifier(krate, source) {
+    let rule = &scans.st_04;
+    if krate.name == rule.verifier_crate
+        && is_posture_verifier(rule.verifier_prefix.as_str(), krate, source)
+    {
         return;
     }
     let text = &source.with_strings;
@@ -393,13 +400,13 @@ fn container_flags_only_in_the_posture_verifier(
             format!("{} contains {what:?}; dangerous container flags may appear only in the posture verifier's deny list", krate.name),
         ));
     };
-    for needle in DANGEROUS_STRINGS {
-        for (at, _) in text.match_indices(needle) {
+    for needle in &rule.dangerous_strings {
+        for (at, _) in text.match_indices(needle.as_str()) {
             report(at, needle);
         }
     }
-    for flag in HOST_NAMESPACE_FLAGS {
-        for (at, _) in text.match_indices(flag) {
+    for flag in &rule.host_namespace_flags {
+        for (at, _) in text.match_indices(flag.as_str()) {
             let after = &text[at + flag.len()..];
             let value = after.trim_start_matches([' ', '\t', '\n', '=', '"', '\'', ',']);
             let is_host =
@@ -411,26 +418,27 @@ fn container_flags_only_in_the_posture_verifier(
     }
 }
 
-fn is_posture_verifier(krate: &Scanned, source: &Source) -> bool {
-    let prefix = format!("{}/src/", krate.dir);
+fn is_posture_verifier(prefix: &str, krate: &Scanned, source: &Source) -> bool {
+    let src = format!("{}/src/", krate.dir);
     source
         .relative
-        .strip_prefix(&prefix)
-        .is_some_and(|inside| inside.split('/').any(|part| part.starts_with("posture")))
+        .strip_prefix(&src)
+        .is_some_and(|inside| inside.split('/').any(|part| part.starts_with(prefix)))
 }
 
 // ---------------------------------------------------------------------------------------------
 // ST-05
 
-/// No function, route or workflow file named merge, deploy or release publish. The factory opens
-/// draft pull requests and a human merges, so no such path exists in this release. Reading the
-/// merged state of a pull request is fine.
-fn no_merge_or_deploy_path(source: &Source, findings: &mut Vec<Finding>) {
+/// No function, route or workflow file named merge, deploy or release publish. The factory
+/// opens draft pull requests and a human merges, so no such path exists in this release.
+/// Reading the merged state of a pull request is fine.
+fn no_merge_or_deploy_path(scans: &SourceScans, source: &Source, findings: &mut Vec<Finding>) {
+    let rule = &scans.st_05;
     for at in find_word(&source.code, "fn") {
         let Some((name_at, name)) = next_ident(&source.code, at + 2) else {
             continue;
         };
-        if is_merge_or_deploy_name(name) {
+        if is_merge_or_deploy_name(rule, name) {
             findings.push(Finding::new(
                 "ST-05",
                 source.location(name_at),
@@ -439,7 +447,11 @@ fn no_merge_or_deploy_path(source: &Source, findings: &mut Vec<Finding>) {
         }
     }
     for (at, literal) in string_literals(source) {
-        if literal.contains('/') && literal.split('/').any(is_merge_or_deploy_segment) {
+        if literal.contains('/')
+            && literal
+                .split('/')
+                .any(|segment| is_merge_or_deploy_segment(rule, segment))
+        {
             findings.push(Finding::new(
                 "ST-05",
                 source.location(at),
@@ -449,17 +461,16 @@ fn no_merge_or_deploy_path(source: &Source, findings: &mut Vec<Finding>) {
     }
 }
 
-fn is_merge_or_deploy_name(name: &str) -> bool {
-    ["merge", "deploy"]
+fn is_merge_or_deploy_name(rule: &crate::source_scans::St05, name: &str) -> bool {
+    rule.verbs
         .iter()
-        .any(|verb| name == *verb || name.starts_with(&format!("{verb}_")))
-        || name.contains("publish_release")
-        || name.contains("release_publish")
+        .any(|verb| name == verb || name.starts_with(&format!("{verb}_")))
+        || rule.fragments.iter().any(|f| name.contains(f.as_str()))
 }
 
-fn is_merge_or_deploy_segment(segment: &str) -> bool {
+fn is_merge_or_deploy_segment(rule: &crate::source_scans::St05, segment: &str) -> bool {
     let segment = segment.split('?').next().unwrap_or_default();
-    matches!(segment, "merge" | "merges" | "deploy" | "deployments")
+    rule.route_segments.iter().any(|s| s == segment)
 }
 
 /// String literals with the offset of their opening quote. The `code` view keeps the quotes and
@@ -478,50 +489,165 @@ fn string_literals(source: &Source) -> Vec<(usize, String)> {
 // ST-09
 
 /// In the crates that handle workspace content, reading the filesystem is allowed only inside
-/// the ingestion module (`workspace/` in the sandbox crate).
+/// the ingestion module (`workspace/` in the sandbox crate). A call is found through its
+/// resolved path, so `use std::fs as f; f::read(..)` and `use std::fs::read; read(..)` count.
 fn workspace_reads_go_through_ingestion(
+    scans: &SourceScans,
+    krate: &Scanned,
+    source: &Source,
+    resolver: &Resolver,
+    findings: &mut Vec<Finding>,
+) {
+    let rule = &scans.st_09;
+    if !rule.crates.contains(&krate.name) {
+        return;
+    }
+    if krate.name == rule.ingestion_crate
+        && source
+            .relative
+            .starts_with(&format!("{}/{}", krate.dir, rule.ingestion_dir))
+    {
+        return;
+    }
+    let message = |call: &str| {
+        format!(
+            "{} reads the filesystem with {}; every read of a workspace or output path goes through crates/{}/{}",
+            krate.name,
+            call.trim_end_matches('(').trim_start_matches('.'),
+            rule.ingestion_crate,
+            rule.ingestion_dir
+        )
+    };
+    for used in source.syntax.path_uses() {
+        if !source.syntax.is_punct(used.next, "(") {
+            continue;
+        }
+        let candidates = resolver.candidates(&used.segments);
+        for call in &rule.calls {
+            let wanted: Vec<&str> = call.trim_end_matches('(').split("::").collect();
+            if candidates.iter().any(|c| ends_with(c, &wanted)) {
+                findings.push(Finding::new(
+                    "ST-09",
+                    source.location(used.at),
+                    message(call),
+                ));
+            }
+        }
+    }
+    let code = &source.code;
+    for call in &rule.methods {
+        for (at, _) in code.match_indices(call.as_str()) {
+            findings.push(Finding::new("ST-09", source.location(at), message(call)));
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------------------------
+// ST-13 and ST-14
+
+/// A constructor that only some crates may call: `TenantScope::new(..)` as a call, or
+/// `ResolvedPrincipal { .. }` as a struct literal. The type's own definition and its `impl`
+/// blocks are not a use.
+fn constructors_only_where_allowed(
+    scans: &SourceScans,
+    krate: &Scanned,
+    source: &Source,
+    resolver: &Resolver,
+    findings: &mut Vec<Finding>,
+) {
+    for rule in &scans.st_13 {
+        if rule.allowed_crates.contains(&krate.name) {
+            continue;
+        }
+        let wanted: Vec<&str> = rule.name.split("::").collect();
+        let is_call = wanted.len() > 1;
+        for used in source.syntax.path_uses() {
+            let matches = resolver
+                .candidates(&used.segments)
+                .iter()
+                .any(|c| ends_with(c, &wanted));
+            let syntax = &source.syntax;
+            let constructs = if is_call {
+                syntax.is_punct(used.next, "(")
+            } else {
+                // A struct literal. The name after `struct`, `impl`, `for` and similar words, or
+                // after `->`, is a declaration or a return type, not a literal.
+                let before = syntax.tokens.iter().rposition(|t| t.start < used.at);
+                let declaration = before.is_some_and(|b| {
+                    let t = &syntax.tokens[b];
+                    (t.kind == Kind::Ident
+                        && matches!(
+                            t.text.as_str(),
+                            "struct"
+                                | "impl"
+                                | "for"
+                                | "enum"
+                                | "trait"
+                                | "union"
+                                | "use"
+                                | "type"
+                                | "mod"
+                                | "dyn"
+                        ))
+                        || (t.kind == Kind::Punct
+                            && t.text == ">"
+                            && b > 0
+                            && syntax.is_punct(b - 1, "-"))
+                });
+                syntax.is_punct(used.next, "{") && !declaration
+            };
+            if matches && constructs {
+                findings.push(Finding::new(
+                    "ST-13",
+                    source.location(used.at),
+                    format!(
+                        "{} constructs {}; only {} may",
+                        krate.name,
+                        rule.name,
+                        rule.allowed_crates.join(", ")
+                    ),
+                ));
+            }
+        }
+    }
+}
+
+/// The workflow crate does not mention the metering operations. The engine reads usage through
+/// the ledger, and only the broker meters.
+fn no_metering_in_workflow(
+    scans: &SourceScans,
     krate: &Scanned,
     source: &Source,
     findings: &mut Vec<Finding>,
 ) {
-    if !WORKSPACE_READERS.contains(&krate.name.as_str()) {
+    let rule = &scans.st_14;
+    if krate.name != rule.krate {
         return;
     }
-    if krate.name == SANDBOX
-        && source
-            .relative
-            .starts_with(&format!("{}/{INGESTION_DIR}", krate.dir))
-    {
-        return;
-    }
-    let code = &source.code;
-    let calls = FS_READ_CALLS.iter().flat_map(|call| {
-        code.match_indices(call)
-            .filter(|(at, _)| *at == 0 || !is_ident(code.as_bytes()[at - 1]))
-            .map(|(at, _)| (at, *call))
-    });
-    let methods = FS_READ_METHODS
-        .iter()
-        .flat_map(|call| code.match_indices(call).map(|(at, _)| (at, *call)));
-    for (at, call) in calls.chain(methods) {
-        findings.push(Finding::new(
-            "ST-09",
-            source.location(at),
-            format!(
-                "{} reads the filesystem with {}; every read of a workspace or output path goes through crates/sandbox/{INGESTION_DIR}",
-                krate.name,
-                call.trim_end_matches('(').trim_start_matches('.')
-            ),
-        ));
+    for name in &rule.names {
+        for at in find_word(&source.code, name) {
+            findings.push(Finding::new(
+                "ST-14",
+                source.location(at),
+                format!(
+                    "{} mentions {name}; the engine does not touch metering",
+                    krate.name
+                ),
+            ));
+        }
     }
 }
 
 // ---------------------------------------------------------------------------------------------
 // Checks over the whole repository tree
 
-fn tree_checks(root: &Path, findings: &mut Vec<Finding>) -> Result<(), String> {
+fn tree_checks(
+    scans: &SourceScans,
+    root: &Path,
+    findings: &mut Vec<Finding>,
+) -> Result<(), String> {
     let mut files = Vec::new();
-    walk(root, root, &mut files)?;
+    walk(scans, root, root, &mut files)?;
     for relative in files {
         let path = root.join(&relative);
         if relative.starts_with(".github/workflows/") {
@@ -530,9 +656,11 @@ fn tree_checks(root: &Path, findings: &mut Vec<Finding>) -> Result<(), String> {
                 .next()
                 .unwrap_or_default()
                 .to_ascii_lowercase();
-            if ["deploy", "merge", "publish"]
+            if scans
+                .st_05
+                .workflow_file_words
                 .iter()
-                .any(|word| name.contains(word))
+                .any(|word| name.contains(word.as_str()))
             {
                 findings.push(Finding::new(
                     "ST-05",
@@ -558,13 +686,15 @@ fn tree_checks(root: &Path, findings: &mut Vec<Finding>) -> Result<(), String> {
     Ok(())
 }
 
-const SKIPPED_DIRECTORIES: [&str; 3] = [".git", "target", "node_modules"];
-const PROSE_EXTENSIONS: [&str; 4] = ["md", "txt", "rst", "lock"];
-
 /// Every file under `root` that may hold code or configuration, relative and sorted. Prose, build
 /// output, nested checkouts such as git worktrees, and xtask itself (whose tests contain the
 /// offending text on purpose) are left out.
-fn walk(root: &Path, dir: &Path, files: &mut Vec<String>) -> Result<(), String> {
+fn walk(
+    scans: &SourceScans,
+    root: &Path,
+    dir: &Path,
+    files: &mut Vec<String>,
+) -> Result<(), String> {
     let mut entries: Vec<_> = fs::read_dir(dir)
         .map_err(|e| format!("cannot read {}: {e}", dir.display()))?
         .filter_map(Result::ok)
@@ -585,14 +715,15 @@ fn walk(root: &Path, dir: &Path, files: &mut Vec<String>) -> Result<(), String> 
             // A directory with a `.git` entry of its own (a file for a git worktree, a directory
             // for a clone) is another checkout. Its sources are not part of this repository.
             let is_nested_checkout = path.join(".git").symlink_metadata().is_ok();
-            if !SKIPPED_DIRECTORIES.contains(&name) && !is_xtask && !is_nested_checkout {
-                walk(root, &path, files)?;
+            let skipped = scans.st_01.skipped_directories.iter().any(|d| d == name);
+            if !skipped && !is_xtask && !is_nested_checkout {
+                walk(scans, root, &path, files)?;
             }
         } else if kind.is_file() {
             let prose = path
                 .extension()
                 .and_then(|e| e.to_str())
-                .is_some_and(|e| PROSE_EXTENSIONS.contains(&e));
+                .is_some_and(|e| scans.st_01.prose_extensions.iter().any(|p| p == e));
             if !prose {
                 files.push(
                     path.strip_prefix(root)
@@ -655,17 +786,6 @@ mod tests {
     }
 
     #[test]
-    fn every_crate_these_scans_name_is_in_the_rules_file() {
-        let rules = real_rules();
-        for name in NAMED_CRATES {
-            assert!(
-                rules.crate_named(name).is_some(),
-                "{name} is not in crate-dependency-rules.json"
-            );
-        }
-    }
-
-    #[test]
     fn the_rules_file_still_says_what_the_scans_enforce() {
         let rules = real_rules();
         let dep_09 = rules.statement("DEP-09").expect("DEP-09");
@@ -693,12 +813,17 @@ mod tests {
     }
 
     #[test]
-    fn the_sandbox_crate_lives_where_the_ingestion_path_assumes() {
+    fn the_spawn_file_and_the_ingestion_path_are_inside_the_crates_that_own_them() {
         let rules = real_rules();
-        assert_eq!(
-            rules.crate_named(SANDBOX).map(|c| c.path.as_str()),
-            Some("crates/sandbox")
+        let scans = &rules.source_scans;
+        let sandbox = rules.crate_named("sandbox").expect("sandbox");
+        assert!(
+            scans
+                .dep_10
+                .spawn_file
+                .starts_with(&format!("{}/src/", sandbox.path))
         );
+        assert_eq!(scans.st_09.ingestion_crate, "sandbox");
     }
 
     #[test]
@@ -738,7 +863,8 @@ mod tests {
         std::os::unix::fs::symlink(dir.join("a/file.sh"), dir.join("a/link.sh")).unwrap();
 
         let mut files = Vec::new();
-        walk(&dir, &dir, &mut files).expect("a symbolic link loop must not break the walk");
+        walk(&real_rules().source_scans, &dir, &dir, &mut files)
+            .expect("a symbolic link loop must not break the walk");
         let _ = fs::remove_dir_all(&dir);
         assert_eq!(files, ["a/file.sh"]);
     }
@@ -747,14 +873,5 @@ mod tests {
     fn program_names_lose_their_directory_and_extension() {
         assert_eq!(program_name("/usr/bin/Git"), "git");
         assert_eq!(program_name("C:\\Windows\\cmd.exe"), "cmd");
-    }
-
-    #[test]
-    fn a_string_literal_argument_handles_escapes() {
-        assert_eq!(
-            string_literal_at_start("\"do\\\"cker\")").as_deref(),
-            Some("do\"cker")
-        );
-        assert_eq!(string_literal_at_start("program)"), None);
     }
 }

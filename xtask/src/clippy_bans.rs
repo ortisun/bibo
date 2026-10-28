@@ -9,11 +9,9 @@
 use crate::finding::Finding;
 use crate::metadata::Workspace;
 use crate::rules::{Role, Rules};
+use crate::syntax;
 use std::collections::BTreeSet;
 use std::fs;
-
-/// The crates whose `clippy.toml` must carry the ban list, as DEP-05 names them.
-pub const INNER_CRATES: [&str; 4] = ["domain", "ports", "workflow", "spec_adapter"];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum BanKind {
@@ -25,15 +23,25 @@ pub struct Ban {
     pub kind: BanKind,
     pub path: &'static str,
     pub reason: &'static str,
-    /// A statement that uses the banned item, for the scratch crate.
+    /// A statement that uses the banned item, for the scratch crate. Empty when the test cannot
+    /// build one (see `UNPROVEN`).
     pub snippet: &'static str,
+    /// True when the path starts in a crate that not every inner crate depends on (`tokio`,
+    /// `time`, `uuid`), or in a feature that may be off. The rendered entry then carries
+    /// `allow-invalid = true`; without it clippy prints a warning for every run in a crate where
+    /// the path does not resolve.
+    pub optional_path: bool,
 }
 
 const CLOCK: &str = "Take the time from the Clock port.";
 const FILES: &str = "The inner crates do no file I/O. Reach files through a port.";
 const NETWORK: &str =
     "The inner crates open no network connection. Reach the network through a port.";
-const PROCESS: &str = "The inner crates start no process. Only the sandbox and runtime crates do.";
+const PROCESS: &str = "The inner crates start no process. Only the sandbox crate does.";
+const ENVIRONMENT: &str =
+    "The inner crates do not read or change the process environment. Pass the value in.";
+const IDENTIFIERS: &str =
+    "The inner crates make no identifier. Take one from the IdGenerator port.";
 
 const fn method(path: &'static str, reason: &'static str, snippet: &'static str) -> Ban {
     Ban {
@@ -41,6 +49,7 @@ const fn method(path: &'static str, reason: &'static str, snippet: &'static str)
         path,
         reason,
         snippet,
+        optional_path: false,
     }
 }
 
@@ -50,14 +59,48 @@ const fn type_(path: &'static str, reason: &'static str, snippet: &'static str) 
         path,
         reason,
         snippet,
+        optional_path: false,
     }
 }
 
-/// The ban list for `domain`, `ports`, `workflow` and `spec_adapter`. Only std paths, so they
-/// resolve in every crate whatever its dependencies. `uuid::Uuid::new_v4`, `Uuid::now_v7` and
-/// `time::OffsetDateTime::now_utc` fire only in a crate that enables the matching feature, so a
-/// crate that uses them adds them to its own file.
+/// A method that lives in a crate or behind a feature that some inner crates do not have.
+const fn optional_method(path: &'static str, reason: &'static str, snippet: &'static str) -> Ban {
+    Ban {
+        optional_path: true,
+        ..method(path, reason, snippet)
+    }
+}
+
+const fn optional_type(path: &'static str, reason: &'static str, snippet: &'static str) -> Ban {
+    Ban {
+        optional_path: true,
+        ..type_(path, reason, snippet)
+    }
+}
+
+/// Bans whose scratch snippet cannot be built, with the reason. The test lists them so the gap
+/// is visible: each is spelled from the crate's documentation and source, and a misspelling
+/// would ban nothing without a diagnostic.
+pub const UNPROVEN: &[(&str, &str)] = &[
+    (
+        "time::OffsetDateTime::now_local",
+        "needs the `local-offset` feature, which needs the `num_threads` crate; it is not in the offline registry cache",
+    ),
+    (
+        "uuid::Uuid::new_v1",
+        "needs the `v1` feature, which needs the `atomic` crate; it is not in the offline registry cache",
+    ),
+    ("uuid::Uuid::now_v1", "same as new_v1"),
+    ("uuid::Uuid::new_v6", "same as new_v1"),
+    ("uuid::Uuid::now_v6", "same as new_v1"),
+];
+
+/// The ban list for `domain`, `ports`, `workflow` and `spec_adapter`. The std paths resolve in
+/// every crate. The `tokio`, `time` and `uuid` paths fire only where the crate and the feature
+/// exist, and a crate where they do not simply has nothing to ban. The paths of `Path` cover a
+/// `PathBuf` receiver too: the method is called through `Deref`, and the test shows it fires.
 pub const BANS: &[Ban] = &[
+    // The clock.
     method(
         "std::time::SystemTime::now",
         CLOCK,
@@ -73,6 +116,73 @@ pub const BANS: &[Ban] = &[
         CLOCK,
         "std::thread::sleep(std::time::Duration::from_millis(1));",
     ),
+    optional_method(
+        "time::OffsetDateTime::now_utc",
+        CLOCK,
+        "let _ = time::OffsetDateTime::now_utc();",
+    ),
+    optional_method("time::OffsetDateTime::now_local", CLOCK, ""),
+    optional_method(
+        "tokio::time::sleep",
+        CLOCK,
+        "let _ = tokio::time::sleep(std::time::Duration::from_millis(1));",
+    ),
+    optional_method(
+        "tokio::time::sleep_until",
+        CLOCK,
+        "let _ = tokio::time::sleep_until(unimplemented!());",
+    ),
+    optional_method(
+        "tokio::time::timeout",
+        CLOCK,
+        "let _ = tokio::time::timeout(std::time::Duration::from_millis(1), async {});",
+    ),
+    optional_method(
+        "tokio::time::timeout_at",
+        CLOCK,
+        "let _ = tokio::time::timeout_at(unimplemented!(), async {});",
+    ),
+    optional_method(
+        "tokio::time::interval",
+        CLOCK,
+        "let _ = tokio::time::interval(std::time::Duration::from_millis(1));",
+    ),
+    optional_method(
+        "tokio::time::interval_at",
+        CLOCK,
+        "let _ = tokio::time::interval_at(unimplemented!(), std::time::Duration::from_millis(1));",
+    ),
+    optional_method(
+        "tokio::time::Instant::now",
+        CLOCK,
+        "let _ = tokio::time::Instant::now();",
+    ),
+    // Identifiers.
+    optional_method(
+        "uuid::Uuid::new_v4",
+        IDENTIFIERS,
+        "let _ = uuid::Uuid::new_v4();",
+    ),
+    optional_method(
+        "uuid::Uuid::now_v7",
+        IDENTIFIERS,
+        "let _ = uuid::Uuid::now_v7();",
+    ),
+    optional_method(
+        "uuid::Uuid::new_v7",
+        IDENTIFIERS,
+        "let _ = uuid::Uuid::new_v7(unimplemented!());",
+    ),
+    optional_method(
+        "uuid::Uuid::new_v8",
+        IDENTIFIERS,
+        "let _ = uuid::Uuid::new_v8([0; 16]);",
+    ),
+    optional_method("uuid::Uuid::new_v1", IDENTIFIERS, ""),
+    optional_method("uuid::Uuid::now_v1", IDENTIFIERS, ""),
+    optional_method("uuid::Uuid::new_v6", IDENTIFIERS, ""),
+    optional_method("uuid::Uuid::now_v6", IDENTIFIERS, ""),
+    // The file system.
     method("std::fs::read", FILES, "let _ = std::fs::read(\"x\");"),
     method(
         "std::fs::read_to_string",
@@ -151,9 +261,154 @@ pub const BANS: &[Ban] = &[
         "let _ = std::fs::create_dir_all(\"x\");",
     ),
     method(
+        "std::path::Path::exists",
+        FILES,
+        "let _ = std::path::Path::new(\"x\").exists();",
+    ),
+    method(
+        "std::path::Path::try_exists",
+        FILES,
+        "let _ = std::path::Path::new(\"x\").try_exists();",
+    ),
+    method(
+        "std::path::Path::is_file",
+        FILES,
+        "let _ = std::path::Path::new(\"x\").is_file();",
+    ),
+    method(
+        "std::path::Path::is_dir",
+        FILES,
+        "let _ = std::path::Path::new(\"x\").is_dir();",
+    ),
+    method(
+        "std::path::Path::read_dir",
+        FILES,
+        "let _ = std::path::Path::new(\"x\").read_dir();",
+    ),
+    method(
+        "std::path::Path::metadata",
+        FILES,
+        "let _ = std::path::Path::new(\"x\").metadata();",
+    ),
+    method(
+        "std::path::Path::symlink_metadata",
+        FILES,
+        "let _ = std::path::Path::new(\"x\").symlink_metadata();",
+    ),
+    method(
+        "std::path::Path::canonicalize",
+        FILES,
+        "let _ = std::path::Path::new(\"x\").canonicalize();",
+    ),
+    method(
+        "std::path::Path::read_link",
+        FILES,
+        "let _ = std::path::Path::new(\"x\").read_link();",
+    ),
+    optional_method("tokio::fs::read", FILES, "let _ = tokio::fs::read(\"x\");"),
+    optional_method(
+        "tokio::fs::read_to_string",
+        FILES,
+        "let _ = tokio::fs::read_to_string(\"x\");",
+    ),
+    optional_method(
+        "tokio::fs::write",
+        FILES,
+        "let _ = tokio::fs::write(\"x\", \"y\");",
+    ),
+    optional_method(
+        "tokio::fs::read_dir",
+        FILES,
+        "let _ = tokio::fs::read_dir(\"x\");",
+    ),
+    optional_method(
+        "tokio::fs::metadata",
+        FILES,
+        "let _ = tokio::fs::metadata(\"x\");",
+    ),
+    optional_method(
+        "tokio::fs::try_exists",
+        FILES,
+        "let _ = tokio::fs::try_exists(\"x\");",
+    ),
+    optional_method(
+        "tokio::fs::canonicalize",
+        FILES,
+        "let _ = tokio::fs::canonicalize(\"x\");",
+    ),
+    optional_method(
+        "tokio::fs::remove_file",
+        FILES,
+        "let _ = tokio::fs::remove_file(\"x\");",
+    ),
+    optional_method(
+        "tokio::fs::create_dir_all",
+        FILES,
+        "let _ = tokio::fs::create_dir_all(\"x\");",
+    ),
+    // The environment.
+    method(
+        "std::env::var",
+        ENVIRONMENT,
+        "let _ = std::env::var(\"x\");",
+    ),
+    method(
+        "std::env::var_os",
+        ENVIRONMENT,
+        "let _ = std::env::var_os(\"x\");",
+    ),
+    method("std::env::vars", ENVIRONMENT, "let _ = std::env::vars();"),
+    method(
+        "std::env::vars_os",
+        ENVIRONMENT,
+        "let _ = std::env::vars_os();",
+    ),
+    method(
+        "std::env::set_var",
+        ENVIRONMENT,
+        "unsafe { std::env::set_var(\"x\", \"y\") };",
+    ),
+    method(
+        "std::env::remove_var",
+        ENVIRONMENT,
+        "unsafe { std::env::remove_var(\"x\") };",
+    ),
+    method(
+        "std::env::current_dir",
+        ENVIRONMENT,
+        "let _ = std::env::current_dir();",
+    ),
+    method(
+        "std::env::current_exe",
+        ENVIRONMENT,
+        "let _ = std::env::current_exe();",
+    ),
+    method(
+        "std::env::temp_dir",
+        ENVIRONMENT,
+        "let _ = std::env::temp_dir();",
+    ),
+    // The network.
+    method(
+        "std::net::ToSocketAddrs::to_socket_addrs",
+        NETWORK,
+        "let _ = std::net::ToSocketAddrs::to_socket_addrs(\"localhost:80\");",
+    ),
+    optional_method(
+        "tokio::net::lookup_host",
+        NETWORK,
+        "let _ = tokio::net::lookup_host(\"localhost:80\");",
+    ),
+    // Processes.
+    method(
         "std::process::Command::new",
         PROCESS,
         "let _ = std::process::Command::new(\"x\");",
+    ),
+    optional_method(
+        "tokio::process::Command::new",
+        PROCESS,
+        "let _ = tokio::process::Command::new(\"x\");",
     ),
     type_(
         "std::fs::File",
@@ -164,6 +419,16 @@ pub const BANS: &[Ban] = &[
         "std::fs::OpenOptions",
         FILES,
         "let _: Option<std::fs::OpenOptions> = None;",
+    ),
+    optional_type(
+        "tokio::fs::File",
+        FILES,
+        "let _: Option<tokio::fs::File> = None;",
+    ),
+    optional_type(
+        "tokio::fs::OpenOptions",
+        FILES,
+        "let _: Option<tokio::fs::OpenOptions> = None;",
     ),
     type_(
         "std::net::TcpStream",
@@ -181,9 +446,59 @@ pub const BANS: &[Ban] = &[
         "let _: Option<std::net::UdpSocket> = None;",
     ),
     type_(
+        "std::os::unix::net::UnixStream",
+        NETWORK,
+        "let _: Option<std::os::unix::net::UnixStream> = None;",
+    ),
+    type_(
+        "std::os::unix::net::UnixListener",
+        NETWORK,
+        "let _: Option<std::os::unix::net::UnixListener> = None;",
+    ),
+    type_(
+        "std::os::unix::net::UnixDatagram",
+        NETWORK,
+        "let _: Option<std::os::unix::net::UnixDatagram> = None;",
+    ),
+    optional_type(
+        "tokio::net::TcpStream",
+        NETWORK,
+        "let _: Option<tokio::net::TcpStream> = None;",
+    ),
+    optional_type(
+        "tokio::net::TcpListener",
+        NETWORK,
+        "let _: Option<tokio::net::TcpListener> = None;",
+    ),
+    optional_type(
+        "tokio::net::UdpSocket",
+        NETWORK,
+        "let _: Option<tokio::net::UdpSocket> = None;",
+    ),
+    optional_type(
+        "tokio::net::UnixStream",
+        NETWORK,
+        "let _: Option<tokio::net::UnixStream> = None;",
+    ),
+    optional_type(
+        "tokio::net::UnixListener",
+        NETWORK,
+        "let _: Option<tokio::net::UnixListener> = None;",
+    ),
+    optional_type(
+        "tokio::net::UnixDatagram",
+        NETWORK,
+        "let _: Option<tokio::net::UnixDatagram> = None;",
+    ),
+    type_(
         "std::process::Command",
         PROCESS,
         "let _: Option<std::process::Command> = None;",
+    ),
+    optional_type(
+        "tokio::process::Command",
+        PROCESS,
+        "let _: Option<tokio::process::Command> = None;",
     ),
 ];
 
@@ -201,8 +516,13 @@ pub fn render_clippy_toml() -> String {
     ] {
         out.push_str(&format!("\n{key} = [\n"));
         for ban in BANS.iter().filter(|b| b.kind == kind) {
+            let optional = if ban.optional_path {
+                ", allow-invalid = true"
+            } else {
+                ""
+            };
             out.push_str(&format!(
-                "    {{ path = \"{}\", reason = \"{}\" }},\n",
+                "    {{ path = \"{}\", reason = \"{}\"{optional} }},\n",
                 ban.path, ban.reason
             ));
         }
@@ -214,7 +534,8 @@ pub fn render_clippy_toml() -> String {
 /// The source of the scratch crate that proves the bans fire: a header line, then one function
 /// per ban on its own line, in the order of `BANS`.
 pub fn scratch_source() -> String {
-    let mut out = String::from("#![allow(unused)]\n");
+    let mut out =
+        String::from("#![allow(unused, unreachable_code, clippy::let_underscore_future)]\n");
     for (index, ban) in BANS.iter().enumerate() {
         out.push_str(&format!("pub fn ban_{index}() {{ {} }}\n", ban.snippet));
     }
@@ -228,7 +549,7 @@ pub fn check(rules: &Rules, ws: &Workspace) -> Vec<Finding> {
         let Some(Role::Library(rule)) = rules.role_of_package(&member.name) else {
             continue;
         };
-        if !INNER_CRATES.contains(&rule.name.as_str()) {
+        if !rules.source_scans.dep_05.inner_crates.contains(&rule.name) {
             continue;
         }
         let location = format!("{}/clippy.toml", ws.relative_dir(member));
@@ -272,6 +593,107 @@ pub fn check(rules: &Rules, ws: &Workspace) -> Vec<Finding> {
         }
     }
     findings
+}
+
+/// DEP-05, silencing: an `allow` or `expect` of one of the ban lints (or of `clippy::all` or
+/// `warnings`, which include them) in an inner crate. The attribute can sit in `src`, in
+/// `tests`, `benches` or `examples` (clippy runs on them with `--all-targets`), inside
+/// `cfg_attr`, or as a lint table in the manifests or the cargo configuration.
+pub fn check_silencing(rules: &Rules, ws: &Workspace) -> Result<Vec<Finding>, String> {
+    let forbidden = &rules.source_scans.dep_05.forbidden_lint_allows;
+    let mut findings = Vec::new();
+    let mut manifests = vec![(ws.root.join("Cargo.toml"), "Cargo.toml".to_string())];
+    for config in [".cargo/config.toml", ".cargo/config"] {
+        let path = ws.root.join(config);
+        if let Ok(text) = fs::read_to_string(&path) {
+            for lint in forbidden
+                .iter()
+                .filter(|l| l.starts_with("clippy::disallowed"))
+            {
+                if text.contains(lint.as_str())
+                    || text.contains(lint.trim_start_matches("clippy::"))
+                {
+                    findings.push(Finding::new(
+                        "DEP-05",
+                        config,
+                        format!("the cargo configuration mentions {lint}, which could turn a ban off for every crate"),
+                    ));
+                }
+            }
+        }
+    }
+    for member in &ws.members {
+        let Some(Role::Library(rule)) = rules.role_of_package(&member.name) else {
+            continue;
+        };
+        if !rules.source_scans.dep_05.inner_crates.contains(&rule.name) {
+            continue;
+        }
+        let relative = ws.relative_dir(member);
+        manifests.push((
+            member.dir.join("Cargo.toml"),
+            format!("{relative}/Cargo.toml"),
+        ));
+        let mut files = Vec::new();
+        rust_files_under(&member.dir, &mut files)?;
+        for file in files {
+            let text = fs::read_to_string(&file)
+                .map_err(|e| format!("cannot read {}: {e}", file.display()))?;
+            let shown = file
+                .strip_prefix(&ws.root)
+                .unwrap_or(&file)
+                .to_string_lossy()
+                .replace('\\', "/");
+            for attribute in syntax::lex(&text).lint_attributes() {
+                if forbidden.contains(&attribute.lint) {
+                    findings.push(Finding::new(
+                        "DEP-05",
+                        format!("{shown}:{}", line_of(&text, attribute.at)),
+                        format!(
+                            "{} has {}({}), which silences a DEP-05 ban; remove it and take the value through a port",
+                            rule.name, attribute.level, attribute.lint
+                        ),
+                    ));
+                }
+            }
+        }
+    }
+    for (path, shown) in manifests {
+        if let Ok(text) = fs::read_to_string(&path) {
+            for lint in crate::lints::silenced_lints(&text, forbidden) {
+                findings.push(Finding::new(
+                    "DEP-05",
+                    shown.clone(),
+                    format!("the manifest sets {lint} to allow, which silences a DEP-05 ban"),
+                ));
+            }
+        }
+    }
+    Ok(findings)
+}
+
+/// Every `.rs` file under `dir`, without following links and without `target`.
+fn rust_files_under(
+    dir: &std::path::Path,
+    files: &mut Vec<std::path::PathBuf>,
+) -> Result<(), String> {
+    let entries = fs::read_dir(dir).map_err(|e| format!("cannot read {}: {e}", dir.display()))?;
+    for entry in entries {
+        let path = entry
+            .map_err(|e| format!("cannot read {}: {e}", dir.display()))?
+            .path();
+        let Ok(kind) = fs::symlink_metadata(&path).map(|m| m.file_type()) else {
+            continue;
+        };
+        if kind.is_dir() {
+            if path.file_name().is_some_and(|n| n != "target") {
+                rust_files_under(&path, files)?;
+            }
+        } else if kind.is_file() && path.extension().is_some_and(|e| e == "rs") {
+            files.push(path);
+        }
+    }
+    Ok(())
 }
 
 /// The paths listed under `disallowed-methods` and `disallowed-types`. This reads the two
@@ -536,7 +958,7 @@ mod tests {
             .join("../docs/architecture/crate-dependency-rules.json");
         let rules = Rules::load(&path).expect("rules");
         let statement = rules.statement("DEP-05").expect("DEP-05");
-        for name in INNER_CRATES {
+        for name in &rules.source_scans.dep_05.inner_crates {
             assert!(
                 statement.contains(name),
                 "DEP-05 no longer names {name}: {statement}"
@@ -548,7 +970,7 @@ mod tests {
     #[test]
     fn every_snippet_fits_on_one_line_and_the_header_comes_first() {
         let source = scratch_source();
-        assert!(source.starts_with("#![allow(unused)]\n"));
+        assert!(source.starts_with("#![allow(unused, "));
         assert_eq!(source.lines().count(), BANS.len() + 1);
         assert!(
             BANS.iter()

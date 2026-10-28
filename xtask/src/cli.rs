@@ -5,6 +5,9 @@
 
 use crate::clippy_bans;
 use crate::finding::Finding;
+use crate::generated;
+use crate::invariants;
+use crate::links;
 use crate::lints;
 use crate::metadata;
 use crate::rules::Rules;
@@ -15,7 +18,16 @@ use std::path::{Path, PathBuf};
 
 const USAGE: &str = "usage:
   cargo xtask check-architecture [--manifest-path PATH] [--rules PATH]
+  cargo xtask check-links [--root PATH] [--rules PATH]
+  cargo xtask check-invariants [--root PATH] [--register PATH]
+  cargo xtask check-generated [--root PATH] [--rules PATH]
   cargo xtask clippy-toml
+
+check-links fails when a relative link in a Markdown file points at a file or heading that does
+not exist. check-invariants fails when an invariant of docs/architecture/state-machine.json is
+named by no test and no marker under crates/. check-generated runs the --check command of each
+generated file listed in the rules file (python3 is needed). All three exit with 0, 1 (a
+finding) or 2 (could not run).
 
 check-architecture fails when the rules file lists a crate or binary that the workspace lacks.
 Options:
@@ -33,6 +45,9 @@ pub fn run(args: &[String]) -> i32 {
             Ok(parsed) => check_architecture(&parsed),
             Err(message) => fail_to_run(&message),
         },
+        Some("check-links") => with_tool_args(&args[1..], check_links),
+        Some("check-invariants") => with_tool_args(&args[1..], check_invariants),
+        Some("check-generated") => with_tool_args(&args[1..], check_generated),
         Some("clippy-toml") => {
             print!("{}", clippy_bans::render_clippy_toml());
             0
@@ -48,6 +63,109 @@ pub fn run(args: &[String]) -> i32 {
 fn fail_to_run(message: &str) -> i32 {
     eprintln!("error: {message}\n\n{USAGE}");
     2
+}
+
+/// The options of the three small commands.
+struct ToolArgs {
+    root: PathBuf,
+    rules: PathBuf,
+    register: PathBuf,
+}
+
+fn with_tool_args(args: &[String], command: fn(&ToolArgs) -> i32) -> i32 {
+    let root = repository_root();
+    let mut parsed = ToolArgs {
+        rules: root.join("docs/architecture/crate-dependency-rules.json"),
+        register: root.join("docs/architecture/state-machine.json"),
+        root,
+    };
+    let mut rest = args.iter();
+    while let Some(arg) = rest.next() {
+        let target = match arg.as_str() {
+            "--root" => &mut parsed.root,
+            "--rules" => &mut parsed.rules,
+            "--register" => &mut parsed.register,
+            other => return fail_to_run(&format!("unknown option {other:?}")),
+        };
+        match value(&mut rest, arg) {
+            Ok(path) => *target = path,
+            Err(message) => return fail_to_run(&message),
+        }
+    }
+    command(&parsed)
+}
+
+fn print_findings(findings: &[Finding]) {
+    for finding in findings {
+        eprintln!("{finding}");
+    }
+}
+
+fn check_links(args: &ToolArgs) -> i32 {
+    let rules = match Rules::load(&args.rules) {
+        Ok(rules) => rules,
+        Err(message) => return fail_to_run(&message),
+    };
+    match links::check(&args.root, &rules.source_scans.st_01.skipped_directories) {
+        Err(message) => fail_to_run(&message),
+        Ok((files, links, findings)) if findings.is_empty() => {
+            println!(
+                "link check passed: {links} link(s) in {files} Markdown file(s), every relative one resolves"
+            );
+            0
+        }
+        Ok((files, links, findings)) => {
+            print_findings(&findings);
+            eprintln!(
+                "\n{} dead link(s) among {links} link(s) in {files} Markdown file(s)",
+                findings.len()
+            );
+            1
+        }
+    }
+}
+
+fn check_invariants(args: &ToolArgs) -> i32 {
+    match invariants::check(&args.root, &args.register) {
+        Err(message) => fail_to_run(&message),
+        Ok((ids, findings)) if findings.is_empty() => {
+            println!(
+                "invariant register check passed: all {} invariants are named",
+                ids.len()
+            );
+            0
+        }
+        Ok((ids, findings)) => {
+            print_findings(&findings);
+            eprintln!(
+                "\n{} of {} invariants have no test or marker that names them",
+                findings.len(),
+                ids.len()
+            );
+            1
+        }
+    }
+}
+
+fn check_generated(args: &ToolArgs) -> i32 {
+    let rules = match Rules::load(&args.rules) {
+        Ok(rules) => rules,
+        Err(message) => return fail_to_run(&message),
+    };
+    let mut stale = Vec::new();
+    let mut blocked = Vec::new();
+    for artifact in &rules.source_scans.generated_artifacts {
+        match generated::run(&args.root, artifact) {
+            generated::Outcome::Current => println!("current: {}", artifact.name),
+            generated::Outcome::Stale(finding) => stale.push(finding),
+            generated::Outcome::Blocked(message) => blocked.push(message),
+        }
+    }
+    print_findings(&stale);
+    if let Some(message) = blocked.first() {
+        return fail_to_run(&format!("BLOCKED, no evidence either way: {message}"));
+    }
+    i32::from(!stale.is_empty())
 }
 
 struct CheckArgs {
@@ -116,6 +234,10 @@ fn check_architecture(args: &CheckArgs) -> i32 {
     );
     findings.extend(lints::check(&rules, &workspace));
     findings.extend(clippy_bans::check(&rules, &workspace));
+    match clippy_bans::check_silencing(&rules, &workspace) {
+        Ok(more) => findings.extend(more),
+        Err(message) => return fail_to_run(&message),
+    }
     match static_checks::check(&rules, &workspace) {
         Ok(more) => findings.extend(more),
         Err(message) => return fail_to_run(&message),

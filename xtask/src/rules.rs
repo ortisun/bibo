@@ -1,6 +1,7 @@
 //! Reads `docs/architecture/crate-dependency-rules.json`, the single source of truth for which
 //! crate may depend on which. Nothing in this crate repeats those rules.
 
+use crate::source_scans::SourceScans;
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
@@ -15,6 +16,8 @@ pub struct Rules {
     /// The lint that DEP-06 relies on, read from that rule's `enforced_by` text, for example
     /// "workspace lint unsafe_code = forbid".
     pub workspace_lint: WorkspaceLint,
+    /// The parameters of the source scans (the `source_scans` section).
+    pub source_scans: SourceScans,
     statements: BTreeMap<String, String>,
 }
 
@@ -225,12 +228,23 @@ impl Rules {
             "rules file: rule DEP-06 must say \"workspace lint NAME = LEVEL\" in `enforced_by`"
                 .to_string()
         })?;
+        let source_scans = SourceScans::parse(&doc)?;
+        for named in &source_scans.named_crates {
+            let listed =
+                crates.iter().any(|c| &c.name == named) || apps.iter().any(|a| &a.name == named);
+            if !listed {
+                return Err(format!(
+                    "rules file: source_scans names the crate {named:?}, which is not in `crates` or `apps`"
+                ));
+            }
+        }
         Ok(Self {
             package_prefix,
             crates,
             apps,
             tooling,
             workspace_lint,
+            source_scans,
             statements,
         })
     }

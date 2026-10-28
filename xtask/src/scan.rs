@@ -4,6 +4,8 @@
 //! comments, test-only items and, for identifier scans, string contents. Blanking keeps every
 //! byte offset and newline where it was, so a hit maps straight to a line number.
 
+use crate::syntax::{self, Syntax};
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -78,7 +80,7 @@ fn blank(buffer: &mut [u8], start: usize, end: usize) {
 }
 
 /// The index just after a block comment that starts at `start`. Block comments nest.
-fn block_comment_end(bytes: &[u8], start: usize) -> usize {
+pub(crate) fn block_comment_end(bytes: &[u8], start: usize) -> usize {
     let mut depth = 0;
     let mut i = start;
     while i < bytes.len() {
@@ -159,7 +161,7 @@ fn raw_string_span(bytes: &[u8], at: usize) -> (usize, usize) {
 
 /// If the quote at `at` opens a character literal, the index just after its closing quote.
 /// A lifetime such as `'a` returns `None`.
-fn char_literal_end(source: &str, at: usize) -> Option<usize> {
+pub(crate) fn char_literal_end(source: &str, at: usize) -> Option<usize> {
     let bytes = source.as_bytes();
     match bytes.get(at + 1)? {
         b'\\' => {
@@ -177,38 +179,6 @@ fn char_literal_end(source: &str, at: usize) -> Option<usize> {
             (bytes.get(after) == Some(&b'\'')).then_some(after + 1)
         }
     }
-}
-
-/// Byte ranges of items marked `#[cfg(test)]`, found in the `code` view. An item ends at the
-/// closing brace of its body, or at the first semicolon outside brackets when it has none.
-pub fn test_spans(code: &str) -> Vec<(usize, usize)> {
-    const MARKER: &str = "#[cfg(test)]";
-    let bytes = code.as_bytes();
-    let mut spans = Vec::new();
-    let mut from = 0;
-    while let Some(found) = code[from..].find(MARKER) {
-        let start = from + found;
-        let end = item_end(bytes, start + MARKER.len());
-        spans.push((start, end));
-        from = end.max(start + MARKER.len());
-    }
-    spans
-}
-
-fn item_end(bytes: &[u8], from: usize) -> usize {
-    let mut depth = 0usize; // parentheses and square brackets
-    let mut i = from;
-    while i < bytes.len() {
-        match bytes[i] {
-            b'(' | b'[' => depth += 1,
-            b')' | b']' => depth = depth.saturating_sub(1),
-            b';' if depth == 0 => return i + 1,
-            b'{' if depth == 0 => return matching_brace(bytes, i),
-            _ => {}
-        }
-        i += 1;
-    }
-    bytes.len()
 }
 
 /// The index just after the brace that closes the one at `open`.
@@ -265,17 +235,22 @@ pub struct Source {
     pub relative: String,
     pub with_strings: String,
     pub code: String,
+    /// The tokens of the production text, for the scans that resolve imports and aliases.
+    pub syntax: Syntax,
 }
 
 impl Source {
-    /// Mask comments and strings, then blank the items marked `#[cfg(test)]`.
+    /// Mask comments and strings, then blank the items that exist only in test builds. Whether
+    /// an item is test-only is decided from its `cfg` attributes alone (see `syntax`).
     pub fn from_text(relative: &str, text: &str) -> Self {
         let masked = mask(text);
-        let spans = test_spans(&masked.code);
+        let (spans, _) = syntax::lex(text).test_ranges();
+        let production = blank_ranges(text, &spans);
         Self {
             relative: relative.to_string(),
             with_strings: blank_ranges(&masked.with_strings, &spans),
             code: blank_ranges(&masked.code, &spans),
+            syntax: syntax::lex(&production),
         }
     }
 
@@ -293,30 +268,148 @@ impl Source {
     }
 }
 
-/// The production Rust sources of one crate: `src/**/*.rs` and `build.rs`, without test code.
-/// Test code is a file under a `tests`, `benches` or `examples` directory, a file named
-/// `tests.rs`, `*_test.rs` or `*_tests.rs`, and an item marked `#[cfg(test)]`.
-pub fn production_sources(root: &Path, crate_dir: &Path) -> Result<Vec<Source>, String> {
-    let mut files = Vec::new();
+/// What the module tree says about one file.
+struct ParsedFile {
+    text: String,
+    /// The files that `mod x;` and `include!` pull in, with whether a `cfg` makes the pull
+    /// test-only.
+    children: Vec<(PathBuf, bool)>,
+    /// An inner `#![cfg(test)]` makes the whole file test code.
+    whole_file_is_test: bool,
+}
+
+/// The production Rust sources of one crate, without test code.
+///
+/// Test code is decided from `cfg` attributes and nothing else (review finding F-12): an item
+/// under `#[cfg(test)]` (see `syntax::Syntax::test_ranges`), and a file that is pulled in only
+/// by a `mod` declaration under such an attribute, or that starts with `#![cfg(test)]`. A file
+/// called `tests.rs` or `webhook_tests.rs`, or one under a `tests` directory inside `src`, is
+/// production code unless a `cfg(test)` module declares it, because Cargo compiles it into the
+/// library either way. A file in `src` that no module declares is scanned too: it is not
+/// compiled today, but an `include!` or a later `mod` line would bring it in.
+///
+/// The files outside `src` that production targets name (`[lib] path`, `[[bin]] path`) and the
+/// files that `#[path]` and `include!` point at are followed. The `tests`, `benches` and
+/// `examples` directories at the crate root are separate Cargo targets, not production code.
+pub fn production_sources(
+    root: &Path,
+    crate_dir: &Path,
+    target_roots: &[PathBuf],
+) -> Result<Vec<Source>, String> {
+    let mut found = Vec::new();
     let build = crate_dir.join("build.rs");
     if build.is_file() {
-        files.push(build);
+        found.push(build);
     }
-    collect_rust_files(&crate_dir.join("src"), &mut files)?;
-    files.sort();
+    collect_rust_files(&crate_dir.join("src"), &mut found)?;
+    let mut roots: Vec<PathBuf> = target_roots.to_vec();
+    roots.extend(found.iter().cloned());
 
-    let mut sources = Vec::new();
-    for file in files {
+    // Parse every file reachable from any candidate, once.
+    let mut parsed: BTreeMap<PathBuf, ParsedFile> = BTreeMap::new();
+    let mut pending: Vec<PathBuf> = roots.iter().filter_map(|f| clean(f)).collect();
+    while let Some(file) = pending.pop() {
+        if parsed.contains_key(&file) {
+            continue;
+        }
         let text = fs::read_to_string(&file)
             .map_err(|e| format!("cannot read {}: {e}", file.display()))?;
+        let syntax = syntax::lex(&text);
+        let (_, whole_file_is_test) = syntax.test_ranges();
+        let is_target = target_roots
+            .iter()
+            .any(|t| clean(t).as_deref() == Some(&file));
+        let mut children = Vec::new();
+        for decl in syntax.mod_declarations() {
+            for child in module_files(&file, is_target, &decl) {
+                children.push((child, decl.test_only));
+            }
+        }
+        for include in syntax.includes() {
+            let dir = file.parent().unwrap_or(Path::new("."));
+            children.extend(clean(&dir.join(include)).map(|p| (p, false)));
+        }
+        pending.extend(children.iter().map(|(c, _)| c.clone()));
+        parsed.insert(
+            file,
+            ParsedFile {
+                text,
+                children,
+                whole_file_is_test,
+            },
+        );
+    }
+
+    // Roots are the production targets and every file no module declares. From them follow the
+    // declarations that exist outside test builds.
+    let referenced: BTreeSet<&PathBuf> = parsed
+        .values()
+        .flat_map(|f| f.children.iter().map(|(c, _)| c))
+        .collect();
+    let mut production: BTreeSet<PathBuf> = BTreeSet::new();
+    let mut walk: Vec<PathBuf> = parsed
+        .keys()
+        .filter(|f| !referenced.contains(f))
+        .cloned()
+        .chain(target_roots.iter().filter_map(|t| clean(t)))
+        .collect();
+    while let Some(file) = walk.pop() {
+        let Some(info) = parsed.get(&file) else {
+            continue;
+        };
+        if info.whole_file_is_test || !production.insert(file) {
+            continue;
+        }
+        walk.extend(
+            info.children
+                .iter()
+                .filter(|(_, test)| !test)
+                .map(|(c, _)| c.clone()),
+        );
+    }
+
+    let mut sources = Vec::new();
+    for file in production {
         let relative = file
-            .strip_prefix(root)
+            .strip_prefix(clean(root).unwrap_or_else(|| root.to_path_buf()))
             .unwrap_or(&file)
             .to_string_lossy()
             .replace('\\', "/");
-        sources.push(Source::from_text(&relative, &text));
+        sources.push(Source::from_text(&relative, &parsed[&file].text));
     }
     Ok(sources)
+}
+
+fn clean(path: &Path) -> Option<PathBuf> {
+    path.canonicalize().ok()
+}
+
+/// The existing files that `mod name;` can mean in `file`. A file named `lib.rs`, `main.rs` or
+/// `mod.rs`, and any target root, keeps its children beside it; any other file `a/b.rs` keeps
+/// them in `a/b/`.
+fn module_files(file: &Path, is_target: bool, decl: &syntax::ModDeclaration) -> Vec<PathBuf> {
+    let dir = file.parent().unwrap_or(Path::new("."));
+    let stem = file
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or_default();
+    let owns_directory = is_target || matches!(stem, "lib" | "main" | "mod");
+    let mut base = if owns_directory {
+        dir.to_path_buf()
+    } else {
+        dir.join(stem)
+    };
+    for parent in &decl.inline_parents {
+        base.push(parent);
+    }
+    let candidates = match &decl.path_attribute {
+        Some(path) => vec![dir.join(path)],
+        None => vec![
+            base.join(format!("{}.rs", decl.name)),
+            base.join(&decl.name).join("mod.rs"),
+        ],
+    };
+    candidates.iter().filter_map(|c| clean(c)).collect()
 }
 
 fn collect_rust_files(dir: &Path, files: &mut Vec<PathBuf>) -> Result<(), String> {
@@ -342,18 +435,12 @@ fn collect_rust_files(dir: &Path, files: &mut Vec<PathBuf>) -> Result<(), String
             ));
         }
         if path.is_dir() {
-            if !matches!(name.as_str(), "tests" | "benches" | "examples") {
-                collect_rust_files(&path, files)?;
-            }
-        } else if name.ends_with(".rs") && !is_test_file_name(&name) {
+            collect_rust_files(&path, files)?;
+        } else if name.ends_with(".rs") {
             files.push(path);
         }
     }
     Ok(())
-}
-
-fn is_test_file_name(name: &str) -> bool {
-    name == "tests.rs" || name.ends_with("_test.rs") || name.ends_with("_tests.rs")
 }
 
 /// The identifier that follows `from`, after any whitespace, and the offset where it starts.
@@ -494,17 +581,20 @@ mod tests {
     fn a_cfg_test_module_is_found_with_its_nested_braces() {
         let code =
             "fn a() {}\n#[cfg(test)]\nmod tests {\n    fn t() { if true { } }\n}\nfn after() {}\n";
-        let spans = test_spans(code);
-        assert_eq!(spans.len(), 1);
-        let blanked = blank_ranges(code, &spans);
+        let blanked = without_test_items(code);
         assert!(!blanked.contains("fn t()"));
         assert!(blanked.contains("fn a() {}") && blanked.contains("fn after() {}"));
+    }
+
+    fn without_test_items(code: &str) -> String {
+        let (spans, _) = syntax::lex(code).test_ranges();
+        blank_ranges(code, &spans)
     }
 
     #[test]
     fn a_cfg_test_item_that_ends_in_a_semicolon_is_found() {
         let code = "#[cfg(test)]\nuse helper::thing;\nfn kept() {}\n";
-        let blanked = blank_ranges(code, &test_spans(code));
+        let blanked = without_test_items(code);
         assert!(!blanked.contains("helper"));
         assert!(blanked.contains("fn kept()"));
     }
@@ -512,7 +602,7 @@ mod tests {
     #[test]
     fn a_cfg_test_function_with_an_array_type_ends_at_its_body() {
         let code = "#[cfg(test)]\nfn t(a: [u8; 4]) { let _ = a; }\nfn kept() {}\n";
-        let blanked = blank_ranges(code, &test_spans(code));
+        let blanked = without_test_items(code);
         assert!(!blanked.contains("fn t"));
         assert!(blanked.contains("fn kept()"));
     }
@@ -520,8 +610,7 @@ mod tests {
     #[test]
     fn code_after_a_test_module_is_still_scanned() {
         let code = "#[cfg(test)]\nmod tests { fn x() {} }\nfn production() { danger(); }\n";
-        let blanked = blank_ranges(code, &test_spans(code));
-        assert!(blanked.contains("danger()"));
+        assert!(without_test_items(code).contains("danger()"));
     }
 
     #[test]
@@ -583,45 +672,141 @@ mod tests {
         fs::write(krate.join("src/lib.rs"), "pub fn real() {}\n").unwrap();
         fs::create_dir_all(dir.join("elsewhere")).unwrap();
         std::os::unix::fs::symlink(dir.join("elsewhere"), krate.join("src/hidden")).unwrap();
-        let result = production_sources(&dir, &krate);
+        let result = production_sources(&dir, &krate, &[]);
         let _ = fs::remove_dir_all(&dir);
         let error = result.err().expect("a directory link must be refused");
         assert!(error.contains("symbolic link"), "{error}");
     }
 
-    #[test]
-    fn production_sources_skip_test_files_and_directories() {
-        let dir = std::env::temp_dir().join(format!("xtask-scan-{}", std::process::id()));
+    /// Write `files` under a fresh crate directory and return the relative names of the
+    /// production sources found.
+    fn production_names(label: &str, files: &[(&str, &str)], targets: &[&str]) -> Vec<String> {
+        let dir = std::env::temp_dir().join(format!("xtask-scan-{label}-{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         let krate = dir.join("crates/k");
-        for (path, body) in [
-            ("src/lib.rs", "pub fn real() {}\n"),
-            ("src/deep/mod.rs", "pub fn deep() {}\n"),
-            ("src/tests.rs", "fn skipped() {}\n"),
-            ("src/thing_tests.rs", "fn skipped() {}\n"),
-            ("src/thing_test.rs", "fn skipped() {}\n"),
-            ("src/tests/helper.rs", "fn skipped() {}\n"),
-            ("tests/it.rs", "fn skipped() {}\n"),
-            ("benches/b.rs", "fn skipped() {}\n"),
-            ("examples/e.rs", "fn skipped() {}\n"),
-            ("build.rs", "fn main() {}\n"),
-            ("src/notes.txt", "not rust\n"),
-        ] {
+        for (path, body) in files {
             let path = krate.join(path);
             fs::create_dir_all(path.parent().unwrap()).unwrap();
             fs::write(path, body).unwrap();
         }
-        let sources = production_sources(&dir, &krate).unwrap();
-        let mut names: Vec<&str> = sources.iter().map(|s| s.relative.as_str()).collect();
+        let target_roots: Vec<PathBuf> = targets.iter().map(|t| krate.join(t)).collect();
+        let sources = production_sources(&dir, &krate, &target_roots).unwrap();
+        let _ = fs::remove_dir_all(&dir);
+        let mut names: Vec<String> = sources.iter().map(|s| s.relative.clone()).collect();
         names.sort_unstable();
+        names
+    }
+
+    #[test]
+    fn a_file_is_test_code_only_when_a_cfg_test_module_declares_it() {
+        let names = production_names(
+            "cfg",
+            &[
+                (
+                    "src/lib.rs",
+                    "mod real;\n#[cfg(test)]\nmod tests;\n#[cfg(test)]\nmod helper_tests;\n",
+                ),
+                ("src/real.rs", "pub fn real() {}\n"),
+                ("src/tests.rs", "mod nested;\nfn skipped() {}\n"),
+                ("src/tests/nested.rs", "fn skipped() {}\n"),
+                ("src/helper_tests.rs", "fn skipped() {}\n"),
+                ("tests/it.rs", "fn skipped() {}\n"),
+                ("benches/b.rs", "fn skipped() {}\n"),
+                ("examples/e.rs", "fn skipped() {}\n"),
+                ("build.rs", "fn main() {}\n"),
+                ("src/notes.txt", "not rust\n"),
+            ],
+            &[],
+        );
         assert_eq!(
             names,
             [
                 "crates/k/build.rs",
-                "crates/k/src/deep/mod.rs",
+                "crates/k/src/lib.rs",
+                "crates/k/src/real.rs"
+            ]
+        );
+    }
+
+    #[test]
+    fn files_named_like_tests_are_production_when_nothing_marks_them_test_only() {
+        let names = production_names(
+            "names",
+            &[
+                ("src/lib.rs", "mod webhook_tests;\nmod tests;\n"),
+                ("src/webhook_tests.rs", "pub fn m() {}\n"),
+                ("src/tests/mod.rs", "pub fn m() {}\n"),
+                ("src/thing_test.rs", "pub fn orphan() {}\n"),
+            ],
+            &[],
+        );
+        assert_eq!(
+            names,
+            [
+                "crates/k/src/lib.rs",
+                "crates/k/src/tests/mod.rs",
+                "crates/k/src/thing_test.rs",
+                "crates/k/src/webhook_tests.rs"
+            ]
+        );
+    }
+
+    #[test]
+    fn an_inner_cfg_test_attribute_makes_a_declared_file_test_only() {
+        let names = production_names(
+            "inner",
+            &[
+                ("src/lib.rs", "mod only_for_tests;\n"),
+                ("src/only_for_tests.rs", "#![cfg(test)]\nfn t() {}\n"),
+            ],
+            &[],
+        );
+        assert_eq!(names, ["crates/k/src/lib.rs"]);
+    }
+
+    #[test]
+    fn path_attributes_and_include_follow_files_outside_src() {
+        let names = production_names(
+            "path",
+            &[
+                (
+                    "src/lib.rs",
+                    "#[path = \"../shared/moved.rs\"]\nmod moved;\ninclude!(\"../generated.rs\");\n",
+                ),
+                ("shared/moved.rs", "pub fn m() {}\n"),
+                ("generated.rs", "pub fn g() {}\n"),
+                ("shared/unrelated.rs", "pub fn u() {}\n"),
+            ],
+            &[],
+        );
+        assert_eq!(
+            names,
+            [
+                "crates/k/generated.rs",
+                "crates/k/shared/moved.rs",
                 "crates/k/src/lib.rs"
             ]
         );
-        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_target_root_outside_src_is_scanned_with_its_modules() {
+        let names = production_names(
+            "target",
+            &[
+                ("src/lib.rs", ""),
+                ("other/entry.rs", "mod child;\n"),
+                ("other/child.rs", ""),
+            ],
+            &["other/entry.rs"],
+        );
+        assert_eq!(
+            names,
+            [
+                "crates/k/other/child.rs",
+                "crates/k/other/entry.rs",
+                "crates/k/src/lib.rs"
+            ]
+        );
     }
 }

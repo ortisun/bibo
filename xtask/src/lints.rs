@@ -51,6 +51,37 @@ pub fn check(rules: &Rules, ws: &Workspace) -> Vec<Finding> {
     findings
 }
 
+/// The lints in `forbidden` (written `clippy::name` or `name`) that a manifest sets to `allow`,
+/// in `[lints.clippy]`, `[lints.rust]`, the same tables under `[workspace.lints]`, or as a
+/// dotted key. A manifest can silence a lint for the whole crate without any attribute in the
+/// source, so the attribute scan alone would miss it.
+pub fn silenced_lints(manifest: &str, forbidden: &[String]) -> Vec<String> {
+    let mut found = Vec::new();
+    for (header, lines) in tables(manifest) {
+        let table = match header.as_str() {
+            "lints.clippy" | "workspace.lints.clippy" => Some("clippy::"),
+            "lints.rust" | "workspace.lints.rust" => Some(""),
+            _ => None,
+        };
+        for line in &lines {
+            let Some((key, value)) = key_value(line) else {
+                continue;
+            };
+            let key = key.trim_matches('"');
+            let full = match (table, key.split_once('.')) {
+                (Some(prefix), _) => format!("{prefix}{key}"),
+                (None, Some(("clippy", name))) => format!("clippy::{name}"),
+                (None, _) => key.to_string(),
+            };
+            let allows = value.contains("\"allow\"");
+            if allows && forbidden.contains(&full) {
+                found.push(full);
+            }
+        }
+    }
+    found
+}
+
 /// A manifest split into its tables. The first table has the header "" and holds the keys that
 /// come before any `[header]`.
 fn tables(manifest: &str) -> Vec<(String, Vec<String>)> {
@@ -119,6 +150,42 @@ pub fn root_sets_lint(manifest: &str, lint: &WorkspaceLint) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn bans() -> Vec<String> {
+        [
+            "clippy::disallowed_methods",
+            "clippy::disallowed_types",
+            "clippy::all",
+            "warnings",
+        ]
+        .map(String::from)
+        .to_vec()
+    }
+
+    #[test]
+    fn a_manifest_that_sets_a_ban_lint_to_allow_is_found_in_each_spelling() {
+        for manifest in [
+            "[lints.clippy]\ndisallowed_methods = \"allow\"\n",
+            "[workspace.lints.clippy]\ndisallowed_methods = { level = \"allow\", priority = 1 }\n",
+            "[lints]\nclippy.disallowed_methods = \"allow\"\n",
+            "[lints.rust]\nwarnings = \"allow\"\n",
+            "[workspace.lints.clippy]\nall = \"allow\"\n",
+        ] {
+            assert_eq!(silenced_lints(manifest, &bans()).len(), 1, "{manifest}");
+        }
+    }
+
+    #[test]
+    fn a_manifest_that_warns_or_denies_or_sets_other_lints_is_not_silencing() {
+        for manifest in [
+            "[workspace.lints.clippy]\nall = { level = \"warn\", priority = -1 }\ndbg_macro = \"warn\"\n",
+            "[lints.clippy]\ndisallowed_methods = \"deny\"\n",
+            "[lints.clippy]\ndead_code = \"allow\"\n",
+            "# [lints.clippy]\n# disallowed_methods = \"allow\"\n",
+        ] {
+            assert!(silenced_lints(manifest, &bans()).is_empty(), "{manifest}");
+        }
+    }
 
     fn unsafe_forbid() -> WorkspaceLint {
         WorkspaceLint {

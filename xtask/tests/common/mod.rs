@@ -17,6 +17,24 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 static NEXT_ID: AtomicUsize = AtomicUsize::new(0);
 
+/// The real rules file, parsed.
+pub fn real_rules() -> xtask::rules::Rules {
+    xtask::rules::Rules::load(&real_rules_path()).expect("the real rules file loads")
+}
+
+pub fn real_rules_path() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../docs/architecture/crate-dependency-rules.json")
+}
+
+/// The `source_scans` section of the real rules file. The fixtures run the real lists, so a
+/// fixture that passes proves the real data accepts it.
+fn real_source_scans() -> Value {
+    let text = fs::read_to_string(real_rules_path()).expect("read the real rules file");
+    let doc: Value = serde_json::from_str(&text).expect("the real rules file is JSON");
+    doc["source_scans"].clone()
+}
+
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 enum Kind {
     Normal,
@@ -209,9 +227,10 @@ impl Fixture {
                 crate_rule("observability", 2, "adapter", &[], &[], &[]),
                 crate_rule("testkit", 2, "test-support", &["domain", "ports"], &[], &["serde_json"]),
             ],
-            "apps": [app("api")],
+            "apps": [app("api"), app("worker")],
             "tooling": [{"name": "xtask", "path": "xtask", "slice": 0, "responsibility": "fixture"}],
             "rules": rule_list,
+            "source_scans": real_source_scans(),
             "deferred": []
         });
 
@@ -233,6 +252,7 @@ impl Fixture {
             fixture.add_member(&name, false);
         }
         fixture.add_member("api", true);
+        fixture.add_member("worker", true);
 
         fixture.add_external("serde_json", &[]);
         fixture.add_external(
@@ -272,6 +292,12 @@ impl Fixture {
             fixture.depend("api", lib);
         }
         fixture.dev_depend("api", "testkit");
+        // ST-07 reads the tables of the real conventions page.
+        let conventions = fs::read_to_string(
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../docs/observability/conventions.md"),
+        )
+        .expect("read the real conventions page");
+        fixture.file("docs/observability/conventions.md", &conventions);
         fixture
     }
 
@@ -300,6 +326,13 @@ impl Fixture {
     }
 
     fn add_external(&mut self, name: &str, features: &[(&str, &[&str])]) {
+        // A stub is a path package, which the source check refuses for anything but a listed
+        // exception. The tests for that check clear the list.
+        if let Some(list) = self.rules["source_scans"]["dep_04"]["path_exceptions"].as_array_mut()
+            && !list.iter().any(|v| v == name)
+        {
+            list.push(json!(name));
+        }
         self.externals.insert(
             name.to_string(),
             External {
@@ -586,7 +619,11 @@ impl Fixture {
 
     /// The four inner crates carry the ban list, as the rules file requires.
     fn write_clippy_tomls(&self) {
-        for name in xtask::clippy_bans::INNER_CRATES {
+        let inner = self.rules["source_scans"]["dep_05"]["inner_crates"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default();
+        for name in inner.iter().filter_map(Value::as_str) {
             if let Some(member) = self.members.get(name)
                 && !self.skip_clippy_toml.iter().any(|s| s == name)
             {

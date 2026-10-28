@@ -60,7 +60,9 @@ pub fn check(rules: &Rules, ws: &Workspace, options: Options) -> Vec<Finding> {
     for from in &known {
         if let Role::Library(rule) = from.role {
             external_crates_and_features(rule, from, ws, &mut findings);
+            resolved_features_stay_within_the_limits(rules, rule, from, ws, &mut findings);
         }
+        dependencies_come_from_the_registry(rules, from, ws, &mut findings);
     }
     findings
 }
@@ -295,16 +297,18 @@ fn only_binaries_wire_adapters(
     }
 }
 
-/// DEP-04: rings 0 and 1 and the application crates use only the external crates in
-/// `external_allow`, with only the listed features. Adapters, test support and dev-dependencies
-/// are outside this rule.
+/// DEP-04: every library crate (rings 0 and 1, application crates and adapters) uses only the
+/// external crates in `external_allow`, with only the listed features. Test support and
+/// dev-dependencies are outside this rule. Adapters were exempt until review finding F-12: their
+/// lists were read but never enforced, so an adapter could add any process-spawning or HTTP
+/// crate and only a reviewer would notice.
 fn external_crates_and_features(
     rule: &CrateRule,
     from: &Known<'_>,
     ws: &Workspace,
     findings: &mut Vec<Finding>,
 ) {
-    if rule.ring > 1 && rule.layer != "application" {
+    if rule.layer == "test-support" {
         return;
     }
     let workspace_members = ws.member_names();
@@ -379,12 +383,154 @@ fn feature_closure(
             continue;
         }
         for implied in table.get(&feature).into_iter().flatten() {
-            if !implied.contains('/') && !implied.starts_with("dep:") {
+            if let Some(optional_dependency) = implied.strip_prefix("dep:") {
+                pending.push(optional_dependency.to_string());
+            } else if let Some((dependency, _)) = implied.split_once('/') {
+                // `mio/os-poll` also switches on the optional dependency `mio`, which Cargo
+                // lists as a feature of its own unless the manifest uses `dep:` for it. A weak
+                // reference (`mio?/os-poll`) does not.
+                if !dependency.ends_with('?') {
+                    pending.push(dependency.to_string());
+                }
+            } else {
                 pending.push(implied.clone());
             }
         }
     }
     seen
+}
+
+/// DEP-04, sources: an external package comes from the public registry. A path or git
+/// dependency named like an allowed crate would pass a check that reads names only (F-31), and
+/// a path dependency named like a workspace crate must point at that crate's directory.
+fn dependencies_come_from_the_registry(
+    rules: &Rules,
+    from: &Known<'_>,
+    ws: &Workspace,
+    findings: &mut Vec<Finding>,
+) {
+    let sources = &rules.source_scans.dep_04;
+    for dep in &from.member.dependencies {
+        let workspace_member = ws.members.iter().find(|m| m.name == dep.name);
+        let problem = match (&dep.source, &dep.path, workspace_member) {
+            (_, Some(path), Some(member)) if same_directory(path, &member.dir) => None,
+            (_, Some(_), Some(member)) => Some(format!(
+                "a path dependency named {} that does not point at the workspace crate in {}",
+                dep.name,
+                ws.relative_dir(member)
+            )),
+            (Some(source), _, _) if sources.registries.contains(source) => None,
+            (Some(source), _, _) => Some(format!(
+                "{} from {source}, which is not the public registry",
+                dep.name
+            )),
+            (None, _, _) if sources.path_exceptions.contains(&dep.name) => None,
+            (None, _, _) => Some(format!(
+                "{} as a path dependency; an external package must come from the public registry, because a path or git source can carry the name of an allowed crate",
+                dep.name
+            )),
+        };
+        if let Some(problem) = problem {
+            findings.push(Finding::new(
+                "DEP-04",
+                &from.location,
+                format!("{} depends on {problem}", from.member.name),
+            ));
+        }
+    }
+}
+
+fn same_directory(a: &std::path::Path, b: &std::path::Path) -> bool {
+    match (a.canonicalize(), b.canonicalize()) {
+        (Ok(a), Ok(b)) => a == b,
+        _ => a == b,
+    }
+}
+
+/// DEP-05, features: the features Cargo resolves for `time`, `uuid` and `tokio` as the inner
+/// crates see them, with every workspace member's choices unified, stay within the limit in the
+/// rules file. The manifest of the inner crate alone proves nothing: when another crate enables
+/// `time/std`, `OffsetDateTime::now_utc` exists in the domain crate too (review finding F-12).
+fn resolved_features_stay_within_the_limits(
+    rules: &Rules,
+    rule: &CrateRule,
+    from: &Known<'_>,
+    ws: &Workspace,
+    findings: &mut Vec<Finding>,
+) {
+    if !rules.source_scans.dep_05.inner_crates.contains(&rule.name) {
+        return;
+    }
+    for limit in &rules.source_scans.dep_05.resolved_features {
+        let Some(resolved) = from.member.resolved_dependency_features.get(&limit.package) else {
+            continue;
+        };
+        let table = ws
+            .package_features
+            .get(&limit.package)
+            .cloned()
+            .unwrap_or_default();
+        let allowed = feature_closure(limit.allowed.iter().cloned(), &table);
+        // Only real features count. Optional dependencies also appear in the resolved list under
+        // their own names, and `default` is the set of features it implies.
+        let extra: Vec<&String> = resolved
+            .iter()
+            .filter(|f| f.as_str() != "default" && (table.is_empty() || table.contains_key(*f)))
+            .filter(|f| !allowed.contains(*f))
+            .collect();
+        if extra.is_empty() {
+            continue;
+        }
+        let names = extra
+            .iter()
+            .map(|f| f.as_str())
+            .collect::<Vec<_>>()
+            .join(", ");
+        findings.push(Finding::new(
+            "DEP-05",
+            &from.location,
+            format!(
+                "{} resolves {} with feature(s) {names}, which the limit in crate-dependency-rules.json (source_scans.dep_05.resolved_features) does not allow (allowed: {}). {} {}",
+                from.member.name,
+                limit.package,
+                limit.allowed.iter().cloned().collect::<Vec<_>>().join(", "),
+                enablers(ws, &limit.package, &extra, &table),
+                limit.reason
+            ),
+        ));
+    }
+}
+
+/// Which workspace members switch the features on, for the message.
+fn enablers(
+    ws: &Workspace,
+    package: &str,
+    extra: &[&String],
+    table: &BTreeMap<String, Vec<String>>,
+) -> String {
+    let mut who = Vec::new();
+    for member in &ws.members {
+        for dep in member.dependencies.iter().filter(|d| d.name == package) {
+            let mut requested: Vec<String> = dep.features.clone();
+            if dep.uses_default_features {
+                requested.push("default".to_string());
+            }
+            let enabled = feature_closure(requested.into_iter(), table);
+            let hit: Vec<&str> = extra
+                .iter()
+                .filter(|f| enabled.contains(**f))
+                .map(|f| f.as_str())
+                .collect();
+            if !hit.is_empty() {
+                who.push(format!("{} ({})", member.name, hit.join(", ")));
+            }
+        }
+    }
+    if who.is_empty() {
+        "A dependency outside the workspace enables them.".to_string()
+    } else {
+        format!("Enabled by {}.", who.join(", "))
+    }
 }
 
 fn kind_word(kind: DepKind) -> &'static str {

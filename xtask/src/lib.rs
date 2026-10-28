@@ -8,9 +8,15 @@
 pub mod cli;
 pub mod clippy_bans;
 pub mod finding;
+pub mod generated;
+pub mod invariants;
+pub mod links;
 pub mod lints;
 pub mod metadata;
 pub mod rules;
 pub mod scan;
+pub mod source_scans;
+pub mod st07;
 pub mod static_checks;
+pub mod syntax;
 pub mod topology;
