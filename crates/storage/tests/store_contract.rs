@@ -328,10 +328,6 @@ async fn run_all() -> Report {
 /// * `VERSION`: the fixture queues events that announce versions of a job that never reached them
 ///   (an event for version 2 of a job at version 1). The schema refuses such an event at commit
 ///   (`outbox_aggregate_has_reached_version`).
-/// * `LIVE`: the check moves a running stage run back to `READY` and commits while its attempt is
-///   still live, to show that a second start is refused. The schema refuses the commit
-///   (`stage_runs_live_attempt_needs_running_run`), because a run that leaves `RUNNING` must end
-///   its attempt in the same transaction.
 /// * `SKIP`: the check keeps two system transactions open and expects both to find the same
 ///   candidate. The port text and ADR 0014 say the finder takes `FOR NO KEY UPDATE SKIP LOCKED`, so
 ///   the second finder skips the row the first one holds until it calls `finish`.
@@ -357,12 +353,6 @@ const EXCLUDED: &[(&str, &str, &str, &str)] = &[
         "VERSION",
         "Constraint(EventAggregateMismatch)",
         "atomicity.rs: a_lost_commit_answer_is_settled_by_the_witness",
-    ),
-    (
-        "start_attempt_refuses_a_second_live_attempt",
-        "LIVE",
-        "Constraint(IllegalStatusMove)",
-        "claims_and_leases.rs: a_second_live_attempt_is_refused",
     ),
     (
         "two_workers_find_one_candidate_and_one_start_wins",

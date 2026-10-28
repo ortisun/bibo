@@ -1709,13 +1709,17 @@ impl AttemptOps for InMemoryTx {
             if start.transition.transition_id() != "S03" {
                 return Err(StoreError::Constraint(ConstraintRule::IllegalStatusMove));
             }
-            // The statement waits for the row lock and re-evaluates against the committed row.
+            // The statement waits for the row lock and re-evaluates against the committed row,
+            // unless this transaction already wrote the row and so holds the lock itself.
+            let wrote = self.work.stage_runs.get(&start.stage_run)
+                != self.base.stage_runs.get(&start.stage_run);
             if !self.has(StoreDefect::DoubleStartsAttempt) {
                 let g = lock(&self.store.inner);
                 if let Some(committed) = g.committed.stage_runs.get(&start.stage_run)
                     && (committed.version != start.expected
                         || committed.value.status != StageRunStatus::Ready)
                     && !self.claimed.contains(&start.stage_run)
+                    && !wrote
                 {
                     return Err(StoreError::Conflict);
                 }

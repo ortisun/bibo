@@ -1131,32 +1131,63 @@ async fn start_attempt_refuses_a_job_that_is_not_active(
     Ok(())
 }
 
+/// A second attempt cannot start while the first one is live.
+///
+/// Two refusals stand between a second start and the table. A run that is `RUNNING` is not
+/// `READY`, so the start conflicts. A run that reads `READY` while its attempt is live is a bug
+/// the engine must not have, and the start must still refuse it with `OneLiveAttempt`. The
+/// database never commits that state (a run that leaves `RUNNING` ends its attempt in the same
+/// transaction), so the check builds it inside one transaction and drops the transaction: the
+/// store must refuse the start there, and nothing of it may stay.
 async fn start_attempt_refuses_a_second_live_attempt(
     subject: &dyn StoreSubject,
 ) -> Result<(), String> {
     let w = World::new(subject);
     let r = w.ready(w.a, 5).await?;
-    w.start(r, "worker-1")
+    let first = w
+        .start(r, "worker-1")
         .await
         .map_err(|e| format!("start: {e:?}"))?;
-    // Put the run back to READY while the first attempt is still live (a bug the engine must not
-    // have, and the store must still refuse).
-    let mut tx = w.tx(w.a).await?;
-    let row = tx.get_stage_run(r.run).await.ctx("read")?;
-    let retry = plan(
-        StageRunStatus::Running,
-        StageRunEvent::AttemptFailedRetryable,
-        Guard::RetryAllowed,
-    )?;
-    tx.transition_stage_run(r.run, row.version, retry, StageRunEffects::default())
-        .await
-        .ctx("move back to READY")?;
-    tx.commit().await.ctx("commit")?;
-    let result = w.start(r, "worker-2").await;
     ensure_err!(
-        result,
-        StoreError::Constraint(ConstraintRule::OneLiveAttempt),
-        "a second live attempt"
+        w.start(r, "worker-2").await,
+        StoreError::Conflict,
+        "a start of a run that is running"
+    );
+    {
+        let mut tx = w.tx(w.a).await?;
+        let row = tx.get_stage_run(r.run).await.ctx("read")?;
+        let retry = plan(
+            StageRunStatus::Running,
+            StageRunEvent::AttemptFailedRetryable,
+            Guard::RetryAllowed,
+        )?;
+        tx.transition_stage_run(r.run, row.version, retry, StageRunEffects::default())
+            .await
+            .ctx("move back to READY with the attempt still live")?;
+        ensure_err!(
+            w.start_in(&mut *tx, r.run, "worker-2").await,
+            StoreError::Constraint(ConstraintRule::OneLiveAttempt),
+            "a second live attempt"
+        );
+        // Dropped without commit: the state above never reaches the table.
+    }
+    let mut check = w.tx(w.a).await?;
+    let attempts = check.list_attempts(r.run).await.ctx("list")?;
+    ensure_eq!(attempts.len(), 1, "one attempt");
+    ensure_eq!(
+        attempts[0].value.id,
+        first.attempt.value.id,
+        "the first attempt"
+    );
+    ensure_eq!(
+        check
+            .get_stage_run(r.run)
+            .await
+            .ctx("read the run")?
+            .value
+            .status,
+        StageRunStatus::Running,
+        "the run is still running"
     );
     Ok(())
 }
