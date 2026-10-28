@@ -16,5 +16,7 @@ mod readability_corpus;
 mod readability_corpus_tests;
 #[path = "gate_tests.rs"]
 mod readability_gate_tests;
+#[path = "properties.rs"]
+mod readability_properties;
 #[path = "schema_check.rs"]
 mod readability_schema_check;
