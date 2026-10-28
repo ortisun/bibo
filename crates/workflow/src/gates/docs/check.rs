@@ -136,7 +136,7 @@ pub struct Observations {
     /// The help text of the program.
     pub help: Observed<Ran>,
     /// The examples and their runs.
-    pub examples: Observed<Vec<(Example, Ran)>>,
+    pub examples: Observed<Vec<(Example, Option<Ran>)>>,
     /// The diagram blocks and the parser's runs.
     pub diagrams: Observed<Vec<DiagramRun>>,
 }
@@ -174,7 +174,7 @@ pub struct Inputs<'a> {
     pub written_over: &'a str,
     /// The secret scanner: `Some(true)` for text that holds a secret, `None` when the scanner
     /// could not run.
-    pub secret: &'a dyn Fn(&str) -> Option<bool>,
+    pub secret: &'a (dyn Fn(&str) -> Option<bool> + Sync),
 }
 
 /// The result of one check.
@@ -794,7 +794,7 @@ fn examples(inputs: &Inputs<'_>, seen: &Observations) -> CheckResult {
     let mut findings = Vec::new();
     let mut commands = Vec::new();
     for (example, ran) in runs {
-        if !example.runnable {
+        let Some(ran) = ran.as_ref().filter(|_| example.runnable) else {
             findings.push(finding(
                 "example-not-runnable",
                 &example.file,
@@ -805,7 +805,7 @@ fn examples(inputs: &Inputs<'_>, seen: &Observations) -> CheckResult {
                 ),
             ));
             continue;
-        }
+        };
         commands.push(ran.clone());
         if ran.exec.timed_out || ran.exec.exit_code != Some(0) {
             findings.push(finding(
