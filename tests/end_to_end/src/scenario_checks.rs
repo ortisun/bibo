@@ -150,13 +150,18 @@ pub fn e2_intent(ev: &RunEvidence, _env: &Env) -> Verdict {
         );
     }
     // Structure: the specification keeps at least as many acceptance scenarios as the request has
-    // criteria.
-    let criteria = issue
-        .first()
-        .body
-        .iter()
-        .filter(|l| l.starts_with("- "))
-        .count();
+    // acceptance criteria. The criteria are the list items under the heading that names them, in
+    // English or Portuguese.
+    let mut criteria = 0_usize;
+    let mut inside = false;
+    for line in &issue.first().body {
+        if line.starts_with("## ") {
+            let lower = line.to_lowercase();
+            inside = lower.contains("criteria") || lower.contains("critérios");
+        } else if inside && line.starts_with("- ") {
+            criteria += 1;
+        }
+    }
     let scenarios = ev
         .contracts
         .specification
@@ -169,8 +174,8 @@ pub fn e2_intent(ev: &RunEvidence, _env: &Env) -> Verdict {
         .unwrap_or(0);
     need!(
         ID,
-        scenarios >= 4 && scenarios + 2 >= criteria.saturating_sub(2),
-        "the specification has {scenarios} acceptance scenarios for a request with {criteria} list items"
+        criteria > 0 && scenarios >= criteria,
+        "the specification has {scenarios} acceptance scenarios for a request with {criteria} acceptance criteria"
     );
     Verdict::pass(
         ID,
