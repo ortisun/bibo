@@ -170,10 +170,19 @@ async fn an_attempt_span_ends_with_its_outcome_when_the_stage_asks_a_person() {
         .iter()
         .find(|s| s.name == "factory.attempt")
         .expect("an attempt span");
+    // `factory.error_class` is declared on every attempt span and filled only when the attempt
+    // fails (conventions page: "the failure class the engine recorded, when the work failed"),
+    // because `tracing` cannot add a field that was not declared at creation. An attempt that asks
+    // a person did not fail, so that one field is allowed to stay empty. Any other declared field
+    // must be filled.
+    let unfilled: Vec<&String> = attempt
+        .declared_only
+        .iter()
+        .filter(|name| *name != "factory.error_class")
+        .collect();
     assert!(
-        attempt.declared_only.is_empty(),
-        "an attempt field was declared and never filled: {:?}",
-        attempt.declared_only
+        unfilled.is_empty(),
+        "an attempt field was declared and never filled: {unfilled:?}"
     );
     let outcome = attempt.text("factory.outcome").expect("an outcome");
     assert!(

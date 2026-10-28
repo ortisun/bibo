@@ -55,15 +55,9 @@ fn the_spans_that_exist_today_have_an_opener() {
     assert!(some_code_opens("factory.job", Some("job_stretch_span")));
 }
 
-/// Confirmed gap OBS-2 (the test of its behavior is in `crates/workflow/tests/trace_shape.rs`).
-/// This one is the scan side: no production code opens `factory.stage_run`.
-///
-/// Owner: `crates/workflow`, `src/engine/attempt.rs`. Smallest change: in `run_attempt`, open
-/// `tracing::info_span!("factory.stage_run", factory.correlation_id, factory.job_id,
-/// factory.stage_run_id, factory.stage_kind, factory.outcome = Empty)` and run the attempt span
-/// inside it.
+/// Gap OBS-2, closed (the test of its behavior is in `crates/workflow/tests/trace_shape.rs`).
+/// This one is the scan side: `run_attempt` in the engine opens `factory.stage_run`.
 #[test]
-#[ignore = "confirmed gap OBS-2: no code opens a factory.stage_run span"]
 fn some_code_opens_the_stage_run_span() {
     assert!(some_code_opens("factory.stage_run", None));
 }

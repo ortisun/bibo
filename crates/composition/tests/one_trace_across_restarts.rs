@@ -155,6 +155,11 @@ fn two_engines_that_work_on_one_job_produce_one_trace_id() {
         2,
         "{names:?}"
     );
+    assert_eq!(
+        names.iter().filter(|n| **n == "factory.stage_run").count(),
+        2,
+        "one stage run span for each attempt: {names:?}"
+    );
     for span in &run.spans {
         assert_eq!(
             span.trace_id, trace_id,
@@ -189,6 +194,11 @@ fn both_stretches_hang_from_the_same_derived_remote_parent() {
 
 #[test]
 fn the_attempts_and_gates_hang_from_their_own_stretch() {
+    // Gap OBS-2 was closed after this test was written. The attempt used to hang from the stretch
+    // directly. The conventions page (section 3) puts a `factory.stage_run` span between them, so
+    // the attempt hangs from its stage run span, and that span hangs from the stretch. The test
+    // still proves what it was written for: every attempt and its gate are in the trace of a
+    // stretch of their own job.
     let run = two_engines_on_one_job();
     let stretches: Vec<_> = run
         .spans
@@ -196,11 +206,16 @@ fn the_attempts_and_gates_hang_from_their_own_stretch() {
         .filter(|s| s.name == "factory.job")
         .collect();
     for attempt in run.spans.iter().filter(|s| s.name == "factory.attempt") {
+        let stage_run = run
+            .spans
+            .iter()
+            .find(|s| s.name == "factory.stage_run" && s.span_id == attempt.parent_span_id)
+            .unwrap_or_else(|| panic!("an attempt hangs from no stage run span: {attempt:?}"));
         assert!(
             stretches
                 .iter()
-                .any(|s| s.span_id == attempt.parent_span_id),
-            "an attempt hangs from no stretch: {attempt:?}"
+                .any(|s| s.span_id == stage_run.parent_span_id),
+            "a stage run hangs from no stretch: {stage_run:?}"
         );
         let gate = run
             .spans

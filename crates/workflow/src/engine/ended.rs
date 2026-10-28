@@ -21,7 +21,7 @@ use super::record::{Cx, StageEnded};
 
 /// The outcome value of the conventions page for the status of an ended stage run, or `None` when
 /// the stage run has not ended: it is waiting for a retry, for a person or for its gate.
-const fn outcome_of(status: StageRunStatus) -> Option<&'static str> {
+pub(super) const fn outcome_of(status: StageRunStatus) -> Option<&'static str> {
     match status {
         StageRunStatus::Passed => Some("passed"),
         StageRunStatus::Failed => Some("failed"),

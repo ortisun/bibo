@@ -166,6 +166,12 @@ fn every_span_of_the_job_carries_its_correlation_id() {
     assert_eq!(count("factory.job"), 4, "{:?}", seen.spans);
     assert_eq!(count("factory.attempt"), 4, "{:?}", seen.spans);
     assert_eq!(
+        count("factory.stage_run"),
+        4,
+        "one stage run span for each attempt that ran: {:?}",
+        seen.spans
+    );
+    assert_eq!(
         count("factory.gate"),
         3,
         "the failed intake attempt reaches no gate: {:?}",

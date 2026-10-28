@@ -144,7 +144,21 @@ impl Engine {
         &self,
         claimed: &ClaimedAttempt,
     ) -> Result<AttemptOutcome, EngineError> {
+        // The stage run outlives a process, and an attempt is one stretch of work on it, so each
+        // attempt opens a stage run span of its own under the job stretch. Two attempts of one
+        // stage run give two spans with the same `factory.stage_run_id`, and a search for that
+        // identifier finds them all. The attempt hangs from this span, and the gate from the
+        // attempt.
+        let stage_run = tracing::info_span!(
+            "factory.stage_run",
+            factory.correlation_id = %claimed.correlation,
+            factory.job_id = %claimed.job,
+            factory.stage_run_id = %claimed.stage_run,
+            factory.stage_kind = claimed.kind.as_str(),
+            factory.outcome = tracing::field::Empty,
+        );
         let span = tracing::info_span!(
+            parent: &stage_run,
             "factory.attempt",
             factory.correlation_id = %claimed.correlation,
             factory.job_id = %claimed.job,
@@ -153,13 +167,50 @@ impl Engine {
             factory.attempt_number = i64::from(claimed.attempt_number),
             factory.stage_kind = claimed.kind.as_str(),
             factory.outcome = tracing::field::Empty,
+            factory.error_class = tracing::field::Empty,
         );
         let outcome = self
             .run_attempt_inner(claimed)
             .instrument(span.clone())
             .await?;
         span.record("factory.outcome", outcome_label(&outcome));
+        if let AttemptOutcome::Failed { class, .. } = &outcome {
+            // The wire spelling of the failure class, such as `TOOL_ERROR`: a closed set.
+            span.record("factory.error_class", class.as_str());
+        }
+        if let Some(ended) = self.stage_run_outcome(claimed, &outcome).await {
+            stage_run.record("factory.outcome", ended);
+        }
         Ok(outcome)
+    }
+
+    /// The outcome the stage run ended in, when this attempt ended it: `passed`, `failed`,
+    /// `blocked` or `rework_requested`. `None` when the run goes on (a retry, a question to a
+    /// person) or when it cannot be read; telemetry never fails an attempt.
+    ///
+    /// Only a result that was committed can have ended the run, so a lost lease and a cancel are
+    /// not read. The status is read from the store after the commit, so the span says what the
+    /// run holds and not what the branch of the code expected.
+    async fn stage_run_outcome(
+        &self,
+        claimed: &ClaimedAttempt,
+        outcome: &AttemptOutcome,
+    ) -> Option<&'static str> {
+        let may_have_ended = matches!(
+            outcome,
+            AttemptOutcome::Succeeded
+                | AttemptOutcome::Failed {
+                    then: AttemptDisposition::Fail | AttemptDisposition::Block(_),
+                    ..
+                }
+        );
+        if !may_have_ended {
+            return None;
+        }
+        let mut tx = self.tenant_tx(claimed.tenant).await.ok()?;
+        let run = tx.get_stage_run(claimed.stage_run).await.ok();
+        let _ = tx.rollback().await;
+        run.and_then(|run| super::ended::outcome_of(run.value.status))
     }
 
     async fn run_attempt_inner(
