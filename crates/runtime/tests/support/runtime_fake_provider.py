@@ -17,13 +17,17 @@ It holds no real credential, makes no network call of its own and never reads a 
 environment: the expected fake key is a file (--key-file) that the test generated at run time.
 """
 
+import importlib
 import json
 import re
 import sys
+from typing import Any
 
 sys.path.insert(0, "/fake/spike")
 
-import fake_provider as fp  # noqa: E402  (path set above)
+# The spike's file is mounted next to this one when the container runs, so a type checker that
+# reads this file alone cannot resolve it. A dynamic import says so honestly.
+fp: Any = importlib.import_module("fake_provider")
 
 OUTPUT = re.compile(r"FAKE:OUTPUT[ \t]+([^\n]*)")
 USAGE = re.compile(r"FAKE:USAGE[ \t]+(\d+)[ \t]+(\d+)")
