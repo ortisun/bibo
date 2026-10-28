@@ -270,13 +270,16 @@ async fn build(
 
     // The token file, for an agent. The secret is registered with the redactor first, so nothing
     // that follows can print it.
-    let mut secret_handle = None;
+    let mut registration = Registration {
+        redactor: Arc::clone(&shared.redactor),
+        handle: None,
+    };
     let token_file = match &spec.job_token {
         Some(token) => {
             if let Ok(factory_domain::redaction::Registered::Added(handle)) =
                 shared.redactor.register("job_token", token.secret.expose())
             {
-                secret_handle = Some(handle);
+                registration.handle = Some(handle);
             }
             guard.created.token = true;
             let file = shared
@@ -408,6 +411,21 @@ async fn build(
         moved,
         started + spec.limits.wall_clock,
         watch,
-        secret_handle,
+        registration.handle.take(),
     ))
+}
+
+/// A job token registered with the redactor. If provisioning fails before the session takes
+/// the handle, the secret is forgotten again, so a failed job leaves nothing in the registry.
+struct Registration {
+    redactor: Arc<factory_domain::redaction::Redactor>,
+    handle: Option<factory_domain::redaction::SecretHandle>,
+}
+
+impl Drop for Registration {
+    fn drop(&mut self) {
+        if let Some(handle) = self.handle.take() {
+            self.redactor.forget(handle);
+        }
+    }
 }

@@ -949,6 +949,34 @@ async fn negative_nt_sec_09_no_argument_or_environment_holds_the_job_token() {
     }
 }
 
+#[tokio::test]
+async fn the_job_token_is_registered_with_the_redactor_only_while_the_job_lives() {
+    // A job that fails closed leaves nothing registered.
+    let rig = new_rig();
+    rig.sim.mutate(|doc, kind| {
+        if kind == "sandbox" {
+            doc["HostConfig"]["Privileged"] = true.into();
+        }
+    });
+    let (spec, _host) = make_spec(SandboxProfile::Agent);
+    assert!(matches!(
+        create(&rig, spec).await,
+        Err(SandboxError::PostureMismatch(_))
+    ));
+    assert_eq!(rig.world.redactor.registered_count(), 0);
+
+    // A job that runs has it registered, and the end of the job forgets it.
+    let rig = new_rig();
+    let (spec, _host) = make_spec(SandboxProfile::Agent);
+    let session = create(&rig, spec).await.expect("a sandbox");
+    assert_eq!(rig.world.redactor.registered_count(), 1);
+    session
+        .stop_and_remove(TeardownReason::Completed)
+        .await
+        .expect("teardown");
+    assert_eq!(rig.world.redactor.registered_count(), 0);
+}
+
 #[test]
 fn a_spec_that_names_a_network_for_the_wrong_profile_is_refused_before_any_call() {
     let rig = new_rig();

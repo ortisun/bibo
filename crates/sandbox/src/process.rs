@@ -177,6 +177,10 @@ impl ProcessRunner for SystemProcessRunner {
 }
 
 impl SystemProcessRunner {
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "this is the one place in the crate that starts a process (DEP-10, ST-03)"
+    )]
     async fn run_process(
         &self,
         req: SpawnRequest,

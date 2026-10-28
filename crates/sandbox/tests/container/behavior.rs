@@ -974,6 +974,15 @@ async fn janitor_removes_orphans() {
             &foreign,
         ])
         .expect("a foreign network");
+    // The janitor must leave this one alone, so the lab's cleanup (by owner label) cannot remove it
+    // either. This guard removes it, whether the test passes or fails.
+    struct RemoveNetwork(factory_testkit::fx::docker::DockerCli, String);
+    impl Drop for RemoveNetwork {
+        fn drop(&mut self) {
+            let _ = self.0.run(&["network", "rm", &self.1]);
+        }
+    }
+    let _foreign_guard = RemoveNetwork(lab.scope.cli().clone(), foreign.clone());
 
     // Attempt 1 is live: only attempt 2 and the stray are removed.
     let removed = lab

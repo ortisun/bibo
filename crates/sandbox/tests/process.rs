@@ -7,6 +7,8 @@
 //! runner (cleared environment, secrets, caps, group kill, cancel) is therefore asserted on real
 //! processes. Each deliberate break below must make the suite fail.
 
+#![allow(clippy::disallowed_methods)] // The test fixtures start shims directly; the ban is for the product code.
+
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
