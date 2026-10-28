@@ -303,7 +303,7 @@ fn a_decision_is_read_by_the_shared_grammar_and_merge_is_not_a_verb() {
     assert_eq!(ran.exit, Exit::Ok, "{}", ran.err);
     assert!(
         ran.out
-            .contains("Decision d-1 is recorded; the engine has not applied it yet."),
+            .contains("Decision d-1 is recorded; the worker has not applied it yet, and the timeline shows the outcome."),
         "{}",
         ran.out
     );

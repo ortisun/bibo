@@ -367,18 +367,30 @@ async fn every_deliverable_nobody_reads_is_listed_as_terminal() {
     );
 }
 
-/// The pending producer is still pending. The day a package replaces the placeholder of the domain
-/// discovery stage, this fails, and the pair has to be tested for real: empty `PENDING`, run the
-/// stage in `chain`, and cover its pairs in `pairs`. The specification stage was replaced, and the
-/// second test says so, so that it cannot go back to a placeholder unseen.
+/// The domain discovery stage is no longer a placeholder: in Slice 1 it is a recorded skip
+/// (`DomainDiscoveryHandler`), so it stores no `domain-profile` and the pair stays **expected and
+/// never produced**. The readers (documenting and architecture) read the profile only when it
+/// exists, which `pair_domain_discovery_is_pending` records and the worker's `domain_discovery`
+/// test shows through a real engine (the stage is `SKIPPED`, the stages after it go on). The day a
+/// real discovery stage stores the profile, this fails: empty `PENDING`, run the stage in `chain`,
+/// and cover its pairs in `pairs`.
 #[test]
-fn the_pending_producers_are_still_placeholders() {
+fn the_domain_discovery_stage_is_a_recorded_skip_and_still_stores_no_profile() {
     const PLACEHOLDER: &str =
         "Placeholder so that the module line declared by the engine package compiles.";
     let source = include_str!("../../src/stages/domain_discovery/mod.rs");
     assert!(
-        source.contains(PLACEHOLDER),
-        "the DOMAIN_DISCOVERY module is no longer a placeholder: run it in `chain`, empty PENDING, and cover its pairs"
+        !source.contains(PLACEHOLDER),
+        "the DOMAIN_DISCOVERY module is real now"
+    );
+    assert!(
+        source.contains("Applicability::NotApplicable")
+            && source.contains("SkipBasis::DomainProfile"),
+        "the Slice 1 stage records a skip with the basis DomainProfile"
+    );
+    assert!(
+        !source.contains("StageOutput {"),
+        "the stage stores nothing; if it does, run it in `chain`, empty PENDING, and cover its pairs"
     );
     assert_eq!(PENDING, [(StageKind::DomainDiscovery, "domain-profile")]);
 }

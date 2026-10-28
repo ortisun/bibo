@@ -145,7 +145,7 @@ pub fn decided(body: &Value, key: &str) -> String {
         if applied {
             " and applied"
         } else {
-            "; the engine has not applied it yet"
+            "; the worker has not applied it yet, and the timeline shows the outcome"
         },
     )
 }
@@ -198,5 +198,6 @@ mod tests {
     fn a_decision_that_is_not_applied_says_so() {
         let line = decided(&json!({"decision_id": "d", "applied": false}), "k");
         assert!(line.contains("has not applied it yet"));
+        assert!(line.contains("the timeline shows the outcome"));
     }
 }

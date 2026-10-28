@@ -77,6 +77,33 @@ While an attempt runs, the loop also serves the **evidence-drift** requests of t
 a changed binding down a channel and the loop, which owns the engine, makes the `apply_change` call.
 `tests/drift.rs` shows that, the runs it replaces, and the break where the seam ignores the report.
 
+### Before each claim
+
+The loop runs its hooks (`factory_composition::hooks::BeforeClaim`, in the order they were added) before
+every claim. A worker adds two:
+
+1. `seams::RefreshRequests` fills the request cache, because `RequestSource::recorded` must answer
+   without waiting while the claim runs, and the contract of a stage is resolved when a job is admitted.
+2. `decisions::ClaimWork` ([`crates/composition/src/decisions.rs`](../../crates/composition/src/decisions.rs))
+   admits the `RECEIVED` jobs of the tenants the worker serves and applies the decisions that people asked
+   for. The API records both and does neither.
+
+For decisions: the API writes the audit record `decision.requested`; `ClaimWork` reads it, checks the
+allowlist **again, now, by the numeric GitHub id** of the principal behind the record, and applies it once:
+pause, resume and cancel through `Engine::control`; approve, reject and rework through
+`ApprovalService::submit`. The record's id is the command id the engine uses, so a repeat is a no-op
+(`Duplicate`). When the decision is dealt with, the worker writes a marker for the same job,
+`decision.applied` or `decision.rejected`, which the timeline of the API shows. A worker that stops
+between the engine's commit and the marker finds the request with no marker, asks the engine whether it
+applied that command (`Engine::command_applied`) and writes the marker without touching the job. A refusal
+says "the person may not take this decision now" and never which test failed. A decision that cannot be
+decided for a reason that may pass (the allowlist file cannot be read, the store is busy) waits and is
+rejected with a plain reason after 20 passes. A worker that starts reads the tenant's audit log from the
+start, so nothing depends on its memory; for a long log that is one pass over it.
+
+`tests/claim_work.rs` runs the real loop with the hook: a received job is admitted and runs to the
+approval, and a loop without the hook never admits it.
+
 `tests/kill_at_every_boundary.rs` kills the worker after and during each of the 13 stages of the Slice 1
 scope, over the real store, and a new engine finishes the job: with the engine and store parity work
 merged, all 26 cases reach `COMPLETED` after a person's approval.
@@ -104,7 +131,8 @@ test that cannot get a server panics with `BLOCKED:` and is never a pass. The su
 | `tests/broker.rs` | the broker listener is hosted, refuses a request with no token, never shows the key |
 | `tests/prepare.rs` | the binary's start-up path from files, exit codes 2 and 3 |
 | `tests/smoke.rs` | the word-count job, stage by stage, and where it stops |
-| `tests/domain_discovery.rs` | what the engine does for a stage with no handler, and the skip option |
+| `tests/domain_discovery.rs` | what the engine does for a stage with no handler, and the real skip handler over PostgreSQL |
+| `tests/claim_work.rs` | the loop with the step before each claim: a received job is admitted and runs; without it, never (the break) |
 | `tests/engine_scenarios_on_postgres.rs` | 13 of the engine scenarios, with the lease waits real |
 | `tests/engine_scenarios_all_on_postgres.rs` | the engine suite on PostgreSQL: 96 of 97 (from the parity work) |
 | `tests/known_defects.rs` | defects of the engine and the store, as tests that flip when fixed |
@@ -113,6 +141,40 @@ The tests of the composition core (`tests/database.rs`, `tests/profiles.rs`, the
 the store, the providers, the example configurations) are in `crates/composition/tests/`.
 
 ## How far the job gets
+
+### The complete run (`apps/api/tests/complete_run.rs`)
+
+One `word-count` job, from a signed webhook to `COMPLETED`, in test mode. It lives in the API package
+because the workspace rules refuse an edge from one application to another (`DEP-01`), so no test can
+link the API server and `WorkerLoop` together; it runs the same steps in a few lines (refresh the
+request cache, `ClaimWork`, sweep, claim, run the attempt) and the loop itself is tested here.
+
+Real: PostgreSQL (the API login on the server, the worker and engine logins on the worker side), the
+API server on loopback with a bearer token, the signed webhook, the allowlist and policy files, the
+engine, `ClaimWork`, the approval service with its judge, the ledger, the composition seams, and the
+handlers marked real below. Scripted and labelled: the agent runtime, the sandbox (`cargo` is a program of
+the testkit's sandbox), workspaces, code host and issue source (the testkit's fakes), the model broker,
+the engine suite's stand-in handlers, and two values that fail closed in the composition library
+(`DeliverySources::tree_of`, `current_values`).
+
+| State | Handler | Real or scripted | Result |
+|---|---|---|---|
+| webhook, `RECEIVED` | the API | real | `202`, a `RECEIVED` job with no text |
+| admission | `ClaimWork` and the engine | real | `ACTIVE`, 13 stage runs |
+| `INTAKE` | `IntakeHandler` | **real** (the classifier's answer is the recorded valid fixture) | `PASSED`; the stage fetched the issue and stored revision 1 |
+| `REPOSITORY_INTELLIGENCE` | `RepoIntelHandler` | **real** over the fake workspace and sandbox | `PASSED` |
+| `DOMAIN_DISCOVERY` | `DomainDiscoveryHandler` | **real** | `SKIPPED` by `static-general-software-profile` |
+| `SPECIFICATION`, `ARCHITECTURE`, `TASK_PLANNING`, `IMPLEMENTATION`, `VALIDATION`, `REVIEW`, `DOCUMENTING`, `DOCUMENTATION_REVIEW`, `DELIVERY` | the engine suite's scripted handler | scripted | `PASSED` |
+| `APPROVAL` | the scripted handler | scripted | `WAITING_FOR_HUMAN` |
+| the decision | the API, `ClaimWork`, `ApprovalService`, `judge`, `Engine::decide` | **real** (over a pull request on the fake code host and an `approval-request` the test builds) | `APPROVAL` `PASSED`, job `COMPLETED`; the timeline shows `decision.requested`, `decision.applied` |
+
+**Where it stops being real, and why.** The stages from `SPECIFICATION` to `DELIVERY` and `APPROVAL` are
+stand-ins in this run. Each real handler needs the documents the stages before it store and agent output the
+scripted runtime does not write; the workflow suite runs them as separate jobs
+(`crates/workflow/tests/stage_contracts`), and chaining them in one job is the work that is left. The
+specification stage stops at the first skill (see below).
+
+### The smoke (`tests/smoke.rs`)
 
 `tests/smoke.rs` submits a job for `fixtures/repos/word-count` through the store, as the API will, and
 drives it with the worker loop and the scripted runtime. **Real**: PostgreSQL with both pools, the local
@@ -131,32 +193,53 @@ State by state, with the stages in scope:
 |---|---|---|---|---|
 | first two | `PASSED` (1 attempt) | `PASSED` (1 attempt) | not in scope | `COMPLETED` |
 | first three, no constitution | `PASSED` | `PASSED` | `WAITING_FOR_HUMAN` after 1 attempt: `constitution-required` | `WAITING_FOR_HUMAN` |
-| first three, constitution committed | `PASSED` | `PASSED` | `WAITING_FOR_HUMAN` after 2 `FAILED` attempts | `WAITING_FOR_HUMAN` |
+| first three, constitution committed | `PASSED` | `PASSED` | `WAITING_FOR_HUMAN` after 2 `FAILED` attempts (`Sandbox`) | `WAITING_FOR_HUMAN` |
+| first three, installation and constitution committed, file programs in the scripted sandbox | `PASSED` | `PASSED` | `WAITING_FOR_HUMAN` after 2 `FAILED` attempts (`Tool`) | `WAITING_FOR_HUMAN` |
 
 **Where it stops and why.**
 
-1. **No constitution.** The fixture has no `.specify/memory/constitution.md`. The stage asks a person.
-   Nothing in the pipeline writes a constitution: the writer agent is granted `speckit.specify`,
-   `speckit.clarify` and `speckit.checklist` (`agents/specification-writer/manifest.json`), the fourth
-   operation, `SpecOperation::Constitution`, is run by no stage, so the grant the README once listed is
-   not missing from a manifest, it is missing from a flow. Owner of the fix: the architect (who writes
-   the constitution and when) and `agents/**` if a stage is to run the skill.
-2. **A constitution, and the skills write nothing.** The scripted runtime writes no Spec Kit files. The
-   stage fails with the closed error `Sandbox` twice, and the engine asks a person (the attempt limit,
-   ADR 0010). The stage maps several causes to that one value, so the smoke cannot see which; the likely
-   one is that the fixture repository has no Spec Kit installation (`.specify/` with the pinned files), which
-   the provider checks before it trusts a skill's output, and which no stage installs. Not verified. To
-   pass the stage the runtime must be scripted to write a feature directory; the engine suite does that
-   over a scripted provider (`crates/workflow/tests/specification/rig.rs`), which cannot be reused here.
-3. **Later stages** need their wiring: `DOMAIN_DISCOVERY` has no handler; `ARCHITECTURE` and
+1. **No constitution.** The fixture has no `.specify/memory/constitution.md`. The stage asks a person
+   (`constitution-required`). **For Slice 1 the constitution is a precondition of the repository that the
+   factory only verifies.** No stage runs `SpecOperation::Constitution`, and the writer agent is granted
+   `speckit.specify`, `speckit.clarify` and `speckit.checklist` only
+   (`agents/specification-writer/manifest.json`). The master prompt says the specification stage should
+   "establish or consult" a constitution (line 437) and that the constitution is established once and its
+   changes tracked apart from feature requests (line 91); **if it means the factory authors it, a flow must
+   run the skill and the manifest must grant it. That is for the lead and the architect to decide.** The
+   smoke copies the fixture in memory and adds a constitution, as the stage expects; the fixture directory
+   is never edited.
+2. **The `Sandbox` error: found.** The stage runs `mkdir -p inputs`, `tee -- inputs/request.md` and, after
+   the skill, `rm -f --` in its sandbox, and ends with `Sandbox` when one exits with a code other than 0
+   (`run_command`, `stages/specification/run.rs`). The testkit's sandbox answers exit code 127 for any
+   program it does not know. So the first command failed, **before** the provider looked at the
+   installation: the missing Spec Kit installation was not the cause.
+   `smoke_the_sandbox_error_came_from_the_sandbox_not_from_the_installation` shows it: with the
+   installation and the constitution committed and no `mkdir`, `tee`, `rm` or `cp` the stage still ends in
+   `Sandbox` twice; with those four programs (which succeed and change nothing, labelled a stand-in) it
+   ends in `Tool` twice. The `Tool` is the next stop: the scripted runtime has no script queued for the
+   first skill, answers `OutputMissing` (which the stage maps to `Tool`) and writes no file. **Not done:** a
+   runtime that writes `spec.md`, the checklists and `.specify/feature.json` into the fake workspace
+   (`FakeWorkspaceProvider::edit_tree`, which the testkit's runtime cannot call) for the three skills, and a
+   scripted reviewer.
+3. **A person cannot approve a specification through the API.** `ApprovalService::submit` reads the stored
+   `approval-request` of the stage run, which only the `APPROVAL` stage writes, so the specification
+   stage's human gate (`specification-approval-needed`, when `human_approval_required` is true;
+   `state-machine.json` says `policy_by_risk`) has no path from the API. Smallest fix, owner `workflow`
+   and `composition::decisions`: route an approve or reject of a run whose kind is not `APPROVAL` to
+   `Engine::decide` after the same authority check, once the policy names the action and designation.
+4. **Later stages** need their wiring: `ARCHITECTURE` and
    `TASK_PLANNING` need `RiskSource` and `RoundSource` (done) and agent output the scripted runtime does not
    write; `IMPLEMENTATION` needs `TaskLedger` (done); `VALIDATION` needs the sandbox to run the verify
    image; `DELIVERY` needs the change host and two methods of `DeliverySources` that fail closed;
    `APPROVAL` needs `ApprovalSources` (done). The engine suite runs all 13 stages with scripted handlers
    and reaches `COMPLETED`; what the real handlers add is the stage-to-stage content, and none of those
-   stages was reached with a real handler.
+   stages was reached with a real handler in one job. (`DOMAIN_DISCOVERY` is now a real handler, below.)
 
-**The real Docker sandbox.** The three pinned images (`factory-sandbox/agent`, `.../egress-sidecar`,
+**The real Docker sandbox.** (On 2026-10-28 the test passed seven runs out of seven in this worktree, the
+retry of a failed creation was never taken and nothing with the test labels was left behind; the earlier
+failures could not be reproduced and their cause is still not known. The test stays ignored, since it
+needs the Docker daemon and the pinned images; moving it into the default suite for a machine that has
+them is the lead's decision. The text below is the earlier finding.) The three pinned images (`factory-sandbox/agent`, `.../egress-sidecar`,
 `.../verify`) are on this machine. `crates/composition/tests/docker_sandbox.rs` takes the sandbox that
 `providers::assemble` builds, makes a `verify` sandbox from the real policy and the pinned image (no network,
 so no address block and no lock on the shared pool), runs `cargo --version` in it, reads the output as the
@@ -173,17 +256,27 @@ it from git, and the two disagree about a commit id.
 
 `state-machine.json` lists it in Slice 1 (`requires: [SPECIFICATION]`, deterministic, "profile resolution and
 tool capability probes; BLOCKED when a mandatory profile gate cannot run", human gate never) and
-`SLICE_ONE_SCOPE` contains it, but `crates/workflow/src/stages/domain_discovery/mod.rs` is a placeholder.
-**The engine refuses to admit a job whose scope names a stage with no handler** (`admit_job` answers
-`EngineError::NoHandler(DomainDiscovery)` and the job stays `RECEIVED`), so a full-scope job cannot run
-until the stage has a handler. **The engine does support a stage that does not apply**: a handler's
-`applicability` returns `NotApplicable(SkipRule)`; the run becomes `SKIPPED` with the rule in the ledger, and
-ADR 0010 lets a skipped run satisfy the stages that need it and the completion of the job.
-`tests/domain_discovery.rs` shows both. **The smallest correct option** is a handler of about thirty lines
-whose `applicability` returns `NotApplicable` with the basis `DomainProfile`, the rule
-`static-general-software-profile` and the input "Slice 1 resolves one static profile, general-software". It
-drops the stage's second duty (the tool capability probes with a BLOCKED outcome), so the owner and the
-architect must accept that or write the real stage. This crate writes neither.
+`SLICE_ONE_SCOPE` contains it. The engine refuses to admit a job whose scope names a stage with no handler
+(`EngineError::NoHandler`), and supports a stage that does not apply: `applicability` returns
+`NotApplicable(SkipRule)`, the run becomes `SKIPPED` with the rule in the ledger, and ADR 0010 lets a skipped
+run satisfy the stages that need it and the completion of the job.
+
+**Done for Slice 1 (the lead accepted it).** `factory_workflow::stages::domain_discovery::DomainDiscoveryHandler`
+records the skip with the basis `DomainProfile`, the rule `static-general-software-profile` and the reason
+"Slice 1 does not profile the domain. It resolves one static profile, general-software, so there is no domain
+to discover." It reports fidelity `real` (no collaborator), and `execute` and `evaluate` fail closed.
+`tests/domain_discovery.rs` runs it over PostgreSQL and reads the ledger back (no assurance level). No function
+of the worker builds the registry of handlers yet: the binary stops at BLOCKED before it would, because the
+agent runtime, the router, the issue source and the change host need credentials. When it does, it registers
+`DomainDiscoveryHandler::new()` with the others; the complete run (`apps/api/tests/complete_run.rs`) registers
+it today.
+
+**Pending the architect.** The stage's second duty, the tool capability probes with a `BLOCKED` outcome when a
+mandatory profile gate cannot run, is **not** taken by this handler. It stays with the start-up probes
+(`seams::CachedProbes`) and with the router, which refuses a stage whose runtime lacks a capability it needs.
+Whether that is enough needs the architect's confirmation, which has not been given. The handler lives in the
+workflow stage package, in a file that was a placeholder, which is outside the paths this change was meant to
+own; it is reported for that reason.
 
 ### The end-to-end `Wiring`
 
@@ -223,7 +316,7 @@ All are in `crates/composition/src/`.
 | `ApprovalSources` | implemented | `delivery::StoreApprovalSources` | the principal row, the allowlist, the stored `approval-request` |
 | `DeliverySources` | **partly BLOCKED** | `delivery::StoreDeliverySources` | `target` and `ledger` answered; `current_values` and `tree_of` fail closed |
 | Workspace patch indexing | implemented | `indexing::IndexingWorkspaces` | wraps the workspace provider |
-| `GateContext` reading engine-stored documents | **not fixable here** | | see "Cross-stage mismatches", 14 |
+| `GateContext` reading engine-stored documents | fixed in the engine | `Engine::produce` | see "Cross-stage mismatches", 14 |
 | Constitution skill grant | **not in this crate** | | `agents/**` and a flow; see "How far the job gets" |
 
 The approval command parsers (a GitHub comment, command line arguments, a dashboard form) are pure
@@ -239,6 +332,12 @@ functions in `commands`; the HTTP and the process arguments stay with the API an
 | Stale evidence drift ignored | `tests/drift.rs`: with the real seam the dependent runs are replaced; with a seam that says "done" and tells nobody they stay `PASSED` |
 | A patch not indexed for the tenant | `crates/composition/tests/patch_index.rs`: unreadable without the wrapper, readable by its tenant and no other with it, and the wrapper fails closed for an unknown job |
 | A config example the parser refuses | `crates/composition/tests/examples.rs`: the API example of the local stack is refused (it names `database.api` and `listen` and lacks the protected checkout); the worker example parses |
+| A decision applied twice after a stop | `crates/composition/tests/claim_work.rs` (a stop before the marker, for a pause and for a cancel that ends the job) and `apps/api/tests/complete_run.rs` (the same through the real approval service). Shown by editing the source for the run: with a fresh command id on every attempt four tests fail, and with the already-applied check removed the cancel test fails |
+| A decision applied without re-checking authority | `claim_work.rs::break_applying_a_decision_without_rechecking_authority_is_caught`: the same check passes on the real wiring and fails when the hook says yes to everyone and the engine grants every role |
+| A received job never admitted | `tests/claim_work.rs::break_a_loop_without_the_step_never_admits_a_received_job` |
+| A gate that cannot read the engine's documents | `crates/composition/tests/gate_reads_outputs.rs` (was the known defect; the assertion is flipped) |
+| A webhook job with no issue text proceeding | `crates/workflow/tests/intake_repo/webhook.rs`: an issue the host does not return, and an empty one, end the attempt with no prompt; `break_an_issue_source_that_invents_an_issue_lets_the_job_proceed` shows what the defective host does |
+| The smoke fixture without the constitution proceeding | `tests/smoke.rs::smoke_stops_at_the_specification_for_a_constitution` |
 | Skip the role readiness check, run a tenant transaction on the system pool, forget to index a sandbox output, drop the redactor, ignore SIGTERM | as before: `crates/composition/tests/database.rs`, `tests/breaks.rs`, `tests/telemetry.rs` |
 
 ## Cross-stage mismatches
@@ -263,10 +362,9 @@ package. Statuses were checked on 2026-10-28 against the merged foundation.
    `refresh(tenants)` and `remember`; the loop refreshes before each claim for `worker.tenants`. A job whose
    request is not cached waits one poll. *Smallest change, owner `workflow`:* put the recorded request hash
    in `ContractContext`, read by the engine while it holds the tenant transaction.
-5. **`Authority::admission(tenant, requester)` carries no repository. Open.** `repository_registered_and_enabled`
-   and `protection_preflight_passed` cannot be read and the per-repository caps cannot be applied;
-   `StoreAuthority` answers `true` and `false` (the safe side, L0 only) and uses the tenant-wide sum.
-   *Smallest change, owner `workflow` (`commands::Authority`):* add the `RepositoryId` to `admission`.
+5. **`Authority::admission` carried no repository. Fixed.** It takes the `RepositoryId` now; `StoreAuthority`
+   reads the repository's row for `enabled` and `protection_preflight_passed` and counts the repository's own
+   jobs against the policy's per-repository caps (`crates/composition/tests/authority_admission.rs`).
 6. **`AgentSandboxSpecs::agent_spec` receives only a `JobTokenRef`. Fixed:** `RegisteringBroker` keeps each
    token's secret from `issue` to `revoke`, and the spec builder asks it.
 7. **The agent runtimes bind one tenant at construction. Fixed:** `runtimes::TenantRuntimes` stands in front
@@ -286,20 +384,18 @@ package. Statuses were checked on 2026-10-28 against the merged foundation.
     variant for each.
 11. **The engine suite on PostgreSQL.** Now run in full from `tests/engine_scenarios_all_on_postgres.rs`
     (96 of 97); `engine_scenarios_on_postgres.rs` keeps the 13 with real lease waits.
-12. **`DOMAIN_DISCOVERY` has no handler** and is in `SLICE_ONE_SCOPE`. See "How far the job gets".
+12. **`DOMAIN_DISCOVERY` had no handler. Fixed for Slice 1**, with the second duty pending the architect.
+    See "`DOMAIN_DISCOVERY`".
 13. **Decisions made here that need review:** the allowlist file format; the three lists in `sandbox_specs`
     (lowest user id 10000, forbidden and allowed environment names); the sidecar alias `egress`; the job
     tokens are registered with the redactor under the kind `job_tokens`; the default per-task retry limit
     of the ledger (two; no policy file names one); the meaning of "approved" in the ledger sentence the
     specification approval seam reads; the revision reason sentence; `local` and `test` profiles accept
     `AppArmor` being unavailable on the host.
-14. **A stage's gate cannot read the documents the engine stored from its output. Open, confirmed on
-    PostgreSQL** by `crates/composition/tests/gate_reads_outputs.rs` (a known-defect test that flips when
-    fixed). The engine `put`s the outputs and indexes them for the tenant only in the transaction that
-    follows the gate, so `ArtifactStore::get` answers `NotFound` inside `evaluate`. A wrapper in this crate
-    would have to serve a blob the tenant has not indexed, which turns the cross-tenant rule off.
-    *Smallest change, owner `workflow` (`engine/attempt.rs`, `Engine::produce`):* call `index_declared` for
-    every stored output and for the attempt manifest before the `GateContext` is built.
+14. **A stage's gate could not read the documents the engine stored from its output. Fixed in the engine.**
+    `Engine::produce` indexes every output and the attempt manifest for the tenant before it builds the
+    `GateContext`; a different tenant still gets `NotFound` for the same hash. The engine suite passes in memory
+    and on PostgreSQL.
 15. **Specification approvals are not bound to the draft by the engine.** `Decision::Approve` records who and
     when, not which draft. `StoreSpecApprovals` binds by time window (an approval counts for the draft that
     was current when it was recorded) using the engine clock and the database clock of one machine.
@@ -311,6 +407,34 @@ package. Statuses were checked on 2026-10-28 against the merged foundation.
 17. **The API example of the local stack is refused by the parser.** It names `database.api` and `listen` and
     lacks `protected_checkout` and `definitions_root`; the API has no configuration type yet (`infra/**` is
     not edited here). The worker example parses. See "What the deployment must do" in the composition README.
+
+18. **Nothing records the protection preflight. Open.** A repository with no passed preflight runs at level L0
+    (the store reports L0, ADR 0009), and at L0 `approve_pr` is refused as below its minimum level, so no job of
+    such a repository can ever be approved. No process calls `record_protection_preflight`. The complete run
+    records it in the database as an administrator would. *Smallest change, owner `workflow` or the worker
+    assembly:* read `IssueSource::repository_protection` for each repository, judge it against
+    `policies/security.yaml` and record the result before the first job and on a schedule.
+19. **The hook set `warnings_decided` to false for every approval. Fixed**, found by the complete run: the
+    engine's guard `G_APPROVER_AUTHORIZED` wants it true, so no approval could pass. It is now true when the
+    stored request has no open translation warning, and false otherwise. No path of the API records a
+    decision about a warning, so an approval with one open is refused. *Open, owner `api`:* an endpoint for it.
+20. **A person cannot answer the specification stage's human gate through the API.** See "Where it stops and
+    why", item 3.
+21. **A job from the API with no `source_ref` cannot pass `INTAKE`.** Intake authorizes the person who applied the
+    factory label on an issue, and reads the issue pointer from `source_ref`. A job submitted without one has
+    no issue. *Decision for the owner:* require a `source_ref` that names an issue at submission, or give
+    intake a way to authorize a request that has none.
+22. **The issue of a webhook job lives in an audit subject.** The delivery row holds no issue number, so the
+    only record of the issue is the subject `issue <owner>/<name>#<number>` of the audit record
+    `job.received_from_webhook`. `StoreRequests` reads it from there (`WEBHOOK_JOB_ACTION`). *Smallest change,
+    owner `storage` and `api`:* a column on the job or the delivery.
+23. **No test can link the API and the worker loop.** `DEP-01` refuses an edge from one application to another in
+    any kind of dependency. *Decision for the architect:* move `WorkerLoop` into `factory-composition`
+    (ADR 0015 says the library holds no loop), or add a library crate for tests that wire both.
+24. **The intake contract names a webhook job's input by the issue reference.** A job with no text has no hash
+    to put in the contract, so the input `original-request` is named by the SHA-256 of
+    `github-issue:<owner>/<name>#<number>` until the stage stores revision 1. The contract is stored when the
+    run becomes ready; it is not the contract the next attempt resolves after the text exists.
 
 ## Blocked
 
