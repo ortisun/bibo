@@ -5,7 +5,7 @@ mod common;
 use common::{Capture, is_valid_json};
 use factory_observability::logging::{self, CorrelationId, CorrelationLayer, InvalidCorrelationId};
 use factory_observability::names::{self, attr};
-use factory_observability::redact::{PolicyPatternScrubber, Scrub, ScrubError};
+use factory_observability::redact::{Scrub, ScrubError};
 use factory_observability::spans::{self, Job, StageRun};
 use std::borrow::Cow;
 use std::sync::Arc;
@@ -21,7 +21,7 @@ fn with_logging<T>(capture: &Capture, body: impl FnOnce() -> T) -> T {
         .with(CorrelationLayer::new())
         .with(logging::log_layer(
             capture.clone(),
-            Arc::new(PolicyPatternScrubber::new()),
+            common::policy_scrubber(),
             EnvFilter::new("trace"),
         ));
     tracing::subscriber::with_default(subscriber, body)

@@ -32,11 +32,14 @@ use factory_domain::redaction::{
     Encoding, EntropySpec, FlagHandling, PatternAction, PatternSpec, Redactor, SecretHandle,
 };
 use factory_domain::vocabulary::Fidelity;
-use factory_observability::redact::{Scrub, ScrubError};
 use factory_ports::agent::{BrokerError, IssuedJobToken, JobTokenRequest, ModelBroker, TokenUsage};
 use factory_ports::agent::{JobTokenId, JobTokenSecret};
 
 use crate::config::{ConfigError, SecretFile, SecretText, login_of_url};
+
+/// The `Scrub` seam of the telemetry setup, over the redactor. It lives in the observability crate
+/// (ADR 0013); this name stays so that the paths in this crate and its tests do not change.
+pub use factory_observability::redact::RedactorScrubber;
 
 /// Why the redactor or the registry could not be set up.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -254,44 +257,6 @@ fn password_of_url(url: &str) -> Option<String> {
     }
 }
 
-/// The `Scrub` seam of the telemetry setup, over the real redactor.
-///
-/// ADR 0013 plans `s1-telemetry-wiring` to implement `Scrub` for the redactor inside the
-/// observability crate and to make the scrubber a required argument. That package has not landed,
-/// so this newtype is the adapter, and [`crate::telemetry`] passes it with `with_scrubber`.
-#[derive(Clone)]
-pub struct RedactorScrubber(Arc<Redactor>);
-
-impl RedactorScrubber {
-    /// Wraps the redactor.
-    #[must_use]
-    pub fn new(redactor: Arc<Redactor>) -> Self {
-        Self(redactor)
-    }
-
-    /// The redactor behind the scrubber.
-    #[must_use]
-    pub fn redactor(&self) -> &Arc<Redactor> {
-        &self.0
-    }
-}
-
-impl std::fmt::Debug for RedactorScrubber {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("RedactorScrubber")
-    }
-}
-
-impl Scrub for RedactorScrubber {
-    fn scrub<'a>(&self, text: &'a str) -> Result<std::borrow::Cow<'a, str>, ScrubError> {
-        let redacted = self
-            .0
-            .redact_str(text)
-            .map_err(|_| ScrubError::Unavailable)?;
-        Ok(redacted.output)
-    }
-}
-
 /// A broker that registers each job token with the redactor when it is issued and forgets it when
 /// it is revoked, so a token that reaches a log line or a transcript is found by exact value as
 /// well as by the `sfjt_` pattern.
@@ -405,6 +370,7 @@ impl ModelBroker for RegisteringBroker {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use factory_observability::redact::Scrub;
 
     /// Section 9 of the real policy file, loaded the way a binary loads it.
     fn policy() -> SecurityPolicy {

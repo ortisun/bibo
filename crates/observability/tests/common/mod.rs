@@ -1,6 +1,8 @@
 //! Helpers shared by the integration tests. Not every test file uses every helper.
 #![allow(dead_code)]
 
+use factory_domain::redaction::{PatternAction, PatternSpec, Redactor};
+use factory_observability::redact::{RedactorScrubber, Scrub};
 use std::collections::BTreeSet;
 use std::io;
 use std::sync::{Arc, Mutex};
@@ -58,6 +60,108 @@ impl factory_observability::redact::Scrub for ReplaceScrubber {
             std::borrow::Cow::Borrowed(text)
         })
     }
+}
+
+/// The security policy. The tests build the real redactor from its patterns, so the tests and the
+/// composition root read the same source and neither holds a copy.
+const POLICY: &str = include_str!("../../../../policies/security.yaml");
+
+/// The text of a YAML single-quoted scalar, starting just after the opening quote. A doubled
+/// quote stands for one quote.
+fn single_quoted(text: &str) -> String {
+    let mut out = String::new();
+    let mut chars = text.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '\'' {
+            if chars.peek() == Some(&'\'') {
+                chars.next();
+                out.push('\'');
+            } else {
+                return out;
+            }
+        } else {
+            out.push(c);
+        }
+    }
+    panic!("a quoted scalar in the policy does not end");
+}
+
+fn pattern_from_line(line: &str) -> PatternSpec {
+    let id = line
+        .split("id: ")
+        .nth(1)
+        .and_then(|rest| rest.split(',').next())
+        .expect("the line has an id")
+        .trim();
+    let regex = single_quoted(line.split("regex: '").nth(1).expect("the line has a regex"));
+    let action = match line
+        .rsplit("action: ")
+        .next()
+        .and_then(|rest| rest.split([',', ' ', '}']).next())
+        .expect("the line has an action")
+    {
+        "block" => PatternAction::Block,
+        "flag" => PatternAction::Flag,
+        other => panic!("unknown action {other}"),
+    };
+    PatternSpec::new(id, regex, action)
+}
+
+/// The patterns of `secrets.patterns` in the security policy, in the policy's order.
+pub fn policy_patterns() -> Vec<PatternSpec> {
+    let patterns: Vec<PatternSpec> = POLICY
+        .split("\nsecrets:\n")
+        .nth(1)
+        .and_then(|secrets| secrets.split("  patterns:\n").nth(1))
+        .and_then(|rest| rest.split("  entropy_heuristic:").next())
+        .expect("the policy has a secrets section with patterns")
+        .lines()
+        .map(str::trim)
+        .filter(|line| line.starts_with("- { id: "))
+        .map(pattern_from_line)
+        .collect();
+    assert!(
+        patterns.len() >= 20,
+        "the policy reader found too few patterns"
+    );
+    patterns
+}
+
+/// A redactor with the policy's patterns and no registered secret, as the composition root builds
+/// it before it registers the factory's own values.
+pub fn policy_redactor() -> Arc<Redactor> {
+    Arc::new(
+        Redactor::builder()
+            .patterns(policy_patterns())
+            .build()
+            .expect("the policy patterns compile"),
+    )
+}
+
+/// The `Scrub` seam over [`policy_redactor`].
+pub fn policy_scrubber() -> Arc<dyn Scrub> {
+    Arc::new(RedactorScrubber::new(policy_redactor()))
+}
+
+/// Standard base64 with padding. The leak checks look for a canary in this form, and the crate
+/// under test has no encoder of its own to reuse.
+pub fn base64(bytes: &[u8]) -> String {
+    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::new();
+    for chunk in bytes.chunks(3) {
+        let n = chunk
+            .iter()
+            .enumerate()
+            .fold(0u32, |acc, (i, b)| acc | (u32::from(*b) << (16 - 8 * i)));
+        for i in 0..4 {
+            if i <= chunk.len() {
+                out.push(ALPHABET[((n >> (18 - 6 * i)) & 63) as usize] as char);
+            } else {
+                out.push('=');
+            }
+        }
+    }
+    out
 }
 
 /// The conventions page. The tests compare its tables with the constants in the crate, so the

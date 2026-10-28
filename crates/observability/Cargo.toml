@@ -13,6 +13,10 @@ publish.workspace = true
 # together: tracing-opentelemetry 0.34 requires opentelemetry ^0.33, and the SDK and exporter
 # are released in step with the API crate. A bump is a deliberate change to all of them at once.
 [dependencies]
+# The one redactor (`domain::redaction`) and the identifier and trace context types (ADR 0013).
+# `domain` is the only workspace crate this one may depend on (docs/architecture/
+# crate-dependency-rules.json).
+factory-domain.workspace = true
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", default-features = false, features = [
     "std",

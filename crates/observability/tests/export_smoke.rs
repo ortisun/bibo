@@ -10,6 +10,7 @@
 
 mod common;
 
+use factory_observability::redact::Scrub;
 use factory_observability::spans::{self, Job};
 use factory_observability::telemetry::{TelemetryConfig, build_pipeline};
 use std::collections::HashMap;
@@ -161,7 +162,11 @@ fn read_chunked(reader: &mut impl BufRead) -> io::Result<Vec<u8>> {
 }
 
 fn config_for(receiver: &Receiver) -> TelemetryConfig {
-    TelemetryConfig::from_lookup("factory-smoke", "9.9.9", |key| match key {
+    config_with(receiver, common::policy_scrubber())
+}
+
+fn config_with(receiver: &Receiver, scrubber: Arc<dyn Scrub>) -> TelemetryConfig {
+    TelemetryConfig::from_lookup("factory-smoke", "9.9.9", scrubber, |key| match key {
         "OTEL_EXPORTER_OTLP_ENDPOINT" => Some(receiver.endpoint()),
         "FACTORY_ENV" => Some("smoke".to_string()),
         _ => None,
@@ -223,10 +228,13 @@ fn a_span_reaches_a_local_otlp_receiver() {
 #[test]
 fn a_scrubber_supplied_in_the_config_is_the_one_that_runs_on_exported_spans() {
     let receiver = Receiver::start();
-    let config = config_for(&receiver).with_scrubber(Arc::new(common::ReplaceScrubber {
-        from: "needle",
-        to: "haystack",
-    }));
+    let config = config_with(
+        &receiver,
+        Arc::new(common::ReplaceScrubber {
+            from: "needle",
+            to: "haystack",
+        }),
+    );
     let pipeline = build_pipeline(&config, io::sink).expect("pipeline builds");
     pipeline.in_scope(|| {
         let job = spans::job_span(&Job {
@@ -292,10 +300,11 @@ fn a_dead_collector_does_not_stop_the_process() {
             .unwrap_or_else(|error| panic!("BLOCKED: cannot open a local port: {error}"));
         listener.local_addr().unwrap().port()
     };
-    let config = TelemetryConfig::from_lookup("factory-smoke", "9.9.9", |key| {
-        (key == "OTEL_EXPORTER_OTLP_ENDPOINT").then(|| format!("http://127.0.0.1:{port}"))
-    })
-    .unwrap();
+    let config =
+        TelemetryConfig::from_lookup("factory-smoke", "9.9.9", common::policy_scrubber(), |key| {
+            (key == "OTEL_EXPORTER_OTLP_ENDPOINT").then(|| format!("http://127.0.0.1:{port}"))
+        })
+        .unwrap();
     let pipeline = build_pipeline(&config, io::sink).expect("building does not need a collector");
     pipeline.in_scope(|| {
         drop(tracing::info_span!("factory.job"));

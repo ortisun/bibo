@@ -5,7 +5,7 @@ use factory_observability::guard::{
     AttributeGuard, GuardSnapshot, SCRUBBER_UNAVAILABLE, TRUNCATION_MARKER,
 };
 use factory_observability::names::{self, MAX_ATTRIBUTE_VALUE_BYTES, ShapeError, attr, span};
-use factory_observability::redact::{PolicyPatternScrubber, Scrub, ScrubError};
+use factory_observability::redact::{Scrub, ScrubError};
 use factory_observability::spans::{self, Agent, Attempt, Gate, Job, StageRun, ToolCall};
 use factory_observability::trace::{self, SpanProcessing};
 use opentelemetry::Value;
@@ -15,6 +15,8 @@ use std::borrow::Cow;
 use std::sync::Arc;
 use tracing::info_span;
 use tracing_subscriber::prelude::*;
+
+mod common;
 
 const CORRELATION: &str = "0192f3a4-7b1c-7d3e-9a52-1c8f0e4b6a77";
 const JOB: &str = "0192f3a4-7b1c-7d3e-9a52-1c8f0e4b6a78";
@@ -27,7 +29,7 @@ struct Harness {
 
 impl Harness {
     fn new() -> Self {
-        Self::with_scrubber(Arc::new(PolicyPatternScrubber::new()))
+        Self::with_scrubber(common::policy_scrubber())
     }
 
     fn with_scrubber(scrubber: Arc<dyn Scrub>) -> Self {
@@ -237,8 +239,7 @@ fn a_long_value_is_cut_and_marked() {
 #[test]
 fn a_cut_never_splits_a_multi_byte_character() {
     // 'e with acute' is two bytes, so a limit of 255 falls inside a character.
-    let guard =
-        AttributeGuard::new(Arc::new(PolicyPatternScrubber::new())).with_max_value_bytes(255);
+    let guard = AttributeGuard::new(common::policy_scrubber()).with_max_value_bytes(255);
     let harness = Harness::with_guard(guard);
     harness.run(|| {
         drop(info_span!(

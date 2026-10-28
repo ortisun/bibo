@@ -1,9 +1,9 @@
 # Observability conventions
 
-- Status: Slice 0 baseline. The names and tables below are checked by tests in `crates/observability`. No factory service records them yet; the call sites arrive in Slice 1.
+- Status: Slice 1. The names and tables below are checked by tests in `crates/observability` and by the repository-wide ST-07 scan in `xtask`. The redactor is connected and a job is one trace (sections 3 and 12). The decisions are those of [ADR 0013](../adr/0013-telemetry-wiring.md), which is pending human confirmation as item 14 of [ADR 0009](../adr/0009-operating-defaults-pending-confirmation.md).
 - Owner: observability. Reviewer: software architect.
-- Package: `s0-telemetry-baseline`. The Slice 1 package `s1-observability-instrumentation` verifies the call sites against this page.
-- Related: architecture decision record (ADR) [0004](../adr/0004-event-model.md) for domain events, [secrets and credentials](../security/secrets-and-credentials.md) for redaction, [`policies/security.yaml`](../../policies/security.yaml) for the secret patterns.
+- Packages: `s0-telemetry-baseline` fixed the names, `s1-telemetry-wiring` connected the redactor and added the job trace context, and `s1-observability-instrumentation` verifies the call sites against this page.
+- Related: architecture decision record (ADR) [0004](../adr/0004-event-model.md) for domain events, [0013](../adr/0013-telemetry-wiring.md) for the telemetry wiring, [secrets and credentials](../security/secrets-and-credentials.md) for redaction, [`policies/security.yaml`](../../policies/security.yaml) for the secret patterns.
 
 ## 1. What this page fixes
 
@@ -22,14 +22,25 @@ The tables on this page are the contract. The tests in `crates/observability` re
 
 ## 3. Spans
 
-Each job produces one tree of spans. The job span is the root, a stage run hangs off it, an attempt hangs off the stage run, and the agent, tool call and gate spans hang off the attempt or the stage run.
+Each job produces one trace. In it, each stretch of work on the job has a `factory.job` span (see "One job, one trace" below). A stage run hangs off that span, an attempt hangs off the stage run, and the agent, tool call and gate spans hang off the attempt or the stage run.
+
+### One job, one trace
+
+A job lives for hours or days, across restarts and across the API and the worker, and a span is exported only when it ends. No span can last for the whole job, so a job is made one trace in another way: its trace context is derived from the job id (ADR 0013, decision 3).
+
+- The **trace id** is the 32 lowercase hex characters of the job's UUID. The **root span id** is the first 16 hex characters of the SHA-256 of the text `factory.job` followed by the job id. The flags are `01`. `domain::values::Traceparent::for_job` computes it, and any process can, so nothing is stored.
+- Each process that works on a job opens a `factory.job` span for its **stretch** of work: the API while it handles a command on the job, the worker while it holds a claim. The stretch span's remote parent is the derived context. Use `factory_observability::spans::job_stretch_span`, which takes the job id as a `JobId` so the trace cannot be derived from a string by mistake. The composition roots call it through `factory_composition::telemetry::job_stretch`.
+- The derived root span is never exported. A backend shows the stretches as children of a missing parent inside one trace. A job therefore has several `factory.job` spans in one trace, one for each stretch, and a search by `factory.job_id` finds them all.
+- The engine writes the same derived `traceparent` into each outbox event. It names the job's trace, not the span that caused the event; `causation_id` does that.
+- Stage run, attempt, agent, tool call and gate spans that the engine creates inside the stretch take it as their parent and join the trace. The engine crate cannot import this crate, so the stretch is opened by its caller.
+- Without a collector the stretch is a plain `tracing` span and nothing is exported.
 
 A span must carry every attribute in its "required" column when it ends. Required attributes that are only known at the end of the work, such as `factory.outcome`, are set just before the span closes.
 
 <!-- table:spans -->
 | Span | Required attributes | Meaning |
 |---|---|---|
-| `factory.job` | `factory.correlation_id`, `factory.job_id`, `factory.tenant_id` | One request from admission to a terminal state. |
+| `factory.job` | `factory.correlation_id`, `factory.job_id`, `factory.tenant_id` | One stretch of work on a job in one process. All stretches of a job are in one trace. |
 | `factory.stage_run` | `factory.correlation_id`, `factory.job_id`, `factory.stage_run_id`, `factory.stage_kind` | One execution of one stage kind. |
 | `factory.attempt` | `factory.correlation_id`, `factory.job_id`, `factory.stage_run_id`, `factory.attempt_id`, `factory.attempt_number`, `factory.outcome` | One try at a stage run, owned by one worker. |
 | `factory.agent` | `factory.correlation_id`, `factory.job_id`, `factory.attempt_id`, `factory.agent_id`, `factory.outcome` | One agent invocation inside an attempt. |
@@ -212,9 +223,11 @@ Telemetry leaves the process and is kept by other systems. The default is to rec
 Four mechanisms enforce this, each tested:
 
 1. **An allowlist of names.** Only the attribute keys in the table in section 4 leave the process. The exporter drops any other key and counts the drop. A first drop of each key is noted in the diagnostic log, by key name only. Check ST-07 in the [negative test catalog](../security/negative-test-catalog.md) is this rule.
-2. **A scrubber.** Every string that remains, and every span name, event name and log line, passes through a scrubber that removes the secret patterns listed under `secrets.patterns` in [`policies/security.yaml`](../../policies/security.yaml). Each match is replaced by `[REDACTED:` followed by the pattern id and a closing bracket. A test reads the policy file and fails if the scrubber and the policy list different patterns. The entropy heuristic and the registry of the factory's own secret values are not applied here; the redaction work package adds them.
+2. **The redactor.** Every string that remains, and every span name, event name and log line, passes through the factory's one redactor, `domain::redaction::Redactor`, behind the `Scrub` trait. The composition root builds it from the loaded security policy ([`policies/security.yaml`](../../policies/security.yaml): the patterns, the entropy settings, the encodings) and registers the factory's own secret values with it, in every encoding the policy lists. Each match is replaced by `[REDACTED:` followed by the pattern id or the label of the registered value and a closing bracket. This crate holds no pattern of its own; an earlier copy of the patterns and the test that kept it equal to the policy are gone. A value registered after start-up, such as a job token the broker issues, is found at once, because the pipeline holds the same redactor. The entropy heuristic only raises a flag in the redactor and does not change the text.
 3. **A length limit.** A string attribute longer than 256 bytes is cut and ends with `[TRUNCATED]`. Identifiers and digests fit. A prompt or an issue body does not. The scrubber runs first, so a secret that straddles the cut is removed whole.
-4. **Fail closed.** If the scrubber cannot run, the value is replaced and the original is never written. The text of an error status is always blanked.
+4. **Fail closed.** If the redactor fails on a value (the value is larger than its limit, or its checks failed), a span value is replaced by `[REDACTED:scrubber_unavailable]`, a log line is replaced by a fixed error line, and the original is never written. The text of an error status is always blanked.
+
+There is no way to start the pipeline without a scrubber. `TelemetryConfig::new` and its two readers, `from_env` and `from_lookup`, take it as an argument; there is no default and no setter, so a binary that has no redactor does not compile. Tests in `crates/observability` pin the shape of these functions. Other tests put canary secrets into a span attribute, a span name, a span event, an error status and log lines (negative test NT-SEC-01, telemetry sinks) and read what an in-memory exporter and a captured writer received.
 
 These mechanisms are a second line of defense. The first line is not putting the secret in the call in the first place.
 
@@ -223,9 +236,12 @@ These mechanisms are a second line of defense. The first line is not putting the
 A binary starts telemetry once, early in `main`, and keeps the guard until it exits. Library crates never start it.
 
 ```rust
-let config = TelemetryConfig::from_env("factory-worker", env!("CARGO_PKG_VERSION"))?;
+let scrubber = Arc::new(RedactorScrubber::new(redactor));
+let config = TelemetryConfig::from_env("factory-worker", env!("CARGO_PKG_VERSION"), scrubber)?;
 let _telemetry = factory_observability::telemetry::init(&config)?;
 ```
+
+The three binaries do not write this themselves. `factory_composition::telemetry::config_for` builds the configuration from the redactor of the composition root, and `telemetry::init` installs it. The redactor is the same `Arc` that every adapter and stage handler receives.
 
 | Variable | Meaning | Default |
 |---|---|---|
@@ -246,6 +262,8 @@ How it behaves:
 ## 10. Local stack
 
 [`infra/otel/`](../../infra/otel/README.md) holds a collector configuration, a Docker Compose file that starts the collector, VictoriaMetrics and Jaeger on the loopback address, and a script that checks the configuration with the pinned collector image. Its README says what was verified and when.
+
+For the first end-to-end run, the [runbook of first-run signals](runbook-first-run-signals.md) says which span, metric and log line to look at for a stuck lease, a stage over its deadline, a gate blocked by the environment, a job over budget and a redaction hit, and which of those signals no code records yet.
 
 ## 11. Dependencies
 
@@ -269,15 +287,31 @@ Choices that go beyond the defaults:
 - **The SDK's `internal-logs` feature is on.** Without it a dead collector fails silently. With it the SDK writes export failures to the diagnostic log through `tracing`.
 - **The SDK's `spec_unstable_metrics_views` feature is on.** It provides the call that removes unlisted labels from a metric. The name says the specification for that part is not final, so an upgrade of the SDK must re-run the label tests in `crates/observability/tests/metrics.rs`.
 
-The crate does not use the `regex` crate, because the dependency rules do not allow it here. The secret scrubber is written by hand instead, and a test keeps it equal to the patterns in the security policy.
+The crate depends on one workspace crate, `factory-domain`, which the dependency rules allow. It supplies the redactor behind the `Scrub` seam, the `JobId` type and the derived `Traceparent`. The crate does not use the `regex` crate itself; the redactor, which does, lives in `domain`. `tracing-opentelemetry` and `opentelemetry`, already dependencies, set the remote parent of the job stretch span.
 
-## 12. What is not done
+## 12. Decided, and what is not done
 
-These items are known gaps, not oversights.
+### Decided (ADR 0013)
 
-- **One redactor.** The security documents call for a single `Redactor` in `domain::redaction`, with a registry of the factory's own secret values and a sliding window for secrets split across chunks. That work belongs to package `s1-redaction`. Until it lands, this crate carries its own scrubber behind the `Scrub` trait. When it lands, the composition root passes the real redactor in with `TelemetryConfig::with_scrubber`, and this crate's scrubber can be removed. A test shows that a scrubber supplied this way runs on both logs and exported spans.
-- **Peer crates cannot use these constants.** The dependency rules forbid a dependency between two crates in the application and adapter ring. `workflow`, `runtime`, `sandbox` and the others therefore write the same strings in their own `tracing` calls. The tables here are the reference, and package `s1-observability-instrumentation` checks the spans they produce with `check_span_shape`. A repository-wide scan for ST-07 does not exist yet.
-- **No trace context in domain events.** The event schema has an optional `traceparent`. Writing it from the current span, and continuing a trace from it after a restart, is not done. A job outlives any one process, so the job span cannot be one long-lived span in memory. How to link the pieces is a Slice 1 design question.
+- **One redactor.** The factory has one `Redactor`, in `domain::redaction`. This crate implements the `Scrub` seam over it (`RedactorScrubber`), and the stopgap scrubber with the test that kept it equal to the policy was deleted. The scrubber is a required argument of `TelemetryConfig::new`. The composition root builds the redactor from the loaded policy and the registry of secret values and passes it to every binary through `factory_composition::telemetry::config_for`.
+- **Peer crates write the names as literals.** The dependency rules forbid a dependency between two crates in the application and adapter ring, and a constant cannot name a field in a `tracing` macro. `workflow`, `runtime`, `sandbox` and the others write the same strings in their own `tracing` calls. The tables here are the reference. The repository-wide ST-07 scan in `xtask check-architecture` checks the literals against the tables, and `s1-observability-instrumentation` checks the spans they produce.
+- **A job is one trace, found from its id.** No span is held open for a job. Each stretch of work opens a `factory.job` span whose remote parent is derived from the job id (section 3), and the engine writes the derived `traceparent` into each outbox event.
+
+### Not done
+
+- **Consumers do not continue the trace.** Consumers of outbox events do not yet continue the trace from `traceparent`, and there is no stitched job timeline in the dashboard. Both are Slice 2 work in ADR 0013. How a given backend draws a stretch whose parent was never exported has not been checked against a real Jaeger; the generated trace of the first end-to-end run is to be read once by hand.
+- **Gap OBS-1: a second URL with a password on one log line can escape the redactor.** The `url_with_credentials` pattern ends at white space or a slash, so on a JSON log line its match runs past the closing quote. When the same URL stands twice on one line, the first match ends inside the second URL, after its scheme, and the regex engine does not report overlapping matches, so the second password stays in the line. A registered value, a bearer token and a single URL are redacted. The owner is `domain::redaction` or the pattern in the security policy. The failing test is `a_url_with_a_password_twice_on_one_log_line_is_redacted` in `crates/observability/tests/canary.rs`, marked as a confirmed gap and ignored so the build stays green.
+- **Confirmed gaps in the call sites.** `s1-observability-instrumentation` checked the spans, metrics and log fields that other packages write against this page. Each gap has a test that fails today. It is marked as ignored, with the gap number in the reason, so the build stays green. The doc comment of the test gives the owner, the smallest change and the command that runs it. `cargo nextest run --workspace --run-ignored only` runs them all. The gaps are:
+  - OBS-2: the engine opens no `factory.stage_run` span (`crates/workflow`, `src/engine/attempt.rs`).
+  - OBS-3: no code opens a `factory.agent` span (`crates/workflow`, where the engine builds the ports of a handler).
+  - OBS-4: no code opens a `factory.tool_call` span (`crates/runtime`).
+  - OBS-5: nothing records `factory_queue_depth` (`crates/workflow`, `src/scheduler/claim.rs`).
+  - OBS-6: nothing records `factory_stage_duration_seconds` (`crates/workflow`, `src/engine/gate.rs` and `failure.rs`).
+  - OBS-7: nothing records `factory_spend_usd_total` (`crates/workflow`, `src/engine/attempt.rs`).
+  - OBS-8: `factory_stage_runs_total` is recorded only for `passed`, so the error-rate query on this page returns zero (`crates/workflow`, `src/engine/gate.rs`).
+  - OBS-9: three log fields hold text chosen by a repository or a tool (`crates/sandbox` and `crates/runtime`).
+  - OBS-10: no metric counts redactions (`crates/observability`; adding a metric needs the architect's review).
+  - OBS-11: the attempt span does not record `factory.error_class` (`crates/workflow`, `src/engine/attempt.rs`).
 - **No OTLP logs.** Logs go to standard error. The policy names `otel_log_records` as a sink, and the pipeline would need the `opentelemetry-appender-tracing` crate, which is not on the allow list.
-- **No alert rules or dashboards.** This package fixes the names and the data. Rules and dashboards come after the first end-to-end run shows what values the metrics take.
-- **Example only.** The `emit_sample` example in the crate sends fake identifiers to a collector. No factory service records these spans or metrics yet.
+- **No alert rules or dashboards.** This page fixes the names and the data. Rules and dashboards come after the first end-to-end run shows what values the metrics take.
+- **The sample is a sample.** The `emit_sample` example in the crate sends fake identifiers to a collector, with a redactor that has no pattern.

@@ -6,15 +6,28 @@
 //! OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:4318 cargo run -p factory-observability --example emit_sample
 //! ```
 
+use factory_domain::redaction::Redactor;
+use factory_observability::redact::RedactorScrubber;
 use factory_observability::spans::{self, Agent, Attempt, Gate, Job, StageRun, ToolCall};
 use factory_observability::telemetry::{TelemetryConfig, init};
+use std::sync::Arc;
 
 const CORRELATION: &str = "0192f3a4-7b1c-7d3e-9a52-1c8f0e4b6a77";
 const JOB: &str = "0192f3a4-7b1c-7d3e-9a52-1c8f0e4b6a78";
 
 fn main() {
-    let config = TelemetryConfig::from_env("factory-sample", env!("CARGO_PKG_VERSION"))
-        .unwrap_or_else(|error| panic!("bad telemetry settings: {error}"));
+    // The sample sends fake identifiers only, so a redactor with no pattern and no registered
+    // value is enough here. A real binary passes the redactor that the composition root builds
+    // from the security policy.
+    let redactor = Redactor::builder()
+        .build()
+        .unwrap_or_else(|error| panic!("cannot build the redactor: {error}"));
+    let config = TelemetryConfig::from_env(
+        "factory-sample",
+        env!("CARGO_PKG_VERSION"),
+        Arc::new(RedactorScrubber::new(Arc::new(redactor))),
+    )
+    .unwrap_or_else(|error| panic!("bad telemetry settings: {error}"));
     let guard = init(&config).unwrap_or_else(|error| panic!("cannot start telemetry: {error}"));
 
     run_sample_job();

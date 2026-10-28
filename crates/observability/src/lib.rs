@@ -11,4 +11,5 @@ pub mod names;
 pub mod redact;
 pub mod spans;
 pub mod telemetry;
+pub mod testing;
 pub mod trace;

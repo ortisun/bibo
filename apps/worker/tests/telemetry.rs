@@ -15,6 +15,7 @@ use factory_composition::system::{RandomIds, Shutdown, TokioTicker};
 use factory_composition::telemetry::config_for;
 use factory_domain::ids::TenantId;
 use factory_domain::redaction::Redactor;
+use factory_observability::redact::RedactorScrubber;
 use factory_observability::telemetry::{TelemetryConfig, build_pipeline};
 use factory_ports::clock::IdGenerator;
 use factory_ports::store::Store;
@@ -89,14 +90,20 @@ fn telemetry_gets_the_real_redactor() {
     );
     assert!(cleaned.contains("[REDACTED:broker_keys]"), "{cleaned}");
 
-    // The deliberate break: a binary that forgets the scrubber starts with the stopgap one, which
-    // knows the patterns and none of the held values. The line leaks, and the test above would
-    // have failed had `config_for` not passed the real one.
-    let without = TelemetryConfig::new("factory-worker-test", "0.0.0");
+    // The deliberate break: a configuration whose redactor was never given the held value. The
+    // scrubber is a required argument, so a binary cannot leave it out, but it can pass a redactor
+    // that does not know the registry. The line leaks, and the test above would have failed had
+    // `config_for` not passed the redactor of the composition root.
+    let unaware = Arc::new(Redactor::builder().build().expect("builds"));
+    let without = TelemetryConfig::new(
+        "factory-worker-test",
+        "0.0.0",
+        Arc::new(RedactorScrubber::new(unaware)),
+    );
     let leaked = log_line(&without);
     assert!(
         leaked.contains(held),
-        "the stopgap scrubber was expected to miss it: {leaked}"
+        "a redactor that does not know the value was expected to miss it: {leaked}"
     );
 }
 
