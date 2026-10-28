@@ -1098,7 +1098,7 @@ impl Engine {
                 FailureClass::TimedOut => {
                     let facts = GuardFacts::Deadline(DeadlineFacts {
                         now,
-                        attempt_deadline: claimed.deadline_at,
+                        attempt_deadline: attempt.value.deadline_at,
                     });
                     let cleared = clear(Guard::DeadlinePassed, &facts)?;
                     // A timeout is a status of the attempt, not a failure class in its row.

@@ -257,6 +257,20 @@ impl World {
         WorkerId::new(name).expect("a worker id")
     }
 
+    /// The time that the store's own rules compare stored times with (leases, deadlines,
+    /// back-off): what a time written now is relative to. On the in-memory store it is the clock;
+    /// on a real database it keeps running between two reads.
+    pub async fn database_time(&self) -> factory_domain::values::Timestamp {
+        let mut tx = self
+            .store
+            .begin(TenantScope::new(self.tenant))
+            .await
+            .expect("a tx");
+        let now = tx.database_time().await.expect("the database time");
+        tx.rollback().await.expect("rollback");
+        now
+    }
+
     /// The concrete in-memory store. The stage rigs build more fakes on top of it.
     ///
     /// # Panics

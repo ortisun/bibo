@@ -338,7 +338,6 @@ async fn a_job_whose_scope_has_a_stage_without_a_handler_is_not_admitted() {
 
 use factory_domain::machines::failure::FailureClass;
 use factory_domain::machines::retry::{AttemptDisposition, EscalationCause};
-use factory_domain::values::Timestamp;
 use factory_workflow::engine::AttemptOutcome;
 use factory_workflow::handlers::StageError;
 use support::Step;
@@ -591,7 +590,9 @@ async fn a_tool_error_is_retried_after_a_back_off_that_the_claim_honours() {
         s.tweaks.backoff_initial_ms = 90_000;
         s.steps.push_back(Step::Fail(StageError::Tool));
     });
+    let before = world.database_time().await;
     let (_, outcome) = world.run_next("worker-1").await;
+    let after = world.database_time().await;
     assert_eq!(
         outcome,
         AttemptOutcome::Failed {
@@ -603,9 +604,11 @@ async fn a_tool_error_is_retried_after_a_back_off_that_the_claim_honours() {
     let run = intake(&view);
     assert_eq!(run.status, StageRunStatus::Ready);
     let not_before = run.not_before.expect("a back-off");
-    assert_eq!(
-        not_before,
-        Timestamp::parse("2026-10-27T08:31:30Z").expect("an instant")
+    assert_back_off(
+        &not_before,
+        &before,
+        &after,
+        std::time::Duration::from_secs(90),
     );
 
     // The back-off has not ended. Meaning changed with ports v1.1: the store does not offer a
@@ -640,25 +643,48 @@ async fn the_back_off_doubles_with_each_failure() {
         Step::Fail(StageError::Provider),
         Step::Fail(StageError::Provider),
     ]);
-    let wait_after_failure = |view: factory_workflow::engine::JobView| {
-        let not_before = intake(&view).not_before.expect("a back-off");
-        factory_ports::clock::duration_between(
-            &factory_ports::clock::Clock::now(world.clock.as_ref()),
-            &not_before,
-        )
-        .expect("in the future")
-    };
+    let before = world.database_time().await;
     world.run_next("worker-1").await;
-    assert_eq!(
-        wait_after_failure(world.view(job).await),
-        std::time::Duration::from_secs(5)
+    let after = world.database_time().await;
+    let not_before = intake(&world.view(job).await)
+        .not_before
+        .expect("a back-off");
+    assert_back_off(
+        &not_before,
+        &before,
+        &after,
+        std::time::Duration::from_secs(5),
     );
     // The lease of the first attempt lapses, then the second attempt fails in turn.
     world.advance_time(61).await;
+    let before = world.database_time().await;
     world.run_next("worker-1").await;
-    assert_eq!(
-        wait_after_failure(world.view(job).await),
-        std::time::Duration::from_secs(10)
+    let after = world.database_time().await;
+    let not_before = intake(&world.view(job).await)
+        .not_before
+        .expect("a back-off");
+    assert_back_off(
+        &not_before,
+        &before,
+        &after,
+        std::time::Duration::from_secs(10),
+    );
+}
+
+/// A back-off is set from the store's own clock, so it ends `delay` after the moment of the move,
+/// which lies between two readings of that clock taken around it. On the in-memory store the
+/// clock stands still and the two readings are equal, so the check is exact there.
+fn assert_back_off(
+    not_before: &factory_domain::values::Timestamp,
+    before: &factory_domain::values::Timestamp,
+    after: &factory_domain::values::Timestamp,
+    delay: std::time::Duration,
+) {
+    let earliest = before.checked_add(delay).expect("a time");
+    let latest = after.checked_add(delay).expect("a time");
+    assert!(
+        *not_before >= earliest && *not_before <= latest,
+        "the back-off ends at {not_before}, expected between {earliest} and {latest}"
     );
 }
 
@@ -2971,10 +2997,16 @@ async fn production_mode_refuses_fakes() {
     let mut config = world.config.clone();
     config.mode = ExecutionMode::Production;
     let refused = Engine::new(world.deps.clone(), config, world.handlers.clone());
+    // The store is checked first. A real store passes, and the first fake is then the clock.
+    let first = if world.store.fidelity() == Fidelity::Fake {
+        "store"
+    } else {
+        "clock"
+    };
     assert_eq!(
         refused.err(),
         Some(EngineError::FakeRefused(FakeRefused {
-            component: "store".to_owned()
+            component: first.to_owned()
         }))
     );
     // Test mode takes the same parts, and the engine knows its records are fake.
@@ -3083,12 +3115,17 @@ async fn restart_resumes_without_duplication() {
     let claimed = world.claim_one("worker-a").await;
     {
         // Engine A starts the attempt and is dropped before it finishes: the future is polled
-        // once, runs to its first wait with the handler still running, and is dropped there.
+        // until the handler has started and is waiting, and is dropped there. On the in-memory
+        // store that takes one poll; a real database needs several, because every call to it
+        // waits for the network.
         let mut work = std::pin::pin!(world.engine.run_attempt(&claimed));
-        tokio::select! {
-            biased;
-            _ = &mut work => {}
-            () = std::future::ready(()) => {}
+        let script = world.script(StageKind::Specification);
+        while script.executed().is_empty() {
+            tokio::select! {
+                biased;
+                _ = &mut work => break,
+                () = tokio::task::yield_now() => {}
+            }
         }
     }
     let view = world.view(job).await;
