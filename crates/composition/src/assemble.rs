@@ -114,11 +114,11 @@ pub fn blocked_seams() -> Vec<BlockedSeam> {
     vec![
         BlockedSeam {
             seam: "DeliverySources::tree_of",
-            reason: "no port exposes the tree id of a commit and only the sandbox crate may start git (DEP-10): needs JobRepo::tree_of in the ports and the sandbox adapter",
+            reason: "implemented over JobRepo::tree_of (pending architect confirmation), but only wired where the handlers are registered with StoreDeliverySources::with_repository, and no worker assembly registers them yet",
         },
         BlockedSeam {
             seam: "DeliverySources::current_values",
-            reason: "the gate definition hash is computed by private code of the validation stage: needs a public function there, so that the delivery stage and the validation stage cannot disagree",
+            reason: "implemented over validation::current_values, but only wired where the handlers are registered with StoreDeliverySources::with_repository, and no worker assembly registers them yet",
         },
     ]
 }

@@ -155,6 +155,60 @@ pub fn path_rules(policy: &SecurityPolicy) -> PathRules {
     PathRules::new(rules)
 }
 
+/// The path rules of the specification stage: those of [`path_rules`], with the files that the
+/// allowed Spec Kit skills write taken out of the protection groups.
+///
+/// The policy protects `.specify/**` (`factory_config`, `deny_write`), and the same policy lists
+/// `.specify/feature.json` among the writes of `speckit.specify`
+/// (`agent_stage_profiles.profiles[specification].skills.allowed`). With the plain rules the host
+/// refuses the pointer the skill must leave, the audit says `protected-path-changed`, and the
+/// stage is blocked on its first run. The policy marks the one skill that does need a person's
+/// exception (`protected_path_exception_required`, the constitution); every other write it lists
+/// is lifted here, for this stage only, and nothing else under `.specify/` is.
+#[must_use]
+pub fn specification_path_rules(policy: &SecurityPolicy) -> PathRules {
+    let plain = path_rules(policy);
+    let Some(skills) = policy
+        .agent_stage_profiles
+        .profiles
+        .iter()
+        .find(|profile| {
+            profile
+                .applies_to_stage_kinds
+                .iter()
+                .any(|kind| kind == "SPECIFICATION")
+        })
+        .and_then(|profile| profile.skills.as_ref())
+    else {
+        return plain;
+    };
+    let mut rules = plain.rules().to_vec();
+    for skill in skills
+        .allowed
+        .iter()
+        .filter(|skill| skill.protected_path_exception_required != Some(true))
+    {
+        for write in &skill.writes {
+            let Ok(glob) = RepoGlob::new(write.pattern()) else {
+                continue;
+            };
+            for group in &policy.protected_paths.groups {
+                if matches!(group.applies_to, AppliesTo::FactoryRepo) {
+                    continue;
+                }
+                rules.push((
+                    group.id.clone(),
+                    PathRule::Reinclude {
+                        glob: glob.clone(),
+                        group: group.id.clone(),
+                    },
+                ));
+            }
+        }
+    }
+    PathRules::new(rules)
+}
+
 fn remote_of(config: &RemoteConfig) -> Result<RemoteLocation, ProviderError> {
     Ok(match config.remote().map_err(|_| ProviderError::Remote)? {
         Remote::Https(host) => RemoteLocation::Https { host },

@@ -66,12 +66,14 @@ use factory_ports::store::{
     ApprovalChannel, AuditAction, AuditActor, AuditDecision, AuditFilter, ConstraintRule,
     JobFilter, NewAuditEvent, PrincipalKind, Store, StoreError,
 };
-use factory_workflow::commands::{Actor, JobCommand};
+use factory_workflow::commands::{Actor, Decision as EngineDecision, JobCommand, Subject};
 use factory_workflow::engine::{Engine, EngineError};
+use factory_workflow::handlers::RunIdentity;
 use factory_workflow::stages::approval::{ApprovalCommand, ApprovalService, Sender};
 use factory_workflow::stages::approval::{
     ApprovalSources, Outcome, ServiceError, Verb, VerbParse, parse_verb,
 };
+use factory_workflow::stages::specification::SpecDrafts;
 
 use crate::commands::{CommandContext, ParsedDecision};
 use crate::hooks::BeforeClaim;
@@ -240,6 +242,8 @@ pub enum Reason {
     Incomplete,
     /// The pull request moved after the decision was asked for.
     NewCommit,
+    /// The specification draft is not the one the person approved.
+    DraftMoved,
     /// The base branch moved.
     BaseMoved,
     /// What the person saw is not what the pull request holds.
@@ -260,7 +264,7 @@ pub enum Reason {
 
 impl Reason {
     /// Every reason, so that a sentence can be turned back into its code.
-    pub const ALL: [Reason; 19] = [
+    pub const ALL: [Reason; 20] = [
         Self::GaveUp,
         Self::NoJob,
         Self::Malformed,
@@ -272,6 +276,7 @@ impl Reason {
         Self::NoStageRun,
         Self::Incomplete,
         Self::NewCommit,
+        Self::DraftMoved,
         Self::BaseMoved,
         Self::StaleBinding,
         Self::EvidenceMoved,
@@ -297,6 +302,7 @@ impl Reason {
             Self::NoStageRun => "The decision names no stage run.",
             Self::Incomplete => "The decision is not complete.",
             Self::NewCommit => "The pull request changed after the decision was asked for.",
+            Self::DraftMoved => "The specification draft is not the one the person approved.",
             Self::BaseMoved => "The base branch moved after the decision was asked for.",
             Self::StaleBinding => "What the person saw is not what the pull request holds now.",
             Self::EvidenceMoved => "The evidence changed after the decision was asked for.",
@@ -323,6 +329,7 @@ impl Reason {
             Self::NoStageRun => "no_stage_run",
             Self::Incomplete => "incomplete",
             Self::NewCommit => "new_commit",
+            Self::DraftMoved => "draft_moved",
             Self::BaseMoved => "base_moved",
             Self::StaleBinding => "stale_binding",
             Self::EvidenceMoved => "evidence_moved",
@@ -695,6 +702,7 @@ pub struct ClaimWork {
     clock: Arc<dyn Clock>,
     max_age: Duration,
     per_pass: usize,
+    drafts: Option<Arc<dyn SpecDrafts>>,
     scans: Mutex<BTreeMap<TenantId, Scan>>,
 }
 
@@ -739,8 +747,19 @@ impl ClaimWork {
             clock: deps.clock,
             max_age: deps.max_age,
             per_pass: deps.per_pass.max(1),
+            drafts: None,
             scans: Mutex::new(BTreeMap::new()),
         }
+    }
+
+    /// Lets a person approve a specification draft. The hook reads the draft the stage kept
+    /// (`SpecDrafts`) so that an approval counts only for the commit the person names, and the
+    /// engine records the approval where `SpecApprovals` reads it. Without it an approval of a
+    /// specification is refused as out of place, as it was before.
+    #[must_use]
+    pub fn with_specification(mut self, drafts: Arc<dyn SpecDrafts>) -> Self {
+        self.drafts = Some(drafts);
+        self
     }
 
     /// One pass for one tenant: admit, then decide. Public so a test can run a pass without a loop.
@@ -1087,6 +1106,20 @@ impl ClaimWork {
         let Some(stage_run) = fields.stage_run else {
             return Verdict::Done(Reason::NoStageRun.into());
         };
+        // The specification stage asks a person before it freezes its draft. Its question has no
+        // pull request and no approval request: the approval stage writes those, much later.
+        if fields.verb == Verb::Approve {
+            match self.stage_facts(tenant, stage_run).await {
+                Ok(Some((StageKind::Specification, correlation))) => {
+                    return self
+                        .approve_specification(tenant, decision, command, correlation)
+                        .await;
+                }
+                Ok(Some(_)) => {}
+                Ok(None) => return Verdict::Done(Reason::NoStageRun.into()),
+                Err(Unreadable) => return Verdict::Later,
+            }
+        }
         let parsed = ParsedDecision {
             verb: fields.verb,
             reason: decision.reason.clone(),
@@ -1159,7 +1192,115 @@ impl ClaimWork {
         }
     }
 
+    /// A person's approval of a specification draft.
+    ///
+    /// The person names the commit that holds the draft they read (`head`) and the head of the
+    /// ledger they saw (`evidence`). The hook checks the commit against the draft the stage kept,
+    /// then asks the engine to record the approval: the engine writes the person's judgment on
+    /// the stage run, where [`SpecApprovals`](factory_workflow::stages::specification::SpecApprovals)
+    /// reads it, and sends the run back to `READY` so that its next attempt freezes that draft.
+    async fn approve_specification(
+        &self,
+        tenant: TenantId,
+        decision: &Pending,
+        command: CausationId,
+        correlation: CorrelationId,
+    ) -> Verdict {
+        let fields = &decision.fields;
+        let Some(stage_run) = fields.stage_run else {
+            return Verdict::Done(Reason::NoStageRun.into());
+        };
+        let Some(drafts) = &self.drafts else {
+            return Verdict::Done(Reason::WrongState.into());
+        };
+        let identity = RunIdentity {
+            tenant,
+            job: fields.job,
+            correlation,
+            stage_run,
+            kind: StageKind::Specification,
+        };
+        let draft = match drafts.load(&identity).await {
+            Ok(Some(draft)) => draft,
+            // The stage kept no draft: nothing was asked, so there is nothing to approve.
+            Ok(None) => return Verdict::Done(Reason::WrongState.into()),
+            Err(_) => return Verdict::Later,
+        };
+        let (Some(head), Some(evidence)) = (
+            fields.head.as_deref(),
+            fields
+                .evidence
+                .as_deref()
+                .and_then(|text| Sha256Digest::parse(text).ok()),
+        ) else {
+            return Verdict::Done(Reason::Incomplete.into());
+        };
+        if head != draft.commit.as_str() {
+            return Verdict::Done(Reason::DraftMoved.into());
+        }
+        let actor = Actor {
+            tenant,
+            principal: decision.principal,
+            command,
+        };
+        let decided = self
+            .engine
+            .decide(
+                &actor,
+                Subject {
+                    job: fields.job,
+                    stage_run,
+                },
+                EngineDecision::Approve {
+                    evidence_seen: evidence,
+                    warnings_decided: true,
+                },
+            )
+            .await;
+        match decided {
+            Ok(()) => Verdict::Done(Marked::Applied(
+                "The specification was approved. The stage will freeze that draft.".to_owned(),
+            )),
+            Err(EngineError::Duplicate) => Verdict::Done(Marked::Applied(
+                "The engine had applied this decision already.".to_owned(),
+            )),
+            Err(EngineError::NotAuthorized(_)) => Verdict::Done(Reason::NotAuthorized.into()),
+            // The only fact of the approval guard left to fail is the evidence the person saw.
+            Err(EngineError::GuardUnmet(_)) => Verdict::Done(Reason::EvidenceMoved.into()),
+            Err(EngineError::Illegal(_) | EngineError::Refused(_)) => {
+                Verdict::Done(Reason::WrongState.into())
+            }
+            Err(_) => Verdict::Later,
+        }
+    }
+
     // ---- reads -----------------------------------------------------------------------------
+
+    /// The kind of a stage run and the correlation id of its job, or `None` for a stage run the
+    /// tenant does not hold.
+    async fn stage_facts(
+        &self,
+        tenant: TenantId,
+        stage_run: StageRunId,
+    ) -> Result<Option<(StageKind, CorrelationId)>, Unreadable> {
+        let mut tx = self
+            .store
+            .begin(TenantScope::new(tenant))
+            .await
+            .map_err(|_| Unreadable)?;
+        let found = async {
+            let run = tx.get_stage_run(stage_run).await?;
+            let job = tx.get_job(run.value.job_id).await?;
+            Ok::<_, StoreError>((run.value.kind, job.value.correlation_id))
+        }
+        .await;
+        let _ = tx.rollback().await;
+        match found {
+            Ok(facts) => Ok(Some(facts)),
+            Err(StoreError::NotFound) => Ok(None),
+            Err(_) => Err(Unreadable),
+        }
+    }
 
     async fn sender_of(
         &self,

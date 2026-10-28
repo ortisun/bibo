@@ -113,6 +113,27 @@ impl ProjectManifestParser for YamlManifests {
     }
 }
 
+/// The validation stage reads the project manifest from the protected base commit, at
+/// `.factory/project.yaml` first and `.factory/project.json` second, and hands the bytes to its
+/// reader without saying which file they came from.
+///
+/// The reader the stage ships with (`JsonManifestReader`) reads JSON only, and the project manifest
+/// of every repository the factory has met is YAML (the fixture's is), so a reader that is JSON
+/// only makes the stage report "the gate definitions could not be read from the protected base
+/// commit" for a manifest that is fine. This reader is the contracts loader that repository
+/// intelligence already uses: the schema is checked, and a text is read as YAML first (JSON is
+/// YAML) and as JSON second.
+impl factory_workflow::stages::validation::ManifestReader for YamlManifests {
+    fn read(
+        &self,
+        bytes: &[u8],
+    ) -> Result<ProjectManifest, factory_workflow::stages::validation::ManifestRejected> {
+        self.parse(factory_workflow::gates::command::MANIFEST_PATH, bytes)
+            .or_else(|_| self.parse(factory_workflow::gates::command::MANIFEST_JSON_PATH, bytes))
+            .map_err(|_| factory_workflow::stages::validation::ManifestRejected)
+    }
+}
+
 // ------------------------------------------------------------------------------------------
 // AllowlistSource and the allowlist file
 // ------------------------------------------------------------------------------------------
