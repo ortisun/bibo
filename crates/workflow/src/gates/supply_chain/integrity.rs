@@ -752,13 +752,6 @@ impl Run<'_> {
             .union(&self.head.member_keys())
             .cloned()
             .collect();
-        let popular: Vec<(String, &String)> = self
-            .cx
-            .popular
-            .names()
-            .iter()
-            .map(|p| (normalize(p), p))
-            .collect();
         let touched: Vec<LockedPackage> = self
             .diff
             .added
@@ -797,44 +790,16 @@ impl Run<'_> {
                     format!("The package {name} comes from the public registry and has the name of an internal package."),
                 ));
             }
-            if let Some((_, lookalike)) = popular.iter().find(|(p, _)| near_miss(p, &wanted)) {
+            if let Some(lookalike) = self.cx.popular.lookalike(&wanted) {
                 self.push(Finding::warning(
                     check::SUSPECT_NAME,
                     None,
                     format!(
-                        "The package {name} is one edit away from the popular name {}.",
+                        "The package {name} looks like the popular name {}: one edit away, or the same name with a decoration.",
                         plain(lookalike, 80)
                     ),
                 ));
             }
         }
-    }
-}
-
-/// True when `a` and `b` differ and are one edit apart: one letter changed, added, dropped, or
-/// two neighbouring letters swapped. This is the rule of `DependencyPolicy`.
-fn near_miss(a: &str, b: &str) -> bool {
-    if a == b {
-        return false;
-    }
-    let (a, b): (Vec<char>, Vec<char>) = (a.chars().collect(), b.chars().collect());
-    if a.len().abs_diff(b.len()) > 1 {
-        return false;
-    }
-    let common = a.iter().zip(&b).take_while(|(x, y)| x == y).count();
-    let (ra, rb) = (
-        a.get(common..).unwrap_or_default(),
-        b.get(common..).unwrap_or_default(),
-    );
-    match ra.len().cmp(&rb.len()) {
-        std::cmp::Ordering::Equal => {
-            ra.get(1..) == rb.get(1..)
-                || (ra.len() >= 2
-                    && ra.first() == rb.get(1)
-                    && ra.get(1) == rb.first()
-                    && ra.get(2..) == rb.get(2..))
-        }
-        std::cmp::Ordering::Less => ra == rb.get(1..).unwrap_or_default(),
-        std::cmp::Ordering::Greater => ra.get(1..).unwrap_or_default() == rb,
     }
 }

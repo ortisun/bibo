@@ -251,17 +251,24 @@ pub fn parse_audit(stdout: &str) -> Result<AuditResult, AuditRefused> {
     })
 }
 
-/// True when `stdout` is a CycloneDX document.
+/// True when `stdout` is a CycloneDX document: the format is named, a specification version is
+/// given, and the list of components is there and holds at least `at_least` entries. A document
+/// that names the format and lists nothing is a shell, not a bill of materials.
 #[must_use]
-pub fn is_cyclonedx(stdout: &str) -> bool {
-    serde_json::from_str::<Value>(stdout)
-        .ok()
-        .and_then(|doc| {
-            doc.get("bomFormat")
-                .and_then(Value::as_str)
-                .map(str::to_owned)
-        })
-        .is_some_and(|format| format == "CycloneDX")
+pub fn is_cyclonedx(stdout: &str, at_least: usize) -> bool {
+    let Ok(doc) = serde_json::from_str::<Value>(stdout) else {
+        return false;
+    };
+    let named = doc.get("bomFormat").and_then(Value::as_str) == Some("CycloneDX");
+    let versioned = doc
+        .get("specVersion")
+        .and_then(Value::as_str)
+        .is_some_and(|version| !version.is_empty());
+    // A document with no list of components lists none; a list that is not a list is no document.
+    let components = doc
+        .get("components")
+        .map_or(Some(0), |list| list.as_array().map(Vec::len));
+    named && versioned && components.is_some_and(|count| count >= at_least)
 }
 
 #[cfg(test)]
@@ -316,11 +323,25 @@ mod tests {
     }
 
     #[test]
-    fn only_a_cyclonedx_document_is_an_sbom() {
-        assert!(is_cyclonedx(
-            r#"{"bomFormat":"CycloneDX","specVersion":"1.6"}"#
+    fn only_a_cyclonedx_document_that_lists_its_components_is_an_sbom() {
+        let one =
+            r#"{"bomFormat":"CycloneDX","specVersion":"1.6","components":[{"name":"serde"}]}"#;
+        let none = r#"{"bomFormat":"CycloneDX","specVersion":"1.6","components":[]}"#;
+        assert!(is_cyclonedx(one, 1));
+        assert!(is_cyclonedx(none, 0));
+        assert!(
+            !is_cyclonedx(none, 1),
+            "a document with no component is a shell"
+        );
+        assert!(!is_cyclonedx(
+            r#"{"bomFormat":"CycloneDX","components":[{}]}"#,
+            1
         ));
-        assert!(!is_cyclonedx(r#"{"spdxVersion":"SPDX-2.3"}"#));
-        assert!(!is_cyclonedx("garbage"));
+        assert!(!is_cyclonedx(
+            r#"{"bomFormat":"CycloneDX","specVersion":"","components":[{}]}"#,
+            1
+        ));
+        assert!(!is_cyclonedx(r#"{"spdxVersion":"SPDX-2.3"}"#, 0));
+        assert!(!is_cyclonedx("garbage", 0));
     }
 }

@@ -178,7 +178,7 @@ fn review_state(ev: &Evaluation<'_>) -> Review {
         return Review::Blocked(
             BlockedCode::PolicyUnresolvable,
             format!(
-                "a security approver's decision, because build code comes in under: {}",
+                "a security approver's decision, because build code comes in with: {}",
                 names.join(", ")
             ),
         );

@@ -155,7 +155,7 @@ pub async fn run(io: &Io<'_>, inputs: &Inputs<'_>) -> Result<Done, StageError> {
         .map_err(|_| StageError::Internal)?;
     Ok(Done {
         reports,
-        evidence: Some(plan.evidence()),
+        evidence: Some(plan.evidence_with(conclusion.as_ref())),
         fetched: fetched.is_some(),
         scanned: scanned.is_some(),
     })

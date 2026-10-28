@@ -188,6 +188,21 @@ impl Plan {
                 designation, flags, ..
             } => (designation, flags),
         };
+        // The policy engine measures one edit. A squatter also adds a word to a popular name
+        // (`reqwest-rs`, `clap-derive-macros`), and the same scrutiny applies: the name is flagged
+        // and a security approver decides. This only raises the level, never lowers it.
+        let (designation, flags) = match settings.popular.lookalike(&package.name) {
+            Some(popular)
+                if !flags
+                    .iter()
+                    .any(|flag| matches!(flag, DependencyFlag::NearPopularName(_))) =>
+            {
+                let mut flags = flags;
+                flags.push(DependencyFlag::NearPopularName(popular.clone()));
+                (Designation::SecurityApprover, flags)
+            }
+            _ => (designation, flags),
+        };
         if let Some(license) = &record.license
             && let Err(denial) = settings.licenses.check(Some(license))
         {
@@ -256,6 +271,13 @@ impl Plan {
     /// registry said, and the decision that covers it.
     #[must_use]
     pub fn evidence(&self) -> Value {
+        self.evidence_with(None)
+    }
+
+    /// The same, and the packages whose build code waits for a security approver, with the exact
+    /// subject (name, version, checksum) the person decides on.
+    #[must_use]
+    pub fn evidence_with(&self, conclusion: Option<&Conclusion>) -> Value {
         let needs: Vec<Value> = self
             .needs
             .iter()
@@ -280,7 +302,23 @@ impl Plan {
                 })
             })
             .collect();
-        json!({ "new_direct_dependencies": needs })
+        let build_code: Vec<Value> = conclusion
+            .map(|c| c.escalated.as_slice())
+            .unwrap_or_default()
+            .iter()
+            .map(|subject| {
+                json!({
+                    "name": subject.name,
+                    "version": subject.version,
+                    "checksum": subject.checksum,
+                    "needs": Designation::SecurityApprover.as_str(),
+                })
+            })
+            .collect();
+        json!({
+            "new_direct_dependencies": needs,
+            "build_code_awaiting_a_security_approver": build_code,
+        })
     }
 }
 
@@ -310,7 +348,7 @@ pub fn flag_phrase(flag: &DependencyFlag) -> String {
         DependencyFlag::FirstPublishUnknown => "its first publication date is not known".to_owned(),
         DependencyFlag::NearPopularName(name) => {
             format!(
-                "its name is one edit from the popular name {}",
+                "its name looks like the popular name {} (one edit away, or the same name with a decoration)",
                 plain(name, 80)
             )
         }
@@ -355,8 +393,11 @@ fn touched(plan: &Plan) -> impl Iterator<Item = &LockedPackage> {
 pub struct Conclusion {
     /// Licenses outside the list (violations) and build code that came in (a warning).
     pub findings: Vec<Finding>,
-    /// New direct dependencies that were approved by an approver and bring build code, so that a
-    /// security approver must decide too.
+    /// Packages whose build code waits for a security approver: a new direct dependency that was
+    /// approved by an approver and brings build code, and any other package that is new to the
+    /// build and has a build script or is a procedural macro. The decision is recorded as a
+    /// [`DependencyApproval`] of a security approver on exactly this subject (name, version and
+    /// checksum).
     pub escalated: Vec<Subject>,
 }
 
@@ -403,19 +444,45 @@ pub fn conclude(plan: &Plan, metadata: &[PackageMeta], licenses: &LicensePolicy)
             ),
         ));
     }
+    // A decision of a security approver on a subject covers it and, for a new direct dependency,
+    // everything it brings in. Nothing else lifts the block of build code.
+    let security_decided = |subject: &Subject| {
+        plan.approvals
+            .iter()
+            .any(|a| a.covers(subject) && a.satisfies(Designation::SecurityApprover))
+    };
+    let mut under_a_need: BTreeSet<(String, String)> = BTreeSet::new();
     for need in &plan.needs {
         let Some(lock) = plan.integrity.head.locks.get(&need.lockfile) else {
             continue;
         };
-        let brings_code = closure(lock, &need.subject)
-            .into_iter()
-            .any(|key| with_build_code.contains(&key));
-        let security_decided = plan
-            .approvals
-            .iter()
-            .any(|a| a.covers(&need.subject) && a.satisfies(Designation::SecurityApprover));
-        if brings_code && !security_decided {
+        let reached = closure(lock, &need.subject);
+        let brings_code = reached.iter().any(|key| with_build_code.contains(key));
+        if brings_code && !security_decided(&need.subject) {
             conclusion.escalated.push(need.subject.clone());
+        }
+        under_a_need.extend(reached);
+    }
+    // Build code in a package that is new to the build and that no new direct dependency brings
+    // (a transitive crate pulled by a feature flag or a changed manifest) waits for a security
+    // approver as well: `build_script_added` blocks until a security review, whoever asked for
+    // the package. A package that only changed version is not asked again here, because the
+    // gate has no record of what the base commit's version ran (see the review notes, H-3).
+    for package in &plan.integrity.diff.added {
+        let key = (normalize(&package.name), package.version.clone());
+        if package.origin == Origin::Path
+            || !with_build_code.contains(&key)
+            || under_a_need.contains(&key)
+        {
+            continue;
+        }
+        let subject = Subject {
+            name: package.name.clone(),
+            version: package.version.clone(),
+            checksum: package.checksum.clone().unwrap_or_default(),
+        };
+        if !security_decided(&subject) {
+            conclusion.escalated.push(subject);
         }
     }
     conclusion

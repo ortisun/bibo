@@ -263,7 +263,7 @@ impl Tools {
             },
             ("cargo", "sbom") => text(
                 0,
-                r#"{"bomFormat":"CycloneDX","specVersion":"1.6","components":[]}"#,
+                r#"{"bomFormat":"CycloneDX","specVersion":"1.6","components":[{"type":"library","name":"serde"}]}"#,
             ),
             // Reads the manifests and downloads the locked packages. It compiles nothing, so no
             // build script and no procedural macro runs, whatever the packages hold.

@@ -510,7 +510,15 @@ pub async fn scan(io: &Io<'_>, plan: &Plan, commit: &CommitSha) -> Result<Scanne
         }
     };
     let sandbox_id = session.id().as_str().to_owned();
-    let outcome = scan_steps(&mut *session, io).await;
+    let components = usize::from(
+        plan.integrity
+            .head
+            .locks
+            .values()
+            .flat_map(|lock| &lock.packages)
+            .any(|package| package.origin.is_default_registry()),
+    );
+    let outcome = scan_steps(&mut *session, io, components).await;
     let reason = if outcome.is_ok() {
         TeardownReason::Completed
     } else {
@@ -535,10 +543,11 @@ type ScanSteps = (Vec<Seen>, Vec<Seen>, AuditEnd, SbomEnd);
 async fn scan_steps(
     session: &mut dyn SandboxSession,
     io: &Io<'_>,
+    components: usize,
 ) -> Result<ScanSteps, StageError> {
     let (mut audit_seen, mut sbom_seen) = (Vec::new(), Vec::new());
     let audit = audit_step(session, io, &mut audit_seen).await?;
-    let sbom = sbom_step(session, io, &mut sbom_seen).await?;
+    let sbom = sbom_step(session, io, &mut sbom_seen, components).await?;
     Ok((audit_seen, sbom_seen, audit, sbom))
 }
 
@@ -610,6 +619,7 @@ async fn sbom_step(
     session: &mut dyn SandboxSession,
     io: &Io<'_>,
     seen: &mut Vec<Seen>,
+    components: usize,
 ) -> Result<SbomEnd, StageError> {
     let bounds = io.cfg.bounds;
     let tool = &io.cfg.sbom.tool;
@@ -648,7 +658,9 @@ async fn sbom_step(
         return Ok(SbomEnd::Unusable(Blocker::new(why.code, why.missing)));
     }
     Ok(match (verdict, stdout) {
-        (Verdict::Passed, Some(text)) if !cut && tools::is_cyclonedx(&text) => SbomEnd::Made,
+        (Verdict::Passed, Some(text)) if !cut && tools::is_cyclonedx(&text, components) => {
+            SbomEnd::Made
+        }
         _ => unusable(),
     })
 }

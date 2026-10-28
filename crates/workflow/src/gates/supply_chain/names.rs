@@ -7,6 +7,8 @@
 
 use serde_json::Value;
 
+use super::model::normalize;
+
 /// The bundled list, as text.
 const BUNDLED: &str = include_str!("data/popular-crates.v1.json");
 
@@ -19,6 +21,8 @@ pub struct DataError;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PopularNames {
     names: Vec<String>,
+    /// The same names, as cargo compares them.
+    normalized: Vec<String>,
     list_date: String,
     provenance: String,
 }
@@ -56,6 +60,7 @@ impl PopularNames {
             return Err(DataError);
         }
         Ok(Self {
+            normalized: names.iter().map(|name| normalize(name)).collect(),
             names,
             list_date: field("list_date")?,
             provenance: field("provenance")?,
@@ -66,6 +71,7 @@ impl PopularNames {
     #[must_use]
     pub fn of(names: &[&str]) -> Self {
         Self {
+            normalized: names.iter().map(|name| normalize(name)).collect(),
             names: names.iter().map(|name| (*name).to_owned()).collect(),
             list_date: "none".to_owned(),
             provenance: "given by the caller".to_owned(),
@@ -76,6 +82,25 @@ impl PopularNames {
     #[must_use]
     pub fn names(&self) -> &[String] {
         &self.names
+    }
+
+    /// The popular name that `wanted` looks like without being it, if any. `wanted` is compared as
+    /// cargo compares names. A name on the list is never a look-alike of another name on it
+    /// (`serde_json` is not an imitation of `serde`).
+    ///
+    /// A name looks like a popular one when it is one edit away (a letter changed, added, dropped,
+    /// or two neighbours swapped), or when it is the popular name with a decoration that a
+    /// squatter adds and a reader skips over: `reqwest-rs`, `clap-derive-macros`, `rust-serde`.
+    #[must_use]
+    pub fn lookalike(&self, wanted: &str) -> Option<&String> {
+        let wanted = normalize(wanted);
+        if self.normalized.iter().any(|popular| *popular == wanted) {
+            return None;
+        }
+        self.normalized
+            .iter()
+            .position(|popular| near_miss(popular, &wanted) || decorated(popular, &wanted))
+            .and_then(|index| self.names.get(index))
     }
 
     /// When the list was made.
@@ -91,9 +116,94 @@ impl PopularNames {
     }
 }
 
+/// Words a squatter puts before or after a popular name. A word that is a package of its own
+/// (`derive`, `core`, `sys`) is on the list too, because `clap-derive-macros` is not `clap_derive`.
+const DECORATIONS: [&str; 22] = [
+    "rs", "rust", "ext", "extra", "plus", "fork", "patched", "fix", "new", "lib", "util", "utils",
+    "derive", "macros", "macro", "core", "sys", "api", "sdk", "client", "cli", "the",
+];
+
+/// True when `wanted` is `popular` with one or two decorations in front of it or behind it,
+/// separated as cargo separates words.
+fn decorated(popular: &str, wanted: &str) -> bool {
+    let all = |text: &str| {
+        !text.is_empty()
+            && text.split('_').count() <= 2
+            && text.split('_').all(|word| DECORATIONS.contains(&word))
+    };
+    wanted
+        .strip_prefix(popular)
+        .and_then(|rest| rest.strip_prefix('_'))
+        .is_some_and(all)
+        || wanted
+            .strip_suffix(popular)
+            .and_then(|rest| rest.strip_suffix('_'))
+            .is_some_and(all)
+}
+
+/// True when `a` and `b` differ and are one edit apart: one letter changed, added, dropped, or
+/// two neighbouring letters swapped. This is the rule of `DependencyPolicy`.
+fn near_miss(a: &str, b: &str) -> bool {
+    if a == b {
+        return false;
+    }
+    let (a, b): (Vec<char>, Vec<char>) = (a.chars().collect(), b.chars().collect());
+    if a.len().abs_diff(b.len()) > 1 {
+        return false;
+    }
+    let common = a.iter().zip(&b).take_while(|(x, y)| x == y).count();
+    let (ra, rb) = (
+        a.get(common..).unwrap_or_default(),
+        b.get(common..).unwrap_or_default(),
+    );
+    match ra.len().cmp(&rb.len()) {
+        std::cmp::Ordering::Equal => {
+            ra.get(1..) == rb.get(1..)
+                || (ra.len() >= 2
+                    && ra.first() == rb.get(1)
+                    && ra.get(1) == rb.first()
+                    && ra.get(2..) == rb.get(2..))
+        }
+        std::cmp::Ordering::Less => ra == rb.get(1..).unwrap_or_default(),
+        std::cmp::Ordering::Greater => ra.get(1..).unwrap_or_default() == rb,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_name_is_a_lookalike_when_it_is_one_edit_away_or_decorated() {
+        let list = PopularNames::of(&["serde", "reqwest", "clap", "anyhow", "serde_json", "rand"]);
+        for (wanted, popular) in [
+            ("serdee", "serde"),
+            ("reqwset", "reqwest"),
+            ("reqwest-rs", "reqwest"),
+            ("Reqwest_RS", "reqwest"),
+            ("clap-derive-macros", "clap"),
+            ("anyhow-ext", "anyhow"),
+            ("rust-serde", "serde"),
+            ("the_rand", "rand"),
+        ] {
+            assert_eq!(
+                list.lookalike(wanted).map(String::as_str),
+                Some(popular),
+                "{wanted}"
+            );
+        }
+        for fine in [
+            "serde",
+            "serde_json",
+            "serde-json",
+            "tokio",
+            "reqwest-middleware",
+            "serde-yaml-ng",
+            "rand-chacha-fast",
+        ] {
+            assert_eq!(list.lookalike(fine), None, "{fine}");
+        }
+    }
 
     #[test]
     fn the_bundled_list_is_valid_and_says_where_it_came_from() {
