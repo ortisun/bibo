@@ -553,9 +553,10 @@ impl Engine {
         Ok(())
     }
 
-    /// Stores the resolved contract by its content hash and records that the tenant holds it, so
-    /// that `S01` can name it (`StageRunEffects::contract_sha256`). A `put` is idempotent and
-    /// bounded, and the index row is written in this transaction.
+    /// Records the resolved contract by its content hash and that the tenant holds it, so that
+    /// `S01` can name it (`StageRunEffects::contract_sha256`). The index row is written in this
+    /// transaction. The bytes are written to the artifact store after the commit
+    /// ([`Cx::defer_blob`]): a transaction awaits the store and nothing else.
     async fn store_contract(
         &self,
         tx: &mut dyn Tx,
@@ -565,12 +566,7 @@ impl Engine {
     ) -> Result<Sha256Digest, EngineError> {
         let bytes = serde_json::to_vec(contract)
             .map_err(|error| EngineError::Invalid(error.to_string()))?;
-        let stored = self
-            .deps
-            .artifacts
-            .put(bytes, MediaType::parse("application/json")?)
-            .await
-            .map_err(|error| EngineError::Artifacts(error.to_string()))?;
+        let stored = cx.defer_blob(bytes, MediaType::parse("application/json")?);
         tx.index_artifact(NewArtifactIndexEntry {
             artifact: stored.clone(),
             origin: Some((cx.job, run)),

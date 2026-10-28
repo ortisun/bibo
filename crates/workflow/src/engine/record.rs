@@ -10,8 +10,8 @@
 //! come from the same table row, and the event also names the guard and the digest of its facts.
 
 use factory_domain::contracts::domain_event::AggregateKind;
-use factory_domain::contracts::{Contract, DomainEvent};
-use std::cell::Cell;
+use factory_domain::contracts::{ArtifactRef, Contract, DomainEvent};
+use std::cell::{Cell, RefCell};
 use std::time::Duration;
 
 use factory_domain::ids::{AttemptId, AuditEventId, CausationId, CorrelationId, JobId, TenantId};
@@ -20,7 +20,9 @@ use factory_domain::scope::TenantScope;
 use factory_domain::state::{
     AttemptEvent, AttemptStatus, JobEvent, JobStatus, StageRunEvent, StageRunStatus, Status,
 };
-use factory_domain::values::{Slug, Timestamp, Traceparent};
+use factory_domain::values::{
+    MediaType, NonNegativeInt, Sha256Digest, Slug, Timestamp, Traceparent,
+};
 use factory_ports::store::{
     AppliedTransition, Attempt, AttemptEnd, AuditAction as PortAuditAction, AuditActor,
     AuditDecision as PortAuditDecision, Job, LeaseEpoch, NewAuditEvent, StageRun, StageRunEffects,
@@ -53,6 +55,15 @@ pub(crate) struct Cx<'e> {
     /// lost, the store is asked whether this is stored (`Store::committed`), and that settles
     /// whether the whole decision was applied.
     witness: Cell<Option<Witness>>,
+    /// Blobs whose bytes are written to the artifact store after the commit, not during the
+    /// transaction. See [`Cx::defer_blob`].
+    blobs: RefCell<Vec<PendingBlob>>,
+}
+
+/// A blob that [`Cx::commit`] writes once the transaction is applied.
+struct PendingBlob {
+    bytes: Vec<u8>,
+    media_type: MediaType,
 }
 
 /// One move of an aggregate: the event that asks for it, the proof that its guard held, why it
@@ -113,7 +124,31 @@ impl<'e> Cx<'e> {
             now: engine.deps.clock.now(),
             cost_micro_usd: 0,
             witness: Cell::new(None),
+            blobs: RefCell::new(Vec::new()),
         }
+    }
+
+    /// Takes a blob that the decision records by its hash, and writes its bytes after the commit.
+    /// Returns the reference to record now, built from the bytes alone (the address of a blob is
+    /// the SHA-256 of its bytes).
+    ///
+    /// A transaction awaits the store and nothing else: a write to the artifact store that was
+    /// slow or stuck would hold the transaction's locks (ADR 0007). The write follows the commit
+    /// and is idempotent by hash, so a repeat is harmless. If the process stops between the commit
+    /// and the write, or the write fails, the record names a blob that is not stored yet; the
+    /// engine stores it again before it uses it (`Engine::ensure_contract_stored`).
+    pub(crate) fn defer_blob(&self, bytes: Vec<u8>, media_type: MediaType) -> ArtifactRef {
+        let reference = ArtifactRef {
+            sha256: Sha256Digest::of(&bytes),
+            media_type: media_type.clone(),
+            size_bytes: i64::try_from(bytes.len())
+                .ok()
+                .and_then(|size| NonNegativeInt::new(size).ok()),
+        };
+        self.blobs
+            .borrow_mut()
+            .push(PendingBlob { bytes, media_type });
+        reference
     }
 
     /// Commits the decision. When the commit was sent and its answer was lost
@@ -130,7 +165,7 @@ impl<'e> Cx<'e> {
     ///   again on this job until it has read the state.
     pub(crate) async fn commit(&self, tx: Box<dyn Tx>) -> Result<(), EngineError> {
         match tx.commit().await {
-            Ok(()) => Ok(()),
+            Ok(()) => {}
             Err(StoreError::CommitOutcomeUnknown) => {
                 let applied = match self.witness.get() {
                     Some(witness) => {
@@ -142,9 +177,34 @@ impl<'e> Cx<'e> {
                     }
                     None => Err(StoreError::CommitOutcomeUnknown),
                 };
-                settle_unknown_commit(applied)
+                settle_unknown_commit(applied)?;
             }
-            Err(other) => Err(other.into()),
+            Err(other) => return Err(other.into()),
+        }
+        self.flush_blobs().await;
+        Ok(())
+    }
+
+    /// Writes the blobs the decision deferred. The decision is applied, so a write that fails is
+    /// logged and not returned: the record names the blob, and the engine stores it again before
+    /// it uses it.
+    async fn flush_blobs(&self) {
+        let pending = std::mem::take(&mut *self.blobs.borrow_mut());
+        for blob in pending {
+            let expected = Sha256Digest::of(&blob.bytes);
+            match self
+                .engine
+                .deps
+                .artifacts
+                .put(blob.bytes, blob.media_type)
+                .await
+            {
+                Ok(stored) if stored.sha256 == expected => {}
+                Ok(_) | Err(_) => tracing::warn!(
+                    factory.job_id = %self.job,
+                    "a blob that a committed decision names was not stored; it is stored again before it is used"
+                ),
+            }
         }
     }
 

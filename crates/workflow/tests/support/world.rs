@@ -15,8 +15,8 @@ use factory_ports::clock::{Clock, IdGenerator};
 use factory_ports::paths::RepoRef;
 use factory_ports::registry::{ContractKind, OutputValidator, ValidatedOutput};
 use factory_ports::store::{
-    AuditFilter, AuditRecord, NewPrincipal, OutboxSeq, PrincipalKind, StageRun, StageRunArtifact,
-    Store, SystemScope, SystemTx, WorkerId,
+    ArtifactIndexEntry, AuditFilter, AuditRecord, NewPrincipal, OutboxSeq, PrincipalKind, StageRun,
+    StageRunArtifact, Store, SystemScope, SystemTx, WorkerId,
 };
 use factory_testkit::agent::FakeAgentRuntime;
 use factory_testkit::artifact::InMemoryArtifactStore;
@@ -36,6 +36,7 @@ use factory_workflow::engine::{
 use factory_workflow::handlers::HandlerRegistry;
 use factory_workflow::scheduler::ClaimedAttempt;
 
+use super::artifacts::SwitchedArtifacts;
 use super::authority::StaticAuthority;
 use super::handler::{ScriptHandle, ScriptedHandler};
 use super::ids::FaultyIds;
@@ -88,6 +89,8 @@ pub struct World {
     pub ids: Arc<FaultyIds>,
     pub store: Arc<InMemoryStore>,
     pub artifacts: Arc<InMemoryArtifactStore>,
+    /// The artifact store the engine writes through. A test can make its writes fail.
+    pub artifact_switch: Arc<SwitchedArtifacts>,
     pub broker: Arc<FakeModelBroker>,
     pub authority: Arc<StaticAuthority>,
     pub scripts: HashMap<StageKind, ScriptHandle>,
@@ -125,7 +128,10 @@ impl World {
             Some(defect) => InMemoryStore::with_defect(clock.clone(), defect),
             None => InMemoryStore::new(clock.clone()),
         });
-        let artifacts = Arc::new(InMemoryArtifactStore::new());
+        // The artifact store answers for a tenant from the store's index rows, as the database
+        // adapter does, so an artifact the engine indexed is readable with no extra grant.
+        let artifacts = Arc::new(InMemoryArtifactStore::new().indexed_by((*store).clone()));
+        let artifact_switch = Arc::new(SwitchedArtifacts::new(artifacts.clone()));
         let authority = Arc::new(StaticAuthority::new());
         let ticker = Arc::new(ManualTicker::new());
         let broker = Arc::new(FakeModelBroker::new(clock.clone(), ids.clone()));
@@ -146,7 +152,7 @@ impl World {
             store: store.clone(),
             clock: clock.clone(),
             ids: ids.clone(),
-            artifacts: artifacts.clone(),
+            artifacts: artifact_switch.clone(),
             sandbox: Arc::new(FakeSandbox::new(
                 clock.clone(),
                 artifacts.clone(),
@@ -201,6 +207,7 @@ impl World {
             ids,
             store,
             artifacts,
+            artifact_switch,
             broker,
             authority,
             scripts,
@@ -407,6 +414,18 @@ impl World {
             .expect("events");
         tx.rollback().await.expect("rollback");
         rows.into_iter().map(|row| row.event).collect()
+    }
+
+    /// The tenant's index row for an artifact.
+    pub async fn index_entry(&self, sha256: &Sha256Digest) -> ArtifactIndexEntry {
+        let mut tx = self
+            .store
+            .begin(TenantScope::new(self.tenant))
+            .await
+            .expect("a tx");
+        let entry = tx.get_artifact_index(sha256).await.expect("an index row");
+        tx.rollback().await.expect("rollback");
+        entry
     }
 
     /// The stored row of a stage run.

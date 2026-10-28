@@ -6,8 +6,11 @@
 
 mod support;
 
+use factory_domain::scope::TenantScope;
 use factory_domain::state::{AttemptStatus, JobStatus, StageRunStatus};
 use factory_domain::vocabulary::StageKind;
+use factory_ports::artifact::ArtifactStore;
+use factory_ports::clock::IdGenerator;
 use factory_ports::store::{ArtifactDirection, LeaseEpoch, StageRunArtifact};
 use factory_workflow::engine::{Admission, EngineError};
 use factory_workflow::scheduler::{Deferral, Pulse};
@@ -390,6 +393,125 @@ async fn a_valid_output_is_stored_by_hash_and_the_attempt_succeeds() {
     assert!(
         gating.payload.get("outputs").is_none(),
         "an event does not list what the rows already say"
+    );
+}
+
+#[tokio::test]
+async fn an_artifact_a_tool_made_is_indexed_for_the_tenant_and_linked_to_the_stage_run() {
+    // A tool stores a blob and the handler declares it as the deliverable. The blob is the
+    // tenant's only once the engine has indexed it, and the artifact store answers for a tenant
+    // only through that row (ADR 0008).
+    let world = World::new().await;
+    let job = world.admitted_job().await;
+    world
+        .script(StageKind::Intake)
+        .queue([Step::SucceedWithStoredArtifact]);
+    let (_, outcome) = world.run_next("worker-1").await;
+    assert_eq!(outcome, AttemptOutcome::Succeeded);
+
+    let run = intake(&world.view(job).await).id;
+    let links = world.links(run).await;
+    let output = links
+        .iter()
+        .find(|link| link.role.as_str() == "scripted-output.a1")
+        .expect("the artifact is linked as the output");
+    let entry = world.index_entry(&output.sha256).await;
+    assert_eq!(entry.origin, Some((job, run)));
+    let scope = TenantScope::new(world.tenant);
+    assert!(
+        world
+            .artifacts
+            .exists(&scope, &entry.artifact)
+            .await
+            .expect("an answer")
+    );
+    let stranger = TenantScope::new(factory_domain::ids::TenantId::from_uuid(
+        world.ids.new_uuid(),
+    ));
+    assert!(
+        !world
+            .artifacts
+            .exists(&stranger, &entry.artifact)
+            .await
+            .expect("an answer"),
+        "another tenant has no index row, so the blob does not exist for it"
+    );
+}
+
+#[tokio::test]
+async fn an_artifact_a_handler_declares_but_never_stored_is_an_invalid_output() {
+    let world = World::new().await;
+    let job = world.admitted_job().await;
+    world
+        .script(StageKind::Intake)
+        .queue([Step::SucceedWithUnstoredArtifact]);
+    let (_, outcome) = world.run_next("worker-1").await;
+    assert!(matches!(
+        outcome,
+        AttemptOutcome::Failed {
+            class: FailureClass::InvalidOutput,
+            ..
+        }
+    ));
+    let run = intake(&world.view(job).await).id;
+    assert!(
+        world
+            .links(run)
+            .await
+            .iter()
+            .all(|link| link.direction != ArtifactDirection::Output),
+        "nothing is linked as an output of a failed attempt"
+    );
+}
+
+#[tokio::test]
+async fn the_contract_blob_is_written_after_the_commit_and_a_refused_write_does_not_undo_the_decision()
+ {
+    // The contract is recorded by its hash in the transaction of the move to READY (S01), and its
+    // bytes are written after the commit. A store that cannot write must not stop the decision,
+    // which a write inside the transaction would, and the attempt that follows stores the blob
+    // before it starts.
+    let world = World::new().await;
+    world.artifact_switch.refuse_writes(true);
+    let job = world
+        .engine
+        .receive_job(world.tenant, world.requester, world.repository)
+        .await
+        .expect("receive");
+    world
+        .engine
+        .admit_job(world.tenant, job)
+        .await
+        .expect("the job is admitted although the artifact store refuses writes");
+    let view = world.view(job).await;
+    let run = intake(&view);
+    assert_eq!(run.status, StageRunStatus::Ready);
+    let recorded = world
+        .stage_run(run.id)
+        .await
+        .contract_sha256
+        .expect("the contract is recorded on the stage run");
+    let scope = TenantScope::new(world.tenant);
+    let entry = world.index_entry(&recorded).await;
+    assert!(
+        !world
+            .artifacts
+            .exists(&scope, &entry.artifact)
+            .await
+            .expect("an answer"),
+        "the bytes are not stored yet"
+    );
+
+    world.artifact_switch.refuse_writes(false);
+    let (_, outcome) = world.run_next("worker-1").await;
+    assert_eq!(outcome, AttemptOutcome::Succeeded);
+    assert!(
+        world
+            .artifacts
+            .exists(&scope, &entry.artifact)
+            .await
+            .expect("an answer"),
+        "the blob is stored before the attempt runs"
     );
 }
 
