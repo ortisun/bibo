@@ -173,7 +173,7 @@ fn hostile_text() -> impl Strategy<Value = String> {
 }
 
 proptest! {
-    #![proptest_config(ProptestConfig::with_cases(96))]
+    #![proptest_config(ProptestConfig { cases: 96, failure_persistence: None, ..ProptestConfig::default() })]
 
     /// Delimiter collision is checked on every untrusted field: whatever a field holds, the
     /// finished prompt keeps it inside its block, and the checker finds the data unchanged.

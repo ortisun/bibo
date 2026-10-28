@@ -11,6 +11,7 @@
 //! * a section is missing, repeated or out of order;
 //! * it does not tell the model how a block opens, closes and is quoted;
 //! * a table row, class or name cannot be read, or the table and the placeholder lines disagree;
+//! * a line of instructions starts with `<<<`, which only the delimiter lines of a block do;
 //! * `{{input.` appears anywhere but alone on a line inside the data section, or `{{trusted.`
 //!   appears unclosed or inside the data section.
 //!
@@ -288,6 +289,11 @@ impl Template {
             }
             if line.contains(INPUT_OPEN) {
                 return Err(TemplateError::StrayPlaceholder { line: number });
+            }
+            // Only a block may have a line that starts like a delimiter, so that a reader can
+            // tell the factory's lines from the lines of a block by their first characters.
+            if line.starts_with("<<<") {
+                return Err(TemplateError::DelimiterInInstructions { line: number });
             }
             if line.contains(TRUSTED_OPEN) && at >= data_at {
                 return Err(TemplateError::PlaceholderOutsideData { line: number });

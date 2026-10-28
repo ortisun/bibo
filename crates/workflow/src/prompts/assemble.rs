@@ -174,12 +174,24 @@ pub enum Part {
 }
 
 /// A finished prompt, and the record of what it holds.
-#[derive(Debug, Clone, PartialEq, Eq)]
+///
+/// `Debug` shows the hash, the size and the record, never the text.
+#[derive(Clone, PartialEq, Eq)]
 pub struct Assembled {
     text: String,
     parts: Vec<Part>,
     sha256: Sha256Digest,
     manifest: ContextManifest,
+}
+
+impl std::fmt::Debug for Assembled {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Assembled")
+            .field("sha256", &self.sha256)
+            .field("bytes", &self.text.len())
+            .field("manifest", &self.manifest)
+            .finish_non_exhaustive()
+    }
 }
 
 impl Assembled {

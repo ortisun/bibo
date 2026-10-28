@@ -82,6 +82,12 @@ pub enum TemplateError {
         /// The line number, from 1.
         line: usize,
     },
+    /// A line of the instructions starts like the opening or closing line of a block.
+    #[error("line {line}: a line of the instructions starts with `<<<`, which only a block may")]
+    DelimiterInInstructions {
+        /// The line number, from 1.
+        line: usize,
+    },
     /// The table lists more inputs than a prompt may have.
     #[error("the table lists more than {max} inputs")]
     TooManyInputs {

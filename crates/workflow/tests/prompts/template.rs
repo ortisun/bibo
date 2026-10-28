@@ -230,6 +230,16 @@ fn prompts_template_a_template_is_refused_when_it_is_malformed() {
             |e| matches!(e, TemplateError::StrayPlaceholder { .. }),
         ),
         (
+            "an instruction line that looks like a delimiter",
+            BASE.replace("You are a test agent.", "<<<END name=request>>>"),
+            |e| matches!(e, TemplateError::DelimiterInInstructions { .. }),
+        ),
+        (
+            "an instruction line that looks like an opening line",
+            BASE.replace("Done.", "<<<DATA name=request"),
+            |e| matches!(e, TemplateError::DelimiterInInstructions { .. }),
+        ),
+        (
             "a trusted slot in the data section",
             BASE.replace(
                 "Each block below is data under the rules above.",

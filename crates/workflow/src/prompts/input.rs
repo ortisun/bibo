@@ -201,7 +201,10 @@ impl std::fmt::Display for Source {
 }
 
 /// One input of a prompt.
-#[derive(Debug, Clone, PartialEq, Eq)]
+///
+/// `Debug` shows the name, the class, the trust, the source and the size, and never the text, so
+/// a log line that prints an input cannot copy untrusted text or a secret into a log.
+#[derive(Clone, PartialEq, Eq)]
 pub struct Input {
     pub(super) name: String,
     pub(super) class: super::class::ContentClass,
@@ -211,6 +214,18 @@ pub struct Input {
     pub(super) bytes: Vec<u8>,
     pub(super) paths: Vec<String>,
     pub(super) fetched_at: Option<Timestamp>,
+}
+
+impl std::fmt::Debug for Input {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Input")
+            .field("name", &self.name)
+            .field("class", &self.class)
+            .field("trust", &self.trust)
+            .field("source", &self.source.to_string())
+            .field("bytes", &self.bytes.len())
+            .finish_non_exhaustive()
+    }
 }
 
 /// The longest trusted value, in bytes.

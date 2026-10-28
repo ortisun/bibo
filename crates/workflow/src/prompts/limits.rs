@@ -139,6 +139,8 @@ mod tests {
     }
 
     proptest! {
+        #![proptest_config(ProptestConfig { failure_persistence: None, ..ProptestConfig::default() })]
+
         #[test]
         fn prompts_limits_allowances_never_exceed_the_budget_or_the_wish(
             sizes in proptest::collection::vec(0usize..1_000_000, 0..12),

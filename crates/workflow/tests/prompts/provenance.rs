@@ -183,3 +183,18 @@ fn prompts_provenance_the_port_prompt_carries_the_whole_text_and_the_shape_is_do
     assert!(port.data.is_empty());
     assert_eq!(names(&agent).len(), 3);
 }
+
+#[test]
+fn prompts_provenance_debug_output_holds_no_text_of_any_input() {
+    let agent = agent("intake-classifier");
+    let secretish = "words-that-must-not-reach-a-log-4417";
+    let given = input(&agent, "request", secretish);
+    assert!(!format!("{given:?}").contains(secretish));
+    let assembled = assemble(&agent, vec![given]).expect("ok");
+    assert!(!format!("{assembled:?}").contains(secretish));
+    assert!(!format!("{:?}", assembled.manifest()).contains(secretish));
+    let independent = input(&agent, "request", secretish)
+        .into_independent()
+        .expect("independent");
+    assert!(!format!("{independent:?}").contains(secretish));
+}

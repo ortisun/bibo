@@ -83,11 +83,20 @@ impl<'a> SkillRequest<'a> {
     }
 }
 
-/// The file that holds the request.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// The file that holds the request. `Debug` shows the path and the size, never the content.
+#[derive(Clone, PartialEq, Eq)]
 pub struct RequestFile {
     path: RepoPath,
     content: String,
+}
+
+impl std::fmt::Debug for RequestFile {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RequestFile")
+            .field("path", &self.path)
+            .field("bytes", &self.content.len())
+            .finish()
+    }
 }
 
 impl RequestFile {
@@ -104,13 +113,25 @@ impl RequestFile {
     }
 }
 
-/// The input of one skill run.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// The input of one skill run. `Debug` shows the operation, the size of the arguments and the
+/// record, never the arguments, which may hold a block of the request.
+#[derive(Clone, PartialEq, Eq)]
 pub struct SkillInput {
     operation: SpecOperation,
     arguments: String,
     request_file: Option<RequestFile>,
     record: Option<InputRecord>,
+}
+
+impl std::fmt::Debug for SkillInput {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SkillInput")
+            .field("operation", &self.operation)
+            .field("arguments_bytes", &self.arguments.len())
+            .field("request_file", &self.request_file)
+            .field("record", &self.record)
+            .finish()
+    }
 }
 
 impl SkillInput {

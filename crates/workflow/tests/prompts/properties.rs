@@ -34,7 +34,7 @@ fn text() -> impl Strategy<Value = String> {
 }
 
 proptest! {
-    #![proptest_config(ProptestConfig::with_cases(96))]
+    #![proptest_config(ProptestConfig { cases: 96, failure_persistence: None, ..ProptestConfig::default() })]
 
     /// Total and panic free on arbitrary bytes. Bytes that are not UTF-8 are refused with the
     /// place they go wrong; everything else is accepted.
@@ -128,7 +128,7 @@ proptest! {
 }
 
 proptest! {
-    #![proptest_config(ProptestConfig::with_cases(24))]
+    #![proptest_config(ProptestConfig { cases: 24, failure_persistence: None, ..ProptestConfig::default() })]
 
     /// Bounded: whatever the sizes and the limits are, the prompt fits the budget, and the only
     /// errors are the ones that say the budget or the read limit was too small.
