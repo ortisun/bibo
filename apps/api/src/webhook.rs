@@ -212,7 +212,10 @@ pub async fn receive(state: &ApiState, headers: &HeaderMap, body: &[u8]) -> Answ
             witness = audit(
                 state,
                 &mut *tx,
-                &format!("issue {}#{}", issue.repo, issue.number),
+                // The repository is the registered one, found by the installation and repository
+                // ids. The `full_name` of the payload is text the sender chose, and stale after a
+                // rename (R-15).
+                &format!("issue {}#{}", registered.value.full_name, issue.number),
                 "job.received_from_webhook",
                 "A job was received from a labeled issue.",
                 Some(job_id),

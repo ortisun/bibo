@@ -410,6 +410,37 @@ async fn a_label_from_a_requester_narrowed_to_another_repository_makes_no_job() 
     env.stop().await;
 }
 
+/// R-15. The issue a webhook job comes from is named by the registered repository row, resolved from
+/// the installation and repository ids, and not by the `full_name` in the payload, which is stale
+/// after a rename and is text the sender chose.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_webhook_job_names_the_registered_repository_and_not_the_one_in_the_payload() {
+    let env = Env::start().await;
+    let a = &env.a.clone();
+    let mut value: serde_json::Value =
+        serde_json::from_slice(&payload(a, "factory", a.requester.github_id, 71)).expect("json");
+    value["repository"]["full_name"] = json!("renamed-since/elsewhere");
+    let reply = env
+        .send(env.delivery(
+            "issues",
+            &delivery_id(60),
+            &serde_json::to_vec(&value).expect("json"),
+        ))
+        .await;
+    assert_eq!(reply.status, 202);
+    assert_eq!(rows(&env, "jobs").await, 1);
+    let subject = env
+        .db
+        .text("SELECT subject FROM audit_events WHERE action = 'job.received_from_webhook'")
+        .await;
+    env.stop().await;
+    assert_eq!(
+        subject,
+        Some(format!("issue {}#71", a.full_name)),
+        "the registered name, with the number of the issue"
+    );
+}
+
 // ---- NT-AUTHZ-08: an unknown binding -----------------------------------------------------------
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

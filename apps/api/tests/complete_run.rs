@@ -594,6 +594,9 @@ async fn worker(env: &Env, markers: Option<Arc<dyn DecisionMarkers>>) -> Worker 
         markers: markers.unwrap_or_else(|| {
             Arc::new(AuditMarkers::new(store_dyn.clone(), policies.hash.clone()))
         }),
+        clock: Arc::new(SystemClock),
+        max_age: std::time::Duration::from_secs(72 * 3600),
+        per_pass: factory_composition::decisions::DECISIONS_PER_PASS,
     });
     Worker {
         engine,
