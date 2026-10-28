@@ -239,9 +239,292 @@ pub(super) fn strip_inline_code(line: &str) -> String {
     }
 }
 
+/// The longest double-quoted span, in characters, that counts as a quotation.
+const MAX_QUOTED_CHARS: usize = 300;
+
+/// The double-quoted spans of a line as `(start, end)` byte ranges that include the quote marks.
+/// Straight quotes pair in order, and so do curly ones. A span of more than 300 characters is not
+/// a quotation: its opening mark is ordinary text and the closing mark may open the next span.
+pub(super) fn quote_spans(line: &str) -> Vec<(usize, usize)> {
+    let mut spans = Vec::new();
+    let mut open: Option<(usize, usize)> = None;
+    for (count, (at, c)) in line.char_indices().enumerate() {
+        match c {
+            '"' => match open {
+                Some((start, from)) if count - from <= MAX_QUOTED_CHARS + 1 => {
+                    spans.push((start, at + 1));
+                    open = None;
+                }
+                _ => open = Some((at, count)),
+            },
+            '\u{201c}' => open = Some((at, count)),
+            '\u{201d}' => {
+                if let Some((start, from)) = open.take()
+                    && count - from <= MAX_QUOTED_CHARS + 1
+                {
+                    spans.push((start, at + c.len_utf8()));
+                }
+            }
+            _ => {}
+        }
+    }
+    spans
+}
+
+/// `line` with its double-quoted spans taken out.
+pub(super) fn strip_quotes(line: &str) -> String {
+    blank_spans(line, &quote_spans(line))
+}
+
+/// `line` with its square-bracket groups taken out.
+pub(super) fn strip_brackets(line: &str) -> String {
+    let mut spans = Vec::new();
+    let mut open: Option<usize> = None;
+    for (at, c) in line.char_indices() {
+        match c {
+            '[' if open.is_none() => open = Some(at),
+            ']' => {
+                if let Some(start) = open.take() {
+                    spans.push((start, at + 1));
+                }
+            }
+            _ => {}
+        }
+    }
+    blank_spans(line, &spans)
+}
+
+/// `line` with each link target, `[text](target)`, taken out. The text stays.
+pub(super) fn strip_link_targets(line: &str) -> String {
+    if !line.contains("](") {
+        return line.to_owned();
+    }
+    let bytes = line.as_bytes();
+    // For each offset, the offset of the first `)` at or after it, found in one pass from the
+    // right, so that a line of `](` with no `)` is not searched again at every `](`.
+    let mut next_close = vec![usize::MAX; bytes.len() + 1];
+    let mut latest = usize::MAX;
+    for (at, byte) in bytes.iter().enumerate().rev() {
+        if *byte == b')' {
+            latest = at;
+        }
+        if let Some(slot) = next_close.get_mut(at) {
+            *slot = latest;
+        }
+    }
+    let mut spans = Vec::new();
+    let mut from = 0;
+    while let Some(found) = line.get(from..).and_then(|rest| rest.find("](")) {
+        let open = from + found + 1;
+        let close = next_close.get(open + 1).copied().unwrap_or(usize::MAX);
+        if close == usize::MAX {
+            break;
+        }
+        spans.push((open, close + 1));
+        from = close + 1;
+    }
+    blank_spans(line, &spans)
+}
+
+/// `line` with each `http://` or `https://` address taken out. An address ends at white space or
+/// at `<`, `>` or a double quote, and the punctuation that closes a sentence stays outside it.
+pub(super) fn strip_urls(line: &str) -> String {
+    let lowered = line.to_ascii_lowercase();
+    if !lowered.contains("http") {
+        return line.to_owned();
+    }
+    let mut spans = Vec::new();
+    let mut from = 0;
+    while let Some(found) = lowered.get(from..).and_then(|rest| rest.find("http")) {
+        let start = from + found;
+        let after = lowered.get(start + 4..).unwrap_or_default();
+        let scheme = if after.starts_with("://") {
+            7
+        } else if after.starts_with("s://") {
+            8
+        } else {
+            from = start + 4;
+            continue;
+        };
+        let tail = line.get(start + scheme..).unwrap_or_default();
+        let length = tail
+            .find(|c: char| c.is_whitespace() || matches!(c, '<' | '>' | '"'))
+            .unwrap_or(tail.len());
+        let address = tail.get(..length).unwrap_or_default();
+        let kept = address
+            .trim_end_matches(['.', ',', ';', ':', '!', '?', ')', ']', '}', '\''])
+            .len();
+        let end = start + scheme + kept;
+        spans.push((start, end));
+        from = end.max(start + 4);
+    }
+    blank_spans(line, &spans)
+}
+
+/// A line of running prose: inline code, link targets, web addresses and quotations taken out.
+pub(super) fn prose_line(line: &str) -> String {
+    strip_quotes(&strip_urls(&strip_link_targets(&strip_inline_code(line))))
+}
+
+/// A paragraph of prose: consecutive prose lines joined with spaces, already stripped by
+/// [`prose_line`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct Paragraph {
+    /// The line the paragraph starts on.
+    pub(super) line: u32,
+    /// Its text.
+    pub(super) text: String,
+}
+
+/// The paragraphs of a body. A blank line, a heading, a table row, a quotation line or a code
+/// line ends one, and a list item starts a new one. With `headings`, each heading is a paragraph
+/// of its own.
+pub(super) fn paragraphs(body: &Body<'_>, headings: bool) -> Vec<Paragraph> {
+    let mut out = Vec::new();
+    let mut current: Option<Paragraph> = None;
+    let flush = |current: &mut Option<Paragraph>, out: &mut Vec<Paragraph>| {
+        if let Some(done) = current.take()
+            && !done.text.trim().is_empty()
+        {
+            out.push(done);
+        }
+    };
+    for line in &body.lines {
+        let trimmed = line.trimmed();
+        match line.kind {
+            LineKind::Prose => {
+                let text = prose_line(trimmed);
+                match current.as_mut() {
+                    Some(paragraph) => {
+                        paragraph.text.push(' ');
+                        paragraph.text.push_str(text.trim());
+                    }
+                    None => {
+                        current = Some(Paragraph {
+                            line: line.number,
+                            text: text.trim().to_owned(),
+                        });
+                    }
+                }
+            }
+            LineKind::Item => {
+                flush(&mut current, &mut out);
+                let (length, _) = list_marker(trimmed).unwrap_or_default();
+                current = Some(Paragraph {
+                    line: line.number,
+                    text: prose_line(trimmed.get(length..).unwrap_or_default())
+                        .trim()
+                        .to_owned(),
+                });
+            }
+            LineKind::Heading => {
+                flush(&mut current, &mut out);
+                if headings {
+                    out.push(Paragraph {
+                        line: line.number,
+                        text: prose_line(heading_text(trimmed)).trim().to_owned(),
+                    });
+                }
+            }
+            LineKind::Blank | LineKind::Code | LineKind::Quote | LineKind::Table => {
+                flush(&mut current, &mut out);
+            }
+        }
+    }
+    flush(&mut current, &mut out);
+    out
+}
+
+/// The sentences of a text: it is cut after a period, an exclamation mark or a question mark
+/// that is followed by white space or by the end.
+pub(super) fn sentences(text: &str) -> Vec<&str> {
+    let mut out = Vec::new();
+    let mut start = 0;
+    let mut chars = text.char_indices().peekable();
+    while let Some((at, c)) = chars.next() {
+        if matches!(c, '.' | '!' | '?') && chars.peek().is_none_or(|(_, next)| next.is_whitespace())
+        {
+            let end = at + c.len_utf8();
+            if let Some(sentence) = text.get(start..end) {
+                out.push(sentence);
+            }
+            start = end;
+        }
+    }
+    if let Some(rest) = text.get(start..)
+        && !rest.trim().is_empty()
+    {
+        out.push(rest);
+    }
+    out
+}
+
+/// The number of whitespace-separated tokens that contain a letter or a digit.
+pub(super) fn count_words(text: &str) -> usize {
+    text.split_whitespace()
+        .filter(|token| token.chars().any(char::is_alphanumeric))
+        .count()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn quotations_urls_and_link_targets_come_out_and_the_rest_stays() {
+        assert_eq!(strip_quotes(r#"a "b c" d"#), "a   d");
+        assert_eq!(strip_quotes("a \u{201c}b\u{201d} d"), "a   d");
+        assert_eq!(strip_quotes("a \"b"), "a \"b");
+        assert_eq!(
+            strip_link_targets("see [the run](https://x.test/a) now"),
+            "see [the run]  now"
+        );
+        assert_eq!(strip_urls("see https://x.test/a. Next"), "see  . Next");
+        assert_eq!(strip_brackets("a [b c] d"), "a   d");
+    }
+
+    #[test]
+    fn a_quotation_longer_than_three_hundred_characters_is_not_a_quotation() {
+        let long = format!("x \"{}\" y", "w".repeat(310));
+        assert_eq!(strip_quotes(&long), long);
+        let short = format!("x \"{}\" y", "w".repeat(300));
+        assert_eq!(strip_quotes(&short), "x   y");
+    }
+
+    #[test]
+    fn sentences_split_after_terminators_followed_by_white_space() {
+        assert_eq!(
+            sentences("It is 0.1 s long. Is it? Yes!"),
+            vec!["It is 0.1 s long.", " Is it?", " Yes!"]
+        );
+    }
+
+    #[test]
+    fn paragraphs_join_prose_lines_and_split_at_items() {
+        let body = Body::new("one\ntwo\n\n- three\nfour\n- five\n> quoted");
+        let texts: Vec<_> = paragraphs(&body, false)
+            .into_iter()
+            .map(|p| (p.line, p.text))
+            .collect();
+        assert_eq!(
+            texts,
+            vec![
+                (1, "one two".to_owned()),
+                (4, "three four".to_owned()),
+                (6, "five".to_owned())
+            ]
+        );
+    }
+
+    #[test]
+    fn hostile_lines_are_handled_in_one_pass() {
+        let many = "](".repeat(200_000);
+        assert_eq!(strip_link_targets(&many), many);
+        let brackets = "[".repeat(200_000);
+        assert_eq!(strip_brackets(&brackets), brackets);
+        let quotes = "\"".repeat(200_000);
+        assert!(strip_quotes(&quotes).len() <= quotes.len());
+    }
 
     fn kinds(body: &str) -> Vec<LineKind> {
         Body::new(body).lines.iter().map(|l| l.kind).collect()

@@ -5,6 +5,7 @@
 //! proportional to the text. The engine turns a draft into a finding: the severity and the
 //! suggested fix come from the catalog, not from the function.
 
+mod language;
 mod structure;
 mod title;
 
@@ -53,6 +54,11 @@ pub(super) fn run(rule: RuleId, ctx: &Ctx<'_>) -> Option<Draft> {
         RuleId::BodyMetadataLines => structure::metadata_lines(ctx),
         RuleId::PrMissingEvidenceLink => structure::missing_evidence_link(ctx),
         RuleId::DocGuideMissingPart => structure::guide_missing_part(ctx),
-        _ => None,
+        RuleId::TextNotEnglish => language::not_english(ctx),
+        RuleId::TextQuotationDominates => language::quotation_dominates(ctx),
+        RuleId::TextAbbreviationUnexpanded => language::abbreviation_unexpanded(ctx),
+        RuleId::TextRawInternalId => language::raw_internal_id(ctx),
+        RuleId::TextFillerPhrase => language::filler_phrase(ctx),
+        RuleId::TextLongSentence => language::long_sentence(ctx),
     }
 }

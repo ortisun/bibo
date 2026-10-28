@@ -18,6 +18,7 @@ mod artifact;
 mod catalog;
 mod engine;
 mod finding;
+mod lang;
 mod options;
 mod rules;
 mod text;

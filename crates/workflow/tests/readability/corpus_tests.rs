@@ -12,26 +12,6 @@ fn rank(verdict: &str) -> u8 {
     }
 }
 
-/// The rules implemented so far.
-fn implemented(rule: RuleId) -> bool {
-    matches!(
-        rule,
-        RuleId::TitleSchemaShape
-            | RuleId::TitleOpaquePrefix
-            | RuleId::TitleMachineLabel
-            | RuleId::TitleVague
-            | RuleId::TitleTypeTag
-            | RuleId::TitleNotSentenceCase
-            | RuleId::TitleTooLong
-            | RuleId::TitleTrailingPunctuation
-            | RuleId::TaskMissingSection
-            | RuleId::BodyMetadataPrefix
-            | RuleId::BodyMetadataLines
-            | RuleId::PrMissingEvidenceLink
-            | RuleId::DocGuideMissingPart
-    )
-}
-
 #[test]
 fn the_corpus_has_every_file_and_a_plausible_number_of_cases() {
     assert_eq!(FILES.len(), 9);
@@ -43,13 +23,15 @@ fn the_corpus_has_every_file_and_a_plausible_number_of_cases() {
 }
 
 #[test]
-fn every_case_matches_its_labels_for_the_rules_implemented_so_far() {
-    let outcome = run(implemented);
-    assert!(outcome.disagreements.is_empty(), "{}", outcome.describe());
+fn every_case_matches_its_labels_exactly() {
+    let outcome = run(|_| true);
     println!(
-        "{} cases, {} matched exactly",
-        outcome.cases, outcome.matched
+        "{} samples, {} matched exactly, {} disagree",
+        outcome.cases,
+        outcome.matched,
+        outcome.disagreements.len()
     );
+    assert!(outcome.disagreements.is_empty(), "{}", outcome.describe());
 }
 
 #[test]
@@ -72,13 +54,14 @@ fn a_case_never_labels_a_milder_verdict_than_its_deterministic_findings_give() {
     }
 }
 
+/// Every deterministic rule is tested by the corpus: with the findings of one rule hidden, at
+/// least one case fails, and only cases that list the rule fail. A rule that nothing in the
+/// corpus breaks would let a broken implementation pass unnoticed.
 #[test]
-fn the_corpus_notices_when_any_implemented_rule_stops_working() {
+fn the_corpus_notices_when_any_rule_stops_working() {
     let catalog = Catalog::embedded().expect("the embedded catalog loads");
-    for rule in RuleId::ALL.iter().copied().filter(|r| implemented(*r)) {
-        let outcome = run_with(&catalog, &Options::new(), implemented, |hidden| {
-            hidden == rule
-        });
+    for rule in RuleId::ALL.iter().copied() {
+        let outcome = run_with(&catalog, &Options::new(), |_| true, |hidden| hidden == rule);
         assert!(
             !outcome.disagreements.is_empty(),
             "no case fails when {} reports nothing, so the corpus does not test it",
@@ -91,6 +74,11 @@ fn the_corpus_notices_when_any_implemented_rule_stops_working() {
                 .all(|d| d.expected.contains(rule.as_str())),
             "hiding {} should only disturb the cases that break it",
             rule.as_str()
+        );
+        println!(
+            "{}: {} cases fail without it",
+            rule.as_str(),
+            outcome.disagreements.len()
         );
     }
 }
