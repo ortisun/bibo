@@ -141,10 +141,11 @@ for tenant in $audit_tenants; do
   fi
   audit_n=$((audit_n + 1))
 done
-if [ -z "$audit_bad" ] && [ "$audit_n" -gt 0 ]; then
-  ops_check audit-chain-rebuilt-outside-postgresql PASS "$audit_n tenant chains verified by verify_audit_chain.py"
+want_audit=$(python3 -I -c 'import json,sys; print(json.load(open(sys.argv[1]))["chain"]["audit_chains"])' "$manifest")
+if [ -z "$audit_bad" ] && [ "$audit_n" = "$want_audit" ]; then
+  ops_check audit-chain-rebuilt-outside-postgresql PASS "$audit_n tenant chains verified by verify_audit_chain.py (the backup recorded $want_audit)"
 else
-  ops_check audit-chain-rebuilt-outside-postgresql FAIL "${audit_bad:-no audit chain found}"
+  ops_check audit-chain-rebuilt-outside-postgresql FAIL "${audit_bad:-found $audit_n audit chains, the backup recorded $want_audit}"
 fi
 
 # The three logins, as real logins over TCP, with the start-up check of the storage crate

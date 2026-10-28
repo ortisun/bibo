@@ -409,9 +409,9 @@ class TopologyCase(TempDirCase):
 class LockCase(TempDirCase):
     """The shared Docker lock (scripts/lib/ops.sh), the same file the Rust tests lock."""
 
-    def script(self, body, wait="2"):
+    def script(self, body, wait="2", extra_env=None):
         env = dict(os.environ, FACTORY_DOCKER_LOCK_DIR=self.dir, FACTORY_DOCKER_LOCK_WAIT_SECONDS=wait,
-                   FACTORY_DOCKER_HOLD_SECONDS="20", OPS_TOOL="lock-test")
+                   FACTORY_DOCKER_HOLD_SECONDS="20", OPS_TOOL="lock-test", **(extra_env or {}))
         return subprocess.run(["bash", "-c", ". '%s/ops.sh'; ops_install_traps; %s" % (LIB, body)], env=env,
                               capture_output=True, text=True, timeout=60)
 
@@ -434,6 +434,13 @@ class LockCase(TempDirCase):
             holder.kill()
             holder.wait()
             holder.stdout.close()
+
+    def test_the_full_address_pool_is_recognised_in_dockers_own_words_and_nothing_else_is(self):
+        for text in ("failed to create network x: Error response from daemon: all predefined address pools have been fully subnetted",
+                     "could not find an available, non-overlapping IPv4 address pool among the defaults to assign to the network"):
+            self.assertEqual(self.script('ops_is_pool_exhausted "$TEXT"', extra_env={"TEXT": text}).returncode, 0, text)
+        for text in ("network with name x already exists", "Pool overlaps with other one on this address space", "bind: address already in use"):
+            self.assertEqual(self.script('ops_is_pool_exhausted "$TEXT"', extra_env={"TEXT": text}).returncode, 1, text)
 
     def test_the_lock_is_free_again_after_the_holder_ends(self):
         self.assertEqual(self.script("ops_lock_acquire 2; true").returncode, 0)

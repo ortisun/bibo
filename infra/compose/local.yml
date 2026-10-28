@@ -245,8 +245,10 @@ services:
       FACTORY_DB_SYSTEM_USER: factory_engine
       FACTORY_DB_SYSTEM_PASSWORD_FILE: /run/secrets/pg_password_engine
       FACTORY_ARTIFACT_DIR: /var/lib/factory/artifacts
-      # The model broker listens here. Per-job egress sidecars reach it over the "broker" network.
+      # The model broker listens here. Per-job egress sidecars reach it over the "broker" network, whose
+      # name the supervisor needs to attach each sidecar to it. scripts/local-up.sh sets the variable.
       FACTORY_BROKER_LISTEN_ADDR: 0.0.0.0:8181
+      FACTORY_BROKER_NETWORK: ${FACTORY_BROKER_NETWORK:-factory-local_broker}
       # The sandbox images the supervisor starts, by digest (infra/sandbox-images/images.json).
       FACTORY_SANDBOX_AGENT_IMAGE: ${FACTORY_SANDBOX_AGENT_IMAGE:-}
       FACTORY_SANDBOX_VERIFY_IMAGE: ${FACTORY_SANDBOX_VERIFY_IMAGE:-}

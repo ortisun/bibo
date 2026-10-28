@@ -363,8 +363,41 @@ ops_leftovers() {
 ops_stack_up() {
   ops_compose run --rm --no-deps -T artifacts-init >/dev/null \
     || ops_die "the artifact volume could not be prepared (docker compose run artifacts-init)"
-  ops_compose up --detach --no-deps --wait --wait-timeout 180 "$@" \
-    || ops_die "the stack did not become healthy. See: docker compose -p $OPS_PROJECT logs"
+  if ! ops_compose up --detach --no-deps --wait --wait-timeout 180 "$@" 2>"$OPS_RUN_DIR/up.err"; then
+    cat "$OPS_RUN_DIR/up.err" >&2
+    if ops_is_pool_exhausted "$(cat "$OPS_RUN_DIR/up.err")"; then
+      ops_blocked "Docker has no free network address block (the pool is shared with every other stack on this machine). Nothing was created for this run that is not removed again. Wait for another run to finish, or remove networks that you own and no longer need. This script never removes a network it did not create."
+    fi
+    ops_die "the stack did not start or did not become healthy (the reason is in the lines above; the logs: docker compose -p $OPS_PROJECT logs). Whatever did start is still there: scripts/local-up.sh --down removes the containers, --destroy --yes also the data."
+  fi
+}
+
+# True when text is Docker's "no free address block" answer to a network create. These are the spellings that
+# crates/sandbox/tests/support/docker_lock.rs recognises (Docker Engine and Docker Desktop).
+ops_is_pool_exhausted() {
+  case "$1" in
+    *"address pools have been fully subnetted"* | *"non-overlapping IPv4 address pool"* | *"non-overlapping IPv6 address pool"*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+# Refuse to start a PostgreSQL image on a volume that holds the data of another major version. The 18 image keeps
+# its data in /var/lib/postgresql/18/docker, older images in /var/lib/postgresql/data. Neither complains when it
+# finds the other's data: it makes a new, empty cluster beside it, and the old data is silently left behind
+# (docs/operations/troubleshooting.md, "The stack starts empty after an image change").
+ops_pgdata_guard() {
+  local volume="${OPS_PROJECT}_pgdata" want found v
+  want=$(printf '%s' "$OPS_PG_IMAGE_REF" | sed -n 's/^postgres:\([0-9][0-9]*\).*/\1/p')
+  [ -n "$want" ] || return 0
+  docker volume inspect "$volume" >/dev/null 2>&1 || return 0
+  found=$(docker run --rm --pull never --network none --user 0:0 --cap-drop ALL --cap-add DAC_OVERRIDE \
+            --security-opt no-new-privileges:true --read-only --memory 64m --pids-limit 16 \
+            --label factory.managed=true --label "factory.test=${OPS_TEST:-false}" --label "factory.run=${OPS_RUN_ID:-local}" \
+            -v "$volume:/v:ro" --entrypoint /bin/sh "$OPS_PG_IMAGE_REF" \
+            -c 'for f in /v/PG_VERSION /v/data/PG_VERSION /v/*/docker/PG_VERSION; do [ -f "$f" ] && cat "$f"; done; true') || return 0
+  for v in $found; do
+    [ "${v%%.*}" = "$want" ] || ops_die "the volume $volume holds PostgreSQL $v data, and the image is PostgreSQL $want. The image would start a new, empty database next to it and leave your data behind. Use the image that made the volume, restore from a backup into a new volume, or remove the volume (scripts/local-up.sh --destroy --yes) if it holds nothing you need."
+  done
 }
 
 # Remove the compose project's containers, network and volumes. Only this project, only what it created.
