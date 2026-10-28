@@ -15,9 +15,8 @@
 //! it claims an attempt: the sandbox spec carries the job and not the tenant, and the composition
 //! root is the only place that knows both.
 //!
-//! The same applies to the workspace patch (`Workspace::ingest`, `JobRepo::export_patch`). This
-//! package wraps the sandbox only; the workspace wrapper is not written yet and is listed in the
-//! README.
+//! The same applies to the workspace patch (`JobRepo::export_patch`): [`IndexingWorkspaces`]
+//! wraps the workspace provider and indexes the patch when it is exported.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, PoisonError};
@@ -184,5 +183,168 @@ impl SandboxSession for IndexingSession {
         reason: TeardownReason,
     ) -> Result<TeardownReport, SandboxError> {
         self.inner.stop_and_remove(reason).await
+    }
+}
+
+// ------------------------------------------------------------------------------------------
+// The workspace patch
+// ------------------------------------------------------------------------------------------
+
+use factory_ports::paths::{CommitSha, RepoGlob, RepoPath};
+use factory_ports::workspace::{
+    FetchTarget, FetchedBase, IoOperation, JobRepo, PatchExport, PushTarget, ReadView, Workspace,
+    WorkspaceError, WorkspaceProvider, WorkspaceRequest,
+};
+
+/// A workspace provider whose job repositories index the patches they export.
+///
+/// `JobRepo::export_patch` stores the unified diff with `ArtifactStore::put` and returns the
+/// reference, and says "the caller indexes it for its tenant". `put` makes no index row, so until
+/// somebody indexes the patch, `ArtifactStore::get` answers `NotFound` for the tenant that owns
+/// the job: the review and documentation stages could not read the diff they are asked to judge.
+/// This wrapper indexes the patch in a short tenant transaction as soon as it is exported, the
+/// same way [`IndexingSandbox`] does for command output. The tenant comes from [`ActiveJobs`];
+/// a job the loop does not know fails closed.
+///
+/// `WorkspaceError` has no variant for "the artifact could not be indexed" (the same gap as
+/// `SandboxError`, README mismatch 10), so the failure is reported as the closest host failure,
+/// `Io(CreateDirectory)`.
+pub struct IndexingWorkspaces {
+    inner: Arc<dyn WorkspaceProvider>,
+    store: Arc<dyn Store>,
+    jobs: Arc<ActiveJobs>,
+}
+
+impl IndexingWorkspaces {
+    /// Wraps `inner`.
+    #[must_use]
+    pub fn new(
+        inner: Arc<dyn WorkspaceProvider>,
+        store: Arc<dyn Store>,
+        jobs: Arc<ActiveJobs>,
+    ) -> Self {
+        Self { inner, store, jobs }
+    }
+}
+
+#[async_trait]
+impl WorkspaceProvider for IndexingWorkspaces {
+    fn fidelity(&self) -> Fidelity {
+        self.inner.fidelity()
+    }
+
+    async fn fetch(
+        &self,
+        job: JobId,
+        target: &FetchTarget,
+        branch: &factory_ports::paths::BranchName,
+        cancel: &dyn CancelSignal,
+    ) -> Result<FetchedBase, WorkspaceError> {
+        self.inner.fetch(job, target, branch, cancel).await
+    }
+
+    async fn create(
+        &self,
+        req: WorkspaceRequest,
+        cancel: &dyn CancelSignal,
+    ) -> Result<Box<dyn Workspace>, WorkspaceError> {
+        self.inner.create(req, cancel).await
+    }
+
+    async fn repo(&self, job: JobId) -> Result<Box<dyn JobRepo>, WorkspaceError> {
+        let inner = self.inner.repo(job).await?;
+        Ok(Box::new(IndexingRepo {
+            inner,
+            store: Arc::clone(&self.store),
+            jobs: Arc::clone(&self.jobs),
+            job,
+        }))
+    }
+
+    async fn dispose_job(&self, job: JobId) -> Result<(), WorkspaceError> {
+        self.inner.dispose_job(job).await
+    }
+
+    async fn sweep_orphans(
+        &self,
+        live: &[AttemptId],
+        live_jobs: &[JobId],
+    ) -> Result<Vec<AttemptId>, WorkspaceError> {
+        self.inner.sweep_orphans(live, live_jobs).await
+    }
+}
+
+struct IndexingRepo {
+    inner: Box<dyn JobRepo>,
+    store: Arc<dyn Store>,
+    jobs: Arc<ActiveJobs>,
+    job: JobId,
+}
+
+impl IndexingRepo {
+    async fn index(&self, patch: &ArtifactRef) -> Result<(), WorkspaceError> {
+        let failed = || WorkspaceError::Io(IoOperation::CreateDirectory);
+        let tenant = self.jobs.tenant_of(self.job).ok_or_else(failed)?;
+        // A reference without a size cannot be indexed; the workspace adapter always sets one.
+        let entry = NewArtifactIndexEntry::from_reference(patch, None).ok_or_else(failed)?;
+        let mut tx = self
+            .store
+            .begin(TenantScope::new(tenant))
+            .await
+            .map_err(|_| failed())?;
+        match tx.index_artifact(entry).await {
+            Ok(_) => tx.commit().await.map_err(|_| failed()),
+            Err(_) => {
+                let _ = tx.rollback().await;
+                Err(failed())
+            }
+        }
+    }
+}
+
+#[async_trait]
+impl JobRepo for IndexingRepo {
+    async fn read_file_at(
+        &self,
+        commit: &CommitSha,
+        path: &RepoPath,
+        max_bytes: u64,
+        view: ReadView,
+    ) -> Result<Vec<u8>, WorkspaceError> {
+        self.inner.read_file_at(commit, path, max_bytes, view).await
+    }
+
+    async fn list_at(
+        &self,
+        commit: &CommitSha,
+        glob: &RepoGlob,
+        limit: usize,
+        view: ReadView,
+    ) -> Result<Vec<RepoPath>, WorkspaceError> {
+        self.inner.list_at(commit, glob, limit, view).await
+    }
+
+    async fn export_patch(
+        &self,
+        base: &CommitSha,
+        head: &CommitSha,
+        max_bytes: u64,
+        cancel: &dyn CancelSignal,
+    ) -> Result<PatchExport, WorkspaceError> {
+        let exported = self
+            .inner
+            .export_patch(base, head, max_bytes, cancel)
+            .await?;
+        self.index(&exported.patch).await?;
+        Ok(exported)
+    }
+
+    async fn push(
+        &self,
+        target: &PushTarget,
+        commit: &CommitSha,
+        cancel: &dyn CancelSignal,
+    ) -> Result<(), WorkspaceError> {
+        self.inner.push(target, commit, cancel).await
     }
 }
