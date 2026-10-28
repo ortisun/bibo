@@ -676,6 +676,15 @@ fn samples() -> Vec<Sample> {
             vec![format!("sfjt_{}", rep('r', 10))],
         ),
         s(
+            "api_token",
+            format!("sfat_{}", rep('r', 43)),
+            vec![
+                format!("sfat_{}", rep('r', 42)),
+                format!("sfab_{}", rep('r', 43)),
+                format!("xsfat_{}", rep('r', 43)),
+            ],
+        ),
+        s(
             "nats_credentials",
             pem("NATS USER NKEY SEED", 's'),
             vec![pem("NATS UNKNOWN THING", 's')],

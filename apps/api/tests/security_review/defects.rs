@@ -233,7 +233,6 @@ async fn api_3b_the_api_login_cannot_mint_a_token() {
 /// API-4a. The README says the `sfat_` prefix "makes a token recognizable to a secret scanner".
 /// `policies/security.yaml` has a rule for the job token (`sfjt_`) and none for the API token.
 #[test]
-#[ignore = "confirmed defect API-4: no redaction rule and no gitleaks rule recognises an API token (sfat_)"]
 fn api_4a_the_redactor_recognises_an_api_token() {
     let redactor = policy_redactor();
     let token = runtime_token();
@@ -263,7 +262,6 @@ fn api_4a_the_redactor_recognises_an_api_token() {
 /// API-4b. `jobs::submit` refuses "a secret in a request" so that it is not stored. An API token
 /// pasted into the text is stored, and later goes wherever the request text goes.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[ignore = "confirmed defect API-4: a job request that contains an API token is accepted and stored"]
 async fn api_4b_a_job_request_that_contains_an_api_token_is_refused() {
     let env = Env::start().await;
     let token = runtime_token();

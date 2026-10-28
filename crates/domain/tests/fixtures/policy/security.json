@@ -1939,6 +1939,11 @@
       },
       {
         "action": "block",
+        "id": "api_token",
+        "regex": "\\bsfat_[A-Za-z0-9_-]{43}"
+      },
+      {
+        "action": "block",
         "format_status": "unverified",
         "id": "nats_credentials",
         "regex": "-----BEGIN (?:NATS )?USER (?:JWT|NKEY SEED)-----"
