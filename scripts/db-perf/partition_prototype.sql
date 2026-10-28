@@ -360,6 +360,33 @@ BEGIN
 END
 $$;
 
+-- A multi-column range on (tenant_id, sequence): the one key the audit primary key already holds. Each tenant's chain can then
+-- be cut in ranges of sequence numbers, and a whole tenant can sit in a partition of its own.
+DO $$
+BEGIN
+  CREATE TABLE proto_audit_range (LIKE audit_events INCLUDING DEFAULTS, PRIMARY KEY (tenant_id, sequence)) PARTITION BY RANGE (tenant_id, sequence);
+  PERFORM perf.note('B5 audit_events partitioned by RANGE (tenant_id, sequence) with PRIMARY KEY (tenant_id, sequence)', 'accepted');
+EXCEPTION WHEN others THEN
+  PERFORM perf.note('B5 audit_events partitioned by RANGE (tenant_id, sequence)', 'refused: ' || SQLERRM);
+END
+$$;
+DO $$
+DECLARE
+  t1 uuid := (SELECT id FROM perf.tenant_plan WHERE idx = 1);
+  t2 uuid := (SELECT id FROM perf.tenant_plan WHERE idx = 2);
+BEGIN
+  -- tenant 1: sequences 1 to 20,000 in one partition, the rest of tenant 1 in the next; every other tenant in a default partition
+  EXECUTE format('CREATE TABLE proto_audit_range_t1_a PARTITION OF proto_audit_range FOR VALUES FROM (%L, 1) TO (%L, 20001)', t1, t1);
+  EXECUTE format('CREATE TABLE proto_audit_range_t1_b PARTITION OF proto_audit_range FOR VALUES FROM (%L, 20001) TO (%L, 9223372036854775807)', t1, t1);
+  CREATE TABLE proto_audit_range_rest PARTITION OF proto_audit_range DEFAULT;
+  INSERT INTO proto_audit_range SELECT * FROM audit_events;
+  PERFORM perf.note('B6 rows of tenant 1 by range partition (first 20,000 sequences, the rest, everyone else)',
+    (SELECT count(*) FROM proto_audit_range_t1_a) || ' / ' || (SELECT count(*) FROM proto_audit_range_t1_b) || ' / ' || (SELECT count(*) FROM proto_audit_range_rest));
+  PERFORM perf.note('B7 plan of the tail query of tenant 1 on the range partitioned log', perf.plan_text(format('SELECT sequence, hash FROM proto_audit_range WHERE tenant_id = %L ORDER BY sequence DESC LIMIT 1', t1)));
+  PERFORM perf.note('B8 plan of the tail query of tenant 2 (in the default partition)', perf.plan_text(format('SELECT sequence, hash FROM proto_audit_range WHERE tenant_id = %L ORDER BY sequence DESC LIMIT 1', t2)));
+END
+$$;
+
 -- ---------------------------------------------------------------------------------------------
 -- C. The outbox
 

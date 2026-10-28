@@ -66,6 +66,7 @@ LOGINS = {
 }
 
 TX_LIMITS = ("30000ms", "5000ms")   # the defaults of PoolSettings (statement 30 s, lock 5 s)
+SEQSCAN_LARGE = 5000                # a sequential scan of a table with more rows than this fails the verdict (jobs holds 10,000 at 100,000 rows)
 
 
 class Refused(Exception):
@@ -110,7 +111,8 @@ def free_port() -> int:
 
 
 class Cluster:
-    def __init__(self, bin_dir: Path, keep: bool, extra_settings: list[str]):
+    def __init__(self, bin_dir: Path, keep: bool, extra_settings: list[str], deployed_defaults: bool = False):
+        self.deployed_defaults = deployed_defaults
         self.bin = bin_dir
         self.keep = keep
         self.extra = extra_settings
@@ -126,11 +128,10 @@ class Cluster:
         return subprocess.run([str(self.bin / name), *args], check=check, capture_output=True, text=True, env=env)
 
     def _options(self) -> str:
-        options = [
-            "-c", "listen_addresses=127.0.0.1", "-c", f"port={self.port}", "-c", "unix_socket_directories=",
-            "-c", "shared_preload_libraries=pg_stat_statements", "-c", "pg_stat_statements.track=all",
-            "-c", "track_io_timing=on", "-c", "max_connections=100", "-c", "log_min_duration_statement=-1",
-        ]
+        options = ["-c", "listen_addresses=127.0.0.1", "-c", f"port={self.port}", "-c", "unix_socket_directories="]
+        if not self.deployed_defaults:       # the measuring cluster watches itself; the "as deployed" one changes nothing else
+            options += ["-c", "shared_preload_libraries=pg_stat_statements", "-c", "pg_stat_statements.track=all", "-c", "track_io_timing=on",
+                        "-c", "max_connections=100", "-c", "log_min_duration_statement=-1"]
         for s in self.extra:
             options += ["-c", s]
         return " ".join(options)
@@ -1002,7 +1003,7 @@ def run_all(args: argparse.Namespace) -> int:
         for s in catalogue:
             w, c = results[s.id]["warm"], results[s.id]["cold"]
             steps = plans[s.id]["a"]["steps"]
-            seq_big = [x for st in steps for x in st["seq_scans"] if x["rows_in_table"] > 1000]
+            seq_big = [x for st in steps for x in st["seq_scans"] if x["rows_in_table"] > SEQSCAN_LARGE]
             idxs = sorted({i["index"] for st in steps for i in st["index_scans"]})
             p95 = w["tx"]["p95"]
             verdict = "PASS"
@@ -1380,31 +1381,58 @@ def relay_drain(cl: Cluster, login: str, work: Path, script: str, clients: int, 
             "failed": int(m_fail.group(1)) if m_fail else 0, "wall_s": round(time.time() - t0, 2), "rc": proc.returncode}
 
 
-def churn(cl: Cluster, work: Path, args: argparse.Namespace) -> dict:
-    """Heartbeats for a while: what happens to the heap and the indexes of attempts, and to the outbox when events are published."""
-    secs = 20 if args.quick else 90
-    login_w = LOGINS["worker"][0]
-    tables = ["attempts", "outbox", "stage_runs", "jobs"]
+def churn_pass(cl: Cluster, work: Path, hb: str, secs: int, tag: str) -> dict:
+    """One run of heartbeats from a clean start, and what it did to the attempts table."""
+    refresh_leases(cl, DBW)
+    cl.psql(SUPER, DBW, "VACUUM (ANALYZE) attempts")
     cl.psql(SUPER, DBW, "SELECT pg_stat_reset()")
-    cl.psql(SUPER, DBW, "VACUUM (ANALYZE) attempts, outbox")
-    before = stat_snapshot(cl, DBW, tables)
+    before = stat_snapshot(cl, DBW, ["attempts"])["attempts"]
     idx_before = index_sizes(cl, DBW, "attempts")
-    stat_before = cl.query(SUPER, DBW, "SELECT approx_tuple_percent, dead_tuple_percent, approx_free_percent FROM pgstattuple_approx('attempts')")[0]
+    run = pgbench(cl, LOGINS["worker"][0], DBW, hb, 4, secs, work, tag)
+    time.sleep(2)
+    after = stat_snapshot(cl, DBW, ["attempts"])["attempts"]
+    if after["updates"] == 0:
+        raise RuntimeError("the churn run updated no row of attempts (every lease had lapsed?); its numbers would mean nothing")
+    return {"seconds": secs, "heartbeats": run, "attempts_before": before, "attempts_after": after,
+            "hot_share": round(after["hot_updates"] / after["updates"], 4), "dead_per_update": round(after["dead"] / after["updates"], 4),
+            "index_bytes_before": idx_before, "index_bytes_after": index_sizes(cl, DBW, "attempts"),
+            "pgstattuple_approx_after": cl.query(SUPER, DBW, "SELECT approx_tuple_percent, dead_tuple_percent, approx_free_percent FROM pgstattuple_approx('attempts')")[0]}
+
+
+def sweeper_numbers(cl: Cluster, work: Path, tag: str) -> dict:
+    """The expired-lease finder, one client, and its plan."""
+    sweep_sql = f"BEGIN;\n{LEASE_EXPIRED.replace('$1', '10')};\nCOMMIT;\n"
+    run = pgbench(cl, LOGINS["engine"][0], DBW, sweep_sql, 1, 4, work, tag)
+    engine = next(x for x in series_catalogue() if x.id == "due_lease_expired")
+    rel_rows: dict[str, float] = {"attempts": float(cl.scalar(SUPER, DBW, "SELECT reltuples::bigint FROM pg_class WHERE relname = 'attempts'"))}
+    plan = explain_series(cl, engine, {}, DBW, rel_rows)["steps"][0]
+    return {"tps": run["tps"], "latency_ms": run["latency_ms"], "nodes": plan["node_types"], "indexes": [i["index"] for i in plan["index_scans"]],
+            "execution_ms": plan["execution_ms"], "shared_hit": plan["shared_hit"], "seq_scans": plan["seq_scans"]}
+
+
+def churn(cl: Cluster, work: Path, args: argparse.Namespace) -> dict:
+    """Heartbeats for a while: what happens to the heap and the indexes of attempts. First on the schema as it is (migration 19 took
+    the index on the lease away), then, in the same database, with that index put back, which is the schema before migration 19."""
+    secs = 20 if args.quick else 90
+    tables = ["attempts", "outbox", "stage_runs", "jobs"]
     n_live = int(cl.scalar(SUPER, DBW, "SELECT count(*) FROM perf.live_attempts"))
     hb = heartbeat_script(n_live)
-    r = pgbench(cl, login_w, DBW, hb, 4, secs, work, "churn-heartbeats")
-    time.sleep(2)
-    after = stat_snapshot(cl, DBW, tables)
-    idx_after = index_sizes(cl, DBW, "attempts")
-    stat_after = cl.query(SUPER, DBW, "SELECT approx_tuple_percent, dead_tuple_percent, approx_free_percent FROM pgstattuple_approx('attempts')")[0]
-    # wait a little for autovacuum, then one explicit vacuum for the "after maintenance" size
-    time.sleep(5)
-    mid = stat_snapshot(cl, DBW, tables)
+    # The earlier heartbeat runs left 30 second leases, which have lapsed by now; refresh_leases (in churn_pass) puts live ones back.
+    current = churn_pass(cl, work, hb, secs, "churn-current")
+    time.sleep(5)                                                        # give autovacuum its chance
+    after_wait = stat_snapshot(cl, DBW, tables)
     cl.psql(SUPER, DBW, "VACUUM (ANALYZE) attempts")
-    vac = stat_snapshot(cl, DBW, tables)
-    return {"seconds": secs, "heartbeat_run": r, "before": before, "after_churn": after, "after_wait": mid, "after_vacuum": vac,
-            "index_bytes_before": idx_before, "index_bytes_after": idx_after,
-            "pgstattuple_approx_before": stat_before, "pgstattuple_approx_after": stat_after,
+    after_vacuum = stat_snapshot(cl, DBW, tables)
+    sweeper_current = sweeper_numbers(cl, work, "churn-sweeper-current")
+    cl.psql(SUPER, DBW, "CREATE INDEX attempts_lease_expiry_idx ON attempts (lease_expires_at) WHERE status IN ('STARTING', 'RUNNING')")
+    cl.psql(SUPER, DBW, "ANALYZE attempts")
+    try:
+        before_migration = churn_pass(cl, work, hb, min(secs, 45), "churn-before-migration")
+        sweeper_before = sweeper_numbers(cl, work, "churn-sweeper-before-migration")
+    finally:
+        cl.psql(SUPER, DBW, "DROP INDEX attempts_lease_expiry_idx")
+    return {"seconds": secs, "live_attempts": n_live, "current_schema": current, "after_wait": after_wait, "after_vacuum": after_vacuum,
+            "sweeper_current_schema": sweeper_current, "schema_before_migration_19": before_migration, "sweeper_before_migration_19": sweeper_before,
             "settings": {k: v for k, v in settings_report(cl).items() if k.startswith("autovacuum")}}
 
 
@@ -1481,11 +1509,24 @@ def markdown(report: dict) -> str:
                  f"p95 {fmt_ms(sw['sweeper_with_heartbeats']['latency_ms'].get('p95'))} ms; heartbeats {sw['heartbeats_with_sweeper']['tps']:.0f} tps, p95 {fmt_ms(sw['heartbeats_with_sweeper']['latency_ms'].get('p95'))} ms.")
     if "churn" in report:
         ch = report["churn"]
-        a0, a1, a2, a3 = ch["before"]["attempts"], ch["after_churn"]["attempts"], ch["after_wait"]["attempts"], ch["after_vacuum"]["attempts"]
         o.append("")
-        o.append(f"Churn: {ch['heartbeat_run']['transactions']:,} heartbeats in {ch['seconds']} s ({ch['heartbeat_run']['tps']:.0f} tps) on 600 live attempts. attempts: heap {a0['heap_bytes']:,} -> {a1['heap_bytes']:,} bytes, "
-                 f"indexes {a0['index_bytes']:,} -> {a1['index_bytes']:,}, dead tuples {a0['dead']:,} -> {a1['dead']:,}, updates {a1['updates']:,} of which HOT {a1['hot_updates']:,}, "
-                 f"autovacuum runs {a2['autovacuum_count']}; after VACUUM: heap {a3['heap_bytes']:,}, indexes {a3['index_bytes']:,}.")
+        o.append(f"Churn: heartbeats by 4 clients on {ch['live_attempts']} live attempts, each pass from a vacuumed table, the leases refreshed first.")
+        o.append("")
+        o.append("| Schema | Heartbeats | tps | Heap-only (HOT) share | Dead tuples left | attempts heap bytes before to after | attempts index bytes before to after |")
+        o.append("|---|---:|---:|---:|---:|---|---|")
+        for label, key in (("migration 19 (no index keyed on the lease)", "current_schema"), ("before migration 19 (index on the lease)", "schema_before_migration_19")):
+            p = ch[key]
+            b, a = p["attempts_before"], p["attempts_after"]
+            o.append(f"| {label}, {p['seconds']} s | {p['heartbeats']['transactions']:,} | {p['heartbeats']['tps']:.0f} | {p['hot_share']:.4f} | {a['dead']:,} | "
+                     f"{b['heap_bytes']:,} to {a['heap_bytes']:,} | {sum(p['index_bytes_before'].values()):,} to {sum(p['index_bytes_after'].values()):,} |")
+        a2, a3 = ch["after_wait"]["attempts"], ch["after_vacuum"]["attempts"]
+        o.append("")
+        o.append(f"After the 90 second pass on the current schema, with the PostgreSQL defaults: autovacuum runs {a2['autovacuum_count']}, dead tuples {a2['dead']:,} five seconds later; "
+                 f"after one VACUUM: heap {a3['heap_bytes']:,} bytes, indexes {a3['index_bytes']:,} bytes, dead tuples {a3['dead']:,}.")
+        sw, sb = ch["sweeper_current_schema"], ch["sweeper_before_migration_19"]
+        o.append("")
+        o.append(f"Sweeper (lease expired, LIMIT 10, one client): current schema {sw['tps']:.0f} tps, p95 {fmt_ms(sw['latency_ms'].get('p95'))} ms, plan {' / '.join(sw['nodes'])} on {', '.join(sw['indexes'])}; "
+                 f"before migration 19 {sb['tps']:.0f} tps, p95 {fmt_ms(sb['latency_ms'].get('p95'))} ms, plan {' / '.join(sb['nodes'])} on {', '.join(sb['indexes'])}.")
     if report.get("catalog", {}).get("foreign_keys_without_an_index"):
         o.append("")
         o.append("Foreign keys with no index that starts with their columns: " + "; ".join(f"{x['table']}({x['columns']})" for x in report["catalog"]["foreign_keys_without_an_index"]))
@@ -1507,6 +1548,169 @@ def write_outputs(args: argparse.Namespace, report: dict, final: bool) -> None:
     if args.markdown:
         Path(args.markdown).write_text(text + "\n")
     print(text)
+
+
+def idle_demo(cl: Cluster, with_timeout: bool) -> dict:
+    """A worker session that stops after taking a row lock, and a second session that needs the same row."""
+    row = cl.query(SUPER, DB, "SELECT tenant_id, job_id FROM perf.job_plan WHERE class = 'A' ORDER BY n LIMIT 1")[0]
+    t, j = row[0], row[1]
+    login = LOGINS["worker"][0]
+    cl.psql(SUPER, DB, f"ALTER ROLE {login} " + ("SET idle_in_transaction_session_timeout = '2s'" if with_timeout else "RESET idle_in_transaction_session_timeout"))
+    first = subprocess.Popen([str(cl.bin / "psql"), "-X", "-q", "-v", "ON_ERROR_STOP=1", "-U", login, "-d", DB], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                             stderr=subprocess.PIPE, text=True, env=cl.env(login))
+    assert first.stdin is not None
+    first.stdin.write(f"BEGIN;\nSELECT set_config('factory.tenant_id', '{t}', true);\nSELECT 1 FROM jobs WHERE tenant_id = '{t}' AND id = '{j}' FOR NO KEY UPDATE;\n")
+    first.stdin.flush()
+    time.sleep(0.5)
+    t0 = time.time()
+    out, rc = cl.psql(login, DB, check=False, tuples=True, sql=(
+        f"BEGIN; SELECT set_config('factory.tenant_id', '{t}', true); SET LOCAL lock_timeout = '5s'; "
+        f"SELECT 1 FROM jobs WHERE tenant_id = '{t}' AND id = '{j}' FOR NO KEY UPDATE; COMMIT;"))
+    waited = round(time.time() - t0, 2)
+    first.stdin.close()
+    try:
+        _, first_err = first.communicate(timeout=10)
+    except subprocess.TimeoutExpired:
+        first.kill()
+        _, first_err = first.communicate()
+    cl.psql(SUPER, DB, f"ALTER ROLE {login} RESET idle_in_transaction_session_timeout")
+    return {"with_idle_in_transaction_session_timeout_2s": with_timeout, "second_session_waited_s": waited, "second_session_exit": rc,
+            "second_session_said": out.strip().splitlines()[-1][:160] if out.strip() else "", "first_session_said": first_err.strip()[:200]}
+
+
+def run_check_settings(args: argparse.Namespace) -> int:
+    """Settings of the server as deployed (no flags beyond the address), and what they allow: extensions, timeouts, autovacuum."""
+    cl = Cluster(find_bin(), args.keep, [], deployed_defaults=True)
+    atexit.register(cl.destroy)
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        signal.signal(sig, lambda *_: (cl.destroy(), sys.exit(130)))
+    cl.start()
+    provision(cl, args.rows)
+    report: dict[str, Any] = {"schema": "factory-db-settings/1", "postgres": cl.version, "rows": args.rows}
+    report["settings"] = settings_report(cl)
+    out, _ = cl.psql(SUPER, DB, "SELECT count(*) FROM pg_stat_statements", check=False, tuples=True)
+    report["pg_stat_statements_without_preload"] = out.strip().splitlines()[-1][:220] if out.strip() else ""
+    report["role_defaults"] = cl.query(SUPER, DB, "SELECT coalesce(r.rolname, '(all roles)'), s.setconfig::text FROM pg_db_role_setting s LEFT JOIN pg_roles r ON r.oid = s.setrole")
+    report["settings_seen_by_each_login"] = {}
+    for _, (login, _groups) in LOGINS.items():
+        outl, _ = cl.psql(login, DB, check=False, tuples=True, sql=("SELECT current_setting('statement_timeout') || ' / ' || current_setting('lock_timeout') || ' / ' "
+                                                                    "|| current_setting('idle_in_transaction_session_timeout')"))
+        report["settings_seen_by_each_login"][login] = outl.strip()
+    report["idle_in_transaction"] = [idle_demo(cl, False), idle_demo(cl, True)]
+    tables = cl.query(SUPER, DB, "SELECT relname, reltuples::bigint, coalesce(reloptions::text, '') FROM pg_class WHERE relnamespace = 'public'::regnamespace AND relkind = 'r' "
+                                 "AND relname IN ('attempts','stage_runs','jobs','outbox','ledger_entries','audit_events','artifacts')")
+    report["table_storage_options"] = {r[0]: {"reltuples": int(r[1]), "reloptions": r[2]} for r in tables}
+    print(json.dumps(report, indent=1))
+    if args.report:
+        Path(args.report).write_text(json.dumps(report, indent=1))
+    return 0
+
+
+def run_check_backup(args: argparse.Namespace) -> int:
+    """Does a dump taken the way scripts/backup.sh takes it hold everything the schema holds? A round trip into a second database,
+    compared by the catalog fingerprint the migrations suite uses, by row counts, by the chains and by isolation through a real login."""
+    cl = Cluster(find_bin(), args.keep, [], deployed_defaults=True)
+    atexit.register(cl.destroy)
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        signal.signal(sig, lambda *_: (cl.destroy(), sys.exit(130)))
+    cl.start()
+    provision(cl, args.rows)
+    fingerprint = ROOT / "docs" / "database" / "tests" / "catalog_fingerprint.sql"
+    dump = cl.root / "database.dump"
+    globals_sql = cl.root / "globals.sql"
+    env = cl.env(SUPER)
+    t_dump = time.time()
+    subprocess.run([str(cl.bin / "pg_dump"), "-U", SUPER, "-d", DB, "--format=custom", "--lock-wait-timeout=30s", "-f", str(dump)], check=True, env=env)
+    dump_seconds = round(time.time() - t_dump, 2)
+    subprocess.run([str(cl.bin / "pg_dumpall"), "-U", SUPER, "--globals-only", "--no-role-passwords", "-f", str(globals_sql)], check=True, env=env)
+    toc = subprocess.run([str(cl.bin / "pg_restore"), "--list", str(dump)], check=True, capture_output=True, text=True).stdout
+    by_type: dict[str, int] = {}
+    for line in toc.splitlines():
+        m = re.match(r"^\d+; \d+ \d+ ((?:[A-Z]+ ?)+) ", line)
+        if m:
+            key = m.group(1).strip()
+            by_type[key] = by_type.get(key, 0) + 1
+    catalog = {k: int(cl.scalar(SUPER, DB, q)) for k, q in {
+        "TABLE": "SELECT count(*) FROM pg_class WHERE relnamespace='public'::regnamespace AND relkind='r'",
+        "INDEX (not constraints)": "SELECT count(*) FROM pg_index i JOIN pg_class c ON c.oid=i.indexrelid WHERE c.relnamespace='public'::regnamespace AND NOT EXISTS (SELECT 1 FROM pg_constraint k WHERE k.conindid=i.indexrelid)",
+        "CONSTRAINT (primary and unique)": "SELECT count(*) FROM pg_constraint WHERE connamespace='public'::regnamespace AND contype IN ('p','u')",
+        "FK CONSTRAINT": "SELECT count(*) FROM pg_constraint WHERE connamespace='public'::regnamespace AND contype='f'",
+        "CHECK CONSTRAINT": "SELECT count(*) FROM pg_constraint WHERE connamespace='public'::regnamespace AND contype='c'",
+        "TRIGGER": "SELECT count(*) FROM pg_trigger t JOIN pg_class c ON c.oid=t.tgrelid WHERE c.relnamespace='public'::regnamespace AND NOT t.tgisinternal",
+        "POLICY": "SELECT count(*) FROM pg_policy",
+        "ROW SECURITY": "SELECT count(*) FROM pg_class WHERE relnamespace='public'::regnamespace AND relrowsecurity",
+        "FUNCTION": "SELECT count(*) FROM pg_proc WHERE pronamespace='public'::regnamespace",
+        "VIEW": "SELECT count(*) FROM pg_class WHERE relnamespace='public'::regnamespace AND relkind='v'",
+        "SCHEMA (perf, the harness's own)": "SELECT count(*) FROM pg_namespace WHERE nspname='perf'",
+        "EXTENSION": "SELECT count(*) FROM pg_extension WHERE extname<>'plpgsql'",
+    }.items()}
+    cl.psql(SUPER, DB_ADMIN, 'CREATE DATABASE "perf_r" TEMPLATE template0')
+    t_restore = time.time()
+    subprocess.run([str(cl.bin / "pg_restore"), "--exit-on-error", "--single-transaction", "-U", SUPER, "-d", "perf_r", str(dump)], check=True, env=env)
+    restore_seconds = round(time.time() - t_restore, 2)
+
+    def fingerprint_of(db: str) -> str:
+        return subprocess.run([str(cl.bin / "psql"), "-X", "-At", "-U", SUPER, "-d", db, "-f", str(fingerprint)], capture_output=True, text=True, env=env).stdout.strip()
+
+    fp_src, fp_dst = fingerprint_of(DB), fingerprint_of("perf_r")
+
+    def definitions_of(db: str) -> set[str]:
+        """The lines the fingerprint hashes, one per definition, so a difference can be named."""
+        text = fingerprint.read_text()
+        cut = text.rindex("SELECT encode(sha256(")
+        listing = text[:cut] + "SELECT d FROM defs;"
+        done = subprocess.run([str(cl.bin / "psql"), "-X", "-At", "-U", SUPER, "-d", db], input=listing, capture_output=True, text=True, env=env)
+        return set(done.stdout.split("\n"))
+
+    only_source, only_restored = (sorted(definitions_of(DB) - definitions_of("perf_r"))[:8], sorted(definitions_of("perf_r") - definitions_of(DB))[:8]) if fp_src != fp_dst else ([], [])
+    tables = [r[0] for r in cl.query(SUPER, DB, "SELECT relname FROM pg_class WHERE relnamespace='public'::regnamespace AND relkind='r' ORDER BY 1")]
+    mismatched = []
+    for t in tables:
+        a = cl.scalar(SUPER, DB, f'SELECT count(*) FROM "{t}"')
+        b = cl.scalar(SUPER, "perf_r", f'SELECT count(*) FROM "{t}"')
+        if a != b:
+            mismatched.append(f"{t}: {a} != {b}")
+    outbox_src = cl.scalar(SUPER, DB, "SELECT max(seq) FROM outbox")
+    cl.psql(SUPER, "perf_r", "INSERT INTO outbox (tenant_id, event_id, event_type, job_id, aggregate_type, aggregate_id, aggregate_version, transition_id, correlation_id, occurred_at, producer, payload) "
+                             "SELECT tenant_id, gen_random_uuid(), 'job.admitted', id, 'job', id, 1, 'J01', correlation_id, now(), 'workflow.engine', '{}' FROM jobs LIMIT 1")
+    next_seq = cl.scalar(SUPER, "perf_r", "SELECT max(seq) FROM outbox")
+    chains = verify_chains(cl, "perf_r")
+    worker = LOGINS["worker"][0]
+    t1 = cl.scalar(SUPER, DB, "SELECT id FROM perf.tenant_plan WHERE idx = 1")
+    t2 = cl.scalar(SUPER, DB, "SELECT id FROM perf.tenant_plan WHERE idx = 2")
+    out1, _ = cl.psql(worker, "perf_r", check=False, tuples=True, sql=(f"BEGIN; SELECT set_config('factory.tenant_id', '{t1}', true); "
+                                                                          f"SELECT count(*) FILTER (WHERE tenant_id = '{t1}') || '/' || count(*) FROM jobs; ROLLBACK;"))
+    out2, _ = cl.psql(worker, "perf_r", check=False, tuples=True, sql=(f"BEGIN; SELECT set_config('factory.tenant_id', '{t2}', true); "
+                                                                          f"SELECT count(*) FILTER (WHERE tenant_id = '{t1}') FROM jobs; ROLLBACK;"))
+    globals_text = globals_sql.read_text()
+    last = lambda text: text.strip().splitlines()[-1] if text.strip() else text  # noqa: E731
+    report = {
+        "schema": "factory-db-backup-coverage/1", "postgres": cl.version, "rows": args.rows,
+        "toc_entries_by_type": dict(sorted(by_type.items())), "catalog_counts": catalog,
+        "catalog_fingerprint_equal": fp_src == fp_dst, "fingerprint": fp_src,
+        "only_in_the_source": [line[:300] for line in only_source], "only_in_the_restored": [line[:300] for line in only_restored],
+        "differences_are_only_parentheses": fp_src != fp_dst and {line.replace("(", "").replace(")", "") for line in only_source} == {line.replace("(", "").replace(")", "") for line in only_restored},
+        "tables": len(tables), "row_count_mismatches": mismatched,
+        "outbox_identity_continues": {"max_seq_before": outbox_src, "next_seq_after_restore_and_one_insert": next_seq},
+        "chains_on_the_restored_database": chains,
+        "isolation_on_the_restored_database_through_the_worker_login": {"tenant_1_sees": last(out1), "tenant_2_sees_tenant_1_jobs": last(out2)},
+        "globals_sql": {"bytes": len(globals_text), "create_role_lines": len(re.findall(r"^CREATE ROLE ", globals_text, re.M)),
+                        "membership_lines": len(re.findall(r"^GRANT .* TO ", globals_text, re.M)), "mentions_password": bool(re.search(r"PASSWORD", globals_text)),
+                        "has_role_level_settings": bool(re.search(r"ALTER ROLE .* SET ", globals_text))},
+        "statistics_in_dump": any("STATISTICS" in k for k in by_type),
+        "planner_statistics_rows_in_pg_stats": {"source": int(cl.scalar(SUPER, DB, "SELECT count(*) FROM pg_stats WHERE schemaname = 'public'")),
+                                                "restored": int(cl.scalar(SUPER, "perf_r", "SELECT count(*) FROM pg_stats WHERE schemaname = 'public'"))},
+        "dump": {"seconds": dump_seconds, "bytes": dump.stat().st_size, "restore_seconds": restore_seconds,
+                 "database_bytes": int(cl.scalar(SUPER, DB, f"SELECT pg_database_size('{DB}')"))},
+        "not_in_the_dump": ["the artifact blobs (backed up beside it by scripts/backup.sh)", "WAL: there is no point in time recovery, a restore returns to the moment of the dump",
+                            "the passwords of the logins (set again from the secret files)"],
+    }
+    print(json.dumps(report, indent=1))
+    if args.report:
+        Path(args.report).write_text(json.dumps(report, indent=1))
+    same_catalog = report["catalog_fingerprint_equal"] or report["differences_are_only_parentheses"]
+    ok = same_catalog and not mismatched and not chains["ledger_unsound"] and not chains["audit_unsound"]
+    return 0 if ok else EXIT_FAIL
 
 
 def run_prototype(args: argparse.Namespace) -> int:
@@ -1548,6 +1752,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     p.add_argument("--skip-churn", action="store_true")
     p.add_argument("--break", dest="break_", help="a deliberate break that the harness must catch: superuser | chain | drop-index=NAME")
     p.add_argument("--prototype", choices=["partitions"], help="run the partitioning prototypes instead of the measurements")
+    p.add_argument("--check", choices=["settings", "backup"], help="settings: the server as deployed (timeouts, extensions, autovacuum, an idle transaction that holds a lock); backup: a dump and restore round trip")
     p.add_argument("--pg-setting", action="append", default=[], help="an extra server setting, name=value (repeatable)")
     p.add_argument("--combined-for", action="append", default=["job_get@big"], help="series that are also timed with one set statement in place of two")
     a = p.parse_args(argv)
@@ -1559,6 +1764,10 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
 def main(argv: list[str]) -> int:
     args = parse_args(argv)
     try:
+        if args.check:
+            if args.rows == 100000:
+                args.rows = 20000
+            return run_check_settings(args) if args.check == "settings" else run_check_backup(args)
         if args.prototype:
             if args.rows == 100000:
                 args.rows = 30000
