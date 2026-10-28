@@ -340,34 +340,27 @@ async fn grounded(
         format!("findings={}", verdict.findings.len()),
         format!("patch={}", export.patch.sha256),
     ];
+    // A verdict that fails one of these checks is not evidence, but the work is not at fault, so
+    // the report is `BLOCKED` and not `FAILED`: it is not sent back to the builder. The checks
+    // that failed are named, so a person sees what was wrong.
     let blocked = (!failures.is_empty()).then(|| {
+        let checks: Vec<&str> = failures.iter().map(|(id, _)| id.as_str()).collect();
         (
             "dependency_unavailable",
-            "a verdict that is about this change and points at the patch".to_owned(),
+            format!(
+                "a verdict that is about this change and points at the patch ({})",
+                checks.join(", ")
+            ),
         )
     });
     Ok(Finding {
-        reason: if failures.is_empty() {
+        reason: if blocked.is_none() {
             "The verdict was made from this specification, this patch and these gate reports, and each of its findings points at the patch.".to_owned()
         } else {
             "The verdict cannot be trusted as evidence: it is not about this change, or it cites lines the patch does not show.".to_owned()
         },
-        // A verdict that fails this check is not evidence. The report is `BLOCKED` with the checks
-        // that failed in the reason, so a person sees what was wrong.
         failures: Vec::new(),
-        blocked: blocked.map(|(code, what)| {
-            (
-                code,
-                format!(
-                    "{what} ({})",
-                    failures
-                        .iter()
-                        .map(|(id, _)| id.as_str())
-                        .collect::<Vec<_>>()
-                        .join(", ")
-                ),
-            )
-        }),
+        blocked,
         lines,
     })
 }

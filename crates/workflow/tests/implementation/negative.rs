@@ -413,3 +413,46 @@ async fn a_person_answer_reaches_the_builder_that_asked() {
         "it is quoted data: {answer_line}"
     );
 }
+
+/// The scope check: a task may change only the files it owns. A path the path rules allow, but
+/// that belongs to another task, fails the scope gate, and the work goes back to implementation.
+#[tokio::test]
+async fn a_task_that_changes_a_file_it_does_not_own_fails_the_scope_gate() {
+    let rig = Rig::new().await;
+    rig.run_until_implementation().await;
+    // The README belongs to the documentation task, not to the formatter task.
+    rig.builder_will(
+        vec![
+            write("src/main.rs", MAIN),
+            write("README.md", "# Word count\n\nChanged.\n"),
+        ],
+        done(FIRST, &["src/main.rs", "README.md"]),
+    );
+    rig.builder_will(
+        vec![write("tests/errors.rs", crate::rig::ERRORS_TEST)],
+        done("cover-unreadable-file-error", &["tests/errors.rs"]),
+    );
+    rig.builder_will(
+        vec![write("README.md", "# Word count\n\nUse --json.\n")],
+        done("document-json-flag", &["README.md"]),
+    );
+    let (_, outcome) = rig.run_next().await;
+    assert_eq!(outcome, AttemptOutcome::Succeeded);
+    let reports = rig.gate_reports().await;
+    let scope = reports
+        .iter()
+        .find(|r| r["metadata"]["gate_id"] == "implementation-scope")
+        .expect("a scope report");
+    assert_eq!(scope["outcome"], "FAILED", "{scope}");
+    let message = scope["failures"][0]["message"].as_str().expect("a message");
+    assert!(
+        message.contains(FIRST) && message.contains("README.md"),
+        "{message}"
+    );
+    assert_eq!(scope["failures"][0]["check_id"], "path-outside-owned-files");
+    // The commits were made, and the engine sent the work back along the route of the scope check.
+    assert_eq!(rig.events_of("workspace.commit").len(), 3);
+    assert_eq!(rig.runs_of(StageKind::Implementation).await.len(), 2);
+    let view = rig.world.view(rig.job).await;
+    assert_eq!(view.code_rework_rounds, 1);
+}
