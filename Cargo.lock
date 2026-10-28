@@ -429,6 +429,13 @@ dependencies = [
 [[package]]
 name = "factory-cli"
 version = "0.0.0"
+dependencies = [
+ "factory-composition",
+ "factory-domain",
+ "factory-ports",
+ "serde_json",
+ "ureq",
+]
 
 [[package]]
 name = "factory-composition"

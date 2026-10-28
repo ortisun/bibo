@@ -413,7 +413,14 @@
       "name": "cli",
       "path": "apps/cli",
       "slice": 1,
-      "responsibility": "Operator command line: submit, status, timeline, approve, reject, rework, pause, resume, cancel, probe. Calls the same use cases in process in Slice 1."
+      "responsibility": "Operator command line: submit, status, timeline, approve, reject, rework, pause, resume, cancel, probe. Calls the same use cases in process in Slice 1.",
+      "external_dependencies": [
+        "ureq[rustls]",
+        "serde_json"
+      ],
+      "external_dependencies_notes": {
+        "ureq": "NEW DIRECT DEPENDENCY FOR THIS APP, pending confirmation by a person (policies/security.yaml, supply_chain.new_direct_dependency). 3.5.0, MIT or Apache-2.0, with default features off and rustls only: the same crate and the same feature set the github and egress crates already use, so nothing is new to Cargo.lock. The command talks to the API over HTTP with a token read from a file (https, or http to a loopback address; no redirects, no proxy, a 30 second timeout). It starts no process (DEP-10): probe runs the composition start-up checks in process and lists the rest as BLOCKED."
+      }
     },
     {
       "name": "egress-sidecar",

@@ -1093,3 +1093,43 @@ async fn a_forged_forwarding_header_changes_nothing() {
     assert_eq!(limited.header("retry-after"), Some("60"));
     env.stop().await;
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_stop_request_lets_an_open_request_finish_and_then_the_port_is_closed() {
+    use tokio::io::AsyncWriteExt;
+    let limits = factory_api::config::Limits {
+        body_timeout_ms: 5_000,
+        ..factory_api::config::Limits::default()
+    };
+    let env = Env::start_with(support::Options {
+        limits,
+        ..support::Options::default()
+    })
+    .await;
+    let addr = env.addr;
+    let body = serde_json::to_vec(&json!({
+        "repository_id": env.a.repository.as_text(),
+        "text": "A request that is still arriving when the stop request comes."
+    }))
+    .expect("json");
+    let head = format!(
+        "POST /v1/jobs HTTP/1.1\r\nHost: x\r\nConnection: close\r\nAuthorization: Bearer {}\r\nIdempotency-Key: drain\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n",
+        env.a.requester.token,
+        body.len()
+    );
+    let mut stream = open(addr, head.as_bytes()).await;
+    stream.write_all(&body[..10]).await.expect("first part");
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    env.shutdown.raise();
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    stream.write_all(&body[10..]).await.expect("rest");
+    let raw = read_to_close(&mut stream, Duration::from_secs(10))
+        .await
+        .expect("the open request is answered");
+    assert_eq!(support::parse_reply(&raw).status, 201);
+    env.stop().await;
+    assert!(
+        tokio::net::TcpStream::connect(addr).await.is_err(),
+        "the port is still open after the stop"
+    );
+}
