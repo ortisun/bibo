@@ -286,9 +286,16 @@
         "thiserror",
         "tracing",
         "tokio[net,io-util,time,sync,rt,macros]",
-        "an HTTP/1.1 and TLS stack chosen in work package s1-egress-and-broker and reviewed with cargo deny"
+        "ring",
+        "httparse",
+        "ureq[rustls]"
       ],
-      "responsibility": "The model broker and the egress relay. The broker holds the real provider keys, issues and revokes per-job tokens, forwards only allowed API paths, and meters usage against the job ceiling. The relay is the per-job sidecar: exact-host allowlist, rejection of private and metadata address ranges after resolution, pinned connections and a byte quota. Implements ModelBroker."
+      "responsibility": "The model broker and the egress relay. The broker holds the real provider keys, issues and revokes per-job tokens, forwards only allowed API paths, and meters usage against the job ceiling. The relay is the per-job sidecar: exact-host allowlist, rejection of private and metadata address ranges after resolution, pinned connections and a byte quota. Implements ModelBroker.",
+      "external_allow_notes": {
+        "ring": "Digest of the token hash and of the bodies (sha2 is avoided so one crypto library serves the crate), and the TLS crypto provider of the upstream client. Same decision record as the GitHub adapter; cargo deny and cargo audit pass. Applied by the lead at integration, pending confirmation by the project owner.",
+        "httparse": "Parses the HTTP/1 request head on the broker listener, with strict limits. Small, widely used, no unsafe code of ours.",
+        "ureq": "Blocking HTTP client with rustls only, for the upstream call to the model provider, with redirects and proxies off. Same decision record as the GitHub adapter."
+      }
     },
     {
       "name": "observability",
