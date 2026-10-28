@@ -41,7 +41,7 @@ use super::links;
 use super::payload::{self, key};
 use super::progress::clear;
 use super::record::{Cx, Step, index_entry};
-use super::timeline::Timeline;
+use super::timeline::{RunRecord, Timeline};
 use crate::audit::{AuditAction, AuditDecision, AuditKind};
 use crate::commands::{Actor, Decision, Subject};
 
@@ -337,6 +337,12 @@ impl Engine {
                 let facts = UnblockFacts {
                     capability_reprobe_passed: *capability_reprobe_passed,
                     missing_dependency_now_available: *dependency_now_available,
+                    // Read from what the engine stored: a decision recorded through
+                    // `record_dependency_decision` after the attempt that blocked this run. The
+                    // caller cannot assert it, so a composition root has no bool to pass blindly.
+                    dependency_decision_recorded: timeline
+                        .run(run.value.id)
+                        .is_some_and(RunRecord::dependency_decision_since_last_attempt),
                 };
                 let cleared = clear(Guard::BlockClearedRerun, &GuardFacts::Unblock(facts))?;
                 cx.move_stage_run(
@@ -400,7 +406,7 @@ impl Engine {
     }
 
     /// The roles of the principal now, or a refusal when the configuration cannot be read.
-    async fn roles_of(&self, actor: &Actor) -> Result<Vec<HumanRole>, EngineError> {
+    pub(super) async fn roles_of(&self, actor: &Actor) -> Result<Vec<HumanRole>, EngineError> {
         self.deps
             .authority
             .roles(actor.tenant, actor.principal)
@@ -499,7 +505,7 @@ impl Engine {
 
     /// Records a refused decision in the audit log, in a transaction of its own because the
     /// decision's transaction is dropped.
-    async fn record_denial(
+    pub(super) async fn record_denial(
         &self,
         actor: &Actor,
         subject: Subject,

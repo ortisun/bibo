@@ -323,6 +323,60 @@ impl Plan {
     }
 }
 
+/// The decisions an evidence document of [`Plan::evidence_with`] says are still awaited: each new
+/// direct dependency with no decision on it and each package whose build code has none, with the
+/// exact subject (name, version, checksum) a person was shown. The writer and the reader of the
+/// document are in this module, so they cannot drift apart. An entry that is not in the shape the
+/// writer makes is skipped, so a document that was damaged awaits nothing and no decision can be
+/// recorded against it.
+#[must_use]
+pub fn awaiting_in(evidence: &Value) -> Vec<Awaited> {
+    let read = |entry: &Value, kind: ApprovalKind| -> Option<Awaited> {
+        let text = |key: &str| entry.get(key).and_then(Value::as_str);
+        Some(Awaited {
+            kind,
+            subject: Subject {
+                name: text("name")?.to_owned(),
+                version: text("version")?.to_owned(),
+                checksum: text("checksum")?.to_owned(),
+            },
+            needs: Designation::parse(text("needs")?)?,
+        })
+    };
+    let list = |key: &str| -> Vec<Value> {
+        evidence
+            .get(key)
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default()
+    };
+    let mut awaited = Vec::new();
+    for entry in list("new_direct_dependencies") {
+        if entry.get("approval").is_some_and(Value::is_null)
+            && let Some(found) = read(&entry, ApprovalKind::NewDependency)
+        {
+            awaited.push(found);
+        }
+    }
+    for entry in list("build_code_awaiting_a_decision") {
+        if let Some(found) = read(&entry, ApprovalKind::BuildCode) {
+            awaited.push(found);
+        }
+    }
+    awaited
+}
+
+/// One decision an evidence document says is awaited.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Awaited {
+    /// A decision on the dependency, or on its build code.
+    pub kind: ApprovalKind,
+    /// The exact subject the person was shown.
+    pub subject: Subject,
+    /// The designation that must decide, as the policy engine said when the evidence was made.
+    pub needs: Designation,
+}
+
 /// The name of a flag for the evidence.
 fn flag_name(flag: &DependencyFlag) -> String {
     match flag {

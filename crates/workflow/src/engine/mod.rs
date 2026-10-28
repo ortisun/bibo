@@ -28,6 +28,7 @@ pub mod config;
 mod control;
 mod decide;
 mod decision;
+mod dependency;
 mod error;
 mod failure;
 mod gate;

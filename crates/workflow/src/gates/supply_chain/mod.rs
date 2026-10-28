@@ -47,11 +47,13 @@
 
 pub mod approval;
 pub mod cargo;
+pub mod command;
 pub mod diff;
 pub mod facts;
 pub mod findings;
 pub mod gate;
 pub mod integrity;
+pub mod ledger;
 pub mod licenses;
 pub mod model;
 pub mod names;

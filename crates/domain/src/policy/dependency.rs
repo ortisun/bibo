@@ -83,7 +83,10 @@ impl Ecosystem {
         }
     }
 
-    fn valid_name(self, name: &str) -> bool {
+    /// True when `name` is a name of this ecosystem: the same grammar `decide` refuses a request
+    /// by. A caller that reads a name from text uses it, and does not write a grammar of its own.
+    #[must_use]
+    pub fn valid_name(self, name: &str) -> bool {
         if name.is_empty() || name.len() > MAX_NAME_BYTES {
             return false;
         }

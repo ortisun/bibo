@@ -128,7 +128,10 @@ pub enum Decision {
         /// The stage that gets a new run. The table of human rework routes limits the choice.
         target: StageKind,
     },
-    /// Lets a blocked stage run go again (`S17`).
+    /// Lets a blocked stage run go again (`S17`). Guard `G_BLOCK_CLEARED_RERUN` has three
+    /// alternatives. The two facts below are the caller's. The third, that a person recorded the
+    /// decision on a dependency that the stage run was waiting for, is read by the engine from what
+    /// it stored (`Engine::record_dependency_decision`), so there is no flag to pass for it.
     UnblockRerun {
         /// The capability probe was run again and passed.
         capability_reprobe_passed: bool,

@@ -803,6 +803,48 @@ fn build_code_that_comes_in_under_an_approver_decision_asks_for_the_decision_on_
     );
 }
 
+/// The engine decides which decisions a stage run awaits by reading the evidence document this
+/// module writes, so the reader and the writer are tested against each other: what the evidence
+/// shows as awaited is what `awaiting_in` returns, with the designation the policy engine said.
+#[test]
+fn the_evidence_shows_what_awaits_a_decision_and_the_engine_reads_the_same() {
+    use factory_workflow::gates::supply_chain::approval::ApprovalKind;
+    use factory_workflow::gates::supply_chain::review::awaiting_in;
+
+    // Nobody decided anything: the dependency awaits an approver.
+    let plan = decided_plan(&head_with_transitive(), &[]);
+    let awaited = awaiting_in(&plan.evidence());
+    assert_eq!(awaited.len(), 1);
+    assert_eq!(awaited[0].kind, ApprovalKind::NewDependency);
+    assert_eq!(awaited[0].subject, subject("some-crate", "0.1.0", 'c'));
+    assert_eq!(awaited[0].needs, Designation::Approver);
+
+    // The dependency is decided, and the fetched metadata says a package it brings has build
+    // code: the code awaits the decision of the designation the policy names.
+    let by_approver = approve(
+        APPROVER,
+        "bob",
+        Designation::Approver,
+        &subject("some-crate", "0.1.0", 'c'),
+    )
+    .expect("recorded");
+    let plan = decided_plan(&head_with_transitive(), &[by_approver]);
+    let metadata = [
+        meta("some-crate", "0.1.0", Some("MIT"), false, false),
+        meta("inner", "2.0.0", Some("MIT"), true, false),
+    ];
+    let conclusion = conclude(&plan, &metadata, &LicensePolicy::owner_approved());
+    let awaited = awaiting_in(&plan.evidence_with(Some(&conclusion)));
+    assert_eq!(awaited.len(), 1, "the dependency is decided: {awaited:?}");
+    assert_eq!(awaited[0].kind, ApprovalKind::BuildCode);
+    assert_eq!(awaited[0].subject, subject("inner", "2.0.0", 'd'));
+    assert_eq!(awaited[0].needs, Designation::SecurityApprover);
+
+    // A document that is not in the shape the writer makes awaits nothing.
+    assert!(awaiting_in(&json!({})).is_empty());
+    assert!(awaiting_in(&json!({"new_direct_dependencies": [{"name": "x"}]})).is_empty());
+}
+
 #[test]
 fn a_procedural_macro_counts_as_build_code() {
     let approval = approve(

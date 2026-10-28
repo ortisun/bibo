@@ -697,6 +697,10 @@ pub struct UnblockFacts {
     pub capability_reprobe_passed: bool,
     /// The missing dependency is now available.
     pub missing_dependency_now_available: bool,
+    /// A person recorded the decision on a dependency that the blocked stage was waiting for,
+    /// after the attempt that blocked it. The engine reads this from what it stored; a caller does
+    /// not assert it.
+    pub dependency_decision_recorded: bool,
 }
 }
 
@@ -715,6 +719,10 @@ pub fn block_cleared_rerun(facts: &UnblockFacts) -> GuardResult {
             (
                 facts.missing_dependency_now_available,
                 "the missing dependency is now available",
+            ),
+            (
+                facts.dependency_decision_recorded,
+                "a decision on the dependency was recorded",
             ),
         ],
     )
