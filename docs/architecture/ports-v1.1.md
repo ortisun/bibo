@@ -4582,3 +4582,12 @@ The contract test for the real adapter, run only with a test App and a fixture r
 6. Keep the platform tenant for audit events that belong to no tenant? (d2)
 7. The specification's "eleven stages": apply the edits in section 11? (F-18)
 8. Tag `ports-v1.1-rc1` after the Store, workspace, sandbox and agent parts, so the storage and sandbox adapters can start earlier? (ADR 0014, option 3)
+
+## 16. Additions after v1.1 (pending architect confirmation)
+
+Each entry is additive: no existing method changes, and every implementor was updated in the same
+change. Each was found by running the real handlers together, and each waits for the architect.
+
+| Addition | Why | Implementors updated | Status |
+|---|---|---|---|
+| `JobRepo::tree_of(&self, commit: &CommitSha) -> Result<GitSha, WorkspaceError>` | The delivery stage binds an approval to the head commit and to its tree (ADR 0009), and `DeliverySources::tree_of` could not answer: no port exposed a tree identifier, and only the sandbox crate may start `git`. | `GitJobRepo` in `sandbox` (`git rev-parse <commit>^{tree}` in the job's object store), `FakeJobRepo` in `testkit` (a digest of the files, so the same files give the same tree), `IndexingRepo` in `composition` (forwards), and the three repositories of the workflow stage tests (forward). The workspace contract suite has a check for it (`a_commit_has_a_tree_and_the_tree_follows_the_files`) and the fake has a defect that the check catches. | **Pending architect confirmation.** The name and the return type (`GitSha`) are the smallest that served. A version that returns the tree of the base and head together, or that reads from the code host, was not tried. |

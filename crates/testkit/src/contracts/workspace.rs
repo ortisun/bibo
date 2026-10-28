@@ -195,6 +195,7 @@ pub fn checks() -> Vec<WorkspaceCheck> {
         push_works_after_a_restart,
         a_verify_workspace_is_read_only_and_holds_the_holdouts,
         export_patch_is_the_same_for_the_same_commits,
+        a_commit_has_a_tree_and_the_tree_follows_the_files,
         disposing_removes_the_host_directories,
         two_workspaces_do_not_share_a_tree,
     ]
@@ -1138,6 +1139,79 @@ async fn a_verify_workspace_is_read_only_and_holds_the_holdouts(
     ensure!(
         change.is_empty(),
         "without holdouts the hidden test is absent, so deleting it changes nothing"
+    );
+    Ok(())
+}
+
+async fn a_commit_has_a_tree_and_the_tree_follows_the_files(
+    subject: &dyn WorkspaceSubject,
+) -> Result<(), String> {
+    let (ws, base) = open(subject, 1).await?;
+    write(subject, &*ws, "src/a.rs", "// a\n").await?;
+    let change = ingest(&*ws).await.ctx("ingest")?;
+    let head = ws
+        .commit(&change, commit_request("A change"))
+        .await
+        .ctx("commit")?;
+    let repo = subject
+        .provider()
+        .repo(job(1))
+        .await
+        .ctx("the job's repository")?;
+    let base_tree = repo.tree_of(&base).await.ctx("the tree of the base")?;
+    let head_tree = repo.tree_of(&head).await.ctx("the tree of the head")?;
+    let again = repo
+        .tree_of(&head)
+        .await
+        .ctx("the tree of the head, again")?;
+    ensure_eq!(head_tree, again, "a tree is the same every time it is read");
+    ensure!(
+        base_tree != head_tree,
+        "a commit that adds a file has another tree than its parent"
+    );
+    // A second commit that holds the same files as the first has the same tree: the tree names
+    // the files and not the commit.
+    let (other, other_base) = open(subject, 2).await?;
+    write(subject, &*other, "src/a.rs", "// a\n").await?;
+    let other_change = ingest(&*other)
+        .await
+        .ctx("ingest in the second workspace")?;
+    let other_head = other
+        .commit(
+            &other_change,
+            commit_request("The same change, said otherwise"),
+        )
+        .await
+        .ctx("commit in the second workspace")?;
+    let other_repo = subject
+        .provider()
+        .repo(job(2))
+        .await
+        .ctx("the second job's repository")?;
+    ensure_eq!(
+        other_repo
+            .tree_of(&other_base)
+            .await
+            .ctx("the tree of the second base")?,
+        base_tree,
+        "the same base files give the same tree in another job"
+    );
+    ensure_eq!(
+        other_repo
+            .tree_of(&other_head)
+            .await
+            .ctx("the tree of the second head")?,
+        head_tree,
+        "the same files give the same tree whatever the message"
+    );
+    // A commit the job's store does not hold has no tree.
+    let unknown = CommitSha::parse(&"1".repeat(40)).ctx("a commit id")?;
+    ensure!(
+        matches!(
+            repo.tree_of(&unknown).await,
+            Err(WorkspaceError::UnknownCommit)
+        ),
+        "an unknown commit has no tree"
     );
     Ok(())
 }

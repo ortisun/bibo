@@ -7,7 +7,7 @@
 use std::sync::Arc;
 
 use factory_domain::ids::JobId;
-use factory_domain::values::MediaType;
+use factory_domain::values::{GitSha, MediaType};
 use factory_ports::artifact::ArtifactError;
 use factory_ports::clock::CancelSignal;
 use factory_ports::paths::{BranchName, CommitSha, PathMode, RepoGlob, RepoPath};
@@ -373,6 +373,26 @@ impl GitJobRepo {
             .await
     }
 
+    async fn tree(&self, commit: &CommitSha) -> Result<GitSha, WorkspaceError> {
+        self.require_commit(commit, &NoCancel).await?;
+        let spec = format!("{}^{{tree}}", commit.as_str());
+        let inv = Invocation::new(
+            &self.dirs.store,
+            &self.dirs.dir,
+            &["rev-parse", "--verify", "--quiet", &spec],
+        );
+        let out = self
+            .shared
+            .git
+            .run_ok(GitOperation::Read, inv, &NoCancel)
+            .await?;
+        let text = String::from_utf8_lossy(&out);
+        GitSha::parse(text.trim()).map_err(|_| WorkspaceError::Git {
+            operation: GitOperation::Read,
+            exit: None,
+        })
+    }
+
     async fn list(
         &self,
         commit: &CommitSha,
@@ -636,5 +656,17 @@ impl JobRepo for GitJobRepo {
         Self: 'async_trait,
     {
         Box::pin(self.push_commit(target, commit, cancel))
+    }
+
+    fn tree_of<'life0, 'life1, 'async_trait>(
+        &'life0 self,
+        commit: &'life1 CommitSha,
+    ) -> BoxFuture<'async_trait, Result<GitSha, WorkspaceError>>
+    where
+        'life0: 'async_trait,
+        'life1: 'async_trait,
+        Self: 'async_trait,
+    {
+        Box::pin(self.tree(commit))
     }
 }
