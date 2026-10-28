@@ -8,7 +8,7 @@ use async_trait::async_trait;
 use diesel::sql_query;
 use diesel_async::{RunQueryDsl, SimpleAsyncConnection};
 use factory_api::config::Limits;
-use factory_domain::ids::{JobId, PrincipalId, TenantId};
+use factory_domain::ids::{JobId, PrincipalId, RepositoryId, TenantId};
 use factory_domain::machines::guards::AdmissionFacts;
 use factory_domain::scope::TenantScope;
 use factory_domain::values::{Sha256Digest, Slug};
@@ -747,6 +747,7 @@ impl Authority for PanickingAuthority {
         &self,
         _: TenantId,
         _: PrincipalId,
+        _: RepositoryId,
     ) -> Result<AdmissionFacts, AuthorityError> {
         Err(AuthorityError::Unavailable)
     }
