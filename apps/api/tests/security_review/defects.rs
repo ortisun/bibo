@@ -297,7 +297,6 @@ async fn api_4b_a_job_request_that_contains_an_api_token_is_refused() {
 /// caught before commit 8215375 and is not now (a regression of the OBS-1 change); the second group
 /// was never caught.
 #[test]
-#[ignore = "confirmed defect API-5: url_with_credentials misses passwords with a quote or a slash, userinfo without a user name, upper-case schemes and escaped or encoded URLs"]
 fn api_5_url_credentials_the_policy_pattern_misses() {
     const OLD: &str = r"\b[a-z][a-z0-9+.-]*://[^\s:/@]+:[^\s@/]{3,}@[^\s/]+";
     let current = policy_redactor();
