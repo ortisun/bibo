@@ -127,7 +127,9 @@ impl ChangeHost for Spy {
         branch: &BranchName,
     ) -> Result<CommitSha, GitHostError> {
         self.note(Call::ResolveBranch(branch.as_str().to_owned()));
-        if let Some(moved) = self.base_override.lock().expect("lock").clone() {
+        if branch.as_str() == "main"
+            && let Some(moved) = self.base_override.lock().expect("lock").clone()
+        {
             return Ok(moved);
         }
         self.inner.resolve_branch(scope, branch).await

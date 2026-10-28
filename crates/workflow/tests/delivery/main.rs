@@ -14,8 +14,13 @@
 #[allow(dead_code)]
 mod schema_check;
 
+#[path = "../support/mod.rs"]
+mod support;
+
 mod spy;
 mod world;
 
+mod approval;
 mod happy;
+mod judging;
 mod negative;

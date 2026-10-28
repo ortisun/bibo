@@ -34,12 +34,13 @@ use factory_ports::githost::{
 };
 use factory_ports::paths::{BranchName, CommitSha, RepoRef};
 use factory_ports::store::{
-    Approval, ApprovalDecision, ApprovalInvalidation, AuditAction as PortAuditAction, AuditActor,
-    AuditDecision as PortAuditDecision, NewApproval, NewAuditEvent, Store, StoreError,
+    Approval, ApprovalBinding, ApprovalDecision, ApprovalInvalidation,
+    AuditAction as PortAuditAction, AuditActor, AuditDecision as PortAuditDecision, ConstraintRule,
+    NewApproval, NewAuditEvent, Store, StoreError,
 };
 
 use super::command::{ApprovalCommand, Verb};
-use super::judge::{Context, Live, Refusal, judge};
+use super::judge::{Accepted, Context, Live, Refusal, judge};
 use super::request::{ApprovalRequest, VALID_HOURS};
 use super::seams::ApprovalSources;
 use crate::commands::{Actor, Decision, JobCommand, Subject};
@@ -301,7 +302,6 @@ impl ApprovalService {
             }
         };
 
-        // 1. Record the decision.
         let principal = {
             let mut tx = d.store.begin(TenantScope::new(cmd.tenant)).await?;
             let found = tx.find_principal_by_github_user(cmd.sender.id).await?;
@@ -318,63 +318,7 @@ impl ApprovalService {
                 .await?;
             return Err(ServiceError::Refused(refusal));
         };
-        let auth = &accepted.authorization;
         let approval_id = ApprovalId::from_uuid(cmd.id.as_uuid());
-        let decision = match cmd.verb {
-            Verb::Approve => Some(ApprovalDecision::Approve),
-            Verb::Reject => Some(ApprovalDecision::Reject),
-            Verb::Rework => Some(ApprovalDecision::Rework),
-            Verb::Pause => Some(ApprovalDecision::Pause),
-            Verb::Cancel => Some(ApprovalDecision::Cancel),
-            // There is no stored decision for a resume: it is a job command, audited below.
-            Verb::Resume => None,
-        };
-        let version = auth.allowlist_version();
-        let allowlist_hash =
-            Sha256Digest::parse(version).unwrap_or_else(|_| Sha256Digest::of(version.as_bytes()));
-        let mut created = true;
-        {
-            let mut tx = d.store.begin(TenantScope::new(cmd.tenant)).await?;
-            if let Some(decision) = decision {
-                let inserted = tx
-                    .record_approval(NewApproval {
-                        id: approval_id,
-                        job: cmd.job,
-                        stage_run: cmd.stage_run,
-                        decision,
-                        approver: principal.id,
-                        designation: Slug::parse(auth.designation().as_str())
-                            .map_err(|_| ServiceError::Unavailable)?,
-                        allowlist_version: allowlist_hash,
-                        binding: accepted.binding.clone(),
-                        policy_hash: d.policy_hash.clone(),
-                        reason: cmd.reason.clone(),
-                        channel: cmd.channel,
-                        valid_for: Duration::from_secs(VALID_HOURS * 3600),
-                    })
-                    .await?;
-                created = inserted.created;
-            }
-            self.audit(
-                &mut *tx,
-                &cmd,
-                AuditActor::Human(principal.id),
-                "approval.recorded",
-                PortAuditDecision::Allow,
-                &format!(
-                    "{} by {} as {}; allowlist {}; channel {:?}",
-                    cmd.verb.as_str(),
-                    auth.approver(),
-                    auth.designation(),
-                    auth.allowlist_version(),
-                    cmd.channel
-                ),
-            )
-            .await?;
-            tx.commit().await?;
-        }
-
-        // 2. Move the stage run. Authority is checked again by the engine from its own source.
         let actor = Actor {
             tenant: cmd.tenant,
             principal: principal.id,
@@ -384,16 +328,32 @@ impl ApprovalService {
             job: cmd.job,
             stage_run: cmd.stage_run,
         };
-        let still_needed = if cmd.verb == Verb::Approve {
-            self.approvals_missing(&cmd, &request).await?
-        } else {
-            0
-        };
-        if still_needed > 0 {
-            return Ok(Outcome::Recorded {
-                approval: approval_id,
-                still_needed,
-            });
+        let allowlist_version = allowlist.version_hash().to_owned();
+
+        // An approval is recorded **before** the engine is asked, so that one the engine then
+        // refuses stays on record as ineffective. Every other decision is recorded after the
+        // engine accepted it: a refused request for rework, for example, must not stop the same
+        // person from asking again with a valid target.
+        if cmd.verb == Verb::Approve {
+            match self
+                .record(&cmd, principal.id, &accepted, &request, false)
+                .await
+            {
+                Ok(_) => {}
+                Err(ServiceError::Refused(refusal)) => {
+                    self.refuse(&cmd, &refusal, &allowlist_version, &drift, &request)
+                        .await?;
+                    return Err(ServiceError::Refused(refusal));
+                }
+                Err(other) => return Err(other),
+            }
+            let still_needed = self.approvals_missing(&cmd, &request).await?;
+            if still_needed > 0 {
+                return Ok(Outcome::Recorded {
+                    approval: approval_id,
+                    still_needed,
+                });
+            }
         }
         let moved = match cmd.verb {
             Verb::Approve => {
@@ -431,11 +391,18 @@ impl ApprovalService {
             Verb::Resume => d.engine.control(&actor, cmd.job, JobCommand::Resume).await,
             Verb::Cancel => d.engine.control(&actor, cmd.job, JobCommand::Cancel).await,
         };
-        match moved {
-            Ok(()) => {}
-            Err(EngineError::Duplicate) => return Ok(Outcome::Replayed),
+        let replayed = match moved {
+            Ok(()) => false,
+            Err(EngineError::Duplicate) => true,
             Err(other) => return Err(ServiceError::Engine(format!("{other}"))),
-        }
+        };
+        let created = if cmd.verb == Verb::Approve {
+            !replayed
+        } else {
+            self.record(&cmd, principal.id, &accepted, &request, true)
+                .await?
+                && !replayed
+        };
         if !created {
             return Ok(Outcome::Replayed);
         }
@@ -460,6 +427,93 @@ impl ApprovalService {
         Ok(Outcome::Applied {
             approval: approval_id,
         })
+    }
+
+    /// Writes the approval row (all verbs but `resume`) and the audit record. Returns whether the
+    /// row is new. A row that repeats an earlier decision of the same person for the same head
+    /// is `AlreadyDecided`, unless the caller tolerates it.
+    async fn record(
+        &self,
+        cmd: &ApprovalCommand,
+        approver: factory_domain::ids::PrincipalId,
+        accepted: &Accepted,
+        request: &ApprovalRequest,
+        tolerate_repeat: bool,
+    ) -> Result<bool, ServiceError> {
+        let d = &self.deps;
+        let auth = &accepted.authorization;
+        let decision = match cmd.verb {
+            Verb::Approve => Some(ApprovalDecision::Approve),
+            Verb::Reject => Some(ApprovalDecision::Reject),
+            Verb::Rework => Some(ApprovalDecision::Rework),
+            Verb::Pause => Some(ApprovalDecision::Pause),
+            Verb::Cancel => Some(ApprovalDecision::Cancel),
+            // There is no stored decision for a resume: it is a job command, audited below.
+            Verb::Resume => None,
+        };
+        let version = auth.allowlist_version();
+        let allowlist_hash =
+            Sha256Digest::parse(version).unwrap_or_else(|_| Sha256Digest::of(version.as_bytes()));
+        // A decision other than an approval is still bound to the head it was about, so that
+        // two rounds of rework by the same person, on different commits, are two rows.
+        let binding = accepted.binding.clone().unwrap_or_else(|| ApprovalBinding {
+            pr_head: request.pr_head.clone(),
+            tree: request.tree.clone(),
+            base: request.base.clone(),
+            evidence_manifest: request.manifest.clone(),
+            spec_version: request.spec_version,
+        });
+        let mut tx = d.store.begin(TenantScope::new(cmd.tenant)).await?;
+        let mut created = true;
+        if let Some(decision) = decision {
+            let inserted = tx
+                .record_approval(NewApproval {
+                    id: ApprovalId::from_uuid(cmd.id.as_uuid()),
+                    job: cmd.job,
+                    stage_run: cmd.stage_run,
+                    decision,
+                    approver,
+                    designation: Slug::parse(auth.designation().as_str())
+                        .map_err(|_| ServiceError::Unavailable)?,
+                    allowlist_version: allowlist_hash,
+                    binding: Some(binding),
+                    policy_hash: d.policy_hash.clone(),
+                    reason: cmd.reason.clone(),
+                    channel: cmd.channel,
+                    valid_for: Duration::from_secs(VALID_HOURS * 3600),
+                })
+                .await;
+            match inserted {
+                Ok(row) => created = row.created,
+                Err(StoreError::Constraint(ConstraintRule::IdReusedWithDifferentContent)) => {
+                    drop(tx);
+                    return if tolerate_repeat {
+                        Ok(false)
+                    } else {
+                        Err(ServiceError::Refused(Refusal::AlreadyDecided))
+                    };
+                }
+                Err(other) => return Err(other.into()),
+            }
+        }
+        self.audit(
+            &mut *tx,
+            cmd,
+            AuditActor::Human(approver),
+            "approval.recorded",
+            PortAuditDecision::Allow,
+            &format!(
+                "{} by {} as {}; allowlist {}; channel {:?}",
+                cmd.verb.as_str(),
+                auth.approver(),
+                auth.designation(),
+                auth.allowlist_version(),
+                cmd.channel
+            ),
+        )
+        .await?;
+        tx.commit().await?;
+        Ok(created)
     }
 
     /// How many more distinct approvers the tier needs for the head that was approved.
@@ -548,10 +602,9 @@ impl ApprovalService {
             tx.invalidate_approvals(cmd.job, reason).await?;
         }
         tx.commit().await?;
-        // A change in the values the evidence is bound to supersedes the runs that depend on it.
-        if let Refusal::EvidenceDrift(_) = refusal
-            && binding::is_drift(drift)
-        {
+        // A change in the values the evidence is bound to (the base commit, the gate definitions,
+        // the policy, the image) supersedes the runs that depend on it, whichever check noticed.
+        if binding::is_drift(drift) {
             d.engine
                 .apply_change(cmd.tenant, cmd.job, ArtifactChange::GateEvidenceBinding)
                 .await

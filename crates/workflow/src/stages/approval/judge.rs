@@ -123,6 +123,8 @@ pub enum Refusal {
     MissingTarget,
     /// A rejection needs a reason.
     MissingReason,
+    /// This person already recorded this decision for this head.
+    AlreadyDecided,
 }
 
 impl Refusal {
@@ -150,6 +152,7 @@ impl Refusal {
             Self::TranslationWarningsUndecided => "translation_warnings_undecided",
             Self::MissingTarget => "missing_target",
             Self::MissingReason => "missing_reason",
+            Self::AlreadyDecided => "already_decided",
         }
     }
 
