@@ -28,6 +28,7 @@ use factory_ports::registry::ContractKind;
 use factory_ports::workspace::WorkspaceError;
 use serde_json::{Value, json};
 
+use super::binding;
 use super::checks::{review_check, validation_check};
 use super::contract::{MANIFEST, RESULT, resolve};
 use super::input::{self, DossierError, POLICY_INPUT, contract_input};
@@ -96,7 +97,7 @@ impl DeliveryHandler {
     }
 }
 
-pub(super) fn dossier_error(error: DossierError) -> StageError {
+pub(crate) fn dossier_error(error: DossierError) -> StageError {
     match error {
         DossierError::Missing => StageError::Blocked(BlockedCode::DependencyUnavailable),
         DossierError::Invalid => StageError::InvalidOutput,
@@ -104,7 +105,7 @@ pub(super) fn dossier_error(error: DossierError) -> StageError {
     }
 }
 
-pub(super) fn seam_error(error: SeamError) -> StageError {
+pub(crate) fn seam_error(error: SeamError) -> StageError {
     match error {
         SeamError::NotFound => StageError::Blocked(BlockedCode::DependencyUnavailable),
         SeamError::Unavailable => StageError::Tool,
@@ -113,7 +114,7 @@ pub(super) fn seam_error(error: SeamError) -> StageError {
 
 /// How a failure of the code host is classified. A refusal of a credential or of the text is a
 /// policy matter and is never retried; an outage is.
-pub(super) fn host_error(error: &GitHostError) -> StageError {
+pub(crate) fn host_error(error: &GitHostError) -> StageError {
     match error {
         GitHostError::Unavailable | GitHostError::RateLimited { .. } => StageError::Provider,
         GitHostError::Unauthorized
@@ -126,7 +127,7 @@ pub(super) fn host_error(error: &GitHostError) -> StageError {
     }
 }
 
-pub(super) fn workspace_error(error: &WorkspaceError) -> StageError {
+pub(crate) fn workspace_error(error: &WorkspaceError) -> StageError {
     match error {
         WorkspaceError::Cancelled => StageError::Cancelled,
         WorkspaceError::NonFastForward
@@ -141,11 +142,11 @@ fn media_json() -> Result<MediaType, StageError> {
     MediaType::parse("application/json").map_err(|_| StageError::Internal)
 }
 
-pub(super) fn slug(text: &str) -> Result<Slug, StageError> {
+pub(crate) fn slug(text: &str) -> Result<Slug, StageError> {
     Slug::parse(text).map_err(|_| StageError::Internal)
 }
 
-pub(super) fn fidelity_of(parts: &[Fidelity]) -> Fidelity {
+pub(crate) fn fidelity_of(parts: &[Fidelity]) -> Fidelity {
     if parts.contains(&Fidelity::Fake) {
         Fidelity::Fake
     } else {
@@ -204,15 +205,17 @@ impl StageHandler for DeliveryHandler {
         let policy_hash = contract_input(ctx.contract, POLICY_INPUT)
             .ok_or(StageError::Blocked(BlockedCode::PolicyUnresolvable))?
             .sha256;
-        let expected = crate::stages::validation::Binding {
-            implementation_result: dossier.implementation_sha256.clone(),
-            base_commit: input::git_sha(&live_base).ok_or(StageError::Internal)?,
-            head_commit: input::git_sha(&dossier.candidate.head).ok_or(StageError::Internal)?,
-            policy_hash,
-            image_digest: current.image_digest,
-            definition_hash: current.definition_hash,
-        };
-        let differences = dossier.validation.binding.differences(&expected);
+        let differences = binding::differences(
+            &dossier.validation.binding,
+            &binding::Now {
+                live_base: &live_base,
+                current: &current,
+                policy_hash: &policy_hash,
+                head: &dossier.candidate.head,
+                implementation_sha256: &dossier.implementation_sha256,
+            },
+        )
+        .ok_or(StageError::Internal)?;
         if !differences.is_empty() {
             return self.binding_failed(&identity, &differences).await;
         }
@@ -429,13 +432,7 @@ impl DeliveryHandler {
         identity: &crate::handlers::RunIdentity,
         differences: &[&'static str],
     ) -> Result<StageOutput, StageError> {
-        const DRIFT: [&str; 4] = [
-            "base_commit",
-            "policy_hash",
-            "image_digest",
-            "definition_hash",
-        ];
-        if differences.iter().all(|name| DRIFT.contains(name)) {
+        if binding::is_drift(differences) {
             self.deps
                 .drift
                 .binding_changed(identity.tenant, identity.job)

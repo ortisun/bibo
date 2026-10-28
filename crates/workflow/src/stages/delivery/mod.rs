@@ -37,6 +37,7 @@
 //! * It takes the git tree id of the head from [`DeliverySources::tree_of`], because no port
 //!   exposes it.
 
+pub mod binding;
 pub mod checks;
 pub mod contract;
 pub mod handler;
