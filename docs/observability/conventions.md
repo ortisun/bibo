@@ -263,6 +263,8 @@ How it behaves:
 
 [`infra/otel/`](../../infra/otel/README.md) holds a collector configuration, a Docker Compose file that starts the collector, VictoriaMetrics and Jaeger on the loopback address, and a script that checks the configuration with the pinned collector image. Its README says what was verified and when.
 
+For the first end-to-end run, the [runbook of first-run signals](runbook-first-run-signals.md) says which span, metric and log line to look at for a stuck lease, a stage over its deadline, a gate blocked by the environment, a job over budget and a redaction hit, and which of those signals no code records yet.
+
 ## 11. Dependencies
 
 The crate depends only on the external crates that `docs/architecture/crate-dependency-rules.json` allows for `observability`. Versions are pinned in `crates/observability/Cargo.toml`. Release dates are from crates.io and were read on 2026-10-27.
@@ -299,6 +301,17 @@ The crate depends on one workspace crate, `factory-domain`, which the dependency
 
 - **Consumers do not continue the trace.** Consumers of outbox events do not yet continue the trace from `traceparent`, and there is no stitched job timeline in the dashboard. Both are Slice 2 work in ADR 0013. How a given backend draws a stretch whose parent was never exported has not been checked against a real Jaeger; the generated trace of the first end-to-end run is to be read once by hand.
 - **Gap OBS-1: a second URL with a password on one log line can escape the redactor.** The `url_with_credentials` pattern ends at white space or a slash, so on a JSON log line its match runs past the closing quote. When the same URL stands twice on one line, the first match ends inside the second URL, after its scheme, and the regex engine does not report overlapping matches, so the second password stays in the line. A registered value, a bearer token and a single URL are redacted. The owner is `domain::redaction` or the pattern in the security policy. The failing test is `a_url_with_a_password_twice_on_one_log_line_is_redacted` in `crates/observability/tests/canary.rs`, marked as a confirmed gap and ignored so the build stays green.
+- **Confirmed gaps in the call sites.** `s1-observability-instrumentation` checked the spans, metrics and log fields that other packages write against this page. Each gap has a test that fails today. It is marked as ignored, with the gap number in the reason, so the build stays green. The doc comment of the test gives the owner, the smallest change and the command that runs it. `cargo nextest run --workspace --run-ignored only` runs them all. The gaps are:
+  - OBS-2: the engine opens no `factory.stage_run` span (`crates/workflow`, `src/engine/attempt.rs`).
+  - OBS-3: no code opens a `factory.agent` span (`crates/workflow`, where the engine builds the ports of a handler).
+  - OBS-4: no code opens a `factory.tool_call` span (`crates/runtime`).
+  - OBS-5: nothing records `factory_queue_depth` (`crates/workflow`, `src/scheduler/claim.rs`).
+  - OBS-6: nothing records `factory_stage_duration_seconds` (`crates/workflow`, `src/engine/gate.rs` and `failure.rs`).
+  - OBS-7: nothing records `factory_spend_usd_total` (`crates/workflow`, `src/engine/attempt.rs`).
+  - OBS-8: `factory_stage_runs_total` is recorded only for `passed`, so the error-rate query on this page returns zero (`crates/workflow`, `src/engine/gate.rs`).
+  - OBS-9: three log fields hold text chosen by a repository or a tool (`crates/sandbox` and `crates/runtime`).
+  - OBS-10: no metric counts redactions (`crates/observability`; adding a metric needs the architect's review).
+  - OBS-11: the attempt span does not record `factory.error_class` (`crates/workflow`, `src/engine/attempt.rs`).
 - **No OTLP logs.** Logs go to standard error. The policy names `otel_log_records` as a sink, and the pipeline would need the `opentelemetry-appender-tracing` crate, which is not on the allow list.
 - **No alert rules or dashboards.** This page fixes the names and the data. Rules and dashboards come after the first end-to-end run shows what values the metrics take.
 - **The sample is a sample.** The `emit_sample` example in the crate sends fake identifiers to a collector, with a redactor that has no pattern.

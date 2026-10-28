@@ -236,3 +236,36 @@ async fn a_stage_run_span_sits_between_the_job_and_the_attempt() {
     let attempt = named(&spans, "factory.attempt")[0];
     assert_eq!(attempt.parent, Some(stage_runs[0].id));
 }
+
+/// Confirmed gap OBS-11. The page allows `factory.error_class` on an attempt: "the failure class
+/// the engine recorded, when the work failed". The engine does not declare the field on the attempt
+/// span, so a failed or timed out attempt says `failed` or `timed_out` and not why, and a trace
+/// search cannot separate a tool error from a provider error without opening the ledger.
+///
+/// Owner: `crates/workflow`, `src/engine/attempt.rs`, `run_attempt`. Smallest change: declare
+/// `factory.error_class = tracing::field::Empty` on the span and, when the outcome is
+/// `AttemptOutcome::Failed { class, .. }`, record the class in its wire spelling (`TOOL_ERROR`,
+/// `TIMED_OUT`, and so on), a closed set.
+#[tokio::test]
+#[ignore = "confirmed gap OBS-11: a failed attempt span records no factory.error_class"]
+async fn a_failed_attempt_span_records_the_failure_class() {
+    let recorder = Recorder::new();
+    let _installed = recorder.install();
+    let world = World::new().await;
+    world.admitted_job().await;
+    world.script(StageKind::Intake).queue([support::Step::Fail(
+        factory_workflow::handlers::StageError::Tool,
+    )]);
+    run_one(&world, &recorder).await;
+
+    let spans = recorder.spans();
+    let attempt = named(&spans, "factory.attempt")[0];
+    assert_eq!(attempt.text("factory.outcome").as_deref(), Some("failed"));
+    assert!(
+        attempt
+            .text("factory.error_class")
+            .is_some_and(|class| !class.is_empty()),
+        "the failed attempt records no error class: {:?}",
+        attempt.fields
+    );
+}
