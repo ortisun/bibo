@@ -135,6 +135,61 @@ impl Transport for Scripted {
     }
 }
 
+/// Forwards every request except the ones a test has scripted an answer for. A scripted answer is
+/// used once, for the first request of that method whose target contains the fragment.
+pub struct Overrides {
+    inner: Arc<dyn Transport>,
+    rules: Mutex<Vec<(Method, String, WireResponse)>>,
+    seen: Mutex<Vec<(Method, String)>>,
+}
+
+impl Overrides {
+    pub fn new(inner: Arc<dyn Transport>, rules: Vec<(Method, &str, WireResponse)>) -> Arc<Self> {
+        Arc::new(Self {
+            inner,
+            rules: Mutex::new(
+                rules
+                    .into_iter()
+                    .map(|(m, f, r)| (m, f.to_owned(), r))
+                    .collect(),
+            ),
+            seen: Mutex::new(Vec::new()),
+        })
+    }
+
+    /// Adds an answer after the ones already scripted.
+    pub fn script(&self, method: Method, fragment: &str, response: WireResponse) {
+        lock(&self.rules).push((method, fragment.to_owned(), response));
+    }
+
+    /// The targets seen so far that contain the fragment.
+    pub fn targets_with(&self, fragment: &str) -> Vec<String> {
+        lock(&self.seen)
+            .iter()
+            .filter(|(_, t)| t.contains(fragment))
+            .map(|(_, t)| t.clone())
+            .collect()
+    }
+}
+
+#[async_trait]
+impl Transport for Overrides {
+    async fn execute(&self, request: WireRequest) -> Result<WireResponse, TransportError> {
+        lock(&self.seen).push((request.method, request.target.clone()));
+        let scripted = {
+            let mut rules = lock(&self.rules);
+            rules
+                .iter()
+                .position(|(m, f, _)| *m == request.method && request.target.contains(f.as_str()))
+                .map(|p| rules.remove(p).2)
+        };
+        match scripted {
+            Some(response) => Ok(response),
+            None => self.inner.execute(request).await,
+        }
+    }
+}
+
 pub fn answer(status: u16, headers: &[(&str, &str)], body: &Value) -> WireResponse {
     WireResponse {
         status,

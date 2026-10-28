@@ -81,6 +81,8 @@ pub struct CheckRecord {
     pub status: String,
     pub conclusion: Option<String>,
     pub app_id: u64,
+    pub title: String,
+    pub summary: String,
 }
 
 /// What the front serves on its own routes.
@@ -91,6 +93,7 @@ pub struct Extras {
     pub checks: Mutex<Vec<CheckRecord>>,
     pub titles: Mutex<HashMap<(String, u64), String>>,
     pub issue_counters: Mutex<HashMap<String, u64>>,
+    pub foreign_comments: Mutex<HashMap<(String, u64), Vec<Value>>>,
 }
 
 fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
@@ -146,6 +149,23 @@ fn front(fake: &FakeGithub, extras: &Extras, request: &HttpRequest) -> HttpRespo
                 |comment| HttpResponse::json(200, &comment),
             )
         }
+        ("GET", ["repos", owner, repo, "issues", number, "comments"])
+            if lock(&extras.foreign_comments)
+                .contains_key(&(format!("{owner}/{repo}"), number.parse().unwrap_or(0))) =>
+        {
+            // The comments of the fake, then the ones other people wrote, which the fake cannot.
+            let response = fake.handle(request);
+            if response.status != 200 {
+                return response;
+            }
+            let mut list: Vec<Value> = serde_json::from_slice(&response.body).unwrap_or_default();
+            if let Some(more) = lock(&extras.foreign_comments)
+                .get(&(format!("{owner}/{repo}"), number.parse().unwrap_or(0)))
+            {
+                list.extend(more.iter().cloned());
+            }
+            HttpResponse::json(200, &Value::Array(list))
+        }
         ("GET", ["repos", owner, repo, "rules", "branches", _branch]) => {
             if let Some(refused) = probe(fake, request, owner, repo) {
                 return refused;
@@ -197,6 +217,14 @@ fn front(fake: &FakeGithub, extras: &Extras, request: &HttpRequest) -> HttpRespo
                     status: sent["status"].as_str().unwrap_or("queued").to_owned(),
                     conclusion: sent["conclusion"].as_str().map(str::to_owned),
                     app_id: made["app"]["id"].as_u64().unwrap_or(0),
+                    title: sent["output"]["title"]
+                        .as_str()
+                        .unwrap_or_default()
+                        .to_owned(),
+                    summary: sent["output"]["summary"]
+                        .as_str()
+                        .unwrap_or_default()
+                        .to_owned(),
                 });
             }
             response
@@ -217,6 +245,12 @@ fn front(fake: &FakeGithub, extras: &Extras, request: &HttpRequest) -> HttpRespo
                 record.status = status.to_owned();
             }
             record.conclusion = sent["conclusion"].as_str().map(str::to_owned);
+            if let Some(title) = sent["output"]["title"].as_str() {
+                title.clone_into(&mut record.title);
+            }
+            if let Some(summary) = sent["output"]["summary"].as_str() {
+                summary.clone_into(&mut record.summary);
+            }
             HttpResponse::json(200, &check_json(record))
         }
         ("GET", ["repos", owner, repo, "commits", sha, "check-runs"]) => {
