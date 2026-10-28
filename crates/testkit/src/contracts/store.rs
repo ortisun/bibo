@@ -18,7 +18,7 @@ use factory_domain::state::{
     AttemptEvent, AttemptStatus, Guard, JobEvent, JobStatus, StageRunEvent, StageRunStatus, Status,
     TaskNodeEvent, TaskNodeStatus,
 };
-use factory_domain::values::{GitSha, Sha256Digest, Slug, Timestamp};
+use factory_domain::values::{GitSha, MediaType, NonNegativeInt, Sha256Digest, Slug, Timestamp};
 use factory_domain::vocabulary::{AutonomyLevel, ExecutionMode, StageKind};
 use factory_ports::store::*;
 
@@ -36,6 +36,11 @@ pub trait StoreSubject: Send + Sync {
 
     /// Moves the database clock forward by at least `by`.
     async fn advance_database_time(&self, by: Duration);
+
+    /// Creates the tenant, as an owner of the database does when a customer is taken on. The port
+    /// has no insert, and the other levers (`seed_repository`, `seed_token`) need the tenant to
+    /// exist. Naming a tenant the same way twice changes nothing.
+    async fn onboard_tenant(&self, tenant: TenantId);
 
     /// Registers a repository for the tenant, as an administrator does. The port has no insert.
     async fn seed_repository(&self, tenant: TenantId) -> RepositoryId;
@@ -172,9 +177,13 @@ struct Ready {
 }
 
 impl<'a> World<'a> {
-    fn new(subject: &'a dyn StoreSubject) -> Self {
+    /// A world of two tenants, both onboarded, as an owner of the database does before a tenant's
+    /// first transaction.
+    async fn new(subject: &'a dyn StoreSubject) -> Self {
         let ids = Ids::new();
         let (a, b) = (ids.tenant(), ids.tenant());
+        subject.onboard_tenant(a).await;
+        subject.onboard_tenant(b).await;
         Self { subject, ids, a, b }
     }
 
@@ -288,7 +297,7 @@ impl<'a> World<'a> {
             .ctx("insert a stage run")?
             .row;
         let effects = StageRunEffects {
-            contract_sha256: Some(Sha256Digest::of(b"contract")),
+            contract_sha256: Some(index_bytes(&mut *tx, b"contract").await?),
             ..StageRunEffects::default()
         };
         let plan = plan(
@@ -350,6 +359,46 @@ impl<'a> World<'a> {
     }
 }
 
+/// Indexes `bytes` as an artifact of the transaction's tenant, through the port, and returns the
+/// hash that names them. A row that names a hash (a stage contract, a gate report, an attempt
+/// output, a task plan) needs the artifact to be indexed first.
+async fn index_bytes(tx: &mut dyn Tx, bytes: &[u8]) -> Result<Sha256Digest, String> {
+    let sha256 = Sha256Digest::of(bytes);
+    let size = i64::try_from(bytes.len()).map_err(|_| "the artifact is too long".to_owned())?;
+    tx.index_artifact(NewArtifactIndexEntry {
+        sha256: sha256.clone(),
+        media_type: MediaType::parse("application/octet-stream").ctx("a media type")?,
+        size_bytes: NonNegativeInt::new(size).ctx("a size")?,
+        origin: None,
+    })
+    .await
+    .ctx("index an artifact")?;
+    Ok(sha256)
+}
+
+/// Moves the job, inside `tx`, through legal moves until its version is at least `version` and it
+/// is `ACTIVE`: admit it, then pause and resume it as often as it takes. An outbox event announces
+/// a version the aggregate has reached, and the database refuses to commit one that it has not, so
+/// a fixture moves the job first and then announces the version.
+async fn job_reaches(tx: &mut dyn Tx, job: JobId, version: i64) -> Result<(), String> {
+    loop {
+        let row = tx.get_job(job).await.ctx("read the job")?;
+        let status = row.value.status;
+        if row.version.get() >= version && status == JobStatus::Active {
+            return Ok(());
+        }
+        let next = match status {
+            JobStatus::Received => plan(status, JobEvent::Admit, Guard::AdmissionOk)?,
+            JobStatus::Active => plan(status, JobEvent::Pause, Guard::ActorMayPause)?,
+            JobStatus::Paused => plan(status, JobEvent::Resume, Guard::ActorMayPause)?,
+            other => return Err(format!("the job cannot move on from {other:?}")),
+        };
+        tx.transition_job(job, row.version, next)
+            .await
+            .ctx("move the job")?;
+    }
+}
+
 fn plan<S: Status>(from: S, event: S::Event, guard: Guard) -> Result<AppliedTransition<S>, String> {
     let at = Timestamp::parse("2026-10-27T10:00:00Z").expect("a valid time");
     AppliedTransition::plan(from, event, at, cleared(guard)).ctx("plan a transition")
@@ -386,7 +435,7 @@ async fn a_new_store_reports_a_schema_version(subject: &dyn StoreSubject) -> Res
 async fn a_stale_version_conflicts_and_changes_nothing(
     subject: &dyn StoreSubject,
 ) -> Result<(), String> {
-    let w = World::new(subject);
+    let w = World::new(subject).await;
     let job = w.job(w.a).await?;
     let mut tx = w.tx(w.a).await?;
     let row = tx.get_job(job).await.ctx("read")?;
@@ -453,7 +502,7 @@ async fn a_stale_version_conflicts_and_changes_nothing(
 async fn writes_are_invisible_until_commit_and_vanish_on_drop(
     subject: &dyn StoreSubject,
 ) -> Result<(), String> {
-    let w = World::new(subject);
+    let w = World::new(subject).await;
     let repository = subject.seed_repository(w.a).await;
     let requester = w.principal(w.a).await?;
 
@@ -508,21 +557,14 @@ async fn writes_are_invisible_until_commit_and_vanish_on_drop(
 async fn status_ledger_and_outbox_commit_together_or_not_at_all(
     subject: &dyn StoreSubject,
 ) -> Result<(), String> {
-    let w = World::new(subject);
+    let w = World::new(subject).await;
     let job = w.job(w.a).await?;
-    let run = w.ids.stage_run();
+    let run = w.stage_run(w.a, job, 3).await?;
     let at = Timestamp::parse("2026-10-27T10:00:00Z").expect("time");
 
     // All three, rolled back: none remains.
     let mut tx = w.tx(w.a).await?;
-    let row = tx.get_job(job).await.ctx("read")?;
-    tx.transition_job(
-        job,
-        row.version,
-        plan(JobStatus::Received, JobEvent::Admit, Guard::AdmissionOk)?,
-    )
-    .await
-    .ctx("transition")?;
+    job_reaches(&mut *tx, job, 3).await?;
     tx.append_ledger_entry(ledger_entry(&w.ids, job, run, 1, None, &at, "First."))
         .await
         .ctx("append")?;
@@ -551,14 +593,7 @@ async fn status_ledger_and_outbox_commit_together_or_not_at_all(
 
     // All three, committed: all are there, and every queued event.
     let mut tx = w.tx(w.a).await?;
-    let row = tx.get_job(job).await.ctx("read")?;
-    tx.transition_job(
-        job,
-        row.version,
-        plan(JobStatus::Received, JobEvent::Admit, Guard::AdmissionOk)?,
-    )
-    .await
-    .ctx("transition")?;
+    job_reaches(&mut *tx, job, 3).await?;
     tx.append_ledger_entry(ledger_entry(&w.ids, job, run, 1, None, &at, "First."))
         .await
         .ctx("append")?;
@@ -591,37 +626,61 @@ async fn status_ledger_and_outbox_commit_together_or_not_at_all(
     Ok(())
 }
 
+/// Two writers cannot both extend one job's chain.
+///
+/// How the second writer loses depends on the store, and every way is allowed: a store that locks
+/// the job makes the second append wait and then find its position taken (`Conflict`), or give up
+/// at the lock timeout (`Unavailable`); a store that merges at commit refuses the second commit
+/// with `Conflict`. What no store may do is let both entries into the chain. So the check does
+/// not ask how the second writer lost, only that it did, and that the chain holds the first
+/// writer's entry and no other.
 async fn two_open_transactions_cannot_both_extend_the_chain(
     subject: &dyn StoreSubject,
 ) -> Result<(), String> {
-    let w = World::new(subject);
+    let w = World::new(subject).await;
     let job = w.job(w.a).await?;
-    let run = w.ids.stage_run();
+    let run = w.stage_run(w.a, job, 3).await?;
     let at = Timestamp::parse("2026-10-27T10:00:00Z").expect("time");
+    let from_one = ledger_entry(&w.ids, job, run, 1, None, &at, "From one.");
+    let from_two = ledger_entry(&w.ids, job, run, 1, None, &at, "From two.");
     let mut one = w.tx(w.a).await?;
     let mut two = w.tx(w.a).await?;
-    one.append_ledger_entry(ledger_entry(&w.ids, job, run, 1, None, &at, "From one."))
+    one.append_ledger_entry(from_one.clone())
         .await
         .ctx("append in one")?;
-    two.append_ledger_entry(ledger_entry(&w.ids, job, run, 1, None, &at, "From two."))
-        .await
-        .ctx("append in two")?;
-    one.commit().await.ctx("the first committer wins")?;
-    ensure_err!(
-        two.commit().await,
-        StoreError::Conflict,
-        "the second committer"
+    // The second writer appends while the first holds the job and commits meanwhile, so a store
+    // that makes the second append wait lets it go on once the first has committed.
+    let (appended, committed) = tokio::join!(two.append_ledger_entry(from_two), one.commit());
+    committed.ctx("the first writer commits")?;
+    let second_extended = match appended {
+        Err(StoreError::Conflict | StoreError::ChainBroken | StoreError::Unavailable) => false,
+        Err(other) => return Err(format!("the second append failed another way: {other:?}")),
+        Ok(_) => match two.commit().await {
+            Ok(()) => true,
+            Err(StoreError::Conflict) => false,
+            Err(other) => return Err(format!("the second commit failed another way: {other:?}")),
+        },
+    };
+    ensure!(
+        !second_extended,
+        "both writers extended the chain: the second append and the second commit both succeeded"
     );
     let mut check = w.tx(w.a).await?;
     let entries = check.read_ledger(job, 1, 10).await.ctx("read")?;
-    ensure_eq!(entries.len(), 1, "one entry");
+    ensure_eq!(entries.len(), 1, "one entry: the chain did not fork");
+    ensure_eq!(
+        entries[0].entry_hash,
+        from_one.entry_hash,
+        "and it is the first writer's"
+    );
+    verify_chain(&entries).map_err(|e| format!("the chain should verify: {e:?}"))?;
     Ok(())
 }
 
 async fn an_unknown_commit_outcome_is_resolved_by_the_witness(
     subject: &dyn StoreSubject,
 ) -> Result<(), String> {
-    let w = World::new(subject);
+    let w = World::new(subject).await;
     let job = w.job(w.a).await?;
     let at = Timestamp::parse("2026-10-27T10:00:00Z").expect("time");
     let event = domain_event(&w.ids, w.a, job, 2, &at);
@@ -635,6 +694,7 @@ async fn an_unknown_commit_outcome_is_resolved_by_the_witness(
         "nothing is committed yet"
     );
     let mut tx = w.tx(w.a).await?;
+    job_reaches(&mut *tx, job, 2).await?;
     tx.enqueue_event(event).await.ctx("enqueue")?;
     subject.lose_next_commit_answer().await;
     ensure_err!(
@@ -662,7 +722,7 @@ async fn an_unknown_commit_outcome_is_resolved_by_the_witness(
 }
 
 async fn a_dropped_call_poisons_the_transaction(subject: &dyn StoreSubject) -> Result<(), String> {
-    let w = World::new(subject);
+    let w = World::new(subject).await;
     let job = w.job(w.a).await?;
     let mut tx = w.tx(w.a).await?;
     subject.stall_next_call().await;
@@ -690,15 +750,19 @@ async fn a_dropped_call_poisons_the_transaction(subject: &dyn StoreSubject) -> R
 async fn database_time_follows_the_subjects_clock(
     subject: &dyn StoreSubject,
 ) -> Result<(), String> {
-    let w = World::new(subject);
+    // A short step: a subject on a real server can move the reading of its own clock only by
+    // waiting, and the property does not depend on how large the step is. A frozen reading fails
+    // at any step.
+    const STEP: Duration = Duration::from_secs(2);
+    let w = World::new(subject).await;
     let mut tx = w.tx(w.a).await?;
     let before = tx.database_time().await.ctx("time")?;
-    subject.advance_database_time(Duration::from_secs(90)).await;
+    subject.advance_database_time(STEP).await;
     let after = tx.database_time().await.ctx("time")?;
     let gap = after.duration_since(&before).unwrap_or_default();
     ensure!(
-        gap >= Duration::from_secs(90),
-        "the clock moved by at least 90 seconds, moved {gap:?}"
+        gap >= STEP,
+        "the clock moved by at least {STEP:?}, moved {gap:?}"
     );
     Ok(())
 }
@@ -710,7 +774,7 @@ async fn database_time_follows_the_subjects_clock(
 async fn a_row_of_another_tenant_looks_like_a_missing_row(
     subject: &dyn StoreSubject,
 ) -> Result<(), String> {
-    let w = World::new(subject);
+    let w = World::new(subject).await;
     let r = w.ready(w.a, 3).await?;
     let mut other = w.tx(w.b).await?;
     ensure_err!(
@@ -737,22 +801,19 @@ async fn a_row_of_another_tenant_looks_like_a_missing_row(
         "a foreign row and a missing row give the same error"
     );
     // The artifact index is per tenant.
-    let reference = factory_domain::contracts::ArtifactRef {
-        sha256: Sha256Digest::of(b"blob"),
-        media_type: factory_domain::values::MediaType::parse("text/plain").expect("media type"),
-        size_bytes: None,
-    };
     let mut mine = w.tx(w.a).await?;
-    mine.index_artifact(NewArtifactIndexEntry {
-        artifact: reference.clone(),
-        origin: None,
-    })
-    .await
-    .ctx("index")?;
+    let sha256 = index_bytes(&mut *mine, b"blob").await?;
+    let row = mine.get_artifact_index(&sha256).await.ctx("read the row")?;
+    ensure_eq!(row.tenant_id, w.a, "the row is the tenant's");
+    ensure_eq!(
+        row.artifact.size_bytes.map(NonNegativeInt::get),
+        Some(4),
+        "the row keeps the size the entry gave"
+    );
     mine.commit().await.ctx("commit")?;
     let mut other = w.tx(w.b).await?;
     ensure_err!(
-        other.get_artifact_index(&reference.sha256).await,
+        other.get_artifact_index(&sha256).await,
         StoreError::NotFound,
         "another tenant's artifact index row"
     );
@@ -762,7 +823,7 @@ async fn a_row_of_another_tenant_looks_like_a_missing_row(
 async fn an_event_naming_the_wrong_tenant_is_refused(
     subject: &dyn StoreSubject,
 ) -> Result<(), String> {
-    let w = World::new(subject);
+    let w = World::new(subject).await;
     let job = w.job(w.a).await?;
     let at = Timestamp::parse("2026-10-27T10:00:00Z").expect("time");
     let mut tx = w.tx(w.a).await?;
@@ -778,7 +839,7 @@ async fn an_event_naming_the_wrong_tenant_is_refused(
 async fn a_tenant_cannot_read_another_tenants_row_through_any_new_method(
     subject: &dyn StoreSubject,
 ) -> Result<(), String> {
-    let w = World::new(subject);
+    let w = World::new(subject).await;
     let r = w.ready(w.a, 3).await?;
     let started = w
         .start(r, "worker-1")
@@ -887,7 +948,7 @@ async fn a_tenant_cannot_read_another_tenants_row_through_any_new_method(
 async fn a_system_transaction_finds_work_in_every_tenant(
     subject: &dyn StoreSubject,
 ) -> Result<(), String> {
-    let w = World::new(subject);
+    let w = World::new(subject).await;
     let a = w.ready(w.a, 3).await?;
     let b = w.ready(w.b, 3).await?;
     let mut sys = w.sys().await?;
@@ -903,7 +964,7 @@ async fn a_system_transaction_finds_work_in_every_tenant(
 async fn a_candidate_is_found_only_for_an_active_job(
     subject: &dyn StoreSubject,
 ) -> Result<(), String> {
-    let w = World::new(subject);
+    let w = World::new(subject).await;
     // A READY stage run of a job that is not ACTIVE (still RECEIVED).
     let job = w.job(w.a).await?;
     let run = w.stage_run(w.a, job, 3).await?;
@@ -928,7 +989,7 @@ async fn a_candidate_is_found_only_for_an_active_job(
 async fn a_candidate_is_found_only_after_not_before(
     subject: &dyn StoreSubject,
 ) -> Result<(), String> {
-    let w = World::new(subject);
+    let w = World::new(subject).await;
     let r = w.ready(w.a, 3).await?;
     let mut tx = w.tx(w.a).await?;
     let row = tx.get_stage_run(r.run).await.ctx("read")?;
@@ -957,7 +1018,7 @@ async fn a_candidate_is_found_only_after_not_before(
 async fn candidates_go_oldest_first_and_honour_the_limit(
     subject: &dyn StoreSubject,
 ) -> Result<(), String> {
-    let w = World::new(subject);
+    let w = World::new(subject).await;
     let first = w.ready(w.a, 3).await?;
     subject.advance_database_time(Duration::from_secs(5)).await;
     let second = w.ready(w.a, 3).await?;
@@ -975,30 +1036,50 @@ async fn candidates_go_oldest_first_and_honour_the_limit(
     sys.finish().await.ctx("finish")
 }
 
+/// Two workers find the same stage run, and exactly one of their starts wins.
+///
+/// A candidate is a hint (ADR 0014), and the finder of a real store takes the row with
+/// `FOR NO KEY UPDATE SKIP LOCKED`. So a second finder that runs while the first still holds the
+/// row may skip it, and a store with no row locks may show it again; both are allowed here. What no
+/// store may do is hide the row for good (the first finder holds no lock after `finish`), or let
+/// both starts of the one candidate win. The start decides, and the loser gets `Conflict`.
 async fn two_workers_find_one_candidate_and_one_start_wins(
     subject: &dyn StoreSubject,
 ) -> Result<(), String> {
-    let w = World::new(subject);
+    let w = World::new(subject).await;
     let r = w.ready(w.a, 3).await?;
     let mut s1 = w.sys().await?;
     let mut s2 = w.sys().await?;
-    let c1 = s1.find_claim_candidates(1).await.ctx("find")?;
-    let c2 = s2.find_claim_candidates(1).await.ctx("find")?;
+    let first = s1.find_claim_candidates(1).await.ctx("find")?;
     ensure!(
-        c1.len() == 1 && c2.len() == 1 && c1[0].stage_run == c2[0].stage_run,
-        "both find the same candidate"
+        first.len() == 1 && first[0].stage_run == r.run,
+        "the first finder sees the one candidate, saw {first:?}"
+    );
+    let candidate = first[0].clone();
+    let meanwhile = s2.find_claim_candidates(1).await.ctx("find meanwhile")?;
+    ensure!(
+        meanwhile.is_empty() || meanwhile == first,
+        "a finder that runs while another holds the row skips it or sees the same candidate, saw {meanwhile:?}"
     );
     s1.finish().await.ctx("finish")?;
+    let after = s2.find_claim_candidates(1).await.ctx("find after")?;
+    ensure_eq!(
+        after,
+        first,
+        "once the first finder is done the row is free for the second"
+    );
     s2.finish().await.ctx("finish")?;
 
     let mut t1 = w.tx(w.a).await?;
     let mut t2 = w.tx(w.a).await?;
     let won = w
-        .start_at(&mut *t1, r.run, c1[0].version, "worker-1")
+        .start_at(&mut *t1, r.run, candidate.version, "worker-1")
         .await
         .ctx("the first start")?;
     t1.commit().await.ctx("commit the winner")?;
-    let lost = w.start_at(&mut *t2, r.run, c2[0].version, "worker-2").await;
+    let lost = w
+        .start_at(&mut *t2, r.run, candidate.version, "worker-2")
+        .await;
     ensure_err!(
         lost,
         StoreError::Conflict,
@@ -1012,13 +1093,18 @@ async fn two_workers_find_one_candidate_and_one_start_wins(
         won.attempt.value.id,
         "the winner's attempt"
     );
-    Ok(())
+    let mut sys = w.sys().await?;
+    ensure!(
+        sys.find_claim_candidates(10).await.ctx("find")?.is_empty(),
+        "a started stage run is no longer a candidate"
+    );
+    sys.finish().await.ctx("finish")
 }
 
 async fn a_rolled_back_start_leaves_the_stage_run_startable(
     subject: &dyn StoreSubject,
 ) -> Result<(), String> {
-    let w = World::new(subject);
+    let w = World::new(subject).await;
     let r = w.ready(w.a, 3).await?;
     {
         let mut tx = w.tx(w.a).await?;
@@ -1045,7 +1131,7 @@ async fn a_rolled_back_start_leaves_the_stage_run_startable(
 async fn start_attempt_raises_the_epoch_by_one_and_creates_the_attempt_together(
     subject: &dyn StoreSubject,
 ) -> Result<(), String> {
-    let w = World::new(subject);
+    let w = World::new(subject).await;
     let r = w.ready(w.a, 3).await?;
     let started = w
         .start(r, "worker-1")
@@ -1094,7 +1180,7 @@ async fn start_attempt_raises_the_epoch_by_one_and_creates_the_attempt_together(
 async fn start_attempt_refuses_a_job_that_is_not_active(
     subject: &dyn StoreSubject,
 ) -> Result<(), String> {
-    let w = World::new(subject);
+    let w = World::new(subject).await;
     let r = w.ready(w.a, 3).await?;
     // Pause the job after the candidate was found.
     let mut tx = w.tx(w.a).await?;
@@ -1113,32 +1199,63 @@ async fn start_attempt_refuses_a_job_that_is_not_active(
     Ok(())
 }
 
+/// A second attempt cannot start while the first one is live.
+///
+/// Two refusals stand between a second start and the table. A run that is `RUNNING` is not
+/// `READY`, so the start conflicts. A run that reads `READY` while its attempt is live is a bug
+/// the engine must not have, and the start must still refuse it with `OneLiveAttempt`. The
+/// database never commits that state (a run that leaves `RUNNING` ends its attempt in the same
+/// transaction), so the check builds it inside one transaction and drops the transaction: the
+/// store must refuse the start there, and nothing of it may stay.
 async fn start_attempt_refuses_a_second_live_attempt(
     subject: &dyn StoreSubject,
 ) -> Result<(), String> {
-    let w = World::new(subject);
+    let w = World::new(subject).await;
     let r = w.ready(w.a, 5).await?;
-    w.start(r, "worker-1")
+    let first = w
+        .start(r, "worker-1")
         .await
         .map_err(|e| format!("start: {e:?}"))?;
-    // Put the run back to READY while the first attempt is still live (a bug the engine must not
-    // have, and the store must still refuse).
-    let mut tx = w.tx(w.a).await?;
-    let row = tx.get_stage_run(r.run).await.ctx("read")?;
-    let retry = plan(
-        StageRunStatus::Running,
-        StageRunEvent::AttemptFailedRetryable,
-        Guard::RetryAllowed,
-    )?;
-    tx.transition_stage_run(r.run, row.version, retry, StageRunEffects::default())
-        .await
-        .ctx("move back to READY")?;
-    tx.commit().await.ctx("commit")?;
-    let result = w.start(r, "worker-2").await;
     ensure_err!(
-        result,
-        StoreError::Constraint(ConstraintRule::OneLiveAttempt),
-        "a second live attempt"
+        w.start(r, "worker-2").await,
+        StoreError::Conflict,
+        "a start of a run that is running"
+    );
+    {
+        let mut tx = w.tx(w.a).await?;
+        let row = tx.get_stage_run(r.run).await.ctx("read")?;
+        let retry = plan(
+            StageRunStatus::Running,
+            StageRunEvent::AttemptFailedRetryable,
+            Guard::RetryAllowed,
+        )?;
+        tx.transition_stage_run(r.run, row.version, retry, StageRunEffects::default())
+            .await
+            .ctx("move back to READY with the attempt still live")?;
+        ensure_err!(
+            w.start_in(&mut *tx, r.run, "worker-2").await,
+            StoreError::Constraint(ConstraintRule::OneLiveAttempt),
+            "a second live attempt"
+        );
+        // Dropped without commit: the state above never reaches the table.
+    }
+    let mut check = w.tx(w.a).await?;
+    let attempts = check.list_attempts(r.run).await.ctx("list")?;
+    ensure_eq!(attempts.len(), 1, "one attempt");
+    ensure_eq!(
+        attempts[0].value.id,
+        first.attempt.value.id,
+        "the first attempt"
+    );
+    ensure_eq!(
+        check
+            .get_stage_run(r.run)
+            .await
+            .ctx("read the run")?
+            .value
+            .status,
+        StageRunStatus::Running,
+        "the run is still running"
     );
     Ok(())
 }
@@ -1192,7 +1309,7 @@ async fn fail_and_retry(
 async fn start_attempt_refuses_past_the_attempt_limit(
     subject: &dyn StoreSubject,
 ) -> Result<(), String> {
-    let w = World::new(subject);
+    let w = World::new(subject).await;
     let r = w.ready(w.a, 1).await?;
     let first = w
         .start(r, "worker-1")
@@ -1211,7 +1328,7 @@ async fn start_attempt_refuses_past_the_attempt_limit(
 async fn start_attempt_fails_at_the_largest_epoch(
     subject: &dyn StoreSubject,
 ) -> Result<(), String> {
-    let w = World::new(subject);
+    let w = World::new(subject).await;
     let r = w.ready(w.a, 3).await?;
     subject
         .force_lease_epoch(r.tenant, r.run, LeaseEpoch::MAX)
@@ -1234,7 +1351,7 @@ async fn start_attempt_fails_at_the_largest_epoch(
 async fn a_retry_is_findable_after_its_back_off_and_not_before(
     subject: &dyn StoreSubject,
 ) -> Result<(), String> {
-    let w = World::new(subject);
+    let w = World::new(subject).await;
     let r = w.ready(w.a, 3).await?;
     let first = w
         .start(r, "worker-1")
@@ -1275,7 +1392,7 @@ async fn a_retry_is_findable_after_its_back_off_and_not_before(
 
 async fn a_lease_has_no_owner_on_the_stage_run(subject: &dyn StoreSubject) -> Result<(), String> {
     // `StageRun` has no worker and no lease expiry field: this function only compiles if so.
-    let w = World::new(subject);
+    let w = World::new(subject).await;
     let r = w.ready(w.a, 3).await?;
     let mut tx = w.tx(w.a).await?;
     let StageRun { lease_epoch, .. } = tx.get_stage_run(r.run).await.ctx("read")?.value;
@@ -1294,7 +1411,7 @@ async fn a_lease_has_no_owner_on_the_stage_run(subject: &dyn StoreSubject) -> Re
 async fn a_heartbeat_cannot_revive_a_lapsed_lease(
     subject: &dyn StoreSubject,
 ) -> Result<(), String> {
-    let w = World::new(subject);
+    let w = World::new(subject).await;
     let r = w.ready(w.a, 3).await?;
     let started = w
         .start(r, "worker-1")
@@ -1328,7 +1445,7 @@ async fn a_heartbeat_cannot_revive_a_lapsed_lease(
 async fn a_fence_from_another_worker_name_is_refused(
     subject: &dyn StoreSubject,
 ) -> Result<(), String> {
-    let w = World::new(subject);
+    let w = World::new(subject).await;
     let r = w.ready(w.a, 3).await?;
     let started = w
         .start(r, "worker-1")
@@ -1349,7 +1466,7 @@ async fn a_fence_from_another_worker_name_is_refused(
 async fn a_zombie_worker_is_fenced_after_another_worker_takes_over(
     subject: &dyn StoreSubject,
 ) -> Result<(), String> {
-    let w = World::new(subject);
+    let w = World::new(subject).await;
     let r = w.ready(w.a, 3).await?;
     let first = w
         .start(r, "worker-1")
@@ -1400,7 +1517,7 @@ async fn a_zombie_worker_is_fenced_after_another_worker_takes_over(
 }
 
 async fn a_zombie_cannot_change_its_attempt(subject: &dyn StoreSubject) -> Result<(), String> {
-    let w = World::new(subject);
+    let w = World::new(subject).await;
     let r = w.ready(w.a, 3).await?;
     let first = w
         .start(r, "worker-1")
@@ -1475,7 +1592,7 @@ async fn a_zombie_cannot_change_its_attempt(subject: &dyn StoreSubject) -> Resul
 async fn due_attempts_cover_lease_deadline_and_teardown(
     subject: &dyn StoreSubject,
 ) -> Result<(), String> {
-    let w = World::new(subject);
+    let w = World::new(subject).await;
     // One attempt per reason, each in its own job, none due yet.
     let lease = w.ready(w.a, 3).await?;
     let started_lease = w
@@ -1607,7 +1724,7 @@ async fn due_attempts_cover_lease_deadline_and_teardown(
 async fn an_insert_is_idempotent_by_id_and_content(
     subject: &dyn StoreSubject,
 ) -> Result<(), String> {
-    let w = World::new(subject);
+    let w = World::new(subject).await;
     let repository = subject.seed_repository(w.a).await;
     let requester = w.principal(w.a).await?;
     let new = w.new_job(repository, requester, None);
@@ -1676,7 +1793,7 @@ async fn an_insert_is_idempotent_by_id_and_content(
 async fn the_same_id_with_other_content_is_refused(
     subject: &dyn StoreSubject,
 ) -> Result<(), String> {
-    let w = World::new(subject);
+    let w = World::new(subject).await;
     let repository = subject.seed_repository(w.a).await;
     let requester = w.principal(w.a).await?;
     let new = w.new_job(repository, requester, None);
@@ -1719,7 +1836,7 @@ async fn the_same_id_with_other_content_is_refused(
 }
 
 async fn a_job_is_found_by_its_origin(subject: &dyn StoreSubject) -> Result<(), String> {
-    let w = World::new(subject);
+    let w = World::new(subject).await;
     let repository = subject.seed_repository(w.a).await;
     let requester = w.principal(w.a).await?;
     let key = JobOrigin::Request(IdempotencyKey::new("create-1").expect("a key"));
@@ -1754,7 +1871,7 @@ async fn a_job_is_found_by_its_origin(subject: &dyn StoreSubject) -> Result<(), 
 async fn an_original_request_revision_is_immutable(
     subject: &dyn StoreSubject,
 ) -> Result<(), String> {
-    let w = World::new(subject);
+    let w = World::new(subject).await;
     let job = w.job(w.a).await?;
     let first = NewOriginalRequest {
         id: w.ids.uuid7(),
@@ -1834,7 +1951,7 @@ fn delivery(w: &World<'_>, id: &str, body: &str, semantic: Option<&str>) -> NewW
 async fn a_delivery_repeat_is_a_duplicate_not_an_error(
     subject: &dyn StoreSubject,
 ) -> Result<(), String> {
-    let w = World::new(subject);
+    let w = World::new(subject).await;
     let mut tx = w.tx(w.a).await?;
     let first = tx
         .record_delivery(delivery(
@@ -1905,7 +2022,7 @@ async fn a_delivery_repeat_is_a_duplicate_not_an_error(
 async fn the_gate_record_is_required_where_the_table_says(
     subject: &dyn StoreSubject,
 ) -> Result<(), String> {
-    let w = World::new(subject);
+    let w = World::new(subject).await;
     let r = w.ready(w.a, 3).await?;
     w.start(r, "worker-1")
         .await
@@ -1933,11 +2050,13 @@ async fn the_gate_record_is_required_where_the_table_says(
         StoreError::Constraint(ConstraintRule::GateRecordRule),
         "PASSED with no gate record"
     );
+    let report = index_bytes(&mut *tx, b"r").await?;
+    let failing = index_bytes(&mut *tx, b"f").await?;
     let wrong = StageRunEffects {
         gate: Some(GateRecord {
             outcome: factory_domain::vocabulary::GateOutcome::Failed,
-            report_sha256: Some(Sha256Digest::of(b"r")),
-            failing_set_sha256: Some(Sha256Digest::of(b"f")),
+            report_sha256: Some(report.clone()),
+            failing_set_sha256: Some(failing),
         }),
         ..StageRunEffects::default()
     };
@@ -1949,7 +2068,7 @@ async fn the_gate_record_is_required_where_the_table_says(
     let right = StageRunEffects {
         gate: Some(GateRecord {
             outcome: factory_domain::vocabulary::GateOutcome::Passed,
-            report_sha256: Some(Sha256Digest::of(b"r")),
+            report_sha256: Some(report),
             failing_set_sha256: None,
         }),
         ..StageRunEffects::default()
@@ -1968,7 +2087,7 @@ async fn the_gate_record_is_required_where_the_table_says(
 async fn the_attempt_end_is_required_where_the_table_says(
     subject: &dyn StoreSubject,
 ) -> Result<(), String> {
-    let w = World::new(subject);
+    let w = World::new(subject).await;
     let r = w.ready(w.a, 3).await?;
     let started = w
         .start(r, "worker-1")
@@ -1994,7 +2113,7 @@ async fn the_attempt_end_is_required_where_the_table_says(
         "a failed attempt with no failure class"
     );
     let extra = AttemptEnd {
-        output: Some(Sha256Digest::of(b"o")),
+        output: Some(index_bytes(&mut *tx, b"o").await?),
         ..effects_for_failure()
     };
     ensure_err!(
@@ -2029,7 +2148,7 @@ async fn the_attempt_end_is_required_where_the_table_says(
 }
 
 async fn a_terminal_row_is_not_edited(subject: &dyn StoreSubject) -> Result<(), String> {
-    let w = World::new(subject);
+    let w = World::new(subject).await;
     let job = w.active_job(w.a).await?;
     let run = w.stage_run(w.a, job, 3).await?;
     let mut tx = w.tx(w.a).await?;
@@ -2088,12 +2207,13 @@ fn node(w: &World<'_>, key: &str, depends_on: &[&str]) -> NewTaskNode {
 }
 
 async fn a_duplicate_task_key_is_refused(subject: &dyn StoreSubject) -> Result<(), String> {
-    let w = World::new(subject);
+    let w = World::new(subject).await;
     let r = w.ready(w.a, 3).await?;
     let mut tx = w.tx(w.a).await?;
+    let plan_hash = index_bytes(&mut *tx, b"plan").await?;
     let graph = NewTaskGraph {
         stage_run: r.run,
-        plan_sha256: Sha256Digest::of(b"plan"),
+        plan_sha256: plan_hash.clone(),
         nodes: vec![node(&w, "t-001", &[]), node(&w, "t-001", &[])],
     };
     ensure_err!(
@@ -2108,7 +2228,7 @@ async fn a_duplicate_task_key_is_refused(subject: &dyn StoreSubject) -> Result<(
     // A good plan is idempotent by plan hash; another plan for the same run is refused.
     let good = NewTaskGraph {
         stage_run: r.run,
-        plan_sha256: Sha256Digest::of(b"plan"),
+        plan_sha256: plan_hash.clone(),
         nodes: vec![node(&w, "t-001", &[]), node(&w, "t-002", &["t-001"])],
     };
     let stored = tx
@@ -2123,9 +2243,10 @@ async fn a_duplicate_task_key_is_refused(subject: &dyn StoreSubject) -> Result<(
         1,
         "one edge"
     );
+    let other_plan = index_bytes(&mut *tx, b"other").await?;
     ensure_err!(
         tx.insert_task_graph(NewTaskGraph {
-            plan_sha256: Sha256Digest::of(b"other"),
+            plan_sha256: other_plan,
             ..good
         })
         .await,
@@ -2136,12 +2257,13 @@ async fn a_duplicate_task_key_is_refused(subject: &dyn StoreSubject) -> Result<(
 }
 
 async fn a_task_graph_cycle_is_refused(subject: &dyn StoreSubject) -> Result<(), String> {
-    let w = World::new(subject);
+    let w = World::new(subject).await;
     let r = w.ready(w.a, 3).await?;
     let mut tx = w.tx(w.a).await?;
+    let plan_hash = index_bytes(&mut *tx, b"plan").await?;
     let graph = NewTaskGraph {
         stage_run: r.run,
-        plan_sha256: Sha256Digest::of(b"plan"),
+        plan_sha256: plan_hash.clone(),
         nodes: vec![node(&w, "t-001", &["t-002"]), node(&w, "t-002", &["t-001"])],
     };
     ensure_err!(
@@ -2157,17 +2279,18 @@ async fn a_task_graph_cycle_is_refused(subject: &dyn StoreSubject) -> Result<(),
 }
 
 async fn a_task_move_needs_a_current_fence(subject: &dyn StoreSubject) -> Result<(), String> {
-    let w = World::new(subject);
+    let w = World::new(subject).await;
     let r = w.ready(w.a, 3).await?;
     let started = w
         .start(r, "worker-1")
         .await
         .map_err(|e| format!("start: {e:?}"))?;
     let mut tx = w.tx(w.a).await?;
+    let plan_hash = index_bytes(&mut *tx, b"plan").await?;
     let nodes = tx
         .insert_task_graph(NewTaskGraph {
             stage_run: r.run,
-            plan_sha256: Sha256Digest::of(b"plan"),
+            plan_sha256: plan_hash.clone(),
             nodes: vec![node(&w, "t-001", &[])],
         })
         .await
@@ -2236,9 +2359,9 @@ async fn a_task_move_needs_a_current_fence(subject: &dyn StoreSubject) -> Result
 async fn a_ledger_entry_that_does_not_extend_the_chain_is_refused(
     subject: &dyn StoreSubject,
 ) -> Result<(), String> {
-    let w = World::new(subject);
+    let w = World::new(subject).await;
     let job = w.job(w.a).await?;
-    let run = w.ids.stage_run();
+    let run = w.stage_run(w.a, job, 3).await?;
     let at = Timestamp::parse("2026-10-27T10:00:00Z").expect("time");
     let mut tx = w.tx(w.a).await?;
     let first = ledger_entry(&w.ids, job, run, 1, None, &at, "First.");
@@ -2284,9 +2407,9 @@ async fn a_ledger_entry_that_does_not_extend_the_chain_is_refused(
 async fn a_ledger_position_can_be_taken_only_once(
     subject: &dyn StoreSubject,
 ) -> Result<(), String> {
-    let w = World::new(subject);
+    let w = World::new(subject).await;
     let job = w.job(w.a).await?;
-    let run = w.ids.stage_run();
+    let run = w.stage_run(w.a, job, 3).await?;
     let at = Timestamp::parse("2026-10-27T10:00:00Z").expect("time");
     let mut tx = w.tx(w.a).await?;
     tx.append_ledger_entry(ledger_entry(&w.ids, job, run, 1, None, &at, "First."))
@@ -2312,16 +2435,19 @@ async fn a_ledger_position_can_be_taken_only_once(
 async fn events_read_back_in_the_order_they_were_queued(
     subject: &dyn StoreSubject,
 ) -> Result<(), String> {
-    let w = World::new(subject);
+    let w = World::new(subject).await;
     let job = w.job(w.a).await?;
     let other = w.job(w.a).await?;
     let at = Timestamp::parse("2026-10-27T10:00:00Z").expect("time");
     let mut tx = w.tx(w.a).await?;
     let mut queued = Vec::new();
-    // Another job's event goes first, so that the last row of the transaction is this job's.
+    // Another job's event goes first, so that the last row of the transaction is this job's. Each
+    // job reaches the versions its events announce.
+    job_reaches(&mut *tx, other, 2).await?;
     tx.enqueue_event(domain_event(&w.ids, w.a, other, 2, &at))
         .await
         .ctx("another job's event")?;
+    job_reaches(&mut *tx, job, 4).await?;
     for version in 2..=4 {
         let event = domain_event(&w.ids, w.a, job, version, &at);
         queued.push(event.event_id);
@@ -2379,7 +2505,7 @@ fn audit_event(w: &World<'_>, job: Option<JobId>, action: &str) -> NewAuditEvent
 }
 
 async fn the_audit_limit_is_honoured(subject: &dyn StoreSubject) -> Result<(), String> {
-    let w = World::new(subject);
+    let w = World::new(subject).await;
     let job = w.job(w.a).await?;
     let mut tx = w.tx(w.a).await?;
     for n in 0..5 {
@@ -2405,7 +2531,7 @@ async fn the_audit_limit_is_honoured(subject: &dyn StoreSubject) -> Result<(), S
 async fn an_audit_event_with_no_job_is_stored_and_read(
     subject: &dyn StoreSubject,
 ) -> Result<(), String> {
-    let w = World::new(subject);
+    let w = World::new(subject).await;
     let job = w.job(w.a).await?;
     let mut tx = w.tx(w.a).await?;
     let record = tx
@@ -2446,7 +2572,7 @@ async fn an_audit_event_with_no_job_is_stored_and_read(
 async fn the_platform_audit_event_lands_under_the_platform_tenant_only(
     subject: &dyn StoreSubject,
 ) -> Result<(), String> {
-    let w = World::new(subject);
+    let w = World::new(subject).await;
     let event = audit_event(&w, None, "webhook.rejected");
     let record = subject
         .store()
@@ -2497,7 +2623,7 @@ async fn the_platform_audit_event_lands_under_the_platform_tenant_only(
 async fn an_approval_counts_only_for_its_head_and_until_it_expires(
     subject: &dyn StoreSubject,
 ) -> Result<(), String> {
-    let w = World::new(subject);
+    let w = World::new(subject).await;
     let r = w.ready(w.a, 3).await?;
     let approver = w.principal(w.a).await?;
     let head = GitSha::parse(&"a".repeat(40)).expect("sha");
@@ -2615,7 +2741,7 @@ async fn an_approval_counts_only_for_its_head_and_until_it_expires(
 }
 
 async fn a_lookup_miss_is_none_for_every_reason(subject: &dyn StoreSubject) -> Result<(), String> {
-    let w = World::new(subject);
+    let w = World::new(subject).await;
     let repository = subject.seed_repository(w.a).await;
     let principal = w.principal(w.a).await?;
     let audience = Audience(Slug::parse("factory-api").expect("slug"));

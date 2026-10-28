@@ -10,11 +10,13 @@
 //! come from the same table row, and the event also names the guard and the digest of its facts.
 
 use factory_domain::contracts::domain_event::AggregateKind;
-use factory_domain::contracts::{Contract, DomainEvent};
+use factory_domain::contracts::{ArtifactRef, Contract, DomainEvent};
 use std::cell::Cell;
 use std::time::Duration;
 
-use factory_domain::ids::{AttemptId, AuditEventId, CausationId, CorrelationId, JobId, TenantId};
+use factory_domain::ids::{
+    AttemptId, AuditEventId, CausationId, CorrelationId, JobId, StageRunId, TenantId,
+};
 use factory_domain::machines::guards::GuardCleared;
 use factory_domain::scope::TenantScope;
 use factory_domain::state::{
@@ -23,8 +25,9 @@ use factory_domain::state::{
 use factory_domain::values::{Slug, Timestamp, Traceparent};
 use factory_ports::store::{
     AppliedTransition, Attempt, AttemptEnd, AuditAction as PortAuditAction, AuditActor,
-    AuditDecision as PortAuditDecision, Job, LeaseEpoch, NewAuditEvent, StageRun, StageRunEffects,
-    StartAttempt, StartedAttempt, StoreError, Tx, Version, Versioned, Witness, WorkerId,
+    AuditDecision as PortAuditDecision, Job, LeaseEpoch, NewArtifactIndexEntry, NewAuditEvent,
+    StageRun, StageRunEffects, StartAttempt, StartedAttempt, StoreError, Tx, Version, Versioned,
+    Witness, WorkerId,
 };
 use serde_json::{Map, Value, json};
 use uuid::Uuid;
@@ -35,6 +38,20 @@ use crate::audit::{AuditAction, AuditDecision};
 
 /// The name the engine gives itself as the producer of events and the actor of audit records.
 pub(crate) const COMPONENT: &str = "workflow.engine";
+
+/// The index entry for an artifact made for a stage run of a job. The index records the size of
+/// the blob, so a reference that carries none cannot be indexed.
+pub(crate) fn index_entry(
+    artifact: &ArtifactRef,
+    job: JobId,
+    run: StageRunId,
+) -> Result<NewArtifactIndexEntry, EngineError> {
+    NewArtifactIndexEntry::from_reference(artifact, Some((job, run))).ok_or_else(|| {
+        EngineError::Invalid(
+            "an artifact reference carries no size, and the index needs one".to_owned(),
+        )
+    })
+}
 
 /// What the writes of one decision share.
 pub(crate) struct Cx<'e> {

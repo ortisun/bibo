@@ -2,8 +2,8 @@
 //! together or not at all, an event must announce a version its aggregate has reached, and a lost
 //! answer to `COMMIT` is settled by the witness.
 //!
-//! The events here announce versions the job really reached, which the shared contract suite's
-//! fixtures do not always do (see `EXCLUDED` in `store_contract.rs`).
+//! The events here announce versions the job really reached, as the fixtures of the shared contract
+//! suite (`store_contract.rs`) do too.
 
 mod support;
 

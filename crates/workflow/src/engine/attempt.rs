@@ -33,7 +33,7 @@ use factory_domain::values::Slug;
 use factory_ports::agent::{
     CostMicroUsd, IssuedJobToken, JobTokenId, JobTokenRef, JobTokenRequest,
 };
-use factory_ports::store::{AttemptEnd, AuditActor, NewArtifactIndexEntry, Tx};
+use factory_ports::store::{AttemptEnd, AuditActor, Tx};
 use serde_json::{Value, json};
 use tracing::Instrument;
 
@@ -44,7 +44,7 @@ use super::failure::HumanReason;
 use super::gate::Judged;
 use super::payload;
 use super::progress::{Board, clear, upstream_runs};
-use super::record::{Cx, Step};
+use super::record::{Cx, Step, index_entry};
 use super::timeline::Timeline;
 use crate::audit::{AuditAction, AuditDecision, AuditKind};
 use crate::gates::framework::{Expectation, GateDecision, check_evidence, resolve};
@@ -808,11 +808,8 @@ impl Engine {
     ) -> Result<(), EngineError> {
         let mut tx = self.tenant_tx(claimed.tenant).await?;
         for artifact in artifacts {
-            tx.index_artifact(NewArtifactIndexEntry {
-                artifact: artifact.clone(),
-                origin: Some((claimed.job, claimed.stage_run)),
-            })
-            .await?;
+            tx.index_artifact(index_entry(artifact, claimed.job, claimed.stage_run)?)
+                .await?;
         }
         tx.commit().await?;
         Ok(())
@@ -978,11 +975,8 @@ impl Engine {
         artifacts: &[ArtifactRef],
     ) -> Result<(), EngineError> {
         for artifact in artifacts {
-            tx.index_artifact(NewArtifactIndexEntry {
-                artifact: artifact.clone(),
-                origin: Some((cx.job, claimed.stage_run)),
-            })
-            .await?;
+            tx.index_artifact(index_entry(artifact, cx.job, claimed.stage_run)?)
+                .await?;
         }
         Ok(())
     }

@@ -61,7 +61,9 @@ use factory_domain::scope::{PlatformScope, ResolvedPrincipal, ResolvedRepository
 use factory_domain::state::{
     AttemptStatus, Guard, IllegalTransition, JobStatus, StageRunStatus, Status, TaskNodeStatus,
 };
-use factory_domain::values::{AggregateVersion, GitSha, Sha256Digest, Slug, Timestamp};
+use factory_domain::values::{
+    AggregateVersion, GitSha, MediaType, NonNegativeInt, Sha256Digest, Slug, Timestamp,
+};
 use factory_domain::vocabulary::{AutonomyLevel, ExecutionMode, Fidelity, GateOutcome, StageKind};
 
 use crate::sandbox::SandboxId;
@@ -1182,12 +1184,38 @@ pub struct Approval {
 }
 
 /// An artifact to index for the tenant.
+///
+/// The size is part of the entry and is not optional. The index records it, quota and accounting
+/// are counted from it, and an adapter that indexes a blob it does not hold has no length to read.
+/// An `ArtifactRef` may omit the size, so the entry does not take one: it names the hash, the
+/// media type and the size as three fields, and a reference without a size cannot be turned into
+/// an entry ([`NewArtifactIndexEntry::from_reference`]).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NewArtifactIndexEntry {
-    /// The artifact, by content hash.
-    pub artifact: ArtifactRef,
+    /// The content hash of the artifact.
+    pub sha256: Sha256Digest,
+    /// What kind of bytes it is.
+    pub media_type: MediaType,
+    /// The length of the blob in bytes.
+    pub size_bytes: NonNegativeInt,
     /// The job that made it, when one did.
     pub origin: Option<(JobId, StageRunId)>,
+}
+
+impl NewArtifactIndexEntry {
+    /// The entry for a reference that carries its size, and `None` for one that does not.
+    #[must_use]
+    pub fn from_reference(
+        artifact: &ArtifactRef,
+        origin: Option<(JobId, StageRunId)>,
+    ) -> Option<Self> {
+        Some(Self {
+            sha256: artifact.sha256.clone(),
+            media_type: artifact.media_type.clone(),
+            size_bytes: artifact.size_bytes?,
+            origin,
+        })
+    }
 }
 
 /// The tenant's record that it holds an artifact. A tenant reads a blob only through this row
@@ -1196,7 +1224,7 @@ pub struct NewArtifactIndexEntry {
 pub struct ArtifactIndexEntry {
     /// The tenant that holds the artifact.
     pub tenant_id: TenantId,
-    /// The artifact, by content hash.
+    /// The artifact, by content hash. Its size is always present: the index requires it.
     pub artifact: ArtifactRef,
     /// The job and stage run that made it.
     pub origin: Option<(JobId, StageRunId)>,

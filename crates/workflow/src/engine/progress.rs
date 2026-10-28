@@ -22,15 +22,13 @@ use factory_domain::machines::snapshot::StageRunSnapshot;
 use factory_domain::state::{Guard, JobEvent, JobStatus, StageRunEvent, StageRunStatus};
 use factory_domain::values::{HumanText, MediaType, Sha256Digest};
 use factory_domain::vocabulary::{ConfidenceLevel, GateOutcome, StageKind};
-use factory_ports::store::{
-    GateRecord, Job, NewArtifactIndexEntry, StageRun, StageRunEffects, StoreError, Tx, Versioned,
-};
+use factory_ports::store::{GateRecord, Job, StageRun, StageRunEffects, StoreError, Tx, Versioned};
 
 use super::Engine;
 use super::error::EngineError;
 use super::ledger::{ClaimSpec, ledger_verifies};
 use super::payload;
-use super::record::{Cx, Step};
+use super::record::{Cx, Step, index_entry};
 use super::timeline::{RunRecord, Timeline};
 use crate::handlers::{
     Applicability, ContractContext, RunIdentity, SkipBasis, SkipRule, UpstreamRun,
@@ -568,11 +566,8 @@ impl Engine {
             .put(bytes, MediaType::parse("application/json")?)
             .await
             .map_err(|error| EngineError::Artifacts(error.to_string()))?;
-        tx.index_artifact(NewArtifactIndexEntry {
-            artifact: stored.clone(),
-            origin: Some((cx.job, run)),
-        })
-        .await?;
+        tx.index_artifact(index_entry(&stored, cx.job, run)?)
+            .await?;
         Ok(stored.sha256)
     }
 }

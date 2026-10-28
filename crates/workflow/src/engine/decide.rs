@@ -27,9 +27,7 @@ use factory_domain::machines::rework::{
 use factory_domain::state::{Guard, StageRunEvent};
 use factory_domain::values::{HumanText, MediaType};
 use factory_domain::vocabulary::{ConfidenceLevel, GateOutcome, HumanRole};
-use factory_ports::store::{
-    AuditActor, GateRecord, NewArtifactIndexEntry, StageRun, StageRunEffects, Tx, Versioned,
-};
+use factory_ports::store::{AuditActor, GateRecord, StageRun, StageRunEffects, Tx, Versioned};
 use serde_json::json;
 
 use super::Engine;
@@ -38,7 +36,7 @@ use super::gate::ReworkMove;
 use super::ledger::ClaimSpec;
 use super::payload::{self, key};
 use super::progress::clear;
-use super::record::{Cx, Step};
+use super::record::{Cx, Step, index_entry};
 use super::timeline::Timeline;
 use crate::audit::{AuditAction, AuditDecision, AuditKind};
 use crate::commands::{Actor, Decision, Subject};
@@ -405,11 +403,8 @@ impl Engine {
         run: StageRunId,
         artifact: &ArtifactRef,
     ) -> Result<(), EngineError> {
-        tx.index_artifact(NewArtifactIndexEntry {
-            artifact: artifact.clone(),
-            origin: Some((cx.job, run)),
-        })
-        .await?;
+        tx.index_artifact(index_entry(artifact, cx.job, run)?)
+            .await?;
         Ok(())
     }
 
