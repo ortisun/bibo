@@ -15,14 +15,15 @@ use factory_domain::ids::StageRunId;
 use factory_domain::machines::guards::stage_run::satisfies_dependants;
 use factory_domain::machines::guards::{
     GuardCleared, GuardFacts, NotApplicableBasis, NotApplicableFacts, PipelineScopeFacts,
-    RejectionFacts, StageBoardFacts, UnrecoverableFacts, UpstreamFacts, evaluate,
+    ReauthorizationFacts, RejectionFacts, StageBoardFacts, UnrecoverableFacts, UpstreamFacts,
+    evaluate,
 };
 use factory_domain::machines::snapshot::StageRunSnapshot;
 use factory_domain::state::{Guard, JobEvent, JobStatus, StageRunEvent, StageRunStatus};
 use factory_domain::values::{HumanText, MediaType, Sha256Digest};
 use factory_domain::vocabulary::{ConfidenceLevel, GateOutcome, StageKind};
 use factory_ports::store::{
-    GateRecord, Job, NewArtifactIndexEntry, StageRun, StageRunEffects, Tx, Versioned,
+    GateRecord, Job, NewArtifactIndexEntry, StageRun, StageRunEffects, StoreError, Tx, Versioned,
 };
 
 use super::Engine;
@@ -298,7 +299,75 @@ impl Engine {
             return Ok(Round::Moved);
         }
 
+        // A new intake run made after an edit of the request waits for the requester before
+        // any attempt can read the new text (`S22`).
+        if self
+            .require_reauthorization(tx, cx, timeline, board)
+            .await?
+        {
+            return Ok(Round::Moved);
+        }
+
         self.promote_one(tx, cx, timeline, board, &snaps).await
+    }
+
+    /// Takes `S22` for a `READY` intake run that was made after the request was edited, when the
+    /// request now differs from the one the requester authorized (`G_REAUTHORIZATION_REQUIRED`).
+    /// Returns whether it made the move.
+    ///
+    /// The requester authorized the revision before the edit. Once a person has answered the
+    /// wait, the run holds a human answer and the current revision counts as authorized, so the
+    /// run goes on. A job with no recorded original request has nothing to compare, and the move
+    /// is not taken.
+    async fn require_reauthorization(
+        &self,
+        tx: &mut dyn Tx,
+        cx: &Cx<'_>,
+        timeline: &Timeline,
+        board: &Board,
+    ) -> Result<bool, EngineError> {
+        for run in &board.runs {
+            if run.value.status != StageRunStatus::Ready || run.value.kind != StageKind::Intake {
+                continue;
+            }
+            let Some(record) = timeline.run(run.value.id) else {
+                continue;
+            };
+            if !record.reauthorize {
+                continue;
+            }
+            let latest = match tx.get_original_request(cx.job, None).await {
+                Ok(latest) => latest,
+                Err(StoreError::NotFound) => continue,
+                Err(other) => return Err(other.into()),
+            };
+            let authorized = if record.human_inputs.is_empty() && latest.revision > 1 {
+                tx.get_original_request(cx.job, Some(latest.revision - 1))
+                    .await?
+                    .content_sha256
+            } else {
+                latest.content_sha256.clone()
+            };
+            let facts = GuardFacts::Reauthorization(ReauthorizationFacts {
+                authorized_request: Some(&authorized),
+                current_request: &latest.content_sha256,
+                policy_asks_confirmation: false,
+            });
+            let Ok(cleared) = evaluate(Guard::ReauthorizationRequired, &facts) else {
+                continue;
+            };
+            cx.move_stage_run(
+                tx,
+                run,
+                Step::new(StageRunEvent::RequireReauthorization, cleared)
+                    .cause("request-edited")
+                    .payload(payload::for_run(run.value.kind, run.value.id)),
+                StageRunEffects::default(),
+            )
+            .await?;
+            return Ok(true);
+        }
+        Ok(false)
     }
 
     /// The proof that guard `G_PIPELINE_SCOPE_COMPLETE` holds for the job, or `None`.

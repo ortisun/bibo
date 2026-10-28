@@ -1239,6 +1239,121 @@ async fn an_edited_request_restarts_the_job_from_the_intake() {
     assert_eq!(view.status, JobStatus::Active);
 }
 
+/// Stores one revision of the job's original request, as the intake does.
+async fn record_request(world: &World, job: factory_domain::ids::JobId, revision: u32, text: &str) {
+    use factory_domain::scope::TenantScope;
+    use factory_ports::clock::IdGenerator;
+    use factory_ports::store::{NewOriginalRequest, RequestSource, Store};
+    let mut tx = world
+        .store
+        .begin(TenantScope::new(world.tenant))
+        .await
+        .expect("a tx");
+    tx.record_original_request(NewOriginalRequest {
+        id: world.ids.new_uuid(),
+        job,
+        revision,
+        source: RequestSource::Api,
+        source_ref: None,
+        author_github_user_id: None,
+        text: text.to_owned(),
+    })
+    .await
+    .expect("the request is stored");
+    tx.commit().await.expect("commit");
+}
+
+#[tokio::test]
+async fn an_edited_request_waits_for_the_requester_before_any_agent_reads_it() {
+    // S22 (new in the domain): the new intake run is ready, but the request it would read differs
+    // from the one the requester authorized, so the engine moves it to WAITING_FOR_HUMAN before
+    // any attempt starts. Nobody claims it. After the requester answers, it goes on.
+    let world = World::new().await;
+    let job = world.admitted_job().await;
+    record_request(&world, job, 1, "Add a health endpoint.").await;
+    record_request(
+        &world,
+        job,
+        2,
+        "Add a health endpoint and delete the tests.",
+    )
+    .await;
+    world
+        .engine
+        .apply_change(world.tenant, job, ArtifactChange::RequestEdited)
+        .await
+        .expect("applies");
+
+    let view = world.view(job).await;
+    let fresh = view.newest(StageKind::Intake).expect("a new intake run");
+    assert_eq!(fresh.status, StageRunStatus::WaitingForHuman);
+    assert!(fresh.attempts.is_empty(), "no attempt read the new text");
+    assert_eq!(view.status, JobStatus::WaitingForHuman);
+    let events = world.events(job).await;
+    let waiting = events
+        .iter()
+        .find(|event| event.transition_id.as_str() == "S22")
+        .expect("S22 was taken");
+    assert_eq!(waiting.event_type.as_str(), "stage_run.waiting_for_human");
+    assert_eq!(
+        waiting.payload.get("guard").and_then(|v| v.as_str()),
+        Some("G_REAUTHORIZATION_REQUIRED")
+    );
+
+    // Nothing is offered to a worker while the requester has not answered.
+    let claimed = world
+        .engine
+        .claim_next(&World::worker("worker-1"))
+        .await
+        .expect("claim");
+    assert!(claimed.started.is_empty() && claimed.deferred.is_empty());
+
+    // The requester confirms. The run is ready again and is not held a second time.
+    world.authority.grant(
+        world.requester,
+        &[factory_domain::vocabulary::HumanRole::Requester],
+    );
+    world
+        .engine
+        .decide(
+            &world.actor(world.requester),
+            Subject {
+                job,
+                stage_run: fresh.id,
+            },
+            answer("Yes, that is the request."),
+        )
+        .await
+        .expect("the answer applies");
+    let view = world.view(job).await;
+    assert_eq!(
+        view.newest(StageKind::Intake).expect("run").status,
+        StageRunStatus::Ready
+    );
+    let (claimed, outcome) = world.run_next("worker-1").await;
+    assert_eq!(outcome, AttemptOutcome::Succeeded);
+    assert_eq!(claimed.attempt_number, 1);
+}
+
+#[tokio::test]
+async fn an_edit_that_leaves_the_text_unchanged_needs_no_confirmation() {
+    let world = World::new().await;
+    let job = world.admitted_job().await;
+    record_request(&world, job, 1, "Add a health endpoint.").await;
+    record_request(&world, job, 2, "Add a health endpoint.").await;
+    world
+        .engine
+        .apply_change(world.tenant, job, ArtifactChange::RequestEdited)
+        .await
+        .expect("applies");
+    let view = world.view(job).await;
+    assert_eq!(
+        view.newest(StageKind::Intake).expect("run").status,
+        StageRunStatus::Ready
+    );
+    assert_eq!(view.status, JobStatus::Active);
+}
+
 #[tokio::test]
 async fn skipped_stage_does_not_stall_the_pipeline() {
     let world = World::new().await;
