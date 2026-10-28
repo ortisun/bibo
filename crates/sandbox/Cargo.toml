@@ -7,3 +7,34 @@ publish.workspace = true
 
 [lints]
 workspace = true
+
+# `sandbox` is an adapter crate (ring 2). The reference for its dependencies is the `sandbox` entry
+# of docs/architecture/crate-dependency-rules.json. Every crate below is on that list except the
+# one marked "not on the list". Versions are the ones already in Cargo.lock (the same releases the
+# `storage` crate uses), all MIT or Apache-2.0 (or an OR of those), and they pass `cargo deny`.
+[dependencies]
+factory-domain.workspace = true
+factory-ports.workspace = true
+
+# Reads `images.json` and the `docker inspect` documents.
+serde_json = { version = "1.0.154", default-features = false, features = ["std"] }
+
+thiserror = "2.0.21"
+tracing = "0.1.44"
+
+# `process` starts `docker` (only in `src/process.rs`), `io-util` reads its output pipes, `time`
+# bounds every call, `sync` and `rt` run the per-sandbox watchdog. These are the features on the
+# `sandbox` entry of the rules file (`fs` is not needed).
+tokio = { version = "1.54.1", default-features = false, features = ["process", "io-util", "time", "sync", "rt"] }
+
+# Sends the kill signal to a whole process group, which `tokio::process::Child::kill` cannot do.
+# Not on the list for `sandbox`. It is the safe binding to the system call (the workspace forbids
+# `unsafe`), and the `storage` crate already uses the same release. Apache-2.0 or MIT.
+rustix = { version = "1.1.6", default-features = false, features = ["std", "process"] }
+
+[dev-dependencies]
+factory-testkit.workspace = true
+# The tests implement port traits with `#[async_trait]`. Dev dependencies are outside rule DEP-04.
+async-trait = "0.1.92"
+# Real-Docker tests run many tasks at once and read the system clock through `time`.
+tokio = { version = "1.54.1", default-features = false, features = ["rt-multi-thread", "macros", "sync", "time", "process", "io-util"] }
