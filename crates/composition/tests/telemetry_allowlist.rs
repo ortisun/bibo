@@ -268,6 +268,27 @@ const REVIEWED: &[(&str, &str, &str)] = &[
         "kind",
         "label of a secret kind, a closed set",
     ),
+    (
+        "crates/composition/src/decisions.rs",
+        "admitted",
+        "a boolean",
+    ),
+    (
+        "crates/composition/src/decisions.rs",
+        "code",
+        "refusal code of the approval service, a closed set that has a reason for each code",
+    ),
+    (
+        "crates/composition/src/decisions.rs",
+        "decision",
+        "decision id",
+    ),
+    (
+        "crates/composition/src/decisions.rs",
+        "error",
+        "StoreError and EngineError, as in the worker loop; no request text",
+    ),
+    ("crates/composition/src/decisions.rs", "job", "job id"),
     ("crates/composition/src/drift.rs", "created", "a count"),
     ("crates/composition/src/drift.rs", "error", "EngineError"),
     ("crates/composition/src/drift.rs", "superseded", "a count"),

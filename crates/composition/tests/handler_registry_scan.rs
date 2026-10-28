@@ -52,6 +52,11 @@ const HANDLERS: &[(&str, &str, &str)] = &[
         "crates/workflow/src/stages/documenting/handler.rs",
     ),
     (
+        "DomainDiscoveryHandler",
+        "DomainDiscovery",
+        "crates/workflow/src/stages/domain_discovery/mod.rs",
+    ),
+    (
         "ImplementationHandler",
         "Implementation",
         "crates/workflow/src/stages/implementation/handler.rs",
@@ -90,10 +95,10 @@ const HANDLERS: &[(&str, &str, &str)] = &[
 
 /// Stage kinds that have no production handler yet. The engine opens the same spans for them when a
 /// handler is registered, and the workflow scenario proves it with a scripted one for every kind in
-/// its scope. `DomainDiscovery` is in the Slice 1 scope and has no handler: that is a known gap of
-/// the stage packages and not of the telemetry (the worker README lists it as item 12). `Merge` is
-/// not implemented and is outside the scope.
-const KINDS_WITHOUT_A_HANDLER: &[&str] = &["DomainDiscovery", "Merge"];
+/// its scope. `Merge` is not implemented and is outside the scope. `DomainDiscovery` used to be on
+/// this list; it has a handler now (it skips the stage by a recorded rule when the domain profile
+/// asks for no discovery), listed above.
+const KINDS_WITHOUT_A_HANDLER: &[&str] = &["Merge"];
 
 /// The `impl StageHandler for <Type>` blocks of a file: the type, and the stage kind named in the
 /// body of its `fn kind`.
