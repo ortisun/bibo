@@ -38,6 +38,7 @@ use serde_json::{Value, json};
 use tracing::Instrument;
 
 use super::Engine;
+use super::agent_span::ObservedRuntime;
 use super::cancel::AttemptCancel;
 use super::error::EngineError;
 use super::failure::HumanReason;
@@ -144,7 +145,21 @@ impl Engine {
         &self,
         claimed: &ClaimedAttempt,
     ) -> Result<AttemptOutcome, EngineError> {
+        // The stage run outlives a process, and an attempt is one stretch of work on it, so each
+        // attempt opens a stage run span of its own under the job stretch. Two attempts of one
+        // stage run give two spans with the same `factory.stage_run_id`, and a search for that
+        // identifier finds them all. The attempt hangs from this span, and the gate from the
+        // attempt.
+        let stage_run = tracing::info_span!(
+            "factory.stage_run",
+            factory.correlation_id = %claimed.correlation,
+            factory.job_id = %claimed.job,
+            factory.stage_run_id = %claimed.stage_run,
+            factory.stage_kind = claimed.kind.as_str(),
+            factory.outcome = tracing::field::Empty,
+        );
         let span = tracing::info_span!(
+            parent: &stage_run,
             "factory.attempt",
             factory.correlation_id = %claimed.correlation,
             factory.job_id = %claimed.job,
@@ -153,13 +168,50 @@ impl Engine {
             factory.attempt_number = i64::from(claimed.attempt_number),
             factory.stage_kind = claimed.kind.as_str(),
             factory.outcome = tracing::field::Empty,
+            factory.error_class = tracing::field::Empty,
         );
         let outcome = self
             .run_attempt_inner(claimed)
             .instrument(span.clone())
             .await?;
         span.record("factory.outcome", outcome_label(&outcome));
+        if let AttemptOutcome::Failed { class, .. } = &outcome {
+            // The wire spelling of the failure class, such as `TOOL_ERROR`: a closed set.
+            span.record("factory.error_class", class.as_str());
+        }
+        if let Some(ended) = self.stage_run_outcome(claimed, &outcome).await {
+            stage_run.record("factory.outcome", ended);
+        }
         Ok(outcome)
+    }
+
+    /// The outcome the stage run ended in, when this attempt ended it: `passed`, `failed`,
+    /// `blocked` or `rework_requested`. `None` when the run goes on (a retry, a question to a
+    /// person) or when it cannot be read; telemetry never fails an attempt.
+    ///
+    /// Only a result that was committed can have ended the run, so a lost lease and a cancel are
+    /// not read. The status is read from the store after the commit, so the span says what the
+    /// run holds and not what the branch of the code expected.
+    async fn stage_run_outcome(
+        &self,
+        claimed: &ClaimedAttempt,
+        outcome: &AttemptOutcome,
+    ) -> Option<&'static str> {
+        let may_have_ended = matches!(
+            outcome,
+            AttemptOutcome::Succeeded
+                | AttemptOutcome::Failed {
+                    then: AttemptDisposition::Fail | AttemptDisposition::Block(_),
+                    ..
+                }
+        );
+        if !may_have_ended {
+            return None;
+        }
+        let mut tx = self.tenant_tx(claimed.tenant).await.ok()?;
+        let run = tx.get_stage_run(claimed.stage_run).await.ok();
+        let _ = tx.rollback().await;
+        run.and_then(|run| super::ended::outcome_of(run.value.status))
     }
 
     async fn run_attempt_inner(
@@ -210,6 +262,9 @@ impl Engine {
 
         let cancel = AttemptCancel::new();
         let notes = notes.clone();
+        // The handler runs its agents through this wrapper, so each run is a `factory.agent` span.
+        let observed =
+            ObservedRuntime::new(self.deps.runtime.as_ref(), claimed.correlation, claimed.job);
         let mut ctx = StageContext::new(
             prepared.identity,
             claimed.attempt,
@@ -217,7 +272,7 @@ impl Engine {
             claimed.epoch,
             self.config.mode,
             &prepared.contract,
-            self.stage_ports(),
+            self.stage_ports(&observed),
             &cancel,
             job_token,
             &prepared.human_inputs,
@@ -236,7 +291,11 @@ impl Engine {
         // What the model cost is read once the handler has stopped, so the events of this attempt
         // can carry it.
         if let Some(token) = job_token {
-            notes.set_cost(self.token_cost(token.id).await);
+            let cost = self.token_cost(token.id).await;
+            notes.set_cost(cost);
+            // Money was spent whether or not the attempt is later recorded, so the spend is
+            // counted here and not with the result: an attempt that lost its lease still cost it.
+            self.record_spend(claimed, prepared, cost);
         }
 
         if watched.lease_lost {
@@ -520,6 +579,33 @@ impl Engine {
         }
     }
 
+    /// Adds what an attempt spent to `factory_spend_usd_total`, in dollars, by provider and stage.
+    ///
+    /// Each attempt has a token of its own, read once when the handler has stopped, so the whole
+    /// reading is this attempt's spend and none of it is counted twice. The provider label is the
+    /// name of the runtime the router chose for the stage, because the broker does not report a
+    /// provider; the router is a pure function of the stage's need, so asking it again gives the
+    /// answer the token was issued under. The label comes from the routing policy and the
+    /// registered adapters, a closed set, and never from anything a tool printed. Nothing is
+    /// recorded for a stage that spent nothing, or whose route cannot be found.
+    fn record_spend(&self, claimed: &ClaimedAttempt, prepared: &Prepared, micro_usd: u64) {
+        if micro_usd == 0 {
+            return;
+        }
+        let Some(decision) = prepared
+            .need
+            .as_ref()
+            .and_then(|need| self.deps.router.route(need).ok())
+        else {
+            return;
+        };
+        tracing::info!(
+            monotonic_counter.factory_spend_usd_total = micro_usd as f64 / 1_000_000.0,
+            provider = decision.model.runtime.as_str(),
+            stage = claimed.kind.as_str()
+        );
+    }
+
     /// What the token has spent, in millionths of a US dollar. A broker that cannot be reached
     /// reads as no spend, and the broker's own ceiling still holds.
     async fn token_cost(&self, token: JobTokenId) -> u64 {
@@ -702,7 +788,9 @@ impl Engine {
             attempt: claimed.attempt,
             mode: self.config.mode,
             contract: &prepared.contract,
-            ports: self.stage_ports(),
+            // The gate gets the same ports as `execute`, so an agent that judges the output is
+            // also a `factory.agent` span.
+            ports: ctx.ports,
             cancel,
             outputs: &outputs,
             human_inputs: &prepared.human_inputs,

@@ -10,6 +10,17 @@
 
 use serde_json::Value;
 
+use crate::digest;
+use crate::toolspan::{MAX_SPANS_PER_RUN, Outcome, ToolCall};
+
+/// The name of Codex's one shell tool in a `factory.tool_call` span. A fixed word: the command is
+/// not a tool name, and is recorded only as a digest.
+const SHELL: &str = "shell";
+
+/// The name of any tool of an MCP server. A fixed word: the server and the tool are named by the
+/// repository's configuration, so they are not recorded.
+const MCP: &str = "mcp";
+
 /// A tool call that Codex could not run because it needed approval.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RawDenial {
@@ -42,8 +53,29 @@ pub struct Stream {
     pub output_tokens: u64,
     /// Calls the tool could not run because they needed approval.
     pub denials: Vec<RawDenial>,
+    /// The completed tool calls, in order, in the form a span may record: a fixed name, a digest of
+    /// the arguments and the outcome. At most `MAX_SPANS_PER_RUN`. A call that never completed
+    /// (the run was cut) is not here.
+    pub(crate) tool_calls: Vec<ToolCall>,
     /// Lines that were not JSON objects.
     pub malformed_lines: usize,
+}
+
+/// How a completed item ended, from its `status`: `completed`, `failed` or `declined`. Any other
+/// word, or none, means the call has no result to report.
+fn outcome_of(item: &Value) -> Outcome {
+    match item.get("status").and_then(Value::as_str) {
+        Some("completed") => Outcome::Succeeded,
+        Some("failed") => Outcome::Failed,
+        Some("declined") => Outcome::Denied,
+        _ => Outcome::Cancelled,
+    }
+}
+
+fn keep(stream: &mut Stream, call: ToolCall) {
+    if stream.tool_calls.len() < MAX_SPANS_PER_RUN {
+        stream.tool_calls.push(call);
+    }
 }
 
 fn u64_of(value: &Value, key: &str) -> u64 {
@@ -63,14 +95,29 @@ fn read_item(item: &Value, stream: &mut Stream) {
         Some("agent_message") => {
             stream.final_message = item.get("text").and_then(Value::as_str).map(str::to_owned);
         }
-        Some("command_execution") => stream.tool_items += 1,
+        Some("command_execution") => {
+            stream.tool_items += 1;
+            let command = item
+                .get("command")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            keep(
+                stream,
+                ToolCall {
+                    name: SHELL,
+                    args_sha256: digest::hex(command.as_bytes()),
+                    outcome: outcome_of(item),
+                },
+            );
+        }
         Some("mcp_tool_call") => {
             stream.tool_items += 1;
             let error = item
                 .get("error")
                 .and_then(|e| e.get("message").or(Some(e)))
                 .and_then(Value::as_str);
-            if let Some(reason) = error.filter(|r| r.contains("requires approval")) {
+            let denied = error.filter(|r| r.contains("requires approval"));
+            if let Some(reason) = denied {
                 let server = item.get("server").and_then(Value::as_str).unwrap_or("?");
                 let tool = item.get("tool").and_then(Value::as_str).unwrap_or("?");
                 stream.denials.push(RawDenial {
@@ -78,6 +125,21 @@ fn read_item(item: &Value, stream: &mut Stream) {
                     reason: reason.to_owned(),
                 });
             }
+            let arguments = item.get("arguments").unwrap_or(&Value::Null);
+            keep(
+                stream,
+                ToolCall {
+                    name: MCP,
+                    args_sha256: digest::hex(arguments.to_string().as_bytes()),
+                    outcome: if denied.is_some() {
+                        Outcome::Denied
+                    } else if error.is_some() {
+                        Outcome::Failed
+                    } else {
+                        outcome_of(item)
+                    },
+                },
+            );
         }
         _ => {}
     }

@@ -236,9 +236,14 @@ impl CodexRuntime {
             Ok(out) if out.exit_code == Some(0) => {
                 let visible = events::visible_skills(&out.stdout);
                 if visible != allowed {
+                    // The names the tool lists can be chosen by the repository, so the log gets
+                    // how many there are and a short digest of each set: the digests differ when
+                    // the sets differ, and two lines about one set match.
                     tracing::warn!(
-                        ?visible,
-                        ?allowed,
+                        visible_count = visible.len(),
+                        allowed_count = allowed.len(),
+                        visible_sha256 = crate::digest::names(&visible),
+                        allowed_sha256 = crate::digest::names(&allowed),
                         "the skills the tool can see are not the stage's skills"
                     );
                 }
@@ -356,7 +361,7 @@ impl CodexRuntime {
                 result,
                 stdout,
                 stderr,
-            } => interpret(&result, stdout, stderr, cancel.is_cancelled()),
+            } => interpret(&result, stdout, stderr, cancel.is_cancelled(), &req),
         };
         assemble(&self.io, version, &req, end).await
     }
@@ -447,8 +452,17 @@ fn observations(help: &str, features: &str, version: &str) -> Vec<CapabilityObse
     ]
 }
 
-fn interpret(result: &ExecResult, stdout: Vec<u8>, stderr: Vec<u8>, cancel_set: bool) -> RunEnd {
+fn interpret(
+    result: &ExecResult,
+    stdout: Vec<u8>,
+    stderr: Vec<u8>,
+    cancel_set: bool,
+    req: &AgentRunRequest,
+) -> RunEnd {
     let stream = events::parse(&stdout);
+    // One `factory.tool_call` span for each call in the stream: a fixed name, a digest of the
+    // arguments and the outcome, and none of the text the tool printed.
+    crate::toolspan::emit(req, &stream.tool_calls);
     let exit = exit_info(result);
     let requests = if stream.turn_started {
         stream.tool_items + stream.reconnects + 1

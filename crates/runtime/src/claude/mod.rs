@@ -332,7 +332,7 @@ impl ClaudeCodeRuntime {
                 result,
                 stdout,
                 stderr,
-            } => interpret(&result, stdout, stderr, cancel.is_cancelled()),
+            } => interpret(&result, stdout, stderr, cancel.is_cancelled(), &req),
         };
         assemble(&self.io, version, &req, end).await
     }
@@ -454,8 +454,12 @@ fn interpret(
     stdout: Vec<u8>,
     stderr: Vec<u8>,
     cancel_set: bool,
+    req: &AgentRunRequest,
 ) -> RunEnd {
     let stream = events::parse(&stdout);
+    // One `factory.tool_call` span for each call in the stream: a fixed name, a digest of the
+    // arguments and the outcome, and none of the text the tool printed.
+    crate::toolspan::emit(req, &stream.tool_calls());
     let exit = exit_info(result);
     let requests = stream.message_ids.len() as u64 + stream.retries;
     let usage = match &stream.result {

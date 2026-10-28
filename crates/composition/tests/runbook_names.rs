@@ -16,7 +16,7 @@ mod telemetry_scan;
 
 use std::collections::BTreeSet;
 
-use telemetry_scan::{production_sources, repository_root, table};
+use telemetry_scan::{CONVENTIONS, production_sources, repository_root, table};
 
 const RUNBOOK: &str = include_str!("../../../docs/observability/runbook-first-run-signals.md");
 
@@ -73,6 +73,61 @@ fn every_factory_name_in_the_runbook_is_on_the_conventions_page() {
         seen >= 15,
         "the reader found only {seen} names; it is broken"
     );
+}
+
+/// The names the runbook gives in backticks, cut at a brace or an equals sign.
+fn runbook_names() -> BTreeSet<String> {
+    backticked(RUNBOOK)
+        .into_iter()
+        .filter_map(|token| {
+            let name = token.split(['{', '=', ' ']).next().unwrap_or_default();
+            (name.starts_with("factory.") || name.starts_with("factory_")).then(|| name.to_owned())
+        })
+        .collect()
+}
+
+/// Names that production code writes only through a helper of the observability crate, which the
+/// composition root calls: the job span and its tenant attribute. The test below checks the call.
+const WRITTEN_BY_THE_JOB_HELPER: &[&str] = &["factory.job", "factory.tenant_id"];
+
+#[test]
+fn every_name_the_runbook_gives_is_written_by_production_code() {
+    // The runbook lists what exists. A name there that no code writes would be a signal that an
+    // operator looks for and never finds, which is the defect the gap tests exist to prevent. A
+    // span or an attribute must be written as a literal outside the observability crate (the
+    // other crates cannot import its constants); a metric is written as an instrument field,
+    // `monotonic_counter.<name>`, `histogram.<name>` or `gauge.<name>`, in any crate.
+    let sources = production_sources();
+    let names = runbook_names();
+    assert!(names.len() >= 20, "the reader found only {names:?}");
+    for name in &names {
+        if WRITTEN_BY_THE_JOB_HELPER.contains(&name.as_str()) {
+            assert!(
+                sources.iter().any(|(path, text)| {
+                    !path.starts_with("crates/observability/") && text.contains("job_stretch_span")
+                }),
+                "{name} is written by the job helper, and no crate outside observability calls it"
+            );
+        } else if name.starts_with("factory_") {
+            let written = ["monotonic_counter.", "histogram.", "gauge."]
+                .iter()
+                .any(|prefix| {
+                    let field = format!("{prefix}{name}");
+                    sources.iter().any(|(_, text)| text.contains(&field))
+                });
+            assert!(
+                written,
+                "the runbook names the metric `{name}`, which no code records"
+            );
+        } else {
+            assert!(
+                sources.iter().any(|(path, text)| {
+                    !path.starts_with("crates/observability/") && text.contains(name.as_str())
+                }),
+                "the runbook names `{name}`, which no crate outside observability writes"
+            );
+        }
+    }
 }
 
 #[test]
@@ -136,24 +191,77 @@ fn test_sources() -> Vec<String> {
     found
 }
 
+/// The gap numbers (`OBS-n`) that `text` names.
+fn gap_numbers(text: &str) -> BTreeSet<String> {
+    text.split(|c: char| !(c.is_alphanumeric() || c == '-'))
+        .filter(|word| {
+            word.strip_prefix("OBS-").is_some_and(|number| {
+                !number.is_empty() && number.chars().all(|c| c.is_ascii_digit())
+            })
+        })
+        .map(str::to_owned)
+        .collect()
+}
+
+#[test]
+fn the_gap_reader_finds_the_numbers_in_a_sentence() {
+    // The runbook no longer needs to cite six gaps, since they are being closed, so this proves
+    // the reader on a fixed text and not on how many gaps are left.
+    let found = gap_numbers("see (OBS-3), `OBS-10`; not OBS-, OBS-x or XOBS-4.");
+    assert_eq!(
+        found.into_iter().collect::<Vec<_>>(),
+        ["OBS-10", "OBS-3"],
+        "the reader is broken"
+    );
+}
+
 #[test]
 fn every_gap_the_runbook_cites_has_an_ignored_test_with_its_number() {
+    // A gap that is closed has no ignored test and no "Not yet emitted" line in the runbook.
     let sources = test_sources();
-    let mut cited = BTreeSet::new();
-    for word in RUNBOOK.split(|c: char| !(c.is_alphanumeric() || c == '-')) {
-        if let Some(number) = word.strip_prefix("OBS-")
-            && number.chars().all(|c| c.is_ascii_digit())
-            && !number.is_empty()
-        {
-            cited.insert(word.to_owned());
-        }
-    }
-    assert!(cited.len() >= 6, "the reader found only {cited:?}");
-    for gap in &cited {
+    for gap in gap_numbers(RUNBOOK) {
         let marker = format!("#[ignore = \"confirmed gap {gap}:");
         assert!(
             sources.iter().any(|text| text.contains(&marker)),
-            "the runbook cites {gap} but no ignored test carries it"
+            "the runbook cites {gap} but no ignored test carries it: if the gap is closed, \
+             move the signal into the \"What exists\" list and drop the number"
         );
     }
+}
+
+#[test]
+fn the_conventions_page_marks_a_gap_fixed_exactly_when_its_test_is_no_longer_ignored() {
+    // The gap list of the conventions page says "(fixed)" for each closed gap. A gap marked fixed
+    // must have no ignored test left, and a gap not marked fixed must still have one, so the page
+    // and the tests cannot disagree about what remains.
+    let sources = test_sources();
+    let mut seen = 0;
+    for line in CONVENTIONS.lines() {
+        let line = line.trim_start();
+        let Some(item) = line.strip_prefix("- OBS-") else {
+            continue;
+        };
+        let gap = format!(
+            "OBS-{}",
+            item.chars()
+                .take_while(char::is_ascii_digit)
+                .collect::<String>()
+        );
+        let fixed = line.starts_with(&format!("- {gap} (fixed)"));
+        let marker = format!("#[ignore = \"confirmed gap {gap}:");
+        let still_ignored = sources.iter().any(|text| text.contains(&marker));
+        seen += 1;
+        assert_eq!(
+            fixed,
+            !still_ignored,
+            "{gap} is {} on the conventions page and {} in the tests",
+            if fixed { "fixed" } else { "open" },
+            if still_ignored {
+                "still ignored"
+            } else {
+                "not ignored"
+            }
+        );
+    }
+    assert!(seen >= 10, "the reader found only {seen} gaps");
 }

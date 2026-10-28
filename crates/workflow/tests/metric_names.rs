@@ -10,10 +10,11 @@
 //!   that spends, and a recording `Subscriber` reads the metric events back. Each must name a
 //!   metric of the table, with the instrument kind the table gives, and only the labels the table
 //!   lists.
-//! * **What is not emitted yet.** A metric on the page that the engine never records is written as a
-//!   test marked as a confirmed gap and ignored, so the build stays green while the gap stays
-//!   visible. Run them with `cargo nextest run -p factory-workflow --test metric_names
-//!   --run-ignored only`.
+//! * **What the engine used to leave out.** Queue depth, stage duration, spend and the error rate
+//!   were confirmed gaps (OBS-5 to OBS-8), written as ignored tests. They are recorded now, and the
+//!   tests below cover each way a stage run ends, what does not count as an end, the clock of the
+//!   duration and the type of each number. A metric on the page that the engine does not record
+//!   would be written as a test marked as a confirmed gap and ignored.
 
 mod support;
 mod telemetry_support;
@@ -23,7 +24,7 @@ use std::collections::BTreeMap;
 use factory_domain::vocabulary::StageKind;
 use factory_workflow::handlers::StageError;
 use support::{Eval, Step, World};
-use telemetry_support::{EventRecord, Recorder, names_in, table};
+use telemetry_support::{EventRecord, Recorder, Value, names_in, table};
 
 // ---- The registry ------------------------------------------------------------------------
 
@@ -62,6 +63,10 @@ fn the_registry_has_queue_depth_duration_gate_failures_retries_and_spend() {
         ("retries", "factory_retries_total"),
         ("spend", "factory_spend_usd_total"),
         ("error rate", "factory_stage_runs_total"),
+        // Added in the telemetry gap fix (OBS-10). The attribute guard of the observability crate
+        // raises it, not the engine, so this file only checks that it is on the page; the
+        // behavior is tested in `crates/observability/tests/redaction_signal.rs`.
+        ("redactions", "factory_redactions_total"),
     ] {
         assert!(
             metrics().iter().any(|m| m.name == name),
@@ -70,7 +75,7 @@ fn the_registry_has_queue_depth_duration_gate_failures_retries_and_spend() {
     }
     assert_eq!(
         metrics().len(),
-        6,
+        7,
         "a metric was added: say what this file does about it"
     );
 }
@@ -153,6 +158,23 @@ struct Metric {
     kind: &'static str,
     name: String,
     labels: BTreeMap<String, String>,
+    /// The number the event added or set, in the type it was recorded in.
+    value: Value,
+}
+
+impl Metric {
+    /// The number as a float, whatever type it was recorded in.
+    fn number(&self) -> f64 {
+        match &self.value {
+            Value::F64(n) => *n,
+            Value::I64(n) => *n as f64,
+            Value::U64(n) => *n as f64,
+            other => panic!(
+                "{} carries a value that is not a number: {other:?}",
+                self.name
+            ),
+        }
+    }
 }
 
 /// The metric events among the recorded events: a field named `monotonic_counter.<name>`,
@@ -180,6 +202,7 @@ fn metric_events(events: &[EventRecord]) -> Vec<Metric> {
                 kind,
                 name: name.to_owned(),
                 labels,
+                value: event.fields[key].clone(),
             });
         }
     }
@@ -294,89 +317,300 @@ async fn a_retryable_failure_is_counted_as_a_retry_of_its_stage() {
 
 // ---- Confirmed gaps ----------------------------------------------------------------------
 
-/// Confirmed gap OBS-5. `factory_queue_depth` is on the page and nothing records it, so the queue
-/// of ready stage runs cannot be graphed and a stuck queue cannot be alerted on.
-///
-/// Owner: `crates/workflow`, `src/scheduler/claim.rs`. Smallest change: after a claim (and after a
-/// sweep), `tracing::info!(gauge.factory_queue_depth = ready as i64, queue = "ready_stage_runs")`,
-/// where `ready` is the count the claim query already knows or one `count_ready` store read. The
-/// worker loop in `apps/worker` can record it instead if the engine should not read the count.
+/// Gap OBS-5, closed. `factory_queue_depth` is recorded on every call of `claim_next`
+/// (`src/scheduler/claim.rs`) with the number of ready stage runs the lookup found.
 #[tokio::test]
-#[ignore = "confirmed gap OBS-5: nothing records factory_queue_depth"]
 async fn the_queue_depth_gauge_is_recorded_when_work_is_claimed() {
     let metrics = first_stage_metrics(|_| {}).await;
     let gauges = emitted(&metrics, "factory_queue_depth");
-    assert!(
-        !gauges.is_empty(),
-        "no factory_queue_depth was recorded: {metrics:?}"
-    );
+    assert_eq!(gauges.len(), 1, "{metrics:?}");
     assert_eq!(gauges[0].kind, "gauge");
     assert_eq!(gauges[0].labels["queue"], "ready_stage_runs");
+    // A signed integer: the page asks for `i64`, and an unsigned one arrives as a string.
+    assert_eq!(gauges[0].value, Value::I64(1));
 }
 
-/// Confirmed gap OBS-6. `factory_stage_duration_seconds` is on the page and nothing records it,
-/// so there is no stage latency, no p95, and nothing to alert on for a stage over its deadline.
-///
-/// Owner: `crates/workflow`, `src/engine/gate.rs` (where `factory_stage_runs_total` is recorded)
-/// and `src/engine/failure.rs`. Smallest change: when a stage run ends, record
-/// `tracing::info!(histogram.factory_stage_duration_seconds = seconds, stage, outcome)` with the
-/// seconds between the stage run's start and the engine clock.
 #[tokio::test]
-#[ignore = "confirmed gap OBS-6: nothing records factory_stage_duration_seconds"]
+async fn the_queue_depth_is_zero_when_nothing_is_ready_and_counts_what_the_lookup_found() {
+    let recorder = Recorder::new();
+    let _installed = recorder.install();
+    let world = World::new().await;
+
+    // Nothing is ready: the gauge says zero, so an idle queue is not a gap in the graph.
+    world.advance(400);
+    world
+        .engine
+        .claim_next(&World::worker("worker-1"))
+        .await
+        .expect("claim");
+    // Three jobs are admitted, so three intake stage runs are ready.
+    for _ in 0..3 {
+        world.admitted_job().await;
+    }
+    world.advance(400);
+    let claimed = world
+        .engine
+        .claim_next(&World::worker("worker-1"))
+        .await
+        .expect("claim");
+
+    let depths: Vec<Value> = emitted(&metric_events(&recorder.events()), "factory_queue_depth")
+        .into_iter()
+        .map(|m| m.value)
+        .collect();
+    assert_eq!(depths, [Value::I64(0), Value::I64(3)]);
+    assert_eq!(claimed.started.len(), 3, "{claimed:?}");
+}
+
+/// Gap OBS-6, closed. `factory_stage_duration_seconds` is recorded when a stage run ends, with the
+/// stage kind and the outcome the run ended in (`src/engine/ended.rs`, called from `gate.rs` and
+/// `failure.rs`).
+#[tokio::test]
 async fn the_stage_duration_histogram_is_recorded_when_a_stage_run_ends() {
     let metrics = first_stage_metrics(|_| {}).await;
     let histograms = emitted(&metrics, "factory_stage_duration_seconds");
-    assert!(
-        !histograms.is_empty(),
-        "no factory_stage_duration_seconds was recorded: {metrics:?}"
-    );
+    assert_eq!(histograms.len(), 1, "{metrics:?}");
     assert_eq!(histograms[0].kind, "histogram");
+    assert_eq!(histograms[0].labels["stage"], "INTAKE");
+    assert_eq!(histograms[0].labels["outcome"], "passed");
 }
 
-/// Confirmed gap OBS-7. `factory_spend_usd_total` is on the page and nothing records it. The
-/// engine reads what the broker metered (`token_cost` in `src/engine/attempt.rs`) and writes it
-/// into the events of the attempt, so the number is known where the metric should be recorded, but
-/// the metric is not, and no alert on spend can be written.
-///
-/// Owner: `crates/workflow`, `src/engine/attempt.rs`, right after `notes.set_cost(...)`. Smallest
-/// change: `tracing::info!(monotonic_counter.factory_spend_usd_total = dollars, provider, stage)`,
-/// with `dollars` the cost converted from micro-dollars and `provider` the runtime the router chose
-/// for the stage. The counter takes a float; the recording type must stay `f64`.
 #[tokio::test]
-#[ignore = "confirmed gap OBS-7: nothing records factory_spend_usd_total"]
+async fn the_duration_runs_from_the_first_start_of_the_stage_run_across_its_attempts() {
+    // The first attempt fails and is retried. The clock moves 120 seconds between the two
+    // claims, so the stage run took 120 seconds from its first start to its end, and not the
+    // zero seconds the second attempt alone took.
+    let recorder = Recorder::new();
+    let _installed = recorder.install();
+    let world = World::new().await;
+    world
+        .script(StageKind::Intake)
+        .queue([Step::Fail(StageError::Tool)]);
+    world.admitted_job().await;
+    world.advance(400);
+    let first = world.claim_one("worker-1").await;
+    world
+        .engine
+        .run_attempt(&first)
+        .await
+        .expect("the first attempt runs");
+    world.advance(120);
+    let second = world.claim_one("worker-1").await;
+    world
+        .engine
+        .run_attempt(&second)
+        .await
+        .expect("the second attempt runs");
+
+    let metrics = metric_events(&recorder.events());
+    let histograms = emitted(&metrics, "factory_stage_duration_seconds");
+    assert_eq!(histograms.len(), 1, "{metrics:?}");
+    assert!(
+        (histograms[0].number() - 120.0).abs() < 1e-6,
+        "the stage run took 120 seconds: {histograms:?}"
+    );
+    assert_eq!(emitted(&metrics, "factory_stage_runs_total").len(), 1);
+}
+
+/// Gap OBS-7, closed. `factory_spend_usd_total` is recorded in dollars from what the broker
+/// metered for the attempt's token (`token_cost` in `src/engine/attempt.rs`). The `provider` label
+/// is the name of the runtime the router chose, since the broker reports no provider.
+#[tokio::test]
 async fn the_spend_counter_is_recorded_when_an_agent_spends() {
     let metrics =
         first_stage_metrics(|w| w.script(StageKind::Intake).agent_spending(1_500_000)).await;
     let spend = emitted(&metrics, "factory_spend_usd_total");
-    assert!(
-        !spend.is_empty(),
-        "no factory_spend_usd_total was recorded: {metrics:?}"
-    );
+    assert_eq!(spend.len(), 1, "{metrics:?}");
+    assert_eq!(spend[0].kind, "counter");
     assert_eq!(spend[0].labels["stage"], "INTAKE");
+    assert_eq!(spend[0].labels["provider"], "fake");
+    // A double: an integer would be read as a count of whole dollars.
+    assert_eq!(spend[0].value, Value::F64(1.5), "{:?}", spend[0]);
 }
 
-/// Confirmed gap OBS-8. The page says `factory_stage_runs_total` counts stage runs that ended, by
-/// outcome, and gives the error rate as the share with outcome `failed`. The engine records it only
-/// for `passed` (`src/engine/gate.rs`, the `match metric_outcome`). A failed or blocked stage run is
-/// counted in `factory_gate_failures_total` and nowhere in `factory_stage_runs_total`, so the
-/// documented error-rate query returns zero whatever the failures.
-///
-/// Owner: `crates/workflow`, `src/engine/gate.rs`. Smallest change: record
-/// `factory_stage_runs_total` with the `metric_outcome` for every outcome, not only `passed`, and do
-/// the same where a stage run ends by exhausted attempts (`src/engine/failure.rs`).
 #[tokio::test]
-#[ignore = "confirmed gap OBS-8: failed stage runs are not counted in factory_stage_runs_total"]
+async fn an_attempt_that_failed_after_spending_is_still_counted() {
+    // The money is gone whatever happened to the attempt.
+    let metrics = first_stage_metrics(|w| {
+        w.script(StageKind::Intake)
+            .queue([Step::Fail(StageError::Tool)]);
+        w.script(StageKind::Intake).agent_spending(2_000_000);
+    })
+    .await;
+    let spend = emitted(&metrics, "factory_spend_usd_total");
+    assert_eq!(spend.len(), 1, "{metrics:?}");
+    assert_eq!(spend[0].value, Value::F64(2.0));
+}
+
+#[tokio::test]
+async fn a_stage_that_spent_nothing_and_a_stage_with_no_agent_record_no_spend() {
+    let none = first_stage_metrics(|_| {}).await;
+    let zero = first_stage_metrics(|w| w.script(StageKind::Intake).agent_spending(0)).await;
+    for metrics in [none, zero] {
+        assert!(
+            emitted(&metrics, "factory_spend_usd_total").is_empty(),
+            "{metrics:?}"
+        );
+    }
+}
+
+/// Gap OBS-8, closed. The page says `factory_stage_runs_total` counts stage runs that ended, by
+/// outcome, and gives the error rate as the share with outcome `failed`. The engine used to record
+/// it only for `passed`, so that query returned zero whatever the failures. It now records the
+/// outcome the stage run ended in, whichever it is.
+#[tokio::test]
 async fn a_failed_stage_run_is_counted_in_the_stage_run_total() {
+    // The intake gate has no rework route, so a failing gate ends the stage run as failed.
     let metrics = first_stage_metrics(|w| {
         w.script(StageKind::Intake)
             .evals_otherwise(Eval::Fail("check"));
     })
     .await;
     let counted = emitted(&metrics, "factory_stage_runs_total");
-    assert!(
-        counted
-            .iter()
-            .any(|m| m.labels.get("outcome").map(String::as_str) == Some("failed")),
-        "no failed stage run was counted: {metrics:?}"
+    assert_eq!(counted.len(), 1, "{metrics:?}");
+    assert_eq!(counted[0].labels["stage"], "INTAKE");
+    assert_eq!(counted[0].labels["outcome"], "failed");
+    assert_eq!(counted[0].value, Value::U64(1));
+}
+
+/// The outcome and the count of the stage runs that the first stage of a fresh job ended.
+async fn first_stage_end(prepare: impl FnOnce(&World)) -> Vec<(String, f64)> {
+    let metrics = first_stage_metrics(prepare).await;
+    emitted(&metrics, "factory_stage_runs_total")
+        .iter()
+        .map(|m| (m.labels["outcome"].clone(), m.number()))
+        .collect()
+}
+
+#[tokio::test]
+async fn a_blocked_gate_ends_the_stage_run_as_blocked() {
+    let ended = first_stage_end(|w| {
+        w.script(StageKind::Intake).evals_otherwise(Eval::Blocked);
+    })
+    .await;
+    assert_eq!(ended, [("blocked".to_owned(), 1.0)]);
+}
+
+#[tokio::test]
+async fn a_failure_that_retrying_cannot_fix_ends_the_stage_run_as_failed() {
+    // Policy denial is not on the retry list of the scripted contract.
+    let ended = first_stage_end(|w| {
+        w.script(StageKind::Intake)
+            .queue([Step::Fail(StageError::PolicyDenied)]);
+    })
+    .await;
+    assert_eq!(ended, [("failed".to_owned(), 1.0)]);
+}
+
+#[tokio::test]
+async fn a_missing_environment_ends_the_stage_run_as_blocked() {
+    use factory_domain::machines::guards::EnvironmentCause;
+    let ended = first_stage_end(|w| {
+        w.script(StageKind::Intake)
+            .queue([Step::Fail(StageError::Environment(
+                EnvironmentCause::ToolMissing,
+            ))]);
+    })
+    .await;
+    assert_eq!(ended, [("blocked".to_owned(), 1.0)]);
+}
+
+#[tokio::test]
+async fn a_gate_that_sends_the_work_back_ends_the_stage_run_as_rework_requested() {
+    // Validation has a rework route (the code track), so a failing gate there is not final.
+    let recorder = Recorder::new();
+    let _installed = recorder.install();
+    let world = World::new().await;
+    world
+        .script(StageKind::Validation)
+        .queue_evals([Eval::Fail("tests-pass")]);
+    world.admitted_job().await;
+    let before = world
+        .config
+        .scope
+        .iter()
+        .position(|kind| *kind == StageKind::Validation)
+        .expect("validation is in the scope");
+    world.run_stages(before).await;
+    recorder.clear();
+    world.advance(400);
+    world.run_next("worker-1").await;
+
+    let metrics = metric_events(&recorder.events());
+    let counted = emitted(&metrics, "factory_stage_runs_total");
+    assert_eq!(counted.len(), 1, "{metrics:?}");
+    assert_eq!(counted[0].labels["stage"], "VALIDATION");
+    assert_eq!(counted[0].labels["outcome"], "rework_requested");
+    assert_eq!(
+        emitted(&metrics, "factory_stage_duration_seconds")[0].labels["outcome"],
+        "rework_requested"
     );
+}
+
+#[tokio::test]
+async fn a_stage_run_that_only_pauses_is_not_counted_as_ended() {
+    // A retry waits for its back-off, and a question to a person waits for the answer. Neither is
+    // the end of the stage run, and counting them would put the same run in the total twice.
+    let retried = first_stage_metrics(|w| {
+        w.script(StageKind::Intake)
+            .queue([Step::Fail(StageError::Tool)]);
+    })
+    .await;
+    let asked_by_the_agent = first_stage_metrics(|w| {
+        w.script(StageKind::Intake).queue([Step::NeedsHuman]);
+    })
+    .await;
+    let asked_by_the_gate = first_stage_metrics(|w| {
+        w.script(StageKind::Intake).evals_otherwise(Eval::HumanGate);
+    })
+    .await;
+    for (what, metrics) in [
+        ("a retry", retried),
+        ("a question from the agent", asked_by_the_agent),
+        ("a question from the gate", asked_by_the_gate),
+    ] {
+        assert!(
+            emitted(&metrics, "factory_stage_runs_total").is_empty(),
+            "{what} was counted as the end of the stage run: {metrics:?}"
+        );
+        assert!(
+            emitted(&metrics, "factory_stage_duration_seconds").is_empty(),
+            "{what} was timed as the end of the stage run: {metrics:?}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn a_worker_that_lost_its_lease_counts_nothing() {
+    // Worker A hangs, loses its lease and finishes after worker B took over. A's result is
+    // refused, so the stage run ended once, in B's attempt, and the total says one.
+    let recorder = Recorder::new();
+    let _installed = recorder.install();
+    let world = World::new().await;
+    world.admitted_job().await;
+    let release = std::sync::Arc::new(tokio::sync::Notify::new());
+    world
+        .script(StageKind::Intake)
+        .queue([Step::Hang(release.clone())]);
+    let claimed = world.claim_one("worker-a").await;
+    let stale = async { world.engine.run_attempt(&claimed).await };
+    let takeover = async {
+        world.advance_time(61).await;
+        world.engine.sweep().await.expect("sweep");
+        world.advance_time(5).await;
+        let second = world.claim_one("worker-b").await;
+        release.notify_one();
+        second
+    };
+    let (_, second) = tokio::join!(stale, takeover);
+    world
+        .engine
+        .run_attempt(&second)
+        .await
+        .expect("the second attempt runs");
+
+    let metrics = metric_events(&recorder.events());
+    let counted = emitted(&metrics, "factory_stage_runs_total");
+    assert_eq!(counted.len(), 1, "{counted:?}");
+    assert_eq!(counted[0].labels["outcome"], "passed");
 }

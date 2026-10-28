@@ -13,7 +13,7 @@ Two rules for reading it.
 - Every name is checked by a test against the conventions page, but **the queries on this page were not run against a live Jaeger or VictoriaMetrics** in the change that wrote it. The stack needs Docker, and none was used. Run each query once on the first real run and correct this page.
 - The master prompt asks for spans for every job, stage, agent and tool call, and for metrics on queue depth, duration, error rates, gate failures, retries and spend. It does not list alerts. The five signals here are the first-run list given to the observability package, not a list copied from the master prompt.
 
-"Not yet emitted" means that no production code records the signal. Each such item has a confirmed-gap test, marked as ignored, with the command to run it and the smallest change. The gap numbers (OBS-n) are the ones in those tests.
+"Not yet emitted" means that no production code records the signal. A signal that is a confirmed gap with an ignored test cites its number (OBS-n), the one in that test. When this page was first written ten gaps were open; the telemetry gap fix closed them, and the paragraphs below now say what is still missing for reasons that need a decision outside the instrumentation (a store port method, a provider reported by the broker, a count of the log writer's redactions). The conventions page lists every gap and how it was closed.
 
 ## Where to look
 
@@ -28,11 +28,11 @@ Two rules for reading it.
 
 | Signal | Span | Metric | Log | Audit | Missing |
 |---|---|---|---|---|---|
-| 1. Stuck lease | `factory.attempt`, outcome `lease_lost` | `factory_retries_total` follows | "the sweep recovered attempts" | none | `factory_queue_depth` (OBS-5). Nothing shows a lease while it is stuck. |
-| 2. Stage over deadline | `factory.attempt`, outcome `timed_out` | `factory_retries_total` follows | "the sweep recovered attempts" | none | `factory_stage_duration_seconds` (OBS-6); `factory.error_class` on the attempt (OBS-11) |
+| 1. Stuck lease | `factory.attempt`, outcome `lease_lost` | `factory_queue_depth`; `factory_retries_total` follows | "the sweep recovered attempts" | none | The age of a lease while it is stuck, and a queue depth beyond the claim batch (see below). |
+| 2. Stage over deadline | `factory.attempt`, outcome `timed_out`, with `factory.error_class` | `factory_stage_duration_seconds` by stage and outcome; `factory_retries_total` follows | "the sweep recovered attempts" | none | none |
 | 3. Gate blocked by the environment | `factory.gate`, outcome `blocked` | `factory_gate_failures_total` with outcome `blocked` | none | `gate_result` | none for the count; the cause is not in telemetry |
-| 4. Cost over budget | none | none | none | `budget_threshold_crossed` | `factory_spend_usd_total` (OBS-7); `factory.agent` span with `factory.cost_usd` (OBS-3) |
-| 5. Redaction hit | marker `[REDACTED:` in attribute values and names | none | marker `[REDACTED:`, "log line dropped: redactor unavailable" | `secret_redacted_or_blocked` | a counter (OBS-10) |
+| 4. Cost over budget | `factory.agent`, with `factory.cost_usd` | `factory_spend_usd_total` by provider and stage | none | `budget_threshold_crossed` | none |
+| 5. Redaction hit | marker `[REDACTED:` in attribute values and names | `factory_redactions_total` by kind | marker `[REDACTED:`, "log line dropped: redactor unavailable" | `secret_redacted_or_blocked` | a count of the log writer's own redactions |
 
 ## 1. Stuck lease
 
@@ -43,6 +43,7 @@ Two rules for reading it.
 - Span `factory.attempt` with `factory.outcome` = `lease_lost`. It is on the span of the attempt that lost its lease, and it is recorded by the process that was running the attempt. Attributes to search: `factory.job_id`, `factory.stage_run_id`, `factory.attempt_id`, `factory.attempt_number`, `factory.stage_kind`.
 - Log line, level `WARN`, message "the sweep recovered attempts", fields `lease_lost` and `timed_out` (counts). It is written by the worker loop (`apps/worker`, `run.rs`) when a sweep recovered at least one attempt.
 - Metric `factory_retries_total{stage}`. It rises when the lost attempt is retried. A rise is a consequence, not a lease signal: other failures raise it too.
+- Metric `factory_queue_depth{queue="ready_stage_runs"}`, a gauge that every call of the claim loop sets to the number of stage runs it found ready and waiting, zero included. It is bounded by the claim batch (8 by default). The worker loop is written for an engine built with a batch of 1, and a worker built that way reports 0 (nothing was ready) or 1 (something was); check the batch of the engine you run before reading the value as a depth. A reading that stays above zero while no `factory.stage_run` span starts means ready work that is not being taken: every worker is stuck, or the quota, the router or the budget defers it. A graph that stops updating means no worker is polling.
 - Log lines at the start and end of the loop: "worker loop started", with the `worker` field, and "worker loop stopped", with the number of `attempts` it ran. A worker that is gone shows as a `started` without a `stopped`.
 
 **First check.**
@@ -51,7 +52,7 @@ Two rules for reading it.
 2. Look in the worker log for "the sweep recovered attempts". If the sweep ran and recovered nothing while a stage run does not move, the lease has not expired yet: the attempt may still be running.
 3. Look for "the sweep failed and will be tried again". A failing sweep leaves expired leases in place.
 
-**Not yet emitted.** `factory_queue_depth{queue="ready_stage_runs"}` (OBS-5). Without it, a queue that is not drained because every worker is stuck looks the same as an idle system. No signal reports the age of a lease while it is stuck. The engine learns of an expired lease only when a sweep or the owner's next write finds it.
+**Not yet emitted.** No signal reports the age of a lease while it is stuck. The engine learns of an expired lease only when a sweep or the owner's next write finds it. The queue depth is not a true depth: the store port has no count of ready stage runs, and the claim lookup returns at most the claim batch. A count that sees past the batch needs a read-only method on the store port, which is the architect's decision.
 
 ## 2. Stage over deadline
 
@@ -59,19 +60,18 @@ Two rules for reading it.
 
 **What exists.**
 
-- Span `factory.attempt` with `factory.outcome` = `timed_out`. Search `factory.outcome=timed_out`. The span's duration is the time the attempt ran.
+- Span `factory.attempt` with `factory.outcome` = `timed_out` and `factory.error_class` = `TIMED_OUT`. Search `factory.outcome=timed_out`. The span's duration is the time the attempt ran. `factory.error_class` is set on every failed attempt, with the failure class in its wire spelling (`TOOL_ERROR`, `PROVIDER_ERROR`, `SANDBOX_ERROR`, `INVALID_OUTPUT` and so on), so `factory.error_class=PROVIDER_ERROR` finds provider trouble without opening the ledger.
+- Span `factory.stage_run`, the parent of the attempt, with `factory.stage_run_id` and `factory.stage_kind`. Each attempt opens one, because a stage run can outlive a worker, so a stage run that was retried shows as several `factory.stage_run` spans with the same `factory.stage_run_id`. The span has `factory.outcome` only when the attempt ended the stage run (`passed`, `failed`, `blocked`, `rework_requested`); a retried or paused run has none.
 - Log line, level `WARN`, message "the sweep recovered attempts", field `timed_out`. This one is written when the sweep, and not the owner, found the attempt past its deadline.
 - Metric `factory_retries_total{stage}`, as for signal 1.
+- Metric `factory_stage_duration_seconds{stage,outcome}`, a histogram of the wall-clock seconds from the first start of a stage run to its end, recorded when the run ends as `passed`, `failed`, `blocked` or `rework_requested`. The time includes failed attempts, retry back-offs and waits for a person, so a stage that is retried after timeouts shows as one long run. A run that is only paused (a retry, a question to a person) is not recorded until it ends. Runs longer than an hour land in the overflow bucket. Its companion `factory_stage_runs_total{stage,outcome}` counts the same runs, and the error rate of a stage is the share of `outcome="failed"`.
 
 **First check.**
 
 1. Search `factory.outcome=timed_out` and open the trace. Look at which stage kind it is (`factory.stage_kind`) and how many times it repeated (`factory.attempt_number`). The engine caps the number of attempts.
 2. If the same stage times out on every attempt, the timeout in the contract is too short for the work, or the stage is stuck. The trace does not say which.
 
-**Not yet emitted.**
-
-- `factory_stage_duration_seconds{stage,outcome}` (OBS-6). Without it there is no latency percentile per stage and no way to see a stage getting slower before it times out.
-- `factory.error_class` on the attempt span (OBS-11). A failed or timed out attempt says what happened but not the failure class.
+**Not yet emitted.** Nothing is missing for this signal. The cause of a timeout (a stage that is too slow, or stuck) is not in telemetry: the trace shows the stage, the attempt number and the class, and the ledger and the sandbox hold the rest.
 
 ## 3. Gate blocked by the environment
 
@@ -95,18 +95,17 @@ Two rules for reading it.
 
 **What it means.** The spend of a job reached its limit, or a threshold of it. The broker meters every model call through the job token and refuses spend at the ceiling. The engine records a threshold in the audit log, defers a stage run whose job has no budget left, and escalates a stage run to a person with the cause `budget-limit`.
 
-**What exists.** Only records, no span or metric.
+**What exists.** A span for each agent run, a spend counter, and records.
 
+- Span `factory.agent`, one for each agent run, a child of the attempt (or of its gate, for an agent that judges the output). It carries `factory.job_id`, `factory.attempt_id`, `factory.agent_id`, `factory.model`, `factory.tokens_input`, `factory.tokens_output`, `factory.cost_usd` (dollars, as the adapter reported them) and `factory.outcome` (`succeeded`, `timed_out`, `cancelled` or `failed`). A failed run also has `error.type`, a fixed word such as `provider_unavailable` or `budget_refused`. Search `factory.job_id=<id>` and sum `factory.cost_usd` over the `factory.agent` spans for the cost of a job as the adapters saw it. The broker's meter is the source of truth, so the numbers can differ; a run that was cut before the adapter read its usage shows zero here.
+- Metric `factory_spend_usd_total{provider,stage}`, a counter of dollars (a double), added when an attempt ends with what the broker metered for its token. An attempt that failed or lost its lease is counted too, because the money was spent. Nothing is added for an attempt that spent nothing. The `provider` label is the name of the runtime the router chose for the stage (`claude-code-cli`, `codex-cli`), because the broker does not report a provider yet. Spend per hour by provider: `sum(increase(factory_spend_usd_total[1h])) by (provider)`.
 - Audit record `budget_threshold_crossed`, written at the end of an attempt whose token crossed the warning fraction of its ceiling (`budgets.thresholds.warn_at_fraction`, 80 percent by default in the engine configuration).
 - The escalation to a person with the cause `budget-limit`, in the stage run's events and ledger.
 - A stage run that does not start because the job's spend is at or over its limit: the claim defers it with the reason `BudgetExhausted`. Nothing is logged at `info` or higher for this.
 
 **First check.** Query `audit_events` for `budget_threshold_crossed` by job. For spend per job, agent, repository and model, the master prompt points to the evidence ledger and the audit log, as the conventions page says in section 6, rule 4.
 
-**Not yet emitted.**
-
-- `factory_spend_usd_total{provider,stage}` (OBS-7). The engine reads the metered cost of each attempt (`token_cost`) and writes it into the attempt's events, but does not record the metric. No alert on spend can be written until it does.
-- The `factory.agent` span with `factory.cost_usd`, `factory.tokens_input` and `factory.tokens_output` (OBS-3). No code opens it.
+**Not yet emitted.** Nothing is missing for the count of spend. Spend per job, agent, repository and model is still not a metric, by design (conventions, section 6, rule 4): it comes from the ledger and from the `factory.agent` spans.
 
 ## 5. Redaction hit
 
@@ -119,6 +118,7 @@ Two rules for reading it.
 - Log line, level `WARN`, message "the final output was dropped because the redactor could not finish" (`crates/runtime`): an agent's output was dropped for the same reason.
 - Audit record `secret_redacted_or_blocked`, written by the specification, implementation and documenting stages when they redact or block.
 - Log line, level `WARN`, message "telemetry attribute `<key>` is not on the allowlist or has an unknown type; it was dropped", once for each key. It names the key and never the value. It is not a redaction, but it comes from the same guard.
+- Metric `factory_redactions_total{kind}`, a counter that the attribute guard raises each time it changes a span value before export, with `kind` one of `redacted` (a secret was replaced), `truncated` (a string was cut) and `dropped` (an attribute was not on the allowlist or had an unknown type, or the scrubber failed and the original was replaced). Only the kind is recorded: never the text, the pattern id or the key. Any rise in `redacted` is a defect in a call site, as above. A rise in `dropped` is either a new attribute nobody put on the allowlist or a failing scrubber; the first `dropped` line in the log names the key, and the marker `[REDACTED:scrubber_unavailable]` marks the second. Spans only: the log writer's redactions are not in it. The metric was added in the telemetry gap fix; the architect's confirmation is pending.
 
 **First check.**
 
@@ -127,9 +127,9 @@ Two rules for reading it.
 3. Fix the call site so the secret is not passed to the logger at all. The redactor is the second line of defense.
 4. If the marker is `scrubber_unavailable`, or a "log line dropped" line appears, look for the cause in the redactor's limits (the input was larger than the limit) before anything else.
 
-**Not yet emitted.** A counter of redactions (OBS-10). The guard counts the values it redacted, truncated and dropped, and the counts stay inside the process (`GuardStats`). A search for the marker is the only way to find hits. Do not rely on the marker to show that no secret reached a log line: the redactor only knows the shapes in the security policy and the values registered with it.
+**Not yet emitted.** The log writer's own redactions are not counted: a search for the marker in the logs is the only way to find a hit in a log line. Do not rely on the marker, or on the counter, to show that no secret reached a log line or a span: the redactor only knows the shapes in the security policy and the values registered with it.
 
 ## Keeping this page true
 
-- A name on this page that is not in the conventions page, or a signal marked as existing that no code records, is a defect in this page. The tests `span_openers`, `metric_names` and `telemetry_allowlist` check the names and the openers; they do not read this page. After any change to the engine's spans, metrics or log lines, reread the matching section.
-- When a gap is closed, its ignored test passes. Remove the `ignore` marker, delete the "Not yet emitted" paragraph that names it, and move the signal into the "What exists" list with its exact name.
+- A name on this page that is not in the conventions page, or a signal marked as existing that no code records, is a defect in this page. The test `runbook_names` checks that each name here is on the conventions page and that production code writes it, that each quoted log message is written, and that each gap number cited has an ignored test; `span_openers`, `metric_names` and `telemetry_allowlist` check the names and the openers. They cannot tell whether a sentence is true. After any change to the engine's spans, metrics or log lines, reread the matching section.
+- When a gap is closed, its ignored test passes. Remove the `ignore` marker, delete the "Not yet emitted" paragraph that names it, and move the signal into the "What exists" list with its exact name. The conventions page marks the gap "(fixed)", and a test fails when the page and the ignored tests disagree.
