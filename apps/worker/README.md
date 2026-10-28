@@ -166,6 +166,7 @@ test that cannot get a server panics with `BLOCKED:` and is never a pass.
 | `tests/broker.rs` | the broker listener is hosted, refuses a request with no token, never shows the key |
 | `tests/prepare.rs` | the binary's start-up path from files, exit codes 2 and 3 |
 | `tests/smoke.rs` | the first end-to-end smoke, below |
+| `tests/engine_scenarios_on_postgres.rs` | 13 of the 94 engine scenarios, on PostgreSQL |
 | `tests/known_defects.rs` | defects of the first meeting of the engine and the store, as tests that flip when fixed |
 
 ### The first smoke
@@ -287,8 +288,17 @@ Each was found by running the real pieces together. "Fixed" means fixed inside t
     has 94 tests on a `World` built over `InMemoryStore` and a `FakeClock` that also stands for the
     database clock; 48 places move that clock. A real database has its own clock. Running the same suite
     needs `World` to be generic over the store and the lease and back-off tests to wait or to set short
-    times. **`engine_scenarios_on_postgres` is not done**; `tests/kill_at_every_boundary.rs` and
-    `tests/breaks.rs` cover the claim, lease loss, sweep and retry on PostgreSQL.
+    times. **Partly done**: `tests/engine_scenarios_on_postgres.rs` ports 13 of the 94 scenarios
+    (admission, the claim, the lease epoch, the heartbeat, the sweeper, concurrent claims and
+    sweeps, the quota, a valid output) with the same names and assertions and real waits against a
+    two second lease, and all 13 pass on PostgreSQL, with one difference (defect 2 below).
+    `tests/kill_at_every_boundary.rs` adds kill and retry on PostgreSQL. **The other 81 are not run on
+    PostgreSQL**: the done criterion `engine_scenarios_on_postgres` ("the same suite") is **not met**.
+    The approval, rejection, rework, cancel, override and budget scenarios are the ones still to do;
+    the approval ones will fail until defect 1 is fixed.
+    **Defect 2**: a second `admit_job` is refused on PostgreSQL with a store constraint
+    (`IdReusedWithDifferentContent`) where the in-memory suite expects `EngineError::Illegal`.
+    `tests/known_defects.rs` asserts it.
 12. **`DOMAIN_DISCOVERY` has no handler** and is in `SLICE_ONE_SCOPE` (see the smoke).
 13. **Decisions made here that need review**: the allowlist file format; the three lists in
     `sandbox_specs` (lowest user id 10000, forbidden and allowed environment names), which the policy does

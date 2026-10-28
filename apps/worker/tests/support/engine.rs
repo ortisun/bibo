@@ -246,6 +246,17 @@ impl PgWorld {
         WorkerId::new(name).expect("a worker id")
     }
 
+    /// Claims with `worker` and returns the one attempt that started.
+    pub async fn claim_one(&self, worker: &str) -> factory_workflow::scheduler::ClaimedAttempt {
+        let claimed = self
+            .engine
+            .claim_next(&Self::worker(worker))
+            .await
+            .expect("claim");
+        assert_eq!(claimed.started.len(), 1, "{claimed:?}");
+        claimed.started.into_iter().next().expect("one")
+    }
+
     /// Stores a request and admits it.
     pub async fn admitted_job(&self) -> JobId {
         let job = self

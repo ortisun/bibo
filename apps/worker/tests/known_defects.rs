@@ -83,3 +83,37 @@ async fn defect_1_a_persons_approval_is_refused_by_the_postgres_store() {
         "{refusal:?}"
     );
 }
+
+/// DEFECT 2, engine against `PgStore`: admitting a job twice is refused with a store constraint
+/// and not with the typed error the in-memory suite expects.
+///
+/// `a_job_cannot_be_admitted_twice` (engine suite) expects `EngineError::Illegal`. On PostgreSQL
+/// the second admission reaches the store, which refuses the stage runs it is asked to insert as
+/// `ConstraintRule::IdReusedWithDifferentContent`. The job is protected either way (no second set
+/// of stage runs exists), but a caller cannot tell "already admitted" from a defect of the store.
+///
+/// Intended behaviour after the fix: the engine checks the job status before it plans the stage
+/// runs, and this test expects `EngineError::Illegal`.
+#[tokio::test(flavor = "multi_thread")]
+async fn defect_2_a_second_admission_is_refused_by_a_store_constraint_not_a_typed_error() {
+    let db = server().clone_database().await;
+    let ids = factory_worker::system::RandomIds::new().expect("random");
+    let tenant =
+        factory_domain::ids::TenantId::from_uuid(factory_ports::clock::IdGenerator::new_uuid(&ids));
+    seed_tenant(&db, tenant, 0, "org/repo-0").await;
+    let store = factory_storage::pg::PgStore::connect(worker_config(&db).await)
+        .await
+        .expect("ready");
+    let world = PgWorld::new(store, tenant, seeded_repository(tenant), |_| {}).await;
+    let job = world.admitted_job().await;
+    let again = world.engine.admit_job(world.tenant, job).await;
+    assert!(
+        matches!(
+            again,
+            Err(EngineError::Store(StoreError::Constraint(
+                ConstraintRule::IdReusedWithDifferentContent
+            )))
+        ),
+        "{again:?}"
+    );
+}
