@@ -5,18 +5,18 @@ use std::sync::LazyLock;
 use factory_domain::machines::limits::{
     DEFAULT_REPAIR_CAP, DEFAULT_REWORK_CAP, ReworkLedger, ReworkTrack,
 };
-use factory_domain::policy::PolicyEngine;
 use factory_domain::policy::budget::{BudgetVerdict, CeilingRefusal, Metric, Reading, Scope};
 use factory_domain::policy::decision::Designation;
 use factory_domain::policy::dependency::{
     DECORATIONS, DependencyDecision, DependencyFlag, DependencyRefusal, DependencyRequest,
-    RegistryFacts, is_decorated, within_one_edit,
+    RegistryFacts, RunWhen, is_decorated, within_one_edit,
 };
 use factory_domain::policy::risk::RiskFacts;
+use factory_domain::policy::{BuildError, PolicyEngine};
 use factory_domain::vocabulary::RiskTier;
 use proptest::prelude::*;
 
-use crate::support::{approval, security};
+use crate::support::{approval, security, security_from, security_json};
 
 fn engine() -> &'static PolicyEngine {
     static ENGINE: LazyLock<PolicyEngine> =
@@ -193,6 +193,58 @@ fn override_and_dependency_rules_a_new_direct_dependency_always_needs_a_human() 
             &facts(Some(true), Some(900))
         ),
         DependencyDecision::NotNew
+    );
+}
+
+#[test]
+fn the_policy_gives_the_age_of_the_advisory_database_and_when_the_dependency_gates_run() {
+    // SC-6: the limit is a policy value, the 7 days of `maximum-db-staleness` in deny.toml.
+    assert_eq!(engine().dependency.advisory_database_max_age_days(), 7);
+    // The decision about when the gates run is written in the policy: for a change that touches
+    // a dependency file, because the gates judge the change and a scheduled scan of the base
+    // branch judges the repository.
+    assert_eq!(
+        engine().dependency.run_when(),
+        RunWhen::DependencyFilesChange
+    );
+}
+
+#[test]
+fn the_wording_of_new_excludes_the_members_of_the_project_and_the_old_wording_does_not_build() {
+    // SC-3: a package whose name is only that of a member of the project is still new. The
+    // engine reads one wording of the rule, and a policy that says the old one, which let an
+    // internal name make a registry package "not new", does not build.
+    let mut json = security_json();
+    assert_eq!(
+        json["supply_chain"]["new_direct_dependency"]["new_means"],
+        "name_absent_from_base_commit_lockfile_as_anything_but_a_project_member"
+    );
+    json["supply_chain"]["new_direct_dependency"]["new_means"] =
+        "name_absent_from_base_commit_lockfile".into();
+    assert!(matches!(
+        PolicyEngine::new(&security_from(json), &approval()),
+        Err(BuildError::UnknownValue { .. })
+    ));
+}
+
+#[test]
+fn a_policy_with_a_value_for_the_age_or_for_when_the_gates_run_that_the_engine_does_not_know_does_not_build()
+ {
+    let with = |change: fn(&mut serde_json::Value)| {
+        let mut json = security_json();
+        change(&mut json);
+        PolicyEngine::new(&security_from(json), &approval())
+    };
+    assert!(
+        matches!(
+            with(|j| j["supply_chain"]["dependency_gates"]["run_when"] = "sometimes".into()),
+            Err(BuildError::UnknownValue { .. })
+        ),
+        "a run_when that is not one of the two"
+    );
+    assert!(
+        with(|j| j["supply_chain"]["dependency_gates"]["run_when"] = "always".into()).is_ok(),
+        "always is a value the engine reads"
     );
 }
 

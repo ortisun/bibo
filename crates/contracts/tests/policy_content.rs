@@ -1304,6 +1304,31 @@ fn every_open_translation_warning_needs_an_approvers_decision() {
 }
 
 #[test]
+fn the_loader_gives_the_age_of_the_advisory_database_and_when_the_dependency_gates_run() {
+    // SC-6. The value is a typed field of the loaded policy, and it is the staleness limit that
+    // `deny.toml` holds the factory's own CI to, so the two cannot drift: P7D is 7 days.
+    let supply = &security().supply_chain;
+    assert_eq!(supply.advisory_database.max_age_days, 7);
+    let deny = read_text(&repo_root().join("deny.toml"));
+    assert!(
+        deny.lines()
+            .any(|line| line.trim() == r#"maximum-db-staleness = "P7D""#),
+        "deny.toml no longer says P7D; the policy and deny.toml must agree"
+    );
+    // The decision about when the gates run is the policy's, and the engine reads it.
+    assert_eq!(supply.dependency_gates.run_when, "dependency_files_change");
+    assert_eq!(
+        engine().dependency.advisory_database_max_age_days(),
+        supply.advisory_database.max_age_days
+    );
+    // "New" is read with the wording that excludes the members of the project.
+    assert_eq!(
+        supply.new_direct_dependency.new_means,
+        factory_domain::policy::dependency::NEW_MEANS
+    );
+}
+
+#[test]
 fn build_code_of_a_new_package_is_a_security_approvers_own_decision() {
     // B-2 and SC-10. `build_script_added` blocks until a security review, and the action that
     // lifts it has its own row: a person with the designation security_approver, never an

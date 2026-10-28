@@ -1832,6 +1832,24 @@ strict! {
 }
 
 strict! {
+    /// The advisory database the dependency scan reads.
+    pub struct AdvisoryDatabaseRule {
+        /// The most whole days old the database may be. A scan against an older database, or one
+        /// of unknown age, does not pass. A project policy may lower it, never raise it.
+        pub max_age_days: u64,
+    }
+}
+
+strict! {
+    /// When the dependency gates run.
+    pub struct DependencyGates {
+        /// `dependency_files_change` (only for a change that touches a dependency file) or
+        /// `always`. A project policy may move to `always`, never back.
+        pub run_when: String,
+    }
+}
+
+strict! {
     /// SBOM rules.
     pub struct SbomRules {
         /// The format.
@@ -1868,6 +1886,10 @@ strict! {
         pub install_scripts: String,
         /// New direct dependencies.
         pub new_direct_dependency: NewDirectDependency,
+        /// The advisory database the scan reads.
+        pub advisory_database: AdvisoryDatabaseRule,
+        /// When the dependency gates run.
+        pub dependency_gates: DependencyGates,
         /// Scanners.
         pub scanners: Vec<String>,
         /// SBOM.

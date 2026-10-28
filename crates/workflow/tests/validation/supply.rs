@@ -21,7 +21,8 @@ use crate::gates::{base_run, head_run, it_with_one_more};
 use crate::people::{
     APPROVER, REQUESTER, SECURITY, approve, authorized, decide, human, policy_hash, scope,
 };
-use crate::world::{World, base_files};
+use crate::world::{World, base_files, policy_with};
+use factory_workflow::stages::validation::RunSupplyChain;
 
 const CRATES_IO: &str = "registry+https://github.com/rust-lang/crates.io-index";
 
@@ -392,6 +393,103 @@ async fn an_advisory_database_older_than_the_limit_blocks_the_advisory_gate() {
     unknown.0.database.updated(None);
     let ran = unknown.0.run(&unknown.1, &unknown.2).await;
     assert_eq!(ran.outcome(gate::ADVISORIES), GateOutcome::Blocked);
+}
+
+// ---------------------------------------------------------------------------------------------
+// What the policy says, and what the composition root may change
+// ---------------------------------------------------------------------------------------------
+
+#[tokio::test]
+async fn a_stage_built_from_policy_takes_the_limit_and_the_run_rule_from_it() {
+    let w = World::new();
+    let settings = w.supply_settings();
+    assert_eq!(settings.advisory_db_max_age_days, 7, "the policy's value");
+    assert_eq!(settings.run, RunSupplyChain::WhenDependencyFilesChange);
+    // A policy with another value gives another start; nothing is a constant of the stage.
+    let mut w = World::new();
+    w.policy = policy_with(|j| {
+        j["supply_chain"]["advisory_database"]["max_age_days"] = 3.into();
+        j["supply_chain"]["dependency_gates"]["run_when"] = "always".into();
+    });
+    let settings = w.supply_settings();
+    assert_eq!(settings.advisory_db_max_age_days, 3);
+    assert_eq!(settings.run, RunSupplyChain::Always);
+}
+
+#[tokio::test]
+async fn the_composition_root_may_lower_the_database_age_limit_and_never_raise_it() {
+    // The database is ten days old and the policy allows seven: BLOCKED. A configuration that
+    // asks for thirty days is ignored, because policy is only tightened.
+    let (w, base, head) = adding_a_dependency().await;
+    w.approvals
+        .record(decided(Designation::Approver, APPROVER, "bob"));
+    w.database.updated(Some(
+        Timestamp::parse("2026-10-18T00:00:00Z").expect("a time"),
+    ));
+    w.tweak_supply(|settings| settings.advisory_db_max_age_days = 30);
+    let ran = w.run(&base, &head).await;
+    assert_eq!(ran.outcome(gate::ADVISORIES), GateOutcome::Blocked);
+
+    // The database is five days old, inside the policy's seven: PASSED. A configuration that asks
+    // for three days is stricter, and it counts.
+    let (w, base, head) = adding_a_dependency().await;
+    w.approvals
+        .record(decided(Designation::Approver, APPROVER, "bob"));
+    w.database.updated(Some(
+        Timestamp::parse("2026-10-23T00:00:00Z").expect("a time"),
+    ));
+    let ran = w.run(&base, &head).await;
+    assert_eq!(ran.outcome(gate::ADVISORIES), GateOutcome::Passed);
+    let (w, base, head) = adding_a_dependency().await;
+    w.approvals
+        .record(decided(Designation::Approver, APPROVER, "bob"));
+    w.database.updated(Some(
+        Timestamp::parse("2026-10-23T00:00:00Z").expect("a time"),
+    ));
+    w.tweak_supply(|settings| settings.advisory_db_max_age_days = 3);
+    let ran = w.run(&base, &head).await;
+    assert_eq!(ran.outcome(gate::ADVISORIES), GateOutcome::Blocked);
+}
+
+#[tokio::test]
+async fn the_policys_limit_applies_even_when_the_stage_was_built_without_reading_the_policy() {
+    // `SupplyChainSettings::new` does not read the policy and defaults to seven days. A policy
+    // that says three days still wins.
+    let (mut w, base, head) = adding_a_dependency().await;
+    w.policy = policy_with(|j| {
+        j["supply_chain"]["advisory_database"]["max_age_days"] = 3.into();
+    });
+    w.approvals
+        .record(decided(Designation::Approver, APPROVER, "bob"));
+    w.database.updated(Some(
+        Timestamp::parse("2026-10-23T00:00:00Z").expect("a time"),
+    ));
+    w.tweak_supply(|settings| settings.advisory_db_max_age_days = 7);
+    let ran = w.run(&base, &head).await;
+    assert_eq!(ran.outcome(gate::ADVISORIES), GateOutcome::Blocked);
+}
+
+#[tokio::test]
+async fn the_policy_can_make_the_gates_run_on_every_change_and_the_configuration_cannot_undo_it() {
+    // The control: with the policy as it is, a change that touches no dependency file costs
+    // nothing (the test above in this file). With `always`, the same change goes through the
+    // gate: the integrity check reads both lockfiles and says so.
+    let (mut w, base, head) = project(&[]).await;
+    w.policy = policy_with(|j| {
+        j["supply_chain"]["dependency_gates"]["run_when"] = "always".into();
+    });
+    // The configuration asks for the lazy rule; the policy's `always` is not loosened by it.
+    w.tweak_supply(|settings| settings.run = RunSupplyChain::WhenDependencyFilesChange);
+    let ran = w.run(&base, &head).await;
+    assert_eq!(ran.outcome(gate::INTEGRITY), GateOutcome::Passed);
+    assert_ne!(ran.outcome(gate::INTEGRITY), GateOutcome::NotApplicable);
+    assert!(ran.evidence.get("dependency_review").is_some());
+
+    // The configuration may tighten a policy that says "only when a dependency file changes".
+    let (w, base, head) = project(&[]).await;
+    w.tweak_supply(|settings| settings.run = RunSupplyChain::Always);
+    let ran = w.run(&base, &head).await;
+    assert_eq!(ran.outcome(gate::INTEGRITY), GateOutcome::Passed);
 }
 
 // ---------------------------------------------------------------------------------------------

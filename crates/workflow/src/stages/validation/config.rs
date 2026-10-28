@@ -10,6 +10,7 @@ use std::sync::Arc;
 
 use factory_domain::contracts::{Contract, ProjectManifest};
 use factory_domain::policy::PolicyEngine;
+use factory_domain::policy::dependency::RunWhen;
 use factory_domain::redaction::Redactor;
 use factory_ports::paths::{PathRules, RepoGlob};
 use factory_ports::sandbox::{CacheMount, FixedEnv, Hardening, ImageDigest, SandboxLimits};
@@ -97,7 +98,9 @@ impl Default for Bounds {
     }
 }
 
-/// When the dependency and supply chain gates run.
+/// When the dependency and supply chain gates run. The policy says which
+/// (`supply_chain.dependency_gates.run_when`); the stage runs them whenever the policy or this
+/// setting says `Always`, so a configuration may tighten the rule and never loosen it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RunSupplyChain {
     /// On every change. The four reports are made from the dependency files of both commits even
@@ -150,7 +153,9 @@ pub struct SupplyChainSettings {
     pub internal_names: Vec<String>,
     /// The SBOM rule: required for a release or a high-risk job, never a constant.
     pub sbom: SbomRule,
-    /// The most whole days old the advisory database may be.
+    /// The most whole days old the advisory database may be. The policy has the last word: the
+    /// stage uses the lower of this and `supply_chain.advisory_database.max_age_days`, so a
+    /// configuration may lower the limit and never raise it.
     pub advisory_db_max_age_days: u64,
     /// Bounds on what the gate runs.
     pub bounds: SupplyBounds,
@@ -159,9 +164,33 @@ pub struct SupplyChainSettings {
 }
 
 impl SupplyChainSettings {
+    /// The settings a stage built from policy starts from: the age of the advisory database and
+    /// the rule for when the gates run are the policy's (`supply_chain.advisory_database` and
+    /// `supply_chain.dependency_gates`), and the limits are the defaults. The configuration seam
+    /// stays: a field may be changed afterwards, and the stage still takes the stricter of the
+    /// field and the policy.
+    #[must_use]
+    pub fn from_policy(
+        policy: &PolicyEngine,
+        fetch: FetchSandbox,
+        licenses: LicensePolicy,
+        popular: PopularNames,
+        sbom: SbomRule,
+    ) -> Self {
+        Self {
+            run: match policy.dependency.run_when() {
+                RunWhen::DependencyFilesChange => RunSupplyChain::WhenDependencyFilesChange,
+                RunWhen::Always => RunSupplyChain::Always,
+            },
+            advisory_db_max_age_days: policy.dependency.advisory_database_max_age_days(),
+            ..Self::new(fetch, licenses, popular, sbom)
+        }
+    }
+
     /// The settings with the default limits, a database age of
     /// [`DEFAULT_ADVISORY_DB_MAX_AGE_DAYS`] and the gates run only for a change that touches a
-    /// dependency file.
+    /// dependency file. This does not read the policy; the stage still applies the policy's
+    /// limit and rule on top ([`from_policy`](Self::from_policy) starts from them).
     #[must_use]
     pub fn new(
         fetch: FetchSandbox,

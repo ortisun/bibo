@@ -2020,7 +2020,13 @@
     ]
   },
   "supply_chain": {
+    "advisory_database": {
+      "max_age_days": 7
+    },
     "ci_actions_pinned_to_commit_sha": true,
+    "dependency_gates": {
+      "run_when": "dependency_files_change"
+    },
     "images": {
       "built_from_source_by_factory": true,
       "pinned_by_digest": true,
@@ -2053,7 +2059,7 @@
         "license"
       ],
       "min_first_publish_age_days": 30,
-      "new_means": "name_absent_from_base_commit_lockfile"
+      "new_means": "name_absent_from_base_commit_lockfile_as_anything_but_a_project_member"
     },
     "registries_allowed_ref": "egress.profiles.fetch_deps",
     "sbom": {

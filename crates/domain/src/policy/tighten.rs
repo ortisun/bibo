@@ -156,6 +156,7 @@ const MODES: &[&str] = &["additions_only", "append_only", "deny_write", "hidden"
 const LEVELS_STRICT_LAST: &[&str] = &["L3", "L2", "L1", "L0"];
 const LEVELS_LOW_FIRST: &[&str] = &["L0", "L1", "L2", "L3"];
 const GATES: &[&str] = &["none", "per_task", "per_call"];
+const RUN_WHEN: &[&str] = &["dependency_files_change", "always"];
 const RISK: &[&str] = &["low", "medium", "high"];
 const ACTIONS: &[&str] = &["require_human", "deny"];
 const SECRET_ACTIONS: &[&str] = &["flag", "block"];
@@ -464,6 +465,17 @@ fn table() -> Vec<(&'static str, Rule)> {
         (
             "supply_chain.new_direct_dependency.min_first_publish_age_days",
             AtLeast,
+        ),
+        // The advisory database may be at most this old: a ceiling, lowered by a project and
+        // never raised.
+        ("supply_chain.advisory_database.max_age_days", AtMost),
+        // `always` is the stricter value, so a project may move to it and never back.
+        (
+            "supply_chain.dependency_gates.run_when",
+            Rule::Rank {
+                order: RUN_WHEN,
+                default: None,
+            },
         ),
         ("supply_chain.scanners", Superset),
         ("supply_chain.images.pinned_by_digest", on()),

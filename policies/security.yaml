@@ -1471,14 +1471,38 @@ supply_chain:
   # automatic approval condition: no organization allowlist, no popularity or age
   # threshold, no "approved before" shortcut. Do not add an `auto_approve_when` key.
   # "New" means the package name is absent from the resolved lockfile at the base
-  # commit (direct or transitive). A name already in that lockfile is not new, so
-  # this rule does not fire for it; a version change to it is still a lockfile
-  # change and goes through the lockfile, source and scanner checks below.
+  # commit (direct or transitive) as anything but a member of the project, that is, a
+  # package with no source. A name already in that lockfile from a registry or another
+  # source is not new, so this rule does not fire for it; a version change to it is still
+  # a lockfile change and goes through the lockfile, source and scanner checks below. A
+  # member of the project that has the name does not make a registry package of that name
+  # "not new": that is how a dependency confusion looks (review SC-2, SC-3). The engine
+  # reads exactly this wording and refuses to build from another.
   new_direct_dependency:
     approval: human_always
-    new_means: name_absent_from_base_commit_lockfile
+    new_means: name_absent_from_base_commit_lockfile_as_anything_but_a_project_member
     heuristics_recorded: [registry_existence, first_publish_age_days, download_count, repository_link, typosquat_distance_to_popular_names, license]   # shown to the human; they never approve anything
     min_first_publish_age_days: 30                          # a younger package needs a security_approver, not an ordinary approver
+  # The audit tool run offline cannot tell how old its advisory database is, so the image
+  # records the date and the gate reads it. A clean audit against a database older than this,
+  # or of unknown age, is BLOCKED. 7 days is the `maximum-db-staleness = "P7D"` that deny.toml
+  # demands of the factory's own CI. The stage reads this value; the composition root may
+  # configure a lower one and never a higher one. A project policy may lower it, never raise it.
+  advisory_database:
+    max_age_days: 7
+  # When the dependency gates (dependency-integrity, dependency-review, dependency-advisories
+  # and sbom) run. They judge a change, and the master prompt asks for dependency, SBOM and
+  # license checks "where applicable". `dependency_files_change` runs them for a change that
+  # touches a dependency file (a lockfile, a manifest, a build configuration, the configuration
+  # of a scanner, a build script) and reports NOT_APPLICABLE otherwise, with nothing read and no
+  # container made. Run on every change, an unrelated change would fail for an advisory
+  # published after the base commit against a package the change never touched, and the
+  # change could not fix it; that judgment belongs to a scheduled scan of the base branch (not
+  # built yet: see the review of the supply chain gates).
+  # `always` is the stricter value. A project policy may move to it and never back, and the
+  # composition root may do the same.
+  dependency_gates:
+    run_when: dependency_files_change
   scanners: [cargo-deny, cargo-audit, osv-scanner, gitleaks, semgrep]   # applicable subset per ecosystem; tool absence is BLOCKED
   sbom: { format: cyclonedx, required_for: [release, high_risk_jobs] }
   images: { pinned_by_digest: true, built_from_source_by_factory: true, rebuild_interval_days: 14, vulnerability_scan: required }

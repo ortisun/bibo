@@ -2,7 +2,10 @@
 //! ADR 0009 item 4).
 //!
 //! A dependency is **new** when its package name is absent from the resolved lockfile at the base
-//! commit, direct or transitive. A new dependency always needs a human. There is no allowlist, no
+//! commit, direct or transitive, as anything but a member of the project ([`NEW_MEANS`]). A
+//! member of the project (a package with no source) that has the name does not count, because a
+//! registry package named like a member is how a dependency confusion looks. A new dependency
+//! always needs a human. There is no allowlist, no
 //! age or popularity threshold and no earlier approval that makes it automatic, and
 //! [`DependencyDecision`] has no variant that approves one. The registry facts (does the name
 //! exist, how old is its first publication, is it near a popular name, does it collide with an
@@ -217,10 +220,54 @@ pub enum DependencyDecision {
     },
 }
 
+/// When the dependency and supply chain gates run (`supply_chain.dependency_gates.run_when`).
+///
+/// The gates judge a change. Run only when a dependency file changes, they say nothing about the
+/// advisories published since the base commit against packages the change did not touch; that is
+/// a property of the repository, and a scheduled scan of the base branch is where it is judged.
+/// Run on every change, an unrelated change fails for an old advisory. The policy says which, so
+/// that the composition root reads it and does not choose. `Always` is the stricter value, and a
+/// project policy may move to it and never back.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum RunWhen {
+    /// Only for a change that touches a dependency file. Otherwise the four reports say that
+    /// nothing applies.
+    DependencyFilesChange,
+    /// For every change.
+    Always,
+}
+
+impl RunWhen {
+    /// Reads the policy spelling.
+    #[must_use]
+    pub fn parse(text: &str) -> Option<Self> {
+        match text {
+            "dependency_files_change" => Some(Self::DependencyFilesChange),
+            "always" => Some(Self::Always),
+            _ => None,
+        }
+    }
+
+    /// The stricter of two settings.
+    #[must_use]
+    pub fn stricter(self, other: Self) -> Self {
+        self.max(other)
+    }
+}
+
+/// The one wording of "new" the engine implements: the name is absent from the base commit's
+/// lockfile as anything but a member of the project (a package with no source). A member of the
+/// project that has the name does not make a registry package of that name "not new", because
+/// that is how a dependency confusion looks.
+pub const NEW_MEANS: &str =
+    "name_absent_from_base_commit_lockfile_as_anything_but_a_project_member";
+
 /// The dependency rules of one security policy.
 #[derive(Debug, Clone, Copy)]
 pub struct DependencyPolicy {
     min_first_publish_age_days: u64,
+    advisory_database_max_age_days: u64,
+    run_when: RunWhen,
 }
 
 /// Words a squatter puts before or after a popular name. A word that is a package of its own
@@ -304,19 +351,42 @@ impl DependencyPolicy {
                 found: rule.approval.clone(),
             });
         }
-        if rule.new_means != "name_absent_from_base_commit_lockfile" {
+        if rule.new_means != NEW_MEANS {
             return Err(BuildError::UnknownValue {
                 key: "supply_chain.new_direct_dependency.new_means",
                 found: rule.new_means.clone(),
             });
         }
+        let run_when =
+            RunWhen::parse(&policy.supply_chain.dependency_gates.run_when).ok_or_else(|| {
+                BuildError::UnknownValue {
+                    key: "supply_chain.dependency_gates.run_when",
+                    found: policy.supply_chain.dependency_gates.run_when.clone(),
+                }
+            })?;
         Ok(Self {
             min_first_publish_age_days: rule.min_first_publish_age_days,
+            advisory_database_max_age_days: policy.supply_chain.advisory_database.max_age_days,
+            run_when,
         })
     }
 
+    /// The most whole days old the advisory database may be for a scan to count
+    /// (`supply_chain.advisory_database.max_age_days`).
+    #[must_use]
+    pub fn advisory_database_max_age_days(&self) -> u64 {
+        self.advisory_database_max_age_days
+    }
+
+    /// When the dependency gates run (`supply_chain.dependency_gates.run_when`).
+    #[must_use]
+    pub fn run_when(&self) -> RunWhen {
+        self.run_when
+    }
+
     /// Decides what a dependency request needs. `base_lockfile_names` are the package names of
-    /// the resolved lockfile at the base commit, direct and transitive.
+    /// the resolved lockfile at the base commit, direct and transitive, **except the members of
+    /// the project** (see [`NEW_MEANS`]); the caller leaves them out.
     #[must_use]
     pub fn decide(
         &self,
