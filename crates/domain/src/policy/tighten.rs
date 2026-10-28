@@ -3,7 +3,7 @@
 //! A project's policy (`.factory/` in a target repository, read from the protected base commit)
 //! is a candidate document with the same shape as the central one. [`check_security`] and
 //! [`check_approval`] compare the two key by key and report every key where the candidate is
-//! looser, by its path in the document. [`merge_security`] and [`merge_approval`] return the
+//! looser, by its path in the document. [`tighten_security`] and [`tighten_approval`] return the
 //! candidate as the merged policy only when that list is empty, so a merged policy is never looser
 //! than the central one, and the merged value is what gets hashed and used.
 //!
@@ -1054,7 +1054,7 @@ pub fn check_approval(
 ///
 /// # Errors
 /// A [`TightenReport`] naming every key where the project is looser. No merged policy exists then.
-pub fn merge_security(
+pub fn tighten_security(
     base: &SecurityPolicy,
     project: &SecurityPolicy,
 ) -> Result<SecurityPolicy, TightenReport> {
@@ -1062,11 +1062,11 @@ pub fn merge_security(
     Ok(project.clone())
 }
 
-/// The merged approval policy. See [`merge_security`].
+/// The merged approval policy. See [`tighten_security`].
 ///
 /// # Errors
 /// A [`TightenReport`] naming every key where the project is looser.
-pub fn merge_approval(
+pub fn tighten_approval(
     base: &ApprovalPolicy,
     project: &ApprovalPolicy,
 ) -> Result<ApprovalPolicy, TightenReport> {

@@ -4,7 +4,8 @@
 
 use factory_domain::policy::PolicyEngine;
 use factory_domain::policy::tighten::{
-    TightenReport, WideningReason, check_approval, check_security, merge_approval, merge_security,
+    TightenReport, WideningReason, check_approval, check_security, tighten_approval,
+    tighten_security,
 };
 use serde_json::{Value, json};
 
@@ -59,11 +60,11 @@ fn a_policy_equal_to_the_central_one_is_a_tightening_of_it() {
     assert_eq!(check_security(&security(), &security()), Ok(()));
     assert_eq!(check_approval(&approval(), &approval()), Ok(()));
     assert_eq!(
-        merge_security(&security(), &security()).expect("merges"),
+        tighten_security(&security(), &security()).expect("merges"),
         security()
     );
     assert_eq!(
-        merge_approval(&approval(), &approval()).expect("merges"),
+        tighten_approval(&approval(), &approval()).expect("merges"),
         approval()
     );
 }
@@ -869,7 +870,7 @@ fn negative_nt_pol_02_tightenings_are_accepted() {
     json["budgets"]["hard_ceilings"]["per_task"]["max_usd"] = 4.0.into();
     json["sandbox"]["profiles"]["agent"]["limits"]["memory_mb"] = 512.into();
     let project = security_from(json);
-    let merged = merge_security(&security(), &project).expect("a tightening merges");
+    let merged = tighten_security(&security(), &project).expect("a tightening merges");
     assert_eq!(merged, project);
     assert_eq!(
         merged.budgets.hard_ceilings.per_task.max_usd.to_bits(),
@@ -884,7 +885,7 @@ fn negative_nt_pol_02_tightenings_are_accepted() {
     json["budgets"]["hard_ceilings"]["per_task"]["max_usd"] = 4.0.into();
     json["budgets"]["hard_ceilings"]["per_job"]["max_usd"] = 100.0.into();
     json["egress"]["allow_wildcards"] = true.into();
-    let both = merge_security(&security(), &security_from(json)).expect_err("two widenings");
+    let both = tighten_security(&security(), &security_from(json)).expect_err("two widenings");
     assert_eq!(
         both.keys(),
         [

@@ -21,7 +21,7 @@
 //! # Skills
 //!
 //! [`ToolPolicy::check_skill`] decides whether a stage may invoke a skill or slash command, in
-//! every spelling an agent CLI accepts (`/speckit-plan`, `$speckit-plan`, `speckit.plan`). The
+//! every spelling an agent CLI accepts (`/name-part`, `$name-part`, `name.part`). The
 //! profile comes from the stage kind. A skill on the profile's `denied` list is refused even if
 //! it is also on `allowed` (deny wins), and so is every skill when the profile disables them.
 
@@ -224,22 +224,23 @@ pub struct ToolPolicy {
     default_skill_profile: usize,
 }
 
-/// Writes a skill spelling as its id: lower case, without a leading `/` or `$`, and with the
-/// separator after `speckit` turned into a dot.
+/// Writes a skill spelling in the one form the policy ids are compared in: lower case, without a
+/// leading `/` or `$`, and with `-`, `_` and `:` turned into `.`. The policy ids go through the
+/// same function, so a skill the policy names matches in every spelling an agent CLI accepts, and
+/// a spelling that does not reduce to a listed id matches nothing.
 fn canonical_skill(spelling: &str) -> Option<String> {
     let trimmed = spelling.trim();
     if trimmed.is_empty() || trimmed.len() > 128 || trimmed.chars().any(char::is_control) {
         return None;
     }
     let stripped = trimmed.strip_prefix(['/', '$']).unwrap_or(trimmed);
-    let lowered = stripped.to_lowercase();
-    if let Some(rest) = lowered.strip_prefix("speckit")
-        && let Some(first) = rest.chars().next()
-        && matches!(first, '-' | '_' | ':' | '.')
-    {
-        return Some(format!("speckit.{}", &rest[first.len_utf8()..]));
-    }
-    Some(lowered)
+    Some(
+        stripped
+            .to_lowercase()
+            .chars()
+            .map(|c| if matches!(c, '-' | '_' | ':') { '.' } else { c })
+            .collect(),
+    )
 }
 
 impl ToolPolicy {
@@ -331,7 +332,7 @@ impl ToolPolicy {
                             .iter()
                             .map(|a| {
                                 (
-                                    a.id.to_lowercase(),
+                                    canonical_skill(&a.id).unwrap_or_default(),
                                     (
                                         a.writes.iter().map(|g| g.0.clone()).collect(),
                                         a.protected_path_exception_required.unwrap_or(false),
@@ -342,7 +343,7 @@ impl ToolPolicy {
                     })
                     .unwrap_or_default(),
                 denied: skills
-                    .map(|s| s.denied.iter().map(|d| d.to_lowercase()).collect())
+                    .map(|s| s.denied.iter().filter_map(|d| canonical_skill(d)).collect())
                     .unwrap_or_default(),
             });
         }
