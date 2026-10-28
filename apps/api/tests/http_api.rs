@@ -1135,10 +1135,10 @@ async fn a_stop_request_lets_an_open_request_finish_and_then_the_port_is_closed(
     );
 }
 
-/// A job is for one issue. Intake authorizes the person who labelled it and reads its text from the
-/// pointer, and delivery links the pull request to it, so a submission without a pointer that
-/// names an issue of the job's own repository is refused at the door and not left to fail in
-/// intake.
+// A job is for one issue. Intake authorizes the person who labelled it and reads its text from the
+// pointer, and delivery links the pull request to it, so a submission without a pointer that
+// names an issue of the job's own repository is refused at the door and not left to fail in
+// intake.
 env_test!(
     a_submission_must_name_an_issue_of_its_own_repository,
     |env| {

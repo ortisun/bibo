@@ -665,12 +665,34 @@ fn normalized(text: &str, job_tail: &str) -> String {
     }
     // The last eight characters of the job's identifier are in the name of the feature directory.
     // They are taken out after the identifiers themselves, which contain them.
-    out.replace(job_tail, "<tail>")
+    let out = out.replace(job_tail, "<tail>");
+    // The sizes of a document that embeds a time, and the token estimates made from them. A time
+    // with microseconds drops its trailing zeros, so the same time is a character shorter one time
+    // in ten, and so is every size that counts it (the record of a review counts the bytes of the
+    // gate reports it was shown, and estimates the tokens of the prompt from them).
+    let mut sized = out;
+    for marker in ["bytes\":", "estimated_tokens\":"] {
+        let mut next = String::with_capacity(sized.len());
+        let mut rest = sized.as_str();
+        while let Some(at) = rest.find(marker) {
+            let cut = at + marker.len();
+            next.push_str(&rest[..cut]);
+            rest = &rest[cut..];
+            let digits = rest.chars().take_while(char::is_ascii_digit).count();
+            if digits > 0 {
+                next.push_str("<size>");
+                rest = &rest[digits..];
+            }
+        }
+        next.push_str(rest);
+        sized = next;
+    }
+    sized
 }
 
 /// Every stored output of the job: `"STAGE name"` to the hash of the bytes and the hash of the
 /// bytes with the run's own ids, times and derived hashes taken out.
-async fn fingerprints(journey: &Journey) -> BTreeMap<String, (Sha256Digest, Sha256Digest)> {
+async fn fingerprints(journey: &Journey) -> BTreeMap<String, (Sha256Digest, Sha256Digest, String)> {
     let tail = journey.job.to_string();
     let tail = tail[tail.len() - 8..].to_owned();
     let mut found = BTreeMap::new();
@@ -685,6 +707,7 @@ async fn fingerprints(journey: &Journey) -> BTreeMap<String, (Sha256Digest, Sha2
             (
                 Sha256Digest::of(&bytes),
                 Sha256Digest::of(normalized(&text, &tail).as_bytes()),
+                normalized(&text, &tail),
             ),
         );
     }
@@ -710,15 +733,30 @@ async fn two_runs_of_the_same_job_agree_except_in_ids_times_and_what_follows_fro
     );
     assert!(one.len() >= 25, "{} deliverables were compared", one.len());
     let mut raw_differs = Vec::new();
-    for (name, (raw_one, normal_one)) in one {
-        let (raw_two, normal_two) = &two[name];
+    for (name, (raw_one, normal_one, text_one)) in one {
+        let (raw_two, normal_two, text_two) = &two[name];
         if raw_one != raw_two {
             raw_differs.push(name.clone());
         }
-        assert_eq!(
-            normal_one, normal_two,
-            "{name} differs between the runs in more than ids, times and hashes"
-        );
+        if normal_one != normal_two {
+            // Show where the two texts part, so a difference is a fact and not a hash.
+            let at = text_one
+                .chars()
+                .zip(text_two.chars())
+                .take_while(|(a, b)| a == b)
+                .count();
+            let around = |text: &str| -> String {
+                text.chars()
+                    .skip(at.saturating_sub(120))
+                    .take(300)
+                    .collect()
+            };
+            panic!(
+                "{name} differs between the runs in more than ids, times and hashes, from character {at}:\n  one: {}\n  two: {}",
+                around(text_one),
+                around(text_two)
+            );
+        }
     }
     println!(
         "DETERMINISM {} deliverables compared; the bytes differ in {} of them ({}); with the ids, times and derived hashes taken out all {} agree",
@@ -1082,6 +1120,72 @@ async fn break_an_approval_given_for_a_stale_head_is_refused_and_moves_nothing()
     assert_eq!(
         full::count_audit(&journey.rig, journey.job, "approval.recorded").await,
         0
+    );
+    journey.rig.finish();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn break_an_approval_of_another_specification_draft_is_refused_and_moves_nothing() {
+    let journey = begin(Options::default()).await;
+    let _dump = full::DumpOnFailure::new(&journey.rig, journey.job);
+    let view = journey.to_the_specification_question().await;
+    assert_eq!(
+        full::status_of(&view, StageKind::Specification),
+        Some(StageRunStatus::WaitingForHuman),
+        "{view:#?}"
+    );
+    // The person names a commit that is not the one that holds the draft the stage kept.
+    let reply = journey
+        .approve_the_specification(&view, "approve-another-draft", Some("a".repeat(40)))
+        .await;
+    assert_eq!(reply.status, 202, "{}", reply.text());
+    let after = journey
+        .rig
+        .drive(Some(journey.job), 4, |_| false)
+        .await
+        .expect("a view");
+    assert_eq!(
+        full::status_of(&after, StageKind::Specification),
+        Some(StageRunStatus::WaitingForHuman),
+        "{after:#?}"
+    );
+    assert_eq!(
+        full::timeline_actions(
+            &journey.rig.env,
+            &journey.requester,
+            journey.job,
+            "decision."
+        )
+        .await,
+        ["decision.requested", "decision.rejected"]
+    );
+    assert!(
+        journey
+            .rig
+            .audit_text(journey.job)
+            .await
+            .contains("code=draft_moved")
+    );
+    assert_eq!(
+        full::count_audit(
+            &journey.rig,
+            journey.job,
+            "approval_granted_or_rejected.granted"
+        )
+        .await,
+        0,
+        "the engine recorded no approval"
+    );
+    // The honest approval, with the commit of the draft, still works afterwards.
+    let reply = journey
+        .approve_the_specification(&view, "approve-the-real-draft", None)
+        .await;
+    assert_eq!(reply.status, 202, "{}", reply.text());
+    let view = journey.to_the_pull_request_question().await;
+    assert_eq!(
+        full::status_of(&view, StageKind::Specification),
+        Some(StageRunStatus::Passed),
+        "{view:#?}"
     );
     journey.rig.finish();
 }

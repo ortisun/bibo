@@ -210,10 +210,16 @@ readability gate; and the timeline shows both decisions requested and applied on
 **Two runs of the same job agree.** The run is repeated and 27 deliverables are compared. The bytes
 of 17 differ; with the identifiers (job, stage run, attempt, report), the times and the hashes and
 commit ids that follow from them taken out, all 27 agree. What differs is only: UUIDs, timestamps,
-the last eight characters of the job id in the feature directory name, and every hash of a document
-that embeds one of those (the commits, trees, contracts, reports, the manifest).
+the last eight characters of the job id in the feature directory name, every hash of a document
+that embeds one of those (the commits, trees, contracts, reports, the manifest), and the sizes and
+token estimates of documents that embed a time (a time with microseconds drops its trailing zeros, so
+the same time is a character shorter one time in ten, which showed as a one-byte difference in the
+record of the review on three runs of five before the comparison took sizes out). Nothing else
+differs: the playbook, the policy and the fixture are the same, and the clock of the sandbox is fake.
 
-**Deliberate breaks, shown caught** (all in `full_run.rs`): a stage that stores a deliverable under
+**Deliberate breaks, shown caught** (all in `full_run.rs`; an eighth refuses an approval of a specification
+draft that names another commit than the draft the stage kept, with the code `draft_moved`, and shows the
+honest approval working afterwards): a stage that stores a deliverable under
 another name (the engine refuses the undeclared name and nothing is stored); a builder patch that
 touches `.github/workflows/ci.yml` (the ingestion refuses it, the audit records the denial, the
 evidence names the path); a reviewer of the same type as the builder (the review stage refuses an
