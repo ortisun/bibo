@@ -2,7 +2,7 @@
 //!
 //! ```text
 //! factory-cli health   --api URL
-//! factory-cli submit   --api URL --token-file FILE --repository ID --text-file FILE [--key K] [--source-ref R]
+//! factory-cli submit   --api URL --token-file FILE --repository ID --text-file FILE --source-ref OWNER/NAME#N [--key K]
 //! factory-cli status   --api URL --token-file FILE JOB
 //! factory-cli timeline --api URL --token-file FILE JOB
 //! factory-cli approve  --api URL --token-file FILE [--key K] JOB STAGE_RUN head=H evidence=sha256:D [reason...]

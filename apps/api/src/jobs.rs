@@ -148,11 +148,17 @@ pub async fn submit(
     {
         return Err(ApiError::BadRequest("text"));
     }
-    if let Some(source) = &parsed.source_ref
-        && (source.is_empty() || source.len() > MAX_SOURCE_REF_BYTES || !clean_line(source))
-    {
-        return Err(ApiError::BadRequest("source_ref"));
-    }
+    // A job is for one issue (FR-001): the intake stage authorizes the person who labelled it and
+    // reads its text, and the delivery stage links the pull request to it. A job with no issue
+    // could not pass intake, so it is refused here and not left to fail there.
+    let issue = parsed
+        .source_ref
+        .as_deref()
+        .filter(|source| {
+            !source.is_empty() && source.len() <= MAX_SOURCE_REF_BYTES && clean_line(source)
+        })
+        .and_then(factory_composition::seams::issue_of)
+        .ok_or(ApiError::BadRequest("source_ref"))?;
     // A secret in a request is refused, not stored: the original request is kept as received.
     if state
         .redactor
@@ -176,6 +182,16 @@ pub async fn submit(
     }
     // A requester narrowed to some repositories asks for work there and nowhere else (API-1).
     require_repository(state, caller, &registered.value.full_name)?;
+    // The issue belongs to the repository the job is for. The worker fetches it with a token for
+    // that repository, so a pointer to another one would ask the code host for something the job
+    // has no right to.
+    if !issue
+        .repo
+        .to_string()
+        .eq_ignore_ascii_case(&registered.value.full_name)
+    {
+        return Err(ApiError::BadRequest("source_ref"));
+    }
     let pipeline_scope =
         PipelineScope::new(SLICE_ONE_SCOPE.to_vec()).map_err(|_| ApiError::Unavailable)?;
     let inserted = tx

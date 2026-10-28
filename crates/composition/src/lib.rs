@@ -32,6 +32,7 @@
 //! | [`indexing`] | Indexes the artifacts a sandbox writes, for the tenant, when they are written |
 //! | [`ledger`] | The task ledger of the implementation stage, over the store, fenced by attempt and epoch |
 //! | [`hooks`] | The work a binary's loop does before it claims |
+//! | [`preflight`] | The protection preflight recorder: a step before each claim that reads the protection of the default branch, judges it against the policy and records the result |
 //! | [`assemble`] | Start-up in order, and the list of adapters that are not assembled |
 //! | [`webhook`] | The webhook verifier of the API, built from secret files (one per secret in the rotation window) |
 //!
@@ -51,6 +52,7 @@ pub mod health;
 pub mod hooks;
 pub mod indexing;
 pub mod ledger;
+pub mod preflight;
 pub mod profile;
 pub mod providers;
 pub mod reading;

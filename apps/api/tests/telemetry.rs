@@ -20,7 +20,7 @@ async fn job_work_runs_in_a_job_span() {
                 .bearer(&env.a.requester.token)
                 .header("Idempotency-Key", "span")
                 .header("X-Correlation-Id", sent)
-                .json(&json!({"repository_id": env.a.repository.as_text(), "text": "x"})),
+                .json(&json!({"repository_id": env.a.repository.as_text(), "source_ref": format!("{}#1", env.a.full_name), "text": "x"})),
         )
         .await;
     let job = created.json()["job_id"]

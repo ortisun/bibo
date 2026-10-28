@@ -50,7 +50,7 @@ async fn api_1_a_designation_narrowed_to_one_repository_does_not_reach_another()
             Req::post("/v1/jobs")
                 .bearer(&a.requester.token)
                 .header("Idempotency-Key", "api1-first")
-                .json(&json!({"repository_id": other, "text": "A job on the other repository."})),
+                .json(&json!({"repository_id": other, "source_ref": "org/other-repo#1", "text": "A job on the other repository."})),
         )
         .await;
     assert_eq!(reply.status, 201, "{}", reply.text());
@@ -79,7 +79,7 @@ async fn api_1_a_designation_narrowed_to_one_repository_does_not_reach_another()
             Req::post("/v1/jobs")
                 .bearer(&a.requester.token)
                 .header("Idempotency-Key", "api1-second")
-                .json(&json!({"repository_id": other, "text": "Outside my repositories."})),
+                .json(&json!({"repository_id": other, "source_ref": "org/other-repo#1", "text": "Outside my repositories."})),
         )
         .await;
     if !matches!(submit.status, 403 | 404) {
@@ -118,7 +118,7 @@ async fn api_2_an_idempotency_key_of_one_caller_does_not_find_the_job_of_another
         &allowlist_with(&env, |t| t.replacen(&plain, &both, 1)),
     );
 
-    let body = json!({"repository_id": a.repository.as_text(), "text": "Add a word count."});
+    let body = json!({"repository_id": a.repository.as_text(), "source_ref": format!("{}#1", a.full_name), "text": "Add a word count."});
     let first = env
         .send(
             Req::post("/v1/jobs")
@@ -166,7 +166,7 @@ async fn api_2b_a_key_is_found_again_by_its_own_caller_and_by_nobody_else() {
             Req::post("/v1/jobs")
                 .bearer(&person.token)
                 .header("Idempotency-Key", "same-key")
-                .json(&json!({"repository_id": a.repository.as_text(), "text": text})),
+                .json(&json!({"repository_id": a.repository.as_text(), "source_ref": format!("{}#1", a.full_name), "text": text})),
         )
     };
     let first = send(&a.requester, "The first caller's text.").await;
@@ -346,6 +346,7 @@ async fn api_4b_a_job_request_that_contains_an_api_token_is_refused() {
                 .header("Idempotency-Key", "api4b")
                 .json(&json!({
                     "repository_id": env.a.repository.as_text(),
+                    "source_ref": format!("{}#1", env.a.full_name),
                     "text": format!("Please use this credential: {token}"),
                 })),
         )
@@ -642,7 +643,7 @@ async fn api_11_a_repeated_correlation_id_is_the_callers_error_not_the_services(
             Req::post("/v1/jobs")
                 .bearer(&a.requester.token)
                 .header("Idempotency-Key", "api12-1")
-                .json(&json!({"repository_id": a.repository.as_text(), "text": "one"})),
+                .json(&json!({"repository_id": a.repository.as_text(), "source_ref": format!("{}#1", a.full_name), "text": "one"})),
         )
         .await;
     assert_eq!(first.status, 201, "{}", first.text());
@@ -656,7 +657,7 @@ async fn api_11_a_repeated_correlation_id_is_the_callers_error_not_the_services(
                 .bearer(&a.requester.token)
                 .header("Idempotency-Key", "api12-2")
                 .header("X-Correlation-Id", &taken)
-                .json(&json!({"repository_id": a.repository.as_text(), "text": "two"})),
+                .json(&json!({"repository_id": a.repository.as_text(), "source_ref": format!("{}#1", a.full_name), "text": "two"})),
         )
         .await;
     // A cursor that has the characters of one and is not one: `parse_cursor` fails in the store.

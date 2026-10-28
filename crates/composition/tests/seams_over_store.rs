@@ -406,6 +406,55 @@ async fn the_approval_sources_read_the_requester_the_level_and_the_allowlist() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// Found by the full run: the level on the job row is fixed when the job is received, and a job
+/// that arrives before the first preflight of its repository is received at L0 and stayed there,
+/// so the approval of it was refused for ever.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_jobs_level_follows_the_ceiling_of_its_repository_now_and_not_the_row_it_was_received_with()
+ {
+    use factory_composition::delivery::StoreApprovalSources;
+    use factory_domain::policy::authority::AutonomyLevel;
+    use factory_workflow::stages::approval::ApprovalSources;
+    let (db, world, tenant) = pg_world().await;
+    let repository = world.repository.as_uuid();
+    let tenant_text = tenant.as_uuid();
+    // The administrator set a ceiling of L2, and no preflight has passed yet.
+    db.run(&format!(
+        "UPDATE repositories SET autonomy_ceiling = 'L2', protection_preflight_passed = false, \
+         version = version + 1 WHERE tenant_id = '{tenant_text}' AND id = '{repository}'"
+    ))
+    .await;
+    let job = world.admitted_job().await;
+    let dir = std::env::temp_dir().join(format!("composition-level-{}", std::process::id()));
+    let sources = StoreApprovalSources::new(
+        world.store.clone(),
+        world.deps.artifacts.clone(),
+        allowlist_in(&dir),
+    );
+    assert_eq!(
+        sources.level(tenant, job).await,
+        Ok(AutonomyLevel::L0),
+        "no preflight, no autonomy"
+    );
+
+    // The preflight passes after the job was received: the job runs at the ceiling.
+    db.run(&format!(
+        "UPDATE repositories SET protection_preflight_passed = true, version = version + 1 \
+         WHERE tenant_id = '{tenant_text}' AND id = '{repository}'"
+    ))
+    .await;
+    assert_eq!(sources.level(tenant, job).await, Ok(AutonomyLevel::L2));
+
+    // The repository loses its protection later: the same job is capped again.
+    db.run(&format!(
+        "UPDATE repositories SET protection_preflight_passed = false, version = version + 1 \
+         WHERE tenant_id = '{tenant_text}' AND id = '{repository}'"
+    ))
+    .await;
+    assert_eq!(sources.level(tenant, job).await, Ok(AutonomyLevel::L0));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn the_delivery_ledger_is_verified_and_the_two_blocked_methods_fail_closed() {
     use factory_composition::delivery::StoreDeliverySources;

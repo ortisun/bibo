@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "status": "DONE",
+  "feature_directory": "{{FEATURE_DIR}}",
+  "skills_invoked": [
+    "checklist"
+  ],
+  "files_written": [
+    "{{FEATURE_DIR}}/checklists/requirements-quality.md"
+  ],
+  "clarification_questions": [],
+  "assumptions": [],
+  "ignored_instructions": []
+}

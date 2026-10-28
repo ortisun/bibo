@@ -1,0 +1,28 @@
+{
+  "schema_version": 1,
+  "status": "DONE",
+  "task_id": "write-json-formatter",
+  "summary": "Added a function to the counting library that writes the three counts as one JSON object, with unit tests for a normal text, an empty text and agreement with the plain counts.",
+  "files_changed": [
+    "src/lib.rs"
+  ],
+  "commands_run": [
+    {
+      "argv": [
+        "cargo",
+        "test",
+        "--locked",
+        "--lib"
+      ],
+      "exit_code": 0
+    }
+  ],
+  "tests_added": [
+    "fr_001_the_json_text_has_the_three_keys_in_order",
+    "fr_001_an_empty_text_gives_zero_counts_in_json",
+    "fr_004_the_json_text_holds_the_object_and_no_other_text",
+    "sc_001_the_json_counts_are_the_plain_counts"
+  ],
+  "dependency_requests": [],
+  "ignored_instructions": []
+}

@@ -10,17 +10,20 @@
 //!
 //! # Delivery
 //!
-//! Two of the four questions are answered here and two are **BLOCKED**:
+//! Two of the four questions are answered from the store. The other two read the job's object
+//! store and the validation configuration, and are answered once [`StoreDeliverySources::with_repository`]
+//! gave them both; until then they fail closed:
 //!
 //! | Method | Status |
 //! |---|---|
 //! | `target` | answered: repository and base branch from the repository row, the issue from the stored request, the head branch `factory/job-<job id>`, the risk facts joined from the job and measured from the stored design. `links` is empty: no stored document lists the paths of the task, decision and documentation files on the branch |
 //! | `ledger` | answered: the whole chain is read and verified just now, the assurance levels come from the entries that claim them |
-//! | `current_values` | **BLOCKED**: the gate definition hash is computed by private code of the validation stage (`load_definitions`, `definition_of`), and a second implementation here would drift from it. Needs a public function in the workflow crate |
-//! | `tree_of` | **BLOCKED**: no port exposes the tree id of a commit, and this crate may not start `git` (DEP-10). Needs `JobRepo::tree_of` in the ports and the sandbox adapter |
+//! | `current_values` | answered with `with_repository`: the hash of the gate definitions and the digest of the verify image come from `validation::current_values`, the function the validation stage uses for its own binding, so the two cannot disagree. Without it: `Unavailable` |
+//! | `tree_of` | answered with `with_repository`: `JobRepo::tree_of` of the job's object store (pending architect confirmation, ports document section 16). Without it: `Unavailable` |
 //!
-//! The two blocked methods answer `Unavailable`, so the delivery stage fails closed at the point
-//! where it needs them. They are listed in `assemble::blocked_seams`.
+//! A method that is not wired answers `Unavailable`, so the delivery stage fails closed at the
+//! point where it needs it. `assemble::blocked_seams` lists them for a binary that does not wire
+//! them yet.
 
 use std::sync::Arc;
 
@@ -35,7 +38,8 @@ use factory_domain::vocabulary::{AutonomyLevel as VocabularyLevel, Fidelity, Sta
 use factory_ports::artifact::ArtifactStore;
 use factory_ports::clock::Clock;
 use factory_ports::paths::{BranchName, CommitSha, RepoRef};
-use factory_ports::store::{PrincipalKind, Store};
+use factory_ports::store::{PrincipalKind, Store, StoreError};
+use factory_ports::workspace::WorkspaceProvider;
 use factory_workflow::handlers::RunIdentity;
 use factory_workflow::stages::approval::{ApprovalRequest, ApprovalSources};
 use factory_workflow::stages::architecture::design::Design;
@@ -44,6 +48,7 @@ use factory_workflow::stages::architecture::seams::RiskSource;
 use factory_workflow::stages::delivery::{
     CurrentValues, DeliverySources, DeliveryTarget, LedgerState, SeamError,
 };
+use factory_workflow::stages::validation::ValidationConfig;
 
 use crate::reading::Reader;
 use crate::risk::StoreRisk;
@@ -112,9 +117,21 @@ impl ApprovalSources for StoreApprovalSources {
 
     async fn level(&self, tenant: TenantId, job: JobId) -> Result<AutonomyLevel, SeamError> {
         let mut tx = self.reader.begin(tenant).await?;
-        let found = tx.get_job(job).await;
+        let found = async {
+            let stored = tx.get_job(job).await?;
+            let repository = tx.get_repository(stored.value.repository).await?;
+            Ok::<_, StoreError>(repository.value.autonomy_ceiling)
+        }
+        .await;
         let _ = tx.rollback().await;
-        let level = found.map_err(|e| seam(&e))?.value.autonomy_level;
+        // The level a job runs at is the effective ceiling of its repository **now**, not the one
+        // written on the job row. The row is fixed when the job is received, and a job that arrives
+        // before the first protection preflight of its repository is received at L0, because the
+        // store reports L0 for a repository with no passed preflight (ADR 0009). The preflight
+        // then passes before the job is admitted, and the job would stay at L0 for ever, so no
+        // approval of it could pass. Reading the ceiling now also lowers a job whose repository
+        // lost its protection after the job was received, which is the safe direction.
+        let level = found.map_err(|e| seam(&e))?;
         // The store names the level with the vocabulary type and the policy with its own.
         Ok(match level {
             VocabularyLevel::L0 => AutonomyLevel::L0,
@@ -150,13 +167,23 @@ impl ApprovalSources for StoreApprovalSources {
 // DeliverySources
 // ------------------------------------------------------------------------------------------
 
-/// The facts the delivery stage reads from the store.
+/// The facts the delivery stage reads from the store, and, once [`Self::with_repository`] gave
+/// them the job's object store and the validation configuration, the tree of a commit and the
+/// values the validation evidence is bound to.
 #[derive(Clone)]
 pub struct StoreDeliverySources {
     reader: Reader,
     policy: Arc<PolicyEngine>,
     clock: Arc<dyn Clock>,
     job_risk: StoreRisk,
+    repository: Option<RepositoryAccess>,
+}
+
+/// What the two methods that read the job's object store need.
+#[derive(Clone)]
+struct RepositoryAccess {
+    workspaces: Arc<dyn WorkspaceProvider>,
+    validation: Arc<ValidationConfig>,
 }
 
 impl StoreDeliverySources {
@@ -173,7 +200,25 @@ impl StoreDeliverySources {
             reader: Reader::new(store, artifacts),
             policy,
             clock,
+            repository: None,
         }
+    }
+
+    /// Lets the sources read the job's object store: the tree of a commit comes from the
+    /// workspace provider's repository, and the values the validation evidence is bound to come
+    /// from the validation stage's own function with the configuration the stage runs with.
+    /// Without it both methods stay closed, as they were.
+    #[must_use]
+    pub fn with_repository(
+        mut self,
+        workspaces: Arc<dyn WorkspaceProvider>,
+        validation: Arc<ValidationConfig>,
+    ) -> Self {
+        self.repository = Some(RepositoryAccess {
+            workspaces,
+            validation,
+        });
+        self
     }
 }
 
@@ -246,11 +291,23 @@ impl DeliverySources for StoreDeliverySources {
 
     async fn current_values(
         &self,
-        _run: &RunIdentity,
-        _base: &CommitSha,
+        run: &RunIdentity,
+        base: &CommitSha,
     ) -> Result<CurrentValues, SeamError> {
-        // BLOCKED: see the module note.
-        Err(SeamError::Unavailable)
+        let access = self.repository.as_ref().ok_or(SeamError::Unavailable)?;
+        let repo = access
+            .workspaces
+            .repo(run.job)
+            .await
+            .map_err(|_| SeamError::Unavailable)?;
+        let (definition_hash, image_digest) =
+            factory_workflow::stages::validation::current_values(&*repo, &access.validation, base)
+                .await
+                .map_err(|_| SeamError::Unavailable)?;
+        Ok(CurrentValues {
+            definition_hash,
+            image_digest,
+        })
     }
 
     async fn ledger(&self, run: &RunIdentity) -> Result<LedgerState, SeamError> {
@@ -280,8 +337,17 @@ impl DeliverySources for StoreDeliverySources {
         })
     }
 
-    async fn tree_of(&self, _run: &RunIdentity, _commit: &CommitSha) -> Result<GitSha, SeamError> {
-        // BLOCKED: see the module note.
-        Err(SeamError::Unavailable)
+    async fn tree_of(&self, run: &RunIdentity, commit: &CommitSha) -> Result<GitSha, SeamError> {
+        let access = self.repository.as_ref().ok_or(SeamError::Unavailable)?;
+        let repo = access
+            .workspaces
+            .repo(run.job)
+            .await
+            .map_err(|_| SeamError::Unavailable)?;
+        repo.tree_of(commit).await.map_err(|error| match error {
+            // A commit the job's store does not hold is not a tree to compare with.
+            factory_ports::workspace::WorkspaceError::UnknownCommit => SeamError::NotFound,
+            _ => SeamError::Unavailable,
+        })
     }
 }

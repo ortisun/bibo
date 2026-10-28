@@ -85,5 +85,5 @@ pub use config::{
     RunSupplyChain, SupplyChainSeams, SupplyChainSettings, ValidationConfig, VerifySandbox,
 };
 pub use contract::{EVIDENCE, GATES, POLICY_INPUT, SUPPLY_CHAIN_GATES};
-pub use handler::{ValidationHandler, evidence_document};
+pub use handler::{ValidationHandler, current_values, evidence_document};
 pub use input::{Candidate, IMPLEMENTATION_RESULT, SPECIFICATION_CONTRACT, parse_candidate};

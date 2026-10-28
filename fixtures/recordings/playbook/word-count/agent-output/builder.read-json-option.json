@@ -1,0 +1,31 @@
+{
+  "schema_version": 1,
+  "status": "DONE",
+  "task_id": "read-json-option",
+  "summary": "The command line now reads the --json option and prints the JSON text when it is present. The plain line and the error messages are untouched, and seven new tests run the real program to prove it.",
+  "files_changed": [
+    "src/main.rs",
+    "tests/json_output.rs"
+  ],
+  "commands_run": [
+    {
+      "argv": [
+        "cargo",
+        "test",
+        "--locked"
+      ],
+      "exit_code": 0
+    }
+  ],
+  "tests_added": [
+    "fr_001_json_prints_the_three_counts_in_order",
+    "fr_001_json_for_an_empty_file_prints_zero_counts",
+    "fr_004_one_line_break_follows_the_object_and_nothing_else",
+    "fr_002_without_the_option_the_plain_line_is_unchanged",
+    "fr_003_a_missing_file_fails_the_same_way_with_and_without_the_option",
+    "json_reads_standard_input_when_the_name_is_a_dash",
+    "a_repeated_option_behaves_as_one"
+  ],
+  "dependency_requests": [],
+  "ignored_instructions": []
+}

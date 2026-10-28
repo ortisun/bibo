@@ -91,6 +91,8 @@ pub enum WorkspaceDefect {
     MisreportsChangeKinds,
     /// A commit is built from the checkout, so it loses the paths the checkout never held.
     DropsHiddenPathsInCommit,
+    /// `tree_of` answers with the commit's own identifier, so equal files give different trees.
+    TreeIsTheCommit,
 }
 
 /// Each defect and the checks of `contracts::workspace` that must fail when the fake has it.
@@ -208,6 +210,10 @@ pub const DEFECTS: &[(WorkspaceDefect, &[&str])] = &[
     (
         WorkspaceDefect::DropsHiddenPathsInCommit,
         &["an_audited_change_can_be_committed_and_pushed"],
+    ),
+    (
+        WorkspaceDefect::TreeIsTheCommit,
+        &["a_commit_has_a_tree_and_the_tree_follows_the_files"],
     ),
 ];
 
@@ -830,6 +836,21 @@ impl FakeJobRepo {
 
 #[async_trait]
 impl JobRepo for FakeJobRepo {
+    async fn tree_of(
+        &self,
+        commit: &CommitSha,
+    ) -> Result<factory_domain::values::GitSha, WorkspaceError> {
+        // A fake's tree id: forty hex characters of the digest of the files, so two commits with
+        // the same files have the same tree and a different file gives a different one.
+        let object = self.object(commit)?;
+        if self.provider.has(WorkspaceDefect::TreeIsTheCommit) {
+            return factory_domain::values::GitSha::parse(commit.as_str())
+                .map_err(|_| WorkspaceError::UnknownCommit);
+        }
+        factory_domain::values::GitSha::parse(&tree_digest(&object.tree).hex()[..40])
+            .map_err(|_| WorkspaceError::UnknownCommit)
+    }
+
     async fn read_file_at(
         &self,
         commit: &CommitSha,

@@ -18,6 +18,7 @@ mod schema_check;
 mod cargo;
 mod world;
 
+mod current_values;
 mod gates;
 mod negative_gate;
 mod negative_secret;

@@ -33,7 +33,7 @@ async fn submit(env: &Env, tenant: &Tenant, key: &str, text: &str) -> support::R
         Req::post("/v1/jobs")
             .bearer(&tenant.requester.token)
             .header("Idempotency-Key", key)
-            .json(&json!({"repository_id": tenant.repository.as_text(), "text": text})),
+            .json(&json!({"repository_id": tenant.repository.as_text(), "source_ref": format!("{}#1", tenant.full_name), "text": text})),
     )
     .await
 }
@@ -192,7 +192,7 @@ env_test!(submitting_twice_with_one_key_makes_one_job, |env| {
 env_test!(
     a_submission_needs_a_key_a_json_type_and_the_requester_designation,
     |env| {
-        let body = json!({"repository_id": env.a.repository.as_text(), "text": "x"});
+        let body = json!({"repository_id": env.a.repository.as_text(), "source_ref": format!("{}#1", env.a.full_name), "text": "x"});
         let no_key = env
             .send(
                 Req::post("/v1/jobs")
@@ -233,7 +233,7 @@ env_test!(
                 Req::post("/v1/jobs")
                     .bearer(&env.a.requester.token)
                     .header("Idempotency-Key", "k2")
-                    .json(&json!({"repository_id": env.b.repository.as_text(), "text": "x"})),
+                    .json(&json!({"repository_id": env.b.repository.as_text(), "source_ref": format!("{}#1", env.b.full_name), "text": "x"})),
             )
             .await;
         assert_eq!(foreign.status, 404);
@@ -926,7 +926,7 @@ env_test!(
                     .bearer(&env.a.requester.token)
                     .header("Idempotency-Key", "c")
                     .header("X-Correlation-Id", sent)
-                    .json(&json!({"repository_id": env.a.repository.as_text(), "text": "x"})),
+                    .json(&json!({"repository_id": env.a.repository.as_text(), "source_ref": format!("{}#1", env.a.full_name), "text": "x"})),
             )
             .await;
         assert_eq!(
@@ -1109,6 +1109,7 @@ async fn a_stop_request_lets_an_open_request_finish_and_then_the_port_is_closed(
     let addr = env.addr;
     let body = serde_json::to_vec(&json!({
         "repository_id": env.a.repository.as_text(),
+        "source_ref": format!("{}#1", env.a.full_name),
         "text": "A request that is still arriving when the stop request comes."
     }))
     .expect("json");
@@ -1133,3 +1134,73 @@ async fn a_stop_request_lets_an_open_request_finish_and_then_the_port_is_closed(
         "the port is still open after the stop"
     );
 }
+
+// A job is for one issue. Intake authorizes the person who labelled it and reads its text from the
+// pointer, and delivery links the pull request to it, so a submission without a pointer that
+// names an issue of the job's own repository is refused at the door and not left to fail in
+// intake.
+env_test!(
+    a_submission_must_name_an_issue_of_its_own_repository,
+    |env| {
+        let repository = env.a.repository.as_text();
+        let own = format!("{}#12", env.a.full_name);
+        let post = |key: &'static str, body: serde_json::Value| {
+            env.send(
+                Req::post("/v1/jobs")
+                    .bearer(&env.a.requester.token)
+                    .header("Idempotency-Key", key)
+                    .json(&body),
+            )
+        };
+
+        // The honest submission.
+        let ok = post(
+            "source-ref-ok",
+            json!({"repository_id": repository, "source_ref": own, "text": "Add a --json flag."}),
+        )
+        .await;
+        assert_eq!(ok.status, 201, "{}", ok.text());
+
+        // No pointer at all.
+        let missing = post(
+            "source-ref-missing",
+            json!({"repository_id": repository, "text": "Add a --json flag."}),
+        )
+        .await;
+        assert_eq!(missing.status, 400, "{}", missing.text());
+        assert!(missing.text().contains("source_ref"), "{}", missing.text());
+
+        // A pointer that does not name an issue.
+        let keys = [
+            "source-ref-bad-0",
+            "source-ref-bad-1",
+            "source-ref-bad-2",
+            "source-ref-bad-3",
+            "source-ref-bad-4",
+        ];
+        let bad_pointers = [
+            "",
+            "12",
+            "org/repo-0",
+            "org/repo-0#twelve",
+            "https://example.test/issues/12",
+        ];
+        for (key, bad) in keys.into_iter().zip(bad_pointers) {
+            let reply = post(
+            key,
+            json!({"repository_id": repository, "source_ref": bad, "text": "Add a --json flag."}),
+        )
+        .await;
+            assert_eq!(reply.status, 400, "{bad:?}: {}", reply.text());
+        }
+
+        // An issue of another repository: the worker would ask the code host for something the job
+        // has no right to.
+        let elsewhere = post(
+        "source-ref-elsewhere",
+        json!({"repository_id": repository, "source_ref": format!("{}#12", env.b.full_name), "text": "Add a --json flag."}),
+    )
+    .await;
+        assert_eq!(elsewhere.status, 400, "{}", elsewhere.text());
+    }
+);

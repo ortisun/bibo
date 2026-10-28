@@ -26,13 +26,32 @@ CLI, are made of before each adds its own shell. A ring 3 **library**
 | `delivery` | `ApprovalSources` and `DeliverySources` (two methods fail closed) |
 | `commands` | The pure parsers from a comment, `argv` or a form to an approval command |
 | `reading` | Shared reads of stage run outputs, the ledger and the artifact store |
-| `providers` | The real Docker sandbox, host-side workspace and Spec Kit provider from the configuration |
+| `providers` | The real Docker sandbox, host-side workspace and Spec Kit provider from the configuration; `specification_path_rules` (the stage's rules with the writes of its skills lifted); `spec_kit_provider` and `spec_kit_installation` from a checkout |
 | `runtimes` | One agent runtime that serves every tenant |
 | `indexing` | Indexes what a sandbox writes and what a workspace exports, for the tenant, when it is written |
 | `hooks` | The work a loop does before it claims (`BeforeClaim`) |
+| `preflight` | `ProtectionPreflight`, a step before each claim: for the repository of each waiting job it reads the protection of the default branch from the code host, judges it against the policy and records the result, so that a repository does not run at L0 for ever. The administrator's statement about the bypass list comes from `BypassAttestations`, which has no production source yet (`NoAttestations` fails closed) |
 | `decisions` | `ClaimWork`, the step that admits received jobs and applies the decisions people asked for, once, with the allowlist read again by numeric id; the grammar of a decision record shared with the API |
 | `assemble` | Start-up in order (`prepare`), the list of adapters not assembled (`blocked_adapters`) and of seam methods that fail closed (`blocked_seams`) |
 | `webhook` | The webhook verifier of the API, built from secret files (one per secret in the rotation window) |
+
+## What the full run needed of it
+
+The full run (`apps/api/tests/full_run.rs`) is the first thing that built all thirteen handlers and ran them in one job. What it
+needed from this crate, and what it added:
+
+* `ProtectionPreflight` before `ClaimWork`, in that order, so a job is admitted against a protection judged now.
+* `ClaimWork::with_specification(drafts)`, so that a person's approval of a specification draft is applied.
+* `StoreDeliverySources::with_repository(workspaces, validation_config)`, so that `tree_of` and `current_values` answer.
+* `PolicySpecs::verify_sandbox` and `fetch_sandbox`, the fixed part of the sandboxes the validation and documentation review
+  stages carry in their own configuration, with the environment the pinned image needs (`CARGO_TARGET_DIR`, `CARGO_HOME`,
+  `CARGO_NET_OFFLINE`, `TMPDIR`).
+* `YamlManifests` as the `ManifestReader` of the validation stage.
+* The indexing wrappers (`IndexingSandbox`, `IndexingWorkspaces`) around the sandbox and the workspaces, and the loop noting the
+  tenant of each attempt in `ActiveJobs` before it runs it.
+
+None of this is wired into the worker binary: the function that builds the registry of handlers does not exist yet (worker README,
+mismatch 37).
 
 ## What a binary does with it
 
