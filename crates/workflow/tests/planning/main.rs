@@ -17,4 +17,9 @@
 //! test mode. What real Docker, a real model and a real repository add is listed in the report of
 //! the work package.
 
+#[path = "../support/mod.rs"]
+mod support;
+
 mod dag;
+mod flow;
+mod rig;
