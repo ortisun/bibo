@@ -157,8 +157,81 @@ impl PlatformAudit {
     }
 }
 
-/// Writes the queued events, at most `per_minute` in each minute. The rest are dropped and counted
-/// in one log line. Ends when every sender is gone.
+/// The action of the row that says how many events of one kind were not written in a window.
+pub const AUDIT_DROPPED: &str = "webhook.audit_dropped";
+
+/// How many platform audit events of each kind are written in a window, and how many are left out.
+///
+/// Each kind has its own budget (API-7). With one budget for every kind, an unauthenticated flood of
+/// forged deliveries (`webhook.rejected`) used the whole minute and a genuine delivery for an
+/// unregistered installation (`webhook.unbound`), which NT-AUTHZ-08 says is audited, was dropped
+/// without a trace. Left-out events are counted, and when the window ends one row per kind says
+/// how many, so a flood is visible in the audit log and not only in a log line.
+#[derive(Debug)]
+pub struct AuditBudget {
+    per_kind: u32,
+    window: Duration,
+    started: Instant,
+    kinds: HashMap<&'static str, (u32, u32)>,
+}
+
+/// Events of one kind that a window left out.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Left {
+    /// The action of the events.
+    pub action: &'static str,
+    /// How many.
+    pub count: u32,
+}
+
+impl AuditBudget {
+    /// A budget of `per_kind` events of each kind in each `window`, the first window starting at `now`.
+    #[must_use]
+    pub fn new(per_kind: u32, window: Duration, now: Instant) -> Self {
+        Self {
+            per_kind,
+            window,
+            started: now,
+            kinds: HashMap::new(),
+        }
+    }
+
+    /// When the current window ends.
+    #[must_use]
+    pub fn ends_at(&self) -> Instant {
+        self.started + self.window
+    }
+
+    /// Ends the window if it is over, and says what it left out. The next window starts at `now`.
+    pub fn roll(&mut self, now: Instant) -> Vec<Left> {
+        if now.duration_since(self.started) < self.window {
+            return Vec::new();
+        }
+        self.started = now;
+        let mut left: Vec<Left> = self
+            .kinds
+            .drain()
+            .filter(|(_, (_, dropped))| *dropped > 0)
+            .map(|(action, (_, count))| Left { action, count })
+            .collect();
+        left.sort_by_key(|each| each.action);
+        left
+    }
+
+    /// Asks for a place for one event of this kind: true when it is to be written.
+    pub fn admit(&mut self, action: &'static str) -> bool {
+        let (written, dropped) = self.kinds.entry(action).or_insert((0, 0));
+        if *written >= self.per_kind {
+            *dropped = dropped.saturating_add(1);
+            return false;
+        }
+        *written += 1;
+        true
+    }
+}
+
+/// Writes the queued events, at most `per_minute` of each kind in each minute. The rest are counted,
+/// and one row per kind says how many at the end of the minute. Ends when every sender is gone.
 pub async fn write_platform_audit(
     mut events: mpsc::Receiver<PlatformEvent>,
     store: Arc<dyn Store>,
@@ -166,45 +239,137 @@ pub async fn write_platform_audit(
     policy_hash: Sha256Digest,
     per_minute: u32,
 ) {
-    let mut minute_started = Instant::now();
-    let mut written = 0_u32;
-    let mut dropped = 0_u32;
-    while let Some(event) = events.recv().await {
-        if minute_started.elapsed() >= WINDOW {
-            if dropped > 0 {
-                tracing::warn!(
-                    dropped,
-                    "platform audit events were dropped in the last minute"
-                );
+    let mut budget = AuditBudget::new(per_minute, WINDOW, Instant::now());
+    let write = |event: PlatformEvent| {
+        let store = Arc::clone(&store);
+        let ids = Arc::clone(&ids);
+        let policy_hash = policy_hash.clone();
+        async move {
+            let (Ok(action), Ok(actor)) = (AuditAction::new(event.action), Slug::parse("webhook"))
+            else {
+                return;
+            };
+            let record = NewAuditEvent {
+                id: AuditEventId::from_uuid(ids.new_uuid()),
+                actor: AuditActor::Anonymous(actor),
+                action,
+                subject: event.subject,
+                decision: AuditDecision::Deny,
+                reason: event.reason.to_owned(),
+                policy_hash,
+                job: None,
+                stage_run: None,
+                correlation_id: CorrelationId::from_uuid(ids.new_uuid()),
+            };
+            if let Err(error) = store
+                .record_platform_audit(PlatformScope::receiver(), record)
+                .await
+            {
+                tracing::warn!(error = %error, "a platform audit event could not be written");
             }
-            (minute_started, written, dropped) = (Instant::now(), 0, 0);
         }
-        if written >= per_minute {
-            dropped = dropped.saturating_add(1);
-            continue;
+    };
+    loop {
+        // Wake at the end of the window even when nothing arrives, so the row that counts the
+        // events left out is written in the minute after the flood and not at the next event.
+        let next = tokio::time::timeout_at(budget.ends_at().into(), events.recv()).await;
+        let event = match next {
+            Ok(Some(event)) => Some(event),
+            Ok(None) => break,
+            Err(_elapsed) => None,
+        };
+        for each in budget.roll(Instant::now()) {
+            tracing::warn!(
+                action = each.action,
+                dropped = each.count,
+                "platform audit events were left out in the last minute"
+            );
+            write(PlatformEvent {
+                action: AUDIT_DROPPED,
+                subject: format!("{} x{}", each.action, each.count),
+                reason: "Events of this kind arrived faster than the audit log takes them; the count is in the subject.",
+            })
+            .await;
         }
-        written += 1;
-        let (Ok(action), Ok(actor)) = (AuditAction::new(event.action), Slug::parse("webhook"))
-        else {
-            continue;
-        };
-        let record = NewAuditEvent {
-            id: AuditEventId::from_uuid(ids.new_uuid()),
-            actor: AuditActor::Anonymous(actor),
-            action,
-            subject: event.subject,
-            decision: AuditDecision::Deny,
-            reason: event.reason.to_owned(),
-            policy_hash: policy_hash.clone(),
-            job: None,
-            stage_run: None,
-            correlation_id: CorrelationId::from_uuid(ids.new_uuid()),
-        };
-        if let Err(error) = store
-            .record_platform_audit(PlatformScope::receiver(), record)
-            .await
+        if let Some(event) = event
+            && budget.admit(event.action)
         {
-            tracing::warn!(error = %error, "a platform audit event could not be written");
+            write(event).await;
+        }
+    }
+}
+
+/// The decision refusals of one person that are written as rows in a window. Past it they are
+/// counted (API-8).
+pub const REFUSAL_ROWS_PER_WINDOW: u32 = 5;
+const MAX_REFUSAL_PRINCIPALS: usize = 10_000;
+
+/// What the audit log does with one refused decision.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Refusal {
+    /// Write the usual `decision.denied` row. When `carried` is not zero the last window left that
+    /// many refusals of this person out: write the row that says so too.
+    Record {
+        /// The refusals the window before left out.
+        carried: u32,
+    },
+    /// The first refusal past the share: write one row that says the rest are counted, not written.
+    Suppress,
+    /// Write nothing; the refusal is counted.
+    Count,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct RefusalWindow {
+    started: Instant,
+    rows: u32,
+    left_out: u32,
+}
+
+/// Counts the refused decisions of each person, so a token holder with no designation cannot grow
+/// the tenant's hash-chained audit log by one row per request (API-8). A person gets
+/// [`REFUSAL_ROWS_PER_WINDOW`] rows a minute, then one row that says the rest are counted, and the
+/// count is written in the first row of the next window.
+#[derive(Debug, Default)]
+pub struct RefusalBudget {
+    windows: Mutex<HashMap<factory_domain::ids::PrincipalId, RefusalWindow>>,
+}
+
+impl RefusalBudget {
+    /// An empty budget.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Decides what to write for a refusal of `principal` at `now`.
+    pub fn admit(&self, principal: factory_domain::ids::PrincipalId, now: Instant) -> Refusal {
+        let mut windows = self.windows.lock().unwrap_or_else(PoisonError::into_inner);
+        if windows.len() > MAX_REFUSAL_PRINCIPALS {
+            windows.retain(|_, window| {
+                now.duration_since(window.started) < WINDOW || window.left_out > 0
+            });
+        }
+        let fresh = RefusalWindow {
+            started: now,
+            rows: 0,
+            left_out: 0,
+        };
+        let window = windows.entry(principal).or_insert(fresh);
+        let mut carried = 0;
+        if now.duration_since(window.started) >= WINDOW {
+            carried = window.left_out;
+            *window = fresh;
+        }
+        if window.rows < REFUSAL_ROWS_PER_WINDOW {
+            window.rows += 1;
+            return Refusal::Record { carried };
+        }
+        window.left_out = window.left_out.saturating_add(1);
+        if window.left_out == 1 {
+            Refusal::Suppress
+        } else {
+            Refusal::Count
         }
     }
 }
@@ -278,6 +443,77 @@ mod tests {
         assert_eq!(size, 4, "three sources and the overflow entry");
         // A minute later the old windows are pruned and a new source is counted on its own.
         assert!(limiter.allow(Key::Ip(IpAddr::from([10, 0, 0, 6])), 1, now + WINDOW));
+    }
+
+    #[test]
+    fn each_kind_of_audit_event_has_its_own_budget_and_the_left_out_are_counted() {
+        let start = Instant::now();
+        let mut budget = AuditBudget::new(2, WINDOW, start);
+        // A flood of one kind uses its own budget and nobody else's.
+        let admitted = (0..70).filter(|_| budget.admit("webhook.rejected")).count();
+        assert_eq!(admitted, 2);
+        assert!(
+            budget.admit("webhook.unbound"),
+            "another kind still has its budget"
+        );
+        assert!(budget.admit("webhook.unbound"));
+        assert!(!budget.admit("webhook.unbound"));
+        // Nothing is said before the window ends.
+        assert!(budget.roll(start + WINDOW / 2).is_empty());
+        // When it ends, one entry per kind that left events out, with the count.
+        assert_eq!(
+            budget.roll(start + WINDOW),
+            vec![
+                Left {
+                    action: "webhook.rejected",
+                    count: 68
+                },
+                Left {
+                    action: "webhook.unbound",
+                    count: 1
+                },
+            ]
+        );
+        // The next window starts clean, and a window with nothing left out says nothing.
+        assert!(budget.admit("webhook.rejected"));
+        assert!(budget.roll(start + WINDOW * 2).is_empty());
+        assert_eq!(budget.ends_at(), start + WINDOW * 2 + WINDOW);
+    }
+
+    #[test]
+    fn a_person_gets_a_few_refusal_rows_then_one_note_then_a_count() {
+        let budget = RefusalBudget::new();
+        let person = factory_domain::ids::PrincipalId::from_uuid(uuid::Uuid::from_u128(1));
+        let other = factory_domain::ids::PrincipalId::from_uuid(uuid::Uuid::from_u128(2));
+        let start = Instant::now();
+        let plan: Vec<Refusal> = (0..60).map(|_| budget.admit(person, start)).collect();
+        let rows = plan
+            .iter()
+            .filter(|each| matches!(each, Refusal::Record { .. }))
+            .count();
+        let notes = plan
+            .iter()
+            .filter(|each| **each == Refusal::Suppress)
+            .count();
+        let counted = plan.iter().filter(|each| **each == Refusal::Count).count();
+        assert_eq!((rows, notes, counted), (5, 1, 54));
+        assert_eq!(
+            plan[5],
+            Refusal::Suppress,
+            "the note comes first after the share"
+        );
+        // Another person is not touched by the first one's flood.
+        assert_eq!(budget.admit(other, start), Refusal::Record { carried: 0 });
+        // The next window opens with a row, and says how many the last one left out (55 = 1 + 54).
+        assert_eq!(
+            budget.admit(person, start + WINDOW),
+            Refusal::Record { carried: 55 }
+        );
+        assert_eq!(
+            budget.admit(person, start + WINDOW + Duration::from_secs(1)),
+            Refusal::Record { carried: 0 },
+            "and says it once"
+        );
     }
 
     #[tokio::test]

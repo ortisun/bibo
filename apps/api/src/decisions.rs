@@ -34,7 +34,7 @@ use factory_composition::decisions::DecisionFields;
 use factory_domain::ids::{AuditEventId, CorrelationId, JobId, StageRunId};
 use factory_domain::vocabulary::HumanRole;
 use factory_ports::store::{
-    AuditActor, AuditDecision, ConstraintRule, NewAuditEvent, StoreError, Witness,
+    AuditActor, AuditDecision, ConstraintRule, NewAuditEvent, StoreError, Tx, Witness,
 };
 use factory_workflow::stages::approval::Verb;
 use serde::Deserialize;
@@ -45,6 +45,7 @@ use crate::auth::{Caller, require_repository};
 use crate::jobs::{
     audit_action, clean_line, clean_text, commit, decode, idempotency_key, parse_id,
 };
+use crate::limits::Refusal;
 use crate::state::ApiState;
 use crate::tokens;
 
@@ -241,30 +242,20 @@ pub async fn decide(
         target: decision.target.map(|t| t.as_str().to_owned()),
     }
     .subject();
-    let (action, outcome, reason) = if allowed {
-        (
-            "decision.requested",
-            AuditDecision::Record,
-            format!("requested: {}", kept(&decision.reason)),
-        )
-    } else {
-        (
-            "decision.denied",
-            AuditDecision::Deny,
-            "The caller does not hold the designation this decision needs.".to_owned(),
-        )
-    };
+    if !allowed {
+        return refuse(state, caller, tx, subject, correlation_id).await;
+    }
     let written = tx
         .record_audit(NewAuditEvent {
             id: audit_id,
             actor: AuditActor::Human(caller.principal),
-            action: audit_action(action)?,
+            action: audit_action("decision.requested")?,
             subject,
-            decision: outcome,
-            reason,
+            decision: AuditDecision::Record,
+            reason: format!("requested: {}", kept(&decision.reason)),
             policy_hash: state.policy_hash(),
             job: job_ref,
-            stage_run: if allowed { stage_run } else { None },
+            stage_run,
             correlation_id,
         })
         .await;
@@ -276,9 +267,6 @@ pub async fn decide(
         Err(other) => return Err(other.into()),
     }
     commit(state, caller.scope(), tx, Witness::Audit(audit_id)).await?;
-    if !allowed {
-        return Err(ApiError::Forbidden);
-    }
     Ok(Reply::new(
         StatusCode::ACCEPTED,
         json!({
@@ -287,6 +275,73 @@ pub async fn decide(
             "applied": false,
         }),
     ))
+}
+
+/// The refusal of someone who does not hold the designation: audited, within what the audit log
+/// takes from one person (API-8), and answered `403` with no reason.
+///
+/// A refused caller used to leave one row with a new id for every request, so any token holder, listed
+/// or not, could grow the tenant's hash-chained audit log by thousands of rows an hour, and the
+/// chain serialises its writers. A person now has a few rows a minute, then one row that says the
+/// rest are counted, and the count is written when the next minute opens.
+async fn refuse(
+    state: &ApiState,
+    caller: &Caller,
+    mut tx: Box<dyn Tx>,
+    subject: String,
+    correlation_id: CorrelationId,
+) -> Answer {
+    let rows: Vec<(&str, String, &str)> = match state
+        .refusals
+        .admit(caller.principal, std::time::Instant::now())
+    {
+        Refusal::Count => {
+            let _ = tx.rollback().await;
+            return Err(ApiError::Forbidden);
+        }
+        Refusal::Record { carried } => {
+            let mut rows = vec![(
+                "decision.denied",
+                subject,
+                "The caller does not hold the designation this decision needs.",
+            )];
+            if carried > 0 {
+                rows.push((
+                        "decision.denied_summary",
+                        format!("decision refusals: {carried} not recorded"),
+                        "Refusals of this person in the minute before went past what the audit log records one by one; the count is in the subject.",
+                    ));
+            }
+            rows
+        }
+        Refusal::Suppress => vec![(
+            "decision.denied_suppressed",
+            "decision refusals".to_owned(),
+            "More refusals of this person follow in this minute; they are counted, not recorded one by one.",
+        )],
+    };
+    let mut last = None;
+    for (action, subject, reason) in rows {
+        let id = AuditEventId::from_uuid(state.ports.ids.new_uuid());
+        tx.record_audit(NewAuditEvent {
+            id,
+            actor: AuditActor::Human(caller.principal),
+            action: audit_action(action)?,
+            subject,
+            decision: AuditDecision::Deny,
+            reason: reason.to_owned(),
+            policy_hash: state.policy_hash(),
+            job: None,
+            stage_run: None,
+            correlation_id,
+        })
+        .await?;
+        last = Some(id);
+    }
+    if let Some(id) = last {
+        commit(state, caller.scope(), tx, Witness::Audit(id)).await?;
+    }
+    Err(ApiError::Forbidden)
 }
 
 #[cfg(test)]

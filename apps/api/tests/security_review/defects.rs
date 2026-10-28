@@ -515,7 +515,6 @@ async fn api_6_one_peer_cannot_take_every_connection_slot() {
 /// delivery for an unregistered installation (NT-AUTHZ-08, "dropped, audited, acknowledged") is
 /// then dropped.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[ignore = "confirmed defect API-7: an unauthenticated flood of forged deliveries uses up the shared platform audit budget and a genuine unbound delivery is no longer audited"]
 async fn api_7_forged_deliveries_do_not_use_up_the_audit_of_a_real_one() {
     let env = Env::start().await;
     let a = env.a.clone();
@@ -578,7 +577,6 @@ async fn api_7_forged_deliveries_do_not_use_up_the_audit_of_a_real_one() {
 /// API-8. Every refused decision writes an audit row with a fresh id. A token holder who is not on
 /// the allowlist can write as many as the per-address rate limit lets through (600 a minute).
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[ignore = "confirmed defect API-8: an authenticated caller with no designation writes one audit row per refused request, without a bound per principal"]
 async fn api_8_refused_decisions_of_one_principal_are_bounded() {
     let env = Env::start().await;
     let a = env.a.clone();

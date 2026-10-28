@@ -32,7 +32,7 @@ use factory_workflow::commands::Authority;
 use tokio::task::JoinHandle;
 
 use crate::config::{ApiConfig, GithubSettings, Limits};
-use crate::limits::{PlatformAudit, RateLimiter, write_platform_audit};
+use crate::limits::{PlatformAudit, RateLimiter, RefusalBudget, write_platform_audit};
 use crate::state::{ApiPorts, ApiState, expected_schema};
 
 /// The identity the API reports to telemetry.
@@ -108,6 +108,7 @@ pub fn assemble_state(
         github: inputs.github,
         limits: inputs.limits,
         limiter: RateLimiter::new(),
+        refusals: RefusalBudget::new(),
         platform_audit,
         expected_schema: expected_schema(),
     };
