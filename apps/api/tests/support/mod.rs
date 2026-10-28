@@ -116,6 +116,12 @@ pub struct Options {
     pub webhooks: Option<Option<Arc<dyn WebhookVerifier>>>,
     pub store_wrapper: Option<StoreWrapper>,
     pub factory_label: String,
+    /// THE BREAK "accept a decision authenticated by login": these logins are approvers.
+    pub authority_by_login: Option<Vec<String>>,
+    /// THE BREAK "serve tenant B's job to tenant A": every transaction is opened for tenant B.
+    pub serve_tenant_b_to_everyone: bool,
+    /// THE BREAK "answer readiness OK while the schema is behind": the store reports this version.
+    pub report_schema: Option<SchemaVersion>,
 }
 
 impl Default for Options {
@@ -127,6 +133,9 @@ impl Default for Options {
             webhooks: None,
             store_wrapper: None,
             factory_label: "factory".to_owned(),
+            authority_by_login: None,
+            serve_tenant_b_to_everyone: false,
+            report_schema: None,
         }
     }
 }
@@ -195,21 +204,35 @@ impl Env {
             )
         });
 
-        let store_dyn: Arc<dyn Store> = match options.store_wrapper {
-            Some(wrap) => wrap(Arc::clone(&store)),
-            None => store.clone(),
+        let store_dyn: Arc<dyn Store> = if let Some(wrap) = options.store_wrapper {
+            wrap(Arc::clone(&store))
+        } else if options.serve_tenant_b_to_everyone || options.report_schema.is_some() {
+            Arc::new(TamperedStore {
+                inner: Arc::clone(&store),
+                tenant: options.serve_tenant_b_to_everyone.then_some(b.id),
+                schema: options.report_schema,
+            })
+        } else {
+            store.clone()
         };
         let clock: Arc<dyn Clock> = Arc::new(SystemClock);
         let ids: Arc<dyn IdGenerator> = Arc::new(RandomIds::new().expect("ids"));
         let allowlist_file = Arc::new(FileAllowlist::in_checkout(&checkout));
-        let authority: Arc<dyn Authority> = options.authority.unwrap_or_else(|| {
+        let authority: Arc<dyn Authority> = if let Some(authority) = options.authority {
+            authority
+        } else if let Some(approver_logins) = options.authority_by_login {
+            Arc::new(LoginAuthority {
+                store: Arc::clone(&store_dyn),
+                approver_logins,
+            })
+        } else {
             Arc::new(StoreAuthority::new(
                 Arc::clone(&store_dyn),
                 Arc::clone(&allowlist_file),
                 Arc::clone(&policies.engine),
                 Arc::clone(&clock),
             ))
-        });
+        };
         let ports = ApiPorts {
             store: store_dyn,
             clock,
@@ -574,6 +597,314 @@ pub async fn read_to_close(stream: &mut TcpStream, within: Duration) -> Option<V
             Ok(Ok(0)) | Ok(Err(_)) => return Some(raw),
             Ok(Ok(n)) => raw.extend_from_slice(&chunk[..n]),
             Err(_) => return None,
+        }
+    }
+}
+
+// ---- a store that counts what the request path asks of it ----------------------------------
+
+use async_trait::async_trait;
+use factory_domain::scope::{PlatformScope, ResolvedPrincipal, ResolvedRepository};
+use factory_domain::vocabulary::Fidelity;
+use factory_ports::store::{
+    Audience, AuditRecord, GithubRepositoryId, InstallationId, NewAuditEvent, SchemaVersion,
+    StoreError, SystemScope, SystemTx, TokenHash, Tx, Witness,
+};
+use std::sync::atomic::{AtomicUsize, Ordering};
+
+/// What a [`CountingStore`] has been asked.
+#[derive(Debug, Default)]
+pub struct Counts {
+    /// Transactions begun and lookups made: everything that reads or writes tenant data.
+    pub touches: AtomicUsize,
+    /// Platform audit writes (made by the background task, never by a request).
+    pub platform_audits: AtomicUsize,
+}
+
+impl Counts {
+    pub fn touches(&self) -> usize {
+        self.touches.load(Ordering::SeqCst)
+    }
+}
+
+/// The real store with a counter in front, standing in for the "database query counter" of the
+/// webhook tests.
+pub struct CountingStore {
+    pub inner: Arc<PgStore>,
+    pub counts: Arc<Counts>,
+}
+
+#[async_trait]
+impl Store for CountingStore {
+    fn fidelity(&self) -> Fidelity {
+        self.inner.fidelity()
+    }
+
+    async fn begin(
+        &self,
+        scope: factory_domain::scope::TenantScope,
+    ) -> Result<Box<dyn Tx>, StoreError> {
+        self.counts.touches.fetch_add(1, Ordering::SeqCst);
+        self.inner.begin(scope).await
+    }
+
+    async fn begin_system(&self, scope: SystemScope) -> Result<Box<dyn SystemTx>, StoreError> {
+        self.counts.touches.fetch_add(1, Ordering::SeqCst);
+        self.inner.begin_system(scope).await
+    }
+
+    async fn resolve_token(
+        &self,
+        hash: &TokenHash,
+        audience: &Audience,
+    ) -> Result<Option<ResolvedPrincipal>, StoreError> {
+        self.counts.touches.fetch_add(1, Ordering::SeqCst);
+        self.inner.resolve_token(hash, audience).await
+    }
+
+    async fn resolve_installation(
+        &self,
+        installation: InstallationId,
+        repository: GithubRepositoryId,
+    ) -> Result<Option<ResolvedRepository>, StoreError> {
+        self.counts.touches.fetch_add(1, Ordering::SeqCst);
+        self.inner
+            .resolve_installation(installation, repository)
+            .await
+    }
+
+    async fn record_platform_audit(
+        &self,
+        scope: PlatformScope,
+        event: NewAuditEvent,
+    ) -> Result<AuditRecord, StoreError> {
+        self.counts.platform_audits.fetch_add(1, Ordering::SeqCst);
+        self.inner.record_platform_audit(scope, event).await
+    }
+
+    async fn committed(
+        &self,
+        scope: factory_domain::scope::TenantScope,
+        witness: Witness,
+    ) -> Result<bool, StoreError> {
+        self.counts.touches.fetch_add(1, Ordering::SeqCst);
+        self.inner.committed(scope, witness).await
+    }
+
+    async fn schema_version(&self) -> Result<SchemaVersion, StoreError> {
+        self.inner.schema_version().await
+    }
+}
+
+/// Options that put a [`CountingStore`] in front of the real store and hand back its counters.
+pub fn counting(mut options: Options) -> (Options, Arc<Counts>) {
+    let counts = Arc::new(Counts::default());
+    let held = Arc::clone(&counts);
+    options.store_wrapper = Some(Box::new(move |inner| {
+        Arc::new(CountingStore {
+            inner,
+            counts: held,
+        })
+    }));
+    (options, counts)
+}
+
+/// Waits until `check` is true, up to `within`, polling every 50 ms.
+pub async fn eventually<F, Fut>(within: Duration, mut check: F) -> bool
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = bool>,
+{
+    let deadline = tokio::time::Instant::now() + within;
+    loop {
+        if check().await {
+            return true;
+        }
+        if tokio::time::Instant::now() >= deadline {
+            return false;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+}
+
+// ---- stand-ins for the profile and the deliberate breaks --------------------------------------
+
+use factory_domain::ids::JobId;
+use factory_domain::machines::guards::AdmissionFacts;
+use factory_domain::policy::authority::Allowlist;
+use factory_domain::vocabulary::HumanRole;
+use factory_ports::store::PrincipalKind;
+use factory_workflow::commands::AuthorityError;
+use factory_workflow::stages::intake::seams::{AllowlistSource, SeamError};
+
+/// An authority that reports `fake` and gives everyone the same roles.
+pub struct FixedAuthority {
+    pub roles: Vec<HumanRole>,
+}
+
+#[async_trait]
+impl Authority for FixedAuthority {
+    fn fidelity(&self) -> Fidelity {
+        Fidelity::Fake
+    }
+
+    async fn admission(
+        &self,
+        _: TenantId,
+        _: PrincipalId,
+    ) -> Result<AdmissionFacts, AuthorityError> {
+        Err(AuthorityError::Unavailable)
+    }
+
+    async fn roles(&self, _: TenantId, _: PrincipalId) -> Result<Vec<HumanRole>, AuthorityError> {
+        Ok(self.roles.clone())
+    }
+
+    async fn concurrency_allows(&self, _: TenantId, _: JobId) -> Result<bool, AuthorityError> {
+        Ok(true)
+    }
+}
+
+/// An allowlist source that reports `fake`.
+pub struct FakeAllowlist;
+
+#[async_trait]
+impl AllowlistSource for FakeAllowlist {
+    fn fidelity(&self) -> Fidelity {
+        Fidelity::Fake
+    }
+
+    async fn current(&self, _: TenantId) -> Result<Allowlist, SeamError> {
+        Err(SeamError::Unavailable)
+    }
+}
+
+/// THE BREAK "accept a decision authenticated by login": an authority that decides by the login
+/// string of the principal row, the way the API must not.
+pub struct LoginAuthority {
+    pub store: Arc<dyn Store>,
+    pub approver_logins: Vec<String>,
+}
+
+#[async_trait]
+impl Authority for LoginAuthority {
+    fn fidelity(&self) -> Fidelity {
+        Fidelity::Real
+    }
+
+    async fn admission(
+        &self,
+        _: TenantId,
+        _: PrincipalId,
+    ) -> Result<AdmissionFacts, AuthorityError> {
+        Err(AuthorityError::Unavailable)
+    }
+
+    async fn roles(
+        &self,
+        tenant: TenantId,
+        principal: PrincipalId,
+    ) -> Result<Vec<HumanRole>, AuthorityError> {
+        let mut tx = self
+            .store
+            .begin(factory_domain::scope::TenantScope::new(tenant))
+            .await
+            .map_err(|_| AuthorityError::Unavailable)?;
+        let found = tx.get_principal(principal).await;
+        let _ = tx.rollback().await;
+        let found = found.map_err(|_| AuthorityError::Unavailable)?;
+        let by_login = matches!(found.kind, PrincipalKind::Human { .. })
+            && found
+                .login
+                .as_ref()
+                .is_some_and(|login| self.approver_logins.contains(login));
+        Ok(if by_login {
+            vec![
+                HumanRole::Requester,
+                HumanRole::Approver,
+                HumanRole::Operator,
+            ]
+        } else {
+            Vec::new()
+        })
+    }
+
+    async fn concurrency_allows(&self, _: TenantId, _: JobId) -> Result<bool, AuthorityError> {
+        Ok(true)
+    }
+}
+
+/// THE BREAKS "serve tenant B's job to tenant A" and "answer readiness OK while the schema is
+/// behind": a store that forwards to the real one and tampers with one answer.
+///
+/// With `tenant` set it opens every transaction for that tenant, whoever asked. Row-level security
+/// cannot help: the transaction is legitimately that tenant's. With `schema` set it reports that
+/// schema version whatever the database says.
+pub struct TamperedStore {
+    pub inner: Arc<PgStore>,
+    pub tenant: Option<TenantId>,
+    pub schema: Option<SchemaVersion>,
+}
+
+#[async_trait]
+impl Store for TamperedStore {
+    fn fidelity(&self) -> Fidelity {
+        self.inner.fidelity()
+    }
+
+    async fn begin(
+        &self,
+        scope: factory_domain::scope::TenantScope,
+    ) -> Result<Box<dyn Tx>, StoreError> {
+        let scope = self
+            .tenant
+            .map_or(scope, factory_domain::scope::TenantScope::new);
+        self.inner.begin(scope).await
+    }
+
+    async fn begin_system(&self, scope: SystemScope) -> Result<Box<dyn SystemTx>, StoreError> {
+        self.inner.begin_system(scope).await
+    }
+
+    async fn resolve_token(
+        &self,
+        hash: &TokenHash,
+        audience: &Audience,
+    ) -> Result<Option<ResolvedPrincipal>, StoreError> {
+        self.inner.resolve_token(hash, audience).await
+    }
+
+    async fn resolve_installation(
+        &self,
+        i: InstallationId,
+        r: GithubRepositoryId,
+    ) -> Result<Option<ResolvedRepository>, StoreError> {
+        self.inner.resolve_installation(i, r).await
+    }
+
+    async fn record_platform_audit(
+        &self,
+        scope: PlatformScope,
+        event: NewAuditEvent,
+    ) -> Result<AuditRecord, StoreError> {
+        self.inner.record_platform_audit(scope, event).await
+    }
+
+    async fn committed(
+        &self,
+        scope: factory_domain::scope::TenantScope,
+        witness: Witness,
+    ) -> Result<bool, StoreError> {
+        let scope = self
+            .tenant
+            .map_or(scope, factory_domain::scope::TenantScope::new);
+        self.inner.committed(scope, witness).await
+    }
+
+    async fn schema_version(&self) -> Result<SchemaVersion, StoreError> {
+        match self.schema {
+            Some(version) => Ok(version),
+            None => self.inner.schema_version().await,
         }
     }
 }
