@@ -18,12 +18,11 @@
 
 mod support;
 
-use std::fmt::Write as _;
-use std::sync::{Arc, Mutex, OnceLock, PoisonError};
+use std::sync::{Arc, PoisonError};
 
 use factory_testkit::webhook::{FakeWebhookVerifier, WebhookDefect};
 use serde_json::json;
-use support::{Env, Options, Req};
+use support::{Env, Options, Req, captured};
 
 type Check = Result<(), String>;
 
@@ -140,66 +139,6 @@ fn break_comparing_a_token_with_equals_is_caught() {
 }
 
 // ---- 3. log a token ----------------------------------------------------------------------------------
-
-/// Every event the process emits, as text. Installed once for the whole test process; a test looks
-/// for its own token, which no other test shares.
-fn captured() -> &'static Arc<Mutex<Vec<String>>> {
-    static LINES: OnceLock<Arc<Mutex<Vec<String>>>> = OnceLock::new();
-    LINES.get_or_init(|| {
-        let lines = Arc::new(Mutex::new(Vec::new()));
-        let _ = tracing::subscriber::set_global_default(Capture {
-            lines: Arc::clone(&lines),
-            next: std::sync::atomic::AtomicU64::new(1),
-        });
-        lines
-    })
-}
-
-struct Capture {
-    lines: Arc<Mutex<Vec<String>>>,
-    next: std::sync::atomic::AtomicU64,
-}
-
-struct Text(String);
-
-impl tracing::field::Visit for Text {
-    fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
-        let _ = write!(self.0, "{}={value:?} ", field.name());
-    }
-}
-
-impl tracing::Subscriber for Capture {
-    fn enabled(&self, _: &tracing::Metadata<'_>) -> bool {
-        true
-    }
-
-    fn new_span(&self, attributes: &tracing::span::Attributes<'_>) -> tracing::span::Id {
-        let mut text = Text(String::new());
-        attributes.record(&mut text);
-        self.lines
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .push(text.0);
-        tracing::span::Id::from_u64(self.next.fetch_add(1, std::sync::atomic::Ordering::Relaxed))
-    }
-
-    fn record(&self, _: &tracing::span::Id, _: &tracing::span::Record<'_>) {}
-
-    fn record_follows_from(&self, _: &tracing::span::Id, _: &tracing::span::Id) {}
-
-    fn event(&self, event: &tracing::Event<'_>) {
-        let mut text = Text(String::new());
-        event.record(&mut text);
-        self.lines
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .push(text.0);
-    }
-
-    fn enter(&self, _: &tracing::span::Id) {}
-
-    fn exit(&self, _: &tracing::span::Id) {}
-}
 
 async fn no_token_is_logged(env: &Env, leak: impl FnOnce(&str)) -> Check {
     let lines = captured();

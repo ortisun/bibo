@@ -35,6 +35,7 @@ use axum::http::{HeaderMap, StatusCode};
 use axum::response::Response;
 use axum::routing::{MethodFilter, on};
 use http_body_util::{BodyExt, Limited};
+use tracing::Instrument;
 
 use crate::answers::{Answer, ApiError, CORRELATION_HEADER, Reply, render};
 use crate::auth::{Caller, authenticate};
@@ -284,6 +285,17 @@ async fn run(
     };
     let params = path_params(spec.path, parts.uri.path());
     let job_id = params.first().copied().unwrap_or("");
+    // Work on one job runs inside a `factory.job` span (ADR 0013), with the correlation id and the
+    // tenant of the caller. The job id is the path value only when it is a job id: nothing else the
+    // caller sent becomes an attribute.
+    let job_span = |caller: &Caller| {
+        let known = factory_domain::ids::JobId::parse(job_id).map(|id| id.as_text());
+        factory_composition::telemetry::job_stretch(
+            correlation,
+            known.as_deref().unwrap_or("none"),
+            &caller.tenant.as_text(),
+        )
+    };
     match (spec.op, caller) {
         (Op::Live, _) => health::live(),
         (Op::Ready, _) => health::ready(state).await,
@@ -293,10 +305,20 @@ async fn run(
             jobs::submit(state, &caller, &parts.headers, &bytes, correlation).await
         }
         (Op::ListJobs, Some(caller)) => jobs::list(state, &caller, parts.uri.query()).await,
-        (Op::JobStatus, Some(caller)) => jobs::status(state, &caller, job_id).await,
-        (Op::JobTimeline, Some(caller)) => jobs::timeline(state, &caller, job_id).await,
+        (Op::JobStatus, Some(caller)) => {
+            jobs::status(state, &caller, job_id)
+                .instrument(job_span(&caller))
+                .await
+        }
+        (Op::JobTimeline, Some(caller)) => {
+            jobs::timeline(state, &caller, job_id)
+                .instrument(job_span(&caller))
+                .await
+        }
         (Op::Decide, Some(caller)) => {
-            decisions::decide(state, &caller, job_id, &parts.headers, &bytes).await
+            decisions::decide(state, &caller, job_id, &parts.headers, &bytes)
+                .instrument(job_span(&caller))
+                .await
         }
         // A token route without a caller cannot happen: authentication ran first.
         (_, None) => Err(ApiError::Unauthorized),

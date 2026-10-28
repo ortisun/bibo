@@ -26,23 +26,20 @@ factory-composition.workspace = true
 factory-domain.workspace = true
 factory-ports.workspace = true
 factory-workflow.workspace = true
-factory-storage.workspace = true
 factory-observability.workspace = true
 
-async-trait = "0.1.92"
 serde = { version = "1.0.229", default-features = false, features = ["std", "derive"] }
 serde_json = { workspace = true, features = ["std"] }
 thiserror = "2.0.21"
 tracing = "0.1.44"
 tokio = { version = "1.54.1", default-features = false, features = ["rt", "rt-multi-thread", "net", "time", "sync", "macros", "signal"] }
-time = { version = "0.3.55", default-features = false, features = ["std"] }
 uuid = { version = "1.29.0", default-features = false, features = ["std"] }
 
 # NEW DIRECT DEPENDENCIES, PENDING CONFIRMATION BY A PERSON (policies/security.yaml,
 # supply_chain.new_direct_dependency). The master prompt and the architecture overview name Axum on
-# Tokio for the API. Each is MIT or Apache-2.0 and already passes `cargo deny`; see the README of
-# this package, section "Dependencies", for versions, licences and what each one is for. They are
-# used behind two small modules (`server` and `routes`), so a replacement touches those only.
+# Tokio for the API. All pass `cargo deny` as it is; see the README of this package, section
+# "Dependencies", for versions, licences and what each one is for. They are used behind two small
+# modules (`server` and `routes`), so a replacement touches those only.
 #
 # `axum` routes by method and path and extracts the request. Only `http1` and `tokio` are on:
 # no JSON extractor (the API reads the raw body and decodes it itself, so an error answer never
@@ -59,7 +56,8 @@ tower = { version = "0.5.3", default-features = false, features = ["util"] }
 
 [dev-dependencies]
 factory-testkit.workspace = true
-factory-contracts.workspace = true
+factory-storage.workspace = true
+async-trait = "0.1.92"
 # The database test server of the storage crate is included with `#[path]` and needs these.
 diesel = { version = "2.3.14", default-features = false, features = ["postgres_backend"] }
 diesel-async = { version = "0.9.2", default-features = false, features = ["postgres", "deadpool"] }
