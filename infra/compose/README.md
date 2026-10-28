@@ -4,6 +4,8 @@ This folder holds the Docker Compose files for running the factory's dependencie
 
 It is a development setup. It is not the production deployment.
 
+For the full local run (PostgreSQL 18, the artifact volume, the network layout of the sandbox policy, and the places where the factory services plug in), see `local.yml` and `docs/operations/local-deployment.md`. That stack is a separate Compose project (`factory-local`) with its own volumes and port, started by `scripts/local-up.sh`. This folder's `postgres.yml` is still the PostgreSQL 17 development service of `scripts/dev-up.sh`; moving it to 18 belongs to the work package `s1-ci-database-and-generated-checks`.
+
 ## Start and stop
 
 From the repository root:

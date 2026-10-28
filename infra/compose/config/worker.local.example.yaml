@@ -1,0 +1,46 @@
+# An EXAMPLE configuration for the worker in the local stack (infra/compose/local.yml, profile "factory").
+#
+# It follows the example in apps/worker/README.md on feat/slice-0-foundation (read 2026-10-28), with the values
+# this stack decides: the paths of the secret files, of the artifact volume and of the read-only mounts, and the
+# addresses on the Compose networks. It has NOT been run through the worker's parser: no image of the worker
+# exists, and the worker README says an unknown or misspelled setting is an error. Treat it as the starting
+# point for the composition work, and copy it to a file of your own (FACTORY_WORKER_CONFIG) to change it.
+#
+# No secret is here. Every secret is the path of a file that Compose mounts under /run/secrets, and the files
+# are made by scripts/local-up.sh (infra/compose/secrets, never committed).
+#
+# What this stack cannot fill in, because it needs a real credential, which this package does not have and must
+# not invent:
+#   * broker.upstreams (a model provider and its key file) and broker.prices
+#   * github.app_id and github.key_file (a registered GitHub App)
+#   * worker.tenants (the tenant ids the worker serves)
+# Until they are supplied the worker is BLOCKED, which is the right answer.
+
+profile: local
+protected_checkout: /srv/factory/protected
+definitions_root: /srv/factory/protected
+
+database:
+  tenant: { url_file: /run/secrets/db_worker, login: factory_worker, max_connections: 8 }
+  system: { url_file: /run/secrets/db_engine, login: factory_engine, max_connections: 4 }
+
+artifacts: { root: /var/lib/factory/artifacts }
+
+sandbox:
+  images_catalog: /srv/factory/protected/infra/sandbox-images/images.json
+  # The two paths below are mounted into sandbox containers by the Docker daemon, so they are paths on the
+  # machine where the daemon runs, not paths inside this container. A containerized worker cannot make them work
+  # without bind mounts whose inside and outside paths are equal. See docs/operations/local-deployment.md,
+  # "Docker access, an open decision".
+  token_root: /var/lib/factory/tokens
+  workspace_root: /var/lib/factory/workspaces
+
+broker:
+  # Sidecars on the internal "broker" network reach the broker here, so it listens on every address of the
+  # container, not on loopback. The "data" network is the only other network the worker is on.
+  listen: 0.0.0.0:8731
+  upstreams: []
+  prices: []
+
+# github: { app_id: 0, key_file: /run/secrets/github_app_key }     # needs a registered GitHub App
+# worker: { name_prefix: worker, poll_interval_ms: 1000, sweep_interval_s: 10, drain_s: 120, tenants: [] }
