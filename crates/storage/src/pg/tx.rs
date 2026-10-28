@@ -248,7 +248,14 @@ impl PgTx {
 impl Drop for PgTx {
     fn drop(&mut self) {
         if let Some(connection) = self.connection.take() {
-            abandon(&self.shared, connection);
+            if self.busy {
+                // A call was dropped while its statement may still be running on the connection.
+                // The connection is not trusted with a rollback: closing it ends the transaction
+                // on the server, and the pool opens a fresh one.
+                drop(PooledConnection::take(connection));
+            } else {
+                abandon(&self.shared, connection);
+            }
         }
     }
 }

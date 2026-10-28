@@ -167,7 +167,13 @@ impl PgSystemTx {
 impl Drop for PgSystemTx {
     fn drop(&mut self) {
         if let Some(connection) = self.connection.take() {
-            abandon(&self.shared, connection);
+            if self.busy {
+                // A call was dropped while its statement may still be running. The connection is
+                // closed, which ends the transaction and frees its locks on the server.
+                drop(PooledConnection::take(connection));
+            } else {
+                abandon(&self.shared, connection);
+            }
         }
     }
 }
