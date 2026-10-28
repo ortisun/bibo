@@ -11,17 +11,18 @@
 //! * the new runs are listed in the events, so a restarted engine finds them.
 
 use factory_domain::ids::StageRunId;
-use factory_domain::machines::guards::{GuardFacts, SupersedeFacts, evaluate};
+use factory_domain::machines::guards::{GuardFacts, SupersedeFacts};
 use factory_domain::state::{AttemptEvent, AttemptStatus, Guard, StageRunEvent};
 use factory_domain::vocabulary::StageKind;
-use factory_ports::store::{NewStageRun, Tx};
+use factory_ports::store::{AttemptEnd, NewStageRun, StageRunEffects, Tx};
 use serde_json::json;
 
 use super::Engine;
+use super::config::STORE_ATTEMPT_CEILING;
 use super::error::EngineError;
 use super::payload::{self, key};
-use super::progress::{Board, guard_error};
-use super::record::Cx;
+use super::progress::{Board, clear};
+use super::record::{Cx, Step};
 use super::timeline::Timeline;
 use factory_domain::machines::guards::CancelFacts;
 
@@ -63,13 +64,20 @@ impl Engine {
         cause: &'static str,
     ) -> Result<Vec<(StageKind, StageRunId)>, EngineError> {
         let mut created = Vec::with_capacity(kinds.len());
+        let existing = tx.list_stage_runs(cx.job).await?;
         for kind in kinds {
             let id = self.new_stage_run_id();
+            // The next number for this kind. After a rework the new run names the run it replaces.
+            let previous = existing.iter().rfind(|run| run.value.kind == *kind);
             tx.insert_stage_run(NewStageRun {
                 id,
                 job_id: cx.job,
                 kind: *kind,
-                created_at: cx.now,
+                run_number: previous.map_or(1, |run| run.value.run_number.saturating_add(1)),
+                max_attempts: STORE_ATTEMPT_CEILING,
+                rework_of: previous
+                    .filter(|_| matches!(why, Why::Rework))
+                    .map(|run| run.value.id),
             })
             .await?;
             created.push((*kind, id));
@@ -78,11 +86,10 @@ impl Engine {
         for id in runs {
             self.cancel_live_attempts(tx, cx, &timeline, *id).await?;
             let run = tx.get_stage_run(*id).await?;
-            evaluate(
+            let cleared = clear(
                 Guard::UpstreamInvalidated,
                 &GuardFacts::Supersede(why.facts()),
-            )
-            .map_err(guard_error)?;
+            )?;
             let mut payload = payload::for_run(run.value.kind, *id);
             payload = payload::with(payload, key::CAUSE, json!(cause));
             if let Some((_, replacement)) = created.iter().find(|(kind, _)| *kind == run.value.kind)
@@ -93,8 +100,15 @@ impl Engine {
                     payload::run_ref(*replacement, run.value.kind),
                 );
             }
-            cx.move_stage_run(tx, &run, StageRunEvent::Supersede, Some(cause), payload)
-                .await?;
+            cx.move_stage_run(
+                tx,
+                &run,
+                Step::new(StageRunEvent::Supersede, cleared)
+                    .cause(cause)
+                    .payload(payload),
+                StageRunEffects::default(),
+            )
+            .await?;
         }
         Ok(created)
     }
@@ -125,15 +139,19 @@ impl Engine {
                 job: job.value.status,
                 stage_run_is_being_superseded: true,
             });
-            evaluate(Guard::CancelAllowed, &facts).map_err(guard_error)?;
+            let cleared = clear(Guard::CancelAllowed, &facts)?;
             let payload = payload::attempt_event(record.kind, run_id, row.value.number, None);
             cx.move_attempt(
                 tx,
                 &row,
                 row.value.epoch,
-                AttemptEvent::RequestCancel,
-                Some("run-superseded"),
-                payload,
+                Step::new(AttemptEvent::RequestCancel, cleared)
+                    .cause("run-superseded")
+                    .payload(payload),
+                AttemptEnd {
+                    teardown_grace: Some(self.config.teardown_grace),
+                    ..AttemptEnd::default()
+                },
             )
             .await?;
         }

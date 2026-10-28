@@ -9,7 +9,9 @@
 //!   depth limit (found by a scan that builds nothing), and only then parses. The parse itself is
 //!   strict: it counts nodes against a budget, refuses duplicate object keys, and refuses
 //!   trailing data. Then the schema runs, then the path-safety check.
-//! * [`OutputValidator::validate`] (the port) takes a `serde_json::Value` that somebody already
+//! * [`OutputValidator::validate_bytes`] (the port) is the same path, and also returns the SHA-256
+//!   and the size of the exact bytes it checked, so the artifact that stores them has that hash.
+//! * [`OutputValidator::validate_value`] (the port) takes a `serde_json::Value` that somebody already
 //!   parsed. It cannot stop a parse that already happened, so it re-checks the limits on the value
 //!   with an iterative walk (no recursion, so a deep value cannot overflow the stack) and stops at
 //!   the first limit that is broken.
@@ -31,8 +33,9 @@ use std::collections::BTreeMap;
 use std::fmt;
 
 use factory_domain::contracts::Violation;
+use factory_domain::values::Sha256Digest;
 use factory_ports::paths::RepoPath;
-use factory_ports::registry::{ContractKind, OutputValidator};
+use factory_ports::registry::{ContractKind, OutputValidator, ValidatedOutput};
 use serde::de::{DeserializeSeed, Error as _, MapAccess, SeqAccess, Visitor};
 use serde_json::{Map, Number, Value};
 
@@ -305,7 +308,23 @@ impl SchemaOutputValidator {
 }
 
 impl OutputValidator for SchemaOutputValidator {
-    fn validate(
+    fn validate_bytes(
+        &self,
+        kind: ContractKind,
+        version: u32,
+        bytes: &[u8],
+    ) -> Result<ValidatedOutput, Vec<Violation>> {
+        let value = self
+            .parse_and_validate(kind, version, bytes)
+            .map_err(|issues| issues.iter().map(Issue::to_violation).collect::<Vec<_>>())?;
+        Ok(ValidatedOutput {
+            value,
+            sha256: Sha256Digest::of(bytes),
+            size_bytes: u64::try_from(bytes.len()).unwrap_or(u64::MAX),
+        })
+    }
+
+    fn validate_value(
         &self,
         kind: ContractKind,
         version: u32,
@@ -767,7 +786,7 @@ mod tests {
     fn an_unknown_schema_version_is_one_violation() {
         let validator = validator();
         let violations = validator
-            .validate(ContractKind::GateReport, 2, &json!({}))
+            .validate_value(ContractKind::GateReport, 2, &json!({}))
             .expect_err("version 2 is unknown");
         assert_eq!(violations.len(), 1);
         assert!(violations[0].message.contains("version 2 is not supported"));

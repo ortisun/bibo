@@ -4,7 +4,7 @@
 //! from the schema example, so the contract is a real, validated `StageContract`. It reports
 //! fidelity `fake`, which a production engine refuses.
 
-use std::collections::VecDeque;
+use std::collections::{BTreeMap, VecDeque};
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
@@ -13,7 +13,9 @@ use factory_domain::contracts::{Contract, GateReport, ReviewVerdict, StageContra
 use factory_domain::values::{HumanText, MediaType, Slug};
 use factory_domain::vocabulary::RiskTier;
 use factory_domain::vocabulary::{Fidelity, StageKind};
-use factory_ports::agent::{CostMicroUsd, Denial, RoutingNeed, Usage};
+use factory_ports::agent::{
+    CostMicroUsd, Denial, ProbedCapabilities, RoutingNeed, RuntimeCapabilities, RuntimeId, Usage,
+};
 use factory_ports::registry::ContractKind;
 use factory_workflow::audit::AuditAction;
 use factory_workflow::gates::framework::GateDecision;
@@ -44,6 +46,8 @@ pub enum Step {
 pub enum Eval {
     /// A passing report of the scripted gate.
     Pass,
+    /// A passing report, and the handler says it supports the sandbox assurance level.
+    PassClaimingAssurance,
     /// A failing report. The text is the id of the failed check.
     Fail(&'static str),
     /// A report of a gate that could not run.
@@ -72,6 +76,9 @@ pub struct Tweaks {
     pub backoff_initial_ms: i64,
     pub backoff_max_ms: i64,
     pub attempt_timeout_seconds: i64,
+    /// Adds an acceptance criterion that names a gate which never reports, so a pass has a
+    /// criterion with no evidence behind it.
+    pub uncovered_criterion: bool,
 }
 
 impl Default for Tweaks {
@@ -89,6 +96,7 @@ impl Default for Tweaks {
             backoff_initial_ms: 5_000,
             backoff_max_ms: 300_000,
             attempt_timeout_seconds: 900,
+            uncovered_criterion: false,
         }
     }
 }
@@ -130,6 +138,11 @@ pub struct Script {
     pub extra_document: bool,
     /// Whether the output leaves out the required deliverable.
     pub omit_deliverable: bool,
+    /// What a failing run leaves behind: the number of denied tool calls and whether it stored a
+    /// transcript. The handler reports them with `note_failed_run` before it returns the error.
+    pub failed_run: Option<(u32, bool)>,
+    /// The transcripts that failing runs stored, so a test can ask whether the engine kept them.
+    pub transcripts: Vec<factory_domain::contracts::ArtifactRef>,
 }
 
 impl Default for Script {
@@ -152,6 +165,8 @@ impl Default for Script {
             report_sandbox: true,
             extra_document: false,
             omit_deliverable: false,
+            failed_run: None,
+            transcripts: Vec::new(),
         }
     }
 }
@@ -264,6 +279,16 @@ fn resolve_contract(ctx: &ContractContext<'_>, tweaks: &Tweaks) -> StageContract
         "machine_verifiable": true,
         "verification": { "kind": "gate", "ref": "scripted-gate" }
     }]);
+    if tweaks.uncovered_criterion
+        && let Some(criteria) = doc["acceptance_criteria"].as_array_mut()
+    {
+        criteria.push(json!({
+            "id": "unverified-check",
+            "description": "A check that no gate of this stage ever reports on.",
+            "machine_verifiable": true,
+            "verification": { "kind": "gate", "ref": "silent-gate" }
+        }));
+    }
     doc["deliverables"] = json!([{
         "name": "scripted-output",
         "description": "The document the scripted stage produces.",
@@ -298,6 +323,16 @@ impl StageHandler for ScriptedHandler {
                 tier: RecommendedTier::Standard,
                 required: Vec::new(),
                 risk: RiskTier::Low,
+                exclude: Vec::new(),
+                // The router considers only a runtime that was probed. The scripted stage
+                // stands for the probe of the one fake runtime.
+                probed: ProbedCapabilities(BTreeMap::from([(
+                    RuntimeId::new("fake").expect("a runtime"),
+                    RuntimeCapabilities {
+                        runtime_version: "fake".to_owned(),
+                        observations: Vec::new(),
+                    },
+                )])),
             })
     }
 
@@ -324,9 +359,9 @@ impl StageHandler for ScriptedHandler {
         });
         if report {
             ctx.report_sandbox_ready(SandboxReady {
-                started_within_limits: true,
-                tool_grants_in_place: true,
-                capability_probe_satisfied: true,
+                posture_verified: true,
+                tool_grants_recorded: true,
+                probe_satisfies_stage: true,
             });
         }
         self.script.with(|script| {
@@ -386,7 +421,41 @@ impl StageHandler for ScriptedHandler {
                     .collect(),
                 ..StageOutput::default()
             }),
-            Step::Fail(error) => Err(error),
+            Step::Fail(error) => {
+                let failed = self.script.with(|script| script.failed_run);
+                if let Some((denied, transcript)) = failed {
+                    let stored = if transcript {
+                        let reference = ctx
+                            .ports
+                            .artifacts
+                            .put(
+                                b"the redacted transcript of a run that failed".to_vec(),
+                                MediaType::parse("text/plain").expect("a media type"),
+                            )
+                            .await
+                            .expect("the transcript is stored");
+                        self.script
+                            .with(|script| script.transcripts.push(reference.clone()));
+                        Some(reference)
+                    } else {
+                        None
+                    };
+                    ctx.note_failed_run(&factory_ports::agent::AgentRunReport {
+                        outcome: Err(factory_ports::agent::AgentRunError::Timeout),
+                        transcript: stored,
+                        usage: Usage::default(),
+                        runtime_version: None,
+                        exit: None,
+                        permission_denials: (0..denied)
+                            .map(|_| Denial {
+                                tool: "write-file".to_owned(),
+                                reason: "the path is protected".to_owned(),
+                            })
+                            .collect(),
+                    });
+                }
+                Err(error)
+            }
             Step::NeedsHuman => Ok(StageOutput {
                 needs_human: Some(NeedsHumanRequest {
                     reason: Slug::parse("ambiguous-requirement").expect("a slug"),
@@ -421,6 +490,19 @@ impl StageHandler for ScriptedHandler {
                 reports: vec![pass(ctx)],
                 ..GateDecision::default()
             },
+            Eval::PassClaimingAssurance => {
+                let report = pass(ctx);
+                GateDecision {
+                    assurance: vec![
+                        factory_workflow::gates::framework::decision::AssuranceClaim {
+                            level: factory_domain::vocabulary::AssuranceLevel::VerifiedInSandbox,
+                            gate: report.metadata.gate_id.clone(),
+                        },
+                    ],
+                    reports: vec![report],
+                    ..GateDecision::default()
+                }
+            }
             Eval::Fail(check) => GateDecision {
                 reports: vec![report(ctx, "FAILED", check)],
                 ..GateDecision::default()

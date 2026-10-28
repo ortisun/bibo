@@ -14,7 +14,9 @@ use factory_ports::agent::{
     BrokerError, CostMicroUsd, JobTokenId, JobTokenRequest, ModelBroker, TokenState, Usage,
 };
 
-use super::{Check, Context, Report, check_list, ensure, ensure_eq, ensure_err, run_checks};
+use super::{
+    Check, Context, Report, Waiver, check_list, ensure, ensure_eq, ensure_err, run_checks,
+};
 
 /// Whether the broker let a metered request through.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -71,8 +73,18 @@ pub fn checks() -> Vec<BrokerCheck> {
         an_unknown_token_has_no_usage,
         a_token_expires_with_time,
         tokens_are_independent,
+        revoke_for_job_revokes_every_token_of_the_job,
+        metering_to_the_ceiling_revokes_the_token,
+        spend_under_a_revoked_token_is_refused,
     ]
 }
+
+/// The secret check cannot fail through the fake: the type decides what `Debug` shows.
+pub const WAIVERS: &[Waiver] = &[Waiver {
+    check: "a_secret_never_appears_in_debug_output",
+    reason: "JobTokenSecret implements Debug in the ports crate, so no fake can make it show the secret.",
+    trigger: "None: the unit test of JobTokenSecret in factory-ports is the proof. This check guards the real broker's own types.",
+}];
 
 fn cost(micro: u64) -> Usage {
     Usage {
@@ -346,6 +358,92 @@ async fn tokens_are_independent(subject: &dyn BrokerSubject) -> Result<(), Strin
         subject.spend(&two.id, cost(1)).await,
         Spend::Allowed,
         "a request on the second token"
+    );
+    Ok(())
+}
+
+async fn revoke_for_job_revokes_every_token_of_the_job(
+    subject: &dyn BrokerSubject,
+) -> Result<(), String> {
+    let request = subject.request();
+    let first = subject.broker().issue(request.clone()).await.ctx("issue")?;
+    let second = subject.broker().issue(request.clone()).await.ctx("issue")?;
+    let mut other_job = subject.request();
+    other_job.job = factory_domain::ids::JobId::from_uuid(factory_ports::clock::Uuid::from_u128(
+        (99_u128 << 80) | (0x7_u128 << 76) | (0b10_u128 << 62),
+    ));
+    let elsewhere = subject
+        .broker()
+        .issue(other_job)
+        .await
+        .ctx("issue for another job")?;
+    subject
+        .broker()
+        .revoke_for_job(request.job)
+        .await
+        .ctx("revoke for the job")?;
+    for token in [&first, &second] {
+        ensure_eq!(
+            subject.broker().usage(&token.id).await.ctx("usage")?.state,
+            TokenState::Revoked,
+            "a token of the job"
+        );
+    }
+    ensure_eq!(
+        subject
+            .broker()
+            .usage(&elsewhere.id)
+            .await
+            .ctx("usage")?
+            .state,
+        TokenState::Active,
+        "a token of another job"
+    );
+    subject
+        .broker()
+        .revoke_for_job(request.job)
+        .await
+        .ctx("a repeat")?;
+    Ok(())
+}
+
+async fn metering_to_the_ceiling_revokes_the_token(
+    subject: &dyn BrokerSubject,
+) -> Result<(), String> {
+    let request = subject.request();
+    let ceiling = request.cost_ceiling.0;
+    let issued = subject.broker().issue(request).await.ctx("issue")?;
+    subject.spend(&issued.id, cost(ceiling)).await;
+    let standing = subject.broker().usage(&issued.id).await.ctx("usage")?;
+    ensure_eq!(
+        standing.state,
+        TokenState::Revoked,
+        "a token at its ceiling"
+    );
+    ensure_eq!(
+        subject.spend(&issued.id, cost(1)).await,
+        Spend::Refused,
+        "spend after the ceiling"
+    );
+    Ok(())
+}
+
+async fn spend_under_a_revoked_token_is_refused(subject: &dyn BrokerSubject) -> Result<(), String> {
+    let issued = subject
+        .broker()
+        .issue(subject.request())
+        .await
+        .ctx("issue")?;
+    subject.broker().revoke(&issued.id).await.ctx("revoke")?;
+    ensure_eq!(
+        subject.spend(&issued.id, cost(10)).await,
+        Spend::Refused,
+        "spend under a revoked token"
+    );
+    ensure_eq!(
+        subject.broker().usage(&issued.id).await.ctx("usage")?.usage,
+        Usage::default(),
+        "a refused spend adds nothing"
     );
     Ok(())
 }

@@ -24,15 +24,16 @@ use factory_domain::contracts::stage_contract::Placement;
 use factory_domain::contracts::{ArtifactRef, StageContract};
 use factory_domain::machines::failure::FailureClass;
 use factory_domain::machines::guards::{
-    DeadlineFacts, EpochFacts, GuardFacts, OutputFacts, SandboxProvisionFacts, evaluate,
+    DeadlineFacts, EnvironmentCause, EpochFacts, GuardFacts, OutputFacts, SandboxProvisionFacts,
 };
 use factory_domain::machines::retry::AttemptDisposition;
+use factory_domain::scope::TenantScope;
 use factory_domain::state::{AttemptEvent, AttemptStatus, Guard, Status};
 use factory_domain::values::Slug;
 use factory_ports::agent::{
     CostMicroUsd, IssuedJobToken, JobTokenId, JobTokenRef, JobTokenRequest,
 };
-use factory_ports::store::{AuditActor, NewArtifactIndexEntry, StoreError, Tx};
+use factory_ports::store::{AttemptEnd, AuditActor, NewArtifactIndexEntry, Tx};
 use serde_json::{Value, json};
 use tracing::Instrument;
 
@@ -42,8 +43,8 @@ use super::error::EngineError;
 use super::failure::HumanReason;
 use super::gate::Judged;
 use super::payload;
-use super::progress::{Board, upstream_runs};
-use super::record::Cx;
+use super::progress::{Board, clear, upstream_runs};
+use super::record::{Cx, Step};
 use super::timeline::Timeline;
 use crate::audit::{AuditAction, AuditDecision, AuditKind};
 use crate::gates::framework::{Expectation, GateDecision, check_evidence, resolve};
@@ -93,6 +94,9 @@ enum Produced {
     /// The output is valid and stored, and the gate collected its evidence.
     Judged {
         outputs: Vec<NamedArtifact>,
+        /// The document that lists every output by name and hash. Its hash is the attempt's
+        /// output (`AttemptEnd::output`).
+        manifest: ArtifactRef,
         judged: Box<Judged>,
         output: StageOutput,
     },
@@ -130,9 +134,9 @@ struct Watched {
 impl Engine {
     /// Runs the attempt a worker holds, and records the result.
     ///
-    /// The call needs a Tokio runtime with the time driver enabled: the heartbeat of the lease and
-    /// the teardown grace period are timers of that runtime. The lease itself is judged by the
-    /// database clock, not by these timers.
+    /// The heartbeat of the lease and the teardown grace period wait through the engine's
+    /// [`Ticker`](crate::scheduler::Ticker), so the composition root decides how the wait is made.
+    /// The lease itself is judged by the database clock, not by these waits.
     ///
     /// # Errors
     /// The store errors. A handler failure is an [`AttemptOutcome`], not an error.
@@ -195,9 +199,9 @@ impl Engine {
         if !needs_sandbox {
             // No sandbox to wait for: the engine's own preconditions are the whole of the guard.
             let ready = SandboxReady {
-                started_within_limits: true,
-                tool_grants_in_place: true,
-                capability_probe_satisfied: true,
+                posture_verified: true,
+                tool_grants_recorded: true,
+                probe_satisfies_stage: true,
             };
             if let Err(outcome) = lease_outcome(self.mark_running(claimed, ready).await)? {
                 return Ok(outcome);
@@ -278,6 +282,7 @@ impl Engine {
             }
             Some(Ok(Produced::Judged {
                 outputs,
+                manifest,
                 judged,
                 output,
             })) => {
@@ -285,6 +290,7 @@ impl Engine {
                     claimed,
                     &prepared.contract,
                     outputs,
+                    &manifest,
                     &judged,
                     &output,
                     &notes,
@@ -296,12 +302,12 @@ impl Engine {
                 self.teardown_complete(claimed).await?;
                 Ok(AttemptOutcome::Cancelled)
             }
-            Some(Err(PipelineError::Stage(StageError::Blocked(_)))) => {
-                self.commit_blocked(claimed, &notes).await
-            }
             Some(Err(PipelineError::Stage(error))) => {
+                // A stage that cannot run because its environment is missing or unsafe carries
+                // the cause, and the stage run is blocked (`S21`) instead of retried.
                 let class = error.failure_class().unwrap_or(FailureClass::Internal);
-                self.commit_failure(claimed, class, &notes).await
+                self.commit_failure_for(claimed, class, error.environment(), &notes)
+                    .await
             }
             None => {
                 self.commit_failure(claimed, FailureClass::Internal, &notes)
@@ -359,14 +365,14 @@ impl Engine {
     {
         let mut work = std::pin::pin!(work);
         let mut watched = Watched::default();
-        let mut grace: Option<Pin<Box<tokio::time::Sleep>>> = None;
+        let mut grace: Option<Pin<Box<dyn Future<Output = ()> + Send + '_>>> = None;
         loop {
             tokio::select! {
                 outcome = &mut work => {
                     watched.result = Some(outcome);
                     break;
                 }
-                () = tokio::time::sleep(self.config.heartbeat_interval) => {
+                () = self.deps.ticker.sleep(self.config.heartbeat_interval) => {
                     match self.heartbeat(claimed).await {
                         Ok(Pulse::Alive) => {
                             if let Some(ready) = notes.sandbox_ready() {
@@ -509,7 +515,7 @@ impl Engine {
             )
             .await?;
         }
-        tx.commit().await?;
+        cx.commit(tx).await?;
         Ok(())
     }
 
@@ -523,13 +529,15 @@ impl Engine {
         let job = tx.get_job(claimed.job).await?;
         let cx = Cx::new(self, &job.value, self.new_causation_id());
         cx.audit_engine(&mut *tx, action).await?;
-        tx.commit().await?;
+        cx.commit(tx).await?;
         Ok(())
     }
 
-    fn teardown_timer(&self) -> Pin<Box<tokio::time::Sleep>> {
-        let grace: Duration = self.config.teardown_grace;
-        Box::pin(tokio::time::sleep(grace))
+    /// The wait for a cancelled handler to stop, asked of the ticker. The store's own teardown
+    /// deadline (`A10`) is what ends a teardown that never finishes; this wait only stops the
+    /// worker from holding on to a handler that ignores the cancel.
+    fn teardown_timer(&self) -> Pin<Box<dyn Future<Output = ()> + Send + '_>> {
+        self.deps.ticker.sleep(self.config.teardown_grace)
     }
 
     /// Moves the attempt from `STARTING` to `RUNNING` (`A01`) once the sandbox is ready. Does
@@ -550,15 +558,15 @@ impl Engine {
         let job = tx.get_job(claimed.job).await?;
         let cx = Cx::new(self, &job.value, self.new_causation_id());
         let facts = GuardFacts::SandboxProvision(SandboxProvisionFacts {
-            sandbox_started_within_limits: ready.started_within_limits,
-            policy_tool_grants_in_place: ready.tool_grants_in_place,
-            runtime_capability_probe_satisfied: ready.capability_probe_satisfied,
+            posture_verified: ready.posture_verified,
+            tool_grants_recorded: ready.tool_grants_recorded,
+            probe_satisfies_stage: ready.probe_satisfies_stage,
             epoch: EpochFacts {
                 sent_epoch: claimed.epoch.get(),
                 stored_epoch: attempt.value.epoch.get(),
             },
         });
-        evaluate(Guard::SandboxProvisioned, &facts).map_err(super::progress::guard_error)?;
+        let cleared = clear(Guard::SandboxProvisioned, &facts)?;
         let payload = payload::attempt_event(
             claimed.kind,
             claimed.stage_run,
@@ -569,12 +577,11 @@ impl Engine {
             &mut *tx,
             &attempt,
             claimed.epoch,
-            AttemptEvent::SandboxReady,
-            None,
-            payload,
+            Step::new(AttemptEvent::SandboxReady, cleared).payload(payload),
+            AttemptEnd::default(),
         )
         .await?;
-        tx.commit().await?;
+        cx.commit(tx).await?;
         Ok(true)
     }
 
@@ -602,7 +609,7 @@ impl Engine {
             });
         }
         let documents = self
-            .check_output(&prepared.contract, &output)
+            .check_output(claimed, &prepared.contract, &output)
             .await
             .map_err(|()| StageError::InvalidOutput)?;
         let mut outputs = Vec::with_capacity(documents.len() + output.artifacts.len());
@@ -610,6 +617,26 @@ impl Engine {
             outputs.push(self.store_document(name, media_type, value).await?);
         }
         outputs.extend(output.artifacts.iter().cloned());
+        // The attempt's output is one document that names every output, so the record of the
+        // attempt points at exactly what it produced.
+        let listed: Vec<Value> = outputs
+            .iter()
+            .map(|named| {
+                json!({
+                    "name": named.name.as_str(),
+                    "sha256": named.artifact.sha256.as_str(),
+                    "media_type": named.artifact.media_type.as_str(),
+                })
+            })
+            .collect();
+        let manifest = self
+            .store_document(
+                "attempt-output",
+                "application/json",
+                &json!({ "outputs": listed }),
+            )
+            .await?
+            .artifact;
 
         let gate = GateContext {
             identity: prepared.identity,
@@ -669,12 +696,14 @@ impl Engine {
         }
         Ok(Produced::Judged {
             outputs,
+            manifest,
             judged: Box::new(Judged {
                 decision,
                 reports,
                 review,
                 problem,
                 could_not_run,
+                attempt: claimed.attempt,
             }),
             output,
         })
@@ -702,9 +731,11 @@ impl Engine {
     /// back into a message.
     async fn check_output(
         &self,
+        claimed: &ClaimedAttempt,
         contract: &StageContract,
         output: &StageOutput,
     ) -> Result<Vec<(String, String, Value)>, ()> {
+        let tenant = claimed.tenant;
         let declared = |name: &Slug| contract.deliverables.iter().any(|d| &d.name == name);
         let mut documents = Vec::with_capacity(output.documents.len());
         for OutputDocument {
@@ -721,7 +752,7 @@ impl Engine {
                 && self
                     .deps
                     .validator
-                    .validate(*kind, *version, value)
+                    .validate_value(*kind, *version, value)
                     .is_err()
             {
                 return Err(());
@@ -736,7 +767,22 @@ impl Engine {
             if !declared(&artifact.name) {
                 return Err(());
             }
-            match self.deps.artifacts.exists(&artifact.artifact).await {
+            // The artifact store answers only for a hash the tenant has indexed, and a handler
+            // stores a blob without indexing it. The tenant's row is written first, so that the
+            // question "is the blob there" can be asked.
+            if self
+                .index_declared(claimed, std::slice::from_ref(&artifact.artifact))
+                .await
+                .is_err()
+            {
+                return Err(());
+            }
+            match self
+                .deps
+                .artifacts
+                .exists(&TenantScope::new(tenant), &artifact.artifact)
+                .await
+            {
                 Ok(true) => {}
                 Ok(false) | Err(_) => return Err(()),
             }
@@ -751,6 +797,25 @@ impl Engine {
             }
         }
         Ok(documents)
+    }
+
+    /// Records in the tenant's artifact index, in a short transaction of its own, that it holds
+    /// artifacts a handler declared. Indexing is idempotent by hash.
+    async fn index_declared(
+        &self,
+        claimed: &ClaimedAttempt,
+        artifacts: &[ArtifactRef],
+    ) -> Result<(), EngineError> {
+        let mut tx = self.tenant_tx(claimed.tenant).await?;
+        for artifact in artifacts {
+            tx.index_artifact(NewArtifactIndexEntry {
+                artifact: artifact.clone(),
+                origin: Some((claimed.job, claimed.stage_run)),
+            })
+            .await?;
+        }
+        tx.commit().await?;
+        Ok(())
     }
 
     /// Stores one document by its content hash, before the transaction opens.
@@ -797,7 +862,7 @@ impl Engine {
                 output_validates_against_outputs_schema: true,
                 output_artifact_hash_stored: true,
             });
-            evaluate(Guard::OutputSchemaValid, &facts).map_err(super::progress::guard_error)?;
+            let cleared = clear(Guard::OutputSchemaValid, &facts)?;
             self.index(
                 &mut *tx,
                 &cx,
@@ -809,14 +874,17 @@ impl Engine {
                 &mut *tx,
                 &attempt,
                 claimed.epoch,
-                AttemptEvent::ReportSuccess,
-                None,
-                payload::attempt_event(
+                Step::new(AttemptEvent::ReportSuccess, cleared).payload(payload::attempt_event(
                     claimed.kind,
                     claimed.stage_run,
                     claimed.attempt_number,
                     None,
-                ),
+                )),
+                // The request for a person is this attempt's output.
+                AttemptEnd {
+                    output: Some(request.artifact.sha256.clone()),
+                    ..AttemptEnd::default()
+                },
             )
             .await?;
             self.escalate_running(
@@ -830,7 +898,7 @@ impl Engine {
                 .await
         }
         .await;
-        Ok(match self.conclude(tx, recorded).await? {
+        Ok(match self.conclude(tx, &cx, recorded).await? {
             Ok(()) => AttemptOutcome::NeedsHuman,
             Err(outcome) => outcome,
         })
@@ -839,11 +907,13 @@ impl Engine {
     /// Records a valid output and the gate that judged it, in one transaction: the attempt
     /// succeeds (`A04`), the stage run goes through `GATING` and takes the move that the evidence
     /// calls for, and the ledger entries that justify the move are appended with it (INV-03).
+    #[allow(clippy::too_many_arguments)]
     async fn commit_judged(
         &self,
         claimed: &ClaimedAttempt,
         contract: &StageContract,
         outputs: Vec<NamedArtifact>,
+        manifest: &ArtifactRef,
         judged: &Judged,
         output: &StageOutput,
         notes: &Notes,
@@ -864,9 +934,10 @@ impl Engine {
                 output_validates_against_outputs_schema: true,
                 output_artifact_hash_stored: !outputs.is_empty(),
             });
-            evaluate(Guard::OutputSchemaValid, &facts).map_err(super::progress::guard_error)?;
+            let cleared = clear(Guard::OutputSchemaValid, &facts)?;
             let mut stored: Vec<ArtifactRef> =
                 outputs.iter().map(|named| named.artifact.clone()).collect();
+            stored.push(manifest.clone());
             stored.extend(judged.reports.iter().cloned());
             stored.extend(judged.review.iter().cloned());
             self.index(&mut *tx, &cx, claimed, &stored).await?;
@@ -874,14 +945,16 @@ impl Engine {
                 &mut *tx,
                 &attempt,
                 claimed.epoch,
-                AttemptEvent::ReportSuccess,
-                None,
-                payload::attempt_event(
+                Step::new(AttemptEvent::ReportSuccess, cleared).payload(payload::attempt_event(
                     claimed.kind,
                     claimed.stage_run,
                     claimed.attempt_number,
                     None,
-                ),
+                )),
+                AttemptEnd {
+                    output: Some(manifest.sha256.clone()),
+                    ..AttemptEnd::default()
+                },
             )
             .await?;
             self.gate_stage(&mut *tx, &cx, &run, contract, judged, &outputs)
@@ -890,7 +963,7 @@ impl Engine {
                 .await
         }
         .await;
-        Ok(match self.conclude(tx, recorded).await? {
+        Ok(match self.conclude(tx, &cx, recorded).await? {
             Ok(()) => AttemptOutcome::Succeeded,
             Err(outcome) => outcome,
         })
@@ -907,8 +980,7 @@ impl Engine {
         for artifact in artifacts {
             tx.index_artifact(NewArtifactIndexEntry {
                 artifact: artifact.clone(),
-                stage_run_id: Some(claimed.stage_run),
-                created_at: cx.now,
+                origin: Some((cx.job, claimed.stage_run)),
             })
             .await?;
         }
@@ -921,15 +993,16 @@ impl Engine {
     async fn conclude<T>(
         &self,
         tx: Box<dyn Tx>,
+        cx: &Cx<'_>,
         recorded: Result<T, EngineError>,
     ) -> Result<Result<T, AttemptOutcome>, EngineError> {
         match recorded {
-            Ok(value) => match tx.commit().await {
+            Ok(value) => match cx.commit(tx).await {
                 Ok(()) => Ok(Ok(value)),
-                Err(StoreError::Conflict | StoreError::LeaseFenced) => {
+                Err(EngineError::Conflict | EngineError::LeaseFenced) => {
                     Ok(Err(AttemptOutcome::LeaseLost))
                 }
-                Err(other) => Err(other.into()),
+                Err(other) => Err(other),
             },
             Err(EngineError::LeaseFenced | EngineError::Conflict) => {
                 Ok(Err(AttemptOutcome::LeaseLost))
@@ -947,6 +1020,19 @@ impl Engine {
         class: FailureClass,
         notes: &Notes,
     ) -> Result<AttemptOutcome, EngineError> {
+        self.commit_failure_for(claimed, class, None, notes).await
+    }
+
+    /// Fails the attempt with `class`. When `environment` names a cause, the stage run is blocked
+    /// before a retry or a person is considered (`S21`); otherwise the stage run retries, asks a
+    /// person or fails by the retry rules.
+    async fn commit_failure_for(
+        &self,
+        claimed: &ClaimedAttempt,
+        class: FailureClass,
+        environment: Option<EnvironmentCause>,
+        notes: &Notes,
+    ) -> Result<AttemptOutcome, EngineError> {
         let mut tx = self.tenant_tx(claimed.tenant).await?;
         let attempt = tx.get_attempt(claimed.attempt).await?;
         if attempt.value.status.is_terminal() {
@@ -957,104 +1043,74 @@ impl Engine {
         let from = attempt.value.status;
         let recorded = async {
             let now = tx.database_time().await?;
-            let event = match class {
+            let (event, cleared, end) = match class {
                 FailureClass::TimedOut => {
                     let facts = GuardFacts::Deadline(DeadlineFacts {
                         now,
                         attempt_deadline: claimed.deadline_at,
                     });
-                    evaluate(Guard::DeadlinePassed, &facts)
-                        .map_err(super::progress::guard_error)?;
-                    AttemptEvent::DeadlineExceeded
+                    let cleared = clear(Guard::DeadlinePassed, &facts)?;
+                    // A timeout is a status of the attempt, not a failure class in its row.
+                    (
+                        AttemptEvent::DeadlineExceeded,
+                        cleared,
+                        AttemptEnd::default(),
+                    )
                 }
                 _ => {
                     let facts = GuardFacts::Epoch(EpochFacts {
                         sent_epoch: claimed.epoch.get(),
                         stored_epoch: attempt.value.epoch.get(),
                     });
-                    evaluate(Guard::EpochCurrent, &facts).map_err(super::progress::guard_error)?;
+                    let cleared = clear(Guard::EpochCurrent, &facts)?;
                     // Before the sandbox was up, the only failure the attempt machine has is
-                    // `provision_failed`. The class is in the event.
-                    class
-                        .attempt_event(from)
-                        .unwrap_or(AttemptEvent::ProvisionFailed)
+                    // `provision_failed`. The class is in the row and in the event.
+                    (
+                        class
+                            .attempt_event(from)
+                            .unwrap_or(AttemptEvent::ProvisionFailed),
+                        cleared,
+                        AttemptEnd {
+                            failure_class: Some(class),
+                            ..AttemptEnd::default()
+                        },
+                    )
                 }
             };
+            let cause = class.as_str().to_ascii_lowercase().replace('_', "-");
             cx.move_attempt(
                 &mut *tx,
                 &attempt,
                 claimed.epoch,
-                event,
-                Some(&class.as_str().to_ascii_lowercase().replace('_', "-")),
-                payload::attempt_event(
-                    claimed.kind,
-                    claimed.stage_run,
-                    claimed.attempt_number,
-                    Some(class),
-                ),
+                Step::new(event, cleared)
+                    .cause(&cause)
+                    .payload(payload::attempt_event(
+                        claimed.kind,
+                        claimed.stage_run,
+                        claimed.attempt_number,
+                        Some(class),
+                    )),
+                end,
             )
             .await?;
             self.record_handler_notes(&mut *tx, &cx, claimed, notes, &StageOutput::default())
                 .await?;
             let disposition = self
-                .after_attempt_failed(&mut *tx, &cx, claimed.stage_run, claimed.attempt, class)
+                .after_attempt_failed(
+                    &mut *tx,
+                    &cx,
+                    claimed.stage_run,
+                    claimed.attempt,
+                    class,
+                    environment,
+                )
                 .await?;
             Ok::<Option<AttemptDisposition>, EngineError>(disposition)
         }
         .await;
-        Ok(match self.conclude(tx, recorded).await? {
+        Ok(match self.conclude(tx, &cx, recorded).await? {
             Ok(Some(then)) => AttemptOutcome::Failed { class, then },
             Ok(None) => AttemptOutcome::Cancelled,
-            Err(outcome) => outcome,
-        })
-    }
-
-    /// A stage that cannot run because something it needs is missing fails closed: the attempt
-    /// fails and the stage run waits for a person. It is never retried with other settings.
-    async fn commit_blocked(
-        &self,
-        claimed: &ClaimedAttempt,
-        notes: &Notes,
-    ) -> Result<AttemptOutcome, EngineError> {
-        let mut tx = self.tenant_tx(claimed.tenant).await?;
-        let attempt = tx.get_attempt(claimed.attempt).await?;
-        if attempt.value.status.is_terminal() {
-            return Ok(AttemptOutcome::LeaseLost);
-        }
-        let job = tx.get_job(claimed.job).await?;
-        let cx = Cx::new(self, &job.value, self.new_causation_id()).with_cost(notes.cost());
-        let class = FailureClass::PolicyDenied;
-        let from = attempt.value.status;
-        let recorded = async {
-            cx.move_attempt(
-                &mut *tx,
-                &attempt,
-                claimed.epoch,
-                class
-                    .attempt_event(from)
-                    .unwrap_or(AttemptEvent::ProvisionFailed),
-                Some("stage-blocked"),
-                payload::attempt_event(
-                    claimed.kind,
-                    claimed.stage_run,
-                    claimed.attempt_number,
-                    Some(class),
-                ),
-            )
-            .await?;
-            self.record_handler_notes(&mut *tx, &cx, claimed, notes, &StageOutput::default())
-                .await?;
-            self.escalate_running(&mut *tx, &cx, claimed.stage_run, HumanReason::Blocked)
-                .await
-        }
-        .await;
-        Ok(match self.conclude(tx, recorded).await? {
-            Ok(()) => AttemptOutcome::Failed {
-                class,
-                then: AttemptDisposition::Escalate(
-                    factory_domain::machines::retry::EscalationCause::AttemptLimit,
-                ),
-            },
             Err(outcome) => outcome,
         })
     }
@@ -1069,12 +1125,25 @@ impl Engine {
         notes: &Notes,
         output: &StageOutput,
     ) -> Result<(), EngineError> {
-        let actor = AuditActor::Component(Slug::parse(&format!(
+        let actor = AuditActor::System(Slug::parse(&format!(
             "stage-handler.{}",
             claimed.kind.as_str().to_ascii_lowercase()
         ))?);
         for action in notes.take_audit() {
             cx.audit(tx, actor.clone(), action).await?;
+        }
+        // A run that failed still reports the tool calls policy denied and its transcript.
+        for _ in 0..notes.take_denials() {
+            cx.audit(
+                tx,
+                actor.clone(),
+                AuditAction::new(AuditKind::ToolCallDenied, AuditDecision::Denied),
+            )
+            .await?;
+        }
+        if let Some(transcript) = notes.take_transcript() {
+            self.index(tx, cx, claimed, std::slice::from_ref(&transcript))
+                .await?;
         }
         for _ in &output.permission_denials {
             cx.audit(

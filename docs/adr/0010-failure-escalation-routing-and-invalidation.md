@@ -1,9 +1,13 @@
 # 0010: Limits ask a person, a skipped stage satisfies its dependants, unfixable findings go to a person, and every outside change has a row in the invalidation table
 
-- Status: Accepted by the architect. The defaults below are **pending human confirmation** and are listed in [ADR 0009](0009-operating-defaults-pending-confirmation.md), items 7 to 11.
+- Status: Accepted by the architect. The defaults below are **pending human confirmation** and are listed in [ADR 0009](0009-operating-defaults-pending-confirmation.md), items 7 to 11. Revised again on 2026-10-27 by ADR 0014 (see "Revision note (ADR 0014)").
 - Date: 2026-10-27
 - Deciders: software_architect, after the engineers who wrote the state machines in `domain` found the gaps
 - Related: [state machines](../architecture/state-machine.md), [`state-machine.json`](../architecture/state-machine.json), [ADR 0001](0001-orchestration-engine.md), [ADR 0009](0009-operating-defaults-pending-confirmation.md), [ADR 0011](0011-canonical-time-and-numbers.md)
+
+## Revision note (ADR 0014)
+
+Revised on 2026-10-27 by [ADR 0014](0014-ports-v1-1-claim-protocol-and-port-revision.md): two transitions are added. `S21` blocks a stage run whose attempt ended because the environment is missing or unsafe, and takes row 0 of the order of moves after a failed attempt. `S22` sends a new `INTAKE` run to a person before any agent reads a request that changed after it was authorized. `G_UNRECOVERABLE` is restated so it is built from the listing of stage runs.
 
 ## Context and problem statement
 

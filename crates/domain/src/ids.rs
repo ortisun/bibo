@@ -76,3 +76,49 @@ uuid_id! {
     /// One run of an experiment, cited as evidence.
     pub struct ExperimentRunId("experiment run id")
 }
+uuid_id! {
+    /// A repository registered for a tenant.
+    pub struct RepositoryId("repository id")
+}
+uuid_id! {
+    /// One approver decision.
+    pub struct ApprovalId("approval id")
+}
+uuid_id! {
+    /// One recorded webhook delivery. This is the row, not the identifier GitHub puts in a header.
+    pub struct WebhookDeliveryId("webhook delivery id")
+}
+uuid_id! {
+    /// One audit record.
+    pub struct AuditEventId("audit event id")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_new_identifiers_are_distinct_types_that_round_trip_as_text() {
+        let uuid = uuid::Uuid::from_u128(0x0190_0000_0000_7000_8000_0000_0000_0001);
+        let repository = RepositoryId::from_uuid(uuid);
+        let approval = ApprovalId::from_uuid(uuid);
+        let delivery = WebhookDeliveryId::from_uuid(uuid);
+        let audit = AuditEventId::from_uuid(uuid);
+        assert_eq!(
+            RepositoryId::parse(&repository.as_text()).unwrap(),
+            repository
+        );
+        assert_eq!(ApprovalId::parse(&approval.as_text()).unwrap(), approval);
+        assert_eq!(
+            WebhookDeliveryId::parse(&delivery.as_text()).unwrap(),
+            delivery
+        );
+        assert_eq!(AuditEventId::parse(&audit.as_text()).unwrap(), audit);
+    }
+
+    #[test]
+    fn a_malformed_identifier_names_what_it_was_meant_to_be() {
+        let message = RepositoryId::parse("not-a-uuid").unwrap_err().to_string();
+        assert!(message.contains("repository id"), "{message}");
+    }
+}

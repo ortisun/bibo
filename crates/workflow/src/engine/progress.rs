@@ -9,25 +9,28 @@
 //! sees the effect of the moves before it. The number of rounds is bounded by the size of the
 //! job, so a bug cannot make it loop.
 
-use factory_domain::contracts::Contract;
 use factory_domain::contracts::evidence_ledger_entry::{ClaimKind, Evidence, SourceEvidence};
+use factory_domain::contracts::{Contract, StageContract};
 use factory_domain::ids::StageRunId;
 use factory_domain::machines::guards::stage_run::satisfies_dependants;
 use factory_domain::machines::guards::{
-    GuardFacts, NotApplicableBasis, NotApplicableFacts, PipelineScopeFacts, RejectionFacts,
-    StageBoardFacts, UnrecoverableFacts, UpstreamFacts, evaluate,
+    GuardCleared, GuardFacts, NotApplicableBasis, NotApplicableFacts, PipelineScopeFacts,
+    ReauthorizationFacts, RejectionFacts, StageBoardFacts, UnrecoverableFacts, UpstreamFacts,
+    evaluate,
 };
 use factory_domain::machines::snapshot::StageRunSnapshot;
 use factory_domain::state::{Guard, JobEvent, JobStatus, StageRunEvent, StageRunStatus};
-use factory_domain::values::{HumanText, Sha256Digest};
-use factory_domain::vocabulary::{ConfidenceLevel, StageKind};
-use factory_ports::store::{Job, StageRun, Tx, Versioned};
+use factory_domain::values::{HumanText, MediaType, Sha256Digest};
+use factory_domain::vocabulary::{ConfidenceLevel, GateOutcome, StageKind};
+use factory_ports::store::{
+    GateRecord, Job, NewArtifactIndexEntry, StageRun, StageRunEffects, StoreError, Tx, Versioned,
+};
 
 use super::Engine;
 use super::error::EngineError;
 use super::ledger::{ClaimSpec, ledger_verifies};
 use super::payload;
-use super::record::Cx;
+use super::record::{Cx, Step};
 use super::timeline::{RunRecord, Timeline};
 use crate::handlers::{
     Applicability, ContractContext, RunIdentity, SkipBasis, SkipRule, UpstreamRun,
@@ -69,6 +72,18 @@ impl Board {
     /// True when some run has this status.
     fn any(&self, status: StageRunStatus) -> bool {
         self.runs.iter().any(|run| run.value.status == status)
+    }
+
+    /// True when a run of the same stage kind was created after this one. The board lists runs in
+    /// the order they were created.
+    fn has_newer_run_of_kind(&self, id: StageRunId) -> bool {
+        let Some(position) = self.runs.iter().position(|run| run.value.id == id) else {
+            return false;
+        };
+        let kind = self.runs[position].value.kind;
+        self.runs[position + 1..]
+            .iter()
+            .any(|run| run.value.kind == kind)
     }
 }
 
@@ -185,9 +200,9 @@ impl Engine {
             let snaps = board.snapshots();
             let facts = GuardFacts::StageBoard(StageBoardFacts { stage_runs: &snaps });
             if !board.any(StageRunStatus::Blocked)
-                && evaluate(Guard::BlockDispositionsRecorded, &facts).is_ok()
+                && let Ok(cleared) = evaluate(Guard::BlockDispositionsRecorded, &facts)
             {
-                cx.move_job(tx, job, JobEvent::Unblock, None, Default::default())
+                cx.move_job(tx, job, Step::new(JobEvent::Unblock, cleared))
                     .await?;
                 return Ok(Round::Moved);
             }
@@ -212,68 +227,62 @@ impl Engine {
                 reject_decision_recorded: true,
                 decider_is_authorized_approver: true,
             });
-            evaluate(Guard::RejectionRecorded, &facts).map_err(guard_error)?;
+            let cleared = clear(Guard::RejectionRecorded, &facts)?;
             cx.move_job(
                 tx,
                 job,
-                JobEvent::RejectJob,
-                Some("approver-rejected"),
-                Default::default(),
+                Step::new(JobEvent::RejectJob, cleared).cause("approver-rejected"),
             )
             .await?;
             return Ok(Round::Moved);
         }
 
         if status == JobStatus::Active {
+            // A failed run that a newer run of its kind already replaces is not what ends the
+            // job: only the newest run of a stage kind counts (`G_UNRECOVERABLE`).
             let failed = timeline.runs.iter().any(|record| {
                 !record.rejected
-                    && board
-                        .run(record.id)
-                        .is_some_and(|run| run.value.status == StageRunStatus::Failed)
+                    && board.run(record.id).is_some_and(|run| {
+                        run.value.status == StageRunStatus::Failed
+                            && !board.has_newer_run_of_kind(run.value.id)
+                    })
             });
             if failed {
                 let facts = GuardFacts::Unrecoverable(UnrecoverableFacts {
                     stage_run_failed: true,
+                    newer_run_of_kind_exists: false,
                     rework_route_remains: false,
                     retry_budget_remains: false,
                     hard_limit_reached: false,
                     policy_says_fail: false,
                 });
-                evaluate(Guard::Unrecoverable, &facts).map_err(guard_error)?;
+                let cleared = clear(Guard::Unrecoverable, &facts)?;
                 cx.move_job(
                     tx,
                     job,
-                    JobEvent::FailJob,
-                    Some("stage-failed"),
-                    Default::default(),
+                    Step::new(JobEvent::FailJob, cleared).cause("stage-failed"),
                 )
                 .await?;
                 return Ok(Round::Moved);
             }
             if board.any(StageRunStatus::WaitingForHuman)
-                && evaluate(Guard::AnyStageWaiting, &board_facts).is_ok()
+                && let Ok(cleared) = evaluate(Guard::AnyStageWaiting, &board_facts)
             {
-                cx.move_job(tx, job, JobEvent::StageNeedsHuman, None, Default::default())
+                cx.move_job(tx, job, Step::new(JobEvent::StageNeedsHuman, cleared))
                     .await?;
                 return Ok(Round::Moved);
             }
             if board.any(StageRunStatus::Blocked)
-                && evaluate(Guard::AnyStageBlocked, &board_facts).is_ok()
+                && let Ok(cleared) = evaluate(Guard::AnyStageBlocked, &board_facts)
             {
-                cx.move_job(tx, job, JobEvent::Block, None, Default::default())
+                cx.move_job(tx, job, Step::new(JobEvent::Block, cleared))
                     .await?;
                 return Ok(Round::Moved);
             }
-        } else if evaluate(Guard::NoStageWaiting, &board_facts).is_ok() {
+        } else if let Ok(cleared) = evaluate(Guard::NoStageWaiting, &board_facts) {
             // The job was waiting and no stage run waits for a person any more.
-            cx.move_job(
-                tx,
-                job,
-                JobEvent::HumanWaitResolved,
-                None,
-                Default::default(),
-            )
-            .await?;
+            cx.move_job(tx, job, Step::new(JobEvent::HumanWaitResolved, cleared))
+                .await?;
             return Ok(Round::Moved);
         }
 
@@ -281,19 +290,87 @@ impl Engine {
             return Ok(Round::Settled);
         }
 
-        if self
+        if let Some(cleared) = self
             .pipeline_complete(tx, cx, timeline, board, &snaps)
             .await?
         {
-            cx.move_job(tx, job, JobEvent::Complete, None, Default::default())
+            cx.move_job(tx, job, Step::new(JobEvent::Complete, cleared))
                 .await?;
+            return Ok(Round::Moved);
+        }
+
+        // A new intake run made after an edit of the request waits for the requester before
+        // any attempt can read the new text (`S22`).
+        if self
+            .require_reauthorization(tx, cx, timeline, board)
+            .await?
+        {
             return Ok(Round::Moved);
         }
 
         self.promote_one(tx, cx, timeline, board, &snaps).await
     }
 
-    /// True when guard `G_PIPELINE_SCOPE_COMPLETE` holds for the job.
+    /// Takes `S22` for a `READY` intake run that was made after the request was edited, when the
+    /// request now differs from the one the requester authorized (`G_REAUTHORIZATION_REQUIRED`).
+    /// Returns whether it made the move.
+    ///
+    /// The requester authorized the revision before the edit. Once a person has answered the
+    /// wait, the run holds a human answer and the current revision counts as authorized, so the
+    /// run goes on. A job with no recorded original request has nothing to compare, and the move
+    /// is not taken.
+    async fn require_reauthorization(
+        &self,
+        tx: &mut dyn Tx,
+        cx: &Cx<'_>,
+        timeline: &Timeline,
+        board: &Board,
+    ) -> Result<bool, EngineError> {
+        for run in &board.runs {
+            if run.value.status != StageRunStatus::Ready || run.value.kind != StageKind::Intake {
+                continue;
+            }
+            let Some(record) = timeline.run(run.value.id) else {
+                continue;
+            };
+            if !record.reauthorize {
+                continue;
+            }
+            let latest = match tx.get_original_request(cx.job, None).await {
+                Ok(latest) => latest,
+                Err(StoreError::NotFound) => continue,
+                Err(other) => return Err(other.into()),
+            };
+            let authorized = if record.human_inputs.is_empty() && latest.revision > 1 {
+                tx.get_original_request(cx.job, Some(latest.revision - 1))
+                    .await?
+                    .content_sha256
+            } else {
+                latest.content_sha256.clone()
+            };
+            let facts = GuardFacts::Reauthorization(ReauthorizationFacts {
+                authorized_request: Some(&authorized),
+                current_request: &latest.content_sha256,
+                policy_asks_confirmation: false,
+            });
+            let Ok(cleared) = evaluate(Guard::ReauthorizationRequired, &facts) else {
+                continue;
+            };
+            cx.move_stage_run(
+                tx,
+                run,
+                Step::new(StageRunEvent::RequireReauthorization, cleared)
+                    .cause("request-edited")
+                    .payload(payload::for_run(run.value.kind, run.value.id)),
+                StageRunEffects::default(),
+            )
+            .await?;
+            return Ok(true);
+        }
+        Ok(false)
+    }
+
+    /// The proof that guard `G_PIPELINE_SCOPE_COMPLETE` holds for the job, or `None`.
     async fn pipeline_complete(
         &self,
         tx: &mut dyn Tx,
@@ -301,7 +378,7 @@ impl Engine {
         timeline: &Timeline,
         board: &Board,
         snaps: &[StageRunSnapshot],
-    ) -> Result<bool, EngineError> {
+    ) -> Result<Option<GuardCleared>, EngineError> {
         // Cheap checks first: the ledger is read only when the stages are done.
         let scope = &self.config.scope;
         let every_stage_done = scope.iter().all(|kind| {
@@ -310,7 +387,7 @@ impl Engine {
                 .is_some_and(|run| satisfies_dependants(run.value.status))
         });
         if !every_stage_done {
-            return Ok(false);
+            return Ok(None);
         }
         let approved = !scope.contains(&StageKind::Approval)
             || timeline.runs_of(StageKind::Approval).any(|record| {
@@ -326,7 +403,7 @@ impl Engine {
             approval_decision_is_approve: approved,
             ledger_chain_verifies: chain,
         });
-        Ok(evaluate(Guard::PipelineScopeComplete, &facts).is_ok())
+        Ok(evaluate(Guard::PipelineScopeComplete, &facts).ok())
     }
 
     /// Promotes the first `PENDING` run whose upstream is done: to `READY` (`S01`), or to
@@ -360,14 +437,27 @@ impl Engine {
                 consumed_artifact_hashes_current: self.upstream_is_current(board, run.value.kind),
                 stage_contract_resolved_and_valid: contract_ok,
             });
-            if evaluate(Guard::UpstreamPassed, &facts).is_err() {
+            let Ok(cleared) = evaluate(Guard::UpstreamPassed, &facts) else {
                 continue;
-            }
+            };
             match handler.applicability(&ccx) {
                 Applicability::Applies => {
+                    let contract = handler.contract(&ccx).map_err(|_| {
+                        EngineError::Corrupt("the stage contract no longer resolves")
+                    })?;
+                    let contract_sha256 =
+                        self.store_contract(tx, cx, run.value.id, &contract).await?;
                     let payload = payload::for_run(run.value.kind, run.value.id);
-                    cx.move_stage_run(tx, run, StageRunEvent::PreconditionsMet, None, payload)
-                        .await?;
+                    cx.move_stage_run(
+                        tx,
+                        run,
+                        Step::new(StageRunEvent::PreconditionsMet, cleared).payload(payload),
+                        StageRunEffects {
+                            contract_sha256: Some(contract_sha256),
+                            ..StageRunEffects::default()
+                        },
+                    )
+                    .await?;
                 }
                 Applicability::NotApplicable(rule) => {
                     self.skip_run(tx, cx, run, record, &rule).await?;
@@ -409,7 +499,7 @@ impl Engine {
             basis: Some(basis),
             rule_and_inputs_recorded: true,
         });
-        evaluate(Guard::NotApplicableDecided, &facts).map_err(guard_error)?;
+        let cleared = clear(Guard::NotApplicableDecided, &facts)?;
         let citation = HumanText::parse(&format!(
             "Skip rule {} states that the {} stage does not apply: {}",
             rule.rule,
@@ -444,13 +534,56 @@ impl Engine {
         cx.move_stage_run(
             tx,
             run,
-            StageRunEvent::MarkNotApplicable,
-            Some("not-applicable"),
-            payload,
+            Step::new(StageRunEvent::MarkNotApplicable, cleared)
+                .cause("not-applicable")
+                .payload(payload),
+            StageRunEffects {
+                gate: Some(GateRecord {
+                    outcome: GateOutcome::NotApplicable,
+                    report_sha256: None,
+                    failing_set_sha256: None,
+                }),
+                ..StageRunEffects::default()
+            },
         )
         .await?;
         Ok(())
     }
+
+    /// Stores the resolved contract by its content hash and records that the tenant holds it, so
+    /// that `S01` can name it (`StageRunEffects::contract_sha256`). A `put` is idempotent and
+    /// bounded, and the index row is written in this transaction.
+    async fn store_contract(
+        &self,
+        tx: &mut dyn Tx,
+        cx: &Cx<'_>,
+        run: StageRunId,
+        contract: &StageContract,
+    ) -> Result<Sha256Digest, EngineError> {
+        let bytes = serde_json::to_vec(contract)
+            .map_err(|error| EngineError::Invalid(error.to_string()))?;
+        let stored = self
+            .deps
+            .artifacts
+            .put(bytes, MediaType::parse("application/json")?)
+            .await
+            .map_err(|error| EngineError::Artifacts(error.to_string()))?;
+        tx.index_artifact(NewArtifactIndexEntry {
+            artifact: stored.clone(),
+            origin: Some((cx.job, run)),
+        })
+        .await?;
+        Ok(stored.sha256)
+    }
+}
+
+/// Checks a guard on `facts` and returns the proof that a move needs.
+///
+/// # Errors
+/// [`EngineError::GuardUnmet`] when the guard does not hold, and [`EngineError::Corrupt`] when the
+/// engine passed facts of the wrong kind.
+pub(crate) fn clear(guard: Guard, facts: &GuardFacts<'_>) -> Result<GuardCleared, EngineError> {
+    evaluate(guard, facts).map_err(guard_error)
 }
 
 /// A guard that did not hold, as an engine error.

@@ -4,14 +4,16 @@
 //! re-hashed on every read, and refused above a size limit. That is what the content-addressed
 //! store of ADR 0008 promises, without a disk.
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::sync::Mutex;
 
 use async_trait::async_trait;
 use factory_domain::contracts::ArtifactRef;
+use factory_domain::ids::TenantId;
+use factory_domain::scope::TenantScope;
 use factory_domain::values::{MediaType, NonNegativeInt, Sha256Digest};
 use factory_domain::vocabulary::Fidelity;
-use factory_ports::artifact::{ArtifactBackend, ArtifactError, ArtifactStore};
+use factory_ports::artifact::{ArtifactBackend, ArtifactError, ArtifactStore, BackendStep};
 
 use crate::contracts::artifact::ArtifactStoreSubject;
 
@@ -29,13 +31,57 @@ pub enum ArtifactDefect {
     IgnoresSizeLimit,
     /// The reference of a repeated write keeps the media type of the first write.
     KeepsFirstMediaType,
+    /// `get` and `exists` ignore the tenant's index row.
+    IgnoresTenantIndex,
+    /// The address is the hash of the length, so equal-length objects collide.
+    AddressesByLength,
+    /// `get` of an unknown hash returns an empty blob instead of `NotFound`.
+    ReadsUnknownAsEmpty,
 }
+
+/// Each defect and the checks of `contracts::artifact` that must fail when the fake has it.
+pub const DEFECTS: &[(ArtifactDefect, &[&str])] = &[
+    (
+        ArtifactDefect::NotContentAddressed,
+        &[
+            "stored_bytes_come_back_unchanged_with_a_reference_that_describes_them",
+            "the_same_bytes_give_the_same_reference",
+            "empty_content_can_be_stored",
+            "concurrent_writes_of_the_same_bytes_agree",
+        ],
+    ),
+    (
+        ArtifactDefect::AddressesByLength,
+        &["different_objects_are_kept_apart"],
+    ),
+    (
+        ArtifactDefect::ReadsUnknownAsEmpty,
+        &["an_unknown_hash_is_not_found_and_does_not_exist"],
+    ),
+    (
+        ArtifactDefect::SkipsRehashOnGet,
+        &["a_damaged_blob_is_never_returned"],
+    ),
+    (
+        ArtifactDefect::IgnoresSizeLimit,
+        &["an_object_over_the_limit_is_refused"],
+    ),
+    (
+        ArtifactDefect::KeepsFirstMediaType,
+        &["the_same_bytes_with_another_media_type_share_one_hash"],
+    ),
+    (
+        ArtifactDefect::IgnoresTenantIndex,
+        &["a_blob_is_readable_only_through_the_tenants_index_row"],
+    ),
+];
 
 #[derive(Default)]
 struct State {
     blobs: HashMap<String, Vec<u8>>,
     media_types: HashMap<String, MediaType>,
     counter: u64,
+    indexed: BTreeSet<(TenantId, String)>,
 }
 
 /// An in-memory artifact store. Reports fidelity `fake` and the `local-fs` backend label, because
@@ -84,6 +130,17 @@ impl InMemoryArtifactStore {
         }
     }
 
+    /// Records that the tenant's index row names the artifact.
+    pub fn grant(&self, tenant: TenantId, sha256: &Sha256Digest) {
+        let mut state = self.state.lock().expect("the lock is never poisoned");
+        state.indexed.insert((tenant, sha256.to_string()));
+    }
+
+    fn allowed(&self, state: &State, tenant: TenantId, sha256: &Sha256Digest) -> bool {
+        self.is(ArtifactDefect::IgnoresTenantIndex)
+            || state.indexed.contains(&(tenant, sha256.to_string()))
+    }
+
     fn is(&self, defect: ArtifactDefect) -> bool {
         self.defect == Some(defect)
     }
@@ -99,7 +156,7 @@ fn size_of(bytes: &[u8]) -> Result<NonNegativeInt, ArtifactError> {
     i64::try_from(bytes.len())
         .ok()
         .and_then(|size| NonNegativeInt::new(size).ok())
-        .ok_or_else(|| ArtifactError::Io("the size does not fit a reference".to_owned()))
+        .ok_or(ArtifactError::Io(BackendStep::Write))
 }
 
 #[async_trait]
@@ -125,6 +182,8 @@ impl ArtifactStore for InMemoryArtifactStore {
         let sha256 = if self.is(ArtifactDefect::NotContentAddressed) {
             state.counter += 1;
             Sha256Digest::of(&state.counter.to_be_bytes())
+        } else if self.is(ArtifactDefect::AddressesByLength) {
+            Sha256Digest::of(&(bytes.len() as u64).to_be_bytes())
         } else {
             Sha256Digest::of(&bytes)
         };
@@ -148,8 +207,20 @@ impl ArtifactStore for InMemoryArtifactStore {
         })
     }
 
-    async fn get(&self, reference: &ArtifactRef) -> Result<Vec<u8>, ArtifactError> {
+    async fn get(
+        &self,
+        scope: &TenantScope,
+        reference: &ArtifactRef,
+    ) -> Result<Vec<u8>, ArtifactError> {
         let state = self.state.lock().expect("the lock is never poisoned");
+        if !self.allowed(&state, scope.tenant_id(), &reference.sha256) {
+            return Err(ArtifactError::NotFound);
+        }
+        if self.is(ArtifactDefect::ReadsUnknownAsEmpty)
+            && !state.blobs.contains_key(reference.sha256.as_str())
+        {
+            return Ok(Vec::new());
+        }
         let blob = state
             .blobs
             .get(reference.sha256.as_str())
@@ -166,9 +237,15 @@ impl ArtifactStore for InMemoryArtifactStore {
         Ok(blob.clone())
     }
 
-    async fn exists(&self, reference: &ArtifactRef) -> Result<bool, ArtifactError> {
+    async fn exists(
+        &self,
+        scope: &TenantScope,
+        reference: &ArtifactRef,
+    ) -> Result<bool, ArtifactError> {
         let state = self.state.lock().expect("the lock is never poisoned");
-        Ok(state.blobs.contains_key(reference.sha256.as_str()))
+        Ok(self.allowed(&state, scope.tenant_id(), &reference.sha256)
+            && (state.blobs.contains_key(reference.sha256.as_str())
+                || self.is(ArtifactDefect::ReadsUnknownAsEmpty)))
     }
 }
 
@@ -219,5 +296,27 @@ impl ArtifactStoreSubject for InMemoryArtifactSubject {
 
     async fn corrupt_blob(&self, sha256: &Sha256Digest) {
         self.store.corrupt(sha256);
+    }
+
+    fn scope(&self) -> TenantScope {
+        TenantScope::new(Self::tenant())
+    }
+
+    fn other_scope(&self) -> TenantScope {
+        TenantScope::new(Self::other_tenant())
+    }
+
+    async fn index_for(&self, scope: &TenantScope, reference: &ArtifactRef) {
+        self.store.grant(scope.tenant_id(), &reference.sha256);
+    }
+}
+
+impl InMemoryArtifactSubject {
+    fn tenant() -> TenantId {
+        TenantId::parse("00000000-0000-7000-8000-00000000000a").expect("a valid tenant id")
+    }
+
+    fn other_tenant() -> TenantId {
+        TenantId::parse("00000000-0000-7000-8000-00000000000b").expect("a valid tenant id")
     }
 }

@@ -1,9 +1,13 @@
 # 0002: Hexagonal workspace in four rings; twelve library crates and four binaries in Slice 1
 
-- Status: Accepted
+- Status: Accepted Revised again on 2026-10-27 by ADR 0014 (see "Revision note (ADR 0014)").
 - Date: 2026-10-27
 - Deciders: software_architect
 - Related: [overview](../architecture/overview.md), [`crate-dependency-rules.json`](../architecture/crate-dependency-rules.json), [slice plan](../architecture/slice-plan.md)
+
+## Revision note (ADR 0014)
+
+Revised on 2026-10-27 by [ADR 0014](0014-ports-v1-1-claim-protocol-and-port-revision.md). The verification table says `uuid::Uuid::now_v7` and `new_v4` were "not yet tried" and belong on the clippy list. They were never added, and the lists also lack the `Path` methods that touch the file system, `std::env`, Unix sockets, `tokio::time` and `OffsetDateTime::now_utc`. Another crate in the workspace can also enable `time/std` for the domain crate through feature unification. The review mutated each of these in a scratch copy and both `cargo xtask check-architecture` and `cargo clippy` stayed green. Decision 11 of the new record adds the bans, reads the resolved features and lists the fixtures.
 
 ## Context and problem statement
 

@@ -7,18 +7,19 @@
 //! the first stage becomes ready. A job that does not is rejected, the reasons go to the audit
 //! log, and nothing in the reply says which test failed (`G_ADMISSION_DENIED`).
 
-use factory_domain::ids::{JobId, PrincipalId, StageRunId, TenantId};
+use factory_domain::ids::{JobId, PrincipalId, RepositoryId, StageRunId, TenantId};
 use factory_domain::machines::guards::{GuardFacts, evaluate};
 use factory_domain::state::{Guard, JobEvent, JobStatus};
 use factory_domain::vocabulary::StageKind;
-use factory_ports::store::{AuditActor, NewJob, NewStageRun};
+use factory_ports::store::{AuditActor, NewJob, NewStageRun, PipelineScope, StoreError};
 use serde_json::json;
 
 use super::Engine;
+use super::config::STORE_ATTEMPT_CEILING;
 use super::error::EngineError;
 use super::payload::{self, key};
-use super::progress::guard_error;
-use super::record::Cx;
+use super::progress::clear;
+use super::record::{Cx, Step};
 use crate::audit::{AuditAction, AuditDecision, AuditKind};
 use factory_domain::ids::CorrelationId;
 
@@ -38,25 +39,50 @@ impl Engine {
     /// Stores a request as a job in `RECEIVED`. The API does this after it has authenticated the
     /// caller; it is here so that the engine and its tests have one way to make a job.
     ///
+    /// The job works on `repository` and runs at the autonomy level that repository allows. It
+    /// carries the engine's execution mode and pipeline scope.
+    ///
     /// # Errors
-    /// The store errors, for instance when the requester is not a principal of the tenant.
+    /// The store errors, for instance when the requester is not a principal of the tenant or the
+    /// repository is not registered for it.
     pub async fn receive_job(
         &self,
         tenant: TenantId,
         requester: PrincipalId,
+        repository: RepositoryId,
     ) -> Result<JobId, EngineError> {
         let id = JobId::from_uuid(self.deps.ids.new_uuid());
         let correlation = CorrelationId::from_uuid(self.deps.ids.new_uuid());
+        let pipeline_scope = PipelineScope::new(self.config.scope.clone())?;
         let mut tx = self.tenant_tx(tenant).await?;
+        let registered = tx.get_repository(repository).await?;
         tx.insert_job(NewJob {
             id,
             correlation_id: correlation,
+            repository,
             requester,
-            created_at: self.deps.clock.now(),
+            execution_mode: self.config.mode,
+            autonomy_level: registered.value.autonomy_ceiling,
+            pipeline_scope,
+            origin: None,
         })
         .await?;
-        tx.commit().await?;
-        Ok(id)
+        match tx.commit().await {
+            Ok(()) => Ok(id),
+            // Creating a job writes no event or audit record to ask about, but the insert is
+            // idempotent by id, so the job itself is the witness.
+            Err(StoreError::CommitOutcomeUnknown) => {
+                let mut read = self.tenant_tx(tenant).await?;
+                let found = read.get_job(id).await;
+                read.rollback().await?;
+                match found {
+                    Ok(_) => Ok(id),
+                    Err(StoreError::NotFound) => Err(EngineError::Store(StoreError::Unavailable)),
+                    Err(other) => Err(other.into()),
+                }
+            }
+            Err(other) => Err(other.into()),
+        }
     }
 
     /// Decides whether a received job runs.
@@ -86,7 +112,7 @@ impl Engine {
             .map_err(|_| EngineError::Refused("the protected configuration cannot be read"))?;
 
         match evaluate(Guard::AdmissionOk, &GuardFacts::Admission(facts)) {
-            Ok(()) => {
+            Ok(cleared) => {
                 let mut created = Vec::with_capacity(self.config.scope.len());
                 for kind in &self.config.scope {
                     let id = self.new_stage_run_id();
@@ -94,7 +120,9 @@ impl Engine {
                         id,
                         job_id: job,
                         kind: *kind,
-                        created_at: cx.now,
+                        run_number: 1,
+                        max_attempts: STORE_ATTEMPT_CEILING,
+                        rework_of: None,
                     })
                     .await?;
                     created.push((*kind, id));
@@ -109,15 +137,19 @@ impl Engine {
                     "autonomy_limited_to_l0".to_owned(),
                     json!(facts.autonomy_limited_to_l0()),
                 );
-                cx.move_job(&mut *tx, &stored, JobEvent::Admit, None, event)
-                    .await?;
+                cx.move_job(
+                    &mut *tx,
+                    &stored,
+                    Step::new(JobEvent::Admit, cleared).payload(event),
+                )
+                .await?;
                 cx.audit_engine(
                     &mut *tx,
                     AuditAction::new(AuditKind::AuthorizationDecision, AuditDecision::Granted),
                 )
                 .await?;
                 self.settle(&mut *tx, &cx).await?;
-                tx.commit().await?;
+                cx.commit(tx).await?;
                 Ok(Admission::Admitted {
                     stage_runs: created,
                 })
@@ -125,25 +157,22 @@ impl Engine {
             Err(_) => {
                 // The definition of G_ADMISSION_DENIED is the opposite of G_ADMISSION_OK, so it
                 // holds here. It is evaluated anyway: a move needs its own guard.
-                evaluate(Guard::AdmissionDenied, &GuardFacts::Admission(facts))
-                    .map_err(guard_error)?;
+                let cleared = clear(Guard::AdmissionDenied, &GuardFacts::Admission(facts))?;
                 cx.move_job(
                     &mut *tx,
                     &stored,
-                    JobEvent::RejectAtAdmission,
-                    Some("admission-denied"),
-                    serde_json::Map::new(),
+                    Step::new(JobEvent::RejectAtAdmission, cleared).cause("admission-denied"),
                 )
                 .await?;
                 cx.audit(
                     &mut *tx,
-                    AuditActor::Component(factory_domain::values::Slug::parse(
+                    AuditActor::System(factory_domain::values::Slug::parse(
                         super::record::COMPONENT,
                     )?),
                     AuditAction::new(AuditKind::AuthorizationDecision, AuditDecision::Denied),
                 )
                 .await?;
-                tx.commit().await?;
+                cx.commit(tx).await?;
                 Ok(Admission::Rejected)
             }
         }

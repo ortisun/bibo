@@ -11,11 +11,13 @@
 //! move that the result names, and commits the move with its evidence in one transaction
 //! (INV-03). The agent's own account of its work appears nowhere in this module.
 
+pub mod assurance;
 pub mod decision;
 pub mod evidence;
 pub mod resolve;
 
-pub use decision::GateDecision;
+pub use assurance::{AssuranceEntry, assurance_entries};
+pub use decision::{AssuranceClaim, GateDecision};
 pub use evidence::{EvidenceProblem, Expectation, check_evidence};
 pub use resolve::{BlockCause, Resolution, failing_set, resolve, snapshots, uncovered_criteria};
 

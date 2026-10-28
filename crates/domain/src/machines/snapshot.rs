@@ -5,6 +5,7 @@
 //! changes the state.
 
 use crate::ids::StageRunId;
+use crate::machines::guards::digest::facts;
 use crate::macros::string_enum;
 use crate::state::{AttemptStatus, StageRunStatus};
 use crate::vocabulary::{GateOutcome, StageKind};
@@ -23,6 +24,7 @@ string_enum! {
     }
 }
 
+facts! {
 /// One attempt of a job and its sandbox.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct AttemptSnapshot {
@@ -31,7 +33,9 @@ pub struct AttemptSnapshot {
     /// Whether its sandbox still exists.
     pub sandbox: SandboxState,
 }
+}
 
+facts! {
 /// The result of one mandatory gate, as the stage gate reads it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct GateReportSnapshot {
@@ -39,6 +43,7 @@ pub struct GateReportSnapshot {
     pub outcome: GateOutcome,
     /// For `NOT_APPLICABLE`: whether the reason is recorded.
     pub not_applicable_reason_recorded: bool,
+}
 }
 
 string_enum! {
@@ -53,6 +58,7 @@ string_enum! {
     }
 }
 
+facts! {
 /// One stage run of a job, as the rules need to see it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct StageRunSnapshot {
@@ -64,6 +70,7 @@ pub struct StageRunSnapshot {
     pub status: StageRunStatus,
     /// What was recorded for the run while it is `BLOCKED`, if anything.
     pub block_disposition: Option<BlockDisposition>,
+}
 }
 
 impl StageRunSnapshot {

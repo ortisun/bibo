@@ -1,6 +1,7 @@
 //! Guards of the Attempt machine (transitions `A01` to `A10`), and the two guards about attempts
 //! that the Job and StageRun machines use (`G_ALL_ATTEMPTS_TERMINAL`, `G_NO_ACTIVE_ATTEMPT`).
 
+use super::digest::facts;
 use super::{Check, GuardResult};
 use crate::machines::snapshot::{AttemptSnapshot, SandboxState};
 use crate::state::{AttemptStatus, Guard, JobStatus, Status};
@@ -8,11 +9,13 @@ use crate::values::Timestamp;
 
 // ---- attempts of a job or a stage run -----------------------------------------------------------------
 
+facts! {
 /// The attempts under one job or one stage run.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct AttemptsFacts<'a> {
     /// The attempts, with the state of their sandboxes.
     pub attempts: &'a [AttemptSnapshot],
+}
 }
 
 /// `G_ALL_ATTEMPTS_TERMINAL`. A sandbox that could not be confirmed gone counts as flagged as
@@ -48,6 +51,7 @@ pub fn no_active_attempt(facts: &AttemptsFacts<'_>) -> GuardResult {
 
 // ---- the lease epoch -----------------------------------------------------------------------------------------
 
+facts! {
 /// The lease epoch a worker sent and the one on record.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct EpochFacts {
@@ -55,6 +59,7 @@ pub struct EpochFacts {
     pub sent_epoch: u64,
     /// The epoch stored on the attempt.
     pub stored_epoch: u64,
+}
 }
 
 impl EpochFacts {
@@ -77,6 +82,7 @@ pub fn epoch_current(facts: &EpochFacts) -> GuardResult {
         .finish()
 }
 
+facts! {
 /// What decides whether a heartbeat is accepted.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct LeaseEpochFacts {
@@ -86,6 +92,7 @@ pub struct LeaseEpochFacts {
     pub now: Timestamp,
     /// When the lease runs out.
     pub lease_expires_at: Timestamp,
+}
 }
 
 /// `G_LEASE_EPOCH_CURRENT`. The last instant of the lease still counts.
@@ -107,17 +114,22 @@ pub fn lease_epoch_current(facts: &LeaseEpochFacts) -> GuardResult {
 
 // ---- starting -----------------------------------------------------------------------------------------------------
 
+facts! {
 /// What decides whether the sandbox is ready.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SandboxProvisionFacts {
-    /// The sandbox started within its limits.
-    pub sandbox_started_within_limits: bool,
-    /// The policy-approved tool grants are in place.
-    pub policy_tool_grants_in_place: bool,
-    /// The runtime capability probe satisfies what the stage needs.
-    pub runtime_capability_probe_satisfied: bool,
+    /// The sandbox provider returned a session. That means it created the container, read its
+    /// posture back, found every part equal to the spec and the policy, started it and passed
+    /// the runtime self-check. The engine sets this from "`create_verified` returned a session"
+    /// and from nothing else.
+    pub posture_verified: bool,
+    /// The tool grants that policy approved are recorded in the audit log.
+    pub tool_grants_recorded: bool,
+    /// The runtime probe of this attempt supports every capability the stage needs.
+    pub probe_satisfies_stage: bool,
     /// The lease epoch.
     pub epoch: EpochFacts,
+}
 }
 
 /// `G_SANDBOX_PROVISIONED`.
@@ -127,16 +139,16 @@ pub struct SandboxProvisionFacts {
 pub fn sandbox_provisioned(facts: &SandboxProvisionFacts) -> GuardResult {
     Check::new(Guard::SandboxProvisioned)
         .require(
-            facts.sandbox_started_within_limits,
-            "the sandbox did not start within its limits",
+            facts.posture_verified,
+            "the sandbox posture was not verified against the spec and the policy",
         )
         .require(
-            facts.policy_tool_grants_in_place,
-            "the policy-approved tool grants are not in place",
+            facts.tool_grants_recorded,
+            "the policy-approved tool grants are not recorded in the audit log",
         )
         .require(
-            facts.runtime_capability_probe_satisfied,
-            "the runtime capability probe does not satisfy what the stage needs",
+            facts.probe_satisfies_stage,
+            "the runtime probe does not satisfy what the stage needs",
         )
         .require(facts.epoch.is_current(), "the lease epoch is not current")
         .finish()
@@ -144,6 +156,7 @@ pub fn sandbox_provisioned(facts: &SandboxProvisionFacts) -> GuardResult {
 
 // ---- deadlines and leases (the sweeper) ----------------------------------------------------------------
 
+facts! {
 /// What decides whether the attempt ran out of time.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DeadlineFacts {
@@ -151,6 +164,7 @@ pub struct DeadlineFacts {
     pub now: Timestamp,
     /// The attempt deadline.
     pub attempt_deadline: Timestamp,
+}
 }
 
 /// `G_DEADLINE_PASSED`: now is after the deadline, not at it.
@@ -166,6 +180,7 @@ pub fn deadline_passed(facts: &DeadlineFacts) -> GuardResult {
         .finish()
 }
 
+facts! {
 /// What decides whether the lease was lost.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct LeaseExpiryFacts {
@@ -175,6 +190,7 @@ pub struct LeaseExpiryFacts {
     pub lease_expires_at: Timestamp,
     /// A heartbeat arrived that the check has not yet seen in `lease_expires_at`.
     pub heartbeat_arrived: bool,
+}
 }
 
 /// `G_LEASE_EXPIRED`.
@@ -193,6 +209,7 @@ pub fn lease_expired(facts: &LeaseExpiryFacts) -> GuardResult {
 
 // ---- cancelling -------------------------------------------------------------------------------------------------------
 
+facts! {
 /// What decides whether an attempt may be told to cancel.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CancelFacts {
@@ -202,6 +219,7 @@ pub struct CancelFacts {
     pub job: JobStatus,
     /// The stage run of the attempt is being superseded.
     pub stage_run_is_being_superseded: bool,
+}
 }
 
 /// `G_CANCEL_ALLOWED`: the attempt is not terminal, and the job is `CANCELLING` or the stage
@@ -222,11 +240,13 @@ pub fn cancel_allowed(facts: &CancelFacts) -> GuardResult {
         .finish()
 }
 
+facts! {
 /// What decides whether teardown is complete.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SandboxGoneFacts {
     /// The sandbox provider confirmed the sandbox no longer exists.
     pub provider_confirms_sandbox_gone: bool,
+}
 }
 
 /// `G_SANDBOX_GONE`.
@@ -242,6 +262,7 @@ pub fn sandbox_gone(facts: &SandboxGoneFacts) -> GuardResult {
         .finish()
 }
 
+facts! {
 /// What decides whether the teardown grace period is over.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TeardownFacts {
@@ -251,6 +272,7 @@ pub struct TeardownFacts {
     pub cancel_requested_at: Timestamp,
     /// The grace period, 30 seconds by default.
     pub grace_seconds: u32,
+}
 }
 
 /// `G_TEARDOWN_DEADLINE_PASSED`: the grace period has elapsed in full.

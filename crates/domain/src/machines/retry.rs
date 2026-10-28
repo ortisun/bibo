@@ -16,6 +16,7 @@
 //!
 //! | Order | The attempt failed with | Move |
 //! |---|---|---|
+//! | 0 | An environment cause (runtime unreachable, image absent, posture differs, spec weaker than policy, tool absent, policy unreadable) | `S21`, the stage run is blocked |
 //! | 1 | `BUDGET_EXHAUSTED` | `S07`, and the job's broker token is revoked |
 //! | 2 | A class the contract lists in `retry_on`, with attempts, repairs and budget left | `S05` |
 //! | 3 | `POLICY_DENIED`, `INTERNAL`, or a class not in `retry_on` | `S06` |
@@ -35,7 +36,7 @@
 
 use crate::machines::failure::FailureClass;
 use crate::machines::guards::stage_run::retry_allowed;
-use crate::machines::guards::{EscalationFacts, RetryFacts};
+use crate::machines::guards::{EnvironmentCause, EscalationFacts, RetryFacts};
 use crate::state::StageRunEvent;
 
 /// Why a failed attempt ends up with a human.
@@ -81,6 +82,9 @@ pub enum AttemptDisposition {
     Escalate(EscalationCause),
     /// The stage run fails.
     Fail,
+    /// The environment is missing or unsafe, so the stage run is blocked (`S21`). Nothing is
+    /// retried and no other settings are tried.
+    Block(EnvironmentCause),
 }
 
 impl AttemptDisposition {
@@ -91,6 +95,7 @@ impl AttemptDisposition {
             AttemptDisposition::Retry => StageRunEvent::AttemptFailedRetryable,
             AttemptDisposition::Escalate(_) => StageRunEvent::EscalateToHuman,
             AttemptDisposition::Fail => StageRunEvent::AttemptFailedFinal,
+            AttemptDisposition::Block(_) => StageRunEvent::AttemptBlocked,
         }
     }
 }
@@ -102,6 +107,12 @@ impl AttemptDisposition {
 /// and only the attempts since the last human answer (see [`AttemptWindow`]).
 #[must_use]
 pub fn decide_after_failure(facts: &RetryFacts<'_>) -> AttemptDisposition {
+    // 0. A missing or unsafe environment blocks the stage run, whatever else holds. Retrying
+    // with the same settings cannot help, and a person is not asked to decide something that is
+    // not a decision.
+    if let Some(cause) = facts.environment {
+        return AttemptDisposition::Block(cause);
+    }
     // 1. A budget limit asks a person, whatever else holds.
     if facts.class == FailureClass::BudgetExhausted {
         return AttemptDisposition::Escalate(EscalationCause::BudgetLimit);

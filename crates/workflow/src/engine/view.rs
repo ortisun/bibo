@@ -95,13 +95,22 @@ impl Engine {
                     epoch: row.value.epoch,
                 });
             }
+            // The back-off is a column of the stage run. It shows while the run waits to be tried
+            // again after an attempt that ended badly.
+            let backing_off = run.value.status == StageRunStatus::Ready
+                && attempts.last().is_some_and(|last| {
+                    matches!(
+                        last.status,
+                        AttemptStatus::Failed | AttemptStatus::TimedOut | AttemptStatus::LeaseLost
+                    )
+                });
             stage_runs.push(StageRunView {
                 id: run.value.id,
                 kind: run.value.kind,
                 status: run.value.status,
                 lease_epoch: run.value.lease_epoch,
                 attempts,
-                not_before: record.not_before,
+                not_before: backing_off.then_some(run.value.not_before),
                 human_answers: record.human_inputs.len(),
                 replaced_by: record.replaced_by,
             });

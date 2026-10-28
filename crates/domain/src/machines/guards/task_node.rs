@@ -3,15 +3,18 @@
 //! `G_EPOCH_CURRENT` (`T04`, `T05`) is in [`attempt`](super::attempt) and `G_NO_ACTIVE_ATTEMPT`
 //! (`T07`) is there too, because both read attempts.
 
+use super::digest::facts;
 use super::{Check, GuardResult};
 use crate::ids::TaskNodeId;
 use crate::state::{Guard, TaskNodeStatus};
 
+facts! {
 /// What decides whether a task node can leave `PENDING`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TaskDepsFacts<'a> {
     /// The status of every task this node depends on.
     pub dependencies: &'a [TaskNodeStatus],
+}
 }
 
 /// `G_TASK_DEPS_SUCCEEDED`. A node with no dependency is ready at once.
@@ -30,6 +33,7 @@ pub fn task_deps_succeeded(facts: &TaskDepsFacts<'_>) -> GuardResult {
         .finish()
 }
 
+facts! {
 /// What decides whether a task node starts.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TaskStartFacts {
@@ -37,6 +41,7 @@ pub struct TaskStartFacts {
     pub this_task: TaskNodeId,
     /// The task the `IMPLEMENTATION` attempt picked as the next one in topological order.
     pub next_in_topological_order: Option<TaskNodeId>,
+}
 }
 
 /// `G_TASK_STARTED_BY_ATTEMPT`.
@@ -52,6 +57,7 @@ pub fn task_started_by_attempt(facts: &TaskStartFacts) -> GuardResult {
         .finish()
 }
 
+facts! {
 /// What decides whether a task counts as done.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TaskEvidenceFacts {
@@ -63,6 +69,7 @@ pub struct TaskEvidenceFacts {
     pub protected_path_changed: bool,
     /// The per-task checks passed.
     pub per_task_checks_passed: bool,
+}
 }
 
 /// `G_TASK_EVIDENCE_RECORDED`.
@@ -87,6 +94,7 @@ pub fn task_evidence_recorded(facts: &TaskEvidenceFacts) -> GuardResult {
         .finish()
 }
 
+facts! {
 /// What decides whether a failed task is tried again.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TaskRetryFacts {
@@ -96,6 +104,7 @@ pub struct TaskRetryFacts {
     pub per_task_limit: u32,
     /// The stage budget has room.
     pub stage_budget_has_room: bool,
+}
 }
 
 /// `G_TASK_RETRY_ALLOWED`.

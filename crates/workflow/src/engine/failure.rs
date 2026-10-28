@@ -11,35 +11,36 @@
 
 use factory_domain::ids::{AttemptId, StageRunId};
 use factory_domain::machines::failure::FailureClass;
-use factory_domain::machines::guards::{EscalationFacts, GuardFacts, RetryFacts, evaluate};
+use factory_domain::machines::guards::{
+    EnvironmentCause, EnvironmentFacts, EscalationFacts, GuardFacts, RetryFacts,
+};
 use factory_domain::machines::retry::{AttemptDisposition, EscalationCause, decide_after_failure};
 use factory_domain::state::{Guard, StageRunEvent, StageRunStatus};
-use factory_ports::clock::timestamp_after;
-use factory_ports::store::Tx;
+use factory_domain::vocabulary::GateOutcome;
+use factory_ports::store::{GateRecord, StageRunEffects, Tx};
 use serde_json::json;
 
 use super::Engine;
 use super::error::EngineError;
 use super::payload::{self, key};
-use super::progress::{Board, guard_error, upstream_runs};
-use super::record::Cx;
+use super::progress::{Board, clear, upstream_runs};
+use super::record::{Cx, Step};
 use super::timeline::Timeline;
 use crate::scheduler::retry_delay;
 
-/// Why a running stage run goes to a person when no failure class decides it.
+/// Why a running stage run goes to a person when no failure class decides it. The only reason
+/// left is that the agent asked: a stage that cannot run because its environment is missing no
+/// longer goes to a person, it is blocked (`S21`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum HumanReason {
     /// The agent returned a structured request for a person.
     AgentRequested,
-    /// The stage could not run because something it needs is missing, and it fails closed.
-    Blocked,
 }
 
 impl HumanReason {
     const fn code(self) -> &'static str {
         match self {
             Self::AgentRequested => "agent-requested-a-human",
-            Self::Blocked => "stage-blocked",
         }
     }
 
@@ -47,9 +48,9 @@ impl HumanReason {
         EscalationFacts {
             budget_limit_hit: false,
             attempt_limit_reached: false,
-            agent_requested_a_human: matches!(self, Self::AgentRequested),
+            agent_requested_a_human: true,
             stagnation_detected: false,
-            policy_requires_human_decision: matches!(self, Self::Blocked),
+            policy_requires_human_decision: false,
         }
     }
 }
@@ -70,6 +71,7 @@ impl Engine {
         run_id: StageRunId,
         attempt: AttemptId,
         class: FailureClass,
+        environment: Option<EnvironmentCause>,
     ) -> Result<Option<AttemptDisposition>, EngineError> {
         let timeline = Timeline::load(tx, cx.job).await?;
         let board = Board::load(tx, &timeline).await?;
@@ -99,6 +101,7 @@ impl Engine {
             budget_has_room: timeline.spent_micro_usd < self.config.job_budget_micro_usd,
             invalid_output_failures: window.invalid_output_failures(),
             repair_cap: self.config.repair_cap,
+            environment,
         };
         let disposition = decide_after_failure(&facts);
         let base = payload::attempt_event(
@@ -109,21 +112,24 @@ impl Engine {
         );
         match disposition {
             AttemptDisposition::Retry => {
-                evaluate(Guard::RetryAllowed, &GuardFacts::Retry(facts)).map_err(guard_error)?;
+                let cleared = clear(Guard::RetryAllowed, &GuardFacts::Retry(facts))?;
                 let delay = retry_delay(
                     &contract.timeout_and_retries.backoff,
                     window.attempts_used(),
                     seed_of(attempt),
                 );
-                let now = tx.database_time().await?;
-                let not_before = timestamp_after(&now, delay);
-                let payload = payload::with(base, key::NOT_BEFORE, json!(not_before.to_string()));
+                // The store sets `not_before` from its own clock, so the back-off needs no wait
+                // for an old lease: the stage run is findable again once the delay has passed.
                 cx.move_stage_run(
                     tx,
                     run,
-                    StageRunEvent::AttemptFailedRetryable,
-                    Some("retry-scheduled"),
-                    payload,
+                    Step::new(StageRunEvent::AttemptFailedRetryable, cleared)
+                        .cause("retry-scheduled")
+                        .payload(base),
+                    StageRunEffects {
+                        not_before_after: Some(delay),
+                        ..StageRunEffects::default()
+                    },
                 )
                 .await?;
                 tracing::info!(
@@ -132,28 +138,64 @@ impl Engine {
                 );
             }
             AttemptDisposition::Escalate(cause) => {
-                evaluate(
+                let cleared = clear(
                     Guard::EscalationRequired,
                     &GuardFacts::Escalation(cause.facts()),
-                )
-                .map_err(guard_error)?;
+                )?;
                 let code = match cause {
                     EscalationCause::BudgetLimit => "budget-limit",
                     EscalationCause::AttemptLimit => "attempt-limit",
                 };
                 let payload = payload::with(base, key::CAUSE, json!(code));
-                cx.move_stage_run(tx, run, StageRunEvent::EscalateToHuman, Some(code), payload)
-                    .await?;
-            }
-            AttemptDisposition::Fail => {
-                evaluate(Guard::FailureNonretryable, &GuardFacts::Retry(facts))
-                    .map_err(guard_error)?;
                 cx.move_stage_run(
                     tx,
                     run,
-                    StageRunEvent::AttemptFailedFinal,
-                    Some("failure-not-retryable"),
-                    base,
+                    Step::new(StageRunEvent::EscalateToHuman, cleared)
+                        .cause(code)
+                        .payload(payload),
+                    StageRunEffects::default(),
+                )
+                .await?;
+            }
+            AttemptDisposition::Fail => {
+                let cleared = clear(Guard::FailureNonretryable, &GuardFacts::Retry(facts))?;
+                cx.move_stage_run(
+                    tx,
+                    run,
+                    Step::new(StageRunEvent::AttemptFailedFinal, cleared)
+                        .cause("failure-not-retryable")
+                        .payload(base),
+                    StageRunEffects::default(),
+                )
+                .await?;
+            }
+            AttemptDisposition::Block(cause) => {
+                // The environment is missing or unsafe, so the stage run is blocked before any
+                // retry or person is considered (`S21`). The attempt was ended as failed in
+                // this transaction, which is what the guard asks.
+                let cleared = clear(
+                    Guard::EnvironmentBlocked,
+                    &GuardFacts::Environment(EnvironmentFacts {
+                        cause,
+                        attempt_ended_failed: true,
+                    }),
+                )?;
+                let code = cause.as_str();
+                let payload = payload::with(base, key::CAUSE, json!(code));
+                cx.move_stage_run(
+                    tx,
+                    run,
+                    Step::new(StageRunEvent::AttemptBlocked, cleared)
+                        .cause(code)
+                        .payload(payload),
+                    StageRunEffects {
+                        gate: Some(GateRecord {
+                            outcome: GateOutcome::Blocked,
+                            report_sha256: None,
+                            failing_set_sha256: None,
+                        }),
+                        ..StageRunEffects::default()
+                    },
                 )
                 .await?;
             }
@@ -177,11 +219,10 @@ impl Engine {
         let timeline = Timeline::load(tx, cx.job).await?;
         let board = Board::load(tx, &timeline).await?;
         let run = board.run(run_id).ok_or(EngineError::NotFound)?;
-        evaluate(
+        let cleared = clear(
             Guard::EscalationRequired,
             &GuardFacts::Escalation(reason.facts()),
-        )
-        .map_err(guard_error)?;
+        )?;
         let payload = payload::with(
             payload::for_run(run.value.kind, run_id),
             key::CAUSE,
@@ -190,9 +231,10 @@ impl Engine {
         cx.move_stage_run(
             tx,
             run,
-            StageRunEvent::EscalateToHuman,
-            Some(reason.code()),
-            payload,
+            Step::new(StageRunEvent::EscalateToHuman, cleared)
+                .cause(reason.code())
+                .payload(payload),
+            StageRunEffects::default(),
         )
         .await?;
         self.settle(tx, cx).await

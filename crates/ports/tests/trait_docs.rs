@@ -1,16 +1,18 @@
 //! Every public trait of the ports states its contract: preconditions, postconditions, closed
-//! error set and idempotency (done criterion 5 of work package `s0-ports-and-testkit`).
+//! error set, idempotency, and (since ports v1.1) cancellation and timeouts (done criterion 5 of
+//! work package `s0-ports-and-testkit`).
 //!
-//! The test reads the port sources, finds each `pub trait` and checks its documentation for four
+//! The test reads the port sources, finds each `pub trait` and checks its documentation for five
 //! headings, each followed by text. The sources are embedded with `include_str!`, so the test does
 //! no file I/O. The checker has tests of its own, so it is known to fail on a bad trait.
 
-const SOURCES: [(&str, &str); 10] = [
+const SOURCES: [(&str, &str); 11] = [
     ("agent.rs", include_str!("../src/agent.rs")),
     ("artifact.rs", include_str!("../src/artifact.rs")),
     ("clock.rs", include_str!("../src/clock.rs")),
     ("githost.rs", include_str!("../src/githost.rs")),
     ("paths.rs", include_str!("../src/paths.rs")),
+    ("process.rs", include_str!("../src/process.rs")),
     ("registry.rs", include_str!("../src/registry.rs")),
     ("sandbox.rs", include_str!("../src/sandbox.rs")),
     ("spec.rs", include_str!("../src/spec.rs")),
@@ -18,17 +20,25 @@ const SOURCES: [(&str, &str); 10] = [
     ("workspace.rs", include_str!("../src/workspace.rs")),
 ];
 
-/// The 18 ports of work package `s0-ports-and-testkit`, plus the parts of `Tx`.
-const EXPECTED_TRAITS: [&str; 27] = [
+/// The ports of work package `s0-ports-and-testkit`, plus the parts of `Tx`, and what ports v1.1
+/// adds: the read-only system transaction, the job repository, the process runner, the webhook
+/// verifier and the metering seam.
+const EXPECTED_TRAITS: [&str; 37] = [
     "Clock",
     "IdGenerator",
     "CancelSignal",
     "Store",
+    "SystemTx",
     "Tx",
     "JobOps",
+    "RequestOps",
+    "DeliveryOps",
+    "RepositoryOps",
     "StageRunOps",
     "AttemptOps",
     "TaskNodeOps",
+    "StageArtifactOps",
+    "ApprovalOps",
     "LedgerOps",
     "OutboxOps",
     "AuditOps",
@@ -38,7 +48,11 @@ const EXPECTED_TRAITS: [&str; 27] = [
     "SandboxProvider",
     "SandboxSession",
     "WorkspaceProvider",
+    "JobRepo",
     "Workspace",
+    "ProcessRunner",
+    "WebhookVerifier",
+    "MeteringOps",
     "AgentRuntime",
     "ModelRouter",
     "ModelBroker",
@@ -49,11 +63,12 @@ const EXPECTED_TRAITS: [&str; 27] = [
     "ChangeHost",
 ];
 
-const HEADINGS: [&str; 4] = [
+const HEADINGS: [&str; 5] = [
     "# Preconditions",
     "# Postconditions",
     "# Errors",
     "# Idempotency",
+    "# Cancellation and timeouts",
 ];
 
 /// One public trait found in a source, with its documentation text.
@@ -149,7 +164,7 @@ fn trait_docs_state_the_contract() {
 fn the_checker_reports_a_trait_with_no_documentation() {
     let source = "pub trait Bare {\n    fn go(&self);\n}\n";
     let problems = trait_doc_problems(source);
-    assert_eq!(problems.len(), 4, "{problems:?}");
+    assert_eq!(problems.len(), 5, "{problems:?}");
     assert!(problems[0].contains("trait Bare has no `# Preconditions`"));
 }
 
@@ -165,6 +180,9 @@ fn the_checker_reports_a_missing_idempotency_section() {
 /// Done.
 ///
 /// # Errors
+/// None.
+///
+/// # Cancellation and timeouts
 /// None.
 pub trait Almost {}
 ";
@@ -190,6 +208,9 @@ fn the_checker_reports_an_empty_section() {
 ///
 /// # Idempotency
 /// Yes.
+///
+/// # Cancellation and timeouts
+/// None.
 pub trait Hollow {}
 ";
     let problems = trait_doc_problems(source);
@@ -215,8 +236,35 @@ fn the_checker_reads_through_attributes_and_accepts_a_full_contract() {
 ///
 /// # Idempotency
 /// Yes.
+///
+/// # Cancellation and timeouts
+/// None.
 #[async_trait]
 pub trait Whole {}
 ";
     assert!(trait_doc_problems(source).is_empty());
+}
+
+#[test]
+fn the_checker_reports_a_missing_cancellation_section() {
+    let source = "\
+/// Does a thing.
+///
+/// # Preconditions
+/// None.
+///
+/// # Postconditions
+/// Done.
+///
+/// # Errors
+/// None.
+///
+/// # Idempotency
+/// Yes.
+pub trait Unbounded {}
+";
+    assert_eq!(
+        trait_doc_problems(source),
+        vec!["trait Unbounded has no `# Cancellation and timeouts` section"]
+    );
 }

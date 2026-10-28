@@ -19,6 +19,7 @@ This directory is `docs/adr/`, as the master prompt's workspace layout (section 
 | [0011](0011-canonical-time-and-numbers.md) | Timestamps compare by instant and are written in the shortest form. Ledger integers stay within 2^53 - 1. | Accepted by the architect, defaults pending confirmation |
 | [0012](0012-row-level-security-in-slice-1.md) | Row-level security in Slice 1: a tenant setting per transaction, a separate role and pool for the system scope, two narrow lookup functions. Replaces four statements of 0007. | Accepted by the architect, default pending confirmation |
 | [0013](0013-telemetry-wiring.md) | Telemetry names as literals with a repository scan, one redactor injected by the composition root, and a job traced by an id derived from it. | Accepted by the architect, defaults pending confirmation |
+| [0014](0014-ports-v1-1-claim-protocol-and-port-revision.md) | Ports v1.1: one claim protocol (find in the system scope, start in the tenant scope, the lease on the attempt), a complete store, guard-bound transitions, a job-owned object store, a typed sandbox spec, agent output as bytes, check runs, and two new stage run transitions. | Accepted by the architect, defaults pending confirmation |
 
 ## Rules for this directory
 

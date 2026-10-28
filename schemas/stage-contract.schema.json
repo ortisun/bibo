@@ -782,7 +782,19 @@
               "LEASE_LOST"
             ]
           },
-          "description": "Failure classes worth retrying. BUDGET_EXHAUSTED and POLICY_DENIED are never retried."
+          "description": "Failure classes worth retrying. BUDGET_EXHAUSTED and POLICY_DENIED are never retried. LEASE_LOST and TIMED_OUT must be listed: they are infrastructure failures, and without them a worker crash would fail the stage run instead of being retried (ADR 0014).",
+          "allOf": [
+            {
+              "contains": {
+                "const": "LEASE_LOST"
+              }
+            },
+            {
+              "contains": {
+                "const": "TIMED_OUT"
+              }
+            }
+          ]
         },
         "max_rework_iterations": {
           "type": "integer",

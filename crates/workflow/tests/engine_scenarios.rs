@@ -20,7 +20,7 @@ async fn admission_creates_one_stage_run_per_stage_and_readies_the_first() {
     let world = World::new().await;
     let job = world
         .engine
-        .receive_job(world.tenant, world.requester)
+        .receive_job(world.tenant, world.requester, world.repository)
         .await
         .expect("receive");
     assert_eq!(
@@ -60,7 +60,7 @@ async fn admission_rejects_an_unlisted_requester_and_does_not_say_why() {
         .set_admission(|facts| facts.requester_on_allowlist = false);
     let job = world
         .engine
-        .receive_job(world.tenant, world.requester)
+        .receive_job(world.tenant, world.requester, world.repository)
         .await
         .expect("receive");
 
@@ -78,7 +78,10 @@ async fn admission_rejects_an_unlisted_requester_and_does_not_say_why() {
     // The reason is for the audit log, which records the denial and not the reason.
     let audit = world.audit(job).await;
     assert_eq!(audit.len(), 1);
-    assert_eq!(audit[0].action.as_str(), "authorization_decision.denied");
+    assert_eq!(
+        audit[0].event.action.as_str(),
+        "authorization_decision.denied"
+    );
 }
 
 #[tokio::test]
@@ -87,7 +90,7 @@ async fn admission_fails_closed_when_the_protected_configuration_cannot_be_read(
     world.authority.set_unavailable(true);
     let job = world
         .engine
-        .receive_job(world.tenant, world.requester)
+        .receive_job(world.tenant, world.requester, world.repository)
         .await
         .expect("receive");
 
@@ -155,42 +158,59 @@ async fn a_second_claim_finds_nothing_while_the_work_is_taken() {
 }
 
 #[tokio::test]
-async fn a_crash_between_the_claim_and_the_start_loses_nothing_and_starts_once() {
+async fn a_crash_between_the_find_and_the_start_loses_nothing_and_starts_once() {
+    // Meaning changed with ports v1.1: finding work no longer leases it. A claim is a find in
+    // a system transaction that writes nothing, and a start in a tenant transaction. An engine
+    // that stops between the two has left no lease to wait out, and the next engine starts the
+    // stage run at once, at the first epoch, exactly once.
     let world = World::new().await;
     let job = world.admitted_job().await;
-    // Claim from the store directly, as an engine that stopped right after the claim would.
     let mut tx = world.store_system().await;
-    let work = tx
-        .claim_ready(
-            &World::worker("worker-1"),
-            8,
-            std::time::Duration::from_secs(60),
-        )
-        .await
-        .expect("claim");
-    assert_eq!(work.len(), 1);
-    tx.commit().await.expect("commit");
-    // The claim is committed and no attempt exists. A restarted engine sees a ready stage run
-    // with a lease that has not run out, so it leaves it alone.
+    let found = tx.find_claim_candidates(8).await.expect("find");
+    assert_eq!(found.len(), 1);
+    tx.finish().await.expect("finish");
+    let view = world.view(job).await;
+    let intake = view.newest(StageKind::Intake).expect("run");
+    assert_eq!(
+        intake.lease_epoch,
+        LeaseEpoch::NEVER_CLAIMED,
+        "nothing was written"
+    );
+    assert!(intake.attempts.is_empty());
+
     let restarted = world.restarted_engine();
-    let none = restarted
-        .claim_next(&World::worker("worker-2"))
-        .await
-        .expect("claim");
-    assert!(none.started.is_empty());
-    // After the lease lapses the stage run is claimed again, at a higher epoch, and starts once.
-    world.advance(61);
     let again = restarted
         .claim_next(&World::worker("worker-2"))
         .await
         .expect("claim");
     assert_eq!(again.started.len(), 1);
-    assert_eq!(again.started[0].epoch, LeaseEpoch::new(2));
+    assert_eq!(again.started[0].epoch, LeaseEpoch::new(1));
     let view = world.view(job).await;
     assert_eq!(
         view.newest(StageKind::Intake).expect("run").attempts.len(),
         1
     );
+}
+
+#[tokio::test]
+async fn a_crash_after_the_start_leaves_a_lease_that_the_sweeper_ends_and_a_retry_starts() {
+    // New scenario for ports v1.1: the engine started the attempt and stopped before it ran
+    // anything. The attempt holds a lease that lapses by itself; the sweeper ends it and the
+    // stage run goes back to ready, and a later claim starts a second attempt at a higher epoch.
+    let world = World::new().await;
+    let job = world.admitted_job().await;
+    let first = world.claim_one("worker-1").await;
+    world.advance(61);
+    let swept = world.engine.sweep().await.expect("sweep");
+    assert_eq!(swept.lease_lost, vec![first.attempt]);
+    world.advance(400);
+    let second = world.claim_one("worker-2").await;
+    assert_eq!(second.epoch, LeaseEpoch::new(2));
+    assert_eq!(second.attempt_number, 2);
+    let view = world.view(job).await;
+    let intake = view.newest(StageKind::Intake).expect("run");
+    assert_eq!(intake.attempts[0].status, AttemptStatus::LeaseLost);
+    assert_eq!(intake.attempts[1].status, AttemptStatus::Starting);
 }
 
 #[tokio::test]
@@ -309,7 +329,7 @@ async fn a_job_whose_scope_has_a_stage_without_a_handler_is_not_admitted() {
             .expect("an engine starts");
     let job = world
         .engine
-        .receive_job(world.tenant, world.requester)
+        .receive_job(world.tenant, world.requester, world.repository)
         .await
         .expect("receive");
     let refused = world.engine.admit_job(world.tenant, job).await;
@@ -466,7 +486,9 @@ async fn a_tool_error_is_retried_after_a_back_off_that_the_claim_honours() {
         Timestamp::parse("2026-10-27T08:31:30Z").expect("an instant")
     );
 
-    // The lease has lapsed and the back-off has not: the claim finds the run and leaves it.
+    // The back-off has not ended. Meaning changed with ports v1.1: the store does not offer a
+    // stage run whose `not_before` is in the future, so the claim finds nothing at all. Before,
+    // the claim took a lease on the run, deferred it, and the lease had to run out too.
     world.advance(80);
     let early = world
         .engine
@@ -474,18 +496,17 @@ async fn a_tool_error_is_retried_after_a_back_off_that_the_claim_honours() {
         .await
         .expect("claim");
     assert!(early.started.is_empty());
-    assert_eq!(early.deferred.len(), 1);
-    assert_eq!(early.deferred[0].1, Deferral::BackingOff);
-    // The deferred claim holds the lease until it lapses, because the Store port cannot give a
-    // lease back. Once it has lapsed and the back-off is over, the retry starts as attempt 2
-    // under a higher epoch.
-    world.advance(70);
+    assert!(early.deferred.is_empty(), "{early:?}");
+    // The early look took nothing, so the retry starts the moment the back-off ends, with no
+    // lease to wait out, as attempt 2 under the next epoch and not one above it.
+    world.advance(10);
     let (second, outcome) = world.run_next("worker-2").await;
     assert_eq!(outcome, AttemptOutcome::Succeeded);
     assert_eq!(second.attempt_number, 2);
-    assert!(
-        second.epoch > LeaseEpoch::new(2),
-        "the deferred claim also raised the epoch"
+    assert_eq!(
+        second.epoch,
+        LeaseEpoch::new(2),
+        "the early look did not raise the epoch"
     );
 }
 
@@ -626,8 +647,14 @@ async fn a_structured_request_for_a_person_is_escalated_and_not_retried() {
 }
 
 #[tokio::test]
-async fn a_blocked_stage_waits_for_a_person_and_is_never_retried() {
+async fn a_missing_tool_blocks_the_stage_run_and_is_never_retried() {
+    // Meaning changed with ports v1.1 and the domain's S21. A stage that cannot run because
+    // something it needs is missing used to fail the attempt and send the stage run to a person
+    // (`S07`). It now takes `S21` (`G_ENVIRONMENT_BLOCKED`): the stage run and the job are
+    // `BLOCKED`, the cause is recorded, and nothing is retried. The check that nothing is
+    // retried is kept.
     use factory_domain::contracts::gate_report::BlockedCode;
+    use factory_domain::machines::guards::EnvironmentCause;
     let world = World::new().await;
     let job = world.admitted_job().await;
     world
@@ -636,16 +663,118 @@ async fn a_blocked_stage_waits_for_a_person_and_is_never_retried() {
             BlockedCode::ToolUnavailable,
         ))]);
     let (_, outcome) = world.run_next("worker-1").await;
-    assert!(matches!(
+    assert_eq!(
         outcome,
         AttemptOutcome::Failed {
             class: FailureClass::PolicyDenied,
-            ..
+            then: AttemptDisposition::Block(EnvironmentCause::ToolMissing),
         }
-    ));
+    );
     let view = world.view(job).await;
-    assert_eq!(intake(&view).status, StageRunStatus::WaitingForHuman);
+    assert_eq!(intake(&view).status, StageRunStatus::Blocked);
+    assert_eq!(view.status, JobStatus::Blocked);
     assert_eq!(intake(&view).attempts.len(), 1);
+    assert_eq!(intake(&view).attempts[0].status, AttemptStatus::Failed);
+
+    // The event names the move, its guard and the cause.
+    let events = world.events(job).await;
+    let blocked = events
+        .iter()
+        .find(|event| event.transition_id.as_str() == "S21")
+        .expect("S21 was taken");
+    assert_eq!(blocked.event_type.as_str(), "stage_run.blocked");
+    assert_eq!(
+        blocked.payload.get("guard").and_then(|v| v.as_str()),
+        Some("G_ENVIRONMENT_BLOCKED")
+    );
+    assert_eq!(
+        blocked.payload.get("cause").and_then(|v| v.as_str()),
+        Some("tool_missing")
+    );
+
+    // A claim finds nothing: a blocked stage run is not offered, so no retry starts by itself.
+    world.advance(600);
+    let claimed = world
+        .engine
+        .claim_next(&World::worker("worker-2"))
+        .await
+        .expect("claim");
+    assert!(claimed.started.is_empty() && claimed.deferred.is_empty());
+
+    // An operator who has fixed the environment unblocks it, and the work goes on as attempt 2.
+    let operator = world.person("operator-1", &[HumanRole::Operator]).await;
+    world
+        .engine
+        .decide(
+            &world.actor(operator),
+            Subject {
+                job,
+                stage_run: intake(&view).id,
+            },
+            Decision::UnblockRerun {
+                capability_reprobe_passed: true,
+                dependency_now_available: true,
+            },
+        )
+        .await
+        .expect("unblocks");
+    let (second, outcome) = world.run_next("worker-2").await;
+    assert_eq!(outcome, AttemptOutcome::Succeeded);
+    assert_eq!(second.attempt_number, 2);
+}
+
+#[tokio::test]
+async fn every_environment_cause_blocks_the_stage_run_and_a_provisioning_failure_does_not() {
+    // New for S21. The sandbox and probe errors that mean the environment is missing or unsafe
+    // block the stage run before any retry is considered; a provisioning failure, which another
+    // try can fix, is retried as before.
+    use factory_domain::machines::guards::EnvironmentCause;
+    for cause in [
+        EnvironmentCause::DaemonUnavailable,
+        EnvironmentCause::ImageUnavailable,
+        EnvironmentCause::PostureMismatch,
+        EnvironmentCause::PolicyViolation,
+        EnvironmentCause::ToolMissing,
+        EnvironmentCause::PolicyUnloadable,
+    ] {
+        let world = World::new().await;
+        let job = world.admitted_job().await;
+        world
+            .script(StageKind::Intake)
+            .queue([Step::Fail(StageError::Environment(cause))]);
+        let (_, outcome) = world.run_next("worker-1").await;
+        assert!(
+            matches!(
+                outcome,
+                AttemptOutcome::Failed {
+                    then: AttemptDisposition::Block(found),
+                    ..
+                } if found == cause
+            ),
+            "{cause}: {outcome:?}"
+        );
+        let view = world.view(job).await;
+        assert_eq!(intake(&view).status, StageRunStatus::Blocked, "{cause}");
+        assert_eq!(view.status, JobStatus::Blocked, "{cause}");
+    }
+
+    let world = World::new().await;
+    let job = world.admitted_job().await;
+    world
+        .script(StageKind::Intake)
+        .queue([Step::Fail(StageError::Sandbox)]);
+    let (_, outcome) = world.run_next("worker-1").await;
+    assert!(
+        matches!(
+            outcome,
+            AttemptOutcome::Failed {
+                then: AttemptDisposition::Retry,
+                ..
+            }
+        ),
+        "{outcome:?}"
+    );
+    assert_eq!(intake(&world.view(job).await).status, StageRunStatus::Ready);
 }
 
 #[tokio::test]
@@ -715,7 +844,7 @@ async fn negative_nt_lse_01_a_stale_worker_that_comes_back_changes_nothing() {
     assert_eq!(succeeded, 1);
 }
 
-#[tokio::test(start_paused = true)]
+#[tokio::test]
 async fn heartbeats_during_a_long_stage_keep_the_lease() {
     let world = World::new().await;
     world.admitted_job().await;
@@ -731,7 +860,8 @@ async fn heartbeats_during_a_long_stage_keep_the_lease() {
         // every 15 seconds keeps the lease, so the sweeper finds nothing to take.
         for _ in 0..6 {
             world.advance(20);
-            tokio::time::sleep(std::time::Duration::from_secs(16)).await;
+            // The engine's ticker moves past the 15 second heartbeat interval.
+            world.tick(16).await;
             let swept = world.engine.sweep().await.expect("sweep");
             assert!(swept.lease_lost.is_empty(), "the lease was kept alive");
         }
@@ -744,7 +874,7 @@ async fn heartbeats_during_a_long_stage_keep_the_lease() {
     );
 }
 
-#[tokio::test(start_paused = true)]
+#[tokio::test]
 async fn an_attempt_past_its_deadline_is_stopped_and_timed_out() {
     let world = World::new().await;
     let job = world.admitted_job().await;
@@ -758,7 +888,7 @@ async fn an_attempt_past_its_deadline_is_stopped_and_timed_out() {
     let driver = async {
         world.advance(40);
         // The next heartbeat sees the passed deadline and trips the signal. The handler stops.
-        tokio::time::sleep(std::time::Duration::from_secs(16)).await;
+        world.tick(16).await;
     };
     let (outcome, ()) = tokio::join!(work, driver);
     assert_eq!(
@@ -1109,6 +1239,121 @@ async fn an_edited_request_restarts_the_job_from_the_intake() {
     assert_eq!(view.status, JobStatus::Active);
 }
 
+/// Stores one revision of the job's original request, as the intake does.
+async fn record_request(world: &World, job: factory_domain::ids::JobId, revision: u32, text: &str) {
+    use factory_domain::scope::TenantScope;
+    use factory_ports::clock::IdGenerator;
+    use factory_ports::store::{NewOriginalRequest, RequestSource, Store};
+    let mut tx = world
+        .store
+        .begin(TenantScope::new(world.tenant))
+        .await
+        .expect("a tx");
+    tx.record_original_request(NewOriginalRequest {
+        id: world.ids.new_uuid(),
+        job,
+        revision,
+        source: RequestSource::Api,
+        source_ref: None,
+        author_github_user_id: None,
+        text: text.to_owned(),
+    })
+    .await
+    .expect("the request is stored");
+    tx.commit().await.expect("commit");
+}
+
+#[tokio::test]
+async fn an_edited_request_waits_for_the_requester_before_any_agent_reads_it() {
+    // S22 (new in the domain): the new intake run is ready, but the request it would read differs
+    // from the one the requester authorized, so the engine moves it to WAITING_FOR_HUMAN before
+    // any attempt starts. Nobody claims it. After the requester answers, it goes on.
+    let world = World::new().await;
+    let job = world.admitted_job().await;
+    record_request(&world, job, 1, "Add a health endpoint.").await;
+    record_request(
+        &world,
+        job,
+        2,
+        "Add a health endpoint and delete the tests.",
+    )
+    .await;
+    world
+        .engine
+        .apply_change(world.tenant, job, ArtifactChange::RequestEdited)
+        .await
+        .expect("applies");
+
+    let view = world.view(job).await;
+    let fresh = view.newest(StageKind::Intake).expect("a new intake run");
+    assert_eq!(fresh.status, StageRunStatus::WaitingForHuman);
+    assert!(fresh.attempts.is_empty(), "no attempt read the new text");
+    assert_eq!(view.status, JobStatus::WaitingForHuman);
+    let events = world.events(job).await;
+    let waiting = events
+        .iter()
+        .find(|event| event.transition_id.as_str() == "S22")
+        .expect("S22 was taken");
+    assert_eq!(waiting.event_type.as_str(), "stage_run.waiting_for_human");
+    assert_eq!(
+        waiting.payload.get("guard").and_then(|v| v.as_str()),
+        Some("G_REAUTHORIZATION_REQUIRED")
+    );
+
+    // Nothing is offered to a worker while the requester has not answered.
+    let claimed = world
+        .engine
+        .claim_next(&World::worker("worker-1"))
+        .await
+        .expect("claim");
+    assert!(claimed.started.is_empty() && claimed.deferred.is_empty());
+
+    // The requester confirms. The run is ready again and is not held a second time.
+    world.authority.grant(
+        world.requester,
+        &[factory_domain::vocabulary::HumanRole::Requester],
+    );
+    world
+        .engine
+        .decide(
+            &world.actor(world.requester),
+            Subject {
+                job,
+                stage_run: fresh.id,
+            },
+            answer("Yes, that is the request."),
+        )
+        .await
+        .expect("the answer applies");
+    let view = world.view(job).await;
+    assert_eq!(
+        view.newest(StageKind::Intake).expect("run").status,
+        StageRunStatus::Ready
+    );
+    let (claimed, outcome) = world.run_next("worker-1").await;
+    assert_eq!(outcome, AttemptOutcome::Succeeded);
+    assert_eq!(claimed.attempt_number, 1);
+}
+
+#[tokio::test]
+async fn an_edit_that_leaves_the_text_unchanged_needs_no_confirmation() {
+    let world = World::new().await;
+    let job = world.admitted_job().await;
+    record_request(&world, job, 1, "Add a health endpoint.").await;
+    record_request(&world, job, 2, "Add a health endpoint.").await;
+    world
+        .engine
+        .apply_change(world.tenant, job, ArtifactChange::RequestEdited)
+        .await
+        .expect("applies");
+    let view = world.view(job).await;
+    assert_eq!(
+        view.newest(StageKind::Intake).expect("run").status,
+        StageRunStatus::Ready
+    );
+    assert_eq!(view.status, JobStatus::Active);
+}
+
 #[tokio::test]
 async fn skipped_stage_does_not_stall_the_pipeline() {
     let world = World::new().await;
@@ -1387,8 +1632,8 @@ async fn only_people_with_a_listed_role_may_answer_and_a_refusal_is_audited() {
     );
     let audit = world.audit(job).await;
     assert!(audit.iter().any(|record| {
-        record.action.as_str() == "authorization_decision.denied"
-            && matches!(&record.actor, factory_ports::store::AuditActor::Principal(p) if *p == stranger)
+        record.event.action.as_str() == "authorization_decision.denied"
+            && matches!(&record.event.actor, factory_ports::store::AuditActor::Human(p) if *p == stranger)
     }));
 }
 
@@ -1658,7 +1903,7 @@ async fn negative_nt_mrg_02_an_approval_of_stale_evidence_is_refused() {
     assert!(
         audit
             .iter()
-            .any(|r| r.action.as_str() == "approval_granted_or_rejected.denied")
+            .any(|r| r.event.action.as_str() == "approval_granted_or_rejected.denied")
     );
 }
 
@@ -1988,14 +2233,21 @@ async fn a_paused_job_starts_nothing_and_a_resumed_job_goes_on() {
         .await
         .expect("claim");
     assert!(claimed.started.is_empty());
-    assert_eq!(claimed.deferred[0].1, Deferral::JobNotActive);
+    // Meaning changed with ports v1.1: the store offers only stage runs of active jobs, so a
+    // paused job is not found and nothing is deferred. The stage run is still ready, and nothing
+    // was taken from it.
+    assert!(claimed.deferred.is_empty(), "{claimed:?}");
+    let view = world.view(job).await;
+    let intake = view.newest(StageKind::Intake).expect("run");
+    assert_eq!(intake.status, StageRunStatus::Ready);
+    assert_eq!(intake.lease_epoch, LeaseEpoch::NEVER_CLAIMED);
 
     world
         .engine
         .control(&world.actor(operator), job, JobCommand::Resume)
         .await
         .expect("resumes");
-    world.advance(61);
+    // No lease from the earlier look lingers, so the stage run starts at once.
     let (_, outcome) = world.run_next("worker-1").await;
     assert_eq!(outcome, AttemptOutcome::Succeeded);
 }
@@ -2019,7 +2271,7 @@ async fn only_an_operator_may_pause() {
             .audit(job)
             .await
             .iter()
-            .any(|r| r.action.as_str() == "authorization_decision.denied")
+            .any(|r| r.event.action.as_str() == "authorization_decision.denied")
     );
 }
 
@@ -2044,7 +2296,7 @@ async fn cancelling_a_job_with_no_running_attempt_ends_it_at_once() {
     );
 }
 
-#[tokio::test(start_paused = true)]
+#[tokio::test]
 async fn cancelling_stops_the_running_attempt_and_tears_it_down() {
     let world = World::new().await;
     let job = world.admitted_job().await;
@@ -2068,7 +2320,7 @@ async fn cancelling_stops_the_running_attempt_and_tears_it_down() {
             "the attempt is still tearing down"
         );
         // The next heartbeat tells the worker to stop.
-        tokio::time::sleep(std::time::Duration::from_secs(16)).await;
+        world.tick(16).await;
     };
     let (outcome, ()) = tokio::join!(work, driver);
     assert_eq!(outcome.expect("runs"), AttemptOutcome::Cancelled);
@@ -2103,19 +2355,13 @@ async fn a_worker_that_never_tears_down_is_forced_after_the_grace_period() {
     );
     // Nothing happens before the grace period.
     world.advance(10);
-    world
-        .engine
-        .sweep_job(world.tenant, job)
-        .await
-        .expect("sweep");
+    world.engine.sweep().await.expect("sweep");
     assert_eq!(world.view(job).await.status, JobStatus::Cancelling);
-    // After it, the sweeper forces the end.
+    // After it, the sweeper forces the end, again through the due-work query and with no job
+    // named.
     world.advance(30);
-    world
-        .engine
-        .sweep_job(world.tenant, job)
-        .await
-        .expect("sweep");
+    let swept = world.engine.sweep().await.expect("sweep");
+    assert_eq!(swept.forced.len(), 1);
     let view = world.view(job).await;
     assert_eq!(view.status, JobStatus::Cancelled);
     assert_eq!(
@@ -2133,12 +2379,11 @@ async fn the_sweeper_times_out_an_attempt_whose_worker_went_quiet() {
         .with(|s| s.tweaks.attempt_timeout_seconds = 30);
     let claimed = world.claim_one("worker-1").await;
     world.advance(31);
-    // The lease is still held (31 s of 60), so only the deadline is past.
-    world
-        .engine
-        .sweep_job(world.tenant, job)
-        .await
-        .expect("sweep");
+    // The lease is still held (31 s of 60), so only the deadline is past. One sweep finds it
+    // through the store's due-work query for deadlines, with no job named.
+    let swept = world.engine.sweep().await.expect("sweep");
+    assert_eq!(swept.timed_out, vec![claimed.attempt]);
+    assert!(swept.lease_lost.is_empty());
     let view = world.view(job).await;
     let intake = view.newest(StageKind::Intake).expect("run");
     assert_eq!(intake.attempts[0].status, AttemptStatus::TimedOut);
@@ -2176,7 +2421,7 @@ async fn an_agent_stage_gets_a_job_token_that_ends_with_the_attempt() {
         .audit(job)
         .await
         .iter()
-        .map(|r| r.action.as_str().to_owned())
+        .map(|r| r.event.action.as_str().to_owned())
         .collect();
     assert!(audit.contains(&"credential_minted_and_revoked.granted".to_owned()));
     assert!(audit.contains(&"credential_minted_and_revoked.ended".to_owned()));
@@ -2197,11 +2442,11 @@ async fn a_stage_that_runs_no_agent_gets_no_token() {
     world.run_next("worker-1").await;
     assert_eq!(world.script(StageKind::Intake).tokens(), vec![None]);
     assert!(
-        world
-            .audit(job)
-            .await
-            .iter()
-            .all(|r| !r.action.as_str().starts_with("credential_minted"))
+        world.audit(job).await.iter().all(|r| !r
+            .event
+            .action
+            .as_str()
+            .starts_with("credential_minted"))
     );
 }
 
@@ -2236,7 +2481,7 @@ async fn a_budget_limit_revokes_the_token_and_asks_a_person() {
             .audit(job)
             .await
             .iter()
-            .any(|r| r.action.as_str() == "budget_threshold_crossed.noted")
+            .any(|r| r.event.action.as_str() == "budget_threshold_crossed.noted")
     );
 }
 
@@ -2315,10 +2560,10 @@ async fn production_mode_refuses_fakes() {
         .is_ok()
     );
 
-    // Each of the eleven adapters and the thirteen handlers is on the list that is checked, and
-    // any one of them alone is enough to refuse the run.
+    // Each of the twelve adapters (the ticker is new with ports v1.1) and the thirteen handlers
+    // is on the list that is checked, and any one of them alone is enough to refuse the run.
     let components = components_of(&world.deps, &world.handlers);
-    assert_eq!(components.len(), 11 + 13);
+    assert_eq!(components.len(), 12 + 13);
     for expected in [
         "store",
         "clock",
@@ -2331,6 +2576,7 @@ async fn production_mode_refuses_fakes() {
         "agent registry",
         "model broker",
         "authority",
+        "ticker",
         "stage handler INTAKE",
         "stage handler APPROVAL",
     ] {
@@ -2391,7 +2637,7 @@ async fn events_carry_the_job_traceparent() {
     assert_eq!(trace_id, job.as_uuid().simple().to_string());
 }
 
-#[tokio::test(start_paused = true)]
+#[tokio::test]
 async fn restart_resumes_without_duplication() {
     // Engine A works on the job and is dropped while a stage is running. Engine B finds the job
     // as the store holds it, takes the work after the lease lapses, and finishes the job.
@@ -2409,10 +2655,14 @@ async fn restart_resumes_without_duplication() {
     world.advance(400);
     let claimed = world.claim_one("worker-a").await;
     {
-        // Engine A starts the attempt and is dropped before it finishes: the future is dropped
-        // at its first wait, with the handler still running.
-        let work = world.engine.run_attempt(&claimed);
-        let _ = tokio::time::timeout(std::time::Duration::from_millis(10), work).await;
+        // Engine A starts the attempt and is dropped before it finishes: the future is polled
+        // once, runs to its first wait with the handler still running, and is dropped there.
+        let mut work = std::pin::pin!(world.engine.run_attempt(&claimed));
+        tokio::select! {
+            biased;
+            _ = &mut work => {}
+            () = std::future::ready(()) => {}
+        }
     }
     let view = world.view(job).await;
     assert_eq!(
@@ -2480,4 +2730,287 @@ async fn restart_resumes_without_duplication() {
         2,
         "the lost attempt and its replacement"
     );
+}
+
+// ---- a pass needs the guard that clears it (ports v1.1, GuardCleared) ---------------------------
+
+#[tokio::test]
+async fn a_pass_with_a_criterion_that_nothing_verified_is_blocked_and_never_passed() {
+    // The contract has two acceptance criteria and the gate reports on one. The guard of the pass
+    // (`G_GATE_PASS_EVIDENCED`) asks for evidence behind every criterion, so the stage run is
+    // blocked and no `stage_run.passed` event exists for it.
+    let world = World::new().await;
+    let job = world.admitted_job().await;
+    world
+        .script(StageKind::Intake)
+        .with(|s| s.tweaks.uncovered_criterion = true);
+    world.run_next("worker-1").await;
+    let view = world.view(job).await;
+    assert_eq!(status_of(&view, StageKind::Intake), StageRunStatus::Blocked);
+    let intake_id = view.newest(StageKind::Intake).expect("run").id;
+    let passed = world
+        .events(job)
+        .await
+        .iter()
+        .filter(|event| {
+            event.event_type.as_str() == "stage_run.passed"
+                && event.aggregate.id.as_uuid() == intake_id.as_uuid()
+        })
+        .count();
+    assert_eq!(passed, 0, "a stage run with an unverified criterion passed");
+}
+
+#[tokio::test]
+async fn every_move_names_the_guard_that_cleared_it_and_the_facts_it_held_on() {
+    // Every move of a job, a stage run or an attempt is written with the proof that its guard
+    // held. The event says which guard and carries the digest of the facts, so the record shows
+    // that the move was justified. A passed stage run names the guard of its pass.
+    let world = World::new().await;
+    let job = world.admitted_job().await;
+    world.run_stages(3).await;
+    let events = world.events(job).await;
+    let mut moves = 0;
+    for event in &events {
+        let Some(row) = event.payload.get("guard") else {
+            continue;
+        };
+        moves += 1;
+        let guard = row.as_str().expect("a guard name");
+        assert!(guard.starts_with("G_"), "{guard}");
+        let digest = event
+            .payload
+            .get("guard_facts_sha256")
+            .and_then(|v| v.as_str())
+            .expect("the facts digest");
+        assert!(
+            factory_domain::values::Sha256Digest::parse(digest).is_ok(),
+            "{digest}"
+        );
+    }
+    assert!(
+        moves >= events.len() - 1,
+        "{moves} of {} events name a guard",
+        events.len()
+    );
+    let passes: Vec<&str> = events
+        .iter()
+        .filter(|event| event.event_type.as_str() == "stage_run.passed")
+        .filter_map(|event| event.payload.get("guard").and_then(|v| v.as_str()))
+        .collect();
+    assert_eq!(passes.len(), 3);
+    assert!(passes.iter().all(|guard| *guard == "G_GATE_PASS_EVIDENCED"));
+}
+
+// ---- events that belong to no job ----------------------------------------------------------------
+
+#[tokio::test]
+async fn an_event_with_no_job_is_recorded_in_the_platform_chain_and_not_under_a_tenant() {
+    // A webhook with a bad signature has no tenant and no job. The caller, which alone may make a
+    // platform scope, passes it in; the engine adds the identifier, the policy and a correlation
+    // id of the event's own.
+    use factory_domain::scope::PlatformScope;
+    use factory_ports::store::AuditActor;
+    use factory_workflow::audit::{AuditAction, AuditDecision, AuditKind};
+    use factory_workflow::engine::PlatformEvent;
+    let world = World::new().await;
+    let record = world
+        .engine
+        .record_platform_event(
+            PlatformScope::receiver(),
+            PlatformEvent {
+                actor: AuditActor::Anonymous(
+                    factory_domain::values::Slug::parse("webhook").expect("a slug"),
+                ),
+                action: AuditAction::new(
+                    AuditKind::WebhookAcceptedOrRejected,
+                    AuditDecision::Denied,
+                ),
+                subject: "a delivery with a bad signature".to_owned(),
+                reason: "the signature did not verify".to_owned(),
+            },
+        )
+        .await
+        .expect("the platform event is recorded");
+    assert_eq!(record.event.job, None);
+    assert_eq!(
+        record.event.action.as_str(),
+        "webhook_accepted_or_rejected.denied"
+    );
+    assert_eq!(record.event.policy_hash, world.config.policy_hash);
+    let platform = world.store.platform_audit();
+    assert_eq!(platform.len(), 1);
+    assert!(
+        world.store.tenant_audit(world.tenant).is_empty(),
+        "nothing landed under a tenant"
+    );
+}
+
+// ---- what a failed run leaves behind -------------------------------------------------------------
+
+#[tokio::test]
+async fn a_failed_run_keeps_its_denied_tool_calls_and_its_transcript() {
+    // Ports v1.1: an agent run always returns a report, with usage, transcript and denials, even
+    // when it has no output. The handler hands the report to the engine before it returns the
+    // error, and the engine records each denial in the audit log and indexes the transcript for
+    // the tenant, together with the failure of the attempt.
+    use factory_domain::scope::TenantScope;
+    use factory_ports::store::Store;
+
+    let world = World::new().await;
+    let job = world.admitted_job().await;
+    world.script(StageKind::Intake).with(|s| {
+        s.failed_run = Some((2, true));
+        s.steps.push_back(Step::Fail(StageError::Tool));
+    });
+    let (_, outcome) = world.run_next("worker-1").await;
+    assert!(
+        matches!(outcome, AttemptOutcome::Failed { .. }),
+        "{outcome:?}"
+    );
+    let denials = world
+        .audit(job)
+        .await
+        .iter()
+        .filter(|r| r.event.action.as_str().starts_with("tool_call_denied"))
+        .count();
+    assert_eq!(
+        denials, 2,
+        "each denied tool call of the failed run is audited"
+    );
+    let transcripts = world
+        .script(StageKind::Intake)
+        .with(|s| s.transcripts.clone());
+    assert_eq!(transcripts.len(), 1);
+    // The tenant's index names the transcript, so the tenant may read the blob.
+    let mut tx = world
+        .store
+        .begin(TenantScope::new(world.tenant))
+        .await
+        .expect("a tx");
+    let row = tx
+        .get_artifact_index(&transcripts[0].sha256)
+        .await
+        .expect("the tenant holds the transcript of the failed run");
+    assert_eq!(row.tenant_id, world.tenant);
+    tx.rollback().await.expect("rollback");
+
+    // A failing run that reports nothing leaves nothing extra behind.
+    let other = World::new().await;
+    let job = other.admitted_job().await;
+    other
+        .script(StageKind::Intake)
+        .queue([Step::Fail(StageError::Tool)]);
+    other.run_next("worker-1").await;
+    assert!(
+        other.audit(job).await.iter().all(|r| !r
+            .event
+            .action
+            .as_str()
+            .starts_with("tool_call_denied"))
+    );
+}
+
+// ---- assurance claims of a gate decision --------------------------------------------------------
+
+#[tokio::test]
+async fn an_assurance_claim_in_a_test_run_is_dropped_and_the_stage_still_passes() {
+    // A test run records as a fake component, and the domain refuses an assurance level on a fake
+    // entry (INV-08). The handler's claim is therefore not written, and the stage run is judged on
+    // its evidence all the same. Whether a claim is written when the evidence is real and current
+    // is covered by the unit tests of `assurance_entries`, which can take a real recorder.
+    let world = World::new().await;
+    let job = world.admitted_job().await;
+    world
+        .script(StageKind::Intake)
+        .queue_evals([Eval::PassClaimingAssurance]);
+    let (_, outcome) = world.run_next("worker-1").await;
+    assert_eq!(outcome, AttemptOutcome::Succeeded);
+    assert_eq!(
+        status_of(&world.view(job).await, StageKind::Intake),
+        StageRunStatus::Passed
+    );
+    let entries = world.ledger(job).await;
+    assert!(!entries.is_empty());
+    assert!(
+        entries
+            .iter()
+            .all(|entry| entry.claim.assurance_level.is_none()),
+        "an assurance level was written for a fake run"
+    );
+}
+
+// ---- a commit whose answer is lost (ports v1.1, CommitOutcomeUnknown) -------------------------
+
+#[tokio::test]
+async fn a_commit_whose_answer_is_lost_but_was_applied_is_a_success_and_nothing_repeats() {
+    // The store applies the commit and then fails to say so. The engine asks the store whether the
+    // last record of the decision is stored (`Store::committed`), finds it, and reports success.
+    // The decision is neither lost nor made twice.
+    let world = World::new().await;
+    let job = world
+        .engine
+        .receive_job(world.tenant, world.requester, world.repository)
+        .await
+        .expect("receive");
+
+    world.store.lose_next_commit_answer();
+    let admission = world
+        .engine
+        .admit_job(world.tenant, job)
+        .await
+        .expect("an applied commit is a success even when its answer is lost");
+    assert!(matches!(admission, Admission::Admitted { .. }));
+    assert_eq!(world.view(job).await.status, JobStatus::Active);
+    let admitted = world
+        .events(job)
+        .await
+        .iter()
+        .filter(|event| event.event_type.as_str() == "job.admitted")
+        .count();
+    assert_eq!(admitted, 1, "the admission was made once");
+
+    // The start of an attempt is the other decision that matters: a lost answer must not leave a
+    // second attempt behind when the caller goes on.
+    world.store.lose_next_commit_answer();
+    let claimed = world.claim_one("worker-1").await;
+    let view = world.view(job).await;
+    assert_eq!(
+        view.newest(StageKind::Intake).expect("run").attempts.len(),
+        1
+    );
+    assert_eq!(claimed.attempt_number, 1);
+}
+
+#[tokio::test]
+async fn creating_a_job_whose_commit_answer_is_lost_finds_the_job() {
+    let world = World::new().await;
+    world.store.lose_next_commit_answer();
+    let job = world
+        .engine
+        .receive_job(world.tenant, world.requester, world.repository)
+        .await
+        .expect("the job was stored, so the call succeeds");
+    assert_eq!(
+        world.engine.job_status(world.tenant, job).await,
+        Ok(JobStatus::Received)
+    );
+}
+
+#[tokio::test]
+async fn a_commit_the_store_cannot_confirm_is_never_reported_as_a_success() {
+    // The store loses the answer and then says the witness is not stored. The engine must not
+    // call that a success: the call fails with an error that can be repeated, and the caller
+    // reads the state before it acts again. The defect makes `committed` answer "no" always.
+    let world = World::with_store_defect(factory_testkit::store::StoreDefect::LosesWitness).await;
+    let job = world
+        .engine
+        .receive_job(world.tenant, world.requester, world.repository)
+        .await
+        .expect("receive");
+    world.store.lose_next_commit_answer();
+    let refused = world.engine.admit_job(world.tenant, job).await;
+    let Err(error) = refused else {
+        panic!("an unconfirmed commit was reported as a success: {refused:?}");
+    };
+    assert!(error.is_retryable(), "{error:?}");
 }

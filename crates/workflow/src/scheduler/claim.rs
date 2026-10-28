@@ -1,32 +1,35 @@
 //! The claim loop: handing a ready stage run to one worker, with a lease.
 //!
 //! A claim has two halves, in two transactions, because the system scope only finds work and the
-//! tenant scope applies it (ADR 0012):
+//! tenant scope applies it (ADR 0012, ADR 0014):
 //!
-//! 1. A system transaction leases ready stage runs to the worker (`Store::claim_ready`). The
-//!    store gives each stage run to at most one claimer, skips one that is already claimed, and
-//!    raises its lease epoch. The engine commits at once.
-//! 2. For each stage run, a tenant transaction checks the guard `G_LEASE_ACQUIRED`, creates the
-//!    attempt and moves the stage run to `RUNNING` (`S03`) in one commit.
+//! 1. A system transaction finds ready stage runs of active jobs whose back-off is over
+//!    (`SystemTx::find_claim_candidates`). It writes nothing and holds no lock once it ends. What
+//!    it returns is a hint, not a grant.
+//! 2. For each candidate, a tenant transaction reads the job and the stage run, checks the guard
+//!    `G_LEASE_ACQUIRED` and calls `AttemptOps::start_attempt`. The store checks that the stage run
+//!    is still `READY` at the version the candidate was read at, raises the epoch, moves the run
+//!    to `RUNNING` (`S03`) and creates the attempt with its lease, as one step. Two workers that
+//!    found the same candidate cannot both start it: one gets `Conflict`.
 //!
-//! If the engine stops between the two, the stage run is `READY` with a lease that lapses by
-//! itself, and the next claim takes it with a higher epoch. Nothing is lost and nothing runs
-//! twice: the attempt that did not start has no worker, and a worker that did start holds an
-//! epoch that the store checks on every write (INV-05).
+//! If the engine stops between the two halves nothing was written, and the next claim finds the
+//! same candidate again. If it stops after the start, the attempt holds a lease that lapses by
+//! itself and the sweeper ends it (`A07`). A worker that did start holds an epoch that the store
+//! checks on every write (INV-05).
 
 use factory_domain::ids::{AttemptId, CorrelationId, JobId, StageRunId, TenantId};
 use factory_domain::machines::guards::{GuardFacts, LeaseGrantFacts, evaluate};
-use factory_domain::state::{Guard, StageRunEvent, StageRunStatus};
+use factory_domain::state::Guard;
 use factory_domain::values::Timestamp;
 use factory_domain::vocabulary::StageKind;
-use factory_ports::clock::timestamp_after;
-use factory_ports::store::{ClaimedWork, LeaseEpoch, NewAttempt, StoreError, WorkerId};
+use factory_ports::store::{
+    ClaimCandidate, ConstraintRule, LeaseEpoch, NotReady, StoreError, WorkerId,
+};
 use std::time::Duration;
 
 use crate::audit::{AuditAction, AuditDecision, AuditKind};
-use crate::engine::payload::attempt_started;
 use crate::engine::progress::{Board, upstream_runs};
-use crate::engine::record::Cx;
+use crate::engine::record::{Cx, Launch};
 use crate::engine::timeline::Timeline;
 use crate::engine::{Engine, EngineError};
 
@@ -58,7 +61,7 @@ pub struct ClaimedAttempt {
     pub deadline_at: Timestamp,
 }
 
-/// Why a claimed stage run did not start. The lease lapses by itself.
+/// Why a candidate did not start. Nothing was claimed, so there is no lease to wait out.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Deferral {
     /// The job is not `ACTIVE`: paused, waiting, blocked, cancelling or finished.
@@ -73,8 +76,21 @@ pub enum Deferral {
     BudgetExhausted,
     /// The contract of the stage could not be resolved.
     NoContract,
-    /// Another writer got there first, or the lease had already ended.
+    /// The stage run has used all the attempts the store allows it.
+    AttemptLimit,
+    /// Another worker started it first, or it changed since it was found.
     Superseded,
+}
+
+impl Deferral {
+    /// True when the stage run stays `READY` and would be found again at once, so the engine moves
+    /// its `not_before` forward to keep one stage run from holding up the others.
+    const fn is_postponed(self) -> bool {
+        matches!(
+            self,
+            Self::QuotaExceeded | Self::NoRuntime | Self::BudgetExhausted | Self::NoContract
+        )
+    }
 }
 
 /// The result of one call to [`Engine::claim_next`].
@@ -82,33 +98,29 @@ pub enum Deferral {
 pub struct Claimed {
     /// The attempts that started.
     pub started: Vec<ClaimedAttempt>,
-    /// The stage runs that were claimed and did not start, with the reason.
+    /// The stage runs that were found and did not start, with the reason.
     pub deferred: Vec<(StageRunId, Deferral)>,
 }
 
 impl Engine {
-    /// Leases ready stage runs to `worker` and starts an attempt for each one that may start.
+    /// Finds ready stage runs and starts an attempt, with a lease for `worker`, for each one that
+    /// may start.
     ///
     /// # Errors
-    /// The store errors of the claim itself. A stage run that cannot start is reported in
+    /// The store errors of the lookup. A stage run that cannot start is reported in
     /// [`Claimed::deferred`], not as an error, so one bad run does not hold back the others.
     pub async fn claim_next(&self, worker: &WorkerId) -> Result<Claimed, EngineError> {
-        let work = {
+        let candidates = {
             let mut tx = self.system_tx().await?;
-            let work = tx
-                .claim_ready(worker, self.config.claim_batch, self.config.lease_ttl)
-                .await?;
-            match tx.commit().await {
-                Ok(()) => work,
-                // Another claimer committed first: its claim stands and this one is dropped.
-                Err(StoreError::Conflict) => return Ok(Claimed::default()),
-                Err(other) => return Err(other.into()),
-            }
+            let found = tx.find_claim_candidates(self.config.claim_batch).await;
+            // The transaction ends whether or not the lookup worked, so no lock outlives it.
+            tx.finish().await?;
+            found?
         };
         let mut claimed = Claimed::default();
-        for item in work {
-            let run = item.stage_run.value.id;
-            match self.start_attempt(worker, item).await {
+        for candidate in candidates {
+            let run = candidate.stage_run;
+            match self.start_candidate(worker, &candidate).await {
                 Ok(Ok(started)) => claimed.started.push(started),
                 Ok(Err(reason)) => claimed.deferred.push((run, reason)),
                 Err(EngineError::Conflict | EngineError::LeaseFenced | EngineError::NotFound) => {
@@ -120,17 +132,13 @@ impl Engine {
         Ok(claimed)
     }
 
-    /// Applies one claim: checks `G_LEASE_ACQUIRED`, creates the attempt and takes `S03`.
-    async fn start_attempt(
+    /// Applies one candidate: checks `G_LEASE_ACQUIRED`, then starts the attempt (`S03`).
+    async fn start_candidate(
         &self,
         worker: &WorkerId,
-        work: ClaimedWork,
+        candidate: &ClaimCandidate,
     ) -> Result<Result<ClaimedAttempt, Deferral>, EngineError> {
-        let (tenant, job_id, run_id) = (
-            work.stage_run.value.tenant_id,
-            work.stage_run.value.job_id,
-            work.stage_run.value.id,
-        );
+        let (tenant, job_id, run_id) = (candidate.tenant, candidate.job, candidate.stage_run);
         // The quota is asked before the transaction opens: a transaction awaits the store only.
         let quota_allows = self
             .deps
@@ -142,9 +150,6 @@ impl Engine {
         let mut tx = self.tenant_tx(tenant).await?;
         let job = tx.get_job(job_id).await?;
         let run = tx.get_stage_run(run_id).await?;
-        if run.value.status != StageRunStatus::Ready || run.value.lease_epoch != work.lease.epoch {
-            return Ok(Err(Deferral::Superseded));
-        }
         let cx = Cx::new(self, &job.value, self.new_causation_id());
         let timeline = Timeline::load(&mut *tx, job_id).await?;
         let Some(record) = timeline.run(run_id) else {
@@ -159,69 +164,95 @@ impl Engine {
         let board = Board::load(&mut *tx, &timeline).await?;
         let upstream = upstream_runs(&timeline, &board);
         let ccx = self.contract_context(&cx, &run.value, record, &upstream);
-        let Ok(contract) = handler.contract(&ccx) else {
-            return Ok(Err(Deferral::NoContract));
-        };
+        let contract = handler.contract(&ccx);
         let capability_ok = handler
             .routing_need(&ccx)
             .is_none_or(|need| self.deps.router.route(&need).is_ok());
-
-        if timeline.spent_micro_usd >= self.config.job_budget_micro_usd {
-            return Ok(Err(Deferral::BudgetExhausted));
-        }
         let now = tx.database_time().await?;
+
         let facts = GuardFacts::LeaseGrant(LeaseGrantFacts {
-            lease_compare_and_swap_succeeded: work.lease.expires_at > now,
+            claim_candidate_current: run.value.status
+                == factory_domain::state::StageRunStatus::Ready
+                && run.version == candidate.version,
             job_status: job.value.status,
             now,
-            not_before: record.not_before,
+            not_before: Some(run.value.not_before),
             concurrency_quota_allows: quota_allows,
             runtime_capability_check_passed: capability_ok,
         });
-        if let Err(error) = evaluate(Guard::LeaseAcquired, &facts) {
-            tracing::debug!(
-                stage_run = %run_id,
-                guard = %Guard::LeaseAcquired,
-                "a claimed stage run does not start: {error}"
-            );
-            return Ok(Err(deferral_for(
-                job.value.status,
-                record.not_before.is_some_and(|not_before| now < not_before),
-                quota_allows,
-                capability_ok,
-            )));
-        }
+        let verdict = match (
+            &contract,
+            timeline.spent_micro_usd >= self.config.job_budget_micro_usd,
+        ) {
+            (Err(_), _) => Err(Deferral::NoContract),
+            (Ok(_), true) => Err(Deferral::BudgetExhausted),
+            (Ok(_), false) => match evaluate(Guard::LeaseAcquired, &facts) {
+                Ok(cleared) => Ok(cleared),
+                Err(error) => {
+                    tracing::debug!(
+                        stage_run = %run_id,
+                        guard = %Guard::LeaseAcquired,
+                        "a stage run does not start: {error}"
+                    );
+                    Err(deferral_for(
+                        job.value.status,
+                        run.value.not_before > now,
+                        quota_allows,
+                        capability_ok,
+                        run.value.status == factory_domain::state::StageRunStatus::Ready
+                            && run.version == candidate.version,
+                    ))
+                }
+            },
+        };
+        let cleared = match verdict {
+            Ok(cleared) => cleared,
+            Err(reason) => return self.defer(tx, &run, reason).await,
+        };
+        let Ok(contract) = contract else {
+            return Ok(Err(Deferral::NoContract));
+        };
 
         let attempt_id = self.new_attempt_id();
-        let attempt = tx
-            .insert_attempt(NewAttempt {
-                id: attempt_id,
-                stage_run_id: run_id,
-                epoch: work.lease.epoch,
-                created_at: cx.now,
-            })
-            .await?;
         let timeout = Duration::from_secs(
             u64::try_from(contract.timeout_and_retries.attempt_timeout_seconds.get())
                 .unwrap_or(u64::MAX),
         );
-        let deadline_at = timestamp_after(&now, timeout);
-        let payload = attempt_started(
-            run.value.kind,
-            run_id,
-            attempt_id,
-            attempt.value.number,
-            deadline_at,
-        );
-        cx.move_stage_run(&mut *tx, &run, StageRunEvent::Start, None, payload)
-            .await?;
+        let started = match cx
+            .start_stage_run(
+                &mut *tx,
+                &run,
+                cleared,
+                Launch {
+                    attempt: attempt_id,
+                    worker: worker.clone(),
+                    lease_ttl: self.config.lease_ttl,
+                    attempt_timeout: timeout,
+                },
+            )
+            .await
+        {
+            Ok(started) => started,
+            // The store judged it by its own clock and its own rows, and its answer is final.
+            Err(EngineError::Store(StoreError::NotReady(NotReady::JobNotActive))) => {
+                return Ok(Err(Deferral::JobNotActive));
+            }
+            Err(EngineError::Store(StoreError::NotReady(NotReady::BackingOff))) => {
+                return Ok(Err(Deferral::BackingOff));
+            }
+            Err(EngineError::Store(StoreError::Constraint(ConstraintRule::AttemptLimit))) => {
+                return Ok(Err(Deferral::AttemptLimit));
+            }
+            Err(other) => return Err(other),
+        };
         // The tools that policy granted to this run are the ones in its contract.
         cx.audit_engine(
             &mut *tx,
             AuditAction::new(AuditKind::ToolGrantIssued, AuditDecision::Granted),
         )
         .await?;
-        tx.commit().await?;
+        cx.commit(tx).await?;
+        let attempt = started.attempt.value;
         Ok(Ok(ClaimedAttempt {
             tenant,
             job: job_id,
@@ -229,12 +260,31 @@ impl Engine {
             stage_run: run_id,
             kind: run.value.kind,
             attempt: attempt_id,
-            attempt_number: attempt.value.number,
-            epoch: work.lease.epoch,
+            attempt_number: attempt.number,
+            epoch: attempt.epoch,
             worker: worker.clone(),
-            lease_expires_at: work.lease.expires_at,
-            deadline_at,
+            lease_expires_at: attempt.lease_expires_at,
+            deadline_at: attempt.deadline_at,
         }))
+    }
+
+    /// Ends a transaction for a candidate that does not start. A reason that would make the same
+    /// candidate come back at once moves the stage run's `not_before` forward first
+    /// (`postpone_stage_run`), so other stage runs get their turn.
+    async fn defer(
+        &self,
+        mut tx: Box<dyn factory_ports::store::Tx>,
+        run: &factory_ports::store::Versioned<factory_ports::store::StageRun>,
+        reason: Deferral,
+    ) -> Result<Result<ClaimedAttempt, Deferral>, EngineError> {
+        if reason.is_postponed() {
+            tx.postpone_stage_run(run.value.id, run.version, self.config.lease_ttl)
+                .await?;
+            tx.commit().await?;
+        } else {
+            tx.rollback().await?;
+        }
+        Ok(Err(reason))
     }
 }
 
@@ -244,8 +294,11 @@ fn deferral_for(
     backing_off: bool,
     quota_allows: bool,
     capability_ok: bool,
+    candidate_current: bool,
 ) -> Deferral {
-    if job_status != factory_domain::state::JobStatus::Active {
+    if !candidate_current {
+        Deferral::Superseded
+    } else if job_status != factory_domain::state::JobStatus::Active {
         Deferral::JobNotActive
     } else if backing_off {
         Deferral::BackingOff

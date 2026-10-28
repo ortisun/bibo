@@ -157,9 +157,38 @@ string_enum! {
     }
 }
 
+string_enum! {
+    /// How much the factory may do on its own in a repository. `L0` is the lowest.
+    pub enum AutonomyLevel("autonomy level") {
+        /// The lowest level.
+        L0 = "L0",
+        /// The next level.
+        L1 = "L1",
+        /// The level after that.
+        L2 = "L2",
+        /// The highest level.
+        L3 = "L3",
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_four_autonomy_levels_read_back_and_a_fifth_is_refused() {
+        for (text, level) in [
+            ("L0", AutonomyLevel::L0),
+            ("L1", AutonomyLevel::L1),
+            ("L2", AutonomyLevel::L2),
+            ("L3", AutonomyLevel::L3),
+        ] {
+            assert_eq!(AutonomyLevel::parse(text).unwrap(), level);
+            assert_eq!(level.as_str(), text);
+        }
+        let message = AutonomyLevel::parse("L4").unwrap_err().to_string();
+        assert!(message.contains("L0, L1, L2, L3"), "{message}");
+    }
 
     #[test]
     fn a_fake_is_permitted_only_in_test_mode() {

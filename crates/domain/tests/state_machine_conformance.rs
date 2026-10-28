@@ -19,13 +19,14 @@ use factory_domain::ids::{StageRunId, TaskNodeId};
 use factory_domain::machines::failure::FailureClass;
 use factory_domain::machines::guards::{
     AdmissionFacts, AnswerFacts, ApprovalFacts, AttemptsFacts, BlockingFacts, CancelFacts,
-    DeadlineFacts, EpochFacts, EscalationFacts, FactsKind, GatePassFacts, GuardError, GuardFacts,
-    HumanRejectFacts, HumanReworkFacts, LeaseEpochFacts, LeaseExpiryFacts, LeaseGrantFacts,
-    NeedsHumanFacts, NoReworkFacts, NotApplicableFacts, OutputFacts, OverrideFacts,
-    PipelineScopeFacts, PrincipalFacts, RejectionFacts, RetryFacts, ReworkFacts, SandboxGoneFacts,
-    SandboxProvisionFacts, StageBoardFacts, SupersedeFacts, TaskDepsFacts, TaskEvidenceFacts,
-    TaskRetryFacts, TaskStartFacts, TeardownFacts, UnblockFacts, UnrecoverableFacts, UpstreamFacts,
-    evaluate, facts_kind,
+    DeadlineFacts, EnvironmentCause, EnvironmentFacts, EpochFacts, EscalationFacts, FactsKind,
+    GatePassFacts, GuardError, GuardFacts, HumanRejectFacts, HumanReworkFacts, LeaseEpochFacts,
+    LeaseExpiryFacts, LeaseGrantFacts, NeedsHumanFacts, NoReworkFacts, NotApplicableFacts,
+    OutputFacts, OverrideFacts, PipelineScopeFacts, PrincipalFacts, ReauthorizationFacts,
+    RejectionFacts, RetryFacts, ReworkFacts, SandboxGoneFacts, SandboxProvisionFacts,
+    StageBoardFacts, SupersedeFacts, TaskDepsFacts, TaskEvidenceFacts, TaskRetryFacts,
+    TaskStartFacts, TeardownFacts, UnblockFacts, UnrecoverableFacts, UpstreamFacts, evaluate,
+    facts_kind,
 };
 use factory_domain::machines::invalidation::{ArtifactChange, INVALIDATION_RULES, plan_for_change};
 use factory_domain::machines::limits::{
@@ -42,7 +43,7 @@ use factory_domain::state::{
     Actor, AttemptEvent, AttemptStatus, Guard, IllegalTransition, JobEvent, JobStatus,
     StageRunEvent, StageRunStatus, Status, TaskNodeEvent, TaskNodeStatus,
 };
-use factory_domain::values::{EventType, Timestamp, TransitionId};
+use factory_domain::values::{EventType, Sha256Digest, Timestamp, TransitionId};
 use factory_domain::vocabulary::{AssuranceLevel, HumanRole, ReleaseState, StageKind};
 use serde_json::{Value, json};
 
@@ -495,6 +496,9 @@ fn moment() -> Timestamp {
     Timestamp::parse("2026-10-27T10:00:00Z").unwrap()
 }
 
+/// A request hash that facts can borrow for the whole run of the test.
+static REQUEST_HASH: LazyLock<Sha256Digest> = LazyLock::new(|| Sha256Digest::of(b"request"));
+
 /// Facts of each kind, built from the public fields. The `match` has no catch-all arm, so a new
 /// kind of facts cannot be added without adding it here.
 fn sample_facts(kind: FactsKind) -> GuardFacts<'static> {
@@ -518,6 +522,7 @@ fn sample_facts(kind: FactsKind) -> GuardFacts<'static> {
         FactsKind::Attempts => GuardFacts::Attempts(AttemptsFacts { attempts: &[] }),
         FactsKind::Unrecoverable => GuardFacts::Unrecoverable(UnrecoverableFacts {
             stage_run_failed: false,
+            newer_run_of_kind_exists: false,
             rework_route_remains: false,
             retry_budget_remains: false,
             hard_limit_reached: false,
@@ -544,8 +549,17 @@ fn sample_facts(kind: FactsKind) -> GuardFacts<'static> {
             basis: None,
             rule_and_inputs_recorded: false,
         }),
+        FactsKind::Environment => GuardFacts::Environment(EnvironmentFacts {
+            cause: EnvironmentCause::DaemonUnavailable,
+            attempt_ended_failed: true,
+        }),
+        FactsKind::Reauthorization => GuardFacts::Reauthorization(ReauthorizationFacts {
+            authorized_request: None,
+            current_request: &REQUEST_HASH,
+            policy_asks_confirmation: false,
+        }),
         FactsKind::LeaseGrant => GuardFacts::LeaseGrant(LeaseGrantFacts {
-            lease_compare_and_swap_succeeded: true,
+            claim_candidate_current: true,
             job_status: JobStatus::Active,
             now: moment(),
             not_before: None,
@@ -565,6 +579,7 @@ fn sample_facts(kind: FactsKind) -> GuardFacts<'static> {
             budget_has_room: true,
             invalid_output_failures: 0,
             repair_cap: RepairCap::DEFAULT,
+            environment: None,
         }),
         FactsKind::Escalation => GuardFacts::Escalation(EscalationFacts {
             budget_limit_hit: false,
@@ -643,9 +658,9 @@ fn sample_facts(kind: FactsKind) -> GuardFacts<'static> {
             external_change_recorded: false,
         }),
         FactsKind::SandboxProvision => GuardFacts::SandboxProvision(SandboxProvisionFacts {
-            sandbox_started_within_limits: true,
-            policy_tool_grants_in_place: true,
-            runtime_capability_probe_satisfied: true,
+            posture_verified: true,
+            tool_grants_recorded: true,
+            probe_satisfies_stage: true,
             epoch,
         }),
         FactsKind::Epoch => GuardFacts::Epoch(epoch),
@@ -725,7 +740,20 @@ fn guard_registry_matches(doc: &Value) {
             "{guard}: the sample is of the wrong kind"
         );
         match evaluate(*guard, &facts) {
-            Ok(()) | Err(GuardError::Unmet(_)) => {}
+            Ok(cleared) => {
+                // The clearance names the guard that was run and the digest of these facts.
+                assert_eq!(
+                    cleared.guard(),
+                    *guard,
+                    "{guard}: the clearance is for another guard"
+                );
+                assert_eq!(
+                    cleared.facts_sha256(),
+                    &facts.digest(),
+                    "{guard}: the clearance carries another digest"
+                );
+            }
+            Err(GuardError::Unmet(_)) => {}
             Err(error @ GuardError::WrongFacts { .. }) => {
                 panic!("{guard} refused the facts it reads: {error}")
             }

@@ -31,10 +31,6 @@ pub(crate) mod key {
     pub const ATTEMPT_NUMBER: &str = "attempt_number";
     /// The failure class of an attempt that ended badly.
     pub const FAILURE_CLASS: &str = "failure_class";
-    /// `stage_run.retry_scheduled`: the earliest instant the run may start again.
-    pub const NOT_BEFORE: &str = "not_before";
-    /// `stage_run.started`: the instant the attempt times out.
-    pub const DEADLINE: &str = "deadline_at";
     /// `stage_run.rework_requested`: the count the round is charged to.
     pub const REWORK_TRACK: &str = "rework_track";
     /// `stage_run.rework_requested`: digest of what failed, for the stagnation detector.
@@ -51,6 +47,10 @@ pub(crate) mod key {
     pub const CAUSE: &str = "cause";
     /// The principal who took a human decision.
     pub const PRINCIPAL: &str = "principal_id";
+    /// The guard that held for the move an event announces (ADR 0014, decision 3).
+    pub const GUARD: &str = "guard";
+    /// The SHA-256 of the facts that guard held on.
+    pub const GUARD_FACTS: &str = "guard_facts_sha256";
 }
 
 /// A stage run as the payload lists it.
@@ -79,19 +79,18 @@ pub(crate) fn with(
     payload
 }
 
-/// The payload of `stage_run.started`: the attempt that the move created and when it times out.
+/// The payload of `stage_run.started`: the attempt that the move created. The deadline is not in
+/// it: the store keeps it on the attempt (`Attempt::deadline_at`).
 #[must_use]
 pub(crate) fn attempt_started(
     kind: StageKind,
     run: StageRunId,
     attempt: factory_domain::ids::AttemptId,
     number: u32,
-    deadline: factory_domain::values::Timestamp,
 ) -> Map<String, Value> {
     let payload = for_run(kind, run);
     let payload = with(payload, key::ATTEMPT, json!(attempt.to_string()));
-    let payload = with(payload, key::ATTEMPT_NUMBER, json!(number));
-    with(payload, key::DEADLINE, json!(deadline.to_string()))
+    with(payload, key::ATTEMPT_NUMBER, json!(number))
 }
 
 /// The payload of an attempt event: the stage run it belongs to, which try it is, and, when it

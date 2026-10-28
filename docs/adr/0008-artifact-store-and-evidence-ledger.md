@@ -1,9 +1,13 @@
 # 0008: Store artifacts by content hash and record claims in a hash-chained, append-only evidence ledger
 
-- Status: Accepted
+- Status: Accepted Revised again on 2026-10-27 by ADR 0014 (see "Revision note (ADR 0014)").
 - Date: 2026-10-27
 - Deciders: software_architect (database enforcement belongs to the DBA, integrity review to security)
 - Related: [ADR 0007](0007-persistence-access-and-tenancy.md), [`evidence-ledger-entry` schema](../../schemas/evidence-ledger-entry.schema.json), [state machines](../architecture/state-machine.md)
+
+## Revision note (ADR 0014)
+
+Revised on 2026-10-27 by [ADR 0014](0014-ports-v1-1-claim-protocol-and-port-revision.md): `ArtifactStore::get` and `exists` take the tenant's scope and answer only when the tenant's index row names the hash. "Callers check the tenant's index row first" was a convention across every call site; it is now the adapter's job.
 
 ## Context and problem statement
 

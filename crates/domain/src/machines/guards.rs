@@ -13,10 +13,12 @@
 //! answer.
 //!
 //! * [`facts_kind`] says which kind of facts a guard reads, so the engine builds the right one.
-//! * [`evaluate`] runs the predicate and returns `Ok(())` when the guard holds. When it does not,
-//!   the [`GuardFailure`] lists every unmet condition in plain English, for the audit record.
-//!   Those texts are for operators. A reply to a requester must not repeat them (for example,
-//!   `G_ADMISSION_DENIED` says that no reply reveals which test failed).
+//! * [`evaluate`] runs the predicate and returns a [`GuardCleared`] when the guard holds: the
+//!   proof that `AppliedTransition::plan` in the ports crate needs, with the guard and the digest
+//!   of the facts it held on. When the guard does not hold, the [`GuardFailure`] lists every
+//!   unmet condition in plain English, for the audit record. Those texts are for operators. A
+//!   reply to a requester must not repeat them (for example, `G_ADMISSION_DENIED` says that no
+//!   reply reveals which test failed).
 //! * Each predicate is also a public function in [`job`], [`stage_run`], [`attempt`] or
 //!   [`task_node`], for a caller that already holds the typed facts.
 //!
@@ -34,6 +36,7 @@
 //! catch-all arm, so adding a guard to the enum without a predicate does not compile.
 
 pub mod attempt;
+pub mod digest;
 pub mod job;
 pub mod stage_run;
 pub mod task_node;
@@ -42,6 +45,7 @@ use std::fmt;
 
 use crate::macros::string_enum;
 use crate::state::Guard;
+use crate::values::Sha256Digest;
 
 pub use attempt::{
     AttemptsFacts, CancelFacts, DeadlineFacts, EpochFacts, LeaseEpochFacts, LeaseExpiryFacts,
@@ -52,12 +56,45 @@ pub use job::{
     UnrecoverableFacts,
 };
 pub use stage_run::{
-    AnswerFacts, ApprovalFacts, BlockingFacts, EscalationFacts, GatePassFacts, HumanRejectFacts,
-    HumanReworkFacts, LeaseGrantFacts, NeedsHumanFacts, NoReworkFacts, NotApplicableBasis,
-    NotApplicableFacts, OutputFacts, OverrideFacts, RetryFacts, ReworkFacts, SupersedeFacts,
-    UnblockFacts, UpstreamFacts,
+    AnswerFacts, ApprovalFacts, BlockingFacts, EnvironmentCause, EnvironmentFacts, EscalationFacts,
+    GatePassFacts, HumanRejectFacts, HumanReworkFacts, LeaseGrantFacts, NeedsHumanFacts,
+    NoReworkFacts, NotApplicableBasis, NotApplicableFacts, OutputFacts, OverrideFacts,
+    ReauthorizationFacts, RetryFacts, ReworkFacts, SupersedeFacts, UnblockFacts, UpstreamFacts,
 };
 pub use task_node::{TaskDepsFacts, TaskEvidenceFacts, TaskRetryFacts, TaskStartFacts};
+
+/// Proof that `guard` held on facts whose digest is `facts_sha256` (ADR 0014 decision 3).
+///
+/// The only way to get one is [`evaluate`]: the constructor is private to this module, so code
+/// that skipped the check cannot plan a transition. The engine writes the guard and the digest
+/// into the payload of the event that announces the move.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[must_use = "a clearance is the proof that a transition needs"]
+pub struct GuardCleared {
+    guard: Guard,
+    facts_sha256: Sha256Digest,
+}
+
+impl GuardCleared {
+    fn new(guard: Guard, facts_sha256: Sha256Digest) -> Self {
+        Self {
+            guard,
+            facts_sha256,
+        }
+    }
+
+    /// The guard that held.
+    #[must_use]
+    pub const fn guard(&self) -> Guard {
+        self.guard
+    }
+
+    /// The digest of the facts the guard held on (see [`digest`]).
+    #[must_use]
+    pub const fn facts_sha256(&self) -> &Sha256Digest {
+        &self.facts_sha256
+    }
+}
 
 /// A guard that does not hold, with every condition that was not met.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -92,7 +129,7 @@ impl std::error::Error for GuardFailure {}
 /// What a predicate returns: `Ok(())` when the guard holds.
 pub type GuardResult = Result<(), GuardFailure>;
 
-/// Why [`evaluate`] did not return `Ok(())`.
+/// Why [`evaluate`] did not return a [`GuardCleared`].
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum GuardError {
     /// The guard was evaluated and does not hold.
@@ -181,6 +218,10 @@ string_enum! {
         Upstream = "upstream",
         /// [`NotApplicableFacts`].
         NotApplicable = "not applicable",
+        /// [`EnvironmentFacts`].
+        Environment = "environment",
+        /// [`ReauthorizationFacts`].
+        Reauthorization = "reauthorization",
         /// [`LeaseGrantFacts`].
         LeaseGrant = "lease grant",
         /// [`OutputFacts`].
@@ -261,6 +302,10 @@ pub enum GuardFacts<'a> {
     Upstream(UpstreamFacts<'a>),
     /// See [`NotApplicableFacts`].
     NotApplicable(NotApplicableFacts),
+    /// See [`EnvironmentFacts`].
+    Environment(EnvironmentFacts),
+    /// See [`ReauthorizationFacts`].
+    Reauthorization(ReauthorizationFacts<'a>),
     /// See [`LeaseGrantFacts`].
     LeaseGrant(LeaseGrantFacts),
     /// See [`OutputFacts`].
@@ -333,6 +378,8 @@ impl GuardFacts<'_> {
             GuardFacts::PipelineScope(_) => FactsKind::PipelineScope,
             GuardFacts::Upstream(_) => FactsKind::Upstream,
             GuardFacts::NotApplicable(_) => FactsKind::NotApplicable,
+            GuardFacts::Environment(_) => FactsKind::Environment,
+            GuardFacts::Reauthorization(_) => FactsKind::Reauthorization,
             GuardFacts::LeaseGrant(_) => FactsKind::LeaseGrant,
             GuardFacts::Output(_) => FactsKind::Output,
             GuardFacts::Retry(_) => FactsKind::Retry,
@@ -365,6 +412,63 @@ impl GuardFacts<'_> {
     }
 }
 
+impl GuardFacts<'_> {
+    /// The text the digest is taken over: one `name=value` line per field, in field order (see
+    /// [`digest`]). The `match` names every kind of facts, so a new kind cannot be left out of
+    /// the digest.
+    #[must_use]
+    pub fn rendered(&self) -> String {
+        let facts: &dyn digest::Facts = match self {
+            GuardFacts::Admission(inner) => inner,
+            GuardFacts::StageBoard(inner) => inner,
+            GuardFacts::Principal(inner) => inner,
+            GuardFacts::Attempts(inner) => inner,
+            GuardFacts::Unrecoverable(inner) => inner,
+            GuardFacts::Rejection(inner) => inner,
+            GuardFacts::PipelineScope(inner) => inner,
+            GuardFacts::Upstream(inner) => inner,
+            GuardFacts::NotApplicable(inner) => inner,
+            GuardFacts::Environment(inner) => inner,
+            GuardFacts::Reauthorization(inner) => inner,
+            GuardFacts::LeaseGrant(inner) => inner,
+            GuardFacts::Output(inner) => inner,
+            GuardFacts::Retry(inner) => inner,
+            GuardFacts::Escalation(inner) => inner,
+            GuardFacts::GatePass(inner) => inner,
+            GuardFacts::Rework(inner) => inner,
+            GuardFacts::NeedsHuman(inner) => inner,
+            GuardFacts::Blocking(inner) => inner,
+            GuardFacts::NoRework(inner) => inner,
+            GuardFacts::Answer(inner) => inner,
+            GuardFacts::Approval(inner) => inner,
+            GuardFacts::HumanRework(inner) => inner,
+            GuardFacts::HumanReject(inner) => inner,
+            GuardFacts::Unblock(inner) => inner,
+            GuardFacts::Override(inner) => inner,
+            GuardFacts::Supersede(inner) => inner,
+            GuardFacts::SandboxProvision(inner) => inner,
+            GuardFacts::Epoch(inner) => inner,
+            GuardFacts::LeaseEpoch(inner) => inner,
+            GuardFacts::Deadline(inner) => inner,
+            GuardFacts::LeaseExpiry(inner) => inner,
+            GuardFacts::Cancel(inner) => inner,
+            GuardFacts::SandboxGone(inner) => inner,
+            GuardFacts::Teardown(inner) => inner,
+            GuardFacts::TaskDeps(inner) => inner,
+            GuardFacts::TaskStart(inner) => inner,
+            GuardFacts::TaskEvidence(inner) => inner,
+            GuardFacts::TaskRetry(inner) => inner,
+        };
+        digest::render_lines(facts)
+    }
+
+    /// The SHA-256 of [`rendered`](Self::rendered).
+    #[must_use]
+    pub fn digest(&self) -> Sha256Digest {
+        Sha256Digest::of(self.rendered().as_bytes())
+    }
+}
+
 /// The kind of facts that `guard` reads.
 #[must_use]
 pub const fn facts_kind(guard: Guard) -> FactsKind {
@@ -381,6 +485,8 @@ pub const fn facts_kind(guard: Guard) -> FactsKind {
         Guard::PipelineScopeComplete => FactsKind::PipelineScope,
         Guard::UpstreamPassed => FactsKind::Upstream,
         Guard::NotApplicableDecided => FactsKind::NotApplicable,
+        Guard::EnvironmentBlocked => FactsKind::Environment,
+        Guard::ReauthorizationRequired => FactsKind::Reauthorization,
         Guard::LeaseAcquired => FactsKind::LeaseGrant,
         Guard::OutputSchemaValid => FactsKind::Output,
         Guard::RetryAllowed | Guard::FailureNonretryable => FactsKind::Retry,
@@ -412,12 +518,17 @@ pub const fn facts_kind(guard: Guard) -> FactsKind {
     }
 }
 
-/// Runs the predicate of `guard` on `facts`.
+/// Runs the predicate of `guard` on `facts` and, when it holds, returns the proof.
 ///
 /// # Errors
 /// * [`GuardError::Unmet`] when the guard does not hold. The failure lists what was not true.
 /// * [`GuardError::WrongFacts`] when `facts` are not of the kind `guard` reads.
-pub fn evaluate(guard: Guard, facts: &GuardFacts<'_>) -> Result<(), GuardError> {
+pub fn evaluate(guard: Guard, facts: &GuardFacts<'_>) -> Result<GuardCleared, GuardError> {
+    held(guard, facts).map(|()| GuardCleared::new(guard, facts.digest()))
+}
+
+/// The predicate of `guard`, without the proof.
+fn held(guard: Guard, facts: &GuardFacts<'_>) -> Result<(), GuardError> {
     // Picks the facts out of the enum and runs one predicate. Facts of another kind are a
     // mistake in the caller and are reported as such, never read as if they were right.
     macro_rules! run {
@@ -447,6 +558,10 @@ pub fn evaluate(guard: Guard, facts: &GuardFacts<'_>) -> Result<(), GuardError> 
         Guard::PipelineScopeComplete => run!(PipelineScope => job::pipeline_scope_complete),
         Guard::UpstreamPassed => run!(Upstream => stage_run::upstream_passed),
         Guard::NotApplicableDecided => run!(NotApplicable => stage_run::not_applicable_decided),
+        Guard::EnvironmentBlocked => run!(Environment => stage_run::environment_blocked),
+        Guard::ReauthorizationRequired => {
+            run!(Reauthorization => stage_run::reauthorization_required)
+        }
         Guard::LeaseAcquired => run!(LeaseGrant => stage_run::lease_acquired),
         Guard::OutputSchemaValid => run!(Output => stage_run::output_schema_valid),
         Guard::RetryAllowed => run!(Retry => stage_run::retry_allowed),

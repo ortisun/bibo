@@ -32,10 +32,11 @@
 //!
 //! # Whose blob is it
 //!
-//! The blob store itself is not tenant-aware: a blob is shared by hash, and its `get` and `exists`
-//! (the `ArtifactStore` port) answer for anyone who holds a reference. Code that acts for a tenant
-//! uses [`TenantArtifacts`], which asks the tenant's artifact index first and answers "not found"
-//! for a blob that only another tenant holds (architecture review F-15).
+//! The blob store itself is not tenant-aware: a blob is shared by hash, and `get_unscoped` and
+//! `exists_unscoped` answer for anyone who holds a reference. Ports v1.1 moved the tenant check
+//! into the port: `ArtifactStore::get` and `exists` take a `TenantScope` and read through the
+//! tenant's index row. That needs the `Store`, which this type does not hold, so until the
+//! Postgres adaptation the two port methods return the closed error `Io(BackendStep::Index)`.
 //!
 //! Losing the disk loses the blobs. Backups of the directory are an `sre` item (ADR 0008).
 #![allow(clippy::disallowed_methods, clippy::disallowed_types)]
@@ -49,15 +50,16 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use async_trait::async_trait;
 use factory_domain::contracts::ArtifactRef;
+use factory_domain::scope::TenantScope;
 use factory_domain::values::{MediaType, NonNegativeInt, Sha256Digest};
 use factory_domain::vocabulary::Fidelity;
-use factory_ports::artifact::{ArtifactBackend, ArtifactError, ArtifactStore};
+use factory_ports::artifact::{ArtifactBackend, ArtifactError, ArtifactStore, BackendStep};
 use rustix::fs::{AtFlags, FileType, Mode, OFlags};
 use rustix::io::Errno;
 
+// Pending adaptation to ports v1.1: the tenant wrapper is replaced by the scoped port methods.
+#[cfg(any())]
 mod scoped;
-
-pub use scoped::TenantArtifacts;
 
 /// A limit that fits the logs and reports of a gate run. A caller that stores larger objects
 /// passes its own.
@@ -93,18 +95,31 @@ impl std::fmt::Debug for LocalFsArtifactStore {
 /// The error for a failed file system call. The text names the step and the operating system's
 /// reason. It holds no path and no artifact content.
 fn io_error(step: &str, errno: Errno) -> ArtifactError {
-    ArtifactError::Io(format!("{step}: {errno}"))
+    tracing::warn!(step, %errno, "an artifact file system call failed");
+    ArtifactError::Io(backend_step(step))
 }
 
 fn plain_io_error(step: &str, error: &std::io::Error) -> ArtifactError {
-    ArtifactError::Io(format!("{step}: {}", error.kind()))
+    tracing::warn!(step, kind = ?error.kind(), "an artifact file system call failed");
+    ArtifactError::Io(backend_step(step))
+}
+
+/// The closed step of the port for a step named in words: anything that makes or changes a file is
+/// a write, the rest is a read.
+fn backend_step(step: &str) -> BackendStep {
+    const WRITING: [&str; 6] = ["make", "create", "write", "flush", "move", "resolve"];
+    if WRITING.iter().any(|word| step.starts_with(word)) {
+        BackendStep::Write
+    } else {
+        BackendStep::Read
+    }
 }
 
 fn unsafe_path() -> ArtifactError {
-    ArtifactError::Io(
+    tracing::warn!(
         "the artifact path is not a plain directory tree: a link or another kind of file is in the way"
-            .to_owned(),
-    )
+    );
+    ArtifactError::Io(BackendStep::Read)
 }
 
 /// The three path components of a blob: `ab`, `cd` and the whole digest in hex.
@@ -339,9 +354,8 @@ fn get_blocking(inner: &Inner, reference: &ArtifactRef) -> Result<Vec<u8>, Artif
         return Err(unsafe_path());
     }
     if u64::try_from(stat.st_size).unwrap_or(u64::MAX) > inner.max_object_bytes {
-        return Err(ArtifactError::Io(
-            "the stored blob is larger than the limit of the store".to_owned(),
-        ));
+        tracing::warn!("the stored blob is larger than the limit of the store");
+        return Err(ArtifactError::Io(BackendStep::Read));
     }
     let mut bytes = Vec::new();
     File::from(descriptor)
@@ -372,7 +386,7 @@ async fn blocking<T: Send + 'static>(
 ) -> Result<T, ArtifactError> {
     tokio::task::spawn_blocking(call)
         .await
-        .map_err(|_| ArtifactError::Io("the file system task did not finish".to_owned()))?
+        .map_err(|_| ArtifactError::Io(BackendStep::Read))?
 }
 
 #[async_trait]
@@ -394,13 +408,42 @@ impl ArtifactStore for LocalFsArtifactStore {
         blocking(move || put_blocking(&inner, &bytes, media_type)).await
     }
 
-    async fn get(&self, reference: &ArtifactRef) -> Result<Vec<u8>, ArtifactError> {
+    // Pending adaptation to ports v1.1: reading through the tenant's index row needs the `Store`.
+    async fn get(
+        &self,
+        _scope: &TenantScope,
+        _reference: &ArtifactRef,
+    ) -> Result<Vec<u8>, ArtifactError> {
+        Err(ArtifactError::Io(BackendStep::Index))
+    }
+
+    async fn exists(
+        &self,
+        _scope: &TenantScope,
+        _reference: &ArtifactRef,
+    ) -> Result<bool, ArtifactError> {
+        Err(ArtifactError::Io(BackendStep::Index))
+    }
+}
+
+impl LocalFsArtifactStore {
+    /// Reads a blob by its hash for anyone who holds the reference. Unscoped: the code that acts
+    /// for a tenant must go through the port methods, which check the tenant's index row.
+    ///
+    /// # Errors
+    /// [`ArtifactError`], as for the port.
+    pub async fn get_unscoped(&self, reference: &ArtifactRef) -> Result<Vec<u8>, ArtifactError> {
         let inner = self.inner.clone();
         let reference = reference.clone();
         blocking(move || get_blocking(&inner, &reference)).await
     }
 
-    async fn exists(&self, reference: &ArtifactRef) -> Result<bool, ArtifactError> {
+    /// Tells whether a blob with this hash is stored, for anyone. Unscoped, like
+    /// [`LocalFsArtifactStore::get_unscoped`].
+    ///
+    /// # Errors
+    /// [`ArtifactError`], as for the port.
+    pub async fn exists_unscoped(&self, reference: &ArtifactRef) -> Result<bool, ArtifactError> {
         let inner = self.inner.clone();
         let reference = reference.clone();
         blocking(move || exists_blocking(&inner, &reference)).await

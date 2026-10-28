@@ -32,6 +32,7 @@ mod failure;
 mod gate;
 mod ledger;
 pub(crate) mod payload;
+mod platform;
 pub(crate) mod progress;
 pub(crate) mod record;
 mod replace;
@@ -49,7 +50,7 @@ use factory_ports::clock::{Clock, IdGenerator};
 use factory_ports::registry::{AgentRegistry, OutputValidator};
 use factory_ports::require_permitted;
 use factory_ports::sandbox::SandboxProvider;
-use factory_ports::store::{Store, SystemScope, Tx};
+use factory_ports::store::{Store, SystemScope, SystemTx, Tx};
 use factory_ports::workspace::WorkspaceProvider;
 
 pub(crate) use ledger::read_all_ledger;
@@ -59,10 +60,12 @@ pub use attempt::AttemptOutcome;
 pub use changes::ChangeApplied;
 pub use config::EngineConfig;
 pub use error::EngineError;
+pub use platform::PlatformEvent;
 pub use view::{AttemptView, JobView, StageRunView};
 
 use crate::commands::Authority;
 use crate::handlers::{HandlerRegistry, StagePorts};
+use crate::scheduler::Ticker;
 
 /// The adapters an engine works through. Each is chosen by the composition root. In a production
 /// run every one of them must report fidelity `real` (invariant INV-08).
@@ -92,6 +95,8 @@ pub struct EngineDeps {
     pub broker: Arc<dyn ModelBroker>,
     /// Says who may do what.
     pub authority: Arc<dyn Authority>,
+    /// Waits between heartbeats and during a teardown. The engine has no timer of its own.
+    pub ticker: Arc<dyn Ticker>,
 }
 
 impl std::fmt::Debug for EngineDeps {
@@ -116,6 +121,7 @@ pub fn components_of(deps: &EngineDeps, handlers: &HandlerRegistry) -> Vec<(Stri
         ("agent registry".to_owned(), deps.registry.fidelity()),
         ("model broker".to_owned(), deps.broker.fidelity()),
         ("authority".to_owned(), deps.authority.fidelity()),
+        ("ticker".to_owned(), deps.ticker.fidelity()),
     ];
     for handler in handlers.all() {
         components.push((
@@ -202,8 +208,9 @@ impl Engine {
         Ok(self.deps.store.begin(TenantScope::new(tenant)).await?)
     }
 
-    /// Opens a transaction that sees every tenant. Used only to find work.
-    pub(crate) async fn system_tx(&self) -> Result<Box<dyn Tx>, EngineError> {
+    /// Opens the read-only transaction that sees every tenant. Used only to find work; it cannot
+    /// write.
+    pub(crate) async fn system_tx(&self) -> Result<Box<dyn SystemTx>, EngineError> {
         Ok(self.deps.store.begin_system(SystemScope::engine()).await?)
     }
 

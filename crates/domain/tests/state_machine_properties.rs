@@ -16,8 +16,8 @@ use factory_domain::machines::guards::stage_run::{
     retry_allowed, rework_allowed,
 };
 use factory_domain::machines::guards::{
-    AdmissionFacts, DeadlineFacts, GatePassFacts, LeaseExpiryFacts, OverrideFacts,
-    PipelineScopeFacts, RetryFacts, ReworkFacts,
+    AdmissionFacts, DeadlineFacts, EnvironmentCause, GatePassFacts, LeaseExpiryFacts,
+    OverrideFacts, PipelineScopeFacts, RetryFacts, ReworkFacts,
 };
 use factory_domain::machines::guards::{attempt, job};
 use factory_domain::machines::invalidation::{ArtifactChange, plan_for_change, plan_for_rework};
@@ -39,7 +39,7 @@ use factory_domain::values::Timestamp;
 use factory_domain::vocabulary::{GateOutcome, HumanRole, StageKind};
 use proptest::collection::vec;
 use proptest::prelude::*;
-use proptest::test_runner::{Config, TestCaseError, TestRunner};
+use proptest::test_runner::{Config, RngAlgorithm, TestCaseError, TestRng, TestRunner};
 use serde_json::Value;
 
 static DOCUMENT: LazyLock<Value> = LazyLock::new(|| {
@@ -726,12 +726,113 @@ fn a_simulated_pipeline_keeps_every_rule_after_every_action() {
         .unwrap_or_else(|failure| panic!("{failure}"));
 }
 
+/// A runner whose random numbers come from a fixed seed, so a test that counts what the
+/// generator reaches counts the same thing on every run.
+fn seeded_runner(cases: u32, seed: u8) -> TestRunner {
+    TestRunner::new_with_rng(
+        Config {
+            cases,
+            failure_persistence: None,
+            ..Config::default()
+        },
+        TestRng::from_seed(RngAlgorithm::ChaCha, &[seed; 32]),
+    )
+}
+
+/// Index of the newest run of `kind`.
+fn newest(sim: &Sim, kind: StageKind) -> usize {
+    sim.runs
+        .iter()
+        .rposition(|run| run.kind == kind)
+        .expect("a run of the stage exists")
+}
+
+/// Carries the newest run of `kind` from PENDING to GATING with the happy-path action.
+fn advance_to_gating(sim: &mut Sim, kind: StageKind) {
+    for _ in 0..3 {
+        let run = newest(sim, kind);
+        sim.step(&Action::Advance { run })
+            .expect("the happy path keeps every rule");
+    }
+    let run = newest(sim, kind);
+    assert_eq!(
+        sim.runs[run].status,
+        StageRunStatus::Gating,
+        "three happy-path steps carry a {kind} run to its gate"
+    );
+}
+
+/// A gate finding on the only run that is gating: a verdict that asks for changes, with a failing
+/// set that differs from the last round and budget left.
+fn ask_for_rework() -> Action {
+    Action::GateRework {
+        run: 0,
+        defect: 0,
+        verdict: true,
+        differs: true,
+        budget: true,
+    }
+}
+
 #[test]
-fn the_simulation_does_reach_rework_supersession_and_the_cap() {
-    // A guard against a simulation that never gets anywhere: over many runs it must have granted
-    // rework, hit the cap, and superseded runs. Otherwise its checks would be vacuous.
+fn a_directed_route_reaches_rework_supersession_and_the_cap() {
+    // The simulation must be able to grant rework, supersede runs and use the whole cap, or its
+    // checks would be vacuous. This route proves it with no randomness: a specification run is
+    // sent back twice, and the third request meets the cap.
+    let mut sim = Sim::new(limits_from(2, 2));
+    assert_eq!(
+        sim.limits.cap(ReworkTrack::Code).get(),
+        2,
+        "the cap is two rounds"
+    );
+
+    advance_to_gating(&mut sim, StageKind::Specification);
+    sim.step(&ask_for_rework())
+        .expect("round one keeps every rule");
+    assert_eq!(sim.granted[0], 1, "the first request was granted");
+    assert!(
+        sim.runs
+            .iter()
+            .any(|r| r.status == StageRunStatus::Superseded),
+        "rework to the specification superseded the runs after it"
+    );
+    assert_eq!(
+        sim.runs[newest(&sim, StageKind::Specification)].status,
+        StageRunStatus::Pending,
+        "the rework started a new specification run"
+    );
+
+    advance_to_gating(&mut sim, StageKind::Specification);
+    sim.step(&ask_for_rework())
+        .expect("round two keeps every rule");
+    assert_eq!(sim.granted[0], 2, "the second request was granted");
+    assert_eq!(
+        sim.granted[0],
+        sim.limits.cap(ReworkTrack::Code).get(),
+        "the whole cap is used"
+    );
+
+    advance_to_gating(&mut sim, StageKind::Specification);
+    sim.step(&ask_for_rework())
+        .expect("a request over the cap keeps every rule");
+    assert_eq!(
+        sim.granted[0], 2,
+        "a third request is not granted: the cap holds"
+    );
+    assert_eq!(
+        sim.runs[newest(&sim, StageKind::Specification)].status,
+        StageRunStatus::WaitingForHuman,
+        "a request over the cap asks a person"
+    );
+}
+
+#[test]
+fn the_generated_simulation_reaches_rework_supersession_and_the_cap() {
+    // The same guard for the random strategy, with a fixed seed: it counts the same on every run,
+    // so it cannot fail by bad luck. If the strategy or the simulation stops reaching rework, the
+    // cap or supersession, the counts drop to zero and this fails on every run.
     let strategy = (any::<u8>(), any::<u8>(), vec(action(), 40..80));
-    let mut runner = runner(1_000);
+    let mut runner = seeded_runner(1_000, 7);
     let seen = std::cell::RefCell::new((0u32, 0u32, 0u32));
     runner
         .run(&strategy, |(code, documentation, actions)| {
@@ -891,6 +992,7 @@ fn an_always_failing_runtime_ends_in_a_human_or_a_failure_within_max_attempts() 
                             0
                         },
                         repair_cap: RepairCap::from_policy(repair_cap),
+                        environment: None,
                     });
                     prop_assert!(stage.advance(decision.stage_run_event()).is_ok());
                     match decision {
@@ -911,8 +1013,53 @@ fn an_always_failing_runtime_ends_in_a_human_or_a_failure_within_max_attempts() 
                             }
                             break;
                         }
+                        AttemptDisposition::Block(_) => {
+                            prop_assert!(false, "no environment cause was set, yet it blocked");
+                        }
                     }
                 }
+                Ok(())
+            },
+        )
+        .unwrap_or_else(|failure| panic!("{failure}"));
+}
+
+#[test]
+fn an_environment_cause_blocks_whatever_the_other_facts_are() {
+    // S21 comes first in the order of ADR 0010: over generated facts, a cause always gives
+    // `Block`, never a retry, an escalation or a failure, and the move is legal from RUNNING.
+    let strategy = (
+        0..FailureClass::ALL.len(),
+        any::<u8>(),
+        0u32..14,
+        1u32..12,
+        any::<bool>(),
+        0u32..14,
+        any::<u8>(),
+        0..EnvironmentCause::ALL.len(),
+    );
+    runner(SEQUENCES)
+        .run(
+            &strategy,
+            |(class, mask, used, max, budget, invalid, repair_cap, cause)| {
+                let retry_on = retry_classes_from(mask);
+                let cause = EnvironmentCause::ALL[cause];
+                let facts = RetryFacts {
+                    class: FailureClass::ALL[class],
+                    retry_on: &retry_on,
+                    attempts_used: used,
+                    max_attempts: max,
+                    budget_has_room: budget,
+                    invalid_output_failures: invalid,
+                    repair_cap: RepairCap::from_policy(repair_cap),
+                    environment: Some(cause),
+                };
+                let decision = decide_after_failure(&facts);
+                prop_assert_eq!(decision, AttemptDisposition::Block(cause));
+                prop_assert_eq!(
+                    StageRunStatus::Running.apply(decision.stage_run_event()),
+                    Ok(StageRunStatus::Blocked)
+                );
                 Ok(())
             },
         )
@@ -946,6 +1093,7 @@ fn budget_and_attempt_limit_escalate_over_generated_facts() {
                     budget_has_room: budget,
                     invalid_output_failures: invalid,
                     repair_cap: RepairCap::from_policy(repair_cap),
+                    environment: None,
                 };
                 let decision = decide_after_failure(&facts);
                 let escalates = matches!(decision, AttemptDisposition::Escalate(_));
@@ -1141,6 +1289,7 @@ fn retry_and_rework_guards_never_allow_more_than_the_limits() {
                     budget_has_room: budget,
                     invalid_output_failures: invalid,
                     repair_cap: RepairCap::from_policy(repair_cap),
+                    environment: None,
                 };
                 if retry_allowed(&retry).is_ok() {
                     prop_assert!(used < max);
