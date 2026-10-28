@@ -127,7 +127,7 @@ Two rules for reading it.
 3. Fix the call site so the secret is not passed to the logger at all. The redactor is the second line of defense.
 4. If the marker is `scrubber_unavailable`, or a "log line dropped" line appears, look for the cause in the redactor's limits (the input was larger than the limit) before anything else.
 
-**Not yet emitted.** A counter of redactions (OBS-10). The guard counts the values it redacted, truncated and dropped, and the counts stay inside the process (`GuardStats`). A search for the marker is the only way to find hits. One known case is not covered by the redactor at all: a second URL with a password on the same log line (OBS-1). Do not rely on the marker to show that no secret reached a log line.
+**Not yet emitted.** A counter of redactions (OBS-10). The guard counts the values it redacted, truncated and dropped, and the counts stay inside the process (`GuardStats`). A search for the marker is the only way to find hits. Do not rely on the marker to show that no secret reached a log line: the redactor only knows the shapes in the security policy and the values registered with it.
 
 ## Keeping this page true
 

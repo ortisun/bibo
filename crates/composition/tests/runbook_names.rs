@@ -148,7 +148,7 @@ fn every_gap_the_runbook_cites_has_an_ignored_test_with_its_number() {
             cited.insert(word.to_owned());
         }
     }
-    assert!(cited.len() >= 7, "the reader found only {cited:?}");
+    assert!(cited.len() >= 6, "the reader found only {cited:?}");
     for gap in &cited {
         let marker = format!("#[ignore = \"confirmed gap {gap}:");
         assert!(

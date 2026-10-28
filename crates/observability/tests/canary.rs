@@ -250,17 +250,14 @@ fn a_redactor_that_fails_drops_the_value_and_the_line() {
     assert!(rig.pipeline.stats().snapshot().scrub_failures >= 1);
 }
 
-/// Confirmed gap OBS-1. The `url_with_credentials` pattern of the security policy ends its match
-/// at white space or a slash, so on a JSON log line it runs on past the closing quote. If the same
-/// URL stands twice on the line, as in `info!(url = %url, "connecting to {url}")`, the first match
-/// ends inside the second URL, after its scheme. The regex engine reports only matches that do not
-/// overlap, so the second URL is no longer found, and its password stays in the line.
-///
-/// Run it with `cargo nextest run -p factory-observability --run-ignored only
-/// a_url_with_a_password_twice_on_one_log_line_is_redacted`. The owner is `domain::redaction`
-/// (package `s1-redaction`) or the pattern in `policies/security.yaml`.
+/// Gap OBS-1, fixed in the pattern. The `url_with_credentials` pattern of the security policy
+/// used to end its match only at white space or a slash, so on a JSON log line it ran on past the
+/// closing quote. If the same URL stood twice on the line, as in
+/// `info!(url = %url, "connecting to {url}")`, the first match ended inside the second URL, after
+/// its scheme. The regex engine reports only matches that do not overlap, so the second URL was
+/// no longer found and its password stayed in the line. The password and host classes now stop at
+/// quotes and at the delimiters of a JSON line.
 #[test]
-#[ignore = "confirmed gap OBS-1: a second URL with a password on the same log line is not redacted"]
 fn a_url_with_a_password_twice_on_one_log_line_is_redacted() {
     let (url, password) = url_password_canary();
     let rig = Rig::new(policy_redactor_with(&[]));
