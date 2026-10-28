@@ -541,6 +541,30 @@ dependencies = [
 [[package]]
 name = "factory-worker"
 version = "0.0.0"
+dependencies = [
+ "async-trait",
+ "diesel",
+ "diesel-async",
+ "factory-contracts",
+ "factory-domain",
+ "factory-egress",
+ "factory-github",
+ "factory-observability",
+ "factory-ports",
+ "factory-runtime",
+ "factory-sandbox",
+ "factory-spec_adapter",
+ "factory-storage",
+ "factory-testkit",
+ "factory-workflow",
+ "serde",
+ "serde_json",
+ "thiserror",
+ "time",
+ "tokio",
+ "tracing",
+ "uuid",
+]
 
 [[package]]
 name = "factory-workflow"

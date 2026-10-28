@@ -4,6 +4,61 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 publish.workspace = true
+build = "build.rs"
+
+# The worker is a composition root (ring 3, ADR 0002): the only place where adapters are chosen and
+# wired to the engine. It is also the home of the shared composition core (`src/lib.rs`): the
+# typed configuration, the profiles, the registry of ports, the start-up checks, the redactor and
+# the health report. `apps/api` and `apps/cli` will reuse it. The dependency rules do not let an
+# app depend on another app and no `crates/*` entry exists for composition, so the core is a
+# library target of this package; docs/architecture/crate-dependency-rules.json needs an
+# architect decision before the API can link it (see apps/worker/README.md, "Reuse").
+
+[lib]
+name = "factory_worker"
+path = "src/lib.rs"
+
+[[bin]]
+name = "factory-worker"
+path = "src/main.rs"
 
 [lints]
 workspace = true
+
+[dependencies]
+factory-domain.workspace = true
+factory-ports.workspace = true
+factory-workflow.workspace = true
+factory-spec_adapter.workspace = true
+factory-storage.workspace = true
+factory-runtime.workspace = true
+factory-sandbox.workspace = true
+factory-github.workspace = true
+factory-contracts.workspace = true
+factory-egress.workspace = true
+factory-observability.workspace = true
+
+# The seams are `#[async_trait]` traits. Maintained by dtolnay.
+async-trait = "0.1.92"
+# Typed configuration and the health report. Same release and features the other crates pin.
+serde = { version = "1.0.229", default-features = false, features = ["std", "derive"] }
+serde_json = { workspace = true, features = ["std"] }
+thiserror = "2.0.21"
+tracing = "0.1.44"
+# `rt` (current thread: the engine's futures are not `Send`), `time` for the production `Ticker`
+# and the loop's idle waits, `sync` for the shutdown channel, `macros` for `select!`, `signal` for
+# SIGTERM and SIGINT. `signal` is not in the DEP-05 resolved-feature list of the rules file yet:
+# the lead has to add it (README, "Rules-file entries").
+tokio = { version = "1.54.1", default-features = false, features = ["rt", "time", "sync", "macros", "signal"] }
+# Instants for the clock and the lease arithmetic. `std` provides `OffsetDateTime::now_utc`.
+time = { version = "0.3.55", default-features = false, features = ["std"] }
+# Identifiers are built from 16 random bytes with `Builder::from_random_bytes`. No generator
+# feature (`v4`, `v7`) is turned on, because the DEP-05 resolved-feature rule forbids them.
+uuid = { version = "1.29.0", default-features = false, features = ["std"] }
+
+[dev-dependencies]
+factory-testkit.workspace = true
+# The database test server of the storage crate is included with `#[path]` and needs these.
+diesel = { version = "2.3.14", default-features = false, features = ["postgres_backend"] }
+diesel-async = { version = "0.9.2", default-features = false, features = ["postgres", "deadpool"] }
+tokio = { version = "1.54.1", default-features = false, features = ["rt", "rt-multi-thread", "time", "sync", "macros", "signal", "test-util"] }
