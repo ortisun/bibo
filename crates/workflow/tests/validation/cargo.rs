@@ -24,6 +24,7 @@ pub struct CargoScript {
     test_runs: Mutex<VecDeque<TestRun>>,
     exits: Mutex<BTreeMap<String, i32>>,
     missing: Mutex<BTreeSet<String>>,
+    metadata: Mutex<String>,
 }
 
 impl CargoScript {
@@ -53,6 +54,24 @@ impl CargoScript {
             .lock()
             .expect("the lock is never poisoned")
             .insert(subcommand.to_owned());
+    }
+
+    /// What `cargo metadata` prints: the packages that came in, with licenses and build code.
+    pub fn metadata_of(&self, packages: &[(&str, &str, &str, bool)]) {
+        let list: Vec<serde_json::Value> = packages
+            .iter()
+            .map(|(name, version, license, build)| {
+                let kinds = if *build {
+                    serde_json::json!([{"kind": ["lib"]}, {"kind": ["custom-build"]}])
+                } else {
+                    serde_json::json!([{"kind": ["lib"]}])
+                };
+                serde_json::json!({"name": name, "version": version, "license": license, "targets": kinds})
+            })
+            .collect();
+        *self.metadata.lock().expect("the lock is never poisoned") =
+            serde_json::json!({"packages": list, "workspace_members": [], "version": 1})
+                .to_string();
     }
 
     /// Every command line the sandbox ran, in order.
@@ -116,6 +135,14 @@ impl CargoScript {
                 "clippy" => word("clippy 0.1.98 (abcdef012 2026-08-05)\n"),
                 _ => word("cargo 1.98.0 (797e8a9bc 2026-08-05)\n"),
             };
+        }
+        if sub == "metadata" {
+            return word(&self.metadata.lock().expect("the lock is never poisoned"));
+        }
+        if sub == "audit" {
+            return word(
+                r#"{"database":{},"lockfile":{"dependency-count":1},"settings":{},"vulnerabilities":{"found":false,"count":0,"list":[]},"warnings":{}}"#,
+            );
         }
         if sub == "test" {
             let run = self

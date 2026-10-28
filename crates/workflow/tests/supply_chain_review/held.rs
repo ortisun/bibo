@@ -14,7 +14,7 @@ use factory_workflow::gates::supply_chain::review::{Plan, RegistryTable, Setting
 use serde_json::json;
 
 use crate::files::{Files, base, files, judge, lock, manifest, member, reg, side, sum, with};
-use crate::people::{APPROVER, approve, engine, now};
+use crate::people::{APPROVER, approve, engine, now, policy_hash, scope};
 
 fn plan_for(base: &Files, head: &Files, registry: &RegistryTable) -> Plan {
     let popular = PopularNames::bundled().expect("the bundled list");
@@ -34,6 +34,8 @@ fn plan_for(base: &Files, head: &Files, registry: &RegistryTable) -> Plan {
             internal_names: &[],
             popular: &popular,
             now: now(),
+            scope: scope(),
+            policy_hash: &policy_hash(),
         },
     )
 }

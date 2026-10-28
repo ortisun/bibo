@@ -10,7 +10,7 @@ use factory_workflow::handlers::StageError;
 use factory_workflow::stages::delivery::text::{TextRefused, finish};
 
 use crate::spy::Call;
-use crate::world::{Scenario, World, canary};
+use crate::world::{ReviewBinding, Scenario, World, canary};
 
 /// Everything up to `execute`, so that a test sees its result and not a panic.
 async fn execute_only(world: &World) -> Result<Vec<String>, StageError> {
@@ -445,6 +445,85 @@ async fn a_blocked_gate_nobody_decided_about_is_not_delivered() {
     let world = World::with(scenario);
     let result = execute_only(&world).await;
     assert_eq!(result, Err(StageError::PolicyDenied));
+    nothing_reached_the_host(&world);
+}
+
+/// Condition C-a of the security review: the specification the delivery reads must have been
+/// approved by a person. Planning, architecture and validation each check it; delivery did not.
+#[tokio::test]
+async fn a_specification_that_is_not_approved_is_not_delivered() {
+    for status in ["draft", "superseded"] {
+        let world = World::with(Scenario {
+            spec_status: Some(status),
+            ..Scenario::default()
+        });
+        let result = execute_only(&world).await;
+        assert!(
+            matches!(
+                result,
+                Err(StageError::PolicyDenied | StageError::InvalidOutput)
+            ),
+            "{status}: {result:?}"
+        );
+        nothing_reached_the_host(&world);
+    }
+}
+
+/// Condition C-b: the documentation reviewer's verdict is read, not only hashed. A verdict that
+/// is not a `PASS` is not delivered.
+#[tokio::test]
+async fn a_documentation_review_that_did_not_pass_is_not_delivered() {
+    let world = World::with(Scenario {
+        documentation_verdict: "CHANGES_REQUIRED",
+        ..Scenario::default()
+    });
+    assert_eq!(execute_only(&world).await, Err(StageError::PolicyDenied));
+    nothing_reached_the_host(&world);
+}
+
+/// A `PASS` over other reports, or over another specification, is a verdict about something
+/// else. It is refused as stale, whatever its hash.
+#[tokio::test]
+async fn a_documentation_review_of_other_reports_or_another_specification_is_not_delivered() {
+    for binding in [
+        ReviewBinding::OtherReports,
+        ReviewBinding::OtherSpecification,
+    ] {
+        let world = World::with(Scenario {
+            documentation_review: binding,
+            ..Scenario::default()
+        });
+        assert_eq!(
+            execute_only(&world).await,
+            Err(StageError::PolicyDenied),
+            "{binding:?}"
+        );
+        nothing_reached_the_host(&world);
+    }
+}
+
+/// A verdict that is not a review verdict at all is invalid, which is not the same as stale.
+#[tokio::test]
+async fn a_documentation_review_that_is_not_a_verdict_is_invalid() {
+    let world = World::new();
+    let (base, head) = world.commits().await;
+    let handler = world.handler();
+    let mut upstream = world.upstream(&base, &head).await;
+    world
+        .edit_upstream(
+            &mut upstream,
+            StageKind::DocumentationReview,
+            "documentation-review",
+            |value| *value = serde_json::json!({ "document": "documentation review" }),
+        )
+        .await;
+    let contract = world
+        .resolve_contract(&handler, &upstream)
+        .expect("a contract");
+    assert_eq!(
+        world.execute(&handler, &contract, &upstream).await.err(),
+        Some(StageError::InvalidOutput)
+    );
     nothing_reached_the_host(&world);
 }
 

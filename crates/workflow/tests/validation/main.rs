@@ -9,6 +9,9 @@
 //! Every negative test of `docs/security/negative-test-catalog.md` that this package owns has a
 //! function whose name starts `negative_nt_...`.
 
+#[allow(dead_code)]
+#[path = "../supply_chain/people.rs"]
+mod people;
 #[path = "../readability/schema_check.rs"]
 mod schema_check;
 
@@ -19,3 +22,4 @@ mod gates;
 mod negative_gate;
 mod negative_secret;
 mod schema;
+mod supply;

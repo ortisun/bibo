@@ -30,7 +30,10 @@ use std::thread;
 use std::time::Duration;
 
 use factory_workflow::gates::supply_chain::cargo::CargoFormat;
-use factory_workflow::gates::supply_chain::integrity::{Context, inspect};
+use factory_workflow::gates::supply_chain::findings::check;
+use factory_workflow::gates::supply_chain::integrity::{
+    Context, Integrity, MAX_LOCKED_PACKAGES, MAX_NEW_DIRECT, inspect,
+};
 use factory_workflow::gates::supply_chain::model::Side;
 use factory_workflow::gates::supply_chain::names::PopularNames;
 
@@ -78,7 +81,6 @@ fn finishes_within(count: usize, budget: Duration) -> bool {
 /// tens of milliseconds in the debug profile. The budget is generous (1.5 s) and the current code
 /// needs more than twice that on the reviewer's machine.
 #[test]
-#[ignore = "confirmed defect SC-4: the integrity checks are quadratic in the number of locked packages"]
 fn sc4_the_integrity_checks_stay_fast_on_a_large_candidate_lockfile() {
     assert!(
         finishes_within(4_000, Duration::from_millis(1_500)),
@@ -90,4 +92,41 @@ fn sc4_the_integrity_checks_stay_fast_on_a_large_candidate_lockfile() {
 #[test]
 fn control_a_small_lockfile_is_fast() {
     assert!(finishes_within(200, Duration::from_millis(1_500)));
+}
+
+fn inspected(count: usize) -> Integrity {
+    let popular = PopularNames::bundled().expect("the bundled list");
+    let cx = Context {
+        internal_names: &[],
+        popular: &popular,
+    };
+    let lock = wide_lockfile(count);
+    let base = Side::of(&CargoFormat, [("Cargo.lock", BASE_LOCK)]);
+    let head = Side::of(&CargoFormat, [("Cargo.lock", lock.as_str())]);
+    inspect(&CargoFormat, &base, &head, &cx).expect("the base is readable")
+}
+
+/// A candidate lockfile above the package bound is refused by name, so the checks that follow are
+/// bounded by a size a person could review. The bound is a violation of the candidate, not a
+/// block of the base.
+#[test]
+fn sc4_a_lockfile_above_the_package_bound_is_refused() {
+    let integrity = inspected(MAX_LOCKED_PACKAGES + 1);
+    assert!(integrity.has(check::UNREADABLE), "{:?}", integrity.findings);
+    let allowed = inspected(MAX_LOCKED_PACKAGES - 1);
+    assert!(!allowed.has(check::UNREADABLE), "{:?}", allowed.findings);
+}
+
+/// A change that brings more new direct dependencies than a person can decide on is refused
+/// before the policy engine is asked about each of them.
+#[test]
+fn sc4_a_change_with_too_many_new_direct_dependencies_is_refused() {
+    let integrity = inspected(MAX_NEW_DIRECT + 1);
+    assert!(
+        integrity.has(check::TOO_MANY_NEW),
+        "{:?}",
+        integrity.findings
+    );
+    let few = inspected(MAX_NEW_DIRECT);
+    assert!(!few.has(check::TOO_MANY_NEW), "{:?}", few.findings);
 }

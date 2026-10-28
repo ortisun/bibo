@@ -50,6 +50,73 @@ pub trait RegistryMetadata: Send + Sync {
     async fn lookup(&self, name: &str, version: &str) -> RegistryRecord;
 }
 
+/// The advisory database the audit reads.
+///
+/// The audit runs in a sandbox with no network and with `--no-fetch`, and with that flag the tool
+/// does not check how old its database is and prints no date. The age is therefore a fact the
+/// composition root supplies, from where the image was built (the date of the database that was
+/// copied into the pinned image), and the gate requires it: an audit against a database of
+/// unknown age is not a clean audit.
+#[async_trait]
+pub trait AdvisoryDatabase: Send + Sync {
+    /// When the database the audit reads was last updated. `None` when that is not known.
+    async fn updated_at(&self) -> Option<Timestamp>;
+}
+
+/// A database whose date was read before the run, and a test double.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct StaticDatabase(pub Option<Timestamp>);
+
+#[async_trait]
+impl AdvisoryDatabase for StaticDatabase {
+    async fn updated_at(&self) -> Option<Timestamp> {
+        self.0
+    }
+}
+
+/// How old the advisory database is, judged against the limit.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DatabaseAge {
+    /// Updated within the limit.
+    Fresh {
+        /// Whole days since the update.
+        days: u64,
+    },
+    /// Updated before the limit.
+    Stale {
+        /// Whole days since the update.
+        days: u64,
+        /// The limit it is judged against.
+        limit: u64,
+    },
+    /// The date is not known, or lies in the future, which cannot be true and is not trusted.
+    Unknown,
+}
+
+impl DatabaseAge {
+    /// Judges the date `updated` at `now` against `limit_days`. A database exactly `limit_days`
+    /// old is fresh; one second more is stale.
+    #[must_use]
+    pub fn judge(now: &Timestamp, updated: Option<Timestamp>, limit_days: u64) -> Self {
+        let Some(updated) = updated else {
+            return Self::Unknown;
+        };
+        let seconds = now.unix_seconds() - updated.unix_seconds();
+        let Ok(elapsed) = u64::try_from(seconds) else {
+            return Self::Unknown;
+        };
+        let days = elapsed / 86_400;
+        if elapsed <= limit_days.saturating_mul(86_400) {
+            Self::Fresh { days }
+        } else {
+            Self::Stale {
+                days,
+                limit: limit_days,
+            }
+        }
+    }
+}
+
 /// A fixed table of records, for a source that was filled before the run and for tests.
 #[derive(Debug, Clone, Default)]
 pub struct StaticRegistry {
@@ -87,6 +154,31 @@ mod tests {
 
     fn at(text: &str) -> Timestamp {
         Timestamp::parse(text).expect("a timestamp")
+    }
+
+    #[test]
+    fn the_database_age_is_fresh_stale_or_unknown_and_never_guessed() {
+        let now = at("2026-10-28T12:00:00Z");
+        let judge = |updated: Option<&str>| DatabaseAge::judge(&now, updated.map(at), 7);
+        assert_eq!(
+            judge(Some("2026-10-28T11:00:00Z")),
+            DatabaseAge::Fresh { days: 0 }
+        );
+        assert_eq!(
+            judge(Some("2026-10-21T12:00:00Z")),
+            DatabaseAge::Fresh { days: 7 }
+        );
+        assert_eq!(
+            judge(Some("2026-10-21T11:59:59Z")),
+            DatabaseAge::Stale { days: 7, limit: 7 },
+            "one second past the limit is stale"
+        );
+        assert_eq!(
+            judge(Some("2026-10-20T12:00:00Z")),
+            DatabaseAge::Stale { days: 8, limit: 7 }
+        );
+        assert_eq!(judge(None), DatabaseAge::Unknown);
+        assert_eq!(judge(Some("2026-10-29T00:00:00Z")), DatabaseAge::Unknown);
     }
 
     #[test]

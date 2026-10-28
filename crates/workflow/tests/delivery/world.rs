@@ -219,6 +219,31 @@ pub struct Scenario {
     pub translation_warnings: u32,
     /// What the documenting stage did.
     pub documentation: Documentation,
+    /// The status the frozen specification carries. `None` leaves the fixture's own (approved).
+    pub spec_status: Option<&'static str>,
+    /// The verdict of the documentation review.
+    pub documentation_verdict: &'static str,
+    /// The outcome of every report of the documentation gate (`PASSED`, `FAILED` or `BLOCKED`).
+    pub documentation_outcome: &'static str,
+    /// What the documentation reviewer's verdict says it read.
+    pub documentation_review: ReviewBinding,
+}
+
+/// A review verdict that is valid and is not a pass: the example of a review that asks for
+/// changes, with its finding.
+pub fn changes_required_review() -> serde_json::Value {
+    serde_json::from_str(VERDICT).expect("a verdict")
+}
+
+/// What the documentation reviewer's verdict says it read.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReviewBinding {
+    /// Exactly the stored reports and the frozen specification.
+    Reports,
+    /// Reports that are not the stored ones.
+    OtherReports,
+    /// Another specification.
+    OtherSpecification,
 }
 
 impl Default for Scenario {
@@ -239,6 +264,10 @@ impl Default for Scenario {
             },
             translation_warnings: 0,
             documentation: Documentation::Committed,
+            spec_status: None,
+            documentation_verdict: "PASS",
+            documentation_outcome: "PASSED",
+            documentation_review: ReviewBinding::Reports,
         }
     }
 }
@@ -605,6 +634,9 @@ impl World {
         if let Some(title) = &self.scenario.spec_title {
             spec["title"] = serde_json::json!(title);
         }
+        if let Some(status) = self.scenario.spec_status {
+            spec["metadata"]["status"] = serde_json::json!(status);
+        }
         let spec = self.store_json(&spec).await;
         let plan: serde_json::Value = serde_json::from_str(PLAN).expect("a plan");
         let plan = self.store_json(&plan).await;
@@ -670,7 +702,7 @@ impl World {
         let mut documentation_reports: Vec<serde_json::Value> = gate_ids()
             .into_iter()
             .map(|gate| {
-                self.report(gate, "PASSED")
+                self.report(gate, self.scenario.documentation_outcome)
                     .to_json_value()
                     .expect("a report is JSON")
             })
@@ -700,7 +732,40 @@ impl World {
                 &documentation_reports,
             ))
             .await;
-        let documentation_review = self.store_json(&blob("documentation review")).await;
+        // The documentation reviewer's verdict names the reports it read by identifier and by the
+        // hash of the stored report, and the frozen specification by its hash.
+        let mut review: serde_json::Value = serde_json::from_str(VERDICT).expect("a verdict");
+        if self.scenario.documentation_verdict == "PASS" {
+            review["verdict"] = serde_json::json!("PASS");
+            review["findings"] = serde_json::json!([]);
+            review
+                .as_object_mut()
+                .expect("object")
+                .remove("human_question");
+        }
+        let read: Vec<serde_json::Value> = match self.scenario.documentation_review {
+            ReviewBinding::OtherReports => vec![serde_json::json!({
+                "gate_report_id": "018f3a80-1c22-7a44-9b55-6c7d8e9fa0b3",
+                "sha256": Sha256Digest::of(b"some other report"),
+            })],
+            _ => documentation_reports
+                .iter()
+                .map(|value| {
+                    serde_json::json!({
+                        "gate_report_id": value["metadata"]["gate_report_id"],
+                        "sha256": Sha256Digest::of(&serde_json::to_vec(value).expect("JSON")),
+                    })
+                })
+                .collect(),
+        };
+        review["inputs_reviewed"]["gate_reports"] = serde_json::Value::Array(read);
+        review["inputs_reviewed"]["frozen_spec_sha256"] =
+            if self.scenario.documentation_review == ReviewBinding::OtherSpecification {
+                serde_json::json!(Sha256Digest::of(b"another specification"))
+            } else {
+                serde_json::json!(spec.sha256)
+            };
+        let documentation_review = self.store_json(&review).await;
 
         let mut add = |kind: StageKind, name: &'static str, artifact: ArtifactRef| {
             if self.scenario.missing == Some(name) {

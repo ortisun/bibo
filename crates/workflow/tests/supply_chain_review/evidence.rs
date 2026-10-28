@@ -15,7 +15,7 @@ use factory_workflow::gates::supply_chain::names::PopularNames;
 use factory_workflow::gates::supply_chain::review::{Plan, RegistryTable, Settings};
 
 use crate::files::{base, head_adding, side};
-use crate::people::{engine, now};
+use crate::people::{engine, now, policy_hash, scope};
 
 fn plan_for(record: RegistryRecord) -> Plan {
     let popular = PopularNames::bundled().expect("the bundled list");
@@ -38,12 +38,13 @@ fn plan_for(record: RegistryRecord) -> Plan {
             internal_names: &[],
             popular: &popular,
             now: now(),
+            scope: scope(),
+            policy_hash: &policy_hash(),
         },
     )
 }
 
 #[test]
-#[ignore = "confirmed defect SC-8: registry text (repository, license) is written to the evidence without the sanitising the rest of the gate applies"]
 fn sc8_registry_text_is_cleaned_and_bounded_before_it_is_stored() {
     let hostile = format!("<script>alert(1)</script>{}", "x".repeat(20_000));
     let plan = plan_for(RegistryRecord {

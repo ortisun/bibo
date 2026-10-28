@@ -44,7 +44,8 @@ use super::licenses::LicensePolicy;
 use super::names::PopularNames;
 use super::review::Plan;
 use super::tools::{
-    self, AUDIT, AUDIT_PROBE, AuditResult, FETCH, METADATA, PackageMeta, SbomTool, Unreadable,
+    self, AUDIT, AUDIT_PROBE, AuditRefused, AuditResult, FETCH, METADATA, PackageMeta, SbomTool,
+    Unreadable,
 };
 use crate::gates::command::{Reading, Role, Verdict, interpret};
 use crate::handlers::{StageError, StagePorts};
@@ -126,9 +127,18 @@ pub struct SupplyChainConfig {
     pub internal_names: Vec<String>,
     /// The SBOM rule.
     pub sbom: SbomRule,
+    /// The most whole days old the advisory database may be. `policies/security.yaml` has no row
+    /// for this yet, so it is configuration with a conservative default
+    /// ([`DEFAULT_ADVISORY_DB_MAX_AGE_DAYS`], the 7 days `deny.toml` demands of the factory's
+    /// own CI). A database older than this, or of unknown age, blocks the advisory gate.
+    pub advisory_db_max_age_days: u64,
     /// Bounds.
     pub bounds: Bounds,
 }
+
+/// The default limit on the age of the advisory database, equal to `maximum-db-staleness = "P7D"`
+/// in `deny.toml`.
+pub const DEFAULT_ADVISORY_DB_MAX_AGE_DAYS: u64 = 7;
 
 impl std::fmt::Debug for SupplyChainConfig {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -500,7 +510,15 @@ pub async fn scan(io: &Io<'_>, plan: &Plan, commit: &CommitSha) -> Result<Scanne
         }
     };
     let sandbox_id = session.id().as_str().to_owned();
-    let outcome = scan_steps(&mut *session, io).await;
+    let components = usize::from(
+        plan.integrity
+            .head
+            .locks
+            .values()
+            .flat_map(|lock| &lock.packages)
+            .any(|package| package.origin.is_default_registry()),
+    );
+    let outcome = scan_steps(&mut *session, io, components).await;
     let reason = if outcome.is_ok() {
         TeardownReason::Completed
     } else {
@@ -525,10 +543,11 @@ type ScanSteps = (Vec<Seen>, Vec<Seen>, AuditEnd, SbomEnd);
 async fn scan_steps(
     session: &mut dyn SandboxSession,
     io: &Io<'_>,
+    components: usize,
 ) -> Result<ScanSteps, StageError> {
     let (mut audit_seen, mut sbom_seen) = (Vec::new(), Vec::new());
     let audit = audit_step(session, io, &mut audit_seen).await?;
-    let sbom = sbom_step(session, io, &mut sbom_seen).await?;
+    let sbom = sbom_step(session, io, &mut sbom_seen, components).await?;
     Ok((audit_seen, sbom_seen, audit, sbom))
 }
 
@@ -578,8 +597,16 @@ async fn audit_step(
     let Some(text) = stdout.filter(|_| !cut) else {
         return Ok(unusable("complete and readable output of cargo audit"));
     };
-    let Ok(result) = tools::parse_audit(&text) else {
-        return Ok(unusable("output of cargo audit in the form it prints"));
+    let result = match tools::parse_audit(&text) {
+        Ok(result) => result,
+        Err(AuditRefused::Configured) => {
+            return Ok(unusable(
+                "an audit run with the default settings (this one ignored or filtered advisories)",
+            ));
+        }
+        Err(AuditRefused::Unreadable) => {
+            return Ok(unusable("output of cargo audit in the form it prints"));
+        }
     };
     Ok(match (code, result.count) {
         (Some(0), 0) => AuditEnd::Clean(result),
@@ -592,6 +619,7 @@ async fn sbom_step(
     session: &mut dyn SandboxSession,
     io: &Io<'_>,
     seen: &mut Vec<Seen>,
+    components: usize,
 ) -> Result<SbomEnd, StageError> {
     let bounds = io.cfg.bounds;
     let tool = &io.cfg.sbom.tool;
@@ -630,7 +658,9 @@ async fn sbom_step(
         return Ok(SbomEnd::Unusable(Blocker::new(why.code, why.missing)));
     }
     Ok(match (verdict, stdout) {
-        (Verdict::Passed, Some(text)) if !cut && tools::is_cyclonedx(&text) => SbomEnd::Made,
+        (Verdict::Passed, Some(text)) if !cut && tools::is_cyclonedx(&text, components) => {
+            SbomEnd::Made
+        }
         _ => unusable(),
     })
 }

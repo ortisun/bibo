@@ -17,7 +17,7 @@ use factory_workflow::handlers::StageError;
 
 use super::files::{Files, base, head_adding, lock, manifest, member, reg, sum, with};
 use super::people::{
-    APPROVER, REQUESTER, SECURITY, approve, authorized, decide, engine, human, policy_hash,
+    APPROVER, REQUESTER, SECURITY, approve, authorized, decide, engine, human, policy_hash, scope,
 };
 use super::review::{at, old_and_licensed, plan_with, record, table};
 use super::world::{
@@ -298,6 +298,7 @@ async fn a_reason_that_looks_like_a_secret_is_withheld_from_the_report() {
         &proof,
         subject(),
         policy_hash(),
+        scope(),
         &format!("The maintainer sent {token} for the review."),
     )
     .expect("recorded");
@@ -540,8 +541,71 @@ async fn scanner_absence_is_blocked() {
 }
 
 #[tokio::test]
+async fn an_audit_against_a_database_within_the_limit_passes_and_says_how_old_it_is() {
+    let world = World::new();
+    world.tools.set(clean());
+    let ran = run(&world, &head(), &[by_approver()]).await;
+    assert_eq!(ran.outcome(gate::ADVISORIES), GateOutcome::Passed);
+    let reason = &ran.report(gate::ADVISORIES).reason;
+    assert!(reason.as_str().contains("updated 1 day(s) ago"), "{reason}");
+}
+
+#[tokio::test]
+async fn an_audit_against_a_database_older_than_the_limit_is_blocked_with_the_age() {
+    let world = World::new();
+    world.tools.set(clean());
+    // Eight days before the fake clock, with a limit of seven.
+    world.database_updated(Some(at("2026-10-20T12:00:00Z")));
+    let ran = run(&world, &head(), &[by_approver()]).await;
+    assert!(ran.done.scanned, "the audit ran");
+    assert_eq!(ran.outcome(gate::ADVISORIES), GateOutcome::Blocked);
+    let missing = ran.missing(gate::ADVISORIES);
+    assert!(
+        missing.contains("last 7 day(s)") && missing.contains("8 day(s) old"),
+        "{missing}"
+    );
+    let reason = ran
+        .report(gate::ADVISORIES)
+        .blocked_reason
+        .as_ref()
+        .expect("a reason");
+    assert_eq!(reason.code, BlockedCode::DependencyUnavailable);
+}
+
+#[tokio::test]
+async fn a_database_exactly_at_the_limit_is_fresh_and_a_date_in_the_future_is_not_trusted() {
+    let world = World::new();
+    world.tools.set(clean());
+    world.database_updated(Some(at("2026-10-21T12:00:00Z")));
+    let ran = run(&world, &head(), &[by_approver()]).await;
+    assert_eq!(ran.outcome(gate::ADVISORIES), GateOutcome::Passed);
+
+    let world = World::new();
+    world.tools.set(clean());
+    world.database_updated(Some(at("2026-10-29T12:00:00Z")));
+    let ran = run(&world, &head(), &[by_approver()]).await;
+    assert_eq!(ran.outcome(gate::ADVISORIES), GateOutcome::Blocked);
+}
+
+#[tokio::test]
+async fn an_advisory_that_is_found_fails_even_when_the_database_is_old() {
+    let world = World::new();
+    world.tools.set(Script {
+        audit: AuditScript::Found,
+        ..clean()
+    });
+    world.database_updated(None);
+    let ran = run(&world, &head(), &[by_approver()]).await;
+    assert_eq!(ran.outcome(gate::ADVISORIES), GateOutcome::Failed);
+}
+
+#[tokio::test]
 async fn scanner_absence_is_blocked_when_the_audit_gives_no_usable_answer() {
-    for audit in [AuditScript::Garbage, AuditScript::Error] {
+    for audit in [
+        AuditScript::Garbage,
+        AuditScript::Error,
+        AuditScript::Ignoring,
+    ] {
         let world = World::new();
         world.tools.set(Script { audit, ..clean() });
         let ran = run(&world, &head(), &[by_approver()]).await;

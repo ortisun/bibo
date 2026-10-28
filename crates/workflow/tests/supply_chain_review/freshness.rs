@@ -21,7 +21,7 @@ use crate::world::{Script, World, metadata};
 
 /// The candidate moves `serde` to a later version in the same series. The manifest is the same
 /// as the base commit's, so no person is asked about a new dependency.
-fn head_upgrading_serde() -> Files {
+pub fn head_upgrading_serde() -> Files {
     files(&[
         (
             "Cargo.toml",
@@ -39,9 +39,10 @@ fn head_upgrading_serde() -> Files {
 }
 
 #[tokio::test]
-#[ignore = "confirmed defect SC-6: the advisories gate passes on an audit that gives no evidence of the age of the advisory database"]
 async fn sc6_an_audit_with_no_evidence_of_the_database_age_is_not_a_pass() {
     let world = World::new();
+    // The scripted audit prints `"database":{}` and the image says nothing about its database.
+    world.database_updated(None);
     world.tools.set(Script {
         metadata: metadata(&[("serde", "1.0.101", Some("MIT OR Apache-2.0"), false)]),
         ..Script::default()

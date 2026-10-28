@@ -19,7 +19,7 @@ use serde_json::json;
 use super::files::{Files, base, files, head_adding, lock, manifest, member, reg, side, sum, with};
 use super::people::{
     APPROVER, OPERATOR, REQUESTER, SECURITY, approve, authorized, decide, engine, human, now,
-    policy_hash,
+    policy_hash, scope,
 };
 
 pub fn at(text: &str) -> Timestamp {
@@ -72,6 +72,8 @@ pub fn plan_with(
             internal_names: internal,
             popular: &popular,
             now: now(),
+            scope: scope(),
+            policy_hash: &policy_hash(),
         },
     )
 }
@@ -507,7 +509,7 @@ fn a_decision_needs_a_reason_the_right_action_and_a_checksum() {
         Some(REQUESTER),
     ));
     assert_eq!(
-        DependencyApproval::record(&proof, subject.clone(), policy_hash(), "ok").err(),
+        DependencyApproval::record(&proof, subject.clone(), policy_hash(), scope(), "ok").err(),
         Some(ApprovalError::NoReason)
     );
     let no_sum = Subject {
@@ -519,6 +521,7 @@ fn a_decision_needs_a_reason_the_right_action_and_a_checksum() {
             &proof,
             no_sum,
             policy_hash(),
+            scope(),
             "A reason that is long enough."
         )
         .err(),
@@ -555,6 +558,7 @@ fn a_decision_needs_a_reason_the_right_action_and_a_checksum() {
             &proof,
             subject,
             policy_hash(),
+            scope(),
             "A reason that is long enough."
         )
         .err(),

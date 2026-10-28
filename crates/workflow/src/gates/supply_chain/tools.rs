@@ -148,13 +148,56 @@ pub struct AuditResult {
     pub warnings: u64,
 }
 
+/// Why the output of the audit is not an answer to rely on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub enum AuditRefused {
+    /// The text is not the document the tool prints, or it does not add up.
+    #[error("the output of the tool is not in the expected form")]
+    Unreadable,
+    /// The tool ran with settings that hide advisories (an ignore list, a severity threshold, a
+    /// target filter). Those come from a configuration file, and the only one that may exist is
+    /// the base commit's; the answer is what that configuration lets through, not what the
+    /// advisory database says.
+    #[error("the audit ran with settings that hide advisories")]
+    Configured,
+}
+
+impl From<Unreadable> for AuditRefused {
+    fn from(_: Unreadable) -> Self {
+        Self::Unreadable
+    }
+}
+
+/// Reads the settings the tool printed back and refuses any that hide an advisory. A missing
+/// `settings` object is read as no settings (the form older tools and the scripted tools use).
+fn visible_settings(doc: &Value) -> Result<(), AuditRefused> {
+    let Some(settings) = doc.get("settings") else {
+        return Ok(());
+    };
+    let empty = |key: &str| match settings.get(key) {
+        None | Some(Value::Null) => Ok(true),
+        Some(Value::Array(items)) => Ok(items.is_empty()),
+        Some(_) => Err(AuditRefused::Unreadable),
+    };
+    if !(empty("ignore")? && empty("target_arch")? && empty("target_os")?) {
+        return Err(AuditRefused::Configured);
+    }
+    match settings.get("severity") {
+        None | Some(Value::Null) => Ok(()),
+        Some(_) => Err(AuditRefused::Configured),
+    }
+}
+
 /// Reads the output of `cargo audit --json`.
 ///
 /// # Errors
-/// [`Unreadable`] when the text is not the document, or says `found` and lists none, or the count
-/// does not agree with the list.
-pub fn parse_audit(stdout: &str) -> Result<AuditResult, Unreadable> {
+/// [`AuditRefused::Unreadable`] when the text is not the document, or says `found` and lists
+/// none, or the count does not agree with the list. [`AuditRefused::Configured`] when the tool
+/// printed settings that hide advisories, whatever it found: a clean answer from a tool told to
+/// ignore an advisory is not a clean audit.
+pub fn parse_audit(stdout: &str) -> Result<AuditResult, AuditRefused> {
     let doc: Value = serde_json::from_str(stdout).map_err(|_| Unreadable)?;
+    visible_settings(&doc)?;
     let vulns = doc.get("vulnerabilities").ok_or(Unreadable)?;
     let found = vulns
         .get("found")
@@ -169,7 +212,7 @@ pub fn parse_audit(stdout: &str) -> Result<AuditResult, Unreadable> {
         .and_then(Value::as_array)
         .ok_or(Unreadable)?;
     if found != (count > 0) || u64::try_from(list.len()).ok() != Some(count) {
-        return Err(Unreadable);
+        return Err(Unreadable.into());
     }
     let advisories = list
         .iter()
@@ -208,17 +251,24 @@ pub fn parse_audit(stdout: &str) -> Result<AuditResult, Unreadable> {
     })
 }
 
-/// True when `stdout` is a CycloneDX document.
+/// True when `stdout` is a CycloneDX document: the format is named, a specification version is
+/// given, and the list of components is there and holds at least `at_least` entries. A document
+/// that names the format and lists nothing is a shell, not a bill of materials.
 #[must_use]
-pub fn is_cyclonedx(stdout: &str) -> bool {
-    serde_json::from_str::<Value>(stdout)
-        .ok()
-        .and_then(|doc| {
-            doc.get("bomFormat")
-                .and_then(Value::as_str)
-                .map(str::to_owned)
-        })
-        .is_some_and(|format| format == "CycloneDX")
+pub fn is_cyclonedx(stdout: &str, at_least: usize) -> bool {
+    let Ok(doc) = serde_json::from_str::<Value>(stdout) else {
+        return false;
+    };
+    let named = doc.get("bomFormat").and_then(Value::as_str) == Some("CycloneDX");
+    let versioned = doc
+        .get("specVersion")
+        .and_then(Value::as_str)
+        .is_some_and(|version| !version.is_empty());
+    // A document with no list of components lists none; a list that is not a list is no document.
+    let components = doc
+        .get("components")
+        .map_or(Some(0), |list| list.as_array().map(Vec::len));
+    named && versioned && components.is_some_and(|count| count >= at_least)
 }
 
 #[cfg(test)]
@@ -273,11 +323,25 @@ mod tests {
     }
 
     #[test]
-    fn only_a_cyclonedx_document_is_an_sbom() {
-        assert!(is_cyclonedx(
-            r#"{"bomFormat":"CycloneDX","specVersion":"1.6"}"#
+    fn only_a_cyclonedx_document_that_lists_its_components_is_an_sbom() {
+        let one =
+            r#"{"bomFormat":"CycloneDX","specVersion":"1.6","components":[{"name":"serde"}]}"#;
+        let none = r#"{"bomFormat":"CycloneDX","specVersion":"1.6","components":[]}"#;
+        assert!(is_cyclonedx(one, 1));
+        assert!(is_cyclonedx(none, 0));
+        assert!(
+            !is_cyclonedx(none, 1),
+            "a document with no component is a shell"
+        );
+        assert!(!is_cyclonedx(
+            r#"{"bomFormat":"CycloneDX","components":[{}]}"#,
+            1
         ));
-        assert!(!is_cyclonedx(r#"{"spdxVersion":"SPDX-2.3"}"#));
-        assert!(!is_cyclonedx("garbage"));
+        assert!(!is_cyclonedx(
+            r#"{"bomFormat":"CycloneDX","specVersion":"","components":[{}]}"#,
+            1
+        ));
+        assert!(!is_cyclonedx(r#"{"spdxVersion":"SPDX-2.3"}"#, 0));
+        assert!(!is_cyclonedx("garbage", 0));
     }
 }

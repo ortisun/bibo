@@ -28,6 +28,7 @@
 //! stage committed nothing. A documentation result or plan written for other commits than the
 //! implementation result is stale and is refused, not delivered.
 
+use factory_domain::contracts::specification_contract::SpecStatus;
 use factory_domain::contracts::{
     ArtifactRef, Contract, GateReport, ReviewVerdict, SpecificationContract, StageContract, TaskDag,
 };
@@ -39,7 +40,7 @@ use factory_ports::artifact::ArtifactStore;
 use factory_ports::paths::CommitSha;
 use serde_json::Value;
 
-use super::documentation_gate::{DocumentationGate, Expected, GateProblem};
+use super::documentation_gate::{DocumentationGate, Expected, GateProblem, ReviewProblem};
 use crate::gates::docs::plan::DocPlan;
 use crate::handlers::UpstreamRun;
 use crate::stages::validation::Binding;
@@ -131,15 +132,12 @@ pub enum DossierError {
     Stale,
 }
 
-/// The two commits of the implementation result.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Candidate {
-    /// The protected branch tip the change is relative to.
-    pub base: CommitSha,
-    /// The code head: the commit the gates ran on. The documentation commit, if there is one, sits
-    /// on top of it.
-    pub head: CommitSha,
-}
+// The two commits of the implementation result, and the one function that reads them. The
+// validation stage reads the same document to decide which commit to run the gates on, and the
+// delivery stage reads it to decide which commit is delivered, so the two must not drift: both
+// call the function the validation stage defines. (The implementation stage keeps a copy of its
+// own, outside this package; see the review notes, C-d.)
+pub use crate::stages::validation::{Candidate, parse_candidate};
 
 /// The validation evidence: the binding and the reports.
 #[derive(Debug, Clone, PartialEq)]
@@ -207,17 +205,6 @@ async fn bytes(
 
 fn sha_only(reference: &ArtifactRef) -> Sha256Digest {
     reference.sha256.clone()
-}
-
-/// Reads the two commits from the implementation result.
-#[must_use]
-pub fn parse_candidate(bytes: &[u8]) -> Option<Candidate> {
-    let value: Value = serde_json::from_slice(bytes).ok()?;
-    let field = |name: &str| value.get(name).and_then(Value::as_str);
-    Some(Candidate {
-        base: CommitSha::parse(field("base_commit")?).ok()?,
-        head: CommitSha::parse(field("head_commit")?).ok()?,
-    })
 }
 
 /// Reads `documentation-result` and returns the commit to deliver.
@@ -335,6 +322,12 @@ pub async fn read(
         std::str::from_utf8(&spec).map_err(|_| DossierError::Invalid)?,
     )
     .map_err(|_| DossierError::Invalid)?;
+    // The specification the stages before read was approved by a person. Planning, architecture
+    // and validation each check it, and the delivery checks it again: a pull request is not
+    // opened for a specification that is a draft, or that a later freeze replaced.
+    if specification.metadata.status != SpecStatus::Approved {
+        return Err(DossierError::NotDeliverable);
+    }
 
     let (plan, plan_ref) = bytes(artifacts, scope, contract, TASK_PLAN).await?;
     let plan =
@@ -358,19 +351,35 @@ pub async fn read(
     // than the ones that are delivered is stale, whatever its hash.
     let (gate_bytes, documentation_gate) =
         bytes(artifacts, scope, contract, DOCUMENTATION_GATE).await?;
-    DocumentationGate::from_bytes(&gate_bytes)
-        .map_err(|_| DossierError::Invalid)?
-        .check(&Expected {
-            base_commit: &candidate.base,
-            code_head: &candidate.head,
-            documentation_head: &pushed_head,
-            plan_sha256: &documentation_plan.sha256,
-        })
+    let gate = DocumentationGate::from_bytes(&gate_bytes).map_err(|_| DossierError::Invalid)?;
+    gate.check(&Expected {
+        base_commit: &candidate.base,
+        code_head: &candidate.head,
+        documentation_head: &pushed_head,
+        plan_sha256: &documentation_plan.sha256,
+    })
+    .map_err(|problem| match problem {
+        GateProblem::Invalid => DossierError::Invalid,
+        GateProblem::Stale(_) => DossierError::Stale,
+    })?;
+    // The reviewer's verdict is read, not only hashed: it must be a valid verdict, it must be a
+    // `PASS`, and it must be about the reports that are delivered and the specification that is
+    // frozen. The code review is held to the same rule in the manifest.
+    let (review_bytes, documentation_review) =
+        bytes(artifacts, scope, contract, DOCUMENTATION_REVIEW).await?;
+    let documentation_verdict = ReviewVerdict::from_json_str(
+        std::str::from_utf8(&review_bytes).map_err(|_| DossierError::Invalid)?,
+    )
+    .map_err(|_| DossierError::Invalid)?;
+    documentation_verdict
+        .validate()
+        .map_err(|_| DossierError::Invalid)?;
+    gate.check_review(&documentation_verdict, &spec_ref.sha256)
         .map_err(|problem| match problem {
-            GateProblem::Invalid => DossierError::Invalid,
-            GateProblem::Stale(_) => DossierError::Stale,
+            ReviewProblem::Invalid => DossierError::Invalid,
+            ReviewProblem::NotPass => DossierError::NotDeliverable,
+            ReviewProblem::Stale(_) => DossierError::Stale,
         })?;
-    let (_, documentation_review) = bytes(artifacts, scope, contract, DOCUMENTATION_REVIEW).await?;
 
     Ok(Dossier {
         candidate,

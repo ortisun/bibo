@@ -33,6 +33,7 @@ mod evidence;
 mod freshness;
 mod held;
 mod identity;
+mod lookalike;
 mod reader;
 mod registry_input;
 mod requirements;

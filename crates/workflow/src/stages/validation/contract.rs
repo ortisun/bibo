@@ -10,6 +10,7 @@ use serde_json::{Value, json};
 
 use super::input::{IMPLEMENTATION_RESULT, SPECIFICATION_CONTRACT, upstream_output};
 use crate::gates::command::gate_id;
+use crate::gates::supply_chain::report::gate as supply_chain_gate;
 use crate::handlers::{ContractContext, StageError};
 use factory_domain::contracts::gate_report::BlockedCode;
 use factory_domain::vocabulary::StageKind;
@@ -58,6 +59,28 @@ pub const GATES: [(&str, &str); 9] = [
     (
         gate_id::EVIDENCE_BINDING,
         "The evidence is about this commit, this policy, this image and these definitions.",
+    ),
+];
+
+/// The gates of the dependency and supply chain package, in report order. The stage makes a report
+/// for each of them on every run: a change that touches no dependency file gets four reports that
+/// say nothing applies, and a gate that cannot run says what is missing.
+pub const SUPPLY_CHAIN_GATES: [(&str, &str); 4] = [
+    (
+        supply_chain_gate::INTEGRITY,
+        "The dependency files agree with the base commit: no changed source, checksum, patch or build configuration.",
+    ),
+    (
+        supply_chain_gate::REVIEW,
+        "Every new direct dependency has a recorded human decision, and the packages that came in are licensed.",
+    ),
+    (
+        supply_chain_gate::ADVISORIES,
+        "No known advisory applies to the locked packages, according to a recent advisory database.",
+    ),
+    (
+        supply_chain_gate::SBOM,
+        "A software bill of materials was made when the job requires one.",
     ),
 ];
 
@@ -113,6 +136,7 @@ pub fn resolve(ctx: &ContractContext<'_>) -> Result<StageContract, StageError> {
 
     let criteria: Vec<Value> = GATES
         .iter()
+        .chain(SUPPLY_CHAIN_GATES.iter())
         .map(|(gate, description)| {
             json!({
                 "id": format!("{gate}-passes"),
@@ -122,7 +146,11 @@ pub fn resolve(ctx: &ContractContext<'_>) -> Result<StageContract, StageError> {
             })
         })
         .collect();
-    let gate_ids: Vec<&str> = GATES.iter().map(|(gate, _)| *gate).collect();
+    let gate_ids: Vec<&str> = GATES
+        .iter()
+        .chain(SUPPLY_CHAIN_GATES.iter())
+        .map(|(gate, _)| *gate)
+        .collect();
 
     let document = json!({
         "schema_version": 1,
