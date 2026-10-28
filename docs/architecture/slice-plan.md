@@ -2715,7 +2715,7 @@ The harness reads the database and GitHub, not log text. All of them must hold f
 The security specialist's catalog is the oracle. The validator parses it live, so a new or changed P0 test fails the check until it has an owner.
 
 <!-- GENERATED:begin negative-test-summary -->
-The catalog has 86 P0 tests. 86 are mapped to a work package and a crate: 81 with full scope and 5 with reduced scope, listed under gaps. 3 of the full ones have a part that stays BLOCKED until a spike has run. 0 have no owner. The catalog also has 36 P1 and 5 P2 tests, which it requires before Slice 2 and later (1 P1 mapped so far), and 10 static checks, all mapped.
+The catalog has 87 P0 tests. 87 are mapped to a work package and a crate: 82 with full scope and 5 with reduced scope, listed under gaps. 3 of the full ones have a part that stays BLOCKED until a spike has run. 0 have no owner. The catalog also has 35 P1 and 5 P2 tests, which it requires before Slice 2 and later (0 P1 mapped so far), and 10 static checks, all mapped.
 <!-- GENERATED:end negative-test-summary -->
 
 ### P0 tests and their owners
@@ -2759,7 +2759,7 @@ The catalog has 86 P0 tests. 86 are mapped to a work package and a crate: 81 wit
 | `NT-MRG-05` | Auto-merge and deploy are off | Integration | workflow | `s1-stage-delivery-and-approval` | `workflow` |  | full |
 | `NT-MRG-06` | Self and bot approval | Integration | workflow github | `s1-stage-delivery-and-approval` | `workflow` | `s1-github-adapter` | full |
 | `NT-MRG-07` | Repository protection preflight | Integration | github | `s1-github-adapter` | `github` |  | full |
-| `NT-MRG-08` | Draft until thresholds | Integration | workflow | `s1-stage-delivery-and-approval` | `workflow` |  | full |
+| `NT-MRG-08` | The factory never marks a pull request ready | Integration | workflow | `s1-stage-delivery-and-approval` | `workflow` |  | full |
 | `NT-POL-01` | Policy source | Unit and integration | policy | `s0-contracts-and-registry` | `contracts` |  | full |
 | `NT-POL-02` | Tighten-only overrides | Unit | policy | `s1-policy-evaluation` | `domain` |  | full |
 | `NT-POL-03` | Schema strictness | Unit | policy | `s0-contracts-and-registry` | `contracts` |  | full |
@@ -2793,6 +2793,7 @@ The catalog has 86 P0 tests. 86 are mapped to a work package and a crate: 81 wit
 | `NT-SUP-02` | Install and build scripts | Integration | sandbox quality | `s1-supply-chain-gates` | `workflow` | `s1-sandbox-adapter` | full |
 | `NT-SUP-03` | Lockfile and source tampering | Integration | quality | `s1-supply-chain-gates` | `workflow` |  | full |
 | `NT-SUP-05` | Image pinning | Integration | sandbox | `s1-sandbox-adapter` | `sandbox` |  | full |
+| `NT-TEN-01` | Row-level security | Integration (PostgreSQL) | storage | `s1-storage-postgres` | `storage` | `s1-database-tenancy-and-state-sync` | full |
 | `NT-TEN-05` | API object references | Integration | api | `s1-apps-composition` | `api` | `s1-storage-postgres` | full |
 | `NT-TOOL-01` | No shell interpretation | Integration | runtime sandbox | `s1-sandbox-adapter` | `sandbox` | `s1-agent-runtime-adapters` | full |
 | `NT-TOOL-02` | Forbidden command class matrix | Unit | policy | `s1-policy-evaluation` | `domain` |  | full |
