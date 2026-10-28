@@ -16,7 +16,10 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use factory_domain::contracts::gate_report::BlockedCode;
-use factory_domain::contracts::{Contract, GateReport, StageContract};
+use factory_domain::contracts::specification_contract::SpecStatus;
+use factory_domain::contracts::{
+    Contract, GateReport, ReviewVerdict, SpecificationContract, StageContract,
+};
 use factory_domain::ids::GateReportId;
 use factory_domain::policy::PolicyEngine;
 use factory_domain::scope::TenantScope;
@@ -36,10 +39,13 @@ use crate::handlers::{
 };
 use crate::stages::delivery::binding::{self, Now};
 use crate::stages::delivery::contract::RESULT as DELIVERY_RESULT;
-use crate::stages::delivery::documentation_gate::{DocumentationGate, Expected, GateProblem};
+use crate::stages::delivery::documentation_gate::{
+    DocumentationGate, Expected, GateProblem, ReviewProblem,
+};
 use crate::stages::delivery::handler::{fidelity_of, host_error, seam_error, slug};
 use crate::stages::delivery::input::{
-    DOCUMENTATION_GATE, DOCUMENTATION_PLAN, POLICY_INPUT, VALIDATION_EVIDENCE, contract_input,
+    DOCUMENTATION_GATE, DOCUMENTATION_PLAN, DOCUMENTATION_REVIEW, POLICY_INPUT,
+    SPECIFICATION_CONTRACT, VALIDATION_EVIDENCE, contract_input,
 };
 use crate::stages::delivery::{DeliverySources, EvidenceDrift};
 use crate::stages::intake::common::{
@@ -151,6 +157,11 @@ impl StageHandler for ApprovalHandler {
         let delivery = read(DELIVERY_RESULT).await?;
         let evidence = read(VALIDATION_EVIDENCE).await?;
         let documentation = read(DOCUMENTATION_GATE).await?;
+        let specification = read(SPECIFICATION_CONTRACT).await?;
+        let documentation_review = read(DOCUMENTATION_REVIEW).await?;
+        let specification_sha256 = contract_input(ctx.contract, SPECIFICATION_CONTRACT)
+            .ok_or_else(unavailable)?
+            .sha256;
         let documentation_plan = contract_input(ctx.contract, DOCUMENTATION_PLAN)
             .ok_or_else(unavailable)?
             .sha256;
@@ -218,6 +229,27 @@ impl StageHandler for ApprovalHandler {
             .map_err(|problem| match problem {
                 GateProblem::Invalid => StageError::InvalidOutput,
                 GateProblem::Stale(_) => StageError::PolicyDenied,
+            })?;
+
+        // The specification is the one a person approved, and the documentation reviewer passed
+        // exactly these reports over exactly this specification. The delivery stage checked both;
+        // an approval is a decision about the same work, so it checks them again from the
+        // documents it pinned, and a person is never asked about work that does not hold.
+        let specification = SpecificationContract::from_json_value(specification)
+            .map_err(|_| StageError::InvalidOutput)?;
+        if specification.metadata.status != SpecStatus::Approved {
+            return Err(StageError::PolicyDenied);
+        }
+        let documentation_review = ReviewVerdict::from_json_value(documentation_review)
+            .map_err(|_| StageError::InvalidOutput)?;
+        documentation_review
+            .validate()
+            .map_err(|_| StageError::InvalidOutput)?;
+        documentation
+            .check_review(&documentation_review, &specification_sha256)
+            .map_err(|problem| match problem {
+                ReviewProblem::Invalid => StageError::InvalidOutput,
+                ReviewProblem::NotPass | ReviewProblem::Stale(_) => StageError::PolicyDenied,
             })?;
 
         // The pull request must still be the open draft at the delivered commit.
@@ -300,12 +332,18 @@ impl StageHandler for ApprovalHandler {
         let decided = |gate: &factory_domain::values::Slug| {
             ledger.dispositions.iter().any(|(held, _)| held == gate)
         };
+        // The flag shown to the person covers every gate the delivery depends on: the reports of
+        // the validation stage and the reports of the documentation gate, by the same rule. A
+        // documentation gate that is blocked with no recorded decision is not clear.
         let gates_clear = !reports.is_empty()
-            && reports.iter().all(|report| match report.outcome {
-                GateOutcome::Passed | GateOutcome::NotApplicable => true,
-                GateOutcome::Blocked => decided(&report.metadata.gate_id),
-                GateOutcome::Failed => false,
-            });
+            && reports
+                .iter()
+                .chain(documentation.reports.iter())
+                .all(|report| match report.outcome {
+                    GateOutcome::Passed | GateOutcome::NotApplicable => true,
+                    GateOutcome::Blocked => decided(&report.metadata.gate_id),
+                    GateOutcome::Failed => false,
+                });
         let open_translation_warnings = reports
             .iter()
             .chain(documentation.reports.iter())

@@ -8,7 +8,8 @@ use serde_json::{Value, json};
 use crate::handlers::{ContractContext, StageError};
 use crate::stages::delivery::contract::{MANIFEST, RESULT as DELIVERY_RESULT};
 use crate::stages::delivery::input::{
-    DOCUMENTATION_GATE, DOCUMENTATION_PLAN, POLICY_INPUT, VALIDATION_EVIDENCE, upstream_output,
+    DOCUMENTATION_GATE, DOCUMENTATION_PLAN, DOCUMENTATION_REVIEW, POLICY_INPUT,
+    SPECIFICATION_CONTRACT, VALIDATION_EVIDENCE, upstream_output,
 };
 
 /// The deliverable: what the person is asked to decide.
@@ -18,13 +19,17 @@ pub const GATE: &str = "approval-evidence-clear";
 
 /// Which stage produces each input, in the order the contract lists them. The documentation plan
 /// is here for its hash: the reports of the documentation gate are bound to it, and the stage
-/// compares the two.
-pub const SOURCES: [(StageKind, &str); 5] = [
+/// compares the two. The frozen specification and the documentation reviewer's verdict are read,
+/// not only hashed: the person is asked about work whose specification a person approved and
+/// whose documentation passed an independent review of exactly these reports.
+pub const SOURCES: [(StageKind, &str); 7] = [
     (StageKind::Delivery, DELIVERY_RESULT),
     (StageKind::Delivery, MANIFEST),
     (StageKind::Validation, VALIDATION_EVIDENCE),
+    (StageKind::Specification, SPECIFICATION_CONTRACT),
     (StageKind::Documenting, DOCUMENTATION_PLAN),
     (StageKind::DocumentationReview, DOCUMENTATION_GATE),
+    (StageKind::DocumentationReview, DOCUMENTATION_REVIEW),
 ];
 
 /// Resolves the contract.

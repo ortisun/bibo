@@ -74,6 +74,7 @@ mod planning_rig;
 mod chain;
 mod deliver;
 
+mod boundary;
 mod breaks;
 mod heads;
 mod names;

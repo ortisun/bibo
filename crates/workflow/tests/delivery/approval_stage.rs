@@ -311,6 +311,122 @@ async fn a_blocked_gate_is_clear_only_when_a_person_decided_about_it() {
     assert_eq!(ran.resolution, Resolution::HumanGate);
 }
 
+/// Condition C-c: the flag the person is shown covers the documentation gate as well, by the same
+/// rule as the validation reports. A documentation gate that failed, or was blocked and nobody
+/// decided about, is not clear; a blocked one with a recorded decision is.
+#[tokio::test]
+async fn the_documentation_gate_is_part_of_what_the_person_is_told_is_clear() {
+    for outcome in ["FAILED", "BLOCKED"] {
+        let stage = after_delivery(Scenario {
+            documentation_outcome: outcome,
+            ..Scenario::default()
+        })
+        .await;
+        let ran = stage.run().await.expect("the stage runs");
+        assert!(!ran.request.gates_clear, "{outcome}");
+    }
+
+    let stage = after_delivery(Scenario {
+        documentation_outcome: "BLOCKED",
+        ..Scenario::default()
+    })
+    .await;
+    for gate in factory_workflow::stages::documentation_review::gate_ids() {
+        stage
+            .world
+            .sources
+            .ledger
+            .lock()
+            .expect("lock")
+            .dispositions
+            .push((
+                Slug::parse(gate).expect("a slug"),
+                factory_domain::ids::LedgerEntryId::from_uuid(uuid::Uuid::from_u128(7)),
+            ));
+    }
+    let ran = stage.run().await.expect("the stage runs");
+    assert!(ran.request.gates_clear, "every blocked gate was decided");
+}
+
+/// Condition C-a, again at the approval: a specification that is not approved is not put in front
+/// of a person.
+#[tokio::test]
+async fn a_specification_that_is_not_approved_stops_the_approval_stage() {
+    let mut stage = after_delivery(Scenario::default()).await;
+    stage
+        .world
+        .edit_upstream(
+            &mut stage.upstream,
+            StageKind::Specification,
+            "specification-contract",
+            |value| value["metadata"]["status"] = json!("draft"),
+        )
+        .await;
+    let error = stage.execute().await.err();
+    assert!(
+        matches!(
+            error,
+            Some(StageError::PolicyDenied | StageError::InvalidOutput)
+        ),
+        "{error:?}"
+    );
+}
+
+/// Condition C-b, again at the approval: the documentation reviewer's verdict is read from the
+/// document the contract pinned. A verdict that is not a `PASS`, or that judged other reports or
+/// another specification, stops the stage.
+#[tokio::test]
+async fn a_documentation_review_that_does_not_hold_stops_the_approval_stage() {
+    // Not a pass.
+    let mut stage = after_delivery(Scenario::default()).await;
+    stage
+        .world
+        .edit_upstream(
+            &mut stage.upstream,
+            StageKind::DocumentationReview,
+            "documentation-review",
+            |value| *value = crate::world::changes_required_review(),
+        )
+        .await;
+    assert_eq!(stage.execute().await.err(), Some(StageError::PolicyDenied));
+
+    // Judged other reports.
+    let mut stage = after_delivery(Scenario::default()).await;
+    stage
+        .world
+        .edit_upstream(
+            &mut stage.upstream,
+            StageKind::DocumentationReview,
+            "documentation-review",
+            |value| {
+                value["inputs_reviewed"]["gate_reports"][0]["sha256"] =
+                    json!(factory_domain::values::Sha256Digest::of(b"other"));
+            },
+        )
+        .await;
+    assert_eq!(stage.execute().await.err(), Some(StageError::PolicyDenied));
+
+    // Judged another specification.
+    let mut stage = after_delivery(Scenario::default()).await;
+    stage
+        .world
+        .edit_upstream(
+            &mut stage.upstream,
+            StageKind::DocumentationReview,
+            "documentation-review",
+            |value| {
+                value["inputs_reviewed"]["frozen_spec_sha256"] =
+                    json!(factory_domain::values::Sha256Digest::of(b"another"));
+            },
+        )
+        .await;
+    assert_eq!(stage.execute().await.err(), Some(StageError::PolicyDenied));
+
+    // Untouched, the same stage runs.
+    let stage = after_delivery(Scenario::default()).await;
+    assert!(stage.execute().await.is_ok());
+}
+
 #[tokio::test]
 async fn translation_warnings_are_counted_for_the_decision() {
     let stage = after_delivery(Scenario {

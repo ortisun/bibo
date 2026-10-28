@@ -14,8 +14,10 @@
 //! document with the commits and the plan hash the reader holds. A difference is a report made for
 //! something else, and it does not count.
 
-use factory_domain::contracts::{Contract, GateReport};
+use factory_domain::contracts::{Contract, GateReport, ReviewVerdict};
+use factory_domain::ids::GateReportId;
 use factory_domain::values::Sha256Digest;
+use factory_domain::vocabulary::Verdict;
 use factory_ports::paths::CommitSha;
 use serde_json::Value;
 
@@ -34,6 +36,21 @@ pub enum GateProblem {
     /// The document is well formed and was made for other commits or another plan than the ones it
     /// is read against. The names are the fields of the binding that differ.
     #[error("the documentation gate report was made for other commits or another plan")]
+    Stale(Vec<&'static str>),
+}
+
+/// Why the documentation reviewer's verdict could not be used.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum ReviewProblem {
+    /// The bytes are not a valid review verdict.
+    #[error("the documentation review is not a valid review verdict")]
+    Invalid,
+    /// The verdict is not `PASS`. Delivery follows work that passed.
+    #[error("the documentation review is not a pass")]
+    NotPass,
+    /// The verdict was made over other reports or another specification than the ones that are
+    /// delivered. The names say which.
+    #[error("the documentation review was made over other reports or another specification")]
     Stale(Vec<&'static str>),
 }
 
@@ -72,6 +89,9 @@ pub struct DocumentationGate {
     pub binding: GateBinding,
     /// One typed report for each gate.
     pub reports: Vec<GateReport>,
+    /// The identifier and the hash of each report as it is stored, in the order of `reports`. The
+    /// reviewer's verdict names the reports it read by these.
+    pub stored: Vec<(GateReportId, Sha256Digest)>,
 }
 
 fn text<'a>(value: &'a Value, key: &str) -> Option<&'a str> {
@@ -127,17 +147,74 @@ impl DocumentationGate {
             .get("binding")
             .and_then(GateBinding::from_json)
             .ok_or(GateProblem::Invalid)?;
-        let reports = value
+        let items = value
             .get("reports")
             .and_then(Value::as_array)
-            .ok_or(GateProblem::Invalid)?
+            .ok_or(GateProblem::Invalid)?;
+        let reports = items
             .iter()
             .map(|item| GateReport::from_json_value(item.clone()).map_err(|_| GateProblem::Invalid))
             .collect::<Result<Vec<_>, _>>()?;
         if reports.is_empty() {
             return Err(GateProblem::Invalid);
         }
-        Ok(Self { binding, reports })
+        let stored = reports
+            .iter()
+            .zip(items)
+            .map(|(report, item)| {
+                (
+                    report.metadata.gate_report_id,
+                    Sha256Digest::of(&serde_json::to_vec(item).unwrap_or_default()),
+                )
+            })
+            .collect();
+        Ok(Self {
+            binding,
+            reports,
+            stored,
+        })
+    }
+
+    /// Checks the reviewer's verdict against this document.
+    ///
+    /// The verdict must be `PASS`, must name exactly the reports of this document (by identifier
+    /// and by the hash of the stored report), and must have read the specification the reader
+    /// holds. A `PASS` over other reports is a verdict about something else: the reports are bound
+    /// to the commits and the plan by [`check`](Self::check), and the verdict is bound to the
+    /// reports here.
+    ///
+    /// # Errors
+    /// [`ReviewProblem::NotPass`] for any other verdict, [`ReviewProblem::Stale`] for a verdict
+    /// made over other reports or another specification.
+    pub fn check_review(
+        &self,
+        review: &ReviewVerdict,
+        specification_sha256: &Sha256Digest,
+    ) -> Result<(), ReviewProblem> {
+        if review.verdict != Verdict::Pass {
+            return Err(ReviewProblem::NotPass);
+        }
+        let mut differing = Vec::new();
+        let mut named: Vec<(GateReportId, Sha256Digest)> = review
+            .inputs_reviewed
+            .gate_reports
+            .iter()
+            .map(|reference| (reference.gate_report_id, reference.sha256.clone()))
+            .collect();
+        let mut held = self.stored.clone();
+        named.sort_by_key(|(id, _)| id.to_string());
+        held.sort_by_key(|(id, _)| id.to_string());
+        if named != held {
+            differing.push("gate_reports");
+        }
+        if review.inputs_reviewed.frozen_spec_sha256 != *specification_sha256 {
+            differing.push("frozen_spec_sha256");
+        }
+        if differing.is_empty() {
+            Ok(())
+        } else {
+            Err(ReviewProblem::Stale(differing))
+        }
     }
 
     /// Reads the document from the bytes that were stored.
