@@ -25,6 +25,7 @@
 //! | [`commands`] | What a person or an operator can ask for, and the [`Authority`](commands::Authority) seam that says who may |
 //! | [`handlers`] | The [`StageHandler`](handlers::StageHandler) trait that each stage package implements, and the registry |
 //! | [`gates`] | The gate framework: how stored evidence becomes a gate outcome. The stage packages add gates under it |
+//! | [`prompts`] | The prompt assembler: where text that other people or programs wrote enters a model prompt, inside delimited, quoted blocks, with secrets removed and a record of what the model saw |
 //! | [`audit`] | The audit stream with actor, policy hash and correlation id, and the verifier that re-reads a job |
 //! | [`stages`] | The module lines of every stage directory. Each stage package fills its own directory |
 //!
@@ -41,5 +42,6 @@ pub mod commands;
 pub mod engine;
 pub mod gates;
 pub mod handlers;
+pub mod prompts;
 pub mod scheduler;
 pub mod stages;
