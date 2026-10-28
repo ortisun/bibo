@@ -11,7 +11,12 @@
 //! Every negative test of `docs/security/negative-test-catalog.md` that this package owns has a
 //! function whose name starts `negative_nt_sup_...`.
 
+#[path = "../readability/schema_check.rs"]
+mod schema_check;
+
 mod files;
+mod gate_run;
 mod integrity;
 mod people;
 mod review;
+mod world;

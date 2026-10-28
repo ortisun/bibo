@@ -16,19 +16,19 @@ use factory_workflow::gates::supply_chain::review::{Plan, RegistryTable, Setting
 use factory_workflow::gates::supply_chain::tools::PackageMeta;
 use serde_json::json;
 
-use super::files::{Files, base, files, lock, manifest, member, reg, side, sum, with};
+use super::files::{Files, base, files, head_adding, lock, manifest, member, reg, side, sum, with};
 use super::people::{
     APPROVER, OPERATOR, REQUESTER, SECURITY, approve, authorized, decide, engine, human, now,
     policy_hash,
 };
 
-fn at(text: &str) -> Timestamp {
+pub fn at(text: &str) -> Timestamp {
     Timestamp::parse(text).expect("a time")
 }
 
 /// The registry's answer for a package that exists, was first published `published`, and has
 /// `license`.
-fn record(published: Option<&str>, license: Option<&str>) -> RegistryRecord {
+pub fn record(published: Option<&str>, license: Option<&str>) -> RegistryRecord {
     RegistryRecord {
         exists: Some(true),
         first_published: published.map(at),
@@ -38,35 +38,18 @@ fn record(published: Option<&str>, license: Option<&str>) -> RegistryRecord {
     }
 }
 
-fn old_and_licensed() -> RegistryRecord {
+pub fn old_and_licensed() -> RegistryRecord {
     record(Some("2020-01-01T00:00:00Z"), Some("MIT OR Apache-2.0"))
 }
 
-fn table(entries: &[(&str, RegistryRecord)]) -> RegistryTable {
+pub fn table(entries: &[(&str, RegistryRecord)]) -> RegistryTable {
     entries
         .iter()
         .map(|(name, record)| (normalize(name), record.clone()))
         .collect()
 }
 
-/// The candidate adds `name` at `version` to the manifest and the lockfile.
-fn head_adding(name: &'static str, version: &'static str, digit: char) -> Files {
-    let dep = format!("[dependencies]\nserde = \"1\"\n{name} = \"{version}\"\n");
-    files(&[
-        ("Cargo.toml", manifest("app", &dep)),
-        (
-            "Cargo.lock",
-            lock(&[
-                member("app", &[name, "serde"]),
-                reg(name, version, digit),
-                reg("serde", "1.0.100", 'a').with_deps(&["serde_derive"]),
-                reg("serde_derive", "1.0.100", 'b'),
-            ]),
-        ),
-    ])
-}
-
-fn plan_with(
+pub fn plan_with(
     head: &Files,
     registry: &RegistryTable,
     approvals: &[DependencyApproval],

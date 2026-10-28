@@ -29,14 +29,37 @@ pub const OPERATOR: u64 = 1002;
 const REPOSITORY: &str = "example-org/app";
 
 pub fn engine() -> &'static PolicyEngine {
-    static ENGINE: LazyLock<PolicyEngine> = LazyLock::new(|| {
-        let security: SecurityPolicy =
-            serde_json::from_str(SECURITY_POLICY).expect("the security policy fixture");
-        let approval: ApprovalPolicy =
-            serde_json::from_str(APPROVAL_POLICY).expect("the approval policy fixture");
-        PolicyEngine::new(&security, &approval).expect("a policy engine")
-    });
+    static ENGINE: LazyLock<PolicyEngine> = LazyLock::new(|| build_engine(&[]));
     &ENGINE
+}
+
+/// A policy engine from the fixtures, with these extra subcommands allowed for `cargo`. The real
+/// command sets list no SBOM tool, so a test of the path where an SBOM is made adds one here and
+/// changes nothing else.
+pub fn build_engine(extra_cargo_subcommands: &[&str]) -> PolicyEngine {
+    let mut security: serde_json::Value =
+        serde_json::from_str(SECURITY_POLICY).expect("the security policy fixture");
+    if !extra_cargo_subcommands.is_empty() {
+        let sets = security["command_sets"]["sets"]
+            .as_array_mut()
+            .expect("command sets");
+        let rust = sets
+            .iter_mut()
+            .find(|set| set["id"] == "rust")
+            .expect("the rust set");
+        let allowed = rust["executables"]["cargo"]["allowed_subcommands"]
+            .as_array_mut()
+            .expect("subcommands");
+        allowed.extend(
+            extra_cargo_subcommands
+                .iter()
+                .map(|name| serde_json::json!(name)),
+        );
+    }
+    let security: SecurityPolicy = serde_json::from_value(security).expect("a security policy");
+    let approval: ApprovalPolicy =
+        serde_json::from_str(APPROVAL_POLICY).expect("the approval policy fixture");
+    PolicyEngine::new(&security, &approval).expect("a policy engine")
 }
 
 pub fn tenant() -> TenantId {

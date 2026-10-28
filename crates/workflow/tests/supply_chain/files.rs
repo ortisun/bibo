@@ -140,6 +140,23 @@ pub fn judge_with(base: &Files, head: &Files, internal: &[String]) -> Integrity 
     inspect(&CargoFormat, &side(base), &side(head), &cx).expect("the base is readable")
 }
 
+/// The candidate adds `name` at `version` to the manifest and the lockfile of [`base`].
+pub fn head_adding(name: &'static str, version: &'static str, digit: char) -> Files {
+    let dep = format!("[dependencies]\nserde = \"1\"\n{name} = \"{version}\"\n");
+    files(&[
+        ("Cargo.toml", manifest("app", &dep)),
+        (
+            "Cargo.lock",
+            lock(&[
+                member("app", &[name, "serde"]),
+                reg(name, version, digit),
+                reg("serde", "1.0.100", 'a').with_deps(&["serde_derive"]),
+                reg("serde_derive", "1.0.100", 'b'),
+            ]),
+        ),
+    ])
+}
+
 pub fn judge(base: &Files, head: &Files) -> Integrity {
     judge_with(base, head, &[])
 }
