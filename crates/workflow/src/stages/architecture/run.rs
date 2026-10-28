@@ -45,6 +45,7 @@ use crate::stages::implementation::input::{REPOSITORY_MAP, SPECIFICATION_CONTRAC
 
 fn tools(handler: &ArchitectureHandler) -> Tools<'_> {
     Tools {
+        redactor: handler.redactor.as_ref(),
         specs: handler.specs.as_ref(),
         probes: handler.probes.as_ref(),
         schemas: handler.schemas.as_ref(),

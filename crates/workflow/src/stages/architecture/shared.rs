@@ -202,6 +202,7 @@ pub struct AgentSettings {
 /// The seams an agent run needs.
 #[derive(Clone, Copy)]
 pub(crate) struct Tools<'a> {
+    pub(crate) redactor: &'a factory_domain::redaction::Redactor,
     pub(crate) specs: &'a dyn WorkspaceAgentSpecs,
     pub(crate) probes: &'a dyn CapabilityProbes,
     pub(crate) schemas: &'a dyn AgentOutputCheck,
@@ -368,6 +369,14 @@ async fn run_in(
     };
     if ctx.cancel.is_cancelled() {
         return Err(StageError::Cancelled);
+    }
+    // An artifact is a sink that refuses a secret. The agent read the repository with its own
+    // tools, so a secret in a file it could read can come out in what it wrote. Nothing is stored
+    // from such an answer, and a redactor that cannot check refuses it as well.
+    match tools.redactor.contains_secret(output.as_bytes()) {
+        Ok(false) => {}
+        Ok(true) => return Err(StageError::PolicyDenied),
+        Err(_) => return Err(StageError::Internal),
     }
     let validated = tools
         .schemas

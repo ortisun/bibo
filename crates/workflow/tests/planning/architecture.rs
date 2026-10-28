@@ -533,6 +533,43 @@ async fn architecture_text_is_readable_and_a_vague_title_is_not() {
     assert!(rig.deliverable_in(first, DESIGN).await.is_some());
 }
 
+/// A token-shaped canary, built when the test runs so that no secret-shaped text is in the source.
+pub fn canary() -> String {
+    format!("{}{}", "ghp_", "Q".repeat(36))
+}
+
+#[tokio::test]
+async fn negative_a_secret_in_the_architects_answer_is_refused_and_stored_nowhere() {
+    let mut leaking = design();
+    leaking["design_elements"][0]["responsibility"] = json!(format!(
+        "Formats the counts as JSON, and the old deploy token {} stays in the notes.",
+        canary()
+    ));
+    let (rig, outcome) = run_design(Options::default(), leaking).await;
+    assert!(
+        matches!(
+            outcome,
+            AttemptOutcome::Failed {
+                class: factory_domain::machines::failure::FailureClass::PolicyDenied,
+                ..
+            }
+        ),
+        "{outcome:?}"
+    );
+    assert!(
+        rig.artifact_named(StageKind::Architecture, DESIGN)
+            .await
+            .is_none()
+    );
+    assert!(
+        rig.artifact_named(StageKind::Architecture, RECORD)
+            .await
+            .is_none()
+    );
+    let reports = serde_json::to_string(&rig.gate_reports().await).expect("JSON");
+    assert!(!reports.contains(&canary()));
+}
+
 #[tokio::test]
 async fn injection_in_the_specification_and_the_repository_text_stays_inside_the_data_blocks() {
     let mut spec: Value = serde_json::from_str(crate::rig::SPECIFICATION).expect("JSON");

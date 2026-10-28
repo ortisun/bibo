@@ -40,6 +40,10 @@
 //!   writes no verdict in a critic's name.
 //! * **The agent's answer is never repaired.** It is checked against its schema and then read
 //!   strictly. A design that fails a check is stored all the same so the gate can say what is wrong.
+//! * **An answer with a secret in it is stored nowhere.** The agent reads the repository with its
+//!   own tools, so a secret in a file it could read can come out in what it wrote. Every answer
+//!   of an agent, the planner's and the critic's included, is checked with the redactor before
+//!   anything is stored, and a stage that finds one fails with a policy denial.
 //!
 //! # Decisions that the specification leaves open
 //!

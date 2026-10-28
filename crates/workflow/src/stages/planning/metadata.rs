@@ -39,11 +39,8 @@ pub struct Assigned {
 }
 
 impl Expected {
-    /// The values for one plan.
-    ///
-    /// # Errors
-    /// `None` when a version is not a positive whole number, which only a fault in the caller
-    /// causes.
+    /// The values for one plan. `None` when a version is not a positive whole number, which only
+    /// a fault in the caller causes.
     #[must_use]
     pub fn assign(assigned: Assigned) -> Option<Self> {
         Some(Self(PlanMetadata {

@@ -491,6 +491,40 @@ async fn injection_in_the_specification_and_the_repository_text_cannot_give_a_ta
 }
 
 #[tokio::test]
+async fn negative_a_secret_in_the_planners_answer_is_refused_and_stored_nowhere() {
+    let canary = crate::architecture::canary();
+    let leaked = canary.clone();
+    let (rig, outcome) = plan_with(Options::default(), move |plan| {
+        plan["summary"] = json!(format!(
+            "Three tasks, and the old token {leaked} is in the notes."
+        ));
+    })
+    .await;
+    assert!(
+        matches!(
+            outcome,
+            AttemptOutcome::Failed {
+                class: factory_domain::machines::failure::FailureClass::PolicyDenied,
+                ..
+            }
+        ),
+        "{outcome:?}"
+    );
+    assert!(
+        rig.artifact_named(StageKind::TaskPlanning, TASK_PLAN)
+            .await
+            .is_none()
+    );
+    assert!(
+        rig.artifact_named(StageKind::TaskPlanning, RECORD)
+            .await
+            .is_none()
+    );
+    let reports = serde_json::to_string(&rig.gate_reports().await).expect("JSON");
+    assert!(!reports.contains(&canary));
+}
+
+#[tokio::test]
 async fn the_planner_receives_the_stored_design_and_the_assigned_values_as_untrusted_blocks() {
     let (rig, _) = plan_with(Options::default(), |_| {}).await;
     let prompt = &rig.runtime.prompts("planner")[0].instructions;
