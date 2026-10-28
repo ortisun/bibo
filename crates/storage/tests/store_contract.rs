@@ -2,30 +2,20 @@
 //! PostgreSQL server.
 //!
 //! The suite is the one the in-memory fake passes (ports v1.1). Every check gets a database of its
-//! own, cloned from a migrated template, and the checks run side by side. The slow ones wait for
-//! the database clock (the lease time to live in the suite is 60 seconds), so running them
-//! together keeps the whole suite near the length of the longest check.
-//!
-//! Seven of the 48 checks cannot pass against the schema and the port text as they are. They are
-//! listed in [`EXCLUDED`] with the cause, and the test is strict in both directions: an excluded
-//! check must still fail with the stated error, and every other check must pass. The causes are
-//! disagreements between the suite and the schema (or the port), not defects of the adapter, and
-//! each excluded property is covered by a test of this crate that uses data the schema accepts.
-//!
-//! Three fixtures are completed by the subject, in the throwaway database only, because the suite
-//! names things the schema requires to exist: tenants are onboarded at their first transaction
-//! ([`OnboardingStore`]); a hash named by a stage run, an attempt or a task node is indexed as an
-//! artifact of the tenant; a ledger entry's stage run is created (see
-//! `support::COMPLETE_FIXTURES`). None of these removes a rule that the checks test.
+//! own, cloned from a migrated template, and the checks run side by side. All of them must pass: the
+//! suite creates what it names (tenants through `StoreSubject::onboard_tenant`, artifacts through
+//! the port, stage runs through the port), and the subject adds no trigger and no wrapper to the
+//! store under test.
 //!
 //! [`PgSubject`] supplies what the port has no method for, as SQL run by the superuser in the
-//! throwaway database: a repository, an API token, switching a repository off, and moving a stage
-//! run's epoch to its maximum. The two faults (a stalled call and a lost answer to `COMMIT`) are
-//! injected into the store itself.
+//! throwaway database: a tenant, a repository, an API token, switching a repository off, and
+//! moving a stage run's epoch to its maximum. The two faults (a stalled call and a lost answer to
+//! `COMMIT`) are injected into the store itself. The clock moves by waiting for a step of a few
+//! seconds, because `database_time` reads the real clock, and by shifting the stored times for a
+//! longer one, which costs no wait.
 
 mod support;
 
-use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
@@ -33,12 +23,8 @@ use std::time::Duration;
 use async_trait::async_trait;
 use diesel_async::SimpleAsyncConnection;
 use factory_domain::ids::{RepositoryId, StageRunId, TenantId};
-use factory_domain::scope::{PlatformScope, ResolvedRepository};
 use factory_domain::scope::{ResolvedPrincipal, TenantScope};
-use factory_ports::store::{
-    Audience, AuditFilter, AuditRecord, GithubRepositoryId, InstallationId, LeaseEpoch,
-    NewAuditEvent, SchemaVersion, Store, StoreError, SystemScope, SystemTx, TokenHash, Tx, Witness,
-};
+use factory_ports::store::{Audience, AuditFilter, AuditRecord, LeaseEpoch, Store, TokenHash};
 use factory_storage::pg::PgStore;
 use factory_testkit::contracts::store::{StoreSubject, checks};
 use factory_testkit::contracts::{Report, SKIPPED_PREFIX};
@@ -53,100 +39,20 @@ const PLATFORM: u128 = 1;
 /// The longest step of the clock that is made by waiting. A longer one moves the stored times.
 const REAL_WAIT_LIMIT: Duration = Duration::from_secs(3);
 
-/// The store the checks use: the real store, with tenants onboarded on first use.
-///
-/// The schema has a row per tenant, and the application role cannot insert one: onboarding is an
-/// owner action (`docs/database/for-the-storage-crate.md`). The shared suite names tenants as bare
-/// identifiers and never onboards them, which the in-memory fake does not need. So this wrapper
-/// onboards a tenant, as the superuser, right before the first transaction opened for it. It adds
-/// nothing else: every call goes to the real store.
-struct OnboardingStore {
-    inner: PgStore,
-    db: Arc<TestDb>,
-}
-
-impl OnboardingStore {
-    async fn onboard(&self, tenant: TenantId) {
-        let id = tenant.as_uuid();
-        self.db
-            .run(&format!(
-                "INSERT INTO tenants (id, slug, display_name) \
-                 VALUES ('{id}', 't-{}', 'Contract tenant') ON CONFLICT (id) DO NOTHING",
-                &id.simple().to_string()[..12]
-            ))
-            .await;
-    }
-}
-
-#[async_trait]
-impl Store for OnboardingStore {
-    fn fidelity(&self) -> factory_domain::vocabulary::Fidelity {
-        self.inner.fidelity()
-    }
-
-    async fn begin(&self, scope: TenantScope) -> Result<Box<dyn Tx>, StoreError> {
-        self.onboard(scope.tenant_id()).await;
-        self.inner.begin(scope).await
-    }
-
-    async fn begin_system(&self, scope: SystemScope) -> Result<Box<dyn SystemTx>, StoreError> {
-        self.inner.begin_system(scope).await
-    }
-
-    async fn resolve_token(
-        &self,
-        hash: &TokenHash,
-        audience: &Audience,
-    ) -> Result<Option<ResolvedPrincipal>, StoreError> {
-        self.inner.resolve_token(hash, audience).await
-    }
-
-    async fn resolve_installation(
-        &self,
-        installation: InstallationId,
-        repository: GithubRepositoryId,
-    ) -> Result<Option<ResolvedRepository>, StoreError> {
-        self.inner
-            .resolve_installation(installation, repository)
-            .await
-    }
-
-    async fn record_platform_audit(
-        &self,
-        scope: PlatformScope,
-        event: NewAuditEvent,
-    ) -> Result<AuditRecord, StoreError> {
-        self.inner.record_platform_audit(scope, event).await
-    }
-
-    async fn committed(&self, scope: TenantScope, witness: Witness) -> Result<bool, StoreError> {
-        self.onboard(scope.tenant_id()).await;
-        self.inner.committed(scope, witness).await
-    }
-
-    async fn schema_version(&self) -> Result<SchemaVersion, StoreError> {
-        self.inner.schema_version().await
-    }
-}
-
 struct PgSubject {
     db: Arc<TestDb>,
-    store: OnboardingStore,
+    store: PgStore,
     counter: AtomicU64,
 }
 
 impl PgSubject {
     async fn new() -> Self {
         let db = Arc::new(server().clone_database().await);
-        db.run(support::COMPLETE_FIXTURES).await;
-        let inner = PgStore::connect(config_for(&db).await)
+        let store = PgStore::connect(config_for(&db).await)
             .await
             .expect("the store becomes ready");
         Self {
-            store: OnboardingStore {
-                inner,
-                db: db.clone(),
-            },
+            store,
             db,
             counter: AtomicU64::new(1),
         }
@@ -154,10 +60,6 @@ impl PgSubject {
 
     fn next(&self) -> u64 {
         self.counter.fetch_add(1, Ordering::Relaxed)
-    }
-
-    async fn ensure_tenant(&self, tenant: TenantId) {
-        self.store.onboard(tenant).await;
     }
 
     async fn audit_of(&self, tenant: TenantId) -> Vec<AuditRecord> {
@@ -176,6 +78,19 @@ impl PgSubject {
 impl StoreSubject for PgSubject {
     fn store(&self) -> &dyn Store {
         &self.store
+    }
+
+    /// The schema has a row per tenant and the application role cannot insert one: onboarding is
+    /// an owner action (`docs/database/for-the-storage-crate.md`), so it runs as the superuser.
+    async fn onboard_tenant(&self, tenant: TenantId) {
+        let id = tenant.as_uuid();
+        self.db
+            .run(&format!(
+                "INSERT INTO tenants (id, slug, display_name) \
+                 VALUES ('{id}', 't-{}', 'Contract tenant') ON CONFLICT (id) DO NOTHING",
+                &id.simple().to_string()[..12]
+            ))
+            .await;
     }
 
     /// Moves the clock forward by at least `by`.
@@ -213,7 +128,6 @@ impl StoreSubject for PgSubject {
     }
 
     async fn seed_repository(&self, tenant: TenantId) -> RepositoryId {
-        self.ensure_tenant(tenant).await;
         let n = self.next();
         let id = Uuid::from_u128(tenant.as_uuid().as_u128() ^ (u128::from(n) << 96) ^ 0x5eed);
         self.db
@@ -230,7 +144,6 @@ impl StoreSubject for PgSubject {
     }
 
     async fn seed_token(&self, hash: TokenHash, audience: Audience, who: ResolvedPrincipal) {
-        self.ensure_tenant(who.tenant).await;
         let hex: String = hash.0.iter().map(|byte| format!("{byte:02x}")).collect();
         let n = self.next();
         self.db
@@ -255,11 +168,11 @@ impl StoreSubject for PgSubject {
     }
 
     async fn stall_next_call(&self) {
-        self.store.inner.stall_next_call();
+        self.store.stall_next_call();
     }
 
     async fn lose_next_commit_answer(&self) {
-        self.store.inner.lose_next_commit_answer();
+        self.store.lose_next_commit_answer();
     }
 
     async fn platform_audit(&self) -> Vec<AuditRecord> {
@@ -315,18 +228,6 @@ async fn run_all() -> Report {
     report
 }
 
-/// The checks of the shared suite that the schema, or the port text, does not allow to pass, each
-/// with the text its failure must contain and the test of this crate that covers the property with
-/// data the schema accepts. The test is strict in both directions: an excluded check must still
-/// fail the stated way, so a later fix of the suite, the port or the schema cannot leave a stale
-/// exclusion behind, and every other check must pass.
-///
-/// None of these is a defect of the adapter that a change here could fix, and none is hidden: the
-/// final report of the work package `s1-storage-postgres` lists them as disagreements for the
-/// architect to settle.
-///
-const EXCLUDED: &[(&str, &str, &str, &str)] = &[];
-
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn the_shared_store_contract_suite_against_postgres() {
     let report = run_all().await;
@@ -348,42 +249,5 @@ async fn the_shared_store_contract_suite_against_postgres() {
         "skipped checks: {:?}",
         report.skipped
     );
-    let failed: BTreeMap<&str, &str> = report
-        .failed
-        .iter()
-        .map(|(name, why)| (*name, why.as_str()))
-        .collect();
-    let mut problems = Vec::new();
-
-    // 1. Every exclusion names a real check, and the check must still fail the stated way.
-    for (name, cause, expected, covered_by) in EXCLUDED {
-        if !checks().iter().any(|check| check.name == *name) {
-            problems.push(format!(
-                "the excluded check {name} no longer exists in the suite"
-            ));
-            continue;
-        }
-        match failed.get(name) {
-            Some(why) if why.contains(expected) => {
-                eprintln!("  excluded [{cause}] {name}\n      covered by {covered_by}");
-            }
-            Some(why) => problems.push(format!(
-                "the excluded check {name} fails for another reason than {cause}: {why}"
-            )),
-            None => problems.push(format!(
-                "the excluded check {name} passes now: remove it from EXCLUDED ({cause})"
-            )),
-        }
-    }
-    // 2. Every other check passes.
-    for (name, why) in &failed {
-        if !EXCLUDED.iter().any(|(excluded, ..)| excluded == name) {
-            problems.push(format!("{name}: {why}"));
-        }
-    }
-    assert!(
-        problems.is_empty(),
-        "the contract suite found problems:\n  {}",
-        problems.join("\n  ")
-    );
+    report.assert_ok();
 }

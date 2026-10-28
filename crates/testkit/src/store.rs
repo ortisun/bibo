@@ -2753,6 +2753,10 @@ impl crate::contracts::store::StoreSubject for InMemoryStoreSubject {
         self.clock.advance(by);
     }
 
+    async fn onboard_tenant(&self, _tenant: TenantId) {
+        // The fake keeps no row per tenant: every identifier is a tenant from its first use.
+    }
+
     async fn seed_repository(&self, tenant: TenantId) -> RepositoryId {
         self.store.seed_repository(tenant)
     }
