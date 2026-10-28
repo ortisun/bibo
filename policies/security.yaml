@@ -260,6 +260,7 @@ protected_paths:
         - "**/.env"
         - "**/.env.*"
         - "!**/.env.example"             # a leading "!" re-includes; the loader applies it last
+        - "**/.envrc"                    # direnv's file; `.env.*` needs a dot after `env`
         - "**/*.pem"
         - "**/*.key"
         - "**/*.p12"
