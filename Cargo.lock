@@ -371,6 +371,7 @@ dependencies = [
 name = "factory-domain"
 version = "0.0.0"
 dependencies = [
+ "globset",
  "hex",
  "proptest",
  "regex",

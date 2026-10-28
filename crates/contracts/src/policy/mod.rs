@@ -56,10 +56,11 @@
 //! value changes. The hash of a merged policy (central policy plus a project's tightening) is
 //! taken the same way with [`PolicyHash::of`].
 
-pub mod approval;
 pub mod check;
-pub mod common;
-pub mod security;
+
+// The typed documents live in `factory-domain` so that the policy evaluators, which are ring 0, can
+// name them. They are re-exported here under the paths this crate has always had.
+pub use factory_domain::policy::{approval, common, security};
 
 use std::fmt;
 use std::fs::{self, File};

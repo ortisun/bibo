@@ -46,6 +46,12 @@ semver = "1.0.28"
 # which the production build of this crate does not enable.
 regex = { version = "1.13.1", default-features = false, features = ["std", "unicode-perl", "perf"] }
 
+# The glob dialect the policy files name (`**` crosses directories, `*` and `?` do not cross `/`,
+# `{a,b}` is allowed). The typed policy documents compile their globs with it and the path rules
+# match with it. Pure, no I/O. Same version and features as `factory-contracts` used, so the
+# workspace builds one copy.
+globset = { version = "0.4.20", default-features = false }
+
 [dev-dependencies]
 # Property-based tests for the state machines and the ledger chain. Dev only, so DEP-04 does not
 # apply. The `fork` and `timeout` features stay off.

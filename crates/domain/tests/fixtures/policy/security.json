@@ -1,0 +1,2627 @@
+{
+  "agent_stage_profiles": {
+    "default_profile": "no_skills",
+    "profiles": [
+      {
+        "applies_to_stage_kinds": [
+          "*"
+        ],
+        "claude_code": {
+          "flags_add": [
+            "--disable-slash-commands"
+          ]
+        },
+        "codex_cli": {
+          "skill_visibility": "hidden_by_overlay"
+        },
+        "hide_skill_roots_in_sandbox": [
+          ".claude/skills",
+          ".claude/commands",
+          ".agents/skills"
+        ],
+        "id": "no_skills",
+        "skills_allowed": [],
+        "skills_and_slash_commands": "disabled",
+        "violation": "BLOCK"
+      },
+      {
+        "applies_to_stage_kinds": [
+          "SPECIFICATION"
+        ],
+        "claude_code": {
+          "flags_omit": [
+            "--disable-slash-commands"
+          ],
+          "skill_permission_rule": "unverified"
+        },
+        "codex_cli": {
+          "skill_visibility": "allowlist_only"
+        },
+        "detection": [
+          "denied_skill_id_in_cli_event_stream_or_permission_denials",
+          "denied_skill_listed_in_cli_init_skills_or_slash_commands",
+          "forbidden_artifact_present",
+          "skill_not_in_contract_skills_invoked_closed_list",
+          "specify_subcommand_outside_the_four_skills"
+        ],
+        "forbidden_artifacts_after_run": [
+          "specs/*/plan.md",
+          "specs/*/tasks.md",
+          "specs/*/research.md",
+          "specs/*/data-model.md",
+          "specs/*/quickstart.md",
+          "specs/*/contracts/**"
+        ],
+        "hide_denied_skills_in_sandbox": true,
+        "id": "specification",
+        "integrity_before_run": {
+          "extensions_file_absent": true,
+          "integration_status_json": "ok",
+          "recorded_versions_equal_pinned": true,
+          "skill_file_hashes_equal_pinned_manifest": true
+        },
+        "on_violation": [
+          "discard_agent_output",
+          "audit_forbidden_skill_invoked",
+          "mark_stage_BLOCKED"
+        ],
+        "other_project_skills_and_commands": "not_honored",
+        "skills": {
+          "allowed": [
+            {
+              "id": "speckit.constitution",
+              "protected_path_exception_required": true,
+              "writes": [
+                ".specify/memory/constitution.md"
+              ]
+            },
+            {
+              "id": "speckit.specify",
+              "writes": [
+                "specs/*/spec.md",
+                "specs/*/checklists/requirements.md",
+                ".specify/feature.json"
+              ]
+            },
+            {
+              "id": "speckit.clarify",
+              "writes": [
+                "specs/*/spec.md",
+                "specs/*/checklists/requirements.md"
+              ]
+            },
+            {
+              "id": "speckit.checklist",
+              "writes": [
+                "specs/*/checklists/*.md"
+              ]
+            }
+          ],
+          "denied": [
+            "speckit.plan",
+            "speckit.tasks",
+            "speckit.analyze",
+            "speckit.implement",
+            "speckit.converge",
+            "speckit.taskstoissues"
+          ],
+          "deny_wins_over_allow": true
+        },
+        "skills_and_slash_commands": "allowlist_only",
+        "violation": "BLOCK"
+      }
+    ],
+    "selection_authority": "engine_from_stage_kind",
+    "threats": [
+      "T-06",
+      "T-04",
+      "T-15"
+    ]
+  },
+  "audit": {
+    "append_only": true,
+    "application_db_role_privileges": [
+      "INSERT",
+      "SELECT"
+    ],
+    "external_anchor": {
+      "interval_minutes": 60,
+      "store": "object_store_with_object_lock",
+      "what": "chain_head_hash"
+    },
+    "hash_chain": {
+      "algorithm": "sha256",
+      "fields": [
+        "prev_hash",
+        "canonical_event_json"
+      ],
+      "scope": "per_tenant"
+    },
+    "must_record": [
+      "webhook_accepted_or_rejected",
+      "authorization_decision",
+      "tool_grant_issued",
+      "tool_call_denied",
+      "command_executed",
+      "sandbox_created_posture_result_destroyed",
+      "egress_request",
+      "secret_redacted_or_blocked",
+      "protected_path_decision",
+      "gate_result",
+      "approval_granted_or_rejected",
+      "human_override",
+      "credential_minted_and_revoked",
+      "budget_threshold_crossed"
+    ],
+    "required_event_fields": [
+      "event_id",
+      "tenant_id",
+      "actor_type",
+      "actor_id",
+      "action",
+      "subject",
+      "decision",
+      "reason",
+      "policy_hash",
+      "job_id",
+      "stage_run_id",
+      "correlation_id",
+      "created_at",
+      "prev_hash",
+      "hash"
+    ],
+    "sandbox_can_write": false,
+    "separate_from_diagnostic_logs": true,
+    "server_assigned_timestamp": true,
+    "threats": [
+      "T-31"
+    ],
+    "verification_job_interval_minutes": 60
+  },
+  "budgets": {
+    "concurrency": {
+      "max_queued_jobs_per_repo": 20,
+      "max_running_jobs_per_repo": 2,
+      "max_running_sandboxes_per_host": 8
+    },
+    "enforced_by": [
+      "model_broker",
+      "scheduler"
+    ],
+    "hard_ceilings": {
+      "per_job": {
+        "max_delegation_depth": 2,
+        "max_documentation_rework_iterations": 2,
+        "max_rework_iterations": 2,
+        "max_usd": 25.0,
+        "max_wall_clock_s": 14400
+      },
+      "per_org_day": {
+        "max_usd": 500.0
+      },
+      "per_repo_day": {
+        "max_jobs_started": 40,
+        "max_usd": 100.0
+      },
+      "per_task": {
+        "max_input_tokens": 4000000,
+        "max_output_tokens": 400000,
+        "max_tool_calls": 1500,
+        "max_turns": 60,
+        "max_usd": 8.0,
+        "max_wall_clock_s": 3600
+      }
+    },
+    "on_exhaustion": "stop_job_revoke_job_token_mark_BLOCKED",
+    "per_request_caps": {
+      "max_input_tokens": 200000,
+      "max_output_tokens": 32000
+    },
+    "rework": {
+      "default_rounds": 2,
+      "on_cap_reached": "human_decides",
+      "project_override": "lower_only"
+    },
+    "stagnation": {
+      "action_on_no_new_passing_evidence": "escalate_needs_human",
+      "window_iterations": 3
+    },
+    "threats": [
+      "T-26"
+    ],
+    "thresholds": {
+      "stop_at_fraction": 1.0,
+      "warn_at_fraction": 0.8
+    },
+    "turn_accounting": "broker_model_request_count"
+  },
+  "command_sets": {
+    "default_action": "deny",
+    "executable_match": "basename_only",
+    "sets": [
+      {
+        "env": {
+          "CARGO_NET_OFFLINE": "true",
+          "CARGO_TERM_COLOR": "never",
+          "RUST_BACKTRACE": "1"
+        },
+        "executables": {
+          "cargo": {
+            "allowed_subcommands": [
+              "build",
+              "check",
+              "test",
+              "clippy",
+              "fmt",
+              "doc",
+              "tree",
+              "metadata",
+              "nextest",
+              "deny",
+              "audit"
+            ],
+            "forbidden_args": [
+              "--config",
+              "--manifest-path=/",
+              "-Z",
+              "--registry",
+              "--index"
+            ],
+            "forced_args": {
+              "agent": [
+                "--offline",
+                "--locked"
+              ],
+              "fetch_deps": [
+                "--locked"
+              ],
+              "verify": [
+                "--offline",
+                "--locked"
+              ]
+            }
+          },
+          "rustc": {
+            "allowed_subcommands": [],
+            "forbidden_args": [
+              "-C",
+              "--codegen",
+              "-Z"
+            ]
+          },
+          "rustfmt": {
+            "allowed_subcommands": []
+          }
+        },
+        "id": "rust"
+      },
+      {
+        "env": {
+          "CI": "true",
+          "NPM_CONFIG_AUDIT": "false",
+          "NPM_CONFIG_FUND": "false",
+          "NPM_CONFIG_IGNORE_SCRIPTS": "true"
+        },
+        "executables": {
+          "node": {
+            "allowed_subcommands": [],
+            "forbidden_args": [
+              "--require",
+              "-r",
+              "--import",
+              "--eval",
+              "-e",
+              "--inspect",
+              "--inspect-brk"
+            ]
+          },
+          "npm": {
+            "allowed_subcommands": [
+              "test",
+              "run",
+              "ls",
+              "pack"
+            ],
+            "forbidden_args": [
+              "--registry",
+              "--userconfig",
+              "--globalconfig"
+            ]
+          },
+          "npx": {
+            "allowed_subcommands": [],
+            "forbidden_args": []
+          },
+          "pnpm": {
+            "allowed_subcommands": [
+              "test",
+              "run",
+              "ls"
+            ],
+            "forbidden_args": [
+              "--registry"
+            ]
+          }
+        },
+        "id": "node",
+        "notes": "npm run is allowed because scripts are repository code running inside the sandbox. Install scripts stay disabled and installs only happen in fetch_deps."
+      },
+      {
+        "env": {
+          "PIP_DISABLE_PIP_VERSION_CHECK": "1",
+          "PIP_NO_INDEX": "1",
+          "PYTHONDONTWRITEBYTECODE": "1"
+        },
+        "executables": {
+          "mypy": {
+            "allowed_subcommands": []
+          },
+          "pytest": {
+            "allowed_subcommands": [],
+            "forbidden_args": [
+              "-p"
+            ]
+          },
+          "python": {
+            "allowed_subcommands": [],
+            "forbidden_args": [
+              "-c",
+              "-m pip",
+              "-m ensurepip"
+            ]
+          },
+          "ruff": {
+            "allowed_subcommands": [
+              "check",
+              "format"
+            ]
+          }
+        },
+        "id": "python"
+      },
+      {
+        "env": {
+          "GOFLAGS": "-mod=readonly",
+          "GONOSUMDB": "",
+          "GOPROXY": "off",
+          "GOTOOLCHAIN": "local"
+        },
+        "executables": {
+          "go": {
+            "allowed_subcommands": [
+              "build",
+              "test",
+              "vet",
+              "fmt",
+              "list"
+            ],
+            "forbidden_args": [
+              "-toolexec",
+              "-exec",
+              "-overlay"
+            ]
+          }
+        },
+        "id": "go"
+      }
+    ],
+    "threats": [
+      "T-06",
+      "T-13",
+      "T-29"
+    ]
+  },
+  "credentials": {
+    "app_private_key": {
+      "consumers": [
+        "token_minter"
+      ],
+      "overlapping_keys_during_rotation": true,
+      "rotation_days": 90,
+      "store": "secret_manager"
+    },
+    "github_app": {
+      "installation_token": {
+        "holders": [
+          "control_plane_only"
+        ],
+        "lifetime_s": 3600,
+        "logged": false,
+        "mint": "per_job",
+        "permissions": "narrowed_per_stage",
+        "persisted_to_disk": false,
+        "repositories": "exactly_one",
+        "revoke_on_job_end": true,
+        "visible_to_sandbox": false
+      },
+      "permissions_forbidden": [
+        "administration",
+        "workflows",
+        "secrets",
+        "environments",
+        "deployments",
+        "pages",
+        "packages",
+        "repository_hooks",
+        "organization_administration",
+        "members"
+      ],
+      "permissions_required": {
+        "actions": "read",
+        "checks": "write",
+        "contents": "write",
+        "issues": "write",
+        "metadata": "read",
+        "pull_requests": "write",
+        "statuses": "write"
+      }
+    },
+    "model_providers": {
+      "delivery": "broker_injected",
+      "fallback_if_cli_cannot_use_broker": "documented_residual_risk",
+      "job_token": {
+        "bound_to": [
+          "tenant_id",
+          "job_id",
+          "stage_run_id"
+        ],
+        "entropy_bits": 256,
+        "prefix": "sfjt_",
+        "revoked_on": [
+          "job_end",
+          "budget_exhausted",
+          "posture_violation"
+        ],
+        "scope": [
+          "provider",
+          "model_allowlist",
+          "max_tokens",
+          "max_usd"
+        ],
+        "ttl": "job_wall_clock_plus_300s"
+      },
+      "real_keys": {
+        "dedicated_per_deployment": true,
+        "hard_spend_limit_required": true,
+        "rotation_days": 180,
+        "store": "secret_manager"
+      },
+      "subscription_logins": {
+        "allowed": false,
+        "exception": {
+          "counts_as_real_provider_smoke_test": "only_if_the_signed_decision_says_so",
+          "decision_requires": [
+            "org_admin",
+            "security_approver",
+            "written_provider_terms_determination"
+          ],
+          "enabled": false,
+          "evidence_label": "host_subscription_demo",
+          "max_days_until_expiry": 30,
+          "runs_without": [
+            "--bare"
+          ],
+          "scope": "named_demo_profile_on_a_dedicated_host_with_fixture_repository_only"
+        },
+        "never_for_tenant_or_customer_data": true,
+        "never_in_sandbox": true,
+        "reason": "cannot_be_brokered_or_metered"
+      }
+    },
+    "repository_requirements": {
+      "app_in_bypass_list": false,
+      "branch_deletion_disabled": true,
+      "default_branch_protected": true,
+      "dismiss_stale_approvals_on_new_commits": true,
+      "factory_branch_pattern": "factory/*",
+      "force_push_disabled": true,
+      "push_only_to_factory_branch_pattern": true,
+      "require_code_owner_review_for_protected_paths": true,
+      "require_pull_request": true,
+      "required_status_checks_pinned_to_app_id": true
+    },
+    "rotation_slas": {
+      "high_privilege_days": 90,
+      "leaked_or_suspected_hours": 1,
+      "standard_days": 180
+    },
+    "threats": [
+      "T-19",
+      "T-24",
+      "T-14"
+    ],
+    "webhook_secret": {
+      "overlapping_secrets_during_rotation": true,
+      "rotation_days": 180,
+      "store": "secret_manager"
+    }
+  },
+  "egress": {
+    "allow_wildcards": false,
+    "broker_upstreams": [
+      {
+        "host": "api.anthropic.com",
+        "id": "anthropic_api",
+        "justification": "Claude models",
+        "paths": [
+          "/v1/messages",
+          "/v1/messages/count_tokens"
+        ],
+        "review_by": "2027-01-31"
+      },
+      {
+        "host": "api.openai.com",
+        "id": "openai_api",
+        "justification": "Codex and OpenAI models",
+        "paths": [
+          "/v1/responses",
+          "/v1/chat/completions"
+        ],
+        "review_by": "2027-01-31"
+      }
+    ],
+    "default_action": "deny",
+    "enforcement": "proxy_on_internal_network",
+    "never_allow_from_sandbox": [
+      {
+        "host": "github.com",
+        "reason": "git push, gist and repository creation are exfiltration channels; the control plane clones and pushes"
+      },
+      {
+        "host": "api.github.com",
+        "reason": "token theft would become repository write access"
+      },
+      {
+        "host": "gist.github.com",
+        "reason": "anonymous-style paste channel"
+      },
+      {
+        "host": "raw.githubusercontent.com",
+        "reason": "arbitrary content fetch; not needed"
+      },
+      {
+        "host": "pastebin.com",
+        "reason": "paste channel"
+      },
+      {
+        "host": "transfer.sh",
+        "reason": "file drop channel"
+      }
+    ],
+    "profiles": {
+      "agent": {
+        "allow": [
+          {
+            "host": "model-broker.sandbox.internal",
+            "id": "model_broker",
+            "justification": "credential-injecting model API relay",
+            "methods": [
+              "POST"
+            ],
+            "ports": [
+              8443
+            ],
+            "review_by": "2027-01-31",
+            "terminates_tls": true
+          }
+        ]
+      },
+      "fetch_deps": {
+        "allow": [
+          {
+            "ecosystem": "cargo",
+            "host": "index.crates.io",
+            "id": "crates_index",
+            "justification": "sparse registry index",
+            "methods": [
+              "GET",
+              "HEAD"
+            ],
+            "ports": [
+              443
+            ],
+            "review_by": "2027-01-31"
+          },
+          {
+            "ecosystem": "cargo",
+            "host": "static.crates.io",
+            "id": "crates_files",
+            "justification": "crate downloads",
+            "methods": [
+              "GET",
+              "HEAD"
+            ],
+            "ports": [
+              443
+            ],
+            "review_by": "2027-01-31"
+          },
+          {
+            "ecosystem": "npm",
+            "host": "registry.npmjs.org",
+            "id": "npm_registry",
+            "justification": "package metadata and tarballs",
+            "methods": [
+              "GET",
+              "HEAD"
+            ],
+            "ports": [
+              443
+            ],
+            "review_by": "2027-01-31"
+          },
+          {
+            "ecosystem": "pip",
+            "host": "pypi.org",
+            "id": "pypi_index",
+            "justification": "package index",
+            "methods": [
+              "GET",
+              "HEAD"
+            ],
+            "ports": [
+              443
+            ],
+            "review_by": "2027-01-31"
+          },
+          {
+            "ecosystem": "pip",
+            "host": "files.pythonhosted.org",
+            "id": "pypi_files",
+            "justification": "package files",
+            "methods": [
+              "GET",
+              "HEAD"
+            ],
+            "ports": [
+              443
+            ],
+            "review_by": "2027-01-31"
+          },
+          {
+            "ecosystem": "go",
+            "host": "proxy.golang.org",
+            "id": "go_proxy",
+            "justification": "module proxy",
+            "methods": [
+              "GET",
+              "HEAD"
+            ],
+            "ports": [
+              443
+            ],
+            "review_by": "2027-01-31"
+          },
+          {
+            "ecosystem": "go",
+            "host": "sum.golang.org",
+            "id": "go_sum",
+            "justification": "checksum database",
+            "methods": [
+              "GET",
+              "HEAD"
+            ],
+            "ports": [
+              443
+            ],
+            "review_by": "2027-01-31"
+          }
+        ]
+      },
+      "none": {
+        "allow": []
+      }
+    },
+    "proxy_rules": {
+      "log_every_request": true,
+      "max_bytes_per_job": 2147483648,
+      "methods_default": [
+        "GET",
+        "HEAD"
+      ],
+      "reject_resolved_ip_ranges": [
+        "127.0.0.0/8",
+        "10.0.0.0/8",
+        "172.16.0.0/12",
+        "192.168.0.0/16",
+        "169.254.0.0/16",
+        "100.64.0.0/10",
+        "::1/128",
+        "fc00::/7",
+        "fe80::/10"
+      ],
+      "tls": "passthrough"
+    },
+    "resolve_in_proxy_only": true,
+    "sandbox_dns": "blocked",
+    "threats": [
+      "T-11",
+      "T-17",
+      "T-18"
+    ],
+    "widening_requires": [
+      "human_approval",
+      "security_review"
+    ]
+  },
+  "forbidden_command_classes": [
+    {
+      "action": "deny",
+      "breakglass_tool": "exec.shell",
+      "description": "Shell strings defeat argv-level policy. Use typed commands instead.",
+      "id": "shell_interpreters",
+      "match": {
+        "executables": [
+          "sh",
+          "bash",
+          "zsh",
+          "dash",
+          "ash",
+          "fish",
+          "ksh",
+          "csh",
+          "tcsh",
+          "busybox",
+          "eval",
+          "source"
+        ]
+      }
+    },
+    {
+      "action": "deny",
+      "description": "Download and run, or pipe a download into an interpreter.",
+      "id": "remote_fetch_and_execute",
+      "match": {
+        "argv_regex": [
+          "(?i)\\|\\s*(sh|bash|zsh|python[0-9.]*|perl|ruby|node)\\b"
+        ],
+        "executables": [
+          "curl",
+          "wget",
+          "fetch",
+          "aria2c"
+        ]
+      }
+    },
+    {
+      "action": "deny",
+      "id": "privilege_escalation",
+      "match": {
+        "executables": [
+          "sudo",
+          "su",
+          "doas",
+          "pkexec",
+          "setcap",
+          "capsh",
+          "nsenter",
+          "unshare",
+          "chroot",
+          "mount",
+          "umount",
+          "pivot_root"
+        ]
+      }
+    },
+    {
+      "action": "deny",
+      "id": "container_and_orchestrator_tooling",
+      "match": {
+        "executables": [
+          "docker",
+          "podman",
+          "nerdctl",
+          "ctr",
+          "runc",
+          "crictl",
+          "kubectl",
+          "helm",
+          "buildah",
+          "skopeo"
+        ]
+      }
+    },
+    {
+      "action": "deny",
+      "id": "credential_access",
+      "match": {
+        "argv_regex": [
+          "(?i)/proc/[^ ]*/(environ|mem|maps)",
+          "(?i)(\\.ssh|\\.aws|\\.config/gh|\\.git-credentials|\\.netrc|\\.docker/config\\.json|\\.npmrc|\\.pypirc|\\.cargo/credentials)",
+          "(?i)credential[.]helper"
+        ],
+        "executables": [
+          "env",
+          "printenv",
+          "security",
+          "gh",
+          "gpg",
+          "ssh-add",
+          "ssh-keygen",
+          "keyctl"
+        ]
+      }
+    },
+    {
+      "action": "deny",
+      "description": "Raw network clients, tunnels and DNS tools. Network is denied anyway; this catches attempts early.",
+      "id": "network_tools",
+      "match": {
+        "executables": [
+          "nc",
+          "ncat",
+          "netcat",
+          "socat",
+          "telnet",
+          "ssh",
+          "scp",
+          "sftp",
+          "rsync",
+          "ftp",
+          "tftp",
+          "nmap",
+          "masscan",
+          "dig",
+          "nslookup",
+          "host",
+          "ping",
+          "traceroute",
+          "tcpdump",
+          "iptables",
+          "nft",
+          "ip",
+          "ifconfig"
+        ]
+      }
+    },
+    {
+      "action": "deny",
+      "id": "destructive_filesystem",
+      "match": {
+        "argv_regex": [
+          "(?i)\\brm\\b.*\\s-[a-z]*r[a-z]*f?\\s+(/|~|\\$HOME|\\*)(\\s|$)",
+          "(?i)\\bdd\\b.*\\bof=/dev/",
+          "(?i)\\bfind\\b\\s+/\\s.*-delete",
+          "(?i)\\bchmod\\b\\s+-R\\s+[0-7]*7[0-7]*\\s+/"
+        ],
+        "executables": [
+          "mkfs",
+          "shred",
+          "wipefs",
+          "fdisk",
+          "parted",
+          "losetup"
+        ]
+      }
+    },
+    {
+      "action": "deny",
+      "description": "Agents never push or rewrite history. The control plane owns every push.",
+      "id": "vcs_publish_and_history_rewrite",
+      "match": {
+        "argv_regex": [
+          "(?i)\\bgit\\b.*\\b(push|remote|filter-branch|filter-repo|reflog\\s+expire|gc\\s+--prune|clone|fetch|pull|submodule|config|credential|worktree|update-ref|symbolic-ref)\\b"
+        ],
+        "executables": [
+          "git-filter-repo"
+        ]
+      }
+    },
+    {
+      "action": "deny",
+      "id": "package_publish_and_auth",
+      "match": {
+        "argv_regex": [
+          "(?i)\\bcargo\\b.*\\b(publish|login|logout|owner|yank)\\b",
+          "(?i)\\b(npm|pnpm|yarn)\\b.*\\b(publish|login|adduser|token|dist-tag|deprecate|unpublish)\\b",
+          "(?i)\\b(twine|poetry)\\b.*\\b(upload|publish)\\b",
+          "(?i)\\b(gem)\\b.*\\bpush\\b"
+        ],
+        "executables": [
+          "twine"
+        ]
+      }
+    },
+    {
+      "action": "deny",
+      "description": "Spec Kit is confined to the specification stage and its four skills. These subcommands install, upgrade, reach the network or run the full workflow. The control plane runs `specify init` and `specify integration status --json` on the host; an agent never does.",
+      "id": "spec_kit_out_of_scope",
+      "match": {
+        "argv_regex": [
+          "(?i)\\bspecify\\b\\s+(init|self|extension|preset|bundle|workflow|mcp)\\b",
+          "(?i)\\bspecify\\b\\s+integration\\s+(upgrade|search|list\\s+--catalog|install|uninstall)\\b"
+        ],
+        "executables": [
+          "specify"
+        ]
+      }
+    },
+    {
+      "action": "deny",
+      "id": "process_debug_and_injection",
+      "match": {
+        "executables": [
+          "gdb",
+          "lldb",
+          "strace",
+          "ltrace",
+          "ptrace",
+          "perf",
+          "bpftrace",
+          "bpftool"
+        ]
+      }
+    },
+    {
+      "action": "deny",
+      "id": "kernel_and_system_state",
+      "match": {
+        "executables": [
+          "insmod",
+          "rmmod",
+          "modprobe",
+          "sysctl",
+          "mknod",
+          "systemctl",
+          "service",
+          "crontab",
+          "at",
+          "batch",
+          "reboot",
+          "shutdown",
+          "halt"
+        ]
+      }
+    },
+    {
+      "action": "deny",
+      "description": "Processes that outlive the tool call. The wrapper also kills the whole process group at call end.",
+      "id": "detached_persistence",
+      "match": {
+        "executables": [
+          "nohup",
+          "setsid",
+          "disown",
+          "daemonize",
+          "screen",
+          "tmux"
+        ]
+      }
+    },
+    {
+      "action": "deny",
+      "description": "Package installs may run only in the fetch_deps profile with scripts disabled.",
+      "except_profiles": [
+        "fetch_deps"
+      ],
+      "id": "install_scripts_outside_fetch",
+      "match": {
+        "argv_regex": [
+          "(?i)\\b(npm|pnpm|yarn)\\b\\s+(install|i|add|ci)\\b",
+          "(?i)\\bpip[0-9.]*\\b\\s+(install|download)\\b",
+          "(?i)\\bcargo\\b\\s+(install|add|update|fetch|vendor)\\b",
+          "(?i)\\bgo\\b\\s+(get|install)\\b"
+        ]
+      }
+    }
+  ],
+  "gate_integrity": {
+    "evidence_binding": [
+      "head_sha",
+      "tree_hash",
+      "gate_definition_hash",
+      "policy_hash",
+      "image_digest",
+      "base_sha"
+    ],
+    "evidence_source": "supervisor_observed",
+    "flaky_tests": {
+      "only_for": "central_flaky_registry",
+      "record_every_retry": true,
+      "retries_allowed": 1
+    },
+    "gate_definition_source": "base_commit_or_central",
+    "gate_runner": "fresh_verify_container",
+    "gate_status_values": [
+      "PASSED",
+      "FAILED",
+      "BLOCKED",
+      "NOT_APPLICABLE"
+    ],
+    "invalidated_by": [
+      "new_commit",
+      "rebase",
+      "base_moved",
+      "policy_change",
+      "spec_revision",
+      "image_change"
+    ],
+    "merge": {
+      "require_expected_head_sha": true,
+      "required_checks_pinned_to_app_id": true,
+      "rerun_critical_gates_after_sync": true
+    },
+    "missing_evidence_is": "BLOCKED",
+    "nonwaivable_gates": [
+      "protected_path_check",
+      "secret_scan",
+      "sandbox_posture",
+      "evidence_binding",
+      "test_regression_check",
+      "signature_verification",
+      "stage_profile_check"
+    ],
+    "review_verdict_values": [
+      "PASS",
+      "CHANGES_REQUIRED",
+      "BLOCK",
+      "NEEDS_HUMAN"
+    ],
+    "reviewer_sees_builder_self_justification": false,
+    "reviewer_verdict_can_override_gate": false,
+    "semantic_checks": [
+      {
+        "blocks_until": "human_approval",
+        "id": "new_dependency"
+      },
+      {
+        "blocks_until": "human_approval",
+        "description": "lint level lowered, allow attributes added, ignore lists grown",
+        "id": "lint_relaxation"
+      },
+      {
+        "blocks_until": "human_approval",
+        "description": "harness=false, test targets removed, ignore or skip markers, conftest hooks that deselect",
+        "id": "test_harness_disabled"
+      },
+      {
+        "blocks_until": "security_review",
+        "description": "new build.rs, setup.py, postinstall or similar",
+        "id": "build_script_added"
+      },
+      {
+        "blocks_until": "human_approval",
+        "description": "alternate registry, git or path dependency, patch or replace section",
+        "id": "registry_or_source_changed"
+      },
+      {
+        "blocks_until": "security_review",
+        "description": "privileged, host network, new capabilities, exposed ports in container or IaC changes",
+        "id": "privilege_or_network_widening"
+      },
+      {
+        "blocks_until": "never",
+        "description": "secrets.patterns match in the diff",
+        "id": "secret_in_diff"
+      }
+    ],
+    "skipped_gate_is": "BLOCKED",
+    "test_regression": {
+      "baseline_from": "trusted_run_on_base_commit",
+      "forbid_assertion_count_drop": true,
+      "forbid_newly_ignored_tests": true,
+      "forbid_newly_skipped_tests": true,
+      "forbid_removed_tests": true,
+      "new_tests_allowed": true
+    },
+    "threats": [
+      "T-12",
+      "T-13",
+      "T-14"
+    ],
+    "tool_absent_is": "BLOCKED"
+  },
+  "matching": {
+    "case_insensitive": true,
+    "count_rename_source_and_destination": true,
+    "evaluate_on": "trusted_tree_diff",
+    "mode_and_type_changes_are_modifications": true,
+    "normalization": "nfc",
+    "reject_absolute": true,
+    "reject_dot_git_components": true,
+    "reject_dotdot": true,
+    "reject_gitlinks": true,
+    "reject_nul_and_backslash": true,
+    "symlinks": "reject_if_target_outside_workspace",
+    "threats": [
+      "T-12",
+      "T-15",
+      "T-10"
+    ]
+  },
+  "output_hygiene": {
+    "allow_images_from_domains": [],
+    "allow_link_domains": [
+      "github.com"
+    ],
+    "allow_raw_html": false,
+    "applies_to": [
+      "pr_title",
+      "pr_body",
+      "issue_comment",
+      "review_comment",
+      "commit_message",
+      "check_run_output"
+    ],
+    "max_body_bytes": 60000,
+    "neutralize_cross_repo_references": true,
+    "neutralize_user_mentions": true,
+    "secrets_check": "secrets.sinks.github_bound_text",
+    "strip_hidden_content": [
+      "html_comments",
+      "zero_width_characters",
+      "bidi_controls"
+    ],
+    "threats": [
+      "T-18"
+    ]
+  },
+  "path_access": {
+    "deny_read_globs_ref": "protected_paths.groups[secret_bearing_files,evaluation_holdouts]",
+    "follow_symlinks_on_host": false,
+    "max_diff_bytes": 5242880,
+    "max_file_bytes": 5242880,
+    "max_files_changed_per_task": 200,
+    "resolve_with": "openat2_resolve_beneath",
+    "threats": [
+      "T-06",
+      "T-10",
+      "T-12"
+    ],
+    "workspace_audit": {
+      "on_reject": "fail_job_with_BLOCK_and_audit",
+      "reject_any_of": [
+        "dot_git_entry_other_than_the_masked_root_entry",
+        "non_empty_hidden_path",
+        "special_files",
+        "symlink_with_target_outside_workspace",
+        "regular_file_with_link_count_over_1",
+        "file_larger_than_max_file_bytes",
+        "entry_count_over_200000",
+        "path_longer_than_4096_bytes",
+        "name_longer_than_255_bytes",
+        "name_with_control_characters_or_invalid_utf8",
+        "setuid_or_setgid_mode_bits"
+      ],
+      "run": "before_ingest",
+      "walk": "no_follow"
+    },
+    "workspace_root": "/workspace",
+    "write_allow": [
+      "**"
+    ],
+    "write_scope_source": "task_owned_files"
+  },
+  "policy": {
+    "config_source": "protected_default_branch",
+    "conflict_resolution": "deny_overrides",
+    "default_action": "deny",
+    "id": "security",
+    "project_overrides": "tighten_only",
+    "status": "designed",
+    "threats": [
+      "T-15",
+      "T-04",
+      "T-12"
+    ],
+    "version": 1
+  },
+  "protected_paths": {
+    "default_change_requires": [
+      "spec_authorization",
+      "independent_policy_review",
+      "human_approval"
+    ],
+    "groups": [
+      {
+        "applies_to": "both",
+        "globs": [
+          ".github/**",
+          ".gitlab-ci.yml",
+          ".circleci/**",
+          ".buildkite/**",
+          "azure-pipelines.yml",
+          "Jenkinsfile",
+          ".drone.yml",
+          "bitbucket-pipelines.yml",
+          "CODEOWNERS",
+          "docs/CODEOWNERS"
+        ],
+        "id": "ci_workflows",
+        "mode": "deny_write",
+        "reason": "CI definitions and code ownership decide what runs and who reviews.",
+        "threats": [
+          "T-12",
+          "T-14"
+        ]
+      },
+      {
+        "applies_to": "both",
+        "globs": [
+          ".cargo/**",
+          "rust-toolchain",
+          "rust-toolchain.toml",
+          "clippy.toml",
+          ".clippy.toml",
+          "rustfmt.toml",
+          ".rustfmt.toml",
+          "deny.toml",
+          "audit.toml",
+          ".config/nextest.toml",
+          "Makefile",
+          "justfile",
+          "scripts/ci.sh",
+          "scripts/ci/**",
+          "scripts/gates/**",
+          "tox.ini",
+          "noxfile.py",
+          "pytest.ini",
+          "jest.config.*",
+          "vitest.config.*",
+          "playwright.config.*",
+          ".coveragerc",
+          "codecov.yml",
+          ".codecov.yml",
+          "sonar-project.properties",
+          ".pre-commit-config.yaml",
+          ".gitleaks.toml",
+          ".gitleaksignore",
+          ".semgrep/**",
+          ".semgrepignore",
+          ".npmrc",
+          ".yarnrc*",
+          "pip.conf",
+          ".eslintrc*",
+          "eslint.config.*",
+          "tsconfig*.json"
+        ],
+        "id": "gate_and_toolchain_config",
+        "mode": "deny_write",
+        "reason": "Lint, type, coverage and scanner settings, and the CI entry point (scripts/ci.sh and scripts/ci/), decide what a PASS means.",
+        "threats": [
+          "T-12",
+          "T-13"
+        ]
+      },
+      {
+        "applies_to": "both",
+        "globs": [
+          ".factory/**",
+          ".specify/**"
+        ],
+        "id": "factory_config",
+        "mode": "deny_write",
+        "reason": "Project-local factory configuration and Spec Kit state. Changed only through the specification and configuration stages.",
+        "threats": [
+          "T-12",
+          "T-15",
+          "T-04"
+        ]
+      },
+      {
+        "applies_to": "both",
+        "globs": [
+          "AGENTS.md",
+          "CLAUDE.md",
+          "GEMINI.md",
+          ".claude/**",
+          ".codex/**",
+          ".gemini/**",
+          ".agents/**",
+          ".cursor/**",
+          ".cursorrules",
+          ".mcp.json",
+          ".github/copilot-instructions.md"
+        ],
+        "id": "agent_instruction_files",
+        "mode": "deny_write",
+        "reason": "Files that steer future agent runs. A builder editing them is persistent prompt injection.",
+        "threats": [
+          "T-02",
+          "T-04"
+        ]
+      },
+      {
+        "applies_to": "both",
+        "globs": [
+          ".git",
+          ".git/**",
+          ".gitmodules",
+          ".githooks/**",
+          ".husky/**"
+        ],
+        "id": "vcs_internals_and_hooks",
+        "mode": "deny_write",
+        "reason": "Hooks and submodule pointers run or fetch code on developer machines and on the control plane.",
+        "threats": [
+          "T-10"
+        ]
+      },
+      {
+        "applies_to": "both",
+        "globs": [
+          "tests/fixtures/**",
+          "tests/golden/**",
+          "**/__snapshots__/**",
+          "**/*.snap",
+          "**/testdata/**",
+          "**/golden/**"
+        ],
+        "id": "test_fixtures_and_goldens",
+        "mode": "append_only",
+        "reason": "Existing fixtures and golden files may be added to but not edited or removed to force a pass.",
+        "threats": [
+          "T-12",
+          "T-13"
+        ]
+      },
+      {
+        "applies_to": "both",
+        "globs": [
+          "tests/**",
+          "**/tests/**",
+          "**/__tests__/**",
+          "**/*_test.*",
+          "**/*.test.*",
+          "**/*.spec.*",
+          "**/test_*.py"
+        ],
+        "id": "test_code",
+        "mode": "additions_only",
+        "reason": "Builders add tests; they do not weaken or remove existing ones. Rewrites need spec authorization and independent policy review.",
+        "threats": [
+          "T-12",
+          "T-13"
+        ]
+      },
+      {
+        "applies_to": "both",
+        "globs": [
+          "evals/**",
+          "tests/evals/**",
+          "tests/holdout/**",
+          "**/holdout/**",
+          "**/heldout/**"
+        ],
+        "id": "evaluation_holdouts",
+        "mode": "hidden",
+        "reason": "Held-out evaluation data must never be visible to builders or reach model context.",
+        "threats": [
+          "T-12",
+          "T-13",
+          "T-35"
+        ]
+      },
+      {
+        "applies_to": "both",
+        "globs": [
+          ".env",
+          ".env.*",
+          "!.env.example",
+          "**/*.pem",
+          "**/*.key",
+          "**/*.p12",
+          "**/*.pfx",
+          "**/id_rsa*",
+          "**/id_ed25519*",
+          ".netrc",
+          ".pypirc",
+          ".git-credentials",
+          ".aws/**",
+          ".ssh/**",
+          ".docker/config.json",
+          "**/credentials*.json"
+        ],
+        "id": "secret_bearing_files",
+        "mode": "hidden",
+        "reason": "Never mounted, never read into context, never allowed in a diff.",
+        "threats": [
+          "T-16",
+          "T-19",
+          "T-20"
+        ]
+      },
+      {
+        "applies_to": "factory_repo",
+        "globs": [
+          "policies/**",
+          "docs/security/**",
+          "agents/**",
+          "workflows/**"
+        ],
+        "id": "factory_self_protection",
+        "mode": "deny_write",
+        "reason": "When the factory works on its own repository, its policies, security documents and agent manifests are protected.",
+        "threats": [
+          "T-15",
+          "T-12"
+        ]
+      }
+    ],
+    "sensitive_files": [
+      {
+        "checks": [
+          "new_dependency",
+          "lint_relaxation",
+          "test_harness_disabled",
+          "build_script_added",
+          "registry_or_source_changed"
+        ],
+        "extra_review": [
+          "security_reviewer"
+        ],
+        "globs": [
+          "Cargo.toml",
+          "**/Cargo.toml",
+          "Cargo.lock",
+          "package.json",
+          "**/package.json",
+          "package-lock.json",
+          "pnpm-lock.yaml",
+          "yarn.lock",
+          "pyproject.toml",
+          "requirements*.txt",
+          "uv.lock",
+          "poetry.lock",
+          "go.mod",
+          "go.sum",
+          "Gemfile",
+          "Gemfile.lock",
+          "pom.xml",
+          "build.gradle*",
+          "**/*.csproj"
+        ],
+        "id": "dependency_manifests"
+      },
+      {
+        "checks": [
+          "privilege_or_network_widening",
+          "secret_in_diff"
+        ],
+        "extra_review": [
+          "security_reviewer"
+        ],
+        "globs": [
+          "Dockerfile*",
+          "**/Dockerfile*",
+          "docker-compose*.yml",
+          "infra/**",
+          "**/*.tf",
+          "k8s/**",
+          "helm/**"
+        ],
+        "id": "container_and_infrastructure"
+      },
+      {
+        "applies_to": "factory_repo",
+        "checks": [
+          "secret_in_diff"
+        ],
+        "extra_review": [
+          "security_reviewer"
+        ],
+        "globs": [
+          "crates/policy/**",
+          "crates/sandbox/**",
+          "crates/github/**",
+          "crates/runtime/**"
+        ],
+        "id": "security_critical_code"
+      },
+      {
+        "checks": [
+          "build_script_added",
+          "test_harness_disabled"
+        ],
+        "extra_review": [
+          "security_reviewer"
+        ],
+        "globs": [
+          ".gitattributes",
+          "**/build.rs",
+          "**/setup.py",
+          "**/conftest.py"
+        ],
+        "id": "attributes_and_build_scripts"
+      }
+    ]
+  },
+  "sandbox": {
+    "allowed_special_mounts": [
+      {
+        "purpose": "mask_gitdir_pointer",
+        "readonly": true,
+        "source": "/dev/null",
+        "target": "/workspace/.git"
+      }
+    ],
+    "fail_closed": true,
+    "forbidden_mount_sources": [
+      "/var/run/docker.sock",
+      "/run/docker.sock",
+      "/",
+      "/etc",
+      "/root",
+      "/home",
+      "/var",
+      "/usr",
+      "/proc",
+      "/sys",
+      "/dev"
+    ],
+    "host_execution_fallback": "never",
+    "profiles": {
+      "agent": {
+        "egress_profile": "agent",
+        "limits": {
+          "cpus": 2.0,
+          "max_file_mb": 512,
+          "memory_mb": 4096,
+          "memory_swap_mb": 4096,
+          "nofile": 4096,
+          "pids": 256,
+          "tmpfs_mb": 512,
+          "wall_clock_s": 3600,
+          "workspace_disk_mb": 2048
+        },
+        "network": "model_broker_only",
+        "purpose": "Agent CLI and its tool execution. Reaches only the model broker.",
+        "secrets": "broker_job_token",
+        "tmpfs_exec": false,
+        "workspace": {
+          "mode": "rw",
+          "scope": "task_owned_files"
+        }
+      },
+      "fetch_deps": {
+        "egress_profile": "fetch_deps",
+        "limits": {
+          "cpus": 1.0,
+          "max_file_mb": 512,
+          "memory_mb": 1024,
+          "memory_swap_mb": 1024,
+          "nofile": 2048,
+          "pids": 128,
+          "tmpfs_mb": 256,
+          "wall_clock_s": 600,
+          "workspace_disk_mb": 4096
+        },
+        "network": "proxied_allowlist",
+        "purpose": "Download dependencies with install scripts disabled. Runs no repository code.",
+        "secrets": "none",
+        "tmpfs_exec": false,
+        "workspace": {
+          "mode": "rw",
+          "scope": "dependency_directories_only"
+        }
+      },
+      "verify": {
+        "egress_profile": "none",
+        "gate_definitions_from": "base_commit_or_central",
+        "holdouts_mounted": true,
+        "limits": {
+          "cpus": 4.0,
+          "max_file_mb": 1024,
+          "memory_mb": 8192,
+          "memory_swap_mb": 8192,
+          "nofile": 8192,
+          "pids": 512,
+          "tmpfs_mb": 512,
+          "wall_clock_s": 1800,
+          "workspace_disk_mb": 4096
+        },
+        "network": "none",
+        "purpose": "Trusted build, test and scan gates. Fresh container per gate run.",
+        "secrets": "none",
+        "tmpfs_exec": false,
+        "workspace": {
+          "mode": "rw",
+          "scope": "build_output_directory_only"
+        }
+      }
+    },
+    "required": {
+      "apparmor": "runtime_default_or_stricter_where_available",
+      "cap_add": [],
+      "cap_drop": [
+        "ALL"
+      ],
+      "devices": [],
+      "docker_socket_mounted": false,
+      "environment": {
+        "forbidden_names": [
+          "LD_PRELOAD",
+          "LD_LIBRARY_PATH",
+          "LD_AUDIT",
+          "RUSTFLAGS",
+          "RUSTC_WRAPPER",
+          "CARGO_BUILD_RUSTC_WRAPPER",
+          "NODE_OPTIONS",
+          "PYTHONPATH",
+          "PYTHONSTARTUP",
+          "BASH_ENV",
+          "ENV",
+          "GIT_SSH_COMMAND",
+          "GIT_CONFIG_GLOBAL",
+          "GIT_EXEC_PATH"
+        ],
+        "names": "allowlist_only",
+        "path": "fixed_read_only_path",
+        "proxy_variables": "set_only_by_supervisor_to_the_sidecar_address",
+        "secret_values_forbidden": true
+      },
+      "extra_sysctls": {},
+      "image_reference": "digest_pinned",
+      "init": true,
+      "ipc_mode": "none",
+      "log_driver": "none",
+      "network_mode": [
+        "none",
+        "job_internal"
+      ],
+      "no_new_privileges": true,
+      "pid_mode": "private",
+      "privileged": false,
+      "pull_policy": "never",
+      "read_only_rootfs": true,
+      "remove_with_rm_flag": false,
+      "restart_policy": "no",
+      "seccomp": "runtime_default_or_stricter",
+      "user": "numeric_non_root",
+      "uts_mode": "private"
+    },
+    "runtime": "docker",
+    "threats": [
+      "T-08",
+      "T-09",
+      "T-10",
+      "T-11",
+      "T-19",
+      "T-27"
+    ],
+    "watchdog": {
+      "disk_poll_interval_s": 5,
+      "max_log_bytes": 67108864,
+      "on_breach": "kill_and_mark_failed",
+      "on_log_cap": "stop_capturing_and_mark_truncated",
+      "record_oom_killed": true,
+      "wall_clock_kill": "supervisor"
+    },
+    "workspace": {
+      "caches": "read_only",
+      "cross_job_writable_volumes": false,
+      "cross_tenant_shared_paths": false,
+      "hidden_paths_not_mounted": true,
+      "hidden_paths_strategy": "sparse_checkout_exclusion",
+      "host_git_environment": {
+        "GIT_CONFIG_GLOBAL": "/dev/null",
+        "GIT_CONFIG_NOSYSTEM": "1",
+        "GIT_TERMINAL_PROMPT": "0",
+        "core_fsmonitor": "false",
+        "core_hooksPath": "/dev/null",
+        "safe_directory_wildcard": "forbidden",
+        "submodule_recursion": "never"
+      },
+      "mask_dot_git": true,
+      "mount": "plain_worktree_directory",
+      "protected_overlay_readonly": true,
+      "vcs_operations_run_on_host": true
+    }
+  },
+  "schema_version": 1,
+  "secrets": {
+    "entropy_heuristic": {
+      "action": "flag",
+      "enabled": true,
+      "min_length": 32,
+      "min_shannon_bits_per_char": 4.2
+    },
+    "exact_values": {
+      "encodings": [
+        "raw",
+        "base64_std",
+        "base64_url",
+        "base64_no_pad",
+        "hex_lower",
+        "hex_upper",
+        "url_percent",
+        "json_escaped"
+      ],
+      "min_length": 8,
+      "register_from": [
+        "job_tokens",
+        "webhook_secret",
+        "app_private_key",
+        "database_credentials",
+        "broker_keys",
+        "object_store_keys"
+      ],
+      "split_detection": "sliding_window"
+    },
+    "never_in_model_context": [
+      "github_tokens",
+      "app_private_key",
+      "webhook_secret",
+      "broker_keys",
+      "job_tokens",
+      "database_credentials",
+      "evaluation_holdouts",
+      "other_tenant_data",
+      "builder_self_justification_for_reviewers"
+    ],
+    "patterns": [
+      {
+        "action": "block",
+        "id": "github_token_classic",
+        "regex": "\\bghp_[A-Za-z0-9]{36}\\b"
+      },
+      {
+        "action": "block",
+        "id": "github_token_prefixed",
+        "regex": "\\bgh[ousr]_[A-Za-z0-9]{36,255}\\b"
+      },
+      {
+        "action": "block",
+        "id": "github_fine_grained",
+        "regex": "\\bgithub_pat_[A-Za-z0-9_]{22,255}\\b"
+      },
+      {
+        "action": "block",
+        "id": "private_key_block",
+        "regex": "-----BEGIN (?:[A-Z0-9]+ )?PRIVATE KEY(?: BLOCK)?-----"
+      },
+      {
+        "action": "block",
+        "id": "anthropic_api_key",
+        "regex": "\\bsk-ant-[A-Za-z0-9_-]{20,}\\b"
+      },
+      {
+        "action": "block",
+        "id": "openai_api_key",
+        "regex": "\\bsk-(?:proj-|svcacct-|admin-)?[A-Za-z0-9_-]{32,}\\b"
+      },
+      {
+        "action": "block",
+        "id": "aws_access_key_id",
+        "regex": "\\b(?:AKIA|ASIA|AGPA|AIDA|AROA|ANPA|ANVA)[A-Z0-9]{16}\\b"
+      },
+      {
+        "action": "block",
+        "id": "aws_secret_access_key",
+        "regex": "(?i)aws_?secret_?access_?key[\"'\\s:=]+[A-Za-z0-9/+=]{40}"
+      },
+      {
+        "action": "block",
+        "id": "gcp_api_key",
+        "regex": "\\bAIza[0-9A-Za-z_-]{35}\\b"
+      },
+      {
+        "action": "block",
+        "id": "slack_token",
+        "regex": "\\bxox[abprs]-[A-Za-z0-9-]{10,}\\b"
+      },
+      {
+        "action": "block",
+        "id": "stripe_live_key",
+        "regex": "\\b[rs]k_live_[0-9A-Za-z]{20,}\\b"
+      },
+      {
+        "action": "block",
+        "id": "npm_token",
+        "regex": "\\bnpm_[A-Za-z0-9]{36}\\b"
+      },
+      {
+        "action": "block",
+        "id": "pypi_token",
+        "regex": "\\bpypi-AgE[A-Za-z0-9_-]{50,}\\b"
+      },
+      {
+        "action": "block",
+        "format_status": "unverified",
+        "id": "crates_io_token",
+        "regex": "\\bcio[A-Za-z0-9]{32}\\b"
+      },
+      {
+        "action": "block",
+        "id": "jwt",
+        "regex": "\\beyJ[A-Za-z0-9_-]{8,}\\.eyJ[A-Za-z0-9_-]{8,}\\.[A-Za-z0-9_-]{8,}\\b"
+      },
+      {
+        "action": "block",
+        "id": "authorization_header",
+        "regex": "(?i)\\bauthorization:\\s*(?:bearer|token|basic)\\s+[A-Za-z0-9._~+/=-]{16,}"
+      },
+      {
+        "action": "block",
+        "id": "url_with_credentials",
+        "regex": "\\b[a-z][a-z0-9+.-]*://[^\\s:/@]+:[^\\s@/]{3,}@[^\\s/]+"
+      },
+      {
+        "action": "block",
+        "id": "factory_job_token",
+        "regex": "\\bsfjt_[A-Za-z0-9_-]{32,}\\b"
+      },
+      {
+        "action": "block",
+        "format_status": "unverified",
+        "id": "nats_credentials",
+        "regex": "-----BEGIN (?:NATS )?USER (?:JWT|NKEY SEED)-----"
+      },
+      {
+        "action": "flag",
+        "id": "generic_assignment",
+        "regex": "(?i)\\b(?:password|passwd|secret|api[_-]?key|access[_-]?key|token)\\b\\s*[:=]\\s*[\"']?[^\\s\"']{12,}"
+      }
+    ],
+    "redactor_failure": "drop_content_and_fail_step",
+    "scanner_regex_dialect": "rust_regex",
+    "sinks": {
+      "artifacts": {
+        "applies_to": [
+          "content_addressed_artifacts",
+          "evidence_manifests"
+        ],
+        "on_match": "block"
+      },
+      "dashboard_and_api": {
+        "applies_to": [
+          "api_responses",
+          "dashboard_payloads"
+        ],
+        "on_match": "redact"
+      },
+      "diffs_and_files": {
+        "applies_to": [
+          "workspace_diff"
+        ],
+        "on_match": "block"
+      },
+      "domain_events": {
+        "applies_to": [
+          "outbox_payloads",
+          "jetstream_messages"
+        ],
+        "on_match": "block"
+      },
+      "github_bound_text": {
+        "applies_to": [
+          "pr_title",
+          "pr_body",
+          "issue_comment",
+          "review_comment",
+          "commit_message",
+          "branch_name",
+          "check_run_output",
+          "status_description"
+        ],
+        "on_match": "block"
+      },
+      "logs_and_traces": {
+        "applies_to": [
+          "stdout",
+          "stderr",
+          "tracing_events",
+          "otel_span_attributes",
+          "otel_log_records"
+        ],
+        "on_match": "redact"
+      },
+      "model_context": {
+        "applies_to": [
+          "prompts",
+          "tool_results",
+          "retrieved_context"
+        ],
+        "on_match": "redact"
+      }
+    },
+    "threats": [
+      "T-16",
+      "T-17",
+      "T-18",
+      "T-19",
+      "T-20"
+    ]
+  },
+  "supply_chain": {
+    "ci_actions_pinned_to_commit_sha": true,
+    "images": {
+      "built_from_source_by_factory": true,
+      "pinned_by_digest": true,
+      "rebuild_interval_days": 14,
+      "vulnerability_scan": "required"
+    },
+    "install_scripts": "disabled_in_fetch",
+    "licenses": {
+      "allow_list_in": "deny.toml",
+      "always_denied": [
+        "GPL",
+        "LGPL",
+        "AGPL",
+        "unknown"
+      ],
+      "default": "deny_unlisted"
+    },
+    "lockfiles": {
+      "frozen_in_gates": true,
+      "required": true
+    },
+    "new_direct_dependency": {
+      "approval": "human_always",
+      "heuristics_recorded": [
+        "registry_existence",
+        "first_publish_age_days",
+        "download_count",
+        "repository_link",
+        "typosquat_distance_to_popular_names",
+        "license"
+      ],
+      "min_first_publish_age_days": 30,
+      "new_means": "name_absent_from_base_commit_lockfile"
+    },
+    "registries_allowed_ref": "egress.profiles.fetch_deps",
+    "sbom": {
+      "format": "cyclonedx",
+      "required_for": [
+        "release",
+        "high_risk_jobs"
+      ]
+    },
+    "scanners": [
+      "cargo-deny",
+      "cargo-audit",
+      "osv-scanner",
+      "gitleaks",
+      "semgrep"
+    ],
+    "threats": [
+      "T-29",
+      "T-30"
+    ]
+  },
+  "tenancy": {
+    "database_row_level_security": "required",
+    "memory_stores": {
+      "access_boundary": "tenant_and_repository"
+    },
+    "messaging": {
+      "per_tenant_publish_subscribe_permissions": true,
+      "subject_prefix_per_tenant": true
+    },
+    "model_context": {
+      "cross_tenant_retrieval": "never"
+    },
+    "object_store": {
+      "key_per_tenant": "recommended",
+      "prefix_per_tenant": true
+    },
+    "sandbox": {
+      "shared_between_tenants": "never",
+      "warm_pool_across_tenants": "never",
+      "writable_cache_shared": "never"
+    },
+    "tenant_id_on_every_row": true,
+    "threats": [
+      "T-28"
+    ]
+  },
+  "tools": {
+    "agents_may_self_grant": false,
+    "default_action": "deny",
+    "entries": [
+      {
+        "args": {
+          "path": {
+            "access": "read",
+            "kind": "workspace_path"
+          }
+        },
+        "human_gate": "none",
+        "id": "fs.read",
+        "limits": {
+          "max_calls_per_task": 3000,
+          "max_result_bytes": 262144,
+          "timeout_s": 10
+        },
+        "profiles": [
+          "agent",
+          "verify"
+        ],
+        "risk": "low",
+        "roles": [
+          "builder",
+          "integrator",
+          "qa",
+          "code_reviewer",
+          "security_reviewer",
+          "reliability_reviewer",
+          "ux_reviewer",
+          "adversarial_reviewer",
+          "architect",
+          "architecture_critic",
+          "planner",
+          "documentation_planner",
+          "technical_writer",
+          "api_documentation",
+          "architecture_documentation",
+          "operations_writer",
+          "documentation_reviewer",
+          "repository_analyst"
+        ]
+      },
+      {
+        "args": {
+          "path": {
+            "access": "read",
+            "kind": "workspace_path"
+          }
+        },
+        "human_gate": "none",
+        "id": "fs.list",
+        "limits": {
+          "max_calls_per_task": 1000,
+          "max_result_bytes": 131072,
+          "timeout_s": 10
+        },
+        "profiles": [
+          "agent",
+          "verify"
+        ],
+        "risk": "low",
+        "roles": [
+          "builder",
+          "integrator",
+          "qa",
+          "code_reviewer",
+          "security_reviewer",
+          "reliability_reviewer",
+          "ux_reviewer",
+          "adversarial_reviewer",
+          "architect",
+          "architecture_critic",
+          "planner",
+          "documentation_planner",
+          "technical_writer",
+          "api_documentation",
+          "architecture_documentation",
+          "operations_writer",
+          "documentation_reviewer",
+          "repository_analyst"
+        ]
+      },
+      {
+        "args": {
+          "path": {
+            "access": "read",
+            "kind": "workspace_path"
+          },
+          "pattern": {
+            "kind": "bounded_string",
+            "max_len": 512
+          }
+        },
+        "human_gate": "none",
+        "id": "fs.search",
+        "limits": {
+          "max_calls_per_task": 1000,
+          "max_result_bytes": 131072,
+          "timeout_s": 20
+        },
+        "profiles": [
+          "agent",
+          "verify"
+        ],
+        "risk": "low",
+        "roles": [
+          "builder",
+          "integrator",
+          "qa",
+          "code_reviewer",
+          "security_reviewer",
+          "reliability_reviewer",
+          "ux_reviewer",
+          "adversarial_reviewer",
+          "architect",
+          "architecture_critic",
+          "planner",
+          "repository_analyst"
+        ]
+      },
+      {
+        "args": {
+          "content": {
+            "kind": "bounded_string",
+            "max_len": 5242880
+          },
+          "path": {
+            "access": "write",
+            "kind": "workspace_path"
+          }
+        },
+        "human_gate": "none",
+        "id": "fs.write",
+        "limits": {
+          "max_calls_per_task": 500,
+          "max_result_bytes": 4096,
+          "timeout_s": 10
+        },
+        "notes": "Writes go through path_access and protected_paths. Atomic temp-file plus rename.",
+        "profiles": [
+          "agent"
+        ],
+        "risk": "medium",
+        "roles": [
+          "builder",
+          "integrator",
+          "technical_writer",
+          "api_documentation",
+          "architecture_documentation",
+          "operations_writer"
+        ]
+      },
+      {
+        "args": {
+          "path": {
+            "access": "write",
+            "kind": "workspace_path"
+          }
+        },
+        "human_gate": "none",
+        "id": "fs.delete",
+        "limits": {
+          "max_calls_per_task": 100,
+          "max_result_bytes": 1024,
+          "timeout_s": 10
+        },
+        "profiles": [
+          "agent"
+        ],
+        "risk": "medium",
+        "roles": [
+          "builder",
+          "integrator"
+        ]
+      },
+      {
+        "args": {
+          "argv": {
+            "kind": "argv_array",
+            "policy": "command_sets"
+          },
+          "cwd": {
+            "access": "read",
+            "kind": "workspace_path"
+          },
+          "env": {
+            "kind": "fixed_by_supervisor"
+          }
+        },
+        "human_gate": "none",
+        "id": "exec.run",
+        "limits": {
+          "kill_process_group": true,
+          "max_calls_per_task": 300,
+          "max_result_bytes": 262144,
+          "timeout_s": 600
+        },
+        "notes": "In fetch_deps the commands are chosen by the supervisor after the dependency decision, not requested by an agent. The same wrapper and command_sets apply.",
+        "profiles": [
+          "agent",
+          "verify",
+          "fetch_deps"
+        ],
+        "risk": "high",
+        "roles": [
+          "builder",
+          "integrator",
+          "qa",
+          "adversarial_reviewer"
+        ]
+      },
+      {
+        "enabled": false,
+        "human_gate": "per_call",
+        "id": "exec.shell",
+        "profiles": [],
+        "risk": "high",
+        "roles": []
+      },
+      {
+        "description": "status, diff, log, show against the host-side trusted git directory.",
+        "human_gate": "none",
+        "id": "vcs.read",
+        "limits": {
+          "max_calls_per_task": 200,
+          "max_result_bytes": 262144,
+          "timeout_s": 20
+        },
+        "profiles": [
+          "agent"
+        ],
+        "risk": "low",
+        "roles": [
+          "builder",
+          "integrator",
+          "qa",
+          "code_reviewer",
+          "security_reviewer",
+          "reliability_reviewer",
+          "adversarial_reviewer"
+        ]
+      },
+      {
+        "description": "Control plane commits the workspace to the job branch with a hardened git environment.",
+        "human_gate": "none",
+        "id": "vcs.commit",
+        "limits": {
+          "max_calls_per_task": 20,
+          "max_result_bytes": 4096,
+          "timeout_s": 60
+        },
+        "profiles": [
+          "agent"
+        ],
+        "risk": "medium",
+        "roles": [
+          "builder",
+          "integrator"
+        ]
+      },
+      {
+        "args": {
+          "ecosystem": {
+            "kind": "enum",
+            "values": [
+              "cargo",
+              "npm",
+              "pip",
+              "go"
+            ]
+          },
+          "justification": {
+            "kind": "bounded_string",
+            "max_len": 1000
+          },
+          "name": {
+            "kind": "bounded_string",
+            "max_len": 214
+          },
+          "version_req": {
+            "kind": "bounded_string",
+            "max_len": 64
+          }
+        },
+        "description": "Typed dependency request. With the agent CLI inside the sandbox this is a field of the agent's structured result, not a mediated call. A human decides every new direct dependency; a fetch_deps run follows only on approval.",
+        "human_gate": "per_call",
+        "id": "deps.request",
+        "limits": {
+          "max_calls_per_task": 10,
+          "max_result_bytes": 4096,
+          "timeout_s": 10
+        },
+        "profiles": [
+          "agent"
+        ],
+        "risk": "medium",
+        "roles": [
+          "builder",
+          "integrator"
+        ]
+      },
+      {
+        "args": {
+          "url": {
+            "kind": "url",
+            "schemes": [
+              "https"
+            ]
+          }
+        },
+        "description": "Factory-side fetch through the SSRF guard (see untrusted_content.web_fetch). Never available to builders.",
+        "human_gate": "none",
+        "id": "net.fetch",
+        "limits": {
+          "max_calls_per_task": 30,
+          "max_result_bytes": 524288,
+          "timeout_s": 20
+        },
+        "profiles": [],
+        "risk": "high",
+        "roles": [
+          "research",
+          "intake"
+        ]
+      },
+      {
+        "human_gate": "none",
+        "id": "spec.read",
+        "limits": {
+          "max_calls_per_task": 200,
+          "max_result_bytes": 262144,
+          "timeout_s": 5
+        },
+        "profiles": [
+          "agent",
+          "verify"
+        ],
+        "risk": "low",
+        "roles": [
+          "architect",
+          "architecture_critic",
+          "planner",
+          "builder",
+          "qa",
+          "code_reviewer",
+          "security_reviewer",
+          "reliability_reviewer",
+          "ux_reviewer",
+          "adversarial_reviewer",
+          "documentation_planner",
+          "technical_writer",
+          "documentation_reviewer"
+        ]
+      },
+      {
+        "description": "Structured, schema-validated output channel. The only way an agent returns results.",
+        "human_gate": "none",
+        "id": "report.submit",
+        "limits": {
+          "max_calls_per_task": 20,
+          "max_result_bytes": 524288,
+          "timeout_s": 5
+        },
+        "profiles": [
+          "agent",
+          "verify"
+        ],
+        "risk": "low",
+        "roles": [
+          "*"
+        ]
+      }
+    ],
+    "grant_authority": "policy_engine",
+    "never_grantable": [
+      "github.write",
+      "vcs.push",
+      "merge",
+      "approval.grant",
+      "policy.write",
+      "tool.grant",
+      "secrets.read",
+      "docker.any",
+      "audit.write"
+    ],
+    "threats": [
+      "T-06",
+      "T-07",
+      "T-13"
+    ]
+  },
+  "untrusted_content": {
+    "agent_runtimes": {
+      "claude_code": {
+        "auth": "ANTHROPIC_API_KEY_or_apiKeyHelper_pointing_at_job_token",
+        "forbidden_flags_outside_verified_sandbox": [
+          "--dangerously-skip-permissions",
+          "--allow-dangerously-skip-permissions"
+        ],
+        "per_run_budget_flag": "--max-budget-usd",
+        "per_stage_flags_ref": "agent_stage_profiles",
+        "required_flags": [
+          "--bare",
+          "--strict-mcp-config",
+          "--no-session-persistence"
+        ],
+        "settings_source": "factory_generated_file_via_--settings",
+        "tools_flag": "--tools / --allowedTools / --disallowedTools from the manifest"
+      },
+      "codex_cli": {
+        "env_policy": "shell_environment_policy.inherit=none plus explicit allowlist (key exists per --help example; exact syntax to confirm)",
+        "forbidden_flags_outside_verified_sandbox": [
+          "--dangerously-bypass-approvals-and-sandbox",
+          "--dangerously-bypass-hook-trust"
+        ],
+        "required_flags": [
+          "--ignore-user-config",
+          "--ignore-rules",
+          "--ephemeral",
+          "--sandbox read-only|workspace-write"
+        ]
+      },
+      "instruction_files_are_data": true,
+      "probe_required_before_enable": true,
+      "repo_config_files_never_honored": [
+        ".claude/settings.json",
+        ".claude/settings.local.json",
+        ".mcp.json",
+        ".codex/config.toml",
+        "CLAUDE.md",
+        "AGENTS.md"
+      ]
+    },
+    "authority_from_content": "never",
+    "classes": [
+      "issue_text",
+      "issue_comment",
+      "pr_text",
+      "repo_file",
+      "commit_message",
+      "tool_output",
+      "web_content",
+      "dependency_text",
+      "model_output",
+      "specification_text",
+      "retrieved_memory"
+    ],
+    "injection_signal_detector": {
+      "enabled": true,
+      "on_signal": "raise_to_needs_human_when_stage_has_write_tools",
+      "role": "telemetry_and_escalation_only"
+    },
+    "prompt_assembly": {
+      "envelope_delimiter_collision_check": true,
+      "untrusted_in_instruction_channel": "forbidden",
+      "wrap_in_data_envelope": true
+    },
+    "specification_authorization": {
+      "parsed_from_prose": "never",
+      "source": "structured_field_written_by_authenticated_human"
+    },
+    "structured_output": {
+      "bounded_repair_attempts": 2,
+      "max_output_bytes": 524288,
+      "schema_validated": true,
+      "unknown_fields": "reject"
+    },
+    "threats": [
+      "T-01",
+      "T-02",
+      "T-03",
+      "T-04",
+      "T-05",
+      "T-07",
+      "T-33"
+    ],
+    "web_fetch": {
+      "allowed_content_types": [
+        "text/html",
+        "text/plain",
+        "text/markdown",
+        "application/json",
+        "application/pdf"
+      ],
+      "cookies_and_auth_headers": "never",
+      "max_bytes": 524288,
+      "max_redirects": 3,
+      "reject_resolved_ip_ranges_ref": "egress.proxy_rules.reject_resolved_ip_ranges",
+      "resolve_then_pin_ip": true,
+      "revalidate_on_redirect": true,
+      "runs_in": "control_plane_gateway",
+      "schemes": [
+        "https"
+      ]
+    }
+  },
+  "webhook": {
+    "accepted_events": [
+      {
+        "actions": [
+          "labeled",
+          "edited",
+          "closed",
+          "reopened",
+          "transferred",
+          "deleted"
+        ],
+        "event": "issues"
+      },
+      {
+        "actions": [
+          "created"
+        ],
+        "event": "issue_comment"
+      },
+      {
+        "actions": [
+          "synchronize",
+          "closed",
+          "reopened",
+          "edited"
+        ],
+        "event": "pull_request"
+      },
+      {
+        "actions": [
+          "submitted",
+          "dismissed"
+        ],
+        "event": "pull_request_review"
+      },
+      {
+        "actions": [
+          "created",
+          "deleted",
+          "suspend",
+          "unsuspend"
+        ],
+        "event": "installation"
+      },
+      {
+        "actions": [
+          "added",
+          "removed"
+        ],
+        "event": "installation_repositories"
+      },
+      {
+        "actions": [],
+        "event": "ping"
+      }
+    ],
+    "content_types": [
+      "application/json"
+    ],
+    "dedupe": {
+      "key": "X-GitHub-Delivery",
+      "on_duplicate": "ack_and_ignore",
+      "retention_days": 30,
+      "store": "postgres_unique_constraint"
+    },
+    "ignore_senders": [
+      "self_app_bot",
+      "other_bots_not_on_allowlist"
+    ],
+    "max_body_bytes": 1048576,
+    "payload_is_hint_only": true,
+    "rate_limit": {
+      "on_exceed": "reject_429",
+      "per_installation_per_minute": 120,
+      "per_source_ip_per_minute": 600
+    },
+    "refetch_before_acting": [
+      "issue_state",
+      "labels",
+      "label_actor_numeric_id",
+      "pr_head_sha",
+      "branch_protection"
+    ],
+    "required_headers": [
+      "X-GitHub-Event",
+      "X-GitHub-Delivery",
+      "X-Hub-Signature-256"
+    ],
+    "respond_within_s": 10,
+    "semantic_idempotency": {
+      "key_fields": [
+        "event",
+        "action",
+        "installation_id",
+        "repository_id",
+        "subject_node_id",
+        "subject_updated_at",
+        "sender_id"
+      ],
+      "retention_days": 30
+    },
+    "signature": {
+      "algorithm": "hmac-sha256",
+      "compare": "constant_time",
+      "header": "X-Hub-Signature-256",
+      "input": "raw_request_body",
+      "legacy_sha1_header": "ignore",
+      "prefix": "sha256="
+    },
+    "tenant_binding": [
+      "installation_id",
+      "repository_id"
+    ],
+    "threats": [
+      "T-21",
+      "T-22",
+      "T-23"
+    ],
+    "verify_before_db_access": true,
+    "verify_before_parse": true
+  }
+}

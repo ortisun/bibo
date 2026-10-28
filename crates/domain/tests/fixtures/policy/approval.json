@@ -1,0 +1,737 @@
+{
+  "actions": [
+    {
+      "id": "accept_issue_for_intake",
+      "min_level": "L0",
+      "requires": "none",
+      "threats": [
+        "T-23"
+      ],
+      "when": "label `factory` applied by a person on the requester allowlist, matched by numeric user ID"
+    },
+    {
+      "id": "post_comment",
+      "min_level": "L0",
+      "requires": "none",
+      "threats": [
+        "T-18"
+      ],
+      "when": "text passes output_hygiene and secret checks"
+    },
+    {
+      "id": "set_status_or_check",
+      "min_level": "L0",
+      "requires": "none",
+      "threats": [
+        "T-13"
+      ],
+      "when": "result derived from supervisor-observed gate evidence"
+    },
+    {
+      "id": "push_factory_branch",
+      "min_level": "L1",
+      "requires": "none",
+      "threats": [
+        "T-12",
+        "T-24"
+      ],
+      "when": "branch matches factory/*, diff passes protected_path_check and secret_scan"
+    },
+    {
+      "id": "open_draft_pr",
+      "min_level": "L1",
+      "requires": "none",
+      "threats": [
+        "T-18"
+      ],
+      "when": "branch pushed; body passes output_hygiene"
+    },
+    {
+      "approver_roles": [
+        "approver"
+      ],
+      "id": "freeze_specification",
+      "min_level": "L1",
+      "requires": "human",
+      "threats": [
+        "T-01",
+        "T-23"
+      ],
+      "when": "risk tier at least medium or open questions remain; below that the spec gate decides"
+    },
+    {
+      "approver_roles": [
+        "approver"
+      ],
+      "id": "mark_pr_ready",
+      "min_level": "L1",
+      "requires_by_level": {
+        "L0": "forbidden",
+        "L1": "human",
+        "L2": "policy",
+        "L3": "policy"
+      },
+      "threats": [
+        "T-14"
+      ],
+      "when": "policy means the L2 preconditions are satisfied"
+    },
+    {
+      "approver_roles": [
+        "approver"
+      ],
+      "id": "merge_pr",
+      "min_level": "L1",
+      "requires_by_level": {
+        "L0": "forbidden",
+        "L1": "human",
+        "L2": "human",
+        "L3": "policy"
+      },
+      "threats": [
+        "T-14"
+      ],
+      "when": "L3 is disabled; a human merge still passes the policy checks and is bound to the head SHA"
+    },
+    {
+      "approver_roles": [
+        "approver"
+      ],
+      "id": "approve_pr",
+      "min_level": "L1",
+      "requires": "human",
+      "threats": [
+        "T-23"
+      ]
+    },
+    {
+      "approver_roles": [
+        "approver"
+      ],
+      "id": "reject_or_request_rework",
+      "min_level": "L1",
+      "requires": "human",
+      "threats": [
+        "T-23"
+      ]
+    },
+    {
+      "approver_roles": [
+        "operator"
+      ],
+      "id": "pause_or_resume_job",
+      "min_level": "L1",
+      "requires": "human",
+      "threats": [
+        "T-23"
+      ]
+    },
+    {
+      "approver_roles": [
+        "operator"
+      ],
+      "id": "cancel_job",
+      "min_level": "L1",
+      "requires": "human",
+      "threats": [
+        "T-23"
+      ]
+    },
+    {
+      "id": "close_or_label_issue",
+      "min_level": "L1",
+      "requires": "none",
+      "when": "limited to labels in the factory namespace"
+    },
+    {
+      "approver_roles": [
+        "approver"
+      ],
+      "id": "add_new_direct_dependency",
+      "min_level": "L1",
+      "requires": "human",
+      "threats": [
+        "T-29"
+      ],
+      "when": "always, for a package name absent from the base commit lockfile; no allowlist or heuristic approves it; a package first published less than 30 days ago needs a security_approver"
+    },
+    {
+      "id": "run_fetch_deps",
+      "min_level": "L1",
+      "requires": "none",
+      "threats": [
+        "T-29"
+      ],
+      "when": "after dependency policy decision; allowlisted registries only"
+    },
+    {
+      "approver_roles": [
+        "security_approver"
+      ],
+      "id": "change_protected_path",
+      "min_level": "L1",
+      "requires": "human_and_policy",
+      "threats": [
+        "T-12"
+      ],
+      "when": "needs spec_authorization AND independent_policy_review AND human_approval"
+    },
+    {
+      "approver_roles": [
+        "security_approver"
+      ],
+      "id": "grant_tool_outside_manifest",
+      "min_level": "L1",
+      "requires": "human",
+      "threats": [
+        "T-06"
+      ]
+    },
+    {
+      "approver_roles": [
+        "security_approver"
+      ],
+      "id": "use_exec_shell_breakglass",
+      "min_level": "L1",
+      "requires": "human",
+      "threats": [
+        "T-06"
+      ],
+      "when": "per call, single task, recorded"
+    },
+    {
+      "approver_roles": [
+        "security_approver"
+      ],
+      "id": "widen_egress_allowlist",
+      "min_level": "L1",
+      "requires": "human",
+      "threats": [
+        "T-17"
+      ]
+    },
+    {
+      "approver_roles": [
+        "org_admin"
+      ],
+      "id": "raise_budget_ceiling",
+      "min_level": "L1",
+      "requires": "human",
+      "threats": [
+        "T-26"
+      ]
+    },
+    {
+      "approver_roles": [
+        "repo_admin"
+      ],
+      "id": "install_spec_kit_or_tooling",
+      "min_level": "L1",
+      "requires": "human",
+      "when": "the master prompt forbids running installation scripts without authorization"
+    },
+    {
+      "approver_roles": [
+        "org_admin"
+      ],
+      "id": "change_authority_allowlist",
+      "min_level": "L1",
+      "requires": "human",
+      "threats": [
+        "T-23",
+        "T-24"
+      ],
+      "when": "adds, removes or widens a designation; adding or widening security_approver or org_admin needs two distinct org_admins and never self-granted"
+    },
+    {
+      "approver_roles": [
+        "org_admin",
+        "security_approver"
+      ],
+      "id": "accept_subscription_login_exception",
+      "min_level": "L1",
+      "requires": "human",
+      "threats": [
+        "T-19",
+        "T-20"
+      ],
+      "when": "both sign; needs a written provider-terms determination, a named demo profile, a dedicated host, a fixture repository only and an expiry of at most 30 days (secrets-and-credentials.md section 4.5)"
+    },
+    {
+      "approver_roles": [
+        "security_approver"
+      ],
+      "id": "waive_failed_gate",
+      "min_level": "L1",
+      "requires": "human",
+      "threats": [
+        "T-13"
+      ],
+      "when": "only gates NOT listed in security.yaml gate_integrity.nonwaivable_gates; waiver has an owner and an expiry"
+    },
+    {
+      "approver_roles": [
+        "security_approver"
+      ],
+      "id": "accept_residual_risk",
+      "min_level": "L1",
+      "requires": "human",
+      "threats": [
+        "T-31"
+      ],
+      "when": "owner and expiry recorded"
+    },
+    {
+      "approver_roles": [
+        "org_admin"
+      ],
+      "id": "send_code_to_new_model_provider",
+      "min_level": "L1",
+      "requires": "human",
+      "threats": [
+        "T-20",
+        "T-28"
+      ]
+    },
+    {
+      "approver_roles": [
+        "org_admin"
+      ],
+      "id": "write_to_additional_repository",
+      "min_level": "L1",
+      "requires": "human",
+      "threats": [
+        "T-24"
+      ],
+      "when": "a job is bound to exactly one repository; cross-repository writes are a new job"
+    }
+  ],
+  "always_human": [
+    "merge_to_default_branch_unless_L3_explicitly_enabled",
+    "enable_auto_merge_for_a_repository",
+    "raise_autonomy_level",
+    "any_deployment_or_release_publication",
+    "publish_package_or_container_image",
+    "create_or_push_tags",
+    "change_protected_path",
+    "modify_ci_workflows_or_gate_configuration",
+    "modify_security_or_approval_policy",
+    "add_new_direct_dependency",
+    "widen_egress_allowlist",
+    "grant_tool_outside_agent_manifest",
+    "enable_exec_shell_breakglass",
+    "raise_budget_ceiling",
+    "waive_any_gate",
+    "accept_residual_risk",
+    "freeze_specification_with_risk_at_least_medium",
+    "access_additional_repository_or_organization",
+    "send_code_to_additional_model_provider",
+    "install_or_update_spec_kit_or_other_tooling",
+    "change_authority_allowlist",
+    "accept_subscription_login_exception",
+    "delete_branch_repository_release_or_data",
+    "force_push_or_rewrite_history",
+    "money_movement_live_orders_or_capital_transfer",
+    "physical_actuation",
+    "regulated_or_compliance_sign_off",
+    "restore_or_rotate_credentials_after_incident"
+  ],
+  "approval_binding": {
+    "binds_to": [
+      "pr_head_sha",
+      "tree_hash",
+      "evidence_manifest_hash",
+      "policy_hash",
+      "spec_version",
+      "base_sha"
+    ],
+    "expires_after_hours": 72,
+    "github_merge_must_pass_expected_head_sha": true,
+    "invalidated_by": [
+      "new_commit_on_head",
+      "rebase_or_force_push",
+      "base_branch_moved_requiring_resync",
+      "policy_change",
+      "specification_revision",
+      "any_gate_result_changed",
+      "approver_removed_from_allowlist_or_entry_expired"
+    ],
+    "record_fields": [
+      "approval_id",
+      "tenant_id",
+      "job_id",
+      "action",
+      "approver_github_user_id",
+      "approver_designation",
+      "allowlist_version_hash",
+      "decision",
+      "binds_to",
+      "reason",
+      "channel",
+      "created_at"
+    ],
+    "step_up_authentication_required_for": [
+      "change_protected_path",
+      "widen_egress_allowlist",
+      "raise_budget_ceiling",
+      "raise_autonomy_level",
+      "accept_residual_risk",
+      "waive_any_gate"
+    ]
+  },
+  "authority": {
+    "allowlist_changes": {
+      "action": "change_authority_allowlist",
+      "audit": "every_change_recorded_with_before_and_after_hash",
+      "requires_distinct_org_admins": 2,
+      "self_grant_allowed": false
+    },
+    "bots_may_be_listed": false,
+    "entry_expiry": "optional",
+    "entry_fields": [
+      "tenant_id",
+      "github_user_id",
+      "login",
+      "designations",
+      "repositories",
+      "added_by",
+      "added_at",
+      "expires_at"
+    ],
+    "evaluated": "at_decision_time_not_cached",
+    "github_permission": {
+      "additional_condition": {
+        "at_least": "triage",
+        "can_only_deny": true,
+        "enabled": false
+      },
+      "can_grant_authority": false
+    },
+    "identity_key": "github_user_numeric_id",
+    "location": "protected_configuration",
+    "login_is_display_only": true,
+    "never_read_from": [
+      "target_repository",
+      "feature_branch",
+      "builder_workspace",
+      "dashboard_database",
+      "issue_or_comment_text"
+    ],
+    "read_from": [
+      "protected_default_branch",
+      "signed_release"
+    ],
+    "scope": "tenant",
+    "source": "named_allowlist"
+  },
+  "autonomy": {
+    "auto_merge": {
+      "enabled": false,
+      "per_repo_opt_in_only": true
+    },
+    "default_level": "L1",
+    "deploy": {
+      "approver_roles": [
+        "org_admin"
+      ],
+      "autonomous": "never",
+      "enabled": false,
+      "requires": "human"
+    },
+    "levels": [
+      {
+        "description": "Reads issues and repository, posts comments and status. No branches, no pull requests.",
+        "github_writes": [
+          "comment",
+          "status",
+          "check_run"
+        ],
+        "id": "L0",
+        "name": "observe_only"
+      },
+      {
+        "description": "DEFAULT. Creates factory branches and DRAFT pull requests. Every promotion step needs a human.",
+        "github_writes": [
+          "comment",
+          "status",
+          "check_run",
+          "push_factory_branch",
+          "open_draft_pr",
+          "update_draft_pr"
+        ],
+        "human_required_for": [
+          "spec_freeze_when_risk_at_least_medium",
+          "mark_pr_ready",
+          "merge_pr"
+        ],
+        "id": "L1",
+        "name": "human_approval"
+      },
+      {
+        "description": "May mark a pull request ready for review when all gates pass. A human still merges.",
+        "github_writes": [
+          "comment",
+          "status",
+          "check_run",
+          "push_factory_branch",
+          "open_draft_pr",
+          "update_draft_pr",
+          "mark_pr_ready"
+        ],
+        "human_required_for": [
+          "merge_pr"
+        ],
+        "id": "L2",
+        "name": "assisted_ready",
+        "preconditions": [
+          "all_gates_PASSED",
+          "no_protected_path_change",
+          "risk_tier_at_most_medium",
+          "security_review_PASS"
+        ]
+      },
+      {
+        "description": "OFF. Documented so the shape is fixed. Needs explicit per-repo opt-in.",
+        "eligibility_all_of": [
+          "risk_tier_is_low",
+          "no_protected_path_change",
+          "no_sensitive_file_change",
+          "no_new_dependency",
+          "all_gates_PASSED_on_final_head_sha",
+          "independent_review_PASS_with_no_open_findings",
+          "security_review_PASS",
+          "documentation_gate_PASSED_or_NOT_APPLICABLE",
+          "branch_protection_and_required_checks_intact",
+          "final_validation_after_rebase_or_sync",
+          "authorized_identity_recorded",
+          "audit_event_written_before_merge"
+        ],
+        "enabled": false,
+        "github_writes": [
+          "comment",
+          "status",
+          "check_run",
+          "push_factory_branch",
+          "open_draft_pr",
+          "update_draft_pr",
+          "mark_pr_ready",
+          "merge_pr"
+        ],
+        "human_required_for": [],
+        "id": "L3",
+        "name": "auto_merge_low_risk",
+        "opt_in_requires": [
+          "human_approval_by_org_admin",
+          "written_justification"
+        ],
+        "revoke_automatically_on": [
+          "escaped_defect_in_repo",
+          "nonwaivable_gate_failure",
+          "policy_change",
+          "security_incident"
+        ]
+      }
+    ]
+  },
+  "commands": {
+    "channels": [
+      "dashboard",
+      "cli",
+      "github_comment"
+    ],
+    "dashboard_and_cli": {
+      "authentication": "required",
+      "csrf_protection": "required_for_dashboard",
+      "session_binding": "tenant_scoped"
+    },
+    "github_comment": {
+      "accept_event": "issue_comment.created",
+      "authorization": "allowlist_membership_by_numeric_user_id_with_required_designation",
+      "first_line_only": true,
+      "ignore_if_sender_type_not": "User",
+      "ignore_inside": [
+        "code_blocks",
+        "block_quotes",
+        "html_comments"
+      ],
+      "ignore_senders": [
+        "self_app_bot",
+        "other_bots"
+      ],
+      "one_command_per_comment": true,
+      "prefix": "/factory",
+      "syntax": "/factory <verb> [free text reason]",
+      "unauthorized_response": "silent_audit_only"
+    },
+    "rate_limit": {
+      "per_user_per_minute": 20
+    },
+    "threats": [
+      "T-23",
+      "T-32"
+    ],
+    "verbs": [
+      "approve",
+      "reject",
+      "pause",
+      "resume",
+      "rework",
+      "cancel"
+    ]
+  },
+  "intake": {
+    "authorizing_actor": "label_sender",
+    "authorizing_actor_requires_designation": "requester",
+    "github_permission_is_authorization": false,
+    "label_presence_alone_is_authorization": false,
+    "on_out_of_policy_request": "reject_with_concise_explanation",
+    "on_unauthorized": "comment_once_with_reason_and_audit",
+    "reauthorize_on_edit_by_actor_other_than_authorizer": true,
+    "snapshot_content_hash_at_authorization": true,
+    "threats": [
+      "T-23",
+      "T-01"
+    ],
+    "trigger_label": "factory"
+  },
+  "never_allowed_even_with_human_via_the_factory": [
+    "force_push_to_default_branch",
+    "bypass_branch_protection",
+    "disable_audit_logging",
+    "read_secret_values_into_agent_context",
+    "run_agent_with_unsandboxed_host_execution"
+  ],
+  "policy": {
+    "config_source": "protected_default_branch",
+    "conflict_resolution": "deny_overrides",
+    "default_action": "require_human",
+    "id": "approval",
+    "project_overrides": "tighten_only",
+    "status": "designed",
+    "threats": [
+      "T-14",
+      "T-23",
+      "T-24"
+    ],
+    "version": 1
+  },
+  "risk_classification": {
+    "agent_may_lower_tier": false,
+    "agent_may_raise_tier": true,
+    "computed_by": "policy_engine_from_trusted_diff_and_spec"
+  },
+  "risk_tiers": [
+    {
+      "criteria_any": [
+        "docs_only",
+        "tests_only_new_files",
+        "single_module_change_without_sensitive_or_protected_paths"
+      ],
+      "id": "low",
+      "required_approvals": 1,
+      "required_reviews": [
+        "code_reviewer"
+      ]
+    },
+    {
+      "criteria_any": [
+        "multi_module_change",
+        "public_api_change",
+        "schema_migration_without_data_loss"
+      ],
+      "id": "medium",
+      "required_approvals": 1,
+      "required_reviews": [
+        "code_reviewer",
+        "qa"
+      ]
+    },
+    {
+      "approver_must_differ_from_requester": true,
+      "criteria_any": [
+        "authn_authz_change",
+        "secret_handling_change",
+        "new_dependency",
+        "sensitive_file_change",
+        "data_migration",
+        "concurrency_or_locking_change",
+        "infra_change"
+      ],
+      "id": "high",
+      "required_approvals": 1,
+      "required_reviews": [
+        "code_reviewer",
+        "qa",
+        "security_reviewer",
+        "adversarial_reviewer"
+      ]
+    },
+    {
+      "approver_must_differ_from_requester": true,
+      "approver_roles": [
+        "security_approver"
+      ],
+      "criteria_any": [
+        "protected_path_change",
+        "policy_or_sandbox_change",
+        "money_movement",
+        "physical_actuation",
+        "regulated_workflow",
+        "production_data_access"
+      ],
+      "id": "critical",
+      "required_approvals": 2,
+      "required_reviews": [
+        "code_reviewer",
+        "qa",
+        "security_reviewer",
+        "adversarial_reviewer"
+      ]
+    }
+  ],
+  "roles": [
+    {
+      "description": "May submit a request (apply the `factory` label, use the API or CLI).",
+      "designation": "requester",
+      "id": "requester"
+    },
+    {
+      "description": "May pause, resume, cancel and view jobs. A separate designation on the same allowlist.",
+      "designation": "operator",
+      "id": "operator"
+    },
+    {
+      "description": "May approve, reject and request rework.",
+      "designation": "approver",
+      "id": "approver",
+      "must_be_human_user": true
+    },
+    {
+      "description": "May approve changes to protected paths, egress, tool grants and sandbox settings.",
+      "designation": "security_approver",
+      "id": "security_approver"
+    },
+    {
+      "description": "May lower autonomy and change the factory's settings for a repository. A factory designation, not a GitHub role.",
+      "designation": "repo_admin",
+      "id": "repo_admin"
+    },
+    {
+      "description": "May raise autonomy, enable auto-merge or deploy, change budgets above ceilings, and edit the allowlist.",
+      "designation": "org_admin",
+      "id": "org_admin"
+    }
+  ],
+  "schema_version": 1,
+  "separation_of_duties": {
+    "approver_may_equal_requester_when_low_risk": true,
+    "approver_must_differ_from_requester_when": [
+      "risk_tier_at_least_high",
+      "protected_path_change",
+      "sensitive_file_change",
+      "new_dependency"
+    ],
+    "factory_app_may_approve": false,
+    "security_approver_must_differ_from_requester": true
+  }
+}
