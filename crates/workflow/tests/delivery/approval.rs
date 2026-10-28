@@ -540,6 +540,31 @@ async fn negative_nt_mrg_03_the_head_moving_after_approval_invalidates_the_appro
 }
 
 #[tokio::test]
+async fn negative_nt_mrg_03_a_refusal_for_a_moved_head_also_ends_the_approvals_on_record() {
+    // No webhook told the service about the push. The next decision finds the head moved, refuses,
+    // and the approval that was on record for the old head stops counting at once.
+    let rig = Rig::new(RiskTier::Critical).await;
+    let first = rig.command(Verb::Approve, rig.person(2)).await;
+    rig.service.submit(first).await.expect("recorded");
+    let shown = rig.request().pr_head;
+    assert_eq!(rig.valid(&shown).await, 1);
+    rig.host
+        .head_moves_to(CommitSha::parse(&"9".repeat(40)).expect("a sha"));
+    let second = rig.command(Verb::Approve, rig.person(3)).await;
+    assert_eq!(
+        refused(rig.service.submit(second).await),
+        Refusal::HeadMoved
+    );
+    assert_eq!(rig.valid(&shown).await, 0);
+    assert_eq!(
+        rig.approvals().await[0]
+            .invalidated
+            .map(|(_, reason)| reason),
+        Some(ApprovalInvalidation::NewCommit)
+    );
+}
+
+#[tokio::test]
 async fn negative_nt_mrg_03_the_second_approver_alone_does_not_pass_a_critical_change() {
     let rig = Rig::new(RiskTier::Critical).await;
     // The same person twice counts once: the second is refused as already decided.
