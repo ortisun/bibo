@@ -141,7 +141,7 @@ struct EntryFile {
     expires_at: Option<String>,
 }
 
-fn designation(name: &str) -> Option<Designation> {
+pub(crate) fn designation(name: &str) -> Option<Designation> {
     Some(match name {
         "requester" => Designation::Requester,
         "operator" => Designation::Operator,

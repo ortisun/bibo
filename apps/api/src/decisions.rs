@@ -21,11 +21,16 @@
 //! binding checks of `ApprovalService::judge` (head, tree, base and evidence as they are now). The
 //! engine runs in the worker, which holds the sandbox, the runtime and the GitHub App; the API
 //! holds none of them and cannot build one without a fake. So the answer is `202` with
-//! `"applied": false`: the decision is recorded, authorized by the allowlist and ready for the
-//! worker to judge. No process reads these records yet; the README lists the smallest change.
+//! `"applied": false`: the decision is recorded, authorized by the allowlist and waiting for the
+//! worker. `"applied": false` is true of the moment of the answer and says nothing about what
+//! comes after. The worker (`factory_composition::decisions::ClaimWork`, a step before each claim)
+//! reads the record, checks the allowlist again by numeric id, applies the decision once and
+//! writes the audit record `decision.applied` or `decision.rejected` for the same job, which
+//! `GET /v1/jobs/{id}/timeline` shows.
 
 use axum::http::{HeaderMap, StatusCode};
 use factory_composition::commands::{CommandError, ParsedDecision, parse_form};
+use factory_composition::decisions::DecisionFields;
 use factory_domain::ids::{AuditEventId, CorrelationId, JobId, StageRunId};
 use factory_domain::vocabulary::HumanRole;
 use factory_ports::store::{
@@ -205,15 +210,17 @@ pub async fn decide(
     } else {
         AuditEventId::from_uuid(ids.new_uuid())
     };
-    let subject = format!(
-        "verb={} job={} run={} head={} evidence={} target={}",
-        decision.verb.as_str(),
-        job_id.as_text(),
-        stage_run.map_or_else(|| "none".to_owned(), |run| run.as_text()),
-        decision.head.as_ref().map_or("none", |h| h.as_str()),
-        decision.evidence.as_ref().map_or("none", |e| e.as_str()),
-        decision.target.map_or("none", |t| t.as_str()),
-    );
+    // The one grammar of the subject is shared with the worker, which reads it back to apply the
+    // decision.
+    let subject = DecisionFields {
+        verb: decision.verb,
+        job: job_id,
+        stage_run,
+        head: decision.head.as_ref().map(|h| h.as_str().to_owned()),
+        evidence: decision.evidence.as_ref().map(|e| e.as_str().to_owned()),
+        target: decision.target.map(|t| t.as_str().to_owned()),
+    }
+    .subject();
     let (action, outcome, reason) = if allowed {
         (
             "decision.requested",

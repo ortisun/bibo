@@ -74,6 +74,31 @@ impl JobView {
 }
 
 impl Engine {
+    /// Whether the engine already applied the command with this id to the job.
+    ///
+    /// A decision the engine applies leaves events that carry the command id as their cause, and
+    /// a repeat of the command is answered `Duplicate`. A caller that applies decisions from a
+    /// queue and may stop between the engine's commit and its own record of it asks this first,
+    /// so that the repeat is a no-op and not a second application.
+    ///
+    /// # Errors
+    /// [`EngineError::NotFound`] when the job does not exist for the tenant, and the store errors.
+    pub async fn command_applied(
+        &self,
+        tenant: TenantId,
+        job: JobId,
+        command: factory_domain::ids::CausationId,
+    ) -> Result<bool, EngineError> {
+        let mut tx = self.tenant_tx(tenant).await?;
+        let loaded = async {
+            tx.get_job(job).await?;
+            Timeline::load(&mut *tx, job).await
+        }
+        .await;
+        tx.rollback().await?;
+        Ok(loaded?.has_applied(command))
+    }
+
     /// Reads a job with its stage runs and attempts.
     ///
     /// # Errors
