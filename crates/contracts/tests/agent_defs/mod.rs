@@ -19,6 +19,7 @@ use serde_json::Value;
 use crate::support::{read_text, repo_root};
 
 pub mod checks;
+pub mod render;
 
 /// The Slice 1 agent set, by directory name. The package `s1-agent-definitions` asks for exactly
 /// these nine roles and no others.
