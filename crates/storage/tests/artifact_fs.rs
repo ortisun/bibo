@@ -139,10 +139,10 @@ impl ArtifactStoreSubject for LocalSubject {
 
     async fn index_for(&self, scope: &TenantScope, reference: &ArtifactRef) {
         let mut tx = self.index.begin(*scope).await.expect("begin");
-        tx.index_artifact(NewArtifactIndexEntry {
-            artifact: reference.clone(),
-            origin: None,
-        })
+        tx.index_artifact(
+            NewArtifactIndexEntry::from_reference(reference, None)
+                .expect("the suite indexes references that carry their size"),
+        )
         .await
         .expect("index the artifact");
         tx.commit().await.expect("commit the index row");

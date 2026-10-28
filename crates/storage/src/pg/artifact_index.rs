@@ -4,10 +4,9 @@
 //! hash: a tenant reads a blob only through its own row, and a hash that only another tenant holds
 //! looks the same as a hash nobody holds.
 //!
-//! The size is required by the table (`NOT NULL`: quota and accounting need it), and
-//! `ArtifactRef.size_bytes` is optional in the port. `ArtifactStore::put` always returns a
-//! reference with a size, so the reference of a stored blob carries it. A reference without a size
-//! cannot be indexed here: the transaction does not hold the blob and will not invent a size.
+//! The size is required by the table (`NOT NULL`: quota and accounting need it), and the entry the
+//! port takes ([`NewArtifactIndexEntry`]) carries it as a mandatory field, so there is no entry
+//! without one to refuse and the adapter never has to invent a size.
 
 use async_trait::async_trait;
 use diesel::sql_types::{BigInt, Nullable, Text, Timestamptz, Uuid as SqlUuid};
@@ -18,7 +17,7 @@ use factory_domain::ids::{JobId, StageRunId, TenantId};
 use factory_domain::values::{MediaType, NonNegativeInt, Sha256Digest};
 use factory_ports::artifact::ArtifactBackend;
 use factory_ports::store::{
-    ArtifactIndexEntry, ArtifactIndexOps, ConstraintRule, NewArtifactIndexEntry, StoreError,
+    ArtifactIndexEntry, ArtifactIndexOps, NewArtifactIndexEntry, StoreError,
 };
 use time::OffsetDateTime;
 use uuid::Uuid;
@@ -96,10 +95,6 @@ async fn index(
     new: NewArtifactIndexEntry,
 ) -> Result<ArtifactIndexEntry, StoreError> {
     let operation = "index_artifact";
-    let Some(size) = new.artifact.size_bytes else {
-        // Nothing here knows the size of a blob that was not stored through this reference.
-        return Err(StoreError::Constraint(ConstraintRule::TextBounds));
-    };
     // A job and stage run named as the origin must be the tenant's. Checked here so that a refusal
     // does not abort the transaction; the composite key checks the same.
     if let Some((job, run)) = new.origin {
@@ -123,9 +118,9 @@ async fn index(
          VALUES ($1, $2, $3, $4, $5, $6, $7) ON CONFLICT (tenant_id, content_sha256) DO NOTHING",
     )
     .bind::<SqlUuid, _>(tenant.as_uuid())
-    .bind::<Text, _>(new.artifact.sha256.as_str())
-    .bind::<BigInt, _>(size.get())
-    .bind::<Text, _>(new.artifact.media_type.as_str())
+    .bind::<Text, _>(new.sha256.as_str())
+    .bind::<BigInt, _>(new.size_bytes.get())
+    .bind::<Text, _>(new.media_type.as_str())
     .bind::<Text, _>(backend.label())
     .bind::<Nullable<SqlUuid>, _>(new.origin.map(|(job, _)| job.as_uuid()))
     .bind::<Nullable<SqlUuid>, _>(new.origin.map(|(_, run)| run.as_uuid()))
@@ -133,7 +128,7 @@ async fn index(
     .await
     .map_err(|error| database(operation, &error))?;
     // The first row wins: a second index call for the same hash returns it.
-    get(connection, tenant, &new.artifact.sha256)
+    get(connection, tenant, &new.sha256)
         .await?
         .ok_or(StoreError::NotFound)
 }

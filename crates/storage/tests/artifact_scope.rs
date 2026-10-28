@@ -19,7 +19,7 @@ use factory_domain::ids::TenantId;
 use factory_domain::scope::TenantScope;
 use factory_domain::values::{MediaType, NonNegativeInt, Sha256Digest};
 use factory_ports::artifact::{ArtifactError, ArtifactStore};
-use factory_ports::store::{ConstraintRule, NewArtifactIndexEntry, Store, StoreError};
+use factory_ports::store::{NewArtifactIndexEntry, Store, StoreError};
 use factory_storage::artifact_fs::LocalFsArtifactStore;
 use factory_testkit::clock::FakeClock;
 use factory_testkit::store::InMemoryStore;
@@ -62,10 +62,9 @@ fn absent() -> ArtifactRef {
 /// Indexes the artifact for the tenant, as the transaction that uses it does.
 async fn index(store: &dyn Store, tenant: TenantId, reference: &ArtifactRef) {
     let mut tx = store.begin(TenantScope::new(tenant)).await.expect("begin");
-    tx.index_artifact(NewArtifactIndexEntry {
-        artifact: reference.clone(),
-        origin: None,
-    })
+    tx.index_artifact(
+        NewArtifactIndexEntry::from_reference(reference, None).expect("a reference with a size"),
+    )
     .await
     .expect("index");
     tx.commit().await.expect("commit");
@@ -152,10 +151,7 @@ async fn an_index_row_is_the_tenants_own() {
     assert_eq!(row.artifact.size_bytes.map(NonNegativeInt::get), Some(4));
     // A second index call returns the first row.
     let again = mine
-        .index_artifact(NewArtifactIndexEntry {
-            artifact: reference.clone(),
-            origin: None,
-        })
+        .index_artifact(NewArtifactIndexEntry::from_reference(&reference, None).expect("a size"))
         .await
         .expect("a replay");
     assert_eq!(again, row);
@@ -168,20 +164,16 @@ async fn an_index_row_is_the_tenants_own() {
         "another tenant's artifact index row"
     );
 
-    // The size is required by the table. A reference without one is refused, not stored as zero.
+    // The size is required by the table, and so by the entry: a reference without one cannot be
+    // turned into an entry, so nothing can be stored as zero or invented by the adapter.
     let unsized_reference = ArtifactRef {
         size_bytes: None,
         sha256: Sha256Digest::of(b"no size"),
         ..reference
     };
     assert_eq!(
-        other
-            .index_artifact(NewArtifactIndexEntry {
-                artifact: unsized_reference.clone(),
-                origin: None
-            })
-            .await,
-        Err(StoreError::Constraint(ConstraintRule::TextBounds))
+        NewArtifactIndexEntry::from_reference(&unsized_reference, None),
+        None
     );
     assert_eq!(
         scene
@@ -209,8 +201,8 @@ async fn a_stage_run_of_another_tenant_is_refused_and_leaves_no_index_row() {
     let mut tx = scene.tx(scene.b).await;
     assert_eq!(
         tx.index_artifact(NewArtifactIndexEntry {
-            artifact: reference.clone(),
             origin: Some((job, run)),
+            ..NewArtifactIndexEntry::from_reference(&reference, None).expect("a size")
         })
         .await,
         Err(StoreError::NotFound)
@@ -230,8 +222,8 @@ async fn a_stage_run_of_another_tenant_is_refused_and_leaves_no_index_row() {
     let mut tx = scene.tx(scene.a).await;
     let row = tx
         .index_artifact(NewArtifactIndexEntry {
-            artifact: reference,
             origin: Some((job, run)),
+            ..NewArtifactIndexEntry::from_reference(&reference, None).expect("a size")
         })
         .await
         .expect("A's own stage run");

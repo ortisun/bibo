@@ -339,8 +339,6 @@ async fn run_all() -> Report {
 ///   same ledger position, and the second to lose at commit. PostgreSQL makes the second writer
 ///   wait for the first one's row lock (here: until the lock timeout), which is first-writer-wins
 ///   by waiting, not first-committer-wins by merging.
-/// * `SIZE`: the check indexes an artifact whose reference has no size. The column is `NOT NULL`
-///   and the adapter will not invent a size (no stopgap zero).
 const EXCLUDED: &[(&str, &str, &str, &str)] = &[
     (
         "events_read_back_in_the_order_they_were_queued",
@@ -377,12 +375,6 @@ const EXCLUDED: &[(&str, &str, &str, &str)] = &[
         "WRITERS",
         "Unavailable",
         "ledger_chain.rs: concurrent_appends_to_one_job_give_a_continuous_verifiable_chain",
-    ),
-    (
-        "a_row_of_another_tenant_looks_like_a_missing_row",
-        "SIZE",
-        "Constraint(TextBounds)",
-        "artifact_scope.rs: an_index_row_is_the_tenants_own",
     ),
 ];
 

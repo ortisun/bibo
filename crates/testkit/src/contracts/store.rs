@@ -18,7 +18,7 @@ use factory_domain::state::{
     AttemptEvent, AttemptStatus, Guard, JobEvent, JobStatus, StageRunEvent, StageRunStatus, Status,
     TaskNodeEvent, TaskNodeStatus,
 };
-use factory_domain::values::{GitSha, Sha256Digest, Slug, Timestamp};
+use factory_domain::values::{GitSha, MediaType, NonNegativeInt, Sha256Digest, Slug, Timestamp};
 use factory_domain::vocabulary::{AutonomyLevel, ExecutionMode, StageKind};
 use factory_ports::store::*;
 
@@ -348,6 +348,23 @@ impl<'a> World<'a> {
         })
         .await
     }
+}
+
+/// Indexes `bytes` as an artifact of the transaction's tenant, through the port, and returns the
+/// hash that names them. A row that names a hash (a stage contract, a gate report, an attempt
+/// output, a task plan) needs the artifact to be indexed first.
+async fn index_bytes(tx: &mut dyn Tx, bytes: &[u8]) -> Result<Sha256Digest, String> {
+    let sha256 = Sha256Digest::of(bytes);
+    let size = i64::try_from(bytes.len()).map_err(|_| "the artifact is too long".to_owned())?;
+    tx.index_artifact(NewArtifactIndexEntry {
+        sha256: sha256.clone(),
+        media_type: MediaType::parse("application/octet-stream").ctx("a media type")?,
+        size_bytes: NonNegativeInt::new(size).ctx("a size")?,
+        origin: None,
+    })
+    .await
+    .ctx("index an artifact")?;
+    Ok(sha256)
 }
 
 fn plan<S: Status>(from: S, event: S::Event, guard: Guard) -> Result<AppliedTransition<S>, String> {
@@ -741,22 +758,19 @@ async fn a_row_of_another_tenant_looks_like_a_missing_row(
         "a foreign row and a missing row give the same error"
     );
     // The artifact index is per tenant.
-    let reference = factory_domain::contracts::ArtifactRef {
-        sha256: Sha256Digest::of(b"blob"),
-        media_type: factory_domain::values::MediaType::parse("text/plain").expect("media type"),
-        size_bytes: None,
-    };
     let mut mine = w.tx(w.a).await?;
-    mine.index_artifact(NewArtifactIndexEntry {
-        artifact: reference.clone(),
-        origin: None,
-    })
-    .await
-    .ctx("index")?;
+    let sha256 = index_bytes(&mut *mine, b"blob").await?;
+    let row = mine.get_artifact_index(&sha256).await.ctx("read the row")?;
+    ensure_eq!(row.tenant_id, w.a, "the row is the tenant's");
+    ensure_eq!(
+        row.artifact.size_bytes.map(NonNegativeInt::get),
+        Some(4),
+        "the row keeps the size the entry gave"
+    );
     mine.commit().await.ctx("commit")?;
     let mut other = w.tx(w.b).await?;
     ensure_err!(
-        other.get_artifact_index(&reference.sha256).await,
+        other.get_artifact_index(&sha256).await,
         StoreError::NotFound,
         "another tenant's artifact index row"
     );

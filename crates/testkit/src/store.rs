@@ -24,7 +24,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 
 use async_trait::async_trait;
-use factory_domain::contracts::{DomainEvent, EvidenceLedgerEntry};
+use factory_domain::contracts::{ArtifactRef, DomainEvent, EvidenceLedgerEntry};
 use factory_domain::ids::{
     ApprovalId, AttemptId, JobId, PrincipalId, RepositoryId, StageRunId, TaskNodeId, TenantId,
 };
@@ -2581,13 +2581,17 @@ impl ArtifactIndexOps for InMemoryTx {
                 self.job(job)?;
                 self.stage_run(run)?;
             }
-            let key = (self.tenant, new.artifact.sha256.clone());
+            let key = (self.tenant, new.sha256.clone());
             if let Some(first) = self.work.index.get(&key) {
                 return Ok(first.clone());
             }
             let entry = ArtifactIndexEntry {
                 tenant_id: self.tenant,
-                artifact: new.artifact,
+                artifact: ArtifactRef {
+                    sha256: new.sha256,
+                    media_type: new.media_type,
+                    size_bytes: Some(new.size_bytes),
+                },
                 origin: new.origin,
                 created_at: self.now(),
             };

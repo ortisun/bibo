@@ -14,7 +14,6 @@ use std::sync::atomic::{AtomicI64, Ordering};
 use std::time::Duration;
 
 use diesel_async::SimpleAsyncConnection;
-use factory_domain::contracts::ArtifactRef;
 use factory_domain::ids::{AttemptId, JobId, PrincipalId, RepositoryId, StageRunId, TenantId};
 use factory_domain::machines::failure::FailureClass;
 use factory_domain::scope::TenantScope;
@@ -305,11 +304,10 @@ impl Scene {
 pub async fn index_blob(tx: &mut dyn Tx, bytes: &[u8]) -> Sha256Digest {
     let sha256 = Sha256Digest::of(bytes);
     tx.index_artifact(NewArtifactIndexEntry {
-        artifact: ArtifactRef {
-            sha256: sha256.clone(),
-            media_type: MediaType::parse("text/plain").expect("media type"),
-            size_bytes: NonNegativeInt::new(i64::try_from(bytes.len()).expect("small")).ok(),
-        },
+        sha256: sha256.clone(),
+        media_type: MediaType::parse("text/plain").expect("media type"),
+        size_bytes: NonNegativeInt::new(i64::try_from(bytes.len()).expect("small"))
+            .expect("a size"),
         origin: None,
     })
     .await
