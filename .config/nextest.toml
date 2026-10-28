@@ -1,0 +1,6 @@
+# A test that never returns must fail, not hold the build forever. A flaky hang once kept a test
+# binary alive for hours in a worktree (an engine scenario on PostgreSQL waiting on a timer that
+# never fired). The slowest legitimate tests (the property suites, the Docker sandbox tests) finish
+# in under a minute, so a run is flagged as slow after one minute and killed after ten.
+[profile.default]
+slow-timeout = { period = "60s", terminate-after = 10 }
