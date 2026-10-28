@@ -34,6 +34,10 @@ pub enum ParseError {
     /// version, a dependency written in a form that is not a table or a string).
     #[error("the file has a layout this reader does not know")]
     Unsupported,
+    /// The file holds more entries than the gate reads. The bound keeps the cost of the checks
+    /// that follow in proportion to a lockfile a person could review.
+    #[error("the file holds more packages than the gate reads")]
+    TooLarge,
 }
 
 impl From<TomlError> for ParseError {

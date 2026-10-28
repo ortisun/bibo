@@ -29,6 +29,16 @@ use super::model::{
 };
 use super::names::PopularNames;
 
+/// The most packages one lockfile may hold. A lockfile of the biggest projects known holds a few
+/// thousand; a candidate lockfile above this is not one a person could review, and the checks
+/// that follow are bounded by it.
+pub const MAX_LOCKED_PACKAGES: usize = 10_000;
+
+/// The most new direct dependencies one change may bring. Each needs its own human decision, so a
+/// change with more is not one a person can decide on, and the policy engine is asked once for
+/// each of them.
+pub const MAX_NEW_DIRECT: usize = 100;
+
 /// Every dependency file of one commit, read.
 #[derive(Debug, Clone, Default)]
 pub struct Snapshot {
@@ -49,9 +59,13 @@ impl Snapshot {
         let mut unreadable = Vec::new();
         for (path, text) in side.files() {
             let outcome = match format.kind_of(path) {
-                Some(FileKind::Lockfile) => format
-                    .parse_lockfile(text)
-                    .map(|lock| drop(snapshot.locks.insert(path.to_owned(), lock))),
+                Some(FileKind::Lockfile) => format.parse_lockfile(text).and_then(|lock| {
+                    if lock.packages.len() > MAX_LOCKED_PACKAGES {
+                        return Err(ParseError::TooLarge);
+                    }
+                    snapshot.locks.insert(path.to_owned(), lock);
+                    Ok(())
+                }),
                 Some(FileKind::Manifest) => format
                     .parse_manifest(text)
                     .map(|manifest| drop(snapshot.manifests.insert(path.to_owned(), manifest))),
@@ -242,6 +256,12 @@ pub fn inspect(
         base: &base_snapshot,
         head: &head_snapshot,
         internal: &internal,
+        manifest_names: head_snapshot
+            .manifests
+            .values()
+            .filter_map(|manifest| manifest.name.as_deref())
+            .map(normalize)
+            .collect(),
         findings: Vec::new(),
         diff: LockDiff::default(),
     };
@@ -255,6 +275,7 @@ pub fn inspect(
                 match error {
                     ParseError::Syntax(_) => "it is not valid",
                     ParseError::Unsupported => "its layout is not one this check knows",
+                    ParseError::TooLarge => "it holds more packages than the gate reads",
                 }
             ),
         ));
@@ -277,6 +298,8 @@ struct Run<'a> {
     base: &'a Snapshot,
     head: &'a Snapshot,
     internal: &'a BTreeSet<String>,
+    /// The normalized package name of every manifest of the candidate.
+    manifest_names: BTreeSet<String>,
     findings: Vec<Finding>,
     diff: LockDiff,
 }
@@ -286,6 +309,16 @@ impl Run<'_> {
         self.lockfiles();
         self.references();
         let new_direct = self.new_direct_dependencies();
+        if new_direct.len() > MAX_NEW_DIRECT {
+            self.push(Finding::violation(
+                check::TOO_MANY_NEW,
+                None,
+                format!(
+                    "The change brings {} new direct dependencies, and a change may bring at most {MAX_NEW_DIRECT}. Each needs its own decision, so split the change.",
+                    new_direct.len()
+                ),
+            ));
+        }
         self.lockfile_only();
         self.manifests();
         self.configs();
@@ -390,13 +423,7 @@ impl Run<'_> {
                 }
             }
             Origin::Path => {
-                let explained = self.head.manifests.values().any(|manifest| {
-                    manifest
-                        .name
-                        .as_deref()
-                        .is_some_and(|own| normalize(own) == normalize(&package.name))
-                });
-                if !explained {
+                if !self.manifest_names.contains(&normalize(&package.name)) {
                     self.push(Finding::violation(
                         check::PATH_UNEXPLAINED,
                         None,

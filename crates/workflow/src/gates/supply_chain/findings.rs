@@ -61,6 +61,8 @@ pub mod check {
     pub const REFERENCE_DANGLING: &str = "lockfile-reference-dangling";
     /// A new dependency request is not a valid request.
     pub const INVALID_REQUEST: &str = "invalid-dependency-request";
+    /// A change brings more new direct dependencies than a person can decide on.
+    pub const TOO_MANY_NEW: &str = "too-many-new-dependencies";
     /// A license outside the owner-approved list.
     pub const LICENSE: &str = "license-not-allowed";
     /// A package name one edit from a popular name, below a package a person approved.
