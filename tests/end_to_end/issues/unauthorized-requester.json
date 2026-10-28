@@ -1,0 +1,41 @@
+{
+  "issue_format": 1,
+  "id": "unauthorized-requester",
+  "summary": "The same request as json-output-en, filed by a person who is not on the requester allowlist. Scenario E6 submits it, and a variant with no factory label.",
+  "language": "en",
+  "same_intent_as": "json-output-en",
+  "requester": "unauthorized",
+  "labels": ["factory"],
+  "variants": [
+    {
+      "id": "no-label",
+      "requester": "authorized",
+      "labels": []
+    }
+  ],
+  "revisions": [
+    {
+      "title": "Add a JSON output option to the word count tool",
+      "body": [
+        "Scripts that call the word count tool have to read its columns of numbers, and that breaks whenever the spacing changes. I would like an option that prints the same counts as a JSON object.",
+        "",
+        "## What needs to change",
+        "Add a `--json` option. With it, the tool prints one JSON object on standard output with the keys `lines`, `words` and `characters`, in that order. Without the option, the output stays exactly as it is today."
+      ]
+    }
+  ],
+  "intent": {
+    "must_preserve": [],
+    "checks": []
+  },
+  "expected": {
+    "outcome": "rejected_at_admission",
+    "behavior": [
+      "The factory rejects the request at admission. The job ends REJECTED and no stage run starts.",
+      "The reply on the issue is short and in plain English. It does not say which test failed, so a stranger learns nothing about the allowlist.",
+      "An audit event records the rejection with the requester, the time and the correlation id.",
+      "No agent, sandbox or model call happens for this request.",
+      "A request with no factory label is not accepted either, and is explained in the same way."
+    ]
+  }
+}

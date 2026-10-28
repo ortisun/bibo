@@ -1,0 +1,98 @@
+{
+  "issue_format": 1,
+  "id": "json-output-en",
+  "summary": "The English request that scenarios E1, E3, E5, E7, E8 and E11 submit: add a JSON output option.",
+  "language": "en",
+  "requester": "authorized",
+  "labels": [
+    "factory"
+  ],
+  "revisions": [
+    {
+      "title": "Add a JSON output option to the word count tool",
+      "body": [
+        "Scripts that call the word count tool have to read its columns of numbers, and that breaks whenever the spacing changes. I would like an option that prints the same counts as a JSON object.",
+        "",
+        "## What needs to change",
+        "Add a `--json` option. With it, the tool prints one JSON object on standard output with the keys `lines`, `words` and `characters`, in that order. Without the option, the output stays exactly as it is today.",
+        "",
+        "## Acceptance criteria",
+        "- For a file with 3 lines, 7 words and 31 characters, `word-count --json notes.txt` prints one JSON object with `lines` set to 3, `words` set to 7 and `characters` set to 31.",
+        "- For an empty file, all three counts are 0.",
+        "- Without `--json`, the output is the same, byte for byte, as in the previous release.",
+        "- If the file does not exist, standard output is empty, standard error explains that the file could not be read, and the exit status is not zero. This holds with and without `--json`.",
+        "",
+        "## Constraints",
+        "- Do not add third-party dependencies. The tool must keep building without a network.",
+        "- Document the option in the README and in the changelog."
+      ]
+    }
+  ],
+  "intent": {
+    "must_preserve": [
+      "--json",
+      "JSON",
+      "README"
+    ],
+    "checks": [
+      {
+        "id": "json-keys",
+        "description": "The output has the keys lines, words and characters.",
+        "all_of": [
+          "lines",
+          "words",
+          "characters"
+        ]
+      },
+      {
+        "id": "example-counts",
+        "description": "The example file has 3 lines, 7 words and 31 characters.",
+        "all_of": [
+          "3 lines",
+          "7 words",
+          "31 characters"
+        ]
+      },
+      {
+        "id": "empty-file",
+        "description": "An empty file gives zero counts.",
+        "all_of": [
+          "empty"
+        ]
+      },
+      {
+        "id": "plain-output-unchanged",
+        "description": "Without the option the output does not change.",
+        "all_of": [
+          "--json",
+          "without|not given|unchanged|same"
+        ]
+      },
+      {
+        "id": "unreadable-file",
+        "description": "A file that cannot be read gives an error message on standard error and a non-zero exit status.",
+        "all_of": [
+          "standard error|stderr",
+          "non-zero|nonzero|not zero"
+        ]
+      },
+      {
+        "id": "no-new-dependencies",
+        "description": "No third-party dependency is added.",
+        "all_of": [
+          "dependenc"
+        ]
+      }
+    ],
+    "match": "Each entry of all_of is a lower-case text, or several joined with | where any one is enough. A check holds when the English artifacts contain every entry."
+  },
+  "expected": {
+    "outcome": "draft_pull_request",
+    "behavior": [
+      "The factory accepts the request, because it carries the factory label and comes from a person on the allowlist.",
+      "It passes through every stage of the pipeline in order and stores the output and the evidence of each stage.",
+      "It opens a draft pull request that links the issue, the specification revision, the plan and the evidence manifest.",
+      "The job then waits for a person to approve. The factory does not merge and does not deploy."
+    ]
+  }
+}
