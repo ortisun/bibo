@@ -33,8 +33,8 @@ mod prompts_provenance;
 mod prompts_real;
 #[path = "redaction.rs"]
 mod prompts_redaction;
-#[path = "speckit.rs"]
-mod prompts_speckit;
+#[path = "skill_input.rs"]
+mod prompts_skill_input;
 #[path = "support.rs"]
 mod prompts_support;
 #[path = "template.rs"]

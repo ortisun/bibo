@@ -7,7 +7,7 @@
 use factory_ports::paths::RepoPath;
 use factory_ports::spec::{FeatureDir, SpecOperation};
 use factory_testkit::fx::canary::{CanaryKind, CanarySet, Sweeper};
-use factory_workflow::prompts::speckit::{RequestDelivery, SkillInput, SkillRequest};
+use factory_workflow::prompts::skill::{RequestDelivery, SkillInput, SkillRequest};
 use factory_workflow::prompts::{Assembler, AssemblyError, ContentClass, Input, Limits, Source};
 
 use super::prompts_check::{CLOSE, OPEN, attribute, decode_block, neutralize_oracle};

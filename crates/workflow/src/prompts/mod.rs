@@ -87,7 +87,7 @@
 //!
 //! # Spec Kit
 //!
-//! [`speckit`] builds the input of a skill: a fixed instruction chosen by the operation alone,
+//! [`skill`] builds the input of a skill: a fixed instruction chosen by the operation alone,
 //! with the request in a file or a delimited block. No byte of an issue is in the arguments.
 //!
 //! # What this does not defend against
@@ -126,7 +126,7 @@ mod input;
 mod limits;
 mod manifest;
 mod sanitize;
-pub mod speckit;
+pub mod skill;
 mod template;
 mod verify;
 
