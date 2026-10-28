@@ -541,7 +541,11 @@ async fn scanner_absence_is_blocked() {
 
 #[tokio::test]
 async fn scanner_absence_is_blocked_when_the_audit_gives_no_usable_answer() {
-    for audit in [AuditScript::Garbage, AuditScript::Error] {
+    for audit in [
+        AuditScript::Garbage,
+        AuditScript::Error,
+        AuditScript::Ignoring,
+    ] {
         let world = World::new();
         world.tools.set(Script { audit, ..clean() });
         let ran = run(&world, &head(), &[by_approver()]).await;

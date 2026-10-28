@@ -44,7 +44,8 @@ use super::licenses::LicensePolicy;
 use super::names::PopularNames;
 use super::review::Plan;
 use super::tools::{
-    self, AUDIT, AUDIT_PROBE, AuditResult, FETCH, METADATA, PackageMeta, SbomTool, Unreadable,
+    self, AUDIT, AUDIT_PROBE, AuditRefused, AuditResult, FETCH, METADATA, PackageMeta, SbomTool,
+    Unreadable,
 };
 use crate::gates::command::{Reading, Role, Verdict, interpret};
 use crate::handlers::{StageError, StagePorts};
@@ -578,8 +579,16 @@ async fn audit_step(
     let Some(text) = stdout.filter(|_| !cut) else {
         return Ok(unusable("complete and readable output of cargo audit"));
     };
-    let Ok(result) = tools::parse_audit(&text) else {
-        return Ok(unusable("output of cargo audit in the form it prints"));
+    let result = match tools::parse_audit(&text) {
+        Ok(result) => result,
+        Err(AuditRefused::Configured) => {
+            return Ok(unusable(
+                "an audit run with the default settings (this one ignored or filtered advisories)",
+            ));
+        }
+        Err(AuditRefused::Unreadable) => {
+            return Ok(unusable("output of cargo audit in the form it prints"));
+        }
     };
     Ok(match (code, result.count) {
         (Some(0), 0) => AuditEnd::Clean(result),

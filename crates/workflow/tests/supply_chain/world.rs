@@ -86,6 +86,8 @@ pub enum AuditScript {
     Garbage,
     /// Exit code 1 with no document, as the tool does on an error.
     Error,
+    /// A clean answer from a tool that was told to ignore an advisory by a configuration file.
+    Ignoring,
 }
 
 /// What the scripted tools do.
@@ -252,6 +254,10 @@ impl Tools {
                 ),
                 AuditScript::Garbage => text(0, "audit complete, all good"),
                 AuditScript::Error => text(1, ""),
+                AuditScript::Ignoring => text(
+                    0,
+                    r#"{"database":{},"lockfile":{"dependency-count":3},"settings":{"target_arch":[],"target_os":[],"severity":null,"ignore":["RUSTSEC-2020-0001"]},"vulnerabilities":{"found":false,"count":0,"list":[]},"warnings":{}}"#,
+                ),
             },
             ("cargo", "sbom") => text(
                 0,

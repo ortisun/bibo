@@ -43,6 +43,8 @@ pub mod check {
     /// The build configuration names a program to run, an environment to set, or a key that is
     /// not on the list of harmless ones.
     pub const BUILD_CONFIG: &str = "build-config-changed";
+    /// The change edits the configuration of a scanner (`audit.toml`, `deny.toml`).
+    pub const SCANNER_CONFIG: &str = "scanner-config-changed";
     /// A package archive has another checksum for the same version.
     pub const CHECKSUM_CHANGED: &str = "checksum-changed";
     /// A registry package has no usable checksum.

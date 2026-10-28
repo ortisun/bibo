@@ -48,6 +48,9 @@ pub struct Snapshot {
     pub manifests: BTreeMap<String, Manifest>,
     /// Build configurations by path.
     pub configs: BTreeMap<String, BuildConfig>,
+    /// The configuration files of the scanners, by path, as text. Nothing in them is read: the
+    /// candidate must not change them, whatever they say.
+    pub scanners: BTreeMap<String, String>,
 }
 
 impl Snapshot {
@@ -72,6 +75,10 @@ impl Snapshot {
                 Some(FileKind::BuildConfig) => format
                     .parse_build_config(text)
                     .map(|config| drop(snapshot.configs.insert(path.to_owned(), config))),
+                Some(FileKind::ScannerConfig) => {
+                    snapshot.scanners.insert(path.to_owned(), text.to_owned());
+                    Ok(())
+                }
                 None => Ok(()),
             };
             if let Err(error) = outcome {
@@ -322,6 +329,7 @@ impl Run<'_> {
         self.lockfile_only();
         self.manifests();
         self.configs();
+        self.scanner_configs();
         self.consistency();
         self.names(&new_direct);
         new_direct
@@ -644,6 +652,36 @@ impl Run<'_> {
                     ),
                 ));
             }
+        }
+    }
+
+    /// The configuration of the scanners belongs to the factory and to the base commit. A change
+    /// that adds, edits or removes one of these files would let the code under test decide what
+    /// the scanner may report, so it is a violation whatever the file says. The audit runs in a
+    /// checkout of the candidate, so a file that equals the base commit's is the base commit's
+    /// configuration.
+    fn scanner_configs(&mut self) {
+        let paths: BTreeSet<&String> = self
+            .base
+            .scanners
+            .keys()
+            .chain(self.head.scanners.keys())
+            .collect();
+        for path in paths {
+            let what = match (self.base.scanners.get(path), self.head.scanners.get(path)) {
+                (Some(old), Some(new)) if old == new => continue,
+                (None, Some(_)) => "adds",
+                (Some(_), None) => "removes",
+                _ => "changes",
+            };
+            self.push(Finding::violation(
+                check::SCANNER_CONFIG,
+                Some(path),
+                format!(
+                    "The change {what} the file {}, which configures a scanner that judges the change, and the code under test may not decide what a scanner reports.",
+                    plain(path, 200)
+                ),
+            ));
         }
     }
 

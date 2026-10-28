@@ -22,6 +22,9 @@ pub enum FileKind {
     Manifest,
     /// A build configuration file.
     BuildConfig,
+    /// The configuration of a scanner (the advisory audit, the license and ban checker). It is
+    /// compared as text: nothing in it is trusted, so any difference is a finding.
+    ScannerConfig,
 }
 
 /// Why a dependency file was not read. The set is closed and holds no text of the file.

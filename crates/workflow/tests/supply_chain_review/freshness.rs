@@ -21,7 +21,7 @@ use crate::world::{Script, World, metadata};
 
 /// The candidate moves `serde` to a later version in the same series. The manifest is the same
 /// as the base commit's, so no person is asked about a new dependency.
-fn head_upgrading_serde() -> Files {
+pub fn head_upgrading_serde() -> Files {
     files(&[
         (
             "Cargo.toml",

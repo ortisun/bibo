@@ -420,6 +420,7 @@ impl Reporter<'_> {
             && head.locks.is_empty()
             && head.manifests.is_empty()
             && head.configs.is_empty()
+            && head.scanners.is_empty()
         {
             return self.not_applicable(
                 gate::INTEGRITY,

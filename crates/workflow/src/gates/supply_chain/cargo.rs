@@ -46,15 +46,26 @@ impl DependencyFormat for CargoFormat {
     }
 
     fn kind_of(&self, path: &str) -> Option<FileKind> {
+        // Names are compared without regard to case. A checkout on a case-insensitive file
+        // system (a bind mount on macOS or Windows) reads `Audit.toml` as `audit.toml`, and a
+        // name this gate skipped would be a name the tools read.
         let name = path.rsplit('/').next().unwrap_or(path);
         let in_cargo_dir = path
             .strip_suffix(name)
-            .is_some_and(|dir| dir.ends_with(".cargo/"));
-        match name {
-            "Cargo.lock" => Some(FileKind::Lockfile),
-            "Cargo.toml" => Some(FileKind::Manifest),
-            "config.toml" | "config" if in_cargo_dir => Some(FileKind::BuildConfig),
-            _ => None,
+            .is_some_and(|dir| dir.to_ascii_lowercase().ends_with(".cargo/"));
+        let is = |wanted: &str| name.eq_ignore_ascii_case(wanted);
+        if is("Cargo.lock") {
+            Some(FileKind::Lockfile)
+        } else if is("Cargo.toml") {
+            Some(FileKind::Manifest)
+        } else if (is("config.toml") || is("config") || is("audit.toml")) && in_cargo_dir {
+            // `cargo audit` reads `.cargo/audit.toml` from the directory it runs in, which is
+            // the candidate's checkout: its keys can ignore advisories or point at a database.
+            Some(FileKind::BuildConfig)
+        } else if is("audit.toml") || is("deny.toml") {
+            Some(FileKind::ScannerConfig)
+        } else {
+            None
         }
     }
 
@@ -500,5 +511,14 @@ mod tests {
         assert_eq!(kind("sub/.cargo/config"), Some(FileKind::BuildConfig));
         assert_eq!(kind("config.toml"), None);
         assert_eq!(kind("src/Cargo.toml.bak"), None);
+        // The configuration of the scanners is a dependency file in the sense of this gate.
+        assert_eq!(kind(".cargo/audit.toml"), Some(FileKind::BuildConfig));
+        assert_eq!(kind("deny.toml"), Some(FileKind::ScannerConfig));
+        assert_eq!(kind("audit.toml"), Some(FileKind::ScannerConfig));
+        assert_eq!(kind("crates/a/deny.toml"), Some(FileKind::ScannerConfig));
+        // Case does not hide a file on a case-insensitive file system.
+        assert_eq!(kind(".CARGO/Audit.toml"), Some(FileKind::BuildConfig));
+        assert_eq!(kind("DENY.TOML"), Some(FileKind::ScannerConfig));
+        assert_eq!(kind("cargo.lock"), Some(FileKind::Lockfile));
     }
 }
