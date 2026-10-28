@@ -112,6 +112,14 @@ if ! docker exec -i "$OPS_PG" pg_restore -U factory_admin -d factory --exit-on-e
 fi
 ops_check database-restored PASS "pg_restore finished in one transaction"
 
+# A restore leaves the planner with no statistics (database review F-04). Refresh them as the
+# bootstrap superuser before anything reads the database, so the first queries get real plans.
+if ! ops_sql -c 'ANALYZE' >/dev/null 2>"$OPS_RUN_DIR/analyze.err"; then
+  ops_check statistics-refreshed FAIL "ANALYZE failed: $(head -n 2 "$OPS_RUN_DIR/analyze.err" | tr '\n' ' ')"
+  finish
+fi
+ops_check statistics-refreshed PASS "ANALYZE ran on the restored database"
+
 ops_ensure_logins || { ops_check login-passwords FAIL "could not set the passwords"; finish; }
 if ! ops_volume_run "$OPS_ARTIFACT_VOLUME" rw 'tar --numeric-owner -C /v -xpf -' <"$backup/artifacts.tar" 2>"$OPS_RUN_DIR/untar.err"; then
   ops_check artifacts-unpacked FAIL "tar failed: $(head -n 2 "$OPS_RUN_DIR/untar.err" | tr '\n' ' ')"
