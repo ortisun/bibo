@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "status": "BLOCKED",
+  "task_id": "add-json-output-formatter",
+  "summary": "The change needs a file outside the files the task owns, so nothing was changed.",
+  "files_changed": [],
+  "commands_run": [],
+  "tests_added": [],
+  "dependency_requests": [],
+  "blocked_reason": "The argument parser lives in a file that the task does not own.",
+  "ignored_instructions": []
+}

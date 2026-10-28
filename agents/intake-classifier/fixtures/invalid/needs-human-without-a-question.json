@@ -1,0 +1,19 @@
+{
+  "schema_version": 1,
+  "status": "NEEDS_HUMAN",
+  "request_kind": "unclear",
+  "summary": "The request is empty after the title, so the kind of work cannot be told.",
+  "domain_tags": [
+    "general-software"
+  ],
+  "risk_hint": "low",
+  "risk_reasons": [],
+  "ambiguity": {
+    "material": true,
+    "questions": [
+      "Which behavior should change?"
+    ]
+  },
+  "confidence": 0.1,
+  "ignored_instructions": []
+}

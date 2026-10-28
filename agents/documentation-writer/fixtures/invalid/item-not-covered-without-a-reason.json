@@ -1,0 +1,30 @@
+{
+  "schema_version": 1,
+  "status": "DONE",
+  "summary": "Documented the --json flag in the README and added a changelog entry.",
+  "files_written": [
+    "README.md",
+    "CHANGELOG.md"
+  ],
+  "plan_coverage": [
+    {
+      "plan_item": "readme-usage",
+      "status": "covered",
+      "files": [
+        "README.md"
+      ]
+    },
+    {
+      "plan_item": "changelog",
+      "status": "not_covered",
+      "files": []
+    }
+  ],
+  "claims": [
+    {
+      "claim": "With the --json flag the tool prints one JSON object with the keys lines, words and characters.",
+      "evidence_path": "tests/json_output.rs"
+    }
+  ],
+  "ignored_instructions": []
+}

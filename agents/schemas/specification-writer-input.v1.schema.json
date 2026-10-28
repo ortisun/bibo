@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:ortisun:factory:schema:agent:specification-writer-input:1",
+  "title": "Specification writer input",
+  "description": "The named data blocks the prompt assembly renders into the prompt of the specification writer. Each value is untrusted text and is rendered inside its own block; none of it becomes an instruction.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "request"
+  ],
+  "properties": {
+    "request": {
+      "type": "string",
+      "maxLength": 1048576,
+      "description": "The normalized request: its title and body."
+    },
+    "clarification_answers": {
+      "type": "string",
+      "maxLength": 1048576,
+      "description": "Answers a person gave to earlier clarification questions, when there are any."
+    }
+  }
+}

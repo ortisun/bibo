@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "status": "CLASSIFIED",
+  "request_kind": "feature",
+  "summary": "The request asks for a flag on the word count tool that prints its counts as JSON, so that other programs can read them.",
+  "domain_tags": [
+    "general-software",
+    "command-line-tool"
+  ],
+  "risk_hint": "low",
+  "risk_reasons": [],
+  "ambiguity": {
+    "material": false,
+    "questions": []
+  },
+  "confidence": 0.9,
+  "ignored_instructions": []
+}

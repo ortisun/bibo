@@ -1,0 +1,9 @@
+{
+  "schema_version": 1,
+  "verdict": "NEEDS_HUMAN",
+  "title": "A decision is needed",
+  "summary": "The change and the specification disagree on one point that only a person can settle.",
+  "findings": [],
+  "confidence_overall": 0.5,
+  "ignored_instructions": []
+}

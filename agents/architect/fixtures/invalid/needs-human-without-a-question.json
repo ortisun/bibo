@@ -1,0 +1,40 @@
+{
+  "schema_version": 1,
+  "status": "NEEDS_HUMAN",
+  "title": "Add a JSON output mode",
+  "summary": "A new formatter module prints the counts as JSON and the argument parser selects it when the flag is present.",
+  "design_elements": [
+    {
+      "element_id": "json-formatter",
+      "title": "Print counts as JSON",
+      "responsibility": "Formats the line, word and character counts as one JSON object when the flag is given.",
+      "kind": "module",
+      "satisfies": [
+        "FR-001",
+        "FR-002"
+      ],
+      "touches": [
+        "src/main.rs",
+        "src/output.rs"
+      ]
+    }
+  ],
+  "decisions": [
+    {
+      "decision_id": "hand-written-json",
+      "title": "Write the JSON by hand",
+      "choice": "Build the JSON text with the standard library, because the tool has no dependencies and the output has three fields.",
+      "alternatives": [
+        "Add a JSON library as a dependency."
+      ],
+      "consequences": "No new dependency is needed, and the formatter must escape its own output.",
+      "needs_person": false
+    }
+  ],
+  "risks": [
+    "The argument parser may change the order of flags."
+  ],
+  "open_questions": [],
+  "uncovered_requirements": [],
+  "ignored_instructions": []
+}

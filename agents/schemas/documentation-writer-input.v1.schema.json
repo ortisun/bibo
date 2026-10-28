@@ -1,0 +1,35 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:ortisun:factory:schema:agent:documentation-writer-input:1",
+  "title": "Documentation writer input",
+  "description": "The named data blocks the prompt assembly renders into the prompt of the documentation writer. Each value is untrusted text and is rendered inside its own block; none of it becomes an instruction.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "documentation_plan",
+    "frozen_specification",
+    "diff"
+  ],
+  "properties": {
+    "documentation_plan": {
+      "type": "string",
+      "maxLength": 1048576,
+      "description": "The plan that lists the documents to write and what each must cover."
+    },
+    "frozen_specification": {
+      "type": "string",
+      "maxLength": 1048576,
+      "description": "The frozen specification."
+    },
+    "diff": {
+      "type": "string",
+      "maxLength": 1048576,
+      "description": "The exported patch of the change to document."
+    },
+    "rework_findings": {
+      "type": "string",
+      "maxLength": 1048576,
+      "description": "Findings from a failed documentation check in an earlier round, when there are any."
+    }
+  }
+}

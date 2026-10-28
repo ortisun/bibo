@@ -1,0 +1,24 @@
+{
+  "schema_version": 1,
+  "verdict": "CHANGES_REQUIRED",
+  "title": "Review of the change",
+  "summary": "One high-severity finding must be fixed before the work can move on.",
+  "findings": [
+    {
+      "finding_id": "missing-empty-file-test",
+      "severity": "high",
+      "category": "tests",
+      "title": "Add a test for an empty input file",
+      "description": "The change handles an empty file in the formatter, but no test covers it, so a regression would go unnoticed.",
+      "location": {
+        "path": "src/output.rs"
+      },
+      "confidence": 0.8,
+      "proposed_next_action": "add_test",
+      "defect_class": "code_behavior"
+    }
+  ],
+  "confidence_overall": 0.8,
+  "residual_risks": [],
+  "ignored_instructions": []
+}
