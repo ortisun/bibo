@@ -14,6 +14,14 @@ use factory_domain::redaction::Redactor;
 use factory_ports::paths::{PathRules, RepoGlob};
 use factory_ports::sandbox::{CacheMount, FixedEnv, Hardening, ImageDigest, SandboxLimits};
 
+use crate::gates::supply_chain::approval::RecordedApprovals;
+use crate::gates::supply_chain::facts::{AdvisoryDatabase, RegistryMetadata};
+use crate::gates::supply_chain::licenses::LicensePolicy;
+use crate::gates::supply_chain::names::PopularNames;
+use crate::gates::supply_chain::run::{
+    Bounds as SupplyBounds, DEFAULT_ADVISORY_DB_MAX_AGE_DAYS, FetchSandbox, SbomRule,
+};
+
 /// The manifest bytes could not be turned into a project manifest.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 #[error("the project manifest could not be read")]
@@ -89,6 +97,107 @@ impl Default for Bounds {
     }
 }
 
+/// When the dependency and supply chain gates run.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RunSupplyChain {
+    /// On every change. The four reports are made from the dependency files of both commits even
+    /// when the change touches none.
+    Always,
+    /// Only when the change touches a dependency file (a lockfile, a manifest, a build
+    /// configuration, the configuration of a scanner, a build script). Otherwise the four reports
+    /// say that nothing applies, and no file is read and no container is made.
+    WhenDependencyFilesChange,
+}
+
+/// How much of the object store the dependency gates read.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DependencyReadLimits {
+    /// The most paths of one commit that are listed. A listing as long as this is taken for a cut
+    /// listing, and a cut listing is not a project with fewer files: the gates are blocked.
+    pub max_paths: usize,
+    /// The most dependency files read from one commit.
+    pub max_files: usize,
+    /// The largest dependency file read.
+    pub max_file_bytes: u64,
+    /// The most bytes of dependency files read from one commit.
+    pub max_total_bytes: u64,
+}
+
+impl Default for DependencyReadLimits {
+    fn default() -> Self {
+        Self {
+            max_paths: 50_000,
+            max_files: 2_000,
+            max_file_bytes: 8 * 1024 * 1024,
+            max_total_bytes: 32 * 1024 * 1024,
+        }
+    }
+}
+
+/// What the dependency gates are configured with. Nothing in it comes from the repository.
+#[derive(Clone)]
+pub struct SupplyChainSettings {
+    /// When the gates run.
+    pub run: RunSupplyChain,
+    /// The `fetch_deps` sandbox. The `verify` sandbox is the stage's own.
+    pub fetch: FetchSandbox,
+    /// The license rule, equal to `deny.toml`.
+    pub licenses: LicensePolicy,
+    /// The popular names to measure the distance to.
+    pub popular: PopularNames,
+    /// The names of the organization's internal packages. The members of the project at the base
+    /// commit are added by the gate.
+    pub internal_names: Vec<String>,
+    /// The SBOM rule: required for a release or a high-risk job, never a constant.
+    pub sbom: SbomRule,
+    /// The most whole days old the advisory database may be.
+    pub advisory_db_max_age_days: u64,
+    /// Bounds on what the gate runs.
+    pub bounds: SupplyBounds,
+    /// Bounds on what the gate reads.
+    pub limits: DependencyReadLimits,
+}
+
+impl SupplyChainSettings {
+    /// The settings with the default limits, a database age of
+    /// [`DEFAULT_ADVISORY_DB_MAX_AGE_DAYS`] and the gates run only for a change that touches a
+    /// dependency file.
+    #[must_use]
+    pub fn new(
+        fetch: FetchSandbox,
+        licenses: LicensePolicy,
+        popular: PopularNames,
+        sbom: SbomRule,
+    ) -> Self {
+        Self {
+            run: RunSupplyChain::WhenDependencyFilesChange,
+            fetch,
+            licenses,
+            popular,
+            internal_names: Vec::new(),
+            sbom,
+            advisory_db_max_age_days: DEFAULT_ADVISORY_DB_MAX_AGE_DAYS,
+            bounds: SupplyBounds::default(),
+            limits: DependencyReadLimits::default(),
+        }
+    }
+}
+
+/// What the composition root hands the dependency gates: their settings and the three sources the
+/// gates cannot read from the repository.
+#[derive(Clone)]
+pub struct SupplyChainSeams {
+    /// The settings.
+    pub settings: SupplyChainSettings,
+    /// The decisions recorded for a job, loaded by tenant and job from the ledger.
+    pub approvals: Arc<dyn RecordedApprovals>,
+    /// The facts about a package the registry knows. A source that knows nothing returns the
+    /// default record, which the policy reads as the worst answer.
+    pub registry: Arc<dyn RegistryMetadata>,
+    /// The date of the advisory database the audit reads. A database of unknown age blocks.
+    pub advisory_db: Arc<dyn AdvisoryDatabase>,
+}
+
 /// Everything the validation stage is built from.
 #[derive(Clone)]
 pub struct ValidationConfig {
@@ -109,6 +218,8 @@ pub struct ValidationConfig {
     pub flaky_registry: BTreeSet<String>,
     /// Bounds.
     pub bounds: Bounds,
+    /// The dependency and supply chain gates. The stage always makes their four reports.
+    pub supply_chain: SupplyChainSeams,
 }
 
 impl std::fmt::Debug for ValidationConfig {

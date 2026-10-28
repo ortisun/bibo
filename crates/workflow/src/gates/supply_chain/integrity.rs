@@ -16,7 +16,8 @@
 //! | An older version than before; a version that cannot be ordered | `version-downgrade`, `unordered-version` |
 //! | Packages added or removed in the lockfile with no change to a manifest | `lockfile-only-edit` |
 //! | A manifest dependency the lockfile does not hold; no lockfile at all | `lockfile-out-of-date`, `lockfile-missing` |
-//! | A transitive package with the name of an internal package | `dependency-confusion` |
+//! | A transitive package with the name of an internal package; a registry package with the name and version of a member | `dependency-confusion` |
+//! | A lockfile reference that names several packages or none | `lockfile-reference-ambiguous`, `lockfile-reference-dangling` |
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -24,9 +25,19 @@ use super::diff::{ChangeKind, LockDiff};
 use super::findings::{Finding, check};
 use super::model::{
     BuildConfig, ConfigClass, DeclaredSource, DependencyFormat, FileKind, LockedPackage, Lockfile,
-    Manifest, Origin, ParseError, Side, normalize, plain,
+    Manifest, Origin, ParseError, Resolved, Side, normalize, plain,
 };
 use super::names::PopularNames;
+
+/// The most packages one lockfile may hold. A lockfile of the biggest projects known holds a few
+/// thousand; a candidate lockfile above this is not one a person could review, and the checks
+/// that follow are bounded by it.
+pub const MAX_LOCKED_PACKAGES: usize = 10_000;
+
+/// The most new direct dependencies one change may bring. Each needs its own human decision, so a
+/// change with more is not one a person can decide on, and the policy engine is asked once for
+/// each of them.
+pub const MAX_NEW_DIRECT: usize = 100;
 
 /// Every dependency file of one commit, read.
 #[derive(Debug, Clone, Default)]
@@ -37,6 +48,12 @@ pub struct Snapshot {
     pub manifests: BTreeMap<String, Manifest>,
     /// Build configurations by path.
     pub configs: BTreeMap<String, BuildConfig>,
+    /// The configuration files of the scanners, by path, as text. Nothing in them is read: the
+    /// candidate must not change them, whatever they say.
+    pub scanners: BTreeMap<String, String>,
+    /// The paths of the build scripts, in lower case, so that a manifest can tell whether cargo
+    /// finds `build.rs` next to it. The text is not read.
+    pub build_scripts: BTreeSet<String>,
 }
 
 impl Snapshot {
@@ -48,15 +65,27 @@ impl Snapshot {
         let mut unreadable = Vec::new();
         for (path, text) in side.files() {
             let outcome = match format.kind_of(path) {
-                Some(FileKind::Lockfile) => format
-                    .parse_lockfile(text)
-                    .map(|lock| drop(snapshot.locks.insert(path.to_owned(), lock))),
+                Some(FileKind::Lockfile) => format.parse_lockfile(text).and_then(|lock| {
+                    if lock.packages.len() > MAX_LOCKED_PACKAGES {
+                        return Err(ParseError::TooLarge);
+                    }
+                    snapshot.locks.insert(path.to_owned(), lock);
+                    Ok(())
+                }),
                 Some(FileKind::Manifest) => format
                     .parse_manifest(text)
                     .map(|manifest| drop(snapshot.manifests.insert(path.to_owned(), manifest))),
                 Some(FileKind::BuildConfig) => format
                     .parse_build_config(text)
                     .map(|config| drop(snapshot.configs.insert(path.to_owned(), config))),
+                Some(FileKind::ScannerConfig) => {
+                    snapshot.scanners.insert(path.to_owned(), text.to_owned());
+                    Ok(())
+                }
+                Some(FileKind::BuildScript) => {
+                    snapshot.build_scripts.insert(path.to_ascii_lowercase());
+                    Ok(())
+                }
                 None => Ok(()),
             };
             if let Err(error) = outcome {
@@ -70,6 +99,39 @@ impl Snapshot {
     #[must_use]
     pub fn package_names(&self) -> BTreeSet<String> {
         self.locks.values().flat_map(Lockfile::names).collect()
+    }
+
+    /// The normalized name of every package that is not a member of the project: the packages
+    /// that came from somewhere else. A registry package that has the name of a member is **not**
+    /// known by that name, because the member is the project's own code and the registry package
+    /// is somebody else's.
+    #[must_use]
+    pub fn external_names(&self) -> BTreeSet<String> {
+        self.locks
+            .values()
+            .flat_map(|lock| &lock.packages)
+            .filter(|package| package.origin != Origin::Path)
+            .map(|package| normalize(&package.name))
+            .collect()
+    }
+
+    /// The normalized name of every member of the project (a package with no source).
+    #[must_use]
+    pub fn member_names(&self) -> BTreeSet<String> {
+        self.locks
+            .values()
+            .flat_map(Lockfile::members)
+            .map(|package| normalize(&package.name))
+            .collect()
+    }
+
+    /// The normalized name and the version of every member of the project.
+    fn member_keys(&self) -> BTreeSet<(String, String)> {
+        self.locks
+            .values()
+            .flat_map(Lockfile::members)
+            .map(|package| (normalize(&package.name), package.version.clone()))
+            .collect()
     }
 
     /// The registry package names that manifests declare, with the workspace table resolved.
@@ -95,6 +157,19 @@ impl Snapshot {
             }
         }
         names
+    }
+
+    /// True when building the package of the manifest at `path` runs a build script: the manifest
+    /// names one, or cargo finds `build.rs` next to it and the manifest does not turn it off.
+    fn has_build_script(&self, path: &str, manifest: &Manifest) -> bool {
+        let directory = path.rsplit_once('/').map_or("", |(dir, _)| dir);
+        let implicit = if directory.is_empty() {
+            "build.rs".to_owned()
+        } else {
+            format!("{directory}/build.rs").to_ascii_lowercase()
+        };
+        manifest.build_script
+            || (!manifest.build_disabled && self.build_scripts.contains(&implicit))
     }
 
     /// Every declaration, as the canonical lines that tell two versions of a manifest apart.
@@ -143,8 +218,13 @@ pub struct Integrity {
     pub new_direct: Vec<NewDirect>,
     /// The candidate's files.
     pub head: Snapshot,
-    /// The names of the packages of the base commit's lockfiles.
+    /// The normalized names of the packages of the base commit's lockfiles that are not members
+    /// of the project. A registry package with the name of a member is not "known" by it.
     pub base_names: Vec<String>,
+    /// The normalized names that count as the organization's own: the names the operator listed
+    /// and the name of every member of the project at the base commit, so that the list does not
+    /// depend on a person remembering to extend it.
+    pub internal_names: Vec<String>,
 }
 
 impl Integrity {
@@ -191,11 +271,24 @@ pub fn inspect(
         return Err(BaseUnreadable { path });
     }
     let (head_snapshot, head_bad) = Snapshot::read(format, head);
+    let internal: BTreeSet<String> = cx
+        .internal_names
+        .iter()
+        .map(|name| normalize(name))
+        .chain(base_snapshot.member_names())
+        .collect();
     let mut run = Run {
         format,
         cx,
         base: &base_snapshot,
         head: &head_snapshot,
+        internal: &internal,
+        manifest_names: head_snapshot
+            .manifests
+            .values()
+            .filter_map(|manifest| manifest.name.as_deref())
+            .map(normalize)
+            .collect(),
         findings: Vec::new(),
         diff: LockDiff::default(),
     };
@@ -209,6 +302,7 @@ pub fn inspect(
                 match error {
                     ParseError::Syntax(_) => "it is not valid",
                     ParseError::Unsupported => "its layout is not one this check knows",
+                    ParseError::TooLarge => "it holds more packages than the gate reads",
                 }
             ),
         ));
@@ -219,7 +313,8 @@ pub fn inspect(
         findings,
         diff,
         new_direct,
-        base_names: base_snapshot.package_names().into_iter().collect(),
+        base_names: base_snapshot.external_names().into_iter().collect(),
+        internal_names: internal.into_iter().collect(),
         head: head_snapshot,
     })
 }
@@ -229,6 +324,9 @@ struct Run<'a> {
     cx: &'a Context<'a>,
     base: &'a Snapshot,
     head: &'a Snapshot,
+    internal: &'a BTreeSet<String>,
+    /// The normalized package name of every manifest of the candidate.
+    manifest_names: BTreeSet<String>,
     findings: Vec<Finding>,
     diff: LockDiff,
 }
@@ -236,10 +334,22 @@ struct Run<'a> {
 impl Run<'_> {
     fn run(&mut self) -> Vec<NewDirect> {
         self.lockfiles();
+        self.references();
         let new_direct = self.new_direct_dependencies();
+        if new_direct.len() > MAX_NEW_DIRECT {
+            self.push(Finding::violation(
+                check::TOO_MANY_NEW,
+                None,
+                format!(
+                    "The change brings {} new direct dependencies, and a change may bring at most {MAX_NEW_DIRECT}. Each needs its own decision, so split the change.",
+                    new_direct.len()
+                ),
+            ));
+        }
         self.lockfile_only();
         self.manifests();
         self.configs();
+        self.scanner_configs();
         self.consistency();
         self.names(&new_direct);
         new_direct
@@ -341,13 +451,7 @@ impl Run<'_> {
                 }
             }
             Origin::Path => {
-                let explained = self.head.manifests.values().any(|manifest| {
-                    manifest
-                        .name
-                        .as_deref()
-                        .is_some_and(|own| normalize(own) == normalize(&package.name))
-                });
-                if !explained {
+                if !self.manifest_names.contains(&normalize(&package.name)) {
                     self.push(Finding::violation(
                         check::PATH_UNEXPLAINED,
                         None,
@@ -367,26 +471,81 @@ impl Run<'_> {
         }
     }
 
+    /// Every reference of a candidate lockfile must name exactly one package. A reference that
+    /// names several would let a check pick the wrong one, and a gate that skips it would not see
+    /// a package that came in: the answer is a finding, never a `continue`.
+    fn references(&mut self) {
+        for (path, lock) in &self.head.locks {
+            let index = lock.index();
+            let (mut ambiguous, mut dangling) = (None, None);
+            for package in &lock.packages {
+                for reference in &package.dependencies {
+                    match index.resolve(reference) {
+                        Resolved::One(_) => {}
+                        Resolved::Ambiguous => {
+                            ambiguous.get_or_insert((package, reference));
+                        }
+                        Resolved::Dangling => {
+                            dangling.get_or_insert((package, reference));
+                        }
+                    }
+                }
+            }
+            for (found, id, what) in [
+                (
+                    ambiguous,
+                    check::REFERENCE_AMBIGUOUS,
+                    "names more than one package",
+                ),
+                (dangling, check::REFERENCE_DANGLING, "names no package"),
+            ] {
+                if let Some((package, reference)) = found {
+                    self.findings.push(Finding::violation(
+                        id,
+                        Some(path),
+                        format!(
+                            "In the lockfile {}, the package {} {} lists a dependency on {} that {what}, so the packages that came in cannot be told apart.",
+                            plain(path, 200),
+                            plain(&package.name, 80),
+                            plain(&package.version, 40),
+                            plain(&reference.name, 80),
+                        ),
+                    ));
+                }
+            }
+        }
+    }
+
     /// The direct dependencies that the base lockfiles do not hold: the packages that a member
-    /// of the project depends on, whose name is in no base lockfile.
+    /// of the project depends on, whose name is in no base lockfile as something other than a
+    /// member. A registry package with the name of a member is therefore new.
     fn new_direct_dependencies(&self) -> Vec<NewDirect> {
-        let known = self.base.package_names();
+        let known = self.base.external_names();
+        let mut seen: BTreeSet<(String, String, String, Origin)> = BTreeSet::new();
         let mut found: Vec<NewDirect> = Vec::new();
         for (path, lock) in &self.head.locks {
+            let index = lock.index();
             for member in lock.members() {
                 for reference in &member.dependencies {
-                    let Some(package) = lock.resolve(reference) else {
+                    // A reference that does not name one package is a finding of its own
+                    // ([`Run::references`]); it is never taken for a package it may not mean.
+                    let Resolved::One(package) = index.resolve(reference) else {
                         continue;
                     };
                     if package.origin == Origin::Path || known.contains(&normalize(&package.name)) {
                         continue;
                     }
-                    let entry = NewDirect {
-                        lockfile: path.clone(),
-                        package: package.clone(),
-                    };
-                    if !found.contains(&entry) {
-                        found.push(entry);
+                    let key = (
+                        path.clone(),
+                        normalize(&package.name),
+                        package.version.clone(),
+                        package.origin.clone(),
+                    );
+                    if seen.insert(key) {
+                        found.push(NewDirect {
+                            lockfile: path.clone(),
+                            package: package.clone(),
+                        });
                     }
                 }
             }
@@ -457,7 +616,8 @@ impl Run<'_> {
                     ));
                 }
             }
-            if (manifest.build_script && !old.is_some_and(|m| m.build_script))
+            let had_build_script = old.is_some_and(|m| self.base.has_build_script(path, m));
+            if (self.head.has_build_script(path, manifest) && !had_build_script)
                 || (manifest.proc_macro && !old.is_some_and(|m| m.proc_macro))
             {
                 self.push(Finding::warning(
@@ -516,6 +676,36 @@ impl Run<'_> {
         }
     }
 
+    /// The configuration of the scanners belongs to the factory and to the base commit. A change
+    /// that adds, edits or removes one of these files would let the code under test decide what
+    /// the scanner may report, so it is a violation whatever the file says. The audit runs in a
+    /// checkout of the candidate, so a file that equals the base commit's is the base commit's
+    /// configuration.
+    fn scanner_configs(&mut self) {
+        let paths: BTreeSet<&String> = self
+            .base
+            .scanners
+            .keys()
+            .chain(self.head.scanners.keys())
+            .collect();
+        for path in paths {
+            let what = match (self.base.scanners.get(path), self.head.scanners.get(path)) {
+                (Some(old), Some(new)) if old == new => continue,
+                (None, Some(_)) => "adds",
+                (Some(_), None) => "removes",
+                _ => "changes",
+            };
+            self.push(Finding::violation(
+                check::SCANNER_CONFIG,
+                Some(path),
+                format!(
+                    "The change {what} the file {}, which configures a scanner that judges the change, and the code under test may not decide what a scanner reports.",
+                    plain(path, 200)
+                ),
+            ));
+        }
+    }
+
     /// The manifests and the lockfiles must agree.
     fn consistency(&mut self) {
         let declared = self.head.declared_registry_names();
@@ -541,11 +731,26 @@ impl Run<'_> {
     }
 
     /// Names that look like another name: a transitive package with an internal name is a
-    /// violation; a package one edit from a popular name is a warning.
+    /// violation; a package one edit from a popular name is a warning. A registry package with
+    /// the name **and version** of a member of the project is a violation whether or not it is a
+    /// new direct dependency: nobody has a reason to take the registry copy of a package they
+    /// build themselves, so a person is not asked.
     fn names(&mut self, new_direct: &[NewDirect]) {
-        let direct: BTreeSet<(String, String)> = new_direct
+        let direct: BTreeSet<(String, String, Origin)> = new_direct
             .iter()
-            .map(|d| (normalize(&d.package.name), d.package.version.clone()))
+            .map(|d| {
+                (
+                    normalize(&d.package.name),
+                    d.package.version.clone(),
+                    d.package.origin.clone(),
+                )
+            })
+            .collect();
+        let members: BTreeSet<(String, String)> = self
+            .base
+            .member_keys()
+            .union(&self.head.member_keys())
+            .cloned()
             .collect();
         let touched: Vec<LockedPackage> = self
             .diff
@@ -555,69 +760,46 @@ impl Run<'_> {
             .chain(self.diff.changed.iter().map(|c| c.after.clone()))
             .collect();
         for package in touched {
-            if direct.contains(&(normalize(&package.name), package.version.clone())) {
-                // The policy engine decides these, with a security approver.
-                continue;
-            }
             let wanted = normalize(&package.name);
             let name = plain(&package.name, 80);
             if package.origin.is_default_registry()
-                && self
-                    .cx
-                    .internal_names
-                    .iter()
-                    .any(|internal| normalize(internal) == wanted)
+                && members.contains(&(wanted.clone(), package.version.clone()))
             {
+                self.push(Finding::violation(
+                    check::CONFUSION,
+                    None,
+                    format!(
+                        "The package {name} {} comes from the public registry and has the name and version of a package of the project itself.",
+                        plain(&package.version, 40)
+                    ),
+                ));
+                continue;
+            }
+            if direct.contains(&(
+                wanted.clone(),
+                package.version.clone(),
+                package.origin.clone(),
+            )) {
+                // The policy engine decides these, with a security approver.
+                continue;
+            }
+            if package.origin.is_default_registry() && self.internal.contains(&wanted) {
                 self.push(Finding::violation(
                     check::CONFUSION,
                     None,
                     format!("The package {name} comes from the public registry and has the name of an internal package."),
                 ));
             }
-            if let Some(popular) = self
-                .cx
-                .popular
-                .names()
-                .iter()
-                .find(|popular| near_miss(&normalize(popular), &wanted))
-            {
+            if let Some(lookalike) = self.cx.popular.lookalike(&wanted) {
                 self.push(Finding::warning(
                     check::SUSPECT_NAME,
                     None,
                     format!(
-                        "The package {name} is one edit away from the popular name {}.",
-                        plain(popular, 80)
+                        "The package {name} looks like the popular name {}: one edit away, or the same name with a decoration.",
+                        plain(lookalike, 80)
                     ),
                 ));
             }
         }
-    }
-}
-
-/// True when `a` and `b` differ and are one edit apart: one letter changed, added, dropped, or
-/// two neighbouring letters swapped. This is the rule of `DependencyPolicy`.
-fn near_miss(a: &str, b: &str) -> bool {
-    if a == b {
-        return false;
-    }
-    let (a, b): (Vec<char>, Vec<char>) = (a.chars().collect(), b.chars().collect());
-    if a.len().abs_diff(b.len()) > 1 {
-        return false;
-    }
-    let common = a.iter().zip(&b).take_while(|(x, y)| x == y).count();
-    let (ra, rb) = (
-        a.get(common..).unwrap_or_default(),
-        b.get(common..).unwrap_or_default(),
-    );
-    match ra.len().cmp(&rb.len()) {
-        std::cmp::Ordering::Equal => {
-            ra.get(1..) == rb.get(1..)
-                || (ra.len() >= 2
-                    && ra.first() == rb.get(1)
-                    && ra.get(1) == rb.first()
-                    && ra.get(2..) == rb.get(2..))
-        }
-        std::cmp::Ordering::Less => ra == rb.get(1..).unwrap_or_default(),
-        std::cmp::Ordering::Greater => ra.get(1..).unwrap_or_default() == rb,
     }
 }

@@ -376,7 +376,6 @@ fn a_patch_or_replace_section_is_seen_in_every_spelling_cargo_accepts() {
 /// "x.rs"` cargo lists a `custom-build` target (observed with `cargo metadata --no-deps`); the
 /// reader reads `package` only, so the manifest has no name and no build script.
 #[test]
-#[ignore = "confirmed defect SC-9: a [project] table hides the manifest name and a build script from the reader"]
 fn sc9_the_project_alias_of_the_package_table_is_read() {
     let text = "[project]\nname = \"app\"\nversion = \"0.1.0\"\nbuild = \"x.rs\"\n";
     let manifest = CargoFormat.parse_manifest(text).expect("a manifest");
@@ -387,9 +386,48 @@ fn sc9_the_project_alias_of_the_package_table_is_read() {
 /// `[lib] crate-type = ["proc-macro"]` builds a procedural macro (observed: cargo lists a
 /// `proc-macro` target). The reader looks for `proc-macro = true` only.
 #[test]
-#[ignore = "confirmed defect SC-9: crate-type = [\"proc-macro\"] is not seen as a procedural macro"]
 fn sc9_a_proc_macro_declared_by_crate_type_is_seen() {
     let text = h("[lib]\ncrate-type = [\"proc-macro\"]\n");
     let manifest = CargoFormat.parse_manifest(&text).expect("a manifest");
     assert!(manifest.proc_macro);
+}
+
+/// A `build.rs` next to a manifest that names no `build` key is a build script all the same: cargo
+/// finds it by its name. The manifest cannot say so, so the gate reads the presence of the file.
+#[test]
+fn sc9_a_plain_build_rs_next_to_a_manifest_is_build_code() {
+    let head = with(base(), "build.rs", "fn main() {}\n");
+    let integrity = judge(&base(), &head);
+    assert!(integrity.has(check::BUILD_CODE), "{:?}", integrity.findings);
+    assert!(!integrity.has_violation(), "it is a warning, not a block");
+}
+
+/// The name is matched without regard to case, in the directory of the manifest only, and `build
+/// = false` turns the script off.
+#[test]
+fn sc9_the_plain_build_script_rules_follow_cargo() {
+    let in_other_dir = with(base(), "tools/build.rs", "fn main() {}\n");
+    assert!(!judge(&base(), &in_other_dir).has(check::BUILD_CODE));
+
+    let upper = with(base(), "BUILD.RS", "fn main() {}\n");
+    assert!(judge(&base(), &upper).has(check::BUILD_CODE));
+
+    let off = with(
+        with(base(), "build.rs", "fn main() {}\n"),
+        "Cargo.toml",
+        "[package]\nname = \"app\"\nversion = \"0.1.0\"\nbuild = false\n\n[dependencies]\nserde = \"1\"\n",
+    );
+    assert!(!judge(&base(), &off).has(check::BUILD_CODE));
+}
+
+/// A build script that the base commit already had is not new.
+#[test]
+fn sc9_a_build_script_the_base_commit_already_had_is_not_reported_again() {
+    let with_script = with(base(), "build.rs", "fn main() {}\n");
+    let changed = with(
+        with_script.clone(),
+        "build.rs",
+        "fn main() { /* more */ }\n",
+    );
+    assert!(!judge(&with_script, &changed).has(check::BUILD_CODE));
 }

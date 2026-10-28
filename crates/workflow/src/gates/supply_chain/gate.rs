@@ -16,17 +16,22 @@
 //! document, and the recorded approvals it hands back to the next run are what let step 3 start.
 
 use factory_domain::contracts::GateReport;
-use factory_domain::values::Timestamp;
+use factory_domain::contracts::gate_report::BlockedCode;
+use factory_domain::policy::dependency::{
+    DependencyDecision, DependencyPolicy, DependencyRequest, RegistryFacts,
+};
+use factory_domain::values::{Sha256Digest, Timestamp};
 use factory_ports::paths::CommitSha;
 use serde_json::Value;
 
-use super::approval::DependencyApproval;
-use super::facts::RegistryMetadata;
+use super::approval::{DecisionScope, DependencyApproval};
+use super::facts::{AdvisoryDatabase, DatabaseAge, RegistryMetadata, RegistryRecord};
 use super::integrity::{BaseUnreadable, Context, inspect};
 use super::model::{DependencyFormat, Side, normalize};
 use super::report::{Evaluation, Reporter};
 use super::review::{Conclusion, Plan, RegistryTable, Settings, conclude};
 use super::run::{Io, SupplyChainConfig, fetch, scan};
+use super::version::Version;
 use crate::gates::command::report::{ReportContext, image_digest};
 use crate::handlers::StageError;
 
@@ -44,6 +49,10 @@ pub struct Inputs<'a> {
     pub approvals: &'a [DependencyApproval],
     /// Where the facts about the new packages come from.
     pub registry: &'a dyn RegistryMetadata,
+    /// The advisory database the audit reads: its age is a fact the advisory gate requires.
+    pub advisory_db: &'a dyn AdvisoryDatabase,
+    /// The hash of the policy bundle in force. A decision taken under another one is not valid.
+    pub policy_hash: &'a Sha256Digest,
     /// What every report shares: the run, the definition, the binding.
     pub report: ReportContext,
 }
@@ -83,11 +92,17 @@ pub async fn run(io: &Io<'_>, inputs: &Inputs<'_>) -> Result<Done, StageError> {
     let mut registry = RegistryTable::new();
     if !integrity.has_violation() {
         for entry in &integrity.new_direct {
-            let record = inputs
-                .registry
-                .lookup(&entry.package.name, &entry.package.version)
-                .await;
-            registry.insert(normalize(&entry.package.name), record);
+            let (name, version) = (&entry.package.name, &entry.package.version);
+            // The name and the version are text from the candidate's lockfile, and the source
+            // speaks to a registry with the control plane's own egress. Only a request that the
+            // policy engine accepts as a request reaches it; for any other the record stays the
+            // default (all unknown), and `Plan::new` refuses the request by name.
+            let record = if is_valid_request(&cfg.policy.dependency, name, version) {
+                inputs.registry.lookup(name, version).await
+            } else {
+                RegistryRecord::default()
+            };
+            registry.insert(normalize(name), record);
         }
     }
     let settings = Settings {
@@ -96,6 +111,11 @@ pub async fn run(io: &Io<'_>, inputs: &Inputs<'_>) -> Result<Done, StageError> {
         internal_names: &cfg.internal_names,
         popular,
         now,
+        scope: DecisionScope {
+            tenant: io.scope.tenant_id(),
+            job: io.job,
+        },
+        policy_hash: inputs.policy_hash,
     };
     let plan = Plan::new(integrity, &registry, inputs.approvals, &settings);
 
@@ -118,22 +138,89 @@ pub async fn run(io: &Io<'_>, inputs: &Inputs<'_>) -> Result<Done, StageError> {
         None
     };
 
+    let database = DatabaseAge::judge(
+        &now,
+        inputs.advisory_db.updated_at().await,
+        cfg.advisory_db_max_age_days,
+    );
     let evaluation = Evaluation {
         plan: Ok(&plan),
         fetched: fetched.as_ref(),
         conclusion: conclusion.as_ref(),
         scanned: scanned.as_ref(),
         sbom_required: cfg.sbom.required,
+        database,
     };
     let reports = reporter(io, inputs, now)?
         .reports(&evaluation)
         .map_err(|_| StageError::Internal)?;
     Ok(Done {
         reports,
-        evidence: Some(plan.evidence()),
+        evidence: Some(plan.evidence_with(conclusion.as_ref())),
         fetched: fetched.is_some(),
         scanned: scanned.is_some(),
     })
+}
+
+/// True when `name` at `version` is a request the policy engine would not refuse as malformed:
+/// a crate name of the registry's alphabet and length, and a version that reads as one.
+fn is_valid_request(policy: &DependencyPolicy, name: &str, version: &str) -> bool {
+    let request = DependencyRequest {
+        ecosystem: "cargo",
+        name,
+        version_req: version,
+    };
+    let facts = RegistryFacts {
+        exists_in_registry: None,
+        first_publish_age_days: None,
+        popular_names: &[],
+        internal_names: &[],
+    };
+    !matches!(
+        policy.decide(&request, &[], &facts),
+        DependencyDecision::Refused { .. }
+    ) && Version::parse(version).is_some()
+}
+
+/// Why the gate does not run for a change.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Skip<'a> {
+    /// The change touches no dependency file.
+    Untouched,
+    /// The gate cannot run: something it needs is missing. The four reports are BLOCKED and say
+    /// what.
+    Blocked {
+        /// The category.
+        code: BlockedCode,
+        /// What is missing, as the report names it.
+        missing: &'a str,
+        /// A plain sentence.
+        reason: &'a str,
+    },
+}
+
+/// The four reports of a change for which the gate does not run. No container is made and no
+/// registry is asked.
+///
+/// # Errors
+/// [`StageError::Internal`] when a report would break the contract (a fault of the factory), or
+/// the image reference of a sandbox is not a digest.
+pub fn skipped(
+    io: &Io<'_>,
+    report: &ReportContext,
+    skip: &Skip<'_>,
+) -> Result<Vec<GateReport>, StageError> {
+    let now = io.ports.clock.now();
+    let reporter = reporter_for(io, report, now)?;
+    match skip {
+        Skip::Untouched => reporter.untouched(),
+        Skip::Blocked {
+            code,
+            missing,
+            reason,
+        } => reporter.cannot_run(*code, missing, reason),
+    }
+    .map_err(|_| StageError::Internal)
 }
 
 fn unreadable_base(
@@ -148,6 +235,7 @@ fn unreadable_base(
         conclusion: None,
         scanned: None,
         sbom_required: io.cfg.sbom.required,
+        database: DatabaseAge::Unknown,
     };
     let reports = reporter(io, inputs, now)?
         .reports(&evaluation)
@@ -165,12 +253,20 @@ fn reporter<'a>(
     inputs: &Inputs<'_>,
     now: Timestamp,
 ) -> Result<Reporter<'a>, StageError> {
+    reporter_for(io, &inputs.report, now)
+}
+
+fn reporter_for<'a>(
+    io: &'a Io<'_>,
+    report: &ReportContext,
+    now: Timestamp,
+) -> Result<Reporter<'a>, StageError> {
     let cfg = io.cfg;
     let digest = |image: &factory_ports::sandbox::ImageDigest| {
         image_digest(image.reference()).map_err(|_| StageError::Internal)
     };
     Ok(Reporter {
-        cx: inputs.report.clone(),
+        cx: report.clone(),
         ids: io.ports.ids,
         now,
         redactor: &cfg.redactor,

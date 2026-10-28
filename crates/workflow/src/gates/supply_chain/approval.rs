@@ -13,11 +13,17 @@
 //! * The approval is bound to the exact name, version and checksum. The same name at another
 //!   version, or the same version with another checksum, is another subject and has no
 //!   approval until a person decides on it.
+//! * It is bound to the tenant and the job it was decided for, and to the hash of the policy
+//!   bundle in force when it was decided. The review drops a decision that is for another tenant,
+//!   another job or another policy bundle: a decision taken under a weaker policy, or for
+//!   another job, does not carry over.
 //! * It is written to the ledger evidence with the approver's id, the designation, the version of
-//!   the allowlist, the hash of the policy bundle and the reason ([`DependencyApproval::to_json`]).
-//!   [`DependencyApproval::from_json`] reads it back, and refuses a record that has no numeric id.
+//!   the allowlist, the hash of the policy bundle, the tenant, the job and the reason
+//!   ([`DependencyApproval::to_json`]). [`DependencyApproval::from_json`] reads it back, and
+//!   refuses a record that has no numeric id, no tenant or no job.
 
-use factory_domain::ids::TenantId;
+use async_trait::async_trait;
+use factory_domain::ids::{JobId, TenantId};
 use factory_domain::policy::authority::{
     ActionContext, ActionVerdict, Actor, Allowlist, AuthorityPolicy, AutonomyLevel, ChangeFacts,
 };
@@ -57,6 +63,15 @@ impl Subject {
     }
 }
 
+/// Where a decision was taken: the tenant and the job it is for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DecisionScope {
+    /// The tenant.
+    pub tenant: TenantId,
+    /// The job.
+    pub job: JobId,
+}
+
 /// Why a decision could not be recorded.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub enum ApprovalError {
@@ -84,6 +99,8 @@ pub struct DependencyApproval {
     pub allowlist_version: String,
     /// The hash of the policy bundle in force when it was decided.
     pub policy_hash: Sha256Digest,
+    /// The tenant and the job it was decided for.
+    pub scope: DecisionScope,
     /// Why, in the person's words.
     pub reason: String,
     /// When.
@@ -104,6 +121,7 @@ impl DependencyApproval {
         authorization: &AuthorizedApproval,
         subject: Subject,
         policy_hash: Sha256Digest,
+        scope: DecisionScope,
         reason: &str,
     ) -> Result<Self, ApprovalError> {
         if authorization.action() != ACTION {
@@ -122,6 +140,7 @@ impl DependencyApproval {
             designation: authorization.designation(),
             allowlist_version: authorization.allowlist_version().to_owned(),
             policy_hash,
+            scope,
             reason: reason.chars().take(MAX_REASON_CHARS).collect(),
             decided_at: *authorization.decided_at(),
         })
@@ -131,6 +150,12 @@ impl DependencyApproval {
     #[must_use]
     pub fn covers(&self, subject: &Subject) -> bool {
         self.subject.same_as(subject)
+    }
+
+    /// True when the decision was taken for this tenant and job, under this policy bundle.
+    #[must_use]
+    pub fn is_valid_for(&self, scope: &DecisionScope, policy_hash: &Sha256Digest) -> bool {
+        self.scope == *scope && self.policy_hash == *policy_hash
     }
 
     /// True when the person who decided holds a designation that is enough for `needed`. A
@@ -161,6 +186,8 @@ impl DependencyApproval {
             "designation": self.designation.as_str(),
             "allowlist_version": self.allowlist_version,
             "policy_hash": self.policy_hash.as_str(),
+            "tenant_id": self.scope.tenant.as_text(),
+            "job_id": self.scope.job.as_text(),
             "reason": self.reason,
             "decided_at": self.decided_at.as_text(),
         })
@@ -189,9 +216,41 @@ impl DependencyApproval {
             designation: Designation::parse(text("designation")?)?,
             allowlist_version: text("allowlist_version")?.to_owned(),
             policy_hash: Sha256Digest::parse(text("policy_hash")?).ok()?,
+            scope: DecisionScope {
+                tenant: TenantId::parse(text("tenant_id")?).ok()?,
+                job: JobId::parse(text("job_id")?).ok()?,
+            },
             reason: reason.to_owned(),
             decided_at: Timestamp::parse(text("decided_at")?).ok()?,
         })
+    }
+}
+
+/// The decisions recorded for a job, as the composition root reads them from the ledger.
+///
+/// The implementation loads by tenant and job, and only the rows written by the approval command
+/// (`authorize` and [`DependencyApproval::record`]). It never reads a decision from the stage
+/// output, from an artifact the sandbox wrote or from a file of the repository: those are the
+/// candidate's. The gate drops what is for another tenant, job or policy bundle on its own, so
+/// this is the second check and not the first.
+#[async_trait]
+pub trait RecordedApprovals: Send + Sync {
+    /// Every decision recorded for `job` of `tenant`.
+    async fn for_job(&self, tenant: TenantId, job: JobId) -> Vec<DependencyApproval>;
+}
+
+/// A fixed list of decisions, for a source that was filled before the run and for tests.
+#[derive(Debug, Clone, Default)]
+pub struct StaticApprovals(pub Vec<DependencyApproval>);
+
+#[async_trait]
+impl RecordedApprovals for StaticApprovals {
+    async fn for_job(&self, tenant: TenantId, job: JobId) -> Vec<DependencyApproval> {
+        self.0
+            .iter()
+            .filter(|approval| approval.scope == DecisionScope { tenant, job })
+            .cloned()
+            .collect()
     }
 }
 

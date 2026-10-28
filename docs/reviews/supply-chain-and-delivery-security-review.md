@@ -189,3 +189,107 @@ cargo test -p factory-workflow --test supply_chain_review --locked -- --ignored 
 The tests use the builder's harness (`files.rs`, `people.rs`, `world.rs`) by path and do not change it. SC-4 takes no reading of the clock, because the workspace bans `Instant::now`; it runs the check on a thread and waits with a deadline. The cargo and cargo-audit evidence of SC-1, SC-5 and SC-6 was produced in scratch directories outside the repository; the steps are written out above so anyone can repeat them.
 
 Checks run on this branch: `cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets --locked -- -D warnings`, `cargo xtask check-architecture`, and the secret scan (`./scripts/ci.sh --only secret-scan`) all pass. The builder's `supply_chain` target still passes (85 tests).
+
+## Status after fixes
+
+- Author of the fixes: the software engineer, on branch `worktree-agent-acab5747c201423c3`, from `8b2db5a`. I did not review my own work: a re-review follows, and the table below is a claim for the re-reviewer to check, not a verdict.
+- The review's own text above is left as the reviewer wrote it. Where it says "fails by design", the test is no longer ignored (`cargo test -p factory-workflow --test supply_chain_review --locked -- --ignored` runs nothing).
+- Where a test of the review had to change, it is named below with the reason.
+
+### What is fixed
+
+| ID | Status | What changed | Tests |
+|---|---|---|---|
+| SC-1 | fixed | A lockfile reference keeps its source (`LockedRef.origin`). `LockIndex::resolve` answers `One`, `Ambiguous` or `Dangling`, and an ambiguous or dangling reference is a violation (`lockfile-reference-ambiguous`, `lockfile-reference-dangling`), never a `continue`. | `sc1_*`, `identity::a_reference_that_names_two_packages_is_a_finding_and_is_not_skipped`, `identity::a_reference_that_names_no_package_is_a_finding` |
+| SC-2 | fixed | The lock diff identifies a package by name, version and source, and equal identities pair off one to one. | `sc2_*`, `diff::tests::a_registry_package_beside_a_member_of_the_same_name_and_version_is_added`, `..._a_member_replaced_by_a_registry_package_...` |
+| SC-3 | fixed | The names of the base commit's members are internal names without an operator list. A registry package with a member's name is a new direct dependency (a person decides, and the policy engine flags the internal name for a security approver). A registry package with a member's name **and version** is a `dependency-confusion` violation, direct or not. | `sc3_*`, `identity::the_name_of_a_base_member_is_internal_without_an_operator_list`, `identity::a_registry_twin_of_a_member_*` |
+| SC-4 | fixed | The diff, the reference lookup and the name checks are linear (maps built once). A lockfile above 10 000 packages is unreadable (`MAX_LOCKED_PACKAGES`), and a change with more than 100 new direct dependencies is refused (`MAX_NEW_DIRECT`). 4 000 packages run in about 0.1 s in debug (the review measured 3.39 s). | `sc4_*` (three tests) |
+| SC-5 | fixed, with a limit | `.cargo/audit.toml` is a build configuration file (every key unrecognised), and `deny.toml` and `audit.toml` anywhere in the tree are compared as text: add, edit or remove is a violation. File names are matched without regard to case. `parse_audit` refuses an answer whose `settings` hide advisories (`ignore`, `severity`, `target_arch`, `target_os`), as BLOCKED with the reason. **Limit:** cargo-audit 0.22.2 has no flag for a configuration path, so "the base commit's configuration" is enforced by equality (the candidate's file may not differ from the base's) and not by pointing the tool elsewhere. A base commit that has an `ignore` list therefore makes the advisories gate BLOCKED for that repository, which fails closed. | `sc5_*` (seven tests), the audit script `Ignoring` in the harness |
+| SC-6 | fixed, policy row missing | The age of the advisory database is a fact (`AdvisoryDatabase::updated_at`) the composition root supplies from where the image was built. A clean audit against a database that is unknown, in the future or older than the limit is BLOCKED (`dependency_unavailable`) with the age; a clean one records how old the database was. The limit is `SupplyChainConfig.advisory_db_max_age_days`, default 7 (the `maximum-db-staleness = "P7D"` of `deny.toml`). `policies/security.yaml` has no row for it. | `sc6_*`, `gate_run::an_audit_against_a_database_*`, `validation::supply::an_advisory_database_older_than_the_limit_*` |
+| SC-7 | fixed | `gate::run` asks the policy engine whether the name and version are a valid request before it calls `RegistryMetadata::lookup`; an invalid one is never sent and is refused by name afterwards. The review's own test became vacuous (see "Tests I changed"), so a second test was added. | `sc7_*` (two tests) |
+| SC-8 | fixed | `repository` and `license` go through `plain` and a 200-character bound before the evidence. The URL characters `?`, `=`, `#` and `%` become `?`, so the stored link is for reading, not for following. | `sc8_*` |
+| SC-9 | fixed | `[project]` is read as `[package]`, `crate-type = ["proc-macro"]` is a procedural macro, and a plain `build.rs` next to a manifest (matched without regard to case, unless `build = false`) is build code. The gate reads the presence of `build.rs` files only, never their text. | `sc9_*` (five tests) |
+| SC-10 | fixed, policy row missing | A package that is new to the build and has a build script or is a procedural macro waits for a security approver, whoever asked for it; the decision is a `DependencyApproval` of a security approver on that exact name, version and checksum, and the evidence lists the subjects (`build_code_awaiting_a_security_approver`). A package that only changed version is not asked again: the gate has no record of what the base commit's version ran. | `sc10_*` (three tests) |
+| H-1, B-7 | fixed | A recorded approval names its tenant and job (`DecisionScope`) and the review drops a decision for another tenant or job or taken under another policy hash. | `requirements::requirement_an_approval_names_its_tenant_and_its_job_and_no_other_covers`, `..._under_an_old_policy_hash_no_longer_covers_...`, `validation::supply::a_decision_taken_under_another_policy_or_for_another_job_does_not_count` |
+| H-2 | partial | The stage refuses a dependency file that the patch shows as a symbolic link or a gitlink on either side. A link that the change does not touch cannot be seen: `JobRepo` returns bytes and no mode. | `supply::tests::a_dependency_file_that_becomes_a_link_or_a_submodule_is_found`, and the host-side link rule |
+| H-4 | fixed | A name that is a popular name with one or two decorations (`reqwest-rs`, `clap-derive-macros`, `anyhow-ext`, `rust-serde`) is flagged as near a popular name, and a new direct dependency with it goes to a security approver. A name on the popular list is never a look-alike of another. The domain's own rule is unchanged (the domain is not mine to edit). | `lookalike::*`, `names::tests::a_name_is_a_lookalike_*` |
+| H-7 | partial | An SBOM document must name `bomFormat` and a non-empty `specVersion` and list at least one component when the lockfile holds a registry package. The stricter "as many components as packages" was not done: the tool is unverified and the lockfile also holds development dependencies. | `tools::tests::only_a_cyclonedx_document_that_lists_its_components_is_an_sbom` |
+| C-a | fixed | Delivery and approval require the specification to have status `approved`. | `negative::a_specification_that_is_not_approved_is_not_delivered`, `approval_stage::a_specification_that_is_not_approved_stops_the_approval_stage`, `boundary::break_a_specification_that_is_not_approved_*` |
+| C-b | fixed | The `documentation-review` verdict is parsed and must be a `PASS` that names exactly the stored reports of the documentation gate (by identifier and by the hash of the stored report) and the frozen specification (`DocumentationGate::check_review`). The approval stage pins the specification and the verdict as inputs (`approval::contract::SOURCES` has seven now) and checks them again. | `negative::a_documentation_review_*`, `approval_stage::a_documentation_review_that_does_not_hold_*`, `boundary::break_a_tampered_documentation_review_*` |
+| C-c | fixed | `gates_clear` covers the validation reports and the documentation gate reports by the same rule. | `approval_stage::the_documentation_gate_is_part_of_what_the_person_is_told_is_clear` |
+| C-d | partial | The validation and the delivery stage share one `parse_candidate`. The third copy is in `stages/implementation/input.rs`, outside the paths I may edit. | `validation::input::tests`, the stage_contracts names test |
+
+### The gate in the validation stage
+
+`stages/validation/supply.rs` is the only caller of `gate::run`. The handler makes the four reports on every run and stores them with the other reports; the contract names them (`SUPPLY_CHAIN_GATES`), so an un-wired gate leaves a named gate with no report and the stage blocks (21 validation tests fail when the reports are dropped).
+
+- A host-side rule refused the change: all four are BLOCKED, and no container is made.
+- The change touches no dependency file (`RunSupplyChain::WhenDependencyFilesChange`, the default; `Always` is the other setting): all four are NOT_APPLICABLE, nothing is read, nothing is made.
+- Otherwise both commits are listed with `JobRepo::list_at("**")` (a list as long as `max_paths` is taken as cut) and the dependency files are read with bounds on their number, size and total, from the committed trees, never the sandbox.
+- The seams come in through `ValidationConfig.supply_chain` (`SupplyChainSeams`): `RecordedApprovals` (loaded by tenant and job), `RegistryMetadata`, `AdvisoryDatabase` and the settings (fetch sandbox, licenses, popular and internal names, SBOM rule, age limit, bounds). The verify sandbox, policy engine and redactor are the stage's own.
+- The plan's decisions are stored in the `validation-evidence` document under `dependency_review`.
+
+### How a person is asked, exactly
+
+1. A new direct dependency with no recorded decision makes `dependency-review` BLOCKED with the code `policy_unresolvable`. The missing item reads `a recorded human decision for: <name> <version> (<designation>[: reasons])`. No fetch container is made. The engine ends the stage run as blocked (`Resolution::Blocked(GateBlocked("dependency-review"))`).
+2. The verdict the person gives is the **dependency approval**: the policy action `add_new_direct_dependency`, decided through `approval::authorize` and stored with `DependencyApproval::record(authorization, subject, policy_hash, DecisionScope { tenant, job }, reason)`. The subject (name, version, checksum), the designation that must decide (`approver`, or `security_approver` when the registry facts are bad or unknown) and the reasons are in `validation-evidence.dependency_review.new_direct_dependencies`. For build code in a package that no new direct dependency brings, the same record by a security approver on the subject in `build_code_awaiting_a_security_approver`.
+3. The command that lets the blocked stage run go again is the operator's `UnblockRerun` (S17). Its guard `G_BLOCK_CLEARED_RERUN` has two alternatives, a capability re-probe and "the missing dependency is now available"; there is none for "a decision was recorded", so the composition root has to pass `dependency_now_available = true`. That is the nearest fit, and the state machine owner should decide whether to add the alternative.
+4. `Decision::Override` (S18) is **not** the way: it passes the stage without a decision bound to a package, a version and a checksum. The override policy for the block code `policy_unresolvable` on gate `dependency-review` must say that it is not permitted.
+5. What does not exist yet is the writer: no command or ledger row writes a dependency approval (B-4). Until the composition root builds it, every new direct dependency blocks for good, which fails closed.
+
+### What the lead must add, because I may not edit it
+
+- `policies/approval.yaml`, `actions`: a row `approve_build_code` (requires human, `approver_roles: [security_approver]`, bound to name, version and checksum, threats T-29 and T-30). SC-10 uses `add_new_direct_dependency` with the designation `security_approver` as the carrier of that decision until the row exists. The row `add_new_direct_dependency` also needs its `when` text to say that it covers build code in a new package.
+- `policies/security.yaml`, `supply_chain`: `advisory_database: { max_age_days: 7 }`, read by the composition root into `advisory_db_max_age_days`; and the wording of `new_direct_dependency.new_means` should become "the name is absent from the base commit's lockfile as anything but a member of the project (a package with no source)", which is what the gate does.
+- `policies/security.yaml`, `supply_chain` or the stage settings: whether the dependency gates run on every change (`RunSupplyChain::Always`) or only when a dependency file changes. The policy has no row; the default is "only then".
+- The override policy: no override for `policy_unresolvable` on `dependency-review` (see 4 above).
+- `docs/architecture/state-machine.md`, guard `G_BLOCK_CLEARED_RERUN`: an alternative for a recorded decision (see 3 above).
+- The domain crate: `within_one_edit` and the decoration rule of H-4 belong in `DependencyPolicy` (B-6); the gate keeps its own copy in `names.rs` until then.
+
+### Requirements on the composition root, after the fixes
+
+1. **Complete, regular, matched inputs.** The stage now builds `base` and `head` from the object store for the two commits it holds, lists the whole tree, bounds the read, and blocks on a failed, cut or oversized read. Still the composition root's: the `JobRepo` adapter must return an error, not an empty list, when the listing fails, and should expose the file mode so that a link the change does not touch can be refused (H-2).
+2. **Configuration from outside the repository.** Unchanged, except that the members of the base commit are added to `internal_names` by the gate. `SbomRule.required` still comes from the job's risk tier or release flag.
+3. **Environment.** Unchanged.
+4. **Images.** Unchanged, and now the date of the advisory database must reach the `AdvisoryDatabase` seam (a label or a file written by the image build). The image still lacks `cargo-audit`, `cargo-sbom` and the database (H-5): the advisories gate is BLOCKED until it has them.
+5. **Registry client.** Still the client's own duty to percent-encode, fix the host, refuse redirects off the host, bound the response and the time, and return the default record on any error. The gate now sends it only names and versions that pass the policy engine's rule.
+6. **Approvals.** Load by tenant and job from rows written by the approval command, and drop a row whose approver left the allowlist or whose `allowlist_version` is not valid now (the gate drops other tenants, other jobs and other policy hashes itself). Store the job and tenant in the row; `DependencyApproval::to_json` writes `tenant_id` and `job_id` and `from_json` refuses a row without them. Redact the reason (`record` does not).
+7. **One entry point.** `stages/validation/supply.rs` is it. Treat `StageError::PolicyDenied` as a stop.
+8. **Execution.** Run the stage's synchronous reading in `spawn_blocking` if the runtime is shared with latency-sensitive work: the checks are linear and bounded now (10 000 packages, 100 new direct dependencies, 2 000 files, 32 MiB), but they still run in the async task.
+9. **Workspace for the fetch.** Unchanged (B-3).
+10. **Command policy.** Unchanged, and `sbom` is still absent from `allowed_subcommands` (B-1).
+
+### What is not fixed, and why
+
+- **H-3** (an upgrade, a second major version or a promotion to direct gets no human decision): a policy decision.
+- **H-5** (the image has none of the scanners): infra images.
+- **H-6** (`cargo --version` outside the command policy): the policy has no entry for a bare `--version`, so passing it through `allowed` would block the fetch for good; the vector is constant and the image has no rustup.
+- **H-8** (TOML 1.1): availability only; not done.
+- **B-3** (`WorkspacePurpose::FetchDeps`): ports. **B-4** (the approval command and ledger writer): ports and composition root. **B-5** (a path dependency between members): policy. **B-2** (the approval row): see above.
+- **C-d**, the copy in `stages/implementation/input.rs`; **C-e** (the specification's job, commit and mode compared with the running job): not done, because the stages do not hold the running job's mode at that point and I judged it larger than a small change.
+- **A gap I saw while fixing, not in the review:** `Origin::Git` holds the host only. A package that stays a git package on the same host and changes repository or revision has an equal origin and no checksum, so the diff does not see it if the base already held it from git. The base should never hold a git package under this policy, so the exposure is small.
+- **Dependency files that are unchanged symbolic links** (H-2), and a **bound of 50 000 paths** for the tree listing: a monorepo above it is BLOCKED, which fails closed and has to be raised by configuration.
+- **A base commit with an `ignore` list in `.cargo/audit.toml`** blocks the advisories gate for that repository (SC-5 limit).
+
+### Tests I changed
+
+- `identity::control_the_listed_internal_name_catches_a_registry_package_with_another_version` became `control_the_listed_internal_name_still_reaches_a_security_approver`. After SC-3 the package is a new direct dependency that a security approver decides, not a violation, and the test asserts that and the flag.
+- `requirements::requirement_an_approval_names_no_job_no_tenant_and_no_repository` and `..._an_old_policy_hash_still_covers_the_dependency` described the behaviour that H-1 and B-7 removed. They now pin the new binding. The repository is still not in the record.
+- `registry_input::sc7_the_registry_source_is_never_asked_about_a_name_that_is_not_a_crate_name` stopped being a test of SC-7: the name `a b` makes a dangling lockfile reference, which is a finding of its own, and the lookups never start. It is kept, and `sc7_only_the_ordinary_name_reaches_the_registry_source` tests the lookup with names the lockfile can reference.
+- `freshness::sc6_*` sets the world's database age to unknown (`World::database_updated(None)`); the harness default is a database one day old.
+
+### Deliberate breaks
+
+Each break was made in the source, the named tests were run, and the source was restored. A break that no test noticed was a reason to add a test, and two were added (see the commit "Sharpen the tests").
+
+| Break | Caught by |
+|---|---|
+| The diff keyed by version only | three tests in `diff.rs`. No integration test notices, because the one-to-one pairing and the other checks catch the same input independently. |
+| Ambiguous references resolved by taking the first | `cargo::tests::a_reference_keeps_its_source_*`, `identity::a_reference_that_names_two_packages_*` |
+| The candidate's audit configuration trusted | nine tests (`only_dependency_files_are_recognised`, `scanner_absence_is_blocked_*`, seven `sc5_*`) |
+| The age of the database not checked | `gate_run::an_audit_against_a_database_*` (three), `sc6_*`, `validation::supply::an_advisory_database_older_than_the_limit_*` |
+| The registry client called without validating the name | `sc7_only_the_ordinary_name_reaches_the_registry_source` (the review's own test did not notice) |
+| The gate not wired into the validation stage | 21 tests in the validation target, the contract test among them |
+| The approved-specification check removed from delivery and approval | `negative::a_specification_that_is_not_approved_is_not_delivered`, `approval_stage::a_specification_that_is_not_approved_stops_the_approval_stage`, `boundary::break_a_specification_that_is_not_approved_*` (the first version of the last two passed for another reason, because the changed specification no longer matched the verdict, and were sharpened) |
+| The documentation review read by hash only | three tests in the delivery target and one in `stage_contracts::boundary` |
+| `gates_clear` without the documentation reports | `approval_stage::the_documentation_gate_is_part_of_what_the_person_is_told_is_clear` |

@@ -21,6 +21,7 @@ use factory_domain::redaction::Redactor;
 use factory_domain::values::{Sha256Digest, Timestamp};
 use factory_ports::clock::IdGenerator;
 
+use super::facts::DatabaseAge;
 use super::findings::{Finding, check};
 use super::integrity::BaseUnreadable;
 use super::model::plain;
@@ -63,6 +64,8 @@ pub struct Evaluation<'a> {
     pub scanned: Option<&'a Scanned>,
     /// True when the job requires an SBOM (a release or a high-risk job).
     pub sbom_required: bool,
+    /// How old the advisory database the audit read is.
+    pub database: DatabaseAge,
 }
 
 /// Builds the reports of one run.
@@ -175,7 +178,7 @@ fn review_state(ev: &Evaluation<'_>) -> Review {
         return Review::Blocked(
             BlockedCode::PolicyUnresolvable,
             format!(
-                "a security approver's decision, because build code comes in under: {}",
+                "a security approver's decision, because build code comes in with: {}",
                 names.join(", ")
             ),
         );
@@ -396,6 +399,59 @@ impl Reporter<'_> {
         )
     }
 
+    /// The four reports of a run that touched no dependency file: nothing to compare, decide or
+    /// scan, decided by a deterministic rule.
+    ///
+    /// # Errors
+    /// [`ReportError`] when a report would break the contract. That is a fault of the factory.
+    pub fn untouched(&self) -> Result<Vec<GateReport>, ReportError> {
+        const WHY: &str = "The change touches no dependency file, so there is nothing to compare, decide or scan.";
+        [
+            (
+                gate::INTEGRITY,
+                "Dependency files agree with the base commit",
+            ),
+            (gate::REVIEW, "New dependencies are decided and licensed"),
+            (gate::ADVISORIES, "No known advisory in the dependencies"),
+            (gate::SBOM, "Software bill of materials"),
+        ]
+        .into_iter()
+        .map(|(id, title)| {
+            self.not_applicable(
+                id,
+                title,
+                NotApplicableCode::NoMatchingFiles,
+                NotApplicableDecider::DeterministicRule,
+                WHY,
+            )
+        })
+        .collect()
+    }
+
+    /// The four reports of a run that could not start: each says what was missing.
+    ///
+    /// # Errors
+    /// [`ReportError`] when a report would break the contract. That is a fault of the factory.
+    pub fn cannot_run(
+        &self,
+        code: BlockedCode,
+        missing: &str,
+        reason: &str,
+    ) -> Result<Vec<GateReport>, ReportError> {
+        [
+            (
+                gate::INTEGRITY,
+                "Dependency files agree with the base commit",
+            ),
+            (gate::REVIEW, "New dependencies are decided and licensed"),
+            (gate::ADVISORIES, "No known advisory in the dependencies"),
+            (gate::SBOM, "Software bill of materials"),
+        ]
+        .into_iter()
+        .map(|(id, title)| self.blocked(id, title, code, missing, reason))
+        .collect()
+    }
+
     /// The four reports, in the order of [`gate::ALL`].
     ///
     /// # Errors
@@ -420,6 +476,7 @@ impl Reporter<'_> {
             && head.locks.is_empty()
             && head.manifests.is_empty()
             && head.configs.is_empty()
+            && head.scanners.is_empty()
         {
             return self.not_applicable(
                 gate::INTEGRITY,
@@ -652,6 +709,31 @@ impl Reporter<'_> {
                 Vec::new(),
                 Outcome::Blocked(*code, self.clean(missing)),
             ),
+            // A clean answer from a database of unknown age or beyond the limit is not a clean
+            // audit: with `--no-fetch` the tool checks nothing about the age and prints no date.
+            AuditEnd::Clean(_) if !matches!(ev.database, DatabaseAge::Fresh { .. }) => {
+                let (code, missing, reason) = match ev.database {
+                    DatabaseAge::Stale { days, limit } => (
+                        BlockedCode::DependencyUnavailable,
+                        format!("an advisory database updated within the last {limit} day(s) (this one is {days} day(s) old)"),
+                        format!("The audit found nothing, but its advisory database is more than {limit} day(s) old, so the answer says nothing about advisories published since."),
+                    ),
+                    _ => (
+                        BlockedCode::DependencyUnavailable,
+                        "the date of the advisory database the audit read".to_owned(),
+                        "The audit found nothing, but nothing says how old its advisory database is, and an audit that cannot say so is not a clean one.".to_owned(),
+                    ),
+                };
+                self.make(
+                    gate::ADVISORIES,
+                    TITLE,
+                    &reason,
+                    self.verify_environment(scanned, seen)?,
+                    seen,
+                    Vec::new(),
+                    Outcome::Blocked(code, self.clean(&missing)),
+                )
+            }
             AuditEnd::Clean(result) => {
                 let warnings = if result.warnings > 0 {
                     vec![warning(
@@ -662,10 +744,14 @@ impl Reporter<'_> {
                 } else {
                     Vec::new()
                 };
+                let age = match ev.database {
+                    DatabaseAge::Fresh { days } => days,
+                    _ => 0,
+                };
                 self.make(
                     gate::ADVISORIES,
                     TITLE,
-                    "The audit found no advisory against the locked packages.",
+                    &format!("The audit found no advisory against the locked packages, in an advisory database updated {age} day(s) ago."),
                     self.verify_environment(scanned, seen)?,
                     seen,
                     warnings,

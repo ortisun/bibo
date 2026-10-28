@@ -46,15 +46,30 @@ impl DependencyFormat for CargoFormat {
     }
 
     fn kind_of(&self, path: &str) -> Option<FileKind> {
+        // Names are compared without regard to case. A checkout on a case-insensitive file
+        // system (a bind mount on macOS or Windows) reads `Audit.toml` as `audit.toml`, and a
+        // name this gate skipped would be a name the tools read.
         let name = path.rsplit('/').next().unwrap_or(path);
         let in_cargo_dir = path
             .strip_suffix(name)
-            .is_some_and(|dir| dir.ends_with(".cargo/"));
-        match name {
-            "Cargo.lock" => Some(FileKind::Lockfile),
-            "Cargo.toml" => Some(FileKind::Manifest),
-            "config.toml" | "config" if in_cargo_dir => Some(FileKind::BuildConfig),
-            _ => None,
+            .is_some_and(|dir| dir.to_ascii_lowercase().ends_with(".cargo/"));
+        let is = |wanted: &str| name.eq_ignore_ascii_case(wanted);
+        if is("Cargo.lock") {
+            Some(FileKind::Lockfile)
+        } else if is("Cargo.toml") {
+            Some(FileKind::Manifest)
+        } else if (is("config.toml") || is("config") || is("audit.toml")) && in_cargo_dir {
+            // `cargo audit` reads `.cargo/audit.toml` from the directory it runs in, which is
+            // the candidate's checkout: its keys can ignore advisories or point at a database.
+            Some(FileKind::BuildConfig)
+        } else if is("audit.toml") || is("deny.toml") {
+            Some(FileKind::ScannerConfig)
+        } else if is("build.rs") {
+            // Only its presence is read: cargo builds `build.rs` next to a manifest with no
+            // `build` key, and a manifest cannot say so.
+            Some(FileKind::BuildScript)
+        } else {
+            None
         }
     }
 
@@ -86,10 +101,13 @@ impl DependencyFormat for CargoFormat {
 
     fn parse_manifest(&self, text: &str) -> Result<Manifest, ParseError> {
         let doc = toml::parse(text)?;
+        // `[project]` is the old name of `[package]`, and cargo 1.98 still reads it.
+        let package = doc
+            .get("package")
+            .or_else(|| doc.get("project"))
+            .and_then(Value::as_table);
         let mut manifest = Manifest {
-            name: doc
-                .get("package")
-                .and_then(Value::as_table)
+            name: package
                 .and_then(|package| package.get("name"))
                 .and_then(Value::as_str)
                 .map(str::to_owned),
@@ -118,16 +136,22 @@ impl DependencyFormat for CargoFormat {
                 flatten(section, value, &mut manifest.patches);
             }
         }
-        manifest.build_script = doc
-            .get("package")
-            .and_then(Value::as_table)
-            .and_then(|package| package.get("build"))
-            .is_some_and(|build| build.as_bool() != Some(false));
+        let build = package.and_then(|package| package.get("build"));
+        manifest.build_script = build.is_some_and(|build| build.as_bool() != Some(false));
+        manifest.build_disabled = build.and_then(Value::as_bool) == Some(false);
         manifest.proc_macro = doc.get("lib").and_then(Value::as_table).is_some_and(|lib| {
-            lib.get("proc-macro")
+            let flag = lib
+                .get("proc-macro")
                 .or_else(|| lib.get("proc_macro"))
                 .and_then(Value::as_bool)
-                == Some(true)
+                == Some(true);
+            // `crate-type = ["proc-macro"]` builds a procedural macro as well.
+            let by_type = lib
+                .get("crate-type")
+                .or_else(|| lib.get("crate_type"))
+                .and_then(Value::as_array)
+                .is_some_and(|types| types.iter().any(|t| t.as_str() == Some("proc-macro")));
+            flag || by_type
         });
         Ok(manifest)
     }
@@ -179,12 +203,16 @@ fn locked_package(value: &Value) -> Result<LockedPackage, ParseError> {
     })
 }
 
-/// `name`, `name 1.2.3` or `name 1.2.3 (source)`.
+/// `name`, `name 1.2.3` or `name 1.2.3 (source)`. The source is kept: it is what tells a
+/// workspace member from a registry package of the same name and version.
 fn reference(text: &str) -> LockedRef {
-    let mut words = text.split(' ');
+    let mut words = text.splitn(3, ' ');
     LockedRef {
         name: words.next().unwrap_or_default().to_owned(),
         version: words.next().map(str::to_owned),
+        origin: words
+            .next()
+            .map(|source| origin_of(source.trim_start_matches('(').trim_end_matches(')'))),
     }
 }
 
@@ -369,6 +397,35 @@ mod tests {
     }
 
     #[test]
+    fn a_reference_keeps_its_source_so_a_member_and_a_registry_package_are_told_apart() {
+        let text = format!(
+            "version = 4\n\n[[package]]\nname = \"app\"\nversion = \"0.1.0\"\ndependencies = [\"evil 0.1.0 ({CRATES_IO})\", \"serde\", \"log 0.4.0\"]\n\n[[package]]\nname = \"evil\"\nversion = \"0.1.0\"\n\n[[package]]\nname = \"evil\"\nversion = \"0.1.0\"\nsource = \"{CRATES_IO}\"\nchecksum = \"{}\"\n",
+            "e".repeat(64)
+        );
+        let lock = CargoFormat.parse_lockfile(&text).expect("a lockfile");
+        let refs = &lock.packages[0].dependencies;
+        assert_eq!(refs[0].origin, Some(Origin::Registry));
+        assert_eq!(refs[1].origin, None);
+        assert_eq!(refs[2].version.as_deref(), Some("0.4.0"));
+        let index = lock.index();
+        match index.resolve(&refs[0]) {
+            super::super::model::Resolved::One(package) => {
+                assert_eq!(package.origin, Origin::Registry);
+            }
+            other => panic!("expected one package, got {other:?}"),
+        }
+        // The same reference without its source names both and is not resolved.
+        let bare = LockedRef {
+            origin: None,
+            ..refs[0].clone()
+        };
+        assert_eq!(
+            index.resolve(&bare),
+            super::super::model::Resolved::Ambiguous
+        );
+    }
+
+    #[test]
     fn the_sparse_index_is_the_default_registry_and_another_index_is_not() {
         for (source, registry) in [
             ("sparse+https://index.crates.io/", true),
@@ -467,5 +524,16 @@ mod tests {
         assert_eq!(kind("sub/.cargo/config"), Some(FileKind::BuildConfig));
         assert_eq!(kind("config.toml"), None);
         assert_eq!(kind("src/Cargo.toml.bak"), None);
+        // The configuration of the scanners is a dependency file in the sense of this gate.
+        assert_eq!(kind(".cargo/audit.toml"), Some(FileKind::BuildConfig));
+        assert_eq!(kind("deny.toml"), Some(FileKind::ScannerConfig));
+        assert_eq!(kind("audit.toml"), Some(FileKind::ScannerConfig));
+        assert_eq!(kind("crates/a/deny.toml"), Some(FileKind::ScannerConfig));
+        // Case does not hide a file on a case-insensitive file system.
+        assert_eq!(kind(".CARGO/Audit.toml"), Some(FileKind::BuildConfig));
+        assert_eq!(kind("DENY.TOML"), Some(FileKind::ScannerConfig));
+        assert_eq!(kind("cargo.lock"), Some(FileKind::Lockfile));
+        assert_eq!(kind("crates/a/build.rs"), Some(FileKind::BuildScript));
+        assert_eq!(kind("src/build.rs.bak"), None);
     }
 }

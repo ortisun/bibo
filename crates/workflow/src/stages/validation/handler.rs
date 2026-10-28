@@ -30,6 +30,7 @@ use super::input::{
 };
 use super::sandboxed::{Io, Sandboxed, in_sandbox, workspace_error};
 use super::set::{Findings, SpecState, reports};
+use super::supply;
 use crate::gates::command::report::{ReportContext, ReportError, Subject, image_digest};
 use crate::gates::command::{
     CommandGate, MANIFEST_JSON_PATH, MANIFEST_PATH, Resolved, Role, TrustedGates, gate_id,
@@ -316,7 +317,7 @@ impl StageHandler for ValidationHandler {
             arch: cfg.sandbox.arch.clone(),
             base: candidate.base.clone(),
         };
-        let all = reports(
+        let mut all = reports(
             &asm,
             &Findings {
                 definitions: definitions.as_ref().ok(),
@@ -327,11 +328,31 @@ impl StageHandler for ValidationHandler {
             },
         )
         .map_err(report_error)?;
+        // The dependency and supply chain gates: four reports, always. They run after the
+        // command gates, in their own sandboxes, and only for a change every host-side rule let
+        // through.
+        let dependencies = supply::reports(&supply::Context {
+            cfg,
+            ports,
+            scope: io.scope,
+            cancel,
+            job: io.job,
+            attempt: io.attempt,
+            repo: &*repo,
+            base: &candidate.base,
+            head: &candidate.head,
+            gathered: &gathered,
+            host_clean: host.clean(),
+            report: asm.cx.clone(),
+            policy_hash: &binding.policy_hash,
+        })
+        .await?;
+        all.extend(dependencies.reports);
         let violation = all.iter().any(|report| {
             report.outcome == GateOutcome::Failed
                 && NONWAIVABLE.contains(&report.metadata.gate_id.as_str())
         });
-        evidence_output(&binding, violation, &all)
+        evidence_output(&binding, violation, &all, dependencies.evidence)
     }
 
     async fn evaluate(&self, ctx: &GateContext<'_>) -> Result<GateDecision, StageError> {
@@ -506,8 +527,15 @@ fn evidence_output(
     binding: &Binding,
     violation: bool,
     reports: &[GateReport],
+    dependency_decisions: Option<Value>,
 ) -> Result<StageOutput, StageError> {
-    let document = evidence_document(binding, violation, reports)?;
+    let mut document = evidence_document(binding, violation, reports)?;
+    // What the dependency review decided and who decided it: the exact subjects (name, version,
+    // checksum) a person is asked about, and the decisions that cover them. The reports are the
+    // evidence the engine reads; this is the record a person reads.
+    if let (Some(extra), Some(object)) = (dependency_decisions, document.as_object_mut()) {
+        object.insert("dependency_review".to_owned(), extra);
+    }
     Ok(StageOutput {
         documents: vec![OutputDocument {
             name: Slug::parse(EVIDENCE).map_err(|_| StageError::Internal)?,

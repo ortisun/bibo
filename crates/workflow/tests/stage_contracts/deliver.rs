@@ -33,6 +33,12 @@ use factory_testkit::router::StaticModelRouter;
 use factory_testkit::sandbox::FakeSandbox;
 use factory_workflow::gates::framework::{GateDecision, Resolution, resolve};
 use factory_workflow::gates::readability::{Options, ReadabilityGate};
+use factory_workflow::gates::supply_chain::approval::StaticApprovals;
+use factory_workflow::gates::supply_chain::facts::{StaticDatabase, StaticRegistry};
+use factory_workflow::gates::supply_chain::licenses::LicensePolicy;
+use factory_workflow::gates::supply_chain::names::PopularNames;
+use factory_workflow::gates::supply_chain::run::{FetchSandbox, SbomRule};
+use factory_workflow::gates::supply_chain::tools::SbomTool;
 use factory_workflow::handlers::{
     ContractContext, GateContext, NamedArtifact, RunIdentity, StageContext, StageError,
     StageHandler, StagePorts, UpstreamRun,
@@ -46,7 +52,8 @@ use factory_workflow::stages::delivery::{
     EvidenceDrift, LedgerState, SeamError,
 };
 use factory_workflow::stages::validation::{
-    Binding, Bounds, JsonManifestReader, ValidationConfig, ValidationHandler, VerifySandbox,
+    Binding, Bounds, JsonManifestReader, SupplyChainSeams, SupplyChainSettings, ValidationConfig,
+    ValidationHandler, VerifySandbox,
 };
 use serde_json::Value;
 
@@ -59,6 +66,10 @@ pub fn validation_handler() -> ValidationHandler {
     let image = factory_testkit::fixtures::sandbox_spec(
         &factory_testkit::fixtures::Ids::new(),
         factory_ports::sandbox::SandboxProfile::Verify,
+    );
+    let fetch = factory_testkit::fixtures::sandbox_spec(
+        &factory_testkit::fixtures::Ids::new(),
+        factory_ports::sandbox::SandboxProfile::FetchDeps,
     );
     ValidationHandler::new(Arc::new(ValidationConfig {
         policy: policy_engine(),
@@ -76,6 +87,28 @@ pub fn validation_handler() -> ValidationHandler {
         manifest: Arc::new(JsonManifestReader),
         flaky_registry: std::collections::BTreeSet::new(),
         bounds: Bounds::default(),
+        supply_chain: SupplyChainSeams {
+            settings: SupplyChainSettings::new(
+                FetchSandbox {
+                    image: fetch.image,
+                    limits: fetch.limits,
+                    env: fetch.env,
+                    hardening: fetch.hardening,
+                    caches: Vec::new(),
+                    sidecar: "sidecar-fixture".to_owned(),
+                    arch: "arm64".to_owned(),
+                },
+                LicensePolicy::owner_approved(),
+                PopularNames::bundled().expect("the bundled list"),
+                SbomRule {
+                    required: false,
+                    tool: SbomTool::default(),
+                },
+            ),
+            approvals: Arc::new(StaticApprovals::default()),
+            registry: Arc::new(StaticRegistry::new()),
+            advisory_db: Arc::new(StaticDatabase(None)),
+        },
     }))
 }
 

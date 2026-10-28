@@ -43,6 +43,8 @@ pub mod check {
     /// The build configuration names a program to run, an environment to set, or a key that is
     /// not on the list of harmless ones.
     pub const BUILD_CONFIG: &str = "build-config-changed";
+    /// The change edits the configuration of a scanner (`audit.toml`, `deny.toml`).
+    pub const SCANNER_CONFIG: &str = "scanner-config-changed";
     /// A package archive has another checksum for the same version.
     pub const CHECKSUM_CHANGED: &str = "checksum-changed";
     /// A registry package has no usable checksum.
@@ -51,10 +53,18 @@ pub mod check {
     pub const DOWNGRADE: &str = "version-downgrade";
     /// A package version could not be ordered.
     pub const UNORDERED: &str = "unordered-version";
-    /// A transitive package carries the name of an internal package.
+    /// A transitive package carries the name of an internal package, or a registry package has
+    /// the name and version of a member of the project.
     pub const CONFUSION: &str = "dependency-confusion";
+    /// A reference in the lockfile names more than one package, so it does not say which one the
+    /// project depends on. Cargo never writes such a lockfile.
+    pub const REFERENCE_AMBIGUOUS: &str = "lockfile-reference-ambiguous";
+    /// A reference in the lockfile names no package. `cargo fetch --locked` refuses such a file.
+    pub const REFERENCE_DANGLING: &str = "lockfile-reference-dangling";
     /// A new dependency request is not a valid request.
     pub const INVALID_REQUEST: &str = "invalid-dependency-request";
+    /// A change brings more new direct dependencies than a person can decide on.
+    pub const TOO_MANY_NEW: &str = "too-many-new-dependencies";
     /// A license outside the owner-approved list.
     pub const LICENSE: &str = "license-not-allowed";
     /// A package name one edit from a popular name, below a package a person approved.
