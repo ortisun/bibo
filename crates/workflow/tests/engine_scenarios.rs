@@ -2635,6 +2635,55 @@ async fn the_sweeper_times_out_an_attempt_whose_worker_went_quiet() {
     assert_eq!(intake.status, StageRunStatus::Ready);
 }
 
+#[tokio::test]
+async fn one_sweep_ends_every_attempt_that_is_due_whatever_the_reason() {
+    // `sweep` asks the store for the attempts that are due for each of the three reasons and moves
+    // them in one call: a lapsed lease, a passed deadline with a lease still held, and a teardown
+    // that ran out of time. Each lands in its own field of the result.
+    let world = World::new().await;
+    world
+        .script(StageKind::Intake)
+        .with(|s| s.tweaks.attempt_timeout_seconds = 30);
+    let operator = world.person("operator-1", &[HumanRole::Operator]).await;
+
+    let quiet_job = world.admitted_job().await;
+    let quiet = world.claim_one("worker-1").await;
+    let slow_job = world.admitted_job().await;
+    let slow = world.claim_one("worker-2").await;
+    let cancelled_job = world.admitted_job().await;
+    let stuck = world.claim_one("worker-3").await;
+    world
+        .engine
+        .control(&world.actor(operator), cancelled_job, JobCommand::Cancel)
+        .await
+        .expect("cancels");
+
+    // The slow worker keeps its lease. The quiet one and the one asked to stop do not heartbeat.
+    world.advance(25);
+    assert_eq!(world.engine.heartbeat(&slow).await, Ok(Pulse::Alive));
+    world.advance(36);
+    let swept = world.engine.sweep().await.expect("sweep");
+    assert_eq!(swept.lease_lost, vec![quiet.attempt]);
+    assert_eq!(swept.timed_out, vec![slow.attempt]);
+    assert_eq!(swept.forced, vec![stuck.attempt]);
+    assert!(swept.skipped.is_empty());
+
+    for (job, expected) in [
+        (quiet_job, AttemptStatus::LeaseLost),
+        (slow_job, AttemptStatus::TimedOut),
+        (cancelled_job, AttemptStatus::Cancelled),
+    ] {
+        let view = world.view(job).await;
+        let first = &view.newest(StageKind::Intake).expect("run").attempts[0];
+        assert_eq!(first.status, expected);
+    }
+    // A second sweep finds nothing more to do.
+    assert_eq!(
+        world.engine.sweep().await.expect("sweep"),
+        factory_workflow::scheduler::Swept::default()
+    );
+}
+
 // ---- credentials and budgets ----------------------------------------------------------------
 
 use factory_ports::agent::{ModelBroker, TokenState};
