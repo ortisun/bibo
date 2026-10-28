@@ -425,6 +425,16 @@ dependencies = [
 [[package]]
 name = "factory-runtime"
 version = "0.0.0"
+dependencies = [
+ "async-trait",
+ "factory-domain",
+ "factory-ports",
+ "factory-testkit",
+ "serde_json",
+ "thiserror",
+ "tokio",
+ "tracing",
+]
 
 [[package]]
 name = "factory-sandbox"
