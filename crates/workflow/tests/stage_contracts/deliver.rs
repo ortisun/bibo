@@ -490,6 +490,48 @@ impl<'a> Delivery<'a> {
         upstream
     }
 
+    /// Replaces a deliverable of a stage run in `upstream` with the same document after `edit`
+    /// changed it, as a producer that wrote it differently would have stored it.
+    pub async fn edit(
+        &self,
+        upstream: &mut [UpstreamRun],
+        kind: StageKind,
+        name: &str,
+        edit: impl FnOnce(&mut Value),
+    ) {
+        let rig = &self.pipeline.rig;
+        let scope = TenantScope::new(rig.world.tenant);
+        let slot = upstream
+            .iter_mut()
+            .rev()
+            .filter(|run| run.kind == kind)
+            .find_map(|run| run.outputs.iter_mut().find(|o| o.name.as_str() == name))
+            .unwrap_or_else(|| panic!("{kind} has no deliverable {name}"));
+        let bytes = ArtifactStore::get(&*rig.artifacts, &scope, &slot.artifact)
+            .await
+            .expect("readable");
+        let mut value: Value = serde_json::from_slice(&bytes).expect("JSON");
+        edit(&mut value);
+        slot.artifact = rig
+            .artifacts
+            .put(
+                serde_json::to_vec(&value).expect("JSON"),
+                MediaType::parse("application/json").expect("a media type"),
+            )
+            .await
+            .expect("stored");
+    }
+
+    /// The same deliverable, stored under another name.
+    pub fn rename(upstream: &mut [UpstreamRun], kind: StageKind, from: &str, to: &str) {
+        let slot = upstream
+            .iter_mut()
+            .filter(|run| run.kind == kind)
+            .find_map(|run| run.outputs.iter_mut().find(|o| o.name.as_str() == from))
+            .unwrap_or_else(|| panic!("{kind} has no deliverable {from}"));
+        slot.name = Slug::parse(to).expect("a slug");
+    }
+
     /// The code host the stages ran against.
     pub fn host(&self) -> &FakeChangeHost {
         &self.host

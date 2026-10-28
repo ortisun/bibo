@@ -448,6 +448,10 @@ async fn pair_delivery_to_approval() {
     assert_eq!(request.tree.as_str(), result["tree"]);
     assert_eq!(request.manifest.as_str(), result["manifest_sha256"]);
     assert_eq!(request.pull_request, result["pull_request"]);
+    // The hash the person is shown for the manifest is the hash of the manifest document the
+    // approval contract pins, so the two cannot name different manifests.
+    let manifest = whole.delivered.find("evidence-manifest");
+    assert_eq!(manifest.artifact.sha256.as_str(), result["manifest_sha256"]);
 }
 
 #[tokio::test]
