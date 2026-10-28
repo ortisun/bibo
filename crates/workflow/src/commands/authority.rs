@@ -7,7 +7,7 @@
 //! next decision (NT-AUTHZ-04).
 
 use async_trait::async_trait;
-use factory_domain::ids::{JobId, PrincipalId, TenantId};
+use factory_domain::ids::{JobId, PrincipalId, RepositoryId, TenantId};
 use factory_domain::machines::guards::AdmissionFacts;
 use factory_domain::vocabulary::{Fidelity, HumanRole};
 
@@ -41,14 +41,16 @@ pub trait Authority: Send + Sync {
     /// A production run refuses `fake`.
     fn fidelity(&self) -> Fidelity;
 
-    /// The facts guard `G_ADMISSION_OK` reads for a job that `requester` asked for: whether the
-    /// requester is on the allowlist, the tenant is within its quota, the repository is registered
-    /// and enabled, policy allows the class of request, and the repository passed the protection
-    /// preflight.
+    /// The facts guard `G_ADMISSION_OK` reads for a job that `requester` asked for on
+    /// `repository`: whether the requester is on the allowlist, the tenant and the repository are
+    /// within their quotas, the repository is registered and enabled, policy allows the class of
+    /// request, and the repository passed the protection preflight. The repository is part of the
+    /// question because three of those facts are about it.
     async fn admission(
         &self,
         tenant: TenantId,
         requester: PrincipalId,
+        repository: RepositoryId,
     ) -> Result<AdmissionFacts, AuthorityError>;
 
     /// The roles the principal holds on the tenant, now.
