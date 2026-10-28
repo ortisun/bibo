@@ -9,9 +9,9 @@ use factory_workflow::stages::implementation::ReworkContext;
 use serde_json::{Value, json};
 
 use crate::flow::{
-    CHANGELOG, README, block, documented_and_reviewed, failures_of, gate_outcomes, reviewer_asks,
-    reviewer_passes, reviewer_will, run, through_review, up_to_documenting, verdict_of,
-    writer_done, writer_will, writer_will_document,
+    CHANGELOG, README, block, failures_of, gate_outcomes, reviewer_asks, reviewer_passes,
+    reviewer_will, run, through_review, up_to_documenting, verdict_of, writer_done, writer_will,
+    writer_will_document,
 };
 use crate::rig::{MAIN, Options, Rig, documented_scope, done, write};
 
@@ -579,5 +579,4 @@ async fn a_writer_that_needs_a_decision_asks_a_person() {
     run(&rig, StageKind::Documenting).await;
     assert!(!passed(&rig, StageKind::Documenting).await);
     assert_eq!(rig.events_of("workspace.commit:").len(), commits);
-    let _ = documented_and_reviewed;
 }

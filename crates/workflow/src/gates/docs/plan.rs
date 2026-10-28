@@ -286,6 +286,11 @@ pub fn writable(page: &str) -> bool {
         || (page.starts_with("docs/") && page.ends_with(".md") && !page.contains(".."))
 }
 
+/// True for a path that holds infrastructure: the `infra` directory, charts and container files.
+fn is_infrastructure(path: &str) -> bool {
+    path.starts_with("infra/") || path.starts_with("helm/") || path.contains("Dockerfile")
+}
+
 /// True for a path that is a test or a build script.
 #[must_use]
 pub fn is_test_or_build(path: &str) -> bool {
@@ -632,9 +637,7 @@ pub fn derive(facts: &Facts, binding: Binding) -> DocPlan {
             ],
         });
     }
-    if paths.iter().any(|path| {
-        path.starts_with("infra/") || path.starts_with("deploy/") || path.contains("Dockerfile")
-    }) {
+    if paths.iter().any(|path| is_infrastructure(path)) {
         plan.change_types.push("infrastructure-change".to_owned());
         plan.items.push(Item {
             id: "operations-update".to_owned(),
@@ -647,7 +650,7 @@ pub fn derive(facts: &Facts, binding: Binding) -> DocPlan {
             form: Form::HowTo,
             audience: vec![Audience::Operators],
             sources: sources_of(&|path| {
-                path.starts_with("infra/") || path.starts_with("deploy/") || path.contains("Dockerfile")
+                is_infrastructure(path)
             }),
             terms: Vec::new(),
             acceptance: vec![
