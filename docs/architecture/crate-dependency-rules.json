@@ -196,9 +196,13 @@
         "thiserror",
         "tracing",
         "tokio[process,fs,io-util,time,sync,rt]",
-        "tempfile"
+        "tempfile",
+        "rustix[std,process]"
       ],
-      "responsibility": "SandboxProvider and WorkspaceProvider over the Docker command line and host-side git. Three network profiles (fetch_deps, agent behind a per-job egress sidecar, verify with no network), the posture verifier that inspects a created container before it starts, the supervisor that enforces wall-clock and disk limits, redacted log streaming, the janitor, and the workspace side: mirror, sparse worktree, masked .git, host-side git with a fixed environment, the no-follow audit walk and the tree diff. The only crate that starts containers or runs git."
+      "responsibility": "SandboxProvider and WorkspaceProvider over the Docker command line and host-side git. Three network profiles (fetch_deps, agent behind a per-job egress sidecar, verify with no network), the posture verifier that inspects a created container before it starts, the supervisor that enforces wall-clock and disk limits, redacted log streaming, the janitor, and the workspace side: mirror, sparse worktree, masked .git, host-side git with a fixed environment, the no-follow audit walk and the tree diff. The only crate that starts containers or runs git.",
+      "external_allow_notes": {
+        "rustix": "Added at integration of s1-sandbox-adapter. The ProcessRunner contract requires that a command that times out or is cancelled ends its whole process group, not only the direct child, so no stray process keeps running. Sending a signal to a process group has no safe route in the standard library, and the workspace forbids unsafe code, so the crate uses rustix with the std and process features only. The storage adapter already uses the same release (with fs). Decided by the lead, pending architect confirmation; if declined, GroupGuard falls back to a direct-child kill and the group postcondition of the contract is not met."
+      }
     },
     {
       "name": "github",
