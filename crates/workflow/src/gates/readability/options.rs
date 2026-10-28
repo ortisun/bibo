@@ -77,3 +77,25 @@ impl Options {
         self.disabled.contains(&rule) && catalog.severity(rule) == Severity::Warn
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Even a set that holds every rule leaves the rules that block on: the catalog decides.
+    #[test]
+    fn a_rule_that_blocks_stays_on_even_if_it_got_into_the_set() {
+        let catalog = Catalog::embedded().expect("the embedded catalog loads");
+        let options = Options {
+            disabled: RuleId::ALL.iter().copied().collect(),
+        };
+        for rule in RuleId::ALL {
+            assert_eq!(
+                options.is_disabled(&catalog, *rule),
+                catalog.severity(*rule) == Severity::Warn,
+                "{}",
+                rule.as_str()
+            );
+        }
+    }
+}

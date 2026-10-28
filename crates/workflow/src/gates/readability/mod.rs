@@ -18,6 +18,7 @@ mod artifact;
 mod catalog;
 mod engine;
 mod finding;
+mod gate;
 mod lang;
 mod options;
 mod rules;
@@ -29,4 +30,8 @@ pub use catalog::{
 };
 pub use engine::{CheckError, MAX_TOTAL_BYTES, check};
 pub use finding::{Finding, Part};
+pub use gate::{
+    GATE_ID, GATE_VERSION, GateError, ReadabilityGate, ReportContext, ReportError, ReviewerPolicy,
+    TOOL_NAME,
+};
 pub use options::{Options, OptionsError};

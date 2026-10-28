@@ -14,3 +14,7 @@ mod readability_catalog;
 mod readability_corpus;
 #[path = "corpus_tests.rs"]
 mod readability_corpus_tests;
+#[path = "gate_tests.rs"]
+mod readability_gate_tests;
+#[path = "schema_check.rs"]
+mod readability_schema_check;
