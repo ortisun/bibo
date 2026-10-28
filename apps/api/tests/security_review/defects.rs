@@ -107,7 +107,6 @@ async fn api_1_a_designation_narrowed_to_one_repository_does_not_reach_another()
 /// the caller. A second requester who sends the same key and the same text is handed the first
 /// requester's job (`200`, `created: false`), which is attributed to the first requester.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[ignore = "confirmed defect API-2: an idempotency key is shared by every caller of the tenant, so another user is answered with the first user's job"]
 async fn api_2_an_idempotency_key_of_one_caller_does_not_find_the_job_of_another() {
     let env = Env::start().await;
     let a = env.a.clone();
@@ -146,6 +145,81 @@ async fn api_2_an_idempotency_key_of_one_caller_does_not_find_the_job_of_another
         "the second caller was answered with the first caller's job (status {})",
         second.status
     );
+}
+
+/// API-2 for a job, with a body that differs: before the fix the second caller learned, from the
+/// answer, whether their guess of the first caller's text was exact (`200` or `409`). Now the key
+/// of one caller is not found by another at all, so both are `201`; and the first caller, asking
+/// again with the same key, finds their own job.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn api_2b_a_key_is_found_again_by_its_own_caller_and_by_nobody_else() {
+    let env = Env::start().await;
+    let a = env.a.clone();
+    let plain = entry_of(&a, &a.operator, "operator");
+    let both = entry_of(&a, &a.operator, "operator, requester");
+    write_allowlist(
+        &env,
+        &allowlist_with(&env, |t| t.replacen(&plain, &both, 1)),
+    );
+    let send = |person: &crate::support::Person, text: &str| {
+        env.send(
+            Req::post("/v1/jobs")
+                .bearer(&person.token)
+                .header("Idempotency-Key", "same-key")
+                .json(&json!({"repository_id": a.repository.as_text(), "text": text})),
+        )
+    };
+    let first = send(&a.requester, "The first caller's text.").await;
+    // Another text, under a key the first caller used: no oracle, no conflict, a job of their own.
+    let guess = send(&a.operator, "A guess at the first caller's text.").await;
+    let again = send(&a.requester, "The first caller's text.").await;
+    let changed = send(&a.requester, "A different text under my own key.").await;
+    env.stop().await;
+    assert_eq!(first.status, 201, "{}", first.text());
+    assert_eq!(guess.status, 201, "{}", guess.text());
+    assert_ne!(first.json()["job_id"], guess.json()["job_id"]);
+    assert_eq!(again.status, 200, "{}", again.text());
+    assert_eq!(first.json()["job_id"], again.json()["job_id"]);
+    assert_eq!(changed.status, 409, "my own key, another text: a conflict");
+}
+
+/// API-2 for a decision: two approvers who send the same key for the same job write one record
+/// each. Before the fix the second was answered `409`, a conflict with a record that was not theirs.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn api_2c_two_approvers_with_the_same_key_write_two_records() {
+    let env = Env::start().await;
+    let a = env.a.clone();
+    let plain = entry_of(&a, &a.operator, "operator");
+    let both = entry_of(&a, &a.operator, "operator, approver");
+    write_allowlist(
+        &env,
+        &allowlist_with(&env, |t| t.replacen(&plain, &both, 1)),
+    );
+    let job = new_job(&env, &a, "api2c").await;
+    let run = stage_run(&env, &a, &job).await;
+    let first = env
+        .send(decide(&a.approver, &job, "shared", &approval(&run)))
+        .await;
+    let second = env
+        .send(decide(&a.operator, &job, "shared", &approval(&run)))
+        .await;
+    let retried = env
+        .send(decide(&a.approver, &job, "shared", &approval(&run)))
+        .await;
+    let rows = env
+        .db
+        .number("SELECT count(*) FROM audit_events WHERE action = 'decision.requested'")
+        .await;
+    env.stop().await;
+    assert_eq!(first.status, 202, "{}", first.text());
+    assert_eq!(second.status, 202, "{}", second.text());
+    assert_ne!(first.json()["decision_id"], second.json()["decision_id"]);
+    assert_eq!(
+        retried.status, 202,
+        "the same caller's retry is the same record"
+    );
+    assert_eq!(retried.json()["decision_id"], first.json()["decision_id"]);
+    assert_eq!(rows, 2, "one record for each caller");
 }
 
 // ---- API-3 -------------------------------------------------------------------------------------
@@ -562,7 +636,6 @@ fn api_9_the_rate_limit_holds_for_a_client_with_a_whole_ipv6_prefix() {
 /// store. Any caller with a token can produce either at will, which is a way to raise 5xx rates
 /// and warnings (and, behind a proxy that ejects a host on consecutive 5xx, to take the host out).
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[ignore = "confirmed defect API-11: a repeated X-Correlation-Id and a malformed pagination cursor are answered 503 and logged as store faults"]
 async fn api_11_a_repeated_correlation_id_is_the_callers_error_not_the_services() {
     let env = Env::start().await;
     let a = env.a.clone();

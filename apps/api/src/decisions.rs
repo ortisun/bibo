@@ -96,11 +96,13 @@ fn required_roles(state: &ApiState, verb: Verb) -> Vec<HumanRole> {
         .unwrap_or_default()
 }
 
-/// A UUID derived from the tenant, the job and the caller's key: the same three always give the
-/// same id, so a retried request is the same record.
-fn derived_id(tenant: &str, job: &str, key: &str) -> uuid::Uuid {
+/// A UUID derived from the tenant, the caller, the job and the caller's key: the same four always
+/// give the same id, so a retried request is the same record, and two people who send the same key
+/// for the same job write two records, not one record that the second of them is told is theirs
+/// (API-2).
+fn derived_id(tenant: &str, principal: &str, job: &str, key: &str) -> uuid::Uuid {
     let digest = factory_domain::values::Sha256Digest::of(
-        format!("decision\n{tenant}\n{job}\n{key}").as_bytes(),
+        format!("decision\n{tenant}\n{principal}\n{job}\n{key}").as_bytes(),
     );
     let hash = tokens::digest_bytes(&digest);
     let mut bytes = [0_u8; 16];
@@ -182,7 +184,12 @@ pub async fn decide(
     }
 
     let ids = &state.ports.ids;
-    let command = derived_id(&caller.tenant.as_text(), &job_id.as_text(), key.as_str());
+    let command = derived_id(
+        &caller.tenant.as_text(),
+        &caller.principal.as_text(),
+        &job_id.as_text(),
+        key.as_str(),
+    );
 
     // 1. Who. The attempt of someone without the role is audited and refused with no reason, and
     // the answer does not depend on whether the job exists: an unlisted person learns nothing
@@ -287,12 +294,17 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_same_tenant_job_and_key_give_the_same_id_and_a_different_key_does_not() {
-        let a = derived_id("t1", "j1", "k1");
-        assert_eq!(a, derived_id("t1", "j1", "k1"));
-        assert_ne!(a, derived_id("t1", "j1", "k2"));
-        assert_ne!(a, derived_id("t1", "j2", "k1"));
-        assert_ne!(a, derived_id("t2", "j1", "k1"));
+    fn the_same_tenant_caller_job_and_key_give_the_same_id_and_a_different_one_does_not() {
+        let a = derived_id("t1", "p1", "j1", "k1");
+        assert_eq!(a, derived_id("t1", "p1", "j1", "k1"));
+        assert_ne!(a, derived_id("t1", "p1", "j1", "k2"));
+        assert_ne!(a, derived_id("t1", "p1", "j2", "k1"));
+        assert_ne!(a, derived_id("t2", "p1", "j1", "k1"));
+        assert_ne!(
+            a,
+            derived_id("t1", "p2", "j1", "k1"),
+            "another caller, the same key"
+        );
         assert_eq!(a.get_version_num(), 4);
     }
 
