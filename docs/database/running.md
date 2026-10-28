@@ -47,8 +47,8 @@ The role that runs them must be a superuser or the role that created the five gr
    scripts/db-test.sh
    ```
 
-   It provides a database, migrates it, runs the seventeen suites, drops everything it created (the databases, and the login roles the `rls` suite makes), and prints a last line that starts with `PASS` or `FAIL`.
-2. To run some suites only, name them. `scripts/db-test.sh ledger audit` runs two. `scripts/db-test.sh --list` prints all seventeen with one line each on what they prove.
+   It provides a database, migrates it, runs the eighteen suites, drops everything it created (the databases, and the login roles the `rls` suite makes), and prints a last line that starts with `PASS` or `FAIL`.
+2. To run some suites only, name them. `scripts/db-test.sh ledger audit` runs two. `scripts/db-test.sh --list` prints all eighteen with one line each on what they prove.
 3. To keep the server for inspection use `--keep`. It prints the URL of the maintenance database and leaves the process running, and you stop it yourself.
 
 ### Where the database comes from
