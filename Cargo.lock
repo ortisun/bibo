@@ -398,10 +398,26 @@ dependencies = [
 [[package]]
 name = "factory-egress"
 version = "0.0.0"
+dependencies = [
+ "async-trait",
+ "factory-domain",
+ "factory-ports",
+ "factory-testkit",
+ "httparse",
+ "ring",
+ "serde_json",
+ "thiserror",
+ "tokio",
+ "ureq",
+]
 
 [[package]]
 name = "factory-egress-sidecar"
 version = "0.0.0"
+dependencies = [
+ "factory-egress",
+ "serde_json",
+]
 
 [[package]]
 name = "factory-github"

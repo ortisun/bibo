@@ -7,3 +7,57 @@ publish.workspace = true
 
 [lints]
 workspace = true
+
+# DEPENDENCY DECISION (work package s1-egress-and-broker, 2026-10-28). The evidence and the
+# rejected alternatives are in the crate documentation (`src/lib.rs`, section "Dependencies").
+# The crates marked NEEDS ARCHITECT are not in the `egress` entry of
+# docs/architecture/crate-dependency-rules.json yet, so `cargo xtask check-architecture` reports
+# DEP-04 for them until the architect amends that file (that file is outside this package).
+# Every crate below passes `cargo deny --locked check` and `cargo audit --deny warnings` with the
+# unchanged deny.toml. A new direct dependency always needs a person
+# (policies/security.yaml, supply_chain.new_direct_dependency).
+#
+# The `broker` feature (on by default) holds everything that knows about tokens, providers and
+# money: the broker core, the HTTP server, the upstream client and the system random source. The
+# per-job sidecar binary depends on this crate with `default-features = false`, so its image
+# carries none of that code: it has the relay only, and the relay needs the standard library plus
+# the two crates that are on the list.
+[features]
+default = ["broker"]
+broker = [
+  "dep:factory-domain",
+  "dep:factory-ports",
+  "dep:ring",
+  "dep:httparse",
+  "dep:ureq",
+]
+
+[dependencies]
+factory-domain = { workspace = true, optional = true }
+factory-ports = { workspace = true, optional = true }
+
+# On the `egress` list. Request bodies (the model name and the output token limit), the usage in
+# provider answers, and the audit lines.
+serde_json = { version = "1.0.154", default-features = false, features = ["std"] }
+# On the `egress` list.
+thiserror = "2.0.21"
+
+# NEEDS ARCHITECT. `ring::rand::SystemRandom`, the operating system's random source for the
+# 256-bit job token (behind the `TokenEntropy` trait), and `ring::digest::SHA256`, the hash that
+# is all the broker keeps of a token. The same crate is the crypto provider of `ureq`'s TLS below,
+# so there is no second crypto stack and no separate hashing crate. 0.17.14, "Apache-2.0 AND
+# ISC", no open advisory.
+ring = { version = "0.17.14", optional = true }
+# NEEDS ARCHITECT. Parses the request head the sandbox sends to the broker (zero-copy, no
+# dependencies, MIT OR Apache-2.0, maintained by the hyper maintainers). It is already in the
+# graph through `ureq-proto` and `hyper`.
+httparse = { version = "1.10.1", optional = true }
+# NEEDS ARCHITECT. Blocking HTTP/1.1 client with TLS through rustls and ring, to call the provider.
+# The same release and the same feature set as the GitHub adapter: `rustls` only.
+ureq = { version = "3.5.0", default-features = false, features = ["rustls"], optional = true }
+
+[dev-dependencies]
+factory-testkit.workspace = true
+# `#[tokio::test]` for the contract suite. Dev dependencies are outside rule DEP-04.
+tokio = { version = "1.54.1", default-features = false, features = ["rt", "macros", "sync", "time"] }
+async-trait = "0.1.92"

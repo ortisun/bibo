@@ -7,3 +7,17 @@ publish.workspace = true
 
 [lints]
 workspace = true
+
+[[bin]]
+name = "factory-egress-sidecar"
+path = "src/main.rs"
+
+[dependencies]
+# The relay only. `default-features = false` leaves out the broker (tokens, prices, the provider
+# client and TLS), so the image holds no code that knows about a credential. The path form is on
+# purpose: a `workspace = true` dependency cannot switch off the default features.
+factory-egress = { path = "../../crates/egress", default-features = false }
+
+[dev-dependencies]
+# The tests start the built program, read its ready line and talk to it over TCP.
+serde_json = { version = "1.0.154", default-features = false, features = ["std"] }
