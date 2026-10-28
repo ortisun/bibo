@@ -547,6 +547,7 @@ dependencies = [
 name = "factory-observability"
 version = "0.0.0"
 dependencies = [
+ "factory-domain",
  "opentelemetry",
  "opentelemetry-otlp",
  "opentelemetry_sdk",

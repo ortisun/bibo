@@ -23,7 +23,12 @@ fn lookup(vars: &[(&str, &str)]) -> impl Fn(&str) -> Option<String> {
 }
 
 fn config(vars: &[(&str, &str)]) -> Result<TelemetryConfig, InitError> {
-    TelemetryConfig::from_lookup("factory-test", "1.2.3", lookup(vars))
+    TelemetryConfig::from_lookup(
+        "factory-test",
+        "1.2.3",
+        common::policy_scrubber(),
+        lookup(vars),
+    )
 }
 
 #[test]
@@ -149,12 +154,16 @@ fn a_pipeline_without_a_collector_still_logs_with_the_correlation_id() {
 
 #[test]
 fn a_scrubber_supplied_in_the_config_is_the_one_that_runs_on_logs() {
-    let config = config(&[])
-        .unwrap()
-        .with_scrubber(Arc::new(ReplaceScrubber {
+    let config = TelemetryConfig::from_lookup(
+        "factory-test",
+        "1.2.3",
+        Arc::new(ReplaceScrubber {
             from: "needle",
             to: "haystack",
-        }));
+        }),
+        lookup(&[]),
+    )
+    .unwrap();
     let capture = Capture::default();
     let pipeline = build_pipeline(&config, capture.clone()).expect("builds");
     pipeline.in_scope(|| tracing::info!("a needle in the log"));
