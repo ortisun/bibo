@@ -482,18 +482,32 @@ fn binding_check(field: &str) -> &'static str {
     }
 }
 
+/// The document the stage stores as `validation-evidence`: the binding the reports are for, whether
+/// a gate found a violation of policy, and the typed report of every gate. The delivery, review
+/// and approval stages read this document, and `evidence_output` is the only writer of it.
+///
+/// # Errors
+/// [`StageError::Internal`] when a report cannot be written as JSON.
+pub fn evidence_document(
+    binding: &Binding,
+    violation: bool,
+    reports: &[GateReport],
+) -> Result<Value, StageError> {
+    let listed: Result<Vec<Value>, _> = reports.iter().map(Contract::to_json_value).collect();
+    Ok(json!({
+        "kind": "validation-evidence",
+        "binding": binding.to_json(),
+        "policy_violation": violation,
+        "reports": listed.map_err(|_| StageError::Internal)?,
+    }))
+}
+
 fn evidence_output(
     binding: &Binding,
     violation: bool,
     reports: &[GateReport],
 ) -> Result<StageOutput, StageError> {
-    let listed: Result<Vec<Value>, _> = reports.iter().map(Contract::to_json_value).collect();
-    let document = json!({
-        "kind": "validation-evidence",
-        "binding": binding.to_json(),
-        "policy_violation": violation,
-        "reports": listed.map_err(|_| StageError::Internal)?,
-    });
+    let document = evidence_document(binding, violation, reports)?;
     Ok(StageOutput {
         documents: vec![OutputDocument {
             name: Slug::parse(EVIDENCE).map_err(|_| StageError::Internal)?,

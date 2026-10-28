@@ -76,5 +76,5 @@ pub use config::{
     Bounds, JsonManifestReader, ManifestReader, ManifestRejected, ValidationConfig, VerifySandbox,
 };
 pub use contract::{EVIDENCE, GATES, POLICY_INPUT};
-pub use handler::ValidationHandler;
+pub use handler::{ValidationHandler, evidence_document};
 pub use input::{IMPLEMENTATION_RESULT, SPECIFICATION_CONTRACT};
