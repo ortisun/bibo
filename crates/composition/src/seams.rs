@@ -323,7 +323,7 @@ impl RefreshRequests {
 }
 
 #[async_trait(?Send)]
-impl crate::run::BeforeClaim for RefreshRequests {
+impl crate::hooks::BeforeClaim for RefreshRequests {
     async fn before_claim(&self) {
         if self.requests.refresh(&self.tenants).await.is_err() {
             tracing::warn!("the request cache could not be refreshed; some jobs wait one poll");

@@ -4,15 +4,12 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 publish.workspace = true
-build = "build.rs"
 
-# The worker is a composition root (ring 3, ADR 0002): the only place where adapters are chosen and
-# wired to the engine. It is also the home of the shared composition core (`src/lib.rs`): the
-# typed configuration, the profiles, the registry of ports, the start-up checks, the redactor and
-# the health report. `apps/api` and `apps/cli` will reuse it. The dependency rules do not let an
-# app depend on another app and no `crates/*` entry exists for composition, so the core is a
-# library target of this package; docs/architecture/crate-dependency-rules.json needs an
-# architect decision before the API can link it (see apps/worker/README.md, "Reuse").
+# The worker is a composition root (ring 3, ADR 0002): the binary that runs the engine loop and
+# hosts the model broker listener. The shared composition core (the typed configuration, the
+# profiles, the registry of ports, the start-up checks, the redactor, the seams and the health
+# report) is the library crate `factory-composition` (ADR 0015), which `apps/api` and `apps/cli`
+# also use. What stays here is `main`, the loop and the broker host.
 
 [lib]
 name = "factory_worker"
@@ -26,6 +23,7 @@ path = "src/main.rs"
 workspace = true
 
 [dependencies]
+factory-composition.workspace = true
 factory-domain.workspace = true
 factory-ports.workspace = true
 factory-workflow.workspace = true

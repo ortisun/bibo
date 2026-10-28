@@ -16,6 +16,8 @@ mod support;
 use std::sync::Arc;
 use std::time::Duration;
 
+use factory_composition::indexing::{ActiveJobs, IndexingSandbox};
+use factory_composition::system::{RandomIds, Shutdown, TokioTicker, raise_on_termination};
 use factory_domain::ids::TenantId;
 use factory_domain::scope::TenantScope;
 use factory_domain::state::StageRunStatus;
@@ -27,9 +29,7 @@ use factory_storage::pg::PgStore;
 use factory_testkit::clock::{FakeCancel, FakeClock};
 use factory_testkit::fixtures::{Ids, sandbox_policy, sandbox_spec};
 use factory_testkit::sandbox::{FakeSandbox, ProgramOutput};
-use factory_worker::indexing::{ActiveJobs, IndexingSandbox};
 use factory_worker::run::{WorkerLoop, exit_code};
-use factory_worker::system::{RandomIds, Shutdown, TokioTicker, raise_on_termination};
 use support::engine::{PgWorld, Step};
 use support::{seed_tenant, seeded_repository, server, worker_config};
 
@@ -176,12 +176,12 @@ async fn the_system_pool_cannot_write_a_row() {
     assert!(message.contains("permission denied"), "{message}");
 }
 
-fn quick_loop_settings(drain_s: u64) -> factory_worker::config::LoopConfig {
-    factory_worker::config::LoopConfig {
+fn quick_loop_settings(drain_s: u64) -> factory_composition::config::LoopConfig {
+    factory_composition::config::LoopConfig {
         poll_interval_ms: 50,
         sweep_interval_s: 1,
         drain_s,
-        ..factory_worker::config::LoopConfig::default()
+        ..factory_composition::config::LoopConfig::default()
     }
 }
 

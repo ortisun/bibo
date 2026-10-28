@@ -9,6 +9,10 @@
 
 Revised on 2026-10-27 by [ADR 0014](0014-ports-v1-1-claim-protocol-and-port-revision.md). The verification table says `uuid::Uuid::now_v7` and `new_v4` were "not yet tried" and belong on the clippy list. They were never added, and the lists also lack the `Path` methods that touch the file system, `std::env`, Unix sockets, `tokio::time` and `OffsetDateTime::now_utc`. Another crate in the workspace can also enable `time/std` for the domain crate through feature unification. The review mutated each of these in a scratch copy and both `cargo xtask check-architecture` and `cargo clippy` stayed green. Decision 11 of the new record adds the bans, reads the resolved features and lists the fixtures.
 
+## Revision note (ADR 0015)
+
+Revised on 2026-10-28 by [ADR 0015](0015-composition-library.md). Slice 1 has a thirteenth library crate, `composition`, in ring 3 next to the binaries. It holds the composition core that the binaries share, only binaries may depend on it, and it has no `main`. The statement "twelve library crates" below counts the libraries of rings 0 to 2.
+
 ## Context and problem statement
 
 The master prompt (section 14) suggests sixteen library crates and five applications. The repository is empty. Several engineers, a DBA, QA and others will start in parallel once the contracts are fixed. They need boundaries that let them avoid editing the same files, and the project rule is hexagonal architecture: the domain has no I/O and adapters depend inward.

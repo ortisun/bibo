@@ -3,10 +3,10 @@
 //! [`prepare`] runs the start-up checks in the order that makes a failure easiest to read, and
 //! returns the parts that are ready: the loaded and hashed policy, the redactor and the registry
 //! of secret values, the telemetry guard, the connected store with its two pools (roles and schema
-//! checked), the hosted broker. [`blocked_adapters`] says which adapters of the port registry this
-//! part of the work package does not assemble, and why. The worker binary prints that list as
-//! `BLOCKED:` lines and exits with code 3 until the list is empty: it never starts a loop on a
-//! half-built registry, and it never fills a hole with a fake outside a test.
+//! checked). [`blocked_adapters`] says which adapters of the port registry this part of the work
+//! package does not assemble, and why. The worker binary prints that list as `BLOCKED:` lines and
+//! exits with code 3 until the list is empty: it never starts a loop on a half-built registry,
+//! and it never fills a hole with a fake outside a test.
 //!
 //! The order of the checks is the order of the failures an operator meets:
 //!
@@ -14,8 +14,11 @@
 //! 2. the sandbox image catalog: pinned, ready, no skeleton;
 //! 3. the redactor from the policy, and every secret value the process holds registered;
 //! 4. the telemetry set-up with that redactor;
-//! 5. both database pools: roles, schema version;
-//! 6. the broker listener.
+//! 5. both database pools: roles, schema version.
+//!
+//! The model broker listener is the worker's: the worker starts it after [`prepare`] and then
+//! calls [`Prepared::check_secret_kinds`], because the broker's provider keys are one of the
+//! secret kinds the policy requires.
 
 use std::path::Path;
 use std::sync::Arc;
@@ -24,14 +27,21 @@ use factory_domain::redaction::Redactor;
 use factory_observability::telemetry::TelemetryGuard;
 use factory_storage::pg::PgStore;
 
-use crate::broker_host::{HostedBroker, start as start_broker};
 use crate::config::FactoryConfig;
 use crate::database;
 use crate::profile::{PortName, Profile};
 use crate::redaction::{FactorySecrets, SecretKind, redactor_from_policy};
 use crate::startup::{LoadedPolicies, StartupFailure, check_image_catalog, load_policy};
-use crate::system::{RandomIds, SystemClock};
 use crate::telemetry;
+
+/// Who is starting: the service name and version telemetry reports.
+#[derive(Debug, Clone, Copy)]
+pub struct Identity {
+    /// The service name, such as `factory-worker`.
+    pub service: &'static str,
+    /// The version.
+    pub version: &'static str,
+}
 
 /// What [`prepare`] built.
 pub struct Prepared {
@@ -43,8 +53,6 @@ pub struct Prepared {
     pub secrets: FactorySecrets,
     /// The connected store.
     pub store: PgStore,
-    /// The hosted broker.
-    pub broker: HostedBroker,
     /// The telemetry pipeline, kept alive for the process.
     pub telemetry: Option<TelemetryGuard>,
 }
@@ -106,7 +114,10 @@ pub fn blocked_adapters(profile: Profile) -> Vec<Blocked> {
 ///
 /// # Errors
 /// The first [`StartupFailure`].
-pub async fn prepare(config: &FactoryConfig) -> Result<Prepared, StartupFailure> {
+pub async fn prepare(
+    config: &FactoryConfig,
+    identity: Identity,
+) -> Result<Prepared, StartupFailure> {
     let untrusted = [config.sandbox.workspace_root.as_path()];
     let untrusted: Vec<&Path> = untrusted.to_vec();
     let policies = load_policy(&config.protected_checkout, &untrusted)?;
@@ -151,8 +162,8 @@ pub async fn prepare(config: &FactoryConfig) -> Result<Prepared, StartupFailure>
 
     let guard = {
         let telemetry_config = telemetry::config_for(
-            "factory-worker",
-            env!("CARGO_PKG_VERSION"),
+            identity.service,
+            identity.version,
             config.profile,
             &config.telemetry,
             &redactor,
@@ -165,31 +176,34 @@ pub async fn prepare(config: &FactoryConfig) -> Result<Prepared, StartupFailure>
     };
 
     let store = database::connect(&config.database, &mut secrets).await?;
-    let broker = start_broker(
-        &config.broker,
-        Arc::clone(&redactor),
-        Arc::new(SystemClock),
-        Arc::new(RandomIds::new().map_err(|error| StartupFailure::Other(error.to_string()))?),
-        &mut secrets,
-    )?;
-
-    // A kind of secret the policy requires and that nothing registered means the redactor does
-    // not know a value it should. Production refuses to start; the other profiles say so.
-    if let Some(kind) = secrets.unregistered_kinds().first() {
-        if config.profile == Profile::Production {
-            return Err(StartupFailure::SecretKindMissing(kind.label()));
-        }
-        tracing::warn!(
-            kind = kind.label(),
-            "no secret of a kind the policy lists is registered"
-        );
-    }
     Ok(Prepared {
         policies,
         redactor,
         secrets,
         store,
-        broker,
         telemetry: guard,
     })
+}
+
+impl Prepared {
+    /// Refuses to go on when a kind of secret the policy requires has no value registered.
+    ///
+    /// Call it once everything that registers a value has run (the broker listener registers the
+    /// provider keys). A kind that nothing registered means the redactor does not know a value it
+    /// should. Production refuses to start; the other profiles say so in the log.
+    ///
+    /// # Errors
+    /// [`StartupFailure::SecretKindMissing`], in the production profile only.
+    pub fn check_secret_kinds(&self, profile: Profile) -> Result<(), StartupFailure> {
+        if let Some(kind) = self.secrets.unregistered_kinds().first() {
+            if profile == Profile::Production {
+                return Err(StartupFailure::SecretKindMissing(kind.label()));
+            }
+            tracing::warn!(
+                kind = kind.label(),
+                "no secret of a kind the policy lists is registered"
+            );
+        }
+        Ok(())
+    }
 }

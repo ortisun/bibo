@@ -18,6 +18,8 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
+use factory_composition::config::LoopConfig;
+use factory_composition::system::{RandomIds, Shutdown, SystemClock, TokioTicker};
 use factory_domain::contracts::Violation;
 use factory_domain::contracts::agent_manifest::RecommendedTier;
 use factory_domain::ids::{CausationId, JobId, PrincipalId, RepositoryId, StageRunId, TenantId};
@@ -40,8 +42,6 @@ use factory_testkit::registry::InMemoryAgentRegistry;
 use factory_testkit::router::{RouteRule, StaticModelRouter};
 use factory_testkit::sandbox::FakeSandbox;
 use factory_testkit::workspace::{FakeRemote, FakeWorkspaceProvider};
-use factory_worker::config::LoopConfig;
-use factory_worker::system::{RandomIds, Shutdown, SystemClock, TokioTicker};
 use factory_workflow::commands::{Actor, Decision, Subject};
 use factory_workflow::engine::{Admission, Engine, EngineConfig, EngineDeps, JobView};
 use factory_workflow::handlers::HandlerRegistry;

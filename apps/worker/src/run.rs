@@ -33,10 +33,11 @@ use factory_workflow::engine::{AttemptOutcome, Engine, EngineError};
 use factory_workflow::scheduler::{ClaimedAttempt, Ticker};
 use tracing::Instrument;
 
-use crate::config::LoopConfig;
-use crate::indexing::ActiveJobs;
-use crate::system::Shutdown;
-use crate::telemetry::job_stretch;
+use factory_composition::config::LoopConfig;
+use factory_composition::hooks::BeforeClaim;
+use factory_composition::indexing::ActiveJobs;
+use factory_composition::system::Shutdown;
+use factory_composition::telemetry::job_stretch;
 
 /// What to do after an attempt.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -46,14 +47,6 @@ pub enum Flow {
     /// Leave the loop now, as if the process had been told to stop. Tests use it to stop at an
     /// exact boundary.
     Stop,
-}
-
-/// Work to do before each claim. The loop is single-threaded, so the future need not be `Send`.
-#[async_trait::async_trait(?Send)]
-pub trait BeforeClaim {
-    /// Runs once before each call to `Engine::claim_next`. It must not fail the loop: a hook that
-    /// cannot do its work logs and returns.
-    async fn before_claim(&self);
 }
 
 /// Looks at each finished attempt. Production runs without one.
@@ -118,7 +111,7 @@ impl WorkerLoop {
         self
     }
 
-    /// Runs `hook` before each claim. The request cache of `seams::StoreRequests` is filled this
+    /// Runs `hook` before each claim. The request cache of `factory_composition::seams::StoreRequests` is filled this
     /// way, because `RequestSource::recorded` must answer without waiting while the claim runs.
     #[must_use]
     pub fn with_before_claim(mut self, hook: Arc<dyn BeforeClaim>) -> Self {
@@ -127,7 +120,7 @@ impl WorkerLoop {
     }
 
     /// Tells the loop to note, while an attempt runs, which tenant owns its job. The indexing
-    /// sandbox reads it (`crate::indexing`).
+    /// sandbox reads it (`factory_composition::indexing`).
     #[must_use]
     pub fn with_active_jobs(mut self, jobs: Arc<ActiveJobs>) -> Self {
         self.jobs = Some(jobs);

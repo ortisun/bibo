@@ -18,6 +18,14 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
+use factory_composition::config::{LoopConfig, SecretFile};
+use factory_composition::redaction::{FactorySecrets, redactor_from_policy};
+use factory_composition::sandbox_specs::{PolicySpecs, sandbox_policy_from};
+use factory_composition::seams::{
+    CachedProbes, FileAllowlist, SchemaChecker, StoreRepositories, StoreRequests, YamlManifests,
+};
+use factory_composition::startup::load_policy;
+use factory_composition::system::{RandomIds, Shutdown, TokioTicker};
 use factory_contracts::registry::FileAgentRegistry;
 use factory_domain::ids::TenantId;
 use factory_domain::scope::TenantScope;
@@ -36,15 +44,7 @@ use factory_testkit::githost::{FakeChangeHost, FakeIssueSource};
 use factory_testkit::router::probed;
 use factory_testkit::sandbox::{FakeSandbox, ProgramOutput};
 use factory_testkit::workspace::{FakeRemote, FakeWorkspaceProvider};
-use factory_worker::config::{LoopConfig, SecretFile};
-use factory_worker::redaction::{FactorySecrets, redactor_from_policy};
 use factory_worker::run::{Flow, Observer, WorkerLoop};
-use factory_worker::sandbox_specs::{PolicySpecs, sandbox_policy_from};
-use factory_worker::seams::{
-    CachedProbes, FileAllowlist, SchemaChecker, StoreRepositories, StoreRequests, YamlManifests,
-};
-use factory_worker::startup::load_policy;
-use factory_worker::system::{RandomIds, Shutdown, TokioTicker};
 use factory_workflow::engine::{AttemptOutcome, Engine};
 use factory_workflow::handlers::HandlerRegistry;
 use factory_workflow::scheduler::ClaimedAttempt;
@@ -253,7 +253,7 @@ async fn smoke_body() {
         .await;
 
     // The broker wrapper that keeps token secrets, over the world's broker.
-    let broker = Arc::new(factory_worker::redaction::RegisteringBroker::new(
+    let broker = Arc::new(factory_composition::redaction::RegisteringBroker::new(
         world.deps.broker.clone(),
         Arc::clone(&redactor),
     ));
@@ -296,7 +296,7 @@ async fn smoke_body() {
     }
     let requests = Arc::new(StoreRequests::new(store_dyn.clone()));
     let allowlist = Arc::new(FileAllowlist::in_checkout(&checkout));
-    let authority = Arc::new(factory_worker::authority::StoreAuthority::new(
+    let authority = Arc::new(factory_composition::authority::StoreAuthority::new(
         store_dyn.clone(),
         allowlist.clone(),
         Arc::clone(&policies.engine),
@@ -417,7 +417,7 @@ async fn smoke_body() {
         shutdown.clone(),
     )
     .with_observer(Arc::new(StopWhenIdle))
-    .with_before_claim(Arc::new(factory_worker::seams::RefreshRequests::new(
+    .with_before_claim(Arc::new(factory_composition::seams::RefreshRequests::new(
         requests.clone(),
         vec![tenant],
     )));
@@ -487,11 +487,11 @@ async fn smoke_body() {
 fn smoke_word_count_runs_the_real_intake_and_repository_stages() {
     let policies = load_policy(&repository_root(), &[]).expect("the real policies load");
     let redactor = Arc::new(redactor_from_policy(&policies.security).expect("redactor"));
-    let config = factory_worker::telemetry::config_for(
+    let config = factory_composition::telemetry::config_for(
         "factory-worker-smoke",
         "0.0.0",
-        factory_worker::profile::Profile::Test,
-        &factory_worker::config::TelemetryConfig {
+        factory_composition::profile::Profile::Test,
+        &factory_composition::config::TelemetryConfig {
             otlp_endpoint: None,
             log_filter: Some("warn,factory_workflow=debug".to_owned()),
         },

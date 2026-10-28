@@ -362,6 +362,34 @@ name = "factory-cli"
 version = "0.0.0"
 
 [[package]]
+name = "factory-composition"
+version = "0.0.0"
+dependencies = [
+ "async-trait",
+ "diesel",
+ "diesel-async",
+ "factory-contracts",
+ "factory-domain",
+ "factory-egress",
+ "factory-github",
+ "factory-observability",
+ "factory-ports",
+ "factory-runtime",
+ "factory-sandbox",
+ "factory-spec_adapter",
+ "factory-storage",
+ "factory-testkit",
+ "factory-workflow",
+ "serde",
+ "serde_json",
+ "thiserror",
+ "time",
+ "tokio",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
 name = "factory-contracts"
 version = "0.0.0"
 dependencies = [
@@ -545,6 +573,7 @@ dependencies = [
  "async-trait",
  "diesel",
  "diesel-async",
+ "factory-composition",
  "factory-contracts",
  "factory-domain",
  "factory-egress",

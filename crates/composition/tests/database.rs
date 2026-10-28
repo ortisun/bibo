@@ -2,11 +2,11 @@
 
 mod support;
 
+use factory_composition::database::pools;
+use factory_composition::health::{CheckStatus, EXPECTED_SCHEMA_VERSION, check_schema};
 use factory_domain::vocabulary::Fidelity;
 use factory_ports::store::Store;
 use factory_storage::pg::{PgStore, RoleProblem, StartupError};
-use factory_worker::database::pools;
-use factory_worker::health::{CheckStatus, EXPECTED_SCHEMA_VERSION, check_schema};
 use support::{Scene, server, small_pool, worker_config};
 
 #[tokio::test(flavor = "multi_thread")]

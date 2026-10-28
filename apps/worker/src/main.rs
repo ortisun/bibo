@@ -11,8 +11,9 @@
 
 use std::process::ExitCode;
 
-use factory_worker::assemble::{blocked_adapters, prepare};
-use factory_worker::config::FactoryConfig;
+use factory_composition::assemble::blocked_adapters;
+use factory_composition::config::FactoryConfig;
+use factory_worker::boot::boot;
 
 fn main() -> ExitCode {
     let config = match FactoryConfig::from_environment(|name| std::env::var(name).ok()) {
@@ -33,8 +34,8 @@ fn main() -> ExitCode {
         }
     };
     runtime.block_on(async move {
-        let prepared = match prepare(&config).await {
-            Ok(prepared) => prepared,
+        let booted = match boot(&config).await {
+            Ok(booted) => booted,
             Err(error) => {
                 eprintln!("factory-worker: start-up check failed: {error}");
                 return ExitCode::from(1);
@@ -48,10 +49,10 @@ fn main() -> ExitCode {
                 eprintln!("BLOCKED: {}: {}", item.port.label(), item.reason);
             }
             eprintln!("BLOCKED is not a pass: the start-up checks passed, and no job was claimed.");
-            prepared.broker.shutdown();
+            booted.broker.shutdown();
             return ExitCode::from(3);
         }
-        prepared.broker.shutdown();
+        booted.broker.shutdown();
         ExitCode::SUCCESS
     })
 }

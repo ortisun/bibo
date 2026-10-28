@@ -6,11 +6,11 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use factory_composition::config::{BrokerConfig, SecretFile, UpstreamConfig};
+use factory_composition::redaction::{FactorySecrets, redactor_from_policy};
+use factory_composition::startup::load_policy;
+use factory_composition::system::{RandomIds, SystemClock};
 use factory_worker::broker_host::start;
-use factory_worker::config::{BrokerConfig, SecretFile, UpstreamConfig};
-use factory_worker::redaction::{FactorySecrets, redactor_from_policy};
-use factory_worker::startup::load_policy;
-use factory_worker::system::{RandomIds, SystemClock};
 
 fn repository_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..")

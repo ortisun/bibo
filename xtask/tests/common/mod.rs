@@ -206,7 +206,7 @@ impl Fixture {
         };
         let rule_list: Vec<Value> = [
             "DEP-01", "DEP-02", "DEP-03", "DEP-04", "DEP-05", "DEP-06", "DEP-07", "DEP-08",
-            "DEP-09", "DEP-10",
+            "DEP-09", "DEP-10", "DEP-11",
         ]
         .iter()
         .map(|id| rule(id))
@@ -226,6 +226,15 @@ impl Fixture {
                 crate_rule("github", 2, "adapter", &["domain", "ports"], &["testkit"], &["serde_json"]),
                 crate_rule("observability", 2, "adapter", &[], &[], &[]),
                 crate_rule("testkit", 2, "test-support", &["domain", "ports"], &[], &["serde_json"]),
+                // The composition library: ring 3, a library, wires every adapter (ADR 0015).
+                crate_rule(
+                    "composition",
+                    3,
+                    "composition",
+                    &["domain", "ports", "workflow", "spec_adapter", "storage", "sandbox", "runtime", "github", "observability"],
+                    &["testkit"],
+                    &["serde_json"],
+                ),
             ],
             "apps": [app("api"), app("worker")],
             "tooling": [{"name": "xtask", "path": "xtask", "slice": 0, "responsibility": "fixture"}],

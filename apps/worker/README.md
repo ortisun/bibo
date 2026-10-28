@@ -1,43 +1,37 @@
 # factory-worker
 
-The worker is a composition root (ring 3, [ADR 0002](../../docs/adr/0002-workspace-layout-and-dependency-rule.md)).
+The worker is a binary in ring 3 ([ADR 0002](../../docs/adr/0002-workspace-layout-and-dependency-rule.md)).
 It chooses the adapters, wires them to the engine and runs the engine loop: claim, run a stage
 attempt, sweep leases and deadlines, wait. It also hosts the model broker listener.
 
-This package is the **first part** of work package `s1-apps-composition`. It holds the shared
-composition core that the API and the operator CLI will reuse, and the worker. The API
-(`apps/api`) and the CLI (`apps/cli`) are later parts and still print "not implemented".
+The composition core that the API and the operator CLI share is **not in this package**. Since the
+second part of work package `s1-apps-composition` it is the library crate
+[`factory-composition`](../../crates/composition/README.md) ([ADR 0015](../../docs/adr/0015-composition-library.md)).
+This package keeps what only a process that claims work needs.
 
 The package is a library (`src/lib.rs`, crate `factory_worker`) and a thin binary (`src/main.rs`).
 
 ## Where things are
 
-| Module | What it holds | Reused by the API and the CLI |
-|---|---|---|
-| `config` | The typed configuration: one YAML file read with the restricted reader of `factory-contracts`, the environment, secrets by file reference | yes |
-| `profile` | `production`, `local`, `test`, and the ports each may stand in for | yes |
-| `registry` | `PortRegistry`: every adapter in one value, and the check that runs `require_permitted` for every port | yes |
-| `startup` | The policy from the protected checkout (hashed), the sandbox image catalog | yes |
-| `redaction` | The redactor built from the policy, the registry of the factory's secret values, the telemetry scrubber, the broker wrapper that registers job tokens | yes |
-| `database` | The two pools and the two logins (ADR 0012) | yes |
-| `health` | Health and readiness as plain data | yes |
-| `telemetry` | The telemetry configuration with the real scrubber, and the `factory.job` stretch span | yes |
-| `system` | The real clock, identifier source, `Ticker` and shutdown signal | yes |
-| `seams`, `authority`, `sandbox_specs` | The seams the stages declare (table below) | yes |
-| `indexing` | Indexes sandbox outputs for the tenant when they are written | worker |
-| `broker_host` | Hosts the model broker listener | worker |
-| `run` | The worker loop | worker |
-| `assemble` | Start-up in order, and the list of adapters that are not assembled | yes |
+| Module | What it holds |
+|---|---|
+| `boot` | Start-up of the worker: the shared checks (`factory_composition::assemble::prepare`), then the broker listener, then the check that every kind of secret the policy lists has a value |
+| `broker_host` | Hosts the model broker listener in the worker's process |
+| `run` | The worker loop |
+
+Everything else that this README used to list here (`config`, `profile`, `registry`, `startup`,
+`redaction`, `database`, `health`, `telemetry`, `system`, `seams`, `authority`, `sandbox_specs`,
+`indexing`, `assemble`) is in `crates/composition/src/` with the same module names. The tests moved
+with them: `tests/database.rs` and `tests/profiles.rs` are in `crates/composition/tests/`, and the
+database test support (`tests/support/`) is the one in that crate, included here by `#[path]` so
+that there is one provisioning code.
 
 ### Reuse by the API and the CLI
 
-The dependency rules do not let an app depend on another app (`DEP-01`: an app may depend on library
-crates only), and the rules file lists no composition crate. So the core lives in this package, and
-`apps/api` cannot link it yet. Two ways out, both a change to
-`docs/architecture/crate-dependency-rules.json` that needs the architect: allow a binary to depend on
-a library target of another binary, or add a ring 3 library entry for composition. Until then the
-API part would have to copy the modules, which is the wrong answer. The core has no dependency on
-anything that is specific to the worker except `run`, `indexing` and `broker_host`.
+`DEP-01` lets an app depend on library crates only, so the core could not stay in a library target
+of this binary. [ADR 0015](../../docs/adr/0015-composition-library.md) adds the ring 3 library
+`composition`; rule `DEP-11` lets binaries depend on it and nobody in rings 0 to 2, and says it has no
+`main`. The API and the CLI depend on `factory-composition` and write their own shell.
 
 ## Running it
 

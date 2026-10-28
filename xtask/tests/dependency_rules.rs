@@ -1,5 +1,5 @@
 //! One passing and one failing fixture for each dependency rule that `cargo metadata` or the
-//! manifests can prove: DEP-01 to DEP-04, DEP-06 and DEP-08. Each failing fixture changes one thing in the baseline and
+//! manifests can prove: DEP-01 to DEP-04, DEP-06, DEP-08 and DEP-11. Each failing fixture changes one thing in the baseline and
 //! expects the check to exit non-zero with that rule's id.
 
 mod common;
@@ -402,6 +402,103 @@ mod dependency_rules {
         }
     }
 
+    mod dep_11_the_composition_library_is_for_binaries_only {
+        use super::*;
+
+        #[test]
+        fn a_binary_depending_on_the_composition_library_passes() {
+            // The same ring as the binary, so DEP-02 must not object to the edge either.
+            let mut fx = Fixture::baseline("dep11-app");
+            fx.depend("api", "composition");
+            fx.run().assert_passes();
+        }
+
+        #[test]
+        fn a_library_in_ring_two_depending_on_it_fails() {
+            let mut fx = Fixture::baseline("dep11-ring2");
+            // Cargo itself refuses a cycle, so the library stops depending on workflow first.
+            fx.remove_dependency("composition", "workflow");
+            fx.depend("workflow", "composition");
+            fx.allow_in_rules("workflow", "composition");
+            let run = fx.run();
+            run.assert_violation_mentions("DEP-11", "factory-workflow");
+            run.assert_violation_mentions("DEP-02", "factory-workflow");
+        }
+
+        #[test]
+        fn a_library_depending_on_it_fails_even_as_a_dev_dependency() {
+            let mut fx = Fixture::baseline("dep11-dev");
+            fx.dev_depend("storage", "composition");
+            fx.run()
+                .assert_violation_mentions("DEP-11", "factory-storage");
+        }
+
+        #[test]
+        fn the_domain_depending_on_it_fails() {
+            let mut fx = Fixture::baseline("dep11-domain");
+            for dep in [
+                "domain",
+                "ports",
+                "workflow",
+                "spec_adapter",
+                "storage",
+                "sandbox",
+                "runtime",
+                "github",
+                "observability",
+            ] {
+                fx.remove_dependency("composition", dep);
+            }
+            fx.depend("domain", "composition");
+            fx.allow_in_rules("domain", "composition");
+            fx.run()
+                .assert_violation_mentions("DEP-11", "factory-domain");
+        }
+
+        #[test]
+        fn the_library_wiring_several_adapters_is_not_a_dep_08_finding() {
+            // The baseline composition library depends on storage, sandbox, runtime and github.
+            Fixture::baseline("dep11-wires")
+                .run()
+                .assert_no_violation("DEP-08");
+        }
+
+        #[test]
+        fn a_main_file_in_the_library_makes_a_binary_target_and_fails() {
+            let mut fx = Fixture::baseline("dep11-main-file");
+            fx.source("composition", "src/main.rs", "fn main() {}\n");
+            fx.run()
+                .assert_violation_mentions("DEP-11", "binary target");
+        }
+
+        #[test]
+        fn a_function_named_main_in_the_library_fails() {
+            let mut fx = Fixture::baseline("dep11-main-fn");
+            fx.source("composition", "src/lib.rs", "pub fn main() {}\n");
+            fx.run()
+                .assert_violation_mentions("DEP-11", "function named main");
+        }
+
+        #[test]
+        fn a_build_script_main_is_not_the_library_defining_main() {
+            let mut fx = Fixture::baseline("dep11-build-script");
+            fx.source("composition", "build.rs", "fn main() {}\n");
+            fx.run().assert_no_violation("DEP-11");
+        }
+
+        #[test]
+        fn a_composition_library_in_the_wrong_ring_is_refused_by_the_rules_reader() {
+            let mut fx = Fixture::baseline("dep11-ring");
+            fx.rules_mut()["crates"]
+                .as_array_mut()
+                .expect("crates")
+                .iter_mut()
+                .find(|c| c["name"] == "composition")
+                .expect("composition")["ring"] = serde_json::json!(2);
+            fx.run().assert_error("composition library");
+        }
+    }
+
     mod layout_the_workspace_matches_the_rules_file {
         use super::*;
 
@@ -425,6 +522,7 @@ mod dependency_rules {
         fn a_listed_crate_that_does_not_exist_fails_by_default() {
             let mut fx = Fixture::baseline("layout-required");
             fx.remove_dependency("api", "github");
+            fx.remove_dependency("composition", "github");
             fx.omit_from_workspace("github");
             fx.run_default()
                 .assert_violation_mentions("LAYOUT", "factory-github");
@@ -442,6 +540,7 @@ mod dependency_rules {
         fn a_missing_crate_passes_when_missing_crates_are_allowed() {
             let mut fx = Fixture::baseline("layout-allowed");
             fx.remove_dependency("api", "github");
+            fx.remove_dependency("composition", "github");
             fx.omit_from_workspace("github");
             // `run` passes --allow-missing-crates.
             fx.run().assert_passes();

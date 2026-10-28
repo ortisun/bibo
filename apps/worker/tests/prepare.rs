@@ -7,9 +7,10 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use factory_worker::assemble::{blocked_adapters, prepare};
-use factory_worker::config::FactoryConfig;
-use factory_worker::profile::{PortName, Profile};
+use factory_composition::assemble::blocked_adapters;
+use factory_composition::config::FactoryConfig;
+use factory_composition::profile::{PortName, Profile};
+use factory_worker::boot::boot;
 use support::server;
 
 fn repository_root() -> PathBuf {
@@ -93,20 +94,21 @@ async fn deployment(profile: &str, same_login: bool) -> (PathBuf, PathBuf, suppo
 async fn prepare_connects_both_pools_hosts_the_broker_and_lists_what_is_blocked() {
     let (config_path, dir, _db) = deployment("local", false).await;
     let config = FactoryConfig::from_file(&config_path).expect("the configuration loads");
-    let prepared = prepare(&config).await.expect("every start-up check passes");
+    let booted = boot(&config).await.expect("every start-up check passes");
+    let prepared = &booted.prepared;
     assert!(
         prepared
             .secrets
-            .count(factory_worker::redaction::SecretKind::DatabaseCredentials)
+            .count(factory_composition::redaction::SecretKind::DatabaseCredentials)
             >= 4
     );
     assert!(
         prepared
             .secrets
-            .count(factory_worker::redaction::SecretKind::BrokerKeys)
+            .count(factory_composition::redaction::SecretKind::BrokerKeys)
             >= 1
     );
-    prepared.broker.shutdown();
+    booted.broker.shutdown();
     let blocked = blocked_adapters(Profile::Local);
     assert!(blocked.iter().any(|b| b.port == PortName::Runtime));
     assert!(blocked.iter().all(|b| !b.reason.is_empty()));

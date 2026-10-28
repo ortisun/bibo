@@ -3,6 +3,9 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use factory_composition::profile::{PortName, Profile};
+use factory_composition::registry::PortRegistry;
+use factory_composition::system::{RandomIds, SystemClock, TokioTicker};
 use factory_domain::vocabulary::Fidelity;
 use factory_ports::artifact::ArtifactStore;
 use factory_testkit::agent::FakeAgentRuntime;
@@ -20,9 +23,6 @@ use factory_testkit::spec::FakeSpecificationProvider;
 use factory_testkit::store::InMemoryStore;
 use factory_testkit::webhook::FakeWebhookVerifier;
 use factory_testkit::workspace::{FakeRemote, FakeWorkspaceProvider};
-use factory_worker::profile::{PortName, Profile};
-use factory_worker::registry::PortRegistry;
-use factory_worker::system::{RandomIds, SystemClock, TokioTicker};
 
 mod support;
 use support::engine::StaticAuthority;
