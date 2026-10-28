@@ -1,18 +1,9 @@
 //! The evidence ledger on a real database: a chain that stays continuous under concurrent
 //! appends, a verifier that fails when a stored byte changes, and the two published hash vectors.
 //!
-//! PENDING ADAPTATION TO PORTS V1.1. These tests drive the old `Store` write model (`claim_ready`,
-//! `insert_attempt`, event payloads, `ScopeNotAllowed`) and do not compile against the revised
-//! traits, so the whole file is compiled out with `#![cfg(any())]`. The Postgres adaptation
-//! package rewrites each test against the new traits and removes the attribute. The test names
-//! below are the ones that package must account for.
-//!
-//! * `concurrent_appends_to_one_job_give_a_continuous_verifiable_chain`
-//! * `flipping_one_byte_of_a_stored_entry_fails_verification`
-//! * `ledger_vectors_from_the_database_docs`
-//! * `a_ledger_entry_for_a_stage_run_that_does_not_exist_is_refused`
-
-#![cfg(any())]
+//! An append moves the head of the job without raising the job's version (migration 17). A second
+//! writer waits for the first writer's lock on the job and then finds the position taken, so the
+//! retry loop below never meets a fork: the chain is continuous.
 
 mod support;
 
@@ -25,12 +16,12 @@ use factory_domain::ledger::{ChainError, canonical_form, chain_hash, head_of, ve
 use factory_domain::values::Sha256Digest;
 use factory_ports::store::StoreError;
 use factory_testkit::fixtures::ledger_entry;
-use support::{Scene, now};
+use support::{Scene, at};
 
 /// Appends one entry at the head of the job's chain, retrying while another writer is in the way.
 async fn append_next(scene: &Scene, job: JobId, run: StageRunId, text: &str) -> u64 {
     loop {
-        let mut tx = scene.tenant_tx(scene.a).await;
+        let mut tx = scene.tx(scene.a).await;
         let head = tx.ledger_head(job).await.expect("head");
         let (sequence, previous) = match &head {
             Some(head) => (head.sequence + 1, Some(head.hash.clone())),
@@ -42,7 +33,7 @@ async fn append_next(scene: &Scene, job: JobId, run: StageRunId, text: &str) -> 
             run,
             sequence,
             previous.as_ref(),
-            &now(),
+            &at(),
             text,
         );
         match tx.append_ledger_entry(entry).await {
@@ -90,7 +81,7 @@ async fn concurrent_appends_to_one_job_give_a_continuous_verifiable_chain() {
     );
 
     // The domain verifies the chain that was read back.
-    let mut tx = scene.tenant_tx(scene.a).await;
+    let mut tx = scene.tx(scene.a).await;
     let entries = tx.read_ledger(job, 1, 1000).await.expect("read");
     assert_eq!(entries.len(), 40);
     assert_eq!(verify_chain(&entries), Ok(()));
@@ -132,7 +123,7 @@ async fn flipping_one_byte_of_a_stored_entry_fails_verification() {
         scene.db.text(&verdict_query).await.as_deref(),
         Some("sound")
     );
-    let mut tx = scene.tenant_tx(scene.a).await;
+    let mut tx = scene.tx(scene.a).await;
     assert_eq!(
         verify_chain(&tx.read_ledger(job, 1, 100).await.expect("read")),
         Ok(())
@@ -166,7 +157,7 @@ async fn flipping_one_byte_of_a_stored_entry_fails_verification() {
     // The database verifier names entry 3.
     assert_eq!(scene.db.text(&verdict_query).await.as_deref(), Some("3"));
     // The Rust verifier fails at entry 3 as well: the stored hash no longer matches the content.
-    let mut tx = scene.tenant_tx(scene.a).await;
+    let mut tx = scene.tx(scene.a).await;
     let entries = tx
         .read_ledger(job, 1, 100)
         .await
@@ -221,9 +212,9 @@ async fn ledger_vectors_from_the_database_docs() {
     // trigger recomputes and accepts, and it is the one stored.
     let job = scene.job(scene.a).await;
     let run = scene.ready_stage_run(scene.a, job).await;
-    let entry = ledger_entry(&scene.ids, job, run, 1, None, &now(), "The first claim.");
+    let entry = ledger_entry(&scene.ids, job, run, 1, None, &at(), "The first claim.");
     let text = String::from_utf8(canonical_form(&entry).expect("canonical")).expect("utf-8");
-    let mut tx = scene.tenant_tx(scene.a).await;
+    let mut tx = scene.tx(scene.a).await;
     let head = tx.append_ledger_entry(entry.clone()).await.expect("append");
     tx.commit().await.expect("commit");
     assert_eq!(head.hash, entry.entry_hash);
@@ -251,7 +242,7 @@ async fn a_ledger_entry_for_a_stage_run_that_does_not_exist_is_refused() {
     let scene = Scene::new().await;
     let job = scene.job(scene.a).await;
     let phantom = scene.ids.stage_run();
-    let mut tx = scene.tenant_tx(scene.a).await;
+    let mut tx = scene.tx(scene.a).await;
     let refused = tx
         .append_ledger_entry(ledger_entry(
             &scene.ids,
@@ -259,12 +250,19 @@ async fn a_ledger_entry_for_a_stage_run_that_does_not_exist_is_refused() {
             phantom,
             1,
             None,
-            &now(),
+            &at(),
             "No such run.",
         ))
         .await;
-    assert!(
-        matches!(refused, Err(StoreError::Constraint(_))),
-        "{refused:?}"
+    // The composite key to `stage_runs` refuses it. The database aborts the transaction, so what
+    // follows in it is refused too and the caller rolls back.
+    assert_eq!(refused, Err(StoreError::NotFound), "no such stage run");
+    assert_eq!(tx.ledger_head(job).await, Err(StoreError::Unavailable));
+    drop(tx);
+    let mut check = scene.tx(scene.a).await;
+    assert_eq!(
+        check.ledger_head(job).await,
+        Ok(None),
+        "the chain is still empty"
     );
 }

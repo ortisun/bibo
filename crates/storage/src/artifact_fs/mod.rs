@@ -33,10 +33,12 @@
 //! # Whose blob is it
 //!
 //! The blob store itself is not tenant-aware: a blob is shared by hash, and `get_unscoped` and
-//! `exists_unscoped` answer for anyone who holds a reference. Ports v1.1 moved the tenant check
-//! into the port: `ArtifactStore::get` and `exists` take a `TenantScope` and read through the
-//! tenant's index row. That needs the `Store`, which this type does not hold, so until the
-//! Postgres adaptation the two port methods return the closed error `Io(BackendStep::Index)`.
+//! `exists_unscoped` answer for anyone who holds a reference. The port is tenant-aware: `get` and
+//! `exists` take a `TenantScope` and read the blob only when the tenant's own index row names the
+//! hash. The store holds the `Store` for that. It opens a short transaction for the scope it was
+//! given, asks `get_artifact_index`, and rolls back; the row is read under the tenant's policy, so
+//! a hash that only another tenant holds looks the same as a hash nobody holds (`NotFound` for
+//! `get`, `false` for `exists`). Only then does it read the blob, and it hashes the bytes again.
 //!
 //! Losing the disk loses the blobs. Backups of the directory are an `sre` item (ADR 0008).
 #![allow(clippy::disallowed_methods, clippy::disallowed_types)]
@@ -54,12 +56,9 @@ use factory_domain::scope::TenantScope;
 use factory_domain::values::{MediaType, NonNegativeInt, Sha256Digest};
 use factory_domain::vocabulary::Fidelity;
 use factory_ports::artifact::{ArtifactBackend, ArtifactError, ArtifactStore, BackendStep};
+use factory_ports::store::{Store, StoreError};
 use rustix::fs::{AtFlags, FileType, Mode, OFlags};
 use rustix::io::Errno;
-
-// Pending adaptation to ports v1.1: the tenant wrapper is replaced by the scoped port methods.
-#[cfg(any())]
-mod scoped;
 
 /// A limit that fits the logs and reports of a gate run. A caller that stores larger objects
 /// passes its own.
@@ -77,10 +76,12 @@ struct Inner {
     temp_counter: AtomicU64,
 }
 
-/// Blobs in a directory, addressed by SHA-256. Cheap to clone: the clones share the root.
+/// Blobs in a directory, addressed by SHA-256. Cheap to clone: the clones share the root and the
+/// store that holds the tenants' artifact index.
 #[derive(Clone)]
 pub struct LocalFsArtifactStore {
     inner: Arc<Inner>,
+    index: Arc<dyn Store>,
 }
 
 impl std::fmt::Debug for LocalFsArtifactStore {
@@ -233,6 +234,7 @@ fn look(directory: &OwnedFd, name: &str) -> Result<Present, ArtifactError> {
 
 impl LocalFsArtifactStore {
     /// Opens the store on `root`, creating the directory (mode `0700`) when it is missing.
+    /// `index` is the store that holds each tenant's artifact index; `get` and `exists` read it.
     ///
     /// The path is resolved once, here, and the store keeps an open descriptor of the real
     /// directory. A later change to the path, such as a link put in its place, does not move the
@@ -240,7 +242,11 @@ impl LocalFsArtifactStore {
     ///
     /// # Errors
     /// Returns [`ArtifactError::Io`] when the directory cannot be made or opened.
-    pub fn open(root: impl AsRef<Path>, max_object_bytes: u64) -> Result<Self, ArtifactError> {
+    pub fn open(
+        root: impl AsRef<Path>,
+        max_object_bytes: u64,
+        index: Arc<dyn Store>,
+    ) -> Result<Self, ArtifactError> {
         use std::os::unix::fs::DirBuilderExt;
         let root = root.as_ref();
         std::fs::DirBuilder::new()
@@ -262,7 +268,35 @@ impl LocalFsArtifactStore {
                 max_object_bytes,
                 temp_counter: AtomicU64::new(0),
             }),
+            index,
         })
+    }
+
+    /// Whether the tenant's index has a row for the hash. The transaction opened for the scope
+    /// only reads, and is rolled back. With no row the answer is the same for a blob that does not
+    /// exist and for a blob that another tenant holds.
+    async fn indexed(
+        &self,
+        scope: &TenantScope,
+        reference: &ArtifactRef,
+    ) -> Result<bool, ArtifactError> {
+        let index_failed = |error: &StoreError| {
+            tracing::warn!(?error, "the artifact index could not be read");
+            ArtifactError::Io(BackendStep::Index)
+        };
+        let mut tx = self
+            .index
+            .begin(*scope)
+            .await
+            .map_err(|error| index_failed(&error))?;
+        let found = match tx.get_artifact_index(&reference.sha256).await {
+            Ok(_) => Ok(true),
+            Err(StoreError::NotFound) => Ok(false),
+            Err(error) => Err(index_failed(&error)),
+        };
+        // A failed rollback of a read only transaction changes nothing for the caller.
+        let _ = tx.rollback().await;
+        found
     }
 
     /// The largest object the store accepts, in bytes.
@@ -408,21 +442,26 @@ impl ArtifactStore for LocalFsArtifactStore {
         blocking(move || put_blocking(&inner, &bytes, media_type)).await
     }
 
-    // Pending adaptation to ports v1.1: reading through the tenant's index row needs the `Store`.
     async fn get(
         &self,
-        _scope: &TenantScope,
-        _reference: &ArtifactRef,
+        scope: &TenantScope,
+        reference: &ArtifactRef,
     ) -> Result<Vec<u8>, ArtifactError> {
-        Err(ArtifactError::Io(BackendStep::Index))
+        if !self.indexed(scope, reference).await? {
+            return Err(ArtifactError::NotFound);
+        }
+        self.get_unscoped(reference).await
     }
 
     async fn exists(
         &self,
-        _scope: &TenantScope,
-        _reference: &ArtifactRef,
+        scope: &TenantScope,
+        reference: &ArtifactRef,
     ) -> Result<bool, ArtifactError> {
-        Err(ArtifactError::Io(BackendStep::Index))
+        if !self.indexed(scope, reference).await? {
+            return Ok(false);
+        }
+        self.exists_unscoped(reference).await
     }
 }
 

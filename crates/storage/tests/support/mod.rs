@@ -14,14 +14,19 @@ use std::sync::atomic::{AtomicI64, Ordering};
 use std::time::Duration;
 
 use diesel_async::SimpleAsyncConnection;
-use factory_domain::ids::{JobId, PrincipalId, RepositoryId, StageRunId, TenantId};
+use factory_domain::contracts::ArtifactRef;
+use factory_domain::ids::{AttemptId, JobId, PrincipalId, RepositoryId, StageRunId, TenantId};
+use factory_domain::machines::failure::FailureClass;
 use factory_domain::scope::TenantScope;
-use factory_domain::state::{Guard, JobEvent, JobStatus, StageRunEvent, StageRunStatus, Status};
-use factory_domain::values::Timestamp;
+use factory_domain::state::{
+    AttemptEvent, AttemptStatus, Guard, JobEvent, JobStatus, StageRunEvent, StageRunStatus, Status,
+};
+use factory_domain::values::{MediaType, NonNegativeInt, Sha256Digest, Timestamp};
 use factory_domain::vocabulary::{AutonomyLevel, ExecutionMode, StageKind};
 use factory_ports::store::{
-    AppliedTransition, NewJob, NewPrincipal, NewStageRun, PipelineScope, PrincipalKind,
-    StageRunEffects, Store, SystemScope, SystemTx, Tx,
+    AppliedTransition, AttemptEnd, NewArtifactIndexEntry, NewJob, NewPrincipal, NewStageRun,
+    PipelineScope, PrincipalKind, StageRunEffects, StartAttempt, StartedAttempt, Store, StoreError,
+    SystemScope, SystemTx, Tx, Version, WorkerId,
 };
 use factory_storage::pg::{PgStore, PgStoreConfig, PoolSettings, TenantLogin};
 use factory_testkit::fixtures::{Ids, cleared};
@@ -33,7 +38,7 @@ pub use server::{Login, TestDb, server};
 /// count low when many tests run at once.
 pub fn small_pool(url: factory_storage::pg::DatabaseUrl) -> PoolSettings {
     let mut settings = PoolSettings::new(url);
-    settings.max_connections = 6;
+    settings.max_connections = 12;
     settings.acquire_timeout = Duration::from_secs(20);
     settings
 }
@@ -186,8 +191,10 @@ impl Scene {
             cleared(Guard::UpstreamPassed),
         )
         .expect("S01");
+        // The contract is an artifact the tenant has indexed; the table has a key to it.
+        let contract = index_blob(&mut *tx, b"contract").await;
         let effects = StageRunEffects {
-            contract_sha256: Some(factory_domain::values::Sha256Digest::of(b"contract")),
+            contract_sha256: Some(contract),
             ..StageRunEffects::default()
         };
         tx.transition_stage_run(id, inserted.row.version, plan, effects)
@@ -195,6 +202,73 @@ impl Scene {
             .expect("ready");
         tx.commit().await.expect("commit stage run");
         id
+    }
+
+    /// Starts an attempt for a `READY` stage run in a transaction of its own and commits it.
+    pub async fn start(
+        &self,
+        tenant: TenantId,
+        run: StageRunId,
+        worker: &str,
+    ) -> Result<StartedAttempt, StoreError> {
+        let mut tx = self.tx(tenant).await;
+        let version = tx.get_stage_run(run).await?.version;
+        let started = start_in(&mut *tx, run, version, worker).await?;
+        tx.commit().await?;
+        Ok(started)
+    }
+
+    /// Ends the live attempt as failed and moves the run back to `READY` after `delay`.
+    pub async fn fail_and_retry(
+        &self,
+        tenant: TenantId,
+        started: &StartedAttempt,
+        delay: Duration,
+    ) {
+        let mut tx = self.tx(tenant).await;
+        let attempt = tx
+            .get_attempt(started.attempt.value.id)
+            .await
+            .expect("read");
+        let fail = AppliedTransition::plan(
+            AttemptStatus::Starting,
+            AttemptEvent::ProvisionFailed,
+            at(),
+            cleared(Guard::EpochCurrent),
+        )
+        .expect("A02");
+        let end = AttemptEnd {
+            failure_class: Some(FailureClass::SandboxError),
+            ..AttemptEnd::default()
+        };
+        tx.transition_attempt(
+            attempt.value.id,
+            attempt.version,
+            attempt.value.epoch,
+            fail,
+            end,
+        )
+        .await
+        .expect("end the attempt");
+        let run = tx
+            .get_stage_run(started.attempt.value.stage_run_id)
+            .await
+            .expect("read the run");
+        let retry = AppliedTransition::plan(
+            StageRunStatus::Running,
+            StageRunEvent::AttemptFailedRetryable,
+            at(),
+            cleared(Guard::RetryAllowed),
+        )
+        .expect("S05");
+        let effects = StageRunEffects {
+            not_before_after: Some(delay),
+            ..StageRunEffects::default()
+        };
+        tx.transition_stage_run(run.value.id, run.version, retry, effects)
+            .await
+            .expect("schedule the retry");
+        tx.commit().await.expect("commit the retry");
     }
 
     /// Every attempt of a stage run in number order, as the superuser sees it: id, number,
@@ -225,6 +299,48 @@ impl Scene {
         }
         found
     }
+}
+
+/// Indexes a blob of these bytes for the tenant of the transaction and returns its hash.
+pub async fn index_blob(tx: &mut dyn Tx, bytes: &[u8]) -> Sha256Digest {
+    let sha256 = Sha256Digest::of(bytes);
+    tx.index_artifact(NewArtifactIndexEntry {
+        artifact: ArtifactRef {
+            sha256: sha256.clone(),
+            media_type: MediaType::parse("text/plain").expect("media type"),
+            size_bytes: NonNegativeInt::new(i64::try_from(bytes.len()).expect("small")).ok(),
+        },
+        origin: None,
+    })
+    .await
+    .expect("index the blob");
+    sha256
+}
+
+/// Starts an attempt for a stage run read at `version`, in the transaction given.
+pub async fn start_in(
+    tx: &mut dyn Tx,
+    run: StageRunId,
+    version: Version,
+    worker: &str,
+) -> Result<StartedAttempt, StoreError> {
+    let transition = AppliedTransition::plan(
+        StageRunStatus::Ready,
+        StageRunEvent::Start,
+        at(),
+        cleared(Guard::LeaseAcquired),
+    )
+    .expect("S03");
+    tx.start_attempt(StartAttempt {
+        attempt: AttemptId::from_uuid(Uuid::from_u128((1 << 100) | u128::from(next_github_id()))),
+        stage_run: run,
+        expected: version,
+        worker: WorkerId::new(worker).expect("a worker name"),
+        lease_ttl: Duration::from_secs(60),
+        attempt_timeout: Duration::from_secs(600),
+        transition,
+    })
+    .await
 }
 
 /// A fixed instant for the field the engine plans and the store ignores.

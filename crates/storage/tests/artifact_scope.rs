@@ -1,18 +1,11 @@
-//! Tenant-scoped artifact reads (architecture review F-15): a tenant reads a blob only when its own
-//! artifact index says it holds it, and a blob that only another tenant holds looks like a blob
-//! that does not exist. The checks run against the in-memory store and against PostgreSQL.
+//! A tenant reads a blob only through its own row in the artifact index (ADR 0008, ports-v1.1
+//! decision 9). A blob is stored once, by hash, and may be shared by tenants; the index row says
+//! who may read it. A hash that only another tenant holds gives `NotFound` for `get` and `false`
+//! for `exists`, the same answer as a hash nobody holds.
 //!
-//! PENDING ADAPTATION TO PORTS V1.1. These tests drive the old `Store` write model (`claim_ready`,
-//! `insert_attempt`, event payloads, `ScopeNotAllowed`) and do not compile against the revised
-//! traits, so the whole file is compiled out with `#![cfg(any())]`. The Postgres adaptation
-//! package rewrites each test against the new traits and removes the attribute. The test names
-//! below are the ones that package must account for.
-//!
-//! * `reads_are_scoped_to_the_tenant_with_the_in_memory_store`
-//! * `reads_are_scoped_to_the_tenant_with_postgres`
-//! * `a_stage_run_of_another_tenant_is_refused_and_leaves_no_index_row`
-
-#![cfg(any())]
+//! The first test runs the scoping against the PostgreSQL store, where the index row is read under
+//! row-level security. The second runs the same checks against the in-memory store, so the two
+//! agree.
 #![allow(clippy::disallowed_methods, clippy::disallowed_types)]
 
 mod support;
@@ -24,10 +17,10 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use factory_domain::contracts::ArtifactRef;
 use factory_domain::ids::TenantId;
 use factory_domain::scope::TenantScope;
-use factory_domain::values::{MediaType, Sha256Digest};
+use factory_domain::values::{MediaType, NonNegativeInt, Sha256Digest};
 use factory_ports::artifact::{ArtifactError, ArtifactStore};
-use factory_ports::store::Store;
-use factory_storage::artifact_fs::{LocalFsArtifactStore, TenantArtifacts};
+use factory_ports::store::{ConstraintRule, NewArtifactIndexEntry, Store, StoreError};
+use factory_storage::artifact_fs::LocalFsArtifactStore;
 use factory_testkit::clock::FakeClock;
 use factory_testkit::store::InMemoryStore;
 use support::Scene;
@@ -66,145 +59,181 @@ fn absent() -> ArtifactRef {
     }
 }
 
+/// Indexes the artifact for the tenant, as the transaction that uses it does.
+async fn index(store: &dyn Store, tenant: TenantId, reference: &ArtifactRef) {
+    let mut tx = store.begin(TenantScope::new(tenant)).await.expect("begin");
+    tx.index_artifact(NewArtifactIndexEntry {
+        artifact: reference.clone(),
+        origin: None,
+    })
+    .await
+    .expect("index");
+    tx.commit().await.expect("commit");
+}
+
 async fn check_scoping(store: Arc<dyn Store>, a: TenantId, b: TenantId) {
     let scratch = Scratch::new();
     let blobs =
-        Arc::new(LocalFsArtifactStore::open(scratch.0.join("blobs"), 1 << 20).expect("open"));
-    let artifacts = TenantArtifacts::new(blobs.clone(), store);
+        LocalFsArtifactStore::open(scratch.0.join("blobs"), 1 << 20, store.clone()).expect("open");
     let (scope_a, scope_b) = (TenantScope::new(a), TenantScope::new(b));
 
-    // Tenant A stores a blob and reads it back.
-    let reference = artifacts
-        .put(scope_a, b"tenant a's evidence".to_vec(), text(), None)
+    // Tenant A stores and indexes a blob.
+    let reference = blobs
+        .put(b"a gate report".to_vec(), text())
         .await
-        .expect("A puts");
+        .expect("put");
+    index(&*store, a, &reference).await;
     assert_eq!(
-        artifacts.get(scope_a, &reference).await.expect("A gets"),
-        b"tenant a's evidence"
+        blobs.get(&scope_a, &reference).await.expect("A reads it"),
+        b"a gate report"
     );
-    assert!(
-        artifacts
-            .exists(scope_a, &reference)
-            .await
-            .expect("A exists")
-    );
+    assert!(blobs.exists(&scope_a, &reference).await.expect("exists"));
 
-    // Tenant B holds the hash and cannot read the blob. It also cannot tell that A holds it: the
-    // answers are exactly the answers for a blob that nobody stored.
+    // Tenant B holds no row for the hash: the same answer as for a blob nobody stored.
     assert_eq!(
-        artifacts.get(scope_b, &reference).await,
+        blobs.get(&scope_b, &reference).await,
         Err(ArtifactError::NotFound)
     );
     assert_eq!(
-        artifacts.get(scope_b, &absent()).await,
+        blobs.get(&scope_b, &absent()).await,
         Err(ArtifactError::NotFound)
     );
-    assert_eq!(artifacts.exists(scope_b, &reference).await, Ok(false));
-    assert_eq!(artifacts.exists(scope_b, &absent()).await, Ok(false));
+    assert!(!blobs.exists(&scope_b, &reference).await.expect("exists"));
+    assert!(!blobs.exists(&scope_b, &absent()).await.expect("exists"));
 
-    // The blob store itself is not scoped. The tenant-scoped layer is what keeps B out, and the
-    // raw store is for the code that writes and verifies blobs.
-    assert!(blobs.exists(&reference).await.expect("raw exists"));
-
-    // When B stores the same bytes it holds them too, and reads them. The bytes are stored once.
-    let again = artifacts
-        .put(scope_b, b"tenant a's evidence".to_vec(), text(), None)
-        .await
-        .expect("B puts the same bytes");
-    assert_eq!(again.sha256, reference.sha256);
+    // Once B indexes the same bytes it reads them; A's row did not change.
+    index(&*store, b, &reference).await;
     assert_eq!(
-        artifacts.get(scope_b, &reference).await.expect("B gets"),
-        b"tenant a's evidence"
+        blobs.get(&scope_b, &reference).await.expect("B reads it"),
+        b"a gate report"
     );
-    let hex = reference.sha256.hex().to_owned();
-    let directory = scratch
-        .0
-        .join("blobs")
-        .join("sha256")
-        .join(&hex[0..2])
-        .join(&hex[2..4]);
+    // A row without a blob reads as missing, not as an error of the index.
+    let unstored = ArtifactRef {
+        size_bytes: NonNegativeInt::new(5).ok(),
+        ..absent()
+    };
+    index(&*store, a, &unstored).await;
     assert_eq!(
-        std::fs::read_dir(directory).expect("list").count(),
-        1,
-        "one blob for two tenants"
+        blobs.get(&scope_a, &unstored).await,
+        Err(ArtifactError::NotFound)
     );
-
-    // A third tenant that never stored it is still out.
-    let outsider = TenantScope::new(TenantId::from_uuid(uuid::Uuid::from_u128(0xdead)));
-    assert_eq!(
-        artifacts
-            .exists(outsider, &reference)
-            .await
-            .ok()
-            .filter(|held| *held),
-        None
-    );
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn reads_are_scoped_to_the_tenant_with_the_in_memory_store() {
-    let ids = factory_testkit::fixtures::Ids::new();
-    let store: Arc<dyn Store> = Arc::new(InMemoryStore::new(Arc::new(FakeClock::new())));
-    check_scoping(store, ids.tenant(), ids.tenant()).await;
+    assert!(!blobs.exists(&scope_a, &unstored).await.expect("exists"));
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn reads_are_scoped_to_the_tenant_with_postgres() {
     let scene = Scene::new().await;
-    let store: Arc<dyn Store> = Arc::new(scene.store.clone());
-    check_scoping(store, scene.a, scene.b).await;
+    check_scoping(Arc::new(scene.store.clone()), scene.a, scene.b).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn reads_are_scoped_to_the_tenant_with_the_in_memory_store() {
+    let ids = factory_testkit::fixtures::Ids::new();
+    let store = Arc::new(InMemoryStore::new(Arc::new(FakeClock::new())));
+    check_scoping(store, ids.tenant(), ids.tenant()).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_index_row_is_the_tenants_own() {
+    let scene = Scene::new().await;
+    let reference = ArtifactRef {
+        sha256: Sha256Digest::of(b"blob"),
+        media_type: text(),
+        size_bytes: NonNegativeInt::new(4).ok(),
+    };
+    index(&scene.store, scene.a, &reference).await;
+
+    let mut mine = scene.tx(scene.a).await;
+    let row = mine
+        .get_artifact_index(&reference.sha256)
+        .await
+        .expect("A's row");
+    assert_eq!(row.tenant_id, scene.a);
+    assert_eq!(row.artifact.size_bytes.map(NonNegativeInt::get), Some(4));
+    // A second index call returns the first row.
+    let again = mine
+        .index_artifact(NewArtifactIndexEntry {
+            artifact: reference.clone(),
+            origin: None,
+        })
+        .await
+        .expect("a replay");
+    assert_eq!(again, row);
+    drop(mine);
+
+    let mut other = scene.tx(scene.b).await;
+    assert_eq!(
+        other.get_artifact_index(&reference.sha256).await,
+        Err(StoreError::NotFound),
+        "another tenant's artifact index row"
+    );
+
+    // The size is required by the table. A reference without one is refused, not stored as zero.
+    let unsized_reference = ArtifactRef {
+        size_bytes: None,
+        sha256: Sha256Digest::of(b"no size"),
+        ..reference
+    };
+    assert_eq!(
+        other
+            .index_artifact(NewArtifactIndexEntry {
+                artifact: unsized_reference.clone(),
+                origin: None
+            })
+            .await,
+        Err(StoreError::Constraint(ConstraintRule::TextBounds))
+    );
+    assert_eq!(
+        scene
+            .db
+            .number(&format!(
+                "SELECT count(*) FROM artifacts WHERE content_sha256 = '{}'",
+                unsized_reference.sha256
+            ))
+            .await,
+        0
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_stage_run_of_another_tenant_is_refused_and_leaves_no_index_row() {
     let scene = Scene::new().await;
-    let scratch = Scratch::new();
-    let blobs =
-        Arc::new(LocalFsArtifactStore::open(scratch.0.join("blobs"), 1 << 20).expect("open"));
-    let artifacts = TenantArtifacts::new(blobs, Arc::new(scene.store.clone()));
-    let job = scene.job(scene.a).await;
+    let job = scene.active_job(scene.a).await;
     let run = scene.ready_stage_run(scene.a, job).await;
-
-    // Tenant B names tenant A's stage run. The index refuses, and B does not come to hold the blob.
-    let refused = artifacts
-        .put(
-            TenantScope::new(scene.b),
-            b"b names a's run".to_vec(),
-            text(),
-            Some(run),
-        )
-        .await;
-    assert!(matches!(refused, Err(ArtifactError::Io(_))), "{refused:?}");
     let reference = ArtifactRef {
-        sha256: Sha256Digest::of(b"b names a's run"),
+        sha256: Sha256Digest::of(b"made by A"),
         media_type: text(),
-        size_bytes: None,
+        size_bytes: NonNegativeInt::new(9).ok(),
     };
+    // Tenant B names tenant A's stage run as the origin of its artifact.
+    let mut tx = scene.tx(scene.b).await;
     assert_eq!(
-        artifacts
-            .exists(TenantScope::new(scene.b), &reference)
-            .await,
-        Ok(false)
+        tx.index_artifact(NewArtifactIndexEntry {
+            artifact: reference.clone(),
+            origin: Some((job, run)),
+        })
+        .await,
+        Err(StoreError::NotFound)
     );
-
-    // Tenant A may name its own stage run, and the index records it.
-    artifacts
-        .put(
-            TenantScope::new(scene.a),
-            b"a names its run".to_vec(),
-            text(),
-            Some(run),
-        )
-        .await
-        .expect("A names its own run");
+    drop(tx);
     assert_eq!(
         scene
             .db
             .number(&format!(
-                "SELECT count(*) FROM artifacts WHERE created_by_stage_run_id = '{}'",
-                run.as_uuid()
+                "SELECT count(*) FROM artifacts WHERE content_sha256 = '{}'",
+                reference.sha256
             ))
             .await,
-        1
+        0
     );
+    // Tenant A may.
+    let mut tx = scene.tx(scene.a).await;
+    let row = tx
+        .index_artifact(NewArtifactIndexEntry {
+            artifact: reference,
+            origin: Some((job, run)),
+        })
+        .await
+        .expect("A's own stage run");
+    assert_eq!(row.origin, Some((job, run)));
 }

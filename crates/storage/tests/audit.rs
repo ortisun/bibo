@@ -1,21 +1,13 @@
-//! The audit log and the evidence ledger are append only for the application role (NT-AUD-01), and
-//! an audit event carries its actor, its policy hash and its correlation id.
-//!
-//! PENDING ADAPTATION TO PORTS V1.1. These tests drive the old `Store` write model (`claim_ready`,
-//! `insert_attempt`, event payloads, `ScopeNotAllowed`) and do not compile against the revised
-//! traits, so the whole file is compiled out with `#![cfg(any())]`. The Postgres adaptation
-//! package rewrites each test against the new traits and removes the attribute. The test names
-//! below are the ones that package must account for.
-//!
-//! * `negative_nt_aud_01`
-
-#![cfg(any())]
+//! NT-AUD-01 on a real database: the audit log is append only, its chain is numbered from 1 with a
+//! database time and the hashes of the policy and the correlation, and the application login can
+//! neither change nor remove a row of the audit log or of the ledger.
 
 mod support;
 
+use factory_domain::ids::AuditEventId;
 use factory_domain::values::{Sha256Digest, Slug};
-use factory_ports::store::{AuditActor, AuditEvent};
-use support::{Scene, as_login, now};
+use factory_ports::store::{AuditAction, AuditActor, AuditDecision, AuditFilter, NewAuditEvent};
+use support::{Scene, as_login, at};
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn negative_nt_aud_01() {
@@ -27,27 +19,32 @@ async fn negative_nt_aud_01() {
     let requester = scene.principal(scene.a).await;
 
     // Three events: a component, a person, and a component again.
-    let mut tx = scene.tenant_tx(scene.a).await;
-    for (actor, action) in [
+    let mut tx = scene.tx(scene.a).await;
+    for (number, (actor, action)) in [
         (
-            AuditActor::Component(Slug::parse("workflow.engine").expect("slug")),
+            AuditActor::System(Slug::parse("workflow-engine").expect("slug")),
             "job.admitted",
         ),
-        (AuditActor::Principal(requester), "approval.recorded"),
+        (AuditActor::Human(requester), "approval.recorded"),
         (
-            AuditActor::Component(Slug::parse("workflow.engine").expect("slug")),
+            AuditActor::System(Slug::parse("workflow-engine").expect("slug")),
             "job.completed",
         ),
-    ] {
-        tx.record_audit(AuditEvent {
-            job_id: job,
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        tx.record_audit(NewAuditEvent {
+            id: AuditEventId::from_uuid(uuid::Uuid::from_u128(1000 + number as u128)),
             actor,
-            action: Slug::parse(action).expect("slug"),
+            action: AuditAction::new(action).expect("action"),
+            subject: "a job".to_owned(),
+            decision: AuditDecision::Record,
+            reason: "A fact the test recorded.".to_owned(),
             policy_hash: policy.clone(),
+            job: Some(job),
+            stage_run: None,
             correlation_id: correlation,
-            // A time far in the past: the database must stamp its own.
-            occurred_at: factory_domain::values::Timestamp::parse("2001-01-01T00:00:00Z")
-                .expect("time"),
         })
         .await
         .expect("record");
@@ -59,7 +56,7 @@ async fn negative_nt_aud_01() {
         run,
         1,
         None,
-        &now(),
+        &at(),
         "A claim.",
     ))
     .await
@@ -67,18 +64,31 @@ async fn negative_nt_aud_01() {
     tx.commit().await.expect("commit");
 
     // What a caller reads back.
-    let mut tx = scene.tenant_tx(scene.a).await;
-    let read = tx.read_audit(job, 10).await.expect("read");
-    let actions: Vec<&str> = read.iter().map(|event| event.action.as_str()).collect();
+    let mut tx = scene.tx(scene.a).await;
+    let read = tx
+        .read_audit(AuditFilter::Job(job), 0, 10)
+        .await
+        .expect("read");
+    let actions: Vec<&str> = read
+        .iter()
+        .map(|record| record.event.action.as_str())
+        .collect();
     assert_eq!(
         actions,
         ["job.admitted", "approval.recorded", "job.completed"]
     );
     assert!(
-        read.iter()
-            .all(|event| event.policy_hash == policy && event.correlation_id == correlation)
+        read.iter().all(|record| record.event.policy_hash == policy
+            && record.event.correlation_id == correlation)
     );
-    assert_eq!(read[1].actor, AuditActor::Principal(requester));
+    assert_eq!(read[1].event.actor, AuditActor::Human(requester));
+    assert_eq!(
+        read.iter()
+            .map(|record| record.sequence)
+            .collect::<Vec<_>>(),
+        [1, 2, 3],
+        "the chain is numbered from 1 by the database"
+    );
     drop(tx);
 
     // What the table holds: an actor, the policy hash and the correlation id on every row, a chain

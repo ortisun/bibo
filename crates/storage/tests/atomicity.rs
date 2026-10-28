@@ -1,281 +1,292 @@
-//! One decision, one transaction (ADR 0004, invariant INV-03): the status change, the ledger entry,
-//! the outbox row and the audit record commit together or not at all.
+//! One decision, one transaction: the status change, its ledger entry and its outbox event commit
+//! together or not at all, an event must announce a version its aggregate has reached, and a lost
+//! answer to `COMMIT` is settled by the witness.
 //!
-//! PENDING ADAPTATION TO PORTS V1.1. These tests drive the old `Store` write model (`claim_ready`,
-//! `insert_attempt`, event payloads, `ScopeNotAllowed`) and do not compile against the revised
-//! traits, so the whole file is compiled out with `#![cfg(any())]`. The Postgres adaptation
-//! package rewrites each test against the new traits and removes the attribute. The test names
-//! below are the ones that package must account for.
-//!
-//! * `transition_is_atomic`
-//! * `an_event_must_announce_a_version_the_job_has_reached`
-//! * `the_outbox_reads_back_in_order_and_resumes`
-
-#![cfg(any())]
+//! The events here announce versions the job really reached, which the shared contract suite's
+//! fixtures do not always do (see `EXCLUDED` in `store_contract.rs`).
 
 mod support;
 
-use factory_domain::ids::{JobId, StageRunId};
-use factory_domain::state::{JobEvent, JobStatus};
-use factory_domain::values::{Sha256Digest, Slug};
+use factory_domain::ids::{EventId, JobId, StageRunId, TenantId};
+use factory_domain::scope::TenantScope;
+use factory_domain::state::{Guard, JobEvent, JobStatus};
 use factory_ports::store::{
-    AppliedTransition, AuditActor, AuditEvent, OutboxSeq, StoreError, Tx, Version,
+    AppliedTransition, AuditAction, AuditActor, AuditDecision, ConstraintRule, JobFacts,
+    NewAuditEvent, OutboxSeq, Store, StoreError, Witness,
 };
-use factory_testkit::fixtures::{domain_event, ledger_entry};
-use support::{Scene, now};
+use factory_testkit::fixtures::{cleared, domain_event, ledger_entry};
+use support::{Scene, at};
 
-/// Everything the database holds about a job's decision, as one line.
-async fn footprint(scene: &Scene, job: JobId) -> String {
-    let job = job.as_uuid();
-    scene
-        .db
-        .text(&format!(
-            "SELECT (SELECT status || ':v' || version || ':head' || ledger_head_sequence FROM jobs WHERE id = '{job}') \
-               || ' ledger=' || (SELECT count(*) FROM ledger_entries WHERE job_id = '{job}') \
-               || ' outbox=' || (SELECT count(*) FROM outbox WHERE job_id = '{job}') \
-               || ' audit=' || (SELECT count(*) FROM audit_events WHERE job_id = '{job}')"
-        ))
-        .await
-        .expect("footprint")
+/// What a job has in the three tables a decision writes, read as the superuser.
+struct Footprint {
+    status: String,
+    version: i64,
+    ledger_head: i64,
+    events: i64,
 }
 
-const UNTOUCHED: &str = "RECEIVED:v1:head0 ledger=0 outbox=0 audit=0";
-
-fn audit_event(scene: &Scene, job: JobId, action: &str) -> AuditEvent {
-    AuditEvent {
-        job_id: job,
-        actor: AuditActor::Component(Slug::parse("workflow.engine").expect("slug")),
-        action: Slug::parse(action).expect("slug"),
-        policy_hash: Sha256Digest::of(b"policy"),
-        correlation_id: scene.ids.correlation(),
-        occurred_at: now(),
+async fn footprint(scene: &Scene, job: JobId) -> Footprint {
+    let id = job.as_uuid();
+    Footprint {
+        status: scene
+            .db
+            .text(&format!("SELECT status FROM jobs WHERE id = '{id}'"))
+            .await
+            .expect("status"),
+        version: scene
+            .db
+            .number(&format!("SELECT version FROM jobs WHERE id = '{id}'"))
+            .await,
+        ledger_head: scene
+            .db
+            .number(&format!(
+                "SELECT ledger_head_sequence FROM jobs WHERE id = '{id}'"
+            ))
+            .await,
+        events: scene
+            .db
+            .number(&format!(
+                "SELECT count(*) FROM outbox WHERE job_id = '{id}'"
+            ))
+            .await,
     }
 }
 
-/// The writes of one decision, up to but not including the commit. The event announces the
-/// version the job has after the status change.
-async fn decide(scene: &Scene, job: JobId, run: StageRunId, announce: Option<i64>) -> Box<dyn Tx> {
-    let mut tx = scene.tenant_tx(scene.a).await;
-    let read = tx.get_job(job).await.expect("get");
-    let admit = AppliedTransition::plan(JobStatus::Received, JobEvent::Admit, now()).expect("J01");
-    let next = tx
-        .transition_job(job, read.version, admit)
+/// A job in `RECEIVED` with a stage run for the ledger entries to name.
+async fn job_with_run(scene: &Scene, tenant: TenantId) -> (JobId, StageRunId) {
+    let job = scene.job(tenant).await;
+    let run = scene.ready_stage_run(tenant, job).await;
+    (job, run)
+}
+
+fn admit() -> AppliedTransition<JobStatus> {
+    AppliedTransition::plan(
+        JobStatus::Received,
+        JobEvent::Admit,
+        at(),
+        cleared(Guard::AdmissionOk),
+    )
+    .expect("J01")
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_decision_commits_or_vanishes_as_one() {
+    let scene = Scene::new().await;
+    let (job, run) = job_with_run(&scene, scene.a).await;
+
+    // Rolled back: none of the three remains.
+    let mut tx = scene.tx(scene.a).await;
+    let row = tx.get_job(job).await.expect("read");
+    let version = tx
+        .transition_job(job, row.version, admit())
         .await
-        .expect("transition");
+        .expect("admit");
     tx.append_ledger_entry(ledger_entry(
         &scene.ids,
         job,
         run,
         1,
         None,
-        &now(),
+        &at(),
         "Admitted.",
     ))
     .await
     .expect("append");
-    tx.enqueue_event(domain_event(
+    // An append does not move the job's version: the version the transition returned still holds.
+    assert_eq!(tx.get_job(job).await.expect("read").version, version);
+    tx.enqueue_event(domain_event(&scene.ids, scene.a, job, version.get(), &at()))
+        .await
+        .expect("enqueue");
+    tx.rollback().await.expect("roll back");
+    let after = footprint(&scene, job).await;
+    assert_eq!(after.status, "RECEIVED");
+    assert_eq!(after.version, 1);
+    assert_eq!(after.ledger_head, 0);
+    assert_eq!(after.events, 0);
+
+    // Committed: all three are there, and the version moved once.
+    let mut tx = scene.tx(scene.a).await;
+    let row = tx.get_job(job).await.expect("read");
+    let version = tx
+        .transition_job(job, row.version, admit())
+        .await
+        .expect("admit");
+    tx.append_ledger_entry(ledger_entry(
         &scene.ids,
-        scene.a,
         job,
-        announce.unwrap_or(next.get()),
-        &now(),
+        run,
+        1,
+        None,
+        &at(),
+        "Admitted.",
     ))
     .await
-    .expect("enqueue");
-    tx
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn transition_is_atomic() {
-    let scene = Scene::new().await;
-    let job = scene.job(scene.a).await;
-    let run = scene.ready_stage_run(scene.a, job).await;
-    assert_eq!(footprint(&scene, job).await, UNTOUCHED);
-
-    // Fault 1: the process stops after the outbox insert. The transaction is dropped.
-    let tx = decide(&scene, job, run, None).await;
-    drop(tx);
-    assert_eq!(
-        footprint(&scene, job).await,
-        UNTOUCHED,
-        "a dropped transaction leaves nothing"
-    );
-
-    // Fault 2: the caller rolls back after the outbox insert.
-    let tx = decide(&scene, job, run, None).await;
-    tx.rollback().await.expect("rollback");
-    assert_eq!(
-        footprint(&scene, job).await,
-        UNTOUCHED,
-        "a rollback leaves nothing"
-    );
-
-    // Fault 3: a statement fails after the outbox insert. The audit record has a bad action name.
-    let mut tx = decide(&scene, job, run, None).await;
-    let failed = tx
-        .record_audit(audit_event(&scene, job, "not-a-valid-action"))
-        .await;
-    assert!(
-        matches!(failed, Err(StoreError::Constraint(_))),
-        "{failed:?}"
-    );
-    drop(tx);
-    assert_eq!(
-        footprint(&scene, job).await,
-        UNTOUCHED,
-        "a failed statement leaves nothing"
-    );
-
-    // Fault 4: the database refuses at commit, after every statement was accepted. The event
-    // announces a version the job never reaches.
-    let tx = decide(&scene, job, run, Some(99)).await;
-    let refused = tx.commit().await;
-    assert!(
-        matches!(&refused, Err(StoreError::Constraint(text)) if text.contains("outbox_aggregate_has_reached_version")),
-        "{refused:?}"
-    );
-    assert_eq!(
-        footprint(&scene, job).await,
-        UNTOUCHED,
-        "a refused commit leaves no status change, no ledger entry and no outbox row"
-    );
-
-    // No fault: the same decision commits, and all four writes are there.
-    let mut tx = decide(&scene, job, run, None).await;
-    tx.record_audit(audit_event(&scene, job, "job.admitted"))
+    .expect("append");
+    tx.enqueue_event(domain_event(&scene.ids, scene.a, job, version.get(), &at()))
         .await
-        .expect("audit");
+        .expect("enqueue");
     tx.commit().await.expect("commit");
-    assert_eq!(
-        footprint(&scene, job).await,
-        "ACTIVE:v3:head1 ledger=1 outbox=1 audit=1",
-        "the status, the ledger head, the entry, the event and the audit record"
-    );
+    let after = footprint(&scene, job).await;
+    assert_eq!(after.status, "ACTIVE");
+    assert_eq!(after.version, 2, "one change of status, one version");
+    assert_eq!(after.ledger_head, 1);
+    assert_eq!(after.events, 1);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn an_event_must_announce_a_version_the_job_has_reached() {
     let scene = Scene::new().await;
     let job = scene.job(scene.a).await;
-    let mut tx = scene.tenant_tx(scene.a).await;
-    tx.enqueue_event(domain_event(&scene.ids, scene.a, job, 5, &now()))
+    let mut tx = scene.tx(scene.a).await;
+    // The job is at version 1; the event announces version 5.
+    tx.enqueue_event(domain_event(&scene.ids, scene.a, job, 5, &at()))
         .await
-        .expect("enqueue");
-    let refused = tx.commit().await;
-    assert!(
-        matches!(&refused, Err(StoreError::Constraint(text)) if text.contains("outbox_aggregate_has_reached_version")),
-        "{refused:?}"
-    );
-    assert_eq!(footprint(&scene, job).await, UNTOUCHED);
-
-    // The version the job has is accepted.
-    let mut tx = scene.tenant_tx(scene.a).await;
-    tx.enqueue_event(domain_event(&scene.ids, scene.a, job, 1, &now()))
-        .await
-        .expect("enqueue");
-    tx.commit()
-        .await
-        .expect("an event for the current version commits");
-
-    // The same event twice is a constraint error at the second enqueue (the event id is unique).
-    // A second event for the same version of the job is a replay, and says so with `Conflict`.
-    let other = scene.job(scene.a).await;
-    let event = domain_event(&scene.ids, scene.a, other, 1, &now());
-    let mut tx = scene.tenant_tx(scene.a).await;
-    tx.enqueue_event(event.clone()).await.expect("first");
-    assert!(matches!(
-        tx.enqueue_event(event).await,
-        Err(StoreError::Constraint(_))
-    ));
-    drop(tx);
-    let mut tx = scene.tenant_tx(scene.a).await;
+        .expect("the statement is accepted; the check is deferred to commit");
     assert_eq!(
-        tx.enqueue_event(domain_event(&scene.ids, scene.a, job, 1, &now()))
-            .await,
-        Err(StoreError::Conflict),
-        "the version 1 event of the first job is already queued"
+        tx.commit().await,
+        Err(StoreError::Constraint(
+            ConstraintRule::EventAggregateMismatch
+        )),
+        "the database refuses the event at commit"
     );
+    assert_eq!(footprint(&scene, job).await.events, 0, "nothing remains");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn the_outbox_reads_back_in_order_and_resumes() {
     let scene = Scene::new().await;
-    let job_one = scene.job(scene.a).await;
-    let job_two = scene.job(scene.a).await;
-
-    // Move each job to version 4 with real transitions: admit, pause, resume.
-    for job in [job_one, job_two] {
-        let mut tx = scene.tenant_tx(scene.a).await;
-        let mut version = Version::FIRST;
-        let mut status = JobStatus::Received;
-        for event in [JobEvent::Admit, JobEvent::Pause, JobEvent::Resume] {
-            let plan = AppliedTransition::plan(status, event, now()).expect("legal");
-            version = tx
-                .transition_job(job, version, plan)
-                .await
-                .expect("transition");
-            status = plan.to_status();
-        }
-        assert_eq!(version.get(), 4);
-        tx.commit().await.expect("commit");
+    let job = scene.job(scene.a).await;
+    let other = scene.job(scene.a).await;
+    let mut tx = scene.tx(scene.a).await;
+    // Bring both jobs to version 3: two facts, then the admission.
+    for target in [job, other] {
+        let request = support::index_blob(&mut *tx, b"request").await;
+        let current = tx.get_job(target).await.expect("read").version;
+        let v2 = tx
+            .update_job_facts(
+                target,
+                current,
+                JobFacts {
+                    policy_hash: Some(factory_domain::values::Sha256Digest::of(b"policy")),
+                    ..JobFacts::default()
+                },
+            )
+            .await
+            .expect("policy");
+        tx.update_job_facts(
+            target,
+            v2,
+            JobFacts {
+                normalized_request: Some(request.clone()),
+                ..JobFacts::default()
+            },
+        )
+        .await
+        .expect("request");
     }
-
+    // Another job's event goes first, so that the last row of the transaction is this job's.
+    tx.enqueue_event(domain_event(&scene.ids, scene.a, other, 3, &at()))
+        .await
+        .expect("another job's event");
     let mut queued = Vec::new();
-    let mut tx = scene.tenant_tx(scene.a).await;
-    for version in 2..=4 {
-        let event = domain_event(&scene.ids, scene.a, job_one, version, &now());
+    for version in 1..=3 {
+        let event = domain_event(&scene.ids, scene.a, job, version, &at());
         queued.push(event.event_id);
         tx.enqueue_event(event).await.expect("enqueue");
     }
-    tx.enqueue_event(domain_event(&scene.ids, scene.a, job_two, 2, &now()))
-        .await
-        .expect("other job");
     tx.commit().await.expect("commit");
 
-    let mut tx = scene.tenant_tx(scene.a).await;
+    let mut tx = scene.tx(scene.a).await;
     let rows = tx
-        .read_events(job_one, OutboxSeq::START, 100)
+        .read_events(job, OutboxSeq::START, 10)
         .await
         .expect("read");
-    let read: Vec<_> = rows.iter().map(|row| row.event.event_id).collect();
+    let ids: Vec<EventId> = rows.iter().map(|row| row.event.event_id).collect();
     assert_eq!(
-        read, queued,
-        "events come back in the order they were queued"
+        ids, queued,
+        "this job's events, in the order they were queued"
+    );
+    assert!(rows.windows(2).all(|pair| pair[0].seq < pair[1].seq));
+    let resumed = tx
+        .read_events(job, OutboxSeq::new(rows[0].seq.get() + 1), 10)
+        .await
+        .expect("resume");
+    assert_eq!(
+        resumed.len(),
+        2,
+        "reading resumes after the last position seen"
+    );
+    assert_eq!(
+        tx.read_events(job, OutboxSeq::START, 2)
+            .await
+            .expect("limit")
+            .len(),
+        2
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_lost_commit_answer_is_settled_by_the_witness() {
+    let scene = Scene::new().await;
+    let job = scene.job(scene.a).await;
+    let event = domain_event(&scene.ids, scene.a, job, 1, &at());
+    let witness = Witness::OutboxEvent(event.event_id);
+    let audit = NewAuditEvent {
+        id: factory_domain::ids::AuditEventId::from_uuid(uuid::Uuid::from_u128(4242)),
+        actor: AuditActor::System(
+            factory_domain::values::Slug::parse("workflow-engine").expect("slug"),
+        ),
+        action: AuditAction::new("job.admitted").expect("action"),
+        subject: "a job".to_owned(),
+        decision: AuditDecision::Record,
+        reason: "A decision whose commit answer is lost.".to_owned(),
+        policy_hash: factory_domain::values::Sha256Digest::of(b"policy"),
+        job: Some(job),
+        stage_run: None,
+        correlation_id: scene.ids.correlation(),
+    };
+    let audit_witness = Witness::Audit(audit.id);
+    let scope = TenantScope::new(scene.a);
+
+    assert!(!scene.store.committed(scope, witness).await.expect("ask"));
+    let mut tx = scene.tx(scene.a).await;
+    tx.enqueue_event(event).await.expect("enqueue");
+    tx.record_audit(audit).await.expect("audit");
+    scene.store.lose_next_commit_answer();
+    assert_eq!(tx.commit().await, Err(StoreError::CommitOutcomeUnknown));
+    assert!(
+        scene.store.committed(scope, witness).await.expect("ask"),
+        "the event is stored"
     );
     assert!(
-        rows.windows(2).all(|pair| pair[0].seq < pair[1].seq),
-        "positions rise"
-    );
-    assert_eq!(
-        tx.read_events(job_two, OutboxSeq::START, 100)
+        scene
+            .store
+            .committed(scope, audit_witness)
             .await
-            .expect("read")
-            .len(),
-        1,
-        "events are kept per job"
+            .expect("ask"),
+        "so is the record"
+    );
+    assert!(
+        !scene
+            .store
+            .committed(TenantScope::new(scene.b), witness)
+            .await
+            .expect("ask"),
+        "another tenant cannot see the witness"
     );
 
-    // Reading resumes from a position, and the position is inclusive.
-    let page = tx
-        .read_events(job_one, OutboxSeq::START, 2)
-        .await
-        .expect("page");
-    assert_eq!(page.len(), 2);
-    let last = page.last().expect("last").seq;
-    let again = tx.read_events(job_one, last, 10).await.expect("resume");
-    assert_eq!(again.first().map(|row| row.seq), Some(last));
-    assert_eq!(again.len(), 2);
-    assert_eq!(
-        tx.read_events(job_one, OutboxSeq::new(last.get() + 1), 10)
+    // A transaction that was rolled back leaves no witness.
+    let rolled_back_job = scene.job(scene.a).await;
+    let other = domain_event(&scene.ids, scene.a, rolled_back_job, 1, &at());
+    let other_witness = Witness::OutboxEvent(other.event_id);
+    let mut tx = scene.tx(scene.a).await;
+    tx.enqueue_event(other).await.expect("enqueue");
+    tx.rollback().await.expect("roll back");
+    assert!(
+        !scene
+            .store
+            .committed(scope, other_witness)
             .await
-            .expect("after")
-            .len(),
-        1
+            .expect("ask")
     );
-
-    // The event comes back as it went in.
-    let first = &rows[0].event;
-    assert_eq!(first.aggregate.version.get(), 2);
-    assert_eq!(first.tenant_id, scene.a);
-    assert_eq!(first.transition_id.as_str(), "J01");
 }

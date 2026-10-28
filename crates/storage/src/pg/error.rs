@@ -36,6 +36,9 @@ pub(super) enum Failure {
     Deadlock,
     /// SQLSTATE 55P03 or 57014: a lock or statement timeout set by the adapter.
     Timeout,
+    /// SQLSTATE 25P02: an earlier statement of the transaction failed, and PostgreSQL refuses the
+    /// rest. The only safe step is to roll back.
+    Aborted,
     /// SQLSTATE 42501 for a missing grant: the role may not run the statement.
     PermissionDenied,
     /// SQLSTATE 42501 from a policy, or 22P02 on the tenant setting: the setting was missing or
@@ -84,6 +87,8 @@ fn classify_message(message: &str) -> Failure {
         Failure::Deadlock
     } else if message.contains("canceling statement due to") {
         Failure::Timeout
+    } else if message.contains("current transaction is aborted") {
+        Failure::Aborted
     } else if message.contains("row-level security policy")
         || message.contains("invalid input syntax for type uuid")
         || message.contains("unrecognized configuration parameter")
@@ -248,7 +253,7 @@ pub(super) fn database(operation: &'static str, error: &DieselError) -> StoreErr
         Failure::NotNull => unmapped("missing value", None),
         Failure::Serialization | Failure::Deadlock => StoreError::Conflict,
         Failure::NoRow => StoreError::NotFound,
-        Failure::Timeout | Failure::Connection => StoreError::Unavailable,
+        Failure::Timeout | Failure::Aborted | Failure::Connection => StoreError::Unavailable,
         Failure::PermissionDenied => StoreError::Internal(FaultCode::PermissionDenied),
         Failure::TenantSetting => StoreError::Internal(FaultCode::TenantSetting),
         Failure::OutOfRange => rule(ConstraintRule::LeaseEpochExhausted),
@@ -531,6 +536,19 @@ mod tests {
         assert_eq!(
             database("write", &unknown("bigint out of range")),
             StoreError::Constraint(ConstraintRule::LeaseEpochExhausted)
+        );
+    }
+
+    #[test]
+    fn a_statement_after_a_failed_one_is_unavailable() {
+        assert_eq!(
+            database(
+                "write",
+                &unknown(
+                    "current transaction is aborted, commands ignored until end of transaction block"
+                )
+            ),
+            StoreError::Unavailable
         );
     }
 
