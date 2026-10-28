@@ -6,6 +6,7 @@
 //! something may still exist.
 
 use std::sync::Arc;
+use std::sync::atomic::Ordering;
 use std::time::Duration;
 
 use super::Shared;
@@ -146,8 +147,10 @@ impl Drop for Guard {
         let names = self.names.clone();
         let created = self.created;
         if let Ok(runtime) = tokio::runtime::Handle::try_current() {
+            shared.background_cleanups.fetch_add(1, Ordering::SeqCst);
             runtime.spawn(async move {
                 remove_all(&shared, &names, created, true).await;
+                shared.background_cleanups.fetch_sub(1, Ordering::SeqCst);
             });
         }
     }

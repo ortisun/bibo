@@ -41,6 +41,7 @@ mod watchdog;
 
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 use factory_domain::ids::AttemptId;
@@ -111,6 +112,8 @@ pub(crate) struct Shared {
     pub ids: Arc<dyn IdGenerator>,
     pub tokens: TokenStore,
     catalog: OnceCell<ImageCatalog>,
+    /// Removals that a drop guard started in the background and that have not finished.
+    pub background_cleanups: AtomicUsize,
 }
 
 impl Shared {
@@ -180,7 +183,17 @@ impl DockerSandboxProvider {
                 ids,
                 tokens,
                 catalog: OnceCell::new(),
+                background_cleanups: AtomicUsize::new(0),
             }),
+        }
+    }
+
+    /// Waits until every removal that a dropped session or a dropped `create_verified` future
+    /// started in the background has finished. A worker calls this before it exits, and a test
+    /// calls it before it looks at Docker.
+    pub async fn finish_background_cleanups(&self) {
+        while self.shared.background_cleanups.load(Ordering::SeqCst) > 0 {
+            tokio::time::sleep(Duration::from_millis(50)).await;
         }
     }
 }

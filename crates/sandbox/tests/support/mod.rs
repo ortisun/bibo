@@ -322,7 +322,15 @@ pub struct World {
 
 /// A provider over `runner`.
 pub fn provider(config: ProviderConfig, runner: Arc<dyn ProcessRunner>) -> World {
-    let artifacts = Arc::new(InMemoryArtifactStore::new());
+    provider_with(config, runner, Arc::new(InMemoryArtifactStore::new()))
+}
+
+/// A provider over `runner` that stores output in `artifacts`.
+pub fn provider_with(
+    config: ProviderConfig,
+    runner: Arc<dyn ProcessRunner>,
+    artifacts: Arc<InMemoryArtifactStore>,
+) -> World {
     let redactor = Arc::new(Redactor::builder().build().expect("a redactor"));
     let provider = DockerSandboxProvider::new(
         config,

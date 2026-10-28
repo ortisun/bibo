@@ -21,8 +21,8 @@ use std::time::Duration;
 
 use factory_domain::values::Timestamp;
 use factory_ports::sandbox::{
-    Confinement, Hardening, ImageDigest, Namespace, NetworkAttachment, ObservedMount, PostureDiff,
-    PostureReport, SCRATCH_TARGET, SandboxLimits, TMPFS_SOURCE,
+    Confinement, ExpectedMount, Hardening, ImageDigest, Namespace, NetworkAttachment,
+    ObservedMount, PostureDiff, PostureReport, SCRATCH_TARGET, SandboxLimits, TMPFS_SOURCE,
 };
 use serde_json::Value;
 
@@ -492,6 +492,28 @@ pub fn observe(input: &ObserveInput<'_>) -> Result<Inspected, PostureDiff> {
     })
 }
 
+/// Where Docker Desktop mounts the host's shared folders inside its virtual machine. It reports a
+/// bind mount's source under this prefix for some mounts and not for others of the same job.
+const FILE_SHARE_PREFIX: &str = "/host_mnt";
+
+/// Puts an observed bind source back to the host path the spec named, when the daemon reported it
+/// under [`FILE_SHARE_PREFIX`] and the path without the prefix is exactly what the spec asked for
+/// at that target. Nothing else is changed: a source that is not the requested one stays as it
+/// was, and the comparison in the ports crate then reports it.
+pub fn normalize_file_share_sources(mounts: &mut [ObservedMount], expected: &[ExpectedMount]) {
+    for mount in mounts {
+        let Some(plain) = mount.source.strip_prefix(FILE_SHARE_PREFIX) else {
+            continue;
+        };
+        let asked = expected
+            .iter()
+            .any(|want| want.target == mount.target && want.source.as_deref() == Some(plain));
+        if asked {
+            mount.source = plain.to_owned();
+        }
+    }
+}
+
 /// The alias the sidecar has on `network`: `expected` when the sidecar has it, otherwise its first
 /// alias, otherwise nothing. The sandbox's own posture compares it with the spec.
 #[must_use]
@@ -702,6 +724,37 @@ mod tests {
         );
         // A missing field is a failure, not a pass.
         assert!(evaluate_self_check("", 10001).is_err());
+    }
+
+    #[test]
+    fn a_file_share_prefix_is_removed_only_where_the_spec_asked_for_that_path() {
+        let observed = |target: &str, source: &str| ObservedMount {
+            target: target.to_owned(),
+            read_only: false,
+            source: source.to_owned(),
+        };
+        let expected = vec![
+            ExpectedMount {
+                target: "/out".to_owned(),
+                read_only: false,
+                source: Some("/Users/x/out".to_owned()),
+            },
+            ExpectedMount {
+                target: "/workspace".to_owned(),
+                read_only: false,
+                source: Some("/Users/x/ws".to_owned()),
+            },
+        ];
+        let mut mounts = vec![
+            observed("/out", "/host_mnt/Users/x/out"),
+            // The daemon reports another path than the one asked for: it must stay different.
+            observed("/workspace", "/host_mnt/Users/y/ws"),
+            observed("/elsewhere", "/host_mnt/Users/x/out"),
+        ];
+        normalize_file_share_sources(&mut mounts, &expected);
+        assert_eq!(mounts[0].source, "/Users/x/out");
+        assert_eq!(mounts[1].source, "/host_mnt/Users/y/ws");
+        assert_eq!(mounts[2].source, "/host_mnt/Users/x/out");
     }
 
     #[test]

@@ -1,6 +1,7 @@
 //! A running sandbox: commands, the wall clock, the disk cap and teardown.
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use factory_domain::redaction::SecretHandle;
 use factory_domain::vocabulary::Fidelity;
@@ -100,7 +101,7 @@ impl DockerSession {
     /// clock has passed (and the watchdog has not yet got to it).
     async fn ensure_alive(&self) -> Result<(), SandboxError> {
         if let Some(stop) = self.recorded_stop() {
-            return Err(stop.error());
+            return Err(self.stopped_error(stop).await);
         }
         if Instant::now() >= self.deadline {
             watchdog::mark(&self.watch.stop_tx, Stop::WallClock);
@@ -108,6 +109,18 @@ impl DockerSession {
             return Err(Stop::WallClock.error());
         }
         Ok(())
+    }
+
+    /// The error for a session the watchdog stopped. The watchdog records the cause and then
+    /// kills the container; the caller hears of it only once the container is really gone, so
+    /// "timed out" never describes a container that still runs.
+    async fn stopped_error(&self, stop: Stop) -> SandboxError {
+        if matches!(stop, Stop::WallClock | Stop::Disk) {
+            let mut killed = self.watch.killed_rx.clone();
+            let _ =
+                tokio::time::timeout(Duration::from_secs(20), killed.wait_for(|done| *done)).await;
+        }
+        stop.error()
     }
 
     /// Records `stop` and kills the container: a command that cannot be stopped on its own ends
@@ -185,7 +198,7 @@ impl DockerSession {
         let (code, signal, stdout, stderr, timed_out) = match outcome {
             Ok(output) => {
                 if let Some(stop) = self.recorded_stop() {
-                    return Err(stop.error());
+                    return Err(self.stopped_error(stop).await);
                 }
                 let Some(code) = output.code else {
                     return Err(SandboxError::DaemonUnavailable);
@@ -208,9 +221,10 @@ impl DockerSession {
                     self.end_session(Stop::Cancelled).await;
                     return Err(SandboxError::Cancelled);
                 }
-                return Err(self
-                    .recorded_stop()
-                    .map_or(SandboxError::Cancelled, Stop::error));
+                return Err(match self.recorded_stop() {
+                    Some(stop) => self.stopped_error(stop).await,
+                    None => SandboxError::Cancelled,
+                });
             }
             Err(_) => return Err(SandboxError::DaemonUnavailable),
         };

@@ -110,6 +110,8 @@ pub(crate) struct Watch {
     shutdown: Arc<Notify>,
     pub stop_tx: StopSender,
     pub stop_rx: watch::Receiver<Option<Stop>>,
+    /// True once the watchdog's own `docker kill` has returned.
+    pub killed_rx: watch::Receiver<bool>,
 }
 
 impl Watch {
@@ -137,6 +139,7 @@ pub(crate) struct Limits {
 /// Starts the watchdog for `container`.
 pub(crate) fn spawn(shared: Arc<Shared>, container: String, limits: Limits) -> Watch {
     let (tx, rx) = watch::channel(None);
+    let (killed_tx, killed_rx) = watch::channel(false);
     let stop_tx: StopSender = Arc::new(tx);
     let shutdown = Arc::new(Notify::new());
     let handle = tokio::spawn({
@@ -156,6 +159,7 @@ pub(crate) fn spawn(shared: Arc<Shared>, container: String, limits: Limits) -> W
                     Either::First(Either::First(())) => {
                         mark(&stop_tx, Stop::WallClock);
                         kill(&shared.docker, &container).await;
+                        killed_tx.send_replace(true);
                         return;
                     }
                     Either::First(Either::Second(())) => {
@@ -163,6 +167,7 @@ pub(crate) fn spawn(shared: Arc<Shared>, container: String, limits: Limits) -> W
                         if measured.is_some_and(|used| used > limits.disk_cap_kib) {
                             mark(&stop_tx, Stop::Disk);
                             kill(&shared.docker, &container).await;
+                            killed_tx.send_replace(true);
                             return;
                         }
                     }
@@ -176,5 +181,6 @@ pub(crate) fn spawn(shared: Arc<Shared>, container: String, limits: Limits) -> W
         shutdown,
         stop_tx,
         stop_rx: rx,
+        killed_rx,
     }
 }

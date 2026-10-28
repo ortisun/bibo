@@ -94,7 +94,8 @@ impl DockerError {
             if message.contains("No such container")
                 || message.contains("No such network")
                 || message.contains("No such object")
-                || message.contains("No such image"))
+                || message.contains("No such image")
+                || message.contains(" not found"))
     }
 }
 

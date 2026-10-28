@@ -23,7 +23,8 @@ use crate::container::docker::{DockerClient, DockerError};
 use crate::container::images::CatalogImage;
 use crate::container::names::{Kind, SandboxNames, labels};
 use crate::container::posture::{
-    ObserveInput, evaluate_self_check, observe, sidecar_alias, sidecar_deviations,
+    ObserveInput, evaluate_self_check, normalize_file_share_sources, observe, sidecar_alias,
+    sidecar_deviations,
 };
 
 /// How long the self-check and the token read may take.
@@ -212,8 +213,12 @@ async fn prepare_network(
         shared.config.policy.apparmor_may_be_unavailable,
     );
     if !deviations.is_empty() {
+        // The sidecar is part of the sandbox's posture: a sidecar that differs from its plan
+        // fails closed like a container that differs from its spec.
         tracing::warn!(deviations = ?deviations, "the egress sidecar differs from its plan");
-        return Err(SandboxError::ProvisionFailed(stage));
+        return Err(SandboxError::PostureMismatch(PostureDiff {
+            fields: deviations,
+        }));
     }
     let observed = sidecar_alias(&document, &names.network, alias)
         .ok_or(SandboxError::ProvisionFailed(stage))?;
@@ -341,6 +346,7 @@ async fn build(
     // The self-check cannot have run yet. It is counted as passed for this comparison only and is
     // decided for real after the start.
     report.self_check_passed = true;
+    normalize_file_share_sources(&mut report.mounts, &spec.expected_mounts());
     let mut fields = report.differences(spec, &shared.config.policy).fields;
     for extra in inspected.extra {
         if !fields.contains(&extra) {
