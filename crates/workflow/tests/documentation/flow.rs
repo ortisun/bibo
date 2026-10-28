@@ -483,3 +483,34 @@ mod defects_route_by_class {
         assert_eq!(rig.runs_of(StageKind::Implementation).await.len(), 1);
     }
 }
+
+/// The tools the contracts grant are those of the manifests, and the writer's write scope in the
+/// contract is the one in its manifest. A reviewer whose manifest granted a tool that writes would
+/// be refused before anything is made.
+#[test]
+fn the_granted_tools_are_those_of_the_manifests() {
+    use factory_domain::contracts::AgentManifest;
+    use factory_workflow::stages::implementation::seams::verify_read_only_tools;
+    let names = |manifest: &AgentManifest| -> Vec<String> {
+        manifest
+            .allowed_tools
+            .as_slice()
+            .iter()
+            .map(|tool| tool.name.as_str().to_owned())
+            .collect()
+    };
+    let writer: AgentManifest =
+        serde_json::from_str(crate::rig::WRITER_MANIFEST).expect("the real manifest");
+    let reviewer: AgentManifest =
+        serde_json::from_str(crate::rig::DOC_REVIEWER_MANIFEST).expect("the real manifest");
+    assert_eq!(
+        names(&writer),
+        factory_workflow::stages::documenting::GRANTED_TOOLS
+    );
+    assert_eq!(
+        names(&reviewer),
+        factory_workflow::stages::documentation_review::GRANTED_TOOLS
+    );
+    assert!(verify_read_only_tools(&reviewer).is_ok());
+    assert!(verify_read_only_tools(&writer).is_err());
+}
