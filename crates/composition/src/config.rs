@@ -201,6 +201,11 @@ pub struct SandboxConfig {
     /// Label value that marks the containers this factory created, for the janitor.
     #[serde(default = "default_owner")]
     pub owner: String,
+    /// More labels for every object this factory creates in Docker, beside the owner label. The
+    /// janitor touches only objects that carry all of them, so a test run labels its objects
+    /// with its own and removes only those.
+    #[serde(default)]
+    pub labels: std::collections::BTreeMap<String, String>,
     /// Where the target repositories are fetched from and pushed to.
     #[serde(default)]
     pub remote: RemoteConfig,

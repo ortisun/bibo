@@ -219,7 +219,9 @@ pub fn assemble(inputs: ProviderInputs<'_>) -> Result<Providers, ProviderError> 
             platform: config.sandbox.platform.clone(),
             token_root: config.sandbox.token_root.clone(),
             caches: Vec::new(),
-            owner_labels: vec![(OWNER_LABEL.to_owned(), config.sandbox.owner.clone())],
+            owner_labels: std::iter::once((OWNER_LABEL.to_owned(), config.sandbox.owner.clone()))
+                .chain(config.sandbox.labels.clone())
+                .collect(),
             sidecar_command: config.sandbox.sidecar_command.clone(),
             docker: DockerSettings::default(),
             watchdog: WatchdogSettings {

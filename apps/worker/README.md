@@ -123,7 +123,7 @@ builder checked against a policy derived from the same document, the redactor, t
 `SpecHistory`, `ReworkSource`) and the real `SpecKitProvider`. **Faked**: the agent runtime (scripted),
 the sandbox (the testkit's, running `cargo` as a scripted program), the workspace provider and change host
 (over the files of the fixture), the issue source and the broker. The real Docker sandbox and the real git
-workspace were not used; the reasons are below.
+workspace were not used in the smoke; the reasons are below.
 
 State by state, with the stages in scope:
 
@@ -156,11 +156,18 @@ State by state, with the stages in scope:
    and reaches `COMPLETED`; what the real handlers add is the stage-to-stage content, and none of those
    stages was reached with a real handler.
 
-**The real Docker sandbox** needs the pinned images (`factory-sandbox/agent`, `.../egress-sidecar`,
-`.../verify`), which `infra/sandbox-images/build.sh` builds and which are not on this machine. The
-provider assembles and is shown to be real; no container was started. **The real git workspace** cannot be
-mixed with the fake change host: `REPOSITORY_INTELLIGENCE` takes the base commit from the change host and the
-workspace takes it from git, and the two disagree about a commit id.
+**The real Docker sandbox.** The three pinned images (`factory-sandbox/agent`, `.../egress-sidecar`,
+`.../verify`) are on this machine. `crates/composition/tests/docker_sandbox.rs` takes the sandbox that
+`providers::assemble` builds, makes a `verify` sandbox from the real policy and the pinned image (no network,
+so no address block and no lock on the shared pool), runs `cargo --version` in it, reads the output as the
+owning tenant through the indexing wrapper over PostgreSQL, removes the container, and checks that nothing with
+its labels (`factory.test=true`, `factory.test.run=<pid>`) is left. **It passed on one run and failed on the
+next four**: `docker create` answered "bind source path does not exist" for a directory the test had just made,
+for five seconds running (Docker Desktop for Mac, `/host_mnt`). A plain `docker run` over a directory of the
+same tree worked. The cause is not found, so the test is `#[ignore]`d with that reason, not counted as a pass
+and not deleted; the smoke does not use the real sandbox. **The real git workspace** cannot be mixed with the
+fake change host: `REPOSITORY_INTELLIGENCE` takes the base commit from the change host and the workspace takes
+it from git, and the two disagree about a commit id.
 
 ### `DOMAIN_DISCOVERY`
 
@@ -313,7 +320,7 @@ package. Statuses were checked on 2026-10-28 against the merged foundation.
 | Model router | `policies/model_routing.yaml` does not exist |
 | Issue source, change host | need a registered GitHub App and its key |
 | `DeliverySources::tree_of`, `current_values` | see mismatch 16 |
-| The real Docker sandbox, run | the pinned images are not built on this machine |
+| The real Docker sandbox, run in a test | the pinned images are present; the one test of it is ignored because the daemon did not see its bind sources on four runs of five (see "How far the job gets") |
 
 Everything about a live provider or live GitHub is BLOCKED and was not attempted.
 

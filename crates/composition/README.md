@@ -74,6 +74,7 @@ sandbox:
   images_catalog: /srv/factory/protected/infra/sandbox-images/images.json
   token_root: /var/lib/factory/tokens
   workspace_root: /var/lib/factory/workspaces
+  labels: {}                                # more Docker labels; a test run adds its own
   remote: { https_host: github.com }        # or { directory: /abs/path } outside production
   sidecar_command: []                       # the egress sidecar's arguments
 broker:
