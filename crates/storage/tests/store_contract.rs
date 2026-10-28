@@ -50,6 +50,9 @@ use uuid::Uuid;
 /// The platform tenant of migration 2, which `record_platform_audit` writes under.
 const PLATFORM: u128 = 1;
 
+/// The longest step of the clock that is made by waiting. A longer one moves the stored times.
+const REAL_WAIT_LIMIT: Duration = Duration::from_secs(3);
+
 /// The store the checks use: the real store, with tenants onboarded on first use.
 ///
 /// The schema has a row per tenant, and the application role cannot insert one: onboarding is an
@@ -177,13 +180,13 @@ impl StoreSubject for PgSubject {
 
     /// Moves the clock forward by at least `by`.
     ///
-    /// A short step waits on the real clock, so the checks that read `database_time` see time
-    /// pass. A long step (the suite asks for ten minutes to pass an attempt deadline) moves every
-    /// stored time that a rule compares with the clock back by `by`, which is the same to every
-    /// comparison and costs no wait. Both are real to the database: the second is a repair by an
-    /// operator with the triggers off for one transaction.
+    /// A step of a few seconds waits on the real clock, which is the only way to move the reading
+    /// of `database_time`. A longer step moves every stored time that a rule compares with the
+    /// clock back by `by`, which is the same to every one of those comparisons and costs no
+    /// wait. Both are real to the database: the second is a repair by an operator with the
+    /// triggers off for one transaction.
     async fn advance_database_time(&self, by: Duration) {
-        if by <= Duration::from_secs(150) {
+        if by <= REAL_WAIT_LIMIT {
             tokio::time::sleep(by + Duration::from_millis(100)).await;
             return;
         }

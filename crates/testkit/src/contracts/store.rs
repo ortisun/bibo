@@ -690,15 +690,19 @@ async fn a_dropped_call_poisons_the_transaction(subject: &dyn StoreSubject) -> R
 async fn database_time_follows_the_subjects_clock(
     subject: &dyn StoreSubject,
 ) -> Result<(), String> {
+    // A short step: a subject on a real server can move the reading of its own clock only by
+    // waiting, and the property does not depend on how large the step is. A frozen reading fails
+    // at any step.
+    const STEP: Duration = Duration::from_secs(2);
     let w = World::new(subject);
     let mut tx = w.tx(w.a).await?;
     let before = tx.database_time().await.ctx("time")?;
-    subject.advance_database_time(Duration::from_secs(90)).await;
+    subject.advance_database_time(STEP).await;
     let after = tx.database_time().await.ctx("time")?;
     let gap = after.duration_since(&before).unwrap_or_default();
     ensure!(
-        gap >= Duration::from_secs(90),
-        "the clock moved by at least 90 seconds, moved {gap:?}"
+        gap >= STEP,
+        "the clock moved by at least {STEP:?}, moved {gap:?}"
     );
     Ok(())
 }
