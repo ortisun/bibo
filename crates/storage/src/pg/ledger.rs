@@ -9,33 +9,38 @@
 //!
 //! # The job head
 //!
-//! The job row holds the head of its chain (`ledger_head_sequence`, `ledger_head_hash`), and the
-//! database verifier reports a head that is behind the entries. So an append also moves the head,
-//! and the trigger `bump_guard` requires every update of a job to raise its version by one.
-//! An append therefore raises the job's version by one. A caller that holds the version of the job
-//! across an append reads it again.
+//! The job row holds the head of its chain (`ledger_head_sequence`, `ledger_head_hash`). An append
+//! moves the head without raising the job's version (migration 17): `append_ledger_entry` returns
+//! the chain head and no version, and `transition_job` takes the version the caller read, so a
+//! transition after an append in the same transaction must not find the version moved. The head
+//! never moves back, and a head move together with any other change of the job still raises the
+//! version by one.
 //!
 //! # Concurrent appends
 //!
-//! The append locks the job row with `FOR NO KEY UPDATE SKIP LOCKED`. A second writer that finds
-//! the row held by an open transaction gets `Conflict` at once, reads the head and retries. Two
-//! writers can never both extend the chain at one position.
+//! The append locks the job row with `FOR NO KEY UPDATE` (never `FOR UPDATE`: a ledger insert
+//! takes a `KEY SHARE` lock on the job), reads the head under the lock, and checks the entry
+//! against it. A second writer waits for the first to end, then reads the head the first one left
+//! and finds its own position taken. Two writers can never both extend the chain at one position:
+//! the primary key of `ledger_entries` and the key to the predecessor allow one entry at each.
 
-use diesel::sql_query;
 use diesel::sql_types::{Array, BigInt, Nullable, Text, Uuid as SqlUuid};
-use diesel::{OptionalExtension, QueryableByName};
+use diesel::{OptionalExtension, QueryableByName, sql_query};
 use diesel_async::{AsyncPgConnection, RunQueryDsl};
 use factory_domain::contracts::{Contract, EvidenceLedgerEntry};
 use factory_domain::ids::{JobId, TenantId};
 use factory_domain::ledger::{ChainHead, canonical_form, chain_hash};
 use factory_domain::values::Sha256Digest;
-use factory_ports::store::{Sequence, StoreError};
+use factory_ports::store::{LedgerOps, Sequence, StoreError};
 use serde_json::Value;
 use uuid::Uuid;
 
-use super::cas::{Machine, exists};
-use super::conv::{corrupt, digest_from_column, job_to_column, tenant_to_column};
-use super::error::{Failure, constraint, generic};
+use async_trait::async_trait;
+
+use super::cas::{Table, exists};
+use super::conv::{corrupt, digest_from_column, signed_to_column, unsigned_from_column};
+use super::error::database;
+use super::tx::{PgTx, call};
 
 #[derive(QueryableByName)]
 struct HeadRow {
@@ -43,41 +48,37 @@ struct HeadRow {
     sequence: i64,
     #[diesel(sql_type = Nullable<Text>)]
     hash: Option<String>,
-    #[diesel(sql_type = BigInt)]
-    version: i64,
 }
 
-fn head_from(sequence: i64, hash: Option<String>) -> Result<Option<ChainHead>, StoreError> {
+fn head_from(sequence: i64, hash: Option<&str>) -> Result<Option<ChainHead>, StoreError> {
     if sequence == 0 {
         return Ok(None);
     }
     let hash = hash.ok_or_else(|| corrupt("ledger head without a hash"))?;
     Ok(Some(ChainHead {
-        sequence: u64::try_from(sequence).map_err(|_| corrupt("ledger head sequence"))?,
-        hash: digest_from_column(&hash)?,
+        sequence: unsigned_from_column(sequence, "ledger head sequence")?,
+        hash: digest_from_column(hash)?,
     }))
 }
 
 /// The head of a job's chain, or `None` for a job with no entries.
-pub(super) async fn head(
+async fn head(
     connection: &mut AsyncPgConnection,
     tenant: TenantId,
     job: JobId,
 ) -> Result<Option<ChainHead>, StoreError> {
     let row = sql_query(
-        "SELECT ledger_head_sequence AS sequence, ledger_head_hash AS hash, version \
+        "SELECT ledger_head_sequence AS sequence, ledger_head_hash AS hash \
            FROM jobs WHERE tenant_id = $1 AND id = $2",
     )
-    .bind::<SqlUuid, _>(tenant_to_column(tenant))
-    .bind::<SqlUuid, _>(job_to_column(job))
+    .bind::<SqlUuid, _>(tenant.as_uuid())
+    .bind::<SqlUuid, _>(job.as_uuid())
     .get_result::<HeadRow>(connection)
     .await
     .optional()
-    .map_err(|error| generic("ledger_head", &error))?;
-    match row {
-        Some(row) => head_from(row.sequence, row.hash),
-        None => Err(StoreError::NotFound),
-    }
+    .map_err(|error| database("ledger_head", &error))?
+    .ok_or(StoreError::NotFound)?;
+    head_from(row.sequence, row.hash.as_deref())
 }
 
 /// The fields of an entry that the table keeps as columns, read from the same JSON the hash was
@@ -105,7 +106,9 @@ fn text_at(document: &Value, path: &[&str]) -> Option<String> {
 }
 
 fn columns_of(document: &Value) -> Result<Columns, StoreError> {
-    let bad = || constraint("the entry does not have the fields of the schema", None);
+    // An entry the schema of the document does not describe cannot be stored. The domain type
+    // makes this unreachable, so the answer is the one for a chain that cannot take the entry.
+    let bad = || StoreError::ChainBroken;
     let uuid_at = |path: &[&str]| -> Result<Option<Uuid>, StoreError> {
         match text_at(document, path) {
             Some(text) => Uuid::parse_str(&text).map(Some).map_err(|_| bad()),
@@ -139,44 +142,27 @@ fn columns_of(document: &Value) -> Result<Columns, StoreError> {
 }
 
 /// Appends one entry at head + 1.
-pub(super) async fn append(
+async fn append(
     connection: &mut AsyncPgConnection,
     tenant: TenantId,
     entry: EvidenceLedgerEntry,
 ) -> Result<ChainHead, StoreError> {
-    let tenant_raw = tenant_to_column(tenant);
+    let operation = "append_ledger_entry";
     let job = entry.metadata.job_id;
-    let job_raw = job_to_column(job);
 
-    // 1. The job: it must be the tenant's, and nobody else may hold it.
+    // 1. The job: it must be the tenant's, and nobody else may extend its chain meanwhile.
     let locked = sql_query(
-        "SELECT ledger_head_sequence AS sequence, ledger_head_hash AS hash, version \
-           FROM jobs WHERE tenant_id = $1 AND id = $2 FOR NO KEY UPDATE SKIP LOCKED",
+        "SELECT ledger_head_sequence AS sequence, ledger_head_hash AS hash \
+           FROM jobs WHERE tenant_id = $1 AND id = $2 FOR NO KEY UPDATE",
     )
-    .bind::<SqlUuid, _>(tenant_raw)
-    .bind::<SqlUuid, _>(job_raw)
+    .bind::<SqlUuid, _>(tenant.as_uuid())
+    .bind::<SqlUuid, _>(job.as_uuid())
     .get_result::<HeadRow>(connection)
     .await
     .optional()
-    .map_err(|error| generic("append_ledger_entry", &error))?;
-    let Some(locked) = locked else {
-        return Err(
-            if exists(
-                connection,
-                Machine::Job,
-                tenant_raw,
-                job_raw,
-                "append_ledger_entry",
-            )
-            .await?
-            {
-                StoreError::Conflict
-            } else {
-                StoreError::NotFound
-            },
-        );
-    };
-    let current = head_from(locked.sequence, locked.hash)?;
+    .map_err(|error| database(operation, &error))?
+    .ok_or(StoreError::NotFound)?;
+    let current = head_from(locked.sequence, locked.hash.as_deref())?;
 
     // 2. The chain rules, in the order the port documents them.
     let sequence = entry.sequence();
@@ -197,17 +183,20 @@ pub(super) async fn append(
     let canonical_text = String::from_utf8(canonical).map_err(|_| StoreError::ChainBroken)?;
     let document = serde_json::to_value(&entry).map_err(|_| StoreError::ChainBroken)?;
     let columns = columns_of(&document)?;
+    let number = signed_to_column(sequence);
 
     // 3. The entry. `prev_sequence` is left out: the trigger sets it.
     sql_query(
-        "INSERT INTO ledger_entries (tenant_id, job_id, sequence, entry_id, stage_run_id, attempt_id, \
-                recorded_at, execution_mode, recorded_component, recorded_fidelity, claim_kind, \
-                assurance_level, confidence_level, invalidates, prev_entry_hash, entry_hash, canonical_json) \
-         VALUES ($1, $2, $3, $4, $5, $6, $7::timestamptz, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)",
+        "INSERT INTO ledger_entries (tenant_id, job_id, sequence, entry_id, stage_run_id, \
+                attempt_id, recorded_at, execution_mode, recorded_component, recorded_fidelity, \
+                claim_kind, assurance_level, confidence_level, invalidates, prev_entry_hash, \
+                entry_hash, canonical_json) \
+         VALUES ($1, $2, $3, $4, $5, $6, $7::timestamptz, $8, $9, $10, $11, $12, $13, $14, $15, \
+                 $16, $17)",
     )
-    .bind::<SqlUuid, _>(tenant_raw)
-    .bind::<SqlUuid, _>(job_raw)
-    .bind::<BigInt, _>(i64::try_from(sequence).map_err(|_| StoreError::ChainBroken)?)
+    .bind::<SqlUuid, _>(tenant.as_uuid())
+    .bind::<SqlUuid, _>(job.as_uuid())
+    .bind::<BigInt, _>(number)
     .bind::<SqlUuid, _>(columns.entry_id)
     .bind::<SqlUuid, _>(columns.stage_run_id)
     .bind::<Nullable<SqlUuid>, _>(columns.attempt_id)
@@ -219,41 +208,32 @@ pub(super) async fn append(
     .bind::<Nullable<Text>, _>(columns.assurance_level)
     .bind::<Text, _>(columns.confidence_level)
     .bind::<Array<SqlUuid>, _>(columns.invalidates)
-    .bind::<Nullable<Text>, _>(entry.prev_entry_hash.as_ref().map(|hash| hash.as_str().to_owned()))
+    .bind::<Nullable<Text>, _>(
+        entry
+            .prev_entry_hash
+            .as_ref()
+            .map(|hash| hash.as_str().to_owned()),
+    )
     .bind::<Text, _>(entry.entry_hash.as_str())
     .bind::<Text, _>(canonical_text)
     .execute(connection)
     .await
-    .map_err(|error| match Failure::of(&error) {
-        Failure::Unique(Some(name)) if name == "ledger_entries_pkey" => StoreError::Conflict,
-        Failure::Check(Some(name))
-            if matches!(
-                name.as_str(),
-                "ledger_entries_hash_matches_document" | "ledger_entries_document_matches_columns"
-            ) =>
-        {
-            StoreError::ChainBroken
-        }
-        Failure::ForeignKey(Some(name)) if name.contains("prev_sequence") => StoreError::ChainBroken,
-        Failure::Unique(name) => constraint("unique violation", name.as_deref()),
-        Failure::ForeignKey(name) => constraint("foreign key violation", name.as_deref()),
-        Failure::Check(name) => constraint("check violation", name.as_deref()),
-        _ => generic("append_ledger_entry", &error),
-    })?;
+    .map_err(|error| database(operation, &error))?;
 
-    // 4. Move the head, in the same transaction, with the job's version bump.
+    // 4. Move the head, in the same transaction, without a version bump. It moves from the
+    // position before this one only, so a head that is not where it was read is a lost race.
     let moved = sql_query(
-        "UPDATE jobs SET ledger_head_sequence = $3, ledger_head_hash = $4, version = version + 1 \
-          WHERE tenant_id = $1 AND id = $2 AND version = $5",
+        "UPDATE jobs SET ledger_head_sequence = $3, ledger_head_hash = $4 \
+          WHERE tenant_id = $1 AND id = $2 AND ledger_head_sequence = $5",
     )
-    .bind::<SqlUuid, _>(tenant_raw)
-    .bind::<SqlUuid, _>(job_raw)
-    .bind::<BigInt, _>(i64::try_from(sequence).map_err(|_| StoreError::ChainBroken)?)
+    .bind::<SqlUuid, _>(tenant.as_uuid())
+    .bind::<SqlUuid, _>(job.as_uuid())
+    .bind::<BigInt, _>(number)
     .bind::<Text, _>(entry.entry_hash.as_str())
-    .bind::<BigInt, _>(locked.version)
+    .bind::<BigInt, _>(number - 1)
     .execute(connection)
     .await
-    .map_err(|error| generic("append_ledger_entry", &error))?;
+    .map_err(|error| database(operation, &error))?;
     if moved != 1 {
         return Err(StoreError::Conflict);
     }
@@ -272,29 +252,35 @@ struct EntryRow {
 }
 
 /// Entries of a job from `from` (inclusive), in order.
-pub(super) async fn read(
+async fn read(
     connection: &mut AsyncPgConnection,
     tenant: TenantId,
     job: JobId,
     from: Sequence,
     limit: u32,
 ) -> Result<Vec<EvidenceLedgerEntry>, StoreError> {
-    let tenant_raw = tenant_to_column(tenant);
-    let job_raw = job_to_column(job);
-    if !exists(connection, Machine::Job, tenant_raw, job_raw, "read_ledger").await? {
+    if !exists(
+        connection,
+        Table::Jobs,
+        tenant,
+        job.as_uuid(),
+        "read_ledger",
+    )
+    .await?
+    {
         return Err(StoreError::NotFound);
     }
     let rows = sql_query(
         "SELECT canonical_json, entry_hash FROM ledger_entries \
           WHERE tenant_id = $1 AND job_id = $2 AND sequence >= $3 ORDER BY sequence LIMIT $4",
     )
-    .bind::<SqlUuid, _>(tenant_raw)
-    .bind::<SqlUuid, _>(job_raw)
-    .bind::<BigInt, _>(i64::try_from(from).unwrap_or(i64::MAX))
+    .bind::<SqlUuid, _>(tenant.as_uuid())
+    .bind::<SqlUuid, _>(job.as_uuid())
+    .bind::<BigInt, _>(signed_to_column(from))
     .bind::<BigInt, _>(i64::from(limit))
     .load::<EntryRow>(connection)
     .await
-    .map_err(|error| generic("read_ledger", &error))?;
+    .map_err(|error| database("read_ledger", &error))?;
     rows.into_iter().map(entry_from_row).collect()
 }
 
@@ -311,4 +297,27 @@ fn entry_from_row(row: EntryRow) -> Result<EvidenceLedgerEntry, StoreError> {
         Value::String(hash.as_str().to_owned()),
     );
     EvidenceLedgerEntry::from_json_value(document).map_err(|_| corrupt("ledger entry"))
+}
+
+#[async_trait]
+impl LedgerOps for PgTx {
+    async fn append_ledger_entry(
+        &mut self,
+        entry: EvidenceLedgerEntry,
+    ) -> Result<ChainHead, StoreError> {
+        call!(self, connection, tenant => append(connection, tenant, entry))
+    }
+
+    async fn ledger_head(&mut self, job: JobId) -> Result<Option<ChainHead>, StoreError> {
+        call!(self, connection, tenant => head(connection, tenant, job))
+    }
+
+    async fn read_ledger(
+        &mut self,
+        job: JobId,
+        from: Sequence,
+        limit: u32,
+    ) -> Result<Vec<EvidenceLedgerEntry>, StoreError> {
+        call!(self, connection, tenant => read(connection, tenant, job, from, limit))
+    }
 }

@@ -1,24 +1,8 @@
-//! Tenant isolation through the adapter, as the application login (NT-TEN-01, the Rust part), and
-//! the start-up checks that keep a login with too many rights out.
-//!
-//! Every test here connects as an application login, never as the table owner or a superuser: those
-//! bypass the policies silently, and a test that did not connect as the login would prove nothing.
-//! The superuser is used only to put fixtures in place and to look.
-//!
-//! PENDING ADAPTATION TO PORTS V1.1. These tests drive the old `Store` write model (`claim_ready`,
-//! `insert_attempt`, event payloads, `ScopeNotAllowed`) and do not compile against the revised
-//! traits, so the whole file is compiled out with `#![cfg(any())]`. The Postgres adaptation
-//! package rewrites each test against the new traits and removes the attribute. The test names
-//! below are the ones that package must account for.
-//!
-//! * `negative_nt_ten_01`
-//! * `a_reused_connection_carries_no_tenant_into_the_next_transaction`
-//! * `the_pool_resets_a_session_level_tenant_when_a_connection_is_reused`
-//! * `refuses_a_role_that_bypasses_rls`
-//! * `the_schema_version_is_the_number_of_applied_migrations`
-//! * `every_repository_method_refuses_another_tenants_rows`
-
-#![cfg(any())]
+//! Tenant isolation on a real database, through the adapter and through raw logins: a session with
+//! no setting, an empty one or a malformed one sees nothing or fails loudly; a pooled connection
+//! carries no tenant into the next transaction; a login that could bypass row-level security is
+//! refused at start-up; and every method of the transaction answers a foreign row as it answers a
+//! missing one.
 
 mod support;
 
@@ -26,19 +10,15 @@ use std::time::Duration;
 
 use diesel::sql_query;
 use diesel_async::{RunQueryDsl, SimpleAsyncConnection};
-use factory_domain::contracts::ArtifactRef;
-use factory_domain::state::{
-    AttemptEvent, AttemptStatus, JobEvent, JobStatus, Status, TaskNodeEvent, TaskNodeStatus,
-};
-use factory_domain::values::{MediaType, NonEmptyString, Sha256Digest, Slug};
-use factory_domain::vocabulary::StageKind;
+use factory_domain::values::{GitSha, Sha256Digest};
+use factory_ports::sandbox::SandboxId;
 use factory_ports::store::{
-    AppliedTransition, AuditActor, AuditEvent, LeaseEpoch, NewArtifactIndexEntry, NewAttempt,
-    NewJob, NewPrincipal, NewStageRun, NewTaskNode, OutboxSeq, StoreError, Version,
+    ApprovalInvalidation, AuditFilter, Fence, OutboxSeq, SandboxRecord, StoreError, Version,
+    WorkerId,
 };
 use factory_storage::pg::{PgPool, PgStore, PoolSettings, RoleProblem, StartupError};
 use factory_testkit::fixtures::{domain_event, ledger_entry};
-use support::{Scene, as_login, config_for, now, server, small_pool};
+use support::{Scene, as_login, at, config_for, server, small_pool};
 use uuid::Uuid;
 
 fn count(value: Result<Option<String>, String>) -> String {
@@ -133,8 +113,8 @@ async fn negative_nt_ten_01() {
     );
 
     // The same through the store: a transaction for A reads A's job and never B's.
-    let mut tx_a = scene.tenant_tx(scene.a).await;
-    let mut tx_b = scene.tenant_tx(scene.b).await;
+    let mut tx_a = scene.tx(scene.a).await;
+    let mut tx_b = scene.tx(scene.b).await;
     let first_job_of_b = scene
         .db
         .text(&format!("SELECT id FROM jobs WHERE tenant_id = '{b}'"))
@@ -198,7 +178,6 @@ async fn a_reused_connection_carries_no_tenant_into_the_next_transaction() {
         one.max_connections = 1;
         one
     };
-    config.claim_only_active_jobs = false;
     let store = PgStore::connect(config).await.expect("ready");
     let job_a = scene.job(scene.a).await;
     let job_b = scene.job(scene.b).await;
@@ -344,7 +323,7 @@ async fn refuses_a_role_that_bypasses_rls() {
     );
 
     // A worker login is not an API login.
-    let mut api_expected = config_for(db).await;
+    let mut api_expected = support::worker_config_for(db).await;
     api_expected.tenant_login = factory_storage::pg::TenantLogin::Api;
     assert_eq!(
         PgStore::connect(api_expected).await.map(|_| ()),
@@ -383,322 +362,198 @@ async fn the_schema_version_is_the_number_of_applied_migrations() {
     );
 }
 
-/// Every method of the transaction, called by tenant A on the rows of tenant B. Each answers as for
-/// a row that does not exist, and B's rows are as they were.
+/// Every method of the transaction, called by tenant B on the rows of tenant A. Each answers as
+/// for a row that does not exist, and A's rows are as they were.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn every_repository_method_refuses_another_tenants_rows() {
+async fn every_method_refuses_another_tenants_rows() {
     let scene = Scene::new().await;
-    let (a, b) = (scene.a, scene.b);
-
-    // Tenant B has one of everything.
-    let job_b = scene.job(b).await;
-    let principal_b = scene.principal(b).await;
-    let run_b = scene.ready_stage_run(b, job_b).await;
-    scene.claim("worker-1", 5).await;
-    let (attempt_b, ..) = scene.newest_attempt(run_b).await;
-    let artifact = ArtifactRef {
-        sha256: Sha256Digest::of(b"tenant b only"),
-        media_type: MediaType::parse("text/plain").expect("media type"),
-        size_bytes: None,
-    };
-    {
-        let mut tx = scene.tenant_tx(b).await;
-        tx.index_artifact(NewArtifactIndexEntry {
-            artifact: artifact.clone(),
-            stage_run_id: Some(run_b),
-            created_at: now(),
-        })
-        .await
-        .expect("index");
-        let entry = ledger_entry(
-            &scene.ids,
-            job_b,
-            run_b,
-            1,
-            None,
-            &now(),
-            "Tenant B's claim.",
-        );
-        tx.append_ledger_entry(entry).await.expect("append");
-        let version = tx.get_job(job_b).await.expect("job").version;
-        let admit =
-            AppliedTransition::plan(JobStatus::Received, JobEvent::Admit, now()).expect("J01");
-        let next = tx
-            .transition_job(job_b, version, admit)
-            .await
-            .expect("admit");
-        tx.enqueue_event(domain_event(&scene.ids, b, job_b, next.get(), &now()))
-            .await
-            .expect("event");
-        tx.record_audit(AuditEvent {
-            job_id: job_b,
-            actor: AuditActor::Component(Slug::parse("workflow.engine").expect("slug")),
-            action: Slug::parse("job.admitted").expect("slug"),
-            policy_hash: Sha256Digest::of(b"policy"),
-            correlation_id: scene.ids.correlation(),
-            occurred_at: now(),
-        })
-        .await
-        .expect("audit");
-        tx.commit().await.expect("commit");
-    }
-    let node_b = scene.ids.task_node();
-    scene
-        .db
-        .run(&format!(
-            "INSERT INTO artifacts (tenant_id, content_sha256, size_bytes, media_type, backend) \
-               VALUES ('{b}', 'sha256:{}', 0, 'application/json', 'local-fs'); \
-             INSERT INTO task_nodes (tenant_id, id, job_id, stage_run_id, task_key, plan_sha256) \
-               VALUES ('{b}', '{node_b}', '{job_b}', '{run_b}', 't-001', 'sha256:{}');",
-            "c".repeat(64),
-            "c".repeat(64),
-            b = b.as_uuid(),
-            node_b = node_b.as_uuid(),
-            job_b = job_b.as_uuid(),
-            run_b = run_b.as_uuid(),
-        ))
-        .await;
-    let state_of_b = || async {
-        scene
-            .db
-            .text(&format!(
-                "SELECT (SELECT string_agg(status || version, ',') FROM jobs WHERE tenant_id = '{b}') || '|' || \
-                        (SELECT string_agg(status || version, ',') FROM stage_runs WHERE tenant_id = '{b}') || '|' || \
-                        (SELECT string_agg(status || version, ',') FROM attempts WHERE tenant_id = '{b}') || '|' || \
-                        (SELECT string_agg(status || version, ',') FROM task_nodes WHERE tenant_id = '{b}') || '|' || \
-                        (SELECT count(*) FROM ledger_entries WHERE tenant_id = '{b}') || '|' || \
-                        (SELECT count(*) FROM outbox WHERE tenant_id = '{b}') || '|' || \
-                        (SELECT count(*) FROM audit_events WHERE tenant_id = '{b}') || '|' || \
-                        (SELECT count(*) FROM artifacts WHERE tenant_id = '{b}')",
-                b = b.as_uuid()
-            ))
-            .await
-            .expect("state")
-    };
-    let before = state_of_b().await;
-
-    // Tenant A calls every method with B's identifiers.
-    let mut tx = scene.tenant_tx(a).await;
-    let version = Version::FIRST;
-    let stale_epoch = LeaseEpoch::new(1);
-    assert_eq!(
-        tx.get_job(job_b).await,
-        Err(StoreError::NotFound),
-        "get_job"
-    );
-    let admit = AppliedTransition::plan(JobStatus::Received, JobEvent::Admit, now()).expect("J01");
-    assert_eq!(
-        tx.transition_job(job_b, version, admit).await,
-        Err(StoreError::NotFound),
-        "transition_job"
-    );
-    assert_eq!(
-        tx.insert_stage_run(NewStageRun {
-            id: scene.ids.stage_run(),
-            job_id: job_b,
-            kind: StageKind::Intake,
-            created_at: now()
-        })
-        .await,
-        Err(StoreError::NotFound),
-        "insert_stage_run under B's job"
-    );
-    assert_eq!(
-        tx.get_stage_run(run_b).await,
-        Err(StoreError::NotFound),
-        "get_stage_run"
-    );
-    let ready = AppliedTransition::plan(
-        factory_domain::state::StageRunStatus::Pending,
-        factory_domain::state::StageRunEvent::PreconditionsMet,
-        now(),
-    )
-    .expect("S01");
-    assert_eq!(
-        tx.transition_stage_run(run_b, version, ready).await,
-        Err(StoreError::NotFound),
-        "transition_stage_run"
-    );
-    assert_eq!(
-        tx.claim_ready(
-            &factory_ports::store::WorkerId::new("w").expect("w"),
-            1,
-            Duration::from_secs(1)
-        )
-        .await
-        .map(|_| ()),
-        Err(StoreError::ScopeNotAllowed)
-    );
-    assert_eq!(
-        tx.expired_leases(1).await.map(|_| ()),
-        Err(StoreError::ScopeNotAllowed)
-    );
-    assert_eq!(
-        tx.insert_attempt(NewAttempt {
-            id: scene.ids.attempt(),
-            stage_run_id: run_b,
-            epoch: stale_epoch,
-            created_at: now()
-        })
-        .await
-        .map(|_| ()),
-        Err(StoreError::NotFound),
-        "insert_attempt"
-    );
-    assert_eq!(
-        tx.get_attempt(attempt_b).await.map(|_| ()),
-        Err(StoreError::NotFound),
-        "get_attempt"
-    );
-    assert_eq!(
-        tx.heartbeat(attempt_b, stale_epoch).await,
-        Err(StoreError::NotFound),
-        "heartbeat"
-    );
-    let started =
-        AppliedTransition::plan(AttemptStatus::INITIAL, AttemptEvent::SandboxReady, now())
-            .expect("A01");
-    assert_eq!(
-        tx.transition_attempt(attempt_b, version, stale_epoch, started)
-            .await,
-        Err(StoreError::NotFound),
-        "transition_attempt"
-    );
-    assert_eq!(
-        tx.get_task_node(node_b).await.map(|_| ()),
-        Err(StoreError::NotFound),
-        "get_task_node"
-    );
-    let ready_node = AppliedTransition::plan(
-        TaskNodeStatus::Pending,
-        TaskNodeEvent::DependenciesSatisfied,
-        now(),
-    )
-    .expect("T01");
-    assert_eq!(
-        tx.transition_task_node(node_b, version, ready_node).await,
-        Err(StoreError::NotFound),
-        "transition_task_node"
-    );
-    assert_eq!(
-        tx.insert_task_node(NewTaskNode {
-            id: scene.ids.task_node(),
-            job_id: job_b,
-            key: Slug::parse("t-002").expect("slug"),
-            created_at: now()
-        })
-        .await
-        .map(|_| ()),
-        Err(StoreError::NotFound),
-        "insert_task_node under B's job"
-    );
-    let entry = ledger_entry(
-        &scene.ids,
-        job_b,
-        run_b,
-        1,
-        None,
-        &now(),
-        "A tries B's chain.",
-    );
-    assert_eq!(
-        tx.append_ledger_entry(entry).await.map(|_| ()),
-        Err(StoreError::NotFound),
-        "append_ledger_entry"
-    );
-    assert_eq!(
-        tx.ledger_head(job_b).await,
-        Err(StoreError::NotFound),
-        "ledger_head"
-    );
-    assert_eq!(
-        tx.read_ledger(job_b, 1, 10).await.map(|_| ()),
-        Err(StoreError::NotFound),
-        "read_ledger"
-    );
-    assert_eq!(
-        tx.enqueue_event(domain_event(&scene.ids, b, job_b, 2, &now()))
-            .await,
-        Err(StoreError::TenantMismatch),
-        "an event naming B"
-    );
-    assert_eq!(
-        tx.enqueue_event(domain_event(&scene.ids, a, job_b, 2, &now()))
-            .await,
-        Err(StoreError::NotFound),
-        "an event of A for B's job"
-    );
-    assert_eq!(
-        tx.read_events(job_b, OutboxSeq::START, 10)
-            .await
-            .map(|_| ()),
-        Err(StoreError::NotFound),
-        "read_events"
-    );
-    let audit = AuditEvent {
-        job_id: job_b,
-        actor: AuditActor::Component(Slug::parse("workflow.engine").expect("slug")),
-        action: Slug::parse("job.admitted").expect("slug"),
-        policy_hash: Sha256Digest::of(b"policy"),
-        correlation_id: scene.ids.correlation(),
-        occurred_at: now(),
-    };
-    assert_eq!(
-        tx.record_audit(audit).await,
-        Err(StoreError::NotFound),
-        "record_audit"
-    );
-    assert_eq!(
-        tx.read_audit(job_b, 10).await.map(|_| ()),
-        Err(StoreError::NotFound),
-        "read_audit"
-    );
-    assert_eq!(
-        tx.get_artifact_index(&artifact.sha256).await.map(|_| ()),
-        Err(StoreError::NotFound),
-        "get_artifact_index"
-    );
-    assert_eq!(
-        tx.get_principal(principal_b).await.map(|_| ()),
-        Err(StoreError::NotFound),
-        "get_principal"
-    );
-    // A job for A cannot name B's principal as its requester.
-    assert!(matches!(
-        tx.insert_job(NewJob {
-            id: scene.ids.job(),
-            correlation_id: scene.ids.correlation(),
-            requester: principal_b,
-            created_at: now()
-        })
-        .await
-        .map(|_| ()),
-        Err(StoreError::Constraint(_))
-    ));
-    drop(tx);
-
-    // Tenant A may use the same external reference as B: references are unique per tenant.
-    let mut tx = scene.tenant_tx(a).await;
-    let reference = scene
+    let job = scene.active_job(scene.a).await;
+    let run = scene.ready_stage_run(scene.a, job).await;
+    let started = scene.start(scene.a, run, "worker-1").await.expect("start");
+    let attempt = started.attempt.value.id;
+    let hash = Sha256Digest::of(b"a blob of A");
+    let principal_a = scene.principal(scene.a).await;
+    let before = scene
         .db
         .text(&format!(
-            "SELECT coalesce(login, github_user_id::text) FROM principals WHERE id = '{}'",
-            principal_b.as_uuid()
+            "SELECT version || '|' || status FROM jobs WHERE id = '{}'",
+            job.as_uuid()
         ))
-        .await
-        .expect("ref");
-    tx.insert_principal(NewPrincipal {
-        id: scene.ids.principal(),
-        external_ref: NonEmptyString::parse(&reference).expect("ref"),
-        created_at: now(),
-    })
-    .await
-    .expect("the same reference in another tenant");
-    drop(tx);
+        .await;
 
-    assert_eq!(
-        state_of_b().await,
-        before,
-        "tenant B's rows are as they were"
+    // A fresh transaction of B for every call: a failure of the database aborts a transaction.
+    macro_rules! as_b {
+        ($tx:ident => $call:expr, $expected:expr, $what:expr) => {{
+            let mut $tx = scene.tx(scene.b).await;
+            assert_eq!($call.await.map(|_| ()), $expected, $what);
+        }};
+    }
+    let refused = Err(StoreError::NotFound);
+    let mut tx = scene.tx(scene.b).await;
+    assert_eq!(tx.get_job(job).await.map(|_| ()), refused.clone());
+    drop(tx);
+    as_b!(tx => tx.list_stage_runs(job), refused.clone(), "list_stage_runs");
+    as_b!(tx => tx.get_stage_run(run), refused.clone(), "get_stage_run");
+    as_b!(tx => tx.postpone_stage_run(run, Version::FIRST, Duration::from_secs(1)), refused.clone(), "postpone");
+    as_b!(tx => tx.get_attempt(attempt), refused.clone(), "get_attempt");
+    as_b!(tx => tx.list_attempts(run), refused.clone(), "list_attempts");
+    as_b!(
+        tx => tx.heartbeat(
+            Fence {
+                attempt,
+                epoch: started.attempt.value.epoch,
+                worker: WorkerId::new("worker-1").expect("name"),
+            },
+            Duration::from_secs(60),
+        ),
+        Err(StoreError::LeaseFenced),
+        "heartbeat"
     );
+    as_b!(
+        tx => tx.record_sandbox(
+            attempt,
+            SandboxRecord { sandbox: SandboxId::new("sandbox-1".to_owned()), leaked: true },
+        ),
+        refused.clone(),
+        "record_sandbox"
+    );
+    as_b!(tx => tx.list_task_nodes(run), refused.clone(), "list_task_nodes");
+    as_b!(tx => tx.task_dependencies(run), refused.clone(), "task_dependencies");
+    as_b!(tx => tx.list_stage_run_artifacts(run), refused.clone(), "list_stage_run_artifacts");
+    as_b!(tx => tx.list_approvals(job), refused.clone(), "list_approvals");
+    as_b!(
+        tx => tx.valid_approvals(job, &GitSha::parse(&"a".repeat(40)).expect("sha")),
+        refused.clone(),
+        "valid_approvals"
+    );
+    as_b!(tx => tx.invalidate_approvals(job, ApprovalInvalidation::NewCommit), refused.clone(), "invalidate_approvals");
+    as_b!(tx => tx.ledger_head(job), refused.clone(), "ledger_head");
+    as_b!(tx => tx.read_ledger(job, 1, 10), refused.clone(), "read_ledger");
+    as_b!(tx => tx.read_events(job, OutboxSeq::START, 10), refused.clone(), "read_events");
+    as_b!(tx => tx.read_audit(AuditFilter::Job(job), 0, 10), refused.clone(), "read_audit");
+    as_b!(tx => tx.get_original_request(job, None), refused.clone(), "get_original_request");
+    as_b!(tx => tx.get_repository(scene.repository(scene.a)), refused.clone(), "get_repository");
+    as_b!(
+        tx => tx.record_protection_preflight(scene.repository(scene.a), Version::FIRST, true),
+        refused.clone(),
+        "record_protection_preflight"
+    );
+    as_b!(tx => tx.get_principal(principal_a), refused.clone(), "get_principal");
+    as_b!(tx => tx.get_artifact_index(&hash), refused.clone(), "get_artifact_index");
+    // Lookups by a number a tenant may not learn.
+    let mut tx = scene.tx(scene.b).await;
+    assert_eq!(tx.stage_runs_consuming(job, &hash).await, Ok(Vec::new()));
+    assert_eq!(tx.find_principal_by_github_user(1).await, Ok(None));
+    drop(tx);
+    // Writes that name A's job, with B's own tenant on the value, find no such job.
+    let event = domain_event(&scene.ids, scene.b, job, 1, &at());
+    as_b!(tx => tx.enqueue_event(event), refused.clone(), "enqueue_event");
+    // And a value that names A as its tenant, sent through B's transaction, is a mismatch.
+    let event = domain_event(&scene.ids, scene.a, job, 1, &at());
+    as_b!(
+        tx => tx.enqueue_event(event),
+        Err(StoreError::TenantMismatch),
+        "an event naming another tenant"
+    );
+    let entry = ledger_entry(&scene.ids, job, run, 1, None, &at(), "Not B's.");
+    as_b!(tx => tx.append_ledger_entry(entry), refused.clone(), "append_ledger_entry");
+    let request = factory_ports::store::NewOriginalRequest {
+        id: scene.ids.uuid7(),
+        job,
+        revision: 1,
+        source: factory_ports::store::RequestSource::Api,
+        source_ref: None,
+        author_github_user_id: None,
+        text: "Not B's.".to_owned(),
+    };
+    as_b!(tx => tx.record_original_request(request), refused.clone(), "record_original_request");
+
+    // A's rows are as they were.
+    let after = scene
+        .db
+        .text(&format!(
+            "SELECT version || '|' || status FROM jobs WHERE id = '{}'",
+            job.as_uuid()
+        ))
+        .await;
+    assert_eq!(before, after, "the job of A did not change");
+    assert_eq!(scene.attempts_of(run).await.len(), 1);
+    assert_eq!(
+        scene
+            .db
+            .number(&format!(
+                "SELECT count(*) FROM ledger_entries WHERE tenant_id = '{}'",
+                scene.b.as_uuid()
+            ))
+            .await,
+        0
+    );
+}
+
+/// The system login finds work and writes nothing: a tenant write on the system pool is refused
+/// by the database before any policy is asked.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_system_login_cannot_write_a_tenant_row() {
+    let scene = Scene::new().await;
+    let job = scene.active_job(scene.a).await;
+    let run = scene.ready_stage_run(scene.a, job).await;
+    scene.start(scene.a, run, "worker-1").await.expect("start");
+    let engine = scene.db.server.logins().await.engine.clone();
+    for (what, sql) in [
+        (
+            "UPDATE of a stage run",
+            format!(
+                "UPDATE stage_runs SET version = version + 1 WHERE id = '{}'",
+                run.as_uuid()
+            ),
+        ),
+        (
+            "UPDATE of an attempt",
+            "UPDATE attempts SET status = 'FAILED'".to_owned(),
+        ),
+        (
+            "INSERT of a job",
+            format!(
+                "INSERT INTO jobs (tenant_id, id, repository_id, requester_principal_id, execution_mode, \
+                        autonomy_level, pipeline_scope, correlation_id) \
+                 SELECT tenant_id, '{}', repository_id, requester_principal_id, execution_mode, \
+                        autonomy_level, pipeline_scope, '{}' FROM jobs LIMIT 1",
+                uuid::Uuid::from_u128(11),
+                uuid::Uuid::from_u128(12)
+            ),
+        ),
+        ("DELETE of a job", "DELETE FROM jobs".to_owned()),
+    ] {
+        let outcome = as_login(
+            &scene.db,
+            &engine,
+            None,
+            &format!("WITH w AS ({sql} RETURNING 1) SELECT count(*)::text AS v FROM w"),
+        )
+        .await;
+        assert!(
+            outcome
+                .as_ref()
+                .is_err_and(|text| text.contains("permission denied")),
+            "{what} must be refused to the system login: {outcome:?}"
+        );
+    }
+    // What it may do: find, by the named columns of the grant.
+    let found = as_login(
+        &scene.db,
+        &engine,
+        None,
+        "SELECT count(*)::text AS v FROM (SELECT tenant_id, id, version, not_before FROM stage_runs) s",
+    )
+    .await;
+    assert_eq!(found, Ok(Some("1".to_owned())));
+    // But not every column: the system role reads named columns only.
+    let all = as_login(
+        &scene.db,
+        &engine,
+        None,
+        "SELECT count(*)::text AS v FROM (SELECT * FROM stage_runs) s",
+    )
+    .await;
+    assert!(all.is_err_and(|text| text.contains("permission denied")));
 }

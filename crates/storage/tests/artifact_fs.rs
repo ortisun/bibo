@@ -2,10 +2,10 @@
 //! see: read-only blobs, idempotent writes, atomic writes under concurrency, a damaged blob, and
 //! the refusal to follow a symbolic link out of the root.
 //!
-//! Ports v1.1 moved the tenant check into the port (`get` and `exists` take a `TenantScope` and read
-//! through the tenant's index row), which this store cannot do without a `Store`. The shared
-//! contract suite is therefore compiled out (`#[cfg(any())]`) until the Postgres adaptation, and
-//! the file system properties below use `get_unscoped` and `exists_unscoped`.
+//! The store reads a tenant's index row before it reads a blob (ports v1.1, decision 9), so it
+//! needs a `Store`. These tests use the in-memory store of the testkit for that, which keeps the
+//! file system properties free of a database. The same checks against the PostgreSQL store, with
+//! the index row under row-level security, are in `artifact_scope.rs`.
 #![allow(clippy::disallowed_methods, clippy::disallowed_types)]
 
 use std::os::unix::fs::{MetadataExt, PermissionsExt, symlink};
@@ -14,13 +14,17 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
-#[cfg(any())]
 use async_trait::async_trait;
+use factory_domain::contracts::ArtifactRef;
+use factory_domain::scope::TenantScope;
 use factory_domain::values::{MediaType, Sha256Digest};
 use factory_ports::artifact::{ArtifactBackend, ArtifactError, ArtifactStore};
+use factory_ports::store::{NewArtifactIndexEntry, Store};
 use factory_storage::artifact_fs::LocalFsArtifactStore;
-#[cfg(any())]
+use factory_testkit::clock::FakeClock;
 use factory_testkit::contracts::artifact::{ArtifactStoreSubject, run};
+use factory_testkit::fixtures::Ids;
+use factory_testkit::store::InMemoryStore;
 
 static NEXT: AtomicUsize = AtomicUsize::new(0);
 
@@ -70,29 +74,52 @@ fn blob_path(root: &Path, sha256: &Sha256Digest) -> PathBuf {
 
 const LIMIT: u64 = 64 * 1024;
 
-fn store_in(scratch: &Scratch) -> LocalFsArtifactStore {
-    LocalFsArtifactStore::open(scratch.root(), LIMIT).expect("open the store")
+/// A store that keeps the tenants' index rows in memory.
+fn index_store() -> Arc<InMemoryStore> {
+    Arc::new(InMemoryStore::new(Arc::new(FakeClock::new())))
 }
 
-#[cfg(any())]
+fn store_in(scratch: &Scratch) -> LocalFsArtifactStore {
+    LocalFsArtifactStore::open(scratch.root(), LIMIT, index_store()).expect("open the store")
+}
+
 struct LocalSubject {
     scratch: Scratch,
     store: LocalFsArtifactStore,
+    index: Arc<InMemoryStore>,
+    scopes: (TenantScope, TenantScope),
 }
 
-#[cfg(any())]
+impl LocalSubject {
+    fn new() -> Self {
+        let scratch = Scratch::new();
+        let index = index_store();
+        let store = LocalFsArtifactStore::open(scratch.root(), LIMIT, index.clone())
+            .expect("open the store");
+        let ids = Ids::new();
+        let scopes = (
+            TenantScope::new(ids.tenant()),
+            TenantScope::new(ids.tenant()),
+        );
+        Self {
+            scratch,
+            store,
+            index,
+            scopes,
+        }
+    }
+}
+
 #[async_trait]
 impl ArtifactStoreSubject for LocalSubject {
     fn store(&self) -> &dyn ArtifactStore {
         &self.store
     }
 
-    #[cfg(any())]
     fn max_object_bytes(&self) -> u64 {
         LIMIT
     }
 
-    #[cfg(any())]
     /// Changes one byte of the file. The blob is read-only, so the owner makes it writable first.
     async fn corrupt_blob(&self, sha256: &Sha256Digest) {
         let path = blob_path(&self.scratch.root(), sha256);
@@ -101,17 +128,30 @@ impl ArtifactStoreSubject for LocalSubject {
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).expect("chmod");
         std::fs::write(&path, bytes).expect("rewrite the blob");
     }
+
+    fn scope(&self) -> TenantScope {
+        self.scopes.0
+    }
+
+    fn other_scope(&self) -> TenantScope {
+        self.scopes.1
+    }
+
+    async fn index_for(&self, scope: &TenantScope, reference: &ArtifactRef) {
+        let mut tx = self.index.begin(*scope).await.expect("begin");
+        tx.index_artifact(NewArtifactIndexEntry {
+            artifact: reference.clone(),
+            origin: None,
+        })
+        .await
+        .expect("index the artifact");
+        tx.commit().await.expect("commit the index row");
+    }
 }
 
-#[cfg(any())]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn the_shared_artifact_contract_suite_against_the_local_file_system() {
-    let report = run(|| async {
-        let scratch = Scratch::new();
-        let store = store_in(&scratch);
-        LocalSubject { scratch, store }
-    })
-    .await;
+    let report = run(|| async { LocalSubject::new() }).await;
     assert!(report.skipped.is_empty(), "skipped: {:?}", report.skipped);
     report.assert_ok();
 }

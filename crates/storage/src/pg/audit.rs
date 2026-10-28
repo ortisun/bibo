@@ -1,102 +1,42 @@
-//! The audit log: append and read.
+//! The audit log: append only, one hash chain per tenant (NT-AUD-01).
 //!
-//! The database assigns the sequence, the time, the links and the hash (negative test NT-AUD-04),
-//! so this module supplies only the facts of the event. The port's `AuditEvent` has no decision
-//! and no reason, and the table requires both: every event is stored with the decision `record`
-//! and the reason `recorded by the store`, because the port records that something happened and
-//! not a policy verdict.
+//! The database assigns the sequence, the time and the hash. The caller supplies the event and
+//! never a time. An event with no job is allowed (a rejected issue, FR-002); an event that names a
+//! stage run needs a job. The platform audit (`Store::record_platform_audit`) is the same
+//! statement in a transaction for the platform tenant, and has no job.
 //!
-//! The audit trigger takes a per-tenant advisory lock that lasts until the transaction ends. A
-//! transaction should write its audit events last (`docs/database/ledger-and-audit.md`).
+//! A replay of the same event id and content is a no-op that returns the stored record. It takes no
+//! sequence number, so the chain has no gap.
 
-use diesel::QueryableByName;
-use diesel::sql_query;
-use diesel::sql_types::{Text, Timestamptz, Uuid as SqlUuid};
+use async_trait::async_trait;
+use diesel::sql_types::{BigInt, Bool, Nullable, Text, Timestamptz, Uuid as SqlUuid};
+use diesel::{OptionalExtension, QueryableByName, sql_query};
 use diesel_async::{AsyncPgConnection, RunQueryDsl};
-use factory_domain::ids::{JobId, PrincipalId, TenantId};
-use factory_domain::values::Slug;
-use factory_ports::store::{AuditActor, AuditEvent, StoreError};
+use factory_domain::ids::{AuditEventId, CorrelationId, JobId, PrincipalId, StageRunId, TenantId};
+use factory_ports::store::{
+    AuditAction, AuditActor, AuditDecision, AuditFilter, AuditOps, AuditRecord, ConstraintRule,
+    NewAuditEvent, StoreError,
+};
 use time::OffsetDateTime;
 use uuid::Uuid;
 
-use super::cas::{Machine, exists};
+use super::cas::{Table, exists};
 use super::conv::{
-    correlation_from_column, correlation_to_column, corrupt, digest_from_column, from_column,
-    job_to_column, principal_to_column, tenant_to_column,
+    corrupt, digest_from_column, from_column, signed_to_column, slug_from_column,
+    unsigned_from_column,
 };
-use super::error::{Failure, constraint, generic};
+use super::error::database;
+use super::tx::{PgTx, call};
 
-const DECISION: &str = "record";
-const REASON: &str = "recorded by the store";
-
-#[derive(QueryableByName)]
-struct KindRow {
-    #[diesel(sql_type = Text)]
-    kind: String,
-}
-
-pub(super) async fn record(
-    connection: &mut AsyncPgConnection,
-    tenant: TenantId,
-    event: AuditEvent,
-) -> Result<(), StoreError> {
-    let tenant_raw = tenant_to_column(tenant);
-    let job_raw = job_to_column(event.job_id);
-    if !exists(
-        connection,
-        Machine::Job,
-        tenant_raw,
-        job_raw,
-        "record_audit",
-    )
-    .await?
-    {
-        return Err(StoreError::NotFound);
-    }
-    let (actor_type, actor_id) = match &event.actor {
-        AuditActor::Component(name) => ("system".to_owned(), name.as_str().to_owned()),
-        AuditActor::Principal(id) => {
-            let kind = sql_query("SELECT kind FROM principals WHERE tenant_id = $1 AND id = $2")
-                .bind::<SqlUuid, _>(tenant_raw)
-                .bind::<SqlUuid, _>(principal_to_column(*id))
-                .load::<KindRow>(connection)
-                .await
-                .map_err(|error| generic("record_audit", &error))?
-                .into_iter()
-                .next()
-                .ok_or(StoreError::NotFound)?
-                .kind;
-            (kind, id.to_string())
-        }
-    };
-    sql_query(
-        "INSERT INTO audit_events (tenant_id, event_id, actor_type, actor_id, action, subject, decision, \
-                reason, policy_hash, job_id, correlation_id) \
-         VALUES ($1, uuidv7(), $2, $3, $4, $5, $6, $7, $8, $9, $10)",
-    )
-    .bind::<SqlUuid, _>(tenant_raw)
-    .bind::<Text, _>(actor_type)
-    .bind::<Text, _>(actor_id)
-    .bind::<Text, _>(event.action.as_str())
-    .bind::<Text, _>(format!("job:{}", event.job_id))
-    .bind::<Text, _>(DECISION)
-    .bind::<Text, _>(REASON)
-    .bind::<Text, _>(event.policy_hash.as_str())
-    .bind::<SqlUuid, _>(job_raw)
-    .bind::<SqlUuid, _>(correlation_to_column(event.correlation_id))
-    .execute(connection)
-    .await
-    .map_err(|error| match Failure::of(&error) {
-        Failure::Check(name) => constraint("check violation", name.as_deref()),
-        Failure::ForeignKey(name) => constraint("foreign key violation", name.as_deref()),
-        Failure::Unique(name) => constraint("unique violation", name.as_deref()),
-        _ => generic("record_audit", &error),
-    })?;
-    Ok(())
-}
+const COLUMNS: &str = "sequence, event_id, actor_type, actor_id, action, subject, decision, \
+    reason, policy_hash, job_id, stage_run_id, correlation_id, created_at, hash";
 
 #[derive(QueryableByName)]
 struct AuditRow {
+    #[diesel(sql_type = BigInt)]
+    sequence: i64,
+    #[diesel(sql_type = SqlUuid)]
+    event_id: Uuid,
     #[diesel(sql_type = Text)]
     actor_type: String,
     #[diesel(sql_type = Text)]
@@ -104,53 +44,211 @@ struct AuditRow {
     #[diesel(sql_type = Text)]
     action: String,
     #[diesel(sql_type = Text)]
+    subject: String,
+    #[diesel(sql_type = Text)]
+    decision: String,
+    #[diesel(sql_type = Text)]
+    reason: String,
+    #[diesel(sql_type = Text)]
     policy_hash: String,
+    #[diesel(sql_type = Nullable<SqlUuid>)]
+    job_id: Option<Uuid>,
+    #[diesel(sql_type = Nullable<SqlUuid>)]
+    stage_run_id: Option<Uuid>,
     #[diesel(sql_type = SqlUuid)]
     correlation_id: Uuid,
     #[diesel(sql_type = Timestamptz)]
     created_at: OffsetDateTime,
+    #[diesel(sql_type = Text)]
+    hash: String,
 }
 
-pub(super) async fn read(
+fn actor_columns(actor: &AuditActor) -> (&'static str, String) {
+    match actor {
+        AuditActor::Human(id) => ("human", id.as_uuid().hyphenated().to_string()),
+        AuditActor::Service(id) => ("service", id.as_uuid().hyphenated().to_string()),
+        AuditActor::System(label) => ("system", label.as_str().to_owned()),
+        AuditActor::Anonymous(label) => ("anonymous", label.as_str().to_owned()),
+    }
+}
+
+fn actor_from_columns(kind: &str, id: &str) -> Result<AuditActor, StoreError> {
+    let principal = || {
+        Uuid::parse_str(id)
+            .map(PrincipalId::from_uuid)
+            .map_err(|_| corrupt("audit actor"))
+    };
+    Ok(match kind {
+        "human" => AuditActor::Human(principal()?),
+        "service" => AuditActor::Service(principal()?),
+        "system" => AuditActor::System(slug_from_column(id)?),
+        "anonymous" => AuditActor::Anonymous(slug_from_column(id)?),
+        _ => return Err(corrupt("audit actor")),
+    })
+}
+
+const fn decision_name(decision: AuditDecision) -> &'static str {
+    match decision {
+        AuditDecision::Allow => "allow",
+        AuditDecision::Deny => "deny",
+        AuditDecision::Record => "record",
+    }
+}
+
+fn decision_from_column(name: &str) -> Result<AuditDecision, StoreError> {
+    Ok(match name {
+        "allow" => AuditDecision::Allow,
+        "deny" => AuditDecision::Deny,
+        "record" => AuditDecision::Record,
+        _ => return Err(corrupt("audit decision")),
+    })
+}
+
+fn record_from_row(row: AuditRow) -> Result<AuditRecord, StoreError> {
+    Ok(AuditRecord {
+        sequence: unsigned_from_column(row.sequence, "audit sequence")?,
+        event: NewAuditEvent {
+            id: AuditEventId::from_uuid(row.event_id),
+            actor: actor_from_columns(&row.actor_type, &row.actor_id)?,
+            action: AuditAction::new(&row.action).map_err(|_| corrupt("audit action"))?,
+            subject: row.subject,
+            decision: decision_from_column(&row.decision)?,
+            reason: row.reason,
+            policy_hash: digest_from_column(&row.policy_hash)?,
+            job: row.job_id.map(JobId::from_uuid),
+            stage_run: row.stage_run_id.map(StageRunId::from_uuid),
+            correlation_id: CorrelationId::from_uuid(row.correlation_id),
+        },
+        created_at: from_column(row.created_at),
+        hash: digest_from_column(&row.hash)?,
+    })
+}
+
+#[derive(QueryableByName)]
+struct Found {
+    #[diesel(sql_type = Bool)]
+    found: bool,
+}
+
+async fn record(
     connection: &mut AsyncPgConnection,
     tenant: TenantId,
-    job: JobId,
-    limit: u32,
-) -> Result<Vec<AuditEvent>, StoreError> {
-    let tenant_raw = tenant_to_column(tenant);
-    let job_raw = job_to_column(job);
-    if !exists(connection, Machine::Job, tenant_raw, job_raw, "read_audit").await? {
-        return Err(StoreError::NotFound);
+    event: NewAuditEvent,
+) -> Result<AuditRecord, StoreError> {
+    let operation = "record_audit";
+    // A stage run needs a job, and both must be the tenant's. Checked here, so that a refusal
+    // does not abort the transaction; the schema checks the same (`audit_events_stage_run_needs_job`
+    // and the composite keys).
+    if event.stage_run.is_some() && event.job.is_none() {
+        return Err(StoreError::Constraint(ConstraintRule::TextBounds));
     }
-    let rows = sql_query(
-        "SELECT actor_type, actor_id, action, policy_hash, correlation_id, created_at \
-           FROM audit_events WHERE tenant_id = $1 AND job_id = $2 ORDER BY sequence LIMIT $3",
-    )
-    .bind::<SqlUuid, _>(tenant_raw)
-    .bind::<SqlUuid, _>(job_raw)
-    .bind::<diesel::sql_types::BigInt, _>(i64::from(limit))
+    if let Some(job) = event.job {
+        let named = sql_query(
+            "SELECT CASE WHEN $3::uuid IS NULL \
+                    THEN EXISTS (SELECT 1 FROM jobs WHERE tenant_id = $1 AND id = $2) \
+                    ELSE EXISTS (SELECT 1 FROM stage_runs \
+                                  WHERE tenant_id = $1 AND job_id = $2 AND id = $3) END AS found",
+        )
+        .bind::<SqlUuid, _>(tenant.as_uuid())
+        .bind::<SqlUuid, _>(job.as_uuid())
+        .bind::<Nullable<SqlUuid>, _>(event.stage_run.map(|run| run.as_uuid()))
+        .get_result::<Found>(connection)
+        .await
+        .map_err(|error| database(operation, &error))?;
+        if !named.found {
+            return Err(StoreError::NotFound);
+        }
+    }
+    let (actor_type, actor_id) = actor_columns(&event.actor);
+    let inserted = sql_query(format!(
+        "INSERT INTO audit_events (tenant_id, event_id, actor_type, actor_id, action, subject, \
+                decision, reason, policy_hash, job_id, stage_run_id, correlation_id) \
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12) \
+         ON CONFLICT (tenant_id, event_id) DO NOTHING RETURNING {COLUMNS}"
+    ))
+    .bind::<SqlUuid, _>(tenant.as_uuid())
+    .bind::<SqlUuid, _>(event.id.as_uuid())
+    .bind::<Text, _>(actor_type)
+    .bind::<Text, _>(actor_id)
+    .bind::<Text, _>(event.action.as_str())
+    .bind::<Text, _>(event.subject.as_str())
+    .bind::<Text, _>(decision_name(event.decision))
+    .bind::<Text, _>(event.reason.as_str())
+    .bind::<Text, _>(event.policy_hash.as_str())
+    .bind::<Nullable<SqlUuid>, _>(event.job.map(|job| job.as_uuid()))
+    .bind::<Nullable<SqlUuid>, _>(event.stage_run.map(|run| run.as_uuid()))
+    .bind::<SqlUuid, _>(event.correlation_id.as_uuid())
+    .get_result::<AuditRow>(connection)
+    .await
+    .optional()
+    .map_err(|error| database(operation, &error))?;
+    if let Some(row) = inserted {
+        return record_from_row(row);
+    }
+    // A replay: the same id and content gives the stored record, other content is a reuse.
+    let stored = sql_query(format!(
+        "SELECT {COLUMNS} FROM audit_events WHERE tenant_id = $1 AND event_id = $2"
+    ))
+    .bind::<SqlUuid, _>(tenant.as_uuid())
+    .bind::<SqlUuid, _>(event.id.as_uuid())
+    .get_result::<AuditRow>(connection)
+    .await
+    .map_err(|error| database(operation, &error))
+    .and_then(record_from_row)?;
+    if stored.event == event {
+        Ok(stored)
+    } else {
+        Err(StoreError::Constraint(
+            ConstraintRule::IdReusedWithDifferentContent,
+        ))
+    }
+}
+
+async fn read(
+    connection: &mut AsyncPgConnection,
+    tenant: TenantId,
+    filter: AuditFilter,
+    after_sequence: u64,
+    limit: u32,
+) -> Result<Vec<AuditRecord>, StoreError> {
+    let job = match filter {
+        AuditFilter::Tenant => None,
+        AuditFilter::Job(job) => {
+            if !exists(connection, Table::Jobs, tenant, job.as_uuid(), "read_audit").await? {
+                return Err(StoreError::NotFound);
+            }
+            Some(job.as_uuid())
+        }
+    };
+    sql_query(format!(
+        "SELECT {COLUMNS} FROM audit_events \
+          WHERE tenant_id = $1 AND ($2::uuid IS NULL OR job_id = $2) AND sequence > $3 \
+          ORDER BY sequence LIMIT $4"
+    ))
+    .bind::<SqlUuid, _>(tenant.as_uuid())
+    .bind::<Nullable<SqlUuid>, _>(job)
+    .bind::<BigInt, _>(signed_to_column(after_sequence))
+    .bind::<BigInt, _>(i64::from(limit))
     .load::<AuditRow>(connection)
     .await
-    .map_err(|error| generic("read_audit", &error))?;
-    rows.into_iter()
-        .map(|row| {
-            let actor = if row.actor_type == "system" {
-                AuditActor::Component(
-                    Slug::parse(&row.actor_id).map_err(|_| corrupt("audit actor"))?,
-                )
-            } else {
-                AuditActor::Principal(
-                    PrincipalId::parse(&row.actor_id).map_err(|_| corrupt("audit actor"))?,
-                )
-            };
-            Ok(AuditEvent {
-                job_id: job,
-                actor,
-                action: Slug::parse(&row.action).map_err(|_| corrupt("audit action"))?,
-                policy_hash: digest_from_column(&row.policy_hash)?,
-                correlation_id: correlation_from_column(row.correlation_id),
-                occurred_at: from_column(row.created_at),
-            })
-        })
-        .collect()
+    .map_err(|error| database("read_audit", &error))?
+    .into_iter()
+    .map(record_from_row)
+    .collect()
+}
+
+#[async_trait]
+impl AuditOps for PgTx {
+    async fn record_audit(&mut self, event: NewAuditEvent) -> Result<AuditRecord, StoreError> {
+        call!(self, connection, tenant => record(connection, tenant, event))
+    }
+
+    async fn read_audit(
+        &mut self,
+        filter: AuditFilter,
+        after_sequence: u64,
+        limit: u32,
+    ) -> Result<Vec<AuditRecord>, StoreError> {
+        call!(self, connection, tenant => read(connection, tenant, filter, after_sequence, limit))
+    }
 }

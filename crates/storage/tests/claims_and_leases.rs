@@ -1,32 +1,11 @@
-//! Claims, leases, fencing and the lock mode, against a real PostgreSQL server.
+//! The claim protocol of ports v1.1 on a real PostgreSQL server: a read-only search in the system
+//! scope, a start in the tenant scope, the lease on the attempt, the epoch that moves only when a
+//! run goes from `READY` to `RUNNING`, and the lock modes that keep the ledger, audit and outbox
+//! free while a start is open.
 //!
-//! A claim here is the claim of the schema: one tenant transaction moves the stage run to
-//! `RUNNING` with `lease_epoch + 1` and creates the attempt that carries the lease. The tests
-//! find that attempt with a superuser query, because the port gives a caller no way to ask for
-//! it. The shared contract checks that need the caller to name the attempt are excluded in
-//! `store_contract.rs`, and these tests cover the same properties.
-//!
-//! PENDING ADAPTATION TO PORTS V1.1. These tests drive the old `Store` write model (`claim_ready`,
-//! `insert_attempt`, event payloads, `ScopeNotAllowed`) and do not compile against the revised
-//! traits, so the whole file is compiled out with `#![cfg(any())]`. The Postgres adaptation
-//! package rewrites each test against the new traits and removes the attribute. The test names
-//! below are the ones that package must account for.
-//!
-//! * `concurrent_claim_has_one_winner`
-//! * `two_claimers_holding_open_transactions_cannot_take_the_same_row`
-//! * `a_claim_sets_the_lease_and_raises_the_epoch`
-//! * `stale_lease_epoch_is_fenced`
-//! * `negative_nt_lse_02`
-//! * `a_heartbeat_renews_the_lease_by_the_database_clock`
-//! * `an_ended_attempt_cannot_be_heartbeated`
-//! * `expired_leases_lists_only_attempts_past_their_lease`
-//! * `lease_expiry_uses_database_time`
-//! * `claim_does_not_block_ledger_appends`
-//! * `a_lock_for_update_would_block_the_ledger_append`
-//! * `only_stage_runs_of_active_jobs_are_claimed_by_default`
-//! * `a_dropped_claim_frees_the_stage_run_for_the_next_begin`
-
-#![cfg(any())]
+//! The shared contract suite (`store_contract.rs`) runs the port's rules. This file adds what only
+//! a database can show: eight real tasks racing for one candidate, two finders with open
+//! transactions, the exact lock mode, and the database refusing a second live attempt by itself.
 
 mod support;
 
@@ -34,421 +13,323 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use diesel_async::SimpleAsyncConnection;
-use factory_domain::state::{AttemptEvent, AttemptStatus, Status};
-use factory_ports::clock::duration_between;
-use factory_ports::store::{AppliedTransition, LeaseEpoch, StoreError};
-use factory_testkit::clock::FakeClock;
-use factory_testkit::fixtures::ledger_entry;
-use support::{Scene, now};
+use factory_domain::state::{AttemptStatus, Guard, StageRunStatus};
+use factory_domain::values::Slug;
+use factory_ports::store::{
+    AuditAction, AuditActor, AuditDecision, ConstraintRule, Fence, NewAuditEvent, StoreError,
+    WorkerId,
+};
+use factory_testkit::fixtures::cleared;
+use support::{Scene, at, start_in};
 use tokio::sync::Barrier;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn concurrent_claim_has_one_winner() {
-    let scene = Arc::new(Scene::new().await);
-    let job = scene.job(scene.a).await;
+async fn a_claim_sets_the_lease_on_the_attempt_and_raises_the_epoch_once() {
+    let scene = Scene::new().await;
+    let job = scene.active_job(scene.a).await;
     let run = scene.ready_stage_run(scene.a, job).await;
 
-    // Eight workers reach the claim at the same moment.
-    let barrier = Arc::new(Barrier::new(8));
-    let mut workers = Vec::new();
-    for number in 0..8 {
-        let (scene, barrier) = (scene.clone(), barrier.clone());
-        workers.push(tokio::spawn(async move {
-            barrier.wait().await;
-            scene.claim(&format!("worker-{number}"), 5).await.len()
-        }));
-    }
-    let mut winners = 0;
-    for worker in workers {
-        winners += worker.await.expect("a worker does not panic");
-    }
-    assert_eq!(winners, 1, "exactly one claimer wins the ready stage run");
+    let mut sys = scene.system().await;
+    let found = sys.find_claim_candidates(10).await.expect("find");
+    sys.finish().await.expect("finish");
+    assert_eq!(found.len(), 1);
+    assert_eq!(found[0].stage_run, run);
 
-    let attempts = scene.attempts_of(run).await;
-    assert_eq!(
-        attempts.len(),
-        1,
-        "one claim made one attempt: {attempts:?}"
+    let started = scene.start(scene.a, run, "worker-1").await.expect("start");
+    assert_eq!(started.stage_run.value.status, StageRunStatus::Running);
+    assert_eq!(started.stage_run.value.lease_epoch.get(), 1);
+    assert_eq!(started.attempt.value.status, AttemptStatus::Starting);
+    assert_eq!(started.attempt.value.epoch.get(), 1);
+    assert_eq!(started.attempt.value.number, 1);
+    assert_eq!(started.attempt.value.worker.as_str(), "worker-1");
+    // The lease is on the attempt, taken from the database clock.
+    let window = started
+        .attempt
+        .value
+        .lease_expires_at
+        .duration_since(&started.attempt.value.created_at)
+        .expect("the lease ends after the attempt began");
+    assert!(
+        window >= Duration::from_secs(59) && window <= Duration::from_secs(61),
+        "the lease lasts the 60 seconds asked for, not the caller's clock: {window:?}"
     );
-    assert_eq!(attempts[0].2, "STARTING");
+
+    // The epoch moves with READY to RUNNING and with nothing else: a retry keeps it until the next
+    // start.
+    scene
+        .fail_and_retry(scene.a, &started, Duration::ZERO)
+        .await;
     assert_eq!(
         scene
             .db
-            .text(&format!(
-                "SELECT status || ':' || lease_epoch FROM stage_runs WHERE id = '{}'",
+            .number(&format!(
+                "SELECT lease_epoch FROM stage_runs WHERE id = '{}'",
                 run.as_uuid()
             ))
-            .await
-            .as_deref(),
-        Some("RUNNING:1"),
-        "the stage run is RUNNING at epoch 1"
+            .await,
+        1,
+        "ending the attempt and retrying does not raise the epoch"
     );
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn two_claimers_holding_open_transactions_cannot_take_the_same_row() {
-    let scene = Scene::new().await;
-    let job = scene.job(scene.a).await;
-    scene.ready_stage_run(scene.a, job).await;
-    let worker = |name: &str| factory_ports::store::WorkerId::new(name).expect("worker");
-    let mut first = scene.system_tx().await;
-    let mut second = scene.system_tx().await;
-    let ttl = Duration::from_secs(30);
-    let got = first
-        .claim_ready(&worker("worker-1"), 10, ttl)
-        .await
-        .expect("first");
-    assert_eq!(got.len(), 1);
-    // The first transaction has not committed. The second must skip the row, not wait for it.
-    let skipped = second
-        .claim_ready(&worker("worker-2"), 10, ttl)
-        .await
-        .expect("second");
-    assert_eq!(skipped.len(), 0);
-    first.commit().await.expect("commit");
-    drop(second);
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_claim_sets_the_lease_and_raises_the_epoch() {
-    let scene = Scene::new().await;
-    let job = scene.job(scene.a).await;
-    let run = scene.ready_stage_run(scene.a, job).await;
-    let mut system = scene.system_tx().await;
-    let before = system.database_time().await.expect("time");
-    drop(system);
-    let ttl = Duration::from_secs(45);
-    let claimed = scene.claim_for("worker-1", 10, ttl).await;
-    assert_eq!(claimed.len(), 1);
-    let work = &claimed[0];
-    assert_eq!(work.stage_run.value.id, run);
-    assert_eq!(work.lease.epoch, LeaseEpoch::new(1));
-    assert_eq!(work.lease.worker.as_str(), "worker-1");
-    assert_eq!(work.lease.ttl, ttl);
-    let expires_in = duration_between(&before, &work.lease.expires_at).expect("after the claim");
-    assert!(
-        expires_in >= ttl && expires_in <= ttl + Duration::from_secs(2),
-        "the lease ends one ttl after the database time: {expires_in:?}"
-    );
-
-    // What the claim stored is what a later read shows.
-    let mut tx = scene.tenant_tx(scene.a).await;
-    let stored = tx.get_stage_run(run).await.expect("get");
-    assert_eq!(stored.value.lease_epoch, LeaseEpoch::new(1));
-    assert_eq!(stored.value.lease.as_ref(), Some(&work.lease));
-
-    // A second claim finds nothing while the lease lasts.
-    assert!(scene.claim("worker-2", 10).await.is_empty());
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn stale_lease_epoch_is_fenced() {
-    let scene = Scene::new().await;
-    let job = scene.job(scene.a).await;
-    let run = scene.ready_stage_run(scene.a, job).await;
-
-    // Worker 1 claims with a lease of one second and goes quiet.
-    let first = scene.claim_for("worker-1", 1, Duration::from_secs(1)).await;
-    let old_epoch = first[0].lease.epoch;
-    let (old_attempt, ..) = scene.newest_attempt(run).await;
-    tokio::time::sleep(Duration::from_millis(1400)).await;
-
-    // Worker 2 takes the run over. The old attempt is closed and the epoch rises.
     let second = scene
-        .claim_for("worker-2", 1, Duration::from_secs(60))
-        .await;
-    assert_eq!(second.len(), 1, "an expired lease can be claimed again");
-    let new_epoch = second[0].lease.epoch;
-    assert!(
-        new_epoch > old_epoch,
-        "the epoch must rise: {old_epoch:?} then {new_epoch:?}"
-    );
-    let (new_attempt, number, status, _) = scene.newest_attempt(run).await;
-    assert_eq!((number, status.as_str()), (2, "STARTING"));
-    assert_eq!(
-        scene.attempts_of(run).await[0].2,
-        "LEASE_LOST",
-        "the first attempt was closed by the takeover"
-    );
-
-    let mut tx = scene.tenant_tx(scene.a).await;
-    // The zombie's heartbeat and status change are refused.
-    assert_eq!(
-        tx.heartbeat(old_attempt, old_epoch).await,
-        Err(StoreError::LeaseFenced),
-        "a heartbeat from the worker that lost its lease"
-    );
-    let ready = AppliedTransition::plan(AttemptStatus::INITIAL, AttemptEvent::SandboxReady, now())
-        .expect("A01");
-    let version = factory_ports::store::Version::FIRST;
-    assert_eq!(
-        tx.transition_attempt(old_attempt, version, old_epoch, ready)
-            .await,
-        Err(StoreError::LeaseFenced),
-        "a status change from the worker that lost its lease"
-    );
-    // A write that carries the old epoch to the new attempt is refused as well. This is the case
-    // that an epoch check in the code, and only there, stops.
-    assert_eq!(
-        tx.transition_attempt(new_attempt, version, old_epoch, ready)
-            .await,
-        Err(StoreError::LeaseFenced),
-        "the old epoch against the new attempt"
-    );
-    assert_eq!(
-        tx.heartbeat(new_attempt, old_epoch).await,
-        Err(StoreError::LeaseFenced),
-        "the old epoch against the new attempt's heartbeat"
-    );
-    // The new worker is not affected.
-    tx.heartbeat(new_attempt, new_epoch)
+        .start(scene.a, run, "worker-2")
         .await
-        .expect("the new worker's heartbeat");
-    let untouched = tx.get_attempt(new_attempt).await.expect("get");
-    assert_eq!(untouched.value.status, AttemptStatus::Starting);
+        .expect("restart");
+    assert_eq!(second.stage_run.value.lease_epoch.get(), 2);
+    assert_eq!(second.attempt.value.number, 2);
+    assert_eq!(second.attempt.value.epoch.get(), 2);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn negative_nt_lse_02() {
+async fn eight_workers_claim_one_stage_run_and_one_wins() {
     let scene = Arc::new(Scene::new().await);
-    let job = scene.job(scene.a).await;
+    let job = scene.active_job(scene.a).await;
+    let run = scene.ready_stage_run(scene.a, job).await;
 
-    // 100 rounds. In each, two workers reach the claim of one ready stage run together.
-    let mut winners_in_a_row = 0;
-    let mut last = None;
-    for round in 0..100 {
-        let run = scene.ready_stage_run(scene.a, job).await;
-        let barrier = Arc::new(Barrier::new(2));
-        let mut racers = Vec::new();
-        for name in ["worker-a", "worker-b"] {
-            let (scene, barrier) = (scene.clone(), barrier.clone());
-            racers.push(tokio::spawn(async move {
-                barrier.wait().await;
-                // A little jitter, so the two interleave differently from round to round.
-                tokio::time::sleep(Duration::from_micros(((round * 37) % 500) as u64)).await;
-                scene.claim(name, 5).await.len()
-            }));
-        }
-        let mut winners = 0;
-        for racer in racers {
-            winners += racer.await.expect("racer");
-        }
-        assert_eq!(winners, 1, "round {round}: exactly one winner");
-        let attempts = scene.attempts_of(run).await;
-        assert_eq!(
-            attempts.len(),
-            1,
-            "round {round}: one attempt, found {attempts:?}"
-        );
-        winners_in_a_row += 1;
-        last = Some((run, attempts[0].0, attempts[0].3));
-    }
-    assert_eq!(winners_in_a_row, 100);
-
-    // A renewal by the wrong tenant is refused. It cannot even see the attempt.
-    let (_, attempt, epoch) = last.expect("a last round");
-    let epoch = LeaseEpoch::new(u64::try_from(epoch).expect("epoch"));
-    let mut stranger = scene.tenant_tx(scene.b).await;
-    assert_eq!(
-        stranger.heartbeat(attempt, epoch).await,
-        Err(StoreError::NotFound)
-    );
-    // A renewal that carries another epoch is refused.
-    let mut owner = scene.tenant_tx(scene.a).await;
-    assert_eq!(
-        owner.heartbeat(attempt, epoch.next()).await,
-        Err(StoreError::LeaseFenced)
-    );
-    assert_eq!(
-        owner.heartbeat(attempt, LeaseEpoch::NEVER_CLAIMED).await,
-        Err(StoreError::LeaseFenced)
-    );
-    // The holder's own renewal works.
-    owner
-        .heartbeat(attempt, epoch)
+    let mut sys = scene.system().await;
+    let candidate = sys
+        .find_claim_candidates(1)
         .await
-        .expect("the holder renews");
+        .expect("find")
+        .pop()
+        .expect("a candidate");
+    sys.finish().await.expect("finish");
+
+    // Every worker holds the same candidate and starts it at the same moment.
+    let barrier = Arc::new(Barrier::new(8));
+    let mut tasks = Vec::new();
+    for number in 0..8 {
+        let (scene, barrier) = (scene.clone(), barrier.clone());
+        tasks.push(tokio::spawn(async move {
+            let mut tx = scene.tx(scene.a).await;
+            barrier.wait().await;
+            let outcome = start_in(
+                &mut *tx,
+                candidate.stage_run,
+                candidate.version,
+                &format!("worker-{number}"),
+            )
+            .await;
+            match outcome {
+                Ok(started) => {
+                    tx.commit().await.expect("the winner commits");
+                    Some(started)
+                }
+                Err(error) => {
+                    assert_eq!(error, StoreError::Conflict, "every loser is told it lost");
+                    None
+                }
+            }
+        }));
+    }
+    let mut winners = 0;
+    for task in tasks {
+        if task.await.expect("the task does not panic").is_some() {
+            winners += 1;
+        }
+    }
+    assert_eq!(winners, 1, "exactly one worker wins");
+    let attempts = scene.attempts_of(run).await;
+    assert_eq!(attempts.len(), 1, "one attempt exists");
+    assert_eq!(attempts[0].3, 1, "at epoch one");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn two_finders_with_open_transactions_do_not_take_the_same_row() {
+    let scene = Scene::new().await;
+    let job = scene.active_job(scene.a).await;
+    let run = scene.ready_stage_run(scene.a, job).await;
+
+    let mut first = scene.system().await;
+    let mut second = scene.system().await;
+    let mine = first.find_claim_candidates(1).await.expect("find");
+    assert_eq!(mine.len(), 1);
+    // The row is locked `FOR NO KEY UPDATE SKIP LOCKED`: the second finder skips it.
+    let theirs = second.find_claim_candidates(1).await.expect("find");
+    assert!(theirs.is_empty(), "the second finder skips the locked row");
+    first.finish().await.expect("finish");
+    // The lock lasted to the end of the first transaction.
+    let again = second.find_claim_candidates(1).await.expect("find");
+    assert_eq!(again.len(), 1);
+    assert_eq!(again[0].stage_run, run);
+    second.finish().await.expect("finish");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_second_live_attempt_is_refused() {
+    let scene = Scene::new().await;
+    let job = scene.active_job(scene.a).await;
+    let run = scene.ready_stage_run(scene.a, job).await;
+    scene.start(scene.a, run, "worker-1").await.expect("start");
+
+    // A fault the engine must not have, made by an operator with the triggers off: the run is
+    // READY again while its attempt is still live. The commit rule would refuse this state, so it
+    // is made directly and not through the port.
+    scene
+        .db
+        .run(&format!(
+            "BEGIN; SET LOCAL session_replication_role = replica; \
+             UPDATE stage_runs SET status = 'READY' WHERE id = '{}'; COMMIT;",
+            run.as_uuid()
+        ))
+        .await;
+    let result = scene.start(scene.a, run, "worker-2").await;
+    assert_eq!(
+        result.map(|_| ()),
+        Err(StoreError::Constraint(ConstraintRule::OneLiveAttempt))
+    );
+
+    // The database refuses it too, with no help from the code: the unique index of one live
+    // attempt per stage run.
+    let mut admin = scene.db.admin().await;
+    let attempt = scene.attempts_of(run).await[0].0;
+    let refused = admin
+        .batch_execute(&format!(
+            "INSERT INTO attempts (tenant_id, id, job_id, stage_run_id, attempt_number, lease_owner, \
+                    lease_epoch, lease_expires_at, deadline_at) \
+             SELECT tenant_id, '{}', job_id, stage_run_id, 2, 'worker-3', lease_epoch, \
+                    now() + interval '1 minute', now() + interval '1 hour' \
+               FROM attempts WHERE id = '{attempt}'",
+            uuid::Uuid::from_u128(77)
+        ))
+        .await
+        .expect_err("a second live attempt");
+    assert!(
+        refused
+            .to_string()
+            .contains("attempts_one_active_per_stage_run")
+            || refused.to_string().contains("duplicate key"),
+        "the unique index answers: {refused}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_stale_epoch_is_fenced_at_the_statement_and_changes_nothing() {
+    let scene = Scene::new().await;
+    let job = scene.active_job(scene.a).await;
+    let run = scene.ready_stage_run(scene.a, job).await;
+    let first = scene.start(scene.a, run, "worker-1").await.expect("start");
+    scene.fail_and_retry(scene.a, &first, Duration::ZERO).await;
+    let second = scene
+        .start(scene.a, run, "worker-2")
+        .await
+        .expect("restart");
+
+    let mut tx = scene.tx(scene.a).await;
+    // The zombie holds the old attempt and the old epoch.
+    let zombie = Fence {
+        attempt: first.attempt.value.id,
+        epoch: first.attempt.value.epoch,
+        worker: WorkerId::new("worker-1").expect("name"),
+    };
+    let beat = tx.heartbeat(zombie, Duration::from_secs(60)).await;
+    assert!(
+        matches!(beat, Err(StoreError::LeaseFenced | StoreError::Conflict)),
+        "the zombie's heartbeat is refused: {beat:?}"
+    );
+    // The zombie's epoch against the live attempt is fenced, not conflicted.
+    let stale = Fence {
+        attempt: second.attempt.value.id,
+        epoch: first.attempt.value.epoch,
+        worker: WorkerId::new("worker-2").expect("name"),
+    };
+    assert_eq!(
+        tx.heartbeat(stale, Duration::from_secs(60)).await,
+        Err(StoreError::LeaseFenced)
+    );
+    // A transition under the old epoch changes nothing.
+    let current = tx.get_attempt(second.attempt.value.id).await.expect("read");
+    let ready = factory_ports::store::AppliedTransition::plan(
+        AttemptStatus::Starting,
+        factory_domain::state::AttemptEvent::SandboxReady,
+        at(),
+        cleared(Guard::SandboxProvisioned),
+    )
+    .expect("A01");
+    assert_eq!(
+        tx.transition_attempt(
+            current.value.id,
+            current.version,
+            first.attempt.value.epoch,
+            ready,
+            factory_ports::store::AttemptEnd::default()
+        )
+        .await,
+        Err(StoreError::LeaseFenced)
+    );
+    let unchanged = tx.get_attempt(second.attempt.value.id).await.expect("read");
+    assert_eq!(unchanged, current, "the attempt is as it was");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_heartbeat_renews_the_lease_by_the_database_clock() {
     let scene = Scene::new().await;
-    let job = scene.job(scene.a).await;
+    let job = scene.active_job(scene.a).await;
     let run = scene.ready_stage_run(scene.a, job).await;
-    let claimed = scene.claim_for("worker-1", 1, Duration::from_secs(3)).await;
-    let epoch = claimed[0].lease.epoch;
-    let first_expiry = claimed[0].lease.expires_at;
-    let (attempt, ..) = scene.newest_attempt(run).await;
-
-    tokio::time::sleep(Duration::from_millis(1500)).await;
-    let mut tx = scene.tenant_tx(scene.a).await;
-    tx.heartbeat(attempt, epoch).await.expect("heartbeat");
-    let renewed = tx
-        .get_stage_run(run)
+    let started = scene.start(scene.a, run, "worker-1").await.expect("start");
+    let mut tx = scene.tx(scene.a).await;
+    let fence = Fence {
+        attempt: started.attempt.value.id,
+        epoch: started.attempt.value.epoch,
+        worker: WorkerId::new("worker-1").expect("name"),
+    };
+    let renewal = tx
+        .heartbeat(fence, Duration::from_secs(300))
         .await
-        .expect("get")
-        .value
-        .lease
-        .expect("lease");
-    let gain = duration_between(&first_expiry, &renewed.expires_at).expect("later");
+        .expect("renew");
+    let now = tx.database_time().await.expect("time");
+    let ahead = renewal
+        .lease_expires_at
+        .duration_since(&now)
+        .expect("the lease ends in the future");
     assert!(
-        gain >= Duration::from_millis(1400) && gain <= Duration::from_millis(3500),
-        "the lease moved to now plus the ttl, about 1.5 seconds after the first expiry: {gain:?}"
-    );
-    assert_eq!(
-        renewed.ttl,
-        Duration::from_secs(3),
-        "a renewal keeps the ttl"
+        ahead >= Duration::from_secs(295) && ahead <= Duration::from_secs(301),
+        "the lease ends 300 seconds after the database time: {ahead:?}"
     );
 }
 
+/// A `start_attempt` that is open holds the job `FOR SHARE` and the stage run `FOR NO KEY UPDATE`.
+/// Neither stops an audit record (a `KEY SHARE` on both rows) from being written.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn an_ended_attempt_cannot_be_heartbeated() {
+async fn an_open_start_does_not_block_an_audit_insert() {
     let scene = Scene::new().await;
-    let job = scene.job(scene.a).await;
+    let job = scene.active_job(scene.a).await;
     let run = scene.ready_stage_run(scene.a, job).await;
-    let claimed = scene.claim("worker-1", 1).await;
-    let epoch = claimed[0].lease.epoch;
-    let (attempt, ..) = scene.newest_attempt(run).await;
-    let mut tx = scene.tenant_tx(scene.a).await;
-    let failed =
-        AppliedTransition::plan(AttemptStatus::INITIAL, AttemptEvent::ProvisionFailed, now())
-            .expect("A02");
-    tx.transition_attempt(attempt, factory_ports::store::Version::FIRST, epoch, failed)
+
+    let mut start = scene.tx(scene.a).await;
+    let version = start.get_stage_run(run).await.expect("read").version;
+    start_in(&mut *start, run, version, "worker-1")
         .await
-        .expect("end the attempt");
-    assert_eq!(
-        tx.heartbeat(attempt, epoch).await,
-        Err(StoreError::Conflict)
-    );
-}
+        .expect("start, not committed");
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn expired_leases_lists_only_attempts_past_their_lease() {
-    let scene = Scene::new().await;
-    let job = scene.job(scene.a).await;
-    let short = scene.ready_stage_run(scene.a, job).await;
-    scene.claim_for("worker-1", 1, Duration::from_secs(1)).await;
-    let long = scene.ready_stage_run(scene.a, job).await;
-    scene
-        .claim_for("worker-2", 1, Duration::from_secs(600))
-        .await;
-    let (short_attempt, ..) = scene.newest_attempt(short).await;
-    let (long_attempt, ..) = scene.newest_attempt(long).await;
-
-    let mut system = scene.system_tx().await;
-    assert!(
-        system.expired_leases(10).await.expect("list").is_empty(),
-        "no lease has ended yet"
-    );
-    drop(system);
-    tokio::time::sleep(Duration::from_millis(1400)).await;
-    let mut system = scene.system_tx().await;
-    let expired = system.expired_leases(10).await.expect("list");
-    assert_eq!(
-        expired,
-        vec![short_attempt],
-        "only the short lease has ended"
-    );
-    assert!(!expired.contains(&long_attempt));
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn lease_expiry_uses_database_time() {
-    let scene = Scene::new().await;
-    // The caller's clock is an hour behind the database. Everything the caller stamps is wrong
-    // by an hour, and no lease may follow it.
-    let skewed = FakeClock::new();
-    let mut system = scene.system_tx().await;
-    let database_now = system.database_time().await.expect("time");
-    drop(system);
-    let caller_now = factory_ports::clock::Clock::now(&skewed);
-    let skew = duration_between(&caller_now, &database_now);
-    assert!(
-        skew.is_some_and(|gap| gap > Duration::from_secs(3600)),
-        "the fake clock is far behind the database: {skew:?}"
-    );
-
-    let job = scene.job(scene.a).await;
-    let run = scene.ready_stage_run(scene.a, job).await;
-    let claimed = scene.claim_for("worker-1", 1, Duration::from_secs(2)).await;
-    let lease = &claimed[0].lease;
-    let from_database = duration_between(&database_now, &lease.expires_at).expect("future");
-    assert!(
-        from_database <= Duration::from_secs(4),
-        "the lease ends two seconds after the database time, not after the caller's clock: {from_database:?}"
-    );
-    let from_caller = duration_between(&caller_now, &lease.expires_at).expect("future");
-    assert!(
-        from_caller > Duration::from_secs(3600),
-        "it is far from the caller's clock: {from_caller:?}"
-    );
-
-    // It expires by the database clock, whatever the caller's clock says.
-    let (attempt, ..) = scene.newest_attempt(run).await;
-    let mut tx = scene.tenant_tx(scene.a).await;
-    tx.heartbeat(attempt, lease.epoch)
+    let mut audit = scene.tx(scene.a).await;
+    let event = NewAuditEvent {
+        id: factory_domain::ids::AuditEventId::from_uuid(uuid::Uuid::from_u128(901)),
+        actor: AuditActor::System(Slug::parse("workflow-engine").expect("slug")),
+        action: AuditAction::new("stage_run.started").expect("action"),
+        subject: "a stage run".to_owned(),
+        decision: AuditDecision::Record,
+        reason: "The start is open and holds its locks.".to_owned(),
+        policy_hash: factory_domain::values::Sha256Digest::of(b"policy"),
+        job: Some(job),
+        stage_run: Some(run),
+        correlation_id: scene.ids.correlation(),
+    };
+    tokio::time::timeout(Duration::from_secs(3), audit.record_audit(event))
         .await
-        .expect("alive at first");
-    drop(tx);
-    tokio::time::sleep(Duration::from_millis(2300)).await;
-    let mut tx = scene.tenant_tx(scene.a).await;
-    assert_eq!(
-        tx.heartbeat(attempt, lease.epoch).await,
-        Err(StoreError::LeaseFenced),
-        "the caller's clock has not moved, and the lease has ended"
-    );
-    drop(tx);
-    let mut system = scene.system_tx().await;
-    assert_eq!(system.expired_leases(5).await.expect("list"), vec![attempt]);
+        .expect("the audit insert is not blocked by the open start")
+        .expect("recorded");
+    audit.commit().await.expect("commit the audit");
+    start.commit().await.expect("commit the start");
 }
 
+/// The negative control of the test above: `FOR UPDATE` on the stage run does block an audit
+/// insert, which is why every lock in this crate is `FOR NO KEY UPDATE`.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn claim_does_not_block_ledger_appends() {
+async fn a_lock_for_update_would_block_the_audit_insert() {
     let scene = Scene::new().await;
-    let job = scene.job(scene.a).await;
+    let job = scene.active_job(scene.a).await;
     let run = scene.ready_stage_run(scene.a, job).await;
 
-    // A claimer holds the stage run in an open transaction.
-    let mut claimer = scene.system_tx().await;
-    let claimed = claimer
-        .claim_ready(
-            &factory_ports::store::WorkerId::new("worker-1").expect("worker"),
-            1,
-            Duration::from_secs(60),
-        )
-        .await
-        .expect("claim");
-    assert_eq!(claimed.len(), 1);
-
-    // A ledger entry for that stage run takes a KEY SHARE lock on it. It must not wait.
-    let entry = ledger_entry(
-        &scene.ids,
-        job,
-        run,
-        1,
-        None,
-        &now(),
-        "Recorded while a claim is open.",
-    );
-    let mut writer = scene.tenant_tx(scene.a).await;
-    let appended =
-        tokio::time::timeout(Duration::from_secs(5), writer.append_ledger_entry(entry)).await;
-    assert!(
-        matches!(appended, Ok(Ok(_))),
-        "a ledger append is not blocked while a claimer holds the stage run: {appended:?}"
-    );
-    writer.commit().await.expect("commit the append");
-    claimer.commit().await.expect("commit the claim");
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_lock_for_update_would_block_the_ledger_append() {
-    // The control for the test above: with the stronger lock the same append waits. It shows that
-    // the test above can fail, and why the claim uses FOR NO KEY UPDATE.
-    let scene = Scene::new().await;
-    let job = scene.job(scene.a).await;
-    let run = scene.ready_stage_run(scene.a, job).await;
     let mut holder = scene.db.admin().await;
     holder
         .batch_execute(&format!(
@@ -456,61 +337,26 @@ async fn a_lock_for_update_would_block_the_ledger_append() {
             run.as_uuid()
         ))
         .await
-        .expect("hold the row");
-    let entry = ledger_entry(
-        &scene.ids,
-        job,
-        run,
-        1,
-        None,
-        &now(),
-        "Waits for the stronger lock.",
-    );
-    let mut writer = scene.tenant_tx(scene.a).await;
-    let waited = tokio::time::timeout(
-        Duration::from_millis(1500),
-        writer.append_ledger_entry(entry),
-    )
-    .await;
+        .expect("hold the lock");
+
+    let mut audit = scene.tx(scene.a).await;
+    let event = NewAuditEvent {
+        id: factory_domain::ids::AuditEventId::from_uuid(uuid::Uuid::from_u128(902)),
+        actor: AuditActor::System(Slug::parse("workflow-engine").expect("slug")),
+        action: AuditAction::new("stage_run.started").expect("action"),
+        subject: "a stage run".to_owned(),
+        decision: AuditDecision::Record,
+        reason: "A stronger lock is held on the row this record points at.".to_owned(),
+        policy_hash: factory_domain::values::Sha256Digest::of(b"policy"),
+        job: Some(job),
+        stage_run: Some(run),
+        correlation_id: scene.ids.correlation(),
+    };
+    let blocked = tokio::time::timeout(Duration::from_millis(700), audit.record_audit(event)).await;
     assert!(
-        waited.is_err(),
-        "an append waits for a row held FOR UPDATE: {waited:?}"
+        blocked.is_err(),
+        "an audit insert waits for a FOR UPDATE lock on the stage run it points at"
     );
+    drop(audit);
     holder.batch_execute("ROLLBACK").await.expect("release");
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn only_stage_runs_of_active_jobs_are_claimed_by_default() {
-    let scene = Scene::with(|_| {}).await;
-    let job = scene.job(scene.a).await;
-    scene.ready_stage_run(scene.a, job).await;
-    assert!(
-        scene.claim("worker-1", 5).await.is_empty(),
-        "a RECEIVED job is not claimed"
-    );
-    scene.admit(scene.a, job).await;
-    assert_eq!(
-        scene.claim("worker-1", 5).await.len(),
-        1,
-        "an ACTIVE job is"
-    );
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_dropped_claim_frees_the_stage_run_for_the_next_begin() {
-    let scene = Scene::new().await;
-    let job = scene.job(scene.a).await;
-    scene.ready_stage_run(scene.a, job).await;
-    let mut tx = scene.system_tx().await;
-    let worker = factory_ports::store::WorkerId::new("worker-1").expect("worker");
-    assert_eq!(
-        tx.claim_ready(&worker, 5, Duration::from_secs(60))
-            .await
-            .expect("claim")
-            .len(),
-        1
-    );
-    drop(tx);
-    // The rollback of the dropped transaction has finished by the time the next one begins.
-    assert_eq!(scene.claim("worker-2", 5).await.len(), 1);
 }

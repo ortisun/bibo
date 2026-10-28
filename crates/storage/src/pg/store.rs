@@ -5,9 +5,9 @@
 //! The store holds up to two pools, each with its own login (ADR 0012):
 //!
 //! * the **tenant pool**. `begin` takes a connection from it and makes the tenant setting as the
-//!   first statement of the transaction. In the API process its login is also a member of
-//!   `factory_resolver`, and the two lookups of [`PgStore::resolve_token`] and
-//!   [`PgStore::resolve_installation`] run on it, outside a transaction;
+//!   first statement of the transaction (see [`super::tx`]). In the API process its login is also
+//!   a member of `factory_resolver`; `resolve_token`, `resolve_installation` and
+//!   `record_platform_audit` run on it and are refused for any other login;
 //! * the **system pool**, only in the engine process. `begin_system` finds work with it. It cannot
 //!   write a row, so every change goes through a tenant transaction for the tenant that was found
 //!   (see [`super::system`]).
@@ -23,46 +23,65 @@
 //! `begin` waits for every such task first. A caller that drops a transaction and starts another
 //! therefore never sees the locks of the first.
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 
 use async_trait::async_trait;
+use diesel::sql_query;
+use diesel::sql_types::{BigInt, Bytea, Text, Uuid as SqlUuid};
+use diesel::{OptionalExtension, QueryableByName};
+use diesel_async::RunQueryDsl;
+use factory_domain::ids::{PrincipalId, RepositoryId, TenantId};
 use factory_domain::scope::{PlatformScope, ResolvedPrincipal, ResolvedRepository, TenantScope};
-use factory_domain::vocabulary::{ExecutionMode, Fidelity, StageKind};
+use factory_domain::vocabulary::Fidelity;
 use factory_ports::artifact::ArtifactBackend;
 use factory_ports::store::{
-    Audience, AuditRecord, GithubRepositoryId, InstallationId, NewAuditEvent, SchemaVersion, Store,
-    StoreError, SystemScope, SystemTx, TokenHash, Tx, Witness,
+    Audience, AuditOps, AuditRecord, FaultCode, GithubRepositoryId, InstallationId, NewAuditEvent,
+    SchemaVersion, Store, StoreError, SystemScope, SystemTx, TokenHash, Tx, Witness,
 };
 use tokio::task::JoinHandle;
+use uuid::Uuid;
 
-use super::config::{AttemptTimings, JobDefaults, PgStoreConfig, TenantLogin};
-use super::error::StartupError;
+use super::config::{PgStoreConfig, PoolSettings, TenantLogin};
+use super::error::{StartupError, database};
 use super::pool::{PgPool, PooledConnection};
 use super::readiness::{self, Expected};
+use super::system::PgSystemTx;
+use super::tx::PgTx;
 
-/// The parts of the configuration that the operations read.
-#[derive(Debug, Clone)]
-#[allow(dead_code)] // Read by the table modules once they are adapted to ports v1.1.
-pub(super) struct Settings {
-    pub execution_mode: ExecutionMode,
-    pub pipeline_scope: Vec<StageKind>,
-    pub autonomy_level: &'static str,
-    pub attempt_timings: AttemptTimings,
-    pub artifact_backend: ArtifactBackend,
-    pub claim_only_active_jobs: bool,
+/// The tenant under which the platform audit is written (migration 2).
+const PLATFORM_TENANT: Uuid = Uuid::from_u128(1);
+
+/// Faults that a test can ask the store to inject into the next call, to show what the store does
+/// with a stalled connection and with a lost answer to `COMMIT`. Nothing in production sets them.
+#[derive(Debug, Default)]
+pub(super) struct Faults {
+    pub stall_next_call: AtomicBool,
+    pub lose_next_commit_answer: AtomicBool,
+}
+
+impl Faults {
+    pub(super) fn take_stall(&self) -> bool {
+        self.stall_next_call.swap(false, Ordering::SeqCst)
+    }
+
+    pub(super) fn take_lost_commit(&self) -> bool {
+        self.lose_next_commit_answer.swap(false, Ordering::SeqCst)
+    }
 }
 
 /// What every transaction of a store shares.
-#[allow(dead_code)] // Read by the table modules once they are adapted to ports v1.1.
 pub(super) struct Shared {
     pub tenant_pool: PgPool,
+    pub tenant_limits: PoolSettings,
     pub system_pool: Option<PgPool>,
-    pub settings: Settings,
+    pub system_limits: Option<PoolSettings>,
+    pub artifact_backend: ArtifactBackend,
     pub resolver: bool,
+    pub faults: Faults,
     rollbacks: Mutex<Vec<JoinHandle<()>>>,
 }
 
-#[allow(dead_code)] // Used by the transaction types once they are adapted to ports v1.1.
 impl Shared {
     /// Waits for the rollbacks of dropped transactions, so their locks are gone.
     pub(super) async fn settle_rollbacks(&self) {
@@ -87,19 +106,6 @@ impl Shared {
             .unwrap_or_else(PoisonError::into_inner);
         guard.retain(|task| !task.is_finished());
         guard.push(handle);
-    }
-
-    /// A connection for a system step: a plain autocommit connection of the system pool.
-    pub(super) async fn system_connection(&self) -> Result<PooledConnection, StoreError> {
-        match &self.system_pool {
-            Some(pool) => pool.get().await,
-            None => {
-                tracing::error!(
-                    "a system transaction was asked for, but no system pool is configured"
-                );
-                Err(StoreError::Unavailable)
-            }
-        }
     }
 }
 
@@ -168,40 +174,75 @@ impl PgStore {
             readiness::check_schema(&mut connection).await?;
         }
 
-        check_job_defaults(&config.job_defaults)?;
         Ok(Self {
             shared: Arc::new(Shared {
                 tenant_pool,
+                tenant_limits: config.tenant.clone(),
                 system_pool,
-                settings: Settings {
-                    execution_mode: config.execution_mode,
-                    pipeline_scope: config.job_defaults.pipeline_scope.clone(),
-                    autonomy_level: config.job_defaults.autonomy_level.as_str(),
-                    attempt_timings: config.attempt_timings,
-                    artifact_backend: config.artifact_backend,
-                    claim_only_active_jobs: config.claim_only_active_jobs,
-                },
+                system_limits: config.system.clone(),
+                artifact_backend: config.artifact_backend,
                 resolver: config.tenant_login == TenantLogin::Api,
+                faults: Faults::default(),
                 rollbacks: Mutex::new(Vec::new()),
             }),
         })
     }
+
+    /// The next call of any transaction of this store never completes, as if the connection had
+    /// stalled. A test uses it to show that a dropped call poisons the transaction. Not for
+    /// production.
+    #[doc(hidden)]
+    pub fn stall_next_call(&self) {
+        self.shared
+            .faults
+            .stall_next_call
+            .store(true, Ordering::SeqCst);
+    }
+
+    /// The next `COMMIT` is applied by the database and its answer is dropped: the call reports
+    /// `CommitOutcomeUnknown`, and the connection is closed as it would be after a lost answer.
+    /// Not for production.
+    #[doc(hidden)]
+    pub fn lose_next_commit_answer(&self) {
+        self.shared
+            .faults
+            .lose_next_commit_answer
+            .store(true, Ordering::SeqCst);
+    }
+
+    /// A connection of the tenant pool, for the code that runs outside a transaction.
+    async fn tenant_connection(&self) -> Result<PooledConnection, StoreError> {
+        self.shared.tenant_pool.get().await
+    }
+
+    /// The three methods that need the API login are refused, without a database call, for any
+    /// other login.
+    fn require_api_login(&self) -> Result<(), StoreError> {
+        if self.shared.resolver {
+            Ok(())
+        } else {
+            tracing::error!(
+                "a lookup was asked of a store whose tenant login is not the API login"
+            );
+            Err(StoreError::Internal(FaultCode::PermissionDenied))
+        }
+    }
 }
 
-fn check_job_defaults(defaults: &JobDefaults) -> Result<(), StartupError> {
-    let scope = &defaults.pipeline_scope;
-    if scope.is_empty() || scope.len() > StageKind::ALL.len() {
-        return Err(StartupError::Misconfigured(
-            "the default pipeline scope needs between 1 and 14 stage kinds",
-        ));
-    }
-    let mut seen = std::collections::HashSet::new();
-    if !scope.iter().all(|kind| seen.insert(*kind)) {
-        return Err(StartupError::Misconfigured(
-            "the default pipeline scope repeats a stage kind",
-        ));
-    }
-    Ok(())
+#[derive(QueryableByName)]
+struct TokenRow {
+    #[diesel(sql_type = SqlUuid)]
+    tenant_id: Uuid,
+    #[diesel(sql_type = SqlUuid)]
+    principal_id: Uuid,
+}
+
+#[derive(QueryableByName)]
+struct RepositoryRow {
+    #[diesel(sql_type = SqlUuid)]
+    tenant_id: Uuid,
+    #[diesel(sql_type = SqlUuid)]
+    repository_id: Uuid,
 }
 
 #[async_trait]
@@ -210,49 +251,92 @@ impl Store for PgStore {
         Fidelity::Real
     }
 
-    // Pending adaptation to ports v1.1: the transaction types of this crate were written against
-    // the old write model and are not compiled. See the notice in `pg/mod.rs`.
-    async fn begin(&self, _scope: TenantScope) -> Result<Box<dyn Tx>, StoreError> {
-        Err(StoreError::Unavailable)
+    async fn begin(&self, scope: TenantScope) -> Result<Box<dyn Tx>, StoreError> {
+        let tx = PgTx::begin(self.shared.clone(), scope.tenant_id()).await?;
+        Ok(Box::new(tx))
     }
 
     async fn begin_system(&self, _scope: SystemScope) -> Result<Box<dyn SystemTx>, StoreError> {
-        Err(StoreError::Unavailable)
+        let tx = PgSystemTx::begin(self.shared.clone()).await?;
+        Ok(Box::new(tx))
     }
 
     async fn resolve_token(
         &self,
-        _hash: &TokenHash,
-        _audience: &Audience,
+        hash: &TokenHash,
+        audience: &Audience,
     ) -> Result<Option<ResolvedPrincipal>, StoreError> {
-        Err(StoreError::Unavailable)
+        self.require_api_login()?;
+        let mut connection = self.tenant_connection().await?;
+        // The function is the whole answer: zero rows for an unknown, expired, revoked or
+        // wrong-audience token, a disabled owner and a disabled tenant alike. No reason is read.
+        let row = sql_query("SELECT tenant_id, principal_id FROM resolve_token($1, $2)")
+            .bind::<Bytea, _>(hash.0.to_vec())
+            .bind::<Text, _>(audience.0.as_str())
+            .get_result::<TokenRow>(&mut *connection)
+            .await
+            .optional()
+            .map_err(|error| database("resolve_token", &error))?;
+        Ok(row.map(|row| ResolvedPrincipal {
+            tenant: TenantId::from_uuid(row.tenant_id),
+            principal: PrincipalId::from_uuid(row.principal_id),
+        }))
     }
 
     async fn resolve_installation(
         &self,
-        _installation: InstallationId,
-        _repository: GithubRepositoryId,
+        installation: InstallationId,
+        repository: GithubRepositoryId,
     ) -> Result<Option<ResolvedRepository>, StoreError> {
-        Err(StoreError::Unavailable)
+        self.require_api_login()?;
+        let (Ok(installation), Ok(repository)) =
+            (i64::try_from(installation.0), i64::try_from(repository.0))
+        else {
+            // No column holds a number above the largest signed 64-bit value: nothing matches.
+            return Ok(None);
+        };
+        let mut connection = self.tenant_connection().await?;
+        let row = sql_query("SELECT tenant_id, repository_id FROM resolve_installation($1, $2)")
+            .bind::<BigInt, _>(installation)
+            .bind::<BigInt, _>(repository)
+            .get_result::<RepositoryRow>(&mut *connection)
+            .await
+            .optional()
+            .map_err(|error| database("resolve_installation", &error))?;
+        Ok(row.map(|row| ResolvedRepository {
+            tenant: TenantId::from_uuid(row.tenant_id),
+            repository: RepositoryId::from_uuid(row.repository_id),
+        }))
     }
 
     async fn record_platform_audit(
         &self,
         _scope: PlatformScope,
-        _event: NewAuditEvent,
+        event: NewAuditEvent,
     ) -> Result<AuditRecord, StoreError> {
-        Err(StoreError::Unavailable)
+        self.require_api_login()?;
+        // The platform tenant is an ordinary tenant to the database: the same statement as any
+        // audit record, in a transaction whose setting names it. The composite key refuses a job
+        // (the platform tenant has none).
+        let mut tx = PgTx::begin(self.shared.clone(), TenantId::from_uuid(PLATFORM_TENANT)).await?;
+        let record = tx.record_audit(event).await?;
+        Box::new(tx).commit().await?;
+        Ok(record)
     }
 
-    async fn committed(&self, _scope: TenantScope, _witness: Witness) -> Result<bool, StoreError> {
-        Err(StoreError::Unavailable)
+    async fn committed(&self, scope: TenantScope, witness: Witness) -> Result<bool, StoreError> {
+        let mut tx = PgTx::begin(self.shared.clone(), scope.tenant_id()).await?;
+        let found = tx.witnessed(witness).await;
+        // A read only transaction: a failed rollback changes nothing for the caller.
+        let _ = Box::new(tx).rollback().await;
+        found
     }
 
     async fn schema_version(&self) -> Result<SchemaVersion, StoreError> {
-        let mut connection = self.shared.tenant_pool.get().await?;
+        let mut connection = self.tenant_connection().await?;
         let applied = readiness::applied_versions(&mut connection)
             .await
-            .map_err(|error| super::error::generic("schema_version", &error))?;
+            .map_err(|error| database("schema_version", &error))?;
         Ok(readiness::version_number(applied.len()))
     }
 }

@@ -236,9 +236,9 @@ mod tests {
     }
 
     #[test]
-    fn the_code_expects_the_fourteen_migrations_in_the_repository() {
+    fn the_code_expects_the_migrations_in_the_repository() {
         let versions = expected_versions();
-        assert!(versions.len() >= 14, "{versions:?}");
+        assert!(versions.len() >= 18, "{versions:?}");
         assert_eq!(versions[0], "20261027000100");
     }
 }
