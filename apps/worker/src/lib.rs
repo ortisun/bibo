@@ -21,10 +21,13 @@
 //! Composition is the one job of this package, so no module here contains a business rule. The
 //! engine decides, the adapters act, and this package chooses and connects them.
 
+pub mod assemble;
 pub mod authority;
+pub mod broker_host;
 pub mod config;
 pub mod database;
 pub mod health;
+pub mod indexing;
 pub mod profile;
 pub mod redaction;
 pub mod registry;

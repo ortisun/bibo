@@ -34,6 +34,7 @@ use factory_workflow::scheduler::{ClaimedAttempt, Ticker};
 use tracing::Instrument;
 
 use crate::config::LoopConfig;
+use crate::indexing::ActiveJobs;
 use crate::system::Shutdown;
 use crate::telemetry::job_stretch;
 
@@ -76,6 +77,7 @@ pub struct WorkerLoop {
     settings: LoopConfig,
     shutdown: Shutdown,
     observer: Option<Arc<dyn Observer>>,
+    jobs: Option<Arc<ActiveJobs>>,
 }
 
 impl WorkerLoop {
@@ -95,6 +97,7 @@ impl WorkerLoop {
             settings,
             shutdown,
             observer: None,
+            jobs: None,
         }
     }
 
@@ -102,6 +105,14 @@ impl WorkerLoop {
     #[must_use]
     pub fn with_observer(mut self, observer: Arc<dyn Observer>) -> Self {
         self.observer = Some(observer);
+        self
+    }
+
+    /// Tells the loop to note, while an attempt runs, which tenant owns its job. The indexing
+    /// sandbox reads it (`crate::indexing`).
+    #[must_use]
+    pub fn with_active_jobs(mut self, jobs: Arc<ActiveJobs>) -> Self {
+        self.jobs = Some(jobs);
         self
     }
 
@@ -196,6 +207,10 @@ impl WorkerLoop {
 
     /// Runs one attempt inside a job span, honouring the drain budget on a stop request.
     async fn run_one(&self, attempt: &ClaimedAttempt) -> Ran {
+        let _active = self
+            .jobs
+            .as_ref()
+            .map(|jobs| ActiveGuard::enter(Arc::clone(jobs), attempt));
         let span = job_stretch(
             &attempt.correlation.to_string(),
             &attempt.job.to_string(),
@@ -252,6 +267,28 @@ impl WorkerLoop {
         if *since_sweep >= self.settings.sweep_interval() {
             *sweep_due = true;
         }
+    }
+}
+
+/// Notes the tenant of a job while an attempt runs, and forgets it on every way out.
+struct ActiveGuard {
+    jobs: Arc<ActiveJobs>,
+    job: factory_domain::ids::JobId,
+}
+
+impl ActiveGuard {
+    fn enter(jobs: Arc<ActiveJobs>, attempt: &ClaimedAttempt) -> Self {
+        jobs.enter(attempt.job, attempt.tenant);
+        Self {
+            jobs,
+            job: attempt.job,
+        }
+    }
+}
+
+impl Drop for ActiveGuard {
+    fn drop(&mut self) {
+        self.jobs.leave(self.job);
     }
 }
 

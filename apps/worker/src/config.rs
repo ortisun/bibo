@@ -212,6 +212,25 @@ pub struct UpstreamConfig {
     pub key_file: SecretFile,
 }
 
+/// What a model costs, in millionths of a dollar per million tokens. The repository has no price
+/// list, so the deployment supplies one; a model with no entry is refused by the broker.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PriceConfig {
+    /// `anthropic` or `openai`.
+    pub provider: String,
+    /// The model name as the provider spells it.
+    pub model: String,
+    /// Input tokens.
+    pub input: u64,
+    /// Cache write tokens.
+    pub cache_write: u64,
+    /// Cache read tokens.
+    pub cache_read: u64,
+    /// Output tokens.
+    pub output: u64,
+}
+
 /// The model broker hosted by the worker.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -221,6 +240,9 @@ pub struct BrokerConfig {
     /// The providers.
     #[serde(default)]
     pub upstreams: Vec<UpstreamConfig>,
+    /// The price list.
+    #[serde(default)]
+    pub prices: Vec<PriceConfig>,
 }
 
 /// The GitHub App.
