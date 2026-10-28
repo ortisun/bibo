@@ -96,7 +96,7 @@ fn a_missing_spec_kit_installation_or_image_catalog_is_an_error_and_not_a_fallba
     config.protected_checkout = PathBuf::from("/nonexistent");
     assert!(matches!(
         spec_kit_config(&config, config.profile),
-        Err(ProviderError::SpecKit(_, _))
+        Err(ProviderError::Installation(_, _))
     ));
 }
 

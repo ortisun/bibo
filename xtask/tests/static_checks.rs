@@ -108,6 +108,29 @@ mod static_checks {
         }
 
         #[test]
+        fn the_public_names_of_the_adapter_may_be_written_by_a_composition_root() {
+            // Building the provider means writing its type. That is not knowing the layout.
+            let code = "use factory_spec_adapter::{SpecKitConfig, SpecKitProvider};\nfn build() -> Option<SpecKitProvider> { None }\n";
+            run_with_source("composition", "src/providers.rs", code).assert_passes();
+        }
+
+        #[test]
+        fn a_public_name_does_not_excuse_a_path_or_another_word_in_the_same_file() {
+            let code = "use factory_spec_adapter::SpecKitProvider;\nconst FILE: &str = \".specify/integration.json\";\nconst SKILL: &str = \"speckit-specify\";\n";
+            let run = run_with_source("composition", "src/providers.rs", code);
+            run.assert_violation_mentions("DEP-09", "crates/composition/src/providers.rs:2");
+            run.assert_violation_mentions("DEP-09", "crates/composition/src/providers.rs:3");
+            // The line that only names the type is not reported.
+            assert!(
+                !run.stderr.lines().any(
+                    |line| line.contains("providers.rs:1:") || line.ends_with("providers.rs:1")
+                ),
+                "{}",
+                run.stderr
+            );
+        }
+
+        #[test]
         fn the_spec_kit_name_in_a_comment_outside_spec_adapter_passes() {
             run_with_source(
                 "workflow",

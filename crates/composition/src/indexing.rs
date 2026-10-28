@@ -37,6 +37,7 @@ use factory_ports::store::{NewArtifactIndexEntry, Store};
 #[derive(Debug, Default)]
 pub struct ActiveJobs {
     tenants: Mutex<HashMap<JobId, TenantId>>,
+    attempts: Mutex<HashMap<AttemptId, TenantId>>,
 }
 
 impl ActiveJobs {
@@ -60,6 +61,44 @@ impl ActiveJobs {
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .remove(&job);
+    }
+
+    /// Notes that an attempt is running for a tenant. A runtime is asked to run an attempt and
+    /// knows nothing else, so [`crate::runtimes::TenantRuntimes`] finds the tenant here.
+    pub fn enter_attempt(&self, attempt: AttemptId, tenant: TenantId) {
+        self.attempts
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .insert(attempt, tenant);
+    }
+
+    /// Notes that an attempt ended.
+    pub fn leave_attempt(&self, attempt: AttemptId) {
+        self.attempts
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .remove(&attempt);
+    }
+
+    /// The tenant of an attempt being run.
+    #[must_use]
+    pub fn tenant_of_attempt(&self, attempt: AttemptId) -> Option<TenantId> {
+        self.attempts
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get(&attempt)
+            .copied()
+    }
+
+    /// The tenant when exactly one attempt is running, which is the Slice 1 worker (one attempt at
+    /// a time). `None` when none runs or when more than one does, so a caller that has no attempt
+    /// to ask about (a capability probe) never guesses between tenants.
+    #[must_use]
+    pub fn sole_tenant(&self) -> Option<TenantId> {
+        let attempts = self.attempts.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut tenants = attempts.values().copied();
+        let first = tenants.next()?;
+        tenants.all(|other| other == first).then_some(first)
     }
 
     /// The tenant of a job being worked on.

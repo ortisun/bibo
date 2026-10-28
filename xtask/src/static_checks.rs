@@ -153,7 +153,12 @@ fn spec_kit_layout_only_in_spec_adapter(
     if krate.name == rule.spec_kit_crate {
         return;
     }
-    let lowercase = source.with_strings.to_ascii_lowercase();
+    let mut lowercase = source.with_strings.to_ascii_lowercase();
+    for name in &rule.spec_kit_public_names {
+        // Same length, so every offset still maps to its line.
+        let name = name.to_ascii_lowercase();
+        lowercase = lowercase.replace(&name, &" ".repeat(name.len()));
+    }
     for term in &rule.spec_kit_terms {
         for (at, _) in lowercase.match_indices(term.as_str()) {
             findings.push(Finding::new(

@@ -321,14 +321,17 @@ impl WorkerLoop {
 struct ActiveGuard {
     jobs: Arc<ActiveJobs>,
     job: factory_domain::ids::JobId,
+    attempt: factory_domain::ids::AttemptId,
 }
 
 impl ActiveGuard {
     fn enter(jobs: Arc<ActiveJobs>, attempt: &ClaimedAttempt) -> Self {
         jobs.enter(attempt.job, attempt.tenant);
+        jobs.enter_attempt(attempt.attempt, attempt.tenant);
         Self {
             jobs,
             job: attempt.job,
+            attempt: attempt.attempt,
         }
     }
 }
@@ -336,6 +339,7 @@ impl ActiveGuard {
 impl Drop for ActiveGuard {
     fn drop(&mut self) {
         self.jobs.leave(self.job);
+        self.jobs.leave_attempt(self.attempt);
     }
 }
 

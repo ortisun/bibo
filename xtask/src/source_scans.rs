@@ -78,6 +78,11 @@ pub struct Dep09 {
     pub begin_system_crate: String,
     pub spec_kit_crate: String,
     pub spec_kit_terms: Vec<String>,
+    /// The public names of the adapter that a composition root has to write to build the provider.
+    /// They contain a term (`SpecKitProvider`), and writing one is not knowing the layout, so the
+    /// scan blanks exactly these names before it looks for a term. Every other mention, a path in
+    /// a string for instance, is still a finding.
+    pub spec_kit_public_names: Vec<String>,
     pub change_host_trait: String,
     pub forbidden_method_prefixes: Vec<String>,
 }
@@ -239,6 +244,7 @@ impl SourceScans {
             begin_system_crate: name(&text(d, "begin_system_crate", "source_scans.dep_09")?),
             spec_kit_crate: name(&text(d, "spec_kit_crate", "source_scans.dep_09")?),
             spec_kit_terms: strings(d, "spec_kit_terms", "source_scans.dep_09")?,
+            spec_kit_public_names: strings(d, "spec_kit_public_names", "source_scans.dep_09")?,
             change_host_trait: text(d, "change_host_trait", "source_scans.dep_09")?,
             forbidden_method_prefixes: strings(
                 d,

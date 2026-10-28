@@ -56,6 +56,11 @@ use crate::profile::Profile;
 use crate::sandbox_specs::sandbox_policy_from;
 use crate::startup::LoadedPolicies;
 
+/// The label every container, network and volume of this factory carries, with the configured
+/// owner as its value. The janitor touches only objects that carry it. (It does not start with
+/// `factory.`: that prefix is the telemetry attribute namespace, ST-07.)
+pub const OWNER_LABEL: &str = "io.factory.owner";
+
 /// Why the providers could not be assembled.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum ProviderError {
@@ -73,7 +78,7 @@ pub enum ProviderError {
     Remote,
     /// The Spec Kit installation file is missing or not the expected JSON.
     #[error("the Spec Kit installation at {0} cannot be read: {1}")]
-    SpecKit(String, String),
+    Installation(String, String),
 }
 
 /// What [`assemble`] needs from the rest of the start-up.
@@ -165,18 +170,20 @@ pub fn spec_kit_config(
     config: &FactoryConfig,
     profile: Profile,
 ) -> Result<SpecKitConfig, ProviderError> {
-    let path = config.protected_checkout.join(".specify/integration.json");
+    let path = config
+        .protected_checkout
+        .join(factory_spec_adapter::integrity::INTEGRATION);
     let shown = path.display().to_string();
     let bytes = std::fs::read(&path)
-        .map_err(|error| ProviderError::SpecKit(shown.clone(), error.kind().to_string()))?;
+        .map_err(|error| ProviderError::Installation(shown.clone(), error.kind().to_string()))?;
     let integration = IntegrationConfig::parse(&bytes)
-        .map_err(|error| ProviderError::SpecKit(shown, format!("{error:?}")))?;
+        .map_err(|error| ProviderError::Installation(shown, format!("{error:?}")))?;
     Ok(SpecKitConfig {
         host: integration.host,
         separator: integration.separator,
         mode: profile.execution_mode(),
         fallback_adapter: factory_domain::values::Slug::parse("claude-code")
-            .map_err(|_| ProviderError::SpecKit(String::new(), "adapter name".to_owned()))?,
+            .map_err(|_| ProviderError::Installation(String::new(), "adapter name".to_owned()))?,
         fallback_adapter_version: integration.version,
     })
 }
@@ -212,7 +219,7 @@ pub fn assemble(inputs: ProviderInputs<'_>) -> Result<Providers, ProviderError> 
             platform: config.sandbox.platform.clone(),
             token_root: config.sandbox.token_root.clone(),
             caches: Vec::new(),
-            owner_labels: vec![("factory.owner".to_owned(), config.sandbox.owner.clone())],
+            owner_labels: vec![(OWNER_LABEL.to_owned(), config.sandbox.owner.clone())],
             sidecar_command: config.sandbox.sidecar_command.clone(),
             docker: DockerSettings::default(),
             watchdog: WatchdogSettings {

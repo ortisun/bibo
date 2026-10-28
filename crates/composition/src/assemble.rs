@@ -82,7 +82,7 @@ pub fn blocked_adapters(_profile: Profile) -> Vec<Blocked> {
     vec![
         Blocked {
             port: PortName::Runtime,
-            reason: "the agent runtime adapters bind one tenant at construction (RunIo takes a TenantScope), the worker serves many, and a live run needs a model credential and the tool in the agent image",
+            reason: "a live run needs a model credential and the tool in the agent image (the adapters bind one tenant, which crate::runtimes::TenantRuntimes handles)",
         },
         Blocked {
             port: PortName::Router,

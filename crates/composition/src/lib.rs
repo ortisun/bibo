@@ -27,6 +27,7 @@
 //! | [`health`] | Health and readiness as plain data |
 //! | [`telemetry`] | The telemetry configuration with the real scrubber, and the `factory.job` stretch span |
 //! | [`system`] | The real clock, identifier source, `Ticker` and the shutdown signal |
+//! | [`runtimes`] | One agent runtime that serves every tenant, finding the tenant of each call |
 //! | [`seams`], [`authority`], [`sandbox_specs`] | The seams the stages declare |
 //! | [`indexing`] | Indexes the artifacts a sandbox writes, for the tenant, when they are written |
 //! | [`ledger`] | The task ledger of the implementation stage, over the store, fenced by attempt and epoch |
@@ -54,6 +55,7 @@ pub mod reading;
 pub mod redaction;
 pub mod registry;
 pub mod risk;
+pub mod runtimes;
 pub mod sandbox_specs;
 pub mod seams;
 pub mod specs;

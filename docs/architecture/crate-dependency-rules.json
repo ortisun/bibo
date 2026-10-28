@@ -566,6 +566,10 @@
         ".specify",
         "speckit"
       ],
+      "spec_kit_public_names": [
+        "SpecKitConfig",
+        "SpecKitProvider"
+      ],
       "change_host_trait": "ChangeHost",
       "forbidden_method_prefixes": [
         "merge",
