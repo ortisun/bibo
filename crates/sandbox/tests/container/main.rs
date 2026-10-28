@@ -13,6 +13,7 @@ mod support;
 mod behavior;
 mod breaks;
 mod contract;
+mod hand_made;
 mod harness;
 mod isolation;
 mod retry;
