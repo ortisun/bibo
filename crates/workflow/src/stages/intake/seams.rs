@@ -65,6 +65,30 @@ impl std::fmt::Debug for RequestSnapshot {
     }
 }
 
+/// The first text of a request, fetched live from the code host by the stage itself, for a job
+/// that a webhook created. The delivery carries no issue text and the API holds no credential for
+/// the code host, so the job starts without a request.
+#[derive(Clone, PartialEq, Eq)]
+pub struct FetchedRequest {
+    /// The issue the text came from.
+    pub issue: IssueRef,
+    /// The numeric id of the issue's author.
+    pub author: u64,
+    /// Title and body as one text, exactly as the host returned them. Untrusted.
+    pub text: String,
+}
+
+impl std::fmt::Debug for FetchedRequest {
+    /// Shows the size, never the text.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("FetchedRequest")
+            .field("issue", &self.issue)
+            .field("author", &self.author)
+            .field("bytes", &self.text.len())
+            .finish()
+    }
+}
+
 /// Where the stored request is read from (the `RequestOps` of the store, behind the API).
 #[async_trait]
 pub trait RequestSource: Send + Sync {
@@ -72,11 +96,27 @@ pub trait RequestSource: Send + Sync {
     fn fidelity(&self) -> Fidelity;
 
     /// The revision and hash recorded for the job, from memory. `None` when the job has no
-    /// recorded request, and then the stage has no contract.
+    /// recorded request. Then the stage has a contract only if [`RequestSource::awaiting`]
+    /// answers.
     fn recorded(&self, job: JobId) -> Option<RecordedRequest>;
+
+    /// The issue a job that a webhook created came from, from memory, when the job has no
+    /// recorded request yet. `None` for every other job. The stage then resolves its contract
+    /// without the text and fetches the text when it runs.
+    fn awaiting(&self, job: JobId) -> Option<IssueRef>;
 
     /// The newest revision, read now.
     async fn latest(&self, tenant: TenantId, job: JobId) -> Result<RequestSnapshot, SeamError>;
+
+    /// Stores `request` as revision 1 of the job, and returns it as stored. The call is
+    /// idempotent: when revision 1 exists with the same text the stored one is returned, and
+    /// with other text the call fails, because a stored revision never changes.
+    async fn record_first(
+        &self,
+        tenant: TenantId,
+        job: JobId,
+        request: FetchedRequest,
+    ) -> Result<RequestSnapshot, SeamError>;
 }
 
 /// The named allowlist of the protected configuration, as it is now. Nothing is cached: removing a

@@ -36,9 +36,9 @@ use factory_workflow::engine::{AttemptOutcome, Engine};
 use factory_workflow::handlers::HandlerRegistry;
 use factory_workflow::scheduler::ClaimedAttempt;
 use factory_workflow::stages::intake::{
-    AgentOutputCheck, AgentSandboxSpecs, AllowlistSource, CapabilityProbes, IntakeConfig,
-    IntakeDeps, IntakeHandler, IntakeRules, RecordedRequest, RequestSnapshot, RequestSource,
-    SeamError,
+    AgentOutputCheck, AgentSandboxSpecs, AllowlistSource, CapabilityProbes, FetchedRequest,
+    IntakeConfig, IntakeDeps, IntakeHandler, IntakeRules, RecordedRequest, RequestSnapshot,
+    RequestSource, SeamError,
 };
 use serde_json::{Value, json};
 
@@ -111,19 +111,32 @@ pub fn definition_commit() -> GitSha {
 /// answer that `contract` must give without waiting.
 pub struct StoreRequests {
     store: Arc<factory_testkit::store::InMemoryStore>,
+    ids: Arc<dyn factory_ports::clock::IdGenerator>,
     mirror: Mutex<BTreeMap<JobId, (u32, Sha256Digest)>>,
     issues: Mutex<BTreeMap<JobId, IssueRef>>,
+    /// Jobs that a webhook created and that have no text yet.
+    waiting: Mutex<BTreeMap<JobId, IssueRef>>,
     corrupt: Mutex<bool>,
 }
 
 impl StoreRequests {
-    fn new(store: Arc<factory_testkit::store::InMemoryStore>) -> Self {
+    fn new(
+        store: Arc<factory_testkit::store::InMemoryStore>,
+        ids: Arc<dyn factory_ports::clock::IdGenerator>,
+    ) -> Self {
         Self {
             store,
+            ids,
             mirror: Mutex::new(BTreeMap::new()),
             issues: Mutex::new(BTreeMap::new()),
+            waiting: Mutex::new(BTreeMap::new()),
             corrupt: Mutex::new(false),
         }
+    }
+
+    /// Says that `job` came from a webhook for `issue` and has no text yet.
+    pub fn await_issue(&self, job: JobId, issue: IssueRef) {
+        self.waiting.lock().expect("lock").insert(job, issue);
     }
 
     /// Makes `latest` return text that no longer has its hash, as a damaged store would.
@@ -147,6 +160,60 @@ impl RequestSource for StoreRequests {
                 revision: *revision,
                 sha256: sha256.clone(),
             })
+    }
+
+    fn awaiting(&self, job: JobId) -> Option<IssueRef> {
+        if self.mirror.lock().expect("lock").contains_key(&job) {
+            return None;
+        }
+        self.waiting.lock().expect("lock").get(&job).cloned()
+    }
+
+    async fn record_first(
+        &self,
+        tenant: TenantId,
+        job: JobId,
+        request: FetchedRequest,
+    ) -> Result<RequestSnapshot, SeamError> {
+        let mut tx = self
+            .store
+            .begin(TenantScope::new(tenant))
+            .await
+            .map_err(|_| SeamError::Unavailable)?;
+        let stored = tx
+            .record_original_request(NewOriginalRequest {
+                id: self.ids.new_uuid(),
+                job,
+                revision: 1,
+                source: StoreRequestSource::GithubIssue,
+                source_ref: Some(format!(
+                    "{}/{}#{}",
+                    request.issue.repo.owner(),
+                    request.issue.repo.name(),
+                    request.issue.number
+                )),
+                author_github_user_id: Some(request.author),
+                text: request.text.clone(),
+            })
+            .await
+            .map_err(|_| SeamError::Unavailable)?;
+        tx.commit().await.map_err(|_| SeamError::Unavailable)?;
+        let sha256 = stored.row.value.content_sha256.clone();
+        self.mirror
+            .lock()
+            .expect("lock")
+            .insert(job, (1, sha256.clone()));
+        self.issues
+            .lock()
+            .expect("lock")
+            .insert(job, request.issue.clone());
+        Ok(RequestSnapshot {
+            revision: 1,
+            text: request.text,
+            sha256,
+            author: Some(request.author),
+            issue: request.issue,
+        })
     }
 
     async fn latest(&self, tenant: TenantId, job: JobId) -> Result<RequestSnapshot, SeamError> {
@@ -356,6 +423,8 @@ pub struct Options {
     pub no_cargo: bool,
     /// `cargo` fails on this subcommand.
     pub cargo_fails_on: Option<&'static str>,
+    /// The issue source, instead of a faithful fake. For the tests that break it on purpose.
+    pub issue_source: Option<FakeIssueSource>,
 }
 
 impl Rig {
@@ -380,8 +449,8 @@ impl Rig {
             repo: repo.clone(),
             number: 12,
         };
-        let issues = Arc::new(FakeIssueSource::new());
-        let requests = Arc::new(StoreRequests::new(world.memory_store()));
+        let issues = Arc::new(options.issue_source.unwrap_or_default());
+        let requests = Arc::new(StoreRequests::new(world.memory_store(), world.ids.clone()));
         let allowlist = Arc::new(FixedAllowlist::new(world.tenant));
         let check = Arc::new(StandInCheck {
             mode: Mutex::new(CheckMode::Permissive),
@@ -538,6 +607,40 @@ impl Rig {
             .await;
         self.admit(job).await;
         job
+    }
+
+    /// A job as a webhook makes it: received for the rig's issue, with no text stored, labelled by
+    /// the allowlisted requester and admitted. The issue is on the fake host only if the test put
+    /// it there.
+    pub async fn webhook_job(&self) -> JobId {
+        let job = self
+            .engine
+            .receive_job(
+                self.world.tenant,
+                self.world.requester,
+                self.world.repository,
+            )
+            .await
+            .expect("receive");
+        self.requests.await_issue(job, self.issue.clone());
+        self.label_applied_by(&Self::actor(REQUESTER_ID, "requester-one"))
+            .await;
+        self.admit(job).await;
+        job
+    }
+
+    /// Puts the issue of the rig on the fake host with this title and body, opened by `author`.
+    pub fn host_has_issue(&self, title: &str, body: &str, author: u64) {
+        let now = factory_domain::values::Timestamp::parse("2026-10-28T10:00:00Z").expect("a time");
+        self.issues.put_issue(factory_ports::githost::Issue {
+            reference: self.issue.clone(),
+            title: title.to_owned(),
+            body: body.to_owned(),
+            author: Self::actor(author, "requester-one"),
+            labels: vec![LABEL.to_owned()],
+            updated_at: now,
+            fetched_at: now,
+        });
     }
 
     /// A job that is received and has its request stored, not yet labelled or admitted.

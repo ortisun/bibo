@@ -45,8 +45,8 @@ use super::normalize::{
     ClassifierRef, OriginalRef, decision_document, description_from, normalized_request, title_from,
 };
 use super::seams::{
-    AgentOutputCheck, AgentSandboxSpecs, AllowlistSource, CapabilityProbes, RequestSnapshot,
-    RequestSource, SeamError,
+    AgentOutputCheck, AgentSandboxSpecs, AllowlistSource, CapabilityProbes, FetchedRequest,
+    RequestSnapshot, RequestSource, SeamError,
 };
 use crate::audit::{AuditAction, AuditDecision, AuditKind};
 use crate::gates::framework::GateDecision;
@@ -199,11 +199,33 @@ impl StageHandler for IntakeHandler {
     }
 
     fn contract(&self, ctx: &ContractContext<'_>) -> Result<StageContract, StageError> {
-        // No recorded request, no contract: the claim is deferred and nothing starts.
-        let recorded = self
-            .requests
-            .recorded(ctx.identity.job)
-            .ok_or(StageError::Internal)?;
+        // No recorded request and no issue to fetch one from, no contract: the claim is deferred
+        // and nothing starts. A job that a webhook created has no text yet and names its issue
+        // instead: the stage fetches the text when it runs, so the input is named by the issue.
+        let (input_hash, input_description) = match self.requests.recorded(ctx.identity.job) {
+            Some(recorded) => (
+                recorded.sha256,
+                "The request exactly as it was received, kept as untrusted text.",
+            ),
+            None => {
+                let issue = self
+                    .requests
+                    .awaiting(ctx.identity.job)
+                    .ok_or(StageError::Internal)?;
+                (
+                    Sha256Digest::of(
+                        format!(
+                            "github-issue:{}/{}#{}",
+                            issue.repo.owner(),
+                            issue.repo.name(),
+                            issue.number
+                        )
+                        .as_bytes(),
+                    ),
+                    "The issue the job was created from, kept as untrusted text. The text is fetched when the stage runs and stored as revision 1; until then this input is named by the hash of the issue reference.",
+                )
+            }
+        };
         stage_contract(&ContractSpec {
             kind: StageKind::Intake,
             job: ctx.identity.job,
@@ -216,8 +238,8 @@ impl StageHandler for IntakeHandler {
             problem: "A request arrives as free text that anyone can edit. The factory must know who asked, must keep the original words unchanged, and must decide whether to go on, ask one question, decline or split the request, before any other stage reads it.",
             inputs: vec![ContractInput {
                 name: "original-request",
-                description: "The request exactly as it was received, kept as untrusted text.",
-                sha256: recorded.sha256,
+                description: input_description,
+                sha256: input_hash,
                 media_type: "text/plain",
                 source: "untrusted_external",
                 produced_by: None,
@@ -294,12 +316,13 @@ impl StageHandler for IntakeHandler {
         let identity = ctx.identity;
         let ports = ctx.ports;
 
-        // 1. The original request, and its integrity.
-        let snapshot = self
-            .requests
-            .latest(identity.tenant, identity.job)
-            .await
-            .map_err(seam)?;
+        // 1. The original request, and its integrity. A job that a webhook created has none yet:
+        // the stage fetches the issue live and stores it as revision 1.
+        let snapshot = match self.requests.latest(identity.tenant, identity.job).await {
+            Ok(snapshot) => snapshot,
+            Err(SeamError::NotFound) => self.first_request(&identity).await?,
+            Err(other) => return Err(seam(other)),
+        };
         if Sha256Digest::of(snapshot.text.as_bytes()) != snapshot.sha256 {
             return Err(StageError::Internal);
         }
@@ -748,11 +771,61 @@ impl StageHandler for IntakeHandler {
     }
 }
 
+/// Title and body as one text, the way the API stores a request: the title, a blank line, the body.
+/// A missing part leaves no separator.
+fn request_text(title: &str, body: &str) -> String {
+    match (title.is_empty(), body.is_empty()) {
+        (false, false) => format!("{title}\n\n{body}"),
+        (false, true) => title.to_owned(),
+        (true, _) => body.to_owned(),
+    }
+}
+
 fn slug(name: &str) -> Result<Slug, StageError> {
     Slug::parse(name).map_err(|_| StageError::Internal)
 }
 
 impl IntakeHandler {
+    /// Fetches the issue of a job that a webhook created and stores its text as revision 1.
+    ///
+    /// The webhook payload is a hint and carries no text, and the API holds no credential for the
+    /// code host, so this is the one place the text of such a job is read. It fails closed:
+    /// a job that names no issue, an issue the host does not return, another issue than the one
+    /// asked for, and an issue with no words in it all end the attempt, and nothing is stored.
+    async fn first_request(
+        &self,
+        identity: &crate::handlers::RunIdentity,
+    ) -> Result<RequestSnapshot, StageError> {
+        let issue = self
+            .requests
+            .awaiting(identity.job)
+            .ok_or(StageError::Internal)?;
+        let fetched = self
+            .issues
+            .fetch_issue(&self.scope(identity, &issue), &issue)
+            .await
+            .map_err(|_| StageError::Tool)?;
+        if fetched.reference != issue {
+            return Err(StageError::Tool);
+        }
+        let text = request_text(&fetched.title, &fetched.body);
+        if text.trim().is_empty() {
+            return Err(StageError::Tool);
+        }
+        self.requests
+            .record_first(
+                identity.tenant,
+                identity.job,
+                FetchedRequest {
+                    issue,
+                    author: fetched.author.id,
+                    text,
+                },
+            )
+            .await
+            .map_err(seam)
+    }
+
     /// The text the classifier reads: the original, and the answers people gave to the question
     /// of an earlier round, each marked. All of it goes in the one untrusted block.
     async fn request_with_answers(
