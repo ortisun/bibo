@@ -505,11 +505,12 @@
             "process",
             "rt",
             "rt-multi-thread",
+            "signal",
             "sync",
             "test-util",
             "time"
           ],
-          "reason": "workflow lists tokio[sync,time,rt,macros]. net, process, io-util and rt-multi-thread resolve because adapters and dev-dependencies enable them, and Cargo unifies them into the one tokio that workflow sees; the DEP-05 bans on tokio::net, tokio::process and tokio::fs paths are what stops workflow from using them. A new feature (fs, signal, full) appearing in this set needs an architect-reviewed change here."
+          "reason": "workflow lists tokio[sync,time,rt,macros]. net, process, io-util and rt-multi-thread resolve because adapters and dev-dependencies enable them, and Cargo unifies them into the one tokio that workflow sees; the DEP-05 bans on tokio::net, tokio::process and tokio::fs paths are what stops workflow from using them. signal is enabled by apps/worker so that SIGTERM and SIGINT drain the loop instead of abandoning a lease; it adds no crate to Cargo.lock and workflow has no path to it. A new feature (fs, full) appearing in this set needs an architect-reviewed change here."
         }
       ]
     },
