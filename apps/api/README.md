@@ -6,8 +6,10 @@ queries. It chooses its adapters through the composition library
 ([`factory-composition`](../../crates/composition/README.md), [ADR 0015](../../docs/adr/0015-composition-library.md)),
 depends on the `WebhookVerifier` port and not on the `github` crate ([ADR 0014](../../docs/adr/0014-ports-v1-1-claim-protocol-and-port-revision.md)),
 and connects to PostgreSQL as the **API login only** ([ADR 0012](../../docs/adr/0012-row-level-security-in-slice-1.md)):
-a member of `factory_app` and `factory_resolver`, with no system pool. It cannot find work across tenants and
-it cannot do what the engine login does. `tests/database_logins.rs` shows both directions.
+a member of `factory_api_app` and `factory_resolver` and not of `factory_app`, with no system pool. It cannot find
+work across tenants, it cannot do what the engine login does, and it can write only the four tables the API writes
+(`jobs`, `original_requests`, `audit_events`, `webhook_deliveries`): it cannot insert a token, a principal, an
+approval, a ledger entry or an outbox row (finding API-3). `tests/database_logins.rs` shows both directions.
 
 The package is a library (`src/lib.rs`, crate `factory_api`) and a thin binary (`src/main.rs`).
 

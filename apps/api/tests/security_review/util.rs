@@ -76,7 +76,7 @@ pub async fn stage_run(env: &Env, tenant: &Tenant, job: &str) -> String {
     use factory_ports::store::{NewStageRun, Store};
     let id = StageRunId::from_uuid(new_uuid());
     let mut tx = env
-        .store
+        .worker
         .begin(TenantScope::new(tenant.id))
         .await
         .expect("begin");

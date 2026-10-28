@@ -3,9 +3,9 @@
 //! It receives GitHub webhooks, accepts jobs and decisions from people, and answers status and
 //! timeline queries. It chooses its adapters through the composition library (ADR 0015), depends on
 //! the `WebhookVerifier` port and not on the `github` crate (ADR 0014), and connects to the
-//! database as the **API login only** (ADR 0012): a member of `factory_app` and `factory_resolver`,
-//! with no system pool, so it cannot find work across tenants and cannot do what the engine login
-//! does.
+//! database as the **API login only** (ADR 0012): a member of `factory_api_app` and `factory_resolver`,
+//! and not of `factory_app`, with no system pool, so it cannot find work across tenants, cannot do
+//! what the engine login does, and writes only the four tables the API writes.
 //!
 //! | Module | What it holds |
 //! |---|---|

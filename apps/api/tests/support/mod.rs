@@ -145,6 +145,9 @@ pub struct Env {
     pub addr: SocketAddr,
     pub state: Arc<ApiState>,
     pub store: Arc<PgStore>,
+    /// A store connected as the worker login: the fixtures that stand for what the worker has done
+    /// (a stage run, say). The API login cannot write those tables (finding API-3).
+    pub worker: Arc<PgStore>,
     pub a: Tenant,
     pub b: Tenant,
     pub webhook_secret: String,
@@ -181,6 +184,11 @@ impl Env {
             PgStore::connect(config)
                 .await
                 .expect("the store becomes ready"),
+        );
+        let worker = Arc::new(
+            PgStore::connect(PgStoreConfig::new(small_pool(db.url(&logins.worker))))
+                .await
+                .expect("the worker store becomes ready"),
         );
 
         let policies = load_policy(&repository_root(), &[]).expect("the real policies load");
@@ -272,6 +280,7 @@ impl Env {
             addr,
             state,
             store,
+            worker,
             a,
             b,
             webhook_secret,

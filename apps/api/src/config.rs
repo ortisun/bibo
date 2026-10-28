@@ -7,7 +7,7 @@
 //! read; the environment may repeat the profile and may replace the log filter, and cannot widen
 //! anything.
 //!
-//! The API has one database pool, under `database.api`: its login belongs to `factory_app` and
+//! The API has one database pool, under `database.api`: its login belongs to `factory_api_app` and
 //! `factory_resolver` and to nothing else. It has no system pool.
 
 use std::net::SocketAddr;
@@ -24,7 +24,7 @@ use serde::Deserialize;
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ApiDatabase {
-    /// The API pool. A member of `factory_app` and `factory_resolver`.
+    /// The API pool. A member of `factory_api_app` and `factory_resolver`.
     pub api: PoolConfig,
 }
 

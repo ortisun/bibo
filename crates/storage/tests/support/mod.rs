@@ -2,8 +2,8 @@
 //!
 //! A test calls [`Scene::new`] and gets a migrated database of its own, two tenants that each have
 //! a repository, and a store connected the way the deployment connects it: the tenant pool as the
-//! API login (which is also a member of `factory_app`, so it opens tenant transactions and may call
-//! the lookups), the system pool as the engine login. Fixtures that create tenants run as the
+//! API login (a member of `factory_api_app` and `factory_resolver`: it opens tenant transactions for
+//! the four tables the API writes and may call the lookups), the system pool as the engine login. Fixtures that create tenants run as the
 //! superuser, because the application role cannot insert into `tenants` by design. Everything the
 //! code under test does, it does as an application login.
 #![allow(dead_code)]
@@ -42,14 +42,86 @@ pub fn small_pool(url: factory_storage::pg::DatabaseUrl) -> PoolSettings {
     settings
 }
 
-/// The configuration the tests use: the API login on the tenant pool (it can open tenant
-/// transactions and call the lookups), the engine login on the system pool.
+/// The configuration the tests use for the work of a tenant: the worker login on the tenant pool,
+/// the engine login on the system pool. Since finding API-3 the API login is a narrow group of its
+/// own (`factory_api_app`) and cannot write most tables, so it is not this store. The lookups and
+/// the platform audit belong to the API's store: [`api_config_for`], and [`SplitStore`] joins the
+/// two for a suite that expects one store to do everything.
 pub async fn config_for(db: &TestDb) -> PgStoreConfig {
+    let logins = db.server.logins().await;
+    let mut config = PgStoreConfig::new(small_pool(db.url(&logins.worker)));
+    config.system = Some(small_pool(db.url(&logins.engine)));
+    config
+}
+
+/// The configuration of the API process: the API login, no system pool.
+pub async fn api_config_for(db: &TestDb) -> PgStoreConfig {
     let logins = db.server.logins().await;
     let mut config = PgStoreConfig::new(small_pool(db.url(&logins.api)));
     config.tenant_login = TenantLogin::Api;
-    config.system = Some(small_pool(db.url(&logins.engine)));
     config
+}
+
+/// Two real stores that answer as one, the way the deployment's two processes do together: the
+/// tenant and system work goes to the worker and engine logins, the two lookups and the platform
+/// audit to the API login. It exists so that the store contract, which expects one store to do
+/// all of it, still runs against real logins that each hold only their own privileges.
+pub struct SplitStore {
+    pub tenant: std::sync::Arc<PgStore>,
+    pub api: PgStore,
+}
+
+#[async_trait::async_trait]
+impl Store for SplitStore {
+    fn fidelity(&self) -> factory_domain::vocabulary::Fidelity {
+        self.tenant.fidelity()
+    }
+
+    async fn begin(&self, scope: TenantScope) -> Result<Box<dyn Tx>, StoreError> {
+        self.tenant.begin(scope).await
+    }
+
+    async fn begin_system(&self, scope: SystemScope) -> Result<Box<dyn SystemTx>, StoreError> {
+        self.tenant.begin_system(scope).await
+    }
+
+    async fn resolve_token(
+        &self,
+        hash: &factory_ports::store::TokenHash,
+        audience: &factory_ports::store::Audience,
+    ) -> Result<Option<factory_domain::scope::ResolvedPrincipal>, StoreError> {
+        self.api.resolve_token(hash, audience).await
+    }
+
+    async fn resolve_installation(
+        &self,
+        installation: factory_ports::store::InstallationId,
+        repository: factory_ports::store::GithubRepositoryId,
+    ) -> Result<Option<factory_domain::scope::ResolvedRepository>, StoreError> {
+        self.api
+            .resolve_installation(installation, repository)
+            .await
+    }
+
+    async fn record_platform_audit(
+        &self,
+        scope: factory_domain::scope::PlatformScope,
+        event: factory_ports::store::NewAuditEvent,
+    ) -> Result<factory_ports::store::AuditRecord, StoreError> {
+        self.api.record_platform_audit(scope, event).await
+    }
+
+    async fn committed(
+        &self,
+        scope: TenantScope,
+        witness: factory_ports::store::Witness,
+    ) -> Result<bool, StoreError> {
+        self.tenant.committed(scope, witness).await
+    }
+
+    async fn schema_version(&self) -> Result<factory_ports::store::SchemaVersion, StoreError> {
+        self.tenant.schema_version().await
+    }
 }
 
 /// The configuration of a worker process: the worker login, no system pool.
@@ -61,7 +133,10 @@ pub async fn worker_config_for(db: &TestDb) -> PgStoreConfig {
 /// A database, two tenants and a store.
 pub struct Scene {
     pub db: TestDb,
+    /// The worker and engine logins.
     pub store: PgStore,
+    /// The API login: the lookups and the platform audit.
+    pub api: PgStore,
     pub ids: Ids,
     pub a: TenantId,
     pub b: TenantId,
@@ -78,9 +153,13 @@ impl Scene {
         let store = PgStore::connect(config_for(&db).await)
             .await
             .expect("the store becomes ready");
+        let api = PgStore::connect(api_config_for(&db).await)
+            .await
+            .expect("the API store becomes ready");
         Self {
             db,
             store,
+            api,
             ids,
             a,
             b,

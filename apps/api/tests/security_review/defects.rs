@@ -157,11 +157,12 @@ struct Flag {
     yes: bool,
 }
 
-/// API-3a. The API login is a member of `factory_app`, which holds `INSERT` on 17 tables. The API
-/// writes four of them (`jobs`, `original_requests`, `audit_events`, `webhook_deliveries`). The
-/// rest are the worker's and the operator's.
+/// API-3a. The API login used to be a member of `factory_app`, which holds `INSERT` on 17 tables.
+/// The API writes four of them (`jobs`, `original_requests`, `audit_events`,
+/// `webhook_deliveries`). The rest are the worker's and the operator's. Fixed by migration
+/// `2026-10-28-002000_api_login_narrow_group`: the API login belongs to `factory_api_app` and
+/// `factory_resolver` and not to `factory_app`.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[ignore = "confirmed defect API-3: the internet-facing API login can INSERT into tables it never writes (tokens, principals, approvals, the evidence ledger, the outbox, stage runs)"]
 async fn api_3a_the_api_login_holds_only_the_insert_privileges_the_api_uses() {
     let env = Env::start().await;
     let logins = env.db.server.logins().await;
@@ -199,7 +200,6 @@ async fn api_3a_the_api_login_holds_only_the_insert_privileges_the_api_uses() {
 /// API-3b. The same fact end to end: the API login names a tenant by hand, inserts a token for
 /// that tenant's approver, and the new token authenticates over HTTP.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[ignore = "confirmed defect API-3: with the API login's own credentials a token for any principal of any tenant can be minted, and it works"]
 async fn api_3b_the_api_login_cannot_mint_a_token() {
     let env = Env::start().await;
     let logins = env.db.server.logins().await;

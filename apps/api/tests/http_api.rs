@@ -47,7 +47,7 @@ async fn new_job(env: &Env, tenant: &Tenant, key: &str) -> String {
 async fn stage_run(env: &Env, tenant: &Tenant, job: &str) -> StageRunId {
     let id = StageRunId::from_uuid(uuid::Uuid::from_u128(rand_u128()));
     let mut tx = env
-        .store
+        .worker
         .begin(TenantScope::new(tenant.id))
         .await
         .expect("begin");

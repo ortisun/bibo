@@ -329,7 +329,40 @@ async fn refuses_a_role_that_bypasses_rls() {
         PgStore::connect(api_expected).await.map(|_| ()),
         Err(StartupError::RoleNotAllowed {
             pool: "tenant",
-            problem: RoleProblem::MissingGroup
+            problem: RoleProblem::ForbiddenGroup
+        })
+    );
+
+    // The old shape of the API login, a member of the worker's group and the resolver's, held every
+    // privilege of the worker (finding API-3). It is refused as the API's login, and so is the new
+    // shape with the worker's group added back.
+    let old_api = server
+        .create_login("old_api", &["factory_app", "factory_resolver"])
+        .await;
+    let as_api = |login: &support::Login| {
+        let mut config =
+            factory_storage::pg::PgStoreConfig::new(small_pool(server.url(login, &db.name)));
+        config.tenant_login = factory_storage::pg::TenantLogin::Api;
+        config
+    };
+    assert_eq!(
+        PgStore::connect(as_api(&old_api)).await.map(|_| ()),
+        Err(StartupError::RoleNotAllowed {
+            pool: "tenant",
+            problem: RoleProblem::ForbiddenGroup
+        })
+    );
+    let api_and_worker = server
+        .create_login(
+            "api_and_worker",
+            &["factory_api_app", "factory_app", "factory_resolver"],
+        )
+        .await;
+    assert_eq!(
+        PgStore::connect(as_api(&api_and_worker)).await.map(|_| ()),
+        Err(StartupError::RoleNotAllowed {
+            pool: "tenant",
+            problem: RoleProblem::ForbiddenGroup
         })
     );
 
@@ -337,6 +370,9 @@ async fn refuses_a_role_that_bypasses_rls() {
     PgStore::connect(config_for(db).await)
         .await
         .expect("the deployment's logins are ready");
+    PgStore::connect(support::api_config_for(db).await)
+        .await
+        .expect("the API login is ready");
 
     // A database that is behind the code is refused.
     db.run("DELETE FROM __diesel_schema_migrations WHERE version = (SELECT max(version) FROM __diesel_schema_migrations)").await;

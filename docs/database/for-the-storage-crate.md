@@ -8,10 +8,10 @@
 ## Prerequisites
 
 - The migrations applied (see [running.md](running.md)). The newest is migration 18; `Store::schema_version` is `SELECT count(*) FROM __diesel_schema_migrations` (Diesel's own version is 14 digits and `SchemaVersion` is 32 bits), and the code refuses to start when it is behind the count it was built for.
-- **Three logins**, created by the deployment, never by the application. The migrations create the four groups as `NOLOGIN` roles and set no password:
+- **Three logins**, created by the deployment, never by the application. The migrations create the five groups as `NOLOGIN` roles and set no password:
 
   ```sql
-  CREATE ROLE factory_api    LOGIN PASSWORD '...' IN ROLE factory_app, factory_resolver;  -- the API process
+  CREATE ROLE factory_api    LOGIN PASSWORD '...' IN ROLE factory_api_app, factory_resolver;  -- the API process (not factory_app: migration 20)
   CREATE ROLE factory_worker LOGIN PASSWORD '...' IN ROLE factory_app;                    -- tenant pool of the workflow and worker
   CREATE ROLE factory_engine LOGIN PASSWORD '...' IN ROLE factory_system;                 -- system pool of the workflow only
   ```

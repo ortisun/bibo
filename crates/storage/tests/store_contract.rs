@@ -28,7 +28,7 @@ use factory_ports::store::{Audience, AuditFilter, AuditRecord, LeaseEpoch, Store
 use factory_storage::pg::PgStore;
 use factory_testkit::contracts::store::{StoreSubject, checks};
 use factory_testkit::contracts::{Report, SKIPPED_PREFIX};
-use support::{TestDb, config_for, server};
+use support::{SplitStore, TestDb, api_config_for, config_for, server};
 use tokio::sync::Semaphore;
 use tokio::task::JoinSet;
 use uuid::Uuid;
@@ -41,17 +41,30 @@ const REAL_WAIT_LIMIT: Duration = Duration::from_secs(3);
 
 struct PgSubject {
     db: Arc<TestDb>,
-    store: PgStore,
+    /// The worker and engine logins: tenant and system transactions.
+    store: Arc<PgStore>,
+    /// The tenant store joined to the API login's, which answers the lookups and the platform
+    /// audit. The contract expects one store to do all of it; the deployment has two processes.
+    split: SplitStore,
     counter: AtomicU64,
 }
 
 impl PgSubject {
     async fn new() -> Self {
         let db = Arc::new(server().clone_database().await);
-        let store = PgStore::connect(config_for(&db).await)
+        let store = Arc::new(
+            PgStore::connect(config_for(&db).await)
+                .await
+                .expect("the store becomes ready"),
+        );
+        let api = PgStore::connect(api_config_for(&db).await)
             .await
-            .expect("the store becomes ready");
+            .expect("the API store becomes ready");
         Self {
+            split: SplitStore {
+                tenant: Arc::clone(&store),
+                api,
+            },
             store,
             db,
             counter: AtomicU64::new(1),
@@ -77,7 +90,7 @@ impl PgSubject {
 #[async_trait]
 impl StoreSubject for PgSubject {
     fn store(&self) -> &dyn Store {
-        &self.store
+        &self.split
     }
 
     /// The schema has a row per tenant and the application role cannot insert one: onboarding is

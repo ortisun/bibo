@@ -61,7 +61,7 @@ DBW = "perf_w"         # a clone of it for everything that writes
 SUPER = "postgres"
 LOGINS = {
     "worker": ("perfdb_worker", ["factory_app"]),
-    "api": ("perfdb_api", ["factory_app", "factory_resolver"]),
+    "api": ("perfdb_api", ["factory_api_app", "factory_resolver"]),
     "engine": ("perfdb_engine", ["factory_system"]),
 }
 

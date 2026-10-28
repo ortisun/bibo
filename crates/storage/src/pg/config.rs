@@ -77,8 +77,9 @@ impl PoolSettings {
 pub enum TenantLogin {
     /// A member of `factory_app` only. The login of the worker.
     Worker,
-    /// A member of `factory_app` and `factory_resolver`. The login of the API process. It is the
-    /// only login that may call the two lookups and write the platform audit.
+    /// A member of `factory_api_app` and `factory_resolver`, and not of `factory_app`. The login of
+    /// the API process. It is the only login that may call the two lookups and write the platform
+    /// audit, and it can write only the four tables the API writes.
     Api,
 }
 

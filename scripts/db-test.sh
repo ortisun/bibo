@@ -39,7 +39,7 @@ DIESEL_CONFIG="$ROOT/crates/storage/diesel.toml"
 SCHEMA_RS="$ROOT/crates/storage/src/schema.rs"
 STATE_MACHINE="$ROOT/docs/architecture/state-machine.json"
 
-SUITES="migrations statuses ledger tenancy rls terminal_rows plans audit webhook_delivery lease outbox approvals tokens privileges contracts store_model compat"
+SUITES="migrations statuses ledger tenancy rls terminal_rows plans audit webhook_delivery lease outbox approvals tokens privileges api_privileges contracts store_model compat"
 
 RUN_ID="$$_$(date +%s)"
 WORK=""
@@ -101,6 +101,8 @@ approvals        approvals bind a head SHA and only a human principal can approv
 tokens           API tokens are stored hashed, expire, are audience bound and cannot be un-revoked; resolve_token
                  agrees with the view on every case
 privileges       the application role has exactly the grants the design lists
+api_privileges   the group of the API login (factory_api_app) holds only what the API uses: it cannot insert a token,
+                 a principal, an approval, a ledger or outbox row, and it works only on the tenant it names
 contracts        the rows can carry the fields the domain-event and evidence-ledger-entry schemas require
 store_model      the tables carry what the Store port of ports v1.1 needs and the rules it states are rules of the data:
                  gate record, attestation, task nodes and graph, ledger head; the recipes of the operations that
@@ -794,7 +796,7 @@ rls_sessions() {
   api="dbtest_api_${RUN_ID}"
   make_login "$app" factory_app || return 1
   make_login "$sys" factory_system || return 1
-  make_login "$api" "factory_app, factory_resolver" || return 1
+  make_login "$api" "factory_api_app, factory_resolver" || return 1
   t1="$(psql_scalar "$CLONE" -c "SELECT dbtest.u(1)")"
   t2="$(psql_scalar "$CLONE" -c "SELECT dbtest.u(2)")"
 
@@ -803,11 +805,11 @@ rls_sessions() {
 
   # The start-up check a pool runs on its own role (docs/database/tests/role_readiness.sql, quoted in the storage notes).
   expect_count "readiness query as the tenant login: not a superuser, no bypass, owns nothing, in factory_app only" \
-    "$(psql_as "$app" -At -f "$TESTS/role_readiness.sql")" "f|f|f|t|f|f|f" || rc=1
+    "$(psql_as "$app" -At -f "$TESTS/role_readiness.sql")" "f|f|f|t|f|f|f|f" || rc=1
   expect_count "readiness query as the system login: in factory_system only" \
-    "$(psql_as "$sys" -At -f "$TESTS/role_readiness.sql")" "f|f|f|f|t|f|f" || rc=1
-  expect_count "readiness query as the API login: in factory_app and factory_resolver" \
-    "$(psql_as "$api" -At -f "$TESTS/role_readiness.sql")" "f|f|f|t|f|t|f" || rc=1
+    "$(psql_as "$sys" -At -f "$TESTS/role_readiness.sql")" "f|f|f|f|t|f|f|f" || rc=1
+  expect_count "readiness query as the API login: in factory_api_app and factory_resolver, not in factory_app" \
+    "$(psql_as "$api" -At -f "$TESTS/role_readiness.sql")" "f|f|f|f|f|t|f|t" || rc=1
   expect_count "control: the readiness query as a superuser starts with true, so a pool that connects as one refuses to start" \
     "$(psql_db "$CLONE" -At -f "$TESTS/role_readiness.sql" | cut -c1-2)" "t|" || rc=1
 
@@ -932,8 +934,22 @@ SELECT count(*) FROM (SELECT tenant_id, id FROM stage_runs) x;")"
   expect_count "the API login resolves a token to its tenant and principal before any tenant is known" "$out" "$(psql_scalar "$CLONE" -c "SELECT dbtest.u(1) || '|' || dbtest.u(1002)")" || rc=1
   out="$(session_output "$api" "SELECT count(*) FROM resolve_installation(9002, 8002);")"
   expect_count "the API login resolves an installation and repository to a tenant" "$out" "1" || rc=1
-  out="$(session_output "$api" "SELECT count(*) FROM api_tokens;")"
-  expect_count "and with no tenant setting it still sees no token row directly" "$out" "0" || rc=1
+  session_refused "$api" "SELECT count(*) FROM api_tokens;" 'permission denied for table api_tokens' \
+    && ok "the API login cannot read the token table directly, with or without a tenant setting" \
+    || { not_ok "the API login could read the token table"; rc=1; }
+  # Finding API-3 as a real session: name another tenant by hand and mint a token for its principal.
+  session_refused "$api" "BEGIN;
+SELECT set_config('factory.tenant_id', '$t2', true);
+INSERT INTO api_tokens (tenant_id, id, principal_id, token_hash, audience, expires_at)
+  VALUES ('$t2', dbtest.u(2999), dbtest.u(2002), sha256(convert_to('minted', 'UTF8')), 'factory-api', now() + interval '1 day');
+COMMIT;" 'permission denied for table api_tokens' \
+    && ok "the API login cannot mint a token for a tenant it names by hand (API-3b)" \
+    || { not_ok "the API login minted a token"; rc=1; }
+  out="$(session_output "$api" "BEGIN;
+SELECT set_config('factory.tenant_id', '$t1', true) AS x \\gset
+SELECT count(*) FROM jobs;
+ROLLBACK;")"
+  expect_count "the API login reads the jobs of the tenant it names, through its own group" "$out" "1" || rc=1
   session_refused "$api" "SET ROLE factory_system" 'permission denied to set role "factory_system"' && ok "the API login cannot become the system role" || { not_ok "the API login could become the system role"; rc=1; }
 
   # --- Control: a login that belongs to both groups is a finding, and the policies would combine -------
@@ -1209,6 +1225,8 @@ suite_outbox() { simple_suite outbox outbox.sql; }
 suite_tokens() { simple_suite tokens tokens.sql; }
 
 suite_privileges() { simple_suite privileges privileges.sql; }
+
+suite_api_privileges() { simple_suite api_privileges api_privileges.sql; }
 
 suite_approvals() { simple_suite approvals approvals.sql; }
 
