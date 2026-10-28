@@ -188,21 +188,6 @@ impl Plan {
                 designation, flags, ..
             } => (designation, flags),
         };
-        // The policy engine measures one edit. A squatter also adds a word to a popular name
-        // (`reqwest-rs`, `clap-derive-macros`), and the same scrutiny applies: the name is flagged
-        // and a security approver decides. This only raises the level, never lowers it.
-        let (designation, flags) = match settings.popular.lookalike(&package.name) {
-            Some(popular)
-                if !flags
-                    .iter()
-                    .any(|flag| matches!(flag, DependencyFlag::NearPopularName(_))) =>
-            {
-                let mut flags = flags;
-                flags.push(DependencyFlag::NearPopularName(popular.clone()));
-                (Designation::SecurityApprover, flags)
-            }
-            _ => (designation, flags),
-        };
         if let Some(license) = &record.license
             && let Err(denial) = settings.licenses.check(Some(license))
         {

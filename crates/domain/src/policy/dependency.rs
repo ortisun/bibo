@@ -11,7 +11,8 @@
 //! * an ordinary approver for a name that exists, is old enough and looks ordinary;
 //! * a security approver when the first publication is younger than
 //!   `min_first_publish_age_days`, or its age is unknown, or the name is not in the registry or its
-//!   existence is unknown, or it is one edit away from a popular name, or it equals an internal
+//!   existence is unknown, or it is one edit away from a popular name or is a popular name with
+//!   one or two decorations (`reqwest-rs`, see [`is_decorated`]), or it equals an internal
 //!   package name.
 //!
 //! A request is refused before any of that when the name is not a name of its ecosystem, or the
@@ -222,7 +223,50 @@ pub struct DependencyPolicy {
     min_first_publish_age_days: u64,
 }
 
-fn within_one_edit(a: &str, b: &str) -> bool {
+/// Words a squatter puts before or after a popular name. A word that is a package of its own
+/// (`derive`, `core`, `sys`) is on the list too, because `clap-derive-macros` is not
+/// `clap_derive`.
+pub const DECORATIONS: [&str; 22] = [
+    "rs", "rust", "ext", "extra", "plus", "fork", "patched", "fix", "new", "lib", "util", "utils",
+    "derive", "macros", "macro", "core", "sys", "api", "sdk", "client", "cli", "the",
+];
+
+/// True when `wanted` is `popular` with one or two decorations ([`DECORATIONS`]) in front of it
+/// or behind it, separated as the ecosystems separate words (`-` and `_` are one separator,
+/// and case is ignored). `reqwest-rs`, `clap-derive-macros` and `rust-serde` are decorations of
+/// `reqwest`, `clap` and `serde`. The name itself is not a decoration of itself, and `serde_json`
+/// is not a decoration of `serde`, because `json` is not a decoration.
+///
+/// This is the one decoration rule of the factory. The dependency gate calls it, so the rule
+/// that the policy engine applies and the rule the gate warns with cannot differ.
+#[must_use]
+pub fn is_decorated(popular: &str, wanted: &str) -> bool {
+    let fold = |text: &str| text.to_ascii_lowercase().replace('-', "_");
+    let (popular, wanted) = (fold(popular), fold(wanted));
+    let all = |text: &str| {
+        !text.is_empty()
+            && text.split('_').count() <= 2
+            && text.split('_').all(|word| DECORATIONS.contains(&word))
+    };
+    wanted
+        .strip_prefix(&popular)
+        .and_then(|rest| rest.strip_prefix('_'))
+        .is_some_and(all)
+        || wanted
+            .strip_suffix(&popular)
+            .and_then(|rest| rest.strip_suffix('_'))
+            .is_some_and(all)
+}
+
+/// True when `a` and `b` differ and are one edit apart: one letter changed, added or dropped, or
+/// two neighbouring letters swapped (`reqwset`). Equal names are not one edit apart.
+///
+/// This is the one edit rule of the factory (see [`is_decorated`]).
+#[must_use]
+pub fn within_one_edit(a: &str, b: &str) -> bool {
+    if a == b {
+        return false;
+    }
     let (a, b): (Vec<char>, Vec<char>) = (a.chars().collect(), b.chars().collect());
     if a.len().abs_diff(b.len()) > 1 {
         return false;
@@ -330,9 +374,19 @@ impl DependencyPolicy {
                 flags.insert(DependencyFlag::FirstPublishUnknown);
             }
         }
+        // A name on the popular list is not the imitation of a shorter name on it by being
+        // `tokio-util` beside `tokio`: the decoration rule is for names that are not listed.
+        let listed = facts
+            .popular_names
+            .iter()
+            .take(100_000)
+            .any(|popular| ecosystem.normalize(popular) == wanted);
         for popular in facts.popular_names.iter().take(100_000) {
             let popular_norm = ecosystem.normalize(popular);
-            if popular_norm != wanted && within_one_edit(&popular_norm, &wanted) {
+            if popular_norm != wanted
+                && (within_one_edit(&popular_norm, &wanted)
+                    || (!listed && is_decorated(&popular_norm, &wanted)))
+            {
                 flags.insert(DependencyFlag::NearPopularName(popular.clone()));
             }
         }

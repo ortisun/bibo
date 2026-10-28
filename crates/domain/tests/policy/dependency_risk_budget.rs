@@ -9,7 +9,8 @@ use factory_domain::policy::PolicyEngine;
 use factory_domain::policy::budget::{BudgetVerdict, CeilingRefusal, Metric, Reading, Scope};
 use factory_domain::policy::decision::Designation;
 use factory_domain::policy::dependency::{
-    DependencyDecision, DependencyFlag, DependencyRefusal, DependencyRequest, RegistryFacts,
+    DECORATIONS, DependencyDecision, DependencyFlag, DependencyRefusal, DependencyRequest,
+    RegistryFacts, is_decorated, within_one_edit,
 };
 use factory_domain::policy::risk::RiskFacts;
 use factory_domain::vocabulary::RiskTier;
@@ -193,6 +194,65 @@ fn override_and_dependency_rules_a_new_direct_dependency_always_needs_a_human() 
         ),
         DependencyDecision::NotNew
     );
+}
+
+#[test]
+fn the_edit_rule_and_the_decoration_rule_are_public_and_have_one_home() {
+    // B-6: the gate used to keep its own copy of both. The rule lives here, and the gate calls it.
+    assert!(within_one_edit("serde", "serdee"));
+    assert!(within_one_edit("reqwest", "reqwset"));
+    assert!(within_one_edit("serde", "serd"));
+    assert!(
+        !within_one_edit("serde", "serde"),
+        "the same name is not an imitation"
+    );
+    assert!(!within_one_edit("serde", "serdeee"));
+    assert!(is_decorated("reqwest", "reqwest_rs"));
+    assert!(is_decorated("clap", "clap-derive-macros"));
+    assert!(is_decorated("serde", "rust_serde"));
+    assert!(
+        !is_decorated("serde", "serde_json"),
+        "`json` is not a decoration"
+    );
+    assert!(!is_decorated("serde", "serde"));
+    assert!(!is_decorated("serde", "serde_one_two_three"));
+    assert!(DECORATIONS.contains(&"rs") && DECORATIONS.contains(&"ext"));
+}
+
+#[test]
+fn a_popular_name_with_a_decoration_goes_to_a_security_approver_like_one_edit_away() {
+    // H-4: a squatter adds a word to a popular name. The human still decides; the scrutiny is the
+    // security approver's.
+    let popular = strings(&["reqwest", "serde", "clap", "anyhow", "tokio", "tokio_util"]);
+    let facts = RegistryFacts {
+        exists_in_registry: Some(true),
+        first_publish_age_days: Some(900),
+        popular_names: &popular,
+        internal_names: &[],
+    };
+    for (name, imitated) in [
+        ("reqwest-rs", "reqwest"),
+        ("Reqwest_RS", "reqwest"),
+        ("clap-derive-macros", "clap"),
+        ("anyhow-ext", "anyhow"),
+        ("rust-serde", "serde"),
+    ] {
+        let decision = decide("cargo", name, &["tokio"], &facts);
+        let (designation, flags) = needs_human(&decision);
+        assert_eq!(designation, Designation::SecurityApprover, "{name}");
+        assert!(
+            flags.contains(&DependencyFlag::NearPopularName(imitated.to_owned())),
+            "{name}: {flags:?}"
+        );
+    }
+    // A name that is on the list itself is not an imitation of the shorter name on it.
+    let own = decide("cargo", "tokio-util", &["serde"], &facts);
+    let (designation, flags) = needs_human(&own);
+    assert_eq!(designation, Designation::Approver);
+    assert!(flags.is_empty(), "{flags:?}");
+    // The words of a real package are not decorations.
+    let json = decide("cargo", "serde_json", &["tokio"], &facts);
+    assert_eq!(needs_human(&json).0, Designation::Approver);
 }
 
 fn engine_min_age() -> u64 {
