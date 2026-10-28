@@ -608,30 +608,54 @@ async fn status_ledger_and_outbox_commit_together_or_not_at_all(
     Ok(())
 }
 
+/// Two writers cannot both extend one job's chain.
+///
+/// How the second writer loses depends on the store, and every way is allowed: a store that locks
+/// the job makes the second append wait and then find its position taken (`Conflict`), or give up
+/// at the lock timeout (`Unavailable`); a store that merges at commit refuses the second commit
+/// with `Conflict`. What no store may do is let both entries into the chain. So the check does
+/// not ask how the second writer lost, only that it did, and that the chain holds the first
+/// writer's entry and no other.
 async fn two_open_transactions_cannot_both_extend_the_chain(
     subject: &dyn StoreSubject,
 ) -> Result<(), String> {
     let w = World::new(subject);
     let job = w.job(w.a).await?;
-    let run = w.ids.stage_run();
+    let run = w.stage_run(w.a, job, 3).await?;
     let at = Timestamp::parse("2026-10-27T10:00:00Z").expect("time");
+    let from_one = ledger_entry(&w.ids, job, run, 1, None, &at, "From one.");
+    let from_two = ledger_entry(&w.ids, job, run, 1, None, &at, "From two.");
     let mut one = w.tx(w.a).await?;
     let mut two = w.tx(w.a).await?;
-    one.append_ledger_entry(ledger_entry(&w.ids, job, run, 1, None, &at, "From one."))
+    one.append_ledger_entry(from_one.clone())
         .await
         .ctx("append in one")?;
-    two.append_ledger_entry(ledger_entry(&w.ids, job, run, 1, None, &at, "From two."))
-        .await
-        .ctx("append in two")?;
-    one.commit().await.ctx("the first committer wins")?;
-    ensure_err!(
-        two.commit().await,
-        StoreError::Conflict,
-        "the second committer"
+    // The second writer appends while the first holds the job and commits meanwhile, so a store
+    // that makes the second append wait lets it go on once the first has committed.
+    let (appended, committed) = tokio::join!(two.append_ledger_entry(from_two), one.commit());
+    committed.ctx("the first writer commits")?;
+    let second_extended = match appended {
+        Err(StoreError::Conflict | StoreError::ChainBroken | StoreError::Unavailable) => false,
+        Err(other) => return Err(format!("the second append failed another way: {other:?}")),
+        Ok(_) => match two.commit().await {
+            Ok(()) => true,
+            Err(StoreError::Conflict) => false,
+            Err(other) => return Err(format!("the second commit failed another way: {other:?}")),
+        },
+    };
+    ensure!(
+        !second_extended,
+        "both writers extended the chain: the second append and the second commit both succeeded"
     );
     let mut check = w.tx(w.a).await?;
     let entries = check.read_ledger(job, 1, 10).await.ctx("read")?;
-    ensure_eq!(entries.len(), 1, "one entry");
+    ensure_eq!(entries.len(), 1, "one entry: the chain did not fork");
+    ensure_eq!(
+        entries[0].entry_hash,
+        from_one.entry_hash,
+        "and it is the first writer's"
+    );
+    verify_chain(&entries).map_err(|e| format!("the chain should verify: {e:?}"))?;
     Ok(())
 }
 

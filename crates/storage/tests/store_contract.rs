@@ -328,10 +328,6 @@ async fn run_all() -> Report {
 /// * `VERSION`: the fixture queues events that announce versions of a job that never reached them
 ///   (an event for version 2 of a job at version 1). The schema refuses such an event at commit
 ///   (`outbox_aggregate_has_reached_version`).
-/// * `WRITERS`: the check keeps two tenant transactions open and expects both to append to the
-///   same ledger position, and the second to lose at commit. PostgreSQL makes the second writer
-///   wait for the first one's row lock (here: until the lock timeout), which is first-writer-wins
-///   by waiting, not first-committer-wins by merging.
 const EXCLUDED: &[(&str, &str, &str, &str)] = &[
     (
         "events_read_back_in_the_order_they_were_queued",
@@ -350,12 +346,6 @@ const EXCLUDED: &[(&str, &str, &str, &str)] = &[
         "VERSION",
         "Constraint(EventAggregateMismatch)",
         "atomicity.rs: a_lost_commit_answer_is_settled_by_the_witness",
-    ),
-    (
-        "two_open_transactions_cannot_both_extend_the_chain",
-        "WRITERS",
-        "Unavailable",
-        "ledger_chain.rs: concurrent_appends_to_one_job_give_a_continuous_verifiable_chain",
     ),
 ];
 
