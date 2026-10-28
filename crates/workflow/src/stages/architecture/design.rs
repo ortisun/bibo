@@ -243,6 +243,33 @@ impl Design {
         seen
     }
 
+    /// The design as an independent critic receives it: the parts, the decisions, the risks and the
+    /// open questions. The summary and the list of ignored instructions are left out, because they
+    /// are the architect's own account of its work.
+    #[must_use]
+    pub fn for_critic(&self) -> Value {
+        serde_json::json!({
+            "design_elements": self.elements.iter().map(|e| serde_json::json!({
+                "element_id": e.id,
+                "title": e.title,
+                "responsibility": e.responsibility,
+                "kind": e.kind,
+                "satisfies": e.satisfies,
+                "touches": e.touches,
+            })).collect::<Vec<_>>(),
+            "decisions": self.decisions.iter().map(|d| serde_json::json!({
+                "decision_id": d.id,
+                "title": d.title,
+                "choice": d.choice,
+                "alternatives": d.alternatives,
+                "consequences": d.consequences,
+                "needs_person": d.needs_person,
+            })).collect::<Vec<_>>(),
+            "risks": self.risks,
+            "open_questions": self.open_questions,
+        })
+    }
+
     /// The pieces of human-facing text the readability gate reads: a title and a body for each.
     /// The body of an element is its responsibility, and the body of a decision is its choice and
     /// its consequences.

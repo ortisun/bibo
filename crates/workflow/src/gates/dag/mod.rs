@@ -30,7 +30,7 @@ pub mod validate;
 
 pub use graph::{CriticalPath, Graph, Node, ShapeProblem};
 pub use matrix::{DesignLink, Gap, Matrix, MatrixInput, Severity};
-pub use validate::{Analysis, Check, Finding, Limits, Report, SpecFacts, validate};
+pub use validate::{Analysis, Check, Finding, Limits, Report, SpecFacts, protected, validate};
 
 /// The gate that holds the result of the validator.
 pub const GATE_ID: &str = "task-plan-validator";

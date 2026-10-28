@@ -31,6 +31,10 @@ pub struct Limits {
     pub max_task_tokens: u64,
     /// The most seconds one task may be estimated to take.
     pub max_task_seconds: u64,
+    /// The specialist roles a task may ask for. The implementation stage runs one agent, the
+    /// builder, so a deployment that runs only that agent lists it here. An empty list allows any
+    /// role, because the schema leaves roles open and its own example uses several.
+    pub allowed_roles: &'static [&'static str],
 }
 
 impl Default for Limits {
@@ -41,6 +45,7 @@ impl Default for Limits {
             max_files_per_task: 25,
             max_task_tokens: 400_000,
             max_task_seconds: 3_600,
+            allowed_roles: &[],
         }
     }
 }
@@ -124,6 +129,10 @@ pub enum Check {
     CriticalPathUnknownTask,
     /// A part of the task template is blank.
     MissingTemplatePart,
+    /// A task owns a path that policy protects.
+    ProtectedPath,
+    /// A task asks for a specialist role that the factory does not run.
+    SpecialistNotAvailable,
 }
 
 impl Check {
@@ -150,6 +159,8 @@ impl Check {
             Self::ChangeOutsideOwnedFiles => "change-outside-owned-files",
             Self::CriticalPathUnknownTask => "critical-path-unknown-task",
             Self::MissingTemplatePart => "missing-template-part",
+            Self::ProtectedPath => "protected-path-owned",
+            Self::SpecialistNotAvailable => "specialist-not-available",
         }
     }
 }
@@ -263,6 +274,7 @@ pub fn validate(plan: &TaskDag, spec: &SpecFacts, limits: &Limits) -> Report {
     };
 
     sizes(tasks, spec, limits, &mut findings);
+    specialists(tasks, limits, &mut findings);
     parts(tasks, &mut findings);
     coverage(tasks, spec, &mut findings);
     changes(tasks, &mut findings);
@@ -298,6 +310,57 @@ pub fn validate(plan: &TaskDag, spec: &SpecFacts, limits: &Limits) -> Report {
         }
     });
     Report { findings, analysis }
+}
+
+fn specialists(tasks: &[Task], limits: &Limits, findings: &mut Vec<Finding>) {
+    for task in tasks {
+        let role = task.required_specialist.role.as_str();
+        if !limits.allowed_roles.is_empty() && !limits.allowed_roles.contains(&role) {
+            let id = task.task_id.as_str();
+            findings.push(Finding::new(
+                Check::SpecialistNotAvailable,
+                id,
+                format!(
+                    "The task {id} asks for the specialist role {role}, and the factory runs only: {}. Ask for one of those.",
+                    limits.allowed_roles.join(", ")
+                ),
+            ));
+        }
+    }
+}
+
+/// A path that stands for the files a pattern names: the wildcards become a plain letter, so that
+/// the path policy can be asked about it.
+fn representative(pattern: &str) -> String {
+    pattern
+        .trim_start_matches("./")
+        .split('/')
+        .map(|segment| segment.replace(['*', '?'], "x"))
+        .collect::<Vec<_>>()
+        .join("/")
+}
+
+/// The tasks that own a path the policy protects. `refuses` is the policy's answer for one path.
+/// The check is made on a path that stands for each pattern, so `.github/**` is asked about as a
+/// file below `.github`.
+#[must_use]
+pub fn protected(plan: &TaskDag, refuses: &dyn Fn(&str) -> bool) -> Vec<Finding> {
+    let mut findings = Vec::new();
+    for task in plan.tasks.iter() {
+        let id = task.task_id.as_str();
+        for pattern in owned_files(task) {
+            if refuses(&representative(pattern)) {
+                findings.push(Finding::new(
+                    Check::ProtectedPath,
+                    format!("{id}>{pattern}"),
+                    format!(
+                        "The task {id} owns {pattern}, which policy protects. A plan cannot give a builder a protected path."
+                    ),
+                ));
+            }
+        }
+    }
+    findings
 }
 
 fn shape_finding(problem: ShapeProblem) -> Finding {
@@ -778,6 +841,7 @@ mod tests {
             max_files_per_task: 1,
             max_task_tokens: 10,
             max_task_seconds: 10,
+            allowed_roles: &["builder"],
         };
         let found = checks(&validate(&plan(|_| {}), &spec(), &small));
         for expected in [
@@ -814,6 +878,35 @@ mod tests {
             &Limits::default(),
         );
         assert!(checks(&bad).contains(&Check::CriticalPathUnknownTask));
+    }
+
+    #[test]
+    fn a_role_the_factory_does_not_run_and_a_protected_path_are_findings() {
+        let builders_only = Limits {
+            allowed_roles: &["builder"],
+            ..Limits::default()
+        };
+        let report = validate(&plan(|_| {}), &spec(), &builders_only);
+        assert!(checks(&report).contains(&Check::SpecialistNotAvailable));
+        let report = validate(
+            &plan(|v| {
+                for task in v["tasks"].as_array_mut().expect("tasks") {
+                    task["required_specialist"]["role"] = json!("builder");
+                }
+            }),
+            &spec(),
+            &builders_only,
+        );
+        assert!(report.is_clean(), "{:?}", report.findings);
+        let owns = plan(|v| {
+            v["tasks"][2]["owned_files"] = json!([".github/**"]);
+            v["tasks"][2]["expected_changes"] =
+                json!([{ "path_glob": ".github/workflows/ci.yml", "change": "modify" }]);
+        });
+        let found = protected(&owns, &|path| path.starts_with(".github/"));
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].check, Check::ProtectedPath);
+        assert!(protected(&owns, &|_| false).is_empty());
     }
 
     #[test]
