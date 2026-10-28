@@ -177,7 +177,15 @@ ops_new_run() {
 
 # ---- compose, secrets and the database -------------------------------------------------------------
 
-ops_compose() { docker compose --progress quiet -p "$OPS_PROJECT" -f "$OPS_COMPOSE_FILE" --profile "$OPS_PROFILE" "$@"; }
+# FACTORY_COMPOSE_OVERRIDE names one more Compose file, merged over local.yml. scripts/smoke.sh uses it to prove that it
+# notices a layout that breaks the rules (docs/operations/local-deployment.md). A person can use it to change a limit.
+ops_compose() {
+  if [ -n "${FACTORY_COMPOSE_OVERRIDE:-}" ]; then
+    docker compose --progress quiet -p "$OPS_PROJECT" -f "$OPS_COMPOSE_FILE" -f "$FACTORY_COMPOSE_OVERRIDE" --profile "$OPS_PROFILE" "$@"
+  else
+    docker compose --progress quiet -p "$OPS_PROJECT" -f "$OPS_COMPOSE_FILE" --profile "$OPS_PROFILE" "$@"
+  fi
+}
 
 # Create the secret files that do not exist yet. Existing ones are never changed: a changed password
 # would no longer match the one stored inside the database volume.
