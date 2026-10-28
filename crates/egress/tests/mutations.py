@@ -50,8 +50,7 @@ MUTATIONS = {
     ),
     "accept-a-token-for-another-provider": (
         "a token works at any provider's route",
-        [(CORE, "let (audience_ok, model_ok, usage, ceiling, in_flight) = {", "let (_audience_ok, model_ok, usage, ceiling, in_flight) = {"),
-         (CORE, "                record.providers.contains(&facts.provider),", "                true,")],
+        [(CORE, "                record.providers.contains(&facts.provider),", "                true,")],
     ),
     "ignore-the-cost-ceiling": (
         "reaching the ceiling does not revoke the token and the pre-check passes it",
