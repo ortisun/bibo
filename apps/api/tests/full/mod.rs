@@ -212,6 +212,72 @@ impl StageHandler for Traced {
     }
 }
 
+/// A real handler whose output a test changes on the way to the engine: how a deliberate break
+/// puts a stage that stores a deliverable under another name, or leaves one out, into the real
+/// pipeline.
+pub struct Tamper {
+    pub inner: Arc<dyn StageHandler>,
+    pub change: Box<
+        dyn Fn(factory_workflow::handlers::StageOutput) -> factory_workflow::handlers::StageOutput
+            + Send
+            + Sync,
+    >,
+}
+
+#[async_trait::async_trait]
+impl StageHandler for Tamper {
+    fn fidelity(&self) -> factory_domain::vocabulary::Fidelity {
+        self.inner.fidelity()
+    }
+
+    fn kind(&self) -> StageKind {
+        self.inner.kind()
+    }
+
+    fn applicability(
+        &self,
+        ctx: &factory_workflow::handlers::ContractContext<'_>,
+    ) -> factory_workflow::handlers::Applicability {
+        self.inner.applicability(ctx)
+    }
+
+    fn routing_need(
+        &self,
+        ctx: &factory_workflow::handlers::ContractContext<'_>,
+    ) -> Option<factory_ports::agent::RoutingNeed> {
+        self.inner.routing_need(ctx)
+    }
+
+    fn contract(
+        &self,
+        ctx: &factory_workflow::handlers::ContractContext<'_>,
+    ) -> Result<factory_domain::contracts::StageContract, factory_workflow::handlers::StageError>
+    {
+        self.inner.contract(ctx)
+    }
+
+    async fn execute(
+        &self,
+        ctx: &mut factory_workflow::handlers::StageContext<'_>,
+    ) -> Result<factory_workflow::handlers::StageOutput, factory_workflow::handlers::StageError>
+    {
+        self.inner
+            .execute(ctx)
+            .await
+            .map(|output| (self.change)(output))
+    }
+
+    async fn evaluate(
+        &self,
+        ctx: &factory_workflow::handlers::GateContext<'_>,
+    ) -> Result<
+        factory_workflow::gates::framework::GateDecision,
+        factory_workflow::handlers::StageError,
+    > {
+        self.inner.evaluate(ctx).await
+    }
+}
+
 /// What a stage run took, for the report.
 #[derive(Debug, Clone)]
 pub struct Timed {

@@ -93,6 +93,7 @@ struct State {
     misses: Vec<String>,
     replaced: BTreeMap<String, Reply>,
     tweaks: BTreeMap<String, Tweak>,
+    repeatable: std::collections::BTreeSet<String>,
 }
 
 /// The playbook for the word-count fixture.
@@ -140,6 +141,14 @@ impl Playbook {
     /// Replaces the answer for an entry. For a deliberate break; the call site shows it.
     pub fn replace(&self, entry: &str, reply: Reply) {
         self.lock().replaced.insert(entry.to_owned(), reply);
+    }
+
+    /// Lets the entries be asked for again. A deliberate break that makes a stage ask its agent a
+    /// second time (a retry, a round of rework) says so here; the honest run never does.
+    pub fn allow_repeats(&self, entries: &[&str]) {
+        self.lock()
+            .repeatable
+            .extend(entries.iter().map(|entry| (*entry).to_owned()));
     }
 
     /// Changes the answer for an entry after it is made. For a deliberate break.
@@ -200,7 +209,8 @@ impl Playbook {
         let entry = self.entry_for(agent, instructions)?;
         let times = self.times_served(&entry);
         let replaced = self.lock().replaced.get(&entry).cloned();
-        if times >= 1 && replaced.is_none() {
+        let repeatable = self.lock().repeatable.contains(&entry);
+        if times >= 1 && replaced.is_none() && !repeatable {
             return Err(format!(
                 "{agent} asked for the entry {entry} for the {} time, and the playbook has one answer for it",
                 times + 1

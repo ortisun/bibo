@@ -19,6 +19,7 @@ mod playbook;
 mod support;
 
 use std::collections::BTreeMap;
+use std::sync::Arc;
 
 use factory_domain::contracts::ArtifactRef;
 use factory_domain::ids::{JobId, StageRunId};
@@ -278,28 +279,10 @@ fn print_table(journey: &Journey, view: &factory_workflow::engine::JobView) {
 
 // ---- the run ---------------------------------------------------------------------------------
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_labelled_issue_goes_through_every_real_stage_and_two_approvals_complete_it() {
-    let canaries = factory_testkit::fx::canary::CanarySet::generate();
-    let planted = {
-        // The canaries sit where an agent must never read them: hidden paths of the fixture.
-        let env_file = canaries
-            .iter()
-            .map(|canary| format!("{}={}", canary.label(), canary.value()))
-            .collect::<Vec<_>>()
-            .join("\n");
-        vec![
-            (".env".to_owned(), env_file.clone()),
-            ("tests/holdout/secret.txt".to_owned(), env_file),
-        ]
-    };
-    let journey = begin(Options {
-        extra_files: planted,
-        ..Options::default()
-    })
-    .await;
-    let _dump = full::DumpOnFailure::new(&journey.rig, journey.job);
-
+/// The honest journey: the worker runs to the first question, the approver approves the
+/// specification, the worker runs to the second question, the approver approves the pull request.
+/// Returns the finished job.
+async fn whole_job(journey: &Journey) -> factory_workflow::engine::JobView {
     // 1. The webhook only recorded the job. The worker admits it and runs to the first question.
     let view = journey.to_the_specification_question().await;
     full::print_states("first question", &view);
@@ -341,7 +324,33 @@ async fn a_labelled_issue_goes_through_every_real_stage_and_two_approvals_comple
         .await;
     full::print_states("after the second approval", &view);
     assert_eq!(view.status, JobStatus::Completed, "{view:#?}");
-    print_table(&journey, &view);
+    print_table(journey, &view);
+    view
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_labelled_issue_goes_through_every_real_stage_and_two_approvals_complete_it() {
+    let canaries = factory_testkit::fx::canary::CanarySet::generate();
+    let planted = {
+        // The canaries sit where an agent must never read them: hidden paths of the fixture.
+        let env_file = canaries
+            .iter()
+            .map(|canary| format!("{}={}", canary.label(), canary.value()))
+            .collect::<Vec<_>>()
+            .join("\n");
+        vec![
+            (".env".to_owned(), env_file.clone()),
+            ("tests/holdout/secret.txt".to_owned(), env_file),
+        ]
+    };
+    let journey = begin(Options {
+        extra_files: planted,
+        ..Options::default()
+    })
+    .await;
+    let _dump = full::DumpOnFailure::new(&journey.rig, journey.job);
+
+    let view = whole_job(&journey).await;
 
     // ---- what matters -------------------------------------------------------------------
     let rig = &journey.rig;
@@ -593,4 +602,486 @@ async fn a_labelled_issue_goes_through_every_real_stage_and_two_approvals_comple
     assert_eq!(full::count_audit(rig, job, "approval.recorded").await, 1);
     let _ = (BTreeMap::<u8, u8>::new(), Sha256Digest::of(b""));
     rig.finish();
+}
+
+// ---- two runs of the same job ----------------------------------------------------------------
+
+/// The text with what belongs to one run taken out: identifiers, times, and the hashes and commit
+/// ids that follow from them. What is left is what the run decided.
+fn normalized(text: &str, job_tail: &str) -> String {
+    let chars: Vec<char> = text.chars().collect();
+    let hex = |c: char| c.is_ascii_hexdigit();
+    let mut out = String::with_capacity(text.len());
+    let mut i = 0;
+    while i < chars.len() {
+        let rest = &chars[i..];
+        let previous_is_hex = i > 0 && hex(chars[i - 1]);
+        // 8-4-4-4-12 hexadecimal digits.
+        if rest.len() >= 36
+            && !previous_is_hex
+            && rest[..36].iter().enumerate().all(|(at, c)| {
+                if matches!(at, 8 | 13 | 18 | 23) {
+                    *c == '-'
+                } else {
+                    hex(*c)
+                }
+            })
+        {
+            out.push_str("<id>");
+            i += 36;
+            continue;
+        }
+        // 2026-10-28T22:27:44(.123456)Z
+        if rest.len() >= 20
+            && rest[..4].iter().all(char::is_ascii_digit)
+            && rest[4] == '-'
+            && rest[10] == 'T'
+            && rest[13] == ':'
+        {
+            let mut end = 19;
+            if rest.get(end) == Some(&'.') {
+                end += 1;
+                while rest.get(end).is_some_and(char::is_ascii_digit) {
+                    end += 1;
+                }
+            }
+            if rest.get(end) == Some(&'Z') {
+                out.push_str("<time>");
+                i += end + 1;
+                continue;
+            }
+        }
+        // A run of hexadecimal digits that is a hash or a commit id (forty or more).
+        if !previous_is_hex && hex(chars[i]) {
+            let run = rest.iter().take_while(|c| hex(**c)).count();
+            if run >= 40 {
+                out.push_str("<hash>");
+                i += run;
+                continue;
+            }
+        }
+        out.push(chars[i]);
+        i += 1;
+    }
+    // The last eight characters of the job's identifier are in the name of the feature directory.
+    // They are taken out after the identifiers themselves, which contain them.
+    out.replace(job_tail, "<tail>")
+}
+
+/// Every stored output of the job: `"STAGE name"` to the hash of the bytes and the hash of the
+/// bytes with the run's own ids, times and derived hashes taken out.
+async fn fingerprints(journey: &Journey) -> BTreeMap<String, (Sha256Digest, Sha256Digest)> {
+    let tail = journey.job.to_string();
+    let tail = tail[tail.len() - 8..].to_owned();
+    let mut found = BTreeMap::new();
+    for (kind, _, direction, role, bytes) in journey.artifacts().await {
+        if direction != ArtifactDirection::Output {
+            continue;
+        }
+        let name = role.split(".a").next().unwrap_or(&role).to_owned();
+        let text = String::from_utf8_lossy(&bytes).into_owned();
+        found.insert(
+            format!("{kind:?} {name}"),
+            (
+                Sha256Digest::of(&bytes),
+                Sha256Digest::of(normalized(&text, &tail).as_bytes()),
+            ),
+        );
+    }
+    found
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn two_runs_of_the_same_job_agree_except_in_ids_times_and_what_follows_from_them() {
+    let mut runs = Vec::new();
+    for _ in 0..2 {
+        let journey = begin(Options::default()).await;
+        let _dump = full::DumpOnFailure::new(&journey.rig, journey.job);
+        let view = whole_job(&journey).await;
+        assert_eq!(view.status, JobStatus::Completed);
+        runs.push(fingerprints(&journey).await);
+        journey.rig.finish();
+    }
+    let (one, two) = (&runs[0], &runs[1]);
+    assert_eq!(
+        one.keys().collect::<Vec<_>>(),
+        two.keys().collect::<Vec<_>>(),
+        "the same stages stored the same deliverables"
+    );
+    assert!(one.len() >= 25, "{} deliverables were compared", one.len());
+    let mut raw_differs = Vec::new();
+    for (name, (raw_one, normal_one)) in one {
+        let (raw_two, normal_two) = &two[name];
+        if raw_one != raw_two {
+            raw_differs.push(name.clone());
+        }
+        assert_eq!(
+            normal_one, normal_two,
+            "{name} differs between the runs in more than ids, times and hashes"
+        );
+    }
+    println!(
+        "DETERMINISM {} deliverables compared; the bytes differ in {} of them ({}); with the ids, times and derived hashes taken out all {} agree",
+        one.len(),
+        raw_differs.len(),
+        raw_differs.join(", "),
+        one.len()
+    );
+}
+
+// ---- deliberate breaks -----------------------------------------------------------------------
+//
+// Each puts one defect into the real pipeline and shows the run catching it. The defect is made at
+// the call site, in view: a tweak of the playbook, a wrapper around a real handler, or a change of
+// the world the stage reads.
+
+/// Drives a journey past the specification question to wherever the job stops next.
+async fn to_the_next_stop(journey: &Journey) -> factory_workflow::engine::JobView {
+    let view = journey.to_the_specification_question().await;
+    assert_eq!(
+        full::status_of(&view, StageKind::Specification),
+        Some(StageRunStatus::WaitingForHuman),
+        "{view:#?}"
+    );
+    let reply = journey
+        .approve_the_specification(&view, "approve-specification-break", None)
+        .await;
+    assert_eq!(reply.status, 202, "{}", reply.text());
+    journey.to_the_pull_request_question().await
+}
+
+fn never_completed(view: &factory_workflow::engine::JobView) {
+    assert_ne!(view.status, JobStatus::Completed, "{view:#?}");
+}
+
+fn not_started(view: &factory_workflow::engine::JobView, kind: StageKind) {
+    assert!(
+        view.newest(kind).is_none_or(|run| run.attempts.is_empty()
+            && matches!(run.status, StageRunStatus::Pending | StageRunStatus::Ready)),
+        "{kind:?} must not have started: {:?}",
+        view.newest(kind)
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn break_a_stage_that_stores_a_deliverable_under_another_name_is_caught() {
+    let journey = begin(Options {
+        wrap: vec![(
+            StageKind::Architecture,
+            Box::new(|inner: Arc<dyn factory_workflow::handlers::StageHandler>| -> Arc<dyn factory_workflow::handlers::StageHandler> {
+                Arc::new(full::Tamper {
+                    inner,
+                    change: Box::new(|mut output| {
+                        for artifact in &mut output.artifacts {
+                            if artifact.name.as_str() == "architecture-design" {
+                                artifact.name =
+                                    factory_domain::values::Slug::parse("design").expect("a slug");
+                            }
+                        }
+                        output
+                    }),
+                })
+            }),
+        )],
+        ..Options::default()
+    })
+    .await;
+    let _dump = full::DumpOnFailure::new(&journey.rig, journey.job);
+    // The stage is retried before it escalates, and asks the architect again each time.
+    journey.rig.playbook.allow_repeats(&["architect"]);
+    let view = to_the_next_stop(&journey).await;
+    let architecture = view.newest(StageKind::Architecture).expect("a run");
+    assert_ne!(architecture.status, StageRunStatus::Passed, "{view:#?}");
+    never_completed(&view);
+    for later in [
+        StageKind::TaskPlanning,
+        StageKind::Implementation,
+        StageKind::Delivery,
+    ] {
+        not_started(&view, later);
+    }
+    // Nothing was stored under the wrong name, and nothing under the right one.
+    let stored = journey.artifacts().await;
+    assert!(
+        !stored.iter().any(
+            |(kind, _, direction, role, _)| *kind == StageKind::Architecture
+                && *direction == ArtifactDirection::Output
+                && (role.starts_with("design.") || role.starts_with("architecture-design."))
+        ),
+        "a refused output leaves no deliverable behind"
+    );
+    journey.rig.finish();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn break_a_builder_patch_that_touches_a_protected_path_is_caught() {
+    let journey = begin(Options::default()).await;
+    let _dump = full::DumpOnFailure::new(&journey.rig, journey.job);
+    journey
+        .rig
+        .playbook
+        .tweak("builder.read-json-option", |reply| {
+            reply.writes.push((
+                ".github/workflows/ci.yml".to_owned(),
+                b"name: ci\non: push\njobs: {}\n".to_vec(),
+            ));
+        });
+    let view = to_the_next_stop(&journey).await;
+    assert_ne!(
+        full::status_of(&view, StageKind::Implementation),
+        Some(StageRunStatus::Passed),
+        "{view:#?}"
+    );
+    never_completed(&view);
+    not_started(&view, StageKind::Validation);
+    // The refusal is recorded, with the path and the rule, and the file was committed nowhere.
+    assert!(
+        full::count_audit(&journey.rig, journey.job, "protected_path_decision.denied").await >= 1
+    );
+    let evidence = journey
+        .output(StageKind::Implementation, "implementation-evidence")
+        .await;
+    let text = evidence.to_string();
+    assert!(text.contains("protected-path-changed"), "{text}");
+    assert!(text.contains(".github/workflows/ci.yml"), "{text}");
+    journey.rig.finish();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn break_a_reviewer_of_the_same_type_as_the_builder_is_caught() {
+    let journey = begin(Options {
+        review_agent: Some("builder"),
+        ..Options::default()
+    })
+    .await;
+    let _dump = full::DumpOnFailure::new(&journey.rig, journey.job);
+    let view = to_the_next_stop(&journey).await;
+    // The review stage refuses an agent that can write: a reviewer is granted only reading tools,
+    // and the builder is not one. The stage is blocked, not passed.
+    assert_ne!(
+        full::status_of(&view, StageKind::Review),
+        Some(StageRunStatus::Passed),
+        "{view:#?}"
+    );
+    never_completed(&view);
+    assert!(
+        journey
+            .rig
+            .playbook
+            .served()
+            .iter()
+            .filter(|served| served.agent == "builder")
+            .all(|served| served.entry.starts_with("builder.")),
+        "the builder was never asked to review"
+    );
+    for later in [StageKind::Documenting, StageKind::Delivery] {
+        not_started(&view, later);
+    }
+    journey.rig.finish();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn break_a_documentation_gate_report_with_a_failed_gate_stops_the_job_before_delivery() {
+    let journey = begin(Options::default()).await;
+    let _dump = full::DumpOnFailure::new(&journey.rig, journey.job);
+    // The writer documents an option the program does not have.
+    let honest = journey.rig.playbook.document("README.md");
+    let invented = String::from_utf8(honest)
+        .expect("text")
+        .replace("`--json`", "`--yaml`");
+    journey
+        .rig
+        .playbook
+        .tweak("documentation-writer", move |reply| {
+            for (path, bytes) in &mut reply.writes {
+                if path == "README.md" {
+                    *bytes = invented.clone().into_bytes();
+                }
+            }
+        });
+    journey
+        .rig
+        .playbook
+        .allow_repeats(&["documentation-writer"]);
+    let view = to_the_next_stop(&journey).await;
+    assert_ne!(
+        full::status_of(&view, StageKind::DocumentationReview),
+        Some(StageRunStatus::Passed),
+        "{view:#?}"
+    );
+    never_completed(&view);
+    not_started(&view, StageKind::Delivery);
+    // The failed gate has a stored report that names the invented option.
+    let gate = journey
+        .output(StageKind::DocumentationReview, "documentation-gate-report")
+        .await;
+    let text = gate.to_string();
+    assert!(text.contains("FAILED"), "{text}");
+    assert!(text.contains("--yaml"), "{text}");
+    journey.rig.finish();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn break_a_canary_secret_in_the_builders_output_is_stopped_and_never_stored() {
+    let canaries = factory_testkit::fx::canary::CanarySet::generate();
+    let token = canaries
+        .get(factory_testkit::fx::canary::CanaryKind::GithubInstallationToken)
+        .value()
+        .to_owned();
+    let journey = begin(Options::default()).await;
+    let _dump = full::DumpOnFailure::new(&journey.rig, journey.job);
+    let planted = token.clone();
+    journey
+        .rig
+        .playbook
+        .tweak("builder.write-json-formatter", move |reply| {
+            for (path, bytes) in &mut reply.writes {
+                if path == "src/lib.rs" {
+                    let mut text = String::from_utf8(bytes.clone()).expect("text");
+                    text.push_str(&format!("\n// token: {planted}\n"));
+                    *bytes = text.into_bytes();
+                }
+            }
+        });
+    let view = to_the_next_stop(&journey).await;
+    assert_ne!(
+        full::status_of(&view, StageKind::Implementation),
+        Some(StageRunStatus::Passed),
+        "{view:#?}"
+    );
+    never_completed(&view);
+    assert!(
+        full::count_audit(
+            &journey.rig,
+            journey.job,
+            "secret_redacted_or_blocked.denied"
+        )
+        .await
+            >= 1
+    );
+    // The refusal names the rule and the path and never repeats the secret.
+    let evidence = journey
+        .output(StageKind::Implementation, "implementation-evidence")
+        .await
+        .to_string();
+    assert!(evidence.contains("secret-found"), "{evidence}");
+    // No stored blob, audit record, prompt or log line holds the canary in any spelling.
+    let sweeper = factory_testkit::fx::canary::Sweeper::new(&canaries);
+    let mut hits = Vec::new();
+    let mut stack = vec![journey.rig.scratch.join("artifacts")];
+    while let Some(dir) = stack.pop() {
+        for entry in std::fs::read_dir(&dir).into_iter().flatten().flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                stack.push(path);
+            } else if let Ok(bytes) = std::fs::read(&path) {
+                hits.extend(sweeper.scan(&path.display().to_string(), &bytes));
+            }
+        }
+    }
+    for line in support::captured().lock().expect("lock").iter() {
+        hits.extend(sweeper.scan("a log line", line.as_bytes()));
+    }
+    hits.extend(sweeper.scan(
+        "the audit log",
+        journey.rig.audit_text(journey.job).await.as_bytes(),
+    ));
+    assert!(hits.is_empty(), "the canary leaked: {} hit(s)", hits.len());
+    journey.rig.finish();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn break_a_missing_evidence_artifact_before_delivery_stops_the_job() {
+    let journey = begin(Options {
+        wrap: vec![(
+            StageKind::DocumentationReview,
+            Box::new(|inner: Arc<dyn factory_workflow::handlers::StageHandler>| -> Arc<dyn factory_workflow::handlers::StageHandler> {
+                Arc::new(full::Tamper {
+                    inner,
+                    change: Box::new(|mut output| {
+                        output
+                            .artifacts
+                            .retain(|artifact| artifact.name.as_str() != "documentation-gate-report");
+                        output
+                    }),
+                })
+            }),
+        )],
+        ..Options::default()
+    })
+    .await;
+    let _dump = full::DumpOnFailure::new(&journey.rig, journey.job);
+    journey
+        .rig
+        .playbook
+        .allow_repeats(&["documentation-reviewer", "documentation-writer"]);
+    let view = to_the_next_stop(&journey).await;
+    assert_ne!(
+        full::status_of(&view, StageKind::DocumentationReview),
+        Some(StageRunStatus::Passed),
+        "{view:#?}"
+    );
+    never_completed(&view);
+    not_started(&view, StageKind::Delivery);
+    not_started(&view, StageKind::Approval);
+    journey.rig.finish();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn break_an_approval_given_for_a_stale_head_is_refused_and_moves_nothing() {
+    use factory_workflow::stages::approval::ApprovalSources as _;
+    let journey = begin(Options::default()).await;
+    let _dump = full::DumpOnFailure::new(&journey.rig, journey.job);
+    let view = to_the_next_stop(&journey).await;
+    assert_eq!(
+        full::status_of(&view, StageKind::Approval),
+        Some(StageRunStatus::WaitingForHuman),
+        "{view:#?}"
+    );
+    // After the person looked, someone pushes another commit to the pull request's branch.
+    let run = full::stage_run_of(&view, StageKind::Approval);
+    let request = journey
+        .rig
+        .approvals
+        .request(journey.rig.tenant, run)
+        .await
+        .expect("the request");
+    let branch = factory_ports::paths::BranchName::new(&request.head_branch).expect("a branch");
+    let moved = journey.rig.remote.commit_on_branch(
+        &journey.rig.repo,
+        &branch,
+        &[("README.md", "Changed after the person looked.\n")],
+    );
+    assert_ne!(moved.as_str(), request.pr_head.as_str());
+    // The person approves the head they saw.
+    let reply = journey
+        .approve_the_pull_request(&view, "approve-stale", None)
+        .await;
+    assert_eq!(reply.status, 202, "{}", reply.text());
+    let after = journey
+        .rig
+        .drive(Some(journey.job), 4, |_| false)
+        .await
+        .expect("a view");
+    assert_eq!(after.status, JobStatus::WaitingForHuman, "{after:#?}");
+    assert_eq!(
+        full::status_of(&after, StageKind::Approval),
+        Some(StageRunStatus::WaitingForHuman)
+    );
+    assert_eq!(
+        full::timeline_actions(
+            &journey.rig.env,
+            &journey.requester,
+            journey.job,
+            "decision."
+        )
+        .await[2..],
+        ["decision.requested", "decision.rejected"],
+        "the refusal is in the timeline the API serves"
+    );
+    assert_eq!(
+        full::count_audit(&journey.rig, journey.job, "approval.recorded").await,
+        0
+    );
+    journey.rig.finish();
 }
