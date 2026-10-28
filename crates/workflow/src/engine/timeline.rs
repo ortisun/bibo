@@ -17,7 +17,7 @@ use factory_domain::ids::{AttemptId, CausationId, JobId, StageRunId};
 use factory_domain::machines::failure::FailureClass;
 use factory_domain::machines::limits::{ReworkLedger, ReworkTrack};
 use factory_domain::machines::retry::{AttemptWindow, WindowEvent};
-use factory_domain::values::{MediaType, Sha256Digest, Slug, Timestamp};
+use factory_domain::values::{MediaType, Sha256Digest, Slug};
 use factory_domain::vocabulary::StageKind;
 use factory_ports::store::{OutboxRow, OutboxSeq, Tx};
 use serde_json::{Map, Value};
@@ -46,9 +46,6 @@ pub(crate) enum AttemptEnd {
 pub(crate) struct AttemptRecord {
     pub(crate) id: AttemptId,
     pub(crate) number: u32,
-    pub(crate) deadline_at: Option<Timestamp>,
-    /// When the engine asked the attempt to stop (`A08`).
-    pub(crate) cancel_requested_at: Option<Timestamp>,
     pub(crate) end: Option<AttemptEnd>,
 }
 
@@ -60,8 +57,6 @@ pub(crate) struct RunRecord {
     pub(crate) attempts: Vec<AttemptRecord>,
     /// Attempt failures and human answers, in order. The attempt window starts at the last answer.
     pub(crate) window: Vec<WindowEvent>,
-    /// The earliest instant the run may start again, while a retry back-off runs.
-    pub(crate) not_before: Option<Timestamp>,
     /// What the last successful attempt produced.
     pub(crate) outputs: Vec<NamedArtifact>,
     /// The answers people gave, oldest first.
@@ -84,7 +79,6 @@ impl RunRecord {
             kind,
             attempts: Vec::new(),
             window: Vec::new(),
-            not_before: None,
             outputs: Vec::new(),
             human_inputs: Vec::new(),
             replaced_by: None,
@@ -193,7 +187,6 @@ impl Timeline {
         match (event.event_type.as_str(), transition) {
             ("job.admitted", _) => self.create_runs(&event.payload, key::STAGE_RUNS),
             ("stage_run.started", _) => self.attempt_started(event),
-            ("stage_run.retry_scheduled", _) => self.retry_scheduled(event),
             ("stage_run.gating", _) => self.gating(event),
             ("stage_run.rework_requested", _) => self.rework_requested(event),
             ("stage_run.superseded", _) => self.superseded(event),
@@ -213,7 +206,6 @@ impl Timeline {
                 let class = failure_class(&event.payload)?;
                 self.attempt_ended(event, AttemptEnd::Failed(class))
             }
-            ("attempt.cancel_requested", _) => self.cancel_requested(event),
             ("attempt.cancelled", _) => self.attempt_ended(event, AttemptEnd::Cancelled),
             _ => Ok(()),
         }
@@ -240,31 +232,14 @@ impl Timeline {
         let attempt = parse_attempt_id(&event.payload, key::ATTEMPT)?;
         let number = u32::try_from(number(&event.payload, key::ATTEMPT_NUMBER)?)
             .map_err(|_| EngineError::Corrupt("an attempt number is out of range"))?;
-        let deadline_at = match event.payload.get(key::DEADLINE) {
-            Some(Value::String(text)) => Some(parse_instant(text)?),
-            _ => None,
-        };
         let run = self.run_mut(id)?;
-        run.not_before = None;
         if run.attempt(attempt).is_none() {
             run.attempts.push(AttemptRecord {
                 id: attempt,
                 number,
-                deadline_at,
-                cancel_requested_at: None,
                 end: None,
             });
         }
-        Ok(())
-    }
-
-    fn retry_scheduled(&mut self, event: &DomainEvent) -> Result<(), EngineError> {
-        let id = aggregate_run(event)?;
-        let not_before = match event.payload.get(key::NOT_BEFORE) {
-            Some(Value::String(text)) => Some(parse_instant(text)?),
-            _ => None,
-        };
-        self.run_mut(id)?.not_before = not_before;
         Ok(())
     }
 
@@ -344,16 +319,6 @@ impl Timeline {
         Ok(())
     }
 
-    fn cancel_requested(&mut self, event: &DomainEvent) -> Result<(), EngineError> {
-        let run_id = parse_run_id(&event.payload, key::STAGE_RUN)?;
-        let attempt_id = AttemptId::from_uuid(event.aggregate.id.as_uuid());
-        let run = self.run_mut(run_id)?;
-        if let Some(attempt) = run.attempts.iter_mut().find(|a| a.id == attempt_id) {
-            attempt.cancel_requested_at = Some(event.occurred_at);
-        }
-        Ok(())
-    }
-
     fn attempt_ended(&mut self, event: &DomainEvent, end: AttemptEnd) -> Result<(), EngineError> {
         let run_id = parse_run_id(&event.payload, key::STAGE_RUN)?;
         let attempt_id = AttemptId::from_uuid(event.aggregate.id.as_uuid());
@@ -385,10 +350,6 @@ fn number(payload: &Map<String, Value>, name: &str) -> Result<u64, EngineError> 
         .get(name)
         .and_then(Value::as_u64)
         .ok_or(EngineError::Corrupt("a number in an event is missing"))
-}
-
-fn parse_instant(text: &str) -> Result<Timestamp, EngineError> {
-    Timestamp::parse(text).map_err(|_| EngineError::Corrupt("an instant in an event is invalid"))
 }
 
 fn parse_run_id(payload: &Map<String, Value>, name: &str) -> Result<StageRunId, EngineError> {
@@ -603,34 +564,6 @@ mod tests {
     }
 
     #[test]
-    fn a_retry_sets_the_back_off_and_the_next_start_clears_it() {
-        let retry = row(
-            3,
-            "stage_run.retry_scheduled",
-            "S05",
-            ("stage_run", RUN_A),
-            json!({ "not_before": "2026-10-27T08:30:05Z" }),
-            None,
-        );
-        let rows = [admitted(), started(2, ATTEMPT_1, 1), retry.clone()];
-        let timeline = Timeline::fold(&rows).expect("folds");
-        let run = timeline
-            .run(StageRunId::parse(RUN_A).expect("id"))
-            .expect("run");
-        assert_eq!(
-            run.not_before,
-            Some(Timestamp::parse("2026-10-27T08:30:05Z").expect("an instant"))
-        );
-        let mut later = rows.to_vec();
-        later.push(started(4, ATTEMPT_2, 2));
-        let timeline = Timeline::fold(&later).expect("folds");
-        let run = timeline
-            .run(StageRunId::parse(RUN_A).expect("id"))
-            .expect("run");
-        assert_eq!(run.not_before, None);
-    }
-
-    #[test]
     fn rework_charges_a_round_to_its_count_and_lists_the_new_run() {
         let rework = row(
             2,
@@ -699,8 +632,8 @@ mod tests {
     fn an_event_that_names_an_unknown_run_is_a_corrupt_timeline() {
         let orphan = row(
             1,
-            "stage_run.retry_scheduled",
-            "S05",
+            "stage_run.gating",
+            "S04",
             ("stage_run", RUN_A),
             json!({}),
             None,

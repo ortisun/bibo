@@ -246,7 +246,6 @@ impl<'e> Cx<'e> {
             run.value.id,
             launch.attempt,
             started.attempt.value.number,
-            started.attempt.value.deadline_at,
         );
         self.enqueue::<StageRunStatus>(
             tx,

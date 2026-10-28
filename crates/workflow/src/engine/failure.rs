@@ -17,7 +17,6 @@ use factory_domain::machines::guards::{
 use factory_domain::machines::retry::{AttemptDisposition, EscalationCause, decide_after_failure};
 use factory_domain::state::{Guard, StageRunEvent, StageRunStatus};
 use factory_domain::vocabulary::GateOutcome;
-use factory_ports::clock::timestamp_after;
 use factory_ports::store::{GateRecord, StageRunEffects, Tx};
 use serde_json::json;
 
@@ -119,9 +118,6 @@ impl Engine {
                     window.attempts_used(),
                     seed_of(attempt),
                 );
-                let now = tx.database_time().await?;
-                let not_before = timestamp_after(&now, delay);
-                let payload = payload::with(base, key::NOT_BEFORE, json!(not_before.to_string()));
                 // The store sets `not_before` from its own clock, so the back-off needs no wait
                 // for an old lease: the stage run is findable again once the delay has passed.
                 cx.move_stage_run(
@@ -129,7 +125,7 @@ impl Engine {
                     run,
                     Step::new(StageRunEvent::AttemptFailedRetryable, cleared)
                         .cause("retry-scheduled")
-                        .payload(payload),
+                        .payload(base),
                     StageRunEffects {
                         not_before_after: Some(delay),
                         ..StageRunEffects::default()
