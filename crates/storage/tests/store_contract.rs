@@ -328,9 +328,6 @@ async fn run_all() -> Report {
 /// * `VERSION`: the fixture queues events that announce versions of a job that never reached them
 ///   (an event for version 2 of a job at version 1). The schema refuses such an event at commit
 ///   (`outbox_aggregate_has_reached_version`).
-/// * `SKIP`: the check keeps two system transactions open and expects both to find the same
-///   candidate. The port text and ADR 0014 say the finder takes `FOR NO KEY UPDATE SKIP LOCKED`, so
-///   the second finder skips the row the first one holds until it calls `finish`.
 /// * `WRITERS`: the check keeps two tenant transactions open and expects both to append to the
 ///   same ledger position, and the second to lose at commit. PostgreSQL makes the second writer
 ///   wait for the first one's row lock (here: until the lock timeout), which is first-writer-wins
@@ -353,12 +350,6 @@ const EXCLUDED: &[(&str, &str, &str, &str)] = &[
         "VERSION",
         "Constraint(EventAggregateMismatch)",
         "atomicity.rs: a_lost_commit_answer_is_settled_by_the_witness",
-    ),
-    (
-        "two_workers_find_one_candidate_and_one_start_wins",
-        "SKIP",
-        "both find the same candidate",
-        "claims_and_leases.rs: eight_workers_claim_one_stage_run_and_one_wins",
     ),
     (
         "two_open_transactions_cannot_both_extend_the_chain",

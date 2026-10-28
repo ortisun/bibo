@@ -993,6 +993,13 @@ async fn candidates_go_oldest_first_and_honour_the_limit(
     sys.finish().await.ctx("finish")
 }
 
+/// Two workers find the same stage run, and exactly one of their starts wins.
+///
+/// A candidate is a hint (ADR 0014), and the finder of a real store takes the row with
+/// `FOR NO KEY UPDATE SKIP LOCKED`. So a second finder that runs while the first still holds the
+/// row may skip it, and a store with no row locks may show it again; both are allowed here. What no
+/// store may do is hide the row for good (the first finder holds no lock after `finish`), or let
+/// both starts of the one candidate win. The start decides, and the loser gets `Conflict`.
 async fn two_workers_find_one_candidate_and_one_start_wins(
     subject: &dyn StoreSubject,
 ) -> Result<(), String> {
@@ -1000,23 +1007,36 @@ async fn two_workers_find_one_candidate_and_one_start_wins(
     let r = w.ready(w.a, 3).await?;
     let mut s1 = w.sys().await?;
     let mut s2 = w.sys().await?;
-    let c1 = s1.find_claim_candidates(1).await.ctx("find")?;
-    let c2 = s2.find_claim_candidates(1).await.ctx("find")?;
+    let first = s1.find_claim_candidates(1).await.ctx("find")?;
     ensure!(
-        c1.len() == 1 && c2.len() == 1 && c1[0].stage_run == c2[0].stage_run,
-        "both find the same candidate"
+        first.len() == 1 && first[0].stage_run == r.run,
+        "the first finder sees the one candidate, saw {first:?}"
+    );
+    let candidate = first[0].clone();
+    let meanwhile = s2.find_claim_candidates(1).await.ctx("find meanwhile")?;
+    ensure!(
+        meanwhile.is_empty() || meanwhile == first,
+        "a finder that runs while another holds the row skips it or sees the same candidate, saw {meanwhile:?}"
     );
     s1.finish().await.ctx("finish")?;
+    let after = s2.find_claim_candidates(1).await.ctx("find after")?;
+    ensure_eq!(
+        after,
+        first,
+        "once the first finder is done the row is free for the second"
+    );
     s2.finish().await.ctx("finish")?;
 
     let mut t1 = w.tx(w.a).await?;
     let mut t2 = w.tx(w.a).await?;
     let won = w
-        .start_at(&mut *t1, r.run, c1[0].version, "worker-1")
+        .start_at(&mut *t1, r.run, candidate.version, "worker-1")
         .await
         .ctx("the first start")?;
     t1.commit().await.ctx("commit the winner")?;
-    let lost = w.start_at(&mut *t2, r.run, c2[0].version, "worker-2").await;
+    let lost = w
+        .start_at(&mut *t2, r.run, candidate.version, "worker-2")
+        .await;
     ensure_err!(
         lost,
         StoreError::Conflict,
@@ -1030,7 +1050,12 @@ async fn two_workers_find_one_candidate_and_one_start_wins(
         won.attempt.value.id,
         "the winner's attempt"
     );
-    Ok(())
+    let mut sys = w.sys().await?;
+    ensure!(
+        sys.find_claim_candidates(10).await.ctx("find")?.is_empty(),
+        "a started stage run is no longer a candidate"
+    );
+    sys.finish().await.ctx("finish")
 }
 
 async fn a_rolled_back_start_leaves_the_stage_run_startable(
