@@ -101,17 +101,23 @@ fn mine(run: &str) -> Vec<String> {
 /// Runs the body with the telemetry pipeline as the subscriber, so that a failure of a `docker`
 /// command (a short, redacted piece of its standard error) shows in the log of the test.
 ///
-/// **Ignored, and why.** On the machine where this was written (Docker Desktop for Mac, bind
-/// mounts through `/host_mnt`) the test passed on one run: the container was made from the pinned
-/// verify image, `cargo --version` ran in it, the tenant read the output through the indexing
-/// wrapper, the container was removed and nothing with the test labels was left. On the next
-/// four runs `docker create` answered "bind source path does not exist" for a directory the test
-/// had just made, for five seconds running. The cause was not found: a plain `docker run` over a
-/// directory of the same tree worked. Until it is understood the test is not part of the suite, and
-/// it is neither a pass nor deleted. Run it with `cargo nextest run -p factory-composition
-/// --run-ignored only --test docker_sandbox`.
+/// **Ignored, and why.** The test needs the Docker daemon and the pinned images, and a machine
+/// without them gets a `BLOCKED:` panic, so it is not part of the default suite. It is not ignored
+/// for being flaky any more, as far as this checkout can show: on 2026-10-28 it passed seven runs
+/// out of seven in a worktree under `/Users/.../target`, with the one retry of a failed creation
+/// below never taken (a failed `docker` command would have been printed as `DOCKER failed:`, and
+/// none was), and no container with the test labels was left (`docker ps -a --filter
+/// label=factory.test=true` listed none). Before that, on a different checkout, the first run
+/// passed and the next four had `docker create` answer "bind source path does not exist" for a
+/// directory the test had just made, five seconds running, while a plain `docker run` over a
+/// directory of the same tree worked. That could **not be reproduced**, so the cause is not known:
+/// it is consistent with Docker Desktop for Mac sharing host directories with its VM through a
+/// cache that lags behind a directory created a moment ago, which is not something the harness
+/// can fix, but nothing here proves it. Whether to move the test into the default suite for a
+/// machine that has Docker is a decision for the lead. Run it with `cargo nextest run -p
+/// factory-composition --run-ignored only --test docker_sandbox`.
 #[test]
-#[ignore = "BLOCKED: Docker Desktop for Mac does not reliably see the bind sources the test makes; see the doc comment"]
+#[ignore = "needs the Docker daemon and the pinned images; passed 7 of 7 runs on 2026-10-28, an earlier failure could not be reproduced and its cause is not known; see the doc comment"]
 fn the_assembled_docker_provider_runs_a_command_and_the_tenant_reads_its_output() {
     let policies = load_policy(&root(), &[]).expect("the repository policy loads");
     let redactor = Arc::new(redactor_from_policy(&policies.security).expect("a redactor"));
