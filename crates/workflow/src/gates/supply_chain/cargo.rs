@@ -64,6 +64,10 @@ impl DependencyFormat for CargoFormat {
             Some(FileKind::BuildConfig)
         } else if is("audit.toml") || is("deny.toml") {
             Some(FileKind::ScannerConfig)
+        } else if is("build.rs") {
+            // Only its presence is read: cargo builds `build.rs` next to a manifest with no
+            // `build` key, and a manifest cannot say so.
+            Some(FileKind::BuildScript)
         } else {
             None
         }
@@ -97,10 +101,13 @@ impl DependencyFormat for CargoFormat {
 
     fn parse_manifest(&self, text: &str) -> Result<Manifest, ParseError> {
         let doc = toml::parse(text)?;
+        // `[project]` is the old name of `[package]`, and cargo 1.98 still reads it.
+        let package = doc
+            .get("package")
+            .or_else(|| doc.get("project"))
+            .and_then(Value::as_table);
         let mut manifest = Manifest {
-            name: doc
-                .get("package")
-                .and_then(Value::as_table)
+            name: package
                 .and_then(|package| package.get("name"))
                 .and_then(Value::as_str)
                 .map(str::to_owned),
@@ -129,16 +136,22 @@ impl DependencyFormat for CargoFormat {
                 flatten(section, value, &mut manifest.patches);
             }
         }
-        manifest.build_script = doc
-            .get("package")
-            .and_then(Value::as_table)
-            .and_then(|package| package.get("build"))
-            .is_some_and(|build| build.as_bool() != Some(false));
+        let build = package.and_then(|package| package.get("build"));
+        manifest.build_script = build.is_some_and(|build| build.as_bool() != Some(false));
+        manifest.build_disabled = build.and_then(Value::as_bool) == Some(false);
         manifest.proc_macro = doc.get("lib").and_then(Value::as_table).is_some_and(|lib| {
-            lib.get("proc-macro")
+            let flag = lib
+                .get("proc-macro")
                 .or_else(|| lib.get("proc_macro"))
                 .and_then(Value::as_bool)
-                == Some(true)
+                == Some(true);
+            // `crate-type = ["proc-macro"]` builds a procedural macro as well.
+            let by_type = lib
+                .get("crate-type")
+                .or_else(|| lib.get("crate_type"))
+                .and_then(Value::as_array)
+                .is_some_and(|types| types.iter().any(|t| t.as_str() == Some("proc-macro")));
+            flag || by_type
         });
         Ok(manifest)
     }
@@ -520,5 +533,7 @@ mod tests {
         assert_eq!(kind(".CARGO/Audit.toml"), Some(FileKind::BuildConfig));
         assert_eq!(kind("DENY.TOML"), Some(FileKind::ScannerConfig));
         assert_eq!(kind("cargo.lock"), Some(FileKind::Lockfile));
+        assert_eq!(kind("crates/a/build.rs"), Some(FileKind::BuildScript));
+        assert_eq!(kind("src/build.rs.bak"), None);
     }
 }

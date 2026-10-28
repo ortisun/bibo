@@ -16,17 +16,21 @@
 //! document, and the recorded approvals it hands back to the next run are what let step 3 start.
 
 use factory_domain::contracts::GateReport;
+use factory_domain::policy::dependency::{
+    DependencyDecision, DependencyPolicy, DependencyRequest, RegistryFacts,
+};
 use factory_domain::values::{Sha256Digest, Timestamp};
 use factory_ports::paths::CommitSha;
 use serde_json::Value;
 
 use super::approval::{DecisionScope, DependencyApproval};
-use super::facts::{AdvisoryDatabase, DatabaseAge, RegistryMetadata};
+use super::facts::{AdvisoryDatabase, DatabaseAge, RegistryMetadata, RegistryRecord};
 use super::integrity::{BaseUnreadable, Context, inspect};
 use super::model::{DependencyFormat, Side, normalize};
 use super::report::{Evaluation, Reporter};
 use super::review::{Conclusion, Plan, RegistryTable, Settings, conclude};
 use super::run::{Io, SupplyChainConfig, fetch, scan};
+use super::version::Version;
 use crate::gates::command::report::{ReportContext, image_digest};
 use crate::handlers::StageError;
 
@@ -87,11 +91,17 @@ pub async fn run(io: &Io<'_>, inputs: &Inputs<'_>) -> Result<Done, StageError> {
     let mut registry = RegistryTable::new();
     if !integrity.has_violation() {
         for entry in &integrity.new_direct {
-            let record = inputs
-                .registry
-                .lookup(&entry.package.name, &entry.package.version)
-                .await;
-            registry.insert(normalize(&entry.package.name), record);
+            let (name, version) = (&entry.package.name, &entry.package.version);
+            // The name and the version are text from the candidate's lockfile, and the source
+            // speaks to a registry with the control plane's own egress. Only a request that the
+            // policy engine accepts as a request reaches it; for any other the record stays the
+            // default (all unknown), and `Plan::new` refuses the request by name.
+            let record = if is_valid_request(&cfg.policy.dependency, name, version) {
+                inputs.registry.lookup(name, version).await
+            } else {
+                RegistryRecord::default()
+            };
+            registry.insert(normalize(name), record);
         }
     }
     let settings = Settings {
@@ -149,6 +159,26 @@ pub async fn run(io: &Io<'_>, inputs: &Inputs<'_>) -> Result<Done, StageError> {
         fetched: fetched.is_some(),
         scanned: scanned.is_some(),
     })
+}
+
+/// True when `name` at `version` is a request the policy engine would not refuse as malformed:
+/// a crate name of the registry's alphabet and length, and a version that reads as one.
+fn is_valid_request(policy: &DependencyPolicy, name: &str, version: &str) -> bool {
+    let request = DependencyRequest {
+        ecosystem: "cargo",
+        name,
+        version_req: version,
+    };
+    let facts = RegistryFacts {
+        exists_in_registry: None,
+        first_publish_age_days: None,
+        popular_names: &[],
+        internal_names: &[],
+    };
+    !matches!(
+        policy.decide(&request, &[], &facts),
+        DependencyDecision::Refused { .. }
+    ) && Version::parse(version).is_some()
 }
 
 fn unreadable_base(

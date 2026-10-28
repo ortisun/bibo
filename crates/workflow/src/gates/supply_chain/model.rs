@@ -22,6 +22,8 @@ pub enum FileKind {
     Manifest,
     /// A build configuration file.
     BuildConfig,
+    /// A build script that cargo picks up by its name. Only its presence matters.
+    BuildScript,
     /// The configuration of a scanner (the advisory audit, the license and ban checker). It is
     /// compared as text: nothing in it is trusted, so any difference is a finding.
     ScannerConfig,
@@ -259,6 +261,9 @@ pub struct Manifest {
     pub patches: Vec<String>,
     /// The manifest names a build script.
     pub build_script: bool,
+    /// The manifest says `build = false`, which turns off the build script cargo would find by
+    /// its name.
+    pub build_disabled: bool,
     /// The manifest builds a procedural macro.
     pub proc_macro: bool,
 }

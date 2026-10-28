@@ -51,6 +51,9 @@ pub struct Snapshot {
     /// The configuration files of the scanners, by path, as text. Nothing in them is read: the
     /// candidate must not change them, whatever they say.
     pub scanners: BTreeMap<String, String>,
+    /// The paths of the build scripts, in lower case, so that a manifest can tell whether cargo
+    /// finds `build.rs` next to it. The text is not read.
+    pub build_scripts: BTreeSet<String>,
 }
 
 impl Snapshot {
@@ -77,6 +80,10 @@ impl Snapshot {
                     .map(|config| drop(snapshot.configs.insert(path.to_owned(), config))),
                 Some(FileKind::ScannerConfig) => {
                     snapshot.scanners.insert(path.to_owned(), text.to_owned());
+                    Ok(())
+                }
+                Some(FileKind::BuildScript) => {
+                    snapshot.build_scripts.insert(path.to_ascii_lowercase());
                     Ok(())
                 }
                 None => Ok(()),
@@ -150,6 +157,19 @@ impl Snapshot {
             }
         }
         names
+    }
+
+    /// True when building the package of the manifest at `path` runs a build script: the manifest
+    /// names one, or cargo finds `build.rs` next to it and the manifest does not turn it off.
+    fn has_build_script(&self, path: &str, manifest: &Manifest) -> bool {
+        let directory = path.rsplit_once('/').map_or("", |(dir, _)| dir);
+        let implicit = if directory.is_empty() {
+            "build.rs".to_owned()
+        } else {
+            format!("{directory}/build.rs").to_ascii_lowercase()
+        };
+        manifest.build_script
+            || (!manifest.build_disabled && self.build_scripts.contains(&implicit))
     }
 
     /// Every declaration, as the canonical lines that tell two versions of a manifest apart.
@@ -596,7 +616,8 @@ impl Run<'_> {
                     ));
                 }
             }
-            if (manifest.build_script && !old.is_some_and(|m| m.build_script))
+            let had_build_script = old.is_some_and(|m| self.base.has_build_script(path, m));
+            if (self.head.has_build_script(path, manifest) && !had_build_script)
                 || (manifest.proc_macro && !old.is_some_and(|m| m.proc_macro))
             {
                 self.push(Finding::warning(

@@ -37,6 +37,9 @@ use super::model::{LockedPackage, Lockfile, Origin, Resolved, normalize, plain};
 use super::names::PopularNames;
 use super::tools::PackageMeta;
 
+/// The most characters of a text from the registry that the evidence keeps.
+const MAX_REGISTRY_TEXT: usize = 200;
+
 /// The registry facts of the new packages, by normalized name.
 pub type RegistryTable = BTreeMap<String, RegistryRecord>;
 
@@ -267,8 +270,10 @@ impl Plan {
                     "registry": {
                         "exists": need.record.exists,
                         "first_publish_age_days": need.age_days,
-                        "license": need.record.license,
-                        "repository": need.record.repository,
+                        // Text a package author chose: a fixed alphabet and a length bound, like
+                        // every other string of the gate that comes from outside.
+                        "license": need.record.license.as_deref().map(|t| plain(t, MAX_REGISTRY_TEXT)),
+                        "repository": need.record.repository.as_deref().map(|t| plain(t, MAX_REGISTRY_TEXT)),
                         "downloads": need.record.downloads,
                     },
                     "approval": need.approval.as_ref().map(DependencyApproval::to_json),

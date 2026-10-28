@@ -65,7 +65,6 @@ fn head_with_hostile_names() -> Files {
 }
 
 #[tokio::test]
-#[ignore = "confirmed defect SC-7: candidate text that is not a crate name reaches the registry source before it is validated"]
 async fn sc7_the_registry_source_is_never_asked_about_a_name_that_is_not_a_crate_name() {
     let world = World::new();
     let registry = Recording(Mutex::new(Vec::new()));
