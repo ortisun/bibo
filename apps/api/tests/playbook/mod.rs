@@ -290,6 +290,9 @@ impl Playbook {
                         .replace("{{TITLE}}", "Add a JSON output option")
                         .replace("{{BRANCH}}", &name)
                         .replace("{{INPUT}}", &argument_of(instructions))
+                        // The checklists sit one directory below the specification in the
+                        // workspace, and next to it in the fixture, where the link must resolve.
+                        .replace("](spec.md)", "](../spec.md)")
                 };
                 if entry.ends_with("specify") {
                     writes.push((

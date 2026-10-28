@@ -2,7 +2,7 @@
 
 **Purpose**: Validate that the specification is complete and ready to be reviewed
 **Created**: 2026-10-28
-**Feature**: [spec.md](../spec.md)
+**Feature**: [spec.md](spec.md)
 
 ## Content Quality
 
