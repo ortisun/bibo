@@ -37,9 +37,13 @@
 //! * Only Cargo is implemented. [`model::DependencyFormat`] is the seam for npm, pip and Go.
 //! * The registry facts (does the name exist, when was it first published) come from a
 //!   [`facts::RegistryMetadata`] that the composition root supplies. This crate has no network.
-//! * The wiring into `ValidationHandler` is not part of this package: the handler belongs to the
-//!   validation package. [`gate::run`] is what it calls, with the dependency files of both
-//!   commits read from the object store.
+//! * The wiring into the validation stage is `stages::validation::supply`, which reads the
+//!   dependency files of both commits from the object store and calls [`gate::run`] for a change
+//!   that touches one. Everything the gate takes from outside the repository comes in through
+//!   four seams the composition root supplies: [`approval::RecordedApprovals`],
+//!   [`facts::RegistryMetadata`], [`facts::AdvisoryDatabase`] and the settings in
+//!   `stages::validation::SupplyChainSettings` (internal names, the limit on the age of the
+//!   advisory database, the SBOM rule).
 
 pub mod approval;
 pub mod cargo;

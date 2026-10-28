@@ -16,6 +16,7 @@
 //! document, and the recorded approvals it hands back to the next run are what let step 3 start.
 
 use factory_domain::contracts::GateReport;
+use factory_domain::contracts::gate_report::BlockedCode;
 use factory_domain::policy::dependency::{
     DependencyDecision, DependencyPolicy, DependencyRequest, RegistryFacts,
 };
@@ -181,6 +182,47 @@ fn is_valid_request(policy: &DependencyPolicy, name: &str, version: &str) -> boo
     ) && Version::parse(version).is_some()
 }
 
+/// Why the gate does not run for a change.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Skip<'a> {
+    /// The change touches no dependency file.
+    Untouched,
+    /// The gate cannot run: something it needs is missing. The four reports are BLOCKED and say
+    /// what.
+    Blocked {
+        /// The category.
+        code: BlockedCode,
+        /// What is missing, as the report names it.
+        missing: &'a str,
+        /// A plain sentence.
+        reason: &'a str,
+    },
+}
+
+/// The four reports of a change for which the gate does not run. No container is made and no
+/// registry is asked.
+///
+/// # Errors
+/// [`StageError::Internal`] when a report would break the contract (a fault of the factory), or
+/// the image reference of a sandbox is not a digest.
+pub fn skipped(
+    io: &Io<'_>,
+    report: &ReportContext,
+    skip: &Skip<'_>,
+) -> Result<Vec<GateReport>, StageError> {
+    let now = io.ports.clock.now();
+    let reporter = reporter_for(io, report, now)?;
+    match skip {
+        Skip::Untouched => reporter.untouched(),
+        Skip::Blocked {
+            code,
+            missing,
+            reason,
+        } => reporter.cannot_run(*code, missing, reason),
+    }
+    .map_err(|_| StageError::Internal)
+}
+
 fn unreadable_base(
     io: &Io<'_>,
     inputs: &Inputs<'_>,
@@ -211,12 +253,20 @@ fn reporter<'a>(
     inputs: &Inputs<'_>,
     now: Timestamp,
 ) -> Result<Reporter<'a>, StageError> {
+    reporter_for(io, &inputs.report, now)
+}
+
+fn reporter_for<'a>(
+    io: &'a Io<'_>,
+    report: &ReportContext,
+    now: Timestamp,
+) -> Result<Reporter<'a>, StageError> {
     let cfg = io.cfg;
     let digest = |image: &factory_ports::sandbox::ImageDigest| {
         image_digest(image.reference()).map_err(|_| StageError::Internal)
     };
     Ok(Reporter {
-        cx: inputs.report.clone(),
+        cx: report.clone(),
         ids: io.ports.ids,
         now,
         redactor: &cfg.redactor,

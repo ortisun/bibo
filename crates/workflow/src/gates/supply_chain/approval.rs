@@ -22,6 +22,7 @@
 //!   ([`DependencyApproval::to_json`]). [`DependencyApproval::from_json`] reads it back, and
 //!   refuses a record that has no numeric id, no tenant or no job.
 
+use async_trait::async_trait;
 use factory_domain::ids::{JobId, TenantId};
 use factory_domain::policy::authority::{
     ActionContext, ActionVerdict, Actor, Allowlist, AuthorityPolicy, AutonomyLevel, ChangeFacts,
@@ -222,6 +223,34 @@ impl DependencyApproval {
             reason: reason.to_owned(),
             decided_at: Timestamp::parse(text("decided_at")?).ok()?,
         })
+    }
+}
+
+/// The decisions recorded for a job, as the composition root reads them from the ledger.
+///
+/// The implementation loads by tenant and job, and only the rows written by the approval command
+/// (`authorize` and [`DependencyApproval::record`]). It never reads a decision from the stage
+/// output, from an artifact the sandbox wrote or from a file of the repository: those are the
+/// candidate's. The gate drops what is for another tenant, job or policy bundle on its own, so
+/// this is the second check and not the first.
+#[async_trait]
+pub trait RecordedApprovals: Send + Sync {
+    /// Every decision recorded for `job` of `tenant`.
+    async fn for_job(&self, tenant: TenantId, job: JobId) -> Vec<DependencyApproval>;
+}
+
+/// A fixed list of decisions, for a source that was filled before the run and for tests.
+#[derive(Debug, Clone, Default)]
+pub struct StaticApprovals(pub Vec<DependencyApproval>);
+
+#[async_trait]
+impl RecordedApprovals for StaticApprovals {
+    async fn for_job(&self, tenant: TenantId, job: JobId) -> Vec<DependencyApproval> {
+        self.0
+            .iter()
+            .filter(|approval| approval.scope == DecisionScope { tenant, job })
+            .cloned()
+            .collect()
     }
 }
 

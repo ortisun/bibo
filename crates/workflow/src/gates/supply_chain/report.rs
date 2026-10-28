@@ -399,6 +399,59 @@ impl Reporter<'_> {
         )
     }
 
+    /// The four reports of a run that touched no dependency file: nothing to compare, decide or
+    /// scan, decided by a deterministic rule.
+    ///
+    /// # Errors
+    /// [`ReportError`] when a report would break the contract. That is a fault of the factory.
+    pub fn untouched(&self) -> Result<Vec<GateReport>, ReportError> {
+        const WHY: &str = "The change touches no dependency file, so there is nothing to compare, decide or scan.";
+        [
+            (
+                gate::INTEGRITY,
+                "Dependency files agree with the base commit",
+            ),
+            (gate::REVIEW, "New dependencies are decided and licensed"),
+            (gate::ADVISORIES, "No known advisory in the dependencies"),
+            (gate::SBOM, "Software bill of materials"),
+        ]
+        .into_iter()
+        .map(|(id, title)| {
+            self.not_applicable(
+                id,
+                title,
+                NotApplicableCode::NoMatchingFiles,
+                NotApplicableDecider::DeterministicRule,
+                WHY,
+            )
+        })
+        .collect()
+    }
+
+    /// The four reports of a run that could not start: each says what was missing.
+    ///
+    /// # Errors
+    /// [`ReportError`] when a report would break the contract. That is a fault of the factory.
+    pub fn cannot_run(
+        &self,
+        code: BlockedCode,
+        missing: &str,
+        reason: &str,
+    ) -> Result<Vec<GateReport>, ReportError> {
+        [
+            (
+                gate::INTEGRITY,
+                "Dependency files agree with the base commit",
+            ),
+            (gate::REVIEW, "New dependencies are decided and licensed"),
+            (gate::ADVISORIES, "No known advisory in the dependencies"),
+            (gate::SBOM, "Software bill of materials"),
+        ]
+        .into_iter()
+        .map(|(id, title)| self.blocked(id, title, code, missing, reason))
+        .collect()
+    }
+
     /// The four reports, in the order of [`gate::ALL`].
     ///
     /// # Errors

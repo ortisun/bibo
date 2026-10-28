@@ -35,12 +35,23 @@ use factory_testkit::workspace::{FakeRemote, FakeWorkspaceProvider};
 use factory_workflow::gates::framework::{
     EvidenceProblem, Expectation, GateDecision, Resolution, check_evidence, resolve,
 };
+use factory_workflow::gates::supply_chain::approval::{
+    DecisionScope, DependencyApproval, RecordedApprovals,
+};
+use factory_workflow::gates::supply_chain::facts::{
+    AdvisoryDatabase, RegistryMetadata, RegistryRecord, StaticRegistry,
+};
+use factory_workflow::gates::supply_chain::licenses::LicensePolicy;
+use factory_workflow::gates::supply_chain::names::PopularNames;
+use factory_workflow::gates::supply_chain::run::{FetchSandbox, SbomRule};
+use factory_workflow::gates::supply_chain::tools::SbomTool;
 use factory_workflow::handlers::{
     ContractContext, GateContext, NamedArtifact, RunIdentity, StageContext, StageError,
     StageHandler, StagePorts, UpstreamRun,
 };
 use factory_workflow::stages::validation::{
-    Bounds, JsonManifestReader, ValidationConfig, ValidationHandler, VerifySandbox,
+    Bounds, JsonManifestReader, SupplyChainSeams, SupplyChainSettings, ValidationConfig,
+    ValidationHandler, VerifySandbox,
 };
 
 use super::cargo::CargoScript;
@@ -239,6 +250,67 @@ impl SandboxSession for TamperSession {
     }
 }
 
+/// The decisions recorded for the job, as the composition root would load them from the ledger.
+#[derive(Default)]
+pub struct Approvals(Mutex<Vec<DependencyApproval>>);
+
+impl Approvals {
+    pub fn record(&self, approval: DependencyApproval) {
+        self.0
+            .lock()
+            .expect("the lock is never poisoned")
+            .push(approval);
+    }
+}
+
+#[async_trait]
+impl RecordedApprovals for Approvals {
+    async fn for_job(&self, tenant: TenantId, job: JobId) -> Vec<DependencyApproval> {
+        self.0
+            .lock()
+            .expect("the lock is never poisoned")
+            .iter()
+            .filter(|approval| approval.scope == DecisionScope { tenant, job })
+            .cloned()
+            .collect()
+    }
+}
+
+/// What the registry says about the packages of a test.
+#[derive(Default)]
+pub struct Registry(Mutex<StaticRegistry>);
+
+impl Registry {
+    pub fn know(&self, name: &str, record: RegistryRecord) {
+        let mut table = self.0.lock().expect("the lock is never poisoned");
+        *table = table.clone().with(name, record);
+    }
+}
+
+#[async_trait]
+impl RegistryMetadata for Registry {
+    async fn lookup(&self, name: &str, version: &str) -> RegistryRecord {
+        let table = self.0.lock().expect("the lock is never poisoned").clone();
+        table.lookup(name, version).await
+    }
+}
+
+/// The date of the advisory database in the image.
+pub struct Database(Mutex<Option<Timestamp>>);
+
+impl Database {
+    pub fn updated(&self, at: Option<Timestamp>) {
+        *self.0.lock().expect("the lock is never poisoned") = at;
+    }
+}
+
+#[async_trait]
+impl AdvisoryDatabase for Database {
+    async fn updated_at(&self) -> Option<Timestamp> {
+        *self.0.lock().expect("the lock is never poisoned")
+    }
+}
+
 /// Checks a gate report against `schemas/gate-report.schema.json` and nothing else.
 pub struct SchemaValidator;
 
@@ -341,6 +413,9 @@ pub struct World {
     pub policy: Arc<PolicyEngine>,
     pub redactor: Arc<Redactor>,
     pub policy_hash: Sha256Digest,
+    pub approvals: Arc<Approvals>,
+    pub packages: Arc<Registry>,
+    pub database: Arc<Database>,
     runtime: FakeAgentRuntime,
     router: StaticModelRouter,
     registry: InMemoryAgentRegistry,
@@ -351,7 +426,9 @@ pub struct World {
 impl World {
     pub fn new() -> Self {
         let fixture = Ids::new();
-        let tenant = fixture.tenant();
+        // The tenant and the job of the decisions in `people`, so that a recorded decision is for
+        // the run the world makes.
+        let tenant = super::people::tenant();
         let clock = Arc::new(FakeClock::new());
         let ids = Arc::new(SequentialIdGenerator::new());
         let artifacts = Arc::new(Granting {
@@ -400,11 +477,17 @@ impl World {
             registry: InMemoryAgentRegistry::new(),
             broker: Arc::new(FakeModelBroker::new(clock.clone(), ids.clone())),
             validator: SchemaValidator,
-            job: fixture.job(),
+            job: super::people::job(),
             stage_run: fixture.stage_run(),
             attempt: fixture.attempt(),
             correlation: fixture.correlation(),
             policy_hash: Sha256Digest::of(b"policy bundle one"),
+            approvals: Arc::new(Approvals::default()),
+            packages: Arc::new(Registry::default()),
+            // One day old at the time of the fake clock.
+            database: Arc::new(Database(Mutex::new(Some(
+                Timestamp::parse("2026-10-27T00:00:00Z").expect("a time"),
+            )))),
             clock,
             ids,
             fixture,
@@ -448,17 +531,7 @@ impl World {
     }
 
     pub fn config(&self) -> ValidationConfig {
-        let limits = SandboxLimits {
-            cpu_millis: nz(2000),
-            memory_mb: nz(2048),
-            memory_swap_mb: nz(2048),
-            pids: nz(256),
-            nofile: nz(2048),
-            max_file_mb: nz(512),
-            tmpfs_mb: nz(256),
-            workspace_disk_mb: nz(2048),
-            wall_clock: std::time::Duration::from_secs(600),
-        };
+        let limits = limits_for_verify();
         ValidationConfig {
             policy: self.policy.clone(),
             path_rules: fixture_rules(),
@@ -479,6 +552,32 @@ impl World {
             manifest: Arc::new(JsonManifestReader),
             flaky_registry: BTreeSet::new(),
             bounds: Bounds::default(),
+            supply_chain: SupplyChainSeams {
+                settings: SupplyChainSettings::new(
+                    FetchSandbox {
+                        image: image(),
+                        limits: limits_for_fetch(),
+                        env: factory_ports::sandbox::FixedEnv::new(vec![(
+                            "HOME".to_owned(),
+                            "/home/agent".to_owned(),
+                        )])
+                        .expect("an environment"),
+                        hardening: Hardening::strict(10_001, 10_001),
+                        caches: Vec::new(),
+                        sidecar: "sidecar-fixture".to_owned(),
+                        arch: "arm64".to_owned(),
+                    },
+                    LicensePolicy::owner_approved(),
+                    PopularNames::bundled().expect("the bundled list"),
+                    SbomRule {
+                        required: false,
+                        tool: SbomTool::default(),
+                    },
+                ),
+                approvals: self.approvals.clone(),
+                registry: self.packages.clone(),
+                advisory_db: self.database.clone(),
+            },
         }
     }
 
@@ -677,6 +776,35 @@ impl World {
         let base = self.push(&base_files()).await;
         let head = self.push(&with(changes)).await;
         (base, head)
+    }
+}
+
+fn limits_for_verify() -> SandboxLimits {
+    SandboxLimits {
+        cpu_millis: nz(2000),
+        memory_mb: nz(2048),
+        memory_swap_mb: nz(2048),
+        pids: nz(256),
+        nofile: nz(2048),
+        max_file_mb: nz(512),
+        tmpfs_mb: nz(256),
+        workspace_disk_mb: nz(2048),
+        wall_clock: std::time::Duration::from_secs(600),
+    }
+}
+
+/// Within the `fetch_deps` maximum of the sandbox policy fixture, which is lower than `verify`.
+fn limits_for_fetch() -> SandboxLimits {
+    SandboxLimits {
+        cpu_millis: nz(1000),
+        memory_mb: nz(1024),
+        memory_swap_mb: nz(1024),
+        pids: nz(128),
+        nofile: nz(2048),
+        max_file_mb: nz(512),
+        tmpfs_mb: nz(256),
+        workspace_disk_mb: nz(2048),
+        wall_clock: std::time::Duration::from_secs(600),
     }
 }
 
