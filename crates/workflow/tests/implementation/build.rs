@@ -263,7 +263,7 @@ async fn agent_runs_only_in_the_sandbox() {
     assert!(seen.iter().all(
         |(profile, read_only, access)| *profile == SandboxProfile::Agent
             && !read_only
-            && *access == WorkspaceAccess::ReadWrite
+            && *access == WorkspaceAccess::Edit
     ));
 }
 

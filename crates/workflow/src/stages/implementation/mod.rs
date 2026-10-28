@@ -61,7 +61,7 @@ pub mod handler;
 pub mod input;
 pub mod plan;
 pub mod report;
-mod run;
+pub(crate) mod run;
 pub mod scope;
 pub mod seams;
 

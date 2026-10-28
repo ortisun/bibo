@@ -48,8 +48,7 @@ use super::input::{
 use super::plan;
 use super::report::{BuilderReport, Status};
 use super::seams::{
-    Hold, LedgerError, PlannedTask, ReworkContext, SeamError, WorkspaceAccess, verify_posture,
-    verify_spec,
+    Hold, LedgerError, PlannedTask, ReworkContext, SeamError, WorkspaceAccess, verify_spec,
 };
 use crate::audit::{AuditAction, AuditDecision, AuditKind};
 use crate::handlers::{
@@ -97,7 +96,7 @@ enum TaskOutcome {
     Asked(&'static str),
 }
 
-pub(super) fn ledger_error(error: LedgerError) -> StageError {
+pub(crate) fn ledger_error(error: LedgerError) -> StageError {
     match error {
         // This attempt was replaced by another worker. It stops; the engine already knows.
         LedgerError::Fenced => StageError::Cancelled,
@@ -106,14 +105,14 @@ pub(super) fn ledger_error(error: LedgerError) -> StageError {
     }
 }
 
-pub(super) fn seam_error(error: SeamError) -> StageError {
+pub(crate) fn seam_error(error: SeamError) -> StageError {
     match error {
         SeamError::Unavailable => StageError::Tool,
         SeamError::NotFound => StageError::Internal,
     }
 }
 
-pub(super) fn workspace_error(error: WorkspaceError) -> StageError {
+pub(crate) fn workspace_error(error: WorkspaceError) -> StageError {
     match error {
         WorkspaceError::Cancelled => StageError::Cancelled,
         WorkspaceError::UnknownCommit | WorkspaceError::NotFetched => {
@@ -127,7 +126,7 @@ fn slug(text: &str) -> Result<Slug, StageError> {
     Slug::parse(text).map_err(|_| StageError::Internal)
 }
 
-pub(super) fn mode_name(mode: PathMode) -> &'static str {
+pub(crate) fn mode_name(mode: PathMode) -> &'static str {
     match mode {
         PathMode::Hidden => "hidden",
         PathMode::DenyWrite => "deny_write",
@@ -507,7 +506,10 @@ async fn task_facts(
     Ok((changes, additions, deletions))
 }
 
-async fn close(session: Box<dyn SandboxSession>, completed: bool) -> Result<(), StageError> {
+pub(crate) async fn close(
+    session: Box<dyn SandboxSession>,
+    completed: bool,
+) -> Result<(), StageError> {
     session
         .stop_and_remove(if completed {
             TeardownReason::Completed
@@ -519,34 +521,29 @@ async fn close(session: Box<dyn SandboxSession>, completed: bool) -> Result<(), 
         .map_err(|_| StageError::Sandbox)
 }
 
-/// Makes the sandbox for a workspace and checks that it is what the stage meant. The sandbox is
-/// removed again on every failure.
-async fn open_sandbox(
-    handler: &ImplementationHandler,
+/// Makes the sandbox for a workspace and checks that it is what the stage meant: the spec is for
+/// the `agent` profile over this workspace, the sandbox port has read the posture of the container
+/// back and found it equal to the spec and the policy, and the runtime has what the stage needs. The sandbox is
+/// removed again on every failure. When `report_ready` is set, the engine is told that the
+/// sandbox is up.
+pub(crate) async fn open_sandbox(
+    specs: &dyn super::seams::WorkspaceAgentSpecs,
     ctx: &mut StageContext<'_>,
     workspace: &dyn Workspace,
-    tally: &mut Tally,
+    access: WorkspaceAccess,
+    required: &[Capability],
+    report_ready: bool,
 ) -> Result<Box<dyn SandboxSession>, StageError> {
     let ports = ctx.ports;
     let token = ctx.job_token.ok_or(StageError::Internal)?;
     let mounts = workspace.mounts();
-    let spec = handler
-        .specs
-        .spec(
-            ctx.identity.job,
-            ctx.attempt,
-            token,
-            mounts.clone(),
-            WorkspaceAccess::ReadWrite,
-        )
+    let spec = specs
+        .spec(ctx.identity.job, ctx.attempt, token, mounts.clone(), access)
         .map_err(|_| StageError::Environment(EnvironmentCause::PolicyUnloadable))?;
-    // The builder runs in the `agent` profile over this workspace and no other, or it does not run.
-    verify_spec(&spec, &mounts, WorkspaceAccess::ReadWrite)?;
+    // The agent runs in the `agent` profile over this workspace and no other, with the access the
+    // stage asked for, or it does not run.
+    verify_spec(&spec, &mounts)?;
     let mut session = ports.sandbox.create_verified(spec, ctx.cancel).await?;
-    if let Err(error) = verify_posture(session.as_ref(), WorkspaceAccess::ReadWrite) {
-        let _ = close(session, false).await;
-        return Err(error);
-    }
     let capabilities = match ports.runtime.probe(&mut *session).await {
         Ok(found) => found,
         Err(error) => {
@@ -554,20 +551,43 @@ async fn open_sandbox(
             return Err(error.into());
         }
     };
-    let satisfies = capabilities.supports(Capability::JsonSchemaOutput)
-        && capabilities.supports(Capability::HeadlessMultiTurn);
+    let satisfies = required
+        .iter()
+        .all(|capability| capabilities.supports(*capability));
     if !satisfies {
         let _ = close(session, false).await;
         return Err(StageError::Blocked(BlockedCode::ToolUnavailable));
     }
-    if !tally.sandbox_reported {
+    if report_ready {
         ctx.report_sandbox_ready(SandboxReady {
             posture_verified: true,
             tool_grants_recorded: true,
             probe_satisfies_stage: satisfies,
         });
-        tally.sandbox_reported = true;
     }
+    Ok(session)
+}
+
+/// What the builder needs from the runtime.
+const BUILDER_NEEDS: [Capability; 2] =
+    [Capability::JsonSchemaOutput, Capability::HeadlessMultiTurn];
+
+async fn open_builder_sandbox(
+    handler: &ImplementationHandler,
+    ctx: &mut StageContext<'_>,
+    workspace: &dyn Workspace,
+    tally: &mut Tally,
+) -> Result<Box<dyn SandboxSession>, StageError> {
+    let session = open_sandbox(
+        handler.specs.as_ref(),
+        ctx,
+        workspace,
+        WorkspaceAccess::Edit,
+        &BUILDER_NEEDS,
+        !tally.sandbox_reported,
+    )
+    .await?;
+    tally.sandbox_reported = true;
     Ok(session)
 }
 
@@ -593,7 +613,7 @@ async fn ready_check(
         )
         .await
         .map_err(workspace_error)?;
-    let result = match open_sandbox(handler, ctx, workspace.as_ref(), tally).await {
+    let result = match open_builder_sandbox(handler, ctx, workspace.as_ref(), tally).await {
         Ok(session) => close(session, true).await,
         Err(error) => Err(error),
     };
@@ -676,7 +696,7 @@ async fn build_in(
 ) -> Result<TaskOutcome, StageError> {
     let ports = ctx.ports;
     let identity = ctx.identity;
-    let mut session = open_sandbox(handler, ctx, workspace, tally).await?;
+    let mut session = open_builder_sandbox(handler, ctx, workspace, tally).await?;
 
     // The prompt. Everything the builder reads is untrusted data in a quoted block.
     let assembled = {
@@ -744,7 +764,7 @@ async fn build_in(
     let need = RoutingNeed {
         stage: StageKind::Implementation,
         tier: RecommendedTier::Standard,
-        required: vec![Capability::JsonSchemaOutput, Capability::HeadlessMultiTurn],
+        required: BUILDER_NEEDS.to_vec(),
         risk: RiskTier::Medium,
         exclude: Vec::new(),
         probed: handler.probes.probed(),

@@ -250,6 +250,9 @@ impl StageHandler for Fixed {
 /// Stores the evidence of the validation stage, with the outcome a test chose.
 pub struct StandInValidation {
     pub mode: Arc<Mutex<ValidationMode>>,
+    /// How many times the stage ran. A failing run names a different test each time, so that two
+    /// rounds do not fail in the same way, which the engine reads as stagnation.
+    pub rounds: std::sync::atomic::AtomicU32,
 }
 
 const UNIT_TESTS: &str = "unit-tests";
@@ -258,7 +261,11 @@ const UNIT_TESTS_TEXT: &str = "unit-tests 1.0.0: the tests run and every one tha
 const BINDING_TEXT: &str = "evidence-binding 1.0.0: the evidence is about this commit.";
 const EVIDENCE: &str = "validation-evidence";
 
-fn reports(ctx: &StageContext<'_>, unit_tests_pass: bool) -> Result<Vec<GateReport>, StageError> {
+fn reports(
+    ctx: &StageContext<'_>,
+    unit_tests_pass: bool,
+    round: u32,
+) -> Result<Vec<GateReport>, StageError> {
     let make = |id: &'static str, text: &'static str, pass: bool| {
         gate_report(
             &subject(
@@ -282,8 +289,8 @@ fn reports(ctx: &StageContext<'_>, unit_tests_pass: bool) -> Result<Vec<GateRepo
                     Vec::new()
                 } else {
                     vec![(
-                        "unit-test-failed".to_owned(),
-                        "The test counts_a_line failed in the verify run.".to_owned(),
+                        format!("unit-test-failed-{round}"),
+                        format!("The test counts_a_line_{round} failed in the verify run."),
                     )]
                 },
             ),
@@ -381,7 +388,11 @@ impl StageHandler for StandInValidation {
             definition_hash: Sha256Digest::of(b"definitions"),
         };
         let pass = matches!(mode, ValidationMode::AllPass | ValidationMode::StaleHead);
-        let listed: Vec<Value> = reports(ctx, pass)?
+        let round = self
+            .rounds
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+            + 1;
+        let listed: Vec<Value> = reports(ctx, pass, round)?
             .iter()
             .map(|r| r.to_json_value().map_err(|_| StageError::Internal))
             .collect::<Result<_, _>>()?;
@@ -526,7 +537,10 @@ pub fn register_around(
     let mode = Arc::new(Mutex::new(options.validation));
     if options.scope.contains(&StageKind::Validation) {
         handlers
-            .register(Arc::new(StandInValidation { mode: mode.clone() }))
+            .register(Arc::new(StandInValidation {
+                mode: mode.clone(),
+                rounds: std::sync::atomic::AtomicU32::new(0),
+            }))
             .expect("one handler per stage");
     }
     mode

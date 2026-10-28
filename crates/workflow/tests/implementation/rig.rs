@@ -297,7 +297,8 @@ pub struct RigSpecs {
     pub seen: Mutex<Vec<(SandboxProfile, bool, WorkspaceAccess)>>,
     /// Makes the next specs name another profile.
     pub profile: Mutex<Option<SandboxProfile>>,
-    /// Makes the next specs mount the checkout with this read-only flag, whatever was asked.
+    /// Makes the next specs mount the checkout with this read-only flag, whatever was asked. The
+    /// agent profile takes a writable checkout only, so `Some(true)` is a spec the port refuses.
     pub read_only: Mutex<Option<bool>>,
     /// Makes the next specs mount another workspace than the one the stage made.
     pub other_workspace: Mutex<bool>,
@@ -951,6 +952,8 @@ pub struct Options {
     pub plan: String,
     /// Builds the review handler too.
     pub review: bool,
+    /// The manifest of the reviewer, when a test needs another one than the real one.
+    pub reviewer: Option<AgentManifest>,
     /// The limits of the implementation stage, when a test needs smaller ones.
     pub budget: Option<StageBudget>,
 }
@@ -971,6 +974,7 @@ impl Default for Options {
             files: base_files(),
             plan: PLAN.to_owned(),
             review: false,
+            reviewer: None,
             budget: None,
         }
     }
@@ -1067,7 +1071,10 @@ impl Rig {
         });
         let mut registry = InMemoryAgentRegistry::new();
         registry.add(builder_manifest(), Some(BUILDER_PROMPT));
-        registry.add(reviewer_manifest(), Some(REVIEWER_PROMPT));
+        registry.add(
+            options.reviewer.clone().unwrap_or_else(reviewer_manifest),
+            Some(REVIEWER_PROMPT),
+        );
 
         let mut deps = world.deps.clone();
         deps.artifacts = artifacts.clone();
@@ -1124,7 +1131,7 @@ impl Rig {
             log.clone(),
         );
         if options.review {
-            crate::review::register(&mut handlers, &check, &specs, &rework);
+            crate::review::register(&mut handlers, &check, &specs);
         }
         let engine = Engine::new(deps, world.config.clone(), handlers).expect("the engine starts");
         Self {
@@ -1252,9 +1259,32 @@ impl Rig {
             .id
     }
 
-    /// The deliverable `name` of the newest run of `kind`, read back from the artifact store.
+    /// The runs of one kind, oldest first.
+    pub async fn runs_of(
+        &self,
+        kind: StageKind,
+    ) -> Vec<(StageRunId, factory_domain::state::StageRunStatus)> {
+        self.world
+            .view(self.job)
+            .await
+            .runs_of(kind)
+            .map(|run| (run.id, run.status))
+            .collect()
+    }
+
+    /// The deliverable `name` of the newest run of `kind` that has one, read back from the
+    /// artifact store. A run that was replaced by rework keeps its outputs.
     pub async fn deliverable(&self, kind: StageKind, name: &str) -> Option<Value> {
-        let run = self.run_of(kind).await;
+        for (run, _) in self.runs_of(kind).await.into_iter().rev() {
+            if let Some(found) = self.deliverable_in(run, name).await {
+                return Some(found);
+            }
+        }
+        None
+    }
+
+    /// The deliverable `name` of one stage run.
+    pub async fn deliverable_in(&self, run: StageRunId, name: &str) -> Option<Value> {
         let tenant = TenantScope::new(self.world.tenant);
         for link in self.world.links(run).await {
             let reference = ArtifactRef {

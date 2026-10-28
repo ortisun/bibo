@@ -3,7 +3,7 @@
 //! | Gate | Answers |
 //! |---|---|
 //! | `implementation-scope` | Is every path a task changed a path that task owns? The globs come from the plan the contract pinned, not from the evidence the stage wrote |
-//! | `implementation-commits` | Does the head commit hold only changes that the audited ingestion reported, and does it differ from the base? |
+//! | `implementation-commits` | Does the head commit hold only changes, since the commit this run started from, that the audited ingestion reported, and does it differ from the base? |
 //! | `protected-paths-unchanged` | Did the audit refuse a change? A refusal is a policy violation: the stage run is blocked, and nobody is asked to override it by the reviewer |
 //!
 //! Nothing here reads anything the builder wrote. The commits are in the job's object store, the
@@ -243,6 +243,14 @@ pub(super) async fn evaluate(
         format!("base={}", candidate.base),
         format!("head={}", candidate.head),
     ];
+    // A first run starts from the base. A rework run starts from the commit the run it replaced
+    // ended with, and the changes before that were audited and checked by that run.
+    let started_from = evidence
+        .tasks
+        .first()
+        .and_then(|task| factory_ports::paths::CommitSha::parse(&task.built_on).ok())
+        .unwrap_or_else(|| candidate.base.clone());
+    lines.push(format!("started_from={started_from}"));
     let nothing_committed = candidate.base == candidate.head;
     if nothing_committed {
         if evidence.refusal.is_none() {
@@ -261,7 +269,7 @@ pub(super) async fn evaluate(
             }
             Ok(repo) => match repo
                 .export_patch(
-                    &candidate.base,
+                    &started_from,
                     &candidate.head,
                     handler.config.max_patch_bytes,
                     ctx.cancel,

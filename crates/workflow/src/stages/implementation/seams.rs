@@ -14,7 +14,7 @@ use factory_domain::values::{Sha256Digest, Slug};
 use factory_domain::vocabulary::Fidelity;
 use factory_ports::agent::JobTokenRef;
 use factory_ports::paths::CommitSha;
-use factory_ports::sandbox::{SandboxProfile, SandboxSpec, WORKSPACE_TARGET};
+use factory_ports::sandbox::{SandboxProfile, SandboxSpec};
 use factory_ports::store::LeaseEpoch;
 use factory_ports::workspace::WorkspaceMounts;
 
@@ -24,22 +24,29 @@ use factory_domain::machines::guards::EnvironmentCause;
 
 use crate::handlers::{RunIdentity, StageError};
 
-/// What the agent in the sandbox may do with the checkout.
+/// What the checkout is for.
+///
+/// The sandbox port allows the `agent` profile only a writable checkout
+/// (`SandboxRule::WorkspaceAccessMismatch`), because the builder must edit files. A reviewer runs
+/// in the same profile, since only that profile reaches the model broker, so its checkout is
+/// writable at the mount too. What keeps the reviewer from changing anything is therefore not the
+/// mount. It is that the reviewer is granted no tool that writes or runs commands, that its
+/// checkout is its own copy, and that the stage disposes of the copy without ever ingesting it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WorkspaceAccess {
-    /// The builder: the checkout is writable. Protected paths are re-mounted read-only over it.
-    ReadWrite,
-    /// The reviewer: the checkout is read-only. The reviewer changes nothing and pushes nothing.
-    ReadOnly,
+    /// The builder: the stage ingests the checkout, audits it and commits what it holds.
+    Edit,
+    /// The reviewer: a copy to read. The stage never ingests it, and disposes of it unread.
+    Inspect,
 }
 
 /// Builds the sandbox spec of the `agent` profile for an agent that works on a checkout: image,
 /// limits, the mounts of the workspace, the network attachment behind the egress sidecar and the
 /// job token mount. The policy decides every value, so the stage cannot widen a sandbox.
 ///
-/// The stage does not trust the answer. It checks the profile, that the spec mounts exactly the
-/// workspace it made, and that a read-only request came back read-only, before it creates a
-/// sandbox, and it checks the posture of the sandbox that was created.
+/// The stage does not trust the answer. It checks the profile and that the spec mounts exactly the
+/// workspace it made before it creates a sandbox, and the sandbox port checks the posture of the
+/// container against the spec and the policy.
 pub trait WorkspaceAgentSpecs: Send + Sync {
     /// The spec for the attempt, over these mounts.
     ///
@@ -193,25 +200,18 @@ pub trait ReworkSource: Send + Sync {
 }
 
 /// Checks a spec before a sandbox is made from it. The agent runs only in the `agent` profile, over
-/// exactly the workspace the stage made, with the access the stage asked for.
+/// exactly the workspace the stage made, with the job token it needs and nothing else.
 ///
 /// # Errors
 /// [`StageError::Environment`] with the policy cause: the spec is for another profile, mounts a
-/// different workspace, or grants write access to a reader or read access to a writer. Nothing is
-/// retried: another try would be given the same spec.
-pub fn verify_spec(
-    spec: &SandboxSpec,
-    mounts: &WorkspaceMounts,
-    access: WorkspaceAccess,
-) -> Result<(), StageError> {
+/// different workspace than the one the stage made, or has no job token. Nothing is retried:
+/// another try would be given the same spec.
+pub fn verify_spec(spec: &SandboxSpec, mounts: &WorkspaceMounts) -> Result<(), StageError> {
     let refused = || StageError::Environment(EnvironmentCause::PolicyViolation);
     if spec.profile != SandboxProfile::Agent {
         return Err(refused());
     }
     if &spec.mounts.workspace != mounts {
-        return Err(refused());
-    }
-    if spec.mounts.workspace.workspace_read_only != (access == WorkspaceAccess::ReadOnly) {
         return Err(refused());
     }
     if spec.job_token.is_none() {
@@ -220,24 +220,23 @@ pub fn verify_spec(
     Ok(())
 }
 
-/// Checks the sandbox that was made, not the spec it was made from: the posture the supervisor read
-/// back shows the checkout mounted with the access the stage asked for.
+/// Checks that an agent that must not change anything has no tool that could. A reviewer is granted
+/// tools that read, and a tool that writes or runs commands is refused before anything is made.
 ///
 /// # Errors
-/// [`StageError::Environment`] with the posture cause.
-pub fn verify_posture(
-    session: &dyn factory_ports::sandbox::SandboxSession,
-    access: WorkspaceAccess,
+/// [`StageError::Environment`] with the policy cause.
+pub fn verify_read_only_tools(
+    manifest: &factory_domain::contracts::AgentManifest,
 ) -> Result<(), StageError> {
-    let mismatch = || StageError::Environment(EnvironmentCause::PostureMismatch);
-    let mount = session
-        .posture()
-        .mounts
+    use factory_domain::contracts::agent_manifest::ToolAccess;
+    let writes = manifest
+        .allowed_tools
+        .as_slice()
         .iter()
-        .find(|mount| mount.target == WORKSPACE_TARGET)
-        .ok_or_else(mismatch)?;
-    if mount.read_only != (access == WorkspaceAccess::ReadOnly) {
-        return Err(mismatch());
+        .any(|tool| tool.access != ToolAccess::Read);
+    let permissions = &manifest.permissions;
+    if writes || !permissions.filesystem.write.is_empty() {
+        return Err(StageError::Environment(EnvironmentCause::PolicyViolation));
     }
     Ok(())
 }
