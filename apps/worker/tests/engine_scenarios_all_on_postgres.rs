@@ -193,18 +193,6 @@ mod support {
         /// still hold the old time (the timeout of an attempt did, until the engine took the
         /// deadline from the attempt row).
         async fn advance_database_time(&self, seconds: u64) {
-            // A scenario may have dropped an engine in the middle of a call, as a crash does. The
-            // store closes such a connection and rolls it back at its next `begin`, and until
-            // then the rows it locked stay locked. The shift below would wait for them for
-            // ever, so the rollbacks are settled first.
-            self.store
-                .begin_system(SystemScope::engine())
-                .await
-                .expect("a system transaction")
-                .finish()
-                .await
-                .expect("finish");
-
             let shift = format!("make_interval(secs => {seconds})");
             let mut admin = self.db.admin().await;
             admin
