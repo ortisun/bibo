@@ -7,3 +7,50 @@ publish.workspace = true
 
 [lints]
 workspace = true
+
+# DEPENDENCY DECISION (work package s1-github-adapter, 2026-10-28). Evidence and the rejected
+# alternatives are in the crate documentation (`src/lib.rs`, section "Dependencies"). The three
+# crates marked NEEDS ARCHITECT are not in the `github` `external_allow` list of
+# docs/architecture/crate-dependency-rules.json yet, so `cargo xtask check-architecture` reports
+# DEP-04 for them until the architect amends that file (that file is outside this package). Every
+# crate below passes `cargo deny --locked check` and `cargo audit --deny warnings` with the
+# unchanged deny.toml. A new direct dependency always needs a person (policies/security.yaml,
+# supply_chain.new_direct_dependency).
+[dependencies]
+factory-domain.workspace = true
+factory-ports.workspace = true
+# NEEDS ARCHITECT. `#[async_trait]` for the `IssueSource` and `ChangeHost` impls, as the ports and
+# the other adapters do. Maintained by dtolnay, version 0.1.92 (the version `factory-ports` pins).
+async-trait = "0.1.92"
+# On the `github` list. Only the `Deserialize` trait, for the strict JSON reader that refuses
+# duplicate keys in a webhook body.
+serde = { version = "1.0.229", default-features = false, features = ["std"] }
+# On the `github` list. Request and response bodies.
+serde_json = { version = "1.0.154", default-features = false, features = ["std"] }
+# On the `github` list.
+thiserror = "2.0.21"
+# On the `github` list. `rt` for `spawn_blocking` (the HTTP client is blocking), `time` for the
+# back-off sleep, `sync` for the async mutex that serialises minting.
+tokio = { version = "1.54.1", default-features = false, features = ["rt", "sync", "time"] }
+# On the `github` list. HMAC-SHA256 of the webhook body (RustCrypto, pure Rust).
+hmac = "0.13.0"
+# On the `github` list. The hash behind the HMAC, the body hash and the comment marker.
+sha2 = { version = "0.11.1", default-features = false }
+# On the `github` list. Constant-time comparison of the webhook signature.
+subtle = { version = "2.6.1", default-features = false }
+# On the `github` list. Reads the hex digest in `X-Hub-Signature-256`.
+hex = { version = "0.4.3", default-features = false, features = ["alloc"] }
+# NEEDS ARCHITECT. RS256 for the App JWT (`ring::signature::RSA_PKCS1_SHA256`). The same crate is
+# the crypto provider of the TLS library below, so signing adds no second crypto stack. Licence
+# "Apache-2.0 AND ISC", both on the deny.toml list. 0.17.14 has no open advisory.
+ring = "0.17.14"
+# NEEDS ARCHITECT. Blocking HTTP/1.1 client with TLS through rustls and ring and the Mozilla roots
+# (webpki-roots, CDLA-Permissive-2.0, approved on 2026-10-27). Features: `rustls` only, so no
+# gzip, no cookies, no JSON layer, no native TLS and no aws-lc. It runs under
+# `tokio::task::spawn_blocking`, behind the `Transport` trait.
+ureq = { version = "3.5.0", default-features = false, features = ["rustls"] }
+
+[dev-dependencies]
+factory-testkit.workspace = true
+# `macros` for `#[tokio::test]`.
+tokio = { version = "1.54.1", default-features = false, features = ["rt", "sync", "time", "macros"] }

@@ -1,0 +1,24 @@
+{
+  "action": "created",
+  "issue": {
+    "number": 12,
+    "node_id": "PR_kwDOFixture12",
+    "title": "Add a word count command",
+    "state": "open",
+    "author_association": "OWNER",
+    "labels": [{ "name": "factory" }],
+    "updated_at": "2026-10-28T09:30:00Z",
+    "pull_request": { "url": "https://api.github.com/repos/example-org/fixture/pulls/12" }
+  },
+  "comment": {
+    "id": 501,
+    "node_id": "IC_kwDOFixture501",
+    "body": "factory approve",
+    "author_association": "OWNER",
+    "created_at": "2026-10-28T09:30:00Z",
+    "updated_at": "2026-10-28T09:30:00Z"
+  },
+  "repository": { "id": 7, "full_name": "example-org/fixture" },
+  "installation": { "id": 42 },
+  "sender": { "id": 77, "login": "maintainer", "type": "User" }
+}
