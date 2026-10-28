@@ -8,6 +8,10 @@ that file:
   FAKE:OUTPUT <json>          answer with this JSON document as the text of the reply
   FAKE:USAGE <input> <output> report these token counts (and no cache tokens) from now on
   markers                     the request log also counts the strings the runtime tests plant
+  /out/script.json            a control file the test writes. It is read on every request and holds
+                              any of {"output": <json>, "usage": [in, out], "http": <status>,
+                              "sleep": <seconds>}. It takes the place of a directive in the prompt,
+                              for a test that cannot change the prompt after the request was built.
 
 It holds no real credential, makes no network call of its own and never reads a key from the
 environment: the expected fake key is a file (--key-file) that the test generated at run time.
@@ -36,9 +40,31 @@ fp.MARKERS.extend(
 )
 
 _original = fp.find_directive
+SCRIPT = "/out/script.json"
+
+
+def _script():
+    try:
+        with open(SCRIPT, encoding="utf-8") as handle:
+            loaded = json.load(handle)
+            return loaded if isinstance(loaded, dict) else {}
+    except (OSError, ValueError):
+        return {}
 
 
 def find_directive(texts):
+    script = _script()
+    if "usage" in script:
+        fp.USAGE_INPUT, fp.USAGE_OUTPUT = int(script["usage"][0]), int(script["usage"][1])
+        fp.USAGE_CACHE_CREATE = 0
+        fp.USAGE_CACHE_READ = 0
+    if "http" in script:
+        return ("HTTP", str(script["http"]))
+    if "sleep" in script:
+        return ("SLEEP", str(script["sleep"]))
+    if "output" in script:
+        fp.Config.struct_reply = script["output"]
+        return ("STRUCT", "")
     for text in texts:
         usage = USAGE.search(text)
         if usage:

@@ -37,16 +37,20 @@ pub enum EnvName {
     ClaudeDisableNonessentialTraffic,
     /// Claude Code: how many times a failed request is retried.
     ClaudeMaxRetries,
+    /// Claude Code: `1` hides the tool's own bundled skills, so that the skills a stage sees are the
+    /// pinned ones and nothing else.
+    ClaudeDisableBundledSkills,
 }
 
 impl EnvName {
     /// Every name, in the order they are written.
-    pub const ALL: [EnvName; 5] = [
+    pub const ALL: [EnvName; 6] = [
         EnvName::Home,
         EnvName::Path,
         EnvName::AnthropicBaseUrl,
         EnvName::ClaudeDisableNonessentialTraffic,
         EnvName::ClaudeMaxRetries,
+        EnvName::ClaudeDisableBundledSkills,
     ];
 
     /// The variable name.
@@ -58,6 +62,7 @@ impl EnvName {
             Self::AnthropicBaseUrl => "ANTHROPIC_BASE_URL",
             Self::ClaudeDisableNonessentialTraffic => "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC",
             Self::ClaudeMaxRetries => "CLAUDE_CODE_MAX_RETRIES",
+            Self::ClaudeDisableBundledSkills => "CLAUDE_CODE_DISABLE_BUNDLED_SKILLS",
         }
     }
 }

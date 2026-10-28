@@ -119,6 +119,16 @@ impl HostWorkspace {
         }
     }
 
+    /// Makes a file of the checkout executable.
+    pub fn make_executable(&self, relative: &str) {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(
+            self.worktree.join(relative),
+            std::fs::Permissions::from_mode(0o755),
+        )
+        .expect("an executable file");
+    }
+
     /// True when a file exists in the checkout on the host.
     pub fn has(&self, relative: &str) -> bool {
         self.worktree.join(relative).exists()
@@ -383,6 +393,7 @@ impl Lab {
             store: h.store.clone(),
             redactor: h.redactor.clone(),
             dead: None,
+            seen: Vec::new(),
         };
         let status = session
             .exec_text(&["/usr/bin/cat", "/proc/self/status"])
@@ -402,6 +413,29 @@ impl Lab {
             .run(&["ps", "-a", "--filter", &filter, "--format", "{{.Names}}"])
             .map(|o| o.stdout.split_whitespace().map(str::to_owned).collect())
             .unwrap_or_default()
+    }
+
+    /// Writes the control file the fake provider reads on every request.
+    pub fn script(&self, value: &Value) {
+        let path = self.dirs.path().join("provider/script.json");
+        std::fs::write(path, value.to_string()).expect("the provider script");
+    }
+
+    /// Removes the control file.
+    pub fn clear_script(&self) {
+        let _ = std::fs::remove_file(self.dirs.path().join("provider/script.json"));
+    }
+
+    /// An empty directory for a read-only overlay, and the `--mount` argument pair that puts it
+    /// over `target` inside the container, as the sandbox does for a protected or hidden path.
+    pub fn overlay_args(&self, target: &str) -> Vec<String> {
+        let n = self.names.fetch_add(1, Ordering::SeqCst);
+        let dir = self.dirs.path().join(format!("empty-{n}"));
+        std::fs::create_dir_all(&dir).expect("an empty directory");
+        vec![
+            "--mount".to_owned(),
+            format!("type=bind,src={},dst={target},readonly", dir.display()),
+        ]
     }
 
     /// The run label's value, for assertions about the names of what was made.
@@ -532,6 +566,8 @@ pub struct RealSession {
     store: Arc<GrantingStore>,
     redactor: Arc<Redactor>,
     dead: Option<SandboxError>,
+    /// Every argument vector the session was asked to run, in order.
+    pub seen: Vec<Vec<String>>,
 }
 
 /// Reads at most `cap` bytes, then drains the rest so the writer never blocks.
@@ -633,6 +669,7 @@ impl SandboxSession for RealSession {
         req: ExecRequest,
         cancel: &dyn CancelSignal,
     ) -> Result<ExecResult, SandboxError> {
+        self.seen.push(req.argv.as_slice().to_vec());
         if let Some(dead) = &self.dead {
             return Err(dead.clone());
         }

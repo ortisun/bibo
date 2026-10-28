@@ -268,7 +268,9 @@ fn argument_safety_codex_writes_the_spike_flag_set() {
     }
 }
 
-fn weakenings() -> Vec<(&'static str, Box<dyn Fn(&mut PostureReport)>)> {
+type Weakening = (&'static str, Box<dyn Fn(&mut PostureReport)>);
+
+fn weakenings() -> Vec<Weakening> {
     vec![
         ("privileged", Box::new(|p| p.observed.privileged = true)),
         ("root", Box::new(|p| p.observed.uid = 0)),

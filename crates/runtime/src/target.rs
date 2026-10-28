@@ -14,6 +14,21 @@ use factory_ports::sandbox::{Confinement, Namespace, NetworkAttachment, PostureR
 /// The smallest user id a tool may run as. It is the `min_uid` of the sandbox policy.
 pub const MIN_AGENT_UID: u32 = 10_000;
 
+/// Environment names that change how a program loads code or what it builds. A container created
+/// with one of them is not a target (negative test NT-TOOL-06; the list is `forbidden_env_names`
+/// of the sandbox policy).
+pub const FORBIDDEN_ENV_NAMES: [&str; 9] = [
+    "LD_PRELOAD",
+    "LD_LIBRARY_PATH",
+    "LD_AUDIT",
+    "RUSTFLAGS",
+    "RUSTC_WRAPPER",
+    "NODE_OPTIONS",
+    "PYTHONPATH",
+    "BASH_ENV",
+    "GIT_SSH_COMMAND",
+];
+
 /// Why a sandbox cannot host a tool that runs with the bypass flags.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum TargetRefusal {
@@ -69,6 +84,13 @@ impl VerifiedTarget {
         require(h.devices.is_empty(), "devices");
         require(h.sysctls.is_empty(), "sysctls");
         require(h.init, "init");
+        require(
+            !posture
+                .env
+                .iter()
+                .any(|(name, _)| FORBIDDEN_ENV_NAMES.contains(&name.as_str())),
+            "env",
+        );
         if !weak.is_empty() {
             return Err(TargetRefusal::NotHardened(weak));
         }
