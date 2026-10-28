@@ -23,4 +23,5 @@ mod support;
 mod architecture;
 mod dag;
 mod flow;
+mod planning;
 mod rig;

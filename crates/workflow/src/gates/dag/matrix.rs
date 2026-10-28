@@ -178,19 +178,36 @@ impl Matrix {
                 .filter(|element| element.satisfies.contains(requirement))
                 .map(|element| element.element_id.clone())
                 .collect();
+            let cites = |task: &Task, id: &str| {
+                task.acceptance_mapping
+                    .requirement_ids
+                    .iter()
+                    .any(|cited| cited.as_str() == id)
+            };
+            // A task serves a requirement when it cites it. Sharing a file with a design element
+            // does not make a task answer the element's requirements.
             let mut serving: BTreeSet<String> = tasks
                 .iter()
-                .filter(|task| {
-                    task.acceptance_mapping
-                        .requirement_ids
-                        .iter()
-                        .any(|id| id.as_str() == requirement)
-                })
+                .filter(|task| cites(task, requirement))
                 .map(|task| task.task_id.as_str().to_owned())
                 .collect();
-            for element in &design_elements {
-                if let Some(linked) = element_tasks.get(element.as_str()) {
-                    serving.extend(linked.iter().cloned());
+            // A task cannot cite a non-functional requirement or a success criterion. Those are
+            // followed through the design elements that satisfy them, to the functional
+            // requirements the same elements satisfy, and from there to the tasks that cite them.
+            if !requirement.starts_with("FR-") {
+                for element in input
+                    .design
+                    .iter()
+                    .filter(|element| element.satisfies.contains(requirement))
+                {
+                    for functional in element.satisfies.iter().filter(|id| id.starts_with("FR-")) {
+                        serving.extend(
+                            tasks
+                                .iter()
+                                .filter(|task| cites(task, functional))
+                                .map(|task| task.task_id.as_str().to_owned()),
+                        );
+                    }
                 }
             }
             let named = |wanted: fn(&Task) -> bool| -> BTreeSet<String> {
