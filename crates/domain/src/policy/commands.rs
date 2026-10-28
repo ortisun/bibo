@@ -16,9 +16,13 @@
 //!    and `cargo --config x test` are refused. No argument may match `forbidden_args`: exactly,
 //!    as `--flag=value`, with one dash or two (Go accepts both), as a short flag with its value
 //!    attached or inside a cluster (`-Cfoo`, `-vC`), or, for an entry with a space such as
-//!    `-m pip`, as those two arguments in a row. The `forced_args` of the profile
-//!    are inserted before the first `--`, so that they reach the program and not the test binary
-//!    behind it.
+//!    `-m pip`, as those two arguments in a row. The `forced_args` of the profile are inserted
+//!    before the first `--`, so that they reach the program and not the test binary behind it. An
+//!    argument that `forced_arg_subcommands` scopes is inserted only for the subcommands listed
+//!    there (`cargo fmt` rejects `--offline` and `--locked`), and one that the command already
+//!    carries before the `--` is not inserted a second time (cargo rejects `--locked --locked`).
+//!    The environment is the set's `env` with the `env_by_profile` entry of the profile laid over
+//!    it, so the fetch profile can be online where the others stay offline.
 //!
 //! An empty `allowed_subcommands` list means the program has no subcommand to check (`node`
 //! takes a script, `rustc` takes a source file); its safety rests on `forbidden_args`.
@@ -27,7 +31,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use super::security::{CommandAction, SecurityPolicy};
+use super::security::{CommandAction, CommandExecutable, CommandSet, SecurityPolicy};
 use super::{BuildError, RuleRef, SandboxProfileKind};
 
 /// The most arguments one command may have.
@@ -129,13 +133,32 @@ struct Class {
     except_profiles: BTreeSet<SandboxProfileKind>,
 }
 
+/// One forced argument and the subcommands that receive it.
+#[derive(Debug)]
+struct Forced {
+    arg: String,
+    /// `None` is every subcommand; a set is only those.
+    only_for: Option<BTreeSet<String>>,
+}
+
+impl Forced {
+    fn applies_to(&self, subcommand: Option<&str>) -> bool {
+        match &self.only_for {
+            None => true,
+            // A scope names subcommands, so a command with none is outside it.
+            Some(scope) => subcommand.is_some_and(|sub| scope.contains(sub)),
+        }
+    }
+}
+
 #[derive(Debug)]
 struct Program {
     set_id: String,
     subcommands: Vec<String>,
     forbidden_args: Vec<String>,
-    forced: BTreeMap<SandboxProfileKind, Vec<String>>,
-    env: BTreeMap<String, String>,
+    forced: BTreeMap<SandboxProfileKind, Vec<Forced>>,
+    /// The environment of each profile: the set's `env` with that profile's overrides.
+    env: BTreeMap<SandboxProfileKind, BTreeMap<String, String>>,
 }
 
 /// The command rules of one security policy, compiled once.
@@ -191,6 +214,70 @@ fn profile_of(key: &'static str, name: &str) -> Result<SandboxProfileKind, Build
         key,
         found: name.to_owned(),
     })
+}
+
+/// The subcommands that receive each scoped forced argument, checked against the rest of the
+/// entry so that a scope can neither point at nothing nor be dead text.
+fn forced_scopes(
+    executable: &CommandExecutable,
+    subcommands: &[String],
+) -> Result<BTreeMap<String, BTreeSet<String>>, BuildError> {
+    const KEY: &str = "command_sets.sets.executables.forced_arg_subcommands";
+    let mut scopes = BTreeMap::new();
+    for (arg, scope) in executable.forced_arg_subcommands.iter().flatten() {
+        let forced_somewhere = executable
+            .forced_args
+            .iter()
+            .flatten()
+            .any(|(_, args)| args.contains(arg));
+        if !forced_somewhere {
+            return Err(BuildError::UnknownValue {
+                key: KEY,
+                found: arg.clone(),
+            });
+        }
+        if scope.is_empty() {
+            return Err(BuildError::Contradiction(format!(
+                "{KEY}[{arg}] names no subcommand, so the argument would never be added"
+            )));
+        }
+        if let Some(unlisted) = scope.iter().find(|sub| !subcommands.contains(sub)) {
+            return Err(BuildError::UnknownValue {
+                key: KEY,
+                found: unlisted.clone(),
+            });
+        }
+        scopes.insert(arg.clone(), scope.iter().cloned().collect());
+    }
+    Ok(scopes)
+}
+
+/// The environment of a set for each profile: `env` with the profile's `env_by_profile` entry
+/// laid over it.
+fn profile_envs(
+    set: &CommandSet,
+) -> Result<BTreeMap<SandboxProfileKind, BTreeMap<String, String>>, BuildError> {
+    let mut overrides_of = BTreeMap::new();
+    for (name, overrides) in set.env_by_profile.iter().flatten() {
+        let profile = profile_of("command_sets.sets.env_by_profile", name)?;
+        if let Some(unknown) = overrides.keys().find(|key| !set.env.contains_key(*key)) {
+            return Err(BuildError::Contradiction(format!(
+                "command_sets.sets[{}].env_by_profile[{name}] replaces {unknown}, which env does not set",
+                set.id
+            )));
+        }
+        overrides_of.insert(profile, overrides);
+    }
+    Ok(SandboxProfileKind::ALL
+        .into_iter()
+        .map(|profile| {
+            let mut env = set.env.clone();
+            if let Some(overrides) = overrides_of.get(&profile) {
+                env.extend(overrides.iter().map(|(k, v)| (k.clone(), v.clone())));
+            }
+            (profile, env)
+        })
+        .collect())
 }
 
 impl CommandPolicy {
@@ -257,19 +344,26 @@ impl CommandPolicy {
                         found: name.clone(),
                     });
                 }
+                let subcommands = executable.allowed_subcommands.clone().unwrap_or_default();
+                let scopes = forced_scopes(executable, &subcommands)?;
                 let mut forced = BTreeMap::new();
                 for (profile, args) in executable.forced_args.iter().flatten() {
                     forced.insert(
                         profile_of("command_sets.sets.executables.forced_args", profile)?,
-                        args.clone(),
+                        args.iter()
+                            .map(|arg| Forced {
+                                arg: arg.clone(),
+                                only_for: scopes.get(arg).cloned(),
+                            })
+                            .collect(),
                     );
                 }
                 let program = Program {
                     set_id: set.id.clone(),
-                    subcommands: executable.allowed_subcommands.clone().unwrap_or_default(),
+                    subcommands,
                     forbidden_args: executable.forbidden_args.clone().unwrap_or_default(),
                     forced,
-                    env: set.env.clone(),
+                    env: profile_envs(set)?,
                 };
                 if programs.insert(name.clone(), program).is_some() {
                     return Err(BuildError::Duplicate {
@@ -408,18 +502,26 @@ impl CommandPolicy {
 
         let mut final_argv: Vec<String> = argv.to_vec();
         if let Some(forced) = program.forced.get(&profile) {
-            let at = final_argv
+            let subcommand = tail.first().map(String::as_str);
+            let mut at = final_argv
                 .iter()
                 .skip(1)
                 .position(|a| a == "--")
                 .map_or(final_argv.len(), |p| p + 1);
-            for (offset, arg) in forced.iter().enumerate() {
-                final_argv.insert(at + offset, arg.clone());
+            for forced in forced.iter().filter(|f| f.applies_to(subcommand)) {
+                // What follows `--` is for the program behind it, so only the part before the
+                // `--` can already carry the argument. Inserted arguments count as well, which
+                // also collapses a list that names one argument twice.
+                if final_argv[1..at].contains(&forced.arg) {
+                    continue;
+                }
+                final_argv.insert(at, forced.arg.clone());
+                at += 1;
             }
         }
         CommandVerdict::Allowed(AllowedCommand {
             argv: final_argv,
-            env: program.env.clone(),
+            env: program.env.get(&profile).cloned().unwrap_or_default(),
             rule,
         })
     }

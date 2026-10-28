@@ -273,6 +273,31 @@
               "--registry",
               "--index"
             ],
+            "forced_arg_subcommands": {
+              "--locked": [
+                "build",
+                "check",
+                "test",
+                "clippy",
+                "doc",
+                "tree",
+                "metadata",
+                "nextest",
+                "deny",
+                "fetch"
+              ],
+              "--offline": [
+                "build",
+                "check",
+                "test",
+                "clippy",
+                "doc",
+                "tree",
+                "metadata",
+                "nextest",
+                "deny"
+              ]
+            },
             "forced_args": {
               "agent": [
                 "--offline",

@@ -343,6 +343,41 @@ fn negative_nt_pol_02_each_widening_is_refused_and_names_its_key() {
             }),
         ),
         (
+            "takes a subcommand out of the scope of a forced argument",
+            "command_sets.sets[rust].executables[cargo].forced_arg_subcommands.--offline",
+            Box::new(|j| {
+                j["command_sets"]["sets"][0]["executables"]["cargo"]["forced_arg_subcommands"]["--offline"]
+                    .as_array_mut()
+                    .expect("list")
+                    .retain(|sub| sub != "test");
+            }),
+        ),
+        (
+            "drops the scope of a forced argument so that it reaches every subcommand",
+            "command_sets.sets[rust].executables[cargo].forced_arg_subcommands.--locked",
+            Box::new(|j| {
+                j["command_sets"]["sets"][0]["executables"]["cargo"]
+                    .as_object_mut()
+                    .expect("map")
+                    .remove("forced_arg_subcommands");
+            }),
+        ),
+        (
+            "turns the network on for the agent profile",
+            "command_sets.sets[rust].env_by_profile.agent.CARGO_NET_OFFLINE",
+            Box::new(|j| {
+                j["command_sets"]["sets"][0]["env_by_profile"]["agent"] =
+                    json!({ "CARGO_NET_OFFLINE": "false" });
+            }),
+        ),
+        (
+            "turns the network on for every profile of the set",
+            "command_sets.sets[rust].env",
+            Box::new(|j| {
+                j["command_sets"]["sets"][0]["env"]["CARGO_NET_OFFLINE"] = "false".into();
+            }),
+        ),
+        (
             "removes a non-waivable gate",
             "gate_integrity.nonwaivable_gates",
             Box::new(|j| {
