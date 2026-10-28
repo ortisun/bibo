@@ -29,7 +29,7 @@ pub const GATES: [(&str, &str); 3] = [
     ),
     (
         MANIFEST_GATE,
-        "The evidence manifest follows its contract and its hash is the one in the pull request body.",
+        "The evidence manifest follows its contract, cites the commit the pull request was opened from, and its hash is the one in the pull request body.",
     ),
     (
         READABILITY_GATE,

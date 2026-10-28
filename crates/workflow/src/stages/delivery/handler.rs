@@ -101,7 +101,7 @@ pub(crate) fn dossier_error(error: DossierError) -> StageError {
     match error {
         DossierError::Missing => StageError::Blocked(BlockedCode::DependencyUnavailable),
         DossierError::Invalid => StageError::InvalidOutput,
-        DossierError::NotDeliverable => StageError::PolicyDenied,
+        DossierError::NotDeliverable | DossierError::Stale => StageError::PolicyDenied,
     }
 }
 
@@ -189,7 +189,8 @@ impl StageHandler for DeliveryHandler {
         };
 
         // 1. The evidence must still describe the world. The base is resolved again here, before
-        //    anything is pushed (ADR 0010).
+        //    anything is pushed (ADR 0010). The gates ran on the code head, so the binding is
+        //    compared with the code head and not with the documentation commit on top of it.
         let live_base = self
             .deps
             .host
@@ -220,7 +221,8 @@ impl StageHandler for DeliveryHandler {
             return self.binding_failed(&identity, &differences).await;
         }
 
-        // 2. The change, measured on the host from the job's object store.
+        // 2. The change, measured on the host from the job's object store: everything the pull
+        //    request will hold, from the base to the pushed head.
         let repo = ports
             .workspaces
             .repo(identity.job)
@@ -229,7 +231,7 @@ impl StageHandler for DeliveryHandler {
         let export = repo
             .export_patch(
                 &dossier.candidate.base,
-                &dossier.candidate.head,
+                &dossier.pushed_head,
                 self.config.max_patch_bytes,
                 ctx.cancel,
             )
@@ -317,10 +319,12 @@ impl StageHandler for DeliveryHandler {
         let tree = self
             .deps
             .sources
-            .tree_of(&identity, &dossier.candidate.head)
+            .tree_of(&identity, &dossier.pushed_head)
             .await
             .map_err(seam_error)?;
 
+        // `head_commit` is the commit the pull request points at, which is what the approval
+        // binds to. `code_head` is the commit the gates ran on, which the evidence binds to.
         let mut result = json!({
             "kind": RESULT,
             "delivered": false,
@@ -328,7 +332,8 @@ impl StageHandler for DeliveryHandler {
             "base_branch": target.base.as_str(),
             "head_branch": target.head.as_str(),
             "base_commit": dossier.candidate.base.as_str(),
-            "head_commit": dossier.candidate.head.as_str(),
+            "head_commit": dossier.pushed_head.as_str(),
+            "code_head": dossier.candidate.head.as_str(),
             "tree": tree.as_str(),
             "manifest_sha256": manifest_hash.as_str(),
             "spec_version": dossier.specification.metadata.spec_version.get(),
@@ -376,11 +381,13 @@ impl StageHandler for DeliveryHandler {
         .await?;
         let checks = [
             validation_check(
+                &dossier.pushed_head,
                 &dossier.candidate.head,
                 &published.external_id,
                 &dossier.validation.reports,
             ),
             review_check(
+                &dossier.pushed_head,
                 &dossier.candidate.head,
                 &published.external_id,
                 dossier.review.verdict,

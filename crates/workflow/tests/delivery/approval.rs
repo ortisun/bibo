@@ -162,7 +162,10 @@ struct Rig {
     pr: PullRequestRef,
     job: JobId,
     run: StageRunId,
+    /// The head of the pull request: the documentation commit.
     head: CommitSha,
+    /// The commit the gates ran on, under the head.
+    code_head: CommitSha,
     people: Vec<(u64, PrincipalId)>,
 }
 
@@ -179,7 +182,14 @@ impl Rig {
         let main = BranchName::new("main").expect("a branch");
         let branch = BranchName::new("factory/job-1").expect("a branch");
         let base = remote.commit_on_branch(&repo, &main, &[("README.md", "base")]);
-        let head = remote.commit_on_branch(&repo, &branch, &[("README.md", "change")]);
+        // The branch holds the code, and the documentation commit on top of it is the head of the
+        // pull request. The gates ran on the code commit.
+        let code_head = remote.commit_on_branch(&repo, &branch, &[("README.md", "change")]);
+        let head = remote.commit_on_branch(
+            &repo,
+            &branch,
+            &[("README.md", "change"), ("docs/guide.md", "A guide")],
+        );
         let host = Arc::new(Spy::new(FakeChangeHost::sharing(remote)));
         let git = GitScope {
             tenant: w.tenant,
@@ -267,7 +277,7 @@ impl Rig {
             evidence_binding: Binding {
                 implementation_result: Sha256Digest::of(b"result"),
                 base_commit: GitSha::parse(base.as_str()).expect("a sha"),
-                head_commit: GitSha::parse(head.as_str()).expect("a sha"),
+                head_commit: GitSha::parse(code_head.as_str()).expect("a sha"),
                 policy_hash: Sha256Digest::of(b"test policy"),
                 image_digest: Sha256Digest::of(b"image"),
                 definition_hash: Sha256Digest::of(b"definitions"),
@@ -321,6 +331,7 @@ impl Rig {
             job,
             run,
             head,
+            code_head,
             people,
         }
     }
@@ -463,6 +474,50 @@ async fn an_approval_passes_the_stage_and_nothing_merges() {
     );
     assert!(recorded.1.contains("allowlist-version-one"), "{recorded:?}");
     rig.host_only_read();
+}
+
+#[tokio::test]
+async fn an_approval_is_bound_to_the_pushed_head_while_the_evidence_stays_on_the_code_head() {
+    let rig = Rig::new(RiskTier::Low).await;
+    let request = rig.request();
+    // The person is shown the documentation commit, and the gates ran on the code under it.
+    assert_eq!(request.pr_head.as_str(), rig.head.as_str());
+    assert_eq!(
+        request.evidence_binding.head_commit.as_str(),
+        rig.code_head.as_str()
+    );
+    assert_ne!(rig.head, rig.code_head);
+
+    // The approval is recorded although the two differ: the evidence is compared at the code head.
+    let cmd = rig.command(Verb::Approve, rig.person(0)).await;
+    let outcome = rig.service.submit(cmd).await.expect("applied");
+    assert!(matches!(outcome, Outcome::Applied { .. }), "{outcome:?}");
+    let rows = rig.approvals().await;
+    let binding = rows[0].binding.as_ref().expect("a binding");
+    assert_eq!(binding.pr_head.as_str(), rig.head.as_str());
+    let code_head = GitSha::parse(rig.code_head.as_str()).expect("a sha");
+    assert_eq!(rig.valid(&binding.pr_head).await, 1);
+    assert_eq!(
+        rig.valid(&code_head).await,
+        0,
+        "it does not count for the code head"
+    );
+}
+
+#[tokio::test]
+async fn an_approval_that_saw_the_code_head_is_refused() {
+    // A person who was shown the code head did not see the documentation commit that the pull
+    // request now ends with.
+    let rig = Rig::new(RiskTier::Low).await;
+    let mut cmd = rig.command(Verb::Approve, rig.person(0)).await;
+    cmd.seen.as_mut().expect("a binding").pr_head =
+        GitSha::parse(rig.code_head.as_str()).expect("a sha");
+    assert_eq!(
+        refused(rig.service.submit(cmd).await),
+        Refusal::StaleBinding("pr_head")
+    );
+    assert!(rig.approvals().await.is_empty());
+    assert_eq!(rig.run_status().await, StageRunStatus::WaitingForHuman);
 }
 
 #[tokio::test]

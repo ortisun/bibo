@@ -172,8 +172,13 @@ impl StageHandler for ApprovalHandler {
             parse_sha("tree")?,
             parse_sha("base_commit")?,
         );
+        // `head_commit` is what the pull request points at: the documentation commit when there is
+        // one. The gates ran on `code_head`, under it, and the evidence binding names that one.
         let head_commit =
             CommitSha::parse(pr_head.as_str()).map_err(|_| StageError::InvalidOutput)?;
+        let code_head =
+            CommitSha::parse(text_of(&delivery, "code_head").ok_or(StageError::InvalidOutput)?)
+                .map_err(|_| StageError::InvalidOutput)?;
         let base_commit = CommitSha::parse(base.as_str()).map_err(|_| StageError::InvalidOutput)?;
         let repo = RepoRef::parse(repository).map_err(|_| StageError::InvalidOutput)?;
         let head_branch =
@@ -236,7 +241,7 @@ impl StageHandler for ApprovalHandler {
                 live_base: &live_base,
                 current: &current,
                 policy_hash: &policy_hash,
-                head: &head_commit,
+                head: &code_head,
                 implementation_sha256: &binding.implementation_result,
             },
         )

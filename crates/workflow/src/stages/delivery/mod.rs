@@ -14,7 +14,8 @@
 //!    resolved again, the gate definitions and the image are read again, the policy hash is the
 //!    one in the contract. A difference is reported to the engine through [`EvidenceDrift`],
 //!    which supersedes the runs that depend on the evidence (ADR 0010), and nothing is pushed.
-//! 4. The change is measured from the job's object store, and the manifest is built
+//! 4. The change is measured from the job's object store, from the base to the commit that will
+//!    be pushed (the documentation commit when there is one), and the manifest is built
 //!    ([`manifest`]).
 //! 5. The title and body are written from typed evidence ([`pr`], [`text`]) and read by the
 //!    readability gate. Text that is refused stops the stage before the host is touched.
@@ -24,9 +25,8 @@
 //!
 //! # Interfaces this stage needs from the others
 //!
-//! See [`input`] for the documents of the stages before it, among them three that the
-//! documentation packages must confirm. [`DeliverySources`] and [`EvidenceDrift`] are for the
-//! composition root.
+//! See [`input`] for the documents of the stages before it and for which commit is delivered.
+//! [`DeliverySources`] and [`EvidenceDrift`] are for the composition root.
 //!
 //! # What this does not do
 //!

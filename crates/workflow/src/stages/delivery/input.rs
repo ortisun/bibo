@@ -15,14 +15,18 @@
 //! | `SPECIFICATION` | `specification-contract` | the specification package |
 //! | `TASK_PLANNING` | `task-plan` | the implementation package reads it by this name |
 //! | `ARCHITECTURE` | `architecture-design` | the implementation package reads it by this name |
-//! | `DOCUMENTING` | `documentation-plan` | **this package proposes the name** |
-//! | `DOCUMENTATION_REVIEW` | `documentation-gate-report`, `documentation-review` | **this package proposes the names** |
+//! | `DOCUMENTING` | `documentation-plan`, `documentation-result` | `stages::documenting::input` |
+//! | `DOCUMENTATION_REVIEW` | `documentation-gate-report`, `documentation-review` | `stages::documenting::input` |
 //!
-//! The documentation stages are not merged yet. The three names in bold are this package's
-//! reading of what they will produce, and the documentation packages must confirm them or this
-//! file changes. Until then a job cannot reach delivery with real documentation stages, and the
-//! delivery stage blocks (`DependencyUnavailable`) instead of inventing a documentation
-//! reference.
+//! # Which commit is delivered
+//!
+//! The implementation result names the **code head**. The gates ran on it, so the evidence
+//! binding stays on it. The `DOCUMENTING` stage commits the documents on top of the code head and
+//! names that commit in `documentation-result` (`head_commit`) together with the code head it was
+//! written for (`code_head`). The commit that is pushed, opened as the pull request and shown to
+//! the person is [`Dossier::pushed_head`]: the documentation commit, or the code head when the
+//! stage committed nothing. A documentation result or plan written for other commits than the
+//! implementation result is stale and is refused, not delivered.
 
 use factory_domain::contracts::{
     ArtifactRef, Contract, GateReport, ReviewVerdict, SpecificationContract, StageContract, TaskDag,
@@ -35,6 +39,7 @@ use factory_ports::artifact::ArtifactStore;
 use factory_ports::paths::CommitSha;
 use serde_json::Value;
 
+use crate::gates::docs::plan::DocPlan;
 use crate::handlers::UpstreamRun;
 use crate::stages::validation::Binding;
 
@@ -52,6 +57,8 @@ pub const TASK_PLAN: &str = "task-plan";
 pub const ARCHITECTURE: &str = "architecture-design";
 /// The documenting stage's plan.
 pub const DOCUMENTATION_PLAN: &str = "documentation-plan";
+/// What the documenting stage did: the commit it made on top of the code head, if any.
+pub const DOCUMENTATION_RESULT: &str = "documentation-result";
 /// The documentation gate's report.
 pub const DOCUMENTATION_GATE: &str = "documentation-gate-report";
 /// The documentation reviewer's verdict.
@@ -60,7 +67,7 @@ pub const DOCUMENTATION_REVIEW: &str = "documentation-review";
 pub const POLICY_INPUT: &str = "policy-bundle";
 
 /// Which stage produces each input, in the order the contract lists them.
-pub const SOURCES: [(StageKind, &str); 9] = [
+pub const SOURCES: [(StageKind, &str); 10] = [
     (StageKind::Implementation, IMPLEMENTATION_RESULT),
     (StageKind::Validation, VALIDATION_EVIDENCE),
     (StageKind::Review, REVIEW_VERDICT),
@@ -68,6 +75,7 @@ pub const SOURCES: [(StageKind, &str); 9] = [
     (StageKind::TaskPlanning, TASK_PLAN),
     (StageKind::Architecture, ARCHITECTURE),
     (StageKind::Documenting, DOCUMENTATION_PLAN),
+    (StageKind::Documenting, DOCUMENTATION_RESULT),
     (StageKind::DocumentationReview, DOCUMENTATION_GATE),
     (StageKind::DocumentationReview, DOCUMENTATION_REVIEW),
 ];
@@ -110,10 +118,14 @@ pub enum DossierError {
     /// An input does not parse or breaks the rules of its contract.
     #[error("an input of the delivery stage is not a valid document")]
     Invalid,
-    /// The review verdict is not `PASS`, or a gate report is `FAILED`. Delivery follows work that
-    /// passed.
+    /// The review verdict is not `PASS`, a gate report is `FAILED`, or the documentation stage
+    /// reports a refusal. Delivery follows work that passed.
     #[error("the evidence does not allow a delivery")]
     NotDeliverable,
+    /// The documentation was written for other commits than the implementation result names.
+    /// Nothing changed in the world: the documents disagree, and no one waives that.
+    #[error("the documentation was written for other commits than the implementation result")]
+    Stale,
 }
 
 /// The two commits of the implementation result.
@@ -121,7 +133,8 @@ pub enum DossierError {
 pub struct Candidate {
     /// The protected branch tip the change is relative to.
     pub base: CommitSha,
-    /// The commit to deliver.
+    /// The code head: the commit the gates ran on. The documentation commit, if there is one, sits
+    /// on top of it.
     pub head: CommitSha,
 }
 
@@ -139,8 +152,11 @@ pub struct ValidationDossier {
 /// Everything the delivery stage reads, parsed.
 #[derive(Debug, Clone)]
 pub struct Dossier {
-    /// The commits.
+    /// The commits of the implementation result.
     pub candidate: Candidate,
+    /// The commit that is pushed and that the pull request points at: the documentation commit,
+    /// or the code head when the documenting stage committed nothing.
+    pub pushed_head: CommitSha,
     /// The hash of the implementation result.
     pub implementation_sha256: Sha256Digest,
     /// The frozen specification.
@@ -201,6 +217,75 @@ pub fn parse_candidate(bytes: &[u8]) -> Option<Candidate> {
     })
 }
 
+/// Reads `documentation-result` and returns the commit to deliver.
+///
+/// The result and the plan must both be about the commits of the implementation result. A result
+/// that names the code head as its own head committed nothing, and then the code head is
+/// delivered. One that names another commit is a documentation commit, and it must come from a
+/// writer that ran, changed something, and was not told by its plan that nothing needed writing.
+///
+/// # Errors
+/// [`DossierError::Invalid`] for a document that is not a result or contradicts itself or its plan,
+/// [`DossierError::Stale`] for documents about other commits, and
+/// [`DossierError::NotDeliverable`] for a result that records a refusal of the audit, a path outside
+/// the writer's scope or a claim that cites a file that does not exist.
+pub fn parse_documentation(
+    bytes: &[u8],
+    candidate: &Candidate,
+    plan: &DocPlan,
+) -> Result<CommitSha, DossierError> {
+    let value: Value = serde_json::from_slice(bytes).map_err(|_| DossierError::Invalid)?;
+    let text = |name: &str| value.get(name).and_then(Value::as_str);
+    if text("kind") != Some(DOCUMENTATION_RESULT) {
+        return Err(DossierError::Invalid);
+    }
+    let commit = |name: &str| {
+        text(name)
+            .and_then(|found| CommitSha::parse(found).ok())
+            .ok_or(DossierError::Invalid)
+    };
+    let (base, code_head, head) = (
+        commit("base_commit")?,
+        commit("code_head")?,
+        commit("head_commit")?,
+    );
+    let list = |name: &str| {
+        value
+            .get(name)
+            .and_then(Value::as_array)
+            .ok_or(DossierError::Invalid)
+    };
+    let refused = match value.get("refusal") {
+        Some(Value::Null) => false,
+        Some(Value::Object(_)) => true,
+        _ => return Err(DossierError::Invalid),
+    };
+    let (out_of_scope, unresolved, changes) = (
+        list("out_of_scope")?,
+        list("unresolved_claims")?,
+        list("changes")?,
+    );
+
+    if base != candidate.base
+        || code_head != candidate.head
+        || plan.binding.base_commit != candidate.base.as_str()
+        || plan.binding.code_head != candidate.head.as_str()
+    {
+        return Err(DossierError::Stale);
+    }
+    if refused || !out_of_scope.is_empty() || !unresolved.is_empty() {
+        return Err(DossierError::NotDeliverable);
+    }
+    if head == candidate.head {
+        return Ok(head);
+    }
+    let writer_ran = value.get("writer_ran").and_then(Value::as_bool) == Some(true);
+    if !writer_ran || changes.is_empty() || plan.not_applicable.is_some() {
+        return Err(DossierError::Invalid);
+    }
+    Ok(head)
+}
+
 fn parse_validation(bytes: &[u8], sha256: Sha256Digest) -> Option<ValidationDossier> {
     let value: Value = serde_json::from_slice(bytes).ok()?;
     let binding = Binding::from_json(value.get("binding")?)?;
@@ -254,12 +339,24 @@ pub async fn read(
             .map_err(|_| DossierError::Invalid)?;
 
     let (_, architecture_ref) = bytes(artifacts, scope, contract, ARCHITECTURE).await?;
-    let (_, documentation_plan) = bytes(artifacts, scope, contract, DOCUMENTATION_PLAN).await?;
+    let (plan_bytes, documentation_plan) =
+        bytes(artifacts, scope, contract, DOCUMENTATION_PLAN).await?;
+    let documentation_plan_document = serde_json::from_slice::<Value>(&plan_bytes)
+        .ok()
+        .and_then(|value| DocPlan::from_json(&value).ok())
+        .ok_or(DossierError::Invalid)?;
+    let (documentation_result, _) = bytes(artifacts, scope, contract, DOCUMENTATION_RESULT).await?;
+    let pushed_head = parse_documentation(
+        &documentation_result,
+        &candidate,
+        &documentation_plan_document,
+    )?;
     let (_, documentation_gate) = bytes(artifacts, scope, contract, DOCUMENTATION_GATE).await?;
     let (_, documentation_review) = bytes(artifacts, scope, contract, DOCUMENTATION_REVIEW).await?;
 
     Ok(Dossier {
         candidate,
+        pushed_head,
         implementation_sha256: sha_only(&result_ref),
         specification,
         specification_sha256: sha_only(&spec_ref),
