@@ -23,5 +23,9 @@ mod egress;
 mod engine;
 #[path = "policy/paths.rs"]
 mod paths;
+#[path = "policy/tighten.rs"]
+mod tighten;
+#[path = "policy/tighten_property.rs"]
+mod tighten_property;
 #[path = "policy/tools.rs"]
 mod tools;

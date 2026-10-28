@@ -53,6 +53,7 @@ pub mod egress;
 pub mod paths;
 pub mod risk;
 pub mod security;
+pub mod tighten;
 pub mod tools;
 
 mod engine;
