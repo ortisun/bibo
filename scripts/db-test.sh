@@ -5,6 +5,8 @@
 #   scripts/db-test.sh SUITE [SUITE..] run the named suites (see --list)
 #   scripts/db-test.sh --list          print the suite names and what each one proves
 #   scripts/db-test.sh write-schema    regenerate crates/storage/src/schema.rs with diesel print-schema
+#   scripts/db-test.sh plans --rows N  the plans suite at N rows in each large table (a multiple of 10,000; 100000 is the
+#                                      done criterion of s1-database-review). The same as FACTORY_DB_PLANS_SCALE=N/10000.
 #
 # Exit codes: 0 every suite passed, 1 a check failed, 2 bad usage, 3 BLOCKED.
 # BLOCKED means a tool or a database that the run needs is missing. It is never a pass.
@@ -37,7 +39,7 @@ DIESEL_CONFIG="$ROOT/crates/storage/diesel.toml"
 SCHEMA_RS="$ROOT/crates/storage/src/schema.rs"
 STATE_MACHINE="$ROOT/docs/architecture/state-machine.json"
 
-SUITES="migrations statuses ledger tenancy rls terminal_rows plans audit webhook_delivery lease outbox approvals tokens privileges contracts store_model"
+SUITES="migrations statuses ledger tenancy rls terminal_rows plans audit webhook_delivery lease outbox approvals tokens privileges contracts store_model compat"
 
 RUN_ID="$$_$(date +%s)"
 WORK=""
@@ -67,7 +69,7 @@ blocked() {
 }
 
 usage() {
-  sed -n '2,22p' "$0" | sed 's/^# \{0,1\}//'
+  sed -n '2,24p' "$0" | sed 's/^# \{0,1\}//'
 }
 
 list_suites() {
@@ -103,6 +105,8 @@ contracts        the rows can carry the fields the domain-event and evidence-led
 store_model      the tables carry what the Store port of ports v1.1 needs and the rules it states are rules of the data:
                  gate record, attestation, task nodes and graph, ledger head; the recipes of the operations that
                  need only the existing tables
+compat           the statements of the code written for the schema of migration 14 keep working, and every row keeps its
+                 content, after EACH later migration in turn (15, 16, 17, 18): version N-1 code on version N schema
 EOF
 }
 
@@ -603,6 +607,85 @@ upgrade_check() {
   local rc=0
   psql_db "$db" -f "$TESTS/upgrade_check.sql" >/dev/null 2>"$out" || rc=$?
   show_checks "$out"
+  drop_db "$db"
+  return "$rc"
+}
+
+# Version N-1 code on version N schema, for every migration after UPGRADE_FROM, one at a time (docs/database/migration-safety.md,
+# "The rule for every later migration"). The schema as it was after UPGRADE_FROM gets a row in every tenant-owned table. Then the
+# later migrations are applied ONE BY ONE. After each: every table still holds its rows byte for byte over the columns it had,
+# and the statements of the code that was written for UPGRADE_FROM (compat_earlier_code.sql) still run, inside a transaction that
+# is rolled back, so the next step starts from the same rows. The first line is the control: the same statements on the schema they
+# were written for.
+suite_compat() {
+  require_diesel
+  local db="factory_t_${RUN_ID}_compat" out="$WORK/compat.out" step_dir="$WORK/compat-steps" cfg d name before after rc=0 kept=0 steps=()
+  create_db "$db"
+  mkdir -p "$step_dir"
+  cfg="$WORK/diesel-compat.toml"
+  printf '[migrations_directory]\ndir = "%s"\n' "$step_dir" >"$cfg"
+  for d in "$MIGRATIONS"/*/; do
+    d="${d%/}"
+    name="$(basename "$d")"
+    if [[ "$name" < "${UPGRADE_FROM}~" ]]; then
+      cp -R "$d" "$step_dir/"
+      kept=$((kept + 1))
+    else
+      steps+=("$name")
+    fi
+  done
+  if [ "${#steps[@]}" -eq 0 ]; then
+    not_ok "compat: there is no migration after $UPGRADE_FROM, so there is nothing to compare"
+    drop_db "$db"
+    return 1
+  fi
+  if ! diesel_run "$db" --config-file "$cfg" migration run >"$out" 2>&1; then
+    not_ok "compat: the migrations up to $UPGRADE_FROM did not run"
+    cat "$out" >&2
+    drop_db "$db"
+    return 1
+  fi
+  if ! psql_db "$db" -f "$TESTS/00_helpers.sql" -f "$TESTS/upgrade_fixture.sql" >/dev/null 2>"$out"; then
+    not_ok "compat: loading the rows of the earlier version failed"
+    cat "$out" >&2
+    drop_db "$db"
+    return 1
+  fi
+  before="$(psql_scalar "$db" -f "$TESTS/upgrade_fingerprint.sql")"
+  # The control: the earlier code on the schema it was written for.
+  psql_db "$db" -c "BEGIN" -f "$TESTS/compat_earlier_code.sql" -c "ROLLBACK" >/dev/null 2>"$out" || rc=$?
+  show_checks "$out"
+  if [ "$rc" -ne 0 ]; then
+    not_ok "compat: the control failed: the earlier code does not run on the schema after $UPGRADE_FROM, so the comparison below means nothing"
+    drop_db "$db"
+    return 1
+  fi
+  ok "compat: code written for $UPGRADE_FROM on schema $UPGRADE_FROM (the control): its statements run"
+  for name in "${steps[@]}"; do
+    cp -R "$MIGRATIONS/$name" "$step_dir/"
+    if ! diesel_run "$db" --config-file "$cfg" migration run >"$out" 2>&1; then
+      not_ok "compat: migration $name did not run on a database with rows"
+      cat "$out" >&2
+      rc=1
+      continue
+    fi
+    after="$(psql_scalar "$db" -f "$TESTS/upgrade_fingerprint.sql")"
+    if [ "$before" != "$after" ]; then
+      not_ok "compat: migration $name changed rows over the columns they had before"
+      diff <(printf '%s\n' "$before") <(printf '%s\n' "$after") >&2 || true
+      rc=1
+    else
+      ok "compat: migration $name kept every row, byte for byte, over the columns the tables had"
+    fi
+    if psql_db "$db" -c "BEGIN" -f "$TESTS/compat_earlier_code.sql" -c "ROLLBACK" >/dev/null 2>"$out"; then
+      show_checks "$out"
+      ok "compat: code written for $UPGRADE_FROM on the schema after $name: its statements run"
+    else
+      show_checks "$out"
+      not_ok "compat: code written for $UPGRADE_FROM does NOT run on the schema after $name (this migration needs two steps: see docs/database/migration-safety.md)"
+      rc=1
+    fi
+  done
   drop_db "$db"
   return "$rc"
 }
@@ -1159,12 +1242,24 @@ write_schema() {
 # ---------------------------------------------------------------------------------------------
 
 main() {
-  local selected=() arg do_write=0
-  for arg in "$@"; do
+  local selected=() arg do_write=0 rows=""
+  while [ "$#" -gt 0 ]; do
+    arg="$1"
+    shift
     case "$arg" in
       -h | --help) usage; exit 0 ;;
       --list) list_suites; exit 0 ;;
       --keep) KEEP=1 ;;
+      --rows)
+        [ "$#" -gt 0 ] || { err "--rows needs a number"; exit "$EXIT_USAGE"; }
+        rows="$1"
+        shift
+        case "$rows" in
+          '' | *[!0-9]* | 0*) err "--rows must be a positive whole number, not '$rows'"; exit "$EXIT_USAGE" ;;
+        esac
+        if [ $((rows % 10000)) -ne 0 ]; then err "--rows must be a multiple of 10,000 (the plans suite grows in steps of 10,000), not $rows"; exit "$EXIT_USAGE"; fi
+        export FACTORY_DB_PLANS_SCALE=$((rows / 10000))
+        ;;
       write-schema) do_write=1 ;;
       all) read -r -a selected <<< "$SUITES" ;;
       *)
