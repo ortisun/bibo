@@ -291,7 +291,11 @@ impl Engine {
         // What the model cost is read once the handler has stopped, so the events of this attempt
         // can carry it.
         if let Some(token) = job_token {
-            notes.set_cost(self.token_cost(token.id).await);
+            let cost = self.token_cost(token.id).await;
+            notes.set_cost(cost);
+            // Money was spent whether or not the attempt is later recorded, so the spend is
+            // counted here and not with the result: an attempt that lost its lease still cost it.
+            self.record_spend(claimed, prepared, cost);
         }
 
         if watched.lease_lost {
@@ -573,6 +577,33 @@ impl Engine {
             }
             Err(_) => Ok(Err(FailureClass::Internal)),
         }
+    }
+
+    /// Adds what an attempt spent to `factory_spend_usd_total`, in dollars, by provider and stage.
+    ///
+    /// Each attempt has a token of its own, read once when the handler has stopped, so the whole
+    /// reading is this attempt's spend and none of it is counted twice. The provider label is the
+    /// name of the runtime the router chose for the stage, because the broker does not report a
+    /// provider; the router is a pure function of the stage's need, so asking it again gives the
+    /// answer the token was issued under. The label comes from the routing policy and the
+    /// registered adapters, a closed set, and never from anything a tool printed. Nothing is
+    /// recorded for a stage that spent nothing, or whose route cannot be found.
+    fn record_spend(&self, claimed: &ClaimedAttempt, prepared: &Prepared, micro_usd: u64) {
+        if micro_usd == 0 {
+            return;
+        }
+        let Some(decision) = prepared
+            .need
+            .as_ref()
+            .and_then(|need| self.deps.router.route(need).ok())
+        else {
+            return;
+        };
+        tracing::info!(
+            monotonic_counter.factory_spend_usd_total = micro_usd as f64 / 1_000_000.0,
+            provider = decision.model.runtime.as_str(),
+            stage = claimed.kind.as_str()
+        );
     }
 
     /// What the token has spent, in millionths of a US dollar. A broker that cannot be reached

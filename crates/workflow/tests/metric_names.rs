@@ -153,8 +153,23 @@ struct Metric {
     kind: &'static str,
     name: String,
     labels: BTreeMap<String, String>,
-    /// The number the event added or set.
-    value: f64,
+    /// The number the event added or set, in the type it was recorded in.
+    value: Value,
+}
+
+impl Metric {
+    /// The number as a float, whatever type it was recorded in.
+    fn number(&self) -> f64 {
+        match &self.value {
+            Value::F64(n) => *n,
+            Value::I64(n) => *n as f64,
+            Value::U64(n) => *n as f64,
+            other => panic!(
+                "{} carries a value that is not a number: {other:?}",
+                self.name
+            ),
+        }
+    }
 }
 
 /// The metric events among the recorded events: a field named `monotonic_counter.<name>`,
@@ -178,17 +193,11 @@ fn metric_events(events: &[EventRecord]) -> Vec<Metric> {
                 .filter(|(other, _)| *other != key && *other != "message")
                 .map(|(label, value)| (label.clone(), value.text()))
                 .collect();
-            let value = match &event.fields[key] {
-                Value::F64(n) => *n,
-                Value::I64(n) => *n as f64,
-                Value::U64(n) => *n as f64,
-                other => panic!("{name} carries a value that is not a number: {other:?}"),
-            };
             found.push(Metric {
                 kind,
                 name: name.to_owned(),
                 labels,
-                value,
+                value: event.fields[key].clone(),
             });
         }
     }
@@ -367,32 +376,52 @@ async fn the_duration_runs_from_the_first_start_of_the_stage_run_across_its_atte
     let histograms = emitted(&metrics, "factory_stage_duration_seconds");
     assert_eq!(histograms.len(), 1, "{metrics:?}");
     assert!(
-        (histograms[0].value - 120.0).abs() < 1e-6,
+        (histograms[0].number() - 120.0).abs() < 1e-6,
         "the stage run took 120 seconds: {histograms:?}"
     );
     assert_eq!(emitted(&metrics, "factory_stage_runs_total").len(), 1);
 }
 
-/// Confirmed gap OBS-7. `factory_spend_usd_total` is on the page and nothing records it. The
-/// engine reads what the broker metered (`token_cost` in `src/engine/attempt.rs`) and writes it
-/// into the events of the attempt, so the number is known where the metric should be recorded, but
-/// the metric is not, and no alert on spend can be written.
-///
-/// Owner: `crates/workflow`, `src/engine/attempt.rs`, right after `notes.set_cost(...)`. Smallest
-/// change: `tracing::info!(monotonic_counter.factory_spend_usd_total = dollars, provider, stage)`,
-/// with `dollars` the cost converted from micro-dollars and `provider` the runtime the router chose
-/// for the stage. The counter takes a float; the recording type must stay `f64`.
+/// Gap OBS-7, closed. `factory_spend_usd_total` is recorded in dollars from what the broker
+/// metered for the attempt's token (`token_cost` in `src/engine/attempt.rs`). The `provider` label
+/// is the name of the runtime the router chose, since the broker reports no provider.
 #[tokio::test]
-#[ignore = "confirmed gap OBS-7: nothing records factory_spend_usd_total"]
 async fn the_spend_counter_is_recorded_when_an_agent_spends() {
     let metrics =
         first_stage_metrics(|w| w.script(StageKind::Intake).agent_spending(1_500_000)).await;
     let spend = emitted(&metrics, "factory_spend_usd_total");
-    assert!(
-        !spend.is_empty(),
-        "no factory_spend_usd_total was recorded: {metrics:?}"
-    );
+    assert_eq!(spend.len(), 1, "{metrics:?}");
+    assert_eq!(spend[0].kind, "counter");
     assert_eq!(spend[0].labels["stage"], "INTAKE");
+    assert_eq!(spend[0].labels["provider"], "fake");
+    // A double: an integer would be read as a count of whole dollars.
+    assert_eq!(spend[0].value, Value::F64(1.5), "{:?}", spend[0]);
+}
+
+#[tokio::test]
+async fn an_attempt_that_failed_after_spending_is_still_counted() {
+    // The money is gone whatever happened to the attempt.
+    let metrics = first_stage_metrics(|w| {
+        w.script(StageKind::Intake)
+            .queue([Step::Fail(StageError::Tool)]);
+        w.script(StageKind::Intake).agent_spending(2_000_000);
+    })
+    .await;
+    let spend = emitted(&metrics, "factory_spend_usd_total");
+    assert_eq!(spend.len(), 1, "{metrics:?}");
+    assert_eq!(spend[0].value, Value::F64(2.0));
+}
+
+#[tokio::test]
+async fn a_stage_that_spent_nothing_and_a_stage_with_no_agent_record_no_spend() {
+    let none = first_stage_metrics(|_| {}).await;
+    let zero = first_stage_metrics(|w| w.script(StageKind::Intake).agent_spending(0)).await;
+    for metrics in [none, zero] {
+        assert!(
+            emitted(&metrics, "factory_spend_usd_total").is_empty(),
+            "{metrics:?}"
+        );
+    }
 }
 
 /// Gap OBS-8, closed. The page says `factory_stage_runs_total` counts stage runs that ended, by
@@ -411,7 +440,7 @@ async fn a_failed_stage_run_is_counted_in_the_stage_run_total() {
     assert_eq!(counted.len(), 1, "{metrics:?}");
     assert_eq!(counted[0].labels["stage"], "INTAKE");
     assert_eq!(counted[0].labels["outcome"], "failed");
-    assert!((counted[0].value - 1.0).abs() < f64::EPSILON);
+    assert_eq!(counted[0].value, Value::U64(1));
 }
 
 /// The outcome and the count of the stage runs that the first stage of a fresh job ended.
@@ -419,7 +448,7 @@ async fn first_stage_end(prepare: impl FnOnce(&World)) -> Vec<(String, f64)> {
     let metrics = first_stage_metrics(prepare).await;
     emitted(&metrics, "factory_stage_runs_total")
         .iter()
-        .map(|m| (m.labels["outcome"].clone(), m.value))
+        .map(|m| (m.labels["outcome"].clone(), m.number()))
         .collect()
 }
 

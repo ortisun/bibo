@@ -31,7 +31,7 @@ Two rules for reading it.
 | 1. Stuck lease | `factory.attempt`, outcome `lease_lost` | `factory_retries_total` follows | "the sweep recovered attempts" | none | `factory_queue_depth` (OBS-5). Nothing shows a lease while it is stuck. |
 | 2. Stage over deadline | `factory.attempt`, outcome `timed_out`, with `factory.error_class` | `factory_stage_duration_seconds` by stage and outcome; `factory_retries_total` follows | "the sweep recovered attempts" | none | none |
 | 3. Gate blocked by the environment | `factory.gate`, outcome `blocked` | `factory_gate_failures_total` with outcome `blocked` | none | `gate_result` | none for the count; the cause is not in telemetry |
-| 4. Cost over budget | `factory.agent`, with `factory.cost_usd` | none | none | `budget_threshold_crossed` | `factory_spend_usd_total` (OBS-7) |
+| 4. Cost over budget | `factory.agent`, with `factory.cost_usd` | `factory_spend_usd_total` by provider and stage | none | `budget_threshold_crossed` | none |
 | 5. Redaction hit | marker `[REDACTED:` in attribute values and names | none | marker `[REDACTED:`, "log line dropped: redactor unavailable" | `secret_redacted_or_blocked` | a counter (OBS-10) |
 
 ## 1. Stuck lease
@@ -94,18 +94,17 @@ Two rules for reading it.
 
 **What it means.** The spend of a job reached its limit, or a threshold of it. The broker meters every model call through the job token and refuses spend at the ceiling. The engine records a threshold in the audit log, defers a stage run whose job has no budget left, and escalates a stage run to a person with the cause `budget-limit`.
 
-**What exists.** A span for each agent run, and records.
+**What exists.** A span for each agent run, a spend counter, and records.
 
 - Span `factory.agent`, one for each agent run, a child of the attempt (or of its gate, for an agent that judges the output). It carries `factory.job_id`, `factory.attempt_id`, `factory.agent_id`, `factory.model`, `factory.tokens_input`, `factory.tokens_output`, `factory.cost_usd` (dollars, as the adapter reported them) and `factory.outcome` (`succeeded`, `timed_out`, `cancelled` or `failed`). A failed run also has `error.type`, a fixed word such as `provider_unavailable` or `budget_refused`. Search `factory.job_id=<id>` and sum `factory.cost_usd` over the `factory.agent` spans for the cost of a job as the adapters saw it. The broker's meter is the source of truth, so the numbers can differ; a run that was cut before the adapter read its usage shows zero here.
+- Metric `factory_spend_usd_total{provider,stage}`, a counter of dollars (a double), added when an attempt ends with what the broker metered for its token. An attempt that failed or lost its lease is counted too, because the money was spent. Nothing is added for an attempt that spent nothing. The `provider` label is the name of the runtime the router chose for the stage (`claude-code-cli`, `codex-cli`), because the broker does not report a provider yet. Spend per hour by provider: `sum(increase(factory_spend_usd_total[1h])) by (provider)`.
 - Audit record `budget_threshold_crossed`, written at the end of an attempt whose token crossed the warning fraction of its ceiling (`budgets.thresholds.warn_at_fraction`, 80 percent by default in the engine configuration).
 - The escalation to a person with the cause `budget-limit`, in the stage run's events and ledger.
 - A stage run that does not start because the job's spend is at or over its limit: the claim defers it with the reason `BudgetExhausted`. Nothing is logged at `info` or higher for this.
 
 **First check.** Query `audit_events` for `budget_threshold_crossed` by job. For spend per job, agent, repository and model, the master prompt points to the evidence ledger and the audit log, as the conventions page says in section 6, rule 4.
 
-**Not yet emitted.**
-
-- `factory_spend_usd_total{provider,stage}` (OBS-7). The engine reads the metered cost of each attempt (`token_cost`) and writes it into the attempt's events, but does not record the metric. No alert on spend can be written until it does.
+**Not yet emitted.** Nothing is missing for the count of spend. Spend per job, agent, repository and model is still not a metric, by design (conventions, section 6, rule 4): it comes from the ledger and from the `factory.agent` spans.
 
 ## 5. Redaction hit
 
