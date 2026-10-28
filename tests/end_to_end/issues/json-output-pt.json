@@ -1,0 +1,100 @@
+{
+  "issue_format": 1,
+  "id": "json-output-pt",
+  "summary": "The Portuguese version of json-output-en, with the same intent. Scenario E2 submits it.",
+  "language": "pt-BR",
+  "same_intent_as": "json-output-en",
+  "requester": "authorized",
+  "labels": [
+    "factory"
+  ],
+  "revisions": [
+    {
+      "title": "Adicionar uma opção de saída em JSON à ferramenta de contagem de palavras",
+      "body": [
+        "Os scripts que chamam a ferramenta de contagem de palavras precisam interpretar as colunas de números, e isso quebra sempre que o espaçamento muda. Quero uma opção que imprima as mesmas contagens como um objeto JSON.",
+        "",
+        "## O que precisa mudar",
+        "Adicionar a opção `--json`. Com ela, a ferramenta imprime um único objeto JSON na saída padrão com as chaves `lines`, `words` e `characters`, nessa ordem. Sem a opção, a saída continua exatamente como é hoje.",
+        "",
+        "## Critérios de aceitação",
+        "- Para um arquivo com 3 linhas, 7 palavras e 31 caracteres, `word-count --json notes.txt` imprime um único objeto JSON com `lines` igual a 3, `words` igual a 7 e `characters` igual a 31.",
+        "- Para um arquivo vazio, as três contagens são 0.",
+        "- Sem `--json`, a saída é idêntica, byte a byte, à da versão anterior.",
+        "- Se o arquivo não existir, a saída padrão fica vazia, a saída de erro explica que o arquivo não pôde ser lido e o código de saída é diferente de zero. Isso vale com e sem `--json`.",
+        "",
+        "## Restrições",
+        "- Não adicionar dependências de terceiros. A ferramenta deve continuar compilando sem rede.",
+        "- Documentar a opção no README e no changelog."
+      ]
+    }
+  ],
+  "intent": {
+    "must_preserve": [
+      "--json",
+      "JSON",
+      "README"
+    ],
+    "checks": [
+      {
+        "id": "json-keys",
+        "description": "The output has the keys lines, words and characters.",
+        "all_of": [
+          "lines",
+          "words",
+          "characters"
+        ]
+      },
+      {
+        "id": "example-counts",
+        "description": "The example file has 3 lines, 7 words and 31 characters.",
+        "all_of": [
+          "3 lines",
+          "7 words",
+          "31 characters"
+        ]
+      },
+      {
+        "id": "empty-file",
+        "description": "An empty file gives zero counts.",
+        "all_of": [
+          "empty"
+        ]
+      },
+      {
+        "id": "plain-output-unchanged",
+        "description": "Without the option the output does not change.",
+        "all_of": [
+          "--json",
+          "without|not given|unchanged|same"
+        ]
+      },
+      {
+        "id": "unreadable-file",
+        "description": "A file that cannot be read gives an error message on standard error and a non-zero exit status.",
+        "all_of": [
+          "standard error|stderr",
+          "non-zero|nonzero|not zero"
+        ]
+      },
+      {
+        "id": "no-new-dependencies",
+        "description": "No third-party dependency is added.",
+        "all_of": [
+          "dependenc"
+        ]
+      }
+    ],
+    "match": "Each entry of all_of is a lower-case text, or several joined with | where any one is enough. A check holds when the English artifacts contain every entry."
+  },
+  "expected": {
+    "outcome": "draft_pull_request",
+    "behavior": [
+      "The factory accepts the request and runs the same pipeline as for the English request.",
+      "The specification, the task plan, the pull request and the documentation are written in clear English. None of them keeps Portuguese prose outside a marked quotation.",
+      "The technical intent is preserved: the option name, the three keys in their order, the example counts, the empty file case, the unchanged plain output, the error case and the ban on new dependencies.",
+      "The original Portuguese text is stored unchanged and apart from the English normalized request.",
+      "A reviewer's check that the translation is faithful is advice only. It can warn and never blocks."
+    ]
+  }
+}

@@ -1,0 +1,29 @@
+{
+  "issue_format": 1,
+  "id": "ambiguous-request",
+  "summary": "A request too vague to build. Scenario E12 submits it.",
+  "language": "en",
+  "requester": "authorized",
+  "labels": ["factory"],
+  "revisions": [
+    {
+      "title": "Make the output better",
+      "body": [
+        "The output of the word count tool is confusing. Please improve it."
+      ]
+    }
+  ],
+  "intent": {
+    "must_preserve": [],
+    "checks": []
+  },
+  "expected": {
+    "outcome": "one_question",
+    "behavior": [
+      "The factory classifies the request as ambiguous at intake.",
+      "It asks exactly one focused question on the issue, in plain English, and waits for the answer. The job is WAITING_FOR_HUMAN at the intake stage.",
+      "No later stage starts, no sandbox is created and no model is asked to build anything until the answer arrives.",
+      "The question is recorded in the audit trail with the time and the correlation id."
+    ]
+  }
+}
