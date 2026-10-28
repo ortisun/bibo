@@ -1,2 +1,19 @@
-//! Placeholder so that the module line declared by the engine package compiles. The package
-//! `s1-supply-chain-gates` replaces this file with its own code and does not need to edit any other file.
+//! The dependency and supply chain gates of the validation stage.
+//!
+//! A change can bring new code into the build in four ways: a new dependency, a changed
+//! lockfile, a changed place to fetch from, and code that runs while fetching or building. This
+//! module judges them from the files of the base commit and of the candidate, and from commands
+//! that the supervisor ran in a sandbox. Nothing here asks the builder.
+//!
+//! This increment holds the pure part: [`integrity`] reads the dependency files of both commits
+//! and compares them. Only Cargo is implemented; [`model::DependencyFormat`] is the seam for npm,
+//! pip and Go.
+
+pub mod cargo;
+pub mod diff;
+pub mod findings;
+pub mod integrity;
+pub mod model;
+pub mod names;
+pub mod toml;
+pub mod version;
