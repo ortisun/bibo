@@ -5,6 +5,7 @@ use super::catalog::{Catalog, RuleId};
 use super::finding::Finding;
 use super::options::Options;
 use super::rules::{self, Ctx};
+use super::text::Body;
 
 /// The most text the gate reads in one run, in bytes, titles and bodies together. A run over a
 /// larger input does not check a prefix and pass. It refuses, and the gate report is `BLOCKED`.
@@ -45,7 +46,11 @@ pub fn check(
     }
     let mut findings = Vec::new();
     for artifact in artifacts {
-        let ctx = Ctx { catalog, artifact };
+        let ctx = Ctx {
+            catalog,
+            artifact,
+            body: Body::new(artifact.body),
+        };
         for rule in RuleId::ALL.iter().copied() {
             let Some(spec) = catalog.rule(rule) else {
                 continue;

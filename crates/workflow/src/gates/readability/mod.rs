@@ -20,6 +20,7 @@ mod engine;
 mod finding;
 mod options;
 mod rules;
+mod text;
 
 pub use artifact::{Artifact, ArtifactKind, DocumentType};
 pub use catalog::{

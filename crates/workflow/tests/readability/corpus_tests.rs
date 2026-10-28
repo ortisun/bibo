@@ -2,7 +2,7 @@
 
 use factory_workflow::gates::readability::{Catalog, Options, RuleId};
 
-use crate::corpus::{FILES, run, run_with, samples};
+use super::readability_corpus::{FILES, run, run_with, samples, verdict_of};
 
 fn rank(verdict: &str) -> u8 {
     match verdict {
@@ -24,6 +24,11 @@ fn implemented(rule: RuleId) -> bool {
             | RuleId::TitleNotSentenceCase
             | RuleId::TitleTooLong
             | RuleId::TitleTrailingPunctuation
+            | RuleId::TaskMissingSection
+            | RuleId::BodyMetadataPrefix
+            | RuleId::BodyMetadataLines
+            | RuleId::PrMissingEvidenceLink
+            | RuleId::DocGuideMissingPart
     )
 }
 
@@ -51,7 +56,7 @@ fn every_case_matches_its_labels_for_the_rules_implemented_so_far() {
 fn a_case_never_labels_a_milder_verdict_than_its_deterministic_findings_give() {
     let catalog = Catalog::embedded().expect("the embedded catalog loads");
     for sample in samples() {
-        let derived = crate::corpus::verdict_of(
+        let derived = verdict_of(
             sample
                 .breaks
                 .iter()
