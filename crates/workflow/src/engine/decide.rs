@@ -26,7 +26,7 @@ use factory_domain::machines::rework::{
 };
 use factory_domain::state::{Guard, StageRunEvent};
 use factory_domain::values::{HumanText, MediaType};
-use factory_domain::vocabulary::{ConfidenceLevel, GateOutcome, HumanRole};
+use factory_domain::vocabulary::{ConfidenceLevel, GateOutcome, HumanRole, StageKind};
 use factory_ports::store::{
     ArtifactDirection, AuditActor, GateRecord, StageRun, StageRunEffects, Tx, Versioned,
 };
@@ -44,6 +44,10 @@ use super::record::{Cx, Step, index_entry};
 use super::timeline::Timeline;
 use crate::audit::{AuditAction, AuditDecision, AuditKind};
 use crate::commands::{Actor, Decision, Subject};
+
+/// The sentence stored as the input a specification approval adds to its stage run. It is the
+/// factory's own text, never a person's.
+const APPROVAL_NOTE: &str = "The approver approved the draft that was shown.";
 
 impl Engine {
     /// Applies a human decision to a stage run.
@@ -70,6 +74,9 @@ impl Engine {
             Decision::Override { justification, .. } => {
                 Some(self.store_text(justification.as_str().as_bytes()).await?)
             }
+            // Not a person's text: a fixed sentence. Only an approval of a specification keeps it
+            // (see `apply_decision`), and every other approval ignores it.
+            Decision::Approve { .. } => Some(self.store_text(APPROVAL_NOTE.as_bytes()).await?),
             _ => None,
         };
         let mut tx = self.tenant_tx(actor.tenant).await?;
@@ -204,6 +211,41 @@ impl Engine {
                     "approved",
                 )
                 .await?;
+                if run.value.kind == StageKind::Specification {
+                    // The specification stage has stored nothing yet when it asks: it keeps its
+                    // draft aside and waits. Its next attempt reads the judgment above from the
+                    // ledger (`SpecApprovals`) and freezes exactly that draft. Passing the run
+                    // here would pass a stage with no specification in it, so the approval sends
+                    // the run back to `READY` the way an answer does (`S13`), and the stage
+                    // passes by its own attempt. The state machine's `S14` still holds for every
+                    // stage that stores its result before it asks.
+                    let note =
+                        stored.ok_or(EngineError::Corrupt("the approval note was not stored"))?;
+                    let answered = clear(
+                        Guard::AnswerRecorded,
+                        &GuardFacts::Answer(AnswerFacts {
+                            answer_recorded_with_principal: true,
+                            answer_became_a_new_input_hash: true,
+                            raises_a_ceiling: false,
+                            principal_is_org_admin: holds(HumanRole::OrgAdmin),
+                        }),
+                    )?;
+                    self.index_for(tx, cx, run.value.id, &note).await?;
+                    self.link_answer(tx, run.value.id, &note).await?;
+                    cx.move_stage_run(
+                        tx,
+                        run,
+                        Step::new(StageRunEvent::HumanAnswered, answered)
+                            .cause("approved-for-freezing")
+                            .payload(base),
+                        StageRunEffects::default(),
+                    )
+                    .await?;
+                    return Ok(AuditAction::new(
+                        AuditKind::ApprovalGrantedOrRejected,
+                        AuditDecision::Granted,
+                    ));
+                }
                 // No gate ran, but the decision still rests on a document: the person, the role
                 // and the evidence they had seen. The gate record names it by hash, as the store
                 // requires for every outcome but NOT_APPLICABLE.

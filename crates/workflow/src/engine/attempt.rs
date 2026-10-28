@@ -1290,9 +1290,9 @@ impl Engine {
             )
             .await?;
         }
-        if let Some(transcript) = notes.take_transcript() {
-            self.index(tx, cx, claimed, std::slice::from_ref(&transcript))
-                .await?;
+        let transcripts = notes.take_transcripts();
+        if !transcripts.is_empty() {
+            self.index(tx, cx, claimed, &transcripts).await?;
         }
         for _ in &output.permission_denials {
             cx.audit(
