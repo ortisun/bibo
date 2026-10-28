@@ -129,8 +129,7 @@ impl LockDiff {
                 None => self.added.push((*new).clone()),
             }
         }
-        self.removed
-            .extend(pool.rest().into_iter().map(Clone::clone));
+        self.removed.extend(pool.rest().into_iter().cloned());
     }
 
     fn pair(&mut self, old: &LockedPackage, new: &LockedPackage) {

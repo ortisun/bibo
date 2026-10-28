@@ -94,7 +94,7 @@ impl PopularNames {
     #[must_use]
     pub fn lookalike(&self, wanted: &str) -> Option<&String> {
         let wanted = normalize(wanted);
-        if self.normalized.iter().any(|popular| *popular == wanted) {
+        if self.normalized.contains(&wanted) {
             return None;
         }
         self.normalized

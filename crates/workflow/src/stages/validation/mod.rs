@@ -17,15 +17,16 @@
 //! 4. The command gates run in a fresh `verify` sandbox over a read-only workspace of the
 //!    candidate commit, then the test gate runs again on the base commit as the baseline
 //!    ([`sandboxed`]). Tool versions are probed first; a missing tool blocks the gate.
-//! 5. One report is built for each gate ([`set`], [`assemble`]) and written, with the evidence
-//!    binding ([`binding`]), as the deliverable `validation-evidence`.
-//! 5a. The four dependency and supply chain reports are made by [`supply`], after the command
+//! 5. The four dependency and supply chain reports are made by [`supply`], after the command
 //!    gates and in their own sandboxes, for a change every host-side rule let through. A change
 //!    that touches no dependency file gets four `NOT_APPLICABLE` reports and costs nothing; a new
 //!    direct dependency with no recorded decision makes `dependency-review` `BLOCKED` and stops the
 //!    stage run for a person; a scanner or an advisory database that is missing, or too old,
 //!    blocks. A failed or blocked dependency gate fails the stage like any other gate.
-//! 6. `evaluate` reads the stored deliverable back, recomputes the binding from independent
+//! 6. One report is built for each gate of the command catalog ([`set`], [`assemble`]) and all
+//!    of them are written, with the evidence binding ([`binding`]), as the deliverable
+//!    `validation-evidence`.
+//! 7. `evaluate` reads the stored deliverable back, recomputes the binding from independent
 //!    sources, adds the `evidence-binding` report and hands the reports to the engine, which
 //!    decides with `resolve`.
 //!

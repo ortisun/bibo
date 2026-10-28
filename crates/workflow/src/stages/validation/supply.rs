@@ -319,3 +319,39 @@ async fn read_side(
             .map(|(path, text)| (path.as_str(), text.as_str())),
     )))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::gates::scope::patch;
+
+    fn gathered(patch_text: &str) -> Gathered {
+        Gathered {
+            files: Vec::new(),
+            facts: Some(patch::parse(patch_text.as_bytes())),
+            listed: true,
+        }
+    }
+
+    #[test]
+    fn a_dependency_file_that_becomes_a_link_or_a_submodule_is_found() {
+        let link = "diff --git a/Cargo.lock b/Cargo.lock\nnew file mode 120000\nindex 0000000..1111111\n--- /dev/null\n+++ b/Cargo.lock\n@@ -0,0 +1 @@\n+version=4\n\\ No newline at end of file\n";
+        let submodule = "diff --git a/crates/a/Cargo.toml b/crates/a/Cargo.toml\nnew file mode 160000\nindex 0000000..2222222\n--- /dev/null\n+++ b/crates/a/Cargo.toml\n@@ -0,0 +1 @@\n+Subproject commit 3333333333333333333333333333333333333333\n";
+        assert_eq!(
+            linked_dependency_file(&CargoFormat, &gathered(link)).as_deref(),
+            Some("Cargo.lock")
+        );
+        assert_eq!(
+            linked_dependency_file(&CargoFormat, &gathered(submodule)).as_deref(),
+            Some("crates/a/Cargo.toml")
+        );
+    }
+
+    #[test]
+    fn a_link_that_is_not_a_dependency_file_and_a_plain_edit_are_not_reported() {
+        let other = "diff --git a/docs/link b/docs/link\nnew file mode 120000\nindex 0000000..1111111\n--- /dev/null\n+++ b/docs/link\n@@ -0,0 +1 @@\n+x\n\\ No newline at end of file\n";
+        let mode = "diff --git a/Cargo.lock b/Cargo.lock\nold mode 100644\nnew mode 100755\n";
+        assert_eq!(linked_dependency_file(&CargoFormat, &gathered(other)), None);
+        assert_eq!(linked_dependency_file(&CargoFormat, &gathered(mode)), None);
+    }
+}
