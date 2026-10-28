@@ -184,7 +184,10 @@ fn toml_string(text: &str) -> String {
 fn is_plain_model_name(name: &str) -> bool {
     !name.is_empty()
         && name.len() <= 100
-        && name.chars().next().is_some_and(|c| c.is_ascii_alphanumeric())
+        && name
+            .chars()
+            .next()
+            .is_some_and(|c| c.is_ascii_alphanumeric())
         && name.chars().all(|c| {
             c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-' | ':' | '/' | '@' | '[' | ']')
         })
@@ -211,9 +214,15 @@ pub fn build(plan: &Plan<'_>, target: &VerifiedTarget) -> Result<Vec<String>, Ar
         toml_string(JOB_TOKEN_TARGET),
         r = plan.retries,
     );
-    let mut args: Vec<String> = ["exec", "--json", "--ephemeral", "--skip-git-repo-check", "-C"]
-        .map(String::from)
-        .to_vec();
+    let mut args: Vec<String> = [
+        "exec",
+        "--json",
+        "--ephemeral",
+        "--skip-git-repo-check",
+        "-C",
+    ]
+    .map(String::from)
+    .to_vec();
     args.push(WORKSPACE_TARGET.to_owned());
     args.extend(["--ignore-user-config", "--ignore-rules"].map(String::from));
     for feature in Feature::ALWAYS_OFF {

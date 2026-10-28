@@ -114,7 +114,8 @@ pub fn parse(stdout: &[u8]) -> Stream {
                 }
             }
             Some("turn.failed") => {
-                stream.failed = Some(message_of(&event).unwrap_or_else(|| "turn failed".to_owned()));
+                stream.failed =
+                    Some(message_of(&event).unwrap_or_else(|| "turn failed".to_owned()));
             }
             Some("error") => {
                 if let Some(message) = message_of(&event) {

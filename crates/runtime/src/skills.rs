@@ -229,7 +229,10 @@ mod tests {
     fn the_archive_has_valid_headers_the_files_and_the_end_blocks() {
         let skill = PinnedSkill::new(
             "alpha",
-            vec![file("SKILL.md", "body of the skill"), file("notes/x.md", "n")],
+            vec![
+                file("SKILL.md", "body of the skill"),
+                file("notes/x.md", "n"),
+            ],
         )
         .expect("a skill");
         let bundle = SkillBundle::new(vec![skill]).expect("a bundle");

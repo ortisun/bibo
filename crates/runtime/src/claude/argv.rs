@@ -238,9 +238,9 @@ fn is_plain_model_name(name: &str) -> bool {
             .chars()
             .next()
             .is_some_and(|c| c.is_ascii_alphanumeric())
-        && name
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-' | ':' | '/' | '@' | '[' | ']'))
+        && name.chars().all(|c| {
+            c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-' | ':' | '/' | '@' | '[' | ']')
+        })
 }
 
 #[cfg(test)]

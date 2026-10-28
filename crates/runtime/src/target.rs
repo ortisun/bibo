@@ -9,7 +9,7 @@
 //! container has all of that. The argument builders take one, so a bypass flag cannot be written
 //! for a container that was not checked (ADR 0005, "Argument safety").
 
-use factory_ports::sandbox::{Confinement, NetworkAttachment, Namespace, PostureReport};
+use factory_ports::sandbox::{Confinement, Namespace, NetworkAttachment, PostureReport};
 
 /// The smallest user id a tool may run as. It is the `min_uid` of the sandbox policy.
 pub const MIN_AGENT_UID: u32 = 10_000;

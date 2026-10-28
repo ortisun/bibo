@@ -29,15 +29,14 @@ use std::time::Duration;
 
 use factory_domain::vocabulary::Fidelity;
 use factory_ports::agent::{
-    AgentRunError, AgentRunReport, AgentRunRequest, AgentRuntime, Capability, CapabilityObservation,
-    Denial, ExitInfo, FlagSet, ProbeError, ProbeStep, RuntimeCapabilities, RuntimeId,
+    AgentRunError, AgentRunReport, AgentRunRequest, AgentRuntime, Capability,
+    CapabilityObservation, Denial, ExitInfo, FlagSet, ProbeError, ProbeStep, RuntimeCapabilities,
+    RuntimeId,
 };
 use factory_ports::clock::CancelSignal;
 use factory_ports::sandbox::{ExecResult, SandboxSession};
 
-use crate::command::{
-    EnvName, HARD_DEADLINE_MARGIN_SECONDS, ToolCommand, ToolEnv, broker_origin,
-};
+use crate::command::{EnvName, HARD_DEADLINE_MARGIN_SECONDS, ToolCommand, ToolEnv, broker_origin};
 use crate::future::BoxFuture;
 use crate::home::{HomeAllocator, make_home_argv};
 use crate::io::RunIo;
@@ -236,7 +235,11 @@ impl CodexRuntime {
             Ok(out) if out.exit_code == Some(0) => {
                 let visible = events::visible_skills(&out.stdout);
                 if visible != allowed {
-                    tracing::warn!(?visible, ?allowed, "the skills the tool can see are not the stage's skills");
+                    tracing::warn!(
+                        ?visible,
+                        ?allowed,
+                        "the skills the tool can see are not the stage's skills"
+                    );
                 }
                 visible == allowed
             }
@@ -287,11 +290,15 @@ impl CodexRuntime {
         self.runs.fetch_add(1, Ordering::SeqCst);
 
         let home = self.homes.next(req.attempt);
-        if let Err(error) = crate::report::exec_prep(session, make_home_argv(&home), None, cancel).await
+        if let Err(error) =
+            crate::report::exec_prep(session, make_home_argv(&home), None, cancel).await
         {
             return early(error, version);
         }
-        if !self.skills_are_as_allowed(session, &home, req.flag_set).await {
+        if !self
+            .skills_are_as_allowed(session, &home, req.flag_set)
+            .await
+        {
             return early(never_started(), version);
         }
 
@@ -481,7 +488,11 @@ fn classify(
     if result.oom_killed {
         return Err(AgentRunError::ProcessFailed(exit));
     }
-    if let Some(message) = stream.failed.as_ref().or(stream.last_error.as_ref().filter(|_| !stream.completed)) {
+    if let Some(message) = stream
+        .failed
+        .as_ref()
+        .or(stream.last_error.as_ref().filter(|_| !stream.completed))
+    {
         return Err(classify_message(message, exit));
     }
     if stream.completed && exit.code == Some(0) {
@@ -522,9 +533,15 @@ fn classify_message(message: &str, exit: ExitInfo) -> AgentRunError {
         || lower.contains("invalid api key")
     {
         AgentRunError::AuthenticationRequired
-    } else if status(&["402"]) || lower.contains("payment required") || lower.contains("insufficient_quota") {
+    } else if status(&["402"])
+        || lower.contains("payment required")
+        || lower.contains("insufficient_quota")
+    {
         AgentRunError::BudgetRefused
-    } else if status(&["429"]) || lower.contains("too many requests") || lower.contains("rate limit") {
+    } else if status(&["429"])
+        || lower.contains("too many requests")
+        || lower.contains("rate limit")
+    {
         AgentRunError::RateLimited { retry_after: None }
     } else if status(&["500", "502", "503", "504", "529"])
         || lower.contains("high demand")
@@ -559,7 +576,8 @@ impl AgentRuntime for CodexRuntime {
     {
         Box::pin(async move {
             let found = self.probe_inner(session).await?;
-            self.cache.remember(&session.posture().image.clone(), &found);
+            self.cache
+                .remember(&session.posture().image.clone(), &found);
             Ok(found)
         })
     }

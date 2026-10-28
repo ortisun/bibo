@@ -33,9 +33,7 @@ use factory_ports::agent::{
 use factory_ports::clock::CancelSignal;
 use factory_ports::sandbox::SandboxSession;
 
-use crate::command::{
-    EnvName, HARD_DEADLINE_MARGIN_SECONDS, ToolCommand, ToolEnv, broker_origin,
-};
+use crate::command::{EnvName, HARD_DEADLINE_MARGIN_SECONDS, ToolCommand, ToolEnv, broker_origin};
 use crate::future::BoxFuture;
 use crate::home::{HomeAllocator, make_home_argv};
 use crate::io::RunIo;
@@ -293,7 +291,12 @@ impl ClaudeCodeRuntime {
             .and_then(|e| e.set(EnvName::Path, self.config.path.clone()))
             .and_then(|e| e.set(EnvName::AnthropicBaseUrl, base))
             .and_then(|e| e.set(EnvName::ClaudeDisableNonessentialTraffic, "1"))
-            .and_then(|e| e.set(EnvName::ClaudeMaxRetries, self.config.max_retries.to_string()));
+            .and_then(|e| {
+                e.set(
+                    EnvName::ClaudeMaxRetries,
+                    self.config.max_retries.to_string(),
+                )
+            });
         let Ok(env) = env else {
             return early(never_started(), version);
         };
@@ -472,13 +475,10 @@ fn interpret(
                 .iter()
                 .map(|d| Denial {
                     tool: d.tool_name.clone(),
-                    reason: stream
-                        .tool_results
-                        .get(&d.tool_use_id)
-                        .map_or_else(
-                            || "the tool refused the call".to_owned(),
-                            |text| text.chars().take(300).collect(),
-                        ),
+                    reason: stream.tool_results.get(&d.tool_use_id).map_or_else(
+                        || "the tool refused the call".to_owned(),
+                        |text| text.chars().take(300).collect(),
+                    ),
                 })
                 .collect()
         })
@@ -579,7 +579,8 @@ impl AgentRuntime for ClaudeCodeRuntime {
     {
         Box::pin(async move {
             let found = self.probe_inner(session).await?;
-            self.cache.remember(&session.posture().image.clone(), &found);
+            self.cache
+                .remember(&session.posture().image.clone(), &found);
             Ok(found)
         })
     }

@@ -206,7 +206,10 @@ fn read_assistant(event: &Value, stream: &mut Stream) {
     let Some(message) = event.get("message") else {
         return;
     };
-    let id = message.get("id").and_then(Value::as_str).unwrap_or_default();
+    let id = message
+        .get("id")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
     if id.starts_with("msg_") && stream.message_ids.insert(id.to_owned()) {
         let usage = message.get("usage").unwrap_or(&Value::Null);
         stream.partial_input_tokens = stream

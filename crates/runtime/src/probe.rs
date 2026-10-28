@@ -100,7 +100,10 @@ pub async fn run_probe_command(
         .read(&result.stderr)
         .await
         .map_err(|_| ProbeError::ProbeFailed(step))?;
-    if result.exit_code.is_some_and(|code| NOT_EXECUTABLE.contains(&code)) {
+    if result
+        .exit_code
+        .is_some_and(|code| NOT_EXECUTABLE.contains(&code))
+    {
         return Err(ProbeError::BinaryMissing);
     }
     Ok(ProbeOutput {
@@ -234,7 +237,8 @@ mod tests {
 
     #[test]
     fn a_flag_must_match_as_a_whole_word() {
-        let help = "  --tools <tools...>  the tools\n  --tools-extra  other\n  -p, --print  print\n";
+        let help =
+            "  --tools <tools...>  the tools\n  --tools-extra  other\n  -p, --print  print\n";
         assert!(has_flag(help, "--tools"));
         assert!(has_flag(help, "--print"));
         assert!(!has_flag("only --tools-extra here", "--tools"));

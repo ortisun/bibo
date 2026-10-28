@@ -131,7 +131,11 @@ pub fn broker_origin(base_url: &str) -> Result<String, BadBrokerUrl> {
         && rest
             .chars()
             .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | ':' | '[' | ']'));
-    if host_ok { Ok(trimmed.to_owned()) } else { Err(BadBrokerUrl) }
+    if host_ok {
+        Ok(trimmed.to_owned())
+    } else {
+        Err(BadBrokerUrl)
+    }
 }
 
 /// A tool run: its environment, its soft deadline, the program and its arguments.
