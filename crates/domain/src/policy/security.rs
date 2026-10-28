@@ -350,6 +350,23 @@ strict! {
 }
 
 strict! {
+    /// What one role may do with a tool, on top of holding it. A role that is on the entry's
+    /// `roles` and has no scope here has no extra limit from this entry: the task's owned files,
+    /// the protected paths and the command sets still apply.
+    pub struct RoleScope {
+        /// The paths the role may touch with the tool. A path outside them is refused even when
+        /// `path_access` and the protected paths would allow it. They are repository-relative
+        /// globs in the same dialect as the protected paths.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub paths: Option<Vec<GlobText>>,
+        /// The ids of the `command_sets.sets` the role may run with the tool. A command in another
+        /// set is refused for this role.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub command_sets: Option<Vec<String>>,
+    }
+}
+
+strict! {
     /// One tool.
     pub struct ToolEntry {
         /// The tool.
@@ -372,11 +389,25 @@ strict! {
         /// Its caps.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub limits: Option<ToolLimits>,
+        /// Narrower limits for named roles, by role. Every key is a role on `roles`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub role_scopes: Option<BTreeMap<String, RoleScope>>,
         /// When a human must approve.
         pub human_gate: HumanGate,
         /// Notes.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub notes: Option<String>,
+    }
+}
+
+strict! {
+    /// What happens when an agent keeps asking for tools it cannot have.
+    pub struct MisuseThreshold {
+        /// The most refused requests (an unknown tool, a never-grantable tool or a self-grant)
+        /// that one task may make. The request after the last one sends the stage to a person.
+        pub max_denied_requests_per_task: u32,
+        /// What happens then. The value used is `needs_human`.
+        pub on_threshold: String,
     }
 }
 
@@ -391,6 +422,9 @@ strict! {
         pub agents_may_self_grant: bool,
         /// Tools that are never granted to any agent.
         pub never_grantable: Vec<String>,
+        /// When repeated refused requests send the stage to a person.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub misuse_threshold: Option<MisuseThreshold>,
         /// The tools.
         pub entries: Vec<ToolEntry>,
         /// Threats.
@@ -422,6 +456,11 @@ strict! {
         pub executables: BTreeMap<String, CommandExecutable>,
         /// The environment the supervisor sets.
         pub env: BTreeMap<String, String>,
+        /// Values that replace the same names in `env` for one sandbox profile, by profile name.
+        /// The fetch profile uses it to switch the network on where every other profile keeps it
+        /// off.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub env_by_profile: Option<BTreeMap<String, BTreeMap<String, String>>>,
         /// Notes.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub notes: Option<String>,
@@ -1543,6 +1582,10 @@ strict! {
         pub forbidden_flags_outside_verified_sandbox: Vec<String>,
         /// How it authenticates.
         pub auth: String,
+        /// Environment settings the supervisor makes for every run, as `NAME=value`. The
+        /// credential is never one of them.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub required_environment: Option<Vec<String>>,
     }
 }
 

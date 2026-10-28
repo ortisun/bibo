@@ -43,19 +43,11 @@ pub const STAGE_OF_ROLE: [(&str, &str); 9] = [
     ("documentation_reviewer", "DOCUMENTATION_REVIEW"),
 ];
 
-/// What `policies/security.yaml` does not grant yet, found while writing the manifests: its tool
-/// table lists no `specification_writer` and no `specification_reviewer` role. The manifests
-/// declare these tools anyway, because the roles cannot do their work without them. The policy
-/// package has to add the roles. `known_policy_gaps_are_still_gaps` fails once it does, so this
-/// list shrinks to nothing.
-pub const KNOWN_POLICY_GAPS: [(&str, &str); 6] = [
-    ("specification_writer", "fs.read"),
-    ("specification_writer", "fs.list"),
-    ("specification_writer", "fs.write"),
-    ("specification_writer", "exec.run"),
-    ("specification_reviewer", "fs.read"),
-    ("specification_reviewer", "fs.list"),
-];
+/// What `policies/security.yaml` does not grant yet. The tool table now lists the
+/// `specification_writer` and `specification_reviewer` roles with the tools their manifests
+/// declare, so nothing is left. The list stays so that a future gap can be recorded in one place,
+/// and `known_policy_gaps_are_still_gaps` fails as soon as the policy closes an entry.
+pub const KNOWN_POLICY_GAPS: [(&str, &str); 0] = [];
 
 /// The access each tool has, by the effect it can have on the workspace.
 const TOOL_ACCESS: [(&str, &str); 6] = [

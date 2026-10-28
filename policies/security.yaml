@@ -15,7 +15,7 @@
 # -----------------------------------------------------------------------------
 # PARSER CONTRACT (for the future Rust policy crate)
 # -----------------------------------------------------------------------------
-# * Plain YAML 1.2 subset: block style, scalars, lists, maps. No anchors, no
+# * Plain YAML 1.2 subset: block or flow style, scalars, lists, maps. No anchors, no
 #   aliases, no merge keys (<<), no custom tags, a single document.
 # * Deserialize into typed structs with serde and `#[serde(deny_unknown_fields)]`.
 #   An unknown key is a load error, never silently ignored.
@@ -251,24 +251,29 @@ protected_paths:
     - id: secret_bearing_files
       mode: hidden
       applies_to: both
+      # Every glob starts with `**/` so that it matches at any depth. A glob without it
+      # matches only at the repository root, and `apps/web/.env` or `a/b/.aws/credentials`
+      # would stay readable. `**/` also matches the root, so `.env` itself is still hidden.
+      # Matching ignores letter case and the characters that version control ignores in a
+      # name (section 1).
       globs:
-        - ".env"
-        - ".env.*"
-        - "!.env.example"                # a leading "!" re-includes; the loader applies it last
+        - "**/.env"
+        - "**/.env.*"
+        - "!**/.env.example"             # a leading "!" re-includes; the loader applies it last
         - "**/*.pem"
         - "**/*.key"
         - "**/*.p12"
         - "**/*.pfx"
         - "**/id_rsa*"
         - "**/id_ed25519*"
-        - ".netrc"
-        - ".pypirc"
-        - ".git-credentials"
-        - ".aws/**"
-        - ".ssh/**"
-        - ".docker/config.json"
+        - "**/.netrc"
+        - "**/.pypirc"
+        - "**/.git-credentials"
+        - "**/.aws/**"
+        - "**/.ssh/**"
+        - "**/.docker/config.json"
         - "**/credentials*.json"
-      reason: "Never mounted, never read into context, never allowed in a diff."
+      reason: "Never mounted, never read into context, never allowed in a diff. Hidden at any depth, not only at the repository root."
       threats: [T-16, T-19, T-20]
 
     - id: factory_self_protection
@@ -281,6 +286,26 @@ protected_paths:
         - "workflows/**"
       reason: "When the factory works on its own repository, its policies, security documents and agent manifests are protected."
       threats: [T-15, T-12]
+
+    - id: factory_gate_tooling
+      mode: deny_write
+      applies_to: factory_repo
+      # The tooling that decides what a PASS means in the factory's own repository: the xtask
+      # architecture and link checks, the schema validator, the dependency rules they read, the
+      # tools that check the work-package plan, the readability corpus, and the oracle and tool
+      # helpers of the domain tests. A change here moves a gate, so it is a protected change.
+      # In a target repository the same names are ordinary paths (the test directories there
+      # fall under `test_code`).
+      globs:
+        - "xtask/**"
+        - "schemas/validate.sh"
+        - "docs/architecture/crate-dependency-rules.json"
+        - "docs/architecture/tools/**"
+        - "fixtures/readability/**"
+        - "crates/domain/tests/oracle/**"
+        - "crates/domain/tests/tools/**"
+      reason: "When the factory works on its own repository, the tools and test oracles that its gates run are protected, as the CI entry point and the gate configuration are."
+      threats: [T-12, T-13]
 
   # Allowed to change, but every change runs the listed semantic checks (see
   # `gate_integrity.semantic_checks`) and requires the listed extra reviewer.
@@ -317,11 +342,19 @@ protected_paths:
         - "**/*.tf"
         - "k8s/**"
         - "helm/**"
+        - "scripts/dev-up.sh"            # starts the local services and writes their settings
+        - ".env.example"                 # the template of the settings that dev-up.sh reads
       checks: [privilege_or_network_widening, secret_in_diff]
       extra_review: [security_reviewer]
     - id: security_critical_code
+      # The crates that enforce the policy, redact secrets, read the policy files, run the
+      # egress proxy and the sandbox, or hold a credential. Each path is a real directory
+      # (a test checks it): the policy evaluators and the redactor are inside the domain crate.
       globs:
-        - "crates/policy/**"
+        - "crates/domain/src/policy/**"
+        - "crates/domain/src/redaction/**"
+        - "crates/contracts/**"
+        - "crates/egress/**"
         - "crates/sandbox/**"
         - "crates/github/**"
         - "crates/runtime/**"
@@ -461,7 +494,7 @@ forbidden_command_classes:
       executables: [nohup, setsid, disown, daemonize, screen, tmux]
     action: deny
   - id: install_scripts_outside_fetch
-    description: "Package installs may run only in the fetch_deps profile with scripts disabled."
+    description: "Package installs and downloads may run only in the fetch_deps profile. Inside that profile the command sets decide which of them exist: `cargo fetch` and `cargo metadata` for Slice 1, no install, add, update or vendor, and the next class keeps repository code out."
     match:
       argv_regex:
         - '(?i)\b(npm|pnpm|yarn)\b\s+(install|i|add|ci)\b'
@@ -470,6 +503,16 @@ forbidden_command_classes:
         - '(?i)\bgo\b\s+(get|install)\b'
     action: deny
     except_profiles: [fetch_deps]
+  - id: repository_code_in_fetch_deps
+    description: "The fetch_deps profile downloads and runs no repository code: no build script, procedural macro, test binary, project script or interpreter, because it is the one profile with a network. Applies to fetch_deps only (the other two profiles are excepted)."
+    match:
+      executables: [rustc, node, npx, python, pytest, mypy, ruff]
+      argv_regex:
+        - '(?i)\bcargo\b\s+(build|check|test|clippy|doc|nextest|run|bench|rustc|rustdoc|fix|miri)\b'
+        - '(?i)\b(npm|pnpm|yarn)\b\s+(run|test|pack|exec|start|rebuild)\b'
+        - '(?i)\bgo\b\s+(build|test|vet|run|generate)\b'
+    action: deny
+    except_profiles: [agent, verify]
 
 # -----------------------------------------------------------------------------
 # 5. Tool allowlist (typed tools only; no ambient authority)
@@ -511,20 +554,36 @@ tools:
     - secrets.read
     - docker.any
     - audit.write
+  # Repeated refused requests are a signal (NT-TOOL-03). Each request for an unknown tool,
+  # a never-grantable tool or a self-grant is refused and audited. The fourth one in a task
+  # sends the stage to a person (NEEDS_HUMAN) instead of being refused again. A project may
+  # lower the number and never raise it.
+  misuse_threshold:
+    max_denied_requests_per_task: 3
+    on_threshold: needs_human
   entries:
     - id: fs.read
       risk: low
       profiles: [agent, verify]
-      roles: [builder, integrator, qa, code_reviewer, security_reviewer, reliability_reviewer, ux_reviewer, adversarial_reviewer, architect, architecture_critic, planner, documentation_planner, technical_writer, api_documentation, architecture_documentation, operations_writer, documentation_reviewer, repository_analyst]
+      roles: [builder, integrator, qa, code_reviewer, security_reviewer, reliability_reviewer, ux_reviewer, adversarial_reviewer, architect, architecture_critic, planner, documentation_planner, technical_writer, api_documentation, architecture_documentation, operations_writer, documentation_reviewer, repository_analyst, specification_writer, specification_reviewer]
       args: { path: { kind: workspace_path, access: read } }
       limits: { max_calls_per_task: 3000, max_result_bytes: 262144, timeout_s: 10 }
+      # The specification roles read the feature directory, and the writer also reads the Spec
+      # Kit templates and the request inputs. The reviewer reads the specification only. Both
+      # match the manifests in agents/ (a test compares them).
+      role_scopes:
+        specification_writer: { paths: ["specs/**", ".specify/**", "inputs/**"] }
+        specification_reviewer: { paths: ["specs/**"] }
       human_gate: none
     - id: fs.list
       risk: low
       profiles: [agent, verify]
-      roles: [builder, integrator, qa, code_reviewer, security_reviewer, reliability_reviewer, ux_reviewer, adversarial_reviewer, architect, architecture_critic, planner, documentation_planner, technical_writer, api_documentation, architecture_documentation, operations_writer, documentation_reviewer, repository_analyst]
+      roles: [builder, integrator, qa, code_reviewer, security_reviewer, reliability_reviewer, ux_reviewer, adversarial_reviewer, architect, architecture_critic, planner, documentation_planner, technical_writer, api_documentation, architecture_documentation, operations_writer, documentation_reviewer, repository_analyst, specification_writer, specification_reviewer]
       args: { path: { kind: workspace_path, access: read } }
       limits: { max_calls_per_task: 1000, max_result_bytes: 131072, timeout_s: 10 }
+      role_scopes:
+        specification_writer: { paths: ["specs/**", ".specify/**", "inputs/**"] }
+        specification_reviewer: { paths: ["specs/**"] }
       human_gate: none
     - id: fs.search
       risk: low
@@ -536,11 +595,17 @@ tools:
     - id: fs.write
       risk: medium
       profiles: [agent]
-      roles: [builder, integrator, technical_writer, api_documentation, architecture_documentation, operations_writer]
+      roles: [builder, integrator, technical_writer, api_documentation, architecture_documentation, operations_writer, specification_writer]
       args: { path: { kind: workspace_path, access: write }, content: { kind: bounded_string, max_len: 5242880 } }
       limits: { max_calls_per_task: 500, max_result_bytes: 4096, timeout_s: 10 }
+      # The specification writer writes only what its three Spec Kit skills write (section 14a,
+      # agent_stage_profiles.specification.skills.allowed): the specification, the checklist
+      # files and the active-feature pointer. It does not write the constitution; that is a
+      # protected-path exception a human approves (change_protected_path).
+      role_scopes:
+        specification_writer: { paths: ["specs/*/spec.md", "specs/*/checklists/*.md", ".specify/feature.json"] }
       human_gate: none
-      notes: "Writes go through path_access and protected_paths. Atomic temp-file plus rename."
+      notes: "Writes go through path_access and protected_paths. Atomic temp-file plus rename. A role scope narrows further and never widens: a path must pass the scope, the task's owned files and the protected paths."
     - id: fs.delete
       risk: medium
       profiles: [agent]
@@ -551,12 +616,16 @@ tools:
     - id: exec.run
       risk: high
       profiles: [agent, verify, fetch_deps]
-      roles: [builder, integrator, qa, adversarial_reviewer]
+      roles: [builder, integrator, qa, adversarial_reviewer, specification_writer]
       args:
         argv: { kind: argv_array, policy: command_sets }   # array of strings, never one shell string
         cwd: { kind: workspace_path, access: read }
         env: { kind: fixed_by_supervisor }                 # agent cannot add environment variables
       limits: { max_calls_per_task: 300, max_result_bytes: 262144, timeout_s: 600, kill_process_group: true }
+      # The specification writer runs the Spec Kit helper scripts and nothing else: not cargo,
+      # not a package manager, not a shell, and not the helper scripts of the denied skills.
+      role_scopes:
+        specification_writer: { command_sets: [spec_kit_helpers] }
       human_gate: none
       notes: "In fetch_deps the commands are chosen by the supervisor after the dependency decision, not requested by an agent. The same wrapper and command_sets apply."
     - id: exec.shell
@@ -626,12 +695,21 @@ command_sets:
     - id: rust
       executables:
         cargo:
-          allowed_subcommands: [build, check, test, clippy, fmt, doc, tree, metadata, nextest, deny, audit]
+          # `fetch` is in the list so that the fetch_deps profile can run `cargo fetch`. Outside
+          # that profile the class `install_scripts_outside_fetch` denies it before this list is
+          # read. The caller writes `cargo fetch`; the wrapper adds `--locked` (a second
+          # `--locked` is an error in cargo, because the wrapper does not remove duplicates).
+          # Dependency-free fixtures (the Slice 1 command-line tool) need nothing else here.
+          allowed_subcommands: [build, check, test, clippy, fmt, doc, tree, metadata, nextest, deny, audit, fetch]
           forbidden_args: ["--config", "--manifest-path=/", "-Z", "--registry", "--index"]
           forced_args: { agent: ["--offline", "--locked"], verify: ["--offline", "--locked"], fetch_deps: ["--locked"] }
         rustc: { allowed_subcommands: [], forbidden_args: ["-C", "--codegen", "-Z"] }
         rustfmt: { allowed_subcommands: [] }
+      # Offline by default. The fetch_deps profile is the one place cargo may use the network,
+      # and only through the egress proxy (section 8, profile fetch_deps).
       env: { CARGO_TERM_COLOR: never, CARGO_NET_OFFLINE: "true", RUST_BACKTRACE: "1" }
+      env_by_profile:
+        fetch_deps: { CARGO_NET_OFFLINE: "false" }
     - id: node
       executables:
         node: { allowed_subcommands: [], forbidden_args: ["--require", "-r", "--import", "--eval", "-e", "--inspect", "--inspect-brk"] }
@@ -651,6 +729,21 @@ command_sets:
       executables:
         go: { allowed_subcommands: [build, test, vet, fmt, list], forbidden_args: ["-toolexec", "-exec", "-overlay"] }
       env: { GOFLAGS: "-mod=readonly", GOPROXY: "off", GONOSUMDB: "", GOTOOLCHAIN: "local" }
+    - id: spec_kit_helpers
+      # The helper scripts the allowed Spec Kit skills call (integration guide section 11.1). The
+      # name is bare, as for every other set: the supervisor's fixed read-only PATH holds the
+      # hash-checked `.specify/scripts/bash` directory in the specification stage and nowhere
+      # else. A path (`.specify/scripts/bash/x.sh`) is refused as not bare, and an interpreter
+      # (`bash x.sh`) is the forbidden class `shell_interpreters`.
+      # Left out on purpose: setup-plan.sh and setup-tasks.sh belong to the denied plan and tasks
+      # skills, create-new-feature.sh makes a branch and numbers a directory (the factory chooses
+      # the feature directory and never reads the branch, ADR 0006), and common.sh is sourced by
+      # the others and never run.
+      executables:
+        check-prerequisites.sh: { allowed_subcommands: [] }
+        resolve-template.sh: { allowed_subcommands: [] }
+      env: { LC_ALL: "C" }
+      notes: "Held only by the specification_writer role (tools.entries exec.run, role_scopes). Network is off in the agent profile whatever the script does."
   threats: [T-06, T-13, T-29]
 
 # -----------------------------------------------------------------------------
@@ -934,6 +1027,8 @@ credentials:
       dedicated_per_deployment: true
       hard_spend_limit_required: true
       rotation_days: 180
+    # Not needed for the two accepted tools: both can be redirected to the broker and both read the
+    # credential from a file (spike 4.3 and 4.5). It applies only to a future CLI that cannot be.
     fallback_if_cli_cannot_use_broker: documented_residual_risk   # see secrets-and-credentials.md section 4.4
     # Default (ADR 0009 item 2): API keys with a provider-side hard spend limit,
     # held by the broker. Subscription (OAuth) logins, such as a claude.ai or a
@@ -953,7 +1048,7 @@ credentials:
         max_days_until_expiry: 30
         evidence_label: host_subscription_demo
         counts_as_real_provider_smoke_test: only_if_the_signed_decision_says_so
-        runs_without: [--bare]            # --bare never reads OAuth or keychain (claude --help); the exception must compensate for the lost neutralization
+        runs_without: [--bare]            # --bare never reads OAuth or keychain (claude --help), so a login cannot use it. The factory flags do not rely on --bare, so nothing is lost: the run keeps --setting-sources user and --strict-mcp-config
   rotation_slas:
     leaked_or_suspected_hours: 1
     high_privilege_days: 90
@@ -1026,14 +1121,22 @@ webhook:
 # The engine takes the lower of this value and the ADR 0009 default, and a test
 # in the policy-evaluation work package fails if this file exceeds 2.
 #
-# Turn and tool-call caps. Claude Code 2.1.311 has no `--max-turns` and Codex
-# `exec` shows no budget flag (ADR 0005), and the agent CLI runs inside the
-# sandbox, so the factory does not see individual tool calls. The broker
-# therefore counts MODEL REQUESTS as turns (`turn_accounting`). The
-# `max_tool_calls` value is enforced only for commands the factory itself
-# runs (gates, dependency fetch, version control) and, if the host tool bridge
-# is ever chosen, for bridge tools. Whether a CLI exposes a turn cap is a
-# question for the agent-runtime spike.
+# Turn and tool-call caps. The agent CLI runs inside the sandbox, so the factory
+# does not see individual tool calls. The broker therefore counts MODEL REQUESTS
+# as turns (`turn_accounting`), and that count is the cap. The agent-runtime
+# spike (docs/spikes/agent-runtime.md section 4.7) found that Claude Code 2.1.311
+# does have a turn cap, the hidden `--max-turns` flag and the `CLAUDE_CODE_MAX_TURNS`
+# variable, and that both work. It is a second line, set from `per_task.max_turns`,
+# and the probe tests it by behavior because a hidden flag can vanish. Codex 0.163.0
+# has no turn or budget flag, so only the broker and the supervisor cap it. The
+# `max_tool_calls` value is enforced only for commands the factory itself runs
+# (gates, dependency fetch, version control) and, if the host tool bridge is ever
+# chosen, for bridge tools.
+#
+# Exhaustion (ADR 0010, ADR 0009 item 3). A limit reached sends the work to a
+# person; it does not fail the stage and it does not mark it BLOCKED. BLOCKED
+# stays for gates that cannot run and for violations a deterministic check
+# detects. See `on_exhaustion` below.
 budgets:
   enforced_by: [model_broker, scheduler]
   turn_accounting: broker_model_request_count
@@ -1054,7 +1157,12 @@ budgets:
     window_iterations: 3
     action_on_no_new_passing_evidence: escalate_needs_human
   thresholds: { warn_at_fraction: 0.8, stop_at_fraction: 1.0 }
-  on_exhaustion: stop_job_revoke_job_token_mark_BLOCKED
+  # The running stage run goes to WAITING_FOR_HUMAN and the job follows. No new attempt
+  # is leased while the job is not active. The broker revokes the job token, and the
+  # supervisor kills the container, because a CLI retries a refused token for a minute or
+  # more (docs/spikes/agent-runtime.md section 4.7). A person then answers: an org_admin
+  # raises the ceiling (`raise_budget_ceiling`), or the job ends.
+  on_exhaustion: stop_job_revoke_job_token_wait_for_human
   per_request_caps: { max_input_tokens: 200000, max_output_tokens: 32000 }
   threats: [T-26]
 
@@ -1074,6 +1182,10 @@ gate_integrity:
   reviewer_sees_builder_self_justification: false
   nonwaivable_gates: [protected_path_check, secret_scan, sandbox_posture, evidence_binding, test_regression_check, signature_verification, stage_profile_check]
   evidence_binding: [head_sha, tree_hash, gate_definition_hash, policy_hash, image_digest, base_sha]
+  # Each item maps to a row of the invalidation table in docs/architecture/state-machine.md
+  # (section Invalidation, "How each item of gate_integrity.invalidated_by maps to a row"),
+  # with the point at which it is checked. A rebase writes new commits, so `rebase` is a
+  # `new_commit`. The approval list in approval.yaml uses the same names without `rebase`.
   invalidated_by: [new_commit, rebase, base_moved, policy_change, spec_revision, image_change]
   test_regression:
     baseline_from: trusted_run_on_base_commit
@@ -1113,6 +1225,10 @@ untrusted_content:
   structured_output:
     schema_validated: true
     unknown_fields: reject
+    # A repair is a retry after an invalid output, and it counts as an attempt. A project may
+    # lower this number and never raise it, at most 2 (ADR 0010); the engine refuses a larger
+    # value and the tighten rules treat it as a ceiling. After the last repair the stage goes to
+    # a person, or fails when its contract does not list INVALID_OUTPUT in `retry_on`.
     bounded_repair_attempts: 2
     max_output_bytes: 524288
   injection_signal_detector:
@@ -1133,30 +1249,83 @@ untrusted_content:
     source: structured_field_written_by_authenticated_human
     parsed_from_prose: never
   agent_runtimes:
-    # Verified against `claude --help` (2.1.311) and `codex exec --help` (0.163.0)
-    # on 2026-10-27: these flags exist. Whether each one fully neutralizes
-    # repo-resident configuration MUST be proven by the adapter capability probe
-    # and by NT-INJ-07 before the adapter is enabled.
+    # Verified by the agent-runtime spike (docs/spikes/agent-runtime.md section 4) for
+    # Claude Code 2.1.311 and Codex 0.163.0, in the real hardened container profile
+    # against a labelled fake provider, on 2026-10-27. A real provider is not verified.
+    # The adapter capability probe and NT-INJ-07 still run before an adapter is enabled,
+    # and the probe tests behavior, not flag presence: the turn cap of Claude Code is a
+    # hidden flag. Only these two versions are accepted until a probe run proves another.
     claude_code:
-      # Flags for EVERY stage. `--disable-slash-commands` is NOT in this list:
-      # it disables all skills and commands (verified in `claude --help`), which
-      # would stop the Spec Kit skills from resolving. It is applied per stage
-      # by `agent_stage_profiles` below: on for every stage except SPECIFICATION.
-      required_flags: [--bare, --strict-mcp-config, --no-session-persistence]
+      # Flags for EVERY stage. `--disable-slash-commands` is NOT in this list: it
+      # disables all skills and commands, which would stop the Spec Kit skills from
+      # resolving. It is applied per stage by `agent_stage_profiles` below: on for
+      # every stage except SPECIFICATION.
+      # `--bare` is NOT in this list and nothing relies on it (spike 4.6). In a hostile
+      # workspace it still honored the `env` block of `.claude/settings.json`, which sent
+      # the model traffic to an attacker host, and it resolves no project or user skills.
+      # What neutralizes the repository's own configuration is `--setting-sources user`
+      # together with `--strict-mcp-config`: the settings source is the user one only, and
+      # the user home is the empty scratch tmpfs (`HOME=/tmp`), so no repository hook,
+      # `env` block, MCP server or CLAUDE.md is read. Those files are also write-denied
+      # (`agent_instruction_files`). `--model` is always given, because the tool's default
+      # is the most expensive model.
+      required_flags:
+        - "--model <the explicit model of the manifest's recommended_models>"
+        - "--max-turns <budgets.hard_ceilings.per_task.max_turns>"
+        - "--setting-sources user"
+        - "--strict-mcp-config"
+        - "--no-session-persistence"
+        - "--settings <factory-generated JSON whose apiKeyHelper is `cat /run/factory/job-token`>"
       per_stage_flags_ref: agent_stage_profiles
-      # Per `claude --help`, "--bare" still resolves skills via /skill-name. That
-      # project skills under .claude/skills resolve with --bare is UNVERIFIED: the
-      # Spec Kit specialist's verified run used --setting-sources project,local
-      # --strict-mcp-config without --bare. The agent-runtime spike decides.
-      settings_source: factory_generated_file_via_--settings
-      tools_flag: "--tools / --allowedTools / --disallowedTools from the manifest"
-      per_run_budget_flag: --max-budget-usd
-      forbidden_flags_outside_verified_sandbox: [--dangerously-skip-permissions, --allow-dangerously-skip-permissions]
-      auth: ANTHROPIC_API_KEY_or_apiKeyHelper_pointing_at_job_token   # --bare never reads OAuth or keychain (documented in --help)
+      # The one setting that stops the background traffic (telemetry and a registry fetch to
+      # api.anthropic.com) is an environment setting, not a flag. `--bare` and the three
+      # DISABLE_* variables do not stop it (spike 4.4). The credential is never in this list.
+      required_environment:
+        - "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1"
+        - "CLAUDE_CODE_MAX_RETRIES=2"
+        - "HOME=/tmp"
+      settings_source: factory_generated_json_via_--settings_and_--setting-sources_user_only
+      # Written with an equals sign: a variadic option swallows the prompt. These are a
+      # filter on what the model may ask for, not a boundary: a nested shell reads a file
+      # that a deny rule protects (spike 4.8). A deny rule path is `./path` (relative) or
+      # `//path` (absolute); `/path` with one slash silently matches nothing.
+      tools_flag: "--tools=, --allowedTools=, --disallowedTools= from the manifest and the grants"
+      # A second line only. The broker counts requests and tokens and the supervisor kills the
+      # container; the tool's own price list means nothing behind a broker (spike 4.7).
+      per_run_budget_flag: "--max-turns (also CLAUDE_CODE_MAX_TURNS) and --max-budget-usd"
+      forbidden_flags_outside_verified_sandbox: [--dangerously-skip-permissions, --allow-dangerously-skip-permissions, "--permission-mode bypassPermissions"]
+      # The helper reads the token file at the fixed path. An environment variable is
+      # forbidden: the shell the model drives sees it, and so does the parent (spike 4.5).
+      auth: apiKeyHelper_reading_/run/factory/job-token_never_an_environment_variable
     codex_cli:
-      required_flags: [--ignore-user-config, --ignore-rules, --ephemeral, "--sandbox read-only|workspace-write"]
+      # `-m` is always given (the default is the most expensive model). The provider is a
+      # custom entry, because Codex ignores OPENAI_BASE_URL and its built-in provider tries a
+      # WebSocket first. The entry sets wire_api="responses", supports_websockets=false, the
+      # sidecar's plain-HTTP base_url and auth={command="cat", args=["/run/factory/job-token"]}.
+      # `--disable plugins` and `-c analytics.enabled=false` together stop the traffic to other
+      # hosts; each alone does not (spike 4.4). `--disable unbounded_connection_retries` makes
+      # an unreachable broker end the run, where the default retries forever.
+      # `--ignore-user-config` and `--ignore-rules` do NOT stop AGENTS.md; `project_doc_max_bytes=0`
+      # does (spike 4.6). They stay as harmless extra layers.
+      # Codex's own sandbox cannot start inside the container (no user namespace under the
+      # default seccomp profile), so a `--sandbox` mode runs nothing. The bypass flag is
+      # required, and it is acceptable only because the container is the boundary: it is
+      # forbidden everywhere else. Standard input is closed or /dev/null, because Codex appends
+      # it to the prompt.
+      required_flags:
+        - "-m <the explicit model of the manifest's recommended_models>"
+        - "-c model_provider=\"factory_broker\""
+        - "-c model_providers.factory_broker={name=\"factory_broker\", base_url=\"<sidecar address>/v1\", wire_api=\"responses\", supports_websockets=false, auth={command=\"cat\", args=[\"/run/factory/job-token\"]}}"
+        - "--disable plugins"
+        - "-c analytics.enabled=false"
+        - "--disable unbounded_connection_retries"
+        - "-c project_doc_max_bytes=0"
+        - "--ephemeral"
+        - "--ignore-user-config"
+        - "--ignore-rules"
+        - "--dangerously-bypass-approvals-and-sandbox"
       forbidden_flags_outside_verified_sandbox: [--dangerously-bypass-approvals-and-sandbox, --dangerously-bypass-hook-trust]
-      env_policy: "shell_environment_policy.inherit=none plus explicit allowlist (key exists per --help example; exact syntax to confirm)"
+      env_policy: "the credential is never an environment variable: it is read from /run/factory/job-token by the provider's auth command, because Codex passes its whole environment, a key variable included, to the shell the model drives (spike 4.5)"
     probe_required_before_enable: true
     repo_config_files_never_honored: [".claude/settings.json", ".claude/settings.local.json", ".mcp.json", ".codex/config.toml", "CLAUDE.md", "AGENTS.md"]
     instruction_files_are_data: true   # factory-authored instructions are passed explicitly; repo copies are data
@@ -1193,8 +1362,12 @@ agent_stage_profiles:
       claude_code:
         flags_add: [--disable-slash-commands]
       codex_cli:
-        skill_visibility: hidden_by_overlay # Codex has no verified skill-disable flag; see hide_skill_roots_in_sandbox
-      hide_skill_roots_in_sandbox:          # read-only empty overlays (mechanism verified, sandbox-policy.md M1)
+        # Hidden by overlay, and the bundled skills are switched off with
+        # `-c skills.bundled.enabled=false`. A per-path `-c skills.config=[{path=..., enabled=false}]`
+        # also hides a skill. Both verified (spike 4.6); `codex debug prompt-input` lists what is
+        # visible with no model call.
+        skill_visibility: hidden_by_overlay_and_skills.bundled.enabled=false
+      hide_skill_roots_in_sandbox:          # read-only empty overlays (mechanism verified for both tools, sandbox-policy.md M1)
         - ".claude/skills"
         - ".claude/commands"
         - ".agents/skills"
@@ -1204,9 +1377,22 @@ agent_stage_profiles:
       skills_and_slash_commands: allowlist_only
       claude_code:
         flags_omit: [--disable-slash-commands]
-        skill_permission_rule: unverified   # whether Claude Code accepts a per-skill permission rule is a spike question
+        # `--setting-sources user` (every stage) hides the project skill root, and `--bare` also
+        # resolves no skill, so the supervisor mounts the four pinned, hash-checked skill
+        # directories read-only in the USER skill root, `~/.claude/skills/speckit-<name>` (the
+        # home is `/tmp`; spike 4.6). The model then sees exactly four skills under their normal
+        # names, and a prompt that starts with `/speckit-specify` expands. The six empty overlays
+        # are the tool to use only where project skills must stay visible. A mount inside the
+        # tmpfs home leaves root-owned parent directories, which Claude Code tolerates and Codex
+        # does not, so nothing is mounted below `~/.codex`.
+        # A `Skill(speckit-plan)` deny rule blocks the model's Skill tool call and does not block a
+        # prompt that begins with the slash command; the adapter writes the prompt, so it is a
+        # second layer.
+        skill_permission_rule: supported_for_the_Skill_tool_not_for_a_typed_slash_command
       codex_cli:
-        skill_visibility: allowlist_only
+        # Six read-only empty overlays over the denied directories under `.agents/skills`, plus
+        # `-c skills.bundled.enabled=false`. A prompt that starts with `$speckit-specify` expands.
+        skill_visibility: allowlist_only_by_overlay_and_skills.bundled.enabled=false
       skills:
         deny_wins_over_allow: true
         allowed:                            # exactly these four, and nothing else (writes follow integration-guide section 8.4)
@@ -1297,6 +1483,9 @@ supply_chain:
 # -----------------------------------------------------------------------------
 tenancy:
   tenant_id_on_every_row: true
+  # Row-level security is part of Slice 1 (ADR 0012); it is not deferred. The tenant setting is
+  # made in every transaction, the system scope has its own role, and two narrow functions
+  # serve the lookups that happen before a tenant is known. NT-TEN-01 has its first pass in Slice 1.
   database_row_level_security: required
   object_store: { prefix_per_tenant: true, key_per_tenant: recommended }
   messaging: { subject_prefix_per_tenant: true, per_tenant_publish_subscribe_permissions: true }

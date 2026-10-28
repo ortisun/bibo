@@ -304,31 +304,71 @@
         "T-24"
       ],
       "when": "a job is bound to exactly one repository; cross-repository writes are a new job"
+    },
+    {
+      "approver_roles": [
+        "org_admin"
+      ],
+      "id": "raise_autonomy_level",
+      "min_level": "L0",
+      "requires": "human",
+      "threats": [
+        "T-14",
+        "T-23"
+      ],
+      "when": "moves a repository up the ladder, never to a level that is turned off (L3); a repository capped at L0 is raised from L0; needs step-up authentication; recorded as an audit event"
+    },
+    {
+      "approver_roles": [
+        "repo_admin",
+        "org_admin"
+      ],
+      "id": "lower_autonomy_level",
+      "min_level": "L0",
+      "requires": "human",
+      "threats": [
+        "T-14",
+        "T-23"
+      ],
+      "when": "moves a repository down the ladder; a repo_admin may, and so may an org_admin, which is how the engine decides it"
+    },
+    {
+      "approver_roles": [
+        "approver"
+      ],
+      "id": "acknowledge_documentation_warning",
+      "min_level": "L1",
+      "requires": "human",
+      "threats": [
+        "T-23"
+      ],
+      "when": "one decision for each open warning of the reviewer rule `translation-unfaithful` in the gate reports of the evidence the approver saw; approval of the stage is refused while one has none (guard G_APPROVER_AUTHORIZED, ADR 0009 item 17)"
     }
   ],
   "always_human": [
+    "raise_autonomy_level",
+    "change_protected_path",
+    "add_new_direct_dependency",
+    "widen_egress_allowlist",
+    "grant_tool_outside_manifest",
+    "use_exec_shell_breakglass",
+    "raise_budget_ceiling",
+    "waive_failed_gate",
+    "accept_residual_risk",
+    "write_to_additional_repository",
+    "send_code_to_new_model_provider",
+    "install_spec_kit_or_tooling",
+    "change_authority_allowlist",
+    "accept_subscription_login_exception",
+    "acknowledge_documentation_warning",
     "merge_to_default_branch_unless_L3_explicitly_enabled",
     "enable_auto_merge_for_a_repository",
-    "raise_autonomy_level",
     "any_deployment_or_release_publication",
     "publish_package_or_container_image",
     "create_or_push_tags",
-    "change_protected_path",
     "modify_ci_workflows_or_gate_configuration",
     "modify_security_or_approval_policy",
-    "add_new_direct_dependency",
-    "widen_egress_allowlist",
-    "grant_tool_outside_agent_manifest",
-    "enable_exec_shell_breakglass",
-    "raise_budget_ceiling",
-    "waive_any_gate",
-    "accept_residual_risk",
     "freeze_specification_with_risk_at_least_medium",
-    "access_additional_repository_or_organization",
-    "send_code_to_additional_model_provider",
-    "install_or_update_spec_kit_or_other_tooling",
-    "change_authority_allowlist",
-    "accept_subscription_login_exception",
     "delete_branch_repository_release_or_data",
     "force_push_or_rewrite_history",
     "money_movement_live_orders_or_capital_transfer",
@@ -345,16 +385,18 @@
       "spec_version",
       "base_sha"
     ],
+    "checked_when_used": [
+      "evidence_manifest_hash_differs_from_the_one_the_approver_saw",
+      "approver_removed_from_allowlist_or_entry_expired"
+    ],
     "expires_after_hours": 72,
     "github_merge_must_pass_expected_head_sha": true,
     "invalidated_by": [
-      "new_commit_on_head",
-      "rebase_or_force_push",
-      "base_branch_moved_requiring_resync",
+      "new_commit",
+      "base_moved",
       "policy_change",
-      "specification_revision",
-      "any_gate_result_changed",
-      "approver_removed_from_allowlist_or_entry_expired"
+      "image_change",
+      "spec_revision"
     ],
     "record_fields": [
       "approval_id",
@@ -376,7 +418,7 @@
       "raise_budget_ceiling",
       "raise_autonomy_level",
       "accept_residual_risk",
-      "waive_any_gate"
+      "waive_failed_gate"
     ]
   },
   "authority": {

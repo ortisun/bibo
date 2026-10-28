@@ -12,7 +12,7 @@
           ]
         },
         "codex_cli": {
-          "skill_visibility": "hidden_by_overlay"
+          "skill_visibility": "hidden_by_overlay_and_skills.bundled.enabled=false"
         },
         "hide_skill_roots_in_sandbox": [
           ".claude/skills",
@@ -32,10 +32,10 @@
           "flags_omit": [
             "--disable-slash-commands"
           ],
-          "skill_permission_rule": "unverified"
+          "skill_permission_rule": "supported_for_the_Skill_tool_not_for_a_typed_slash_command"
         },
         "codex_cli": {
-          "skill_visibility": "allowlist_only"
+          "skill_visibility": "allowlist_only_by_overlay_and_skills.bundled.enabled=false"
         },
         "detection": [
           "denied_skill_id_in_cli_event_stream_or_permission_denials",
@@ -212,7 +212,7 @@
         "max_wall_clock_s": 3600
       }
     },
-    "on_exhaustion": "stop_job_revoke_job_token_mark_BLOCKED",
+    "on_exhaustion": "stop_job_revoke_job_token_wait_for_human",
     "per_request_caps": {
       "max_input_tokens": 200000,
       "max_output_tokens": 32000
@@ -245,6 +245,11 @@
           "CARGO_TERM_COLOR": "never",
           "RUST_BACKTRACE": "1"
         },
+        "env_by_profile": {
+          "fetch_deps": {
+            "CARGO_NET_OFFLINE": "false"
+          }
+        },
         "executables": {
           "cargo": {
             "allowed_subcommands": [
@@ -258,7 +263,8 @@
               "metadata",
               "nextest",
               "deny",
-              "audit"
+              "audit",
+              "fetch"
             ],
             "forbidden_args": [
               "--config",
@@ -403,6 +409,21 @@
           }
         },
         "id": "go"
+      },
+      {
+        "env": {
+          "LC_ALL": "C"
+        },
+        "executables": {
+          "check-prerequisites.sh": {
+            "allowed_subcommands": []
+          },
+          "resolve-template.sh": {
+            "allowed_subcommands": []
+          }
+        },
+        "id": "spec_kit_helpers",
+        "notes": "Held only by the specification_writer role (tools.entries exec.run, role_scopes). Network is off in the agent profile whatever the script does."
       }
     ],
     "threats": [
@@ -990,7 +1011,7 @@
     },
     {
       "action": "deny",
-      "description": "Package installs may run only in the fetch_deps profile with scripts disabled.",
+      "description": "Package installs and downloads may run only in the fetch_deps profile. Inside that profile the command sets decide which of them exist: `cargo fetch` and `cargo metadata` for Slice 1, no install, add, update or vendor, and the next class keeps repository code out.",
       "except_profiles": [
         "fetch_deps"
       ],
@@ -1001,6 +1022,31 @@
           "(?i)\\bpip[0-9.]*\\b\\s+(install|download)\\b",
           "(?i)\\bcargo\\b\\s+(install|add|update|fetch|vendor)\\b",
           "(?i)\\bgo\\b\\s+(get|install)\\b"
+        ]
+      }
+    },
+    {
+      "action": "deny",
+      "description": "The fetch_deps profile downloads and runs no repository code: no build script, procedural macro, test binary, project script or interpreter, because it is the one profile with a network. Applies to fetch_deps only (the other two profiles are excepted).",
+      "except_profiles": [
+        "agent",
+        "verify"
+      ],
+      "id": "repository_code_in_fetch_deps",
+      "match": {
+        "argv_regex": [
+          "(?i)\\bcargo\\b\\s+(build|check|test|clippy|doc|nextest|run|bench|rustc|rustdoc|fix|miri)\\b",
+          "(?i)\\b(npm|pnpm|yarn)\\b\\s+(run|test|pack|exec|start|rebuild)\\b",
+          "(?i)\\bgo\\b\\s+(build|test|vet|run|generate)\\b"
+        ],
+        "executables": [
+          "rustc",
+          "node",
+          "npx",
+          "python",
+          "pytest",
+          "mypy",
+          "ruff"
         ]
       }
     }
@@ -1395,26 +1441,26 @@
       {
         "applies_to": "both",
         "globs": [
-          ".env",
-          ".env.*",
-          "!.env.example",
+          "**/.env",
+          "**/.env.*",
+          "!**/.env.example",
           "**/*.pem",
           "**/*.key",
           "**/*.p12",
           "**/*.pfx",
           "**/id_rsa*",
           "**/id_ed25519*",
-          ".netrc",
-          ".pypirc",
-          ".git-credentials",
-          ".aws/**",
-          ".ssh/**",
-          ".docker/config.json",
+          "**/.netrc",
+          "**/.pypirc",
+          "**/.git-credentials",
+          "**/.aws/**",
+          "**/.ssh/**",
+          "**/.docker/config.json",
           "**/credentials*.json"
         ],
         "id": "secret_bearing_files",
         "mode": "hidden",
-        "reason": "Never mounted, never read into context, never allowed in a diff.",
+        "reason": "Never mounted, never read into context, never allowed in a diff. Hidden at any depth, not only at the repository root.",
         "threats": [
           "T-16",
           "T-19",
@@ -1435,6 +1481,25 @@
         "threats": [
           "T-15",
           "T-12"
+        ]
+      },
+      {
+        "applies_to": "factory_repo",
+        "globs": [
+          "xtask/**",
+          "schemas/validate.sh",
+          "docs/architecture/crate-dependency-rules.json",
+          "docs/architecture/tools/**",
+          "fixtures/readability/**",
+          "crates/domain/tests/oracle/**",
+          "crates/domain/tests/tools/**"
+        ],
+        "id": "factory_gate_tooling",
+        "mode": "deny_write",
+        "reason": "When the factory works on its own repository, the tools and test oracles that its gates run are protected, as the CI entry point and the gate configuration are.",
+        "threats": [
+          "T-12",
+          "T-13"
         ]
       }
     ],
@@ -1488,7 +1553,9 @@
           "infra/**",
           "**/*.tf",
           "k8s/**",
-          "helm/**"
+          "helm/**",
+          "scripts/dev-up.sh",
+          ".env.example"
         ],
         "id": "container_and_infrastructure"
       },
@@ -1501,7 +1568,10 @@
           "security_reviewer"
         ],
         "globs": [
-          "crates/policy/**",
+          "crates/domain/src/policy/**",
+          "crates/domain/src/redaction/**",
+          "crates/contracts/**",
+          "crates/egress/**",
           "crates/sandbox/**",
           "crates/github/**",
           "crates/runtime/**"
@@ -2028,6 +2098,20 @@
           "verify"
         ],
         "risk": "low",
+        "role_scopes": {
+          "specification_reviewer": {
+            "paths": [
+              "specs/**"
+            ]
+          },
+          "specification_writer": {
+            "paths": [
+              "specs/**",
+              ".specify/**",
+              "inputs/**"
+            ]
+          }
+        },
         "roles": [
           "builder",
           "integrator",
@@ -2046,7 +2130,9 @@
           "architecture_documentation",
           "operations_writer",
           "documentation_reviewer",
-          "repository_analyst"
+          "repository_analyst",
+          "specification_writer",
+          "specification_reviewer"
         ]
       },
       {
@@ -2068,6 +2154,20 @@
           "verify"
         ],
         "risk": "low",
+        "role_scopes": {
+          "specification_reviewer": {
+            "paths": [
+              "specs/**"
+            ]
+          },
+          "specification_writer": {
+            "paths": [
+              "specs/**",
+              ".specify/**",
+              "inputs/**"
+            ]
+          }
+        },
         "roles": [
           "builder",
           "integrator",
@@ -2086,7 +2186,9 @@
           "architecture_documentation",
           "operations_writer",
           "documentation_reviewer",
-          "repository_analyst"
+          "repository_analyst",
+          "specification_writer",
+          "specification_reviewer"
         ]
       },
       {
@@ -2145,18 +2247,28 @@
           "max_result_bytes": 4096,
           "timeout_s": 10
         },
-        "notes": "Writes go through path_access and protected_paths. Atomic temp-file plus rename.",
+        "notes": "Writes go through path_access and protected_paths. Atomic temp-file plus rename. A role scope narrows further and never widens: a path must pass the scope, the task's owned files and the protected paths.",
         "profiles": [
           "agent"
         ],
         "risk": "medium",
+        "role_scopes": {
+          "specification_writer": {
+            "paths": [
+              "specs/*/spec.md",
+              "specs/*/checklists/*.md",
+              ".specify/feature.json"
+            ]
+          }
+        },
         "roles": [
           "builder",
           "integrator",
           "technical_writer",
           "api_documentation",
           "architecture_documentation",
-          "operations_writer"
+          "operations_writer",
+          "specification_writer"
         ]
       },
       {
@@ -2211,11 +2323,19 @@
           "fetch_deps"
         ],
         "risk": "high",
+        "role_scopes": {
+          "specification_writer": {
+            "command_sets": [
+              "spec_kit_helpers"
+            ]
+          }
+        },
         "roles": [
           "builder",
           "integrator",
           "qa",
-          "adversarial_reviewer"
+          "adversarial_reviewer",
+          "specification_writer"
         ]
       },
       {
@@ -2381,6 +2501,10 @@
       }
     ],
     "grant_authority": "policy_engine",
+    "misuse_threshold": {
+      "max_denied_requests_per_task": 3,
+      "on_threshold": "needs_human"
+    },
     "never_grantable": [
       "github.write",
       "vcs.push",
@@ -2401,32 +2525,48 @@
   "untrusted_content": {
     "agent_runtimes": {
       "claude_code": {
-        "auth": "ANTHROPIC_API_KEY_or_apiKeyHelper_pointing_at_job_token",
+        "auth": "apiKeyHelper_reading_/run/factory/job-token_never_an_environment_variable",
         "forbidden_flags_outside_verified_sandbox": [
           "--dangerously-skip-permissions",
-          "--allow-dangerously-skip-permissions"
+          "--allow-dangerously-skip-permissions",
+          "--permission-mode bypassPermissions"
         ],
-        "per_run_budget_flag": "--max-budget-usd",
+        "per_run_budget_flag": "--max-turns (also CLAUDE_CODE_MAX_TURNS) and --max-budget-usd",
         "per_stage_flags_ref": "agent_stage_profiles",
-        "required_flags": [
-          "--bare",
-          "--strict-mcp-config",
-          "--no-session-persistence"
+        "required_environment": [
+          "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1",
+          "CLAUDE_CODE_MAX_RETRIES=2",
+          "HOME=/tmp"
         ],
-        "settings_source": "factory_generated_file_via_--settings",
-        "tools_flag": "--tools / --allowedTools / --disallowedTools from the manifest"
+        "required_flags": [
+          "--model <the explicit model of the manifest's recommended_models>",
+          "--max-turns <budgets.hard_ceilings.per_task.max_turns>",
+          "--setting-sources user",
+          "--strict-mcp-config",
+          "--no-session-persistence",
+          "--settings <factory-generated JSON whose apiKeyHelper is `cat /run/factory/job-token`>"
+        ],
+        "settings_source": "factory_generated_json_via_--settings_and_--setting-sources_user_only",
+        "tools_flag": "--tools=, --allowedTools=, --disallowedTools= from the manifest and the grants"
       },
       "codex_cli": {
-        "env_policy": "shell_environment_policy.inherit=none plus explicit allowlist (key exists per --help example; exact syntax to confirm)",
+        "env_policy": "the credential is never an environment variable: it is read from /run/factory/job-token by the provider's auth command, because Codex passes its whole environment, a key variable included, to the shell the model drives (spike 4.5)",
         "forbidden_flags_outside_verified_sandbox": [
           "--dangerously-bypass-approvals-and-sandbox",
           "--dangerously-bypass-hook-trust"
         ],
         "required_flags": [
+          "-m <the explicit model of the manifest's recommended_models>",
+          "-c model_provider=\"factory_broker\"",
+          "-c model_providers.factory_broker={name=\"factory_broker\", base_url=\"<sidecar address>/v1\", wire_api=\"responses\", supports_websockets=false, auth={command=\"cat\", args=[\"/run/factory/job-token\"]}}",
+          "--disable plugins",
+          "-c analytics.enabled=false",
+          "--disable unbounded_connection_retries",
+          "-c project_doc_max_bytes=0",
+          "--ephemeral",
           "--ignore-user-config",
           "--ignore-rules",
-          "--ephemeral",
-          "--sandbox read-only|workspace-write"
+          "--dangerously-bypass-approvals-and-sandbox"
         ]
       },
       "instruction_files_are_data": true,

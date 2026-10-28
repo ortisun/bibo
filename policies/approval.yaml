@@ -228,35 +228,53 @@ actions:
   - { id: accept_residual_risk,           min_level: L1, requires: human,            approver_roles: [security_approver], when: "owner and expiry recorded", threats: [T-31] }
   - { id: send_code_to_new_model_provider, min_level: L1, requires: human,           approver_roles: [org_admin], threats: [T-20, T-28] }
   - { id: write_to_additional_repository, min_level: L1, requires: human,            approver_roles: [org_admin], when: "a job is bound to exactly one repository; cross-repository writes are a new job", threats: [T-24] }
+  - { id: raise_autonomy_level,           min_level: L0, requires: human,            approver_roles: [org_admin], when: "moves a repository up the ladder, never to a level that is turned off (L3); a repository capped at L0 is raised from L0; needs step-up authentication; recorded as an audit event", threats: [T-14, T-23] }
+  - { id: lower_autonomy_level,           min_level: L0, requires: human,            approver_roles: [repo_admin, org_admin], when: "moves a repository down the ladder; a repo_admin may, and so may an org_admin, which is how the engine decides it", threats: [T-14, T-23] }
+  - { id: acknowledge_documentation_warning, min_level: L1, requires: human,         approver_roles: [approver], when: "one decision for each open warning of the reviewer rule `translation-unfaithful` in the gate reports of the evidence the approver saw; approval of the stage is refused while one has none (guard G_APPROVER_AUTHORIZED, ADR 0009 item 17)", threats: [T-23] }
 
 # -----------------------------------------------------------------------------
 # 5. Actions that ALWAYS require a human, at every level, for every repo
 # -----------------------------------------------------------------------------
 # No setting in this file or in a project policy can move one of these to
 # `none`. A request to do so is itself recorded as a human decision.
+#
+# Two kinds of entry. An entry that is the id of a row in `actions` uses that id
+# exactly, and the engine checks it: it refuses to build when the row lets the action
+# happen with no human at any level. An entry that is not an id (the last group) is a
+# descriptive name for something the factory has no row for, because it does not do it
+# itself; a missing row needs a human by `policy.default_action` anyway. Descriptive names
+# that used to stand for a row (`waive_any_gate`, `grant_tool_outside_agent_manifest`,
+# `enable_exec_shell_breakglass`, `access_additional_repository_or_organization`,
+# `send_code_to_additional_model_provider`, `install_or_update_spec_kit_or_other_tooling`)
+# now carry the row's id, so they are checked.
 always_human:
+  # Ids of rows in `actions`.
+  - raise_autonomy_level
+  - change_protected_path
+  - add_new_direct_dependency
+  - widen_egress_allowlist
+  - grant_tool_outside_manifest
+  - use_exec_shell_breakglass
+  - raise_budget_ceiling
+  - waive_failed_gate
+  - accept_residual_risk
+  - write_to_additional_repository
+  - send_code_to_new_model_provider
+  - install_spec_kit_or_tooling
+  - change_authority_allowlist
+  - accept_subscription_login_exception
+  - acknowledge_documentation_warning
+  # Descriptive names. `merge_pr` has a row, and its L3 level is off, so the unconditional
+  # statement is made here instead of on the row; `freeze_specification` is a human decision
+  # only from risk tier medium up, so the unconditional statement is made here as well.
   - merge_to_default_branch_unless_L3_explicitly_enabled
   - enable_auto_merge_for_a_repository
-  - raise_autonomy_level
   - any_deployment_or_release_publication
   - publish_package_or_container_image
   - create_or_push_tags
-  - change_protected_path
   - modify_ci_workflows_or_gate_configuration
   - modify_security_or_approval_policy
-  - add_new_direct_dependency
-  - widen_egress_allowlist
-  - grant_tool_outside_agent_manifest
-  - enable_exec_shell_breakglass
-  - raise_budget_ceiling
-  - waive_any_gate
-  - accept_residual_risk
   - freeze_specification_with_risk_at_least_medium
-  - access_additional_repository_or_organization
-  - send_code_to_additional_model_provider
-  - install_or_update_spec_kit_or_other_tooling
-  - change_authority_allowlist
-  - accept_subscription_login_exception
   - delete_branch_repository_release_or_data
   - force_push_or_rewrite_history
   - money_movement_live_orders_or_capital_transfer
@@ -277,15 +295,30 @@ approval_binding:
   binds_to: [pr_head_sha, tree_hash, evidence_manifest_hash, policy_hash, spec_version, base_sha]
   github_merge_must_pass_expected_head_sha: true
   expires_after_hours: 72
+  # ONE list of reasons, and it is the one the store port uses: the five variants of
+  # `ApprovalInvalidation` in crates/ports/src/store.rs, by name. They are also the items of
+  # security.yaml `gate_integrity.invalidated_by` without `rebase`, which is a `new_commit`
+  # (a rebase writes new commits, and a force push changes the head the same way). The table
+  # that says which stage runs each one supersedes is in docs/architecture/state-machine.md.
+  # An earlier draft of this file had seven reasons and no `image_change`; the image digest is
+  # part of the evidence binding, so it is here.
   invalidated_by:
-    - new_commit_on_head
-    - rebase_or_force_push
-    - base_branch_moved_requiring_resync
+    - new_commit
+    - base_moved
     - policy_change
-    - specification_revision
-    - any_gate_result_changed
+    - image_change
+    - spec_revision
+  # Two conditions the earlier draft listed as reasons are not stored reasons. They are checked
+  # when an approval is used (before DELIVERY pushes, when the approval is recorded and, in
+  # Slice 4, right before a merge), and the approval is refused then:
+  #   * a gate result changed: the evidence manifest hash the approver saw no longer equals the
+  #     current one (`binds_to` holds that hash), which guard G_APPROVER_AUTHORIZED compares;
+  #   * the approver was removed from the allowlist or the entry expired: authority is read from
+  #     the allowlist version in force at decision time and is not cached.
+  checked_when_used:
+    - evidence_manifest_hash_differs_from_the_one_the_approver_saw
     - approver_removed_from_allowlist_or_entry_expired
-  step_up_authentication_required_for: [change_protected_path, widen_egress_allowlist, raise_budget_ceiling, raise_autonomy_level, accept_residual_risk, waive_any_gate]
+  step_up_authentication_required_for: [change_protected_path, widen_egress_allowlist, raise_budget_ceiling, raise_autonomy_level, accept_residual_risk, waive_failed_gate]
   record_fields: [approval_id, tenant_id, job_id, action, approver_github_user_id, approver_designation, allowlist_version_hash, decision, binds_to, reason, channel, created_at]
 
 # -----------------------------------------------------------------------------

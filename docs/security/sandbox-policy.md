@@ -2,7 +2,7 @@
 
 Status: DESIGNED baseline. Nothing in this document is implemented in the product yet.
 Date of the Docker experiments: 2026-10-27.
-Revised the same day to match ADR 0003, 0005, 0006 and 0009: the agent CLI runs inside the sandbox, so the factory controls the boundaries and not the CLI's individual tool calls (section 2.2); the skill and slash-command flags are per stage (sections 6.3 and 10); every new direct dependency needs a human.
+Revised the same day to match ADR 0003, 0005, 0006 and 0009: the agent CLI runs inside the sandbox, so the factory controls the boundaries and not the CLI's individual tool calls (section 2.2); the skill and slash-command flags are per stage (sections 6.3 and 10); every new direct dependency needs a human. Revised again after the agent-runtime spike (`docs/spikes/agent-runtime.md`): the CLI flag table (section 10), the skill mechanisms (section 6.3), the start of the two CLIs under the profile (section 8), the job token path `/run/factory/job-token` and `HOME=/tmp` (sections 3.2 and 7), and the list of what is still not verified (section 13).
 Machine-readable form: `policies/security.yaml`, section `sandbox`, `egress`, `path_access`.
 Threat IDs (T-nn) and control IDs (C-nn) refer to `docs/security/threat-model.md`.
 Tests that prove these rules (NT-*) are in `docs/security/negative-test-catalog.md`.
@@ -39,7 +39,7 @@ The sandbox is the primary control for everything the factory runs on behalf of 
 | `agent` | Agent CLI and the commands it requests | Model broker only | Read-write for task-owned files | One job token | Yes |
 | `verify` | Build, test, lint, scan, documentation gates | None | Read-only source, writable build output | None | Yes |
 
-`fetch_deps` runs package-manager download commands only (for example `cargo fetch --locked`, `npm ci --ignore-scripts`). It never runs `build.rs`, `postinstall` or `setup.py`. Dependency changes go through a typed dependency request carried in the agent's structured result. A human decides every new direct dependency (no allowlist or heuristic approves one), and only then does a `fetch_deps` run happen. The builder cannot run `cargo add` or `npm install` itself.
+`fetch_deps` runs package-manager download commands only (for example `cargo fetch --locked`, `npm ci --ignore-scripts`). It never runs `build.rs`, `postinstall` or `setup.py`. In Slice 1 the command sets list `cargo fetch` and `cargo metadata` for it, and the class `repository_code_in_fetch_deps` denies a build, a test and an interpreter there; the npm and the other ecosystems' download commands are added with their capability profiles. Dependency changes go through a typed dependency request carried in the agent's structured result. A human decides every new direct dependency (no allowlist or heuristic approves one), and only then does a `fetch_deps` run happen. The builder cannot run `cargo add` or `npm install` itself.
 
 `verify` is a fresh container for each gate run. Gate definitions come from the base commit or from central configuration, never from the builder's workspace. Held-out tests are mounted only here, read-only. The pass or fail result is the supervisor's observation of the exit code and output, not a file the builder could have written.
 
@@ -47,7 +47,7 @@ The sandbox is the primary control for everything the factory runs on behalf of 
 
 Decided by default, pending human confirmation (ADR 0005 and ADR 0009 item 1): **the agent CLI runs inside the `agent` sandbox in Slice 1** (Model A). A person can reverse it by choosing the host tool bridge (Model B).
 
-* Model A, in force: the agent CLI (Claude Code or Codex CLI) and the commands it runs execute together inside the `agent` container. The container is the security boundary. Vendor flags that disable the CLI's own approval prompts and sandbox (`--dangerously-skip-permissions`, `--dangerously-bypass-approvals-and-sandbox`) are acceptable only here, because the container is the external sandbox the Codex help text describes ("environments that are externally sandboxed"). They are forbidden on the host.
+* Model A, in force: the agent CLI (Claude Code or Codex CLI) and the commands it runs execute together inside the `agent` container. The container is the security boundary. Vendor flags that disable the CLI's own approval prompts and sandbox (`--dangerously-skip-permissions`, `--dangerously-bypass-approvals-and-sandbox`) are acceptable only here, because the container is the external sandbox the Codex help text describes ("environments that are externally sandboxed"). They are forbidden on the host. For Codex the bypass flag is also required: its own sandbox cannot start under the default seccomp profile and every command fails without the flag (section 8).
 * Model B, hardening target, off in Slice 1: the CLI runs outside the sandbox with built-in shell and edit tools disabled, and every action goes through factory-provided typed tools that execute inside the sandbox with `docker exec`. This removes the CLI process from the blast radius, at the cost of re-implementing tools. UNVERIFIED that the installed CLIs expose enough control (`--tools`, `--strict-mcp-config`) to make it practical.
 
 What this means for control and for testing. Under Model A the CLI's own tool calls happen inside the CLI, so **the factory does not mediate them**. It cannot grant or deny an individual shell command or file write. The factory controls the boundaries around the process, and those are where every assertion about an in-sandbox agent must be made:
@@ -61,7 +61,14 @@ What this means for control and for testing. Under Model A the CLI's own tool ca
 | Audit log | Posture results, egress requests, gate results, protected-path decisions, approvals, token mint and revoke |
 | Supervisor-run commands | Gates, `fetch_deps`, version control. These are typed commands the factory itself starts, so the argv-array, fixed-environment and command-class rules apply to them in full |
 
-The negative test catalog tags each assertion with the boundary it uses. An assertion that needs the CLI's event stream (Claude Code's `permission_denials` and `system/init` skill list, Codex's `command_execution` items, a base URL the CLI will accept) is checkable only after work package `s0-agent-runtime-spike` proves what the installed CLIs expose.
+The negative test catalog tags each assertion with the boundary it uses. The assertions tagged [C] need what the installed CLIs expose, and the agent-runtime spike (`docs/spikes/agent-runtime.md`) has measured it for Claude Code 2.1.311 and Codex 0.163.0, against a fake provider, in the hardened container profile:
+
+| CLI | What can be observed | Use |
+| --- | --- | --- |
+| Claude Code | The `skills` and `slash_commands` lists of the `system/init` event, `result.permission_denials` (tool name, input, id), and the text of each `tool_result`. Read `is_error` and `terminal_reason` of the `result` event, not `subtype` (a provider failure has `subtype: "success"`) and not the exit code alone (SIGINT exits 0). | Telemetry for a denial; the visible skill set after the profile is applied. The pass condition stays the container effect. |
+| Codex | The `command_execution` items (command, `aggregated_output`, `exit_code`, `status`) and the `mcp_tool_call` items of the `--json` stream, and the prompt listing of `codex debug prompt-input`, which lists the visible skills with no model call. | Same. |
+
+A permission flag is a filter on what the model may ask for, not a boundary (spike 4.8): a nested `sh -c` read a file that a deny rule protected, and a deny rule written with one leading slash matched nothing. What stopped writes outside the workspace and reads of host files was the container.
 
 ### 2.3 Topology for a job
 
@@ -154,14 +161,13 @@ docker create
   --log-driver none
   --stop-timeout 10
   --workdir /workspace
-  --env HOME=/home/agent --env <fixed supervisor-owned variables only>
-  --tmpfs /tmp:rw,noexec,nosuid,nodev,size=${tmp_mb}m,mode=1777
-  --tmpfs /home/agent:rw,noexec,nosuid,nodev,size=64m,uid=${uid},gid=${gid},mode=0700
+  --env HOME=/tmp --env <fixed supervisor-owned variables only>
+  --tmpfs /tmp:rw,noexec,nosuid,nodev,size=${tmp_mb}m,mode=1777         # scratch and home: both agent CLIs write their state here
   --mount type=bind,src=${job_root}/worktree,dst=/workspace
   --mount type=bind,src=${job_root}/worktree/${protected_path},dst=/workspace/${protected_path},readonly   # repeated per protected path that exists
   --mount type=bind,src=/dev/null,dst=/workspace/.git,readonly
   --mount type=bind,src=${job_root}/out,dst=/out
-  --mount type=bind,src=${job_secret_tmpfs}/token,dst=/run/secrets/job_token,readonly    # agent profile only
+  --mount type=bind,src=${job_secret_tmpfs}/token,dst=/run/factory/job-token,readonly    # agent profile only; the path is JOB_TOKEN_TARGET in crates/ports/src/sandbox.rs
   --mount type=bind,src=${tool_cache},dst=/cache,readonly
   ${image}@sha256:${digest}
   ${entrypoint_argv...}
@@ -173,6 +179,8 @@ Notes:
 * Run `docker create`, then `docker inspect`, then verify (section 9), then `docker start -a`. `docker start -a` returned the container's stdout with `--log-driver none` and exit code 0 in experiment P1.
 * There is no `--cap-add`, `--device`, `--privileged`, `--pid host`, `--network host`, `--userns host`, `--sysctl`, `--security-opt seccomp=unconfined`, `--security-opt apparmor=unconfined`, `--security-opt systempaths=unconfined`, `--volumes-from`, `--add-host` pointing at internal addresses, or `--publish`.
 * `--tmpfs ...,noexec` breaks toolchains that execute from `/tmp`. A toolchain that truly needs it gets a named exception in its capability profile, reviewed by security. The build output directory is the exec-capable location.
+* The home directory is the scratch tmpfs: `HOME` is `/tmp`, so there is no second tmpfs. The agent-runtime spike (`docs/spikes/agent-runtime.md` section 4.2) found that both CLIs start, run a turn and run tool calls with a writable, `noexec` home and nothing pre-seeded. Codex needs the home to be writable: with a read-only home it exits with "failed to initialize in-process app-server client: Read-only file system" (VERIFIED, `codex-ro-home`). Claude Code works either way and writes nothing. Do not bind-mount anything below `~/.codex`: a mount inside the tmpfs creates its parent directories owned by root, which Codex cannot tolerate (VERIFIED, `codex-skills-user-root`).
+* The job token is the file `/run/factory/job-token`, the `JOB_TOKEN_TARGET` constant of the sandbox port, mode 0400 on a worker-side tmpfs. It is not delivered as an environment variable (section 7).
 * `nosuid` and `nodev` cannot be set on a bind mount through `--mount` in the options exercised here (UNVERIFIED for other versions). The compensating controls are `no-new-privileges` and zero capabilities, which neutralize setuid binaries in the workspace, plus the workspace audit walk that rejects setuid and setgid bits (`policies/security.yaml`, `path_access.workspace_audit`).
 
 ### 3.3 Forbidden
@@ -250,7 +258,7 @@ The `agent` profile cannot reach any registry. Package installation is not possi
 ${job_root}/                 mode 0700, owned by the sandbox host worker user, one per job attempt
   worktree/                  git worktree of the base commit; mounted read-write at /workspace
   out/                       mounted read-write at /out; structured results and logs spill
-  .secrets/ (tmpfs on host)  job token file; mounted read-only at /run/secrets; removed at job end
+  .secrets/ (tmpfs on host)  job token file; mounted read-only at /run/factory/job-token; removed at job end
 ${repo_cache}/${tenant}/${repo}.git   trusted bare repository; NEVER mounted; read and written only by host-side git
 ```
 
@@ -281,7 +289,15 @@ Defense in depth. The authoritative check is the host-side tree diff (section 6.
 * `append_only` groups (fixtures, golden files) cannot be expressed as a read-only overlay without also blocking new files, so the overlay applies to the existing files only and the tree diff enforces "add allowed, modify and delete blocked".
 * UNVERIFIED: when a read-only overlay target does not exist in the checkout, Docker is expected to create an empty directory for the mount point on the host side. That would be harmless for git but means the audit walk must ignore empty directories at overlay targets. The supervisor should create overlay targets itself before `docker create`, and only for paths that exist in the base tree.
 
-Skill roots get the same treatment. In every stage except specification, the supervisor mounts read-only empty directories over `.claude/skills`, `.claude/commands` and `.agents/skills`, so no repository-resident skill or command resolves even where a CLI has no flag to disable them. In the specification stage it mounts the same kind of empty overlay over the six denied Spec Kit skill directories (plan, tasks, analyze, implement, converge, taskstoissues) under each host skill root, so the four allowed skills resolve and the six do not. The overlay mechanism is the one verified in M1. That each CLI starts and lists exactly the expected skills with these overlays in place is UNVERIFIED and is a spike item. The host's own copy of the files is untouched, so `specify integration status --json` on the host still reports the true state.
+Skill roots get the same treatment. In every stage except specification, the supervisor mounts read-only empty directories over `.claude/skills`, `.claude/commands` and `.agents/skills`, so no repository-resident skill or command resolves even where a CLI has no flag to disable them. In the specification stage it mounts the same kind of empty overlay over the six denied Spec Kit skill directories (plan, tasks, analyze, implement, converge, taskstoissues) under each host skill root, so the four allowed skills resolve and the six do not. The overlay mechanism is the one verified in M1, and the agent-runtime spike verified it for both CLIs (section 4.6): with six empty overlays over the denied directories Claude Code listed exactly the four allowed skills (`claude-skills-overlay-spec-stage`) and Codex listed exactly four (`codex-skills-overlay-spec-stage`); with an overlay over the whole skill root neither listed a Spec Kit skill. The host's own copy of the files is untouched, so `specify integration status --json` on the host still reports the true state.
+
+Three more facts from the spike change what the supervisor sets up.
+
+* **The CLIs' own bundled skills stay visible.** Claude Code lists 16 bundled skills and Codex four (`imagegen`, `openai-docs`, `skill-creator`, `skill-installer`). Both can be switched off: `CLAUDE_CODE_DISABLE_BUNDLED_SKILLS=1` and `-c skills.bundled.enabled=false`. A test that "the visible set equals the four ids" filters to the `speckit-` names, or switches the bundled ones off. Codex can also hide one skill with `-c skills.config=[{path="...SKILL.md", enabled=false}]`.
+* **Claude Code has a second way to expose exactly four skills.** The factory runs it with `--setting-sources user`, so the project skill root is not read at all, and `--bare` resolves no skill either. In the specification stage the supervisor therefore mounts the four pinned, hash-checked skill directories read-only in the user skill root, `~/.claude/skills/speckit-<name>` with `HOME=/tmp`. The model then sees exactly four skills under their normal names and a prompt that starts with `/speckit-specify` expands (`claude-skills-user-root`, `claude-skills-user-root-slash`). The overlays are the tool to use where project skills must stay visible. Repository skill directories are never read in the first case.
+* **A mount below the tmpfs home leaves root-owned parent directories.** Claude Code tolerates that, because it only cannot write below `~/.claude`. Codex does not: it exits with "Permission denied" (`codex-skills-user-root`). For Codex use the overlays on `.agents/skills`, and never mount below `~/.codex`.
+
+A `Skill(speckit-plan)` deny rule blocks the model's `Skill` tool call (`permission_denials` lists it) and does not block a prompt that begins with `/speckit-plan` (`claude-skills-slash-rule-denied`). The adapter writes the prompt, so that path is under its control; the rule is a second layer.
 
 ### 6.4 Hidden paths
 
@@ -306,7 +322,7 @@ Artifacts in `out/` are size-capped, count-capped, hashed, and never rendered or
 Details are in `docs/security/secrets-and-credentials.md`. The rules the sandbox depends on:
 
 * No GitHub token, no App key, no webhook secret, no database or object-store credential, no real model-provider key ever enters a sandbox.
-* The `agent` profile gets one job token (`sfjt_...`), bound to tenant, job and stage, valid only at the model broker, capped by tokens and USD, and revoked at job end. It is delivered as a read-only file on a worker-side tmpfs. Delivery by `--env` is visible in `docker inspect` and `/proc/1/environ` (E16); it is acceptable only where an agent CLI offers no file-based option, and that exception is recorded.
+* The `agent` profile gets one job token (`sfjt_...`), bound to tenant, job and stage, valid only at the model broker, capped by tokens and USD, and revoked at job end. It is delivered as a read-only file on a worker-side tmpfs, at `/run/factory/job-token`. Delivery by `--env` is visible in `docker inspect` and `/proc/1/environ` (E16), and the agent-runtime spike showed that the shell the model drives sees a credential given to the CLI as an environment variable, and so does the parent's `/proc/<pid>/environ` (section 4.5). Both accepted CLIs offer a file-based option (`apiKeyHelper` for Claude Code, a provider `auth` command for Codex), so **an environment variable is forbidden for the credential**. There is no recorded exception.
 * Environment variables are set by the supervisor from a fixed list. The agent cannot add variables to a command (`exec.run` has `env: fixed_by_supervisor`). The agent CLI is configured not to inherit the supervisor's environment.
 * `--log-driver none` keeps the daemon from storing an unredacted copy of output (L1, L2). The supervisor streams stdout and stderr through the redactor and stores only redacted output. If the supervisor dies mid-run, that output is lost, and the job is retried or failed. This is the trade-off for not leaving a raw copy on the host.
 
@@ -321,7 +337,12 @@ Details are in `docs/security/secrets-and-credentials.md`. The rules the sandbox
 | gVisor (`runsc`), Kata Containers, Firecracker | Recommended for multi-tenant production, where a shared kernel is the largest residual risk. Only `runc` is installed on the test machine. | UNVERIFIED |
 | Docker daemon access | Only the supervisor talks to the daemon. The daemon socket is never mounted into any container. The supervisor builds requests from a typed spec and checks them before start. | DESIGNED |
 
-The default seccomp profile denies `unshare(CLONE_NEWUSER)`. Agent CLIs that implement their own sandbox with user namespaces (for example a bubblewrap-based or Landlock-based mode) may fail to initialize inside this container. That is acceptable, because the container is the boundary. Whether Claude Code 2.1.311 and Codex CLI 0.163.0 start cleanly under this profile in non-interactive mode is UNVERIFIED and is a capability-probe item for the adapters.
+The default seccomp profile denies `unshare(CLONE_NEWUSER)`. Agent CLIs that implement their own sandbox with user namespaces (for example a bubblewrap-based or Landlock-based mode) may fail to initialize inside this container. That is acceptable, because the container is the boundary. The agent-runtime spike measured what happens to the two CLIs (VERIFIED, `docs/spikes/agent-runtime.md` sections 4.2 and 4.8, Docker 29.5.2 in a Linux virtual machine with AppArmor and the builtin seccomp profile active):
+
+* Both CLIs start, run a headless turn and run a tool call under the full `agent` profile, with `.git` masked, and finish in under a second against a fake provider. Seccomp is mode 2, `NoNewPrivs` is 1, every capability set is zero and AppArmor `docker-default` is enforced while they run.
+* **Codex's own sandbox cannot start.** Every command in `-s read-only`, `-s workspace-write` and the default mode failed with "bwrap: No permissions to create a new namespace". It fails closed and does not fall back to running without its sandbox. Only `--dangerously-bypass-approvals-and-sandbox` ran a command, as uid 10001 with a read-only root. The flag is therefore required for Codex in the `agent` profile and acceptable only here.
+* **Claude Code's `CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=1` needs bubblewrap too.** Without it the tool refuses to start and prints a stack dump. The variable must not be set.
+* Nothing in the CLIs' behavior changes the stance of this section. The permission flags did not hold either: a chained command after an allowed prefix ran, and a nested `sh -c` read a protected file. The container was what held.
 
 ## 9. Supervisor lifecycle and posture verification
 
@@ -340,26 +361,32 @@ If the Docker daemon is unreachable, the supervisor is down or the image is miss
 
 ## 10. Agent CLI considerations (from the installed binaries)
 
-These flags were read from `claude --help` (2.1.311) and `codex exec --help` (0.163.0) on 2026-10-27. They exist. How well they neutralize repository-resident configuration is UNVERIFIED and must be proven by the adapter capability probe and by NT-INJ-07.
+These flags were first read from `claude --help` (2.1.311) and `codex exec --help` (0.163.0) on 2026-10-27. The agent-runtime spike then ran both tools in the hardened container profile against a labelled fake provider, with a hostile workspace, and measured which of them do what the first reading assumed (`docs/spikes/agent-runtime.md` section 4). Only these two versions are accepted until a probe run proves another. The adapter capability probe and NT-INJ-07 still run before an adapter is enabled, and the probe tests behavior and not flag presence. A real provider has not been called.
 
 | Concern | Claude Code | Codex CLI |
 | --- | --- | --- |
-| Skip repository hooks, plugins, auto-discovered instruction files | `--bare` (documented to skip hooks, plugin sync, auto-memory, keychain reads, CLAUDE.md auto-discovery) | `--ignore-user-config`, `--ignore-rules` |
-| Control settings sources | `--settings <file>`, `--setting-sources` | `-c key=value`, `--strict-config` |
-| MCP servers | `--mcp-config` with `--strict-mcp-config` | `codex mcp` config; use `--ignore-user-config` |
-| Tool restriction | `--tools`, `--allowedTools`, `--disallowedTools`, `--permission-mode` | `-s read-only` / `workspace-write` |
-| Authentication | With `--bare`: `ANTHROPIC_API_KEY` or `apiKeyHelper` via `--settings`; OAuth and keychain are never read | `codex login --with-api-key` reads from stdin |
-| Skills and slash commands | `--disable-slash-commands` ("Disable all skills and commands"). Applied per stage: on in every stage except specification, off there so the four Spec Kit skills resolve (`agent_stage_profiles`). `--bare` documents that "Skills still resolve via /skill-name"; that project skills resolve under `--bare` is UNVERIFIED | No verified skill-disable flag. Skill roots (`.agents/skills`) are hidden by read-only empty overlays in stages with no skills |
-| Per-run cost cap | `--max-budget-usd` (only with `--print`) | none seen in `exec --help` |
+| Neutralize repository hooks, MCP servers, the `env` block of a settings file and instruction files | **`--setting-sources user` with `--strict-mcp-config`**, and an empty home (`HOME=/tmp`). In the hostile workspace this ran no hook, no MCP server, sent no traffic to the overridden host and put no `CLAUDE.md` in the prompt. **`--bare` is not enough**: it skipped the hook and the MCP server but still honored the `env` block of `.claude/settings.json`, which sent the model traffic to an attacker host. The policy no longer relies on it. | **`-c project_doc_max_bytes=0`** keeps `AGENTS.md` out of the prompt. `--ignore-user-config` and `--ignore-rules` do **not** stop `AGENTS.md`; they stay as harmless extra layers. A project `.codex/config.toml` was ignored in an untrusted project |
+| Control settings sources | `--settings <file or JSON>` adds the factory's own settings; `--setting-sources user` restricts the rest | `-c key=value` for every setting; `--strict-config` |
+| MCP servers | `--strict-mcp-config` (with `--mcp-config=<json>` only when the host tool bridge is chosen) | none configured; `--ignore-user-config` |
+| Tool restriction | `--tools=`, `--allowedTools=`, `--disallowedTools=`, written with an equals sign (a variadic option swallows the prompt). A filter on what the model asks for, not a boundary (section 2.2) | its own `-s` sandbox modes cannot start in the container (section 8), so they restrict nothing; `--disable shell_tool --disable unified_exec` apply only to the host tool bridge |
+| Model | `--model` is always given; the default is the most expensive model | `-m` is always given; the default is the most expensive model |
+| Base URL for the broker | `ANTHROPIC_BASE_URL` in the environment, or in the `env` block of the `--settings` JSON | **a custom model provider entry**: `-c model_provider=...` and `-c model_providers.<id>={name=..., base_url="http://<sidecar>/v1", wire_api="responses", supports_websockets=false, ...}`. `OPENAI_BASE_URL` is ignored and the tool goes to `api.openai.com` |
+| Authentication | `--settings '{"apiKeyHelper":"cat /run/factory/job-token"}'` works with and without `--bare`. The credential is not in any environment variable. `--bare` never reads OAuth or the keychain | `auth={command="cat", args=["/run/factory/job-token"]}` in the provider entry. `OPENAI_API_KEY` is not read by `codex exec`; `CODEX_API_KEY` and a provider `env_key` put the key in the environment, which is forbidden |
+| Skills and slash commands | `--disable-slash-commands` ("Disable all skills and commands"). Applied per stage: on in every stage except specification, off there so the four Spec Kit skills resolve (`agent_stage_profiles`). In the specification stage the four pinned skills are mounted read-only in the user skill root (section 6.3), because `--bare` and `--setting-sources user` both hide project skills. A `Skill(name)` deny rule works for the model's tool call and not for a typed slash command | Skills can be hidden by read-only empty overlays, by `-c skills.config=[{path=..., enabled=false}]` and, for the bundled ones, by `-c skills.bundled.enabled=false` |
+| Traffic to other hosts | **`CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1`**, an environment setting. `--bare` and `DISABLE_TELEMETRY`, `DISABLE_ERROR_REPORTING`, `DISABLE_AUTOUPDATER` do not stop the attempts to reach `api.anthropic.com` | **`--disable plugins` and `-c analytics.enabled=false`, both.** Each alone leaves some of `api.github.com`, `chatgpt.com` and `ab.chatgpt.com` |
+| Retries | `CLAUDE_CODE_MAX_RETRIES` (default 10; a revoked token is retried for well over a minute) | `--disable unbounded_connection_retries` (otherwise it never gives up); five retries on a refusal, 30 requests on a 500 |
+| Per-run caps | `--max-turns` (a hidden flag that works, with `CLAUDE_CODE_MAX_TURNS`; test it by behavior) and `--max-budget-usd`, whose price list means nothing behind a broker. Second lines only | none. The broker and the supervisor are the cap |
+| Structured output | `--json-schema` rejects all eleven factory schemas. Not used; the engine validates the final answer | `--output-schema` accepts them; the engine still validates |
 | Session persistence | `--no-session-persistence` | `--ephemeral` |
-| Bypass flags | `--dangerously-skip-permissions`, `--allow-dangerously-skip-permissions` | `--dangerously-bypass-approvals-and-sandbox`, `--dangerously-bypass-hook-trust` |
+| Bypass flags | `--dangerously-skip-permissions`, `--allow-dangerously-skip-permissions`, `--permission-mode bypassPermissions` | `--dangerously-bypass-approvals-and-sandbox` (required here, section 8), `--dangerously-bypass-hook-trust` |
 
 Rules:
 
-* The bypass flags are allowed only inside a container that passed posture verification and the runtime self-check. The adapter must refuse to add them otherwise.
-* The CLI's own budget flag is not the budget control. The broker meters tokens and USD and cuts the job token, so a CLI that ignores or mis-counts its budget still stops.
-* The adapter must pass the instruction set explicitly. Repository copies of `AGENTS.md`, `CLAUDE.md`, `.claude/settings.json`, `.mcp.json` and `.codex/config.toml` are data, not configuration. A project settings file that sets a model base URL environment variable would otherwise redirect traffic that carries a credential. Because the sandbox only holds a job token and only reaches the broker through the sidecar, such a redirect cannot reach an attacker host, but the adapter must still not honor it.
-* Whether the CLIs accept a base URL for the broker (`ANTHROPIC_BASE_URL` and the OpenAI equivalent) is UNVERIFIED here. If a CLI cannot be pointed at the broker, the fallback in `secrets-and-credentials.md` section 4.4 applies and its residual risk is recorded.
+* The bypass flags are allowed only inside a container that passed posture verification and the runtime self-check. The adapter must refuse to add them otherwise. The tool does not check that it runs in a container: `--dangerously-skip-permissions` is accepted for a non-root user anywhere, so the posture check is the only guard.
+* The CLI's own budget flag is not the budget control. The broker meters tokens and USD and cuts the job token, so a CLI that ignores or mis-counts its budget still stops. After a revocation the tools keep retrying, so the supervisor kills the container when the broker revokes the token or the deadline passes (NT-BUD-07).
+* The adapter must pass the instruction set explicitly. Repository copies of `AGENTS.md`, `CLAUDE.md`, `.claude/settings.json`, `.mcp.json` and `.codex/config.toml` are data, not configuration. A project settings file that sets a model base URL environment variable would otherwise redirect traffic that carries a credential. Because the sandbox only holds a job token and only reaches the broker through the sidecar, such a redirect cannot reach an attacker host, but the adapter must still not honor it, and the flags in the first row make sure it does not.
+* Both CLIs accept a base URL for the broker, so the fallback in `secrets-and-credentials.md` section 4.4 is **not needed** for them. The base URL for Claude Code is `ANTHROPIC_BASE_URL`; for Codex it is a model provider entry, never `OPENAI_BASE_URL`. The broker must accept plain HTTP from the sidecar, stream server-sent events, answer `POST /v1/messages` and `POST /v1/responses`, and refuse the Codex WebSocket upgrade at once.
+* Standard input of the tool is closed or `/dev/null`. Codex reads it when it is not a terminal and appends it to the prompt.
 
 ## 11. Production host guidance
 
@@ -431,7 +458,8 @@ Machine: Apple Silicon Mac, Docker Desktop. `docker version`: client 29.9.2, ser
 * Per-bind-mount `nosuid`, `nodev` flags.
 * The egress sidecar and the model broker: no code exists, only the Docker network topology was exercised.
 * Docker network address pool exhaustion with many concurrent per-job networks.
-* Whether the agent CLIs start cleanly under the hardened profile, accept a broker base URL, honor `--bare` and `--setting-sources` as described, and read their credential from a file helper.
+* Settled by the agent-runtime spike and no longer listed here: whether the two CLIs start under the hardened profile, accept a broker base URL, neutralize repository configuration with the flags of section 10 and read their credential from a file helper. They do (section 10), for Claude Code 2.1.311 and Codex 0.163.0 against a fake provider.
+* Still not verified for the agent CLIs: a live call to a real provider (the requests a real provider accepts or refuses, thinking blocks, parallel tool calls, the refusal statuses 401, 402, 403, 429 and 529), a subscription login, `linux/amd64`, a Linux host without a virtual machine layer, interactive mode (the spike used headless mode only), Codex with trust granted to the project, the signatures of the vendor manifests, and whether a real provider accepts Codex's strict output schema.
 * The posture verifier and the self-check: the field names and values were read, but no verifier code was run.
 * Behavior of other Docker versions and other git versions than the ones listed.
 

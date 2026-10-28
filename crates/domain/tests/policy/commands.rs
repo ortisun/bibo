@@ -141,17 +141,27 @@ fn negative_nt_tool_02_forbidden_command_class_matrix() {
 }
 
 #[test]
-fn a_install_command_is_not_a_class_deny_in_fetch_deps_but_the_command_set_still_refuses_it() {
-    // `except_profiles: [fetch_deps]` lifts the class. The command sets then decide, and they list
-    // no install subcommand for cargo or npm, so the supply-chain package will have to run its
-    // fetch outside `exec.run`. This test records the interaction so that a change to either file
-    // shows up here.
-    for words in [vec!["npm", "install", "left-pad"], vec!["cargo", "fetch"]] {
-        let verdict = run(&words, FetchDeps);
-        assert_eq!(class_of(&verdict), None, "{words:?}");
-        assert!(
-            matches!(&verdict, CommandVerdict::Denied(d) if d.reason == CommandDenialReason::SubcommandNotAllowed),
-            "{words:?}: {verdict:?}"
+fn a_install_command_is_not_a_class_deny_in_fetch_deps_but_the_command_set_decides_it() {
+    // `except_profiles: [fetch_deps]` lifts the class. The command sets then decide. They list
+    // `cargo fetch`, the one download Slice 1 needs, and no install subcommand for cargo or npm.
+    // This test records the interaction so that a change to either file shows up here.
+    let verdict = run(&["cargo", "fetch"], FetchDeps);
+    assert_eq!(class_of(&verdict), None, "{verdict:?}");
+    let CommandVerdict::Allowed(a) = verdict else {
+        panic!("cargo fetch is allowed in fetch_deps: {verdict:?}");
+    };
+    assert_eq!(a.argv, ["cargo", "fetch", "--locked"]);
+    let verdict = run(&["npm", "install", "left-pad"], FetchDeps);
+    assert_eq!(class_of(&verdict), None, "{verdict:?}");
+    assert!(
+        matches!(&verdict, CommandVerdict::Denied(d) if d.reason == CommandDenialReason::SubcommandNotAllowed),
+        "{verdict:?}"
+    );
+    // Outside fetch_deps the same `cargo fetch` is still a class deny.
+    for profile in [Agent, Verify] {
+        assert_eq!(
+            class_of(&run(&["cargo", "fetch"], profile)).as_deref(),
+            Some("install_scripts_outside_fetch")
         );
     }
 }

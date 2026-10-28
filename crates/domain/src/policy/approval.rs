@@ -339,8 +339,13 @@ strict! {
         pub github_merge_must_pass_expected_head_sha: bool,
         /// Hours it stays valid.
         pub expires_after_hours: u32,
-        /// What invalidates it.
+        /// The reasons an approval stops counting and is recorded as invalid. They are the
+        /// variants of `ApprovalInvalidation` in the store port, by name.
         pub invalidated_by: Vec<String>,
+        /// Conditions that are checked when an approval is used, and refuse it then. They are not
+        /// stored as an invalidation reason.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub checked_when_used: Option<Vec<String>>,
         /// Actions that need step-up authentication.
         pub step_up_authentication_required_for: Vec<String>,
         /// The fields of an approval record.
