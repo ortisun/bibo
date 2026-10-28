@@ -18,6 +18,8 @@ use serde_json::Value;
 
 use crate::support::{read_text, repo_root};
 
+pub mod checks;
+
 /// The Slice 1 agent set, by directory name. The package `s1-agent-definitions` asks for exactly
 /// these nine roles and no others.
 pub const SLICE_1_AGENTS: [&str; 9] = [
@@ -47,6 +49,47 @@ pub fn security_policy() -> SecurityPolicy {
     PolicyLoader::load_security(&source)
         .unwrap_or_else(|e| panic!("{e}"))
         .document
+}
+
+/// One agent as the repository holds it: the directory name, the manifest as JSON and the prompt.
+#[derive(Clone)]
+pub struct Agent {
+    pub dir_name: String,
+    pub manifest: Value,
+    pub prompt: String,
+}
+
+/// Every directory below `agents/` that holds a `manifest.json`, sorted by name.
+pub fn agents() -> Vec<Agent> {
+    let mut found = Vec::new();
+    if let Ok(entries) = fs::read_dir(agents_dir()) {
+        for entry in entries.filter_map(Result::ok) {
+            let manifest_path = entry.path().join("manifest.json");
+            if !manifest_path.is_file() {
+                continue;
+            }
+            let manifest: Value = serde_json::from_str(&read_text(&manifest_path))
+                .unwrap_or_else(|e| panic!("{} is not JSON: {e}", manifest_path.display()));
+            let prompt_path = repo_root().join(
+                manifest["prompt"]["template_path"]
+                    .as_str()
+                    .expect("a prompt path"),
+            );
+            found.push(Agent {
+                dir_name: entry.file_name().to_string_lossy().into_owned(),
+                manifest,
+                prompt: read_text(&prompt_path),
+            });
+        }
+    }
+    found.sort_by(|a, b| a.dir_name.cmp(&b.dir_name));
+    // A loop over no agents would pass without checking anything.
+    assert!(
+        !found.is_empty(),
+        "there is no manifest.json below {}",
+        agents_dir().display()
+    );
+    found
 }
 
 /// One profile file: where it is and its text.

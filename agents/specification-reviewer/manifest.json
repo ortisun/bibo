@@ -1,0 +1,97 @@
+{
+  "schema_version": 1,
+  "id": "specification-reviewer",
+  "version": "1.0.0",
+  "title": "Specification reviewer",
+  "description": "Independent review of a draft specification, its requirements checklist and the original request. It reports gaps, contradictions and untestable statements, reads files only and cannot change anything. It never sees the writer's report.",
+  "role": "specification_reviewer",
+  "domains": [
+    "general-software"
+  ],
+  "skills": [],
+  "allowed_tools": [
+    {
+      "name": "fs.read",
+      "access": "read",
+      "path_scope": [
+        "specs/**"
+      ]
+    },
+    {
+      "name": "fs.list",
+      "access": "read",
+      "path_scope": [
+        "specs/**"
+      ]
+    },
+    {
+      "name": "report.submit",
+      "access": "read"
+    }
+  ],
+  "required_evidence": [
+    "specification-artifact-hash"
+  ],
+  "inputs_schema": {
+    "name": "specification-reviewer-input",
+    "version": 1,
+    "sha256": "sha256:08f47b8c14cfa5535b8c6a6b7891f34c9d3078e4226278c435c262b4a3f1eaf6"
+  },
+  "outputs_schema": {
+    "name": "review-findings",
+    "version": 1,
+    "sha256": "sha256:ee27adfbdbfcb2c3ddb51643d8df6b8db77fe8c51cb8b0721c7757fe7eb3720f"
+  },
+  "resource_limits": {
+    "max_wall_time_seconds": 600,
+    "max_tokens": 120000,
+    "max_cost_usd": 1.5,
+    "max_tool_calls": 40,
+    "max_delegation_depth": 0
+  },
+  "permissions": {
+    "filesystem": {
+      "read": [
+        "specs/**"
+      ],
+      "write": []
+    },
+    "network": "none",
+    "shell": "none",
+    "production_access": "none",
+    "secrets": "none"
+  },
+  "permitted_placements": [
+    "sandbox"
+  ],
+  "recommended_models": [
+    {
+      "runtime_id": "claude-code-cli",
+      "model": "claude-sonnet-5-5",
+      "tier": "standard",
+      "notes": "Reading one specification against a checklist is within what the starting model can do."
+    },
+    {
+      "runtime_id": "claude-code-cli",
+      "model": "claude-opus-5-5",
+      "tier": "large",
+      "notes": "Use only after two bounded repairs by the starting model have failed the output check, and never as the first attempt. The tool's own default is this model, and it is the most expensive."
+    },
+    {
+      "runtime_id": "codex-cli",
+      "model": "gpt-6.1-sol",
+      "tier": "standard",
+      "notes": "The only Codex model named in the recorded runs. Its price tier has not been confirmed, so treat it as standard until the model router says otherwise."
+    }
+  ],
+  "evaluation_suite": {
+    "id": "specification-reviewer-conformance",
+    "version": "1.0.0",
+    "min_pass_rate": 1.0
+  },
+  "prompt": {
+    "template_path": "agents/specification-reviewer/prompt.md",
+    "template_version": "1.0.0",
+    "template_sha256": "sha256:b907713bfea7a4a3051090d28e946c4390ad3ae2f83a09f2493508a70cb0785c"
+  }
+}

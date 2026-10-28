@@ -1,0 +1,136 @@
+{
+  "schema_version": 1,
+  "id": "specification-writer",
+  "version": "1.0.0",
+  "title": "Specification writer",
+  "description": "Turns one authorized request into a feature specification by running three of the four allowed Spec Kit skills: specify, clarify and checklist. It writes only the specification files of the feature directory and runs only the Spec Kit helper scripts.",
+  "role": "specification_writer",
+  "domains": [
+    "general-software"
+  ],
+  "skills": [
+    {
+      "id": "speckit.specify",
+      "version": "1.1.2"
+    },
+    {
+      "id": "speckit.clarify",
+      "version": "1.1.2"
+    },
+    {
+      "id": "speckit.checklist",
+      "version": "1.1.2"
+    }
+  ],
+  "allowed_tools": [
+    {
+      "name": "fs.read",
+      "access": "read",
+      "path_scope": [
+        "specs/**",
+        ".specify/**",
+        "inputs/**"
+      ]
+    },
+    {
+      "name": "fs.list",
+      "access": "read",
+      "path_scope": [
+        "specs/**",
+        ".specify/**",
+        "inputs/**"
+      ]
+    },
+    {
+      "name": "fs.write",
+      "access": "write",
+      "path_scope": [
+        "specs/*/spec.md",
+        "specs/*/checklists/*.md",
+        ".specify/feature.json"
+      ]
+    },
+    {
+      "name": "exec.run",
+      "access": "execute_sandboxed",
+      "path_scope": [
+        ".specify/scripts/bash/*"
+      ]
+    },
+    {
+      "name": "report.submit",
+      "access": "read"
+    }
+  ],
+  "required_evidence": [
+    "specification-artifact-hash"
+  ],
+  "inputs_schema": {
+    "name": "specification-writer-input",
+    "version": 1,
+    "sha256": "sha256:b73562b4b7e93a32a4c73b9f39d7450c9c9d7abd36668fd0b50019145c9681a5"
+  },
+  "outputs_schema": {
+    "name": "specification-report",
+    "version": 1,
+    "sha256": "sha256:f5e992ca9b34e3f6e65ab238a638961db0d2cbf9dc1328bf82bd51e02bcdb5fb"
+  },
+  "resource_limits": {
+    "max_wall_time_seconds": 1200,
+    "max_tokens": 300000,
+    "max_cost_usd": 4,
+    "max_tool_calls": 120,
+    "max_delegation_depth": 0
+  },
+  "permissions": {
+    "filesystem": {
+      "read": [
+        "specs/**",
+        ".specify/**",
+        "inputs/**"
+      ],
+      "write": [
+        "specs/*/spec.md",
+        "specs/*/checklists/*.md",
+        ".specify/feature.json"
+      ]
+    },
+    "network": "none",
+    "shell": "sandboxed_typed_wrapper",
+    "production_access": "none",
+    "secrets": "none"
+  },
+  "permitted_placements": [
+    "sandbox"
+  ],
+  "recommended_models": [
+    {
+      "runtime_id": "claude-code-cli",
+      "model": "claude-sonnet-5-5",
+      "tier": "standard",
+      "notes": "Writing a specification from a short request is routine work for the starting model."
+    },
+    {
+      "runtime_id": "claude-code-cli",
+      "model": "claude-opus-5-5",
+      "tier": "large",
+      "notes": "Use only after two bounded repairs by the starting model have failed the output check, and never as the first attempt. The tool's own default is this model, and it is the most expensive."
+    },
+    {
+      "runtime_id": "codex-cli",
+      "model": "gpt-6.1-sol",
+      "tier": "standard",
+      "notes": "The only Codex model named in the recorded runs. Its price tier has not been confirmed, so treat it as standard until the model router says otherwise."
+    }
+  ],
+  "evaluation_suite": {
+    "id": "specification-writer-conformance",
+    "version": "1.0.0",
+    "min_pass_rate": 1.0
+  },
+  "prompt": {
+    "template_path": "agents/specification-writer/prompt.md",
+    "template_version": "1.0.0",
+    "template_sha256": "sha256:eea7bdf01676c8a6cbc76951cbab274e37ffab2497d9dd967a24271db153e74a"
+  }
+}

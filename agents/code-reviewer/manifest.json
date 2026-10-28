@@ -1,0 +1,106 @@
+{
+  "schema_version": 1,
+  "id": "code-reviewer",
+  "version": "1.0.0",
+  "title": "Code reviewer",
+  "description": "Independent review of a change against the frozen specification. It receives the frozen specification, the diff and the gate reports, never the builder's own account, and it reads the repository without changing it.",
+  "role": "code_reviewer",
+  "domains": [
+    "general-software"
+  ],
+  "skills": [],
+  "allowed_tools": [
+    {
+      "name": "fs.read",
+      "access": "read",
+      "path_scope": [
+        "**"
+      ]
+    },
+    {
+      "name": "fs.list",
+      "access": "read",
+      "path_scope": [
+        "**"
+      ]
+    },
+    {
+      "name": "fs.search",
+      "access": "read",
+      "path_scope": [
+        "**"
+      ]
+    },
+    {
+      "name": "report.submit",
+      "access": "read"
+    }
+  ],
+  "required_evidence": [
+    "specification-artifact-hash",
+    "diff",
+    "gate-report"
+  ],
+  "inputs_schema": {
+    "name": "code-reviewer-input",
+    "version": 1,
+    "sha256": "sha256:b138c731d7d59b7bafaf2ffb13cf6ebe915b27c2d43a64a1979f3e56f1a4e92e"
+  },
+  "outputs_schema": {
+    "name": "review-findings",
+    "version": 1,
+    "sha256": "sha256:ee27adfbdbfcb2c3ddb51643d8df6b8db77fe8c51cb8b0721c7757fe7eb3720f"
+  },
+  "resource_limits": {
+    "max_wall_time_seconds": 900,
+    "max_tokens": 200000,
+    "max_cost_usd": 2.5,
+    "max_tool_calls": 60,
+    "max_delegation_depth": 0
+  },
+  "permissions": {
+    "filesystem": {
+      "read": [
+        "**"
+      ],
+      "write": []
+    },
+    "network": "none",
+    "shell": "none",
+    "production_access": "none",
+    "secrets": "none"
+  },
+  "permitted_placements": [
+    "sandbox"
+  ],
+  "recommended_models": [
+    {
+      "runtime_id": "claude-code-cli",
+      "model": "claude-sonnet-5-5",
+      "tier": "standard",
+      "notes": "Reviewing a small diff against a specification is within what the starting model can do."
+    },
+    {
+      "runtime_id": "claude-code-cli",
+      "model": "claude-opus-5-5",
+      "tier": "large",
+      "notes": "Use when the diff is large or touches security or concurrency, or when the starting model's output failed the check twice. The tool's own default is this model, and it is the most expensive."
+    },
+    {
+      "runtime_id": "codex-cli",
+      "model": "gpt-6.1-sol",
+      "tier": "standard",
+      "notes": "The only Codex model named in the recorded runs. Its price tier has not been confirmed, so treat it as standard until the model router says otherwise."
+    }
+  ],
+  "evaluation_suite": {
+    "id": "code-reviewer-conformance",
+    "version": "1.0.0",
+    "min_pass_rate": 1.0
+  },
+  "prompt": {
+    "template_path": "agents/code-reviewer/prompt.md",
+    "template_version": "1.0.0",
+    "template_sha256": "sha256:fb4aaca98c940db1dc58ba8954ac2887f3b1ddb94b2f44323ba079145639e2e6"
+  }
+}

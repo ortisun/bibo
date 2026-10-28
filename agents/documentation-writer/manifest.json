@@ -1,0 +1,110 @@
+{
+  "schema_version": 1,
+  "id": "documentation-writer",
+  "version": "1.0.0",
+  "title": "Documentation writer",
+  "description": "Writes the smallest set of documentation that lets a new reader understand and use a change that was built, validated and reviewed. It writes only the README, the changelog and Markdown files under docs, and runs no command.",
+  "role": "technical_writer",
+  "domains": [
+    "general-software"
+  ],
+  "skills": [],
+  "allowed_tools": [
+    {
+      "name": "fs.read",
+      "access": "read",
+      "path_scope": [
+        "**"
+      ]
+    },
+    {
+      "name": "fs.list",
+      "access": "read",
+      "path_scope": [
+        "**"
+      ]
+    },
+    {
+      "name": "fs.write",
+      "access": "write",
+      "path_scope": [
+        "README.md",
+        "CHANGELOG.md",
+        "docs/**/*.md"
+      ]
+    },
+    {
+      "name": "report.submit",
+      "access": "read"
+    }
+  ],
+  "required_evidence": [
+    "diff"
+  ],
+  "inputs_schema": {
+    "name": "documentation-writer-input",
+    "version": 1,
+    "sha256": "sha256:f7e005320a7d6e0f6683b7c73ce374264685b20b40f42bce64a90a10d68c59f2"
+  },
+  "outputs_schema": {
+    "name": "documentation-report",
+    "version": 1,
+    "sha256": "sha256:871f50c66632744d7dd3bd33278a3b77112c2aa4da90163f31536b15dea11a1d"
+  },
+  "resource_limits": {
+    "max_wall_time_seconds": 900,
+    "max_tokens": 150000,
+    "max_cost_usd": 1.5,
+    "max_tool_calls": 60,
+    "max_delegation_depth": 0
+  },
+  "permissions": {
+    "filesystem": {
+      "read": [
+        "**"
+      ],
+      "write": [
+        "README.md",
+        "CHANGELOG.md",
+        "docs/**/*.md"
+      ]
+    },
+    "network": "none",
+    "shell": "none",
+    "production_access": "none",
+    "secrets": "none"
+  },
+  "permitted_placements": [
+    "sandbox"
+  ],
+  "recommended_models": [
+    {
+      "runtime_id": "claude-code-cli",
+      "model": "claude-sonnet-5-5",
+      "tier": "standard",
+      "notes": "Documenting a small change is within what the starting model can do."
+    },
+    {
+      "runtime_id": "claude-code-cli",
+      "model": "claude-opus-5-5",
+      "tier": "large",
+      "notes": "Use when the documentation check fails twice, never as the first attempt. The tool's own default is this model, and it is the most expensive."
+    },
+    {
+      "runtime_id": "codex-cli",
+      "model": "gpt-6.1-sol",
+      "tier": "standard",
+      "notes": "The only Codex model named in the recorded runs. Its price tier has not been confirmed, so treat it as standard until the model router says otherwise."
+    }
+  ],
+  "evaluation_suite": {
+    "id": "documentation-writer-conformance",
+    "version": "1.0.0",
+    "min_pass_rate": 1.0
+  },
+  "prompt": {
+    "template_path": "agents/documentation-writer/prompt.md",
+    "template_version": "1.0.0",
+    "template_sha256": "sha256:2567747131fa98fd970f0be1fb82bfc8b3b0c9b10339399ff061d87e9a40a185"
+  }
+}
