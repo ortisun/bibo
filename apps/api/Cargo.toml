@@ -57,6 +57,10 @@ tower = { version = "0.5.3", default-features = false, features = ["util"] }
 [dev-dependencies]
 factory-testkit.workspace = true
 factory-storage.workspace = true
+# The complete run (`tests/complete_run.rs`) builds the worker's side of the system around the
+# real server: the engine's stage handlers, the agent registry and the output schemas.
+factory-contracts.workspace = true
+factory-sandbox.workspace = true
 async-trait = "0.1.92"
 # The database test server of the storage crate is included with `#[path]` and needs these.
 diesel = { version = "2.3.14", default-features = false, features = ["postgres_backend"] }

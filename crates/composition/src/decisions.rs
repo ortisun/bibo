@@ -772,6 +772,12 @@ impl ClaimWork {
         } else {
             None
         };
+        // The engine's guard for an approval wants every open translation warning to have a
+        // decision of this person. With none open there is nothing undecided. No path of the API
+        // records a decision about a warning yet, so with one open the approval is refused.
+        let warnings_decided = request
+            .as_ref()
+            .is_some_and(|found| found.open_translation_warnings == 0);
         let command = match parsed.into_command(
             CommandContext {
                 id: command,
@@ -781,7 +787,7 @@ impl ClaimWork {
                 sender,
                 channel: ApprovalChannel::Dashboard,
                 comment: None,
-                warnings_decided: false,
+                warnings_decided,
             },
             request.as_ref(),
         ) {
@@ -799,6 +805,11 @@ impl ClaimWork {
                 "The engine had applied this decision already.".to_owned(),
             )),
             Err(ServiceError::Refused(refusal)) => {
+                tracing::info!(
+                    decision = %decision.id.as_uuid(),
+                    code = refusal.code(),
+                    "a decision was refused"
+                );
                 Verdict::Done(Marked::Rejected(refusal_reason(refusal.code())))
             }
             Err(ServiceError::Engine(_)) => Verdict::Done(Marked::Rejected(
