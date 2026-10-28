@@ -14,13 +14,15 @@ use factory_domain::values::{Sha256Digest, Slug};
 use factory_domain::vocabulary::Fidelity;
 use factory_ports::agent::JobTokenRef;
 use factory_ports::paths::CommitSha;
-use factory_ports::sandbox::SandboxSpec;
+use factory_ports::sandbox::{SandboxProfile, SandboxSpec, WORKSPACE_TARGET};
 use factory_ports::store::LeaseEpoch;
 use factory_ports::workspace::WorkspaceMounts;
 
 pub use crate::stages::intake::seams::{AgentOutputCheck, CapabilityProbes, SeamError};
 
-use crate::handlers::RunIdentity;
+use factory_domain::machines::guards::EnvironmentCause;
+
+use crate::handlers::{RunIdentity, StageError};
 
 /// What the agent in the sandbox may do with the checkout.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -122,13 +124,26 @@ pub trait TaskLedger: Send + Sync {
         tasks: &[PlannedTask],
     ) -> Result<Vec<TaskRecord>, LedgerError>;
 
-    /// Takes the node for the attempt (`RUNNING`). A node that an earlier attempt left `RUNNING`
-    /// is first returned to `READY` (`T05`) in the same call.
+    /// Takes the node for the attempt (`RUNNING`). The stage calls it only for a node whose
+    /// dependencies have all `SUCCEEDED`, which the topological order guarantees, so a node
+    /// that is still `PENDING` is first made `READY` (`T01`), a `FAILED` node is retried
+    /// (`T06`), and a node that an earlier attempt left `RUNNING` is first returned to `READY`
+    /// (`T05`), all in the same call.
     ///
     /// # Errors
     /// [`LedgerError::Fenced`] when the epoch is stale, [`LedgerError::Illegal`] when the node
     /// is not one the attempt may take.
     async fn start(&self, run: &RunIdentity, task: &Slug, hold: &Hold) -> Result<(), LedgerError>;
+
+    /// Checks that `hold` is still the current one, without writing. The stage calls it right
+    /// before it makes a commit, so a worker that lost its lease while the builder ran makes no
+    /// commit at all. Between this call and the commit the answer can still change, and then the
+    /// fenced `finish` refuses the record: the commit is an object in the job's store that
+    /// nothing points at, and the next attempt builds the task again.
+    ///
+    /// # Errors
+    /// [`LedgerError::Fenced`] when the epoch is stale.
+    async fn confirm(&self, run: &RunIdentity, hold: &Hold) -> Result<(), LedgerError>;
 
     /// Records the commit that finished the node (`SUCCEEDED`).
     ///
@@ -175,4 +190,54 @@ pub trait ReworkSource: Send + Sync {
     /// [`SeamError::Unavailable`] when the store cannot be read. The stage fails closed: a rework
     /// run that cannot read its feedback must not run as if it were a first run.
     async fn of(&self, run: &RunIdentity) -> Result<Option<ReworkContext>, SeamError>;
+}
+
+/// Checks a spec before a sandbox is made from it. The agent runs only in the `agent` profile, over
+/// exactly the workspace the stage made, with the access the stage asked for.
+///
+/// # Errors
+/// [`StageError::Environment`] with the policy cause: the spec is for another profile, mounts a
+/// different workspace, or grants write access to a reader or read access to a writer. Nothing is
+/// retried: another try would be given the same spec.
+pub fn verify_spec(
+    spec: &SandboxSpec,
+    mounts: &WorkspaceMounts,
+    access: WorkspaceAccess,
+) -> Result<(), StageError> {
+    let refused = || StageError::Environment(EnvironmentCause::PolicyViolation);
+    if spec.profile != SandboxProfile::Agent {
+        return Err(refused());
+    }
+    if &spec.mounts.workspace != mounts {
+        return Err(refused());
+    }
+    if spec.mounts.workspace.workspace_read_only != (access == WorkspaceAccess::ReadOnly) {
+        return Err(refused());
+    }
+    if spec.job_token.is_none() {
+        return Err(refused());
+    }
+    Ok(())
+}
+
+/// Checks the sandbox that was made, not the spec it was made from: the posture the supervisor read
+/// back shows the checkout mounted with the access the stage asked for.
+///
+/// # Errors
+/// [`StageError::Environment`] with the posture cause.
+pub fn verify_posture(
+    session: &dyn factory_ports::sandbox::SandboxSession,
+    access: WorkspaceAccess,
+) -> Result<(), StageError> {
+    let mismatch = || StageError::Environment(EnvironmentCause::PostureMismatch);
+    let mount = session
+        .posture()
+        .mounts
+        .iter()
+        .find(|mount| mount.target == WORKSPACE_TARGET)
+        .ok_or_else(mismatch)?;
+    if mount.read_only != (access == WorkspaceAccess::ReadOnly) {
+        return Err(mismatch());
+    }
+    Ok(())
 }
