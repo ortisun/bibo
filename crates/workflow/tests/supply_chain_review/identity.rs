@@ -350,6 +350,34 @@ fn a_registry_twin_of_a_member_added_in_the_same_change_is_a_violation() {
     assert!(integrity.has(check::CONFUSION), "{:?}", integrity.findings);
 }
 
+/// A git copy of a member, with the member's name and version, is a package from a source the
+/// policy does not allow. A diff that keyed packages by version alone would match it with the
+/// member and say nothing came in; the registry twin is caught by its own rule, this one only by
+/// the diff.
+#[test]
+fn sc2_a_git_copy_of_a_member_with_the_same_name_and_version_is_a_source_violation() {
+    let head = files(&[
+        ("Cargo.toml", workspace_with("foo")),
+        ("app/Cargo.toml", manifest("app", "")),
+        ("foo/Cargo.toml", manifest("foo", "")),
+        (
+            "Cargo.lock",
+            lock(&[
+                member("app", &[]),
+                member("foo", &[]),
+                member("foo", &[]).at_source("git+https://example.test/org/foo#abc"),
+            ]),
+        ),
+    ]);
+    let integrity = judge(&base_with_foo(), &head);
+    assert!(integrity.lock_changed(), "{:?}", integrity.diff);
+    assert!(
+        integrity.has(check::SOURCE),
+        "a git package came in: {:?}",
+        integrity.findings
+    );
+}
+
 /// A reference that names two packages is never resolved by guessing.
 #[test]
 fn a_reference_that_names_two_packages_is_a_finding_and_is_not_skipped() {

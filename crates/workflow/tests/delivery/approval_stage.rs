@@ -362,14 +362,30 @@ async fn a_specification_that_is_not_approved_stops_the_approval_stage() {
             |value| value["metadata"]["status"] = json!("draft"),
         )
         .await;
-    let error = stage.execute().await.err();
-    assert!(
-        matches!(
-            error,
-            Some(StageError::PolicyDenied | StageError::InvalidOutput)
-        ),
-        "{error:?}"
-    );
+    // Bind the documentation reviewer's verdict to the new hash of the specification, so that the
+    // only thing left to refuse is its status.
+    let hash = stage
+        .upstream
+        .iter()
+        .rev()
+        .filter(|run| run.kind == StageKind::Specification)
+        .find_map(|run| {
+            run.outputs
+                .iter()
+                .find(|o| o.name.as_str() == "specification-contract")
+        })
+        .map(|output| output.artifact.sha256.clone())
+        .expect("the specification");
+    stage
+        .world
+        .edit_upstream(
+            &mut stage.upstream,
+            StageKind::DocumentationReview,
+            "documentation-review",
+            |value| value["inputs_reviewed"]["frozen_spec_sha256"] = json!(hash),
+        )
+        .await;
+    assert_eq!(stage.execute().await.err(), Some(StageError::PolicyDenied));
 }
 
 /// Condition C-b, again at the approval: the documentation reviewer's verdict is read from the

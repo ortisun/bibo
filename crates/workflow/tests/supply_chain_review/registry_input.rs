@@ -12,6 +12,8 @@ use std::sync::Mutex;
 use async_trait::async_trait;
 use factory_workflow::gates::supply_chain::facts::{RegistryMetadata, RegistryRecord};
 
+use factory_workflow::gates::supply_chain::report::gate;
+
 use crate::files::{Files, base, files, lock, manifest, member, reg};
 use crate::world::World;
 
@@ -62,6 +64,68 @@ fn head_with_hostile_names() -> Files {
             ]),
         ),
     ])
+}
+
+/// The same, with hostile names that the lockfile can reference without another finding (a space
+/// in a name splits the reference into a name and a version, which is a dangling reference of its
+/// own and stops the lookups before they start), and one ordinary new dependency. The ordinary
+/// one proves that the lookups ran: the test fails when they do not, and when a hostile name is
+/// among them.
+fn head_with_hostile_names_and_one_ordinary() -> Files {
+    let hostile = ["../../admin", "a?b=c", "x%2f%2e%2e"];
+    let manifest_body: String =
+        std::iter::once("[dependencies]\nserde = \"1\"\nsome-crate = \"0.1.0\"\n".to_owned())
+            .chain(
+                hostile
+                    .iter()
+                    .map(|name| format!("\"{name}\" = \"0.1.0\"\n")),
+            )
+            .collect();
+    files(&[
+        ("Cargo.toml", manifest("app", &manifest_body)),
+        (
+            "Cargo.lock",
+            lock(&[
+                member(
+                    "app",
+                    &["../../admin", "a?b=c", "x%2f%2e%2e", "some-crate", "serde"],
+                ),
+                reg("../../admin", "0.1.0", '1'),
+                reg("a?b=c", "0.1.0", '2'),
+                reg("x%2f%2e%2e", "0.1.0", '4'),
+                reg("some-crate", "0.1.0", 'c'),
+                reg("serde", "1.0.100", 'a').with_deps(&["serde_derive"]),
+                reg("serde_derive", "1.0.100", 'b'),
+            ]),
+        ),
+    ])
+}
+
+#[tokio::test]
+async fn sc7_only_the_ordinary_name_reaches_the_registry_source() {
+    let world = World::new();
+    let registry = Recording(Mutex::new(Vec::new()));
+    let ran = world
+        .gate(
+            &base(),
+            &head_with_hostile_names_and_one_ordinary(),
+            &registry,
+            &[],
+            false,
+        )
+        .await
+        .expect("the gate runs");
+    let asked = registry.0.lock().expect("the list").clone();
+    assert_eq!(
+        asked,
+        vec![("some-crate".to_owned(), "0.1.0".to_owned())],
+        "only the valid request is sent out"
+    );
+    // The hostile names are refused by name afterwards.
+    assert!(
+        ran.failure_checks(gate::REVIEW)
+            .contains(&"invalid-dependency-request".to_owned())
+    );
 }
 
 #[tokio::test]

@@ -9,7 +9,7 @@
 
 use factory_domain::values::Sha256Digest;
 use factory_domain::vocabulary::StageKind;
-use factory_workflow::handlers::StageError;
+use factory_workflow::handlers::{StageError, UpstreamRun};
 use serde_json::json;
 
 use crate::deliver::Delivery;
@@ -17,6 +17,33 @@ use crate::pairs::Whole;
 
 const SPECIFICATION: &str = "specification-contract";
 const REVIEW: &str = "documentation-review";
+
+/// Gives the specification this status and nothing else: it is still a valid document, and the
+/// documentation reviewer's verdict is re-bound to its new hash, so that the only thing left for
+/// a stage to refuse is the status.
+async fn with_status(delivery: &Delivery<'_>, upstream: &mut [UpstreamRun], status: &str) {
+    delivery
+        .edit(upstream, StageKind::Specification, SPECIFICATION, |v| {
+            v["metadata"]["status"] = json!(status);
+        })
+        .await;
+    let hash = upstream
+        .iter()
+        .rev()
+        .filter(|run| run.kind == StageKind::Specification)
+        .find_map(|run| {
+            run.outputs
+                .iter()
+                .find(|o| o.name.as_str() == SPECIFICATION)
+        })
+        .map(|output| output.artifact.sha256.clone())
+        .expect("the specification");
+    delivery
+        .edit(upstream, StageKind::DocumentationReview, REVIEW, |v| {
+            v["inputs_reviewed"]["frozen_spec_sha256"] = json!(hash);
+        })
+        .await;
+}
 
 /// A specification that a person did not approve is not delivered and not put in front of a
 /// person, whatever the stage before it said.
@@ -26,51 +53,31 @@ async fn break_a_specification_that_is_not_approved_is_refused_by_delivery_and_a
     let delivery = Delivery::over(&whole.pipeline).await;
     for status in ["draft", "superseded"] {
         let mut upstream = delivery.upstream_of_delivery();
-        delivery
-            .edit(
-                &mut upstream,
-                StageKind::Specification,
-                SPECIFICATION,
-                |v| {
-                    v["metadata"]["status"] = json!(status);
-                },
-            )
-            .await;
+        with_status(&delivery, &mut upstream, status).await;
         let error = delivery
             .run(&delivery.delivery_handler(), StageKind::Delivery, &upstream)
             .await
             .err();
-        assert!(
-            matches!(
-                error,
-                Some(StageError::PolicyDenied | StageError::InvalidOutput)
-            ),
-            "delivery, {status}: {error:?}"
-        );
+        assert_eq!(error, Some(StageError::PolicyDenied), "delivery, {status}");
 
         let mut upstream = delivery.upstream_of_approval(&whole.delivered);
-        delivery
-            .edit(
-                &mut upstream,
-                StageKind::Specification,
-                SPECIFICATION,
-                |v| {
-                    v["metadata"]["status"] = json!(status);
-                },
-            )
-            .await;
+        with_status(&delivery, &mut upstream, status).await;
         let error = delivery
             .run(&delivery.approval_handler(), StageKind::Approval, &upstream)
             .await
             .err();
-        assert!(
-            matches!(
-                error,
-                Some(StageError::PolicyDenied | StageError::InvalidOutput)
-            ),
-            "approval, {status}: {error:?}"
-        );
+        assert_eq!(error, Some(StageError::PolicyDenied), "approval, {status}");
     }
+
+    // The same edit with the status left as it was is accepted, so the refusal is the status.
+    let mut upstream = delivery.upstream_of_delivery();
+    with_status(&delivery, &mut upstream, "approved").await;
+    assert!(
+        delivery
+            .run(&delivery.delivery_handler(), StageKind::Delivery, &upstream)
+            .await
+            .is_ok()
+    );
 }
 
 /// A documentation review whose bytes were tampered with is refused by both stages: a verdict
