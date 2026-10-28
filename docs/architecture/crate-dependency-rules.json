@@ -409,18 +409,37 @@
     "generated_artifacts": [
       {
         "name": "the schema and example index of the domain tests",
-        "check": ["python3", "-I", "crates/domain/tests/tools/gen_example_index.py", "--check"],
+        "check": [
+          "python3",
+          "-I",
+          "crates/domain/tests/tools/gen_example_index.py",
+          "--check"
+        ],
         "regenerate": "python3 -I crates/domain/tests/tools/gen_example_index.py"
       },
       {
         "name": "the ledger chain fixture, against the independent Python oracle",
-        "check": ["python3", "-I", "crates/domain/tests/oracle/ledger_chain_oracle.py", "--check"],
+        "check": [
+          "python3",
+          "-I",
+          "crates/domain/tests/oracle/ledger_chain_oracle.py",
+          "--check"
+        ],
         "regenerate": "python3 -I crates/domain/tests/oracle/ledger_chain_oracle.py"
       }
     ],
     "st_01": {
-      "skipped_directories": [".git", "target", "node_modules"],
-      "prose_extensions": ["md", "txt", "rst", "lock"]
+      "skipped_directories": [
+        ".git",
+        "target",
+        "node_modules"
+      ],
+      "prose_extensions": [
+        "md",
+        "txt",
+        "rst",
+        "lock"
+      ]
     },
     "dep_04": {
       "registries": [
@@ -430,7 +449,12 @@
       "path_exceptions": []
     },
     "dep_05": {
-      "inner_crates": ["domain", "ports", "workflow", "spec_adapter"],
+      "inner_crates": [
+        "domain",
+        "ports",
+        "workflow",
+        "spec_adapter"
+      ],
       "forbidden_lint_allows": [
         "clippy::disallowed_methods",
         "clippy::disallowed_types",
@@ -440,17 +464,33 @@
       "resolved_features": [
         {
           "package": "time",
-          "allowed": [],
-          "reason": "ADR 0011: the inner crates read the time from the Clock port. The std feature of time provides OffsetDateTime::now_utc, and Cargo unifies features across the workspace, so any crate that enables time/std gives it to domain. The resolved feature set is read from cargo metadata, not from the domain manifest."
+          "allowed": [
+            "alloc",
+            "macros",
+            "std"
+          ],
+          "reason": "ADR 0011: the inner crates read the time from the Clock port. The std feature of time provides OffsetDateTime::now_utc, and Cargo unifies features across the workspace. The diesel crate, which the storage adapter needs, depends on time with its default features (std, macros), so those resolve for domain and ports as well and cannot be removed while diesel is in the workspace graph. The guard is therefore the clippy ban on time::OffsetDateTime::now_utc and now_local in every inner crate, which this same rule requires and which a test proves fires. A new feature such as local-offset (it provides now_local) still fails here. Decided at integration, pending architect confirmation. The resolved feature set is read from cargo metadata, not from the domain manifest."
         },
         {
           "package": "uuid",
-          "allowed": ["std"],
+          "allowed": [
+            "std"
+          ],
           "reason": "ADR 0002: identifiers come from the IdGenerator port. The v1, v3, v4, v5, v6, v7 and v8 features and rng/fast-rng provide generators, so none of them may resolve for the inner crates."
         },
         {
           "package": "tokio",
-          "allowed": ["io-util", "macros", "net", "process", "rt", "rt-multi-thread", "sync", "test-util", "time"],
+          "allowed": [
+            "io-util",
+            "macros",
+            "net",
+            "process",
+            "rt",
+            "rt-multi-thread",
+            "sync",
+            "test-util",
+            "time"
+          ],
           "reason": "workflow lists tokio[sync,time,rt,macros]. net, process, io-util and rt-multi-thread resolve because adapters and dev-dependencies enable them, and Cargo unifies them into the one tokio that workflow sees; the DEP-05 bans on tokio::net, tokio::process and tokio::fs paths are what stops workflow from using them. A new feature (fs, signal, full) appearing in this set needs an architect-reviewed change here."
         }
       ]
@@ -459,9 +499,16 @@
       "begin_system_function": "begin_system",
       "begin_system_crate": "workflow",
       "spec_kit_crate": "spec_adapter",
-      "spec_kit_terms": [".specify", "speckit"],
+      "spec_kit_terms": [
+        ".specify",
+        "speckit"
+      ],
       "change_host_trait": "ChangeHost",
-      "forbidden_method_prefixes": ["merge", "ready", "undraft"]
+      "forbidden_method_prefixes": [
+        "merge",
+        "ready",
+        "undraft"
+      ]
     },
     "dep_10": {
       "spawn_file": "crates/sandbox/src/process.rs",
@@ -473,30 +520,86 @@
         "std::os::windows::process",
         "tokio::process"
       ],
-      "shells": ["sh", "bash", "zsh", "dash", "fish", "ksh", "csh", "tcsh", "cmd", "powershell", "pwsh"],
+      "shells": [
+        "sh",
+        "bash",
+        "zsh",
+        "dash",
+        "fish",
+        "ksh",
+        "csh",
+        "tcsh",
+        "cmd",
+        "powershell",
+        "pwsh"
+      ],
       "programs": [
-        { "crate": "sandbox", "programs": ["docker", "git"] },
-        { "crate": "runtime", "programs": ["claude", "codex"] }
+        {
+          "crate": "sandbox",
+          "programs": [
+            "docker",
+            "git"
+          ]
+        },
+        {
+          "crate": "runtime",
+          "programs": [
+            "claude",
+            "codex"
+          ]
+        }
       ]
     },
     "st_04": {
       "verifier_crate": "sandbox",
       "verifier_prefix": "posture",
-      "dangerous_strings": ["--privileged", "--cap-add", "seccomp=unconfined", "apparmor=unconfined", "docker.sock"],
-      "host_namespace_flags": ["--network", "--net", "--pid"]
+      "dangerous_strings": [
+        "--privileged",
+        "--cap-add",
+        "seccomp=unconfined",
+        "apparmor=unconfined",
+        "docker.sock"
+      ],
+      "host_namespace_flags": [
+        "--network",
+        "--net",
+        "--pid"
+      ]
     },
     "st_05": {
-      "verbs": ["merge", "deploy"],
-      "fragments": ["publish_release", "release_publish"],
-      "route_segments": ["merge", "merges", "deploy", "deployments"],
-      "workflow_file_words": ["deploy", "merge", "publish"]
+      "verbs": [
+        "merge",
+        "deploy"
+      ],
+      "fragments": [
+        "publish_release",
+        "release_publish"
+      ],
+      "route_segments": [
+        "merge",
+        "merges",
+        "deploy",
+        "deployments"
+      ],
+      "workflow_file_words": [
+        "deploy",
+        "merge",
+        "publish"
+      ]
     },
     "st_07": {
       "conventions": "docs/observability/conventions.md",
-      "skip_crates": ["observability"]
+      "skip_crates": [
+        "observability"
+      ]
     },
     "st_09": {
-      "crates": ["sandbox", "runtime", "spec_adapter", "workflow"],
+      "crates": [
+        "sandbox",
+        "runtime",
+        "spec_adapter",
+        "workflow"
+      ],
       "ingestion_crate": "sandbox",
       "ingestion_dir": "src/workspace/",
       "calls": [
@@ -525,16 +628,55 @@
       ]
     },
     "st_13": [
-      { "name": "TenantScope::new", "allowed_crates": ["workflow", "storage", "testkit", "api", "worker"] },
-      { "name": "SystemScope::engine", "allowed_crates": ["workflow"] },
-      { "name": "PlatformScope::receiver", "allowed_crates": ["api"] },
-      { "name": "ResolvedPrincipal", "allowed_crates": ["storage", "testkit"] },
-      { "name": "ResolvedRepository", "allowed_crates": ["storage", "testkit"] },
-      { "name": "IngestedChange::new", "allowed_crates": ["sandbox", "testkit"] }
+      {
+        "name": "TenantScope::new",
+        "allowed_crates": [
+          "workflow",
+          "storage",
+          "testkit",
+          "api",
+          "worker"
+        ]
+      },
+      {
+        "name": "SystemScope::engine",
+        "allowed_crates": [
+          "workflow"
+        ]
+      },
+      {
+        "name": "PlatformScope::receiver",
+        "allowed_crates": [
+          "api"
+        ]
+      },
+      {
+        "name": "ResolvedPrincipal",
+        "allowed_crates": [
+          "storage",
+          "testkit"
+        ]
+      },
+      {
+        "name": "ResolvedRepository",
+        "allowed_crates": [
+          "storage",
+          "testkit"
+        ]
+      },
+      {
+        "name": "IngestedChange::new",
+        "allowed_crates": [
+          "sandbox",
+          "testkit"
+        ]
+      }
     ],
     "st_14": {
       "crate": "workflow",
-      "names": ["MeteringOps"]
+      "names": [
+        "MeteringOps"
+      ]
     }
   },
   "deferred": [

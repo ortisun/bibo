@@ -276,8 +276,27 @@ mod dependency_rules {
     mod dep_04_domain_features {
         use super::*;
 
+        /// The limit these tests exercise: `time` may resolve with NO feature for the inner crates.
+        ///
+        /// The repository's own rules file allows `alloc`, `macros` and `std` for `time`, because
+        /// the diesel crate depends on `time` with its default features and Cargo unifies them
+        /// across the workspace; the clippy ban on `now_utc` and `now_local` is the guard there.
+        /// These tests pin the MECHANISM at the strict limit, so it keeps working for any
+        /// repository, and do not depend on what this repository decided to allow.
+        fn require_no_time_features(fx: &mut Fixture) {
+            let features = fx.rules_mut()["source_scans"]["dep_05"]["resolved_features"]
+                .as_array_mut()
+                .expect("resolved_features is a list");
+            let time = features
+                .iter_mut()
+                .find(|entry| entry["package"] == "time")
+                .expect("the rules file limits the features of time");
+            time["allowed"] = serde_json::json!([]);
+        }
+
         fn domain_with_time_and_uuid(label: &str) -> Fixture {
             let mut fx = Fixture::baseline(label);
+            require_no_time_features(&mut fx);
             fx.external_stub(
                 "time",
                 &[("alloc", &[]), ("std", &["alloc"]), ("macros", &[])],
