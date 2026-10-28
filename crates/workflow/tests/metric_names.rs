@@ -312,24 +312,49 @@ async fn a_retryable_failure_is_counted_as_a_retry_of_its_stage() {
 
 // ---- Confirmed gaps ----------------------------------------------------------------------
 
-/// Confirmed gap OBS-5. `factory_queue_depth` is on the page and nothing records it, so the queue
-/// of ready stage runs cannot be graphed and a stuck queue cannot be alerted on.
-///
-/// Owner: `crates/workflow`, `src/scheduler/claim.rs`. Smallest change: after a claim (and after a
-/// sweep), `tracing::info!(gauge.factory_queue_depth = ready as i64, queue = "ready_stage_runs")`,
-/// where `ready` is the count the claim query already knows or one `count_ready` store read. The
-/// worker loop in `apps/worker` can record it instead if the engine should not read the count.
+/// Gap OBS-5, closed. `factory_queue_depth` is recorded on every call of `claim_next`
+/// (`src/scheduler/claim.rs`) with the number of ready stage runs the lookup found.
 #[tokio::test]
-#[ignore = "confirmed gap OBS-5: nothing records factory_queue_depth"]
 async fn the_queue_depth_gauge_is_recorded_when_work_is_claimed() {
     let metrics = first_stage_metrics(|_| {}).await;
     let gauges = emitted(&metrics, "factory_queue_depth");
-    assert!(
-        !gauges.is_empty(),
-        "no factory_queue_depth was recorded: {metrics:?}"
-    );
+    assert_eq!(gauges.len(), 1, "{metrics:?}");
     assert_eq!(gauges[0].kind, "gauge");
     assert_eq!(gauges[0].labels["queue"], "ready_stage_runs");
+    // A signed integer: the page asks for `i64`, and an unsigned one arrives as a string.
+    assert_eq!(gauges[0].value, Value::I64(1));
+}
+
+#[tokio::test]
+async fn the_queue_depth_is_zero_when_nothing_is_ready_and_counts_what_the_lookup_found() {
+    let recorder = Recorder::new();
+    let _installed = recorder.install();
+    let world = World::new().await;
+
+    // Nothing is ready: the gauge says zero, so an idle queue is not a gap in the graph.
+    world.advance(400);
+    world
+        .engine
+        .claim_next(&World::worker("worker-1"))
+        .await
+        .expect("claim");
+    // Three jobs are admitted, so three intake stage runs are ready.
+    for _ in 0..3 {
+        world.admitted_job().await;
+    }
+    world.advance(400);
+    let claimed = world
+        .engine
+        .claim_next(&World::worker("worker-1"))
+        .await
+        .expect("claim");
+
+    let depths: Vec<Value> = emitted(&metric_events(&recorder.events()), "factory_queue_depth")
+        .into_iter()
+        .map(|m| m.value)
+        .collect();
+    assert_eq!(depths, [Value::I64(0), Value::I64(3)]);
+    assert_eq!(claimed.started.len(), 3, "{claimed:?}");
 }
 
 /// Gap OBS-6, closed. `factory_stage_duration_seconds` is recorded when a stage run ends, with the

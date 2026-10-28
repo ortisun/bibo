@@ -117,6 +117,15 @@ impl Engine {
             tx.finish().await?;
             found?
         };
+        // The depth of the queue as the lookup saw it: stage runs that are ready, of active jobs,
+        // with their back-off over, waiting for a worker. It is recorded on every call, zero
+        // included, so an idle queue reads as zero and not as a gap. The lookup returns at most
+        // `claim_batch` of them, so this is the depth up to that bound; the store port has no
+        // count that would see past it.
+        tracing::info!(
+            gauge.factory_queue_depth = i64::try_from(candidates.len()).unwrap_or(i64::MAX),
+            queue = "ready_stage_runs"
+        );
         let mut claimed = Claimed::default();
         for candidate in candidates {
             let run = candidate.stage_run;

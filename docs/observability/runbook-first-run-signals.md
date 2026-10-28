@@ -28,7 +28,7 @@ Two rules for reading it.
 
 | Signal | Span | Metric | Log | Audit | Missing |
 |---|---|---|---|---|---|
-| 1. Stuck lease | `factory.attempt`, outcome `lease_lost` | `factory_retries_total` follows | "the sweep recovered attempts" | none | `factory_queue_depth` (OBS-5). Nothing shows a lease while it is stuck. |
+| 1. Stuck lease | `factory.attempt`, outcome `lease_lost` | `factory_queue_depth`; `factory_retries_total` follows | "the sweep recovered attempts" | none | The age of a lease while it is stuck, and a queue depth beyond the claim batch (see below). |
 | 2. Stage over deadline | `factory.attempt`, outcome `timed_out`, with `factory.error_class` | `factory_stage_duration_seconds` by stage and outcome; `factory_retries_total` follows | "the sweep recovered attempts" | none | none |
 | 3. Gate blocked by the environment | `factory.gate`, outcome `blocked` | `factory_gate_failures_total` with outcome `blocked` | none | `gate_result` | none for the count; the cause is not in telemetry |
 | 4. Cost over budget | `factory.agent`, with `factory.cost_usd` | `factory_spend_usd_total` by provider and stage | none | `budget_threshold_crossed` | none |
@@ -43,6 +43,7 @@ Two rules for reading it.
 - Span `factory.attempt` with `factory.outcome` = `lease_lost`. It is on the span of the attempt that lost its lease, and it is recorded by the process that was running the attempt. Attributes to search: `factory.job_id`, `factory.stage_run_id`, `factory.attempt_id`, `factory.attempt_number`, `factory.stage_kind`.
 - Log line, level `WARN`, message "the sweep recovered attempts", fields `lease_lost` and `timed_out` (counts). It is written by the worker loop (`apps/worker`, `run.rs`) when a sweep recovered at least one attempt.
 - Metric `factory_retries_total{stage}`. It rises when the lost attempt is retried. A rise is a consequence, not a lease signal: other failures raise it too.
+- Metric `factory_queue_depth{queue="ready_stage_runs"}`, a gauge that every call of the claim loop sets to the number of stage runs it found ready and waiting, zero included. It is bounded by the claim batch (8 by default). The worker loop is written for an engine built with a batch of 1, and a worker built that way reports 0 (nothing was ready) or 1 (something was); check the batch of the engine you run before reading the value as a depth. A reading that stays above zero while no `factory.stage_run` span starts means ready work that is not being taken: every worker is stuck, or the quota, the router or the budget defers it. A graph that stops updating means no worker is polling.
 - Log lines at the start and end of the loop: "worker loop started", with the `worker` field, and "worker loop stopped", with the number of `attempts` it ran. A worker that is gone shows as a `started` without a `stopped`.
 
 **First check.**
@@ -51,7 +52,7 @@ Two rules for reading it.
 2. Look in the worker log for "the sweep recovered attempts". If the sweep ran and recovered nothing while a stage run does not move, the lease has not expired yet: the attempt may still be running.
 3. Look for "the sweep failed and will be tried again". A failing sweep leaves expired leases in place.
 
-**Not yet emitted.** `factory_queue_depth{queue="ready_stage_runs"}` (OBS-5). Without it, a queue that is not drained because every worker is stuck looks the same as an idle system. No signal reports the age of a lease while it is stuck. The engine learns of an expired lease only when a sweep or the owner's next write finds it.
+**Not yet emitted.** No signal reports the age of a lease while it is stuck. The engine learns of an expired lease only when a sweep or the owner's next write finds it. The queue depth is not a true depth: the store port has no count of ready stage runs, and the claim lookup returns at most the claim batch. A count that sees past the batch needs a read-only method on the store port, which is the architect's decision.
 
 ## 2. Stage over deadline
 
