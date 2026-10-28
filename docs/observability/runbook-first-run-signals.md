@@ -13,7 +13,7 @@ Two rules for reading it.
 - Every name is checked by a test against the conventions page, but **the queries on this page were not run against a live Jaeger or VictoriaMetrics** in the change that wrote it. The stack needs Docker, and none was used. Run each query once on the first real run and correct this page.
 - The master prompt asks for spans for every job, stage, agent and tool call, and for metrics on queue depth, duration, error rates, gate failures, retries and spend. It does not list alerts. The five signals here are the first-run list given to the observability package, not a list copied from the master prompt.
 
-"Not yet emitted" means that no production code records the signal. Each such item has a confirmed-gap test, marked as ignored, with the command to run it and the smallest change. The gap numbers (OBS-n) are the ones in those tests.
+"Not yet emitted" means that no production code records the signal. A signal that is a confirmed gap with an ignored test cites its number (OBS-n), the one in that test. When this page was first written ten gaps were open; the telemetry gap fix closed them, and the paragraphs below now say what is still missing for reasons that need a decision outside the instrumentation (a store port method, a provider reported by the broker, a count of the log writer's redactions). The conventions page lists every gap and how it was closed.
 
 ## Where to look
 
@@ -132,4 +132,4 @@ Two rules for reading it.
 ## Keeping this page true
 
 - A name on this page that is not in the conventions page, or a signal marked as existing that no code records, is a defect in this page. The test `runbook_names` checks that each name here is on the conventions page and that production code writes it, that each quoted log message is written, and that each gap number cited has an ignored test; `span_openers`, `metric_names` and `telemetry_allowlist` check the names and the openers. They cannot tell whether a sentence is true. After any change to the engine's spans, metrics or log lines, reread the matching section.
-- When a gap is closed, its ignored test passes. Remove the `ignore` marker, delete the "Not yet emitted" paragraph that names it, and move the signal into the "What exists" list with its exact name.
+- When a gap is closed, its ignored test passes. Remove the `ignore` marker, delete the "Not yet emitted" paragraph that names it, and move the signal into the "What exists" list with its exact name. The conventions page marks the gap "(fixed)", and a test fails when the page and the ignored tests disagree.

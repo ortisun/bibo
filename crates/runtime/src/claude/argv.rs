@@ -47,6 +47,25 @@ pub enum ClaudeTool {
 }
 
 impl ClaudeTool {
+    /// Every built-in tool the adapter can grant.
+    pub const ALL: [ClaudeTool; 7] = [
+        Self::Read,
+        Self::Glob,
+        Self::Grep,
+        Self::Edit,
+        Self::Write,
+        Self::Bash,
+        Self::Skill,
+    ];
+
+    /// The tool with this name, when the adapter knows it. Used to turn a name read from the
+    /// tool's event stream into one of the fixed words, so that a name the model chose is never
+    /// recorded as it is.
+    #[must_use]
+    pub fn from_name(name: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|tool| tool.name() == name)
+    }
+
     /// The tool's name in `--tools`.
     #[must_use]
     pub const fn name(self) -> &'static str {

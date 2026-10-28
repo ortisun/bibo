@@ -5,13 +5,11 @@
 //! `factory.job` span that stands in for the one the composition root opens. A recording
 //! `Subscriber` reads the spans back and compares them with the tables of the conventions page:
 //! name, required attributes, allowed attributes, the kind of each value, the outcome, and the
-//! parent. What the page lists and the engine does not yet emit is written as a test marked as a
-//! confirmed gap and ignored, so the build stays green while the gap stays visible. The gaps that
-//! need a scan of the source tree (no code opens an agent or a tool call span) are in
-//! `crates/composition/tests/span_openers.rs`, because the inner crates may not read files.
-//!
-//! Run the gap tests with `cargo nextest run -p factory-workflow --test trace_shape
-//! --run-ignored only`.
+//! parent. What the page lists and the engine did not emit (the stage run span, the error class and
+//! the agent span, gaps OBS-2, OBS-11 and OBS-3) was written as a test marked as a confirmed gap
+//! and ignored, so the build stayed green while the gap stayed visible. Those tests run now. The
+//! scan of the source tree for who opens each span is in `crates/composition/tests/span_openers.rs`,
+//! because the inner crates may not read files.
 
 mod support;
 mod telemetry_support;

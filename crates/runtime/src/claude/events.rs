@@ -14,6 +14,10 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use serde_json::Value;
 
+use super::argv::ClaudeTool;
+use crate::digest;
+use crate::toolspan::{MAX_SPANS_PER_RUN, Outcome, ToolCall, UNLISTED};
+
 /// What `system/init` said.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Init {
@@ -63,6 +67,15 @@ pub struct ResultEvent {
     pub denials: Vec<RawDenial>,
 }
 
+/// A tool call the model made, as the stream announced it: reduced at once to a fixed name and a
+/// digest of the arguments. The id is the tool's own and is used only to find the result.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ToolUse {
+    id: String,
+    name: &'static str,
+    args_sha256: String,
+}
+
 /// What one run's stream held.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct Stream {
@@ -83,8 +96,38 @@ pub struct Stream {
     pub partial_output_tokens: u64,
     /// The text of each `tool_result`, by the call it answers.
     pub tool_results: BTreeMap<String, String>,
+    /// The calls the model made, in order, at most `MAX_SPANS_PER_RUN`.
+    tool_uses: Vec<ToolUse>,
+    /// The ids of the calls whose result was an error.
+    tool_errors: BTreeSet<String>,
+    /// The ids of the calls the tool refused: from `permission_denied` events and from the
+    /// denials of the result event.
+    denied: BTreeSet<String>,
     /// Lines that were not JSON, or were JSON of the wrong shape.
     pub malformed_lines: usize,
+}
+
+impl Stream {
+    /// The tool calls of the run in the form a span may record: a fixed name, a digest of the
+    /// arguments and how the call ended.
+    pub(crate) fn tool_calls(&self) -> Vec<ToolCall> {
+        self.tool_uses
+            .iter()
+            .map(|call| ToolCall {
+                name: call.name,
+                args_sha256: call.args_sha256.clone(),
+                outcome: if self.denied.contains(&call.id) {
+                    Outcome::Denied
+                } else if self.tool_errors.contains(&call.id) {
+                    Outcome::Failed
+                } else if self.tool_results.contains_key(&call.id) {
+                    Outcome::Succeeded
+                } else {
+                    Outcome::Cancelled
+                },
+            })
+            .collect()
+    }
 }
 
 fn u64_of(value: &Value, key: &str) -> u64 {
@@ -202,10 +245,44 @@ fn read_init(event: &Value) -> Init {
     }
 }
 
+/// Notes the tool calls in the content of a message. Only a fixed name and a digest of the
+/// arguments are kept: the name the model chose is looked up in the adapter's own list, and the
+/// arguments are hashed and dropped.
+fn read_tool_uses(message: &Value, stream: &mut Stream) {
+    let Some(parts) = message.get("content").and_then(Value::as_array) else {
+        return;
+    };
+    for part in parts {
+        if part.get("type").and_then(Value::as_str) != Some("tool_use") {
+            continue;
+        }
+        let Some(id) = part.get("id").and_then(Value::as_str) else {
+            continue;
+        };
+        if stream.tool_uses.len() >= MAX_SPANS_PER_RUN
+            || stream.tool_uses.iter().any(|u| u.id == id)
+        {
+            continue;
+        }
+        let name = part
+            .get("name")
+            .and_then(Value::as_str)
+            .and_then(ClaudeTool::from_name)
+            .map_or(UNLISTED, ClaudeTool::name);
+        let input = part.get("input").unwrap_or(&Value::Null);
+        stream.tool_uses.push(ToolUse {
+            id: id.to_owned(),
+            name,
+            args_sha256: digest::hex(input.to_string().as_bytes()),
+        });
+    }
+}
+
 fn read_assistant(event: &Value, stream: &mut Stream) {
     let Some(message) = event.get("message") else {
         return;
     };
+    read_tool_uses(message, stream);
     let id = message
         .get("id")
         .and_then(Value::as_str)
@@ -237,6 +314,9 @@ fn read_user(event: &Value, stream: &mut Stream) {
         {
             let text = part.get("content").map(text_of).unwrap_or_default();
             stream.tool_results.insert(id.to_owned(), text);
+            if part.get("is_error").and_then(Value::as_bool) == Some(true) {
+                stream.tool_errors.insert(id.to_owned());
+            }
         }
     }
 }
@@ -264,12 +344,22 @@ pub fn parse(stdout: &[u8]) -> Stream {
                     stream.retries += 1;
                     stream.last_retry_status = event.get("error_status").and_then(Value::as_u64);
                 }
+                Some("permission_denied") => {
+                    if let Some(id) = event.get("tool_use_id").and_then(Value::as_str) {
+                        stream.denied.insert(id.to_owned());
+                    }
+                }
                 _ => {}
             },
             Some("assistant") => read_assistant(&event, &mut stream),
             Some("user") => read_user(&event, &mut stream),
             Some("result") => match read_result(&event) {
-                Some(result) => stream.result = Some(result),
+                Some(result) => {
+                    stream
+                        .denied
+                        .extend(result.denials.iter().map(|d| d.tool_use_id.clone()));
+                    stream.result = Some(result);
+                }
                 None => stream.malformed_lines += 1,
             },
             _ => {}

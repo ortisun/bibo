@@ -310,8 +310,28 @@ const REVIEWED: &[(&str, &str, &str)] = &[
     ),
     (
         "crates/runtime/src/codex/mod.rs",
+        "allowed_count",
+        "a count of the stage's skills",
+    ),
+    (
+        "crates/runtime/src/codex/mod.rs",
+        "allowed_sha256",
+        "first 12 hex characters of the SHA-256 of the stage's skill names; the names are not logged",
+    ),
+    (
+        "crates/runtime/src/codex/mod.rs",
         "error",
         "probe error, a closed set",
+    ),
+    (
+        "crates/runtime/src/codex/mod.rs",
+        "visible_count",
+        "a count of the skills the tool listed",
+    ),
+    (
+        "crates/runtime/src/codex/mod.rs",
+        "visible_sha256",
+        "first 12 hex characters of the SHA-256 of the skill names the tool listed; the names are not logged",
     ),
     (
         "crates/runtime/src/codex/mod.rs",
@@ -367,6 +387,16 @@ const REVIEWED: &[(&str, &str, &str)] = &[
         "crates/sandbox/src/workspace/ingest.rs",
         "kind",
         "audit reason kind, a closed enum",
+    ),
+    (
+        "crates/sandbox/src/workspace/ingest.rs",
+        "path_sha256",
+        "first 12 hex characters of the SHA-256 of a rejected path; the path is not logged",
+    ),
+    (
+        "crates/sandbox/src/workspace/ingest.rs",
+        "rejected",
+        "a count",
     ),
     (
         "crates/storage/src/artifact_fs/mod.rs",
@@ -437,11 +467,12 @@ const REVIEWED: &[(&str, &str, &str)] = &[
     ),
 ];
 
-/// Fields that put text of outside origin in a log line, as found on 2026-10-28. They are tracked
-/// as confirmed gap OBS-9 and tolerated by the allowlist test until the ignored test at the end of
-/// this file passes. The JSON line escapes control characters and the redactor runs over the line,
-/// but the length is not bounded and the content is not an identifier.
-const TRACKED_AS_OBS_9: &[(&str, &str, &str)] = &[
+/// Fields that put text of outside origin in a log line, as found on 2026-10-28 (confirmed gap
+/// OBS-9, now closed). The three call sites log counts and short digests instead, under other
+/// names, and the test at the end of this file proves that these (file, name) pairs are gone. The
+/// JSON line escapes control characters and the redactor runs over the line, but the length was
+/// not bounded and the content was not an identifier.
+const FORMERLY_TRACKED_AS_OBS_9: &[(&str, &str, &str)] = &[
     (
         "crates/sandbox/src/workspace/ingest.rs",
         "path",
@@ -493,9 +524,7 @@ fn every_log_field_is_on_the_allowlist_or_has_been_reviewed() {
     let allowed = allowed_names();
     let unknown: Vec<String> = event_fields()
         .into_iter()
-        .filter(|f| {
-            !allowed.contains(&f.name) && !is_listed(REVIEWED, f) && !is_listed(TRACKED_AS_OBS_9, f)
-        })
+        .filter(|f| !allowed.contains(&f.name) && !is_listed(REVIEWED, f))
         .map(|f| format!("{}:{} field `{}` = {}", f.file, f.line, f.name, f.value))
         .collect();
     assert!(
@@ -525,7 +554,7 @@ fn no_log_field_has_a_name_that_means_text_from_outside() {
 #[test]
 fn the_reviewed_lists_hold_no_stale_line() {
     let fields = event_fields();
-    for (file, name, reason) in REVIEWED.iter().chain(TRACKED_AS_OBS_9) {
+    for (file, name, reason) in REVIEWED {
         assert!(!reason.is_empty());
         assert!(
             fields.iter().any(|f| f.file == *file && f.name == *name),
@@ -539,7 +568,7 @@ fn the_reviewed_lists_hold_no_stale_line() {
         );
     }
     let mut seen = BTreeSet::new();
-    for (file, name, _) in REVIEWED.iter().chain(TRACKED_AS_OBS_9) {
+    for (file, name, _) in REVIEWED {
         assert!(seen.insert((*file, *name)), "{file} lists `{name}` twice");
     }
 }
@@ -563,30 +592,46 @@ fn a_value_that_is_an_error_is_recorded_only_where_it_was_reviewed() {
     }
 }
 
-/// Confirmed gap OBS-9. Three log fields put text of outside origin in a line: the path of a
+/// Gap OBS-9, closed. Three log fields put text of outside origin in a line: the path of a
 /// workspace entry that the audit rejected (`crates/sandbox/src/workspace/ingest.rs`), and the skill
 /// names the tool printed (`crates/runtime/src/codex/mod.rs`, two fields). The repository's author
 /// chooses both. The JSON line escapes control characters and the redactor scrubs the line, so this
-/// is not an injection or a secret leak by itself, but the text is unbounded, and the conventions
-/// page says text from a person or a tool is not recorded. There is no helper in the workspace that
-/// encodes such text for a log line (escape, truncate to a length, add a digest).
-///
-/// Owner: `crates/sandbox` and `crates/runtime`. Smallest change: log the count of rejected entries
-/// and the audit reason kind, with a digest of the path (`sha256` of the path, first 12 hex
-/// characters) so two lines about one entry can be matched, and log the number of visible skills
-/// instead of their names. The full text is already in the workspace report that
-/// `ws.keep_report(report)` keeps.
+/// was not an injection or a secret leak by itself, but the text was unbounded, and the conventions
+/// page says text from a person or a tool is not recorded. The three sites now log counts and the
+/// first 12 hex characters of a SHA-256 (`Sha256Digest`, the digest the workspace uses), and the
+/// names are no longer logged anywhere.
 #[test]
-#[ignore = "confirmed gap OBS-9: three log fields hold text chosen by the repository"]
 fn no_log_field_holds_text_chosen_by_a_repository_or_a_tool() {
-    let tracked: Vec<String> = event_fields()
+    let still_logged: Vec<String> = event_fields()
         .into_iter()
-        .filter(|f| is_listed(TRACKED_AS_OBS_9, f))
+        .filter(|f| is_listed(FORMERLY_TRACKED_AS_OBS_9, f))
         .map(|f| format!("{}:{} field `{}` = {}", f.file, f.line, f.name, f.value))
         .collect();
     assert!(
-        tracked.is_empty(),
+        still_logged.is_empty(),
         "text of outside origin is logged:\n  {}",
-        tracked.join("\n  ")
+        still_logged.join("\n  ")
     );
+}
+
+#[test]
+fn a_field_named_as_a_digest_is_filled_by_a_digest_helper() {
+    // The replacement fields are named `*_sha256`. A name says nothing about the value, so check
+    // that each such field is filled by a call whose name says digest, and not by the text itself.
+    let mut seen = 0;
+    for field in event_fields() {
+        if field.name.ends_with("_sha256") && !field.name.starts_with("factory.") {
+            seen += 1;
+            assert!(
+                field.value.to_ascii_lowercase().contains("digest")
+                    || field.value.contains(".hex()"),
+                "{}:{} `{}` is named as a digest and is filled with `{}`",
+                field.file,
+                field.line,
+                field.name,
+                field.value
+            );
+        }
+    }
+    assert!(seen >= 3, "the scan found only {seen} digest fields");
 }

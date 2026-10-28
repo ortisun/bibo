@@ -1,14 +1,15 @@
 //! Which production code opens each span of the conventions page (package
 //! `s1-observability-instrumentation`).
 //!
-//! The page names six spans. Three are opened today: `factory.job` by the composition root through
-//! the helper of the observability crate, `factory.attempt` and `factory.gate` by the engine. The
-//! other three have no opener, and a test for each is marked as a confirmed gap and ignored, so the
-//! build stays green while the gap stays visible. Run them with `cargo nextest run -p
-//! factory-composition --test span_openers --run-ignored only`.
+//! The page names six spans, and each has an opener: `factory.job` is opened by the composition
+//! root through the helper of the observability crate; `factory.stage_run`, `factory.attempt`,
+//! `factory.gate` and `factory.agent` by the engine; `factory.tool_call` by the two agent runtime
+//! adapters. Until the telemetry gap fix three of them had none, and a test for each was marked as
+//! a confirmed gap and ignored, so the build stayed green while the gap stayed visible.
 //!
 //! The scan reads text, so it misses a span opened under a name built at run time. The behavior of
-//! the spans that exist is tested in `crates/workflow/tests/trace_shape.rs`.
+//! the engine's spans is tested in `crates/workflow/tests/trace_shape.rs`, and that of the adapters'
+//! spans in `crates/runtime/tests/telemetry.rs`.
 
 mod telemetry_scan;
 
@@ -71,16 +72,10 @@ fn some_code_opens_the_agent_span() {
     assert!(some_code_opens("factory.agent", None));
 }
 
-/// Confirmed gap OBS-4. The conventions page has a `factory.tool_call` span for one tool call made
-/// by an agent. No production code opens one.
-///
-/// Owner: `crates/runtime` (the adapters see each tool call in the tool's output) or the engine
-/// wrapper from OBS-3. Smallest change: when the adapter parses a tool call from the stream, open
-/// `info_span!("factory.tool_call", factory.correlation_id, factory.job_id, factory.attempt_id,
-/// factory.tool_name, factory.outcome = Empty)`, record `factory.tool_args_sha256` and the outcome
-/// (`denied` when policy refused it).
+/// Gap OBS-4, closed (the tests of its behavior are in `crates/runtime/tests/telemetry.rs`). Both
+/// adapters of `crates/runtime` open `factory.tool_call` for each tool call they read from the
+/// tool's event stream, through `src/toolspan.rs`. What the span still lacks is gap OBS-12.
 #[test]
-#[ignore = "confirmed gap OBS-4: no code opens a factory.tool_call span"]
 fn some_code_opens_the_tool_call_span() {
     assert!(some_code_opens("factory.tool_call", None));
 }
