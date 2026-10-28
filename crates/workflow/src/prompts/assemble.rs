@@ -5,7 +5,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use factory_domain::contracts::AgentManifest;
 use factory_domain::ids::TenantId;
 use factory_domain::policy::RepoKind;
-use factory_domain::policy::paths::PathPolicy;
+use factory_domain::policy::paths::{ChangeEvidence, Operation, PathPolicy, PathVerdict};
 use factory_domain::redaction::Redactor;
 use factory_domain::values::Sha256Digest;
 use factory_ports::registry::LoadedPrompt;
@@ -14,7 +14,9 @@ use super::block::{self, Header};
 use super::error::AssemblyError;
 use super::input::{Input, Trust, is_identifier};
 use super::limits::{Limits, allowances};
-use super::manifest::{ContextManifest, InputRecord, Signal, TemplateRecord};
+use super::manifest::{
+    ContextManifest, Exclusion, ExclusionReason, InputRecord, Signal, TemplateRecord,
+};
 use super::sanitize::{Lookalikes, lookalikes, neutralize};
 use super::template::{InputSpec, Line, Template};
 use super::verify::{self, Meant, instruction_line};
@@ -167,6 +169,7 @@ struct Work<'i> {
     omitted: usize,
     redacted: u64,
     hash_is_of_redacted_text: bool,
+    exclusion: Option<Exclusion>,
 }
 
 impl<'a> Assembler<'a> {
@@ -200,7 +203,6 @@ impl<'a> Assembler<'a> {
         scope: &Scope,
         inputs: &[Input],
     ) -> Result<Assembled, AssemblyError> {
-        let _ = (self.paths, scope.repo);
         if prompt.template != manifest.prompt {
             return Err(AssemblyError::PromptNotForManifest);
         }
@@ -261,7 +263,7 @@ impl<'a> Assembler<'a> {
 
         let mut work: Vec<Work<'_>> = Vec::with_capacity(template.inputs().len());
         for spec in template.inputs() {
-            work.push(self.prepare(spec, by_name.get(spec.name()).copied())?);
+            work.push(self.prepare(spec, by_name.get(spec.name()).copied(), scope)?);
         }
         let max_tokens = u64::try_from(manifest.resource_limits.max_tokens.get()).unwrap_or(0);
         let budget = self.limits.prompt_budget_bytes(max_tokens);
@@ -405,7 +407,7 @@ impl<'a> Assembler<'a> {
             estimated_tokens: self.limits.estimate_tokens(text.len()),
             budget_bytes: budget,
             inputs: records,
-            exclusions: Vec::new(),
+            exclusions: work.iter().filter_map(|w| w.exclusion.clone()).collect(),
             signals,
         };
         Ok(Assembled {
@@ -468,6 +470,7 @@ impl<'a> Assembler<'a> {
         &self,
         spec: &'i InputSpec,
         given: Option<&'i Input>,
+        scope: &Scope,
     ) -> Result<Work<'i>, AssemblyError> {
         let Some(input) = given else {
             if spec.required() {
@@ -486,12 +489,62 @@ impl<'a> Assembler<'a> {
                 omitted: 0,
                 redacted: 0,
                 hash_is_of_redacted_text: false,
+                exclusion: None,
             });
         };
         if input.class != spec.class() {
             return Err(AssemblyError::ClassMismatch {
                 name: spec.name().to_owned(),
             });
+        }
+        if input.tenant != scope.tenant {
+            return Err(AssemblyError::ForeignTenant {
+                name: spec.name().to_owned(),
+            });
+        }
+        let given_sha256 = Sha256Digest::of(&input.bytes);
+        if scope.withheld.contains(&given_sha256) {
+            return Err(AssemblyError::WithheldContent {
+                name: spec.name().to_owned(),
+            });
+        }
+        // A file the path policy hides from reads is not read into a prompt. An input made of
+        // several files is left out whole, because it cannot be cut at a file.
+        for path in &input.paths {
+            let verdict = self.paths.check(
+                scope.repo,
+                path,
+                Operation::Read,
+                None,
+                &ChangeEvidence::default(),
+            );
+            if let PathVerdict::Denied(denial) = verdict {
+                if spec.required() {
+                    return Err(AssemblyError::ExcludedRequiredInput {
+                        name: spec.name().to_owned(),
+                    });
+                }
+                return Ok(Work {
+                    spec,
+                    given: None,
+                    original_bytes: 0,
+                    original_sha256: Sha256Digest::of(b""),
+                    text: String::new(),
+                    stripped: 0,
+                    looks: Lookalikes::default(),
+                    omitted: 0,
+                    redacted: 0,
+                    hash_is_of_redacted_text: false,
+                    exclusion: Some(Exclusion {
+                        name: spec.name().to_owned(),
+                        source: input.source.clone(),
+                        reason: ExclusionReason::HiddenPath {
+                            rule: format!("{}:{}", denial.rule.area(), denial.rule.id()),
+                            path: path.clone(),
+                        },
+                    }),
+                });
+            }
         }
         let text = std::str::from_utf8(&input.bytes).map_err(|e| AssemblyError::InvalidUtf8 {
             name: spec.name().to_owned(),
@@ -519,7 +572,7 @@ impl<'a> Assembler<'a> {
         let original_sha256 = if redacted > 0 {
             Sha256Digest::of(clean.as_bytes())
         } else {
-            Sha256Digest::of(&input.bytes)
+            given_sha256
         };
         Ok(Work {
             spec,
@@ -532,6 +585,7 @@ impl<'a> Assembler<'a> {
             omitted: 0,
             redacted,
             hash_is_of_redacted_text: redacted > 0,
+            exclusion: None,
         })
     }
 }
