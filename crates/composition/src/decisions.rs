@@ -1752,7 +1752,7 @@ mod tests {
     }
 
     fn keys(seed: u8) -> DecisionKeys {
-        DecisionKeys::from_bytes(&[seed; 40], None).expect("a key")
+        DecisionKeys::fixed_for_tests(&[seed; 40], None).expect("a key")
     }
 
     fn marker_row(

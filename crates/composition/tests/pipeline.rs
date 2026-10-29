@@ -153,6 +153,40 @@ fn production_inputs() -> PipelineInputs {
     inputs
 }
 
+/// RR-29. A tuning of the assembly (wrapping every handler, replacing the markers, changing the
+/// engine's configuration) is for a test. The production profile refuses one, whichever hook it sets,
+/// and says which; the other profiles still take it.
+#[test]
+fn the_production_profile_refuses_a_tuning_of_the_assembly() {
+    type SetsAHook = fn(&mut Tuning);
+    let hooks: [(&str, SetsAHook); 2] = [
+        ("engine", |tuning| tuning.engine = Some(Box::new(|_| {}))),
+        ("decorate", |tuning| {
+            tuning.decorate = Some(Box::new(|handler| handler));
+        }),
+    ];
+    for (name, set) in hooks {
+        let mut tuned = production_inputs();
+        set(&mut tuned.tuning);
+        match assemble_pipeline(tuned) {
+            Err(PipelineError::Settings(message)) => {
+                assert!(
+                    message.contains("tuning") && message.contains(name),
+                    "{message}"
+                );
+            }
+            other => panic!(
+                "{name}: the production profile took a tuning: {:?}",
+                other.err()
+            ),
+        }
+        // The same hook in the test profile is accepted.
+        let mut allowed = inputs(Profile::Test, StageSettings::default());
+        set(&mut allowed.tuning);
+        assert!(assemble_pipeline(allowed).is_ok(), "{name}");
+    }
+}
+
 #[test]
 fn the_production_profile_refuses_every_stand_in_and_lists_them() {
     let refused = assemble_pipeline(production_inputs())

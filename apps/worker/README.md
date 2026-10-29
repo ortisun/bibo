@@ -92,7 +92,11 @@ For decisions: the API writes the audit record `decision.requested`, ending with
 (`mac=`) that only the API can make; `ClaimWork` recomputes the word with each key it holds
 (`decisions.key_file` and, in a rotation, `decisions.previous_key_file`) and compares in constant time before
 it reads anything else in the record, and rejects a record with no word or the wrong one with the fixed
-code `not_signed`. It then reads the record, checks the
+code `not_signed`. The worker's own marker (`decision.applied`, `decision.rejected`) carries a word of its
+own, made with the same key over another first line, and the worker counts a request as dealt with only when
+the marker that names it has a good word (RR-8); a row that only has the action of a marker is ignored and
+recorded once as `decision.marker_ignored`. Records that are not requests it trusts have a budget of their
+own, apart from the signed ones (RR-21). It then reads the record, checks the
 allowlist **again, now, by the numeric GitHub id** of the principal behind the record, and applies it once:
 pause, resume and cancel through `Engine::control`; approve, reject and rework through
 `ApprovalService::submit`. The record's id is the command id the engine uses, so a repeat is a no-op

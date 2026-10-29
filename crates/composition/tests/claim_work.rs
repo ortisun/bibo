@@ -1166,16 +1166,16 @@ async fn aut_12_a_genuine_request_still_applies_exactly_once() {
 async fn aut_12_a_rotation_accepts_the_previous_key_and_nothing_older() {
     let mut rig = Rig::new().await;
     let (a, b, c) = (rig.active().await, rig.active().await, rig.active().await);
-    rig.keys = Arc::new(DecisionKeys::from_bytes(&[1; 48], None).expect("a key"));
+    rig.keys = Arc::new(DecisionKeys::fixed_for_tests(&[1; 48], None).expect("a key"));
     rig.request(rig.operator, a, Verb::Pause, None, None, "signed before")
         .await;
     // The rotation: the API now signs with the second key; the hook holds both.
-    rig.keys = Arc::new(DecisionKeys::from_bytes(&[2; 48], Some(&[1; 48])).expect("keys"));
+    rig.keys = Arc::new(DecisionKeys::fixed_for_tests(&[2; 48], Some(&[1; 48])).expect("keys"));
     rig.request(rig.operator, b, Verb::Pause, None, None, "signed after")
         .await;
     // A third key, which neither side holds.
     let hook_keys = rig.keys.clone();
-    rig.keys = Arc::new(DecisionKeys::from_bytes(&[3; 48], None).expect("a key"));
+    rig.keys = Arc::new(DecisionKeys::fixed_for_tests(&[3; 48], None).expect("a key"));
     rig.request(
         rig.operator,
         c,

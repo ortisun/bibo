@@ -8,7 +8,8 @@
 //! # What is checked, in this order, before anything is written
 //!
 //! 1. **The acting principal** is a human of the tenant whose numeric GitHub id is the one on the
-//!    proof, and the roles that principal holds *now* (the [`Authority`](crate::commands::Authority)
+//!    proof, is not the requester of the job (separation of duties: a new dependency is a high-tier
+//!    change), and the roles that principal holds *now* (the [`Authority`](crate::commands::Authority)
 //!    seam reads the allowlist for each call) include the one the designation on the proof names.
 //!    A proof made for another person, or for a person removed since, is refused.
 //! 2. **The proof** is for one of the two actions of `approval.yaml` (`add_new_direct_dependency`,
@@ -41,6 +42,7 @@
 use factory_domain::contracts::evidence_ledger_entry::{
     ArtifactEvidence, Attestor, ClaimKind, Evidence, ExpertJudgmentEvidence,
 };
+use factory_domain::ids::PrincipalId;
 use factory_domain::policy::decision::Designation;
 use factory_domain::values::{HumanText, MediaType};
 use factory_domain::vocabulary::{ConfidenceLevel, HumanRole, StageKind};
@@ -97,7 +99,15 @@ impl Engine {
         let timeline = Timeline::load(&mut *tx, request.stage.job).await?;
         let cx = Cx::new(self, &job.value, actor.command);
         let applied = self
-            .apply_dependency_decision(&mut *tx, &cx, actor, &roles, &run, &timeline, &request)
+            .apply_dependency_decision(
+                &mut *tx,
+                &cx,
+                actor,
+                &roles,
+                (&run, job.value.requester),
+                &timeline,
+                &request,
+            )
             .await;
         match applied {
             Ok(recorded) => {
@@ -131,7 +141,7 @@ impl Engine {
         cx: &Cx<'_>,
         actor: &Actor,
         roles: &[HumanRole],
-        run: &Versioned<StageRun>,
+        (run, requester): (&Versioned<StageRun>, PrincipalId),
         timeline: &Timeline,
         request: &RecordDependencyDecision,
     ) -> Result<DependencyDecisionRecorded, EngineError> {
@@ -145,6 +155,16 @@ impl Engine {
         if principal.disabled_at.is_some() || github_user_id != request.proof.approver().get() {
             return Err(EngineError::NotAuthorized(
                 "the proof of authority is for another person",
+            ));
+        }
+        // The person who asked for the job does not decide on its dependencies. A new dependency is
+        // a high-tier change, and the policy says the approver of a high-tier change differs from
+        // the requester (`approver_must_differ_from_requester`). The proof was made for a risk the
+        // policy engine was told; the engine does not rely on it for this, because the requester is
+        // known here and nowhere else (RR-24).
+        if actor.principal == requester {
+            return Err(EngineError::NotAuthorized(
+                "the person who asked for the job may not decide on its dependencies",
             ));
         }
         let designation = request.proof.designation();

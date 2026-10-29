@@ -224,7 +224,7 @@ fn origin_of(source: &str) -> Origin {
         return if DEFAULT_INDEXES.contains(&index) {
             Origin::Registry
         } else {
-            Origin::OtherRegistry(host_of(index))
+            Origin::OtherRegistry(registry_identity(index))
         };
     }
     if let Some(url) = source.strip_prefix("git+") {
@@ -253,6 +253,33 @@ fn git_origin(url: &str) -> Origin {
         repository: plain(path, 200),
         revision: plain(if fragment.is_empty() { query } else { fragment }, 200),
     }
+}
+
+/// What names another registry: the scheme, the host, the port and the path of its index, without
+/// credentials, query or fragment (RR-26). Two registries on one host are two registries: one
+/// service may serve an internal index and a public mirror at different paths, or on different ports,
+/// and a package of one is not a package of the other.
+fn registry_identity(index: &str) -> String {
+    let without_query = index.split(['?', '#']).next().unwrap_or_default();
+    let (scheme, rest) = without_query
+        .split_once("://")
+        .unwrap_or(("", without_query));
+    let (authority, path) = rest
+        .find('/')
+        .map_or((rest, ""), |at| (&rest[..at], &rest[at..]));
+    let host = authority.rsplit('@').next().unwrap_or_default();
+    if host.is_empty() {
+        return "unknown registry".to_owned();
+    }
+    let path = path.trim_end_matches('/');
+    let scheme = scheme.to_ascii_lowercase();
+    let host = host.to_ascii_lowercase();
+    let identity = if scheme.is_empty() {
+        format!("{host}{path}")
+    } else {
+        format!("{scheme}://{host}{path}")
+    };
+    plain(&identity, 200)
 }
 
 /// The host of a URL, without credentials, port, path or query.
@@ -587,5 +614,53 @@ mod tests {
         assert_eq!(kind("cargo.lock"), Some(FileKind::Lockfile));
         assert_eq!(kind("crates/a/build.rs"), Some(FileKind::BuildScript));
         assert_eq!(kind("src/build.rs.bak"), None);
+    }
+}
+
+#[cfg(test)]
+mod registry_identity_tests {
+    use super::*;
+
+    #[test]
+    fn two_registries_on_one_host_are_two_registries() {
+        let one = origin_of("registry+https://registry.example/internal/index");
+        let other = origin_of("registry+https://registry.example/public/index");
+        let port = origin_of("registry+https://registry.example:8443/internal/index");
+        let plain = origin_of("registry+http://registry.example/internal/index");
+        assert_ne!(one, other, "a different path");
+        assert_ne!(one, port, "a different port");
+        assert_ne!(one, plain, "a different scheme");
+        // The same registry written with other case, a trailing slash or credentials is the same.
+        assert_eq!(
+            one,
+            origin_of("registry+HTTPS://Registry.Example/internal/index/")
+        );
+        // Credentials are put together here, so that this file holds no address with a password.
+        let with_login = format!(
+            "registry+https://user{}secret@registry.example/internal/index",
+            ':'
+        );
+        assert_eq!(one, origin_of(&with_login));
+        // The sparse form is read the same way, and the default index is still the default.
+        assert!(matches!(
+            origin_of("sparse+https://registry.example/internal/index"),
+            Origin::OtherRegistry(_)
+        ));
+        assert_eq!(
+            origin_of("registry+https://github.com/rust-lang/crates.io-index"),
+            Origin::Registry
+        );
+    }
+
+    #[test]
+    fn the_identity_never_holds_credentials_or_a_query() {
+        let source = format!(
+            "registry+https://user{}secret@registry.example:8443/i?token=abc#frag",
+            ':'
+        );
+        let Origin::OtherRegistry(identity) = origin_of(&source) else {
+            panic!("another registry");
+        };
+        assert_eq!(identity, "https://registry.example:8443/i");
     }
 }

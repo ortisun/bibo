@@ -319,6 +319,25 @@ pub fn assemble_pipeline(inputs: PipelineInputs) -> Result<Pipeline, PipelineErr
         decision_keys,
         tuning,
     } = inputs;
+    // A hook that replaces the markers, wraps every handler or changes the engine's configuration
+    // is for a test. In the production profile it would let a library caller turn off what the
+    // profile checks, so it is refused (RR-29).
+    if profile == Profile::Production {
+        let used: Vec<&str> = [
+            ("decorate", tuning.decorate.is_some()),
+            ("markers", tuning.markers.is_some()),
+            ("engine", tuning.engine.is_some()),
+        ]
+        .into_iter()
+        .filter_map(|(name, set)| set.then_some(name))
+        .collect();
+        if !used.is_empty() {
+            return Err(PipelineError::Settings(format!(
+                "the production profile refuses a tuning of the assembly ({})",
+                used.join(", ")
+            )));
+        }
+    }
     let Tuning {
         decorate,
         markers,
