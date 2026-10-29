@@ -21,7 +21,7 @@
 //! history shapes could not be seen against a real provider (no real model is called anywhere in
 //! this repository), so they are UNVERIFIED against live traffic; the fixed error and the audit
 //! event name the class of what was refused, and widening the schema is one reviewed line in
-//! [`anthropic`] or [`openai`].
+//! `anthropic.rs` or `openai.rs`.
 //!
 //! # What is parsed, and how
 //!
@@ -104,7 +104,7 @@
 //!
 //! The schemas are code, not policy data, on purpose: a field added to an allow list is a change
 //! to what the provider may do for a sandbox, and should be reviewed with a test next to it. The
-//! architect may move them to `policies/` as data later; the walker in [`rules`] already treats
+//! architect may move them to `policies/` as data later; the walker in `rules.rs` already treats
 //! them as data.
 
 pub mod headers;

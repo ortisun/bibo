@@ -39,7 +39,7 @@ const ANTHROPIC_FORBIDDEN_BETAS: &[&str] = &[
 ///
 /// The header is a comma-separated list. Every value must be a plain lowercase token. A value of
 /// a forbidden family refuses the request. A value that is well formed but not on the list of
-/// [`ANTHROPIC_BETAS`] is dropped. The OpenAI header is dropped whole: no runtime sends one.
+/// `ANTHROPIC_BETAS` is dropped. The OpenAI header is dropped whole: no runtime sends one.
 ///
 /// # Errors
 /// [`Violation::BetaHeader`] for a malformed list or a forbidden family.

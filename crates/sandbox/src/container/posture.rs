@@ -59,7 +59,7 @@ pub const DENIED_FLAGS: &[&str] = &[
 /// The first rule an argument vector breaks, as short text for a log or a test. `None` means the
 /// vector is clean.
 ///
-/// The vector is read the way Docker reads it (see [`super::posture_args`]): long and short flags,
+/// The vector is read the way Docker reads it (see `posture_args.rs`): long and short flags,
 /// a value glued to the flag or in the next word, clusters of boolean flags. The rules then apply
 /// to what each flag means, not to how it is spelled: a security option is a key and a value, a
 /// mount is a map with aliases, a limit is a number above zero, a user is a number that is not
