@@ -52,29 +52,29 @@ The timeline shows `timeline E4 #1 job.admitted`, then `timeline E4 #2 stage_run
 
 ### 3. Intake keeps the request as written and classifies it
 
-The intake stage fetches the issue text, stores it unchanged as revision 1 and asks the intake classifier for a classification. The classifier is a scripted answer: [the playbook entry](../../fixtures/recordings/playbook/word-count/agent-output/intake-classifier.json) says the request is a low-risk feature. Three gates ran, and the engine wrote one ledger entry for each. The first is `ledger E4 #1 id=7d7c9a6c hash=9de5e32909f9 has="intake-original-preserved"`. The gate checks that the stored original is byte for byte the issue. The second is `ledger E4 #2 id=dc496e83 hash=2ee501331450 has="intake-outcome"`.
+The intake stage fetches the issue text, stores it unchanged as revision 1 and asks the intake classifier for a classification. The classifier is a scripted answer: [the playbook entry](../../fixtures/recordings/playbook/word-count/agent-output/intake-classifier.json) says the request is a low-risk feature. Three gates ran, and the engine wrote one ledger entry for each. The first is `ledger E4 #1 id=04b19aa9 hash=8c3e140006ea has="intake-original-preserved"`. The gate checks that the stored original is byte for byte the issue. The second is `ledger E4 #2 id=4cf5e080 hash=cd3a3fc8b0c6 has="intake-outcome"`.
 
 ### 4. Repository intelligence measures the starting point
 
-The factory reads the repository and builds a map. It also runs the project's build and tests on the base commit, to know the starting state. The baseline gate passed: `ledger E4 #7 id=fd94255a hash=1daaaec7ddea has="repository-map-valid"`. The output that the fake sandbox plays back for the baseline is a recording of a real run: [`cargo-test.base.stdout`](../../fixtures/recordings/playbook/word-count/sandbox/cargo-test.base.stdout).
+The factory reads the repository and builds a map. It also runs the project's build and tests on the base commit, to know the starting state. The baseline gate passed: `ledger E4 #7 id=1060f6b1 hash=c085d7a125cb has="repository-map-valid"`. The output that the fake sandbox plays back for the baseline is a recording of a real run: [`cargo-test.base.stdout`](../../fixtures/recordings/playbook/word-count/sandbox/cargo-test.base.stdout).
 
 ### 5. The specification waits for a person
 
 The writer agent produced a specification with the Spec Kit skills. The files are scripted: [`spec.md`](../../fixtures/recordings/playbook/word-count/specification/spec.md). The stage's gates passed, and then the stage asked for a person before it froze the draft.
 
-The timeline shows the wait: `timeline E4 #29 stage_run.waiting_for_human` and `timeline E4 #30 job.waiting_for_human`. The reason is `json E4/timeline.api.json entries.29.reason=agent-requested-a-human`. An approver then decided through the API. The API recorded `timeline E4 #32 decision.requested`. The worker applied it, once, and the stage run went on: `timeline E4 #33 stage_run.ready` and `timeline E4 #36 decision.applied`. The ledger holds the decision: `ledger E4 #13 id=d69cf6fa hash=725b2e2a0a62 has="approved the SPECIFICATION"`.
+The timeline shows the wait: `timeline E4 #29 stage_run.waiting_for_human` and `timeline E4 #30 job.waiting_for_human`. The reason is `json E4/timeline.api.json entries.29.reason=agent-requested-a-human`. An approver then decided through the API. The API recorded `timeline E4 #32 decision.requested`. The worker applied it, once, and the stage run went on: `timeline E4 #33 stage_run.ready` and `timeline E4 #36 decision.applied`. The ledger holds the decision: `ledger E4 #13 id=c6fa8218 hash=1c0951488390 has="approved the SPECIFICATION"`.
 
 ### 6. Domain discovery is skipped, and the ledger says why
 
-Slice 1 profiles no domain. It resolves one static profile, general software. The stage run is `SKIPPED` by a rule, and the architecture decision record 0010 lets a skipped run satisfy the stages that need it. The timeline shows `timeline E4 #44 stage_run.skipped`, and the ledger records the rule: `ledger E4 #38 id=f1ddff5c hash=f2013fc3951c has="static-general-software-profile"`. A skip with no ledger entry would settle nothing.
+Slice 1 profiles no domain. It resolves one static profile, general software. The stage run is `SKIPPED` by a rule, and the architecture decision record 0010 lets a skipped run satisfy the stages that need it. The timeline shows `timeline E4 #44 stage_run.skipped`, and the ledger records the rule: `ledger E4 #38 id=4e000267 hash=8fe45e895167 has="static-general-software-profile"`. A skip with no ledger entry would settle nothing.
 
 ### 7. Architecture and the task plan
 
-The architect agent's design must give every requirement a design element. The gate checks it: `ledger E4 #39 id=f0fff875 hash=b687b9d4f643 has="architecture-traceability"`. The planner's task plan carries the values the factory assigned and not the planner's own: `ledger E4 #47 id=e51fec5b hash=7aa6d8085cd5 has="plan-metadata-matches"`. Both answers are scripted: [architect](../../fixtures/recordings/playbook/word-count/agent-output/architect.json) and [planner](../../fixtures/recordings/playbook/word-count/agent-output/planner.json).
+The architect agent's design must give every requirement a design element. The gate checks it: `ledger E4 #39 id=eb7ede4d hash=c8b27b00fda7 has="architecture-traceability"`. The planner's task plan carries the values the factory assigned and not the planner's own: `ledger E4 #47 id=b759d18e hash=21417ddfb722 has="plan-metadata-matches"`. Both answers are scripted: [architect](../../fixtures/recordings/playbook/word-count/agent-output/architect.json) and [planner](../../fixtures/recordings/playbook/word-count/agent-output/planner.json).
 
 ### 8. Implementation changes only the files the plan owns
 
-The builder ran twice, once for each of two tasks, and its patch was taken in by the host. The scripted patch is in [`patch/`](../../fixtures/recordings/playbook/word-count/patch/). The gate checks that the change stays inside the owned files and that no protected path changed: `ledger E4 #55 id=f964b883 hash=619832bab4a3 has="implementation-scope"`.
+The builder ran twice, once for each of two tasks, and its patch was taken in by the host. The scripted patch is in [`patch/`](../../fixtures/recordings/playbook/word-count/patch/). The gate checks that the change stays inside the owned files and that no protected path changed: `ledger E4 #55 id=10d2bba9 hash=2b7d6d8c6c99 has="implementation-scope"`.
 
 The commits of the pull request branch changed five files: `json E4/evidence.json contracts.evidence_manifest.change.files_changed=5`. The first path is `json E4/evidence.json github.changed_paths.0=src/lib.rs`. The stage's output is stored: [`IMPLEMENTATION-implementation-result.json`](../../fixtures/recordings/e2e/E4/stage-outputs/IMPLEMENTATION-implementation-result.json).
 
@@ -88,23 +88,23 @@ This is a limit of the test. The scripted agents never obey the text, so the rec
 
 ### 10. Validation runs the checks and the supply chain gates
 
-The validation stage ran the project's own checks in the fake sandbox: format, lint, build, unit tests, protected paths, test file protection, a secret scan and the acceptance evidence. The first, `ledger E4 #61 id=b5e9dc2b hash=07b5d83d34b6 has="The gate format reported PASSED"`, opens a run of gates that all passed.
+The validation stage ran the project's own checks in the fake sandbox: format, lint, build, unit tests, protected paths, test file protection, a secret scan and the acceptance evidence. The first, `ledger E4 #61 id=b90130fd hash=e9f0164161be has="The gate format reported PASSED"`, opens a run of gates that all passed.
 
-The four supply chain gates did not apply, because the change adds no dependency. Their reports say so and give the reason: `ledger E4 #69 id=a4ebf0de hash=750ee8f7d3c3 has="dependency-integrity reported NOT_APPLICABLE"`. NOT_APPLICABLE with a recorded reason is different from a pass. The supply chain's registry and advisory database are stand-ins in this run.
+The four supply chain gates did not apply, because the change adds no dependency. Their reports say so and give the reason: `ledger E4 #69 id=967cb52a hash=4d48267c5599 has="dependency-integrity reported NOT_APPLICABLE"`. NOT_APPLICABLE with a recorded reason is different from a pass. The supply chain's registry and advisory database are stand-ins in this run.
 
 ### 11. An independent reviewer reads the change
 
-The code reviewer is another agent than the builder, and the review stage refuses a reviewer that can write. The reviewer returned a verdict: `ledger E4 #89 id=f4835248 hash=037783e66d42 has="verdict PASS for the REVIEW"`. The answer is scripted: [`code-reviewer.json`](../../fixtures/recordings/playbook/word-count/agent-output/code-reviewer.json). It cites no finding, and the stage's gates check that a verdict cites real lines of the patch.
+The code reviewer is another agent than the builder, and the review stage refuses a reviewer that can write. The reviewer returned a verdict: `ledger E4 #89 id=d6d7a480 hash=5f12d5b6021c has="verdict PASS for the REVIEW"`. The answer is scripted: [`code-reviewer.json`](../../fixtures/recordings/playbook/word-count/agent-output/code-reviewer.json). It cites no finding, and the stage's gates check that a verdict cites real lines of the patch.
 
 ### 12. The documentation is written, then judged by the same gate the factory applies to others
 
-The documentation writer updated the README and the changelog: [`docs/README.md`](../../fixtures/recordings/playbook/word-count/docs/README.md). The documenting stage recorded its plan: `ledger E4 #92 id=01295acb hash=252b2d5dc7d9 has="documenting-plan-recorded"`.
+The documentation writer updated the README and the changelog: [`docs/README.md`](../../fixtures/recordings/playbook/word-count/docs/README.md). The documenting stage recorded its plan: `ledger E4 #92 id=d2a94659 hash=b8b7998897d5 has="documenting-plan-recorded"`.
 
-The documentation review then ran the readability gate and the documentation gate. Links, examples and diagrams did not apply to this change: `ledger E4 #105 id=187289ca hash=3f42df92abfb has="docs-links reported NOT_APPLICABLE"`. A documentation reviewer, another agent, passed the documentation: `ledger E4 #110 id=f36e9356 hash=89860bc6eaae has="verdict PASS for the DOCUMENTATION_REVIEW"`.
+The documentation review then ran the readability gate and the documentation gate. Links, examples and diagrams did not apply to this change: `ledger E4 #105 id=e297fc59 hash=16df20c9b7f7 has="docs-links reported NOT_APPLICABLE"`. A documentation reviewer, another agent, passed the documentation: `ledger E4 #110 id=5dd28528 hash=da618c7aac29 has="verdict PASS for the DOCUMENTATION_REVIEW"`.
 
 ### 13. Delivery opens a draft pull request with an evidence manifest
 
-The delivery stage pushed a branch named for the job and opened a draft pull request on the fake host. The result is stored: `json E4/stage-outputs/DELIVERY-delivery-result.json delivered=true` and `json E4/stage-outputs/DELIVERY-delivery-result.json pull_request=1`. The pull request is a draft, and it is not merged: `json E4/evidence.json github.pull_requests.0.draft=true` and `json E4/evidence.json github.pull_requests.0.merged=false`. The delivery gate passed: `ledger E4 #121 id=99c18f61 hash=119243948fe8 has="delivery-pull-request"`.
+The delivery stage pushed a branch named for the job and opened a draft pull request on the fake host. The result is stored: `json E4/stage-outputs/DELIVERY-delivery-result.json delivered=true` and `json E4/stage-outputs/DELIVERY-delivery-result.json pull_request=1`. The pull request is a draft, and it is not merged: `json E4/evidence.json github.pull_requests.0.draft=true` and `json E4/evidence.json github.pull_requests.0.merged=false`. The delivery gate passed: `ledger E4 #121 id=9db19352 hash=8f6920db4beb has="delivery-pull-request"`.
 
 The pull request description lists what was checked and what was not. The evidence manifest behind it gives the change size, the risk and the limits. The risk tier is `json E4/evidence.json contracts.evidence_manifest.risk.tier=low`. The manifest holds `json E4/evidence.json contracts.evidence_manifest.ledger.entry_count=120` ledger entries at the time of delivery.
 
@@ -112,9 +112,9 @@ The manifest is honest about the fakes. Every adapter is listed with its fidelit
 
 ### 14. A person approves, and the job completes
 
-The approval stage checked that the evidence was clear: `ledger E4 #127 id=b0dce80e hash=6582e1c1a8df has="approval-evidence-clear"`. The job waited again: `timeline E4 #129 stage_run.waiting_for_human`. An approval carries the head commit and the ledger hash that the approver read. The API recorded the request: `timeline E4 #132 decision.requested`. The worker checked the approval against the head, the base and the evidence as they were then, and recorded it: `timeline E4 #133 approval.recorded`.
+The approval stage checked that the evidence was clear: `ledger E4 #127 id=bb458fd7 hash=65a26bbba659 has="approval-evidence-clear"`. The job waited again: `timeline E4 #133 stage_run.waiting_for_human`. An approval carries the head commit and the ledger hash that the approver read. The API recorded the request: `timeline E4 #136 decision.requested`. The worker checked the approval against the head, the base and the evidence as they were then, and recorded it: `timeline E4 #137 approval.recorded`.
 
-The stage run passed and the job completed: `timeline E4 #134 stage_run.passed` and `timeline E4 #136 job.completed`. The worker wrote its marker, `timeline E4 #138 decision.applied`. The ledger closes with the approval: `ledger E4 #128 id=4b062a61 hash=745f5ea0cbc2 has="approved the APPROVAL"`. The final state is `json E4/evidence.json job.status=COMPLETED`.
+The stage run passed and the job completed: `timeline E4 #138 stage_run.passed` and `timeline E4 #140 job.completed`. The worker wrote its marker, `timeline E4 #142 decision.applied`. The ledger closes with the approval: `ledger E4 #128 id=e94dd042 hash=6b864eef0275 has="approved the APPROVAL"`. The final state is `json E4/evidence.json job.status=COMPLETED`.
 
 Nothing was merged. The factory has no merge method, and the pull request stays an open draft until a person merges it outside the factory.
 
