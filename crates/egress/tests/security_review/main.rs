@@ -68,13 +68,13 @@ fn reaches_out(forwarded: &Value, headers: &[(String, String)]) -> Vec<String> {
     found
 }
 
-/// EGR-1 (Anthropic). The sandbox holds a valid job token and can post any body it likes to the
-/// broker (the token is a file in the sandbox, and the broker address is reachable by design). The
-/// broker clamps `max_tokens` and checks the model name, and forwards everything else. A request
-/// that names a server tool or a remote MCP server makes the provider fetch the URL, with the
-/// sandbox's data in it, from the provider's network, outside the egress allowlist.
+/// EGR-1 (Anthropic), FIXED: `broker::shape` refuses these bodies and headers. The sandbox holds
+/// a valid job token and can post any body it likes to the broker (the token is a file in the
+/// sandbox, and the broker address is reachable by design). The broker used to clamp `max_tokens`,
+/// check the model name and forward everything else. A request that names a server tool or a
+/// remote MCP server makes the provider fetch the URL, with the sandbox's data in it, from the
+/// provider's network, outside the egress allowlist.
 #[test]
-#[ignore = "confirmed defect EGR-1: the broker forwards provider-side tools, mcp_servers and the beta headers that enable them; run: cargo test -p factory-egress --test security_review -- --ignored egr_1"]
 fn egr_1_anthropic_server_tools_and_remote_mcp_do_not_cross_the_broker() {
     let rig = HttpRig::new();
     let token = rig.claude_token(CEILING);
@@ -114,10 +114,9 @@ fn egr_1_anthropic_server_tools_and_remote_mcp_do_not_cross_the_broker() {
     );
 }
 
-/// EGR-1 (OpenAI Responses). Same defect, other provider: `mcp`, `web_search` and
+/// EGR-1 (OpenAI Responses), FIXED. Same defect, other provider: `mcp`, `web_search` and
 /// `code_interpreter` tools are executed by the provider.
 #[test]
-#[ignore = "confirmed defect EGR-1: the broker forwards Responses API server tools (mcp, web_search, code_interpreter); run: cargo test -p factory-egress --test security_review -- --ignored egr_1"]
 fn egr_1_openai_server_tools_and_remote_mcp_do_not_cross_the_broker() {
     let rig = HttpRig::new();
     let token = rig.codex_token(CEILING);
@@ -227,12 +226,11 @@ fn denied(text: &str) -> bool {
     is_denied(&default_deny_ranges(), ip)
 }
 
-/// EGR-3. The refused ranges stop after the policy list plus a few. Addresses that no registry or
+/// EGR-3, FIXED. The refused ranges used to stop after the policy list plus a few. Addresses that no registry or
 /// model API lives at, and that a host with a VPN or a transition mechanism routes somewhere
 /// private, are connectable: the benchmark range (used as the fake-IP pool of several VPN and
 /// proxy clients on developer laptops) and the IPv4-compatible IPv6 form of a refused address.
 #[test]
-#[ignore = "confirmed gap EGR-3 (low): 198.18.0.0/15 and ::a.b.c.d forms of refused addresses are not in the refused ranges; run: cargo test -p factory-egress --test security_review -- --ignored egr_3"]
 fn egr_3_benchmark_range_and_ipv4_compatible_forms_are_refused_after_resolution() {
     let mut missed = Vec::new();
     for address in [

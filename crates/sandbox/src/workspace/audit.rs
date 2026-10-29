@@ -224,7 +224,10 @@ impl Recorder {
 /// The path to print for an entry: the path itself when it is a safe path, else the same bytes
 /// with every unsafe one escaped as `%XX`, else a fixed stand-in.
 pub(crate) fn report_path(raw: &[u8]) -> RepoPath {
+    // A name that hides or reorders text is escaped in the report as a control character is, so
+    // that the finding that names it cannot hide or reorder the text around it.
     if let Ok(text) = std::str::from_utf8(raw)
+        && !text.chars().any(hides_text)
         && let Ok(path) = RepoPath::new(text)
     {
         return path;
@@ -245,7 +248,10 @@ fn stand_in() -> RepoPath {
     RepoPath::new("_unsafe_entry_").expect("a fixed safe name")
 }
 
-/// The first rule one name breaks: too long, not UTF-8, a control character or a backslash.
+/// The first rule one name breaks: too long, not UTF-8, a control character or a backslash. A name
+/// that hides or reorders text is checked separately, after the git directory aliases (see
+/// [`hides_text`]), because `.git` followed by a zero width character is a nested git directory
+/// first and an unreadable name second.
 fn name_problem(raw: &[u8], limits: &AuditLimits) -> Option<AuditKind> {
     if raw.len() > limits.max_name_bytes {
         return Some(AuditKind::NameTooLong);
@@ -257,6 +263,51 @@ fn name_problem(raw: &[u8], limits: &AuditLimits) -> Option<AuditKind> {
         return Some(AuditKind::UnsafeName);
     }
     None
+}
+
+/// True for a character that changes how a name reads without showing: the whole Unicode category
+/// Cf (format characters: the bidirectional controls U+202A to U+202E and U+2066 to U+2069, the
+/// zero width characters U+200B to U+200F and U+2060, the byte order mark U+FEFF, the soft hyphen,
+/// the Arabic number signs, the interlinear annotation marks and the others), the line and
+/// paragraph separators U+2028 and U+2029 (categories Zl and Zp), the tag block and the variation
+/// selector supplement (U+E0000 to U+E0FFF: tag characters can carry a hidden message), and the
+/// fillers that render as nothing and are not format characters (the combining grapheme joiner,
+/// the Hangul fillers, the Khmer inherent vowels).
+///
+/// The standard library has no category lookup, so the Cf ranges are listed, from Unicode 16.
+/// Letters, digits, marks, punctuation, symbols, emoji and the variation selectors U+FE00 to
+/// U+FE0F, which emoji and CJK ideographs need, are not here: a name in any script passes. Two
+/// legitimate uses are refused with the rest of the category: the zero width non-joiner of Persian
+/// and the zero width joiner of emoji sequences and of some Indic scripts. A file that needs
+/// either is rejected with a named reason and a person renames it, which is the safe side.
+pub(crate) fn hides_text(c: char) -> bool {
+    matches!(
+        c,
+        '\u{00AD}'
+            | '\u{034F}'
+            | '\u{0600}'..='\u{0605}'
+            | '\u{061C}'
+            | '\u{06DD}'
+            | '\u{070F}'
+            | '\u{0890}'..='\u{0891}'
+            | '\u{08E2}'
+            | '\u{115F}'..='\u{1160}'
+            | '\u{17B4}'..='\u{17B5}'
+            | '\u{180E}'
+            | '\u{200B}'..='\u{200F}'
+            | '\u{2028}'..='\u{202E}'
+            | '\u{2060}'..='\u{206F}'
+            | '\u{3164}'
+            | '\u{FEFF}'
+            | '\u{FFA0}'
+            | '\u{FFF9}'..='\u{FFFB}'
+            | '\u{110BD}'
+            | '\u{110CD}'
+            | '\u{13430}'..='\u{1343F}'
+            | '\u{1BCA0}'..='\u{1BCA3}'
+            | '\u{1D173}'..='\u{1D17A}'
+            | '\u{E0000}'..='\u{E0FFF}'
+    )
 }
 
 struct Pending {
@@ -347,6 +398,10 @@ pub(crate) fn walk(root: &Path, ctx: &WalkContext<'_>) -> Result<Manifest, Audit
                     AuditKind::NestedGit
                 };
                 rec.add_raw(kind, holder);
+                continue;
+            }
+            if text.chars().any(hides_text) {
+                rec.add_raw(AuditKind::UnsafeName, &full_raw);
                 continue;
             }
             let rel = String::from_utf8_lossy(&full_raw).into_owned();
@@ -1032,5 +1087,131 @@ mod tests {
         assert_eq!(report_path(b"x\ny").as_str(), "x%0Ay");
         assert_eq!(report_path(b"bad-\xff-name").as_str(), "bad-%FF-name");
         assert!(!report_path(b"\x1b[31m").as_str().contains('\u{1b}'));
+        // A name that hides or reorders text is escaped in the finding that names it.
+        let reported = report_path("gpj.\u{202E}rs".as_bytes());
+        assert!(
+            !reported.as_str().contains('\u{202E}'),
+            "{}",
+            reported.as_str()
+        );
+        assert!(
+            reported.as_str().contains("%E2%80%AE"),
+            "{}",
+            reported.as_str()
+        );
+    }
+
+    #[test]
+    fn a_name_that_hides_or_reorders_text_is_unsafe_in_every_script() {
+        // One character of each kind: bidirectional controls and isolates, zero width characters,
+        // the line and paragraph separators, the byte order mark, a tag character, the Hangul
+        // filler, the soft hyphen, the Arabic number sign, a variation selector supplement, a
+        // musical format control and the interlinear annotation marks.
+        let hidden_characters = [
+            '\u{202A}',
+            '\u{202B}',
+            '\u{202C}',
+            '\u{202D}',
+            '\u{202E}',
+            '\u{2066}',
+            '\u{2067}',
+            '\u{2068}',
+            '\u{2069}',
+            '\u{200B}',
+            '\u{200C}',
+            '\u{200D}',
+            '\u{200E}',
+            '\u{200F}',
+            '\u{2060}',
+            '\u{2028}',
+            '\u{2029}',
+            '\u{FEFF}',
+            '\u{E0041}',
+            '\u{E0001}',
+            '\u{E007F}',
+            '\u{E0100}',
+            '\u{3164}',
+            '\u{115F}',
+            '\u{FFA0}',
+            '\u{00AD}',
+            '\u{034F}',
+            '\u{061C}',
+            '\u{0600}',
+            '\u{180E}',
+            '\u{1D173}',
+            '\u{FFF9}',
+            '\u{FFFB}',
+            '\u{13430}',
+        ];
+        let dir = FxTempDir::new("audit-hidden").expect("tmp");
+        for (i, hidden) in hidden_characters.into_iter().enumerate() {
+            assert!(hides_text(hidden), "U+{:04X}", hidden as u32);
+            // Through the walk of a directory that holds a file with that name.
+            let case = dir.join(format!("case-{i}"));
+            fs::create_dir(&case).expect("a case directory");
+            let name = format!("a{hidden}b.rs");
+            fs::write(case.join(&name), b"").expect("a file");
+            let found = kinds(run(&case, false));
+            assert_eq!(found.len(), 1, "U+{:04X}: {found:?}", hidden as u32);
+            assert_eq!(found[0].0, AuditKind::UnsafeName, "U+{:04X}", hidden as u32);
+            assert!(
+                !found[0].1.contains(hidden),
+                "the finding must not carry the character: {:?}",
+                found[0].1
+            );
+        }
+    }
+
+    #[test]
+    fn a_git_directory_alias_with_a_hidden_character_is_a_nested_git_directory_first() {
+        let dir = FxTempDir::new("audit-alias").expect("tmp");
+        let nested = dir.join("vendor").join(".git\u{200d}");
+        fs::create_dir_all(&nested).expect("a nested directory");
+        fs::write(nested.join("config"), "[core]\n").expect("a file");
+        let found = kinds(run(dir.path(), false));
+        assert!(
+            found
+                .iter()
+                .any(|(kind, path)| *kind == AuditKind::NestedGit && path == "vendor"),
+            "{found:?}"
+        );
+    }
+
+    #[test]
+    fn legitimate_names_in_any_script_are_not_unsafe() {
+        let limits = limits();
+        for name in [
+            "caf\u{e9}.rs",
+            "cafe\u{301}.rs",
+            "\u{65e5}\u{672c}\u{8a9e}.md",
+            "\u{444}\u{430}\u{439}\u{43b}.txt",
+            "\u{645}\u{644}\u{641}.txt",
+            "\u{5e7}\u{5d5}\u{5d1}\u{5e5}.txt",
+            "\u{939}\u{93f}\u{928}\u{94d}\u{926}\u{940}.txt",
+            "\u{d55c}\u{ae00}.txt",
+            "na\u{ef}ve \u{2014} draft.md",
+            "smile\u{1F600}.png",
+            "heart\u{2764}\u{FE0F}.png",
+            "\u{1820}\u{180B}.txt",
+            "a b-c_d.e",
+            "\u{a0}nbsp.txt",
+            "\u{30a2}\u{30a4}\u{30a6}\u{30a8}\u{30aa}.rs",
+        ] {
+            assert_eq!(name_problem(name.as_bytes(), &limits), None, "{name:?}");
+            assert!(!name.chars().any(hides_text), "{name:?}");
+        }
+        // The boundaries of the ranges are exact: the characters next to them pass.
+        for edge in [
+            '\u{2027}',
+            '\u{202F}',
+            '\u{2070}',
+            '\u{200A}',
+            '\u{FEFE}',
+            '\u{FF00}',
+            '\u{E1000}',
+        ] {
+            assert!(!hides_text(edge), "U+{:04X}", edge as u32);
+        }
+        assert!(hides_text('\u{206F}') && hides_text('\u{E0FFF}'));
     }
 }

@@ -7,6 +7,7 @@
 //! |---|---|
 //! | [`broker`] | The pure broker: job tokens (random, hashed at rest, bound to a job and a provider, expiring, revocable), the price list, the caps, the per-job ledger and the audit events. Implements `ModelBroker` and `MeteringOps`. |
 //! | [`http`] | The broker's network side: the listener the sidecar forwards to, the call to the provider with the real key, streamed usage, the header allowlists and the key scrubber. |
+//! | [`broker::shape`] | What may be in a request to a provider: a default-deny schema per API, strict JSON, the beta header and query allowlists, and the closed set of answer headers. The module documentation lists the allowed fields and why. |
 //! | [`relay`] | The logic of the `factory-egress-sidecar` program: broker mode (the `agent` profile) and connect mode (the `fetch_deps` profile). |
 //!
 //! The `broker` feature (on by default) holds `broker` and `http`. The sidecar binary builds this
@@ -22,6 +23,7 @@
 //! | A tool that ignores its own budget is stopped, the refusal comes within two seconds, and the broker's count is the provider's | `negative_nt_bud_07_*` |
 //! | The relay refuses lookalikes, userinfo, IP literals, internal addresses after resolution and rebinding, and stops at the byte quota | `negative_nt_sbx_05_*`, `relay_broker_mode.rs` |
 //! | The real key is in no response, no log and no debug output | `real_key_never_leaves_the_broker` |
+//! | No provider-side tool, remote server or fetched content crosses the broker; the requests of the real tools do | `negative_nt_sbx_17.rs`, `security_review` (`egr_1_*`) |
 //! | The real tools, in the real container profile, reach the fake provider only through sidecar and broker | `tests/e2e_docker.rs` (BLOCKED without Docker or the images) |
 //! | Each deliberate break is caught | `tests/mutations.py` |
 //!

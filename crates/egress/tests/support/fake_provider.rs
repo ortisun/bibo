@@ -56,6 +56,9 @@ pub struct Script {
     /// An extra response header, as a name and a value. Used to play a provider that echoes a
     /// credential back.
     pub extra_header: Option<(String, String)>,
+    /// More response headers, as names and values. Used to play a provider that names the
+    /// account in its headers (request and organization identifiers, rate-limit counters).
+    pub more_headers: Vec<(String, String)>,
     /// Put the `x-api-key` or `authorization` header of the request into the text of the answer.
     pub echo_credential_in_body: bool,
 }
@@ -69,6 +72,7 @@ impl Default for Script {
             cut_after_events: None,
             error_status: None,
             extra_header: None,
+            more_headers: Vec::new(),
             echo_credential_in_body: false,
         }
     }
@@ -199,11 +203,12 @@ fn handle(mut stream: TcpStream, requests: &Mutex<Vec<Recorded>>, script: &Mutex
     requests.lock().expect("requests").push(request.clone());
     let script = script.lock().expect("script").clone();
     let wants_stream = request.json()["stream"].as_bool().unwrap_or(false);
-    let extra = script
+    let extra: String = script
         .extra_header
-        .as_ref()
+        .iter()
+        .chain(script.more_headers.iter())
         .map(|(n, v)| format!("{n}: {v}\r\n"))
-        .unwrap_or_default();
+        .collect();
     let credential = request
         .header("x-api-key")
         .or_else(|| request.header("authorization"))

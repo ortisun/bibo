@@ -37,6 +37,11 @@ pub struct Stream {
     pub turn_started: bool,
     /// True after `turn.completed`.
     pub completed: bool,
+    /// How many `turn.completed` events there were. A run has exactly one.
+    pub completed_events: usize,
+    /// True when a `turn.started`, `item.completed`, `turn.completed` or `turn.failed` event came
+    /// after a `turn.completed`. The tool writes nothing after it.
+    pub events_after_completed: bool,
     /// The message of `turn.failed`.
     pub failed: Option<String>,
     /// The message of the last `error` event.
@@ -161,7 +166,16 @@ pub fn parse(stdout: &[u8]) -> Stream {
             stream.malformed_lines += 1;
             continue;
         }
-        match event.get("type").and_then(Value::as_str) {
+        let kind = event.get("type").and_then(Value::as_str);
+        if stream.completed_events > 0
+            && matches!(
+                kind,
+                Some("turn.started" | "item.completed" | "turn.completed" | "turn.failed")
+            )
+        {
+            stream.events_after_completed = true;
+        }
+        match kind {
             Some("turn.started") => stream.turn_started = true,
             Some("item.completed") => {
                 if let Some(item) = event.get("item") {
@@ -170,6 +184,7 @@ pub fn parse(stdout: &[u8]) -> Stream {
             }
             Some("turn.completed") => {
                 stream.completed = true;
+                stream.completed_events += 1;
                 if let Some(usage) = event.get("usage") {
                     stream.input_tokens = u64_of(usage, "input_tokens");
                     stream.output_tokens = u64_of(usage, "output_tokens");
@@ -247,6 +262,26 @@ mod tests {
         assert_eq!(stream.final_message.as_deref(), Some("done"));
         assert_eq!((stream.input_tokens, stream.output_tokens), (1234, 56));
         assert_eq!(stream.tool_items, 1);
+    }
+
+    #[test]
+    fn a_second_completion_and_any_turn_event_after_it_are_noted() {
+        let done = r#"{"type":"turn.completed","usage":{"input_tokens":1,"output_tokens":1}}"#;
+        let one = parse(format!("{done}\n").as_bytes());
+        assert_eq!(
+            (one.completed_events, one.events_after_completed),
+            (1, false)
+        );
+        let two = parse(format!("{done}\n{done}\n").as_bytes());
+        assert_eq!(
+            (two.completed_events, two.events_after_completed),
+            (2, true)
+        );
+        let late = parse(
+            format!("{done}\n{{\"type\":\"item.completed\",\"item\":{{\"type\":\"agent_message\",\"text\":\"x\"}}}}\n")
+                .as_bytes(),
+        );
+        assert!(late.events_after_completed);
     }
 
     #[test]

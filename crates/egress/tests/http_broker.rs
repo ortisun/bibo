@@ -34,8 +34,8 @@ fn a_claude_request_reaches_the_provider_with_the_real_key_and_with_nothing_else
     assert_eq!(request.header("anthropic-version"), Some("2023-06-01"));
     assert_eq!(
         request.header("anthropic-beta"),
-        Some("test-beta-1,test-beta-2"),
-        "the beta list is forwarded unchanged"
+        Some("claude-code-20250219"),
+        "the beta list is reduced to the values of the recorded runtimes"
     );
     for dropped in ["cookie", "x-claude-code-session-id"] {
         assert_eq!(request.header(dropped), None, "{dropped} must not cross");

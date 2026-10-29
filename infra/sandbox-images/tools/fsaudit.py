@@ -11,9 +11,14 @@ at all (the egress sidecar). It writes one small text file per finding class int
 empty file means no finding. test.sh decides what a finding means for each image.
 
     setid.txt             regular files with the setuid or setgid bit
+    world-writable.txt    files and directories that any user may write, other than the sticky
+                          directories (/tmp and its kin) and symbolic links
     forbidden.txt         executables or symlinks whose name is in forbidden-binaries.txt
     shells.txt            executables or symlinks whose name is in shells.txt
     agent-tools.txt       executables or symlinks named claude or codex, with the SHA-256 of files
+    tool-modes.txt        the file mode of each agent tool and of /usr/bin/timeout (test.sh wants 0711:
+                          a process started from a file that nobody can read is not dumpable, so a
+                          process of the sandbox user cannot open its /proc/<pid>/fd or write its memory)
     sidecar-binary.txt    the factory-egress-sidecar file and its SHA-256, if the image holds one
     credential-names.txt  files whose name is a typical credential file
     special.txt           device nodes and fifos outside /dev
@@ -44,6 +49,9 @@ CHUNK = 8 * 1024 * 1024
 OVERLAP = 4096
 SMALL_TEXT_LIMIT = 4 * 1024 * 1024
 AGENT_TOOL_NAMES = ("claude", "codex", "codex-code-mode-host")
+# Files besides the tools that hold the standard output pipe of an exec: the adapters run
+# `env -i ... timeout ... <tool>`, and `timeout` keeps the pipe while the tool runs.
+EXEC_ONLY_EXTRA = ("/usr/bin/timeout",)
 SIDECAR_NAME = "factory-egress-sidecar"
 
 # Names of files that exist only to hold a credential. A CA bundle (*.pem, *.crt) is public and is
@@ -92,6 +100,7 @@ HIGH_SIGNAL_LITERALS: Dict[str, Tuple[bytes, ...]] = {
     "npm_token": (b"npm_",),
     "pypi_token": (b"pypi-AgE",),
     "factory_job_token": (b"sfjt_",),
+    "api_token": (b"sfat_",),
 }
 
 # A private key header alone is an ordinary string in TLS libraries. A real key has base64 lines
@@ -175,9 +184,11 @@ def command_fs(args: argparse.Namespace) -> int:
     known = {value.lower() for value in args.known_sha256}
 
     setid: List[str] = []
+    world_writable: List[str] = []
     forbidden_hits: List[str] = []
     shell_hits: List[str] = []
     tool_hits: List[str] = []
+    mode_hits: List[str] = []
     sidecar_hits: List[str] = []
     credential_hits: List[str] = []
     special_hits: List[str] = []
@@ -196,6 +207,11 @@ def command_fs(args: argparse.Namespace) -> int:
                 files += 1
                 if member.mode & 0o6000:
                     setid.append(f"{path} mode {member.mode & 0o7777:04o}")
+                if member.isfile() and (base in AGENT_TOOL_NAMES or path in EXEC_ONLY_EXTRA):
+                    mode_hits.append(f"{path} mode {member.mode & 0o7777:04o}")
+
+            if (member.isfile() or member.isdir()) and member.mode & 0o002 and not member.mode & 0o1000:
+                world_writable.append(f"{path} mode {member.mode & 0o7777:04o}")
 
             if member.isdev() or member.isfifo():
                 if not path.startswith("/dev/"):
@@ -259,9 +275,11 @@ def command_fs(args: argparse.Namespace) -> int:
 
     outputs = {
         "setid.txt": setid,
+        "world-writable.txt": world_writable,
         "forbidden.txt": forbidden_hits,
         "shells.txt": shell_hits,
         "agent-tools.txt": tool_hits,
+        "tool-modes.txt": mode_hits,
         "sidecar-binary.txt": sidecar_hits,
         "credential-names.txt": credential_hits,
         "special.txt": special_hits,

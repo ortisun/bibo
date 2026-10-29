@@ -374,10 +374,10 @@ Each entry lists the concrete attacker action, the controls that address it, the
 
 ### T-17 Secret exfiltration through network egress
 
-* Attack: POST data to an allowlisted host that stores it, use package-name or path encoding, use the model API with an attacker's key, use DNS.
-* Mitigations: C-17 (default deny, DNS blocked, byte cap), C-29 (model API reached only through the broker, which replaces credentials, so an attacker key never leaves the sandbox), C-27 (no GitHub token, and `github.com` is denied).
-* Residual (Low).
-* Proven by: NT-SBX-04, NT-SBX-05, NT-SEC-01.
+* Attack: POST data to an allowlisted host that stores it, use package-name or path encoding, use the model API with an attacker's key, use DNS. A request to the broker itself can also name a provider-side tool (`web_fetch`, `web_search`, a remote MCP server, an image by URL), so that the provider's machines make the outbound request, outside the sidecar's allowlist (finding EGR-1 of the isolation core review).
+* Mitigations: C-17 (default deny, DNS blocked, byte cap), C-29 (model API reached only through the broker, which replaces credentials, so an attacker key never leaves the sandbox), C-27 (no GitHub token, and `github.com` is denied). The broker forwards a body only when it fits a closed, per-provider schema of the fields the two runtimes send, refuses provider-side tools, remote servers, fetched content and the beta headers that enable them with a fixed answer and an audit event, and passes back only a media type and a retry delay (`crates/egress/src/broker/shape`).
+* Residual (Low). The schema was derived from recorded sessions against a fake provider; the history shapes of a long real session are UNVERIFIED against a live provider, and a legitimate field the schema lacks fails closed with an audit event.
+* Proven by: NT-SBX-04, NT-SBX-05, NT-SBX-17, NT-SEC-01.
 
 ### T-18 Exfiltration through pull request, comment and commit content
 

@@ -9,6 +9,7 @@ pub mod caps;
 pub mod core;
 pub mod pricing;
 pub mod provider;
+pub mod shape;
 pub mod token;
 
 pub use audit::{AuditEvent, AuditKind, AuditSink, JsonLinesAudit, MemoryAudit, NullAudit};

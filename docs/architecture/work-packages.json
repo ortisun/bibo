@@ -4506,6 +4506,16 @@
         "scope": "full"
       },
       {
+        "id": "NT-SBX-17",
+        "wp": "s1-egress-and-broker",
+        "crate": "egress",
+        "location": "crates/egress/tests/negative_nt_sbx_17.rs",
+        "also": [
+          "s1-agent-runtime-adapters"
+        ],
+        "scope": "full"
+      },
+      {
         "id": "NT-SEC-01",
         "wp": "s1-security-review-and-tests",
         "crate": "workflow",

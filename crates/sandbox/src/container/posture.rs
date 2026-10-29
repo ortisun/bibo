@@ -53,79 +53,20 @@ pub const DENIED_FLAGS: &[&str] = &[
     "--ip",
     "--dns",
     "--entrypoint",
+    "--group-add",
 ];
-
-/// Values that make an otherwise allowed flag weaker. Each is the text after `--security-opt`.
-const DENIED_SECURITY_OPTIONS: &[&str] = &[
-    "seccomp=unconfined",
-    "apparmor=unconfined",
-    "systempaths=unconfined",
-    "label=disable",
-    "no-new-privileges=false",
-];
-
-/// Flags whose value must not name the host or another container.
-const NAMESPACE_FLAGS: &[&str] = &["--network", "--net", "--pid", "--ipc", "--uts", "--userns"];
-
-/// Substrings of a mount or env argument that name the daemon socket or a host root.
-const DENIED_FRAGMENTS: &[&str] = &["docker.sock", "src=/,", "src=/etc", "src=/proc", "src=/sys"];
 
 /// The first rule an argument vector breaks, as short text for a log or a test. `None` means the
 /// vector is clean.
+///
+/// The vector is read the way Docker reads it (see `posture_args.rs`): long and short flags,
+/// a value glued to the flag or in the next word, clusters of boolean flags. The rules then apply
+/// to what each flag means, not to how it is spelled: a security option is a key and a value, a
+/// mount is a map with aliases, a limit is a number above zero, a user is a number that is not
+/// zero, and a namespace is not the host's or another container's.
 #[must_use]
 pub fn denied_flag_in(args: &[String]) -> Option<String> {
-    let mut index = 0;
-    while index < args.len() {
-        let arg = args[index].as_str();
-        let (flag, inline) = match arg.split_once('=') {
-            Some((flag, value)) if flag.starts_with('-') => (flag, Some(value)),
-            _ => (arg, None),
-        };
-        if DENIED_FLAGS.contains(&flag) {
-            return Some(format!("denied flag {flag}"));
-        }
-        let value = inline.or_else(|| args.get(index + 1).map(String::as_str));
-        if flag == "--security-opt"
-            && let Some(value) = value
-        {
-            if DENIED_SECURITY_OPTIONS.contains(&value) {
-                return Some(format!("denied security option {value}"));
-            }
-            if value.starts_with("seccomp=") || value.starts_with("apparmor=") {
-                return Some(format!("custom confinement {value}"));
-            }
-        }
-        if NAMESPACE_FLAGS.contains(&flag)
-            && let Some(value) = value
-            && (value == "host" || value.starts_with("container:") || value == "bridge")
-        {
-            return Some(format!("{flag} {value}"));
-        }
-        if flag == "--user" && value.is_none_or(|v| v.split(':').next() == Some("0")) {
-            return Some("root user".to_owned());
-        }
-        if flag == "--restart" && value != Some("no") {
-            return Some("restart policy".to_owned());
-        }
-        if flag == "--pull" && value != Some("never") {
-            return Some("pull policy".to_owned());
-        }
-        if flag == "--log-driver" && value != Some("none") {
-            return Some("log driver".to_owned());
-        }
-        if flag == "--read-only" && inline == Some("false") {
-            return Some("writable root file system".to_owned());
-        }
-        if (flag == "--mount" || flag == "--env" || flag == "-e")
-            && let Some(fragment) = DENIED_FRAGMENTS
-                .iter()
-                .find(|f| value.is_some_and(|v| v.contains(**f)))
-        {
-            return Some(format!("{flag} names {fragment}"));
-        }
-        index += 1;
-    }
-    None
+    super::posture_args::first_denied(args)
 }
 
 /// What was read from an inspect document.

@@ -35,6 +35,16 @@ The recipes in `fixtures/recordings/agent-cli/images/` are the model for this im
 
 What the spike proved on Alpine does not automatically carry over to Debian for Claude Code. `claude --version` and the posture rules below pass here. A headless turn against the fake provider under the hardened profile was **not repeated** on this image. See "Not verified".
 
+## The tools are execute-only, and why (finding SBX-4)
+
+The adapters trust the event stream, which is the standard output of `env -i ... timeout ... claude|codex ...` run by `docker exec`. Any process of the sandbox user, such as a command the model asked the tool to run, can open `/proc/<pid>/fd/1` of another process of the same user and write into that pipe, and the line it writes is indistinguishable from one the tool wrote (a forged `result` event). The kernel clears the "dumpable" flag of a process that was started from a file nobody can read; the `/proc/<pid>/fd`, `mem` and `environ` entries of such a process belong to root, so the sandbox user can neither write its pipe nor attach to it.
+
+`lib/harden.sh` therefore sets mode **0711**, owner root, on `claude`, `codex`, `codex-code-mode-host` and `/usr/bin/timeout` (`timeout` keeps the same pipe while the tool runs, so it is one of the processes that must be closed). Everyone can execute them, nobody but root can read them. `test.sh` rule `TOOLS-EXECUTE-ONLY` checks the modes.
+
+Shown on the real tools (execute-only copies of the files of this image; see the review status in `docs/reviews/isolation-core-security-review.md`): Claude Code 2.1.311 and Codex 0.163.0 start and run a full turn with a tool call through the sidecar and the broker; a command run by the tool that writes a forged terminal event into `/proc/$PPID/fd/1` fails with "Permission denied" (the control, with the readable binary, puts the forged line in the stream); with only the tool closed and `timeout` readable, the forged line still arrives.
+
+What this does not cover: a process that holds the exec pipe and is dumpable (none of the tools passes its standard output to a child; the stream of any other command run by `docker exec`, such as `bash -c`, is not protected and no adapter trusts it); a readable file the model itself copies and executes cannot become the tool; the lines before the result are authentic only because the tool wrote them, not because anything signed them; and any other way a same-user process could take over the tool (the tool is no longer attachable through `ptrace` or `/proc/<pid>/mem`, but this was shown, not proven for every kernel: the Docker Desktop kernel has no Yama, and on another kernel the same protection comes from the same dumpable rule).
+
 ## The shell, and why it stays
 
 The tools run the commands the model asks for through a shell: Claude Code's `Bash` tool, Codex's shell tool, and the Spec Kit helper scripts all need `bash` (spike section 4.1). So this image keeps `bash` and `sh` (which is `dash`). Everything else that is a shell is removed (`lib/shells.txt`): `rbash`, `ash`, `zsh`, `busybox`, and the rest. `test.sh` (rule `SHELLS`) fails if the image holds any other.

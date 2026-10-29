@@ -6,12 +6,17 @@
 //!    served; every other method and path is refused.
 //! 2. Read the credential from `x-api-key` or `Authorization: Bearer`, and look it up. A bad
 //!    credential is refused before the body is read.
-//! 3. Read the body (bounded), check it is JSON with a `model`, and ask the core for a permit:
-//!    audience, model list, price, caps, rate. The request is counted here.
-//! 4. Clamp the output token limit to the per-request cap, build the upstream request from an
+//! 3. Check the beta header, then read the body (bounded) and check it against the allow schema
+//!    of the API it is written for (`crate::broker::shape`): strict JSON, only the fields the
+//!    runtimes send, no provider-side tool, remote server or fetched content. A body that fails is
+//!    refused with a fixed answer and an audit event, and nothing is sent to a provider.
+//! 4. Ask the core for a permit: audience, model list, price, caps, rate. The request is counted
+//!    here.
+//! 5. Clamp the output token limit to the per-request cap, build the upstream request from an
 //!    allowlist of headers, add the real key, and call the provider with no redirects and no proxy.
-//! 5. Stream the answer back (events are written as they are read) while reading usage from it,
-//!    with the key scrubbed out, then settle the permit with what the answer reported.
+//! 6. Stream the answer back (events are written as they are read) while reading usage from it,
+//!    with the key scrubbed out, then settle the permit with what the answer reported. Of the
+//!    provider's headers only a media type and a retry delay come back.
 //!
 //! The real key exists in this module in one place: the credential header of the upstream request.
 
@@ -31,6 +36,7 @@ use super::scrub::StreamScrubber;
 use super::secret::ProviderKey;
 use super::usage::{StreamUsage, counts_from_json};
 use super::wire::{self, RequestHead};
+use crate::broker::shape::{self, Violation, Wire, headers};
 use crate::broker::{BrokerCore, Outcome, Permit, Provider, Refusal, RequestFacts};
 
 /// Why a broker server could not be built or started. The set is closed.
@@ -447,6 +453,26 @@ fn serve_model_request(
     if !is_json {
         return respond_error(stream, 415, "unsupported_media_type", &[]);
     }
+    let refuse_shape = |stream: &mut TcpStream, violation: Violation| {
+        let refusal = shared
+            .core
+            .refuse_request_shape(&presented, shared.expected_job, violation);
+        respond_refusal(stream, refusal);
+    };
+    let Some(wire) = Wire::for_path(&head.path) else {
+        return respond_error(stream, 404, "not_found", &[]);
+    };
+    // The beta header decides, before the body is read, whether this is a request the broker
+    // forwards at all. Two copies of the header are as unreadable as a bad value.
+    let beta = if head.has("anthropic-beta") && head.header("anthropic-beta").is_none() {
+        Err(Violation::BetaHeader)
+    } else {
+        headers::beta_header(provider, head.header("anthropic-beta"))
+    };
+    let beta = match beta {
+        Ok(beta) => beta,
+        Err(violation) => return refuse_shape(stream, violation),
+    };
     let max_body = shared.core.caps().per_request.max_body_bytes;
     let Some(length) = head.content_length else {
         return respond_error(stream, 411, "length_required", &[]);
@@ -471,8 +497,11 @@ fn serve_model_request(
             return;
         }
     };
-    let Ok(Value::Object(mut object)) = serde_json::from_slice::<Value>(&body) else {
-        return respond_error(stream, 400, "invalid_request", &[]);
+    // The allow schema. What is forwarded below is this body, byte for byte, unless the output
+    // limit had to be brought down.
+    let mut object = match shape::check_body(wire, &body) {
+        Ok(object) => object,
+        Err(violation) => return refuse_shape(stream, violation),
     };
     let Some(model) = object
         .get("model")
@@ -506,7 +535,16 @@ fn serve_model_request(
         permit.settle(Outcome::NoCharge);
         return respond_error(stream, 404, "not_found", &[]);
     };
-    forward(shared, stream, head, upstream, provider, &forwarded, permit);
+    forward(
+        shared,
+        stream,
+        head,
+        upstream,
+        provider,
+        beta.as_deref(),
+        &forwarded,
+        permit,
+    );
 }
 
 fn model_name_ok(model: &str) -> bool {
@@ -569,10 +607,12 @@ fn build_upstream_request(
     upstream: &Upstream,
     provider: Provider,
     head: &RequestHead,
+    beta: Option<&str>,
     body: &[u8],
 ) -> Option<ureq::http::Request<Vec<u8>>> {
     let mut url = format!("{}{}", upstream.base, head.path);
-    if let Some(query) = &head.query {
+    // The query of a model route has one use, Claude Code's `beta=true`. Nothing else crosses.
+    if let Some(query) = headers::upstream_query(provider, head.query.as_deref()) {
         url.push('?');
         url.push_str(query);
     }
@@ -583,11 +623,13 @@ fn build_upstream_request(
         .header("user-agent", "factory-model-broker");
     // Only these headers cross, and only when they look like what they should. Everything else a
     // tool sends is dropped: session identifiers, device identifiers, cookies, forwarding headers
-    // and, above all, the job token in either of its two places.
-    for name in ["accept", "anthropic-beta", "openai-beta"] {
-        if let Some(value) = head.header(name).filter(|v| header_value_ok(v)) {
-            builder = builder.header(name, value);
-        }
+    // and, above all, the job token in either of its two places. The beta list was reduced to the
+    // values of the recorded runtimes before the body was read (`shape::headers::beta_header`).
+    if let Some(value) = head.header("accept").filter(|v| header_value_ok(v)) {
+        builder = builder.header("accept", value);
+    }
+    if let Some(value) = beta {
+        builder = builder.header("anthropic-beta", value);
     }
     match provider {
         Provider::Anthropic => {
@@ -606,16 +648,18 @@ fn build_upstream_request(
     builder.body(body.to_vec()).ok()
 }
 
+#[allow(clippy::too_many_arguments)]
 fn forward(
     shared: &Shared,
     stream: &mut TcpStream,
     head: &RequestHead,
     upstream: &Upstream,
     provider: Provider,
+    beta: Option<&str>,
     body: &[u8],
     permit: Permit,
 ) {
-    let Some(request) = build_upstream_request(upstream, provider, head, body) else {
+    let Some(request) = build_upstream_request(upstream, provider, head, beta, body) else {
         permit.settle(Outcome::NoCharge);
         return respond_error(stream, 400, "invalid_request", &[]);
     };
@@ -644,7 +688,7 @@ fn forward(
         .and_then(|v| v.to_str().ok())
         .unwrap_or("")
         .to_owned();
-    let passed = passed_headers(shared, &response);
+    let passed = passed_headers(&response);
     let header_refs: Vec<(&str, &str)> = passed
         .iter()
         .map(|(n, v)| (n.as_str(), v.as_str()))
@@ -684,23 +728,28 @@ fn forward(
     let _ = wire::write_response(stream, status, &header_refs, &clean);
 }
 
-/// The headers of the provider's answer that the tool gets: the type, the retry delay and the
-/// request identifier, each only if it holds nothing the redactor knows.
-fn passed_headers(
-    shared: &Shared,
-    response: &ureq::http::Response<ureq::Body>,
-) -> Vec<(String, String)> {
+/// The headers of the provider's answer that the tool gets: a media type from a short list and a
+/// retry delay in whole seconds. The provider's request identifiers, organization, region and
+/// rate-limit counters name the broker's account, and nothing in the sandbox needs them.
+fn passed_headers(response: &ureq::http::Response<ureq::Body>) -> Vec<(String, String)> {
     let mut out = Vec::new();
-    for name in ["content-type", "retry-after", "request-id", "x-request-id"] {
-        if let Some(value) = response.headers().get(name).and_then(|v| v.to_str().ok())
-            && header_value_ok(value)
-            && !shared
-                .redactor
-                .contains_secret(value.as_bytes())
-                .unwrap_or(true)
-        {
-            out.push((canonical(name), value.to_owned()));
-        }
+    if let Some(value) = response
+        .headers()
+        .get("content-type")
+        .and_then(|v| v.to_str().ok())
+    {
+        out.push((
+            canonical("content-type"),
+            headers::response_content_type(value).to_owned(),
+        ));
+    }
+    if let Some(seconds) = response
+        .headers()
+        .get("retry-after")
+        .and_then(|v| v.to_str().ok())
+        .and_then(headers::response_retry_after)
+    {
+        out.push((canonical("retry-after"), seconds.to_string()));
     }
     out
 }
@@ -777,6 +826,7 @@ fn error_message(kind: &str) -> &'static str {
         "upstream_unavailable" => "The model provider could not be reached.",
         "upstream_rejected_request" => "The model provider refused the broker's request.",
         "overloaded" => "The broker is busy. Retry later.",
+        "request_shape" => "The request holds content that this broker does not forward.",
         _ => "The request was refused.",
     }
 }

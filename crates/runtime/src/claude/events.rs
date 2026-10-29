@@ -83,6 +83,12 @@ pub struct Stream {
     pub init: Option<Init>,
     /// The last well-formed result event.
     pub result: Option<ResultEvent>,
+    /// How many well-formed result events there were. A run of the tool has exactly one, as the
+    /// 77 recorded runs that ended in a result all show; a second one was written by someone else.
+    pub result_events: usize,
+    /// True when an `assistant`, `user`, `system` or `result` event came after a result event.
+    /// The tool writes nothing after its result.
+    pub events_after_result: bool,
     /// How many `api_retry` events there were. Each is a request the provider answered with a
     /// failure.
     pub retries: u64,
@@ -337,7 +343,13 @@ pub fn parse(stdout: &[u8]) -> Stream {
             stream.malformed_lines += 1;
             continue;
         }
-        match event.get("type").and_then(Value::as_str) {
+        let kind = event.get("type").and_then(Value::as_str);
+        if stream.result_events > 0
+            && matches!(kind, Some("assistant" | "user" | "system" | "result"))
+        {
+            stream.events_after_result = true;
+        }
+        match kind {
             Some("system") => match event.get("subtype").and_then(Value::as_str) {
                 Some("init") => stream.init = Some(read_init(&event)),
                 Some("api_retry") => {
@@ -359,6 +371,7 @@ pub fn parse(stdout: &[u8]) -> Stream {
                         .denied
                         .extend(result.denials.iter().map(|d| d.tool_use_id.clone()));
                     stream.result = Some(result);
+                    stream.result_events += 1;
                 }
                 None => stream.malformed_lines += 1,
             },
@@ -381,6 +394,23 @@ mod tests {
         assert_eq!(result.subtype, "success");
         assert_eq!(result.api_error_status, Some(500));
         assert_eq!(result.terminal_reason.as_deref(), Some("api_error"));
+    }
+
+    #[test]
+    fn a_second_result_and_any_event_after_the_result_are_noted() {
+        let result = r#"{"type":"result","is_error":false,"terminal_reason":"completed","result":"x","usage":{}}"#;
+        let one = parse(format!("{result}\n").as_bytes());
+        assert_eq!((one.result_events, one.events_after_result), (1, false));
+        let two = parse(format!("{result}\n{result}\n").as_bytes());
+        assert_eq!((two.result_events, two.events_after_result), (2, true));
+        let late = parse(
+            format!("{result}\n{{\"type\":\"assistant\",\"message\":{{\"id\":\"msg_a\"}}}}\n")
+                .as_bytes(),
+        );
+        assert_eq!((late.result_events, late.events_after_result), (1, true));
+        // A line of a type the tool does not write is ignored, before or after.
+        let odd = parse(format!("{result}\n{{\"type\":\"other\"}}\n").as_bytes());
+        assert!(!odd.events_after_result);
     }
 
     #[test]

@@ -32,15 +32,18 @@ infra/sandbox-images/test.sh --list           # the rules and their groups
 infra/sandbox-images/test.sh --only agent --rule NO-SETID
 infra/sandbox-images/smoke.sh                 # group "smoke": the toolchain runs offline, non-root, read-only source
 infra/sandbox-images/audit.sh                 # group "audit": no secret, no git, no package manager, agent tools only in the agent image
-infra/sandbox-images/negative-tests.sh        # break each of seven rules on purpose and check that test.sh fails
-infra/sandbox-images/check-pins.sh            # compare pins.env with what the upstream projects publish now
+infra/sandbox-images/negative-tests.sh        # break nine rules on purpose and check that test.sh fails for that reason
+infra/sandbox-images/check-pins.sh            # compare pins.env with what the upstream projects publish now (needs the network)
+infra/sandbox-images/tools/selftest-check-pins.sh   # check-pins.sh fails when it should, with no network
 ```
 
 Exit codes, the same as `scripts/ci.sh`: `0` passed, `1` failed, `2` misuse, `3` **BLOCKED**. A run prints `BLOCKED` and exits 3 when there is no Docker command, no reachable daemon, no `images.json` or a missing image. Nothing was tested then, and that is never a pass. A rule that does not apply to the selected images prints `SKIP`, which is not a pass either.
 
 The rules inspect each image from outside (its file system is read with `docker export`, so this works for an image with no tools) and run it under the full hardened profile of `sandbox-policy.md` section 3.2: non-root, `--cap-drop ALL`, `no-new-privileges`, read-only root, `--network none`, and the memory, process and CPU limits. The container and image names carry the label `factory.sandbox-images.test=1`, and `test.sh` removes what it created.
 
-`negative-tests.sh` is the proof that the tests can fail. It builds copies of the real images with one defect each (a program named `git`, a setuid file, the user set to root, an API-key-shaped value in the environment or in a file, an agent tool in the verify image, a shell in the verify image) and requires `test.sh` to exit 1 with a `FAIL` line for the matching rule. The secret-shaped strings are made at run time.
+`negative-tests.sh` is the proof that the tests can fail. It builds copies of the real images with one defect each (a program named `git`, a setuid file, the user set to root, an API-key-shaped value in the environment or in a file, an agent tool in the verify image, a shell in the verify image, a readable or a world-writable agent tool, a `.netrc`) and requires `test.sh` to exit 1 with a `FAIL` line for the matching rule **that names what the defect added**, and the same rule on the real image not to show it. A rule that is already red on the real image (a false positive, an image not yet rebuilt) would otherwise make every defect look caught; such a case is reported as `UNPROVEN` and counts as missed. The secret-shaped strings are made at run time.
+
+`tools/selftest-check-pins.sh` does the same for `check-pins.sh`, which reads the network and so cannot be watched failing there: with a stand-in `docker` and keys made at run time it shows that a base image with no digest, a wrong digest or an empty pin fails, that a missing Docker daemon is BLOCKED, and that a signature made by another key in the downloaded key file is refused.
 
 ## Pins and reproducibility
 
@@ -108,7 +111,7 @@ images.json               digests, written by build.sh (digests.json is a link t
 build.sh smoke.sh audit.sh test.sh negative-tests.sh check-pins.sh
 agent/ verify/ egress-sidecar/   Dockerfile, build.sh, README.md
 lib/                      files the Dockerfiles mount: harden.sh, toolchain.sh, the name lists
-tools/                    common.sh, fsaudit.py (reads an image from outside), images_json.py, pincheck.py
+tools/                    common.sh, fsaudit.py (reads an image from outside), images_json.py, pincheck.py, selftest-check-pins.sh
 ```
 
 `lib/forbidden-binaries.txt` and `lib/shells.txt` are read by both the build (to delete) and the audit (to check), so the two cannot disagree.

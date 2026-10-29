@@ -7,8 +7,14 @@
 //!   workspace is a host directory. Every few seconds the watchdog measures `/workspace` and
 //!   `/out` with `du` inside the container and kills the container when the total passes the cap.
 //!   Measuring inside means this crate reads no host directory: reads of workspace content belong
-//!   to the ingestion module (check ST-09). A measurement that fails (the container is at its
-//!   process limit, or already dead) is skipped, not counted as zero.
+//!   to the ingestion module (check ST-09). A measurement that fails is never counted as zero and
+//!   never as "under the cap". One failed poll is skipped, because the container may be at its
+//!   process limit for a moment. [`MAX_UNMEASURED_POLLS`] failed polls in a row, in a container
+//!   that is still running, are an unknown size that a process of the sandbox can keep up by
+//!   holding the process table full (finding SBX-3, a `docker exec` cannot start a `du` then), so
+//!   the container is killed and the attempt ends as a resource failure. The rule fails closed:
+//!   a size that cannot be read is treated as one that may be over the cap. A container that is
+//!   no longer running ends the watchdog without a verdict of its own.
 //!
 //! The first cause to be recorded wins, and the session reads it back to tell the caller why.
 
@@ -31,6 +37,9 @@ pub(crate) enum Stop {
     WallClock,
     /// The workspace and output grew past their cap.
     Disk,
+    /// The size of the workspace and output could not be read for [`MAX_UNMEASURED_POLLS`] polls
+    /// in a row, so the cap could not be enforced.
+    DiskUnmeasured,
     /// A command passed its timeout, so the container was killed.
     CommandTimeout,
     /// The caller cancelled a command, so the container was killed.
@@ -42,7 +51,9 @@ impl Stop {
     pub fn error(self) -> SandboxError {
         match self {
             Self::WallClock | Self::CommandTimeout => SandboxError::Timeout,
-            Self::Disk => SandboxError::ResourceExceeded(factory_ports::sandbox::Resource::Disk),
+            Self::Disk | Self::DiskUnmeasured => {
+                SandboxError::ResourceExceeded(factory_ports::sandbox::Resource::Disk)
+            }
             Self::Cancelled => SandboxError::Cancelled,
         }
     }
@@ -69,6 +80,78 @@ pub(crate) async fn kill(docker: &DockerClient, container: &str) {
     let _ = docker
         .run(vec!["kill".to_owned(), container.to_owned()], &NeverCancel)
         .await;
+}
+
+/// How many polls in a row may fail to measure the disk, in a container that is still running,
+/// before the container is killed. With the default poll of five seconds this is fifteen seconds
+/// without a reading: longer than a process table that is full for a moment, shorter than a
+/// determined fork loop that is held on purpose.
+pub(crate) const MAX_UNMEASURED_POLLS: u32 = 3;
+
+/// True unless Docker says the container is not running. Any other answer, including a failed
+/// call, counts as running: a watchdog that cannot tell must not decide the container is gone.
+pub(crate) async fn is_running(docker: &DockerClient, container: &str) -> bool {
+    let answer = docker
+        .run_raw(
+            vec![
+                "inspect".to_owned(),
+                "--format".to_owned(),
+                "{{.State.Running}}".to_owned(),
+                container.to_owned(),
+            ],
+            None,
+            Duration::from_secs(30),
+            4096,
+            &NeverCancel,
+        )
+        .await;
+    match answer {
+        Ok(output) if output.success() => String::from_utf8_lossy(&output.stdout).trim() != "false",
+        _ => true,
+    }
+}
+
+/// What one poll of the disk decided.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Poll {
+    /// Keep watching.
+    Continue,
+    /// The container must be killed, for this cause.
+    Kill(Stop),
+    /// The container is gone; the watchdog has nothing left to do.
+    Gone,
+}
+
+/// Decides what to do after a poll. `measured` is the size in KiB, or `None` when `du` could not
+/// run or its answer was not both paths. `unmeasured` counts the failed polls in a row and is
+/// changed here. `running` is only asked when the measurement failed.
+pub(crate) async fn judge(
+    measured: Option<u64>,
+    cap_kib: u64,
+    unmeasured: &mut u32,
+    running: impl std::future::Future<Output = bool>,
+) -> Poll {
+    match measured {
+        Some(used) => {
+            *unmeasured = 0;
+            if used > cap_kib {
+                Poll::Kill(Stop::Disk)
+            } else {
+                Poll::Continue
+            }
+        }
+        None => {
+            if !running.await {
+                return Poll::Gone;
+            }
+            *unmeasured = unmeasured.saturating_add(1);
+            if *unmeasured >= MAX_UNMEASURED_POLLS {
+                Poll::Kill(Stop::DiskUnmeasured)
+            } else {
+                Poll::Continue
+            }
+        }
+    }
 }
 
 /// The size of `/workspace` and `/out` together, in KiB, measured inside the container. `None`
@@ -146,6 +229,7 @@ pub(crate) fn spawn(shared: Arc<Shared>, container: String, limits: Limits) -> W
         let stop_tx = Arc::clone(&stop_tx);
         let shutdown = Arc::clone(&shutdown);
         async move {
+            let mut unmeasured: u32 = 0;
             loop {
                 let step = race(
                     race(
@@ -164,11 +248,22 @@ pub(crate) fn spawn(shared: Arc<Shared>, container: String, limits: Limits) -> W
                     }
                     Either::First(Either::Second(())) => {
                         let measured = disk_usage_kib(&shared.docker, &container).await;
-                        if measured.is_some_and(|used| used > limits.disk_cap_kib) {
-                            mark(&stop_tx, Stop::Disk);
-                            kill(&shared.docker, &container).await;
-                            killed_tx.send_replace(true);
-                            return;
+                        let verdict = judge(
+                            measured,
+                            limits.disk_cap_kib,
+                            &mut unmeasured,
+                            is_running(&shared.docker, &container),
+                        )
+                        .await;
+                        match verdict {
+                            Poll::Continue => {}
+                            Poll::Gone => return,
+                            Poll::Kill(stop) => {
+                                mark(&stop_tx, stop);
+                                kill(&shared.docker, &container).await;
+                                killed_tx.send_replace(true);
+                                return;
+                            }
                         }
                     }
                     Either::Second(()) => return,
@@ -182,5 +277,69 @@ pub(crate) fn spawn(shared: Arc<Shared>, container: String, limits: Limits) -> W
         stop_tx,
         stop_rx: rx,
         killed_rx,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    async fn poll(measured: Option<u64>, cap: u64, unmeasured: &mut u32, running: bool) -> Poll {
+        judge(measured, cap, unmeasured, async move { running }).await
+    }
+
+    #[tokio::test]
+    async fn a_size_over_the_cap_kills_and_a_size_under_it_resets_the_count() {
+        let mut unmeasured = 2;
+        assert_eq!(
+            poll(Some(10), 100, &mut unmeasured, true).await,
+            Poll::Continue
+        );
+        assert_eq!(unmeasured, 0);
+        assert_eq!(
+            poll(Some(100), 100, &mut unmeasured, true).await,
+            Poll::Continue
+        );
+        assert_eq!(
+            poll(Some(101), 100, &mut unmeasured, true).await,
+            Poll::Kill(Stop::Disk)
+        );
+    }
+
+    #[tokio::test]
+    async fn failed_measurements_in_a_running_container_kill_after_the_limit_and_never_count_as_zero()
+     {
+        let mut unmeasured = 0;
+        for _ in 1..MAX_UNMEASURED_POLLS {
+            assert_eq!(poll(None, 100, &mut unmeasured, true).await, Poll::Continue);
+        }
+        assert_eq!(
+            poll(None, 100, &mut unmeasured, true).await,
+            Poll::Kill(Stop::DiskUnmeasured)
+        );
+        // One good reading in between starts the count again.
+        let mut unmeasured = 0;
+        poll(None, 100, &mut unmeasured, true).await;
+        poll(None, 100, &mut unmeasured, true).await;
+        assert_eq!(
+            poll(Some(1), 100, &mut unmeasured, true).await,
+            Poll::Continue
+        );
+        assert_eq!(poll(None, 100, &mut unmeasured, true).await, Poll::Continue);
+        assert_eq!(unmeasured, 1);
+    }
+
+    #[tokio::test]
+    async fn a_container_that_is_gone_ends_the_watchdog_without_a_verdict_of_its_own() {
+        let mut unmeasured = MAX_UNMEASURED_POLLS - 1;
+        assert_eq!(poll(None, 100, &mut unmeasured, false).await, Poll::Gone);
+    }
+
+    #[test]
+    fn an_unmeasurable_disk_ends_the_attempt_as_a_disk_resource_failure() {
+        assert_eq!(
+            Stop::DiskUnmeasured.error(),
+            SandboxError::ResourceExceeded(factory_ports::sandbox::Resource::Disk)
+        );
     }
 }
