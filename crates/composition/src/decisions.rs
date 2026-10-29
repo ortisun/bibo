@@ -102,6 +102,7 @@ use crate::dependency_decisions::DependencyDecisions;
 use crate::hooks::BeforeClaim;
 use crate::intake_rejections::IntakeRejections;
 use crate::seams::{FileAllowlist, designation};
+use crate::stage_decisions::StageDecisions;
 use crate::telemetry::{job_span_of, job_stretch};
 
 /// The audit action of a request for a decision (written by the API).
@@ -292,13 +293,15 @@ pub enum Reason {
     NotAwaited,
     /// A decision on a dependency matches more than one package the stage run waits for.
     Ambiguous,
+    /// The block of a stage run has not been cleared, so the stage run was not let go again.
+    NotCleared,
     /// Any other refusal of the approval service.
     Refused,
 }
 
 impl Reason {
     /// Every reason, so that a sentence can be turned back into its code.
-    pub const ALL: [Reason; 24] = [
+    pub const ALL: [Reason; 25] = [
         Self::GaveUp,
         Self::NoJob,
         Self::Malformed,
@@ -322,6 +325,7 @@ impl Reason {
         Self::NotSigned,
         Self::NotAwaited,
         Self::Ambiguous,
+        Self::NotCleared,
         Self::Refused,
     ];
 
@@ -356,6 +360,9 @@ impl Reason {
             Self::Ambiguous => {
                 "More than one package matches; add the start of the checksum to say which."
             }
+            Self::NotCleared => {
+                "The block has not been cleared, so the stage run was not let go again."
+            }
             Self::Refused => "The decision was refused.",
         }
     }
@@ -387,6 +394,7 @@ impl Reason {
             Self::NotSigned => "not_signed",
             Self::NotAwaited => "not_awaited",
             Self::Ambiguous => "ambiguous_package",
+            Self::NotCleared => "not_cleared",
             Self::Refused => "refused",
         }
     }
@@ -919,6 +927,7 @@ pub struct ClaimWork {
     per_pass: usize,
     drafts: Option<Arc<dyn SpecDrafts>>,
     dependencies: Option<Arc<DependencyDecisions>>,
+    stages: Option<Arc<StageDecisions>>,
     rejections: Option<Arc<IntakeRejections>>,
     keys: Arc<DecisionKeys>,
     scans: Mutex<BTreeMap<TenantId, Scan>>,
@@ -972,6 +981,7 @@ impl ClaimWork {
             per_pass: deps.per_pass.max(1),
             drafts: None,
             dependencies: None,
+            stages: None,
             rejections: None,
             keys: deps.keys,
             scans: Mutex::new(BTreeMap::new()),
@@ -998,6 +1008,15 @@ impl ClaimWork {
         self
     }
 
+    /// Lets a person act on a stage run: let a blocked one go again (`unblock`). The step reads
+    /// its own requests, which carry their own audit action, and calls the engine. Without it
+    /// those requests are left alone.
+    #[must_use]
+    pub fn with_stage_decisions(mut self, stages: Arc<StageDecisions>) -> Self {
+        self.stages = Some(stages);
+        self
+    }
+
     /// Lets the worker answer a label from someone who may not ask (FR-002). The step reads the
     /// signed requests the API leaves for such labels, posts the one fixed reply through the
     /// change host, and records the rejection. Without it those requests are left alone.
@@ -1013,6 +1032,9 @@ impl ClaimWork {
         self.apply_decisions(tenant).await;
         if let Some(dependencies) = &self.dependencies {
             dependencies.pass(tenant).await;
+        }
+        if let Some(stages) = &self.stages {
+            stages.pass(tenant).await;
         }
         if let Some(rejections) = &self.rejections {
             rejections.pass(tenant).await;

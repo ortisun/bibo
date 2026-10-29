@@ -33,6 +33,7 @@ The address of the API is the `--api` option or the `FACTORY_API_URL` environmen
 | `factory-cli pause` | `--api`, `--token-file`, `--key` | `JOB reason...` | Pauses a job. |
 | `factory-cli resume` | `--api`, `--token-file`, `--key` | `JOB reason...` | Resumes a paused job. |
 | `factory-cli cancel` | `--api`, `--token-file`, `--key` | `JOB reason...` | Cancels a job. |
+| `factory-cli unblock` | `--api`, `--token-file`, `--key` | `JOB STAGE_RUN reason...` | Lets a `BLOCKED` stage run go again once the cause is gone. |
 | `factory-cli approve-dependency` | `--api`, `--token-file`, `--key`, `--stage-run` | `JOB NAME VERSION [CHECKSUM] reason...` | Approves one new direct dependency that the validation stage is waiting on. |
 | `factory-cli approve-build-code` | `--api`, `--token-file`, `--key`, `--stage-run` | `JOB NAME VERSION [CHECKSUM] reason...` | Approves the build script or procedural macro of one package that the validation stage is waiting on. |
 | `factory-cli probe` | `--protected-checkout`, `--images-catalog`, `--profile` | none | Runs the start-up checks that need no credential and lists what cannot be checked. |
@@ -76,6 +77,7 @@ The `key=value` words come first. The first word that is not a known `key=value`
 | `pause` | `operator` | a reason | Pauses the job. |
 | `resume` | `operator` | a reason | Resumes the job. |
 | `cancel` | `operator` | a reason | Cancels the job. |
+| `unblock` | `operator` | `stage_run_id`, a reason of 10 to 500 characters | Lets a `BLOCKED` stage run go again (transition S17) when the engine finds the block cleared: a decision for what the run waited for was recorded after the attempt that blocked it, or a capability re-probe passes. It passes no gate and is not an override. |
 | `approve-dependency` | `approver` | package, version, a reason of 10 to 500 characters | Lets one new direct dependency pass the supply chain gate. |
 | `approve-build-code` | `security_approver` | package, version, a reason of 10 to 500 characters | Lets the build code of one package run. |
 

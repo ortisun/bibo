@@ -42,7 +42,7 @@ The contract is [`openapi.json`](openapi.json), written first and served on `GET
 | `GET /v1/jobs` | bearer token | any designation | read |
 | `GET /v1/jobs/{job_id}` | bearer token | any designation | read |
 | `GET /v1/jobs/{job_id}/timeline` | bearer token | any designation | read |
-| `POST /v1/jobs/{job_id}/decisions` | bearer token | `approver` for approve, reject and rework; `operator` for pause, resume and cancel; `approver` for `approve-dependency` and a security approver for `approve-build-code` (read from the `actions` table of `policies/approval.yaml`). The two dependency verbs take `package`, `version`, an optional `checksum` prefix and a `reason` of 10 to 500 characters, are read by the same reader as the other channels, and are recorded as `decision.dependency_requested` with their own signed word | `Idempotency-Key` required: the record id is derived from the tenant, the job and the key |
+| `POST /v1/jobs/{job_id}/decisions` | bearer token | `approver` for approve, reject and rework; `operator` for pause, resume, cancel and `unblock`; `approver` for `approve-dependency` and a security approver for `approve-build-code` (read from the `actions` table of `policies/approval.yaml`). The two dependency verbs take `package`, `version`, an optional `checksum` prefix and a `reason` of 10 to 500 characters, are read by the same reader as the other channels, and are recorded as `decision.dependency_requested` with their own signed word | `Idempotency-Key` required: the record id is derived from the tenant, the job and the key |
 | `POST /v1/webhooks/github` | HMAC-SHA256 of the raw body | none (GitHub) | the delivery id, the body hash and the event on the same subject revision, in the store |
 
 There is no route that merges or deploys, and a test keeps the words out of the table (ST-05).
@@ -50,6 +50,19 @@ There is no route that merges or deploys, and a test keeps the words out of the 
 `/readyz` answers `503` when any check fails or could not run. A database that is behind the code is a failed
 check, not a passed one (`readiness_checks_schema_version`). Its body names the checks and their status and
 nothing else.
+
+### Letting a blocked stage run go again
+
+`unblock` (`apps/api/src/stage_decisions.rs`) is the operator's verb for transition `S17`. It takes `stage_run_id` and a
+`reason` of 10 to 500 characters, and nothing else: a word that means nothing to it is a `400` naming the field. The
+request is recorded as the audit action `decision.stage_requested`, under an id derived from the tenant, the caller, the
+job and the `Idempotency-Key`, signed with the key that signs the other requests under a context line of its own. The
+action is on the list of the database trigger (migration `2026-10-29-002200_api_stage_decision_action`). The worker's step
+(`factory_composition::stage_decisions`) asks the policy engine for the row `unblock_blocked_stage_run`, then calls
+`Engine::decide` with `UnblockRerun`. The verb asserts no fact. The engine reads from what it stored whether a decision was
+recorded after the attempt that blocked the run, and the worker has no capability probe adapter, so the re-probe never
+passes today. A request for a run that is not blocked ends with the marker code `wrong_state`; one the engine does not
+clear ends with `not_cleared`.
 
 ### What a decision does, and does not
 

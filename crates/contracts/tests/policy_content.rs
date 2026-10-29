@@ -1304,6 +1304,65 @@ fn every_open_translation_warning_needs_an_approvers_decision() {
 }
 
 #[test]
+fn letting_a_blocked_stage_run_go_again_is_an_operators_human_decision_at_every_level() {
+    use AutonomyLevel::{L1, L2};
+    use factory_contracts::policy::approval::Requirement;
+    let policy = approval();
+    let r = row(policy, "unblock_blocked_stage_run");
+    assert_eq!(r.requires, Some(Requirement::Human));
+    assert_eq!(
+        r.approver_roles.as_deref(),
+        Some(&strings(&["operator"])[..])
+    );
+    assert!(
+        r.threats
+            .iter()
+            .flatten()
+            .any(|threat| format!("{threat:?}").contains("23")),
+        "{:?}",
+        r.threats
+    );
+    // The verb is one of the words of the command set, and the action is a human decision that no
+    // setting can turn into none.
+    assert!(
+        policy.commands.verbs.iter().any(|verb| verb == "unblock"),
+        "commands.verbs lacks unblock"
+    );
+    assert!(
+        policy
+            .always_human
+            .iter()
+            .any(|a| a == "unblock_blocked_stage_run")
+    );
+    let engine = engine();
+    assert!(
+        engine
+            .authority
+            .always_needs_human("unblock_blocked_stage_run")
+    );
+    for level in [L1, L2] {
+        assert!(authorized(&decide(
+            &engine,
+            OPERATOR,
+            "unblock_blocked_stage_run",
+            level
+        )));
+        // An approver, a security approver, a requester and an administrator hold other
+        // designations. None of them holds this one.
+        for who in [APPROVER, SECURITY_APPROVER, REQUESTER, REPO_ADMIN] {
+            let verdict = decide(&engine, who, "unblock_blocked_stage_run", level);
+            assert!(
+                matches!(
+                    &verdict,
+                    ActionVerdict::Denied(d) if matches!(d.reason, ActionDenialReason::MissingDesignation { .. })
+                ),
+                "{who} {level:?}: {verdict:?}"
+            );
+        }
+    }
+}
+
+#[test]
 fn the_loader_gives_the_age_of_the_advisory_database_and_when_the_dependency_gates_run() {
     // SC-6. The value is a typed field of the loaded policy, and it is the staleness limit that
     // `deny.toml` holds the factory's own CI to, so the two cannot drift: P7D is 7 days.

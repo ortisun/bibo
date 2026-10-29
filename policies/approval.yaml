@@ -235,6 +235,7 @@ actions:
   - { id: write_to_additional_repository, min_level: L1, requires: human,            approver_roles: [org_admin], when: "a job is bound to exactly one repository; cross-repository writes are a new job", threats: [T-24] }
   - { id: raise_autonomy_level,           min_level: L0, requires: human,            approver_roles: [org_admin], when: "moves a repository up the ladder, never to a level that is turned off (L3); a repository capped at L0 is raised from L0; needs step-up authentication; recorded as an audit event", threats: [T-14, T-23] }
   - { id: lower_autonomy_level,           min_level: L0, requires: human,            approver_roles: [repo_admin, org_admin], when: "moves a repository down the ladder; a repo_admin may, and so may an org_admin, which is how the engine decides it", threats: [T-14, T-23] }
+  - { id: unblock_blocked_stage_run,      min_level: L1, requires: human,            approver_roles: [operator], when: "a person who holds the operator designation lets a BLOCKED stage run go again once the cause is gone: the environment is repaired and the capability re-probe passes, or a decision on the dependency or on the build code it waited for was recorded after the attempt that blocked it (state machine transition S17, guard G_BLOCK_CLEARED_RERUN); the stage runs again and its gates judge the result, so this passes no gate and is not an override", threats: [T-13, T-23] }
   - { id: acknowledge_documentation_warning, min_level: L1, requires: human,         approver_roles: [approver], when: "one decision for each open warning of the reviewer rule `translation-unfaithful` in the gate reports of the evidence the approver saw; approval of the stage is refused while one has none (guard G_APPROVER_AUTHORIZED, ADR 0009 item 17)", threats: [T-23] }
 
 # -----------------------------------------------------------------------------
@@ -270,6 +271,7 @@ always_human:
   - change_authority_allowlist
   - accept_subscription_login_exception
   - acknowledge_documentation_warning
+  - unblock_blocked_stage_run
   # Descriptive names. `merge_pr` has a row, and its L3 level is off, so the unconditional
   # statement is made here instead of on the row; `freeze_specification` is a human decision
   # only from risk tier medium up, so the unconditional statement is made here as well.
@@ -332,7 +334,7 @@ approval_binding:
 # -----------------------------------------------------------------------------
 # One command set, three channels. The authorization rules are identical.
 commands:
-  verbs: [approve, reject, pause, resume, rework, cancel, approve-dependency, approve-build-code]
+  verbs: [approve, reject, pause, resume, rework, cancel, unblock, approve-dependency, approve-build-code]
   channels: [dashboard, cli, github_comment]
   github_comment:
     prefix: "/factory"

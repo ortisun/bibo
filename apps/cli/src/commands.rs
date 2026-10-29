@@ -28,6 +28,7 @@ usage: factory-cli <command> [options]
   reject   --api URL --token-file FILE [--key K] JOB STAGE_RUN reason...
   rework   --api URL --token-file FILE [--key K] JOB STAGE_RUN target=STAGE reason...
   pause | resume | cancel  --api URL --token-file FILE [--key K] JOB reason...
+  unblock  --api URL --token-file FILE [--key K] JOB STAGE_RUN reason...
   approve-dependency  --api URL --token-file FILE [--key K] [--stage-run ID] JOB NAME VERSION [CHECKSUM] reason...
   approve-build-code  --api URL --token-file FILE [--key K] [--stage-run ID] JOB NAME VERSION [CHECKSUM] reason...
   probe    --protected-checkout DIR [--images-catalog FILE] [--profile production|local|test]
@@ -369,6 +370,45 @@ fn decide(
     })
 }
 
+/// The shortest reason a decision about a stage run carries, in characters (the API's own bound).
+const MIN_REASON_CHARS: usize = 10;
+
+/// `unblock`: the operator lets a blocked stage run go again. It sends the stage run and the
+/// reason and no fact: the engine reads for itself whether the block is gone.
+fn unblock(args: &[String], env: &dyn Fn(&str) -> Option<String>, ctx: &mut Context<'_>) -> Exit {
+    let parsed = match split(args, &["api", "token-file", "key"]) {
+        Ok(parsed) => parsed,
+        Err(why) => {
+            ctx.complain(&why);
+            return Exit::Failed;
+        }
+    };
+    let words = &parsed.positional;
+    if words.len() < 3 || !is_uuid(&words[0]) || !is_uuid(&words[1]) {
+        ctx.complain(
+            "unblock takes a job id and a stage run id (both UUIDs), then the reason it can go again",
+        );
+        return Exit::Failed;
+    }
+    let reason = words[2..].join(" ");
+    // What the API would refuse for a missing reason is refused here first, before a request.
+    if reason.chars().count() < MIN_REASON_CHARS {
+        ctx.complain("unblock needs a reason of at least 10 characters");
+        return Exit::Failed;
+    }
+    let body = json!({"verb": "unblock", "stage_run_id": words[1], "reason": reason});
+    let client = match client(&parsed.options, env, true, ctx) {
+        Ok(client) => client,
+        Err(exit) => return exit,
+    };
+    let key = idempotency_key(&parsed.options);
+    let shown = key.clone();
+    let path = format!("/v1/jobs/{}/decisions", words[0]);
+    finish(client.post(&path, &key, &body), ctx, move |body| {
+        render::decided(body, &shown)
+    })
+}
+
 /// `approve-dependency` and `approve-build-code`: a decision on a new dependency or on its build
 /// code. The words after the job id are read by the one reader of those commands, so the package
 /// name, the version and the checksum prefix are the ones every channel accepts.
@@ -500,6 +540,7 @@ pub fn run(
         verb @ ("approve" | "reject" | "rework" | "pause" | "resume" | "cancel") => {
             decide(verb, rest, env, &mut ctx)
         }
+        "unblock" => unblock(rest, env, &mut ctx),
         verb @ (APPROVE_DEPENDENCY | APPROVE_BUILD_CODE) => {
             decide_dependency(verb, rest, env, &mut ctx)
         }

@@ -61,8 +61,10 @@ fn known_registry() -> Arc<dyn RegistryMetadata> {
 struct Journey {
     rig: Rig,
     job: JobId,
+    requester: String,
     approver: String,
     security: String,
+    operator: String,
 }
 
 async fn begin() -> Journey {
@@ -71,6 +73,7 @@ async fn begin() -> Journey {
     let requester = full::token_from_file(&env, "requester", &env.a.requester.token.clone());
     let approver = full::token_from_file(&env, "approver", &env.a.approver.token.clone());
     let security = full::token_from_file(&env, "security", &env.a.security.token.clone());
+    let operator = full::token_from_file(&env, "operator", &env.a.operator.token.clone());
     let rig = Rig::start(
         env,
         Options {
@@ -84,8 +87,10 @@ async fn begin() -> Journey {
     Journey {
         rig,
         job,
+        requester,
         approver,
         security,
+        operator,
     }
 }
 
@@ -238,6 +243,59 @@ impl Journey {
         let reply = full::decide(&self.rig.env, token, self.job, key, body).await;
         self.rig.hook.pass(self.rig.tenant).await;
         reply
+    }
+
+    /// The operator's `unblock` through the API, and one pass of the worker's step over it.
+    async fn unblock(
+        &self,
+        token: &str,
+        key: &str,
+        stage_run: factory_domain::ids::StageRunId,
+    ) -> support::Reply {
+        let reply = full::decide(
+            &self.rig.env,
+            token,
+            self.job,
+            key,
+            json!({
+                "verb": "unblock",
+                "stage_run_id": stage_run.as_text(),
+                "reason": "The cause of the block is gone; run the stage again.",
+            }),
+        )
+        .await;
+        self.rig.hook.pass(self.rig.tenant).await;
+        reply
+    }
+
+    /// The markers the worker wrote for the requests to unblock: `(action, code)`.
+    async fn unblock_markers(&self) -> Vec<(String, String)> {
+        let text = self.rig.audit_text(self.job).await;
+        text.lines()
+            .filter(|line| {
+                (line.starts_with("decision.applied ") || line.starts_with("decision.rejected "))
+                    && line.contains(" verb=unblock ")
+                    && line.contains(" code=")
+            })
+            .filter_map(|line| {
+                let action = line.split_whitespace().next()?.to_owned();
+                let code = line
+                    .split_whitespace()
+                    .find_map(|word| word.strip_prefix("code="))?
+                    .to_owned();
+                Some((action, code))
+            })
+            .collect()
+    }
+
+    async fn status_of_validation(&self) -> Option<StageRunStatus> {
+        let view = self
+            .rig
+            .engine
+            .job_view(self.rig.tenant, self.job)
+            .await
+            .expect("a view of the job");
+        full::status_of(&view, StageKind::Validation)
     }
 
     async fn recorded(
@@ -786,5 +844,196 @@ async fn a_request_for_a_dependency_decision_that_the_api_did_not_sign_is_reject
         2,
         "both are rejected with the fixed code: {text}"
     );
+    journey.rig.finish();
+}
+
+/// The operator's `unblock` (S17) through the API and the worker, with the real engine. The verb
+/// needs the operator designation, names the stage run, and cannot assert that the block is gone:
+/// the engine reads that from what it stored. A repeat of a request is the same decision.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_operator_lets_a_blocked_run_go_again_and_only_when_the_guard_holds() {
+    let journey = begin().await;
+    let _dump = full::DumpOnFailure::new(&journey.rig, journey.job);
+    journey.the_builder_adds_the_dependency(false);
+    let view = journey.to_the_stop_at_validation().await;
+    let run = full::stage_run_of(&view, StageKind::Validation);
+    assert!(blocked(&view), "{view:#?}");
+
+    // 1. Only an operator may ask. The approver, the security approver and the requester hold other
+    // designations. Each is refused with no reason, the attempt is audited, and no request is
+    // recorded.
+    for (who, token) in [
+        ("approver", &journey.approver),
+        ("security", &journey.security),
+        ("requester", &journey.requester),
+    ] {
+        let reply = journey
+            .unblock(token, &format!("not-an-operator-{who}"), run)
+            .await;
+        assert_eq!(reply.status, 403, "{who}: {}", reply.text());
+    }
+    let audit = journey.rig.audit_text(journey.job).await;
+    assert!(audit.contains("decision.denied "), "{audit}");
+    assert!(
+        !audit.contains("decision.stage_requested"),
+        "a refused caller leaves no request: {audit}"
+    );
+
+    // 2. The operator asks while nothing was decided. The request is recorded, and the worker
+    // refuses it because the guard does not hold: the engine read no decision it stored. The stage
+    // run is still blocked.
+    let reply = journey.unblock(&journey.operator, "too-early", run).await;
+    assert_eq!(reply.status, 202, "{}", reply.text());
+    assert_eq!(
+        journey.unblock_markers().await,
+        [("decision.rejected".to_owned(), "not_cleared".to_owned())]
+    );
+    assert_eq!(
+        journey.status_of_validation().await,
+        Some(StageRunStatus::Blocked)
+    );
+
+    // 3. A person decides on the dependency. The operator asks again with a new key, and the
+    // request is applied: the stage run is ready again, and the stage passes through its gates.
+    journey
+        .decide(
+            &journey.approver,
+            "the-decision",
+            "approve-dependency",
+            VERSION,
+            None,
+        )
+        .await;
+    assert_eq!(journey.recorded().await.len(), 1);
+    let reply = journey
+        .unblock(&journey.operator, "after-the-decision", run)
+        .await;
+    assert_eq!(reply.status, 202, "{}", reply.text());
+    let again = journey
+        .unblock(&journey.operator, "after-the-decision", run)
+        .await;
+    assert_eq!(
+        again.status, 202,
+        "a repeat of the request answers as the first did"
+    );
+    assert_eq!(again.json()["decision_id"], reply.json()["decision_id"]);
+    assert_eq!(
+        journey.unblock_markers().await,
+        [
+            ("decision.rejected".to_owned(), "not_cleared".to_owned()),
+            ("decision.applied".to_owned(), "applied".to_owned()),
+        ],
+        "the repeat writes no second marker"
+    );
+    let view = journey
+        .until(240, |view| passed(view) || journey_stopped(view))
+        .await;
+    assert!(passed(&view), "{:#?}\n{view:?}", gates(&journey).await);
+
+    // 4. The same words with the same key, after the run moved, are still the first request. Another
+    // key asks about a run that is no longer blocked, and the worker says so.
+    let reply = journey
+        .unblock(&journey.operator, "after-the-run-passed", run)
+        .await;
+    assert_eq!(reply.status, 202, "{}", reply.text());
+    assert!(
+        journey
+            .unblock_markers()
+            .await
+            .contains(&("decision.rejected".to_owned(), "wrong_state".to_owned())),
+        "{:?}",
+        journey.unblock_markers().await
+    );
+
+    // 5. The audit log holds the request, the engine's grant and the worker's markers, and the
+    // timeline the API serves shows them to a person.
+    let audit = journey.rig.audit_text(journey.job).await;
+    assert!(
+        audit.contains("decision.stage_requested verb=unblock "),
+        "{audit}"
+    );
+    assert!(audit.contains("authorization_decision"), "{audit}");
+    let actions = full::timeline_actions(
+        &journey.rig.env,
+        &journey.approver,
+        journey.job,
+        "decision.",
+    )
+    .await;
+    assert!(
+        actions
+            .iter()
+            .any(|action| action == "decision.stage_requested"),
+        "{actions:?}"
+    );
+    journey.rig.finish();
+}
+
+/// A request is for the person as the allowlist knows them when the worker reads it. The API
+/// recorded the request of an operator who has since left the allowlist, and the worker refuses
+/// it with the fixed code. The stage run stays blocked.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_operator_who_left_the_allowlist_before_the_worker_read_the_request_is_refused() {
+    let journey = begin().await;
+    let _dump = full::DumpOnFailure::new(&journey.rig, journey.job);
+    journey.the_builder_adds_the_dependency(false);
+    let view = journey.to_the_stop_at_validation().await;
+    let run = full::stage_run_of(&view, StageKind::Validation);
+    journey
+        .decide(
+            &journey.approver,
+            "the-decision",
+            "approve-dependency",
+            VERSION,
+            None,
+        )
+        .await;
+
+    // The request is recorded by the API; the worker has not run yet.
+    let reply = full::decide(
+        &journey.rig.env,
+        &journey.operator,
+        journey.job,
+        "operator-then-gone",
+        json!({
+            "verb": "unblock",
+            "stage_run_id": run.as_text(),
+            "reason": "The cause of the block is gone; run the stage again.",
+        }),
+    )
+    .await;
+    assert_eq!(reply.status, 202, "{}", reply.text());
+
+    let allowlist = journey.rig.env.checkout.join("allowlist/allowlist.yaml");
+    let original = std::fs::read_to_string(&allowlist).expect("the allowlist");
+    let without: String = original
+        .split("  - tenant: ")
+        .enumerate()
+        .filter(|(_, entry)| {
+            !entry.contains(&format!(
+                "github_user_id: {}\n",
+                journey.rig.env.a.operator.github_id
+            ))
+        })
+        .map(|(index, entry)| {
+            if index == 0 {
+                entry.to_owned()
+            } else {
+                format!("  - tenant: {entry}")
+            }
+        })
+        .collect();
+    std::fs::write(&allowlist, &without).expect("the allowlist without the operator");
+    journey.rig.hook.pass(journey.rig.tenant).await;
+    assert_eq!(
+        journey.unblock_markers().await,
+        [("decision.rejected".to_owned(), "not_authorized".to_owned())]
+    );
+    assert_eq!(
+        journey.status_of_validation().await,
+        Some(StageRunStatus::Blocked),
+        "the stage run is untouched"
+    );
+    std::fs::write(&allowlist, &original).expect("the allowlist again");
     journey.rig.finish();
 }

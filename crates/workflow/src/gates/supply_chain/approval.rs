@@ -370,10 +370,41 @@ pub fn authorize(request: &Request<'_>, needed: Designation) -> ActionVerdict {
     )
 }
 
+/// The action row of `approval.yaml` for letting a blocked stage run go again.
+pub const UNBLOCK_ACTION: &str = "unblock_blocked_stage_run";
+
+/// The action row of `approval.yaml` for a decision about an open warning of the documentation
+/// reviewer's rule `translation-unfaithful`.
+pub const WARNING_ACTION: &str = "acknowledge_documentation_warning";
+
+/// Asks the policy engine whether `request.actor` may let a blocked stage run go again. The row
+/// `unblock_blocked_stage_run` names the operator. The change is not marked as adding a
+/// dependency: the operator re-runs a stage, and the gates still judge what comes out of it.
+#[must_use]
+pub fn authorize_unblock(request: &Request<'_>) -> ActionVerdict {
+    ask_for(request, UNBLOCK_ACTION, None, false)
+}
+
+/// Asks the policy engine whether `request.actor` may decide on a translation warning. The row
+/// `acknowledge_documentation_warning` names the approver.
+#[must_use]
+pub fn authorize_warning(request: &Request<'_>) -> ActionVerdict {
+    ask_for(request, WARNING_ACTION, None, false)
+}
+
 fn ask(
     request: &Request<'_>,
     action: &str,
     require_designation: Option<Designation>,
+) -> ActionVerdict {
+    ask_for(request, action, require_designation, true)
+}
+
+fn ask_for(
+    request: &Request<'_>,
+    action: &str,
+    require_designation: Option<Designation>,
+    new_dependency: bool,
 ) -> ActionVerdict {
     request.policy.authorize_action(&ActionContext {
         action,
@@ -388,7 +419,7 @@ fn ask(
             risk_tier: request.risk_tier,
             protected_path_change: request.protected_path_change,
             sensitive_file_change: request.sensitive_file_change,
-            new_dependency: true,
+            new_dependency,
         },
         require_designation,
         step_up_done: false,

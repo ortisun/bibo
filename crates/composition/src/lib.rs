@@ -38,6 +38,7 @@
 //! | [`webhook`] | The webhook verifier of the API, built from secret files (one per secret in the rotation window) |
 //! | [`supply_chain`] | The sources of the dependency gates that no adapter implements yet: blocked by design in production, labelled stand-ins in the other profiles |
 //! | [`dependency_decisions`] | A person's decision on a new dependency or its build code: the request the API records, and the step that applies it through the engine |
+//! | [`stage_decisions`] | A person's decision about a stage run that is not an approval (letting a blocked one go again, the project's own build code, a translation warning): the request the API records and the step that applies it through the engine |
 //! | [`decision_signing`] | The keyed word that proves the API wrote a request for a decision, and the keys it is made and checked with (AUT-12) |
 //!
 //! Composition is the one job of this crate, so no module here contains a business rule. The
@@ -72,6 +73,7 @@ pub mod runtimes;
 pub mod sandbox_specs;
 pub mod seams;
 pub mod specs;
+pub mod stage_decisions;
 pub mod startup;
 pub mod supply_chain;
 pub mod system;

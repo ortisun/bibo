@@ -68,6 +68,7 @@ use crate::decisions::DecisionFields;
 use crate::dependency_decisions::DependencyFields;
 use crate::intake_rejections::RejectionFields;
 use crate::profile::Profile;
+use crate::stage_decisions::StageFields;
 use crate::startup::StartupFailure;
 
 /// The shortest key accepted, in bytes of key material: a key written as hex digits counts for the
@@ -92,6 +93,10 @@ const CONTEXT: &str = "factory-decision-request/1";
 /// so a word made for one kind of request is never the word of the other, even if the rest of the
 /// text could be made to look alike.
 const DEPENDENCY_CONTEXT: &str = "factory-dependency-decision-request/1";
+/// The context line of a request about a stage run: letting a blocked one go again, a decision on
+/// the project's own build code, a decision on a translation warning. A word made for one kind of
+/// request is never the word of another.
+const STAGE_CONTEXT: &str = "factory-stage-decision-request/1";
 
 /// The first line of what is signed for the marker of a decision. It differs from [`CONTEXT`] and
 /// [`DEPENDENCY_CONTEXT`], so a word made for a request is never the word of a marker.
@@ -267,6 +272,34 @@ impl DependencySigning<'_> {
     fn message(&self) -> String {
         format!(
             "{DEPENDENCY_CONTEXT}\ntenant={}\nactor={}\nevent={}\nat={}\n{}",
+            self.tenant.as_text(),
+            self.actor.as_text(),
+            self.event.as_uuid().hyphenated(),
+            self.requested_at,
+            self.fields.subject(),
+        )
+    }
+}
+
+/// What a signature of a request about a stage run covers besides the words of the subject.
+#[derive(Debug, Clone, Copy)]
+pub struct StageSigning<'a> {
+    /// The tenant the record belongs to.
+    pub tenant: TenantId,
+    /// The principal the record names as its actor.
+    pub actor: PrincipalId,
+    /// The id of the audit record.
+    pub event: AuditEventId,
+    /// The time of the request, as the text written in the subject.
+    pub requested_at: &'a str,
+    /// The words of the subject.
+    pub fields: &'a StageFields,
+}
+
+impl StageSigning<'_> {
+    fn message(&self) -> String {
+        format!(
+            "{STAGE_CONTEXT}\ntenant={}\nactor={}\nevent={}\nat={}\n{}",
             self.tenant.as_text(),
             self.actor.as_text(),
             self.event.as_uuid().hyphenated(),
@@ -588,6 +621,37 @@ impl DecisionKeys {
         )
     }
 
+    /// The word for a request about a stage run, made with the current key.
+    ///
+    /// # Panics
+    /// Never: an HMAC accepts a key of any length.
+    #[must_use]
+    pub fn sign_stage(&self, signing: &StageSigning<'_>) -> String {
+        let word = self
+            .current
+            .word(signing.message().as_bytes())
+            .expect("an HMAC key can have any length");
+        hex(&word)
+    }
+
+    /// True when `word` is the word of this request about a stage run under the current key or
+    /// the previous one, compared as [`verify`](Self::verify) does.
+    #[must_use]
+    pub fn verify_stage(&self, signing: &StageSigning<'_>, word: &str) -> bool {
+        self.verify_message(&signing.message(), word)
+    }
+
+    /// The subject of a signed request about a stage run: the words, the time, the word.
+    #[must_use]
+    pub fn signed_stage_subject(&self, signing: &StageSigning<'_>) -> String {
+        format!(
+            "{} at={} mac={}",
+            signing.fields.subject(),
+            signing.requested_at,
+            self.sign_stage(signing)
+        )
+    }
+
     /// The subject of a signed request: the six words, the time, the word.
     #[must_use]
     pub fn signed_subject(&self, signing: &Signing<'_>) -> String {
@@ -903,6 +967,38 @@ pub fn read_dependency_subject(subject: &str) -> Option<DependencySubject> {
         });
     }
     DependencyFields::parse_canonical(subject).map(DependencySubject::Unsigned)
+}
+
+/// What the subject of a `decision.stage_requested` row holds.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum StageSubject {
+    /// The words, `at=` and `mac=`.
+    Signed {
+        /// The words.
+        fields: StageFields,
+        /// The time the API wrote.
+        requested_at: String,
+        /// The word, as written. It is not known to be well formed.
+        word: String,
+    },
+    /// The words alone: a row nobody signed.
+    Unsigned(StageFields),
+}
+
+/// Reads the subject of a request about a stage run back. `None` when it is neither the signed nor
+/// the unsigned canonical text.
+#[must_use]
+pub fn read_stage_subject(subject: &str) -> Option<StageSubject> {
+    if let Some((body, at, word)) = split_signed(subject)
+        && let Some(fields) = StageFields::parse_canonical(body)
+    {
+        return Some(StageSubject::Signed {
+            fields,
+            requested_at: at.to_owned(),
+            word: word.to_owned(),
+        });
+    }
+    StageFields::parse_canonical(subject).map(StageSubject::Unsigned)
 }
 
 /// What the subject of a request to answer a rejected label holds, split but not believed.

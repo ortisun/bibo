@@ -230,7 +230,8 @@ $$;
 
 -- ---------------------------------------------------------------------------------------------
 -- 6. What the group may write to the audit log (RR-8 and RR-21 of
---    docs/reviews/authority-api-supply-chain-security-rereview.md; migration 2026-10-29-002100).
+--    docs/reviews/authority-api-supply-chain-security-rereview.md; migrations 2026-10-29-002100 and
+--    2026-10-29-002200, which adds decision.stage_requested).
 --
 --    The worker reads the audit log to find the requests of people, and to find the records that end a
 --    request. The API login may INSERT into the log (section 2), and a row is a row: until the trigger
@@ -248,8 +249,8 @@ $$;
 DO $$
 DECLARE
   allowed text[] := ARRAY[
-    'decision.requested', 'decision.dependency_requested', 'decision.denied', 'decision.denied_summary',
-    'decision.denied_suppressed', 'job.submitted', 'job.received_from_webhook', 'webhook.accepted',
+    'decision.requested', 'decision.dependency_requested', 'decision.stage_requested', 'decision.denied',
+    'decision.denied_summary', 'decision.denied_suppressed', 'job.submitted', 'job.received_from_webhook', 'webhook.accepted',
     'webhook.duplicate_delivery', 'webhook.rejected', 'webhook.unbound', 'webhook.audit_dropped',
     'webhook_accepted_or_rejected.granted', 'webhook_accepted_or_rejected.denied'];
   refused text[] := ARRAY[
@@ -260,7 +261,7 @@ DECLARE
     -- Near misses: the list is exact, not a prefix, a pattern or a case-insensitive match.
     'decision.requested2', 'decision.request', 'decision', 'job.submitted.extra', 'webhook.accepted_by_worker',
     'webhook_accepted_or_rejected', 'webhook_accepted_or_rejected.noted',
-    'decision.dependency_requested_', 'x'];
+    'decision.dependency_requested_', 'decision.stage_requested_', 'decision.stage_request', 'x'];
   a text;
   msg text;
 BEGIN

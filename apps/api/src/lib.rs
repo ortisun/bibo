@@ -17,7 +17,7 @@
 //! | [`answers`] | Every answer the API gives, with a closed set of error codes |
 //! | [`limits`] | Fixed-window rate limits and the bounded queue of platform audit events |
 //! | [`routes`] | The route table, the router and the request pipeline |
-//! | [`jobs`], [`decisions`], [`webhook`], [`health`] | The handlers |
+//! | [`jobs`], [`decisions`], [`stage_decisions`], [`webhook`], [`health`] | The handlers |
 //! | [`server`] | The connection loop: header timeout, connection limit, graceful shutdown |
 //! | [`openapi`] | The OpenAPI document, served and checked against the route table |
 //!
@@ -43,6 +43,7 @@ pub mod limits;
 pub mod openapi;
 pub mod routes;
 pub mod server;
+pub mod stage_decisions;
 pub mod state;
 pub mod tokens;
 pub mod webhook;

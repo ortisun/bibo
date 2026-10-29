@@ -443,3 +443,49 @@ fn the_two_dependency_verbs_are_read_by_the_dependency_grammar_and_sent_as_words
     }
     assert_eq!(api.requests.lock().expect("lock").len(), 2);
 }
+
+#[test]
+fn unblock_names_the_stage_run_and_says_why_and_sends_nothing_else() {
+    let api = fake(vec![(
+        202,
+        r#"{"decision_id":"d-4","status":"recorded","applied":false}"#,
+    )]);
+    let file = token_file(0o600);
+    let ran = cli(&format!(
+        "unblock --api http://{} --token-file {} --key k-4 {JOB} {RUN} The Docker daemon is back; run the stage again.",
+        api.addr,
+        file.display()
+    ));
+    assert_eq!(ran.exit, Exit::Ok, "{}", ran.err);
+    assert!(ran.out.contains("Decision d-4 is recorded"), "{}", ran.out);
+    let sent = api.requests.lock().expect("lock")[0].clone();
+    assert!(sent.starts_with(&format!("POST /v1/jobs/{JOB}/decisions ")));
+    for part in [
+        r#""verb":"unblock""#,
+        &format!(r#""stage_run_id":"{RUN}""#),
+        r#""reason":"The Docker daemon is back; run the stage again.""#,
+    ] {
+        assert!(sent.contains(part), "{part} in {sent}");
+    }
+    // No other word is sent: the engine reads the guard for itself.
+    for part in ["head", "evidence", "target", "package", "checksum"] {
+        assert!(!sent.contains(part), "{part} in {sent}");
+    }
+    // What the command refuses stops here, before any request.
+    for line in [
+        format!("unblock {JOB}"),
+        format!("unblock {JOB} {RUN}"),
+        format!("unblock {JOB} {RUN} short"),
+        format!("unblock {JOB} not-a-uuid A reason that is long enough"),
+        format!("unblock not-a-uuid {RUN} A reason that is long enough"),
+        format!("unblock --stage-run {RUN} {JOB} {RUN} A reason that is long enough"),
+    ] {
+        let ran = cli(&format!(
+            "{line} --api http://{} --token-file {}",
+            api.addr,
+            file.display()
+        ));
+        assert_eq!(ran.exit, Exit::Failed, "{line}: {}", ran.err);
+    }
+    assert_eq!(api.requests.lock().expect("lock").len(), 1);
+}

@@ -45,6 +45,16 @@ The reason has 10 to 500 characters. It is redacted before the engine stores it.
 
 To refuse a package, do not approve it. Send the work back with `rework`, or cancel the job. See [a job is waiting for a person](stuck-waiting-for-a-person.md).
 
+### 3. Let the stage run go again
+
+A decision is recorded where the engine reads it. The stage run stays `BLOCKED` until an operator lets it go:
+
+```bash no-run reason="needs a running API, a token and a blocked job"
+factory-cli unblock --api "$FACTORY_API_URL" --token-file operator.token JOB STAGE_RUN The decision on the package is recorded; run the stage again.
+```
+
+The engine lets the run go only when a decision for what it waited for was recorded after the attempt that blocked it. Before that, the answer is `not_cleared`. `STAGE_RUN` is the validation stage run that `factory-cli status JOB` prints.
+
 ## Check that it worked
 
 The timeline shows `decision.dependency_requested`, then `decision.applied`. The validation stage run leaves `BLOCKED` when every awaited package has a decision that matches its exact name, version and checksum. The engine reads what it stored when the stage run blocked. It does not take the package from your words.
