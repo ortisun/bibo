@@ -76,6 +76,7 @@ pub mod routing;
 pub mod runtimes;
 pub mod sandbox_specs;
 pub mod seams;
+pub mod spec_skills;
 pub mod specs;
 pub mod stage_decisions;
 pub mod startup;
