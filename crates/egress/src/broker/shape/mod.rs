@@ -43,7 +43,7 @@
 //! | `model` | a string; the broker checks it against the token's list | routing and price |
 //! | `max_tokens` | a number; clamped to the per-request cap | Claude Code sends 128000 |
 //! | `messages` | roles `user`, `assistant`, `system`; content as text or blocks; a per-message `output_config.effort` | recorded: Claude Code sends mid-conversation `system` messages |
-//! | blocks | `text`; `image` and `document` with an inline `base64` source (or plain text document); `tool_use` (`id`, `name`, `input`); `tool_result` (`tool_use_id`, `content` text or image blocks, `is_error`); `thinking` (with `signature`); `redacted_thinking`; each may carry `cache_control: ephemeral` | the Read tool returns images and PDFs inline; the history carries the model's earlier reasoning |
+//! | blocks | `text`; `image` and `document` with an inline `base64` source (or plain text document); `tool_use` (`id`, `name`, `input`); `tool_result` (`tool_use_id`, `content` text or image blocks, `is_error`); `thinking` (with `signature`); `redacted_thinking`; each may carry `cache_control: ephemeral` (the five-minute `ttl` only: a one-hour write is billed at twice the rate the price list holds, RR-2) | the Read tool returns images and PDFs inline; the history carries the model's earlier reasoning |
 //! | `system` | text, or text blocks | recorded |
 //! | `stream` | a boolean | streaming answers |
 //! | `tools` | client tools only: `name`, `description`, `input_schema`, `cache_control`, `defer_loading`, and `type: custom` | recorded; a tool with any other `type` is run by the provider |
@@ -126,6 +126,10 @@ pub enum Violation {
     Malformed,
     /// The body nests deeper than [`json::MAX_DEPTH`].
     TooDeep,
+    /// The body holds more values than [`json::MAX_VALUES`] in all, or more than
+    /// [`json::MAX_WIDTH`] in one array or object. It is refused as soon as the count is passed,
+    /// before the document is built (finding RR-6).
+    TooManyValues,
     /// An object names the same key twice.
     DuplicateKey,
     /// A key the schema does not list.
@@ -155,6 +159,7 @@ impl Violation {
         match self {
             Self::Malformed => "malformed",
             Self::TooDeep => "too_deep",
+            Self::TooManyValues => "too_many_values",
             Self::DuplicateKey => "duplicate_key",
             Self::UnknownField => "unknown_field",
             Self::ServerTool => "server_tool",

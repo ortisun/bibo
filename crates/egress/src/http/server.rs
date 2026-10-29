@@ -529,7 +529,7 @@ fn serve_model_request(
     };
     let forwarded = match route {
         Route::Model => {
-            let changed = clamp_output_tokens(provider, &mut object, permit.max_output_tokens());
+            let changed = clamp_output_tokens(wire, &mut object, permit.max_output_tokens());
             if changed {
                 serde_json::to_vec(&Value::Object(object)).unwrap_or(body)
             } else {
@@ -563,13 +563,22 @@ fn model_name_ok(model: &str) -> bool {
 }
 
 /// Brings the output token limit of a request down to `cap`, or sets it when the request names
-/// none. Returns true when the object changed. A request that asks for less is left alone.
-fn clamp_output_tokens(provider: Provider, object: &mut Map<String, Value>, cap: u64) -> bool {
-    let fields: &[&str] = match provider {
-        Provider::Anthropic => &["max_tokens"],
-        // The Responses API names it `max_output_tokens`; Chat Completions has the older
-        // `max_tokens` and the newer `max_completion_tokens`.
-        Provider::OpenAi => &["max_output_tokens", "max_completion_tokens", "max_tokens"],
+/// none (finding RR-1: an OpenAI request without a limit was forwarded without one, and the
+/// provider's own default governed the cost of that request). Returns true when the object
+/// changed. A request that asks for less is left alone.
+///
+/// The field depends on the API, because each rejects the other's: the Messages API has
+/// `max_tokens`, the Responses API `max_output_tokens`, and Chat Completions the older `max_tokens`
+/// and the newer `max_completion_tokens`, which is the one inserted when a chat request names
+/// neither.
+fn clamp_output_tokens(wire: Wire, object: &mut Map<String, Value>, cap: u64) -> bool {
+    let (fields, insert): (&[&str], &str) = match wire {
+        Wire::AnthropicMessages | Wire::AnthropicCountTokens => (&["max_tokens"], "max_tokens"),
+        Wire::OpenAiResponses => (&["max_output_tokens"], "max_output_tokens"),
+        Wire::OpenAiChat => (
+            &["max_completion_tokens", "max_tokens"],
+            "max_completion_tokens",
+        ),
     };
     let mut present = false;
     let mut changed = false;
@@ -588,14 +597,7 @@ fn clamp_output_tokens(provider: Provider, object: &mut Map<String, Value>, cap:
         }
     }
     if !present {
-        let field = match provider {
-            Provider::Anthropic => "max_tokens",
-            // Chat Completions rejects the Responses field and the reverse. The route is not
-            // known here, so a request that names none is left to the provider's own default,
-            // which a ceiling revoke still bounds after the first answer.
-            Provider::OpenAi => return false,
-        };
-        object.insert(field.to_owned(), Value::from(cap));
+        object.insert(insert.to_owned(), Value::from(cap));
         changed = true;
     }
     changed
@@ -938,33 +940,60 @@ mod tests {
                 .cloned()
                 .expect("an object")
         };
+        let messages = Wire::AnthropicMessages;
         let mut over = parse(r#"{"model":"m","max_tokens":128000}"#);
-        assert!(clamp_output_tokens(Provider::Anthropic, &mut over, 32_000));
+        assert!(clamp_output_tokens(messages, &mut over, 32_000));
         assert_eq!(over["max_tokens"], 32_000);
         let mut under = parse(r#"{"model":"m","max_tokens":100}"#);
-        assert!(!clamp_output_tokens(
-            Provider::Anthropic,
-            &mut under,
-            32_000
-        ));
+        assert!(!clamp_output_tokens(messages, &mut under, 32_000));
         assert_eq!(under["max_tokens"], 100);
         let mut none = parse(r#"{"model":"m"}"#);
-        assert!(clamp_output_tokens(Provider::Anthropic, &mut none, 32_000));
+        assert!(clamp_output_tokens(messages, &mut none, 32_000));
         assert_eq!(none["max_tokens"], 32_000);
         let mut odd = parse(r#"{"model":"m","max_tokens":-5}"#);
-        assert!(clamp_output_tokens(Provider::Anthropic, &mut odd, 32_000));
+        assert!(clamp_output_tokens(messages, &mut odd, 32_000));
         assert_eq!(odd["max_tokens"], 32_000);
         let mut responses = parse(r#"{"model":"m","max_output_tokens":99999}"#);
         assert!(clamp_output_tokens(
-            Provider::OpenAi,
+            Wire::OpenAiResponses,
             &mut responses,
             32_000
         ));
         assert_eq!(responses["max_output_tokens"], 32_000);
         let mut chat = parse(r#"{"model":"m","max_tokens":99999,"max_completion_tokens":5}"#);
-        assert!(clamp_output_tokens(Provider::OpenAi, &mut chat, 32_000));
+        assert!(clamp_output_tokens(Wire::OpenAiChat, &mut chat, 32_000));
         assert_eq!(chat["max_tokens"], 32_000);
         assert_eq!(chat["max_completion_tokens"], 5);
+    }
+
+    /// RR-1: a request that names no limit gets the cap, in the field its API takes and in no other.
+    #[test]
+    fn an_openai_request_that_names_no_limit_gets_the_cap_in_the_field_of_its_api() {
+        let parse = |text: &str| -> Map<String, Value> {
+            serde_json::from_str::<Value>(text)
+                .expect("json")
+                .as_object()
+                .cloned()
+                .expect("an object")
+        };
+        let mut responses = parse(r#"{"model":"m","input":[]}"#);
+        assert!(clamp_output_tokens(
+            Wire::OpenAiResponses,
+            &mut responses,
+            32_000
+        ));
+        assert_eq!(responses["max_output_tokens"], 32_000);
+        assert!(!responses.contains_key("max_completion_tokens"));
+        assert!(!responses.contains_key("max_tokens"));
+        let mut chat = parse(r#"{"model":"m","messages":[]}"#);
+        assert!(clamp_output_tokens(Wire::OpenAiChat, &mut chat, 32_000));
+        assert_eq!(chat["max_completion_tokens"], 32_000);
+        assert!(!chat.contains_key("max_tokens"));
+        assert!(!chat.contains_key("max_output_tokens"));
+        // An older chat request that names `max_tokens` keeps its own field.
+        let mut older = parse(r#"{"model":"m","messages":[],"max_tokens":10}"#);
+        assert!(!clamp_output_tokens(Wire::OpenAiChat, &mut older, 32_000));
+        assert!(!older.contains_key("max_completion_tokens"));
     }
 
     #[test]
