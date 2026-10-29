@@ -35,6 +35,7 @@ use super::input::{self, DossierError, POLICY_INPUT, contract_input};
 use super::manifest::{self, AdapterReport, ChangeFacts, ManifestError, ManifestInputs};
 use super::pr::{self, PrFacts};
 use super::publish;
+use super::risk;
 use super::seams::{DeliverySources, EvidenceDrift, SeamError};
 use crate::gates::framework::GateDecision;
 use crate::gates::readability::{Artifact, ReadabilityGate, Severity};
@@ -257,7 +258,15 @@ impl StageHandler for DeliveryHandler {
             .ledger(&identity)
             .await
             .map_err(seam_error)?;
-        let risk = self.config.policy.risk.assess(&target.risk, None);
+        // The tier is the highest of what the job and the design show and what the diff shows,
+        // and the intake classifier's claim can raise it (AUT-10).
+        let measured = risk::assess(
+            &self.config.policy,
+            &target.risk,
+            target.agent_claim,
+            &export.changes,
+        );
+        let risk = measured.assessment.clone();
         let manifest = manifest::build(&ManifestInputs {
             dossier: &dossier,
             identity: &identity,
@@ -338,6 +347,7 @@ impl StageHandler for DeliveryHandler {
             "manifest_sha256": manifest_hash.as_str(),
             "spec_version": dossier.specification.metadata.spec_version.get(),
             "issue": target.issue.number,
+            "risk": measured.reported().to_json(),
         });
         let documents = |result: Value| -> Result<StageOutput, StageError> {
             Ok(StageOutput {

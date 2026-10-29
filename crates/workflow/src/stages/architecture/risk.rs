@@ -26,7 +26,7 @@ const NOT_A_MODULE: [&str; 8] = [
 /// The directories whose children are the modules.
 const CONTAINERS: [&str; 6] = ["crates", "apps", "packages", "services", "libs", "modules"];
 
-fn module_of(path: &str) -> Option<String> {
+pub(crate) fn module_of(path: &str) -> Option<String> {
     let mut parts = path.trim_start_matches("./").split('/');
     let first = parts.next()?;
     // A file at the top of the repository belongs to no module.
@@ -40,7 +40,7 @@ fn module_of(path: &str) -> Option<String> {
     Some(first.to_owned())
 }
 
-fn is_documentation(path: &str) -> bool {
+pub(crate) fn is_documentation(path: &str) -> bool {
     path.starts_with("docs/")
         || path.starts_with("doc/")
         || path.to_ascii_lowercase().ends_with(".md")

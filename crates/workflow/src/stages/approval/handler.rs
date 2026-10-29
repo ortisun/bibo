@@ -47,6 +47,7 @@ use crate::stages::delivery::input::{
     DOCUMENTATION_GATE, DOCUMENTATION_PLAN, DOCUMENTATION_REVIEW, POLICY_INPUT,
     SPECIFICATION_CONTRACT, VALIDATION_EVIDENCE, contract_input,
 };
+use crate::stages::delivery::risk::{Reported, join_reported};
 use crate::stages::delivery::{DeliverySources, EvidenceDrift};
 use crate::stages::intake::common::{
     Executor, GateDefinition, GateFacts, GateSubject, gate_report,
@@ -358,7 +359,19 @@ impl StageHandler for ApprovalHandler {
             .target(&identity)
             .await
             .map_err(seam_error)?;
-        let risk = self.config.policy.risk.assess(&target.risk, None);
+        // The delivery stage measured the diff. The tier shown to the person is the highest of that
+        // and of what the job and the design show, with the classifier's claim, and the
+        // separation-of-duties flags hold when they hold in either (AUT-10).
+        let reported = delivery
+            .get("risk")
+            .and_then(Reported::from_json)
+            .ok_or(StageError::InvalidOutput)?;
+        let risk = join_reported(
+            &self.config.policy,
+            &target.risk,
+            target.agent_claim,
+            &reported,
+        );
         let requester = self
             .deps
             .approvals
@@ -379,9 +392,9 @@ impl StageHandler for ApprovalHandler {
             gates_clear,
             open_translation_warnings,
             tier: risk.tier,
-            protected_path_change: target.risk.protected_path_change,
-            sensitive_file_change: target.risk.sensitive_file_change,
-            new_dependency: target.risk.new_dependency,
+            protected_path_change: risk.protected_path_change,
+            sensitive_file_change: risk.sensitive_file_change,
+            new_dependency: risk.new_dependency,
             requester,
             evidence_binding: binding,
             created_at: ports.clock.now(),

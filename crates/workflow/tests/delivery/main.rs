@@ -26,3 +26,4 @@ mod documented;
 mod happy;
 mod judging;
 mod negative;
+mod risk;
