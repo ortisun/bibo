@@ -18,7 +18,7 @@ CLI, are made of before each adds its own shell. A ring 3 **library**
 | `health` | Health and readiness as plain data |
 | `telemetry` | The telemetry configuration with the real scrubber, and the `factory.job` stretch span |
 | `system` | The real clock, identifier source, `Ticker` and shutdown signal |
-| `seams`, `authority`, `sandbox_specs` | The seams the stages declare that need no store state: schema check, manifests, allowlist, requests, repositories, probes, spec builders |
+| `seams`, `authority`, `sandbox_specs` | The seams the stages declare that need no store state: schema check, manifests, allowlist, requests, repositories, probes, spec builders. `sandbox_specs` also holds the address an agent reaches the broker at (`broker_endpoint`: the sidecar by its alias, over http), the directories of a scratch workspace (made when the spec is accepted) and the path of a program the build made (`built_program`) |
 | `ledger` | `TaskLedger` over `TaskNodeOps`, fenced by attempt and epoch |
 | `feedback`, `risk` | `ReworkSource`, `RoundSource` and `RiskSource`, read from the evidence the engine stored |
 | `drift` | `EvidenceDrift` as a channel to the loop that owns the engine |
@@ -26,7 +26,7 @@ CLI, are made of before each adds its own shell. A ring 3 **library**
 | `delivery` | `ApprovalSources` and `DeliverySources` (two methods fail closed) |
 | `commands` | The pure parsers from a comment, `argv` or a form to an approval command |
 | `reading` | Shared reads of stage run outputs, the ledger and the artifact store |
-| `providers` | The real Docker sandbox, host-side workspace and Spec Kit provider from the configuration; `specification_path_rules` (the stage's rules with the writes of its skills lifted); `spec_kit_provider` and `spec_kit_installation` from a checkout |
+| `providers` | The real Docker sandbox, host-side workspace and Spec Kit provider from the configuration; `specification_path_rules` (the stage's rules with the writes of its skills lifted) and `layer_policy` (the compiled policy the real workspace takes its second look with, with the same writes re-included); `spec_kit_provider` and `spec_kit_installation` from a checkout |
 | `runtimes` | One agent runtime that serves every tenant |
 | `indexing` | Indexes what a sandbox writes and what a workspace exports, for the tenant, when it is written |
 | `hooks` | The work a loop does before it claims (`BeforeClaim`) |
