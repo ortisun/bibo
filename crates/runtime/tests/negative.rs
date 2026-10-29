@@ -22,11 +22,11 @@ use support::{Harness, events_of, init_of, limits, request, tool_results_of};
 const OK_REPLY: &str = "Summarize the project. FAKE:OUTPUT {\"ok\":true}";
 
 fn claude(h: &Harness) -> ClaudeCodeRuntime {
-    ClaudeCodeRuntime::new(ClaudeCodeConfig::default(), h.io.clone())
+    ClaudeCodeRuntime::new(ClaudeCodeConfig::default(), h.io.clone(), h.attestation())
 }
 
 fn codex(h: &Harness) -> CodexRuntime {
-    CodexRuntime::new(CodexConfig::default(), h.io.clone())
+    CodexRuntime::new(CodexConfig::default(), h.io.clone(), h.attestation())
 }
 
 fn claude_request(h: &Harness, lab: &Lab, prompt: &str) -> AgentRunRequest {
@@ -381,7 +381,7 @@ async fn negative_nt_tool_07_a_flood_of_output_is_cut_at_the_cap_and_the_run_sti
         transcript_cap_bytes: CAP,
         ..ClaudeCodeConfig::default()
     };
-    let runtime = ClaudeCodeRuntime::new(config, h.io.clone());
+    let runtime = ClaudeCodeRuntime::new(config, h.io.clone(), h.attestation());
     // Twelve tool calls, each printing 5 MB. The tool bounds each result it reports; the adapter
     // bounds the whole stream.
     let command = "yes flood | head -c 5000000";

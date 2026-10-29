@@ -130,6 +130,7 @@ impl RealSubject {
                 plain: Box::new(ClaudeCodeRuntime::new(
                     ClaudeCodeConfig::default(),
                     h.io.clone(),
+                    h.attestation(),
                 )),
                 filtered: Box::new(ClaudeCodeRuntime::new(
                     ClaudeCodeConfig {
@@ -137,17 +138,23 @@ impl RealSubject {
                         ..ClaudeCodeConfig::default()
                     },
                     h.io.clone(),
+                    h.attestation(),
                 )),
                 use_filtered: AtomicBool::new(false),
             },
             Which::Codex => Switch {
-                plain: Box::new(CodexRuntime::new(CodexConfig::default(), h.io.clone())),
+                plain: Box::new(CodexRuntime::new(
+                    CodexConfig::default(),
+                    h.io.clone(),
+                    h.attestation(),
+                )),
                 filtered: Box::new(CodexRuntime::new(
                     CodexConfig {
                         binary: wrapper,
                         ..CodexConfig::default()
                     },
                     h.io.clone(),
+                    h.attestation(),
                 )),
                 use_filtered: AtomicBool::new(false),
             },

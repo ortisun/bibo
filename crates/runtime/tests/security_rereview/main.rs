@@ -159,7 +159,6 @@ async fn held_noise_around_a_stream_does_not_create_a_result() {
 /// This needs a writer to the pipe, which the execute-only tools take away once the image is
 /// rebuilt (SBX-4). The adapter rule is the second layer and it has this hole.
 #[tokio::test]
-#[ignore = "confirmed defect RR-7: a stream with a torn line and one forged terminal event is a success. Run: cargo test -p factory-runtime --test security_rereview -- --ignored rr_7"]
 async fn rr_7_a_stream_with_a_torn_line_is_not_a_success() {
     let h = Harness::new();
     let claude = recorded::stdout("claude-turn-env");
@@ -199,7 +198,6 @@ async fn rr_7_a_stream_with_a_torn_line_is_not_a_success() {
 /// leaves exactly one terminal event, exit 0 and nothing parsable after it: a success, with the
 /// real terminal line never seen.
 #[tokio::test]
-#[ignore = "confirmed defect RR-8: a truncated stream with one early terminal event and a clean exit is a success. Run: cargo test -p factory-runtime --test security_rereview -- --ignored rr_8"]
 async fn rr_8_a_truncated_stream_is_never_a_success() {
     let h = Harness::new();
     let claude = recorded::stdout("claude-turn-env");
@@ -233,7 +231,6 @@ async fn rr_8_a_truncated_stream_is_never_a_success() {
 /// never both (`exit_parts`), so no run reaches the difference, but the two adapters state one rule
 /// ("the same rule as the Claude Code adapter") and differ in the text of it.
 #[tokio::test]
-#[ignore = "RR-9 hypothesis: the Codex success rule ignores ExecResult.signal. Run: cargo test -p factory-runtime --test security_rereview -- --ignored rr_9"]
 async fn rr_9_codex_success_also_reads_the_signal() {
     let h = Harness::new();
     let stdout = recorded::stdout("codex-turn-custom-provider");

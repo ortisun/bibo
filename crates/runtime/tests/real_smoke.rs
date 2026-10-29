@@ -25,7 +25,8 @@ async fn real_smoke_claude_probes_and_runs_a_turn() {
         "{:?}",
         session.posture
     );
-    let runtime = ClaudeCodeRuntime::new(ClaudeCodeConfig::default(), h.io.clone());
+    let runtime =
+        ClaudeCodeRuntime::new(ClaudeCodeConfig::default(), h.io.clone(), h.attestation());
     let found = runtime.probe(&mut session).await.expect("a probe");
     assert_eq!(found.runtime_version, "2.1.311");
     assert!(found.supports(Capability::HeadlessMultiTurn), "{found:?}");
@@ -51,7 +52,7 @@ async fn real_smoke_codex_probes_and_runs_a_turn() {
     h.register_secret("job-token", &lab.key);
     let ws = HostWorkspace::new(&[]);
     let mut session = lab.session(&h, &ws).await;
-    let runtime = CodexRuntime::new(CodexConfig::default(), h.io.clone());
+    let runtime = CodexRuntime::new(CodexConfig::default(), h.io.clone(), h.attestation());
     let found = runtime.probe(&mut session).await.expect("a probe");
     assert_eq!(found.runtime_version, "0.163.0");
     let mut req = request(&h, "codex-cli", "gpt-fake", &lab.broker_url());

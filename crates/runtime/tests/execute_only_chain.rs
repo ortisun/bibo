@@ -31,6 +31,7 @@
 mod support;
 
 #[path = "../../sandbox/tests/support/docker_lock.rs"]
+#[allow(dead_code)]
 mod docker_lock;
 
 use std::path::PathBuf;

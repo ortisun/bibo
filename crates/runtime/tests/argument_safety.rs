@@ -363,11 +363,16 @@ async fn argument_safety_a_run_on_an_unchecked_sandbox_starts_nothing_with_a_byp
                     Box::new(ClaudeCodeRuntime::new(
                         ClaudeCodeConfig::default(),
                         h.io.clone(),
+                        h.attestation(),
                     )),
                     "claude-code-cli",
                 ),
                 Tool::Codex => (
-                    Box::new(CodexRuntime::new(CodexConfig::default(), h.io.clone())),
+                    Box::new(CodexRuntime::new(
+                        CodexConfig::default(),
+                        h.io.clone(),
+                        h.attestation(),
+                    )),
                     "codex-cli",
                 ),
             };
@@ -399,7 +404,8 @@ async fn argument_safety_the_prompt_travels_on_standard_input_and_the_vector_nam
     );
     req.prompt.instructions =
         "PROMPT-TEXT with LD_PRELOAD=/evil.so and --dangerously-flag".to_owned();
-    let runtime = ClaudeCodeRuntime::new(ClaudeCodeConfig::default(), h.io.clone());
+    let runtime =
+        ClaudeCodeRuntime::new(ClaudeCodeConfig::default(), h.io.clone(), h.attestation());
     let _ = runtime.run(&mut s, req, &NeverCancelled).await;
     let run = watch.tool_run().expect("the tool ran");
     let stdin = String::from_utf8(run.stdin.clone().expect("a prompt on stdin")).expect("text");
@@ -453,7 +459,8 @@ async fn argument_safety_a_broker_address_with_more_than_an_origin_is_refused() 
             "http://egress:8080",
         );
         req.broker.base_url = uri;
-        let runtime = ClaudeCodeRuntime::new(ClaudeCodeConfig::default(), h.io.clone());
+        let runtime =
+            ClaudeCodeRuntime::new(ClaudeCodeConfig::default(), h.io.clone(), h.attestation());
         let report = runtime.run(&mut s, req, &NeverCancelled).await;
         assert!(
             matches!(report.outcome, Err(AgentRunError::ProcessFailed(_))),

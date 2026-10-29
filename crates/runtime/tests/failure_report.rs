@@ -105,7 +105,8 @@ async fn failure_report_a_cancel_that_is_already_set_starts_nothing() {
     let h = Harness::new();
     let mut session = support::scripted::ScriptedSession::new(&h, Tool::Claude, Step::exits(0, ""));
     let watch = session.watch();
-    let runtime = factory_runtime::ClaudeCodeRuntime::new(Default::default(), h.io.clone());
+    let runtime =
+        factory_runtime::ClaudeCodeRuntime::new(Default::default(), h.io.clone(), h.attestation());
     let cancel = FakeCancel::new();
     cancel.cancel();
     let req = support::request(&h, "claude-code-cli", "m", "http://egress:8080");

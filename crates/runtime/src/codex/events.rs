@@ -64,6 +64,13 @@ pub struct Stream {
     pub(crate) tool_calls: Vec<ToolCall>,
     /// Lines that were not JSON objects.
     pub malformed_lines: usize,
+    /// The part of `malformed_lines` that came before the first `turn.completed`. The tool writes
+    /// whole JSON objects, so a line it did not write there is how a forged line gets through
+    /// (finding RR-7).
+    pub malformed_before_completed: usize,
+    /// Non-blank lines after the first `turn.completed`, of any kind: the tool writes nothing after
+    /// it.
+    pub lines_after_completed: usize,
 }
 
 /// How a completed item ended, from its `status`: `completed`, `failed` or `declined`. Any other
@@ -158,14 +165,20 @@ pub fn parse(stdout: &[u8]) -> Stream {
         if line.iter().all(u8::is_ascii_whitespace) {
             continue;
         }
-        let Ok(event) = serde_json::from_slice::<Value>(line) else {
+        let after_completed = stream.completed_events > 0;
+        if after_completed {
+            stream.lines_after_completed += 1;
+        }
+        let Some(event) = serde_json::from_slice::<Value>(line)
+            .ok()
+            .filter(Value::is_object)
+        else {
             stream.malformed_lines += 1;
+            if !after_completed {
+                stream.malformed_before_completed += 1;
+            }
             continue;
         };
-        if !event.is_object() {
-            stream.malformed_lines += 1;
-            continue;
-        }
         let kind = event.get("type").and_then(Value::as_str);
         if stream.completed_events > 0
             && matches!(
@@ -282,6 +295,31 @@ mod tests {
                 .as_bytes(),
         );
         assert!(late.events_after_completed);
+    }
+
+    #[test]
+    fn lines_before_and_after_the_completion_are_told_apart() {
+        let done = r#"{"type":"turn.completed","usage":{"input_tokens":1,"output_tokens":1}}"#;
+        let whole = parse(format!("{{\"type\":\"turn.started\"}}\n\n{done}\n").as_bytes());
+        assert_eq!(
+            (
+                whole.malformed_before_completed,
+                whole.lines_after_completed
+            ),
+            (0, 0)
+        );
+        let torn = parse(format!("{{\"type\":\"turn.sta\n{done}\nrted\"}}\n").as_bytes());
+        assert_eq!(torn.malformed_before_completed, 1);
+        assert_eq!(torn.lines_after_completed, 1);
+        assert_eq!(torn.malformed_lines, 2);
+        let garbage_after = parse(format!("{done}\n[1,2]\n").as_bytes());
+        assert_eq!(
+            (
+                garbage_after.malformed_before_completed,
+                garbage_after.lines_after_completed
+            ),
+            (0, 1)
+        );
     }
 
     #[test]

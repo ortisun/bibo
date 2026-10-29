@@ -111,6 +111,12 @@ pub struct Stream {
     denied: BTreeSet<String>,
     /// Lines that were not JSON, or were JSON of the wrong shape.
     pub malformed_lines: usize,
+    /// The part of `malformed_lines` that came before the first result event. The tool writes
+    /// whole JSON objects, so a line it did not write there is how a forged line gets through
+    /// (finding RR-7).
+    pub malformed_before_result: usize,
+    /// Non-blank lines after the first result event, of any kind: the tool writes nothing after it.
+    pub lines_after_result: usize,
 }
 
 impl Stream {
@@ -335,14 +341,20 @@ pub fn parse(stdout: &[u8]) -> Stream {
         if line.iter().all(u8::is_ascii_whitespace) {
             continue;
         }
-        let Ok(event) = serde_json::from_slice::<Value>(line) else {
+        let after_result = stream.result_events > 0;
+        if after_result {
+            stream.lines_after_result += 1;
+        }
+        let Some(event) = serde_json::from_slice::<Value>(line)
+            .ok()
+            .filter(Value::is_object)
+        else {
             stream.malformed_lines += 1;
+            if !after_result {
+                stream.malformed_before_result += 1;
+            }
             continue;
         };
-        if !event.is_object() {
-            stream.malformed_lines += 1;
-            continue;
-        }
         let kind = event.get("type").and_then(Value::as_str);
         if stream.result_events > 0
             && matches!(kind, Some("assistant" | "user" | "system" | "result"))
@@ -373,7 +385,12 @@ pub fn parse(stdout: &[u8]) -> Stream {
                     stream.result = Some(result);
                     stream.result_events += 1;
                 }
-                None => stream.malformed_lines += 1,
+                None => {
+                    stream.malformed_lines += 1;
+                    if !after_result {
+                        stream.malformed_before_result += 1;
+                    }
+                }
             },
             _ => {}
         }
@@ -411,6 +428,40 @@ mod tests {
         // A line of a type the tool does not write is ignored, before or after.
         let odd = parse(format!("{result}\n{{\"type\":\"other\"}}\n").as_bytes());
         assert!(!odd.events_after_result);
+    }
+
+    #[test]
+    fn lines_before_and_after_the_result_are_told_apart() {
+        let result = r#"{"type":"result","is_error":false,"terminal_reason":"completed","result":"x","usage":{}}"#;
+        let init = r#"{"type":"system","subtype":"init"}"#;
+        let whole = parse(format!("{init}\n\n{result}\n").as_bytes());
+        assert_eq!(
+            (whole.malformed_before_result, whole.lines_after_result),
+            (0, 0)
+        );
+        let torn = parse(format!("{{\"type\":\"sys\n{result}\ntem\"}}\n").as_bytes());
+        assert_eq!(torn.malformed_before_result, 1);
+        assert_eq!(
+            torn.lines_after_result, 1,
+            "the second half is after the result"
+        );
+        assert_eq!(torn.malformed_lines, 2);
+        let garbage_after = parse(format!("{result}\nnot json\n").as_bytes());
+        assert_eq!(
+            (
+                garbage_after.malformed_before_result,
+                garbage_after.lines_after_result
+            ),
+            (0, 1)
+        );
+        let unfinished = parse(format!("{result}\n{{\"type\":\"othe").as_bytes());
+        assert_eq!(unfinished.lines_after_result, 1);
+        // A result event that lacks the error flag is a malformed line, not a terminal event.
+        let flagless = parse(br#"{"type":"result","result":"x"}"#);
+        assert_eq!(
+            (flagless.malformed_before_result, flagless.result_events),
+            (1, 0)
+        );
     }
 
     #[test]
