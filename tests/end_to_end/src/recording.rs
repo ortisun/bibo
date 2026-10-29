@@ -16,7 +16,7 @@
 //! | `ledger.json` | The ledger entries as stored, and the chain head the recorder computed. |
 //! | `timeline.api.json` | The timeline exactly as `GET /v1/jobs/{id}/timeline` served it. |
 //! | `artifacts.json` | The hash of every stored stage output and gate report. |
-//! | `gate-reports/*.json` | The stored gate reports, byte for byte. |
+//! | `gate-reports/RUN.N.json` | The N-th gate report of a stage run, byte for byte as the recorder kept it. |
 //! | `timings.json` | How long each attempt took. |
 //! | `MANIFEST.json` | The SHA-256 of every file above. |
 //!
@@ -571,6 +571,13 @@ fn ledger_verdict(evidence: &RunEvidence, ledger: &Value) -> Verdict {
     )
 }
 
+/// The name of the n-th gate report of a stage run, from 0, in the order the evidence lists them.
+/// A stage run can have several: the validation stage keeps one for each gate it ran.
+#[must_use]
+pub fn report_key(stage_run_id: &str, ordinal: usize) -> String {
+    format!("{stage_run_id}.{ordinal}")
+}
+
 fn sources_verdict(
     evidence: &RunEvidence,
     timeline: &Value,
@@ -595,16 +602,17 @@ fn sources_verdict(
             ),
         );
     }
+    let mut ordinals: BTreeMap<&str, usize> = BTreeMap::new();
     for record in &evidence.contracts.gate_reports {
-        let name = format!("gate-reports/{}.json", record.stage_run_id);
+        let ordinal = ordinals.entry(record.stage_run_id.as_str()).or_insert(0);
+        let key = report_key(&record.stage_run_id, *ordinal);
+        *ordinal += 1;
+        let name = format!("gate-reports/{key}.json");
         let Some(bytes) = files.get(&name) else {
             return Verdict::fail(ID, format!("{name} is not in the recording"));
         };
         let found = crate::canned::sha(bytes);
-        let expected = hashes
-            .get(&record.stage_run_id)
-            .and_then(Value::as_str)
-            .unwrap_or_default();
+        let expected = hashes.get(&key).and_then(Value::as_str).unwrap_or_default();
         if found != expected {
             return Verdict::fail(
                 ID,
@@ -719,13 +727,14 @@ pub fn write(dir: &Path, parts: &Parts) -> Result<(), String> {
     files.insert("timeline.api.json".to_owned(), pretty(&parts.timeline_api));
     files.insert("timings.json".to_owned(), pretty(&parts.timings));
     let mut gate_hashes = serde_json::Map::new();
+    let mut ordinals: BTreeMap<&str, usize> = BTreeMap::new();
     for record in &parts.evidence.contracts.gate_reports {
+        let ordinal = ordinals.entry(record.stage_run_id.as_str()).or_insert(0);
+        let key = report_key(&record.stage_run_id, *ordinal);
+        *ordinal += 1;
         let bytes = pretty(&record.report);
-        gate_hashes.insert(
-            record.stage_run_id.clone(),
-            Value::String(crate::canned::sha(&bytes)),
-        );
-        files.insert(format!("gate-reports/{}.json", record.stage_run_id), bytes);
+        gate_hashes.insert(key.clone(), Value::String(crate::canned::sha(&bytes)));
+        files.insert(format!("gate-reports/{key}.json"), bytes);
     }
     files.insert(
         "artifacts.json".to_owned(),

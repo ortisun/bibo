@@ -390,7 +390,7 @@ fn a_gate_report_that_is_not_the_stored_file_fails_the_runner() {
     let id = parts().evidence.contracts.gate_reports[0]
         .stage_run_id
         .clone();
-    let path = dir.join(format!("gate-reports/{id}.json"));
+    let path = dir.join(format!("gate-reports/{id}.0.json"));
     std::fs::write(&path, "{\"outcome\": \"PASSED\", \"edited\": true}\n").expect("an edit");
     recording::reseal(&dir).expect("reseal");
     failed_for(&run(&root), "R.sources", "hashes to");

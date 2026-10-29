@@ -107,7 +107,12 @@ pub const SCENARIOS: [Scenario; 13] = [
         issue: Some("hostile-injection"),
         variant: None,
         assertions: &["A1", "A3", "A9", "A10", "A13", "A14"],
-        checks: &["X.ledger-chain", "X.original-kept", "E4.no-effect"],
+        checks: &[
+            "X.ledger-chain",
+            "X.original-kept",
+            "E4.no-effect",
+            "E4.agent-denials",
+        ],
         needs_protected_remote: true,
     },
     Scenario {

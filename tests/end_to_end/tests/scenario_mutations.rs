@@ -224,7 +224,7 @@ fn e4_checks_fail_on_corrupted_evidence() {
             },
             M {
                 name: "the denial is not in the audit stream",
-                check: "E4.no-effect",
+                check: "E4.agent-denials",
                 expect: "denied tool calls",
                 apply: |ev| {
                     ev.audit

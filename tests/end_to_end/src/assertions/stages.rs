@@ -3,7 +3,9 @@
 use crate::check::{Env, Verdict};
 use crate::evidence::RunEvidence;
 
-use super::support::{PASSED, ledger_sequences_for, passed_at, runs_of, the_passed_run};
+use super::support::{
+    PASSED, is_skipped, ledger_sequences_for, passed_at, runs_of, the_passed_run,
+};
 
 /// A1: the job is `COMPLETED`. Every stage kind in scope has exactly one `PASSED` run that is not
 /// superseded, and the order respects `requires`.
@@ -29,15 +31,19 @@ pub fn a1(ev: &RunEvidence, env: &Env) -> Verdict {
         );
     }
     for stage in &env.stages {
-        let passed = runs_of(ev, &stage.kind)
-            .into_iter()
-            .filter(|run| run.status == PASSED)
-            .count();
-        if passed != 1 {
+        if the_passed_run(ev, &stage.kind).is_none() {
+            let passed = runs_of(ev, &stage.kind)
+                .into_iter()
+                .filter(|run| run.status == PASSED)
+                .count();
+            let skipped = runs_of(ev, &stage.kind)
+                .into_iter()
+                .filter(|run| is_skipped(run))
+                .count();
             return Verdict::fail(
                 ID,
                 format!(
-                    "stage {} has {passed} PASSED runs, and it must have exactly one",
+                    "stage {} has {passed} PASSED runs and {skipped} SKIPPED runs, and it must have exactly one PASSED run, or one SKIPPED run whose skip the ledger records (ADR 0010)",
                     stage.kind
                 ),
             );
@@ -178,7 +184,9 @@ pub fn a13(ev: &RunEvidence, env: &Env) -> Verdict {
             blockers.push(format!("{} has no run", stage.kind));
             continue;
         };
-        if newest.status != PASSED {
+        let settled = newest.status == PASSED
+            || (is_skipped(newest) && the_passed_run(ev, &stage.kind).is_some());
+        if !settled {
             blockers.push(format!(
                 "the newest {} run is {}",
                 stage.kind, newest.status

@@ -256,6 +256,13 @@ impl Playbook {
             | "documentation-reviewer" => Ok(agent.to_owned()),
             "builder" => {
                 let task = block(instructions, "task");
+                // A rework round gives the builder one task that lists the tasks of the plan for
+                // context, so it names all of them. The playbook has no data file for a rework
+                // answer; a test that drives a rework round supplies one with `replace`.
+                if let Some(round) = task.strip_prefix("Task rework-round-") {
+                    let number: String = round.chars().take_while(char::is_ascii_digit).collect();
+                    return Ok(format!("builder.rework-round-{number}"));
+                }
                 let known: Vec<&str> = TASKS
                     .into_iter()
                     .filter(|task_id| task.contains(task_id))

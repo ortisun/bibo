@@ -21,11 +21,18 @@ use crate::runner::{Blocked, Wiring};
 use crate::scenarios::Scenario;
 
 /// The checks that the composed test rig cannot judge: `(scenario, check, why)`.
-pub const GAPS: [(&str, &str, &str); 1] = [(
-    "E4",
-    "A10",
-    "the change host of the composed test rig is the in-memory fake, which mints no installation token, so the permissions of the tokens and their narrowing to one repository are not recorded; the GitHub adapter's own tests cover the narrowing, and a live run covers it end to end",
-)];
+pub const GAPS: [(&str, &str, &str); 2] = [
+    (
+        "E4",
+        "A10",
+        "the change host of the composed test rig is the in-memory fake, which mints no installation token, so the permissions of the tokens and their narrowing to one repository are not recorded; the GitHub adapter's own tests cover the narrowing, and a live run covers it end to end",
+    ),
+    (
+        "E4",
+        "E4.agent-denials",
+        "the agents of the composed test rig are scripted answers (the playbook) that attempt no tool call, so there is no denied tool call to record; the rest of E4 is judged from attempts made through the API and from the canary sweep; an agent that obeys the hostile text needs the playbook to carry scripted actions, or a live run",
+    ),
+];
 
 /// A wiring over one scenario's recording.
 pub struct Recorded {
