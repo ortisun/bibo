@@ -73,7 +73,14 @@ struct Setup {
 
 /// `extra` is appended to the configuration, for a break that changes it.
 async fn setup(extra: &str) -> Setup {
+    setup_with(extra, |_| {}).await
+}
+
+/// Like [`setup`], and `tweak` changes the playbook before the provider starts: how a deliberate
+/// break puts a wrong model answer on the wire.
+async fn setup_with(extra: &str, tweak: impl FnOnce(&Playbook)) -> Setup {
     let playbook = Playbook::word_count(&live::root());
+    tweak(&playbook);
     // The real sandbox can fail an attempt for a reason of the machine (the daemon not yet seeing a
     // directory), and the engine then runs the stage again from its start. The playbook has one
     // answer for each entry and refuses a second ask by design; here a second ask is a retry of the
@@ -418,6 +425,58 @@ async fn the_whole_job() {
     );
 
     // Only the model's answers and GitHub's server were faked: the report says what ran.
+    // The reviewer is another family than the builder, on the wire: the provider saw the code
+    // reviewer on the other runtime, and the builder on Claude Code.
+    let seen = lab.provider.seen();
+    let model_of = |agent: &str| {
+        seen.iter()
+            .find(|request| request.agent == agent)
+            .map(|request| request.model.clone())
+            .unwrap_or_else(|| panic!("the provider saw no request of {agent}"))
+    };
+    assert_eq!(model_of("builder"), "claude-sonnet-5-5");
+    assert_eq!(model_of("code-reviewer"), "gpt-6.1-sol");
+    assert_eq!(model_of("documentation-reviewer"), "gpt-6.1-sol");
+    assert!(
+        lab.playbook.misses().is_empty(),
+        "the playbook answered every call it was asked: {:?}",
+        lab.playbook.misses()
+    );
+
+    // The tokens of the (fake) GitHub: each narrowed to the one repository, none holding a
+    // permission the policy forbids, and all revoked once the job is over.
+    for mint in github.fake.mints() {
+        assert_eq!(
+            mint.requested_repositories.as_deref().map(<[String]>::len),
+            Some(1),
+            "{mint:?}"
+        );
+        for forbidden in ["administration", "workflows", "secrets", "environments"] {
+            assert!(
+                !mint.granted_permissions.contains_key(forbidden),
+                "{forbidden} in {mint:?}"
+            );
+        }
+    }
+    rig.revoke_ended_jobs().await;
+    let live_tokens: Vec<_> = github
+        .fake
+        .tokens()
+        .into_iter()
+        .filter(|token| token.revoked_at.is_none())
+        .collect();
+    assert!(live_tokens.is_empty(), "tokens left live: {live_tokens:?}");
+    // Both checks of the factory were published by the App on the head the approval named.
+    let checks = github.checks();
+    for name in ["factory-validation", "factory-review"] {
+        assert!(
+            checks.iter().any(|check| check.name == name
+                && check.head_sha == pushed
+                && check.conclusion.as_deref() == Some("success")),
+            "{name}: {checks:?}"
+        );
+    }
+
     println!("LIVE-RUN took {took:.1?}");
     for (stage, took) in rig.durations() {
         println!("LIVE-RUN stage {stage}: {took:.1?}");
@@ -429,4 +488,76 @@ async fn the_whole_job() {
     );
     println!("LIVE-RUN check runs: {:#?}", github.checks());
     let _ = (&registry, StageRunStatus::Passed);
+}
+
+#[test]
+#[ignore = "needs the Docker daemon, the pinned images and the shared network lock; see the head of the file"]
+fn break_a_model_answer_outside_the_recorded_shape_stops_the_job_at_the_stage_that_asked() {
+    live(async {
+        use factory_domain::state::StageRunStatus;
+        // The classifier's answer is a document the schema does not describe. It travels the whole
+        // wire: the fake provider, the real broker, the sidecar, the real tool in the real
+        // container, the adapter, the engine's schema check.
+        let set = setup_with("", |playbook| {
+            playbook.replace(
+                "intake-classifier",
+                playbook::Reply {
+                    entry: "intake-classifier".to_owned(),
+                    output: serde_json::json!({"unexpected": true, "classification": "yes"}),
+                    writes: Vec::new(),
+                    script: None,
+                },
+            );
+        })
+        .await;
+        let Setup {
+            lab,
+            github,
+            registry,
+            world,
+            env,
+        } = set;
+        let requester = full::token_from_file(&env, "requester", &env.a.requester.token.clone());
+        let issue = github.fake.add_issue(
+            &env.a.full_name,
+            "Add a --json flag",
+            "Please add a --json flag to the word count tool.",
+            "requester-one",
+            &["factory"],
+        );
+        let rig = live::LiveRig::start(&lab, env, world, &github).await;
+        label_the_issue(&rig.env, issue).await;
+        let job = full::job_of(&rig.env, &requester).await;
+        let view = rig
+            .drive(job, 300, |view| full::stopped(view))
+            .await
+            .expect("a view of the job");
+        let intake = status_of(&view, StageKind::Intake);
+        println!("BREAK intake {intake:?}, job {:?}", view.status);
+        assert_ne!(intake, Some(StageRunStatus::Passed), "{view:#?}");
+        for later in [
+            StageKind::RepositoryIntelligence,
+            StageKind::Specification,
+            StageKind::Implementation,
+            StageKind::Delivery,
+        ] {
+            assert_ne!(
+                status_of(&view, later),
+                Some(StageRunStatus::Passed),
+                "{later:?} ran after a classifier answer the schema refuses"
+            );
+        }
+        // The wrong answer reached the engine over the real wire, and nothing was published.
+        let seen = lab.provider.seen();
+        assert!(
+            seen.iter()
+                .any(|request| request.agent == "intake-classifier")
+        );
+        assert!(github.fake.pull_numbers(&github_repo(&rig)).is_empty());
+        let _ = &registry;
+    });
+}
+
+fn github_repo(rig: &live::LiveRig) -> String {
+    rig.env.a.full_name.clone()
 }

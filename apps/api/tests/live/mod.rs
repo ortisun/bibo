@@ -265,6 +265,7 @@ pub struct Lab {
     pub run: String,
     pub scratch: PathBuf,
     pub provider: provider::FakeProvider,
+    pub playbook: Arc<Playbook>,
     pub provider_key: String,
     pub core: Arc<BrokerCore>,
     pub audit: Arc<MemoryAudit>,
@@ -358,7 +359,7 @@ impl Lab {
             audit: audit.clone(),
         });
         let provider_key = format!("fake-upstream-{}", random_hex(12));
-        let provider = provider::FakeProvider::start(provider_key.clone(), playbook);
+        let provider = provider::FakeProvider::start(provider_key.clone(), Arc::clone(&playbook));
         let upstream = |which: Provider| {
             UpstreamConfig::new(
                 which,
@@ -410,6 +411,7 @@ impl Lab {
             run,
             scratch,
             provider,
+            playbook,
             provider_key,
             core,
             audit,
@@ -1000,6 +1002,14 @@ impl LiveRig {
                 return self.engine.job_view(self.tenant, job).await.ok();
             }
             tokio::time::sleep(Duration::from_millis(200)).await;
+        }
+    }
+
+    /// Runs the steps before a claim once more, which revokes the installation tokens of the jobs
+    /// that are over.
+    pub async fn revoke_ended_jobs(&self) {
+        for step in &self.before_claim {
+            step.before_claim().await;
         }
     }
 
