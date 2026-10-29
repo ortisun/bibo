@@ -110,13 +110,12 @@ fn held_the_plain_spellings_are_reported() {
     assert!(missed.is_empty(), "not reported: {missed:?}");
 }
 
-/// RR-11. The attribute reader works on single lines that begin with `#[` or `#![` and look for the
+/// RR-11 (fixed). The attribute reader works on single lines that begin with `#[` or `#![` and look for the
 /// text `allow(`. Rust reads attributes as tokens: white space may stand between `#` and `[`, between
 /// the name and its parenthesis, and across lines; and an attribute may follow code on the same line,
 /// which is how a macro body or a one-line item is written. Each of these relaxes a lint and none is
 /// reported.
 #[test]
-#[ignore = "confirmed defect RR-11: an allow attribute written with other spacing, across lines or after code is not seen by the lint_relaxation rule; cargo test -p factory-workflow --test security_rereview --locked -- --ignored rr_11 --exact"]
 fn rr_11_an_allow_attribute_is_found_whatever_its_spacing() {
     let cases = [
         (
@@ -154,11 +153,10 @@ fn rr_11_an_allow_attribute_is_found_whatever_its_spacing() {
     assert!(missed.is_empty(), "not reported: {missed:?}");
 }
 
-/// RR-12. A lint level is lowered without an `allow` and without a `deny` line going away. The rule
+/// RR-12 (fixed). A lint level is lowered without an `allow` and without a `deny` line going away. The rule
 /// counts the lines that hold a `deny` or a `forbid`, so a list that loses a name, and a `forbid`
 /// that becomes a `deny` (which an inner `allow` can then override in a later change), keep the count.
 #[test]
-#[ignore = "confirmed defect RR-12: a deny list that loses a lint and a forbid that becomes a deny are not reported; cargo test -p factory-workflow --test security_rereview --locked -- --ignored rr_12 --exact"]
 fn rr_12_a_lowered_level_is_found_when_the_line_stays() {
     let cases = [
         (
@@ -190,11 +188,10 @@ fn rr_12_a_lowered_level_is_found_when_the_line_stays() {
     assert!(missed.is_empty(), "not reported: {missed:?}");
 }
 
-/// RR-13. The reader of `Cargo.toml` finds a lint table by the exact text of its header and its
+/// RR-13 (fixed). The reader of `Cargo.toml` finds a lint table by the exact text of its header and its
 /// level by the double-quoted word. TOML allows white space around the dots of a header, a dotted
 /// key at the top of the file, a single-quoted string and a quoted key. Cargo reads all of them.
 #[test]
-#[ignore = "confirmed defect RR-13: a lint table written with other TOML spellings is not read by the lint_relaxation rule; cargo test -p factory-workflow --test security_rereview --locked -- --ignored rr_13 --exact"]
 fn rr_13_a_lint_level_written_in_other_toml_spellings_is_found() {
     let base = "[package]\nname = \"x\"\nversion = \"0.1.0\"\n\n[lints.rust]\nunused = \"deny\"\n";
     let cases = [

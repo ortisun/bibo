@@ -227,3 +227,84 @@ BEGIN
     dbtest.run_as('DELETE FROM jobs', 'factory_api_app', 1) LIKE 'ERR:42501:permission denied for table jobs');
 END
 $$;
+
+-- ---------------------------------------------------------------------------------------------
+-- 6. What the group may write to the audit log (RR-8 and RR-21 of
+--    docs/reviews/authority-api-supply-chain-security-rereview.md; migration 2026-10-29-002100).
+--
+--    The worker reads the audit log to find the requests of people, and to find the records that end a
+--    request. The API login may INSERT into the log (section 2), and a row is a row: until the trigger
+--    audit_events_api_actions, that login could write a record in the name of the worker (a
+--    decision.rejected that ends a signed request unseen) or a queue of junk. Now the login writes the
+--    actions the API writes, and no other.
+
+CREATE FUNCTION dbtest.api_audit_stmt(p_actor_type text, p_action text) RETURNS text LANGUAGE sql AS $$
+  SELECT format($q$INSERT INTO audit_events (tenant_id, event_id, actor_type, actor_id, action, subject, decision, reason,
+                       policy_hash, correlation_id)
+                       VALUES (%L, %L, %L, 'p1', %L, 'subject', 'record', 'because', %L, %L)$q$,
+                dbtest.u(1), gen_random_uuid(), p_actor_type, p_action, dbtest.sha('policy'), gen_random_uuid())
+$$;
+
+DO $$
+DECLARE
+  allowed text[] := ARRAY[
+    'decision.requested', 'decision.dependency_requested', 'decision.denied', 'decision.denied_summary',
+    'decision.denied_suppressed', 'job.submitted', 'job.received_from_webhook', 'webhook.accepted',
+    'webhook.duplicate_delivery', 'webhook.rejected', 'webhook.unbound', 'webhook.audit_dropped',
+    'webhook_accepted_or_rejected.granted', 'webhook_accepted_or_rejected.denied'];
+  refused text[] := ARRAY[
+    -- What the worker writes: a marker that ends a request, and the record that a marker was ignored.
+    'decision.applied', 'decision.rejected', 'decision.marker_ignored',
+    -- What the engine, the stages and the preflight write.
+    'approval.recorded', 'job.admitted', 'repository.protection_preflight', 'gate.result',
+    -- Near misses: the list is exact, not a prefix, a pattern or a case-insensitive match.
+    'decision.requested2', 'decision.request', 'decision', 'job.submitted.extra', 'webhook.accepted_by_worker',
+    'webhook_accepted_or_rejected', 'webhook_accepted_or_rejected.noted',
+    'decision.dependency_requested_', 'x'];
+  a text;
+  msg text;
+BEGIN
+  FOREACH a IN ARRAY allowed LOOP
+    PERFORM dbtest.expect_eq('the group may write a ' || a || ' record as a person',
+      dbtest.run_as(dbtest.api_audit_stmt('human', a), 'factory_api_app', 1), 'rows=1');
+  END LOOP;
+  FOREACH a IN ARRAY refused LOOP
+    msg := dbtest.run_as(dbtest.api_audit_stmt('human', a), 'factory_api_app', 1);
+    PERFORM dbtest.expect_true('the group cannot write a ' || a || ' record',
+      msg LIKE 'ERR:42501:the API login may not write an audit record with this action or this actor%', msg);
+  END LOOP;
+
+  -- The actor is not limited: what the hook reads is decided by the action and by the words in the row (a
+  -- request needs a person's id and the API's word, a marker the worker's word), never by the actor type.
+  PERFORM dbtest.expect_eq('the group may write an anonymous webhook record',
+    dbtest.run_as(dbtest.api_audit_stmt('anonymous', 'webhook.rejected'), 'factory_api_app', 1), 'rows=1');
+  PERFORM dbtest.expect_eq('the group may write a platform event of the receiver as a component of the system',
+    dbtest.run_as(dbtest.api_audit_stmt('system', 'webhook_accepted_or_rejected.denied'), 'factory_api_app', 1), 'rows=1');
+  msg := dbtest.run_as(dbtest.api_audit_stmt('system', 'decision.rejected'), 'factory_api_app', 1);
+  PERFORM dbtest.expect_true('the group cannot write the worker''s marker even as a component of the system',
+    msg LIKE 'ERR:42501:the API login may not write an audit record with this action or this actor%', msg);
+
+  -- Everybody else is as before: the worker's group writes its markers, as a component of the system.
+  PERFORM dbtest.expect_eq('the worker group may still write a decision.applied record as the system',
+    dbtest.run_as(dbtest.api_audit_stmt('system', 'decision.applied'), 'factory_app', 1), 'rows=1');
+  PERFORM dbtest.expect_eq('the worker group may still write a decision.rejected record as the system',
+    dbtest.run_as(dbtest.api_audit_stmt('system', 'decision.rejected'), 'factory_app', 1), 'rows=1');
+END
+$$;
+
+-- A login that is a member of the group is held to the same list as the group (it is the login that
+-- connects, not the group), also when it names the tenant by hand as the API does.
+BEGIN;
+CREATE ROLE api_actions_login LOGIN IN ROLE factory_api_app, factory_resolver;
+DO $$
+DECLARE
+  msg text;
+BEGIN
+  PERFORM dbtest.expect_eq('a login of the group may write a decision.requested record',
+    dbtest.run_as(dbtest.api_audit_stmt('human', 'decision.requested'), 'api_actions_login', 1, NULL, false, dbtest.u(1)::text), 'rows=1');
+  msg := dbtest.run_as(dbtest.api_audit_stmt('system', 'decision.rejected'), 'api_actions_login', 1, NULL, false, dbtest.u(1)::text);
+  PERFORM dbtest.expect_true('a login of the group cannot write a record in the name of the worker',
+    msg LIKE 'ERR:42501:the API login may not write an audit record with this action or this actor%', msg);
+END
+$$;
+ROLLBACK;

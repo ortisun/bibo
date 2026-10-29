@@ -566,7 +566,8 @@ fn samples() -> Vec<Sample> {
             vec![
                 format!("ghp_{}", rep('a', 35)),
                 format!("ghp-{}", rep('a', 36)),
-                format!("x{}ghp_{}", "x", rep('a', 36)),
+                // A body one character too long is not a token of this shape.
+                format!("ghp_{}", rep('a', 37)),
             ],
         ),
         s(
@@ -681,7 +682,6 @@ fn samples() -> Vec<Sample> {
             vec![
                 format!("sfat_{}", rep('r', 42)),
                 format!("sfab_{}", rep('r', 43)),
-                format!("xsfat_{}", rep('r', 43)),
             ],
         ),
         s(
@@ -1651,7 +1651,7 @@ fn control_off_a_pattern_that_is_too_greedy_fails_its_positive_sample() {
 }
 
 #[test]
-fn control_off_a_pattern_without_its_word_boundary_fails_its_negative_sample() {
+fn control_off_a_pattern_without_its_trailing_word_boundary_fails_its_negative_sample() {
     let r = redactor_with_pattern("github_token_classic", r"ghp_[A-Za-z0-9]{36}");
     let failures = negative_failures(&r);
     assert!(
@@ -1835,9 +1835,8 @@ fn property_chunking_never_changes_the_result() {
 
 #[test]
 fn property_redacting_twice_changes_nothing_more() {
-    // The pieces are separated here. A pattern written with a word boundary does not match a
-    // token glued to a word, but it does once a marker has taken the word's place, so for glued
-    // pieces a second pass can find one more token. `known_limit_*` below shows that case.
+    // The pieces are separated here. The patterns have no word boundary in front of a token
+    // (RR-4), so a token glued to a word is found at once, and the glued case has its own test below.
     let (r, secret, token) = property_redactor();
     runner()
         .run(&pieces(&secret, &token, false), |input| {
@@ -1962,23 +1961,28 @@ fn property_arbitrary_bytes_never_panic_and_never_depend_on_the_chunking() {
 }
 
 #[test]
-fn known_limit_a_pattern_token_glued_to_a_word_has_no_word_boundary_in_front_of_it() {
-    // The policy writes its token patterns with a word boundary in front. A token right behind a
-    // letter, digit or underscore has none, so no pattern matches it. A registered value is found
-    // anywhere, which is why the factory's own secrets are registered. After a replacement the
-    // marker gives the next text a boundary, so a second pass finds a token the first one could
-    // not.
+fn a_pattern_token_glued_to_a_word_is_found_without_a_boundary_in_front_of_it() {
+    // RR-4. The policy used to write its token patterns with a word boundary in front, so a token
+    // right behind a letter, digit or underscore (a variable name ending in an underscore, say) had
+    // none and no pattern matched it. The prefixes are long and distinctive, so the boundary is
+    // gone, and the token is found wherever it sits. A registered value is found anywhere too.
     let mut rng = Rng::new(0x5eed_0010);
     let secret = fake_secret(&mut rng, 24);
     let token = format!("sfjt_{}", rng.string(ALNUM, 40));
     let r = redactor_with(&[("webhook_secret", &secret)]);
-    assert!(!r.contains_secret(format!("x{token}").as_bytes()).unwrap());
+    for glue in ["x", "9", "_", "API_TOKEN_", "abc123"] {
+        assert!(
+            r.contains_secret(format!("{glue}{token}").as_bytes())
+                .unwrap(),
+            "{glue}"
+        );
+    }
     let once = redact_text(&r, &format!("{secret}{token}"));
-    assert_eq!(once, format!("[REDACTED:webhook_secret]{token}"));
     assert_eq!(
-        redact_text(&r, &once),
+        once,
         "[REDACTED:webhook_secret][REDACTED:factory_job_token]"
     );
+    assert_eq!(redact_text(&r, &once), once);
 }
 
 // ===== Building and sharing ==========================================================================

@@ -10,6 +10,7 @@
 //! | [`protected`] | `protected-paths-unchanged`, and the refusals that belong to `test-file-protection` | whether the policy lets this diff through |
 //! | [`weakening`] | `test-file-protection` | whether a test was skipped, removed or weakened inside a file |
 //! | [`lint`] | `lint` | whether a lint level was lowered, an allow attribute added or an ignore list grown (`lint_relaxation`) |
+//! | [`hardening`] | the risk measure and `dependency-review` | vendored code, dependency files of other places and ecosystems, and files that run on a reviewer's machine, which the path policy does not name (RR-14, RR-15, RR-16) |
 //! | [`build_code`] | `build` | whether the change adds build code of the project's own: a build script, a procedural macro, build dependencies (`build_script_added`, `approve_build_code`) |
 //! | [`secrets`] | `secret-scan` | whether a new line is a secret |
 //! | [`acceptance`] | `acceptance-evidence` | whether every requirement has a passed covering test |
@@ -19,6 +20,7 @@
 pub mod acceptance;
 pub mod build_code;
 pub mod diff;
+pub mod hardening;
 pub mod lines;
 pub mod lint;
 pub mod patch;

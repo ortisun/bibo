@@ -36,7 +36,7 @@ use factory_domain::policy::authority::{
 };
 use factory_domain::policy::decision::{AuthorizedApproval, Designation, GithubUserId};
 use factory_domain::values::{Sha256Digest, Timestamp};
-use factory_domain::vocabulary::RiskTier;
+use factory_domain::vocabulary::{Fidelity, RiskTier};
 use serde_json::{Value, json};
 
 use super::model::normalize;
@@ -294,6 +294,11 @@ impl DependencyApproval {
 /// this is the second check and not the first.
 #[async_trait]
 pub trait RecordedApprovals: Send + Sync {
+    /// Says whether this reads the ledger (`real`) or a list somebody filled (`fake`). The profile
+    /// check refuses a `fake` in production (RR-7): a list that always contains an approval lets a
+    /// new package pass without a person.
+    fn fidelity(&self) -> Fidelity;
+
     /// Every decision recorded for `job` of `tenant`.
     async fn for_job(&self, tenant: TenantId, job: JobId) -> Vec<DependencyApproval>;
 }
@@ -304,6 +309,10 @@ pub struct StaticApprovals(pub Vec<DependencyApproval>);
 
 #[async_trait]
 impl RecordedApprovals for StaticApprovals {
+    fn fidelity(&self) -> Fidelity {
+        Fidelity::Fake
+    }
+
     async fn for_job(&self, tenant: TenantId, job: JobId) -> Vec<DependencyApproval> {
         self.0
             .iter()

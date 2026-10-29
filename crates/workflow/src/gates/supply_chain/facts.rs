@@ -11,6 +11,7 @@ use std::collections::BTreeMap;
 
 use async_trait::async_trait;
 use factory_domain::values::Timestamp;
+use factory_domain::vocabulary::Fidelity;
 
 use super::model::normalize;
 
@@ -45,6 +46,12 @@ impl RegistryRecord {
 /// A source of registry facts.
 #[async_trait]
 pub trait RegistryMetadata: Send + Sync {
+    /// Says whether this asks the registry (`real`) or answers from a table (`fake`). The profile
+    /// check refuses a `fake` in production (RR-7): a table that says "old and owned by many" lets a
+    /// new package pass without a person. A source that fails closed (it knows nothing and says so
+    /// with the all-unknown record) is `real` in this sense: it cannot make a false pass.
+    fn fidelity(&self) -> Fidelity;
+
     /// What the registry says about `name` at `version`. A source that cannot reach the registry
     /// returns the default record, which is all unknown.
     async fn lookup(&self, name: &str, version: &str) -> RegistryRecord;
@@ -59,6 +66,12 @@ pub trait RegistryMetadata: Send + Sync {
 /// unknown age is not a clean audit.
 #[async_trait]
 pub trait AdvisoryDatabase: Send + Sync {
+    /// Says whether the date comes from where the image was built (`real`) or is a claim nobody
+    /// checked (`fake`). The profile check refuses a `fake` in production (RR-7): a source that
+    /// always says "updated yesterday" turns every audit into a clean one. A source that fails
+    /// closed (it does not know the date) is `real` in this sense.
+    fn fidelity(&self) -> Fidelity;
+
     /// When the database the audit reads was last updated. `None` when that is not known.
     async fn updated_at(&self) -> Option<Timestamp>;
 }
@@ -69,6 +82,10 @@ pub struct StaticDatabase(pub Option<Timestamp>);
 
 #[async_trait]
 impl AdvisoryDatabase for StaticDatabase {
+    fn fidelity(&self) -> Fidelity {
+        Fidelity::Fake
+    }
+
     async fn updated_at(&self) -> Option<Timestamp> {
         self.0
     }
@@ -140,6 +157,10 @@ impl StaticRegistry {
 
 #[async_trait]
 impl RegistryMetadata for StaticRegistry {
+    fn fidelity(&self) -> Fidelity {
+        Fidelity::Fake
+    }
+
     async fn lookup(&self, name: &str, _version: &str) -> RegistryRecord {
         self.records
             .get(&normalize(name))

@@ -77,23 +77,33 @@ async fn held_facts_made_from_the_policy_hold_the_override_back() {
     );
 }
 
-/// RR-18. The engine takes the facts from the caller and does not look at the block it is asked to
-/// override. Facts that name another gate and code (here a block the policy does allow to be
-/// overridden), or a hand-written `policy_permits: true`, pass a run that is blocked by a pair the
-/// policy lists as never overridable. The engine's own block event records the cause `gate-blocked`
-/// and not the gate or the code, so it has nothing to compare the facts with.
+/// RR-18 (closed by the engine-held facts of commit 6809ddd, which the first version of this test
+/// predates). The engine used to take the facts from the caller and not look at the block it was
+/// asked to override: facts that named another gate and code, or a hand-written `policy_permits:
+/// true`, passed a run that is blocked by a pair the policy lists as never overridable. The engine
+/// now writes the gate and the code of each block into its own block event, reads them back, and
+/// compares them with its own list, so the facts of the caller can only narrow the answer.
 ///
-/// Today no channel carries an override (the hook and the API have no such verb), so nobody can reach
-/// this from outside; the first override verb to be wired turns it into an approval of what the policy
-/// forbids, by whoever computes the facts wrongly. The test uses an intake run because the rig blocks
-/// no other stage with a code; the point is that the facts and the block are not compared, and a
-/// dependency review is blocked by the same event.
+/// The first version of this test blocked the intake run with a plain `Eval::Blocked`, whose pair is
+/// not on the list, and so expected a refusal that was never due: the override of a block the policy
+/// allows still passes (`overrides::held_an_override_of_a_block_the_policy_allows_still_passes`). The
+/// run here is blocked by the pair the engine holds back, and the facts are the ones that name
+/// another block and the ones written by hand.
 #[tokio::test]
-#[ignore = "confirmed defect RR-18: the engine accepts override facts that are not about the block it overrides; cargo test -p factory-workflow --test security_rereview --locked -- --ignored rr_18 --exact"]
 async fn rr_18_the_engine_does_not_take_the_word_of_the_caller_about_which_block_is_overridden() {
     let policy = policy();
     let world = World::new().await;
-    let (job, run) = blocked_job(&world).await;
+    let job = world.admitted_job().await;
+    world
+        .script(StageKind::Intake)
+        .queue_evals([Eval::BlockedAt(&[(
+            "dependency-review",
+            "policy_unresolvable",
+        )])]);
+    world.run_next("worker-1").await;
+    let view = world.view(job).await;
+    assert_eq!(view.status, JobStatus::Blocked);
+    let run = view.newest(StageKind::Intake).expect("run").id;
     let security = world
         .person("security-1", &[HumanRole::SecurityApprover])
         .await;
@@ -128,11 +138,51 @@ async fn rr_18_the_engine_does_not_take_the_word_of_the_caller_about_which_block
         let view = world.view(job).await;
         let status = view.newest(StageKind::Intake).expect("run").status;
         assert!(
-            result.is_err() && status == StageRunStatus::Blocked,
+            matches!(result, Err(EngineError::GuardUnmet(_))) && status == StageRunStatus::Blocked,
             "facts about {name} passed the run: {result:?}, the run is now {status:?}"
         );
-        if status != StageRunStatus::Blocked {
-            break;
-        }
     }
+}
+
+/// Control: a run blocked by a pair the policy allows is still overridden, with facts made for it.
+#[tokio::test]
+async fn held_an_override_of_a_block_the_policy_allows_still_passes() {
+    let policy = policy();
+    let world = World::new().await;
+    let job = world.admitted_job().await;
+    world
+        .script(StageKind::Intake)
+        .queue_evals([Eval::BlockedAt(&[("sbom", "tool_unavailable")])]);
+    world.run_next("worker-1").await;
+    let view = world.view(job).await;
+    let run = view.newest(StageKind::Intake).expect("run").id;
+    let security = world
+        .person("security-1", &[HumanRole::SecurityApprover])
+        .await;
+    let facts = OverrideFacts::from_policy(
+        &policy.authority,
+        &[("sbom", "tool_unavailable")],
+        true,
+        false,
+    );
+    world
+        .engine
+        .decide(
+            &world.actor(security),
+            Subject {
+                job,
+                stage_run: run,
+            },
+            Decision::Override {
+                justification: justification(),
+                facts,
+            },
+        )
+        .await
+        .expect("the override of a block the policy allows passes");
+    let view = world.view(job).await;
+    assert_eq!(
+        view.newest(StageKind::Intake).expect("run").status,
+        StageRunStatus::Passed
+    );
 }

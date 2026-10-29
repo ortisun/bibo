@@ -111,12 +111,11 @@ fn held_ordinary_and_unusual_url_shapes_lose_their_password() {
     assert!(missed.is_empty(), "a password survived in: {missed:?}");
 }
 
-/// RR-1. The host part of the pattern accepts ASCII characters only (`[a-z0-9._~%:-]`), so a URL whose
+/// RR-1 (fixed). The host part of the pattern accepts ASCII characters only (`[a-z0-9._~%:-]`), so a URL whose
 /// host begins with a letter of another script (an internationalised domain name, which every URL
 /// library accepts) is not recognised and its password is printed. The case-insensitive flag does not
 /// help; the host class has no Unicode letter in it.
 #[test]
-#[ignore = "confirmed defect RR-1: a URL with a password is not redacted when the host begins with a non-ASCII letter; cargo test -p factory-composition --test security_rereview --locked -- --ignored rr_1 --exact"]
 fn rr_1_a_url_whose_host_is_an_internationalised_name_keeps_no_password() {
     let m = marker();
     let shapes = vec![
@@ -145,12 +144,11 @@ fn rr_1_a_url_whose_host_is_an_internationalised_name_keeps_no_password() {
     );
 }
 
-/// RR-2. The pattern looks for a literal at sign. A JSON writer, a YAML double-quoted string or a
+/// RR-2 (fixed). The pattern looked for a literal at sign. A JSON writer, a YAML double-quoted string or a
 /// source literal may write it as `@` or `\x40`; the same bytes decode to a URL with a password
 /// at the first consumer. The registered-secret path covers the encodings of a *known* secret
 /// (`json_escaped`), but this pattern is the net for a secret nobody registered.
 #[test]
-#[ignore = "confirmed defect RR-2: a password followed by an escaped at sign (\\u0040) is not redacted; cargo test -p factory-composition --test security_rereview --locked -- --ignored rr_2 --exact"]
 fn rr_2_a_url_whose_at_sign_is_written_as_an_escape_keeps_no_password() {
     let m = marker();
     // Joined from pieces, so that no line of this file is itself a URL with a password (the
@@ -174,11 +172,10 @@ fn rr_2_a_url_whose_at_sign_is_written_as_an_escape_keeps_no_password() {
     );
 }
 
-/// RR-3. A data source name with no scheme (`user:password@tcp(host:3306)/db`, the form of the Go
+/// RR-3 (fixed). A data source name with no scheme (`user:password@tcp(host:3306)/db`, the form of the Go
 /// MySQL driver and of several others) is not a URL, and the pattern starts at `scheme://`, so the
 /// password is printed.
 #[test]
-#[ignore = "confirmed defect RR-3: a scheme-less DSN with a password is not redacted; cargo test -p factory-composition --test security_rereview --locked -- --ignored rr_3 --exact"]
 fn rr_3_a_scheme_less_data_source_name_keeps_no_password() {
     let m = marker();
     let (colon, at) = (":", "@");
@@ -193,11 +190,10 @@ fn rr_3_a_scheme_less_data_source_name_keeps_no_password() {
     );
 }
 
-/// RR-4. The API token pattern begins with `\b`, so a token glued to a word character (a variable
+/// RR-4 (fixed). The API token pattern begins with `\b`, so a token glued to a word character (a variable
 /// name ending in an underscore, a digit, a letter) has no boundary in front of it and is not
 /// matched. The job-token pattern shares the shape.
 #[test]
-#[ignore = "confirmed defect RR-4: an API token glued to a word character is not recognised; cargo test -p factory-composition --test security_rereview --locked -- --ignored rr_4 --exact"]
 fn rr_4_an_api_token_glued_to_a_word_character_is_recognised() {
     let redactor = policy_redactor();
     let token = format!("sfat{}{}", '_', token_body());

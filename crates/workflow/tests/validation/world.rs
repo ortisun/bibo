@@ -277,6 +277,10 @@ impl Approvals {
 
 #[async_trait]
 impl RecordedApprovals for Approvals {
+    fn fidelity(&self) -> factory_domain::vocabulary::Fidelity {
+        factory_domain::vocabulary::Fidelity::Fake
+    }
+
     async fn for_job(&self, tenant: TenantId, job: JobId) -> Vec<DependencyApproval> {
         self.0
             .lock()
@@ -301,6 +305,10 @@ impl Registry {
 
 #[async_trait]
 impl RegistryMetadata for Registry {
+    fn fidelity(&self) -> factory_domain::vocabulary::Fidelity {
+        factory_domain::vocabulary::Fidelity::Fake
+    }
+
     async fn lookup(&self, name: &str, version: &str) -> RegistryRecord {
         let table = self.0.lock().expect("the lock is never poisoned").clone();
         table.lookup(name, version).await
@@ -318,6 +326,10 @@ impl Database {
 
 #[async_trait]
 impl AdvisoryDatabase for Database {
+    fn fidelity(&self) -> factory_domain::vocabulary::Fidelity {
+        factory_domain::vocabulary::Fidelity::Fake
+    }
+
     async fn updated_at(&self) -> Option<Timestamp> {
         *self.0.lock().expect("the lock is never poisoned")
     }

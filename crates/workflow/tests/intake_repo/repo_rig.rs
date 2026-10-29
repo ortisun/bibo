@@ -275,6 +275,10 @@ pub struct FixedRepository {
 
 #[async_trait]
 impl JobRepository for FixedRepository {
+    fn fidelity(&self) -> factory_domain::vocabulary::Fidelity {
+        factory_domain::vocabulary::Fidelity::Fake
+    }
+
     async fn of(&self, _tenant: TenantId, _job: JobId) -> Result<TargetRepository, SeamError> {
         Ok(TargetRepository {
             repo: self.repo.clone(),
@@ -306,6 +310,10 @@ impl VerifySandboxSpecs for TestVerifySpecs {
 pub struct JsonManifests;
 
 impl ProjectManifestParser for JsonManifests {
+    fn fidelity(&self) -> factory_domain::vocabulary::Fidelity {
+        factory_domain::vocabulary::Fidelity::Fake
+    }
+
     fn parse(&self, _file: &str, bytes: &[u8]) -> Result<ProjectManifest, ManifestProblem> {
         let text =
             std::str::from_utf8(bytes).map_err(|_| ManifestProblem("not UTF-8".to_owned()))?;

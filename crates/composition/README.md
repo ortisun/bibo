@@ -119,6 +119,7 @@ stages:                                     # optional; the defaults are the num
 decisions:                                  # the key that signs decision requests; required in production
   key_file: /run/secrets/decision_signing_key
   # previous_key_file: /run/secrets/decision_signing_key_previous   # during a rotation
+  # previous_key_valid_until: 2026-11-02T12:00:00Z                  # 72 hours after the rotation; production ignores the previous key without it
 worker: { name_prefix: worker, poll_interval_ms: 1000, sweep_interval_s: 10, drain_s: 120, tenants: [2f0c7f64-0d1c-4c5e-9f0a-1b2c3d4e5f60] }
 ```
 

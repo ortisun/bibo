@@ -92,7 +92,11 @@ For decisions: the API writes the audit record `decision.requested`, ending with
 (`mac=`) that only the API can make; `ClaimWork` recomputes the word with each key it holds
 (`decisions.key_file` and, in a rotation, `decisions.previous_key_file`) and compares in constant time before
 it reads anything else in the record, and rejects a record with no word or the wrong one with the fixed
-code `not_signed`. It then reads the record, checks the
+code `not_signed`. The worker's own marker (`decision.applied`, `decision.rejected`) carries a word of its
+own, made with the same key over another first line, and the worker counts a request as dealt with only when
+the marker that names it has a good word (RR-8); a row that only has the action of a marker is ignored and
+recorded once as `decision.marker_ignored`. Records that are not requests it trusts have a budget of their
+own, apart from the signed ones (RR-21). It then reads the record, checks the
 allowlist **again, now, by the numeric GitHub id** of the principal behind the record, and applies it once:
 pause, resume and cancel through `Engine::control`; approve, reject and rework through
 `ApprovalService::submit`. The record's id is the command id the engine uses, so a repeat is a no-op
@@ -418,7 +422,7 @@ functions in `commands`; the HTTP and the process arguments stay with the API an
 
 | Break | Caught by |
 |---|---|
-| The production profile built with a fake adapter, for each of the 25 ports | `crates/composition/tests/profiles.rs`: a registry of fakes is refused for all 25; one fake among real ports is named; the eight seams that report a fidelity are each refused in production and in `local` |
+| The production profile built with a fake adapter, for each of the 37 ports | `crates/composition/tests/profiles.rs`: a registry of fakes is refused for all 37; one fake among real ports is named; the twenty seams (the sixteen of the stages and the four inputs of the security decisions) are each refused in production, and in `local` unless they stand for an outside service |
 | A seam forgotten at wiring | `profiles.rs::a_seam_forgotten_at_wiring_stops_start_up_and_is_named`: the seam set cannot be built and names the missing seam, so there is no registry and no engine |
 | An unfenced `TaskLedger` write | `crates/composition/tests/ledger.rs`: a stale epoch is `Fenced` and writes nothing; the store itself refuses a start with no fence and one with a wrong epoch |
 | Stale evidence drift ignored | `tests/drift.rs`: with the real seam the dependent runs are replaced; with a seam that says "done" and tells nobody they stay `PASSED` |

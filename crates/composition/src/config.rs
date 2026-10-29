@@ -342,6 +342,13 @@ pub struct DecisionSigning {
     /// request signed with it has been dealt with (the approval window is 72 hours).
     #[serde(default)]
     pub previous_key_file: Option<SecretFile>,
+    /// The moment after which the previous key is ignored, as a UTC time such as
+    /// `2026-11-02T12:00:00Z`: 72 hours after the rotation, no more. Without it the production
+    /// profile ignores the previous key (and says so in the log), so a key that leaked and was
+    /// replaced stops verifying on its own and does not wait for someone to remove its file
+    /// (RR-25). The other profiles accept the previous key until its file is removed.
+    #[serde(default)]
+    pub previous_key_valid_until: Option<String>,
 }
 
 /// The budget of one stage run: the wall time, the model tokens and cost, and the attempts.

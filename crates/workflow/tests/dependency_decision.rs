@@ -245,6 +245,60 @@ impl Rig {
         }
     }
 
+    /// A proof for the requester of the job as an approver. The allowlist gives them the designation
+    /// for this one proof, and the policy engine is told that the requester is someone else, which
+    /// is what a caller that gets this wrong does.
+    async fn dependency_proof_for_the_requester_as_approver(
+        &self,
+        who: PrincipalId,
+        needed: Designation,
+    ) -> AuthorizedApproval {
+        let tenant = self.world.tenant;
+        let id = self.github(who).await;
+        let allowlist = Allowlist::new(
+            "sha256:allowlist-v1",
+            vec![AllowlistEntry {
+                tenant,
+                github_user_id: GithubUserId::new(id).expect("an id"),
+                login: "requester".to_owned(),
+                designations: [Designation::Requester, Designation::Approver]
+                    .into_iter()
+                    .collect(),
+                repositories: None,
+                expires_at: None,
+            }],
+        )
+        .expect("no duplicates");
+        let actor = Actor {
+            github_user_id: GithubUserId::new(id).expect("an id"),
+            login: "requester",
+            kind: ActorKind::User,
+            github_permission: None,
+            author_association: None,
+        };
+        let now = now();
+        let verdict = authorize(
+            &Request {
+                policy: &self.policy.authority,
+                level: AutonomyLevel::L1,
+                tenant: &tenant,
+                repository: REPOSITORY,
+                actor: &actor,
+                allowlist: &allowlist,
+                now: &now,
+                requester: GithubUserId::new(id + 1_000),
+                risk_tier: RiskTier::Low,
+                protected_path_change: false,
+                sensitive_file_change: false,
+            },
+            needed,
+        );
+        match verdict {
+            ActionVerdict::Authorized(proof) => proof,
+            other => panic!("expected a proof, got {other:?}"),
+        }
+    }
+
     async fn build_code_proof(&self, who: PrincipalId) -> AuthorizedApproval {
         match self.verdict(who, authorize_build_code).await {
             ActionVerdict::Authorized(proof) => proof,
@@ -686,4 +740,39 @@ async fn the_reason_is_part_of_the_record_and_a_short_one_is_refused() {
     let found = reader.for_job(rig.world.tenant, rig.job).await;
     assert_eq!(found.len(), 1);
     assert_eq!(found[0].reason, reason().as_str());
+}
+
+/// RR-24. The person who asked for the job does not decide on its dependencies, even with a proof the
+/// policy engine made for them: the engine knows the requester of the job and compares it with the
+/// acting principal itself, and does not rely on the risk the caller told the policy engine.
+#[tokio::test]
+async fn the_requester_of_the_job_cannot_decide_on_its_dependencies() {
+    let rig = Rig::new().await;
+    // The requester also holds the approver role and designation, so nothing but the comparison with
+    // the job's requester stands in the way.
+    let requester = rig.world.requester;
+    rig.world
+        .authority
+        .grant(requester, &[HumanRole::Requester, HumanRole::Approver]);
+    let proof = rig
+        .dependency_proof_for_the_requester_as_approver(requester, Designation::Approver)
+        .await;
+    let refused = rig.record(requester, proof, some_crate()).await;
+    assert!(
+        matches!(
+            refused,
+            Err(EngineError::NotAuthorized(
+                "the person who asked for the job may not decide on its dependencies"
+            ))
+        ),
+        "{refused:?}"
+    );
+    assert!(rig.unblock().await.is_err(), "nothing was recorded");
+    // Control: another approver decides.
+    let proof = rig
+        .dependency_proof(rig.approver, Designation::Approver)
+        .await;
+    rig.record(rig.approver, proof, some_crate())
+        .await
+        .expect("another approver records the decision");
 }

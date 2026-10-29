@@ -338,9 +338,12 @@ async fn negative_nt_gate_03_each_ci_gate_and_instruction_file_edit_fails_before
         // Every command gate says it did not run, and BLOCKED is not a pass.
         for command in ["format", "lint", "build", "unit-tests"] {
             // The configuration of a lint or format tool is also a lint relaxation (AUT-4), which
-            // the host reads before any command runs and reports on the lint gate itself.
-            let tool_configuration =
-                path.ends_with("clippy.toml") || path.ends_with("rustfmt.toml");
+            // the host reads before any command runs and reports on the lint gate itself. So is a
+            // cargo configuration that changed and cannot be read as TOML (RR-13): the host cannot
+            // tell that it sets no flags.
+            let tool_configuration = path.ends_with("clippy.toml")
+                || path.ends_with("rustfmt.toml")
+                || path == ".cargo/config.toml";
             let expected = if command == "lint" && tool_configuration {
                 GateOutcome::Failed
             } else {

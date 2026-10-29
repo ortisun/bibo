@@ -39,6 +39,7 @@ use super::risk;
 use super::seams::{DeliverySources, EvidenceDrift, SeamError};
 use crate::gates::framework::GateDecision;
 use crate::gates::readability::{Artifact, ReadabilityGate, Severity};
+use crate::gates::scope::hardening::PatchSignals;
 use crate::handlers::{
     ContractContext, GateContext, OutputDocument, StageContext, StageError, StageHandler,
     StageOutput,
@@ -260,11 +261,12 @@ impl StageHandler for DeliveryHandler {
             .map_err(seam_error)?;
         // The tier is the highest of what the job and the design show and what the diff shows,
         // and the intake classifier's claim can raise it (AUT-10).
-        let measured = risk::assess(
+        let measured = risk::assess_with_patch(
             &self.config.policy,
             &target.risk,
             target.agent_claim,
             &export.changes,
+            &PatchSignals::of(&patch),
         );
         let risk = measured.assessment.clone();
         let manifest = manifest::build(&ManifestInputs {

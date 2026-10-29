@@ -95,7 +95,10 @@ fn inputs(profile: Profile, settings: StageSettings) -> PipelineInputs {
             router: Arc::new(StaticModelRouter::new(Vec::new())),
             issues: Arc::new(FakeIssueSource::new()),
             changes: Arc::new(FakeChangeHost::new()),
-            probes: Arc::new(CachedProbes::new(ProbedCapabilities(BTreeMap::new()))),
+            probes: Arc::new(CachedProbes::new(
+                ProbedCapabilities(BTreeMap::new()),
+                Fidelity::Fake,
+            )),
             supply_chain: sources,
             attestations: Arc::new(NoAttestations),
             app: FAKE_APP_ID,
@@ -148,6 +151,40 @@ fn production_inputs() -> PipelineInputs {
     let mut inputs = inputs(Profile::Production, settings_with_commit());
     inputs.external.supply_chain = SupplyChainSources::blocked();
     inputs
+}
+
+/// RR-29. A tuning of the assembly (wrapping every handler, replacing the markers, changing the
+/// engine's configuration) is for a test. The production profile refuses one, whichever hook it sets,
+/// and says which; the other profiles still take it.
+#[test]
+fn the_production_profile_refuses_a_tuning_of_the_assembly() {
+    type SetsAHook = fn(&mut Tuning);
+    let hooks: [(&str, SetsAHook); 2] = [
+        ("engine", |tuning| tuning.engine = Some(Box::new(|_| {}))),
+        ("decorate", |tuning| {
+            tuning.decorate = Some(Box::new(|handler| handler));
+        }),
+    ];
+    for (name, set) in hooks {
+        let mut tuned = production_inputs();
+        set(&mut tuned.tuning);
+        match assemble_pipeline(tuned) {
+            Err(PipelineError::Settings(message)) => {
+                assert!(
+                    message.contains("tuning") && message.contains(name),
+                    "{message}"
+                );
+            }
+            other => panic!(
+                "{name}: the production profile took a tuning: {:?}",
+                other.err()
+            ),
+        }
+        // The same hook in the test profile is accepted.
+        let mut allowed = inputs(Profile::Test, StageSettings::default());
+        set(&mut allowed.tuning);
+        assert!(assemble_pipeline(allowed).is_ok(), "{name}");
+    }
 }
 
 #[test]

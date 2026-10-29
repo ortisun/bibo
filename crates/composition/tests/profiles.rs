@@ -6,16 +6,16 @@ use async_trait::async_trait;
 use factory_composition::delivery::{StoreApprovalSources, StoreDeliverySources};
 use factory_composition::feedback::StoreFeedback;
 use factory_composition::ledger::StoreTaskLedger;
+use factory_composition::preflight::BypassAttestations;
 use factory_composition::profile::{PortName, Profile};
 use factory_composition::registry::PortRegistry;
-use factory_composition::registry::SeamsBuilder;
+use factory_composition::registry::{Seams, SeamsBuilder};
 use factory_composition::risk::StoreRisk;
-use factory_composition::seams::{
-    CachedProbes, FileAllowlist, StoreRepositories, StoreRequests, YamlManifests,
-};
+use factory_composition::seams::{CachedProbes, FileAllowlist, StoreRepositories, StoreRequests};
 use factory_composition::specs::{StoreSpecApprovals, StoreSpecDrafts, StoreSpecHistory};
 use factory_composition::startup::load_policy;
 use factory_composition::system::{RandomIds, SystemClock, TokioTicker};
+use factory_domain::contracts::ProjectManifest;
 use factory_domain::vocabulary::Fidelity;
 use factory_ports::agent::ProbedCapabilities;
 use factory_ports::artifact::ArtifactStore;
@@ -35,7 +35,11 @@ use factory_testkit::spec::FakeSpecificationProvider;
 use factory_testkit::store::InMemoryStore;
 use factory_testkit::webhook::FakeWebhookVerifier;
 use factory_testkit::workspace::{FakeRemote, FakeWorkspaceProvider};
+use factory_workflow::gates::supply_chain::approval::StaticApprovals;
+use factory_workflow::gates::supply_chain::facts::{StaticDatabase, StaticRegistry};
+use factory_workflow::stages::delivery::seams::EvidenceDrift;
 use factory_workflow::stages::intake::seams::{AgentOutputCheck, AllowlistSource, SeamError};
+use factory_workflow::stages::repo_intel::seams::{ManifestProblem, ProjectManifestParser};
 
 mod support;
 use support::engine::StaticAuthority;
@@ -113,6 +117,55 @@ impl AgentOutputCheck for FakeCheck {
     }
 }
 
+/// A manifest parser that accepts nothing and says it is a stand-in.
+struct FakeManifests;
+
+impl ProjectManifestParser for FakeManifests {
+    fn fidelity(&self) -> Fidelity {
+        Fidelity::Fake
+    }
+
+    fn parse(&self, _: &str, _: &[u8]) -> Result<ProjectManifest, ManifestProblem> {
+        Err(ManifestProblem("a stand-in".to_owned()))
+    }
+}
+
+/// An evidence drift channel that drops the news and says it is a stand-in.
+struct FakeDrift;
+
+#[async_trait]
+impl EvidenceDrift for FakeDrift {
+    fn fidelity(&self) -> Fidelity {
+        Fidelity::Fake
+    }
+
+    async fn binding_changed(
+        &self,
+        _: factory_domain::ids::TenantId,
+        _: factory_domain::ids::JobId,
+    ) -> Result<(), SeamError> {
+        Ok(())
+    }
+}
+
+/// A statement about the bypass list that attests nothing and says it is a stand-in.
+struct FakeAttestations;
+
+#[async_trait]
+impl BypassAttestations for FakeAttestations {
+    fn fidelity(&self) -> Fidelity {
+        Fidelity::Fake
+    }
+
+    async fn attestation(
+        &self,
+        _: factory_domain::ids::TenantId,
+        _: &factory_ports::paths::RepoRef,
+    ) -> Option<factory_ports::githost::BypassAttestation> {
+        None
+    }
+}
+
 struct FakeAllowlist;
 
 #[async_trait]
@@ -141,20 +194,26 @@ fn seams(
     let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
     let policies = load_policy(&root, &[]).expect("the repository policy loads");
     let store: Arc<dyn Store> = store.clone();
-    let (drift, _pump) = factory_composition::drift::channel();
     let requests = Arc::new(StoreRequests::new(store.clone()));
     let feedback = Arc::new(StoreFeedback::new(store.clone(), artifacts.clone()));
     let builder = SeamsBuilder::default()
         .output_check(Arc::new(FakeCheck))
-        .manifests(Arc::new(YamlManifests::new().expect("the schemas load")))
+        .manifests(Arc::new(FakeManifests))
         .allowlist(Arc::new(FakeAllowlist))
         .requests(requests)
         .repositories(Arc::new(StoreRepositories::new(store.clone())))
-        .probes(Arc::new(CachedProbes::new(ProbedCapabilities::default())))
+        .probes(Arc::new(CachedProbes::new(
+            ProbedCapabilities::default(),
+            Fidelity::Fake,
+        )))
         .rework(feedback.clone())
         .rounds(feedback)
         .risk(Arc::new(StoreRisk::new(store.clone(), artifacts.clone())))
-        .drift(Arc::new(drift))
+        .drift(Arc::new(FakeDrift))
+        .package_metadata(Arc::new(StaticRegistry::new()))
+        .advisory_database(Arc::new(StaticDatabase::default()))
+        .recorded_approvals(Arc::new(StaticApprovals::default()))
+        .attestations(Arc::new(FakeAttestations))
         .spec_approvals(Arc::new(StoreSpecApprovals::new(
             store.clone(),
             artifacts.clone(),
@@ -213,42 +272,91 @@ fn a_seam_forgotten_at_wiring_stops_start_up_and_is_named() {
             .to_string()
             .contains("forgot 1 seam(s): task ledger")
     );
-    // Nothing at all names all sixteen.
+    // Nothing at all names all twenty.
     let nothing = SeamsBuilder::default()
         .build()
         .err()
         .expect("nothing is refused");
-    assert_eq!(nothing.missing.len(), 16);
+    assert_eq!(nothing.missing.len(), 20);
 }
 
-/// The eight seams that report a fidelity are in the registry's report, and production refuses a
-/// stand-in in each of them.
+/// Every seam is in the registry's report (RR-6 and RR-7: twenty, the sixteen of the stages and the
+/// four inputs of the security decisions), and production refuses a stand-in in each of them. The
+/// local profile refuses it too, except for the seams that stand for an outside service.
 #[test]
-fn production_refuses_a_stand_in_for_each_seam_that_reports_a_fidelity() {
-    let seam_ports = [
-        PortName::OutputCheck,
-        PortName::Allowlist,
-        PortName::Requests,
-        PortName::TaskLedger,
-        PortName::SpecApprovals,
-        PortName::SpecDrafts,
-        PortName::Delivery,
-        PortName::Approvals,
-    ];
+fn production_refuses_a_stand_in_for_each_seam() {
     let registry = registry(true);
     let reported: Vec<PortName> = registry.fidelities().iter().map(|(p, _)| *p).collect();
-    for port in seam_ports {
-        assert!(reported.contains(&port), "{port:?} is not reported");
+    assert_eq!(Seams::port_names().len(), 20);
+    for port in Seams::port_names() {
+        assert!(reported.contains(port), "{port:?} is not reported");
         let refusal = registry
             .check(Profile::Production)
             .expect_err("a stand-in remains");
-        assert!(refusal.refused.contains(&port), "{}", port.label());
-        // And the local profile keeps state real, so it refuses the stand-in too.
+        assert!(refusal.refused.contains(port), "{}", port.label());
         let local = registry
             .check(Profile::Local)
             .expect_err("stand-ins remain");
-        assert!(local.refused.contains(&port), "{}", port.label());
+        assert_eq!(
+            local.refused.contains(port),
+            !port.is_credentialed(),
+            "{}",
+            port.label()
+        );
     }
+}
+
+/// RR-6 and RR-7 one by one: a registry made of real seams but one, which is a stand-in, is refused
+/// in production and the refusal names that seam alone. The twelve seams that reported nothing are
+/// among them.
+#[test]
+fn one_stand_in_among_real_seams_is_named_alone() {
+    use factory_composition::registry::check_fidelities;
+    for odd in Seams::port_names() {
+        let reported: Vec<(PortName, Fidelity)> = PortName::ALL
+            .iter()
+            .map(|port| {
+                (
+                    *port,
+                    if port == odd {
+                        Fidelity::Fake
+                    } else {
+                        Fidelity::Real
+                    },
+                )
+            })
+            .collect();
+        let refusal = check_fidelities(Profile::Production, &reported)
+            .expect_err("production must refuse a stand-in");
+        assert_eq!(refusal.refused, vec![*odd], "{}", odd.label());
+    }
+}
+
+/// The registry does not take the label a seam was handed with: a stand-in given to
+/// `SupplyChainSources::real` is still refused, because the registry reads what the source says it is.
+#[test]
+fn a_stand_in_handed_over_as_real_is_still_refused_in_production() {
+    use factory_composition::supply_chain::SupplyChainSources;
+    let sources = SupplyChainSources::real(
+        Arc::new(StaticRegistry::new()),
+        Arc::new(StaticDatabase::default()),
+    );
+    assert!(sources.stand_ins().is_empty(), "the label says real");
+    let registry = registry(true);
+    let mut reported = registry.fidelities();
+    for (port, fidelity) in &mut reported {
+        match port {
+            PortName::PackageMetadata => *fidelity = sources.registry().fidelity(),
+            PortName::AdvisoryDatabase => *fidelity = sources.advisory_db().fidelity(),
+            _ => *fidelity = Fidelity::Real,
+        }
+    }
+    let refusal = factory_composition::registry::check_fidelities(Profile::Production, &reported)
+        .expect_err("the two stand-ins are refused");
+    assert_eq!(
+        refusal.refused,
+        [PortName::PackageMetadata, PortName::AdvisoryDatabase]
+    );
 }
 
 struct FakeTicker;
@@ -265,7 +373,7 @@ impl factory_workflow::scheduler::Ticker for FakeTicker {
 #[test]
 fn production_profile_refuses_fakes() {
     let registry = registry(false);
-    // Every one of the 25 ports is a fake here, and the registry reports all 25.
+    // Every one of the 37 ports is a fake here, and the registry reports all 37.
     let reported: Vec<PortName> = registry
         .fidelities()
         .iter()
@@ -293,7 +401,7 @@ fn production_profile_refuses_fakes() {
 
 #[test]
 fn production_profile_refuses_a_single_fake_among_real_system_ports() {
-    // With the real clock, ids and ticker, the other 22 ports are still fakes and still refused.
+    // With the real clock, ids and ticker, the other 34 ports are still fakes and still refused.
     let refusal = registry(true)
         .check(Profile::Production)
         .expect_err("fakes remain");

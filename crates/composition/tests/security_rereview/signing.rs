@@ -43,6 +43,7 @@ fn load(profile: Profile, path: &Path) -> Result<DecisionKeys, KeyError> {
     let settings = DecisionSigning {
         key_file: SecretFile::at(path),
         previous_key_file: None,
+        previous_key_valid_until: None,
     };
     let redactor = Redactor::builder().build().expect("a redactor");
     DecisionKeys::load(profile, Some(&settings), &redactor)
@@ -133,17 +134,16 @@ fn held_the_key_file_is_checked_for_mode_link_size_and_kind() {
 fn held_a_rotation_to_the_same_key_is_refused() {
     let key = vec![7_u8; 40];
     assert_eq!(
-        DecisionKeys::from_bytes(&key, Some(&key)).err(),
+        DecisionKeys::fixed_for_tests(&key, Some(&key)).err(),
         Some(KeyError::SameKey)
     );
 }
 
-/// RR-5. The key is the text of the file, and the only rule on it is a length of 32 bytes. A file of
+/// RR-5 (fixed). The key is the text of the file, and the only rule on it is a length of 32 bytes. A file of
 /// thirty-two copies of one letter, or a dictionary word repeated, is accepted as the key that
 /// authenticates every decision. The tests of the fix use `[7; 40]` as a key, which shows the
 /// shape is thought acceptable.
 #[test]
-#[ignore = "confirmed defect RR-5: a decision signing key with no entropy is accepted; cargo test -p factory-composition --test security_rereview --locked -- --ignored rr_5 --exact"]
 fn rr_5_a_key_with_no_entropy_is_refused() {
     let weak: [(&str, Vec<u8>); 3] = [
         ("one byte repeated", vec![b'a'; 32]),
@@ -170,7 +170,7 @@ fn rr_5_a_key_with_no_entropy_is_refused() {
 /// that was signed.
 #[test]
 fn held_extra_at_and_mac_words_make_a_subject_malformed() {
-    let keys = DecisionKeys::from_bytes(&[9_u8; 40], None).expect("a key");
+    let keys = DecisionKeys::fixed_for_tests(&[9_u8; 40], None).expect("a key");
     let plain = fields();
     let at = "2026-10-28T12:00:00Z";
     let genuine = keys.signed_subject(&signing(&plain, at));
@@ -215,7 +215,7 @@ fn held_extra_at_and_mac_words_make_a_subject_malformed() {
 /// `claim_work.rs`; this is the primitive.)
 #[test]
 fn held_every_field_is_inside_the_word() {
-    let keys = DecisionKeys::from_bytes(&[9_u8; 40], None).expect("a key");
+    let keys = DecisionKeys::fixed_for_tests(&[9_u8; 40], None).expect("a key");
     let base = fields();
     let at = "2026-10-28T12:00:00Z";
     let word = keys.sign(&signing(&base, at));

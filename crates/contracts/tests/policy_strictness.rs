@@ -343,7 +343,7 @@ fn negative_nt_pol_03_an_invalid_regex_is_refused_with_its_key_and_line() {
     ] {
         let changed = replace_once(
             &text,
-            "regex: '\\bghp_[A-Za-z0-9]{36}\\b'",
+            "regex: 'ghp_[A-Za-z0-9]{36}\\b'",
             &format!("regex: {bad}"),
         );
         let error = refused(load_security_text(&changed), why);

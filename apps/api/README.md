@@ -73,9 +73,14 @@ time and so another word; the API finds the record it wrote, checks that it is t
 the first did. A refusal (`decision.denied`) is not a request and carries no word.
 
 **Rotation.** Put the new key in `decisions.key_file` and the old one in `decisions.previous_key_file`, on the
-API and the worker. The API signs with the current key; the worker accepts a word made with either. Remove
-the previous key once the requests signed with it have been dealt with (the approval window is 72 hours).
-The `production` profile does not start without `decisions.key_file`. The `local` and `test` profiles make
+API and the worker. The API signs with the current key; the worker accepts a word made with either. Set
+`decisions.previous_key_valid_until` to the time 72 hours after the rotation (the approval window): after it
+the previous key is ignored, and the `production` profile ignores the previous key when no such time is
+set, so a replaced key stops verifying on its own. Remove the file once the requests signed with it have been
+dealt with. In `production` every directory above a key file must be closed to group and others (a sticky
+directory is allowed) and the file must belong to the owner of its directory or the directory to root.
+A key must be random: 32 bytes at least once decoded (64 hex digits), not one byte or one short word written
+again and again. The `production` profile does not start without `decisions.key_file`. The `local` and `test` profiles make
 the file (mode `0600`) when it is missing, so the API and the worker that name the same path share it; with no
 `decisions` section a process keeps a key in memory, which no other process shares.
 
@@ -135,6 +140,7 @@ github:
 decisions:
   key_file: /run/secrets/decision_signing_key           # required in production; at least 32 bytes, mode 0600
   # previous_key_file: /run/secrets/decision_signing_key_previous   # during a rotation only
+  # previous_key_valid_until: 2026-11-02T12:00:00Z                  # 72 hours after the rotation
 tokens: { audience: factory-api }
 limits:                                 # all optional
   max_body_bytes: 262144
@@ -167,7 +173,7 @@ placeholder chose (`database.api`, `listen`, `artifacts`) are the names the API 
 
 A body is read only after the token is checked, with a hard cap and a deadline; a declared length over the cap
 is refused without reading a byte. hyper's header read timeout closes a slow-loris connection; a stalled body is
-`408`. Open connections are bounded, in all and per source (an address, or an IPv6 /64; an IPv4 client of a
+`408`. Open connections are bounded, in all and per source (an address, or an IPv6 /48; an IPv4 client of a
 dual-stack listener is its IPv4 address), and the ones over either limit are closed unread, so one source cannot
 hold the table with silent connections. The per-source request rate counts under the same grouping. Behind a proxy
 every connection comes from the proxy: set `max_connections_per_source` to `max_connections` and cap clients there. Every string is checked: no

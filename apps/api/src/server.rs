@@ -8,7 +8,7 @@
 //!   request line and headers in time (a slow-loris sender). A body that is slow is cut off by the
 //!   pipeline's own deadline (`routes`).
 //! * **Open connections** are bounded by a semaphore, and each source (an address, or an IPv6
-//!   /64) by a count of its own that is smaller than the table (API-6). A connection over either
+//!   /48) by a count of its own that is smaller than the table (API-6). A connection over either
 //!   limit is closed at once, before anything is read from it.
 //! * **The peer** is the address the operating system reports for the connection. It is put in the
 //!   request as [`Peer`](crate::routes::Peer) and nothing else is ever used as a source address.
@@ -47,7 +47,7 @@ const MAX_HEAD_BYTES: usize = 32 * 1024;
 /// A silent connection costs its sender nothing and is never counted as a request, so the request
 /// rate limit cannot see it; without a count per source one address could hold every slot of the
 /// table until the header timeout, and again after it. The count is made when the connection is
-/// accepted, before a byte is read, under [`source_of`]: an IPv6 client is its /64 and an IPv4
+/// accepted, before a byte is read, under [`source_of`]: an IPv6 client is its /48 and an IPv4
 /// client behind a dual-stack listener is its IPv4 address.
 #[derive(Debug)]
 pub struct Sources {
@@ -250,7 +250,7 @@ mod tests {
     }
 
     #[test]
-    fn the_addresses_of_one_ipv6_prefix_and_both_spellings_of_an_ipv4_client_are_one_source() {
+    fn the_addresses_of_one_ipv6_48_prefix_and_both_spellings_of_an_ipv4_client_are_one_source() {
         let sources = Sources::new(1);
         let in_prefix = |last: u16| IpAddr::V6(Ipv6Addr::new(0x2001, 0xdb8, 0, 1, 0, 0, 0, last));
         let _held = sources.enter(in_prefix(1)).expect("a place");
@@ -261,8 +261,14 @@ mod tests {
         assert!(
             sources
                 .enter(IpAddr::V6(Ipv6Addr::new(0x2001, 0xdb8, 0, 2, 0, 0, 0, 1)))
+                .is_none(),
+            "another /64 of the same /48 is the same source"
+        );
+        assert!(
+            sources
+                .enter(IpAddr::V6(Ipv6Addr::new(0x2001, 0xdb8, 1, 1, 0, 0, 0, 1)))
                 .is_some(),
-            "another /64 is another source"
+            "another /48 is another source"
         );
         let v4 = Ipv4Addr::new(198, 51, 100, 9);
         let _plain = sources.enter(IpAddr::V4(v4)).expect("a place");

@@ -265,6 +265,10 @@ impl AgentOutputCheck for StandInCheck {
 pub struct FixedProbes;
 
 impl CapabilityProbes for FixedProbes {
+    fn fidelity(&self) -> factory_domain::vocabulary::Fidelity {
+        factory_domain::vocabulary::Fidelity::Fake
+    }
+
     fn probed(&self) -> ProbedCapabilities {
         probed(&["fake"])
     }
@@ -304,6 +308,10 @@ pub struct RigRisk {
 
 #[async_trait]
 impl RiskSource for RigRisk {
+    fn fidelity(&self) -> factory_domain::vocabulary::Fidelity {
+        factory_domain::vocabulary::Fidelity::Fake
+    }
+
     async fn of(
         &self,
         _run: &factory_workflow::handlers::RunIdentity,
@@ -325,6 +333,10 @@ impl RigRounds {
 
 #[async_trait]
 impl RoundSource for RigRounds {
+    fn fidelity(&self) -> factory_domain::vocabulary::Fidelity {
+        factory_domain::vocabulary::Fidelity::Fake
+    }
+
     async fn previous(
         &self,
         _run: &factory_workflow::handlers::RunIdentity,

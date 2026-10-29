@@ -22,9 +22,15 @@
 //! * Each `decision.requested` record has an id. That id is the command id the engine uses
 //!   (`Actor::command`, `ApprovalCommand::id`), and the engine answers a repeat of a command with
 //!   `Duplicate` and changes nothing.
-//! * When the decision is dealt with, the worker writes a **marker** under an id derived from the
-//!   decision's: `decision.applied` or `decision.rejected`, with the job, so the timeline of the
-//!   API shows it. A decision with a marker is never read again.
+//! * When the decision is dealt with, the worker writes a **marker** under an id derived (with the
+//!   signing key) from the decision's: `decision.applied` or `decision.rejected`, with the job, so
+//!   the timeline of the API shows it. A decision with a **signed** marker is never read again. The
+//!   marker carries a word of its own (`mac=`, see [`crate::decision_signing`]); a row with the
+//!   action of a marker and no good word is ignored and recorded once as `decision.marker_ignored`,
+//!   so a writer who is not the worker cannot end a request by writing one (RR-8).
+//! * Records that are not requests this module trusts (malformed, unsigned, forged markers) have a
+//!   budget of their own per pass, apart from the signed requests, so a queue of them cannot hold a
+//!   signed request back (RR-21). Tenants are visited in a different order each round.
 //! * A worker that stops between the engine's commit and the marker finds, on its next pass, a
 //!   `decision.requested` with no marker. It asks the engine whether it already applied that
 //!   command (`Engine::command_applied`), and if so writes the marker and does nothing else. So a
@@ -56,6 +62,7 @@
 //! worker that starts reads the log again from the beginning, so nothing depends on this memory.
 
 use std::collections::BTreeMap;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
@@ -86,7 +93,10 @@ use factory_workflow::stages::approval::{
 use factory_workflow::stages::specification::SpecDrafts;
 
 use crate::commands::{CommandContext, ParsedDecision};
-use crate::decision_signing::{DecisionKeys, Signing, SubjectKind, read_subject};
+use crate::decision_signing::{
+    DecisionKeys, MarkerSigning, Signing, SubjectKind, actor_text, read_marker_subject,
+    read_subject,
+};
 use crate::dependency_decisions::DependencyDecisions;
 use crate::hooks::BeforeClaim;
 use crate::seams::{FileAllowlist, designation};
@@ -548,28 +558,93 @@ pub trait DecisionMarkers: Send + Sync {
     async fn mark_unsigned(&self, tenant: TenantId, id: AuditEventId) -> Result<(), Unreadable> {
         self.mark_malformed(tenant, id).await
     }
-}
 
-/// The real [`DecisionMarkers`]: an audit record in the tenant, under an id derived from the
-/// decision's, with the job so the timeline of the API shows it.
-pub struct AuditMarkers {
-    store: Arc<dyn Store>,
-    policy_hash: Sha256Digest,
-}
-
-impl AuditMarkers {
-    /// Markers written to `store`, naming the policy in force.
-    #[must_use]
-    pub fn new(store: Arc<dyn Store>, policy_hash: Sha256Digest) -> Self {
-        Self { store, policy_hash }
+    /// Records, once, that a row which looks like a marker (`decision.applied` or
+    /// `decision.rejected`) does not carry the worker's word and was therefore not counted (RR-8).
+    /// The record names the row's id and a fixed code, and nothing from the row. It is written under
+    /// an id that is derived from the row's id, so a second write finds the first.
+    ///
+    /// # Errors
+    /// [`Unreadable`] when it could not be written. The row is looked at again on the next pass.
+    async fn mark_ignored(&self, _tenant: TenantId, _id: AuditEventId) -> Result<(), Unreadable> {
+        Ok(())
     }
 }
 
-/// The id of the marker of a decision: derived, so that a second write finds the first.
-pub(crate) fn marker_id(decision: AuditEventId) -> AuditEventId {
-    let digest = Sha256Digest::of(format!("decision-marker\n{}", decision.as_uuid()).as_bytes());
-    let number = u128::from_str_radix(&digest.hex()[..32], 16).unwrap_or(0);
-    AuditEventId::from_uuid(uuid::Builder::from_random_bytes(number.to_be_bytes()).into_uuid())
+/// The audit action of the record that says a marker was ignored. Nothing reads it back: it is the
+/// trail a person reads.
+pub const MARKER_IGNORED: &str = "decision.marker_ignored";
+
+/// The real [`DecisionMarkers`]: an audit record in the tenant, under an id derived (with the
+/// signing key) from the decision's, with the job so the timeline of the API shows it. Every marker
+/// carries the worker's word (RR-8): the hook counts no other.
+pub struct AuditMarkers {
+    store: Arc<dyn Store>,
+    policy_hash: Sha256Digest,
+    keys: Arc<DecisionKeys>,
+}
+
+impl AuditMarkers {
+    /// Markers written to `store`, naming the policy in force and signed with `keys`.
+    #[must_use]
+    pub fn new(store: Arc<dyn Store>, policy_hash: Sha256Digest, keys: Arc<DecisionKeys>) -> Self {
+        Self {
+            store,
+            policy_hash,
+            keys,
+        }
+    }
+
+    /// The subject of a marker with its word: `base` is `decision=<id>` and the fixed words.
+    fn signed(
+        &self,
+        tenant: TenantId,
+        event: AuditEventId,
+        action: &str,
+        actor: &AuditActor,
+        base: &str,
+    ) -> String {
+        self.keys.signed_marker_subject(&MarkerSigning {
+            tenant,
+            event,
+            action,
+            actor: &actor_text(actor),
+            subject: base,
+        })
+    }
+}
+
+/// True when `record` is a marker the worker wrote: a `decision.applied` or `decision.rejected` row
+/// by a component of the system, whose subject names a request and ends with a good word (RR-8).
+/// `None` for a row of another action. `Some(None)` for a row that has the action of a marker and is
+/// not one: the hook ignores it. `Some(Some(id))` for the request the marker ends.
+pub(crate) fn counted_marker(
+    tenant: TenantId,
+    record: &factory_ports::store::AuditRecord,
+    keys: &DecisionKeys,
+) -> Option<Option<AuditEventId>> {
+    let action = record.event.action.as_str();
+    if action != APPLIED && action != REJECTED {
+        return None;
+    }
+    let counted = (|| {
+        if !matches!(record.event.actor, AuditActor::System(_)) {
+            return None;
+        }
+        let subject = read_marker_subject(&record.event.subject)?;
+        keys.verify_marker(
+            &MarkerSigning {
+                tenant,
+                event: record.event.id,
+                action,
+                actor: &actor_text(&record.event.actor),
+                subject: subject.base,
+            },
+            subject.word,
+        )
+        .then_some(subject.decision)
+    })();
+    Some(counted)
 }
 
 /// The code of an outcome, for the marker: `applied` for any application, the code of the reason for
@@ -635,7 +710,7 @@ impl DecisionMarkers for AuditMarkers {
         };
         // The subject has the request's id first, then fixed words and numbers only: the code of
         // the outcome, the numeric id of the person and the version of the allowlist (R-13).
-        let subject = format!(
+        let base = format!(
             "decision={} verb={} job={} code={} actor={} allowlist={}",
             decision.id.as_uuid().hyphenated(),
             decision.fields.verb.as_str(),
@@ -649,9 +724,10 @@ impl DecisionMarkers for AuditMarkers {
                 .as_deref()
                 .map_or("none", |version| version.get(..16).unwrap_or(version)),
         );
-        let id = marker_id(decision.id);
+        let id = self.keys.marker_id(decision.id);
         let policy_hash = self.policy_hash.clone();
         let actor = AuditActor::System(Slug::parse("worker.decisions").map_err(|_| Unreadable)?);
+        let subject = self.signed(tenant, id, action, &actor, &base);
         let action = AuditAction::new(action).map_err(|_| Unreadable)?;
         let fallback = CorrelationId::from_uuid(decision.id.as_uuid());
         self.write(
@@ -681,6 +757,38 @@ impl DecisionMarkers for AuditMarkers {
     async fn mark_unsigned(&self, tenant: TenantId, id: AuditEventId) -> Result<(), Unreadable> {
         self.mark_record(tenant, id, Reason::NotSigned).await
     }
+
+    async fn mark_ignored(&self, tenant: TenantId, id: AuditEventId) -> Result<(), Unreadable> {
+        let marker = self.keys.marker_id(id);
+        let policy_hash = self.policy_hash.clone();
+        let actor = AuditActor::System(Slug::parse("worker.decisions").map_err(|_| Unreadable)?);
+        let action = AuditAction::new(MARKER_IGNORED).map_err(|_| Unreadable)?;
+        let subject = format!(
+            "marker={} code={}",
+            id.as_uuid().hyphenated(),
+            Reason::NotSigned.code()
+        );
+        let correlation = CorrelationId::from_uuid(id.as_uuid());
+        self.write(
+            tenant,
+            None,
+            correlation,
+            move |job, stage_run, correlation_id| NewAuditEvent {
+                id: marker,
+                actor,
+                action,
+                subject,
+                decision: AuditDecision::Deny,
+                reason: "A record with the action of a marker was not written by the worker; it was not counted."
+                    .to_owned(),
+                policy_hash,
+                job,
+                stage_run,
+                correlation_id,
+            },
+        )
+        .await
+    }
 }
 
 impl AuditMarkers {
@@ -692,15 +800,16 @@ impl AuditMarkers {
         id: AuditEventId,
         reason: Reason,
     ) -> Result<(), Unreadable> {
-        let marker = marker_id(id);
+        let marker = self.keys.marker_id(id);
         let policy_hash = self.policy_hash.clone();
         let actor = AuditActor::System(Slug::parse("worker.decisions").map_err(|_| Unreadable)?);
-        let action = AuditAction::new(REJECTED).map_err(|_| Unreadable)?;
-        let subject = format!(
+        let base = format!(
             "decision={} code={} actor=none allowlist=none",
             id.as_uuid().hyphenated(),
             reason.code()
         );
+        let subject = self.signed(tenant, marker, REJECTED, &actor, &base);
+        let action = AuditAction::new(REJECTED).map_err(|_| Unreadable)?;
         let correlation = CorrelationId::from_uuid(id.as_uuid());
         self.write(
             tenant,
@@ -742,9 +851,26 @@ struct Scan {
     cursor: u64,
     /// Requests with no marker, by sequence.
     pending: BTreeMap<u64, Pending>,
-    /// `decision.requested` records that are not requests this module understands, or that do
-    /// not carry the API's word, and have no marker yet, by sequence (R-2, R-12, AUT-12).
-    malformed: BTreeMap<u64, (AuditEventId, Fault)>,
+    /// Records that are not requests this module trusts and have no marker yet, by sequence: a
+    /// `decision.requested` that is malformed or does not carry the API's word (R-2, R-12, AUT-12),
+    /// and a row with the action of a marker that does not carry the worker's word (RR-8). They are
+    /// dealt with under a budget of their own, so that they never take the room of a signed request
+    /// (RR-21).
+    junk: BTreeMap<u64, (AuditEventId, Fault)>,
+    /// How many junk records were left out of `junk` because it was full. They are not candidates
+    /// either way, and a worker that starts reads them again.
+    left_out: u64,
+}
+
+impl Scan {
+    /// Keeps a junk record to mark, unless the scan already holds [`JUNK_KEPT`] of them.
+    fn keep_junk(&mut self, sequence: u64, id: AuditEventId, fault: Fault) {
+        if self.junk.len() >= JUNK_KEPT {
+            self.left_out = self.left_out.saturating_add(1);
+            return;
+        }
+        self.junk.insert(sequence, (id, fault));
+    }
 }
 
 /// Why a record is refused before it is read as a request.
@@ -754,11 +880,23 @@ enum Fault {
     Malformed,
     /// The text is right and the word that only the API can make is missing or wrong.
     NotSigned,
+    /// A row with the action of a marker that the worker did not write (no word, a wrong word, or
+    /// not a component of the system as its actor).
+    ForgedMarker,
 }
 
-/// The most decisions (and malformed records) one pass deals with for one tenant, unless the hook is
-/// built with another number. Bounded work per pass (R-12): a long queue never holds the claim back.
+/// The most signed requests one pass deals with for one tenant, unless the hook is built with
+/// another number. Bounded work per pass (R-12): a long queue never holds the claim back.
 pub const DECISIONS_PER_PASS: usize = 50;
+
+/// The most junk records (unsigned or malformed requests, forged markers) one pass writes a marker
+/// for, for one tenant. A budget of its own, apart from [`DECISIONS_PER_PASS`]: junk never takes the
+/// room of a signed request (RR-21).
+pub const JUNK_PER_PASS: usize = 25;
+
+/// The most junk records a scan keeps in memory for one tenant. A writer who adds more than the
+/// worker can mark does not make the worker grow without bound.
+const JUNK_KEPT: usize = 10_000;
 
 /// The most pages of the audit log one pass reads for one tenant. The cursor keeps its place, so
 /// the next pass goes on.
@@ -780,6 +918,8 @@ pub struct ClaimWork {
     dependencies: Option<Arc<DependencyDecisions>>,
     keys: Arc<DecisionKeys>,
     scans: Mutex<BTreeMap<TenantId, Scan>>,
+    /// Where the next round of tenants starts, so that the same tenant is not always first.
+    turn: AtomicUsize,
 }
 
 /// What [`ClaimWork`] is built from.
@@ -830,6 +970,7 @@ impl ClaimWork {
             dependencies: None,
             keys: deps.keys,
             scans: Mutex::new(BTreeMap::new()),
+            turn: AtomicUsize::new(0),
         }
     }
 
@@ -917,28 +1058,29 @@ impl ClaimWork {
         if !self.read_new_records(tenant).await {
             return;
         }
-        // Bounded work (R-12): malformed records first, they are cheap, then requests in the order
-        // of the tenant's audit sequence (R-10), no more than `per_pass` in all.
-        let (malformed, pending): (Vec<(u64, AuditEventId, Fault)>, Vec<Pending>) = {
+        // Bounded work (R-12), in two budgets that do not touch each other (RR-21): junk records
+        // (cheap, a marker each) up to `JUNK_PER_PASS`, and signed requests in the order of the
+        // tenant's audit sequence (R-10) up to `per_pass`. Whatever the junk writer adds, the
+        // signed requests of the pass are the first `per_pass` of them.
+        let (junk, pending): (Vec<(u64, AuditEventId, Fault)>, Vec<Pending>) = {
             let scans = self.scans.lock().unwrap_or_else(PoisonError::into_inner);
             scans.get(&tenant).map_or_else(
                 || (Vec::new(), Vec::new()),
                 |scan| {
-                    let malformed: Vec<(u64, AuditEventId, Fault)> = scan
-                        .malformed
+                    let junk: Vec<(u64, AuditEventId, Fault)> = scan
+                        .junk
                         .iter()
-                        .take(self.per_pass)
+                        .take(JUNK_PER_PASS)
                         .map(|(sequence, (id, fault))| (*sequence, *id, *fault))
                         .collect();
-                    let room = self.per_pass.saturating_sub(malformed.len());
                     (
-                        malformed,
-                        scan.pending.values().take(room).cloned().collect(),
+                        junk,
+                        scan.pending.values().take(self.per_pass).cloned().collect(),
                     )
                 },
             )
         };
-        for (sequence, id, fault) in malformed {
+        for (sequence, id, fault) in junk {
             let (marked, code) = match fault {
                 Fault::Malformed => (
                     self.markers.mark_malformed(tenant, id).await,
@@ -948,17 +1090,21 @@ impl ClaimWork {
                     self.markers.mark_unsigned(tenant, id).await,
                     Reason::NotSigned.code(),
                 ),
+                Fault::ForgedMarker => (
+                    self.markers.mark_ignored(tenant, id).await,
+                    "marker_ignored",
+                ),
             };
             match marked {
                 Ok(()) => {
-                    tracing::info!(code, "a request was rejected");
+                    tracing::info!(code, "a record that is not a request was dealt with");
                     let mut scans = self.scans.lock().unwrap_or_else(PoisonError::into_inner);
                     if let Some(scan) = scans.get_mut(&tenant) {
-                        scan.malformed.remove(&sequence);
+                        scan.junk.remove(&sequence);
                     }
                 }
                 Err(Unreadable) => tracing::warn!(
-                    "the marker of a malformed request could not be written; it is tried again next pass"
+                    "the marker of a record that is not a request could not be written; it is tried again next pass"
                 ),
             }
         }
@@ -1021,15 +1167,21 @@ impl ClaimWork {
                             Ok(pending) => {
                                 scan.pending.insert(record.sequence, pending);
                             }
-                            Err(fault) => {
-                                scan.malformed
-                                    .insert(record.sequence, (record.event.id, fault));
-                            }
+                            Err(fault) => scan.keep_junk(record.sequence, record.event.id, fault),
                         },
                         APPLIED | REJECTED => {
-                            if let Some(id) = marked_decision(&record.event.subject) {
-                                scan.pending.retain(|_, pending| pending.id != id);
-                                scan.malformed.retain(|_, (malformed, _)| *malformed != id);
+                            // Only a marker the worker signed ends a request (RR-8).
+                            match counted_marker(tenant, &record, &self.keys) {
+                                Some(Some(id)) => {
+                                    scan.pending.retain(|_, pending| pending.id != id);
+                                    scan.junk.retain(|_, (junk, _)| *junk != id);
+                                }
+                                Some(None) => scan.keep_junk(
+                                    record.sequence,
+                                    record.event.id,
+                                    Fault::ForgedMarker,
+                                ),
+                                None => {}
                             }
                         }
                         _ => {}
@@ -1466,10 +1618,27 @@ impl ClaimWork {
 #[async_trait(?Send)]
 impl BeforeClaim for ClaimWork {
     async fn before_claim(&self) {
-        for tenant in &self.tenants {
-            self.pass(*tenant).await;
+        // Each tenant has budgets of its own, so one tenant's queue cannot take the room of another's.
+        // The order in which they are visited turns on every round, so that none is always last.
+        let turn = self.turn.fetch_add(1, Ordering::Relaxed);
+        for tenant in rotated(&self.tenants, turn) {
+            self.pass(tenant).await;
         }
     }
+}
+
+/// The tenants in the order of this round: the list starting at the place `turn` names, wrapping.
+fn rotated(tenants: &[TenantId], turn: usize) -> Vec<TenantId> {
+    let start = if tenants.is_empty() {
+        0
+    } else {
+        turn % tenants.len()
+    };
+    tenants[start..]
+        .iter()
+        .chain(&tenants[..start])
+        .copied()
+        .collect()
 }
 
 /// A request for a decision, read from its audit record. `Err` for a record that is not a request
@@ -1531,13 +1700,6 @@ fn requested_from(
     })
 }
 
-/// The decision a marker belongs to, from its subject.
-fn marked_decision(subject: &str) -> Option<AuditEventId> {
-    let first = subject.split_whitespace().next()?;
-    let id = first.strip_prefix("decision=")?;
-    AuditEventId::parse(id).ok()
-}
-
 /// The reason for a refusal of the approval service. Authority is never explained.
 fn refusal_reason(code: &str) -> Reason {
     match code {
@@ -1589,23 +1751,174 @@ mod tests {
         assert_eq!(DecisionFields::parse("verb=pause"), None);
     }
 
-    #[test]
-    fn the_marker_id_is_derived_and_differs_from_the_decision() {
-        let id = AuditEventId::from_uuid(uuid::Uuid::from_u128(7));
-        assert_eq!(marker_id(id), marker_id(id));
-        assert_ne!(marker_id(id), id);
-        assert_ne!(
-            marker_id(id),
-            marker_id(AuditEventId::from_uuid(uuid::Uuid::from_u128(8)))
+    fn keys(seed: u8) -> DecisionKeys {
+        DecisionKeys::fixed_for_tests(&[seed; 40], None).expect("a key")
+    }
+
+    fn marker_row(
+        keys: &DecisionKeys,
+        tenant: TenantId,
+        action: &str,
+        actor: AuditActor,
+        decision: AuditEventId,
+    ) -> factory_ports::store::AuditRecord {
+        let event = keys.marker_id(decision);
+        let base = format!(
+            "decision={} code=applied actor=none allowlist=none",
+            decision.as_uuid().hyphenated()
         );
+        let subject = keys.signed_marker_subject(&MarkerSigning {
+            tenant,
+            event,
+            action,
+            actor: &actor_text(&actor),
+            subject: &base,
+        });
+        factory_ports::store::AuditRecord {
+            sequence: 1,
+            event: NewAuditEvent {
+                id: event,
+                actor,
+                action: AuditAction::new(action).expect("an action"),
+                subject,
+                decision: AuditDecision::Allow,
+                reason: "applied".to_owned(),
+                policy_hash: Sha256Digest::of(b"policy"),
+                job: None,
+                stage_run: None,
+                correlation_id: CorrelationId::from_uuid(uuid::Uuid::from_u128(5)),
+            },
+            created_at: Timestamp::parse("2026-10-29T12:00:00Z").expect("a time"),
+            hash: Sha256Digest::of(b"row"),
+        }
     }
 
     #[test]
-    fn a_marker_names_its_decision() {
+    fn the_marker_id_is_keyed_and_differs_from_the_decision() {
+        let id = AuditEventId::from_uuid(uuid::Uuid::from_u128(7));
+        let one = keys(1);
+        assert_eq!(one.marker_id(id), one.marker_id(id));
+        assert_ne!(one.marker_id(id), id);
+        assert_ne!(
+            one.marker_id(id),
+            one.marker_id(AuditEventId::from_uuid(uuid::Uuid::from_u128(8)))
+        );
+        // Whoever lacks the key cannot compute the id the worker will write under.
+        assert_ne!(one.marker_id(id), keys(2).marker_id(id));
+    }
+
+    #[test]
+    fn a_signed_marker_names_its_decision_and_counts() {
+        let tenant = TenantId::from_uuid(uuid::Uuid::from_u128(1));
         let id = AuditEventId::from_uuid(uuid::Uuid::from_u128(9));
-        let subject = format!("decision={} verb=pause job=x", id.as_uuid().hyphenated());
-        assert_eq!(marked_decision(&subject), Some(id));
-        assert_eq!(marked_decision("verb=pause"), None);
+        let keys = keys(3);
+        let worker = AuditActor::System(Slug::parse("worker.decisions").expect("a slug"));
+        for action in [APPLIED, REJECTED] {
+            let row = marker_row(&keys, tenant, action, worker.clone(), id);
+            assert_eq!(counted_marker(tenant, &row, &keys), Some(Some(id)));
+        }
+    }
+
+    #[test]
+    fn a_marker_without_the_workers_word_is_not_counted() {
+        let tenant = TenantId::from_uuid(uuid::Uuid::from_u128(1));
+        let id = AuditEventId::from_uuid(uuid::Uuid::from_u128(9));
+        let keys = keys(3);
+        let worker = AuditActor::System(Slug::parse("worker.decisions").expect("a slug"));
+        // No word at all.
+        let mut bare = marker_row(&keys, tenant, REJECTED, worker.clone(), id);
+        bare.event.subject = format!("decision={} code=not_authorized", id.as_uuid().hyphenated());
+        assert_eq!(counted_marker(tenant, &bare, &keys), Some(None));
+        // A word of another key.
+        let other = marker_row(&self::keys(4), tenant, REJECTED, worker.clone(), id);
+        assert_eq!(counted_marker(tenant, &other, &keys), Some(None));
+        // The right word on a row of another tenant, with another action, by another actor, with a
+        // changed subject, under another row id.
+        let good = marker_row(&keys, tenant, APPLIED, worker.clone(), id);
+        let other_tenant = TenantId::from_uuid(uuid::Uuid::from_u128(2));
+        assert_eq!(counted_marker(other_tenant, &good, &keys), Some(None));
+        let mut action = good.clone();
+        action.event.action = AuditAction::new(REJECTED).expect("an action");
+        assert_eq!(counted_marker(tenant, &action, &keys), Some(None));
+        let mut actor = good.clone();
+        actor.event.actor =
+            AuditActor::System(Slug::parse("worker.dependency-decisions").expect("a slug"));
+        assert_eq!(counted_marker(tenant, &actor, &keys), Some(None));
+        let mut person = good.clone();
+        person.event.actor = AuditActor::Human(PrincipalId::from_uuid(uuid::Uuid::from_u128(77)));
+        assert_eq!(counted_marker(tenant, &person, &keys), Some(None));
+        let mut subject = good.clone();
+        subject.event.subject = subject
+            .event
+            .subject
+            .replace("code=applied", "code=refused");
+        assert_eq!(counted_marker(tenant, &subject, &keys), Some(None));
+        let mut moved = good.clone();
+        moved.event.id = AuditEventId::from_uuid(uuid::Uuid::from_u128(1234));
+        assert_eq!(counted_marker(tenant, &moved, &keys), Some(None));
+        // A row of another action is not a marker at all.
+        let mut unrelated = good;
+        unrelated.event.action = AuditAction::new("job.submitted").expect("an action");
+        assert_eq!(counted_marker(tenant, &unrelated, &keys), None);
+    }
+
+    #[test]
+    fn the_word_of_a_request_is_not_the_word_of_a_marker() {
+        // The same key signs both kinds of text; their first lines differ, so one cannot stand in for
+        // the other.
+        let tenant = TenantId::from_uuid(uuid::Uuid::from_u128(1));
+        let id = AuditEventId::from_uuid(uuid::Uuid::from_u128(9));
+        let keys = keys(3);
+        let worker = AuditActor::System(Slug::parse("worker.decisions").expect("a slug"));
+        let mut row = marker_row(&keys, tenant, APPLIED, worker, id);
+        let fields = DecisionFields {
+            verb: Verb::Pause,
+            job: JobId::from_uuid(uuid::Uuid::from_u128(0x11)),
+            stage_run: None,
+            head: None,
+            evidence: None,
+            target: None,
+        };
+        let request_word = keys.sign(&Signing {
+            tenant,
+            actor: PrincipalId::from_uuid(uuid::Uuid::from_u128(2)),
+            event: row.event.id,
+            requested_at: "2026-10-29T12:00:00Z",
+            fields: &fields,
+        });
+        row.event.subject = format!(
+            "decision={} code=applied actor=none allowlist=none mac={request_word}",
+            id.as_uuid().hyphenated()
+        );
+        assert_eq!(counted_marker(tenant, &row, &keys), Some(None));
+    }
+
+    #[test]
+    fn the_tenants_start_where_the_turn_says() {
+        let tenants: Vec<TenantId> = (1..=3)
+            .map(|n| TenantId::from_uuid(uuid::Uuid::from_u128(n)))
+            .collect();
+        assert_eq!(rotated(&tenants, 0), tenants);
+        assert_eq!(rotated(&tenants, 1), [tenants[1], tenants[2], tenants[0]]);
+        assert_eq!(rotated(&tenants, 5), [tenants[2], tenants[0], tenants[1]]);
+        assert!(rotated(&[], 4).is_empty());
+        // Over a full round, each tenant is first once.
+        let firsts: Vec<TenantId> = (0..3).map(|turn| rotated(&tenants, turn)[0]).collect();
+        assert_eq!(firsts, tenants);
+    }
+
+    #[test]
+    fn a_scan_keeps_a_bounded_number_of_junk_records() {
+        let mut scan = Scan::default();
+        for n in 0..(JUNK_KEPT as u64 + 5) {
+            scan.keep_junk(
+                n,
+                AuditEventId::from_uuid(uuid::Uuid::from_u128(u128::from(n) + 1)),
+                Fault::NotSigned,
+            );
+        }
+        assert_eq!(scan.junk.len(), JUNK_KEPT);
+        assert_eq!(scan.left_out, 5);
     }
 
     #[test]

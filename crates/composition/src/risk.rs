@@ -17,7 +17,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use factory_domain::policy::risk::RiskFacts;
 use factory_domain::state::StageRunStatus;
-use factory_domain::vocabulary::{RiskTier, StageKind};
+use factory_domain::vocabulary::{Fidelity, RiskTier, StageKind};
 use factory_ports::artifact::ArtifactStore;
 use factory_ports::store::Store;
 use factory_workflow::handlers::RunIdentity;
@@ -58,6 +58,10 @@ fn tier(hint: &str) -> Option<RiskTier> {
 
 #[async_trait]
 impl RiskSource for StoreRisk {
+    fn fidelity(&self) -> Fidelity {
+        self.reader.fidelity()
+    }
+
     async fn of(&self, run: &RunIdentity) -> Result<JobRisk, SeamError> {
         let mut tx = self.reader.begin(run.tenant).await?;
         let outcome = async {

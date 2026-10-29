@@ -32,6 +32,16 @@
 //! compared in constant time. A row with no word, or the wrong one, is rejected with the fixed code
 //! `not_signed`, and nothing else about it is read.
 //!
+//! # The marker is signed too (RR-8)
+//!
+//! The row that ends a request, `decision.applied` or `decision.rejected`, is a row in the same log,
+//! and a login of the API's group can write any row. So the worker's marker carries a word of its own,
+//! made with the same key over a distinct first line, the tenant, the id of the marker row, the action,
+//! the actor and the subject (see [`MarkerSigning`]). The hook counts a request as dealt with only when
+//! the marker that names it has a good word. A marker without one, or with a wrong one, is ignored and
+//! audited once. The id of the marker row is itself keyed ([`DecisionKeys::marker_id`]), so nobody can
+//! write a row under the id the worker will use before the worker does.
+//!
 //! # The key
 //!
 //! The key is a file, named in the configuration of the API and of the worker (`decisions.key_file`):
@@ -47,18 +57,28 @@ use std::path::Path;
 
 use factory_domain::ids::{AuditEventId, PrincipalId, TenantId};
 use factory_domain::redaction::Redactor;
+use factory_domain::values::Timestamp;
+use factory_ports::store::AuditActor;
 use hmac::{Hmac, KeyInit, Mac};
 use sha2::Sha256;
 use subtle::{Choice, ConstantTimeEq};
 
-use crate::config::{ConfigError, DecisionSigning, SecretFile};
+use crate::config::{ConfigError, DecisionSigning};
 use crate::decisions::DecisionFields;
 use crate::dependency_decisions::DependencyFields;
 use crate::profile::Profile;
 use crate::startup::StartupFailure;
 
-/// The shortest key accepted, in bytes.
+/// The shortest key accepted, in bytes of key material: a key written as hex digits counts for the
+/// bytes it spells (64 digits are 32 bytes), any other text for its own bytes.
 pub const MIN_KEY_BYTES: usize = 32;
+
+/// The fewest different byte values the key material may have. A random key of 32 bytes has about 28.
+const MIN_DISTINCT_BYTES: usize = 8;
+
+/// The longest repeating unit that makes a key a repetition: a key that is one unit of up to this
+/// many bytes written again and again is refused.
+const MAX_REPEATING_UNIT: usize = 16;
 
 /// The length of the word, in hex digits.
 pub const WORD_HEX_DIGITS: usize = 64;
@@ -72,12 +92,25 @@ const CONTEXT: &str = "factory-decision-request/1";
 /// text could be made to look alike.
 const DEPENDENCY_CONTEXT: &str = "factory-dependency-decision-request/1";
 
+/// The first line of what is signed for the marker of a decision. It differs from [`CONTEXT`] and
+/// [`DEPENDENCY_CONTEXT`], so a word made for a request is never the word of a marker.
+const MARKER_CONTEXT: &str = "factory-decision-marker/1";
+
+/// The first line of what is hashed to make the id of a marker row.
+const MARKER_ID_CONTEXT: &str = "factory-decision-marker-id/1";
+
 /// Why a key cannot be used.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum KeyError {
     /// The key is shorter than [`MIN_KEY_BYTES`].
     #[error("the decision signing key is shorter than {MIN_KEY_BYTES} bytes")]
     TooShort,
+    /// The key has too little entropy to authenticate anything: one byte or one short word written
+    /// again and again, a run of consecutive values, or too few different bytes (RR-5).
+    #[error(
+        "the decision signing key is not random: it repeats a short pattern or has too few different bytes"
+    )]
+    Weak,
     /// The previous key is the current key.
     #[error("the previous decision signing key is the same as the current one")]
     SameKey,
@@ -99,8 +132,70 @@ impl From<KeyError> for StartupFailure {
 #[derive(Clone)]
 struct Key(Vec<u8>);
 
+/// The bytes a key text stands for: a text of hex digits is the bytes it spells, as the provisioning
+/// script writes it (64 digits for 32 bytes), and any other text is its own bytes. Surrounding white
+/// space is not part of the key.
+fn material(text: &[u8]) -> Vec<u8> {
+    let trimmed = text.trim_ascii();
+    if !trimmed.is_empty()
+        && trimmed.len().is_multiple_of(2)
+        && trimmed.iter().all(u8::is_ascii_hexdigit)
+    {
+        let nibble = |digit: u8| match digit {
+            b'0'..=b'9' => digit - b'0',
+            b'a'..=b'f' => digit - b'a' + 10,
+            _ => digit - b'A' + 10,
+        };
+        let (pairs, _) = trimmed.as_chunks::<2>();
+        return pairs
+            .iter()
+            .map(|[high, low]| nibble(*high) << 4 | nibble(*low))
+            .collect();
+    }
+    trimmed.to_vec()
+}
+
+/// True when the material shows no entropy: too few different values, a repeating unit of up to
+/// [`MAX_REPEATING_UNIT`] bytes, or every byte one step from the one before.
+fn is_weak(material: &[u8]) -> bool {
+    let mut seen = [false; 256];
+    for byte in material {
+        seen[usize::from(*byte)] = true;
+    }
+    if seen.iter().filter(|present| **present).count() < MIN_DISTINCT_BYTES {
+        return true;
+    }
+    let repeats = (1..=MAX_REPEATING_UNIT.min(material.len() / 2)).any(|unit| {
+        material
+            .iter()
+            .enumerate()
+            .all(|(index, byte)| *byte == material[index % unit])
+    });
+    if repeats {
+        return true;
+    }
+    let step = material[1].wrapping_sub(material[0]);
+    material
+        .windows(2)
+        .all(|pair| pair[1].wrapping_sub(pair[0]) == step)
+}
+
 impl Key {
+    /// A key of this text: long enough, and not a repetition (RR-5).
     fn from_bytes(bytes: &[u8]) -> Result<Self, KeyError> {
+        let key = Self::fixed(bytes)?;
+        let material = material(bytes);
+        if material.len() < MIN_KEY_BYTES {
+            return Err(KeyError::TooShort);
+        }
+        if is_weak(&material) {
+            return Err(KeyError::Weak);
+        }
+        Ok(key)
+    }
+
+    /// A key of this text, long enough and nothing more. For a test that wants a known key.
+    fn fixed(bytes: &[u8]) -> Result<Self, KeyError> {
         if bytes.len() < MIN_KEY_BYTES {
             return Err(KeyError::TooShort);
         }
@@ -172,6 +267,46 @@ impl DependencySigning<'_> {
     }
 }
 
+/// What the signature of a marker covers besides its subject.
+#[derive(Debug, Clone, Copy)]
+pub struct MarkerSigning<'a> {
+    /// The tenant the record belongs to.
+    pub tenant: TenantId,
+    /// The id of the marker row itself (see [`DecisionKeys::marker_id`]).
+    pub event: AuditEventId,
+    /// The audit action of the marker: `decision.applied` or `decision.rejected`.
+    pub action: &'a str,
+    /// The actor of the marker, as [`actor_text`] writes it.
+    pub actor: &'a str,
+    /// The subject without the word: `decision=<request id>` and the fixed words after it.
+    pub subject: &'a str,
+}
+
+impl MarkerSigning<'_> {
+    fn message(&self) -> String {
+        format!(
+            "{MARKER_CONTEXT}\ntenant={}\nevent={}\naction={}\nactor={}\n{}",
+            self.tenant.as_text(),
+            self.event.as_uuid().hyphenated(),
+            self.action,
+            self.actor,
+            self.subject,
+        )
+    }
+}
+
+/// The actor of an audit record as one word, for the message of a marker. A person, a service and a
+/// component of the system with the same text are different actors.
+#[must_use]
+pub fn actor_text(actor: &AuditActor) -> String {
+    match actor {
+        AuditActor::Human(id) => format!("human:{}", id.as_text()),
+        AuditActor::Service(id) => format!("service:{}", id.as_text()),
+        AuditActor::System(slug) => format!("system:{}", slug.as_str()),
+        AuditActor::Anonymous(slug) => format!("anonymous:{}", slug.as_str()),
+    }
+}
+
 /// The keys of the signing: the current one, and during a rotation the one before it.
 #[derive(Clone)]
 pub struct DecisionKeys {
@@ -222,13 +357,30 @@ fn random_key_text() -> Result<String, KeyError> {
 }
 
 impl DecisionKeys {
-    /// Keys from the bytes of the files.
+    /// Keys from the bytes of the files. A key that is a repeated byte or word, has too few different
+    /// bytes or is shorter than 32 bytes of key material is refused, in every profile (RR-5).
     ///
     /// # Errors
-    /// [`KeyError::TooShort`] or [`KeyError::SameKey`].
+    /// [`KeyError::TooShort`], [`KeyError::Weak`] or [`KeyError::SameKey`].
     pub fn from_bytes(current: &[u8], previous: Option<&[u8]>) -> Result<Self, KeyError> {
         let current = Key::from_bytes(current)?;
         let previous = previous.map(Key::from_bytes).transpose()?;
+        if previous.as_ref().is_some_and(|old| old.0 == current.0) {
+            return Err(KeyError::SameKey);
+        }
+        Ok(Self { current, previous })
+    }
+
+    /// Keys of a known text, for a test: the length is checked and the entropy is not, so a test may
+    /// use `[7; 40]`. Nothing else calls this: [`load`](Self::load) and every other constructor
+    /// refuse a key with no entropy.
+    ///
+    /// # Errors
+    /// [`KeyError::TooShort`] or [`KeyError::SameKey`].
+    #[doc(hidden)]
+    pub fn fixed_for_tests(current: &[u8], previous: Option<&[u8]>) -> Result<Self, KeyError> {
+        let current = Key::fixed(current)?;
+        let previous = previous.map(Key::fixed).transpose()?;
         if previous.as_ref().is_some_and(|old| old.0 == current.0) {
             return Err(KeyError::SameKey);
         }
@@ -248,7 +400,7 @@ impl DecisionKeys {
     /// The same keys, with `previous` as the key accepted for verification during a rotation.
     ///
     /// # Errors
-    /// [`KeyError::TooShort`] or [`KeyError::SameKey`].
+    /// [`KeyError::TooShort`], [`KeyError::Weak`] or [`KeyError::SameKey`].
     pub fn rotated_from(self, previous: &[u8]) -> Result<Self, KeyError> {
         let old = Key::from_bytes(previous)?;
         if old.0 == self.current.0 {
@@ -264,9 +416,13 @@ impl DecisionKeys {
     /// owner may read. A key is registered with the redactor, so a log line that prints one is
     /// redacted.
     ///
-    /// The production profile needs the section and the files. The other profiles make the file
-    /// when it is missing (mode 0600, written whole before it appears), and with no section at all
-    /// they keep a key in memory.
+    /// The production profile needs the section and the files, and holds the files to more: every
+    /// directory above a key file is closed to writers other than its owner (a sticky directory
+    /// such as `/tmp` is allowed: there only the owner of a file can replace it), and the file
+    /// belongs to the owner of its directory or the directory to root (RR-25). The previous key
+    /// is used only until `previous_key_valid_until`, and not at all in production without one. The
+    /// other profiles make the file when it is missing (mode 0600, written whole before it appears),
+    /// and with no section at all they keep a key in memory.
     ///
     /// # Errors
     /// [`KeyError`].
@@ -274,6 +430,20 @@ impl DecisionKeys {
         profile: Profile,
         settings: Option<&DecisionSigning>,
         redactor: &Redactor,
+    ) -> Result<Self, KeyError> {
+        let now = factory_ports::clock::Clock::now(&crate::system::SystemClock);
+        Self::load_at(profile, settings, redactor, now)
+    }
+
+    /// [`load`](Self::load) at a given time, for the expiry of the previous key.
+    ///
+    /// # Errors
+    /// [`KeyError`].
+    pub fn load_at(
+        profile: Profile,
+        settings: Option<&DecisionSigning>,
+        redactor: &Redactor,
+        now: Timestamp,
     ) -> Result<Self, KeyError> {
         let Some(settings) = settings else {
             if profile == Profile::Production {
@@ -291,12 +461,19 @@ impl DecisionKeys {
         if profile != Profile::Production {
             make_if_missing(settings.key_file.path())?;
         }
+        if profile == Profile::Production {
+            check_key_location(settings.key_file.path())?;
+        }
         let current = settings.key_file.read()?;
-        let previous = settings
-            .previous_key_file
-            .as_ref()
-            .map(SecretFile::read)
-            .transpose()?;
+        let previous = match &settings.previous_key_file {
+            Some(file) if previous_key_in_force(profile, settings, now)? => {
+                if profile == Profile::Production {
+                    check_key_location(file.path())?;
+                }
+                Some(file.read()?)
+            }
+            _ => None,
+        };
         let keys = Self::from_bytes(
             current.expose().as_bytes(),
             previous.as_ref().map(|key| key.expose().as_bytes()),
@@ -385,6 +562,122 @@ impl DecisionKeys {
             self.sign(signing)
         )
     }
+
+    /// The word for a marker, made with the current key.
+    ///
+    /// # Panics
+    /// Never: an HMAC accepts a key of any length.
+    #[must_use]
+    pub fn sign_marker(&self, signing: &MarkerSigning<'_>) -> String {
+        let word = self
+            .current
+            .word(signing.message().as_bytes())
+            .expect("an HMAC key can have any length");
+        hex(&word)
+    }
+
+    /// True when `word` is the word of this marker under the current key or the previous one,
+    /// compared as [`verify`](Self::verify) does.
+    #[must_use]
+    pub fn verify_marker(&self, signing: &MarkerSigning<'_>, word: &str) -> bool {
+        self.verify_message(&signing.message(), word)
+    }
+
+    /// The subject of a signed marker: the words, then the word.
+    #[must_use]
+    pub fn signed_marker_subject(&self, signing: &MarkerSigning<'_>) -> String {
+        format!("{} mac={}", signing.subject, self.sign_marker(signing))
+    }
+
+    /// The id of the marker row for a request (or for a record the hook ignores). It is a keyed
+    /// function of the id, so that it is the same on every pass and in every worker that holds the
+    /// key, and nobody without the key can tell it in advance and write a row under it.
+    ///
+    /// # Panics
+    /// Never: an HMAC accepts a key of any length.
+    #[must_use]
+    pub fn marker_id(&self, decision: AuditEventId) -> AuditEventId {
+        let word = self
+            .current
+            .word(format!("{MARKER_ID_CONTEXT}\n{}", decision.as_uuid().hyphenated()).as_bytes())
+            .expect("an HMAC key can have any length");
+        let mut bytes = [0_u8; 16];
+        bytes.copy_from_slice(&word[..16]);
+        AuditEventId::from_uuid(uuid::Builder::from_random_bytes(bytes).into_uuid())
+    }
+}
+
+/// Whether the previous key still verifies at `now`: until `previous_key_valid_until`, and, with no
+/// such time, in every profile but production (RR-25). A previous key that is ignored is logged, with
+/// the reason and no key.
+fn previous_key_in_force(
+    profile: Profile,
+    settings: &DecisionSigning,
+    now: Timestamp,
+) -> Result<bool, KeyError> {
+    let Some(text) = settings.previous_key_valid_until.as_deref() else {
+        if profile == Profile::Production {
+            tracing::warn!(
+                "the previous decision signing key is ignored: `decisions.previous_key_valid_until` \
+                 is not set, and the production profile does not accept a previous key without an end"
+            );
+            return Ok(false);
+        }
+        return Ok(true);
+    };
+    let until = Timestamp::parse(text).map_err(|_| {
+        KeyError::File(ConfigError::OutOfRange {
+            field: "decisions.previous_key_valid_until",
+            problem: "is not a UTC time such as 2026-11-02T12:00:00Z",
+        })
+    })?;
+    if now > until {
+        tracing::warn!(
+            "the previous decision signing key is ignored: `decisions.previous_key_valid_until` has passed"
+        );
+        return Ok(false);
+    }
+    Ok(true)
+}
+
+/// The place of a key file, in the production profile (RR-25). The file is looked at as the
+/// operating system resolves it, and every directory above it must not be writable by group or
+/// others unless it is sticky (a writer there can replace the file), and the file belongs to the owner of its directory,
+/// or the directory to root. Whether the owner is the user the process runs as cannot be asked
+/// without a call into the operating system that this crate does not make; the mode of the file
+/// (nothing for group or others) and its being readable make it the process's own or root's.
+fn check_key_location(path: &Path) -> Result<(), KeyError> {
+    use std::os::unix::fs::{MetadataExt, PermissionsExt};
+    let shown = path.display().to_string();
+    let unsafe_place = |problem: &'static str| {
+        KeyError::File(ConfigError::UnsafeSecretFile {
+            path: shown.clone(),
+            problem,
+        })
+    };
+    let unreadable = || KeyError::File(ConfigError::Unreadable(shown.clone()));
+    let resolved = std::fs::canonicalize(path).map_err(|_| unreadable())?;
+    for directory in resolved.ancestors().skip(1) {
+        let meta = std::fs::metadata(directory).map_err(|_| unreadable())?;
+        let mode = meta.permissions().mode();
+        // A sticky directory lets only the owner of a file rename or remove it, which is all that
+        // matters for a file that is the process's own.
+        if mode & 0o022 != 0 && mode & 0o1000 == 0 {
+            return Err(unsafe_place(
+                "a directory above it can be written by group or others",
+            ));
+        }
+    }
+    let file = std::fs::metadata(&resolved).map_err(|_| unreadable())?;
+    if let Some(parent) = resolved.parent() {
+        let owner = std::fs::metadata(parent).map_err(|_| unreadable())?.uid();
+        if file.uid() != owner && owner != 0 {
+            return Err(unsafe_place(
+                "owned by another user than the directory it is in",
+            ));
+        }
+    }
+    Ok(())
 }
 
 /// Makes the key file when it does not exist, so that two processes that start together end up with
@@ -468,6 +761,34 @@ pub fn read_subject(subject: &str) -> Option<SubjectKind> {
     DecisionFields::parse_canonical(subject).map(SubjectKind::Unsigned)
 }
 
+/// What the subject of a marker holds, split but not believed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MarkerSubject<'a> {
+    /// The request the marker says it belongs to.
+    pub decision: AuditEventId,
+    /// The subject without the word: what the word covers.
+    pub base: &'a str,
+    /// The word as written. [`DecisionKeys::verify_marker`] decides whether it is good.
+    pub word: &'a str,
+}
+
+/// Splits the subject of a marker: `decision=<id> ... mac=<word>`. `None` when it has no word or does
+/// not start with the id of a request.
+#[must_use]
+pub fn read_marker_subject(subject: &str) -> Option<MarkerSubject<'_>> {
+    let (base, word) = subject.rsplit_once(" mac=")?;
+    if word.is_empty() || word.contains(char::is_whitespace) {
+        return None;
+    }
+    let first = base.split_whitespace().next()?;
+    let decision = AuditEventId::parse(first.strip_prefix("decision=")?).ok()?;
+    Some(MarkerSubject {
+        decision,
+        base,
+        word,
+    })
+}
+
 /// What the subject of a `decision.dependency_requested` row holds.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DependencySubject {
@@ -503,9 +824,11 @@ pub fn read_dependency_subject(subject: &str) -> Option<DependencySubject> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::SecretFile;
     use crate::decisions::DecisionFields;
     use factory_domain::ids::{JobId, StageRunId};
     use factory_workflow::stages::approval::Verb;
+    use sha2::Digest as _;
 
     fn uuid(n: u128) -> uuid::Uuid {
         uuid::Uuid::from_u128(n)
@@ -523,7 +846,12 @@ mod tests {
     }
 
     fn keys(seed: u8) -> DecisionKeys {
-        DecisionKeys::from_bytes(&[seed; 40], None).expect("a key")
+        DecisionKeys::fixed_for_tests(&[seed; 40], None).expect("a key")
+    }
+
+    /// A key that has entropy: 64 hex digits of the SHA-256 of one byte. Different seeds, different keys.
+    fn strong(seed: u8) -> String {
+        hex(&Sha256::digest([seed]))
     }
 
     struct Parts {
@@ -618,10 +946,12 @@ mod tests {
 
     #[test]
     fn a_rotation_accepts_both_keys_and_signs_with_the_new_one() {
-        let old = keys(1);
+        let old = DecisionKeys::from_bytes(strong(1).as_bytes(), None).expect("a key");
         let parts = parts();
         let by_old = old.sign(&parts.signing());
-        let rotated = keys(2).rotated_from(&[1; 40]).expect("rotation");
+        let rotated = keys(2)
+            .rotated_from(&strong(1).into_bytes())
+            .expect("rotation");
         assert!(
             rotated.verify(&parts.signing(), &by_old),
             "the previous key still verifies"
@@ -638,17 +968,78 @@ mod tests {
     #[test]
     fn a_short_key_and_a_repeated_key_are_refused() {
         assert_eq!(
-            DecisionKeys::from_bytes(&[1; 31], None).err(),
+            DecisionKeys::fixed_for_tests(&[1; 31], None).err(),
             Some(KeyError::TooShort)
         );
         assert_eq!(
-            DecisionKeys::from_bytes(&[1; 40], Some(&[2; 10])).err(),
+            DecisionKeys::fixed_for_tests(&[1; 40], Some(&[2; 10])).err(),
             Some(KeyError::TooShort)
         );
         assert_eq!(
-            DecisionKeys::from_bytes(&[1; 40], Some(&[1; 40])).err(),
+            DecisionKeys::fixed_for_tests(&[1; 40], Some(&[1; 40])).err(),
             Some(KeyError::SameKey)
         );
+    }
+
+    /// A key with no entropy is refused by every constructor but the one for tests (RR-5).
+    #[test]
+    fn a_key_with_no_entropy_is_refused() {
+        let hex = |bytes: &[u8]| hex(bytes).into_bytes();
+        let counted: Vec<u8> = (0..40_u8).collect();
+        let weak: Vec<(&str, Vec<u8>)> = vec![
+            ("one byte", vec![b'z'; 40]),
+            ("zeros", vec![0; 40]),
+            (
+                "a word repeated",
+                b"passwordpasswordpasswordpassword".to_vec(),
+            ),
+            (
+                "a unit of sixteen",
+                b"ghijklmnopqrstuvghijklmnopqrstuv".to_vec(),
+            ),
+            ("hex of one byte", hex(&[0xab; 32])),
+            ("hex of a short unit", hex(&[1, 2, 3, 4].repeat(8))),
+            ("a run of consecutive bytes", counted),
+            (
+                "seven different bytes",
+                b"abcdefgabcgfedcbagfedabcgfaebdcg".to_vec(),
+            ),
+        ];
+        for (name, bytes) in weak {
+            assert_eq!(
+                DecisionKeys::from_bytes(&bytes, None).err(),
+                Some(KeyError::Weak),
+                "{name}"
+            );
+            assert!(
+                DecisionKeys::fixed_for_tests(&bytes, None).is_ok(),
+                "{name}: the test constructor checks the length only"
+            );
+        }
+    }
+
+    /// Thirty-two hex digits are sixteen bytes: shorter than the minimum once decoded.
+    #[test]
+    fn a_hex_key_counts_for_the_bytes_it_spells() {
+        let sixteen = hex(&[
+            0x5a, 0x13, 0xc4, 0x9e, 0x72, 0xb8, 0x01, 0xfd, 0x3a, 0x66, 0x90, 0xd2, 0x4b, 0x8c,
+            0xe7, 0x29,
+        ]);
+        assert_eq!(sixteen.len(), 32);
+        assert_eq!(
+            DecisionKeys::from_bytes(sixteen.as_bytes(), None).err(),
+            Some(KeyError::TooShort)
+        );
+    }
+
+    #[test]
+    fn a_random_key_is_accepted_as_text_hex_and_with_a_newline() {
+        let text = random_key_text().expect("random");
+        assert!(DecisionKeys::from_bytes(text.as_bytes(), None).is_ok());
+        assert!(DecisionKeys::from_bytes(format!("{text}\n").as_bytes(), None).is_ok());
+        let words = b"correct horse battery staple, a long enough passphrase 42";
+        assert!(DecisionKeys::from_bytes(words, None).is_ok());
+        assert!(DecisionKeys::generated().is_ok());
     }
 
     #[test]
@@ -715,7 +1106,109 @@ mod tests {
         DecisionSigning {
             key_file: SecretFile::at(current),
             previous_key_file: previous.map(SecretFile::at),
+            previous_key_valid_until: None,
         }
+    }
+
+    /// The settings of a rotation that ends a long time from now.
+    fn rotation(current: &Path, previous: &Path) -> DecisionSigning {
+        DecisionSigning {
+            previous_key_valid_until: Some("2999-01-01T00:00:00Z".to_owned()),
+            ..settings(current, Some(previous))
+        }
+    }
+
+    fn at(text: &str) -> Timestamp {
+        Timestamp::parse(text).expect("a time")
+    }
+
+    /// RR-25. The previous key verifies until the time the configuration gives, and in the production
+    /// profile it does not verify without one.
+    #[test]
+    fn the_previous_key_ends_when_the_configuration_says_and_in_production_it_needs_an_end() {
+        let dir = scratch("expiry");
+        let (old, new) = (dir.join("old.key"), dir.join("new.key"));
+        write_key(&old, &strong(20), 0o600);
+        write_key(&new, &strong(21), 0o600);
+        let parts = parts();
+        let by_old = DecisionKeys::load(
+            Profile::Production,
+            Some(&settings(&old, None)),
+            &redactor(),
+        )
+        .expect("old")
+        .sign(&parts.signing());
+        let load = |profile, settings: &DecisionSigning, now| {
+            DecisionKeys::load_at(profile, Some(settings), &redactor(), now).expect("loads")
+        };
+        let until = |text: &str| DecisionSigning {
+            previous_key_valid_until: Some(text.to_owned()),
+            ..settings(&new, Some(&old))
+        };
+        // Before the end: accepted. At the end: accepted. After it: not.
+        let window = until("2026-11-02T12:00:00Z");
+        for (now, accepted) in [
+            ("2026-11-01T12:00:00Z", true),
+            ("2026-11-02T12:00:00Z", true),
+            ("2026-11-02T12:00:01Z", false),
+        ] {
+            let keys = load(Profile::Production, &window, at(now));
+            assert_eq!(keys.verify(&parts.signing(), &by_old), accepted, "{now}");
+        }
+        // No end: refused in production, kept in the other profiles (until the file is removed).
+        let open = settings(&new, Some(&old));
+        let now = at("2026-11-01T12:00:00Z");
+        assert!(!load(Profile::Production, &open, now).verify(&parts.signing(), &by_old));
+        assert!(load(Profile::Local, &open, now).verify(&parts.signing(), &by_old));
+        // An end that is not a time is an error and not a guess.
+        let broken = until("next tuesday");
+        let refused = DecisionKeys::load_at(Profile::Production, Some(&broken), &redactor(), now);
+        assert!(matches!(refused, Err(KeyError::File(_))), "{refused:?}");
+        std::fs::remove_dir_all(&dir).expect("cleanup");
+    }
+
+    /// RR-25. In the production profile a key file in a directory that group or others can write, or
+    /// above one, is refused, and one in a closed directory is accepted.
+    #[test]
+    fn in_production_a_key_in_a_directory_others_can_write_is_refused() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = scratch("location");
+        let closed = dir.join("closed");
+        std::fs::create_dir_all(&closed).expect("a directory");
+        std::fs::set_permissions(&closed, std::fs::Permissions::from_mode(0o700)).expect("mode");
+        let key = closed.join("decision.key");
+        write_key(&key, &strong(22), 0o600);
+        let load = || {
+            DecisionKeys::load(
+                Profile::Production,
+                Some(&settings(&key, None)),
+                &redactor(),
+            )
+        };
+        assert!(load().is_ok(), "a closed directory");
+        // The directory itself, then the one above it.
+        std::fs::set_permissions(&closed, std::fs::Permissions::from_mode(0o770)).expect("mode");
+        assert!(
+            matches!(load(), Err(KeyError::File(_))),
+            "group-writable directory"
+        );
+        std::fs::set_permissions(&closed, std::fs::Permissions::from_mode(0o700)).expect("mode");
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o757)).expect("mode");
+        assert!(
+            matches!(load(), Err(KeyError::File(_))),
+            "a directory above is writable by others"
+        );
+        // A sticky directory is allowed.
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o1777)).expect("mode");
+        assert!(load().is_ok(), "a sticky directory");
+        // The other profiles do not look.
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o757)).expect("mode");
+        assert!(
+            DecisionKeys::load(Profile::Local, Some(&settings(&key, None)), &redactor()).is_ok(),
+            "the local profile does not check the place"
+        );
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).expect("mode");
+        std::fs::remove_dir_all(&dir).expect("cleanup");
     }
 
     #[test]
@@ -778,9 +1271,9 @@ mod tests {
             dir.join("new.key"),
             dir.join("older.key"),
         );
-        write_key(&old, &"o".repeat(40), 0o600);
-        write_key(&new, &"n".repeat(40), 0o600);
-        write_key(&older, &"x".repeat(40), 0o600);
+        write_key(&old, &strong(10), 0o600);
+        write_key(&new, &strong(11), 0o600);
+        write_key(&older, &strong(12), 0o600);
         let parts = parts();
         let signed_by_old = DecisionKeys::load(
             Profile::Production,
@@ -798,7 +1291,7 @@ mod tests {
         .sign(&parts.signing());
         let rotated = DecisionKeys::load(
             Profile::Production,
-            Some(&settings(&new, Some(&old))),
+            Some(&rotation(&new, &old)),
             &redactor(),
         )
         .expect("rotated");
@@ -807,7 +1300,7 @@ mod tests {
         // The same key twice, and a key that is too short, are refused.
         let same = DecisionKeys::load(
             Profile::Production,
-            Some(&settings(&old, Some(&old))),
+            Some(&rotation(&old, &old)),
             &redactor(),
         );
         assert!(matches!(same, Err(KeyError::SameKey)), "{same:?}");
@@ -826,7 +1319,7 @@ mod tests {
     fn a_loaded_key_is_known_to_the_redactor() {
         let dir = scratch("redactor");
         let path = dir.join("decision.key");
-        let key = "r".repeat(48);
+        let key = strong(13);
         write_key(&path, &key, 0o600);
         let redactor = redactor();
         DecisionKeys::load(Profile::Production, Some(&settings(&path, None)), &redactor)

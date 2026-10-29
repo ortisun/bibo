@@ -110,6 +110,10 @@ struct IgnoresDrift;
 
 #[async_trait]
 impl EvidenceDrift for IgnoresDrift {
+    fn fidelity(&self) -> factory_domain::vocabulary::Fidelity {
+        factory_domain::vocabulary::Fidelity::Fake
+    }
+
     async fn binding_changed(&self, _: TenantId, _: JobId) -> Result<(), SeamError> {
         Ok(())
     }

@@ -13,5 +13,6 @@ mod support;
 
 mod commands;
 mod lint;
+mod lint_property;
 mod overrides;
 mod risk;

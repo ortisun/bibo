@@ -13,6 +13,7 @@ use factory_domain::contracts::{ArtifactRef, EvidenceLedgerEntry};
 use factory_domain::ids::{JobId, StageRunId, TenantId};
 use factory_domain::scope::TenantScope;
 use factory_domain::values::Sha256Digest;
+use factory_domain::vocabulary::Fidelity;
 use factory_ports::artifact::ArtifactStore;
 use factory_ports::store::{ArtifactDirection, Store, Tx};
 use factory_workflow::engine::links::parse_output_role;
@@ -45,6 +46,17 @@ impl Reader {
     #[must_use]
     pub fn artifacts(&self) -> &Arc<dyn ArtifactStore> {
         &self.artifacts
+    }
+
+    /// What a seam that answers from stored evidence is: real when the store and the artifact
+    /// store both are, and a stand-in when either is.
+    #[must_use]
+    pub fn fidelity(&self) -> Fidelity {
+        if self.store.fidelity() == Fidelity::Real && self.artifacts.fidelity() == Fidelity::Real {
+            Fidelity::Real
+        } else {
+            Fidelity::Fake
+        }
     }
 
     /// A tenant transaction.

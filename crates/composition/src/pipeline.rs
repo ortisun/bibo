@@ -319,6 +319,25 @@ pub fn assemble_pipeline(inputs: PipelineInputs) -> Result<Pipeline, PipelineErr
         decision_keys,
         tuning,
     } = inputs;
+    // A hook that replaces the markers, wraps every handler or changes the engine's configuration
+    // is for a test. In the production profile it would let a library caller turn off what the
+    // profile checks, so it is refused (RR-29).
+    if profile == Profile::Production {
+        let used: Vec<&str> = [
+            ("decorate", tuning.decorate.is_some()),
+            ("markers", tuning.markers.is_some()),
+            ("engine", tuning.engine.is_some()),
+        ]
+        .into_iter()
+        .filter_map(|(name, set)| set.then_some(name))
+        .collect();
+        if !used.is_empty() {
+            return Err(PipelineError::Settings(format!(
+                "the production profile refuses a tuning of the assembly ({})",
+                used.join(", ")
+            )));
+        }
+    }
     let Tuning {
         decorate,
         markers,
@@ -466,6 +485,12 @@ pub fn assemble_pipeline(inputs: PipelineInputs) -> Result<Pipeline, PipelineErr
         .spec_history(spec_history.clone())
         .delivery(delivery.clone())
         .approvals(approval_sources.clone())
+        // The four inputs of the security decisions are seams of the registry like the others
+        // (RR-7): the profile refuses a stand-in for each, whatever label it was handed with.
+        .package_metadata(external.supply_chain.registry())
+        .advisory_database(external.supply_chain.advisory_db())
+        .recorded_approvals(Arc::clone(&dependency_approvals))
+        .attestations(Arc::clone(&external.attestations))
         .build()?;
     let ports = PortRegistry {
         store: Arc::clone(&store),
@@ -488,9 +513,10 @@ pub fn assemble_pipeline(inputs: PipelineInputs) -> Result<Pipeline, PipelineErr
         authority: authority.clone(),
         seams,
     };
-    // The two sources of the dependency gates are not ports with a fidelity, so the profile's
-    // check does not reach them. Production takes the blocked adapters, which fail closed, and
-    // refuses a stand-in.
+    // The two sources of the dependency gates carry a label of their own (blocked, stand-in,
+    // real), which names them in the report. The profile's check below reads what each one says
+    // it is (RR-7), so a stand-in handed over as "real" is refused in production too. Production
+    // takes the blocked adapters, which fail closed, and refuses a stand-in.
     if profile == Profile::Production {
         let stand_ins = external.supply_chain.stand_ins();
         if !stand_ins.is_empty() {
@@ -860,7 +886,11 @@ pub fn assemble_pipeline(inputs: PipelineInputs) -> Result<Pipeline, PipelineErr
                 Arc::clone(&clock),
             )),
             markers: markers.unwrap_or_else(|| {
-                Arc::new(AuditMarkers::new(Arc::clone(&store), policies.hash.clone()))
+                Arc::new(AuditMarkers::new(
+                    Arc::clone(&store),
+                    policies.hash.clone(),
+                    Arc::clone(&decision_keys),
+                ))
             }),
             clock: Arc::clone(&clock),
             max_age: std::time::Duration::from_secs(crate::pipeline::APPROVAL_WINDOW_HOURS * 3600),

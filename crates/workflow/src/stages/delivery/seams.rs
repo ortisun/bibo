@@ -125,6 +125,11 @@ pub trait DeliverySources: Send + Sync {
 /// example through a channel.
 #[async_trait]
 pub trait EvidenceDrift: Send + Sync {
+    /// Says whether this tells the engine (`real`) or drops the news (`fake`). The profile check
+    /// refuses a `fake` in production (RR-6): a channel that drops it leaves a changed head
+    /// unnoticed.
+    fn fidelity(&self) -> Fidelity;
+
     /// Reports that a bound value changed.
     ///
     /// # Errors

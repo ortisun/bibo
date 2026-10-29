@@ -331,6 +331,10 @@ impl StoreSpecHistory {
 
 #[async_trait]
 impl SpecHistory for StoreSpecHistory {
+    fn fidelity(&self) -> Fidelity {
+        self.reader.fidelity()
+    }
+
     async fn previous(&self, run: &RunIdentity) -> Result<Option<PreviousSpec>, SeamError> {
         let mut tx = self.reader.begin(run.tenant).await?;
         let outcome = async {

@@ -41,6 +41,10 @@ struct Attested(PrincipalId);
 
 #[async_trait]
 impl BypassAttestations for Attested {
+    fn fidelity(&self) -> factory_domain::vocabulary::Fidelity {
+        factory_domain::vocabulary::Fidelity::Fake
+    }
+
     async fn attestation(&self, _: TenantId, _: &RepoRef) -> Option<BypassAttestation> {
         Some(BypassAttestation {
             by: self.0,

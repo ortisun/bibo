@@ -36,6 +36,7 @@ use serde_json::Value;
 use super::config::{DependencyReadLimits, RunSupplyChain, ValidationConfig};
 use super::gather::Gathered;
 use crate::gates::command::report::ReportContext;
+use crate::gates::scope::hardening;
 use crate::gates::scope::patch::{GITLINK_MODE, PatchFact, SYMLINK_MODE};
 use crate::gates::supply_chain::cargo::CargoFormat;
 use crate::gates::supply_chain::gate::{self, Inputs, Skip};
@@ -145,11 +146,18 @@ pub async fn reports(x: &Context<'_>) -> Result<Outcome, StageError> {
             "The dependency gates did not run, because a host-side check of the change did not pass first.",
         );
     }
-    let touched = x
+    // Vendored code is built and run, and a change inside it is a change of a dependency that no
+    // manifest shows (RR-16). It counts as touching a dependency file.
+    let vendored = x
         .gathered
         .files
         .iter()
-        .any(|file| format.kind_of(&file.path).is_some());
+        .find(|file| hardening::is_vendored(&file.path));
+    let touched = vendored.is_some()
+        || x.gathered
+            .files
+            .iter()
+            .any(|file| format.kind_of(&file.path).is_some());
     // The policy says when the gates run. The configuration may tighten that and never loosen it.
     let always = settings.run == RunSupplyChain::Always
         || x.cfg.policy.dependency.run_when() == RunWhen::Always;
@@ -158,6 +166,21 @@ pub async fn reports(x: &Context<'_>) -> Result<Outcome, StageError> {
             reports: gate::skipped(&io, &x.report, &Skip::Untouched)?,
             evidence: None,
         });
+    }
+    if let Some(file) = vendored {
+        // There is no package to decide on: the code is not the published crate, and no checksum of
+        // a registry vouches for it. A person with the security designation reviews the change
+        // outside the factory, or the builder drops it.
+        return blocked(
+            x,
+            &io,
+            BlockedCode::PolicyUnresolvable,
+            "a security review of the vendored code",
+            &format!(
+                "The change edits vendored code at {}, which no dependency decision covers.",
+                crate::gates::supply_chain::model::plain(&file.path, 200)
+            ),
+        );
     }
     if let Some(path) = linked_dependency_file(&format, x.gathered) {
         return blocked(

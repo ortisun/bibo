@@ -181,6 +181,10 @@ pub struct Drift {
 
 #[async_trait]
 impl EvidenceDrift for Drift {
+    fn fidelity(&self) -> factory_domain::vocabulary::Fidelity {
+        factory_domain::vocabulary::Fidelity::Fake
+    }
+
     async fn binding_changed(&self, tenant: TenantId, job: JobId) -> Result<(), SeamError> {
         self.told.lock().expect("lock").push((tenant, job));
         Ok(())

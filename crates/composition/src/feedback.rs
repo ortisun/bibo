@@ -28,7 +28,7 @@ use factory_domain::contracts::{ArtifactRef, GateReport, ReviewVerdict};
 use factory_domain::ids::StageRunId;
 use factory_domain::state::StageRunStatus;
 use factory_domain::values::Sha256Digest;
-use factory_domain::vocabulary::StageKind;
+use factory_domain::vocabulary::{Fidelity, StageKind};
 use factory_ports::artifact::ArtifactStore;
 use factory_ports::paths::CommitSha;
 use factory_ports::store::{Store, Tx};
@@ -225,6 +225,10 @@ async fn end<T>(tx: Box<dyn Tx>, outcome: Result<T, SeamError>) -> Result<T, Sea
 
 #[async_trait]
 impl ReworkSource for StoreFeedback {
+    fn fidelity(&self) -> Fidelity {
+        self.reader.fidelity()
+    }
+
     async fn of(&self, run: &RunIdentity) -> Result<Option<ReworkContext>, SeamError> {
         let mut tx = self.reader.begin(run.tenant).await?;
         let outcome = async {
@@ -254,6 +258,10 @@ impl ReworkSource for StoreFeedback {
 
 #[async_trait]
 impl RoundSource for StoreFeedback {
+    fn fidelity(&self) -> Fidelity {
+        self.reader.fidelity()
+    }
+
     async fn previous(&self, run: &RunIdentity) -> Result<Option<PreviousRound>, SeamError> {
         let mut tx = self.reader.begin(run.tenant).await?;
         let outcome = async {

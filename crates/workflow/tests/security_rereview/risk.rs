@@ -5,7 +5,10 @@ use factory_domain::policy::{ApprovalPolicy, PolicyEngine, SecurityPolicy};
 use factory_domain::vocabulary::RiskTier;
 use factory_ports::paths::RepoPath;
 use factory_ports::workspace::{ChangeKind, ChangedPath};
-use factory_workflow::stages::delivery::risk::{assess, from_diff};
+use factory_workflow::gates::scope::hardening::PatchSignals;
+use factory_workflow::stages::delivery::risk::{
+    HUGE_CHANGE_FILES, assess, assess_with_patch, from_diff,
+};
 
 const SECURITY: &str = include_str!("../../../domain/tests/fixtures/policy/security.json");
 const APPROVAL: &str = include_str!("../../../domain/tests/fixtures/policy/approval.json");
@@ -93,14 +96,77 @@ fn held_documentation_only_is_only_documentation_and_a_mix_is_high() {
     );
 }
 
-/// RR-14. The list of dependency manifests names most files at the root only (`requirements*.txt`,
+fn assessed(changes: &[ChangedPath], signals: &PatchSignals) -> RiskTier {
+    // What the job and the design showed: an ordinary change to one module.
+    let known = factory_domain::policy::risk::RiskFacts {
+        single_module_change_without_sensitive_or_protected_paths: true,
+        ..Default::default()
+    };
+    assess_with_patch(&policy(), &known, None, changes, signals)
+        .assessment
+        .tier
+}
+
+/// The details of a patch that a list of paths does not carry: a submodule bump, a symbolic link, a
+/// change of mode, a binary file, and headers that cannot be read. None is an ordinary change.
+#[test]
+fn rr_16_the_headers_of_a_patch_make_a_change_that_looks_ordinary_high() {
+    let one_file = [change("src/lib.rs", ChangeKind::Modified)];
+    assert!(
+        assessed(&one_file, &PatchSignals::default()) < RiskTier::High,
+        "the control is an ordinary change"
+    );
+    for (name, patch) in [
+        (
+            "a submodule bump",
+            "diff --git a/lib b/lib\nnew file mode 160000\nindex 0..1\n--- /dev/null\n+++ b/lib\n@@ -0,0 +1 @@\n+Subproject commit aaaa\n",
+        ),
+        (
+            "a symbolic link",
+            "diff --git a/l b/l\nnew file mode 120000\n--- /dev/null\n+++ b/l\n@@ -0,0 +1 @@\n+target\n",
+        ),
+        (
+            "an executable bit",
+            "diff --git a/src/lib.rs b/src/lib.rs\nold mode 100644\nnew mode 100755\n",
+        ),
+        (
+            "a binary file",
+            "diff --git a/x.bin b/x.bin\nnew file mode 100644\nBinary files /dev/null and b/x.bin differ\n",
+        ),
+        ("headers that cannot be read", "diff --git broken\n"),
+    ] {
+        let signals = PatchSignals::of(patch.as_bytes());
+        assert!(!signals.is_ordinary(), "{name}");
+        assert!(
+            assessed(&one_file, &signals) >= RiskTier::High,
+            "{name} is still an ordinary change"
+        );
+    }
+}
+
+/// A list of changed paths longer than anyone reads is counted as high, and so is a rename of a
+/// manifest that changes only the case of its name.
+#[test]
+fn rr_16_a_huge_change_and_a_case_only_rename_are_not_ordinary() {
+    let docs: Vec<ChangedPath> = (0..=HUGE_CHANGE_FILES)
+        .map(|index| change(&format!("docs/note-{index}.md"), ChangeKind::Added))
+        .collect();
+    assert!(assessed(&docs, &PatchSignals::default()) >= RiskTier::High);
+    let rename = [
+        change("crates/x/Cargo.toml", ChangeKind::Deleted),
+        change("crates/x/cargo.toml", ChangeKind::Added),
+    ];
+    let facts = from_diff(&policy(), &rename);
+    assert!(facts.new_dependency && facts.sensitive_file_change);
+}
+
+/// RR-14 (fixed). The list of dependency manifests names most files at the root only (`requirements*.txt`,
 /// `pyproject.toml`, `go.mod`, `package-lock.json`, `yarn.lock`, `pnpm-lock.yaml`, `Gemfile`,
 /// `pom.xml`), and leaves out the files of other package managers (`Pipfile`, `go.work`, `go.sum`
 /// below the root, `.npmrc` below the root). A dependency added in `services/api/requirements.txt`
 /// is, to the policy, an ordinary change to one module, and gets the tier of one. (The slice builds
 /// for Rust first; the policy claims more. `.gitmodules` and a root `.npmrc` are seen.)
 #[test]
-#[ignore = "confirmed defect RR-14: manifests of other ecosystems below the root, .gitmodules and package manager settings are ordinary files to the risk measure; cargo test -p factory-workflow --test security_rereview --locked -- --ignored rr_14 --exact"]
 fn rr_14_a_dependency_or_source_change_is_not_an_ordinary_change_because_of_where_it_is() {
     let unseen: Vec<&str> = [
         "services/api/requirements.txt",
@@ -116,6 +182,7 @@ fn rr_14_a_dependency_or_source_change_is_not_an_ordinary_change_because_of_wher
         "Pipfile.lock",
         "go.work",
         "web/.npmrc",
+        ".gitmodules",
     ]
     .into_iter()
     .filter(|path| ordinary(path, ChangeKind::Modified))
@@ -126,11 +193,10 @@ fn rr_14_a_dependency_or_source_change_is_not_an_ordinary_change_because_of_wher
     );
 }
 
-/// RR-15. Files that run code on a person's machine when they open the project, commit, or build it in
+/// RR-15 (fixed). Files that run code on a person's machine when they open the project, commit, or build it in
 /// an editor are ordinary files to the risk measure: a dev container definition, editor tasks, a git
 /// hook manager. The reviewer is the person who opens the branch.
 #[test]
-#[ignore = "confirmed defect RR-15: files that run on a reviewer's machine are ordinary files to the risk measure; cargo test -p factory-workflow --test security_rereview --locked -- --ignored rr_15 --exact"]
 fn rr_15_a_file_that_runs_on_the_reviewers_machine_is_not_an_ordinary_change() {
     let unseen: Vec<&str> = [
         ".devcontainer/devcontainer.json",
@@ -147,12 +213,11 @@ fn rr_15_a_file_that_runs_on_the_reviewers_machine_is_not_an_ordinary_change() {
     );
 }
 
-/// RR-16. A directory of vendored crates is source that is built and run, and a change inside it is a
+/// RR-16 (fixed). A directory of vendored crates is source that is built and run, and a change inside it is a
 /// change of a dependency that no gate reads: the dependency files of the supply chain gates are the
 /// manifests and the lock file, and the gates are skipped when none of them changes. Edited crate
 /// code and its `.cargo-checksum.json` are an ordinary change to one module.
 #[test]
-#[ignore = "confirmed defect RR-16: a change inside a vendored dependency is an ordinary change; cargo test -p factory-workflow --test security_rereview --locked -- --ignored rr_16 --exact"]
 fn rr_16_a_vendored_dependency_is_not_an_ordinary_file() {
     let unseen: Vec<&str> = [
         "vendor/serde/src/lib.rs",

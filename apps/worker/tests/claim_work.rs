@@ -86,6 +86,9 @@ async fn setup(db: &support::TestDb) -> Setup {
     )
     .expect("the allowlist file");
     let engine = Arc::new(world.restarted_engine());
+    let keys = Arc::new(
+        factory_composition::decision_signing::DecisionKeys::generated().expect("a signing key"),
+    );
     let hook = Arc::new(ClaimWork::new(ClaimWorkDeps {
         engine: Arc::clone(&engine),
         store: world.store.clone(),
@@ -104,14 +107,12 @@ async fn setup(db: &support::TestDb) -> Setup {
         markers: Arc::new(AuditMarkers::new(
             world.store.clone(),
             policies.hash.clone(),
+            Arc::clone(&keys),
         )),
         clock: world.deps.clock.clone(),
         max_age: std::time::Duration::from_secs(72 * 3600),
         per_pass: factory_composition::decisions::DECISIONS_PER_PASS,
-        keys: Arc::new(
-            factory_composition::decision_signing::DecisionKeys::generated()
-                .expect("a signing key"),
-        ),
+        keys,
     }));
     Setup {
         world,
