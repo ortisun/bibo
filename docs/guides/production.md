@@ -75,7 +75,7 @@ The reviewers found no way to approve, merge or mark a pull request ready withou
 ### What is open, and why
 
 - **Open findings.** The [findings of the end-to-end run](../reports/slice-1-findings.md) list SF-01 to SF-08. SF-01 is High: an unauthorized label leaves no audit record of the rejection and no explanation on the issue. A live run would show the same behaviour. Settle it first.
-- **Hypotheses.** RR-13, RR-23, RR-25, RR-28 and the hypotheses H-1 to H-8 of the supply chain and authority reviews were not confirmed or refuted.
+- **Hypotheses.** RR-13, RR-23, RR-28 and the hypotheses H-1 to H-8 of the supply chain and authority reviews were not confirmed or refuted.
 - **Not verified at all.** A real GitHub delivery, a deployment behind a proxy, the container images of the services, load above the rate limits, and everything that needs a real model.
 - **Shared symmetric key.** A compromised worker can forge a decision request, because it holds the key that verifies. An asymmetric signature would remove that and add a dependency.
 

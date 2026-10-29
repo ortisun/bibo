@@ -128,7 +128,7 @@ The API signs each decision request with this key. The worker verifies the signa
 
 | Key | Type | Required | Default | Notes |
 |---|---|---|---|---|
-| `decisions.key_file` | secret file | yes | no default | The current key. At least 32 random bytes, so 64 hex digits. In production every directory above the file must be closed to group and others. |
+| `decisions.key_file` | secret file | yes | no default | The current key. At least 32 random bytes, so 64 hex digits. In production every directory above the file must be closed to group and others, and the file must belong to the user the process runs as. |
 | `decisions.previous_key_file` | secret file | no | none | The previous key, during a rotation. It verifies only. |
 | `decisions.previous_key_valid_until` | text | no | none | A UTC time such as `2026-11-02T12:00:00Z`, 72 hours after the rotation at most. Without it the production profile ignores the previous key. |
 
