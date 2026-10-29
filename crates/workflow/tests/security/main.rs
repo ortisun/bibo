@@ -39,6 +39,7 @@ mod review {
 mod prompts_support;
 
 mod audit_matrix;
+mod classes;
 mod corpus;
 mod negative;
 mod negative_aud;

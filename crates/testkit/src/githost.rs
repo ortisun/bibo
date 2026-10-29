@@ -356,6 +356,19 @@ impl FakeChangeHost {
         found.into_iter().map(|(_, text)| text).collect()
     }
 
+    /// The description of every pull request the host holds, as it was last sent, by number. A
+    /// test that sweeps the sinks of a run for a secret reads the pull request through this.
+    #[must_use]
+    pub fn pull_request_bodies(&self) -> Vec<(PullRequestRef, String)> {
+        self.state
+            .lock()
+            .expect("the lock is never poisoned")
+            .pulls
+            .iter()
+            .map(|(pr, record)| (pr.clone(), record.body.clone()))
+            .collect()
+    }
+
     /// The installation tokens the fake minted, in order: one for each job, kind of token,
     /// repository and permission set, as the real adapter keeps them. Labels, never values.
     #[must_use]
