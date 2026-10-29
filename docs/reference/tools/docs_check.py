@@ -229,6 +229,11 @@ def docker_answers() -> bool:
     return ran is not None and ran.code == 0
 
 
+def docker_cli_works() -> bool:
+    ran = run(["docker", "compose", "version"], ROOT, timeout=30)
+    return ran is not None and ran.code == 0
+
+
 def postgres_available() -> bool:
     if os.environ.get("FACTORY_DB_ADMIN_URL"):
         return True
@@ -472,6 +477,8 @@ def judge_command(root: Path, line: str, helps: Helps) -> list[str]:
         return []
     problems: list[str] = []
     first = words[0]
+    if re.fullmatch(r"(?:\./)?target/(?:debug|release)/factory-[a-z-]+", first):
+        first = first.rsplit("/", 1)[1]
     if first == "bash" and len(words) > 1 and words[1].startswith(("scripts/", "./scripts/")):
         words = words[1:]
         first = words[0]
@@ -1042,13 +1049,20 @@ def check_quickstart(root: Path) -> Outcome:
             return Outcome("quickstart", FAILED, ["git clone of the repository failed"])
         lines.append(f"cloned {head.output.strip()[:10]} into a scratch directory; uncommitted changes are not in the clone")
         env = dict(os.environ)
-        env.setdefault("CARGO_TARGET_DIR", os.environ.get("DOCS_CHECK_TARGET_DIR") or str(work / "target"))
-        env["PATH"] = str(Path(env["CARGO_TARGET_DIR"]) / "debug") + os.pathsep + env.get("PATH", "")
+        env.pop("CARGO_TARGET_DIR", None)
+        shared = os.environ.get("DOCS_CHECK_TARGET_DIR")
+        if shared:
+            os.symlink(shared, clone / "target")
+            lines.append(f"the build directory of the clone is {shared}")
         for block in steps:
             title = (block.attrs.get("step") or [f"line {block.line}"])[0]
             needs = block.attrs.get("needs", [])
             if "docker" in needs and not docker_answers():
                 lines.append(f"BLOCKED  {title}: needs Docker and the daemon does not answer")
+                stopped = True
+                continue
+            if "docker-cli" in needs and not docker_cli_works():
+                lines.append(f"BLOCKED  {title}: needs the docker command and its Compose plugin")
                 stopped = True
                 continue
             if "postgres" in needs and not postgres_available():
