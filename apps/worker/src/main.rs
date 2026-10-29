@@ -6,20 +6,22 @@
 //! ```
 //!
 //! Exit codes: 0 a clean stop, 1 an engine error or a start-up check that failed, 2 bad
-//! configuration, 3 BLOCKED (an adapter this build cannot assemble; one `BLOCKED:` line for each,
-//! on standard error), 4 an attempt was abandoned at the end of the drain budget.
+//! configuration, 3 BLOCKED (something the configuration does not supply; one `BLOCKED:` line for
+//! each, on standard error, starting with the configuration key), 4 an attempt was abandoned at the
+//! end of the drain budget.
 
 use std::process::ExitCode;
+use std::sync::Arc;
 
 use factory_composition::config::FactoryConfig;
 use factory_composition::system::{Shutdown, raise_on_termination};
 use factory_worker::boot::boot;
-use factory_worker::pipeline::{assemble_loop, external_ports};
+use factory_worker::pipeline::{assemble_loop, external_ports, token_sweep};
 use factory_worker::run::exit_code;
 
 fn main() -> ExitCode {
     let config = match FactoryConfig::from_environment(|name| std::env::var(name).ok()) {
-        Ok(config) => config,
+        Ok(config) => Arc::new(config),
         Err(error) => {
             eprintln!("factory-worker: {error}");
             return ExitCode::from(2);
@@ -43,12 +45,11 @@ fn main() -> ExitCode {
                 return ExitCode::from(1);
             }
         };
-        // Every check that needs no credential passed. The ports that do need one (the agent
-        // runtime, the model router, the issue source, the change host) and the seams that no
-        // adapter implements are not assembled yet, so the process stops here and says which.
-        // When they are, `external_ports` returns them and the loop below runs the whole pipeline.
-        let external = match external_ports(&config) {
-            Ok(external) => external,
+        // Every check that needs no outside service passed. The ports that reach the outside
+        // world are built from the configuration; what it does not supply is listed, one line for
+        // each, starting with the key to write, and the process stops here.
+        let world = match external_ports(&booted, &config).await {
+            Ok(world) => world,
             Err(missing) => {
                 for item in &missing {
                     eprintln!("BLOCKED: {item}");
@@ -62,14 +63,16 @@ fn main() -> ExitCode {
         };
         let shutdown = Shutdown::new();
         tokio::spawn(raise_on_termination(shutdown.clone()));
-        let (worker_loop, _pipeline) = match assemble_loop(&booted, &config, external, shutdown) {
-            Ok(assembled) => assembled,
-            Err(error) => {
-                eprintln!("factory-worker: the pipeline cannot be assembled: {error}");
-                booted.broker.shutdown();
-                return ExitCode::from(1);
-            }
-        };
+        let sweep = token_sweep(&booted, &config, &world).into_iter().collect();
+        let (worker_loop, _pipeline) =
+            match assemble_loop(&booted, &config, world.ports, sweep, shutdown) {
+                Ok(assembled) => assembled,
+                Err(error) => {
+                    eprintln!("factory-worker: the pipeline cannot be assembled: {error}");
+                    booted.broker.shutdown();
+                    return ExitCode::from(1);
+                }
+            };
         let summary = worker_loop.run().await;
         booted.broker.shutdown();
         ExitCode::from(exit_code(&summary))

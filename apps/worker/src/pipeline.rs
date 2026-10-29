@@ -7,28 +7,34 @@
 //! puts the result into a [`WorkerLoop`] with the steps before each claim, the active-jobs note and
 //! the drift pump, in the order a loop runs them.
 //!
-//! What the worker cannot give is [`ExternalPorts`]: the agent runtime, the model router, the issue
-//! source and the change host, which need a credential or a file that does not exist yet, the two
-//! sources of the dependency gates that no adapter implements (the registry and the date of the
-//! advisory database, see [`supply_chain_sources`]), and the probes of what the runtime can do. The
-//! decisions people recorded about new dependencies are not on that list: the pipeline reads them
-//! from the ledger. [`external_ports`] says so for a deployment, and `main` then stops with `BLOCKED` lines as
-//! before. The day an adapter exists, `external_ports` returns it and the worker runs the whole
-//! pipeline without any other change; a test that supplies stand-ins runs it today.
+//! The ports that reach the outside world (the agent runtime, the model router, the issue source,
+//! the change host, the capability probes, the registry and the advisory database date) are built by
+//! [`external_ports`] from the configuration, through
+//! [`factory_composition::external::assemble_external`]. What the configuration does not supply it
+//! names, one line for each, starting with the configuration key; `main` prints the lines as
+//! `BLOCKED:` and exits with code 3. With a complete configuration the worker runs the pipeline.
 
 use std::sync::Arc;
 
-use factory_composition::assemble::{Blocked, blocked_adapters, blocked_pipeline_inputs};
 use factory_composition::config::FactoryConfig;
 use factory_composition::decision_signing::DecisionKeys;
+use factory_composition::external::{
+    ExternalInputs, ExternalWorld, ProbeInputs, ProbeReport, RuntimeParts, assemble_external,
+    probe_at_startup, runtimes_for_tenant,
+};
+use factory_composition::hooks::BeforeClaim;
 use factory_composition::pipeline::{
     ExternalPorts, Pipeline, PipelineError, PipelineInputs, Tuning, assemble_pipeline,
 };
-use factory_composition::profile::Profile;
+use factory_composition::policy_broker::{JobSpend, PolicyBroker};
+use factory_composition::redaction::RegisteringBroker;
+use factory_composition::routing::{enabled_models, first_selection};
+use factory_composition::sandbox_specs::PolicySpecs;
 use factory_composition::seams::FileAllowlist;
 use factory_composition::startup::StartupFailure;
-use factory_composition::supply_chain::SupplyChainSources;
 use factory_composition::system::{RandomIds, Shutdown, SystemClock, TokioTicker};
+use factory_composition::token_sweep::RevokeEndedJobs;
+use factory_domain::vocabulary::StageKind;
 use factory_ports::agent::ModelBroker;
 use factory_ports::store::{Store, WorkerId};
 use factory_sandbox::container::images::ImageCatalog;
@@ -45,53 +51,20 @@ fn host_platform() -> &'static str {
     }
 }
 
-/// The registry source and the advisory-database source this process takes into the pipeline.
-/// No real adapter exists for either, so production takes the blocked adapters, which answer "I do
-/// not know" and so make the dependency gates fail closed (a new direct dependency goes to a
-/// security approver, and the advisories gate is BLOCKED), and the `local` and `test` profiles take
-/// labelled stand-ins, which production refuses. Both are named in the `BLOCKED:` list.
+/// The model broker the engine issues job tokens through: the broker core of this process, behind
+/// the routing policy. Every request the engine makes is cut to the stage's models, the stage's
+/// ceiling and what is left of the job's ceiling before the core sees it.
 #[must_use]
-pub fn supply_chain_sources(profile: Profile) -> SupplyChainSources {
-    SupplyChainSources::for_profile(profile, Arc::new(SystemClock))
+pub fn policy_broker(booted: &Booted) -> Arc<dyn ModelBroker> {
+    Arc::new(PolicyBroker::new(
+        booted.broker.core.clone(),
+        Arc::clone(&booted.prepared.routing.policy),
+        booted.broker.core.clone() as Arc<dyn JobSpend>,
+    ))
 }
 
-/// What a deployment can give today: nothing. Every item that is missing is listed, and `main`
-/// prints it as a `BLOCKED:` line.
-///
-/// # Errors
-/// The adapters and the seams that are not assembled, with the reason for each.
-pub fn external_ports(config: &FactoryConfig) -> Result<ExternalPorts, Vec<String>> {
-    let mut missing: Vec<String> = blocked_adapters(config.profile)
-        .into_iter()
-        .map(|Blocked { port, reason }| format!("{}: {reason}", port.label()))
-        .collect();
-    missing.extend(
-        blocked_pipeline_inputs()
-            .into_iter()
-            .map(|item| format!("{}: {}", item.seam, item.reason)),
-    );
-    Err(missing)
-}
-
-/// Assembles the pipeline from what the worker holds and the ports it was given, and puts it in a
-/// loop.
-///
-/// # Errors
-/// [`StartupFailure`] when the keys cannot be read, the catalog cannot be loaded, or the pipeline
-/// cannot be assembled (a port the profile refuses, a handler missing, a setting unusable).
-pub fn assemble_loop(
-    booted: &Booted,
-    config: &FactoryConfig,
-    external: ExternalPorts,
-    shutdown: Shutdown,
-) -> Result<(WorkerLoop, Pipeline), StartupFailure> {
-    let prepared = &booted.prepared;
-    let decision_keys = Arc::new(DecisionKeys::load(
-        config.profile,
-        config.decisions.as_ref(),
-        &prepared.redactor,
-    )?);
-    let catalog_text = std::fs::read_to_string(&config.sandbox.images_catalog).map_err(|_| {
+fn image_catalog(config: &FactoryConfig) -> Result<ImageCatalog, StartupFailure> {
+    let text = std::fs::read_to_string(&config.sandbox.images_catalog).map_err(|_| {
         StartupFailure::Images(format!(
             "{} cannot be read",
             config.sandbox.images_catalog.display()
@@ -102,10 +75,144 @@ pub fn assemble_loop(
         .platform
         .as_deref()
         .unwrap_or_else(|| host_platform());
-    let catalog = ImageCatalog::from_json(&catalog_text, platform)
-        .map_err(|error| StartupFailure::Images(error.to_string()))?;
+    ImageCatalog::from_json(&text, platform)
+        .map_err(|error| StartupFailure::Images(error.to_string()))
+}
+
+/// What the start-up probe of the runtimes comes to: a declaration in the local and test profiles
+/// when the configuration says so, otherwise each runtime probed in an `agent` sandbox, and
+/// `Blocked` with the reason when that cannot be done.
+async fn probe_runtimes(booted: &Booted, config: &Arc<FactoryConfig>) -> ProbeReport {
+    if config.runtimes.declare_capabilities {
+        return ProbeReport::Declared;
+    }
+    let prepared = &booted.prepared;
+    let Ok(tenants) = config.worker.served_tenants() else {
+        return ProbeReport::NotConfigured {
+            key: "worker.tenants",
+            reason: "holds an entry that is not a UUID".to_owned(),
+        };
+    };
+    let Some(tenant) = tenants.first().copied() else {
+        return ProbeReport::NotConfigured {
+            key: "worker.tenants",
+            reason: "is empty, and the probe reads its output as a tenant; list the tenant this worker serves".to_owned(),
+        };
+    };
+    let Ok(catalog) = image_catalog(config) else {
+        return ProbeReport::Blocked("the sandbox image catalog cannot be read".to_owned());
+    };
+    let Ok(enabled) = enabled_models(&prepared.routing.policy, &config.broker.upstreams) else {
+        return ProbeReport::NotConfigured {
+            key: "broker.upstreams",
+            reason: "enables a model the routing policy does not list".to_owned(),
+        };
+    };
+    let Some(model) = first_selection(&prepared.routing.policy, StageKind::Intake, &enabled) else {
+        return ProbeReport::NotConfigured {
+            key: "broker.upstreams",
+            reason: "enables no model that the routing policy routes to the INTAKE stage"
+                .to_owned(),
+        };
+    };
+    let Ok(ids) = RandomIds::new() else {
+        return ProbeReport::Blocked("the random source of identifiers is unavailable".to_owned());
+    };
+    let registering = Arc::new(RegisteringBroker::new(
+        policy_broker(booted),
+        Arc::clone(&prepared.redactor),
+    ));
+    let specs = PolicySpecs::new(
+        Arc::clone(&prepared.policies.security),
+        catalog,
+        Arc::clone(&registering),
+        config.sandbox.workspace_root.join(".specs"),
+    );
+    let parts = RuntimeParts {
+        config: Arc::clone(config),
+        artifacts: Arc::clone(&prepared.artifacts),
+        redactor: Arc::clone(&prepared.redactor),
+        attestation: booted.broker.core.clone(),
+        spec_skills: None,
+    };
+    probe_at_startup(ProbeInputs {
+        sandbox: Arc::clone(&booted.providers.sandbox),
+        specs: &specs,
+        broker: &registering,
+        jobs: &booted.jobs,
+        tenant,
+        ids: &ids,
+        model,
+        runtimes: runtimes_for_tenant(&parts, tenant),
+    })
+    .await
+}
+
+/// Builds the ports that reach the outside world from the configuration.
+///
+/// # Errors
+/// One line for each item the configuration does not supply or supplies unusably, starting with
+/// the port and the configuration key: `issue source: github.installations: is empty ...`.
+pub async fn external_ports(
+    booted: &Booted,
+    config: &Arc<FactoryConfig>,
+) -> Result<ExternalWorld, Vec<String>> {
+    let probes = probe_runtimes(booted, config).await;
+    let prepared = &booted.prepared;
+    assemble_external(ExternalInputs {
+        config,
+        security: &prepared.policies.security,
+        routing: &prepared.routing,
+        redactor: Arc::clone(&prepared.redactor),
+        clock: Arc::new(SystemClock),
+        artifacts: Arc::clone(&prepared.artifacts),
+        jobs: Arc::clone(&booted.jobs),
+        attestation: booted.broker.core.clone(),
+        spec_skills: None,
+        probes,
+    })
+    .map_err(|blocked| blocked.iter().map(ToString::to_string).collect())
+}
+
+/// The step before each claim that revokes the GitHub installation tokens of jobs that are over.
+#[must_use]
+pub fn token_sweep(
+    booted: &Booted,
+    config: &FactoryConfig,
+    world: &ExternalWorld,
+) -> Option<Arc<dyn BeforeClaim>> {
+    let tenants = config.worker.served_tenants().ok()?;
+    let store: Arc<dyn Store> = booted.prepared.store.clone();
+    Some(Arc::new(RevokeEndedJobs::new(
+        world.github.clone(),
+        store,
+        tenants,
+        Arc::clone(&booted.jobs),
+    )))
+}
+
+/// Assembles the pipeline from what the worker holds and the ports it was given, and puts it in a
+/// loop. `extra_hooks` run before the steps of the pipeline, before each claim.
+///
+/// # Errors
+/// [`StartupFailure`] when the keys cannot be read, the catalog cannot be loaded, or the pipeline
+/// cannot be assembled (a port the profile refuses, a handler missing, a setting unusable).
+pub fn assemble_loop(
+    booted: &Booted,
+    config: &FactoryConfig,
+    external: ExternalPorts,
+    extra_hooks: Vec<Arc<dyn BeforeClaim>>,
+    shutdown: Shutdown,
+) -> Result<(WorkerLoop, Pipeline), StartupFailure> {
+    let prepared = &booted.prepared;
+    let decision_keys = Arc::new(DecisionKeys::load(
+        config.profile,
+        config.decisions.as_ref(),
+        &prepared.redactor,
+    )?);
+    let catalog = image_catalog(config)?;
     let store: Arc<dyn Store> = prepared.store.clone();
-    let broker: Arc<dyn ModelBroker> = booted.broker.core.clone();
+    let broker: Arc<dyn ModelBroker> = policy_broker(booted);
     let tenants = config
         .worker
         .served_tenants()
@@ -146,33 +253,13 @@ pub fn assemble_loop(
     )
     .with_active_jobs(Arc::clone(&booted.jobs))
     .with_drift_pump(Arc::clone(&pipeline.drift));
+    // The tokens of ended jobs are revoked first, so that a job admitted in this pass starts from
+    // a clean slate; then the steps of the pipeline run in their own order.
+    for hook in extra_hooks {
+        worker_loop = worker_loop.with_before_claim(hook);
+    }
     for hook in &pipeline.before_claim {
         worker_loop = worker_loop.with_before_claim(Arc::clone(hook));
     }
     Ok((worker_loop, pipeline))
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use factory_composition::supply_chain::Standing;
-
-    #[test]
-    fn production_takes_the_blocked_sources_and_the_other_profiles_take_labelled_stand_ins() {
-        let production = supply_chain_sources(Profile::Production);
-        assert!(production.stand_ins().is_empty());
-        assert!(
-            production
-                .standings()
-                .iter()
-                .all(|(_, standing)| *standing == Standing::Blocked)
-        );
-        for profile in [Profile::Local, Profile::Test] {
-            let sources = supply_chain_sources(profile);
-            assert_eq!(
-                sources.stand_ins(),
-                ["RegistryMetadata", "AdvisoryDatabase"]
-            );
-        }
-    }
 }

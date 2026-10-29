@@ -258,6 +258,21 @@ pub fn enabled_models(
     Ok(enabled)
 }
 
+/// The first model of a stage's routes that the deployment enabled, as the runtime and model a
+/// token holds. `None` when the stage has no route or no enabled model.
+#[must_use]
+pub fn first_selection(
+    policy: &ModelRoutingPolicy,
+    stage: StageKind,
+    enabled: &BTreeSet<String>,
+) -> Option<ModelSelection> {
+    policy
+        .allowed_models(stage.as_str())
+        .into_iter()
+        .find(|model| enabled.contains(&model.id))
+        .and_then(|model| selection_of(model).ok())
+}
+
 /// The caps the broker applies to every request: the largest cap of any role. A broker holds one
 /// set for all its tokens, so a smaller cap for one role cannot be enforced here.
 ///

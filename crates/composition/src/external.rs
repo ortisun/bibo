@@ -100,6 +100,13 @@ pub enum ProbeReport {
     Declared,
     /// The probe could not run, with the reason.
     Blocked(String),
+    /// The probe could not run because of a configuration key, which is named.
+    NotConfigured {
+        /// The key to write.
+        key: &'static str,
+        /// What is wrong with it.
+        reason: String,
+    },
 }
 
 /// The names of the runtimes the providers of the configuration give.
@@ -714,10 +721,24 @@ pub fn assemble_external(inputs: ExternalInputs<'_>) -> Result<ExternalWorld, Ve
             declared_capabilities(&runtime_ids(config)),
             Fidelity::Fake,
         ))),
+        ProbeReport::NotConfigured { key, reason } => {
+            blocked.push(BlockedItem {
+                label: "CapabilityProbes",
+                key,
+                reason,
+            });
+            None
+        }
         ProbeReport::Blocked(reason) => {
             blocked.push(BlockedItem {
                 label: "CapabilityProbes",
-                key: "runtimes",
+                // With no provider there is no runtime to probe, and the key to write is the
+                // provider's.
+                key: if config.broker.upstreams.is_empty() {
+                    "broker.upstreams"
+                } else {
+                    "runtimes"
+                },
                 reason,
             });
             None
