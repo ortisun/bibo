@@ -6,13 +6,13 @@
           "architecture": "arm64",
           "base": "rust:1.98.0-slim-trixie@sha256:17d1ba895198f9934c6314ec5346a0d5115372f3243390c3d731e242f35c2f27",
           "cmd": null,
-          "digest": "sha256:3384ecce65157817bc172bcc55ba981866a4e1b72282acb374a8ef74e7dd2a27",
+          "digest": "sha256:1802348f994695c106d3f8c8c2afac500d493339d96b1860b8eff81ea48f2c48",
           "entrypoint": null,
           "env": {
             "PATH": "/opt/rust/bin:/opt/codex/codex-path:/opt/codex/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
           },
           "home": "/home/agent",
-          "image_id": "sha256:3384ecce65157817bc172bcc55ba981866a4e1b72282acb374a8ef74e7dd2a27",
+          "image_id": "sha256:1802348f994695c106d3f8c8c2afac500d493339d96b1860b8eff81ea48f2c48",
           "labels": {
             "factory.sandbox-images": "1",
             "factory.sandbox.role": "agent",
@@ -23,8 +23,8 @@
           "name": "factory-sandbox/agent",
           "os": "linux",
           "profile": "agent",
-          "reference": "factory-sandbox/agent@sha256:3384ecce65157817bc172bcc55ba981866a4e1b72282acb374a8ef74e7dd2a27",
-          "size_bytes": 2005921859,
+          "reference": "factory-sandbox/agent@sha256:1802348f994695c106d3f8c8c2afac500d493339d96b1860b8eff81ea48f2c48",
+          "size_bytes": 2005930121,
           "status": "ready",
           "tag": "rust1.98.0-claude2.1.311-codex0.163.0",
           "tools": {

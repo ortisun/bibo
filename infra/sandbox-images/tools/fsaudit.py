@@ -65,6 +65,7 @@ from __future__ import annotations
 
 import argparse
 import fnmatch
+import codecs
 import hashlib
 import json
 import posixpath
@@ -147,6 +148,27 @@ HIGH_SIGNAL_LITERALS: Dict[str, Tuple[bytes, ...]] = {
 PRIVATE_KEY_BODY = re.compile(rb"PRIVATE KEY(?: BLOCK)?-----\r?\n[A-Za-z0-9+/=]{40,}")
 
 ELF_MAGIC = b"\x7fELF"
+# Compiled code and data files (a static library, a time zone table, an object file) hold bytes that
+# look like a URL with a password by chance: the generic patterns accept almost any non-ASCII byte in
+# a user name or a host, so random bytes match them. Such a file gets the same treatment as an ELF
+# file: only the patterns with a distinct vendor prefix apply. A file is text, and gets every
+# pattern, when its bytes are valid UTF-8 and hold no control byte other than tab, line feed, carriage
+# return and form feed. Anything else is binary. The ELF magic is kept as a fast path.
+_CONTROL = frozenset(range(0x00, 0x20)) - {0x09, 0x0A, 0x0C, 0x0D}
+
+
+def looks_compiled(block: bytes) -> bool:
+    """True when the block is not text: an ELF file, a control byte, or bytes that are not UTF-8."""
+    if block.startswith(ELF_MAGIC):
+        return True
+    if any(byte in _CONTROL for byte in block):
+        return True
+    try:
+        # `final=False` accepts a multi-byte sequence cut at the end of the block.
+        codecs.getincrementaldecoder("utf-8")().decode(block, final=False)
+    except UnicodeDecodeError:
+        return True
+    return False
 
 
 def read_names(path: Path) -> List[str]:
@@ -312,7 +334,7 @@ def command_fs(args: argparse.Namespace) -> int:
             if digest is not None:
                 digest.update(block)
             file_findings: List[str] = []
-            if member.size <= SMALL_TEXT_LIMIT and not block.startswith(ELF_MAGIC):
+            if member.size <= SMALL_TEXT_LIMIT and not looks_compiled(block):
                 # The whole file is in this one block. Every blocking pattern applies.
                 scan_bytes(block, patterns, False, path, file_findings)
                 scanned_bytes += len(block)

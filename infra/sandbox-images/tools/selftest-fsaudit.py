@@ -172,6 +172,38 @@ def main() -> int:
         elsewhere["secrets.txt"],
     )
 
+    # Compiled code and data files hold bytes that look like a URL with a password by chance. A file
+    # is text when it is valid UTF-8 with no control byte; anything else is binary and gets only the
+    # patterns with a vendor prefix, as an ELF file does. A text file cannot opt out by its first bytes.
+    chance = b"!<arch>\n" + b"\x00" * 16 + f"see {CVS_ADDRESS} for more".encode() + b"\x00" * 16
+    table = b"TZif2" + bytes(range(0x80, 0xB0)) + f"@{CVS_ADDRESS}".encode()[:6] + b"\xff\xfe" * 20
+    compiled = audit(
+        [
+            Entry("./usr/lib/libexample.a", chance),
+            Entry("./usr/share/zoneinfo/America/Example", table),
+            Entry("./usr/lib/libholds-a-token.a", b"!<arch>\n" + b"\x00" * 8 + SECRET.encode() + b"\x00" * 8),
+            Entry("./etc/starts-with-mz.conf", b"MZ " + f"see {CVS_ADDRESS}\n".encode()),
+            Entry("./etc/plain-utf8.conf", "nota: caf\u00e9 ".encode() + f"{CVS_ADDRESS}\n".encode()),
+        ]
+    )
+    expect(
+        "an address-shaped string inside a static library or a data table is not a finding",
+        not mentions(compiled, "secrets.txt", "/usr/lib/libexample.a")
+        and not mentions(compiled, "secrets.txt", "/usr/share/zoneinfo/America/Example"),
+        compiled["secrets.txt"],
+    )
+    expect(
+        "a vendor token inside a static library is still a finding",
+        mentions(compiled, "secrets.txt", "/usr/lib/libholds-a-token.a"),
+        compiled["secrets.txt"],
+    )
+    expect(
+        "a text file is scanned with every pattern, even when it starts with MZ or holds non-ASCII text",
+        mentions(compiled, "secrets.txt", "/etc/starts-with-mz.conf")
+        and mentions(compiled, "secrets.txt", "/etc/plain-utf8.conf"),
+        compiled["secrets.txt"],
+    )
+
     # Files under the trees that the sandbox user could have written are scanned.
     planted = audit(
         [
