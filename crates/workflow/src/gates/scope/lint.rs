@@ -9,202 +9,50 @@
 //!
 //! What counts, for the files the change touches:
 //!
-//! * a new `allow(..)` or `expect(..)` in an attribute (`#[..]`, `#![..]`, `cfg_attr(..)`), at any
-//!   level of the source, and a `deny` or `forbid` attribute that is gone;
-//! * in a `Cargo.toml`, a lint table (`[lints]`, `[lints.rust]`, `[lints.clippy]`, `[workspace.lints..]`)
-//!   whose entry is new at `allow`, is lowered, or is removed from `deny` or `forbid`, and a
-//!   `[lints] workspace = true` that is gone;
-//! * any change to the configuration of a lint or format tool (`clippy.toml`, `rustfmt.toml`);
-//! * a new `rustflags`, `RUSTFLAGS` or `cap-lints` in a cargo configuration file;
+//! * in Rust source, the attributes that set the level of a lint, read as tokens
+//!   ([`attributes`]): comments, string literals and white space of any kind between the tokens of
+//!   an attribute do not change what is read. A suppression (`allow`, `expect`, also inside a
+//!   `cfg_attr`) that the file did not have, and fewer attributes at a level (`deny`, `forbid`,
+//!   `warn`) for a lint than the file had, are hits. A lint dropped from a `deny` list, a `forbid`
+//!   written as `deny` and a `deny` written as `warn` are fewer. A tightening is never a hit;
+//! * in a `Cargo.toml`, the lint tables read with the TOML reader of the supply chain gate
+//!   ([`tables`]), in any of the spellings of TOML (`[lints.rust]`, `[lints . rust]`, a dotted key
+//!   at the top of the file, an inline table, quoted keys, single-quoted strings): a lint new at
+//!   `allow`, a level lowered, a `deny` or `forbid` removed, a priority moved so that a weaker entry
+//!   comes last, any change of the `lints.workspace = true` inheritance, and any new or changed
+//!   `rustflags`. The same for `[workspace.lints]`;
+//! * any change to, or removal of, the configuration of a lint or format tool (`clippy.toml`,
+//!   `rustfmt.toml`);
+//! * in a cargo configuration file (`.cargo/config.toml`, `.cargo/config`), any new, changed or
+//!   removed `rustflags`, `rustdocflags`, `RUSTFLAGS` of the `[env]` table, `cap-lints`, compiler
+//!   or compiler wrapper, in the `[build]` table or a `[target.*]` table, and any new string that
+//!   carries an allow flag;
 //! * in other languages, a new suppression comment (`# noqa`, `eslint-disable`, `//nolint`,
 //!   `@SuppressWarnings`, `#pragma warning disable`, `# pylint: disable`), and a new line in an
 //!   ignore list of a lint tool's own configuration.
 //!
-//! The rules look at the lines a change adds and removes, never at what a file says about itself.
-//! They name the path and the line and never print the content. A hit is a failed host-side result,
-//! so the lint gate cannot say it passed.
+//! A file that the readers refuse (invalid TOML, a document that is too large) is a hit when it
+//! changed: a change that cannot be read is not a change that is known to be harmless.
+//!
+//! The rules look at the two versions of each file, never at what a file says about itself. They
+//! name the path and the line and never print the content. A hit is a failed host-side result, so
+//! the lint gate cannot say it passed.
 
-use std::collections::BTreeMap;
+mod attributes;
+mod tables;
 
 use super::Violation;
 use super::diff::FileChange;
 use super::lines;
+
+use attributes::Change;
+use tables::Settings;
 
 /// The check slug of every hit of this module.
 const CHECK: &str = "lint-relaxed";
 
 fn text(line: &[u8]) -> String {
     String::from_utf8_lossy(line).into_owned()
-}
-
-fn is_identifier_char(c: char) -> bool {
-    c.is_ascii_alphanumeric() || c == '_'
-}
-
-/// True when `line` calls `name(` as a whole word, so `disallow(` is not `allow(`.
-fn calls(line: &str, name: &str) -> bool {
-    let pattern = format!("{name}(");
-    line.match_indices(&pattern).any(|(at, _)| {
-        line[..at]
-            .chars()
-            .next_back()
-            .is_none_or(|before| !is_identifier_char(before))
-    })
-}
-
-/// True for a line that is only a comment in Rust, Python or TOML. A suppression marker in a
-/// comment of a language that has comment markers is judged separately.
-fn is_comment(trimmed: &str) -> bool {
-    trimmed.starts_with("//")
-        || trimmed.starts_with('#') && !trimmed.starts_with("#[") && !trimmed.starts_with("#!")
-}
-
-/// True when the line sits in a Rust attribute.
-fn in_attribute(trimmed: &str) -> bool {
-    trimmed.starts_with("#[") || trimmed.starts_with("#![")
-}
-
-/// The attribute's text when it silences a lint, with a short description for the message.
-fn rust_relaxation(line: &str) -> Option<&'static str> {
-    let trimmed = line.trim();
-    if is_comment(trimmed) || !in_attribute(trimmed) {
-        return None;
-    }
-    let crate_level = trimmed.starts_with("#![");
-    let everything = ["warnings", "clippy::all", "unused", "clippy::pedantic"]
-        .iter()
-        .any(|group| trimmed.contains(group));
-    if calls(trimmed, "allow") || calls(trimmed, "expect") {
-        return Some(match (crate_level, everything) {
-            (true, true) => "a crate-level attribute that silences a whole group of lints",
-            (true, false) => "a crate-level attribute that silences a lint",
-            (false, _) => "an attribute that silences a lint",
-        });
-    }
-    None
-}
-
-fn is_lint_deny(line: &str) -> bool {
-    let trimmed = line.trim();
-    !is_comment(trimmed)
-        && in_attribute(trimmed)
-        && (calls(trimmed, "deny") || calls(trimmed, "forbid"))
-}
-
-/// A level in a `[lints]` table, ranked so that a lower number is a weaker level.
-fn level_rank(level: &str) -> Option<u8> {
-    match level {
-        "allow" => Some(1),
-        "warn" => Some(2),
-        "deny" => Some(3),
-        "forbid" => Some(4),
-        _ => None,
-    }
-}
-
-/// The lint levels a `Cargo.toml` sets, by table and name, and whether a `[lints]` table inherits
-/// the workspace's.
-#[derive(Default)]
-struct Levels {
-    entries: BTreeMap<String, (u8, u32)>,
-    inherits: bool,
-}
-
-fn is_lints_table(name: &str) -> bool {
-    let name = name.trim_start_matches("workspace.");
-    name == "lints" || name.starts_with("lints.")
-}
-
-fn levels_of(data: &[u8]) -> Levels {
-    let mut found = Levels::default();
-    let mut table = String::new();
-    for (index, raw) in lines::split(data).into_iter().enumerate() {
-        let line = text(raw);
-        let trimmed = line.trim();
-        if let Some(name) = trimmed
-            .strip_prefix('[')
-            .and_then(|rest| rest.strip_suffix(']'))
-        {
-            table = name.trim().to_owned();
-            continue;
-        }
-        if !is_lints_table(&table) || trimmed.starts_with('#') {
-            continue;
-        }
-        let Some((key, value)) = trimmed.split_once('=') else {
-            continue;
-        };
-        let key = key.trim().trim_matches('"');
-        let value = value.trim();
-        if key == "workspace" && value.starts_with("true") {
-            found.inherits = true;
-            continue;
-        }
-        let level = ["forbid", "deny", "warn", "allow"]
-            .into_iter()
-            .find(|level| value.contains(&format!("\"{level}\"")));
-        if let Some(rank) = level.and_then(level_rank) {
-            let number = u32::try_from(index + 1).unwrap_or(u32::MAX);
-            found
-                .entries
-                .insert(format!("{table}:{key}"), (rank, number));
-        }
-    }
-    found
-}
-
-fn manifest_relaxations(file: &FileChange, found: &mut Vec<Violation>) {
-    let before = levels_of(file.before_or_empty());
-    let after = levels_of(file.after_or_empty());
-    let mut hit = |number: u32, message: String| {
-        found.push(Violation {
-            check: CHECK,
-            message,
-            path: Some(file.path.clone()),
-            line: Some(number),
-        });
-    };
-    for (key, (rank, number)) in &after.entries {
-        let name = key.split_once(':').map_or(key.as_str(), |(_, name)| name);
-        match before.entries.get(key) {
-            Some((was, _)) if rank < was => hit(
-                *number,
-                format!(
-                    "The path {} lowers the level of the lint {name} at line {number}.",
-                    file.path
-                ),
-            ),
-            None if *rank == 1 => hit(
-                *number,
-                format!(
-                    "The path {} sets the lint {name} to allow at line {number}.",
-                    file.path
-                ),
-            ),
-            _ => {}
-        }
-    }
-    for (key, (rank, _)) in &before.entries {
-        let name = key.split_once(':').map_or(key.as_str(), |(_, name)| name);
-        if *rank >= 3 && !after.entries.contains_key(key) {
-            hit(
-                1,
-                format!(
-                    "The path {} no longer sets the lint {name} to deny or forbid.",
-                    file.path
-                ),
-            );
-        }
-    }
-    if before.inherits && !after.inherits {
-        hit(
-            1,
-            format!(
-                "The path {} no longer takes the lint levels of the workspace.",
-                file.path
-            ),
-        );
-    }
 }
 
 /// Files that configure a lint or format tool of the language: any change to them changes what the
@@ -219,6 +67,26 @@ fn is_tool_configuration(path: &str) -> bool {
 
 fn is_cargo_configuration(path: &str) -> bool {
     path.starts_with(".cargo/") || path.contains("/.cargo/")
+}
+
+fn is_manifest(path: &str) -> bool {
+    path == "Cargo.toml" || path.ends_with("/Cargo.toml")
+}
+
+/// The extensions of files that are certainly not Rust source. A file with any other extension (or
+/// none) may be included into Rust code (`include!`), so its attributes are read.
+const NOT_RUST: [&str; 28] = [
+    "py", "pyi", "js", "mjs", "cjs", "ts", "tsx", "jsx", "go", "java", "kt", "rb", "php", "cs",
+    "swift", "md", "markdown", "rst", "html", "css", "json", "yaml", "yml", "toml", "lock", "svg",
+    "sh", "bash",
+];
+
+fn might_hold_rust(path: &str) -> bool {
+    let name = path.rsplit('/').next().unwrap_or(path);
+    match name.rsplit_once('.') {
+        Some((_, extension)) => !NOT_RUST.contains(&extension.to_ascii_lowercase().as_str()),
+        None => true,
+    }
 }
 
 /// The ignore lists of lint tools of other languages.
@@ -280,9 +148,37 @@ pub fn relaxed(files: &[FileChange]) -> Vec<Violation> {
     for file in files {
         if file.after.is_some() {
             relaxed_in(file, &mut found);
+        } else if file.before.is_some() {
+            removed_in(file, &mut found);
         }
     }
     found
+}
+
+/// A file that is gone: the configuration of a tool or of cargo takes its settings with it.
+fn removed_in(file: &FileChange, found: &mut Vec<Violation>) {
+    let path = file.path.as_str();
+    if is_tool_configuration(path) {
+        found.push(violation(
+            file,
+            None,
+            format!("The path {path} removes the configuration of a lint or format tool."),
+        ));
+    } else if is_cargo_configuration(path) && file.before_or_empty() != b"" {
+        let before = String::from_utf8_lossy(file.before_or_empty());
+        let carried = match tables::read_cargo_configuration(&before) {
+            Ok(settings) => !settings.flags.is_empty(),
+            // Unreadable: it may have carried anything.
+            Err(_) => true,
+        };
+        if carried {
+            found.push(violation(
+                file,
+                None,
+                format!("The path {path} removes compiler flags or a lint cap."),
+            ));
+        }
+    }
 }
 
 fn relaxed_in(file: &FileChange, found: &mut Vec<Violation>) {
@@ -296,32 +192,18 @@ fn relaxed_in(file: &FileChange, found: &mut Vec<Violation>) {
             format!("The path {path} changes the configuration of a lint or format tool."),
         ));
     }
-    let manifest = path == "Cargo.toml" || path.ends_with("/Cargo.toml");
-    if manifest {
-        manifest_relaxations(file, found);
+    if is_manifest(path) {
+        manifest_changes(file, found);
+        return;
     }
-    let cargo_configuration = is_cargo_configuration(path);
+    if is_cargo_configuration(path) {
+        cargo_configuration_changes(file, found);
+    } else if might_hold_rust(path) && before != after {
+        rust_changes(file, found);
+    }
     let foreign = is_foreign_lint_configuration(path);
     for (number, raw) in lines::added(before, after) {
         let line = text(raw);
-        let lower = line.to_ascii_lowercase();
-        if manifest {
-            if lower.trim_start().starts_with("rustflags") {
-                found.push(violation(
-                    file,
-                    Some(number),
-                    format!("The path {path} sets compiler flags at line {number}."),
-                ));
-            }
-            continue;
-        }
-        if let Some(what) = rust_relaxation(&line) {
-            found.push(violation(
-                file,
-                Some(number),
-                format!("The path {path} gains {what}, at line {number}."),
-            ));
-        }
         if suppresses_foreign_lint(&line) {
             found.push(violation(
                 file,
@@ -329,13 +211,6 @@ fn relaxed_in(file: &FileChange, found: &mut Vec<Violation>) {
                 format!(
                     "The path {path} gains a comment that suppresses a lint, at line {number}."
                 ),
-            ));
-        }
-        if cargo_configuration && (lower.contains("rustflags") || lower.contains("cap-lints")) {
-            found.push(violation(
-                file,
-                Some(number),
-                format!("The path {path} sets compiler flags or the lint cap, at line {number}."),
             ));
         }
         if foreign && widens_ignore_list(&line) {
@@ -348,23 +223,154 @@ fn relaxed_in(file: &FileChange, found: &mut Vec<Violation>) {
             ));
         }
     }
-    if file.before.is_some() && count_lines(before, is_lint_deny) > count_lines(after, is_lint_deny)
-    {
+}
+
+// ------------------------------------------------------------------------------------------
+// Rust source
+// ------------------------------------------------------------------------------------------
+
+fn rust_changes(file: &FileChange, found: &mut Vec<Violation>) {
+    let path = file.path.as_str();
+    let before = String::from_utf8_lossy(file.before_or_empty());
+    let after = String::from_utf8_lossy(file.after_or_empty());
+    let mut lowered = false;
+    for change in attributes::compare(&before, &after) {
+        match change {
+            Change::Suppressed { line, inner, group } => {
+                let what = match (inner, group) {
+                    (true, true) => "a crate-level attribute that silences a whole group of lints",
+                    (true, false) => "a crate-level attribute that silences a lint",
+                    (false, _) => "an attribute that silences a lint",
+                };
+                found.push(violation(
+                    file,
+                    Some(line),
+                    format!("The path {path} gains {what}, at line {line}."),
+                ));
+            }
+            // One hit for the file, however many lints lost a level.
+            Change::Lowered if !lowered => {
+                lowered = true;
+                found.push(violation(
+                    file,
+                    None,
+                    format!(
+                        "The path {path} loses a deny or forbid attribute, so a lint level is lowered."
+                    ),
+                ));
+            }
+            Change::Lowered => {}
+        }
+    }
+}
+
+// ------------------------------------------------------------------------------------------
+// TOML
+// ------------------------------------------------------------------------------------------
+
+/// A hit about a TOML file that could not be read, when it changed.
+fn unreadable(file: &FileChange, found: &mut Vec<Violation>) {
+    if file.before != file.after {
         found.push(violation(
             file,
             None,
             format!(
-                "The path {path} loses a deny or forbid attribute, so a lint level is lowered."
+                "The path {} cannot be read as TOML, so its lint levels and flags cannot be compared.",
+                file.path
             ),
         ));
     }
 }
 
-fn count_lines(data: &[u8], keep: impl Fn(&str) -> bool) -> usize {
-    lines::split(data)
-        .into_iter()
-        .filter(|line| keep(&text(line)))
-        .count()
+fn manifest_changes(file: &FileChange, found: &mut Vec<Violation>) {
+    let path = file.path.as_str();
+    let after_text = String::from_utf8_lossy(file.after_or_empty());
+    let before_text = String::from_utf8_lossy(file.before_or_empty());
+    let Ok(after) = tables::read_manifest(&after_text) else {
+        unreadable(file, found);
+        return;
+    };
+    // A base that cannot be read has nothing to compare with: every lint set to allow is new.
+    let before = tables::read_manifest(&before_text).unwrap_or_default();
+    let mut hit = |line: Option<u32>, message: String| found.push(violation(file, line, message));
+    let at = |key: &str| tables::line_of(&after_text, key);
+    let inherits = |settings: &Settings| settings.inherits == Some(true);
+    if inherits(&before) != inherits(&after) {
+        hit(
+            None,
+            format!(
+                "The path {path} changes whether the crate takes the lint levels of the workspace."
+            ),
+        );
+    }
+    for (key, entry) in &after.entries {
+        let name = key.rsplit('.').next().unwrap_or(key);
+        match before.entries.get(key) {
+            Some(was) if entry.rank < was.rank => hit(
+                at(key),
+                format!("The path {path} lowers the level of the lint {name}."),
+            ),
+            Some(was)
+                if (entry.rank >= 3 && entry.priority < was.priority)
+                    || (entry.rank <= 2 && entry.priority > was.priority) =>
+            {
+                hit(
+                    at(key),
+                    format!(
+                        "The path {path} moves the priority of the lint {name} so that a weaker entry comes last."
+                    ),
+                );
+            }
+            None if entry.rank == 1 => hit(
+                at(key),
+                format!("The path {path} sets the lint {name} to allow."),
+            ),
+            _ => {}
+        }
+    }
+    for (key, was) in &before.entries {
+        if was.rank >= 3 && !after.entries.contains_key(key) {
+            let name = key.rsplit('.').next().unwrap_or(key);
+            hit(
+                None,
+                format!("The path {path} no longer sets the lint {name} to deny or forbid."),
+            );
+        }
+    }
+    for (key, value) in &after.flags {
+        if before.flags.get(key) != Some(value) {
+            hit(at(key), format!("The path {path} sets compiler flags."));
+        }
+    }
+}
+
+fn cargo_configuration_changes(file: &FileChange, found: &mut Vec<Violation>) {
+    let path = file.path.as_str();
+    let after_text = String::from_utf8_lossy(file.after_or_empty());
+    let before_text = String::from_utf8_lossy(file.before_or_empty());
+    let Ok(after) = tables::read_cargo_configuration(&after_text) else {
+        unreadable(file, found);
+        return;
+    };
+    let before = tables::read_cargo_configuration(&before_text).unwrap_or_default();
+    for (key, value) in &after.flags {
+        if before.flags.get(key) != Some(value) {
+            found.push(violation(
+                file,
+                tables::line_of(&after_text, key),
+                format!("The path {path} sets compiler flags or the lint cap."),
+            ));
+        }
+    }
+    for key in before.flags.keys() {
+        if !after.flags.contains_key(key) {
+            found.push(violation(
+                file,
+                None,
+                format!("The path {path} removes compiler flags or a lint cap."),
+            ));
+        }
+    }
 }
 
 #[cfg(test)]
@@ -392,36 +398,53 @@ mod tests {
         }
     }
 
-    #[test]
-    fn a_word_that_only_ends_in_allow_is_not_an_allow() {
-        assert!(calls("#[allow(dead_code)]", "allow"));
-        assert!(calls("#![cfg_attr(test, allow(unused))]", "allow"));
-        assert!(!calls("#[disallow(dead_code)]", "allow"));
-        assert!(!calls("#[no_allow(x)]", "allow"));
+    fn deleted(path: &str, before: &str) -> FileChange {
+        FileChange {
+            path: path.to_owned(),
+            kind: ChangeKind::Deleted,
+            before: Some(before.as_bytes().to_vec()),
+            after: None,
+            readable: true,
+        }
     }
 
     #[test]
     fn a_comment_that_mentions_an_attribute_is_not_one() {
-        assert_eq!(rust_relaxation("// #![allow(warnings)]"), None);
-        assert_eq!(rust_relaxation("let x = 1;"), None);
-        assert!(rust_relaxation("#![allow(warnings)]").is_some());
-        assert!(rust_relaxation("    #[expect(clippy::too_many_arguments)]").is_some());
+        assert!(relaxed(&[added("src/lib.rs", "// #![allow(warnings)]\nlet x = 1;\n")]).is_empty());
+        assert!(!relaxed(&[added("src/lib.rs", "#![allow(warnings)]\n")]).is_empty());
+        assert!(
+            !relaxed(&[added(
+                "src/lib.rs",
+                "    #[expect(clippy::too_many_arguments)]\n"
+            )])
+            .is_empty()
+        );
+    }
+
+    #[test]
+    fn a_word_that_only_ends_in_allow_is_not_an_allow() {
+        assert!(
+            relaxed(&[added(
+                "src/lib.rs",
+                "#[disallow(dead_code)]\n#[no_allow(x)]\n"
+            )])
+            .is_empty()
+        );
     }
 
     #[test]
     fn an_unchanged_allow_is_not_new() {
         let same = "#![allow(unused)]\npub fn one() {}\n";
         assert!(relaxed(&[modified("src/lib.rs", same, same)]).is_empty());
-    }
-
-    #[test]
-    fn levels_are_read_per_table() {
-        let levels = levels_of(
-            b"[lints.rust]\nunsafe_code = \"forbid\"\n[lints.clippy]\nall = { level = \"warn\", priority = -1 }\n[package]\nname = \"x\"\n",
+        // Nor is one that moved.
+        assert!(
+            relaxed(&[modified(
+                "src/lib.rs",
+                "#![allow(unused)]\npub fn one() {}\n",
+                "pub fn one() {}\n#![allow(unused)]\n"
+            )])
+            .is_empty()
         );
-        assert_eq!(levels.entries.len(), 2);
-        assert_eq!(levels.entries["lints.rust:unsafe_code"].0, 4);
-        assert_eq!(levels.entries["lints.clippy:all"].0, 2);
     }
 
     #[test]
@@ -442,12 +465,30 @@ mod tests {
         assert!(relaxed(&[modified("Cargo.toml", before, strengthened)]).is_empty());
         let inherits = "[lints]\nworkspace = true\n";
         assert!(!relaxed(&[modified("crates/a/Cargo.toml", inherits, "[package]\n")]).is_empty());
+        assert!(!relaxed(&[modified("crates/a/Cargo.toml", "[package]\n", inherits)]).is_empty());
+    }
+
+    #[test]
+    fn a_priority_that_lets_a_weaker_entry_win_is_a_hit() {
+        let before = "[lints.clippy]\nunwrap_used = { level = \"deny\", priority = 0 }\nall = { level = \"warn\", priority = -1 }\n";
+        let lowered = "[lints.clippy]\nunwrap_used = { level = \"deny\", priority = -5 }\nall = { level = \"warn\", priority = -1 }\n";
+        let raised = "[lints.clippy]\nunwrap_used = { level = \"deny\", priority = 0 }\nall = { level = \"warn\", priority = 10 }\n";
+        assert!(!relaxed(&[modified("Cargo.toml", before, lowered)]).is_empty());
+        assert!(!relaxed(&[modified("Cargo.toml", before, raised)]).is_empty());
+        assert!(relaxed(&[modified("Cargo.toml", before, before)]).is_empty());
     }
 
     #[test]
     fn a_new_manifest_that_allows_a_lint_is_a_hit_and_one_that_denies_is_not() {
         assert!(!relaxed(&[added("Cargo.toml", "[lints.clippy]\nall = \"allow\"\n")]).is_empty());
         assert!(relaxed(&[added("Cargo.toml", "[lints.clippy]\nall = \"deny\"\n")]).is_empty());
+    }
+
+    #[test]
+    fn a_manifest_that_cannot_be_read_is_a_hit_when_it_changed() {
+        let broken = "[lints.rust\nunused = \"deny\"\n";
+        assert!(!relaxed(&[modified("Cargo.toml", "[package]\n", broken)]).is_empty());
+        assert!(relaxed(&[modified("Cargo.toml", broken, broken)]).is_empty());
     }
 
     #[test]
@@ -473,6 +514,22 @@ mod tests {
     }
 
     #[test]
+    fn a_removed_configuration_is_a_hit() {
+        assert!(!relaxed(&[deleted("clippy.toml", "a = 1\n")]).is_empty());
+        assert!(
+            !relaxed(&[deleted(
+                ".cargo/config.toml",
+                "[build]\nrustflags = [\"-D\", \"warnings\"]\n"
+            )])
+            .is_empty()
+        );
+        // A cargo configuration with no flags in it takes nothing away.
+        assert!(relaxed(&[deleted(".cargo/config.toml", "[net]\nretry = 3\n")]).is_empty());
+        // Nor does a source file that is gone.
+        assert!(relaxed(&[deleted("src/old.rs", "#![deny(warnings)]\n")]).is_empty());
+    }
+
+    #[test]
     fn a_lost_deny_attribute_is_a_hit() {
         let before = "#![deny(warnings)]\npub fn one() {}\n";
         let after = "pub fn one() {}\n";
@@ -495,5 +552,13 @@ mod tests {
             .is_empty()
         );
         assert!(relaxed(&[added("app.py", "print('hello')\n")]).is_empty());
+    }
+
+    #[test]
+    fn a_file_that_may_be_included_into_rust_is_read_and_a_python_file_is_not() {
+        assert!(!relaxed(&[added("src/generated.inc", "#![allow(warnings)]\n")]).is_empty());
+        assert!(!relaxed(&[added("build/lints", "#![allow(warnings)]\n")]).is_empty());
+        assert!(relaxed(&[added("tools/check.py", "# [allow(warnings)]\n")]).is_empty());
+        assert!(relaxed(&[added("docs/notes.md", "#![allow(warnings)]\n")]).is_empty());
     }
 }

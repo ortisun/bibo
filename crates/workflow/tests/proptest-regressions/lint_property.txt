@@ -1,0 +1,10 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc dbb7f093b247d8ca14a79f2ad631b3e7bfd28cc859c472c513049292d35d648f # shrinks to space = Spacing(["", "\n", "", "", "", "", "", "", "", "", "", ""]), inner = false, name = "allow", names = ["clippy::too_many_lines"], conditional = false, context = 0, decoys = false
+cc 9f97d4105e2a6649cef53c6dd4c27b76e0933c33e7be858c2af2b191949edad6 # shrinks to before_space = Spacing(["\n", "", "", "", "", "", "", "", "", "", "", ""]), after_space = Spacing(["", "", "", "", "", "", "", "", "", "", "", ""]), inner = false, names = ["unsafe_code", "clippy::too_many_lines"], step = 0, context = 0
+cc daf0e8b90a870373b4f407ab808d78dd0f5af5719531cda763128fd0cd777e48 # shrinks to before_space = Spacing(["/* c */", "", "", "", "", "", "", "", "", "", "", ""]), after_space = Spacing(["\n", "", "", "", "", "", "", "", "", "", "", ""]), inner = false, names = ["unsafe_code", "missing_docs"], level = "warn", context = 0
+cc 84161d177e2ddaea903ee05c4b1b1b1e2c9bbfe1c8262615f7e18f3ce38727b2 # shrinks to before_space = Spacing(["", "/* c */", "", "", "", "", "", "", "", "", "", ""]), after_space = Spacing(["\n", "", "", "", "", "", "", "", "", "", "", ""]), inner = false, names = ["clippy::all"], step = 0, context = 0
