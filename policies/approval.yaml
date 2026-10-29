@@ -1,7 +1,11 @@
 # =============================================================================
 # policies/approval.yaml  -  autonomy levels and human gates
 # =============================================================================
-# STATUS: DESIGNED. No product code reads or enforces this file yet.
+# STATUS: DESIGNED. Product code reads this file: `load_policy` in
+# crates/composition/src/startup.rs loads it with the security policy and builds
+# the policy engine from both, and the API reads the `actions` table below to
+# decide who may take which decision. The flag `policy.status` below is a label
+# that no code reads or switches on.
 #
 # Defaults required by the master prompt:
 #   * start in human-approval mode

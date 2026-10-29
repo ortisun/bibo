@@ -1,9 +1,13 @@
 # =============================================================================
 # policies/security.yaml  -  default-deny security policy for the factory
 # =============================================================================
-# STATUS: DESIGNED. No product code reads or enforces this file yet. Flip
-# `policy.status` to `enforced` only when the policy crate, its tests and the
-# negative tests in docs/security/negative-test-catalog.md exist and pass.
+# STATUS: DESIGNED. Product code reads this file: `load_policy` in
+# crates/composition/src/startup.rs loads it from the protected checkout, hashes
+# it and builds the policy engine and the redactor from it, for the worker, the
+# API and `factory-cli probe`. The flag `policy.status` below is a label that no
+# code reads or switches on. Flip it to `enforced` only when the negative tests
+# in docs/security/negative-test-catalog.md exist and pass; this comment does not
+# say that they do.
 #
 # Companion documents (the "why" behind each key):
 #   docs/security/threat-model.md              threat IDs (T-nn) and control IDs (C-nn)
