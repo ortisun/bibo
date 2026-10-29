@@ -37,7 +37,9 @@ ARG SANDBOX_GID
 ADD --checksum=sha256:${CLIPPY_SHA256} ${CLIPPY_URL} /tmp/dl/clippy.tar.gz
 ADD --checksum=sha256:${RUSTFMT_SHA256} ${RUSTFMT_URL} /tmp/dl/rustfmt.tar.gz
 
-# Claude Code is one native binary. It belongs to root and nobody can write to it.
+# Claude Code is one native binary. It belongs to root and nobody can write to it. lib/harden.sh
+# later makes it, the Codex binaries and `timeout` execute-only (0711), so that their processes are
+# not dumpable and no process of the sandbox user can write into their standard output.
 ADD --checksum=sha256:${CLAUDE_SHA256} --chown=0:0 --chmod=0755 ${CLAUDE_URL} /usr/local/bin/claude
 
 # Codex: unpack the tarball, check bin/codex against its own pinned SHA-256 as a second line (the

@@ -10,6 +10,7 @@
 #   2. the package manager's state that is only useful for installing,
 #   3. the setuid and setgid bits on every file that still has one,
 #   4. every shell that the image's role does not allow,
+#   5. (agent) the read permission on the agent tools and on timeout,
 #
 # and it adds the numeric sandbox user. The test in test.sh then proves the result from outside.
 #
@@ -82,7 +83,28 @@ chown "$uid:$gid" /home/agent
 chmod 0700 /home/agent
 chmod 1777 /tmp
 
-# --- 5. Shells -----------------------------------------------------------------------------------
+# --- 5. Execute-only tools (agent) ---------------------------------------------------------------
+# The adapters run `env -i ... timeout ... claude|codex ...`, and the stream the adapters trust is
+# the standard output of that process chain. Any process of the sandbox user can open
+# /proc/<pid>/fd/1 of another process of the same user and write into that pipe, unless the other
+# process is not dumpable. The kernel makes a process non-dumpable when it is started from a file
+# that nobody can read, and then /proc/<pid>/fd and /proc/<pid>/mem belong to root. So the tools and
+# `timeout`, the processes that hold the pipe, are execute-only: mode 0711, owned by root. They run
+# the same (verified for claude 2.1.311 and codex 0.163.0, including a full turn with the Bash tool
+# through the broker) and cannot be read by the sandbox user. test.sh rule TOOLS-EXECUTE-ONLY checks
+# the modes (finding SBX-4 of docs/reviews/isolation-core-security-review.md).
+if [ "$role" = agent ]; then
+    for tool in /usr/local/bin/claude /opt/codex/bin/codex /opt/codex/bin/codex-code-mode-host /usr/bin/timeout; do
+        test -f "$tool" || {
+            echo "harden.sh: $tool is missing" >&2
+            exit 1
+        }
+        chown 0:0 "$tool"
+        chmod 0711 "$tool"
+    done
+fi
+
+# --- 6. Shells -----------------------------------------------------------------------------------
 # This is the last step, because after it nothing in this script can run a shell.
 shell_names=$(grep -v -e '^#' -e '^$' "$here/shells.txt")
 set --
