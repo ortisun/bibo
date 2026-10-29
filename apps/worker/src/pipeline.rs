@@ -8,9 +8,11 @@
 //! the drift pump, in the order a loop runs them.
 //!
 //! What the worker cannot give is [`ExternalPorts`]: the agent runtime, the model router, the issue
-//! source and the change host, which need a credential or a file that does not exist yet, the three
-//! seams of the dependency gates that no adapter implements, and the probes of what the runtime can
-//! do. [`external_ports`] says so for a deployment, and `main` then stops with `BLOCKED` lines as
+//! source and the change host, which need a credential or a file that does not exist yet, the two
+//! sources of the dependency gates that no adapter implements (the registry and the date of the
+//! advisory database, see [`supply_chain_sources`]), and the probes of what the runtime can do. The
+//! decisions people recorded about new dependencies are not on that list: the pipeline reads them
+//! from the ledger. [`external_ports`] says so for a deployment, and `main` then stops with `BLOCKED` lines as
 //! before. The day an adapter exists, `external_ports` returns it and the worker runs the whole
 //! pipeline without any other change; a test that supplies stand-ins runs it today.
 
@@ -22,8 +24,10 @@ use factory_composition::decision_signing::DecisionKeys;
 use factory_composition::pipeline::{
     ExternalPorts, Pipeline, PipelineError, PipelineInputs, Tuning, assemble_pipeline,
 };
+use factory_composition::profile::Profile;
 use factory_composition::seams::FileAllowlist;
 use factory_composition::startup::StartupFailure;
+use factory_composition::supply_chain::SupplyChainSources;
 use factory_composition::system::{RandomIds, Shutdown, SystemClock, TokioTicker};
 use factory_ports::agent::ModelBroker;
 use factory_ports::store::{Store, WorkerId};
@@ -39,6 +43,16 @@ fn host_platform() -> &'static str {
     } else {
         "linux/amd64"
     }
+}
+
+/// The registry source and the advisory-database source this process takes into the pipeline.
+/// No real adapter exists for either, so production takes the blocked adapters, which answer "I do
+/// not know" and so make the dependency gates fail closed (a new direct dependency goes to a
+/// security approver, and the advisories gate is BLOCKED), and the `local` and `test` profiles take
+/// labelled stand-ins, which production refuses. Both are named in the `BLOCKED:` list.
+#[must_use]
+pub fn supply_chain_sources(profile: Profile) -> SupplyChainSources {
+    SupplyChainSources::for_profile(profile, Arc::new(SystemClock))
 }
 
 /// What a deployment can give today: nothing. Every item that is missing is listed, and `main`
@@ -136,4 +150,29 @@ pub fn assemble_loop(
         worker_loop = worker_loop.with_before_claim(Arc::clone(hook));
     }
     Ok((worker_loop, pipeline))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use factory_composition::supply_chain::Standing;
+
+    #[test]
+    fn production_takes_the_blocked_sources_and_the_other_profiles_take_labelled_stand_ins() {
+        let production = supply_chain_sources(Profile::Production);
+        assert!(production.stand_ins().is_empty());
+        assert!(
+            production
+                .standings()
+                .iter()
+                .all(|(_, standing)| *standing == Standing::Blocked)
+        );
+        for profile in [Profile::Local, Profile::Test] {
+            let sources = supply_chain_sources(profile);
+            assert_eq!(
+                sources.stand_ins(),
+                ["RegistryMetadata", "AdvisoryDatabase"]
+            );
+        }
+    }
 }

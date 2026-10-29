@@ -136,8 +136,8 @@
       "post": {
         "operationId": "decideJob",
         "tags": ["decisions"],
-        "summary": "Records a decision of a person: approve, reject, rework, pause, resume or cancel.",
-        "description": "Approve, reject and rework need the approver designation; pause, resume and cancel need the operator designation (policies/approval.yaml, actions). The designation is read from the allowlist by the numeric GitHub id of the principal behind the token. The decision is recorded and acknowledged with 202; the engine applies it. There is no merge and no deployment.",
+        "summary": "Records a decision of a person: approve, reject, rework, pause, resume, cancel, or a decision on a new dependency (approve-dependency, approve-build-code).",
+        "description": "Approve, reject and rework need the approver designation; pause, resume and cancel need the operator designation; approve-dependency needs the designation the action add_new_direct_dependency names and approve-build-code the one approve_build_code names, a security approver (policies/approval.yaml, actions). The designation is read from the allowlist by the numeric GitHub id of the principal behind the token. The decision is recorded and acknowledged with 202; the engine applies it. A decision on a dependency names the package, the version and, to tell two packages of one name apart, the start of the checksum; the worker applies it only to a package that the blocked validation stage run waits for, and the policy engine decides again whether this person may decide on that package. There is no merge and no deployment.",
         "security": [{ "bearerToken": [] }],
         "parameters": [
           { "$ref": "#/components/parameters/JobId" },
@@ -359,12 +359,15 @@
         "required": ["verb"],
         "additionalProperties": false,
         "properties": {
-          "verb": { "type": "string", "enum": ["approve", "reject", "rework", "pause", "resume", "cancel"] },
-          "stage_run_id": { "type": "string", "format": "uuid", "description": "Required for approve, reject and rework." },
+          "verb": { "type": "string", "enum": ["approve", "reject", "rework", "pause", "resume", "cancel", "approve-dependency", "approve-build-code"] },
+          "stage_run_id": { "type": "string", "format": "uuid", "description": "Required for approve, reject and rework. Optional for approve-dependency and approve-build-code: without it the decision is for the blocked validation stage run of the job." },
           "head": { "type": "string", "description": "The pull request head the person saw: 40 or 64 hex characters. Required for approve." },
           "evidence": { "type": "string", "description": "The ledger digest the person read: sha256: and 64 hex characters. Required for approve." },
           "target": { "type": "string", "description": "The stage that gets new work. Required for rework." },
-          "reason": { "type": "string", "maxLength": 2000, "description": "Why. Optional for approve, required for every other verb." }
+          "reason": { "type": "string", "maxLength": 2000, "description": "Why. Optional for approve, required for every other verb. For approve-dependency and approve-build-code it has 10 to 500 characters and is redacted before the engine stores it." },
+          "package": { "type": "string", "maxLength": 64, "description": "The package name. Required for approve-dependency and approve-build-code, and refused for every other verb." },
+          "version": { "type": "string", "maxLength": 64, "description": "The version of the package, such as 1.2.3. Required for approve-dependency and approve-build-code, and refused for every other verb." },
+          "checksum": { "type": "string", "description": "The start of the checksum of the package archive the person was shown: 12 to 64 lower case hexadecimal digits, with or without sha256:. Needed only when two awaited packages share a name and a version." }
         }
       },
       "DecisionRecorded": {

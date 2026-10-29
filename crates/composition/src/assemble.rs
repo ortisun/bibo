@@ -125,20 +125,22 @@ pub fn blocked_seams() -> Vec<BlockedSeam> {
 
 /// What `pipeline::assemble_pipeline` still needs from the outside beyond the four blocked
 /// adapters, because nothing in this workspace implements it. A worker stops with these listed.
+///
+/// The recorded decisions of people are not on this list any more: `assemble_pipeline` reads them
+/// from the ledger itself (`LedgerApprovals`). The two sources below have an adapter that is
+/// blocked by design ([`crate::supply_chain::SupplyChainSources::blocked`]). The pipeline can be
+/// assembled with them in production, and the dependency gates fail closed on what they do not
+/// know: a new direct dependency waits for a security approver, and the advisories gate is BLOCKED.
 #[must_use]
 pub fn blocked_pipeline_inputs() -> Vec<BlockedSeam> {
     vec![
         BlockedSeam {
-            seam: "RecordedApprovals",
-            reason: "no adapter reads the decisions people recorded about new dependencies from the ledger for the dependency gates",
-        },
-        BlockedSeam {
             seam: "RegistryMetadata",
-            reason: "no adapter asks the package registry about a package, and the registry is outside the egress allowlist",
+            reason: "no adapter asks the package registry about a package, and the registry is outside the egress allowlist; the blocked adapter answers all unknown, so every new direct dependency goes to a security approver",
         },
         BlockedSeam {
             seam: "AdvisoryDatabase",
-            reason: "no adapter reports the date of the advisory database the audit reads",
+            reason: "no adapter reports the date of the advisory database the audit reads, and the image has no audit tool or database yet; the blocked adapter answers unknown, so the advisories gate is BLOCKED",
         },
         BlockedSeam {
             seam: "CapabilityProbes",

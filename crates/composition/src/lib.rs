@@ -36,6 +36,8 @@
 //! | [`preflight`] | The protection preflight recorder: a step before each claim that reads the protection of the default branch, judges it against the policy and records the result |
 //! | [`assemble`] | Start-up in order, and the list of adapters that are not assembled |
 //! | [`webhook`] | The webhook verifier of the API, built from secret files (one per secret in the rotation window) |
+//! | [`supply_chain`] | The sources of the dependency gates that no adapter implements yet: blocked by design in production, labelled stand-ins in the other profiles |
+//! | [`dependency_decisions`] | A person's decision on a new dependency or its build code: the request the API records, and the step that applies it through the engine |
 //! | [`decision_signing`] | The keyed word that proves the API wrote a request for a decision, and the keys it is made and checked with (AUT-12) |
 //!
 //! Composition is the one job of this crate, so no module here contains a business rule. The
@@ -49,6 +51,7 @@ pub mod database;
 pub mod decision_signing;
 pub mod decisions;
 pub mod delivery;
+pub mod dependency_decisions;
 pub mod drift;
 pub mod feedback;
 pub mod health;
@@ -68,6 +71,7 @@ pub mod sandbox_specs;
 pub mod seams;
 pub mod specs;
 pub mod startup;
+pub mod supply_chain;
 pub mod system;
 pub mod telemetry;
 pub mod webhook;

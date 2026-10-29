@@ -1,4 +1,5 @@
-//! Decisions of people: approve, reject, request rework, pause, resume, cancel.
+//! Decisions of people: approve, reject, request rework, pause, resume, cancel, and the two
+//! decisions on a new dependency (`approve-dependency`, `approve-build-code`).
 //!
 //! The API is the front door for a decision, and the engine is the judge. This module does the
 //! part that belongs to the front door and nothing the engine decides:
@@ -31,15 +32,41 @@
 //! reads the record, checks the allowlist again by numeric id, applies the decision once and
 //! writes the audit record `decision.applied` or `decision.rejected` for the same job, which
 //! `GET /v1/jobs/{id}/timeline` shows.
+//!
+//! # The two verbs of a dependency decision
+//!
+//! `approve-dependency` and `approve-build-code` name a package (`package`, `version` and, to tell
+//! two packages apart, the start of the `checksum`) and say why (`reason`, at least ten
+//! characters). The words go through the one reader of those commands
+//! (`gates::supply_chain::command::parse_dependency_command`), so the API accepts exactly the
+//! package names, versions and checksum prefixes the other channels do. The record has its own
+//! audit action, `decision.dependency_requested`, and its own signed subject; the worker's step
+//! reads the evidence the blocked stage run stored, finds the awaited package the words select,
+//! asks the policy engine for the proof of authority and calls
+//! `Engine::record_dependency_decision`. The answer is `202` and `"applied": false`, as for the
+//! other verbs.
 
 use axum::http::{HeaderMap, StatusCode};
 use factory_composition::commands::{CommandError, ParsedDecision, parse_form};
-use factory_composition::decision_signing::{Signing, SubjectKind, read_subject};
+use factory_composition::decision_signing::{
+    DependencySigning, DependencySubject, Signing, SubjectKind, read_dependency_subject,
+    read_subject,
+};
 use factory_composition::decisions::DecisionFields;
+use factory_composition::dependency_decisions::{
+    DependencyFields, REQUESTED as DEPENDENCY_REQUESTED,
+};
 use factory_domain::ids::{AuditEventId, CorrelationId, JobId, StageRunId};
 use factory_domain::vocabulary::HumanRole;
 use factory_ports::store::{
     AuditActor, AuditDecision, ConstraintRule, NewAuditEvent, StoreError, Tx, Witness,
+};
+use factory_workflow::gates::supply_chain::approval::{
+    ApprovalKind, MAX_REASON_CHARS, MIN_REASON_CHARS,
+};
+use factory_workflow::gates::supply_chain::command::{
+    APPROVE_BUILD_CODE, APPROVE_DEPENDENCY, CommandError as DependencyCommandError, ParsedLine,
+    parse_dependency_command,
 };
 use factory_workflow::stages::approval::Verb;
 use serde::Deserialize;
@@ -69,6 +96,12 @@ struct DecisionBody {
     target: Option<String>,
     #[serde(default)]
     reason: Option<String>,
+    #[serde(default)]
+    package: Option<String>,
+    #[serde(default)]
+    version: Option<String>,
+    #[serde(default)]
+    checksum: Option<String>,
 }
 
 /// The longest slice of a reason the audit record keeps, in bytes.
@@ -86,12 +119,17 @@ fn field_of(error: &CommandError) -> &'static str {
 /// The designations the policy's action table names for a verb. Empty when the table has no row
 /// for it, which the caller treats as a refusal.
 fn required_roles(state: &ApiState, verb: Verb) -> Vec<HumanRole> {
+    roles_of_action(state, verb.action())
+}
+
+/// The designations the policy's action table names for an action.
+fn roles_of_action(state: &ApiState, action: &str) -> Vec<HumanRole> {
     state
         .policies
         .approval
         .actions
         .iter()
-        .find(|row| row.id == verb.action())
+        .find(|row| row.id == action)
         .and_then(|row| row.approver_roles.as_ref())
         .map(|names| {
             names
@@ -138,6 +176,19 @@ pub async fn decide(
     let job_id = parse_id(job_id, JobId::parse).ok_or(ApiError::NotFound)?;
     let key = idempotency_key(headers)?;
     let parsed: DecisionBody = decode(body)?;
+    if let Some(kind) = dependency_kind(&parsed.verb) {
+        return decide_dependency(state, caller, job_id, &key, &parsed, kind).await;
+    }
+    // The words of a package mean nothing to the other verbs, and are not ignored.
+    for (field, value) in [
+        ("package", &parsed.package),
+        ("version", &parsed.version),
+        ("checksum", &parsed.checksum),
+    ] {
+        if value.is_some() {
+            return Err(ApiError::BadRequest(field));
+        }
+    }
     for (field, value) in [
         ("verb", Some(&parsed.verb)),
         ("head", parsed.head.as_ref()),
@@ -304,6 +355,230 @@ pub async fn decide(
     Ok(accepted())
 }
 
+/// The kind of decision a verb is, when it is one of the two verbs of a dependency decision.
+fn dependency_kind(verb: &str) -> Option<ApprovalKind> {
+    match verb {
+        APPROVE_DEPENDENCY => Some(ApprovalKind::NewDependency),
+        APPROVE_BUILD_CODE => Some(ApprovalKind::BuildCode),
+        _ => None,
+    }
+}
+
+fn dependency_field(error: DependencyCommandError) -> &'static str {
+    match error {
+        DependencyCommandError::NoName | DependencyCommandError::InvalidName => "package",
+        DependencyCommandError::NoVersion | DependencyCommandError::InvalidVersion => "version",
+        DependencyCommandError::InvalidChecksum => "checksum",
+    }
+}
+
+/// `POST /v1/jobs/{job_id}/decisions` with the verb `approve-dependency` or `approve-build-code`.
+#[allow(clippy::too_many_lines)]
+async fn decide_dependency(
+    state: &ApiState,
+    caller: &Caller,
+    job_id: JobId,
+    key: &factory_ports::store::IdempotencyKey,
+    parsed: &DecisionBody,
+    kind: ApprovalKind,
+) -> Answer {
+    // Words that mean nothing to this verb are refused, not ignored.
+    for (field, value) in [
+        ("head", &parsed.head),
+        ("evidence", &parsed.evidence),
+        ("target", &parsed.target),
+    ] {
+        if value.is_some() {
+            return Err(ApiError::BadRequest(field));
+        }
+    }
+    for (field, value) in [
+        ("package", parsed.package.as_ref()),
+        ("version", parsed.version.as_ref()),
+        ("checksum", parsed.checksum.as_ref()),
+        ("stage_run_id", parsed.stage_run_id.as_ref()),
+    ] {
+        if value.is_some_and(|text| !clean_line(text)) {
+            return Err(ApiError::BadRequest(field));
+        }
+    }
+    // Each of the three is one word. A space would let a word of the package or of the reason
+    // slip into the line the reader of the commands is given.
+    for (field, value) in [
+        ("package", parsed.package.as_ref()),
+        ("version", parsed.version.as_ref()),
+        ("checksum", parsed.checksum.as_ref()),
+    ] {
+        if value.is_some_and(|text| text.is_empty() || text.contains(char::is_whitespace)) {
+            return Err(ApiError::BadRequest(field));
+        }
+    }
+    let package = parsed
+        .package
+        .as_deref()
+        .ok_or(ApiError::BadRequest("package"))?;
+    let version = parsed
+        .version
+        .as_deref()
+        .ok_or(ApiError::BadRequest("version"))?;
+    let reason = parsed.reason.as_deref().map_or("", str::trim);
+    if reason.chars().count() < MIN_REASON_CHARS || reason.chars().count() > MAX_REASON_CHARS {
+        return Err(ApiError::BadRequest("reason"));
+    }
+    if !clean_text(reason)
+        || state
+            .redactor
+            .contains_secret(reason.as_bytes())
+            .unwrap_or(true)
+    {
+        return Err(ApiError::BadRequest("reason"));
+    }
+    // The words go through the one reader of the dependency commands: the same names, versions and
+    // checksum prefixes every channel accepts, and nothing else.
+    let line = match parsed.checksum.as_deref() {
+        Some(checksum) => format!("{} {package} {version} {checksum}", verb_of(kind)),
+        None => format!("{} {package} {version}", verb_of(kind)),
+    };
+    let command = match parse_dependency_command(&line) {
+        Ok(ParsedLine::Command(command))
+            if command.name == package
+                && command.version == version
+                && command.reason.is_empty()
+                && command.checksum_prefix.is_some() == parsed.checksum.is_some() =>
+        {
+            command
+        }
+        Ok(_) => {
+            return Err(ApiError::BadRequest(if parsed.checksum.is_some() {
+                "checksum"
+            } else {
+                "package"
+            }));
+        }
+        Err(error) => return Err(ApiError::BadRequest(dependency_field(error))),
+    };
+    let stage_run = parsed
+        .stage_run_id
+        .as_deref()
+        .map(|text| parse_id(text, StageRunId::parse).ok_or(ApiError::BadRequest("stage_run_id")))
+        .transpose()?;
+    let fields = DependencyFields {
+        kind,
+        job: job_id,
+        stage_run,
+        package: command.name,
+        version: command.version,
+        checksum: command.checksum_prefix,
+    };
+    if !fields.is_well_formed() {
+        return Err(ApiError::BadRequest("package"));
+    }
+
+    let ids = &state.ports.ids;
+    let command_id = derived_id(
+        &caller.tenant.as_text(),
+        &caller.principal.as_text(),
+        &job_id.as_text(),
+        key.as_str(),
+    );
+
+    // Who: the designations the action names. The worker asks the policy engine again, with the
+    // allowlist as it is then and the designation this package needs.
+    let needed = roles_of_action(state, kind.action());
+    let mut allowed = caller.require_any(&needed).is_ok();
+    let mut tx = state.ports.store.begin(caller.scope()).await?;
+    let mut found_job = None;
+    if allowed {
+        let job = tx.get_job(job_id).await?;
+        let repository = tx.get_repository(job.value.repository).await?;
+        match require_repository(state, caller, &repository.value.full_name) {
+            Ok(()) => {}
+            Err(ApiError::Forbidden) => allowed = false,
+            Err(other) => return Err(other),
+        }
+        found_job = Some(job);
+    }
+    let (job_ref, correlation_id) = if let (true, Some(job)) = (allowed, found_job) {
+        if let Some(run) = stage_run {
+            let found = tx.get_stage_run(run).await?;
+            if found.value.job_id != job.value.id {
+                return Err(ApiError::NotFound);
+            }
+        }
+        (Some(job_id), job.value.correlation_id)
+    } else {
+        (None, CorrelationId::from_uuid(ids.new_uuid()))
+    };
+    let audit_id = if allowed {
+        AuditEventId::from_uuid(command_id)
+    } else {
+        AuditEventId::from_uuid(ids.new_uuid())
+    };
+    if !allowed {
+        return refuse(state, caller, tx, fields.subject(), correlation_id).await;
+    }
+    let stored_reason = format!("requested: {}", kept(reason));
+    let accepted = || {
+        Reply::new(
+            StatusCode::ACCEPTED,
+            json!({
+                "decision_id": command_id.hyphenated().to_string(),
+                "status": "recorded",
+                "applied": false,
+            }),
+        )
+    };
+    if let Some(earlier) = recorded_request(&mut *tx, job_id, audit_id).await? {
+        return if earlier.is_the_same_dependency_request(caller, &fields, stage_run, &stored_reason)
+        {
+            let _ = tx.rollback().await;
+            Ok(accepted())
+        } else {
+            Err(ApiError::Conflict)
+        };
+    }
+    let requested_at = state.ports.clock.now().as_text();
+    let subject = state
+        .decision_keys
+        .signed_dependency_subject(&DependencySigning {
+            tenant: caller.tenant,
+            actor: caller.principal,
+            event: audit_id,
+            requested_at: &requested_at,
+            fields: &fields,
+        });
+    let written = tx
+        .record_audit(NewAuditEvent {
+            id: audit_id,
+            actor: AuditActor::Human(caller.principal),
+            action: audit_action(DEPENDENCY_REQUESTED)?,
+            subject,
+            decision: AuditDecision::Record,
+            reason: stored_reason,
+            policy_hash: state.policy_hash(),
+            job: job_ref,
+            stage_run,
+            correlation_id,
+        })
+        .await;
+    match written {
+        Ok(_) => {}
+        Err(StoreError::Constraint(ConstraintRule::IdReusedWithDifferentContent)) => {
+            return Err(ApiError::Conflict);
+        }
+        Err(other) => return Err(other.into()),
+    }
+    commit(state, caller.scope(), tx, Witness::Audit(audit_id)).await?;
+    Ok(accepted())
+}
+
+const fn verb_of(kind: ApprovalKind) -> &'static str {
+    match kind {
+        ApprovalKind::NewDependency => APPROVE_DEPENDENCY,
+        ApprovalKind::BuildCode => APPROVE_BUILD_CODE,
+    }
+}
+
 /// The most pages of a job's audit log read to find an earlier request.
 const REPLAY_PAGES: u32 = 20;
 
@@ -332,7 +607,29 @@ impl Earlier {
     }
 }
 
-/// The `decision.requested` record of this id, if the job's audit log holds it.
+impl Earlier {
+    /// True when the record is the same decision on a dependency: the same person, the same
+    /// words, the same reason. Only the time and the keyed word may differ.
+    fn is_the_same_dependency_request(
+        &self,
+        caller: &Caller,
+        fields: &DependencyFields,
+        stage_run: Option<StageRunId>,
+        reason: &str,
+    ) -> bool {
+        let event = &self.0.event;
+        let same_fields = matches!(
+            read_dependency_subject(&event.subject),
+            Some(DependencySubject::Signed { fields: stored, .. }) if &stored == fields
+        );
+        same_fields
+            && event.actor == AuditActor::Human(caller.principal)
+            && event.stage_run == stage_run
+            && event.reason == reason
+    }
+}
+
+/// The record of this id, if the job's audit log holds it.
 async fn recorded_request(
     tx: &mut dyn Tx,
     job: JobId,
