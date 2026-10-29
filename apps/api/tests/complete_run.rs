@@ -597,6 +597,7 @@ async fn worker(env: &Env, markers: Option<Arc<dyn DecisionMarkers>>) -> Worker 
         clock: Arc::new(SystemClock),
         max_age: std::time::Duration::from_secs(72 * 3600),
         per_pass: factory_composition::decisions::DECISIONS_PER_PASS,
+        keys: Arc::clone(&env.state.decision_keys),
     });
     Worker {
         engine,

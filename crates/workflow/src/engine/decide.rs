@@ -189,8 +189,15 @@ impl Engine {
                 let head = tx.ledger_head(cx.job).await?;
                 let facts = ApprovalFacts {
                     decision_is_approve: true,
-                    // Nobody approves their own request: a distinct approver is required.
-                    principal_holds_required_role: holds(HumanRole::Approver) && !is_requester,
+                    // Nobody approves their own request: a distinct approver is required. For the
+                    // approval of a pull request the policy has already said which designation
+                    // counts at this tier (a critical change names `security_approver` alone), so
+                    // a person who holds either approving role satisfies the engine (AUT-3). The
+                    // freezing of a specification stays with the `approver` role.
+                    principal_holds_required_role: (holds(HumanRole::Approver)
+                        || (run.value.kind == StageKind::Approval
+                            && holds(HumanRole::SecurityApprover)))
+                        && !is_requester,
                     evidence_digest_seen_equals_current: head
                         .as_ref()
                         .is_some_and(|head| &head.hash == evidence_seen),
@@ -207,7 +214,11 @@ impl Engine {
                     cx,
                     run,
                     actor.principal,
-                    HumanRole::Approver,
+                    if holds(HumanRole::Approver) {
+                        HumanRole::Approver
+                    } else {
+                        HumanRole::SecurityApprover
+                    },
                     "approved",
                 )
                 .await?;

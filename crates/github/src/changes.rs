@@ -62,7 +62,9 @@ pub const fn conclusion_for_gate(outcome: GateOutcome) -> CheckConclusion {
 }
 
 /// The conclusion of a stage from all its gates: any failure fails it, else any blocked gate
-/// needs a person, else it passes when at least one gate passed, else it is neutral.
+/// needs a person, else it passes when at least one gate passed. A set with no gate at all, and a
+/// set in which no gate applied, has shown nothing: it needs a person and is never `neutral`,
+/// because a required check accepts `neutral` as passing (AUT-8).
 #[must_use]
 pub fn conclusion_for_gates(outcomes: &[GateOutcome]) -> CheckConclusion {
     if outcomes.contains(&GateOutcome::Failed) {
@@ -72,7 +74,7 @@ pub fn conclusion_for_gates(outcomes: &[GateOutcome]) -> CheckConclusion {
     } else if outcomes.contains(&GateOutcome::Passed) {
         CheckConclusion::Success
     } else {
-        CheckConclusion::Neutral
+        CheckConclusion::ActionRequired
     }
 }
 
@@ -587,11 +589,17 @@ mod tests {
             conclusion_for_gates(&[NotApplicable, Passed]),
             CheckConclusion::Success
         );
+        // Nothing passed, so nothing was shown: a person is asked, and a required check does not
+        // accept it (AUT-8).
         assert_eq!(
             conclusion_for_gates(&[NotApplicable]),
-            CheckConclusion::Neutral
+            CheckConclusion::ActionRequired
         );
-        assert_eq!(conclusion_for_gates(&[]), CheckConclusion::Neutral);
+        assert_eq!(
+            conclusion_for_gates(&[NotApplicable, NotApplicable]),
+            CheckConclusion::ActionRequired
+        );
+        assert_eq!(conclusion_for_gates(&[]), CheckConclusion::ActionRequired);
         assert_eq!(
             conclusion_for_gates(&[Blocked]),
             CheckConclusion::ActionRequired

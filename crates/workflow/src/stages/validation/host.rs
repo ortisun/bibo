@@ -10,13 +10,16 @@ use super::assemble::HostResult;
 use super::config::ValidationConfig;
 use super::gather::Gathered;
 use crate::gates::scope::secrets::{Scan, scan};
-use crate::gates::scope::{entries, protected, weakening};
+use crate::gates::scope::{entries, lint, protected, weakening};
 
-/// The three host-side results.
+/// The host-side results.
 #[derive(Debug, Clone)]
 pub struct HostResults {
     /// `protected-paths-unchanged`.
     pub protected: HostResult,
+    /// The part of `lint` that needs no command: a lint level lowered, an allow attribute added
+    /// or an ignore list grown (`lint_relaxation`, AUT-4). A hit fails the `lint` gate.
+    pub lint: HostResult,
     /// The part of `test-file-protection` that needs no command.
     pub tests: HostResult,
     /// `secret-scan`.
@@ -27,7 +30,7 @@ impl HostResults {
     /// True when no host-side rule refused or failed to run. Only then may a command run.
     #[must_use]
     pub fn clean(&self) -> bool {
-        [&self.protected, &self.tests, &self.secrets]
+        [&self.protected, &self.lint, &self.tests, &self.secrets]
             .iter()
             .all(|result| matches!(result, HostResult::Passed(_)))
     }
@@ -51,6 +54,7 @@ pub fn evaluate(cfg: &ValidationConfig, gathered: &Gathered) -> HostResults {
         );
         return HostResults {
             protected: missing.clone(),
+            lint: missing.clone(),
             tests: missing,
             secrets,
         };
@@ -62,6 +66,7 @@ pub fn evaluate(cfg: &ValidationConfig, gathered: &Gathered) -> HostResults {
         );
         return HostResults {
             protected: missing.clone(),
+            lint: missing.clone(),
             tests: missing,
             secrets,
         };
@@ -93,8 +98,25 @@ pub fn evaluate(cfg: &ValidationConfig, gathered: &Gathered) -> HostResults {
             "A changed file could not be read at both commits, so the tests in it cannot be compared.",
         )
     };
+    let lint = if gathered.all_readable() {
+        let relaxations = lint::relaxed(&gathered.files);
+        if relaxations.is_empty() {
+            HostResult::Passed(
+                "The change lowers no lint level, adds no attribute that silences a lint and grows no ignore list."
+                    .to_owned(),
+            )
+        } else {
+            HostResult::Failed(relaxations)
+        }
+    } else {
+        blocked(
+            "readable versions of every changed file",
+            "A changed file could not be read at both commits, so a relaxed lint in it cannot be seen.",
+        )
+    };
     HostResults {
         protected,
+        lint,
         tests,
         secrets,
     }

@@ -480,7 +480,7 @@ async fn a_server_error_on_a_read_is_retried_with_a_doubling_pause_and_a_write_i
 // ---- pagination --------------------------------------------------------------------------------------
 
 fn event(kind: &str, label: &str, actor_id: u64, login: &str) -> Value {
-    json!({"id": actor_id, "event": kind, "label": {"name": label}, "actor": {"id": actor_id, "login": login}})
+    json!({"id": actor_id, "event": kind, "label": {"name": label}, "actor": {"id": actor_id, "login": login}, "created_at": "2026-10-28T10:00:00Z"})
 }
 
 fn paged_world(

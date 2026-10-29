@@ -32,6 +32,8 @@ CLI, are made of before each adds its own shell. A ring 3 **library**
 | `hooks` | The work a loop does before it claims (`BeforeClaim`) |
 | `preflight` | `ProtectionPreflight`, a step before each claim: for the repository of each waiting job it reads the protection of the default branch from the code host, judges it against the policy and records the result, so that a repository does not run at L0 for ever. The administrator's statement about the bypass list comes from `BypassAttestations`, which has no production source yet (`NoAttestations` fails closed) |
 | `decisions` | `ClaimWork`, the step that admits received jobs and applies the decisions people asked for, once, with the allowlist read again by numeric id; the grammar of a decision record shared with the API |
+| `decision_signing` | `DecisionKeys`: the keys, read from files, that sign a `decision.requested` record (`at=` and `mac=`, HMAC-SHA256 over the tenant, the person, the event id, the time and the other words) and verify it in constant time, with the previous key accepted during a rotation. The hook applies a request only if its word is right (AUT-12) |
+| `pipeline` | `assemble_pipeline`: the thirteen handlers, the engine, the approval service, the hook and the preflight from the configuration (`stages:`), with `PortRegistry::check` for the profile over every port and a refusal of a registry that lacks a handler. The caller gives `ExternalPorts` (runtime, router, issue source, change host, probes, the three supply-chain seams, the bypass attestations) and the `Providers`; production refuses a stand-in for any of them (AUT-13) |
 | `assemble` | Start-up in order (`prepare`), the list of adapters not assembled (`blocked_adapters`) and of seam methods that fail closed (`blocked_seams`) |
 | `webhook` | The webhook verifier of the API, built from secret files (one per secret in the rotation window) |
 
@@ -105,6 +107,15 @@ broker:
   prices:
     - { provider: anthropic, model: claude-sonnet-5-5, input: 3000000, cache_write: 3750000, cache_read: 300000, output: 15000000 }
 github: { app_id: 1, key_file: /run/secrets/github_app_key }
+stages:                                     # optional; the defaults are the numbers the stage tests use
+  definition_commit: 1405df66cbe219b0bf6355bc3d60361a8376b6b4   # required in production
+  # label: factory
+  # budget: { wall_time_seconds: 3600, max_tokens: 2000000, max_cost_usd: 10.0, attempt_timeout_seconds: 3600, max_attempts: 2 }
+  # agents: { reviewer: code-reviewer }       # an agent id of agents/ for each stage
+  # documentation: { build: [cargo, build, --locked], binary: word-count }
+decisions:                                  # the key that signs decision requests; required in production
+  key_file: /run/secrets/decision_signing_key
+  # previous_key_file: /run/secrets/decision_signing_key_previous   # during a rotation
 worker: { name_prefix: worker, poll_interval_ms: 1000, sweep_interval_s: 10, drain_s: 120, tenants: [2f0c7f64-0d1c-4c5e-9f0a-1b2c3d4e5f60] }
 ```
 

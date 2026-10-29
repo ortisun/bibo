@@ -18,6 +18,7 @@ use std::sync::Arc;
 use factory_composition::assemble::Identity;
 use factory_composition::authority::StoreAuthority;
 use factory_composition::database::connect_api;
+use factory_composition::decision_signing::DecisionKeys;
 use factory_composition::profile::Profile;
 use factory_composition::redaction::{FactorySecrets, SecretKind, redactor_from_policy};
 use factory_composition::seams::FileAllowlist;
@@ -69,6 +70,8 @@ pub struct StateInputs {
     pub policies: LoadedPolicies,
     /// The redactor.
     pub redactor: Arc<Redactor>,
+    /// The keys that sign the requests for decisions.
+    pub decision_keys: Arc<DecisionKeys>,
     /// The audience of the tokens.
     pub audience: String,
     /// GitHub-facing settings.
@@ -104,6 +107,7 @@ pub fn assemble_state(
         allowlist_file: inputs.allowlist_file,
         policies: inputs.policies,
         redactor: inputs.redactor,
+        decision_keys: inputs.decision_keys,
         audience: Audience(audience),
         github: inputs.github,
         limits: inputs.limits,
@@ -156,6 +160,14 @@ pub async fn boot(config: &ApiConfig) -> Result<Booted, StartupFailure> {
         Some(telemetry::init(&settings).map_err(|error| StartupFailure::Other(error.to_string()))?)
     };
 
+    // The key is read before the pool opens: a process that cannot sign a request must not take
+    // traffic. The production profile refuses to start without it (AUT-12).
+    let decision_keys = Arc::new(DecisionKeys::load(
+        config.profile,
+        config.decisions.as_ref(),
+        &redactor,
+    )?);
+
     let store: Arc<dyn Store> = Arc::new(connect_api(&config.database.api, &mut secrets).await?);
     if let Some(kind) = secrets.unregistered_kinds().first() {
         if config.profile == Profile::Production {
@@ -191,6 +203,7 @@ pub async fn boot(config: &ApiConfig) -> Result<Booted, StartupFailure> {
         allowlist_file,
         policies,
         redactor,
+        decision_keys,
         audience: config.tokens.audience.clone(),
         github: config.github.clone(),
         limits: config.limits.clone(),

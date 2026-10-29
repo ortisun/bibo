@@ -131,6 +131,7 @@ pub struct Setup {
     pub open: bool,
     pub draft: bool,
     pub head: GitSha,
+    pub pr_base: String,
     pub tree: GitSha,
     pub base: GitSha,
     pub ledger: Sha256Digest,
@@ -148,6 +149,7 @@ impl Setup {
             allowlist: allowlist(tenant),
             tenant,
             head: request.pr_head.clone(),
+            pr_base: request.base_branch.clone(),
             tree: request.tree.clone(),
             base: request.base.clone(),
             request,
@@ -171,7 +173,8 @@ impl Setup {
                     pr_open: self.open,
                     pr_draft: self.draft,
                     pr_head: &self.head,
-                    tree: &self.tree,
+                    pr_base: &self.pr_base,
+                    tree: Some(&self.tree),
                     base_tip: &self.base,
                     ledger_head: &self.ledger,
                     drift: &self.drift,
@@ -322,6 +325,9 @@ fn the_world_moving_after_the_person_looked_refuses_the_approval() {
     let mut setup = Setup::new();
     setup.base = sha('9');
     assert_eq!(setup.judge(&cmd), Err(Refusal::BaseMoved));
+    let mut setup = Setup::new();
+    setup.pr_base = "release".to_owned();
+    assert_eq!(setup.judge(&cmd), Err(Refusal::BaseRetargeted));
     let mut setup = Setup::new();
     setup.tree = sha('9');
     assert_eq!(setup.judge(&cmd), Err(Refusal::TreeChanged));

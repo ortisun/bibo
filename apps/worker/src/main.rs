@@ -11,9 +11,11 @@
 
 use std::process::ExitCode;
 
-use factory_composition::assemble::{blocked_adapters, blocked_seams};
 use factory_composition::config::FactoryConfig;
+use factory_composition::system::{Shutdown, raise_on_termination};
 use factory_worker::boot::boot;
+use factory_worker::pipeline::{assemble_loop, external_ports};
+use factory_worker::run::exit_code;
 
 fn main() -> ExitCode {
     let config = match FactoryConfig::from_environment(|name| std::env::var(name).ok()) {
@@ -41,21 +43,35 @@ fn main() -> ExitCode {
                 return ExitCode::from(1);
             }
         };
-        // Every check that needs no credential passed. The adapters that do are not assembled in
-        // this part of the work package, so the process stops here and says which.
-        let blocked = blocked_adapters(config.profile);
-        if !blocked.is_empty() {
-            for item in &blocked {
-                eprintln!("BLOCKED: {}: {}", item.port.label(), item.reason);
+        // Every check that needs no credential passed. The ports that do need one (the agent
+        // runtime, the model router, the issue source, the change host) and the seams that no
+        // adapter implements are not assembled yet, so the process stops here and says which.
+        // When they are, `external_ports` returns them and the loop below runs the whole pipeline.
+        let external = match external_ports(&config) {
+            Ok(external) => external,
+            Err(missing) => {
+                for item in &missing {
+                    eprintln!("BLOCKED: {item}");
+                }
+                eprintln!(
+                    "BLOCKED is not a pass: the start-up checks passed, and no job was claimed."
+                );
+                booted.broker.shutdown();
+                return ExitCode::from(3);
             }
-            for item in blocked_seams() {
-                eprintln!("BLOCKED: {}: {}", item.seam, item.reason);
+        };
+        let shutdown = Shutdown::new();
+        tokio::spawn(raise_on_termination(shutdown.clone()));
+        let (worker_loop, _pipeline) = match assemble_loop(&booted, &config, external, shutdown) {
+            Ok(assembled) => assembled,
+            Err(error) => {
+                eprintln!("factory-worker: the pipeline cannot be assembled: {error}");
+                booted.broker.shutdown();
+                return ExitCode::from(1);
             }
-            eprintln!("BLOCKED is not a pass: the start-up checks passed, and no job was claimed.");
-            booted.broker.shutdown();
-            return ExitCode::from(3);
-        }
+        };
+        let summary = worker_loop.run().await;
         booted.broker.shutdown();
-        ExitCode::SUCCESS
+        ExitCode::from(exit_code(&summary))
     })
 }

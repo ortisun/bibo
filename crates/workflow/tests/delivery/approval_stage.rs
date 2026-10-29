@@ -285,6 +285,36 @@ async fn a_failed_gate_is_not_put_in_front_of_a_person() {
     );
 }
 
+/// AUT-10: the design lists an ordinary file; the diff adds a build script. The request the person
+/// is shown carries the tier and the separation-of-duties flags of the diff.
+#[tokio::test]
+async fn aut_10_the_request_carries_the_risk_of_the_diff_and_not_only_of_the_design() {
+    let stage = after_delivery(Scenario {
+        edited_path: "build.rs",
+        ..Scenario::default()
+    })
+    .await;
+    let ran = stage.run().await.expect("the stage runs");
+    assert_eq!(ran.request.tier, factory_domain::vocabulary::RiskTier::High);
+    assert!(ran.request.sensitive_file_change);
+    assert!(!ran.request.protected_path_change);
+}
+
+/// AUT-10: the intake classifier's raise reaches the person.
+#[tokio::test]
+async fn aut_10_the_classifiers_raise_reaches_the_request() {
+    let stage = after_delivery(Scenario {
+        agent_claim: Some(factory_domain::vocabulary::RiskTier::Critical),
+        ..Scenario::default()
+    })
+    .await;
+    let ran = stage.run().await.expect("the stage runs");
+    assert_eq!(
+        ran.request.tier,
+        factory_domain::vocabulary::RiskTier::Critical
+    );
+}
+
 #[tokio::test]
 async fn a_blocked_gate_is_clear_only_when_a_person_decided_about_it() {
     let mut stage = after_delivery(Scenario::default()).await;

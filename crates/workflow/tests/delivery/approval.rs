@@ -43,6 +43,9 @@ struct Fixed {
     head: Mutex<Sha256Digest>,
     values: Mutex<CurrentValues>,
     tree: GitSha,
+    /// The only commit the job's object store holds. The real source answers "not found" for a
+    /// commit that someone else pushed to the branch (AUT-2).
+    known: CommitSha,
 }
 
 #[async_trait]
@@ -70,8 +73,12 @@ impl DeliverySources for Fixed {
             dispositions: Vec::<(_, LedgerEntryId)>::new(),
         })
     }
-    async fn tree_of(&self, _run: &RunIdentity, _commit: &CommitSha) -> Result<GitSha, SeamError> {
-        Ok(self.tree.clone())
+    async fn tree_of(&self, _run: &RunIdentity, commit: &CommitSha) -> Result<GitSha, SeamError> {
+        if commit == &self.known {
+            Ok(self.tree.clone())
+        } else {
+            Err(SeamError::NotFound)
+        }
     }
 }
 
@@ -213,14 +220,10 @@ impl Rig {
         for (name, roles) in [
             ("approver", vec![HumanRole::Approver]),
             ("approver-two", vec![HumanRole::Approver]),
-            (
-                "security-one",
-                vec![HumanRole::Approver, HumanRole::SecurityApprover],
-            ),
-            (
-                "security-two",
-                vec![HumanRole::Approver, HumanRole::SecurityApprover],
-            ),
+            // A security approver holds the engine role of that name and no other: the critical
+            // tier names this designation alone, so it must be enough (AUT-3).
+            ("security-one", vec![HumanRole::SecurityApprover]),
+            ("security-two", vec![HumanRole::SecurityApprover]),
             ("operator", vec![HumanRole::Operator]),
             ("outsider", vec![]),
         ] {
@@ -289,6 +292,7 @@ impl Rig {
                 image_digest: Sha256Digest::of(b"image"),
             }),
             tree: judging::sha('d'),
+            known: head.clone(),
         });
         let fixture = Arc::new(Fixture {
             allowlist: Mutex::new(allowlist),

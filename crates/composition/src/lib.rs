@@ -32,9 +32,11 @@
 //! | [`indexing`] | Indexes the artifacts a sandbox writes, for the tenant, when they are written |
 //! | [`ledger`] | The task ledger of the implementation stage, over the store, fenced by attempt and epoch |
 //! | [`hooks`] | The work a binary's loop does before it claims |
+//! | [`pipeline`] | The whole pipeline from the configuration: the thirteen handlers, the engine, the approval service, the hook and the preflight, with the profile's check of every port (AUT-13) |
 //! | [`preflight`] | The protection preflight recorder: a step before each claim that reads the protection of the default branch, judges it against the policy and records the result |
 //! | [`assemble`] | Start-up in order, and the list of adapters that are not assembled |
 //! | [`webhook`] | The webhook verifier of the API, built from secret files (one per secret in the rotation window) |
+//! | [`decision_signing`] | The keyed word that proves the API wrote a request for a decision, and the keys it is made and checked with (AUT-12) |
 //!
 //! Composition is the one job of this crate, so no module here contains a business rule. The
 //! engine decides, the adapters act, and this crate chooses and connects them.
@@ -44,6 +46,7 @@ pub mod authority;
 pub mod commands;
 pub mod config;
 pub mod database;
+pub mod decision_signing;
 pub mod decisions;
 pub mod delivery;
 pub mod drift;
@@ -52,6 +55,7 @@ pub mod health;
 pub mod hooks;
 pub mod indexing;
 pub mod ledger;
+pub mod pipeline;
 pub mod preflight;
 pub mod profile;
 pub mod providers;

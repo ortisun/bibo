@@ -5,21 +5,19 @@ use factory_domain::vocabulary::RiskTier;
 use factory_ports::githost::PullRequestRef;
 use factory_ports::paths::{BranchName, RepoRef};
 use factory_ports::workspace::ChangeKind;
-use factory_workflow::gates::scope::{FileChange, protected, weakening};
+use factory_workflow::gates::scope::{FileChange, lint, protected, weakening};
 use factory_workflow::stages::approval::{Outcome, Refusal, ServiceError};
 
 use crate::approval_rig::{Rig, policy};
 
 // ---- AUT-1: the pull request's own base branch is never compared -------------------------------
 
-/// The approval is bound to the base *commit* (`seen.base`, `request.base`, the live tip of the
-/// branch named in the request), but nothing reads which branch the pull request now targets.
-/// `PullRequestState::base` is returned by the host and ignored by `ApprovalService::submit`,
-/// `judge` (`Live` has no field for it) and the approval handler. Anyone with write access to the
-/// repository can retarget the draft to another branch after the request is made, and an approver
-/// who follows the procedure records an approval for a pull request that now merges elsewhere.
+/// FIXED (AUT-1). The approval was bound to the base *commit* only; nothing read which branch the
+/// pull request targets. Anyone with write access could retarget the draft after the request was
+/// made, and an approver who followed the procedure recorded an approval for a pull request that
+/// merged elsewhere. The judge now compares the branch (`Live::pr_base`) and refuses with the
+/// distinct code `base_retargeted`.
 #[tokio::test]
-#[ignore = "confirmed defect AUT-1: an approval is recorded for a pull request that was retargeted to another base branch"]
 async fn aut_1_an_approval_is_refused_when_the_pull_request_targets_another_base_branch() {
     let rig = Rig::new(RiskTier::Low).await;
     // Someone with write access moves the draft from `main` to `release` after the request was
@@ -28,20 +26,18 @@ async fn aut_1_an_approval_is_refused_when_the_pull_request_targets_another_base
         .retarget(&BranchName::new("release").expect("a branch"));
     let result = rig.approve().await;
     assert!(
-        result.is_err(),
+        matches!(result, Err(ServiceError::Refused(Refusal::BaseRetargeted))),
         "the approval was applied for a pull request whose base is no longer the one shown: {result:?}"
     );
+    assert_eq!(Refusal::BaseRetargeted.code(), "base_retargeted");
 }
 
-/// A person pushes to the branch after the request was made, and the approver approves the head
-/// they were shown. `ApprovalService::submit` reads the tree of the new head from the job's object
-/// store *before* it judges. That store has never seen a commit someone else pushed, so
-/// `tree_of` answers `NotFound`, the service answers `Unavailable`, and `Refusal::HeadMoved` (and
-/// the invalidation of the approvals on record that goes with it) is never reached. The hook then
-/// retries the decision twenty times and rejects it as `gave_up`. The full run's own break test
-/// for a stale head ends the same way: its audit record says `code=gave_up`, not `new_commit`.
+/// FIXED (AUT-2). A person pushes to the branch after the request was made. The service used to
+/// read the tree of the new head from the job's object store before it judged; that store has never
+/// seen a commit someone else pushed, so the answer was "unavailable", the hook retried twenty
+/// times and gave up, and `Refusal::HeadMoved` (with the invalidation of the approvals on record)
+/// was unreachable. The tree is now read only for the head that was shown.
 #[tokio::test]
-#[ignore = "confirmed defect AUT-2: a head moved by someone else is answered as unavailable, not as a moved head, and recorded approvals are not invalidated"]
 async fn aut_2_a_head_pushed_by_someone_else_is_refused_as_a_moved_head() {
     let rig = Rig::new(RiskTier::Low).await;
     let moved = rig.push_foreign_commit();
@@ -92,14 +88,13 @@ fn modified(path: &str, before: &str, after: &str) -> FileChange {
     }
 }
 
-/// `policies/security.yaml` `gate_integrity.semantic_checks` lists `lint_relaxation` ("lint level
-/// lowered, allow attributes added, ignore lists grown", blocks until a human approves). The
-/// host-side gates are `protected::check`, `weakening::weakened` and the secret scan
-/// (`stages/validation/host.rs`). None of them reads a lint attribute. A crate-level
-/// `#![allow(warnings)]` outranks the `-D warnings` of the lint command, so the lint gate, which
-/// reads only the exit code, reports PASSED for code that has warnings.
+/// FIXED (AUT-4). `policies/security.yaml` `gate_integrity.semantic_checks` lists
+/// `lint_relaxation` ("lint level lowered, allow attributes added, ignore lists grown", blocks until
+/// a human approves) and no host-side rule read a lint attribute. A crate-level `#![allow(warnings)]`
+/// outranks the `-D warnings` of the lint command, so the lint gate, which reads only the exit code,
+/// reported PASSED for code that has warnings. `lint::relaxed` now reads the change on the host and
+/// the lint gate fails (see `validation::negative_gate::aut_4_*` for the whole stage).
 #[test]
-#[ignore = "confirmed defect AUT-4: a new crate-level allow attribute that silences the lint gate is not seen by any host-side rule"]
 fn aut_4_a_new_allow_attribute_is_seen_by_a_host_side_gate() {
     let before = "pub fn one() {}\n";
     for added in [
@@ -107,17 +102,19 @@ fn aut_4_a_new_allow_attribute_is_seen_by_a_host_side_gate() {
         "#![allow(clippy::all)]\npub fn one() {}\n",
         "#![allow(unused)]\npub fn one() {}\n",
     ] {
-        let found = weakening::weakened(&[modified("src/lib.rs", before, added)]);
-        let diff = [DiffEntry::Modified {
-            path: "src/lib.rs".to_owned(),
-            gained_lines_only: false,
-        }];
-        let refused = protected::check(&policy().paths, &diff);
-        assert!(
-            !found.is_empty() || !refused.protected.is_empty() || !refused.tests.is_empty(),
-            "no host-side rule saw {added:?}"
-        );
+        let found = lint::relaxed(&[modified("src/lib.rs", before, added)]);
+        assert!(!found.is_empty(), "no host-side rule saw {added:?}");
+        assert_eq!(found[0].check, "lint-relaxed");
     }
+    // The same change without the attribute is clean.
+    assert!(
+        lint::relaxed(&[modified(
+            "src/lib.rs",
+            before,
+            "pub fn one() {}\npub fn two() {}\n"
+        )])
+        .is_empty()
+    );
 }
 
 /// The same policy list names `build_script_added` ("new build.rs, setup.py, postinstall",
@@ -127,7 +124,7 @@ fn aut_4_a_new_allow_attribute_is_seen_by_a_host_side_gate() {
 /// and nothing consumes the "sensitive" hit at gate time: the tier at approval comes from the
 /// architect's design (see AUT-10 in the review).
 #[test]
-#[ignore = "confirmed defect AUT-5: a new build.rs is allowed by the path gate and no gate blocks it for a security review"]
+#[ignore = "confirmed defect AUT-5: waiting for approve_build_code in policies/approval.yaml (policy work); a new build.rs is allowed by the path gate and no gate blocks it for a security review"]
 fn aut_5_a_new_build_script_is_blocked_until_a_security_review() {
     let diff = [DiffEntry::Added {
         path: "build.rs".to_owned(),

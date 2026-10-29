@@ -213,8 +213,13 @@ pub struct Scenario {
     pub dispositions: Vec<String>,
     /// The fidelity the sources report.
     pub sources_fidelity: Fidelity,
-    /// What the factory measured about the change.
+    /// What the factory measured about the job and the design.
     pub risk: RiskFacts,
+    /// The tier the intake classifier claimed.
+    pub agent_claim: Option<factory_domain::vocabulary::RiskTier>,
+    /// The file the builder's commit writes. The design says nothing about it, so a test can make
+    /// the diff touch a path the design did not list.
+    pub edited_path: &'static str,
     /// Open warnings of the rule `translation-unfaithful` in the documentation gate report.
     pub translation_warnings: u32,
     /// What the documenting stage did.
@@ -262,6 +267,8 @@ impl Default for Scenario {
                 single_module_change_without_sensitive_or_protected_paths: true,
                 ..RiskFacts::default()
             },
+            agent_claim: None,
+            edited_path: "src/lib.rs",
             translation_warnings: 0,
             documentation: Documentation::Committed,
             spec_status: None,
@@ -369,6 +376,7 @@ impl World {
                 number: 12,
             },
             risk: scenario.risk,
+            agent_claim: scenario.agent_claim,
             links: vec![
                 factory_workflow::stages::delivery::DocLink {
                     label: "Architecture decision".to_owned(),
@@ -496,7 +504,7 @@ impl World {
             .edit_tree(
                 &dir,
                 TreeEdit::Write(
-                    RepoPath::new("src/lib.rs").expect("a path"),
+                    RepoPath::new(self.scenario.edited_path).expect("a path"),
                     b"pub fn one() {}\npub fn two() {}\n".to_vec(),
                 ),
             )

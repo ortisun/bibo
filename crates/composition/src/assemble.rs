@@ -114,11 +114,35 @@ pub fn blocked_seams() -> Vec<BlockedSeam> {
     vec![
         BlockedSeam {
             seam: "DeliverySources::tree_of",
-            reason: "implemented over JobRepo::tree_of (pending architect confirmation), but only wired where the handlers are registered with StoreDeliverySources::with_repository, and no worker assembly registers them yet",
+            reason: "implemented over JobRepo::tree_of (pending architect confirmation) and wired by pipeline::assemble_pipeline through StoreDeliverySources::with_repository; a binary that does not assemble the pipeline, such as the operator CLI, gets a closed answer",
         },
         BlockedSeam {
             seam: "DeliverySources::current_values",
-            reason: "implemented over validation::current_values, but only wired where the handlers are registered with StoreDeliverySources::with_repository, and no worker assembly registers them yet",
+            reason: "implemented over validation::current_values and wired by pipeline::assemble_pipeline through StoreDeliverySources::with_repository; a binary that does not assemble the pipeline, such as the operator CLI, gets a closed answer",
+        },
+    ]
+}
+
+/// What `pipeline::assemble_pipeline` still needs from the outside beyond the four blocked
+/// adapters, because nothing in this workspace implements it. A worker stops with these listed.
+#[must_use]
+pub fn blocked_pipeline_inputs() -> Vec<BlockedSeam> {
+    vec![
+        BlockedSeam {
+            seam: "RecordedApprovals",
+            reason: "no adapter reads the decisions people recorded about new dependencies from the ledger for the dependency gates",
+        },
+        BlockedSeam {
+            seam: "RegistryMetadata",
+            reason: "no adapter asks the package registry about a package, and the registry is outside the egress allowlist",
+        },
+        BlockedSeam {
+            seam: "AdvisoryDatabase",
+            reason: "no adapter reports the date of the advisory database the audit reads",
+        },
+        BlockedSeam {
+            seam: "CapabilityProbes",
+            reason: "the capabilities of a runtime are probed when the runtime exists, and the runtime is one of the blocked adapters",
         },
     ]
 }

@@ -10,6 +10,7 @@
 //! |---|---|
 //! | [`boot`] | Start-up of the worker: the shared checks, then the broker listener, then the secret-kind check |
 //! | [`broker_host`] | Hosts the model broker listener in the worker's process |
+//! | [`pipeline`] | The pipeline assembled from the configuration and put in a loop; what the worker cannot give it yet (AUT-13) |
 //! | [`run`] | The worker loop |
 //!
 //! No module here contains a business rule. The engine decides, the adapters act, and the
@@ -17,4 +18,5 @@
 
 pub mod boot;
 pub mod broker_host;
+pub mod pipeline;
 pub mod run;

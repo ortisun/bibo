@@ -40,6 +40,16 @@
 //! three agreeing answers. A refusal is a `decision.rejected` marker with a reason that does not
 //! say which test failed.
 //!
+//! # The proof that the API wrote the request
+//!
+//! A row in the audit log is only a row: any login of the API's database group can write one with
+//! any words in it. A request carries a keyed word (`mac=`, HMAC-SHA256 over the tenant, the person,
+//! the event id, the time and the words of the subject; see [`crate::decision_signing`]) that only
+//! the API, which holds the key, can make. Before anything else the hook recomputes the word with
+//! each key it holds and compares in constant time. A request with no word, or the wrong one, is
+//! rejected with a marker that carries the fixed code `not_signed`, and nothing else about it is
+//! read (AUT-12, R-1).
+//!
 //! # What it keeps in memory
 //!
 //! A cursor into the tenant's audit log and the decisions seen so far that have no marker. A
@@ -76,6 +86,7 @@ use factory_workflow::stages::approval::{
 use factory_workflow::stages::specification::SpecDrafts;
 
 use crate::commands::{CommandContext, ParsedDecision};
+use crate::decision_signing::{DecisionKeys, Signing, SubjectKind, read_subject};
 use crate::hooks::BeforeClaim;
 use crate::seams::{FileAllowlist, designation};
 
@@ -246,6 +257,8 @@ pub enum Reason {
     DraftMoved,
     /// The base branch moved.
     BaseMoved,
+    /// The pull request targets another base branch than the one the decision was asked for.
+    BaseRetargeted,
     /// What the person saw is not what the pull request holds.
     StaleBinding,
     /// The evidence changed.
@@ -258,13 +271,15 @@ pub enum Reason {
     GatesNotClear,
     /// The person already took this decision for this version.
     AlreadyDecided,
+    /// The record does not carry the word that only the API can make (AUT-12).
+    NotSigned,
     /// Any other refusal of the approval service.
     Refused,
 }
 
 impl Reason {
     /// Every reason, so that a sentence can be turned back into its code.
-    pub const ALL: [Reason; 20] = [
+    pub const ALL: [Reason; 22] = [
         Self::GaveUp,
         Self::NoJob,
         Self::Malformed,
@@ -278,12 +293,14 @@ impl Reason {
         Self::NewCommit,
         Self::DraftMoved,
         Self::BaseMoved,
+        Self::BaseRetargeted,
         Self::StaleBinding,
         Self::EvidenceMoved,
         Self::ApprovalExpired,
         Self::NotOpen,
         Self::GatesNotClear,
         Self::AlreadyDecided,
+        Self::NotSigned,
         Self::Refused,
     ];
 
@@ -304,12 +321,16 @@ impl Reason {
             Self::NewCommit => "The pull request changed after the decision was asked for.",
             Self::DraftMoved => "The specification draft is not the one the person approved.",
             Self::BaseMoved => "The base branch moved after the decision was asked for.",
+            Self::BaseRetargeted => {
+                "The pull request now targets another branch than the one the decision was asked for."
+            }
             Self::StaleBinding => "What the person saw is not what the pull request holds now.",
             Self::EvidenceMoved => "The evidence changed after the decision was asked for.",
             Self::ApprovalExpired => "The request for approval has expired.",
             Self::NotOpen => "The pull request is no longer an open draft.",
             Self::GatesNotClear => "A check is not clear, so the work cannot be approved.",
             Self::AlreadyDecided => "This person already took this decision for this version.",
+            Self::NotSigned => "The record was not written by the service that takes decisions.",
             Self::Refused => "The decision was refused.",
         }
     }
@@ -331,12 +352,14 @@ impl Reason {
             Self::NewCommit => "new_commit",
             Self::DraftMoved => "draft_moved",
             Self::BaseMoved => "base_moved",
+            Self::BaseRetargeted => "base_retargeted",
             Self::StaleBinding => "stale_binding",
             Self::EvidenceMoved => "evidence_moved",
             Self::ApprovalExpired => "approval_expired",
             Self::NotOpen => "not_open",
             Self::GatesNotClear => "gates_not_clear",
             Self::AlreadyDecided => "already_decided",
+            Self::NotSigned => "not_signed",
             Self::Refused => "refused",
         }
     }
@@ -500,6 +523,17 @@ pub trait DecisionMarkers: Send + Sync {
     async fn mark_malformed(&self, _tenant: TenantId, _id: AuditEventId) -> Result<(), Unreadable> {
         Ok(())
     }
+
+    /// Writes the marker of a `decision.requested` record that does not carry the API's word
+    /// (AUT-12): a record nobody signed, or one signed with another key. The marker names the
+    /// record's id and the fixed code `not_signed`, and nothing from the record. The default is the
+    /// marker of a malformed record.
+    ///
+    /// # Errors
+    /// [`Unreadable`] when it could not be written. The record is looked at again on the next pass.
+    async fn mark_unsigned(&self, tenant: TenantId, id: AuditEventId) -> Result<(), Unreadable> {
+        self.mark_malformed(tenant, id).await
+    }
 }
 
 /// The real [`DecisionMarkers`]: an audit record in the tenant, under an id derived from the
@@ -627,6 +661,23 @@ impl DecisionMarkers for AuditMarkers {
     }
 
     async fn mark_malformed(&self, tenant: TenantId, id: AuditEventId) -> Result<(), Unreadable> {
+        self.mark_record(tenant, id, Reason::Malformed).await
+    }
+
+    async fn mark_unsigned(&self, tenant: TenantId, id: AuditEventId) -> Result<(), Unreadable> {
+        self.mark_record(tenant, id, Reason::NotSigned).await
+    }
+}
+
+impl AuditMarkers {
+    /// The marker of a record that was refused before it was read: its id, a fixed code, and no
+    /// job, because nothing in the record is believed.
+    async fn mark_record(
+        &self,
+        tenant: TenantId,
+        id: AuditEventId,
+        reason: Reason,
+    ) -> Result<(), Unreadable> {
         let marker = marker_id(id);
         let policy_hash = self.policy_hash.clone();
         let actor = AuditActor::System(Slug::parse("worker.decisions").map_err(|_| Unreadable)?);
@@ -634,7 +685,7 @@ impl DecisionMarkers for AuditMarkers {
         let subject = format!(
             "decision={} code={} actor=none allowlist=none",
             id.as_uuid().hyphenated(),
-            Reason::Malformed.code()
+            reason.code()
         );
         let correlation = CorrelationId::from_uuid(id.as_uuid());
         self.write(
@@ -647,7 +698,7 @@ impl DecisionMarkers for AuditMarkers {
                 action,
                 subject,
                 decision: AuditDecision::Deny,
-                reason: Reason::Malformed.text().to_owned(),
+                reason: reason.text().to_owned(),
                 policy_hash,
                 job,
                 stage_run,
@@ -677,9 +728,18 @@ struct Scan {
     cursor: u64,
     /// Requests with no marker, by sequence.
     pending: BTreeMap<u64, Pending>,
-    /// `decision.requested` records that are not requests this module understands and have no
-    /// marker yet, by sequence (R-2, R-12).
-    malformed: BTreeMap<u64, AuditEventId>,
+    /// `decision.requested` records that are not requests this module understands, or that do
+    /// not carry the API's word, and have no marker yet, by sequence (R-2, R-12, AUT-12).
+    malformed: BTreeMap<u64, (AuditEventId, Fault)>,
+}
+
+/// Why a record is refused before it is read as a request.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Fault {
+    /// Not the text this module writes.
+    Malformed,
+    /// The text is right and the word that only the API can make is missing or wrong.
+    NotSigned,
 }
 
 /// The most decisions (and malformed records) one pass deals with for one tenant, unless the hook is
@@ -703,6 +763,7 @@ pub struct ClaimWork {
     max_age: Duration,
     per_pass: usize,
     drafts: Option<Arc<dyn SpecDrafts>>,
+    keys: Arc<DecisionKeys>,
     scans: Mutex<BTreeMap<TenantId, Scan>>,
 }
 
@@ -730,6 +791,9 @@ pub struct ClaimWorkDeps {
     pub max_age: Duration,
     /// The most decisions one pass deals with for one tenant. [`DECISIONS_PER_PASS`] is the usual.
     pub per_pass: usize,
+    /// The keys the API signs its requests with. A request is read only if its word is the one
+    /// under one of them.
+    pub keys: Arc<DecisionKeys>,
 }
 
 impl ClaimWork {
@@ -748,6 +812,7 @@ impl ClaimWork {
             max_age: deps.max_age,
             per_pass: deps.per_pass.max(1),
             drafts: None,
+            keys: deps.keys,
             scans: Mutex::new(BTreeMap::new()),
         }
     }
@@ -826,16 +891,16 @@ impl ClaimWork {
         }
         // Bounded work (R-12): malformed records first, they are cheap, then requests in the order
         // of the tenant's audit sequence (R-10), no more than `per_pass` in all.
-        let (malformed, pending): (Vec<(u64, AuditEventId)>, Vec<Pending>) = {
+        let (malformed, pending): (Vec<(u64, AuditEventId, Fault)>, Vec<Pending>) = {
             let scans = self.scans.lock().unwrap_or_else(PoisonError::into_inner);
             scans.get(&tenant).map_or_else(
                 || (Vec::new(), Vec::new()),
                 |scan| {
-                    let malformed: Vec<(u64, AuditEventId)> = scan
+                    let malformed: Vec<(u64, AuditEventId, Fault)> = scan
                         .malformed
                         .iter()
                         .take(self.per_pass)
-                        .map(|(sequence, id)| (*sequence, *id))
+                        .map(|(sequence, (id, fault))| (*sequence, *id, *fault))
                         .collect();
                     let room = self.per_pass.saturating_sub(malformed.len());
                     (
@@ -845,10 +910,20 @@ impl ClaimWork {
                 },
             )
         };
-        for (sequence, id) in malformed {
-            match self.markers.mark_malformed(tenant, id).await {
+        for (sequence, id, fault) in malformed {
+            let (marked, code) = match fault {
+                Fault::Malformed => (
+                    self.markers.mark_malformed(tenant, id).await,
+                    Reason::Malformed.code(),
+                ),
+                Fault::NotSigned => (
+                    self.markers.mark_unsigned(tenant, id).await,
+                    Reason::NotSigned.code(),
+                ),
+            };
+            match marked {
                 Ok(()) => {
-                    tracing::info!(code = Reason::Malformed.code(), "a request was rejected");
+                    tracing::info!(code, "a request was rejected");
                     let mut scans = self.scans.lock().unwrap_or_else(PoisonError::into_inner);
                     if let Some(scan) = scans.get_mut(&tenant) {
                         scan.malformed.remove(&sequence);
@@ -914,18 +989,19 @@ impl ClaimWork {
                     cursor = record.sequence;
                     scan.cursor = record.sequence;
                     match record.event.action.as_str() {
-                        REQUESTED => match requested_from(&record) {
-                            Some(pending) => {
+                        REQUESTED => match requested_from(tenant, &record, &self.keys) {
+                            Ok(pending) => {
                                 scan.pending.insert(record.sequence, pending);
                             }
-                            None => {
-                                scan.malformed.insert(record.sequence, record.event.id);
+                            Err(fault) => {
+                                scan.malformed
+                                    .insert(record.sequence, (record.event.id, fault));
                             }
                         },
                         APPLIED | REJECTED => {
                             if let Some(id) = marked_decision(&record.event.subject) {
                                 scan.pending.retain(|_, pending| pending.id != id);
-                                scan.malformed.retain(|_, malformed| *malformed != id);
+                                scan.malformed.retain(|_, (malformed, _)| *malformed != id);
                             }
                         }
                         _ => {}
@@ -1368,20 +1444,45 @@ impl BeforeClaim for ClaimWork {
     }
 }
 
-/// A request for a decision, read from its audit record. `None` for a record that is not a request
-/// this module understands (R-2): the record is rejected with a marker and stops being a candidate.
+/// A request for a decision, read from its audit record. `Err` for a record that is not a request
+/// this module trusts: the record is rejected with a marker and stops being a candidate.
 ///
 /// The row is untrusted input: any login of the application group can write an audit record with
 /// any words in it. It is accepted only if the actor is a human principal, the subject is exactly the
-/// canonical text the API writes, and the columns for the job and the stage run say what the subject
-/// says. The reason is free text and is never read for structure.
-fn requested_from(record: &factory_ports::store::AuditRecord) -> Option<Pending> {
+/// canonical text the API writes, **the word at the end of the subject is the one only the API can
+/// make** (AUT-12), and the columns for the job and the stage run say what the subject says. The
+/// word is checked before the columns and before anything is believed. The reason is free text and
+/// is never read for structure.
+fn requested_from(
+    tenant: TenantId,
+    record: &factory_ports::store::AuditRecord,
+    keys: &DecisionKeys,
+) -> Result<Pending, Fault> {
     let AuditActor::Human(principal) = record.event.actor.clone() else {
-        return None;
+        return Err(Fault::Malformed);
     };
-    let fields = DecisionFields::parse_canonical(&record.event.subject)?;
+    let (fields, requested_at, word) = match read_subject(&record.event.subject) {
+        Some(SubjectKind::Signed {
+            fields,
+            requested_at,
+            word,
+        }) => (fields, requested_at, word),
+        // The text is the API's, and nobody signed it.
+        Some(SubjectKind::Unsigned(_)) => return Err(Fault::NotSigned),
+        None => return Err(Fault::Malformed),
+    };
+    let signing = Signing {
+        tenant,
+        actor: principal,
+        event: record.event.id,
+        requested_at: &requested_at,
+        fields: &fields,
+    };
+    if !keys.verify(&signing, &word) {
+        return Err(Fault::NotSigned);
+    }
     if record.event.job != Some(fields.job) || record.event.stage_run != fields.stage_run {
-        return None;
+        return Err(Fault::Malformed);
     }
     let reason = record
         .event
@@ -1389,7 +1490,7 @@ fn requested_from(record: &factory_ports::store::AuditRecord) -> Option<Pending>
         .strip_prefix(REQUEST_PREFIX)
         .unwrap_or(&record.event.reason)
         .to_owned();
-    Some(Pending {
+    Ok(Pending {
         id: record.event.id,
         sequence: record.sequence,
         principal,
@@ -1415,6 +1516,7 @@ fn refusal_reason(code: &str) -> Reason {
         "not_authorized" | "ineligible_approver" | "not_a_command" => Reason::NotAuthorized,
         "new_commit" => Reason::NewCommit,
         "base_moved" => Reason::BaseMoved,
+        "base_retargeted" => Reason::BaseRetargeted,
         "tree_changed" | "stale_binding" | "not_bound" => Reason::StaleBinding,
         "evidence_moved" | "evidence_drift" => Reason::EvidenceMoved,
         "expired" => Reason::ApprovalExpired,

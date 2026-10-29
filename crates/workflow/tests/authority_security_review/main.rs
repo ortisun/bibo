@@ -21,15 +21,12 @@ use support::World;
 
 // ---- AUT-3 ------------------------------------------------------------------------------------
 
-/// The policy gives the critical tier to `security_approver` alone
-/// (`policies/approval.yaml` `risk_tiers[critical].approver_roles`), and
-/// `ApprovalService::count_distinct` counts only security approvers there. The engine then asks
-/// for `HumanRole::Approver` when the last of them approves (`engine/decide.rs`, the
-/// `principal_holds_required_role` fact), and `StoreAuthority::roles` maps the designation
-/// `security_approver` to `HumanRole::SecurityApprover` and to nothing else. A person who holds
-/// exactly the designation the policy names cannot complete the tier.
+/// FIXED (AUT-3). The policy gives the critical tier to `security_approver` alone
+/// (`policies/approval.yaml` `risk_tiers[critical].approver_roles`), but the engine asked for
+/// `HumanRole::Approver` when the last of them approved (`engine/decide.rs`, the
+/// `principal_holds_required_role` fact), and a person who held exactly the designation the policy
+/// names could not complete the tier. The engine now accepts either approving role.
 #[tokio::test]
-#[ignore = "confirmed defect AUT-3: the engine refuses an approval from a person who holds only security_approver"]
 async fn aut_3_a_person_with_only_the_security_approver_role_can_complete_an_approval() {
     let world = World::new().await;
     let (job, run) = world.at_approval().await;

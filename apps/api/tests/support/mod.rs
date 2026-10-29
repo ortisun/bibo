@@ -255,6 +255,10 @@ impl Env {
             allowlist_file,
             policies,
             redactor,
+            decision_keys: Arc::new(
+                factory_composition::decision_signing::DecisionKeys::generated()
+                    .expect("a signing key"),
+            ),
             audience: "factory-api".to_owned(),
             github: GithubSettings {
                 webhook_secret_files: Vec::new(),

@@ -37,27 +37,20 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use factory_composition::authority::StoreAuthority;
-use factory_composition::decisions::{
-    AllowlistAuthority, AuditMarkers, ClaimWork, ClaimWorkDeps, DecisionMarkers,
-};
+use factory_composition::decisions::{ClaimWork, DecisionMarkers};
 use factory_composition::delivery::{StoreApprovalSources, StoreDeliverySources};
-use factory_composition::drift::{DriftPump, channel as drift_channel};
+use factory_composition::drift::DriftPump;
 use factory_composition::indexing::{ActiveJobs, IndexingSandbox, IndexingWorkspaces};
-use factory_composition::preflight::{BypassAttestations, PreflightDeps, ProtectionPreflight};
-use factory_composition::redaction::RegisteringBroker;
-use factory_composition::sandbox_specs::{PolicySpecs, sandbox_policy_from};
-use factory_composition::seams::{
-    CachedProbes, FileAllowlist, SchemaChecker, StoreRepositories, StoreRequests, YamlManifests,
-};
+use factory_composition::preflight::{BypassAttestations, ProtectionPreflight};
+use factory_composition::sandbox_specs::sandbox_policy_from;
+use factory_composition::seams::{CachedProbes, FileAllowlist, StoreRequests};
 use factory_composition::startup::{LoadedPolicies, load_policy};
-use factory_composition::system::{RandomIds, SystemClock, TokioTicker};
-use factory_contracts::registry::FileAgentRegistry;
+use factory_composition::system::{RandomIds, SystemClock};
 use factory_domain::ids::{JobId, StageRunId, TenantId};
 use factory_domain::scope::TenantScope;
 use factory_domain::state::{JobStatus, StageRunStatus, Status};
-use factory_domain::values::{GitSha, Sha256Digest, Slug, Timestamp, Uri};
+use factory_domain::values::{GitSha, Sha256Digest, Timestamp};
 use factory_domain::vocabulary::{ExecutionMode, StageKind};
-use factory_ports::agent::BrokerEndpoint;
 use factory_ports::clock::IdGenerator;
 use factory_ports::githost::{ActorLogin, GithubActor, IssueRef};
 use factory_ports::paths::{BranchName, RepoRef};
@@ -72,30 +65,8 @@ use factory_testkit::githost::{FakeChangeHost, FakeIssueSource};
 use factory_testkit::router::{RouteRule, StaticModelRouter};
 use factory_testkit::sandbox::{FakeSandbox, ProgramOutput};
 use factory_testkit::workspace::{FakeRemote, FakeWorkspaceProvider};
-use factory_workflow::engine::{Engine, EngineConfig, EngineDeps, JobView};
-use factory_workflow::handlers::{HandlerRegistry, StageHandler};
-use factory_workflow::stages::approval::{ApprovalConfig, ApprovalDeps, ApprovalHandler};
-use factory_workflow::stages::approval::{ApprovalHandlerDeps, ApprovalService};
-use factory_workflow::stages::architecture::{ArchitectureConfig, ArchitectureDeps};
-use factory_workflow::stages::delivery::{DeliveryConfig, DeliveryDeps, DeliveryHandler};
-use factory_workflow::stages::documentation_review::{
-    DocsToolchain, DocumentationReviewConfig, DocumentationReviewDeps, DocumentationReviewHandler,
-};
-use factory_workflow::stages::documenting::{DocumentingConfig, DocumentingDeps};
-use factory_workflow::stages::domain_discovery::DomainDiscoveryHandler;
-use factory_workflow::stages::implementation::{
-    CommitIdentity, ImplementationConfig, ImplementationDeps, ImplementationHandler, StageBudget,
-};
-use factory_workflow::stages::intake::{IntakeConfig, IntakeDeps, IntakeHandler};
-use factory_workflow::stages::planning::{PlanningConfig, PlanningDeps, PlanningHandler};
-use factory_workflow::stages::repo_intel::{RepoIntelConfig, RepoIntelDeps, RepoIntelHandler};
-use factory_workflow::stages::review::{ReviewConfig, ReviewDeps, ReviewHandler};
-use factory_workflow::stages::specification::{
-    SpecificationConfig, SpecificationDeps, SpecificationHandler,
-};
-use factory_workflow::stages::validation::{
-    Bounds, SupplyChainSeams, SupplyChainSettings, ValidationConfig, ValidationHandler,
-};
+use factory_workflow::engine::{Engine, JobView};
+use factory_workflow::handlers::StageHandler;
 use serde_json::json;
 
 use crate::cargo::{CargoScript, TestRun};
@@ -291,7 +262,7 @@ pub struct Rig {
     pub env: Env,
     pub engine: Arc<Engine>,
     pub requests: Arc<StoreRequests>,
-    pub hook: ClaimWork,
+    pub hook: Arc<ClaimWork>,
     pub pump: Arc<DriftPump>,
     pub store: Arc<dyn Store>,
     pub artifacts: Arc<dyn factory_ports::artifact::ArtifactStore>,
@@ -311,7 +282,7 @@ pub struct Rig {
     pub runtime: Arc<PlaybookRuntime>,
     pub jobs: Arc<ActiveJobs>,
     pub approvals: Arc<StoreApprovalSources>,
-    pub preflight: ProtectionPreflight,
+    pub preflight: Arc<ProtectionPreflight>,
     pub delivery: Arc<StoreDeliverySources>,
     pub spec_drafts: Arc<factory_composition::specs::StoreSpecDrafts>,
 }
@@ -377,7 +348,7 @@ impl Rig {
         );
         let fake_clock = Arc::new(FakeClock::new());
         let allowlist = Arc::new(FileAllowlist::in_checkout(&env.checkout));
-        let authority = Arc::new(StoreAuthority::new(
+        let _authority = Arc::new(StoreAuthority::new(
             store_dyn.clone(),
             allowlist.clone(),
             Arc::clone(&policies.engine),
@@ -438,7 +409,7 @@ impl Rig {
         let derived = sandbox_policy_from(&policies.security, true).expect("limits fit");
         let catalog_json = std::fs::read_to_string(root().join("infra/sandbox-images/images.json"))
             .expect("the catalog");
-        let catalog = ImageCatalog::from_json(&catalog_json, "linux/arm64").expect("a catalog");
+        let _catalog = ImageCatalog::from_json(&catalog_json, "linux/arm64").expect("a catalog");
         let cargo = CargoScript::new();
         // The runs of `cargo test`, in the order the stages ask: the baseline of repository
         // intelligence, then the head and the baseline of validation.
@@ -494,20 +465,12 @@ impl Rig {
             });
         }
 
-        let broker = Arc::new(RegisteringBroker::new(
-            Arc::new(FakeModelBroker::new(
-                fake_clock.clone(),
-                Arc::new(RandomIds::new().expect("random")),
-            )),
-            Arc::clone(&redactor),
+        let broker = Arc::new(FakeModelBroker::new(
+            fake_clock.clone(),
+            Arc::new(RandomIds::new().expect("random")),
         ));
-        let specs = Arc::new(PolicySpecs::new(
-            Arc::clone(&policies.security),
-            catalog,
-            Arc::clone(&broker),
-            scratch.join("sandbox"),
-        ));
-        let requests = Arc::new(StoreRequests::new(store_dyn.clone()));
+        let catalog_text = std::fs::read_to_string(root().join("infra/sandbox-images/images.json"))
+            .expect("the catalog");
         let probes = Arc::new(CachedProbes::new(factory_ports::agent::ProbedCapabilities(
             BTreeMap::from([(
                 factory_ports::agent::RuntimeId::new("fake").expect("a runtime"),
@@ -518,33 +481,6 @@ impl Rig {
                 ]),
             )]),
         )));
-        let checker = Arc::new(SchemaChecker::new(root()));
-        let commit = nonzero("1405df66cbe219b0bf6355bc3d60361a8376b6b4");
-        let endpoint = BrokerEndpoint {
-            base_url: Uri::parse("https://model-broker.sandbox.internal:8443").expect("a URI"),
-        };
-        let path_rules = factory_composition::providers::path_rules(&policies.security);
-        let slug = |text: &str| Slug::parse(text).expect("a slug");
-        let budget = StageBudget {
-            wall_time_seconds: 3_600,
-            max_tokens: 2_000_000,
-            max_cost_usd: 10.0,
-            attempt_timeout_seconds: 3_600,
-            max_attempts: 2,
-        };
-        let identity = CommitIdentity {
-            name: "Factory".to_owned(),
-            email: "factory@example.invalid".to_owned(),
-        };
-        let settings = factory_workflow::stages::architecture::shared::AgentSettings {
-            broker: endpoint.clone(),
-            max_output_bytes: 524_288,
-            path_rules: path_rules.clone(),
-        };
-        let feedback = Arc::new(factory_composition::feedback::StoreFeedback::new(
-            store_dyn.clone(),
-            artifacts.clone(),
-        ));
         let jobs = Arc::new(ActiveJobs::new());
         // The fake exports a patch no reader can parse (see `gitshape`); the stages need the shape
         // of `git diff`, so the repository it hands out is wrapped, and the indexing wrapper of
@@ -557,347 +493,47 @@ impl Rig {
             store_dyn.clone(),
             jobs.clone(),
         ));
-        let (drift, pump) = drift_channel();
-        let drift = Arc::new(drift);
-
-        let spec_drafts = Arc::new(factory_composition::specs::StoreSpecDrafts::new(
-            store_dyn.clone(),
-            artifacts.clone(),
-        ));
-
-        // ---- the thirteen handlers --------------------------------------------------------
-        let mut registry = HandlerRegistry::new();
-        let mut fidelity: Vec<(StageKind, factory_domain::vocabulary::Fidelity)> = Vec::new();
-        let mut register = |handler: Arc<dyn StageHandler>| {
-            fidelity.push((handler.kind(), handler.fidelity()));
-            let mut handler = handler;
-            for (kind, wrap) in &options.wrap {
-                if *kind == handler.kind() {
-                    handler = wrap(handler);
-                }
-            }
-            registry
-                .register(Arc::new(Traced(handler)))
-                .expect("one handler per stage");
-        };
-        register(Arc::new(IntakeHandler::new(
-            IntakeConfig {
-                label: LABEL.to_owned(),
-                agent: slug("intake-classifier"),
-                rules: factory_workflow::stages::intake::IntakeRules::default(),
-                definition_commit: commit.clone(),
-                broker: endpoint.clone(),
-                max_output_bytes: 524_288,
-            },
-            IntakeDeps {
-                requests: requests.clone(),
-                issues: issues.clone(),
-                allowlists: allowlist.clone(),
-                policy: Arc::clone(&policies.engine),
-                redactor: Arc::clone(&redactor),
-                schemas: checker.clone(),
-                sandboxes: specs.clone(),
-                probes: probes.clone(),
-            },
-        )));
-        register(Arc::new(RepoIntelHandler::new(
-            RepoIntelConfig {
-                definition_commit: commit.clone(),
-                path_rules: factory_testkit::contracts::workspace::fixture_rules(),
-                default_timeout_seconds: 900,
-                max_file_bytes: 64 * 1024,
-                max_paths: 5000,
-            },
-            RepoIntelDeps {
-                changes: host.clone(),
-                repos: Arc::new(StoreRepositories::new(store_dyn.clone())),
-                specs: specs.clone(),
-                manifests: Arc::new(YamlManifests::new().expect("manifests")),
-                policy: Arc::clone(&policies.engine),
-                redactor: Arc::clone(&redactor),
-            },
-        )));
-        register(Arc::new(SpecificationHandler::new(
-            SpecificationConfig {
-                writer: slug("specification-writer"),
-                reviewer: slug("specification-reviewer"),
-                definition_commit: commit.clone(),
-                broker: endpoint.clone(),
-                max_output_bytes: 524_288,
-                path_rules: factory_composition::providers::specification_path_rules(
-                    &policies.security,
-                ),
-                identity: identity.clone(),
-                constitution_path: factory_ports::paths::RepoPath::new(
-                    ".specify/memory/constitution.md",
-                )
-                .expect("a path"),
-                probe_globs: vec![
-                    factory_ports::paths::RepoGlob::new(".specify/extensions.yml").expect("a glob"),
-                    factory_ports::paths::RepoGlob::new("specs/*/plan.md").expect("a glob"),
-                ],
-                limits: factory_workflow::gates::spec::Limits::default(),
-                max_file_bytes: 1_048_576,
-                max_clarification_rounds: 2,
-                human_approval_required: true,
-                policy_principal: None,
-                budget,
-            },
-            SpecificationDeps {
-                provider: factory_composition::providers::spec_kit_provider(
-                    &root(),
-                    ExecutionMode::Test,
-                )
-                .expect("the Spec Kit provider"),
-                policy: Arc::clone(&policies.engine),
-                redactor: Arc::clone(&redactor),
-                profile: Arc::new(
-                    factory_workflow::gates::spec::profile::ProfileRules::from_policy(
-                        &policies.security,
-                        "SPECIFICATION",
-                    )
-                    .expect("the specification profile"),
-                ),
-                schemas: checker.clone(),
-                specs: specs.clone(),
-                probes: probes.clone(),
-                approvals: Arc::new(factory_composition::specs::StoreSpecApprovals::new(
-                    store_dyn.clone(),
-                    artifacts.clone(),
-                )),
-                drafts: spec_drafts.clone(),
-                history: Arc::new(factory_composition::specs::StoreSpecHistory::new(
-                    store_dyn.clone(),
-                    artifacts.clone(),
-                )),
-                rework: feedback.clone(),
-            },
-        )));
-        register(Arc::new(DomainDiscoveryHandler::new()));
-        register(Arc::new(
-            factory_workflow::stages::architecture::ArchitectureHandler::new(
-                ArchitectureConfig {
-                    agent: slug("architect"),
-                    critic: slug("code-reviewer"),
-                    definition_commit: commit.clone(),
-                    settings: settings.clone(),
-                    rules: factory_workflow::stages::architecture::checks::Rules::default(),
-                    budget,
-                },
-                ArchitectureDeps {
-                    policy: Arc::clone(&policies.engine),
-                    redactor: Arc::clone(&redactor),
-                    schemas: checker.clone(),
-                    specs: specs.clone(),
-                    probes: probes.clone(),
-                    risk: Arc::new(factory_composition::risk::StoreRisk::new(
-                        store_dyn.clone(),
-                        artifacts.clone(),
-                    )),
-                    rounds: feedback.clone(),
-                },
-            ),
-        ));
-        register(Arc::new(PlanningHandler::new(
-            PlanningConfig {
-                agent: slug("planner"),
-                definition_commit: commit.clone(),
-                settings: settings.clone(),
-                limits: factory_workflow::gates::dag::Limits::default(),
-                budget,
-            },
-            PlanningDeps {
-                policy: Arc::clone(&policies.engine),
-                redactor: Arc::clone(&redactor),
-                schemas: checker.clone(),
-                specs: specs.clone(),
-                probes: probes.clone(),
-                rounds: feedback.clone(),
-            },
-        )));
-        register(Arc::new(ImplementationHandler::new(
-            ImplementationConfig {
-                agent: slug("builder"),
-                agent_version: "1.0.0".to_owned(),
-                definition_commit: commit.clone(),
-                broker: endpoint.clone(),
-                max_output_bytes: 524_288,
-                path_rules: path_rules.clone(),
-                identity: identity.clone(),
-                max_patch_bytes: 1_048_576,
-                budget,
-            },
-            ImplementationDeps {
-                policy: Arc::clone(&policies.engine),
-                redactor: Arc::clone(&redactor),
-                schemas: checker.clone(),
-                specs: specs.clone(),
-                probes: probes.clone(),
-                ledger: Arc::new(factory_composition::ledger::StoreTaskLedger::new(
-                    store_dyn.clone(),
-                    Arc::new(SystemClock),
-                    Arc::new(RandomIds::new().expect("random")),
-                )),
-                rework: feedback.clone(),
-            },
-        )));
-        let verify = specs.verify_sandbox().expect("the verify sandbox");
-        let fetch = specs.fetch_sandbox().expect("the fetch sandbox");
-        let validation = Arc::new(ValidationConfig {
-            policy: Arc::clone(&policies.engine),
-            path_rules: path_rules.clone(),
-            holdouts: Vec::new(),
-            redactor: Arc::clone(&redactor),
-            sandbox: verify.clone(),
-            manifest: Arc::new(YamlManifests::new().expect("manifests")),
-            flaky_registry: std::collections::BTreeSet::new(),
-            bounds: Bounds::default(),
-            supply_chain: SupplyChainSeams {
-                settings: SupplyChainSettings::new(
-                    fetch,
-                    factory_workflow::gates::supply_chain::licenses::LicensePolicy::owner_approved(
-                    ),
-                    factory_workflow::gates::supply_chain::names::PopularNames::bundled()
-                        .expect("the bundled list"),
-                    factory_workflow::gates::supply_chain::run::SbomRule {
-                        required: false,
-                        tool: factory_workflow::gates::supply_chain::tools::SbomTool::default(),
-                    },
-                ),
-                approvals: Arc::new(NoApprovals),
-                registry: Arc::new(NoRegistry),
-                advisory_db: Arc::new(RecentDatabase),
-            },
-        });
-        register(Arc::new(ValidationHandler::new(validation.clone())));
-        register(Arc::new(ReviewHandler::new(
-            ReviewConfig {
-                agent: slug(options.review_agent.unwrap_or("code-reviewer")),
-                agent_version: "1.0.0".to_owned(),
-                definition_commit: commit.clone(),
-                broker: endpoint.clone(),
-                max_output_bytes: 524_288,
-                path_rules: path_rules.clone(),
-                max_patch_bytes: 1_048_576,
-                budget,
-            },
-            ReviewDeps {
-                policy: Arc::clone(&policies.engine),
-                redactor: Arc::clone(&redactor),
-                schemas: checker.clone(),
-                specs: specs.clone(),
-                probes: probes.clone(),
-            },
-        )));
-        register(Arc::new(
-            factory_workflow::stages::documenting::DocumentingHandler::new(
-                DocumentingConfig {
-                    agent: slug("documentation-writer"),
-                    agent_version: "1.0.0".to_owned(),
-                    definition_commit: commit.clone(),
-                    broker: endpoint.clone(),
-                    max_output_bytes: 524_288,
-                    path_rules: path_rules.clone(),
-                    identity: identity.clone(),
-                    max_patch_bytes: 1_048_576,
-                    budget,
-                },
-                DocumentingDeps {
-                    policy: Arc::clone(&policies.engine),
-                    redactor: Arc::clone(&redactor),
-                    schemas: checker.clone(),
-                    specs: specs.clone(),
-                    probes: probes.clone(),
-                    rework: feedback.clone(),
-                },
-            ),
-        ));
-        register(Arc::new(DocumentationReviewHandler::new(
-            DocumentationReviewConfig {
-                agent: slug("documentation-reviewer"),
-                agent_version: "1.0.0".to_owned(),
-                definition_commit: commit.clone(),
-                broker: endpoint.clone(),
-                max_output_bytes: 524_288,
-                path_rules: path_rules.clone(),
-                max_patch_bytes: 1_048_576,
-                budget,
-                verify: verify.clone(),
-                toolchain: DocsToolchain {
-                    build: vec![
-                        "cargo".to_owned(),
-                        "build".to_owned(),
-                        "--locked".to_owned(),
-                    ],
-                    binary: "word-count".to_owned(),
-                    diagrams: None,
-                    command_timeout_seconds: 120,
-                    max_output_bytes: 1_048_576,
-                },
-            },
-            DocumentationReviewDeps {
-                policy: Arc::clone(&policies.engine),
-                redactor: Arc::clone(&redactor),
-                schemas: checker.clone(),
-                specs: specs.clone(),
-                probes: probes.clone(),
-            },
-        )));
-
-        let delivery_sources = Arc::new(
-            StoreDeliverySources::new(
+        // The sandbox and the workspaces index what they write for the tenant, as the providers of
+        // the worker do (`providers::assemble`), so a stage can read it back.
+        let providers = factory_composition::providers::Providers {
+            process: factory_composition::providers::system_runner(),
+            sandbox: Arc::new(IndexingSandbox::new(
+                Arc::new(sandbox),
                 store_dyn.clone(),
-                artifacts.clone(),
-                Arc::clone(&policies.engine),
-                Arc::new(SystemClock),
+                jobs.clone(),
+            )),
+            workspaces: indexed_workspaces.clone(),
+            specification: factory_composition::providers::spec_kit_provider(
+                &root(),
+                ExecutionMode::Test,
             )
-            .with_repository(indexed_workspaces.clone(), validation.clone()),
-        );
-        register(Arc::new(DeliveryHandler::new(
-            Arc::new(DeliveryConfig {
-                policy: Arc::clone(&policies.engine),
-                redactor: Arc::clone(&redactor),
-                definition_commit: commit.clone(),
-                readability: factory_workflow::gates::readability::ReadabilityGate::new(
-                    factory_workflow::gates::readability::Options::new(),
-                ),
-                max_patch_bytes: 1_048_576,
-            }),
-            DeliveryDeps {
-                host: host.clone(),
-                sources: delivery_sources.clone(),
-                drift: drift.clone(),
-            },
-        )));
-        let approval_sources = Arc::new(StoreApprovalSources::new(
-            store_dyn.clone(),
-            artifacts.clone(),
-            allowlist.clone(),
-        ));
-        register(Arc::new(ApprovalHandler::new(
-            Arc::new(ApprovalConfig {
-                policy: Arc::clone(&policies.engine),
-                definition_commit: commit.clone(),
-            }),
-            ApprovalHandlerDeps {
-                host: host.clone(),
-                delivery: delivery_sources.clone(),
-                approvals: approval_sources.clone(),
-                drift: drift.clone(),
-            },
-        )));
+            .expect("the Spec Kit provider"),
+        };
 
-        let config_for_scope = EngineConfig::new(ExecutionMode::Test, policies.hash.clone());
-        let missing: Vec<StageKind> = config_for_scope
-            .scope
-            .iter()
-            .copied()
-            .filter(|kind| !fidelity.iter().any(|(held, _)| held == kind))
-            .collect();
-        assert!(
-            missing.is_empty(),
-            "every stage of the scope must have its real handler; missing {missing:?}"
-        );
+        // The protection of the repository, as the code host reports it. A stand-in, labelled: the
+        // code host is the testkit's fake.
+        issues
+            .seed_protection(
+                &repo,
+                factory_ports::githost::ProtectionReport {
+                    default_branch: BranchName::new("main").expect("main"),
+                    source: factory_ports::githost::ProtectionSource::Rulesets,
+                    requires_pull_request: true,
+                    requires_code_owner_review: true,
+                    dismisses_stale_approvals: true,
+                    blocks_force_push: true,
+                    blocks_deletion: true,
+                    // The two checks the delivery stage publishes, both pinned to the App.
+                    required_checks: ["factory-validation", "factory-review"]
+                        .iter()
+                        .map(|context| factory_ports::githost::RequiredCheck {
+                            context: (*context).to_owned(),
+                            integration_id: Some(factory_testkit::githost::FAKE_APP_ID.0),
+                        })
+                        .collect(),
+                },
+            )
+            .await;
 
         let routes: Vec<RouteRule> = StageKind::ALL
             .iter()
@@ -912,113 +548,88 @@ impl Rig {
                 capabilities: Vec::new(),
             })
             .collect();
-        let deps = EngineDeps {
-            store: store_dyn.clone(),
-            clock: Arc::new(SystemClock),
-            ids: Arc::new(RandomIds::new().expect("random")),
-            artifacts: artifacts.clone(),
-            // The sandbox and the workspaces index what they write for the tenant, as the
-            // providers of the worker do (`providers::assemble`), so a stage can read it back.
-            sandbox: Arc::new(IndexingSandbox::new(
-                Arc::new(sandbox),
-                store_dyn.clone(),
-                jobs.clone(),
-            )),
-            workspaces: indexed_workspaces.clone(),
-            runtime: runtime.clone(),
-            router: Arc::new(StaticModelRouter::new(routes)),
-            registry: Arc::new(FileAgentRegistry::load(&root()).expect("the real agent registry")),
-            validator: Arc::new(
-                factory_contracts::validator::SchemaOutputValidator::new()
-                    .expect("the embedded schemas load"),
-            ),
-            broker,
-            authority,
-            ticker: Arc::new(TokioTicker),
-        };
-        let mut config = config_for_scope;
-        config.claim_batch = 1;
-        config.lease_ttl = Duration::from_secs(30);
-        config.heartbeat_interval = Duration::from_secs(1);
-        config.teardown_grace = Duration::from_secs(2);
-        let engine =
-            Arc::new(Engine::new(deps.clone(), config, registry).expect("the engine starts"));
 
-        let service = Arc::new(ApprovalService::new(ApprovalDeps {
-            engine: Arc::clone(&engine),
-            store: store_dyn.clone(),
-            host: host.clone(),
-            issues: issues.clone(),
-            policy: Arc::clone(&policies.engine),
-            policy_hash: policies.hash.clone(),
-            delivery: delivery_sources.clone(),
-            approvals: approval_sources.clone(),
-            clock: Arc::new(SystemClock),
-            ids: Arc::new(RandomIds::new().expect("random")),
-            redactor: Arc::clone(&redactor),
-        }));
-        let delivery = delivery_sources.clone();
-        let approvals_for_rig = Arc::new(StoreApprovalSources::new(
-            store_dyn.clone(),
-            artifacts.clone(),
-            Arc::new(FileAllowlist::in_checkout(&env.checkout)),
-        ));
-        // The protection of the repository, as the code host reports it, and the statement of an
-        // administrator that the App is on no bypass list. Both are stand-ins, labelled: the code
-        // host is the testkit's fake, and the statement is the operator of the tenant's.
-        issues
-            .seed_protection(
-                &repo,
-                factory_ports::githost::ProtectionReport {
-                    default_branch: BranchName::new("main").expect("main"),
-                    source: factory_ports::githost::ProtectionSource::Rulesets,
-                    requires_pull_request: true,
-                    requires_code_owner_review: true,
-                    dismisses_stale_approvals: true,
-                    blocks_force_push: true,
-                    blocks_deletion: true,
-                    required_checks: vec![factory_ports::githost::RequiredCheck {
-                        context: "factory-validation".to_owned(),
-                        integration_id: Some(factory_testkit::githost::FAKE_APP_ID.0),
-                    }],
-                },
-            )
-            .await;
-        let preflight = ProtectionPreflight::new(PreflightDeps {
-            store: store_dyn.clone(),
-            source: issues.clone(),
-            app: factory_testkit::githost::FAKE_APP_ID,
-            checks: vec![slug("factory-validation")],
-            attestations: Arc::new(OperatorAttests(env.a.operator.principal)),
-            tenants: vec![tenant],
-            policy_hash: policies.hash.clone(),
-            ids: Arc::new(RandomIds::new().expect("random")),
+        // ---- the pipeline, assembled the way the worker assembles it -----------------------
+        let mut settings = factory_composition::config::StageSettings {
+            label: LABEL.to_owned(),
+            definition_commit: Some("1405df66cbe219b0bf6355bc3d60361a8376b6b4".to_owned()),
+            ..Default::default()
+        };
+        if let Some(agent) = options.review_agent {
+            settings.agents.reviewer = agent.to_owned();
+        }
+        let wraps = options.wrap;
+        let decorate: factory_composition::pipeline::HandlerDecorator = Box::new(move |handler| {
+            let mut handler = handler;
+            for (kind, wrap) in &wraps {
+                if *kind == handler.kind() {
+                    handler = wrap(handler);
+                }
+            }
+            Arc::new(Traced(handler))
         });
-        let hook = ClaimWork::new(ClaimWorkDeps {
-            engine: Arc::clone(&engine),
-            store: store_dyn.clone(),
-            tenants: vec![tenant],
-            submitter: service,
-            approvals: approval_sources,
-            authority: Arc::new(AllowlistAuthority::new(
-                allowlist,
-                Arc::clone(&policies.approval),
-                Arc::new(SystemClock),
-            )),
-            markers: options.markers.unwrap_or_else(|| {
-                Arc::new(AuditMarkers::new(store_dyn.clone(), policies.hash.clone()))
-            }),
-            clock: Arc::new(SystemClock),
-            max_age: Duration::from_secs(72 * 3600),
-            per_pass: factory_composition::decisions::DECISIONS_PER_PASS,
-        })
-        .with_specification(spec_drafts.clone());
+        let pipeline = factory_composition::pipeline::assemble_pipeline(
+            factory_composition::pipeline::PipelineInputs {
+                profile: factory_composition::profile::Profile::Test,
+                settings,
+                definitions_root: root(),
+                policies: policies.clone(),
+                redactor: Arc::clone(&redactor),
+                store: store_dyn.clone(),
+                artifacts: artifacts.clone(),
+                clock: Arc::new(SystemClock),
+                ids: Arc::new(RandomIds::new().expect("random")),
+                providers,
+                catalog: ImageCatalog::from_json(&catalog_text, "linux/arm64").expect("a catalog"),
+                sandbox_scratch: scratch.join("sandbox"),
+                broker,
+                external: factory_composition::pipeline::ExternalPorts {
+                    runtime: runtime.clone(),
+                    router: Arc::new(StaticModelRouter::new(routes)),
+                    issues: issues.clone(),
+                    changes: host.clone(),
+                    probes,
+                    supply_chain: factory_composition::pipeline::SupplyChainParts {
+                        approvals: Arc::new(NoApprovals),
+                        registry: Arc::new(NoRegistry),
+                        advisory_db: Arc::new(RecentDatabase),
+                    },
+                    attestations: Arc::new(OperatorAttests(env.a.operator.principal)),
+                    app: factory_testkit::githost::FAKE_APP_ID,
+                },
+                allowlist: allowlist.clone(),
+                tenants: vec![tenant],
+                decision_keys: Arc::clone(&env.state.decision_keys),
+                tuning: factory_composition::pipeline::Tuning {
+                    decorate: Some(decorate),
+                    markers: options.markers,
+                    engine: Some(Box::new(|config| {
+                        config.lease_ttl = Duration::from_secs(30);
+                        config.heartbeat_interval = Duration::from_secs(1);
+                        config.teardown_grace = Duration::from_secs(2);
+                    })),
+                },
+            },
+        )
+        .unwrap_or_else(|error| panic!("the pipeline assembles: {error}"));
+        let factory_composition::pipeline::Pipeline {
+            engine,
+            handlers: fidelity,
+            hook,
+            preflight,
+            requests,
+            drift: pump,
+            delivery,
+            approvals: approvals_for_rig,
+            spec_drafts,
+            ..
+        } = pipeline;
         Self {
             env,
             engine,
             requests,
             hook,
-            pump: Arc::new(pump),
+            pump,
             store: store_dyn,
             artifacts,
             tenant,

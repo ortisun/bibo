@@ -337,11 +337,16 @@ async fn negative_nt_gate_03_each_ci_gate_and_instruction_file_edit_fails_before
         nothing_ran(&w, &ran);
         // Every command gate says it did not run, and BLOCKED is not a pass.
         for command in ["format", "lint", "build", "unit-tests"] {
-            assert_eq!(
-                ran.outcome(command),
-                GateOutcome::Blocked,
-                "{path}: {command}"
-            );
+            // The configuration of a lint or format tool is also a lint relaxation (AUT-4), which
+            // the host reads before any command runs and reports on the lint gate itself.
+            let tool_configuration =
+                path.ends_with("clippy.toml") || path.ends_with("rustfmt.toml");
+            let expected = if command == "lint" && tool_configuration {
+                GateOutcome::Failed
+            } else {
+                GateOutcome::Blocked
+            };
+            assert_eq!(ran.outcome(command), expected, "{path}: {command}");
         }
     }
 }
@@ -354,6 +359,68 @@ async fn negative_nt_gate_03_deleting_a_protected_file_is_refused_too() {
         GateOutcome::Failed
     );
     nothing_ran(&w, &ran);
+}
+
+// -------------------------------------------------------------------------------------------
+// AUT-4: lint_relaxation
+// -------------------------------------------------------------------------------------------
+
+/// A crate-level `allow` outranks the `-D warnings` of the lint command, so the lint command can
+/// exit 0 for code with warnings. The host reads the attribute before any command runs, fails the
+/// lint gate, and no sandbox is made.
+#[tokio::test]
+async fn aut_4_a_crate_level_allow_attribute_fails_the_lint_gate_before_any_command_runs() {
+    let lib = base_files()
+        .into_iter()
+        .find(|(path, _)| path == "src/lib.rs")
+        .map(|(_, text)| text)
+        .expect("the fixture holds a library");
+    for attribute in [
+        "#![allow(warnings)]",
+        "#![allow(clippy::all)]",
+        "#![allow(unused)]",
+        "#![expect(dead_code)]",
+    ] {
+        let changed = format!("{attribute}\n{lib}");
+        let (w, ran) = run_change(&[("src/lib.rs", Some(&changed))], head_run()).await;
+        assert_eq!(ran.outcome("lint"), GateOutcome::Failed, "{attribute}");
+        assert!(
+            ran.failure_checks("lint")
+                .contains(&"lint-relaxed".to_owned()),
+            "{attribute}"
+        );
+        assert_eq!(w.sandbox.created(), 0, "{attribute}: no sandbox was made");
+        assert!(w.cargo.calls().is_empty(), "{attribute}: no command ran");
+        assert_ne!(
+            ran.resolution,
+            Resolution::Pass,
+            "{attribute}: the stage does not pass"
+        );
+    }
+}
+
+#[tokio::test]
+async fn aut_4_a_lowered_lint_level_in_the_manifest_fails_the_lint_gate() {
+    let manifest = "[package]\nname = \"word-count\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[lints.rust]\nunused = \"allow\"\n";
+    let (w, ran) = run_change(&[("Cargo.toml", Some(manifest))], head_run()).await;
+    assert_eq!(ran.outcome("lint"), GateOutcome::Failed);
+    // A hit is a failure a person decides about (`blocks_until: human_approval`), not a
+    // protected-path violation.
+    assert!(!ran.decision.policy_violation);
+    assert_eq!(w.sandbox.created(), 0, "no sandbox was made");
+    assert!(w.cargo.calls().is_empty(), "no command ran");
+}
+
+#[tokio::test]
+async fn aut_4_an_ordinary_change_still_passes_the_lint_gate() {
+    let lib = base_files()
+        .into_iter()
+        .find(|(path, _)| path == "src/lib.rs")
+        .map(|(_, text)| text)
+        .expect("the fixture holds a library");
+    let changed = format!("{lib}\npub fn extra() {{}}\n");
+    let (_w, ran) = run_change(&[("src/lib.rs", Some(&changed))], head_run()).await;
+    assert_eq!(ran.outcome("lint"), GateOutcome::Passed);
 }
 
 #[tokio::test]

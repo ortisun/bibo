@@ -102,6 +102,11 @@ fn command_gate(
     id: &str,
     comparison: Option<&(BaselineDelta, Vec<Violation>)>,
 ) -> Result<GateReport, ReportError> {
+    // A relaxed lint is seen on the host, before any command. The lint gate cannot report that it
+    // passed for a change that silences the lint (`lint_relaxation`, AUT-4).
+    if id == gate_id::LINT && !matches!(f.host.lint, HostResult::Passed(_)) {
+        return asm.host(gate_id::LINT, f.host.lint.clone());
+    }
     let Some(definitions) = f.definitions else {
         return asm.not_run(
             id,

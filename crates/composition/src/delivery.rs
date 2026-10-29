@@ -237,7 +237,8 @@ impl DeliverySources for StoreDeliverySources {
     }
 
     async fn target(&self, run: &RunIdentity) -> Result<DeliveryTarget, SeamError> {
-        let job_facts = self.job_risk.of(run).await?.facts;
+        let job_risk = self.job_risk.of(run).await?;
+        let (job_facts, agent_claim) = (job_risk.facts, job_risk.agent_claim);
         let mut tx = self.reader.begin(run.tenant).await?;
         let outcome = async {
             let job = tx.get_job(run.job).await.map_err(|e| seam(&e))?.value;
@@ -281,6 +282,7 @@ impl DeliverySources for StoreDeliverySources {
                 head: job_branch(run.job)?,
                 issue,
                 risk,
+                agent_claim,
                 links: Vec::new(),
             })
         }

@@ -28,6 +28,7 @@ fn inputs(env: &Env, profile: Profile, ports: ApiPorts) -> StateInputs {
         allowlist_file: Arc::clone(&env.state.allowlist_file),
         policies: env.state.policies.clone(),
         redactor: Arc::clone(&env.state.redactor),
+        decision_keys: Arc::clone(&env.state.decision_keys),
         audience: "factory-api".to_owned(),
         github: env.state.github.clone(),
         limits: env.state.limits.clone(),

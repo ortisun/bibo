@@ -328,6 +328,279 @@ pub struct GithubConfig {
     pub webhook_secret_file: Option<SecretFile>,
 }
 
+/// The key that signs the requests for decisions (AUT-12, R-1 of the API review).
+///
+/// The API signs each `decision.requested` record with it and the worker's hook verifies the
+/// record with it before anything else. Both processes name the same file. The key is a secret: a
+/// reference to a file that only its owner may read, never a value.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DecisionSigning {
+    /// The file holding the current key: signs and verifies. At least 32 bytes.
+    pub key_file: SecretFile,
+    /// The file holding the previous key, during a rotation: verifies only. Remove it once every
+    /// request signed with it has been dealt with (the approval window is 72 hours).
+    #[serde(default)]
+    pub previous_key_file: Option<SecretFile>,
+}
+
+/// The budget of one stage run: the wall time, the model tokens and cost, and the attempts.
+#[derive(Debug, Clone, Copy, PartialEq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BudgetSettings {
+    /// The wall time of a stage run, in seconds.
+    #[serde(default = "default_stage_wall_s")]
+    pub wall_time_seconds: u32,
+    /// The model tokens a stage run may use.
+    #[serde(default = "default_stage_tokens")]
+    pub max_tokens: u32,
+    /// The model cost a stage run may use, in dollars.
+    #[serde(default = "default_stage_cost")]
+    pub max_cost_usd: f64,
+    /// The wall time of one attempt, in seconds.
+    #[serde(default = "default_stage_wall_s")]
+    pub attempt_timeout_seconds: u32,
+    /// The attempts of a stage run.
+    #[serde(default = "default_stage_attempts")]
+    pub max_attempts: u32,
+}
+
+const fn default_stage_wall_s() -> u32 {
+    3_600
+}
+const fn default_stage_tokens() -> u32 {
+    2_000_000
+}
+const fn default_stage_cost() -> f64 {
+    10.0
+}
+const fn default_stage_attempts() -> u32 {
+    2
+}
+
+impl Default for BudgetSettings {
+    fn default() -> Self {
+        Self {
+            wall_time_seconds: default_stage_wall_s(),
+            max_tokens: default_stage_tokens(),
+            max_cost_usd: default_stage_cost(),
+            attempt_timeout_seconds: default_stage_wall_s(),
+            max_attempts: default_stage_attempts(),
+        }
+    }
+}
+
+/// The name and address the factory commits under.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CommitIdentitySettings {
+    /// The author name.
+    pub name: String,
+    /// The author address.
+    pub email: String,
+}
+
+impl Default for CommitIdentitySettings {
+    fn default() -> Self {
+        Self {
+            name: "Software Factory".to_owned(),
+            email: "factory@users.noreply.invalid".to_owned(),
+        }
+    }
+}
+
+/// How the documentation review builds the target project and finds the tool it documents.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DocumentationSettings {
+    /// The command that builds the project.
+    #[serde(default = "default_docs_build")]
+    pub build: Vec<String>,
+    /// The program the build makes and the pages describe. The first target of Slice 1 is the
+    /// `word-count` fixture; a project manifest will name it for other projects.
+    #[serde(default = "default_docs_binary")]
+    pub binary: String,
+    /// The wall time of one command, in seconds.
+    #[serde(default = "default_docs_timeout")]
+    pub command_timeout_seconds: u64,
+    /// The most output of one command, in bytes.
+    #[serde(default = "default_docs_output")]
+    pub max_output_bytes: u64,
+}
+
+fn default_docs_build() -> Vec<String> {
+    ["cargo", "build", "--locked"]
+        .iter()
+        .map(|word| (*word).to_owned())
+        .collect()
+}
+fn default_docs_binary() -> String {
+    "word-count".to_owned()
+}
+const fn default_docs_timeout() -> u64 {
+    120
+}
+const fn default_docs_output() -> u64 {
+    1_048_576
+}
+
+impl Default for DocumentationSettings {
+    fn default() -> Self {
+        Self {
+            build: default_docs_build(),
+            binary: default_docs_binary(),
+            command_timeout_seconds: default_docs_timeout(),
+            max_output_bytes: default_docs_output(),
+        }
+    }
+}
+
+/// The agents of the stages, by their id in `agents/`.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AgentNames {
+    /// Classifies the request.
+    #[serde(default = "agent_intake")]
+    pub intake: String,
+    /// Writes the specification.
+    #[serde(default = "agent_spec_writer")]
+    pub specification_writer: String,
+    /// Reviews the specification.
+    #[serde(default = "agent_spec_reviewer")]
+    pub specification_reviewer: String,
+    /// Designs.
+    #[serde(default = "agent_architect")]
+    pub architect: String,
+    /// Criticizes the design.
+    #[serde(default = "agent_code_reviewer")]
+    pub critic: String,
+    /// Plans the tasks.
+    #[serde(default = "agent_planner")]
+    pub planner: String,
+    /// Writes the code.
+    #[serde(default = "agent_builder")]
+    pub builder: String,
+    /// Reviews the code. Never the builder.
+    #[serde(default = "agent_code_reviewer")]
+    pub reviewer: String,
+    /// Writes the documentation.
+    #[serde(default = "agent_doc_writer")]
+    pub documentation_writer: String,
+    /// Reviews the documentation.
+    #[serde(default = "agent_doc_reviewer")]
+    pub documentation_reviewer: String,
+}
+
+fn agent_intake() -> String {
+    "intake-classifier".to_owned()
+}
+fn agent_spec_writer() -> String {
+    "specification-writer".to_owned()
+}
+fn agent_spec_reviewer() -> String {
+    "specification-reviewer".to_owned()
+}
+fn agent_architect() -> String {
+    "architect".to_owned()
+}
+fn agent_code_reviewer() -> String {
+    "code-reviewer".to_owned()
+}
+fn agent_planner() -> String {
+    "planner".to_owned()
+}
+fn agent_builder() -> String {
+    "builder".to_owned()
+}
+fn agent_doc_writer() -> String {
+    "documentation-writer".to_owned()
+}
+fn agent_doc_reviewer() -> String {
+    "documentation-reviewer".to_owned()
+}
+
+impl Default for AgentNames {
+    fn default() -> Self {
+        Self {
+            intake: agent_intake(),
+            specification_writer: agent_spec_writer(),
+            specification_reviewer: agent_spec_reviewer(),
+            architect: agent_architect(),
+            critic: agent_code_reviewer(),
+            planner: agent_planner(),
+            builder: agent_builder(),
+            reviewer: agent_code_reviewer(),
+            documentation_writer: agent_doc_writer(),
+            documentation_reviewer: agent_doc_reviewer(),
+        }
+    }
+}
+
+/// The settings of the thirteen stages that the stage code does not decide: names, budgets and
+/// limits. Every one has a default, the numbers the stage tests use, so a deployment names only what
+/// it changes. The commit of the gate definitions has none in the production profile.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct StageSettings {
+    /// The label whose application asks the factory to work.
+    #[serde(default = "default_stage_label")]
+    pub label: String,
+    /// The commit of the factory's own gate definitions, 40 hex digits, recorded in every gate
+    /// report. The production profile needs it; the other profiles derive one from the policy.
+    #[serde(default)]
+    pub definition_commit: Option<String>,
+    /// The identity commits are made under.
+    #[serde(default)]
+    pub commit_identity: CommitIdentitySettings,
+    /// The budget of one stage run.
+    #[serde(default)]
+    pub budget: BudgetSettings,
+    /// The largest answer of an agent, in bytes.
+    #[serde(default = "default_stage_output")]
+    pub max_output_bytes: u64,
+    /// The largest patch a stage reads, in bytes.
+    #[serde(default = "default_stage_patch")]
+    pub max_patch_bytes: u64,
+    /// The rounds of questions the specification stage may ask a person.
+    #[serde(default = "default_stage_rounds")]
+    pub max_clarification_rounds: u32,
+    /// The agents.
+    #[serde(default)]
+    pub agents: AgentNames,
+    /// The documentation review.
+    #[serde(default)]
+    pub documentation: DocumentationSettings,
+}
+
+fn default_stage_label() -> String {
+    "factory".to_owned()
+}
+const fn default_stage_output() -> u64 {
+    524_288
+}
+const fn default_stage_patch() -> u64 {
+    1_048_576
+}
+const fn default_stage_rounds() -> u32 {
+    2
+}
+
+impl Default for StageSettings {
+    fn default() -> Self {
+        Self {
+            label: default_stage_label(),
+            definition_commit: None,
+            commit_identity: CommitIdentitySettings::default(),
+            budget: BudgetSettings::default(),
+            max_output_bytes: default_stage_output(),
+            max_patch_bytes: default_stage_patch(),
+            max_clarification_rounds: default_stage_rounds(),
+            agents: AgentNames::default(),
+            documentation: DocumentationSettings::default(),
+        }
+    }
+}
+
 /// How the worker loop paces itself.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -460,6 +733,12 @@ pub struct FactoryConfig {
     /// GitHub, when configured.
     #[serde(default)]
     pub github: Option<GithubConfig>,
+    /// The key that signs the requests for decisions. The production profile needs it.
+    #[serde(default)]
+    pub decisions: Option<DecisionSigning>,
+    /// The settings of the stages: agents, budgets, limits.
+    #[serde(default)]
+    pub stages: StageSettings,
     /// The worker loop.
     #[serde(default)]
     pub worker: LoopConfig,
@@ -585,6 +864,26 @@ impl FactoryConfig {
                     problem: "the production profile needs the GitHub App",
                 });
             }
+            if self.decisions.is_none() {
+                return Err(ConfigError::OutOfRange {
+                    field: "decisions.key_file",
+                    problem: "the production profile needs the key that signs decision requests",
+                });
+            }
+            if self.stages.definition_commit.is_none() {
+                return Err(ConfigError::OutOfRange {
+                    field: "stages.definition_commit",
+                    problem: "the production profile needs the commit of the gate definitions",
+                });
+            }
+        }
+        if let Some(commit) = &self.stages.definition_commit
+            && factory_domain::values::GitSha::parse(commit).is_err()
+        {
+            return Err(ConfigError::OutOfRange {
+                field: "stages.definition_commit",
+                problem: "must be a commit id of 40 hex digits",
+            });
         }
         if self.worker.poll_interval_ms == 0 || self.worker.sweep_interval_s == 0 {
             return Err(ConfigError::OutOfRange {

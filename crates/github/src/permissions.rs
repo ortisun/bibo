@@ -2,8 +2,9 @@
 //!
 //! `docs/security/secrets-and-credentials.md` section 3.3: an intake or analysis stage gets
 //! `contents`, `issues` and `pull_requests` read-only. The delivery stage gets `contents`,
-//! `pull_requests` and `issues` write and `checks` write. A token for a stage never carries more
-//! than that stage needs. Every set also names `metadata: read`, which every GitHub App has.
+//! `pull_requests` and `issues` write and `checks` write. The approval stage reads, and writes
+//! `issues` only, so that it can post the one comment that acknowledges a decision (AUT-9). A token
+//! for a stage never carries more than that stage needs. Every set also names `metadata: read`, which every GitHub App has.
 //!
 //! Section 3.1 and `policies/security.yaml` `credentials.github_app`: the App must hold the
 //! required permissions and none of the forbidden ones, checked at onboarding and on every job
@@ -78,13 +79,26 @@ impl PermissionSet {
         ])
     }
 
+    /// The approval stage: it reads the pull request and the branches, and posts one comment that
+    /// acknowledges a decision. A comment on a pull request is an issue comment, so the only write
+    /// level it holds is `issues`. It cannot push, open a pull request or publish a check.
+    #[must_use]
+    pub fn approval_stage() -> Self {
+        Self::of(&[
+            ("metadata", Level::Read),
+            ("contents", Level::Read),
+            ("issues", Level::Write),
+            ("pull_requests", Level::Read),
+        ])
+    }
+
     /// The permissions of the token for a stage.
     #[must_use]
     pub fn for_stage(stage: StageKind) -> Self {
-        if may_write(stage) {
-            Self::delivery_stage()
-        } else {
-            Self::read_stage()
+        match stage {
+            StageKind::Delivery => Self::delivery_stage(),
+            StageKind::Approval => Self::approval_stage(),
+            _ => Self::read_stage(),
         }
     }
 
@@ -135,7 +149,9 @@ impl PermissionSet {
     }
 }
 
-/// True when a stage may write to the repository. Only the delivery stage may.
+/// True when a stage may write to the repository: push a branch, open a pull request, publish a
+/// check. Only the delivery stage may. The approval stage holds `issues: write` for its comment and
+/// nothing else, so it is not a writer in this sense.
 #[must_use]
 pub const fn may_write(stage: StageKind) -> bool {
     matches!(stage, StageKind::Delivery)
@@ -247,6 +263,23 @@ mod tests {
     }
 
     #[test]
+    fn the_approval_stage_may_comment_and_do_nothing_else_that_writes() {
+        let set = PermissionSet::approval_stage();
+        let writes: Vec<&str> = set
+            .entries()
+            .into_iter()
+            .filter(|(_, level)| *level == Level::Write)
+            .map(|(name, _)| name)
+            .collect();
+        assert_eq!(writes, ["issues"]);
+        assert!(!may_write(StageKind::Approval));
+        assert_eq!(PermissionSet::for_stage(StageKind::Approval), set);
+        // It reads what it needs to judge a decision, and has no check or contents write.
+        assert!(set.entries().contains(&("pull_requests", Level::Read)));
+        assert!(!set.entries().iter().any(|(name, _)| *name == "checks"));
+    }
+
+    #[test]
     fn only_the_delivery_stage_can_write() {
         for stage in [
             StageKind::Intake,
@@ -255,7 +288,6 @@ mod tests {
             StageKind::Implementation,
             StageKind::Validation,
             StageKind::Review,
-            StageKind::Approval,
             StageKind::Merge,
         ] {
             assert!(!may_write(stage), "{stage:?}");
@@ -280,6 +312,7 @@ mod tests {
         for set in [
             PermissionSet::read_stage(),
             PermissionSet::delivery_stage(),
+            PermissionSet::approval_stage(),
             PermissionSet::fetch(),
             PermissionSet::push(),
         ] {

@@ -6,7 +6,7 @@ use async_trait::async_trait;
 use factory_domain::ids::{JobId, LedgerEntryId, TenantId};
 use factory_domain::policy::risk::RiskFacts;
 use factory_domain::values::{GitSha, Sha256Digest, Slug, Timestamp};
-use factory_domain::vocabulary::{AssuranceLevel, Fidelity};
+use factory_domain::vocabulary::{AssuranceLevel, Fidelity, RiskTier};
 use factory_ports::githost::IssueRef;
 use factory_ports::paths::{BranchName, CommitSha, RepoPath, RepoRef};
 
@@ -34,8 +34,11 @@ pub struct DeliveryTarget {
     pub head: BranchName,
     /// The issue the job came from, by its native number.
     pub issue: IssueRef,
-    /// What the factory measured about the change, for the risk tier. Never an agent's claim.
+    /// What the factory measured about the job and the design, for the risk tier. Never an agent's
+    /// claim. The delivery stage joins it with what the diff shows (`risk::assess`).
     pub risk: RiskFacts,
+    /// The tier the intake classifier claimed. It can raise the tier and never lowers it.
+    pub agent_claim: Option<RiskTier>,
     /// Task, decision and documentation files on the branch, linked from the body.
     pub links: Vec<DocLink>,
 }

@@ -602,6 +602,115 @@ async fn a_retried_decision_is_one_record_and_a_changed_one_is_a_conflict() {
     env.stop().await;
 }
 
+/// AUT-12. The record the API writes ends with the time of the request and the keyed word that only
+/// the API can make, over the tenant, the person, the event id, the time and the other words.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_recorded_decision_carries_the_apis_word() {
+    use factory_composition::decision_signing::{Signing, SubjectKind, read_subject};
+    use factory_domain::ids::AuditEventId;
+
+    let env = Env::start().await;
+    let job = new_job(&env, &env.a, "k").await;
+    let run = stage_run(&env, &env.a, &job).await.as_text();
+    let reject =
+        json!({"verb": "reject", "stage_run_id": run, "reason": "It does not meet the request."});
+    let reply = env
+        .send(decision(&env.a, &env.a.approver, &job, "signed", &reject))
+        .await;
+    assert_eq!(reply.status, 202, "{}", reply.text());
+    let event = AuditEventId::parse(reply.json()["decision_id"].as_str().expect("an id"))
+        .expect("an event id");
+    let subject = env
+        .db
+        .text("SELECT subject FROM audit_events WHERE action = 'decision.requested'")
+        .await
+        .expect("a request is recorded");
+    let Some(SubjectKind::Signed {
+        fields,
+        requested_at,
+        word,
+    }) = read_subject(&subject)
+    else {
+        panic!("the record is not signed: {subject}");
+    };
+    let signing = Signing {
+        tenant: env.a.id,
+        actor: env.a.approver.principal,
+        event,
+        requested_at: &requested_at,
+        fields: &fields,
+    };
+    let keys = &env.state.decision_keys;
+    assert!(keys.verify(&signing, &word), "the word is the API's");
+    // The word belongs to this tenant, this person and this event.
+    for other in [
+        Signing {
+            tenant: env.b.id,
+            ..signing
+        },
+        Signing {
+            actor: env.a.operator.principal,
+            ..signing
+        },
+        Signing {
+            event: AuditEventId::from_uuid(uuid::Uuid::from_u128(rand_u128())),
+            ..signing
+        },
+    ] {
+        assert!(!keys.verify(&other, &word));
+    }
+    // A refusal is not a request and carries no word: nothing applies it.
+    let cancel = json!({"verb": "cancel", "reason": "The request was withdrawn."});
+    let denied = env
+        .send(decision(&env.a, &env.a.approver, &job, "denied", &cancel))
+        .await;
+    assert_eq!(denied.status, 403);
+    let refused = env
+        .db
+        .text("SELECT subject FROM audit_events WHERE action = 'decision.denied'")
+        .await
+        .expect("a refusal is recorded");
+    assert!(!refused.contains("mac="), "{refused}");
+    env.stop().await;
+}
+
+/// AUT-12. A retry has a later time and so another word. It finds the record it wrote and answers as
+/// the first did; a changed request under the same key is still a conflict.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_retry_a_second_later_is_still_one_record() {
+    let env = Env::start().await;
+    let job = new_job(&env, &env.a, "k").await;
+    let run = stage_run(&env, &env.a, &job).await.as_text();
+    let reject =
+        json!({"verb": "reject", "stage_run_id": run, "reason": "It does not meet the request."});
+    let first = env
+        .send(decision(&env.a, &env.a.approver, &job, "same", &reject))
+        .await;
+    tokio::time::sleep(Duration::from_millis(1200)).await;
+    let second = env
+        .send(decision(&env.a, &env.a.approver, &job, "same", &reject))
+        .await;
+    assert_eq!(
+        (first.status, second.status),
+        (202, 202),
+        "{}",
+        second.text()
+    );
+    assert_eq!(first.json(), second.json());
+    assert_eq!(
+        env.db
+            .number("SELECT count(*) FROM audit_events WHERE action = 'decision.requested'")
+            .await,
+        1
+    );
+    let changed = json!({"verb": "reject", "stage_run_id": run, "reason": "A different reason."});
+    let conflict = env
+        .send(decision(&env.a, &env.a.approver, &job, "same", &changed))
+        .await;
+    assert_eq!(conflict.status, 409, "{}", conflict.text());
+    env.stop().await;
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_decision_is_read_by_the_grammar_every_channel_shares() {
     let env = Env::start().await;

@@ -296,6 +296,7 @@ impl<'a> Delivery<'a> {
                 single_module_change_without_sensitive_or_protected_paths: true,
                 ..RiskFacts::default()
             },
+            agent_claim: None,
             links: vec![DocLink {
                 label: "Readme".to_owned(),
                 path: RepoPath::new("README.md").expect("a path"),

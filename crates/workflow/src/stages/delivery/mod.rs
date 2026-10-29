@@ -46,6 +46,7 @@ pub mod input;
 pub mod manifest;
 pub mod pr;
 pub mod publish;
+pub mod risk;
 pub mod seams;
 pub mod text;
 mod verify;
