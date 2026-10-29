@@ -74,3 +74,52 @@ fn a_secret_file_is_refused_when_group_or_others_can_read_it_and_accepted_at_060
     }
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// The text the owner of `infra/compose` puts in `config/worker.local.example.yaml`: the existing
+/// file with the key that verifies the decision requests (the same file the API signs with), the
+/// two settings of the sandbox that a deployment that runs agents sets, and the gate definitions
+/// commit that production requires. The credentials stay out: the worker is still BLOCKED until
+/// they are supplied, which is the right answer.
+const CORRECTED_WORKER_EXAMPLE: &str = "\
+profile: local
+protected_checkout: /srv/factory/protected
+definitions_root: /srv/factory/protected
+
+database:
+  tenant: { url_file: /run/secrets/db_worker, login: factory_worker, max_connections: 8 }
+  system: { url_file: /run/secrets/db_engine, login: factory_engine, max_connections: 4 }
+
+artifacts: { root: /var/lib/factory/artifacts }
+
+sandbox:
+  images_catalog: /srv/factory/protected/infra/sandbox-images/images.json
+  token_root: /var/lib/factory/tokens
+  workspace_root: /var/lib/factory/workspaces
+  # remote: { https_host: github.com }   # or { directory: /abs/path } outside production
+  # sidecar_command: []                  # the egress sidecar's arguments; with none the real sidecar refuses to start
+
+broker:
+  listen: 0.0.0.0:8731
+  upstreams: []
+  prices: []
+
+decisions:
+  key_file: /run/secrets/decision_signing_key   # the SAME file the API signs with; mode 0600; 32 bytes or more
+
+# stages:
+#   definition_commit: 1405df66cbe219b0bf6355bc3d60361a8376b6b4   # required in production
+# github: { app_id: 0, key_file: /run/secrets/github_app_key }     # needs a registered GitHub App
+# worker: { name_prefix: worker, poll_interval_ms: 1000, sweep_interval_s: 10, drain_s: 120, tenants: [] }
+";
+
+#[test]
+fn the_corrected_worker_example_for_the_local_stack_parses_and_names_the_shared_key() {
+    let config = FactoryConfig::from_yaml(CORRECTED_WORKER_EXAMPLE).expect("the text parses");
+    assert_eq!(config.profile, Profile::Local);
+    assert_eq!(config.broker.listen.port(), 8731);
+    assert!(
+        config.decisions.is_some(),
+        "the key that verifies decision requests is named"
+    );
+    assert!(config.broker.upstreams.is_empty() && config.github.is_none());
+}

@@ -33,7 +33,9 @@ CLI, are made of before each adds its own shell. A ring 3 **library**
 | `preflight` | `ProtectionPreflight`, a step before each claim: for the repository of each waiting job it reads the protection of the default branch from the code host, judges it against the policy and records the result, so that a repository does not run at L0 for ever. The administrator's statement about the bypass list comes from `BypassAttestations`, which has no production source yet (`NoAttestations` fails closed) |
 | `decisions` | `ClaimWork`, the step that admits received jobs and applies the decisions people asked for, once, with the allowlist read again by numeric id; the grammar of a decision record shared with the API |
 | `decision_signing` | `DecisionKeys`: the keys, read from files, that sign a `decision.requested` record (`at=` and `mac=`, HMAC-SHA256 over the tenant, the person, the event id, the time and the other words) and verify it in constant time, with the previous key accepted during a rotation. The hook applies a request only if its word is right (AUT-12) |
-| `pipeline` | `assemble_pipeline`: the thirteen handlers, the engine, the approval service, the hook and the preflight from the configuration (`stages:`), with `PortRegistry::check` for the profile over every port and a refusal of a registry that lacks a handler. The caller gives `ExternalPorts` (runtime, router, issue source, change host, probes, the three supply-chain seams, the bypass attestations) and the `Providers`; production refuses a stand-in for any of them (AUT-13) |
+| `pipeline` | `assemble_pipeline`: the thirteen handlers, the engine, the approval service, the hook and the preflight from the configuration (`stages:`), with `PortRegistry::check` for the profile over every port and a refusal of a registry that lacks a handler. The caller gives `ExternalPorts` (runtime, router, issue source, change host, probes, `SupplyChainSources`, the bypass attestations) and the `Providers`; production refuses a stand-in for any of them (AUT-13). The settings of the dependency gates come from the policy (`SupplyChainSettings::from_policy`: the policy is the ceiling, configuration may only lower it), the recorded decisions are read from the ledger (`LedgerApprovals` inside `CurrentApprovals`, never handed in), and the engine is given the blocks the policy says no override may pass |
+| `supply_chain` | `SupplyChainSources`: the registry source and the advisory-database date, for which no adapter exists. Production takes `BlockedRegistry` and `BlockedAdvisoryDatabase`, which answer "unknown" so that the gates fail closed; the `local` and `test` profiles take labelled stand-ins, which production refuses (`PipelineError::StandIn`). `CurrentApprovals` keeps a recorded decision only while its person still holds the designation on the allowlist, read at every call |
+| `dependency_decisions` | A person's decision on a new dependency or on its build code (`approve-dependency`, `approve-build-code`): the request the API records (`decision.dependency_requested`, signed with its own context line) and the step of `ClaimWork` that applies it: it reads the evidence the blocked validation run stored, finds the awaited package the words select, asks the policy engine for the proof, redacts the reason (the engine has no redactor) and calls `Engine::record_dependency_decision` |
 | `assemble` | Start-up in order (`prepare`), the list of adapters not assembled (`blocked_adapters`) and of seam methods that fail closed (`blocked_seams`) |
 | `webhook` | The webhook verifier of the API, built from secret files (one per secret in the rotation window) |
 
@@ -52,8 +54,9 @@ needed from this crate, and what it added:
 * The indexing wrappers (`IndexingSandbox`, `IndexingWorkspaces`) around the sandbox and the workspaces, and the loop noting the
   tenant of each attempt in `ActiveJobs` before it runs it.
 
-None of this is wired into the worker binary: the function that builds the registry of handlers does not exist yet (worker README,
-mismatch 37).
+The function that builds the registry of handlers is `pipeline::assemble_pipeline` (worker README, mismatch 37). The worker binary
+calls it once the four ports with no adapter (runtime, router, issue source, change host) and the capability probes exist; until
+then it stops with `BLOCKED:` lines.
 
 ## What a binary does with it
 

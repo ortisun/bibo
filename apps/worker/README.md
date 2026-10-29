@@ -172,7 +172,7 @@ repository's Spec Kit, the composition seams, and the 13 handlers.
 | The nine agents | the playbook (`apps/api/tests/playbook/`, data in `fixtures/recordings/playbook/word-count/`), played by a runtime that reports fidelity `fake` and writes the files an agent would write into the workspace of its sandbox | every agent stage |
 | The sandbox | the testkit's fake, with `cargo` and the tool answering with output **recorded from a real run** of the patched fixture, and `mkdir`, `tee`, `rm` and `cp` that succeed and change nothing | `REPOSITORY_INTELLIGENCE`, `SPECIFICATION`, `VALIDATION`, `DOCUMENTATION_REVIEW` run commands in it; the agent stages run the playbook in it |
 | Workspaces and the code host | the testkit's fakes over the files of the fixture, with the patch exported in the shape of `git diff` (`apps/api/tests/full/gitshape.rs`) | all |
-| The supply chain's registry, advisory database and recorded approvals | empty or recent stand-ins; the patch adds no dependency, so the gate does not apply | `VALIDATION` |
+| The supply chain's registry and advisory database | `SupplyChainSources::stand_in` (`StandInRegistry` knows no package, `StandInAdvisoryDatabase` says the database is a day old); the ordinary patch adds no dependency, so the gate does not apply. The decisions people record are **not** a stand-in: the pipeline reads them from the ledger, and `apps/api/tests/dependency_run.rs` runs a job whose change adds a dependency through them | `VALIDATION` |
 | The administrator's statement that the App is on no bypass list | the tenant's operator, in the rig | `ProtectionPreflight` |
 
 **Real Docker.** The commands that the fake sandbox answers were also run in the real pinned `verify`
@@ -585,9 +585,10 @@ smallest change.
     stand-in; local lets the model and GitHub side stand in) and names any stage of the engine's scope that has no
     handler. The rig of the full run calls it, so all ten journeys of `apps/api/tests/full_run.rs` run through the
     function the worker calls (`factory_worker::pipeline::assemble_loop`). *What is still not given:* the four BLOCKED
-    ports (runtime, router, issue source, change host), the three seams of the dependency gates that no adapter
-    implements (`RecordedApprovals`, `RegistryMetadata`, `AdvisoryDatabase`), and the capability probes, which `main`
-    lists with `BLOCKED:` lines and exit code 3 until `factory_worker::pipeline::external_ports` returns them.
+    ports (runtime, router, issue source, change host), the two sources of the dependency gates that no adapter
+    implements (`RegistryMetadata`, `AdvisoryDatabase`; `RecordedApprovals` is read from the ledger since the final wiring),
+    and the capability probes, which `main` lists with `BLOCKED:` lines and exit code 3 until
+    `factory_worker::pipeline::external_ports` returns them.
 38. **The reviewer of the code is checked for independence only by what it may do** (`verify_read_only_tools`), not by
     its agent id or role. Configuring the builder as reviewer is caught; configuring a second agent of the same role is
     not. *Owner `workflow`.*
@@ -602,6 +603,7 @@ smallest change.
 | Agent runtime | a live run needs a model credential and the tool in the agent image |
 | Model router | `policies/model_routing.yaml` does not exist |
 | Issue source, change host | need a registered GitHub App and its key |
+| `RegistryMetadata`, `AdvisoryDatabase` | blocked by design in production (`supply_chain::BlockedRegistry`, `BlockedAdvisoryDatabase`): they answer "unknown", so a new direct dependency waits for a security approver and the advisories gate is BLOCKED. Listed as `BLOCKED:` lines. The stand-ins are for `local` and `test`, and production refuses them |
 | `DeliverySources::tree_of`, `current_values` | implemented; no worker assembly registers the handlers yet (mismatches 35 and 37) |
 | The real Docker sandbox, run in a test | the pinned images are present; the one test of it is ignored because the daemon did not see its bind sources on four runs of five (see "How far the job gets") |
 

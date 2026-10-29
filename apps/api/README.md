@@ -42,7 +42,7 @@ The contract is [`openapi.json`](openapi.json), written first and served on `GET
 | `GET /v1/jobs` | bearer token | any designation | read |
 | `GET /v1/jobs/{job_id}` | bearer token | any designation | read |
 | `GET /v1/jobs/{job_id}/timeline` | bearer token | any designation | read |
-| `POST /v1/jobs/{job_id}/decisions` | bearer token | `approver` for approve, reject and rework; `operator` for pause, resume and cancel (read from the `actions` table of `policies/approval.yaml`) | `Idempotency-Key` required: the record id is derived from the tenant, the job and the key |
+| `POST /v1/jobs/{job_id}/decisions` | bearer token | `approver` for approve, reject and rework; `operator` for pause, resume and cancel; `approver` for `approve-dependency` and a security approver for `approve-build-code` (read from the `actions` table of `policies/approval.yaml`). The two dependency verbs take `package`, `version`, an optional `checksum` prefix and a `reason` of 10 to 500 characters, are read by the same reader as the other channels, and are recorded as `decision.dependency_requested` with their own signed word | `Idempotency-Key` required: the record id is derived from the tenant, the job and the key |
 | `POST /v1/webhooks/github` | HMAC-SHA256 of the raw body | none (GitHub) | the delivery id, the body hash and the event on the same subject revision, in the store |
 
 There is no route that merges or deploys, and a test keeps the words out of the table (ST-05).
