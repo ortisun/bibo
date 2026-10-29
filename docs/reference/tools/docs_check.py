@@ -371,7 +371,7 @@ def check_snippet_marks(root: Path, documents: list[Path]) -> Outcome:
     return done("snippet-marks", problems, f"all {count} shell blocks say whether they run")
 
 
-def run_snippets(root: Path, documents: list[Path]) -> Outcome:
+def run_snippets(root: Path, documents: list[Path], cwd: Path | None = None) -> Outcome:
     problems: list[str] = []
     ran_count = 0
     stopped: list[str] = []
@@ -394,7 +394,7 @@ def run_snippets(root: Path, documents: list[Path]) -> Outcome:
             with tempfile.NamedTemporaryFile("w", suffix=".sh", delete=False) as handle:
                 handle.write(block.body)
             seconds = float(block.attrs.get("timeout", ["120"])[0])
-            ran = run(["bash", "-euo", "pipefail", handle.name], root, env, seconds)
+            ran = run(["bash", "-euo", "pipefail", handle.name], cwd or root, env, seconds)
             os.unlink(handle.name)
             if ran is None:
                 problems.append(f"{where}: the snippet did not finish in {seconds:.0f} seconds")
@@ -484,7 +484,11 @@ def judge_command(root: Path, line: str, helps: Helps) -> list[str]:
         first = words[0]
     rest = words[1:]
     before_dash = rest[: rest.index("--")] if "--" in rest else rest
-    flags = [w.split("=", 1)[0] for w in before_dash if FLAG.fullmatch(w.split("=", 1)[0])]
+    flags = [
+        w.split("=", 1)[0]
+        for w in before_dash
+        if FLAG.fullmatch(w.split("=", 1)[0]) and w not in {"--help", "--version"}
+    ]
 
     if first == "factory-cli":
         verb = next((w for w in rest if not w.startswith("-")), None)
@@ -499,7 +503,7 @@ def judge_command(root: Path, line: str, helps: Helps) -> list[str]:
         problems += [f"{first} takes no option, and {f} was given" for f in flags]
     elif first == "factory-egress-sidecar":
         problems += [f"factory-egress-sidecar has no option {f}" for f in flags if f not in helps.sidecar_flags]
-    elif first.startswith(("scripts/", "./scripts/")):
+    elif first.startswith(("scripts/", "./scripts/")) and re.fullmatch(r"(?:\./)?scripts/[a-z0-9._-]+\.sh", first):
         name = first.removeprefix("./").removeprefix("scripts/")
         if not (root / "scripts" / name).is_file():
             problems.append(f"there is no script {first}")
@@ -1175,11 +1179,11 @@ def self_test(root: Path) -> Outcome:
         silent = write(work / "snip/silent.md", "# T\n\n```bash no-run\nls\n```\n")
         cases.append(Case("a no-run block with no reason", check_snippet_marks(work, [silent]), FAILED))
         fine = write(work / "snip/fine.md", '# T\n\n```bash run expect="hello"\necho hello\n```\n')
-        cases.append(Case("a runnable block that prints what the page says", run_snippets(work, [fine]), PASSED))
+        cases.append(Case("a runnable block that prints what the page says", run_snippets(root, [fine], work), PASSED))
         broken = write(work / "snip/broken.md", "# T\n\n```bash run\nfalse\n```\n")
-        cases.append(Case("a runnable block that fails", run_snippets(work, [broken]), FAILED))
+        cases.append(Case("a runnable block that fails", run_snippets(root, [broken], work), FAILED))
         lying = write(work / "snip/lying.md", '# T\n\n```bash run expect="goodbye"\necho hello\n```\n')
-        cases.append(Case("a runnable block that does not print what the page says", run_snippets(work, [lying]), FAILED))
+        cases.append(Case("a runnable block that does not print what the page says", run_snippets(root, [lying], work), FAILED))
 
         # Commands: a flag, a verb and a path that do not exist.
         helps = gather_helps(root)
