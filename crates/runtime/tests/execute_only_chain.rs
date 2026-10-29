@@ -23,10 +23,11 @@
 //! daemon or without the image it panics with `BLOCKED:`; it never passes without Docker. The
 //! hostile code runs only inside that container, as the sandbox user, never on the host.
 //!
-//! The image in the local store was built before the recipe existed (its tools are mode 0755), so the
-//! test applies the modes of the list itself, as `harden.sh` does at build time. That is what is
-//! proven here: the recipe, on the pinned image's files. `test.sh` rule `TOOLS-EXECUTE-ONLY` proves
-//! the built image once it is rebuilt.
+//! The image may be built before or after the recipe: the test sets the modes itself. The control
+//! first reopens `env` (mode 0755, as an image built before the recipe has it), and the protected
+//! case then applies the modes of the list, as `harden.sh` does at build time. On an image built with
+//! the recipe the second step changes nothing, and the control is what shows that the race is real.
+//! `test.sh` rule `TOOLS-EXECUTE-ONLY` proves the built image.
 
 mod support;
 
@@ -365,6 +366,22 @@ fn a_hostile_process_that_exists_before_the_exec_cannot_forge_a_line_through_the
         .filter(|p| *p != "/usr/bin/env")
         .cloned()
         .collect();
+    // An image built with the recipe already has `env` at 0711: the control makes it readable again.
+    {
+        let done = scope
+            .cli()
+            .run(&[
+                "exec",
+                "--user",
+                "0:0",
+                name.as_str(),
+                "/bin/chmod",
+                "0755",
+                "/usr/bin/env",
+            ])
+            .expect("docker exec chmod");
+        assert!(done.success(), "chmod env readable: {}", done.stderr);
+    }
     apply(&without_env);
     let mut control = Vec::new();
     for _ in 0..6 {
