@@ -1573,3 +1573,106 @@ async fn break_applying_a_decision_without_rechecking_authority_is_caught() {
         "the check must fail when the authority check is gone: {caught:?}"
     );
 }
+
+// ---- SF-02: the lines of the hook about a job carry the correlation id of that job ----------
+
+/// Keeps the JSON lines the telemetry pipeline writes.
+#[derive(Clone, Default)]
+struct JsonLines(Arc<Mutex<Vec<u8>>>);
+
+impl std::io::Write for JsonLines {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        self.0.lock().expect("lock").extend_from_slice(bytes);
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+impl JsonLines {
+    fn lines(&self) -> Vec<String> {
+        String::from_utf8_lossy(&self.0.lock().expect("lock"))
+            .lines()
+            .map(str::to_owned)
+            .collect()
+    }
+}
+
+/// Runs `body` under the real telemetry pipeline on this thread, and returns the lines it wrote.
+fn with_json_logs<T>(body: impl std::future::Future<Output = T>) -> (T, Vec<String>) {
+    let redactor = Arc::new(
+        factory_domain::redaction::Redactor::builder()
+            .build()
+            .expect("builds"),
+    );
+    let config = factory_observability::telemetry::TelemetryConfig::new(
+        "factory-claim-work-test",
+        "0.0.0",
+        Arc::new(factory_observability::redact::RedactorScrubber::new(
+            redactor,
+        )),
+    );
+    let logs = JsonLines::default();
+    let sink = logs.clone();
+    let pipeline = factory_observability::telemetry::build_pipeline(&config, move || sink.clone())
+        .expect("the pipeline builds");
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("a runtime");
+    let out = pipeline.in_scope(|| runtime.block_on(body));
+    (out, logs.lines())
+}
+
+/// SF-02. A line of the hook that is about one job is written inside the stretch span of that job,
+/// so it starts with the job's correlation id (the conventions page, section 7). It was not: the
+/// line "a received job was decided" named the job and the line "a decision was dealt with" named
+/// nothing.
+#[test]
+fn sf_02_the_lines_of_the_hook_about_a_job_carry_the_correlation_id_of_that_job() {
+    let ((correlation, other_correlation), lines) = with_json_logs(async {
+        let rig = Rig::new().await;
+        let job = rig.received().await;
+        let other = rig.received().await;
+        rig.hook().pass(rig.tenant).await;
+        rig.request(rig.operator, job, Verb::Pause, None, None, "a short stop")
+            .await;
+        rig.hook().pass(rig.tenant).await;
+        let correlation_of = |job: JobId| {
+            let store = rig.world.store.clone();
+            let tenant = rig.tenant;
+            async move {
+                let mut tx = store.begin(TenantScope::new(tenant)).await.expect("a tx");
+                let found = tx.get_job(job).await.expect("a job").value.correlation_id;
+                let _ = tx.rollback().await;
+                found.to_string()
+            }
+        };
+        (correlation_of(job).await, correlation_of(other).await)
+    });
+    for message in ["a received job was decided", "a decision was dealt with"] {
+        let about: Vec<&String> = lines.iter().filter(|line| line.contains(message)).collect();
+        assert!(
+            !about.is_empty(),
+            "the hook wrote no line '{message}': {lines:#?}"
+        );
+        for line in about {
+            assert!(
+                line.starts_with(&format!("{{\"correlation_id\":\"{correlation}\""))
+                    || line.starts_with(&format!("{{\"correlation_id\":\"{other_correlation}\"")),
+                "the line '{message}' carries no correlation id of a job: {line}"
+            );
+        }
+    }
+    // The decision was about the first job, so its line carries that job's id and not the other's.
+    let decision = lines
+        .iter()
+        .find(|line| line.contains("a decision was dealt with"))
+        .expect("a line");
+    assert!(
+        decision.starts_with(&format!("{{\"correlation_id\":\"{correlation}\"")),
+        "the decision line carries the id of another job: {decision}"
+    );
+}

@@ -91,6 +91,7 @@ use factory_workflow::stages::approval::{
     ApprovalSources, Outcome, ServiceError, Verb, VerbParse, parse_verb,
 };
 use factory_workflow::stages::specification::SpecDrafts;
+use tracing::Instrument as _;
 
 use crate::commands::{CommandContext, ParsedDecision};
 use crate::decision_signing::{
@@ -100,6 +101,7 @@ use crate::decision_signing::{
 use crate::dependency_decisions::DependencyDecisions;
 use crate::hooks::BeforeClaim;
 use crate::seams::{FileAllowlist, designation};
+use crate::telemetry::{job_span_of, job_stretch};
 
 /// The audit action of a request for a decision (written by the API).
 pub const REQUESTED: &str = "decision.requested";
@@ -1030,25 +1032,39 @@ impl ClaimWork {
             }
         };
         for stored in jobs {
-            match self.engine.admit_job(tenant, stored.value.id).await {
-                Ok(admission) => tracing::info!(
-                    job = %stored.value.id,
-                    admitted = matches!(admission, factory_workflow::engine::Admission::Admitted { .. }),
-                    "a received job was decided"
-                ),
-                // Another worker decided first, or the job moved: nothing to do.
-                Err(EngineError::Illegal(_) | EngineError::Conflict | EngineError::NotFound) => {}
-                Err(error @ EngineError::NoHandler(_)) => tracing::error!(
-                    job = %stored.value.id,
-                    %error,
-                    "a received job cannot be admitted until its stage has a handler"
-                ),
-                Err(error) => tracing::warn!(
-                    job = %stored.value.id,
-                    %error,
-                    "a received job was not admitted this pass"
-                ),
-            }
+            // The lines about a job are written inside its stretch span, so they start with its
+            // correlation id (the conventions page, section 7). The id is the stored job's.
+            let span = job_stretch(
+                &stored.value.correlation_id.as_text(),
+                &stored.value.id.as_text(),
+                &tenant.as_text(),
+            );
+            self.admit_one(tenant, stored.value.id)
+                .instrument(span)
+                .await;
+        }
+    }
+
+    /// Asks the engine to decide one received job, and says what became of it.
+    async fn admit_one(&self, tenant: TenantId, job: JobId) {
+        match self.engine.admit_job(tenant, job).await {
+            Ok(admission) => tracing::info!(
+                job = %job,
+                admitted = matches!(admission, factory_workflow::engine::Admission::Admitted { .. }),
+                "a received job was decided"
+            ),
+            // Another worker decided first, or the job moved: nothing to do.
+            Err(EngineError::Illegal(_) | EngineError::Conflict | EngineError::NotFound) => {}
+            Err(error @ EngineError::NoHandler(_)) => tracing::error!(
+                job = %job,
+                %error,
+                "a received job cannot be admitted until its stage has a handler"
+            ),
+            Err(error) => tracing::warn!(
+                job = %job,
+                %error,
+                "a received job was not admitted this pass"
+            ),
         }
     }
 
@@ -1109,28 +1125,36 @@ impl ClaimWork {
             }
         }
         for decision in pending {
-            let (verdict, decision) = self.decide(tenant, decision).await;
-            let marked = match verdict {
-                Verdict::Done(marked) => marked,
-                Verdict::Later if decision.failures + 1 >= MAX_TRIES => {
-                    Marked::Rejected(Reason::GaveUp.text())
-                }
-                Verdict::Later => {
-                    self.note_failure(tenant, decision.sequence);
-                    continue;
-                }
-            };
-            match self.markers.mark(tenant, &decision, &marked).await {
-                Ok(()) => {
-                    // Counted by code, and nothing from the request is in the line (R-13, R-17).
-                    tracing::info!(code = outcome_code(&marked), "a decision was dealt with");
-                    self.forget(tenant, decision.sequence);
-                }
-                Err(Unreadable) => tracing::warn!(
-                    decision = %decision.id,
-                    "the marker could not be written; the decision is checked again next pass"
-                ),
+            // Everything the hook says about a decision is about the job the decision names, so it
+            // is said inside that job's stretch span and starts with that job's correlation id.
+            let span = job_span_of(&*self.store, tenant, decision.fields.job).await;
+            self.deal_with(tenant, decision).instrument(span).await;
+        }
+    }
+
+    /// One decision: judge it, apply it, and write the marker that ends it.
+    async fn deal_with(&self, tenant: TenantId, decision: Pending) {
+        let (verdict, decision) = self.decide(tenant, decision).await;
+        let marked = match verdict {
+            Verdict::Done(marked) => marked,
+            Verdict::Later if decision.failures + 1 >= MAX_TRIES => {
+                Marked::Rejected(Reason::GaveUp.text())
             }
+            Verdict::Later => {
+                self.note_failure(tenant, decision.sequence);
+                return;
+            }
+        };
+        match self.markers.mark(tenant, &decision, &marked).await {
+            Ok(()) => {
+                // Counted by code, and nothing from the request is in the line (R-13, R-17).
+                tracing::info!(code = outcome_code(&marked), "a decision was dealt with");
+                self.forget(tenant, decision.sequence);
+            }
+            Err(Unreadable) => tracing::warn!(
+                decision = %decision.id,
+                "the marker could not be written; the decision is checked again next pass"
+            ),
         }
     }
 

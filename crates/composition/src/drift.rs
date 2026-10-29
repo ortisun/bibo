@@ -32,11 +32,16 @@ use factory_workflow::engine::Engine;
 use factory_workflow::stages::delivery::SeamError;
 use factory_workflow::stages::delivery::seams::EvidenceDrift;
 use tokio::sync::{Mutex, mpsc, oneshot};
+use tracing::Instrument as _;
 
 /// One report that a bound value changed, and where to send the answer.
 struct Request {
     tenant: TenantId,
     job: JobId,
+    /// The span the handler was in when it asked: the attempt's, which carries the correlation id
+    /// of the job. The pump serves the request inside it, so the lines it writes belong to the job
+    /// (the conventions page, section 7).
+    span: tracing::Span,
     reply: oneshot::Sender<Result<(), SeamError>>,
 }
 
@@ -74,7 +79,12 @@ impl EvidenceDrift for ChannelDrift {
     async fn binding_changed(&self, tenant: TenantId, job: JobId) -> Result<(), SeamError> {
         let (reply, answer) = oneshot::channel();
         self.requests
-            .send(Request { tenant, job, reply })
+            .send(Request {
+                tenant,
+                job,
+                span: tracing::Span::current(),
+                reply,
+            })
             .map_err(|_| SeamError::Unavailable)?;
         // A pump that is dropped before it answers drops the sender, which reads as unavailable.
         answer.await.map_err(|_| SeamError::Unavailable)?
@@ -93,27 +103,34 @@ impl DriftPump {
         let Some(request) = request else {
             return false;
         };
-        let applied = engine
-            .apply_change(
-                request.tenant,
-                request.job,
-                ArtifactChange::GateEvidenceBinding,
-            )
-            .await;
-        let answer = match applied {
-            Ok(applied) => {
-                tracing::warn!(
-                    superseded = applied.superseded.len(),
-                    created = applied.created.len(),
-                    "the gate evidence binding changed; the dependent stage runs were replaced"
-                );
-                Ok(())
+        let answer = async {
+            let applied = engine
+                .apply_change(
+                    request.tenant,
+                    request.job,
+                    ArtifactChange::GateEvidenceBinding,
+                )
+                .await;
+            match applied {
+                Ok(applied) => {
+                    tracing::warn!(
+                        superseded = applied.superseded.len(),
+                        created = applied.created.len(),
+                        "the gate evidence binding changed; the dependent stage runs were replaced"
+                    );
+                    Ok(())
+                }
+                Err(error) => {
+                    tracing::error!(
+                        %error,
+                        "the engine could not apply the evidence binding change"
+                    );
+                    Err(SeamError::Unavailable)
+                }
             }
-            Err(error) => {
-                tracing::error!(%error, "the engine could not apply the evidence binding change");
-                Err(SeamError::Unavailable)
-            }
-        };
+        }
+        .instrument(request.span.clone())
+        .await;
         // The handler may have been cancelled and gone; nobody waits for the answer then.
         let _ = request.reply.send(answer);
         true

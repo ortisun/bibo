@@ -15,10 +15,12 @@
 
 use std::sync::Arc;
 
-use factory_domain::ids::JobId;
+use factory_domain::ids::{JobId, TenantId};
 use factory_domain::redaction::Redactor;
+use factory_domain::scope::TenantScope;
 use factory_observability::spans::{Job, JobStretch, job_span, job_stretch_span};
 use factory_observability::telemetry::{InitError, TelemetryConfig, TelemetryGuard};
+use factory_ports::store::Store;
 use tracing::Span;
 
 use crate::config::TelemetryConfig as TelemetrySettings;
@@ -79,5 +81,29 @@ pub fn job_stretch(correlation_id: &str, job_id: &str, tenant_id: &str) -> Span 
             job_id,
             tenant_id,
         }),
+    }
+}
+
+/// The `factory.job` span of a job that a loop of the worker meets outside any attempt: the step
+/// before each claim, which admits a received job or applies a decision for it. The correlation id
+/// is read from the stored job, never from a record a person could write, so a log line cannot be
+/// given another job's id.
+///
+/// A job that cannot be read gives an empty span: the line then has no correlation id, which is
+/// what the conventions page says of a line outside a job (section 7). Nothing waits on it and
+/// nothing fails because of it.
+pub async fn job_span_of(store: &dyn Store, tenant: TenantId, job: JobId) -> Span {
+    let Ok(mut tx) = store.begin(TenantScope::new(tenant)).await else {
+        return Span::none();
+    };
+    let found = tx.get_job(job).await;
+    let _ = tx.rollback().await;
+    match found {
+        Ok(stored) => job_stretch(
+            &stored.value.correlation_id.as_text(),
+            &job.as_text(),
+            &tenant.as_text(),
+        ),
+        Err(_) => Span::none(),
     }
 }

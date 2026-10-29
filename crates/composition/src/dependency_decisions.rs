@@ -80,6 +80,8 @@ use crate::decision_signing::{
 };
 use crate::decisions::{APPLIED, JUNK_PER_PASS, Marked, REJECTED, Reason, counted_marker};
 use crate::reading::Reader;
+use crate::telemetry::job_span_of;
+use tracing::Instrument as _;
 
 /// The audit action of a request for a decision on a dependency (written by the API).
 pub const REQUESTED: &str = "decision.dependency_requested";
@@ -314,26 +316,34 @@ impl DependencyDecisions {
             }
         }
         for request in pending {
-            let (verdict, request) = self.decide(tenant, request).await;
-            let marked = match verdict {
-                Verdict::Done(marked) => marked,
-                Verdict::Later if request.failures + 1 >= MAX_TRIES => {
-                    Marked::Rejected(Reason::GaveUp.text())
-                }
-                Verdict::Later => {
-                    self.with_scan(tenant, |scan| {
-                        if let Some(held) = scan.pending.get_mut(&request.sequence) {
-                            held.failures += 1;
-                        }
-                    });
-                    continue;
-                }
-            };
-            if self.mark(tenant, &request, &marked).await {
-                self.with_scan(tenant, |scan| {
-                    scan.pending.remove(&request.sequence);
-                });
+            // The lines about a decision are about the job it names, so they are said inside that
+            // job's stretch span and start with the correlation id of the stored job.
+            let span = job_span_of(&*self.deps.store, tenant, request.fields.job).await;
+            self.deal_with(tenant, request).instrument(span).await;
+        }
+    }
+
+    /// One decision on a dependency: judge it, apply it, and write the marker that ends it.
+    async fn deal_with(&self, tenant: TenantId, request: Pending) {
+        let (verdict, request) = self.decide(tenant, request).await;
+        let marked = match verdict {
+            Verdict::Done(marked) => marked,
+            Verdict::Later if request.failures + 1 >= MAX_TRIES => {
+                Marked::Rejected(Reason::GaveUp.text())
             }
+            Verdict::Later => {
+                self.with_scan(tenant, |scan| {
+                    if let Some(held) = scan.pending.get_mut(&request.sequence) {
+                        held.failures += 1;
+                    }
+                });
+                return;
+            }
+        };
+        if self.mark(tenant, &request, &marked).await {
+            self.with_scan(tenant, |scan| {
+                scan.pending.remove(&request.sequence);
+            });
         }
     }
 
