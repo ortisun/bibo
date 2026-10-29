@@ -130,54 +130,62 @@ fn example() -> String {
     std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()))
 }
 
-/// What the lead has to change in `infra/compose/config/api.local.example.yaml` (this package does not
-/// edit `infra/**`): add `protected_checkout`, and mount that directory into the API container. The
-/// rest of the file (`profile`, `database.api`, `artifacts`, `listen`) is read by the API as written.
-#[test]
-fn the_api_example_of_the_local_stack_parses_once_it_names_the_protected_checkout() {
-    let as_it_is =
-        ApiConfig::from_yaml(&example()).expect_err("the example lacks the protected checkout");
-    assert!(
-        as_it_is.to_string().contains("protected_checkout"),
-        "{as_it_is}"
-    );
-    let corrected = format!(
-        "{}\nprotected_checkout: /etc/factory/protected\n",
-        example()
-    );
-    let config = ApiConfig::from_yaml(&corrected).expect("the corrected example parses");
-    assert_eq!(config.profile, Profile::Local);
-    assert_eq!(config.database.api.login, "factory_api");
-    assert_eq!(config.listen.port(), 8080);
-    assert!(config.github.webhook_secret_files.is_empty());
-}
-
-/// The text the owner of `infra/compose` puts in `config/api.local.example.yaml`, in full: the
-/// protected checkout the API reads, the key that signs decision requests (the same file the
-/// worker mounts, or the worker rejects every request as unsigned), and the webhook secret. This
-/// test parses it with the API's own parser, so the text printed in the report is a text that works.
-const CORRECTED_API_EXAMPLE: &str = "\
-profile: local
-protected_checkout: /etc/factory/protected   # mounted read-only: policies/ and allowlist/allowlist.yaml
-database:
-  api: { url_file: /run/secrets/db_api, login: factory_api, max_connections: 8 }
-listen: 0.0.0.0:8080
-github:
-  webhook_secret_files: [/run/secrets/webhook_secret]
-  factory_label: factory
-decisions:
-  key_file: /run/secrets/decision_signing_key   # the SAME file the worker mounts; mode 0600; 32 bytes or more
-artifacts: { root: /var/lib/factory/artifacts }
-";
-
+/// The example is the file the local stack mounts, read from `infra/compose/config/`, so it can
+/// never drift from the parser again: the test fails when the file stops parsing, and the stack and
+/// the test read the same bytes. It names the protected checkout the API reads, the key that signs
+/// decision requests (the same file the worker mounts, or the worker rejects every request as
+/// unsigned) and the webhook secret.
 #[test]
 fn the_corrected_api_example_for_the_local_stack_parses_and_names_the_key_the_worker_shares() {
-    let config = ApiConfig::from_yaml(CORRECTED_API_EXAMPLE).expect("the corrected example parses");
+    let config =
+        ApiConfig::from_yaml(&example()).expect("the example in infra/compose/config parses");
     assert_eq!(config.profile, Profile::Local);
+    assert_eq!(config.database.api.login, "factory_api");
     assert_eq!(config.listen.port(), 8080);
     assert_eq!(config.github.webhook_secret_files.len(), 1);
     assert!(
         config.decisions.is_some(),
         "the key that signs decision requests is named"
     );
+}
+
+/// The deliberate break of the example: take the real file and remove the protected checkout, and
+/// the parser refuses it and names the setting. The first version of the example lacked exactly
+/// this line, and the test that read an inline copy did not notice.
+#[test]
+fn an_example_without_the_protected_checkout_is_refused_by_the_parser_and_names_it() {
+    let broken: String = example()
+        .lines()
+        .filter(|line| !line.starts_with("protected_checkout:"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let refused = ApiConfig::from_yaml(&broken).expect_err("the checkout is required");
+    assert!(
+        refused.to_string().contains("protected_checkout"),
+        "{refused}"
+    );
+}
+
+/// A misspelled setting in the example is an error and not a weaker run.
+#[test]
+fn a_misspelled_setting_in_the_api_example_is_an_error() {
+    let broken = example().replace("key_file:", "key_flie:");
+    assert!(ApiConfig::from_yaml(&broken).is_err());
+}
+
+/// The API signs and the worker verifies with one file. If the two examples named different paths,
+/// the stack would start and the worker would reject every decision request as unsigned. Both are
+/// parsed by their own parser and the key file they name is compared.
+#[test]
+fn the_api_and_the_worker_examples_name_the_same_decision_key_file() {
+    let worker_path =
+        support::repository_root().join("infra/compose/config/worker.local.example.yaml");
+    let worker_text = std::fs::read_to_string(&worker_path)
+        .unwrap_or_else(|e| panic!("read {}: {e}", worker_path.display()));
+    let worker = factory_composition::config::FactoryConfig::from_yaml(&worker_text)
+        .expect("the worker example parses");
+    let api = ApiConfig::from_yaml(&example()).expect("the API example parses");
+    let api_key = api.decisions.expect("the API names the key").key_file;
+    let worker_key = worker.decisions.expect("the worker names the key").key_file;
+    assert_eq!(api_key.path(), worker_key.path());
 }

@@ -1,20 +1,20 @@
-# An EXAMPLE configuration for the worker in the local stack (infra/compose/local.yml, profile "factory").
+# The worker's configuration file in the local stack (infra/compose/local.yml, profile "factory").
 #
-# It follows the example in apps/worker/README.md on feat/slice-0-foundation (read 2026-10-28), with the values
-# this stack decides: the paths of the secret files, of the artifact volume and of the read-only mounts, and the
-# addresses on the Compose networks. It has NOT been run through the worker's parser: no image of the worker
-# exists, and the worker README says an unknown or misspelled setting is an error. Treat it as the starting
-# point for the composition work, and copy it to a file of your own (FACTORY_WORKER_CONFIG) to change it.
+# This is the file the stack mounts at /etc/factory/worker.yaml. crates/composition/tests/examples.rs reads THIS
+# file and runs it through the worker's own parser, so it cannot drift from the code: an unknown or misspelled
+# setting is an error there, as it is in the worker. The keys are listed in docs/reference/configuration.md.
+# Copy it to a file of your own (FACTORY_WORKER_CONFIG) to change it.
 #
 # No secret is here. Every secret is the path of a file that Compose mounts under /run/secrets, and the files
-# are made by scripts/local-up.sh (infra/compose/secrets, never committed).
+# are made by scripts/local-up.sh (infra/compose/secrets, never committed). The worker mounts the database URL
+# files of its two logins and the decision signing key, which is the SAME file the API signs with.
 #
-# What this stack cannot fill in, because it needs a real credential, which this package does not have and must
-# not invent:
+# What this stack cannot fill in, because it needs a real credential, which a deployment script must not invent:
 #   * broker.upstreams (a model provider and its key file) and broker.prices
 #   * github.app_id and github.key_file (a registered GitHub App)
 #   * worker.tenants (the tenant ids the worker serves)
-# Until they are supplied the worker is BLOCKED, which is the right answer.
+# Until they are supplied the worker prints BLOCKED lines and exits with code 3, which is the right answer
+# (docs/reference/commands.md, "The BLOCKED lines of the worker").
 
 profile: local
 protected_checkout: /srv/factory/protected
@@ -34,6 +34,8 @@ sandbox:
   # "Docker access, an open decision".
   token_root: /var/lib/factory/tokens
   workspace_root: /var/lib/factory/workspaces
+  # remote: { https_host: github.com }   # or { directory: /abs/path } outside production
+  # sidecar_command: []                  # the egress sidecar's arguments; with none the real sidecar refuses to start
 
 broker:
   # Sidecars on the internal "broker" network reach the broker here, so it listens on every address of the
@@ -42,5 +44,10 @@ broker:
   upstreams: []
   prices: []
 
+decisions:
+  key_file: /run/secrets/decision_signing_key   # the SAME file the API signs with; mode 0600; 32 bytes or more
+
+# stages:
+#   definition_commit: 1405df66cbe219b0bf6355bc3d60361a8376b6b4   # required in production
 # github: { app_id: 0, key_file: /run/secrets/github_app_key }     # needs a registered GitHub App
 # worker: { name_prefix: worker, poll_interval_ms: 1000, sweep_interval_s: 10, drain_s: 120, tenants: [] }
