@@ -51,7 +51,8 @@ STATUS_TEXT = {
 NEEDS = ("docker", "live_provider")
 BLOCK_KINDS = ("docker", "live_provider", "human")
 CONTROL_KINDS = ("mutation", "break_test", "defect")
-ROW_KEYS = {"id", "status", "tests", "control_off", "blocked", "parts_blocked", "note"}
+ROW_KEYS = {"id", "status", "tests", "control_off", "blocked", "parts_blocked", "findings", "note"}
+FINDING_KEYS = {"id", "owner", "title", "detail", "smallest_fix", "severity"}
 TEST_KEYS = {"name", "file", "needs"}
 CONTROL_KEYS = {
     "mutation": {"kind", "script", "name", "catches"},
@@ -59,7 +60,10 @@ CONTROL_KEYS = {
     "defect": {"kind", "file", "symbol", "catches"},
 }
 RUN_KEYS = {"script", "name", "date", "result", "failed"}
-TOP_KEYS = {"schema_version", "catalog", "work_packages", "recorded", "mutation_runs", "rows"}
+TOP_KEYS = {"schema_version", "catalog", "work_packages", "recorded", "findings", "audit_events", "mutation_runs", "rows"}
+POLICY = ROOT / "policies/security.yaml"
+PRODUCTIONS = ("engine", "handler", "differently_named", "other_stream", "none")
+EVENT_KEYS = {"type", "owner", "production", "source", "token", "note"}
 
 
 def fail(errors) -> NoReturn:
@@ -157,6 +161,26 @@ def validate(doc):
     for extra in sorted(set(seen) - p0):
         errors.append(f"{extra}: has a row but is not a P0 test of the catalog")
     runs = doc.get("mutation_runs", [])
+    errors += validate_audit_events(doc.get("audit_events", []), wps)
+    finding_ids = set()
+    for f in doc.get("findings", []):
+        if set(f) != FINDING_KEYS:
+            errors.append(f"finding {f.get('id', '?')}: keys must be {sorted(FINDING_KEYS)}")
+            continue
+        if f["id"] in finding_ids:
+            errors.append(f"finding {f['id']}: listed twice")
+        finding_ids.add(f["id"])
+        if f["owner"] not in wps:
+            errors.append(f"finding {f['id']}: owner {f['owner']} is not a work package")
+        if f["severity"] not in ("high", "medium", "low"):
+            errors.append(f"finding {f['id']}: severity must be high, medium or low")
+    for row in rows:
+        for fid in row.get("findings", []):
+            if fid not in finding_ids:
+                errors.append(f"{row.get('id', '?')}: names finding {fid}, which is not listed")
+    for fid in sorted(finding_ids):
+        if not any(fid in row.get("findings", []) for row in rows):
+            errors.append(f"finding {fid} is not reported by any row")
     for run in runs:
         if set(run) != RUN_KEYS:
             errors.append(f"mutation_runs entry {run}: keys must be {sorted(RUN_KEYS)}")
@@ -169,6 +193,74 @@ def validate(doc):
     for rid, row in seen.items():
         errors += validate_row(rid, row, owners, wps)
     return errors, catalog, owners
+
+
+def required_audit_types():
+    text = POLICY.read_text(encoding="utf-8")
+    section = text.split("must_record:", 1)[1].splitlines()[1:]
+    out = []
+    for line in section:
+        line = line.strip()
+        if not line.startswith("- "):
+            break
+        out.append(line[2:].strip())
+    return out
+
+
+def camel(name):
+    return "".join(part.capitalize() for part in name.split("_"))
+
+
+def production_sources():
+    """The text of every production source of the workspace, by path, without the audit module of
+    the workflow crate (where the enum is defined) and without tests."""
+    found = {}
+    for base in ("crates", "apps"):
+        for path in sorted((ROOT / base).glob("*/src/**/*.rs")):
+            rel = path.relative_to(ROOT).as_posix()
+            if rel.startswith("crates/workflow/src/audit/"):
+                continue
+            found[rel] = path.read_text(encoding="utf-8")
+    return found
+
+
+def validate_audit_events(events, wps):
+    """The owner matrix of NT-AUD-03: the types are the ones the policy requires, in its order; each
+    has an owner that is a work package; and what the matrix says is produced in production code is
+    what the sources say."""
+    errors = []
+    required = required_audit_types()
+    listed = [e.get("type") for e in events]
+    if listed != required:
+        errors.append(f"audit_events types {listed} differ from audit.must_record of the policy {required}")
+    sources = None
+    for e in events:
+        label = e.get("type", "?")
+        if set(e) != EVENT_KEYS:
+            errors.append(f"audit_events {label}: keys must be {sorted(EVENT_KEYS)}")
+            continue
+        if e["owner"] not in wps:
+            errors.append(f"audit_events {label}: owner {e['owner']} is not a work package")
+        if e["production"] not in PRODUCTIONS:
+            errors.append(f"audit_events {label}: production must be one of {list(PRODUCTIONS)}")
+            continue
+        if not e["note"].strip():
+            errors.append(f"audit_events {label}: needs a note")
+        if e["production"] == "none":
+            if sources is None:
+                sources = production_sources()
+            hits = [rel for rel, text in sources.items() if f"AuditKind::{camel(label)}" in text or f'"{label}"' in text]
+            if hits:
+                errors.append(f"audit_events {label}: the matrix says nothing writes it, but {hits} mention it; set production and source")
+        else:
+            text = read_text(e["source"])
+            if text is None:
+                errors.append(f"audit_events {label}: source {e['source']} does not exist")
+            else:
+                for token in [t.strip() for t in e["token"].split("|")]:
+                    if token not in text:
+                        errors.append(f"audit_events {label}: {e['source']} does not contain {token}")
+    return errors
 
 
 def validate_row(rid, row, owners, wps):
@@ -375,6 +467,35 @@ def render(doc, catalog, owners):
         for r in notes:
             w(f"- **{r['id']}**: {r['note']}")
         w("")
+
+    w("### Open findings that a P0 test reports")
+    w("")
+    if doc.get("findings"):
+        w("A finding is a defect that a P0 test found. The test is red until the defect is fixed, and it is not weakened. Each has an owner and the smallest fix.")
+        w("")
+        for f in doc["findings"]:
+            rows_with = ", ".join(r["id"] for r in rows if f["id"] in r.get("findings", []))
+            w(f"- **{f['id']}** ({f['severity']}, owner {f['owner']}, reported by {rows_with}): {f['title']} {f['detail']} Smallest fix: {f['smallest_fix']}")
+    else:
+        w("None.")
+    w("")
+    w("### Audit event types and their owners (NT-AUD-03)")
+    w("")
+    w("The policy requires fourteen types of audit event (`audit.must_record`). The scripted scenario of `negative_nt_aud_03` makes each of them appear with an actor, the policy hash and the correlation id of its job. This table says who owns each type and whether production code writes it. The checker compares the table with the sources, so a type that gains an emitter, or loses one, fails the check until the table says so.")
+    w("")
+    w("| Type | Owner | Written in production code | Where |")
+    w("|---|---|---|---|")
+    meaning = {
+        "engine": "yes, by the engine",
+        "handler": "yes, by a stage handler",
+        "differently_named": "under other names",
+        "other_stream": "in another stream",
+        "none": "no",
+    }
+    for e in doc["audit_events"]:
+        where = e["source"] and f"`{e['source']}`" or "none"
+        w(f"| `{e['type']}` | {e['owner']} | {meaning[e['production']]} | {where}. {e['note']} |")
+    w("")
     w("### Control-off variants that were run for this review")
     w("")
     if runs:

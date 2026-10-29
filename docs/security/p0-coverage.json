@@ -3,6 +3,146 @@
  "catalog": "docs/security/negative-test-catalog.md",
  "work_packages": "docs/architecture/work-packages.json",
  "recorded": "2026-10-29",
+ "findings": [
+  {
+   "id": "F-1",
+   "owner": "s1-stage-implementation-and-review",
+   "severity": "medium",
+   "title": "The denials of a run whose report the stage rejects as invalid are not audited.",
+   "detail": "A model that asks for exec.shell and approval.grant and also forges a field in its report is refused twice by the tool, and the stage rejects the report as invalid output. The audit log holds no tool_call_denied record for either denial, because the stage drops the denials it tallied when it returns the error. The cases fake-03 and fake-04 of the injection corpus show it.",
+   "smallest_fix": "call ctx.note_failed_run(&report) before each Err(StageError::InvalidOutput) that follows ports.runtime.run in crates/workflow/src/stages/implementation/run.rs."
+  },
+  {
+   "id": "F-2",
+   "owner": "s1-apps-composition",
+   "severity": "medium",
+   "title": "Four of the fourteen audit event types the policy requires are not written under their name, or at all.",
+   "detail": "The API writes webhook.accepted and webhook.rejected, which a reader that filters by type does not recognise as webhook_accepted_or_rejected. Nothing in production code writes command_executed or sandbox_created_posture_result_destroyed. The egress broker keeps egress_request facts in its own stream, which nothing carries to the audit log.",
+   "smallest_fix": "write the API actions under the required type (webhook_accepted_or_rejected.granted and .denied), and add emitters for the other three in the validation stage, the sandbox call sites of the stages and the composition root that owns the broker's audit sink, in that order."
+  },
+  {
+   "id": "F-3",
+   "owner": "s1-stage-implementation-and-review",
+   "severity": "high",
+   "title": "Secrets in the fields of the builder's report are written to the content-addressed store.",
+   "detail": "The implementation stage stores the names of the tests the model says it added, the arguments of the commands it says it ran and the instructions it says it ignored, in the implementation evidence document, unchanged. A secret in any of them lands in an artifact where the policy says a secret blocks the write (secrets.sinks.artifacts), and no secret_redacted_or_blocked record is written. The stage accepts the run.",
+   "smallest_fix": "run the redactor over the strings of reported_by_builder (or over the whole evidence document) before it is stored, and refuse the stage run with the code secret-found when it matches, as the stage does for a secret in the change."
+  }
+ ],
+ "audit_events": [
+  {
+   "type": "webhook_accepted_or_rejected",
+   "owner": "s1-apps-composition",
+   "production": "differently_named",
+   "source": "apps/api/src/webhook.rs",
+   "token": "webhook.accepted | webhook.rejected",
+   "note": "The API writes the facts under the names webhook.accepted and webhook.rejected. They are not the required type name, so a reader that filters the audit log by type does not see them."
+  },
+  {
+   "type": "authorization_decision",
+   "owner": "s1-engine-core",
+   "production": "engine",
+   "source": "crates/workflow/src/engine/admission.rs",
+   "token": "AuditKind::AuthorizationDecision",
+   "note": "Admission, the human decision and the intake stage."
+  },
+  {
+   "type": "tool_grant_issued",
+   "owner": "s1-engine-core",
+   "production": "engine",
+   "source": "crates/workflow/src/scheduler/claim.rs",
+   "token": "AuditKind::ToolGrantIssued",
+   "note": "One record for each attempt the engine claims."
+  },
+  {
+   "type": "tool_call_denied",
+   "owner": "s1-engine-core",
+   "production": "engine",
+   "source": "crates/workflow/src/engine/attempt.rs",
+   "token": "AuditKind::ToolCallDenied",
+   "note": "One record for each denial the runtime reports. Finding F-1: denials of a run whose report is rejected as invalid are dropped."
+  },
+  {
+   "type": "command_executed",
+   "owner": "s1-trusted-gates-and-validation",
+   "production": "none",
+   "source": "",
+   "token": "AuditKind::CommandExecuted",
+   "note": "No production code writes it. The validation stage records the gate result and not the command that produced it."
+  },
+  {
+   "type": "sandbox_created_posture_result_destroyed",
+   "owner": "s1-sandbox-adapter",
+   "production": "none",
+   "source": "",
+   "token": "AuditKind::SandboxCreatedPostureResultDestroyed",
+   "note": "No production code writes it. The sandbox adapter returns its posture report to the stage, and the stage does not write the lifecycle to the audit log."
+  },
+  {
+   "type": "egress_request",
+   "owner": "s1-egress-and-broker",
+   "production": "other_stream",
+   "source": "crates/egress/src/broker/audit.rs",
+   "token": "RequestAdmitted",
+   "note": "The broker keeps its own audit events (token issued, request admitted, refused, settled, revoked). Nothing carries them to the audit log of the store yet."
+  },
+  {
+   "type": "secret_redacted_or_blocked",
+   "owner": "s1-redaction",
+   "production": "handler",
+   "source": "crates/workflow/src/stages/implementation/run.rs",
+   "token": "AuditKind::SecretRedactedOrBlocked",
+   "note": "Written by the stage handlers that scan a change."
+  },
+  {
+   "type": "protected_path_decision",
+   "owner": "s1-stage-implementation-and-review",
+   "production": "handler",
+   "source": "crates/workflow/src/stages/implementation/run.rs",
+   "token": "AuditKind::ProtectedPathDecision",
+   "note": "Written by the stage handlers that take a change in."
+  },
+  {
+   "type": "gate_result",
+   "owner": "s1-engine-core",
+   "production": "engine",
+   "source": "crates/workflow/src/engine/gate.rs",
+   "token": "AuditKind::GateResult",
+   "note": "One record for each gate the engine evaluates."
+  },
+  {
+   "type": "approval_granted_or_rejected",
+   "owner": "s1-engine-core",
+   "production": "engine",
+   "source": "crates/workflow/src/engine/decide.rs",
+   "token": "AuditKind::ApprovalGrantedOrRejected",
+   "note": "Written when a person decides."
+  },
+  {
+   "type": "human_override",
+   "owner": "s1-engine-core",
+   "production": "engine",
+   "source": "crates/workflow/src/engine/decide.rs",
+   "token": "AuditKind::HumanOverride",
+   "note": "Written when a person overrides a block."
+  },
+  {
+   "type": "credential_minted_and_revoked",
+   "owner": "s1-engine-core",
+   "production": "engine",
+   "source": "crates/workflow/src/engine/attempt.rs",
+   "token": "AuditKind::CredentialMintedAndRevoked",
+   "note": "The job token of an attempt, at its start and its end."
+  },
+  {
+   "type": "budget_threshold_crossed",
+   "owner": "s1-engine-core",
+   "production": "engine",
+   "source": "crates/workflow/src/engine/attempt.rs",
+   "token": "AuditKind::BudgetThresholdCrossed",
+   "note": "Written at 80 and 100 percent of the ceiling."
+  }
+ ],
  "mutation_runs": [],
  "rows": [
   {
@@ -18,10 +158,26 @@
   },
   {
    "id": "NT-AUD-03",
-   "status": "missing",
-   "tests": [],
+   "status": "control_off_missing",
+   "tests": [
+    {
+     "name": "negative_nt_aud_03_every_required_event_type_appears_with_actor_policy_hash_and_correlation_id",
+     "file": "crates/workflow/tests/security/negative_aud.rs"
+    },
+    {
+     "name": "negative_nt_aud_03_the_matrix_lists_an_owner_for_every_type_the_policy_requires",
+     "file": "crates/workflow/tests/security/negative_aud.rs"
+    },
+    {
+     "name": "negative_nt_aud_03_the_types_the_scenario_scripts_are_the_types_the_engine_does_not_write",
+     "file": "crates/workflow/tests/security/negative_aud.rs"
+    }
+   ],
    "control_off": [],
-   "note": "Covered: a scripted scenario for each of the fourteen required types, checked for actor, policy hash and correlation id, and the owner matrix in the data file. Not covered (gap): a production emitter for the types the source scan shows have none yet; the matrix names them."
+   "note": "Covered: a scripted scenario for each of the fourteen required types, every record checked for actor, policy hash and correlation id, and the owner matrix below, which the checker compares with the sources. Not covered (gap): a production emitter for four types (webhook under the required name, command_executed, the sandbox lifecycle, egress_request in the audit log); the matrix names them.",
+   "findings": [
+    "F-2"
+   ]
   },
   {
    "id": "NT-AUTHZ-01",
@@ -433,9 +589,46 @@
   },
   {
    "id": "NT-INJ-01",
-   "status": "missing",
-   "tests": [],
-   "control_off": []
+   "status": "control_off_missing",
+   "tests": [
+    {
+     "name": "negative_nt_inj_01_a_model_that_obeys_the_text_of_a_request_changes_nothing_the_factory_protects",
+     "file": "crates/workflow/tests/security/negative.rs"
+    },
+    {
+     "name": "negative_nt_inj_01_the_workflow_edit_the_env_the_fetch_and_the_pass_claim_of_the_catalog",
+     "file": "crates/workflow/tests/security/negative.rs"
+    },
+    {
+     "name": "negative_nt_inj_01_every_payload_in_every_input_leaves_the_instructions_as_the_template_wrote_them",
+     "file": "crates/workflow/tests/security/negative.rs"
+    },
+    {
+     "name": "negative_nt_inj_01_the_corpus_has_forty_distinct_payloads_in_ten_categories_and_encodings_decode",
+     "file": "crates/workflow/tests/security/negative.rs"
+    },
+    {
+     "name": "negative_nt_inj_01_part_b_the_commands_run_inside_a_real_agent_sandbox",
+     "file": "crates/workflow/tests/security/negative.rs",
+     "needs": [
+      "docker"
+     ]
+    }
+   ],
+   "control_off": [],
+   "parts_blocked": [
+    {
+     "part": "B",
+     "kind": "docker",
+     "reason": "The commands of the issue run by docker exec in a hardened agent sandbox (FX-EXEC) need the Docker daemon. The engine-level part runs: the model obeys, the policy denies, the stage refuses, no sink holds a canary."
+    },
+    {
+     "part": "C",
+     "kind": "live_provider",
+     "reason": "A real agent CLI driven by a scripted provider needs an installed CLI and the agent image."
+    }
+   ],
+   "note": "The sandbox, the code host and the model are labelled fakes in the engine-level tests. The rig's path rules are those of the fixture repository; the policy denial of every other protected path is checked against the real path policy."
   },
   {
    "id": "NT-INJ-02",
@@ -459,15 +652,73 @@
     {
      "name": "negative_nt_inj_03_hostile_text_in_a_code_comment_gives_the_writer_no_authority",
      "file": "crates/workflow/tests/documentation/negative.rs"
+    },
+    {
+     "name": "negative_nt_inj_03_a_model_that_obeys_a_document_of_the_repository_changes_nothing_the_factory_protects",
+     "file": "crates/workflow/tests/security/negative.rs"
+    },
+    {
+     "name": "negative_nt_inj_03_a_readme_a_contributing_file_and_a_comment_that_ask_for_release_yml_and_secrets",
+     "file": "crates/workflow/tests/security/negative.rs"
+    },
+    {
+     "name": "negative_nt_inj_03_part_b_the_commands_run_inside_a_real_agent_sandbox",
+     "file": "crates/workflow/tests/security/negative.rs",
+     "needs": [
+      "docker"
+     ]
     }
    ],
-   "control_off": []
+   "control_off": [],
+   "parts_blocked": [
+    {
+     "part": "B",
+     "kind": "docker",
+     "reason": "FX-EXEC against the hostile fixture repository needs the Docker daemon."
+    },
+    {
+     "part": "C",
+     "kind": "live_provider",
+     "reason": "A real CLI driven by a scripted provider needs an installed CLI and the agent image."
+    }
+   ]
   },
   {
    "id": "NT-INJ-04",
-   "status": "missing",
-   "tests": [],
-   "control_off": []
+   "status": "control_off_missing",
+   "tests": [
+    {
+     "name": "negative_nt_inj_04_tool_output_that_says_grant_yourself_and_approve_gains_no_authority",
+     "file": "crates/workflow/tests/security/negative.rs"
+    },
+    {
+     "name": "negative_nt_inj_04_the_output_of_a_command_the_factory_ran_sits_in_a_data_envelope",
+     "file": "crates/workflow/tests/security/negative.rs"
+    },
+    {
+     "name": "negative_nt_inj_04_exec_shell_and_approval_grant_are_denied_to_an_agent_that_asks",
+     "file": "crates/workflow/tests/security/negative.rs"
+    },
+    {
+     "name": "negative_nt_inj_04_part_c_the_forwarded_request_keeps_the_output_in_a_tool_result_part",
+     "file": "crates/workflow/tests/security/negative.rs",
+     "needs": [
+      "live_provider"
+     ]
+    }
+   ],
+   "control_off": [],
+   "findings": [
+    "F-1"
+   ],
+   "parts_blocked": [
+    {
+     "part": "C",
+     "kind": "live_provider",
+     "reason": "BLOCKED until a real runtime and a key exist (work package s0-agent-runtime-spike has run, but no key or installed CLI is available here)."
+    }
+   ],
+   "note": "The B and S parts that run in the workflow crate are present: refusals, grants, approvals, audit and the data envelope. Not yet written: that every control-plane endpoint other than the broker rejects the job token, which is a property of the composed API and needs a new file in apps/api/tests. The first test is red on finding F-1."
   },
   {
    "id": "NT-INJ-06",
@@ -1132,10 +1383,22 @@
   },
   {
    "id": "NT-SEC-01",
-   "status": "missing",
-   "tests": [],
+   "status": "control_off_missing",
+   "tests": [
+    {
+     "name": "negative_nt_sec_01_a_full_fixture_job_with_a_canary_of_every_class_leaves_none_in_any_sink",
+     "file": "crates/workflow/tests/security/negative_sec.rs"
+    },
+    {
+     "name": "negative_nt_sec_01_secrets_the_model_pastes_into_its_summary_and_its_change_reach_no_sink",
+     "file": "crates/workflow/tests/security/negative_sec.rs"
+    }
+   ],
    "control_off": [],
-   "note": "Covered: the canary sweep of a full fixture job. Not covered (gap, Slice 2 and Slice 4): NATS messages and memory stores as sinks, which do not exist yet."
+   "note": "Covered: a canary of 21 classes planted in the repository, the request, the environment and the output of commands, and four ways for the model to leak it, swept in the audit log, the outbox, the ledger, every stored artifact, the prompts and the log lines. Not covered (gap, Slice 2 and Slice 4): NATS messages and memory stores, which do not exist. Not yet written: the pull request body, comments, timeline, error bodies and recordings, which need the composed run. The first test is red on finding F-3.",
+   "findings": [
+    "F-3"
+   ]
   },
   {
    "id": "NT-SEC-02",

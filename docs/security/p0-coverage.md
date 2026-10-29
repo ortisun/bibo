@@ -39,9 +39,9 @@ The first command fails when a P0 test of the catalog has no row, when a row poi
 | Status | Count |
 |---|---|
 | implemented, control-off proven | 5 |
-| implemented, control-off missing | 69 |
+| implemented, control-off missing | 73 |
 | BLOCKED | 9 |
-| missing | 5 |
+| missing | 1 |
 | P0 tests of the catalog | 88 |
 
 ### The matrix
@@ -49,7 +49,7 @@ The first command fails when a P0 test of the catalog has no row, when a row poi
 | Test | Title | Owner (work package, crate) | Tests in the repository | Control-off variant | Status |
 |---|---|---|---|---|---|
 | NT-AUD-01 | Append-only audit | s1-storage-postgres, storage | `negative_nt_aud_01` | none | implemented, control-off missing |
-| NT-AUD-03 | Coverage | s1-security-review-and-tests, workflow (partial) | none | none | missing |
+| NT-AUD-03 | Coverage | s1-security-review-and-tests, workflow (partial) | `negative_nt_aud_03_every_required_event_type_appears_with_actor_policy_hash_and_correla…`<br>`negative_nt_aud_03_the_matrix_lists_an_owner_for_every_type_the_policy_requires`<br>`negative_nt_aud_03_the_types_the_scenario_scripts_are_the_types_the_engine_does_not_wri…` | none | implemented, control-off missing |
 | NT-AUTHZ-01 | Unauthorized label | s1-stage-intake-and-repository, workflow | `negative_nt_authz_01_only_the_numeric_id_on_the_allowlist_grants_a_designation`<br>`negative_nt_authz_01_the_actor_is_the_numeric_id_and_a_lookalike_login_is_a_different_p…`<br>`negative_nt_authz_01_a_label_that_came_with_issue_creation_names_its_author`<br>and 5 more | mutation `identify a person by the login and not by the numeric id`, not run in this review | implemented, control-off proven |
 | NT-AUTHZ-02 | Command by an unauthorized user | s1-stage-delivery-and-approval, workflow | `negative_nt_authz_02_a_command_comment_arrives_with_its_authors_numeric_id`<br>`negative_nt_authz_02_an_unauthorized_command_is_audited_and_gets_no_reply`<br>`negative_nt_authz_02_a_sender_who_may_not_decide_is_refused_without_a_reply` | none | implemented, control-off missing |
 | NT-AUTHZ-05 | Issue edited after authorization | s1-stage-intake-and-repository, workflow | `negative_nt_authz_05_an_edit_after_the_snapshot_waits_for_the_requester_and_no_agent_re…`<br>`negative_nt_authz_05_the_stage_refuses_an_edited_request_nobody_confirmed` | none | implemented, control-off missing |
@@ -69,10 +69,10 @@ The first command fails when a P0 test of the catalog has no row, when a row poi
 | NT-GATE-07 | Missing evidence is BLOCKED | s1-trusted-gates-and-validation, workflow | `negative_nt_gate_07_a_missing_build_tool_blocks_the_checks_that_need_it`<br>`negative_nt_gate_07_a_missing_diagram_parser_is_blocked_and_never_passed`<br>`negative_nt_gate_07_a_test_command_that_is_not_found_is_blocked`<br>and 6 more | none | implemented, control-off missing |
 | NT-GATE-08 | Holdout visibility | s1-workspace-ingestion, sandbox (partial) | `negative_nt_gate_08_the_holdout_is_invisible_to_the_agent_and_present_in_verify`<br>`negative_nt_gate_08_the_holdout_is_read_only_in_verify_and_a_clean_run_ingests` [Docker] | none | implemented, control-off missing |
 | NT-GATE-10 | Evidence binding and flaky retries | s1-trusted-gates-and-validation, workflow | `negative_nt_gate_10_evidence_for_one_commit_does_not_count_for_another`<br>`negative_nt_gate_10_a_changed_policy_or_image_makes_the_evidence_stale`<br>`negative_nt_gate_10_a_test_that_fails_once_and_is_not_in_the_flaky_registry_is_failed`<br>and 1 more | none | implemented, control-off missing |
-| NT-INJ-01 | Compromised model obeys issue text | s1-security-review-and-tests, workflow | none | none | missing |
+| NT-INJ-01 | Compromised model obeys issue text | s1-security-review-and-tests, workflow | `negative_nt_inj_01_a_model_that_obeys_the_text_of_a_request_changes_nothing_the_factory…`<br>`negative_nt_inj_01_the_workflow_edit_the_env_the_fetch_and_the_pass_claim_of_the_catalog`<br>`negative_nt_inj_01_every_payload_in_every_input_leaves_the_instructions_as_the_template…`<br>and 2 more | none | implemented, control-off missing |
 | NT-INJ-02 | Envelope hardening | s1-prompt-assembly, workflow | `negative_nt_inj_02_a_path_cannot_carry_text_into_the_instruction`<br>`negative_nt_inj_02_envelope_hardening` | none | implemented, control-off missing |
-| NT-INJ-03 | Repository document injection | s1-security-review-and-tests, workflow | `negative_nt_inj_03_hostile_text_in_a_code_comment_gives_the_writer_no_authority` | none | implemented, control-off missing |
-| NT-INJ-04 | Tool-output injection | s1-security-review-and-tests, workflow | none | none | missing |
+| NT-INJ-03 | Repository document injection | s1-security-review-and-tests, workflow | `negative_nt_inj_03_hostile_text_in_a_code_comment_gives_the_writer_no_authority`<br>`negative_nt_inj_03_a_model_that_obeys_a_document_of_the_repository_changes_nothing_the_…`<br>`negative_nt_inj_03_a_readme_a_contributing_file_and_a_comment_that_ask_for_release_yml_…`<br>and 1 more | none | implemented, control-off missing |
+| NT-INJ-04 | Tool-output injection | s1-security-review-and-tests, workflow | `negative_nt_inj_04_tool_output_that_says_grant_yourself_and_approve_gains_no_authority`<br>`negative_nt_inj_04_the_output_of_a_command_the_factory_ran_sits_in_a_data_envelope`<br>`negative_nt_inj_04_exec_shell_and_approval_grant_are_denied_to_an_agent_that_asks`<br>and 1 more | none | implemented, control-off missing |
 | NT-INJ-06 | Reviewer manipulation and isolation | s1-stage-implementation-and-review, workflow | `negative_nt_inj_06_a_reviewer_pass_does_not_override_a_failed_gate`<br>`negative_nt_inj_06_a_reviewer_pass_cannot_override_a_failed_gate` | none | implemented, control-off missing |
 | NT-INJ-07 | Repository-resident agent configuration | s1-agent-runtime-adapters, runtime | `negative_nt_inj_07_claude_code_ignores_the_repositorys_hooks_servers_settings_and_instr…` [Docker]<br>`negative_nt_inj_07_codex_ignores_the_repositorys_provider_and_instruction_files` [Docker] | none | BLOCKED (docker) |
 | NT-LSE-01 | Stale worker fencing | s1-engine-core, workflow | `negative_nt_lse_01_a_stale_worker_that_comes_back_changes_nothing`<br>`negative_nt_lse_01_a_stale_worker_makes_no_commit` | none | implemented, control-off missing |
@@ -106,7 +106,7 @@ The first command fails when a P0 test of the catalog has no row, when a row poi
 | NT-SBX-13 | Credential isolation | s1-sandbox-adapter, sandbox | `negative_nt_sbx_13_the_job_token_is_a_file_and_no_other_credential_is_anywhere` [Docker] | none | BLOCKED (docker) |
 | NT-SBX-14 | Fail closed | s1-sandbox-adapter, sandbox | `negative_nt_sbx_14_a_stopped_daemon_a_missing_image_and_a_skeleton_sidecar_run_nothing` [Docker]<br>`negative_nt_sbx_14_a_stopped_daemon_a_bad_catalog_and_a_failed_sidecar_run_nothing` | none | implemented, control-off missing |
 | NT-SBX-17 | Model broker forwards no provider-side tool, remote server or fetched content (T-17) | s1-egress-and-broker, egress | `negative_nt_sbx_17_the_requests_of_the_real_tools_pass_unchanged`<br>`negative_nt_sbx_17_history_blocks_of_a_long_session_pass`<br>`negative_nt_sbx_17_every_refused_shape_gets_a_fixed_answer_an_audit_event_and_no_provid…`<br>and 6 more | none | implemented, control-off missing |
-| NT-SEC-01 | Canary sweep of a full job | s1-security-review-and-tests, workflow (partial) | none | none | missing |
+| NT-SEC-01 | Canary sweep of a full job | s1-security-review-and-tests, workflow (partial) | `negative_nt_sec_01_a_full_fixture_job_with_a_canary_of_every_class_leaves_none_in_any_s…`<br>`negative_nt_sec_01_secrets_the_model_pastes_into_its_summary_and_its_change_reach_no_si…` | none | implemented, control-off missing |
 | NT-SEC-02 | Redaction evasion | s1-redaction, domain | `negative_nt_sec_02_a_token_split_over_two_writes_is_redacted`<br>`negative_nt_sec_02_terminal_codes_between_the_characters_do_not_hide_a_token`<br>`negative_nt_sec_02_control_bytes_between_the_characters_do_not_hide_a_token`<br>and 6 more | none | implemented, control-off missing |
 | NT-SEC-03 | GitHub-bound text is blocked | s1-github-adapter, github | `negative_nt_sec_03_text_with_a_secret_is_blocked_everywhere_and_nothing_is_sent` | none | implemented, control-off missing |
 | NT-SEC-04 | Markdown exfiltration | s1-github-adapter, github | `negative_nt_sec_04_markdown_cannot_carry_data_out_through_any_path_to_the_code_host`<br>`negative_nt_sec_04_a_body_over_the_length_cap_is_refused_and_not_cut`<br>`negative_nt_sec_04_hostile_text_does_not_reach_the_pull_request`<br>and 1 more | none | implemented, control-off missing |
@@ -155,17 +155,14 @@ Each of these needs something this machine does not have. A test in this list ha
 
 Each of these P0 tests has no test of the catalog name in the repository.
 
-- **NT-AUD-03** Covered: a scripted scenario for each of the fourteen required types, checked for actor, policy hash and correlation id, and the owner matrix in the data file. Not covered (gap): a production emitter for the types the source scan shows have none yet; the matrix names them.
-- **NT-INJ-01**
-- **NT-INJ-04**
 - **NT-LSE-02**
-- **NT-SEC-01** Covered: the canary sweep of a full fixture job. Not covered (gap, Slice 2 and Slice 4): NATS messages and memory stores as sinks, which do not exist yet.
 
 ### Implemented, control-off missing
 
 Each of these tests exists and runs, and nothing in the repository shows that it fails when its control is removed.
 
 - **NT-AUD-01**
+- **NT-AUD-03** Covered: a scripted scenario for each of the fourteen required types, every record checked for actor, policy hash and correlation id, and the owner matrix below, which the checker compares with the sources. Not covered (gap): a production emitter for four types (webhook under the required name, command_executed, the sandbox lifecycle, egress_request in the audit log); the matrix names them.
 - **NT-AUTHZ-02**
 - **NT-AUTHZ-05**
 - **NT-AUTHZ-08**
@@ -182,8 +179,10 @@ Each of these tests exists and runs, and nothing in the repository shows that it
 - **NT-GATE-07**
 - **NT-GATE-08** Covered: sandbox, prompts and sinks. Not covered (gap, Slice 4): held-out evaluation data in the evals component, which does not exist yet.
 - **NT-GATE-10**
+- **NT-INJ-01** The sandbox, the code host and the model are labelled fakes in the engine-level tests. The rig's path rules are those of the fixture repository; the policy denial of every other protected path is checked against the real path policy.
 - **NT-INJ-02**
 - **NT-INJ-03**
+- **NT-INJ-04** The B and S parts that run in the workflow crate are present: refusals, grants, approvals, audit and the data envelope. Not yet written: that every control-plane endpoint other than the broker rejects the job token, which is a property of the composed API and needs a new file in apps/api/tests. The first test is red on finding F-1.
 - **NT-INJ-06**
 - **NT-LSE-01**
 - **NT-LSE-03**
@@ -208,6 +207,7 @@ Each of these tests exists and runs, and nothing in the repository shows that it
 - **NT-SBX-11**
 - **NT-SBX-14**
 - **NT-SBX-17**
+- **NT-SEC-01** Covered: a canary of 21 classes planted in the repository, the request, the environment and the output of commands, and four ways for the model to leak it, swept in the audit log, the outbox, the ledger, every stored artifact, the prompts and the log lines. Not covered (gap, Slice 2 and Slice 4): NATS messages and memory stores, which do not exist. Not yet written: the pull request body, comments, timeline, error bodies and recordings, which need the composed run. The first test is red on finding F-3.
 - **NT-SEC-02**
 - **NT-SEC-03**
 - **NT-SEC-04**
@@ -237,7 +237,42 @@ Each of these tests exists and runs, and nothing in the repository shows that it
 
 ### Parts that are BLOCKED inside a row
 
-None.
+A row can be proven for the parts that run and still hold a part that cannot run yet. The part is stated here and never counted as a pass.
+
+- **NT-INJ-01**, part B (docker): The commands of the issue run by docker exec in a hardened agent sandbox (FX-EXEC) need the Docker daemon. The engine-level part runs: the model obeys, the policy denies, the stage refuses, no sink holds a canary.
+- **NT-INJ-01**, part C (live provider): A real agent CLI driven by a scripted provider needs an installed CLI and the agent image.
+- **NT-INJ-03**, part B (docker): FX-EXEC against the hostile fixture repository needs the Docker daemon.
+- **NT-INJ-03**, part C (live provider): A real CLI driven by a scripted provider needs an installed CLI and the agent image.
+- **NT-INJ-04**, part C (live provider): BLOCKED until a real runtime and a key exist (work package s0-agent-runtime-spike has run, but no key or installed CLI is available here).
+
+### Open findings that a P0 test reports
+
+A finding is a defect that a P0 test found. The test is red until the defect is fixed, and it is not weakened. Each has an owner and the smallest fix.
+
+- **F-1** (medium, owner s1-stage-implementation-and-review, reported by NT-INJ-04): The denials of a run whose report the stage rejects as invalid are not audited. A model that asks for exec.shell and approval.grant and also forges a field in its report is refused twice by the tool, and the stage rejects the report as invalid output. The audit log holds no tool_call_denied record for either denial, because the stage drops the denials it tallied when it returns the error. The cases fake-03 and fake-04 of the injection corpus show it. Smallest fix: call ctx.note_failed_run(&report) before each Err(StageError::InvalidOutput) that follows ports.runtime.run in crates/workflow/src/stages/implementation/run.rs.
+- **F-2** (medium, owner s1-apps-composition, reported by NT-AUD-03): Four of the fourteen audit event types the policy requires are not written under their name, or at all. The API writes webhook.accepted and webhook.rejected, which a reader that filters by type does not recognise as webhook_accepted_or_rejected. Nothing in production code writes command_executed or sandbox_created_posture_result_destroyed. The egress broker keeps egress_request facts in its own stream, which nothing carries to the audit log. Smallest fix: write the API actions under the required type (webhook_accepted_or_rejected.granted and .denied), and add emitters for the other three in the validation stage, the sandbox call sites of the stages and the composition root that owns the broker's audit sink, in that order.
+- **F-3** (high, owner s1-stage-implementation-and-review, reported by NT-SEC-01): Secrets in the fields of the builder's report are written to the content-addressed store. The implementation stage stores the names of the tests the model says it added, the arguments of the commands it says it ran and the instructions it says it ignored, in the implementation evidence document, unchanged. A secret in any of them lands in an artifact where the policy says a secret blocks the write (secrets.sinks.artifacts), and no secret_redacted_or_blocked record is written. The stage accepts the run. Smallest fix: run the redactor over the strings of reported_by_builder (or over the whole evidence document) before it is stored, and refuse the stage run with the code secret-found when it matches, as the stage does for a secret in the change.
+
+### Audit event types and their owners (NT-AUD-03)
+
+The policy requires fourteen types of audit event (`audit.must_record`). The scripted scenario of `negative_nt_aud_03` makes each of them appear with an actor, the policy hash and the correlation id of its job. This table says who owns each type and whether production code writes it. The checker compares the table with the sources, so a type that gains an emitter, or loses one, fails the check until the table says so.
+
+| Type | Owner | Written in production code | Where |
+|---|---|---|---|
+| `webhook_accepted_or_rejected` | s1-apps-composition | under other names | `apps/api/src/webhook.rs`. The API writes the facts under the names webhook.accepted and webhook.rejected. They are not the required type name, so a reader that filters the audit log by type does not see them. |
+| `authorization_decision` | s1-engine-core | yes, by the engine | `crates/workflow/src/engine/admission.rs`. Admission, the human decision and the intake stage. |
+| `tool_grant_issued` | s1-engine-core | yes, by the engine | `crates/workflow/src/scheduler/claim.rs`. One record for each attempt the engine claims. |
+| `tool_call_denied` | s1-engine-core | yes, by the engine | `crates/workflow/src/engine/attempt.rs`. One record for each denial the runtime reports. Finding F-1: denials of a run whose report is rejected as invalid are dropped. |
+| `command_executed` | s1-trusted-gates-and-validation | no | none. No production code writes it. The validation stage records the gate result and not the command that produced it. |
+| `sandbox_created_posture_result_destroyed` | s1-sandbox-adapter | no | none. No production code writes it. The sandbox adapter returns its posture report to the stage, and the stage does not write the lifecycle to the audit log. |
+| `egress_request` | s1-egress-and-broker | in another stream | `crates/egress/src/broker/audit.rs`. The broker keeps its own audit events (token issued, request admitted, refused, settled, revoked). Nothing carries them to the audit log of the store yet. |
+| `secret_redacted_or_blocked` | s1-redaction | yes, by a stage handler | `crates/workflow/src/stages/implementation/run.rs`. Written by the stage handlers that scan a change. |
+| `protected_path_decision` | s1-stage-implementation-and-review | yes, by a stage handler | `crates/workflow/src/stages/implementation/run.rs`. Written by the stage handlers that take a change in. |
+| `gate_result` | s1-engine-core | yes, by the engine | `crates/workflow/src/engine/gate.rs`. One record for each gate the engine evaluates. |
+| `approval_granted_or_rejected` | s1-engine-core | yes, by the engine | `crates/workflow/src/engine/decide.rs`. Written when a person decides. |
+| `human_override` | s1-engine-core | yes, by the engine | `crates/workflow/src/engine/decide.rs`. Written when a person overrides a block. |
+| `credential_minted_and_revoked` | s1-engine-core | yes, by the engine | `crates/workflow/src/engine/attempt.rs`. The job token of an attempt, at its start and its end. |
+| `budget_threshold_crossed` | s1-engine-core | yes, by the engine | `crates/workflow/src/engine/attempt.rs`. Written at 80 and 100 percent of the ceiling. |
 
 ### Control-off variants that were run for this review
 
