@@ -107,6 +107,11 @@ fn command_gate(
     if id == gate_id::LINT && !matches!(f.host.lint, HostResult::Passed(_)) {
         return asm.host(gate_id::LINT, f.host.lint.clone());
     }
+    // New build code is seen on the host too, and the build gate is blocked until a security
+    // approver decides: the build would run it (`build_script_added`, AUT-5).
+    if id == gate_id::BUILD && !matches!(f.host.build_code, HostResult::Passed(_)) {
+        return asm.host(gate_id::BUILD, f.host.build_code.clone());
+    }
     let Some(definitions) = f.definitions else {
         return asm.not_run(
             id,

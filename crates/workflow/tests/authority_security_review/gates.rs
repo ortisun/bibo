@@ -5,7 +5,7 @@ use factory_domain::vocabulary::RiskTier;
 use factory_ports::githost::PullRequestRef;
 use factory_ports::paths::{BranchName, RepoRef};
 use factory_ports::workspace::ChangeKind;
-use factory_workflow::gates::scope::{FileChange, lint, protected, weakening};
+use factory_workflow::gates::scope::{FileChange, build_code, lint, protected, weakening};
 use factory_workflow::stages::approval::{Outcome, Refusal, ServiceError};
 
 use crate::approval_rig::{Rig, policy};
@@ -124,7 +124,6 @@ fn aut_4_a_new_allow_attribute_is_seen_by_a_host_side_gate() {
 /// and nothing consumes the "sensitive" hit at gate time: the tier at approval comes from the
 /// architect's design (see AUT-10 in the review).
 #[test]
-#[ignore = "confirmed defect AUT-5: waiting for approve_build_code in policies/approval.yaml (policy work); a new build.rs is allowed by the path gate and no gate blocks it for a security review"]
 fn aut_5_a_new_build_script_is_blocked_until_a_security_review() {
     let diff = [DiffEntry::Added {
         path: "build.rs".to_owned(),
@@ -137,9 +136,29 @@ fn aut_5_a_new_build_script_is_blocked_until_a_security_review() {
         after: Some(b"fn main() { println!(\"cargo:rerun-if-changed=build.rs\"); }\n".to_vec()),
         readable: true,
     }]);
+    // The rule of `scope::build_code` (AUT-5): the path gate allows the file, as it should,
+    // and the new build code is held for a security approver before any command builds it. The
+    // validation stage turns the hit into a BLOCKED `build` gate
+    // (`validation::negative_gate::aut_5_*`).
+    let build_code = build_code::added(&[FileChange {
+        path: "build.rs".to_owned(),
+        kind: ChangeKind::Added,
+        before: None,
+        after: Some(b"fn main() { println!(\"cargo:rerun-if-changed=build.rs\"); }\n".to_vec()),
+        readable: true,
+    }]);
     assert!(
-        !refused.protected.is_empty() || !content.is_empty(),
+        !refused.protected.is_empty() || !content.is_empty() || !build_code.is_empty(),
         "a new build.rs passes every host-side rule"
+    );
+    assert!(
+        !build_code.is_empty(),
+        "the rule for build code holds it, and it names the decision"
+    );
+    assert!(
+        build_code[0].message.contains("approve_build_code"),
+        "{}",
+        build_code[0].message
     );
 }
 

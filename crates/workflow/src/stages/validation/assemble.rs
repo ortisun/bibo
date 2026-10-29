@@ -42,6 +42,14 @@ pub enum HostResult {
         /// A plain sentence.
         reason: String,
     },
+    /// The rule found something only a person can decide: the gate is blocked until they do, and
+    /// is not failed. The change waits for a security approver, not for a new attempt.
+    NeedsDecision {
+        /// The decision that is awaited.
+        missing: String,
+        /// A plain sentence.
+        reason: String,
+    },
 }
 
 /// The short title of each gate of the catalog.
@@ -102,6 +110,10 @@ impl Assembler<'_> {
             HostResult::Blocked { missing, reason } => (
                 reason,
                 Outcome::Blocked(BlockedCode::DependencyUnavailable, missing),
+            ),
+            HostResult::NeedsDecision { missing, reason } => (
+                reason,
+                Outcome::Blocked(BlockedCode::PolicyUnresolvable, missing),
             ),
         };
         build(
