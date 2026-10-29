@@ -31,6 +31,10 @@ fn schemas_match_the_files_in_the_schemas_directory() {
         .iter()
         .filter_map(|p| p.file_name()?.to_str().map(str::to_owned))
         .filter(|name| name.ends_with(".schema.json"))
+        // A schema named `policy-*` governs a policy file (policies/*.yaml), not a document that
+        // passes between stages. It is not in the embedded set, which is the set of contract
+        // kinds. `tests/model_routing.rs` checks the policy schema against the policy.
+        .filter(|name| !name.starts_with("policy-"))
         .collect();
     let embedded: BTreeSet<String> = EMBEDDED.iter().map(|s| s.file_name.to_owned()).collect();
     assert_eq!(

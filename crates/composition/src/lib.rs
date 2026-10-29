@@ -67,6 +67,7 @@ pub mod reading;
 pub mod redaction;
 pub mod registry;
 pub mod risk;
+pub mod routing;
 pub mod runtimes;
 pub mod sandbox_specs;
 pub mod seams;

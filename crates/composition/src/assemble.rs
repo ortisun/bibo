@@ -86,7 +86,7 @@ pub fn blocked_adapters(_profile: Profile) -> Vec<Blocked> {
         },
         Blocked {
             port: PortName::Router,
-            reason: "policies/model_routing.yaml does not exist, so there is no real ModelRouter to read it",
+            reason: "policies/model_routing.yaml exists and PolicyModelRouter reads it, but every number in it waits for the project owner and the worker does not yet load it, probe the runtimes and hand the router to the engine",
         },
         Blocked {
             port: PortName::Issues,

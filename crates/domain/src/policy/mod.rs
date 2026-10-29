@@ -54,6 +54,7 @@ pub mod dependency;
 pub mod egress;
 pub mod paths;
 pub mod risk;
+pub mod routing;
 pub mod security;
 pub mod tighten;
 pub mod tools;

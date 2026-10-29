@@ -605,7 +605,7 @@ smallest change.
 | Port or seam | Reason |
 |---|---|
 | Agent runtime | a live run needs a model credential and the tool in the agent image |
-| Model router | `policies/model_routing.yaml` does not exist |
+| Model router | `policies/model_routing.yaml` exists and `PolicyModelRouter` reads it (`factory_composition::routing`), but every number in it waits for the project owner and the worker does not yet load it, probe the runtimes and hand the router and the prices to the engine and the broker |
 | Issue source, change host | need a registered GitHub App and its key |
 | `RegistryMetadata`, `AdvisoryDatabase` | blocked by design in production (`supply_chain::BlockedRegistry`, `BlockedAdvisoryDatabase`): they answer "unknown", so a new direct dependency waits for a security approver and the advisories gate is BLOCKED. Listed as `BLOCKED:` lines. The stand-ins are for `local` and `test`, and production refuses them |
 | `DeliverySources::tree_of`, `current_values` | implemented; no worker assembly registers the handlers yet (mismatches 35 and 37) |

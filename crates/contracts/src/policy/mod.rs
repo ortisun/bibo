@@ -57,10 +57,11 @@
 //! taken the same way with [`PolicyHash::of`].
 
 pub mod check;
+pub mod routing;
 
 // The typed documents live in `factory-domain` so that the policy evaluators, which are ring 0, can
 // name them. They are re-exported here under the paths this crate has always had.
-pub use factory_domain::policy::{approval, common, security};
+pub use factory_domain::policy::{approval, common, routing as routing_policy, security};
 
 use std::fmt;
 use std::fs::{self, File};
@@ -73,6 +74,8 @@ use serde::de::DeserializeOwned;
 
 pub use approval::ApprovalPolicy;
 pub use common::{ConfigSource, GlobText, PolicyStatus, RegexText, ThreatId};
+pub use factory_domain::policy::routing::ModelRoutingPolicy;
+pub use routing::MODEL_ROUTING_FILE;
 pub use security::SecurityPolicy;
 
 use crate::yaml::{self, Content, Document, YamlError, YamlErrorKind, YamlLimits};
