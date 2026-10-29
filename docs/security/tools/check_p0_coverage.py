@@ -5,6 +5,7 @@ Usage (from the repository root):
     python3 -I docs/security/tools/check_p0_coverage.py --check     # validate, fail when the document is out of date
     python3 -I docs/security/tools/check_p0_coverage.py --write     # validate and rewrite the document
     python3 -I docs/security/tools/check_p0_coverage.py --summary   # print the counts by status
+    python3 -I docs/security/tools/check_p0_coverage.py --self-test # break the data on purpose and show each break is caught
 
 The data is docs/security/p0-coverage.json. The document is generated from it and must never be
 edited by hand. Only the standard library is used, and nothing here runs a test, a build or a
@@ -23,7 +24,9 @@ What --check fails on:
     define, a break test or defect that the file does not contain, a variant that claims to catch a
     test of another row, or a mutation with test filters that none of the caught tests matches;
   * a row whose owner is not in docs/architecture/work-packages.json;
-  * a document that differs from what the data produces.
+  * a document that differs from what the data produces;
+  * (--check also runs --self-test) a deliberate break of the data that the validation does not
+    catch.
 """
 
 import ast
@@ -367,8 +370,8 @@ def validate_control(rid, c, tests, names):
             cross_crate = where.startswith("tests/security/")
             if filters is not None:
                 for n in catches:
-                    if not any(n.startswith(f) for f in filters):
-                        errors.append(f"{rid}: mutation {c['name']} runs only the filters {filters}, none of which selects {n}")
+                    if not any(f in n for f in filters):
+                        errors.append(f"{rid}: mutation {c['name']} runs only the filters {filters} (nextest matches a filter as part of a name), none of which selects {n}")
             if not cross_crate and not set(homes) <= {crate_dir(where)}:
                 errors.append(f"{rid}: mutation {c['name']} belongs to {crate_dir(where)}, which is not the crate of the tests it claims to catch ({sorted(homes)})")
     elif kind == "break_test":
@@ -521,14 +524,88 @@ def apply(text, body):
     return pattern.sub(lambda m: m.group(1) + "\n" + body + "\n" + m.group(3), text)
 
 
+def self_test(doc):
+    """Breaks the data on purpose, in memory, and shows that validate() catches each break.
+
+    A checker that cannot fail proves nothing. Each case changes one thing, runs the same
+    validation as --check, and needs an error that says what was broken. The data itself must be
+    valid first."""
+    import copy
+
+    errors, _, _ = validate(doc)
+    if errors:
+        return [f"the data is not valid, so the breaks prove nothing: {errors[:3]}"]
+    row = next(r for r in doc["rows"] if r["status"] == "proven" and r["control_off"])
+
+    def remove_a_row(d):
+        d["rows"] = [r for r in d["rows"] if r["id"] != "NT-SBX-01"]
+
+    def a_test_that_does_not_exist(d):
+        next(r for r in d["rows"] if r["id"] == row["id"])["tests"][0]["name"] = row["tests"][0]["name"] + "_that_is_not_there"
+
+    def a_file_that_does_not_exist(d):
+        next(r for r in d["rows"] if r["id"] == row["id"])["tests"][0]["file"] = "crates/nothing/tests/nothing.rs"
+
+    def control_off_without_a_mutation(d):
+        target = next(r for r in d["rows"] if r["id"] == row["id"])
+        target["control_off"][0] = dict(target["control_off"][0], name="a break that no script defines")
+
+    def proven_without_a_variant(d):
+        next(r for r in d["rows"] if r["id"] == row["id"])["control_off"] = []
+
+    def a_control_off_for_a_test_of_another_row(d):
+        target = next(r for r in d["rows"] if r["id"] == row["id"])
+        target["control_off"][0] = dict(target["control_off"][0], catches=["negative_nt_not_a_test_of_this_row"])
+
+    def blocked_without_a_reason(d):
+        next(r for r in d["rows"] if r["status"] == "blocked")["blocked"] = {"kind": "docker", "reason": " "}
+
+    def drop_an_audit_event_type(d):
+        d["audit_events"] = d["audit_events"][:-1]
+
+    def an_owner_that_is_not_a_work_package(d):
+        d["audit_events"][0]["owner"] = "s9-nobody"
+
+    def an_emitter_that_the_sources_do_not_hold(d):
+        d["audit_events"][1]["token"] = "AuditKind::ThisDoesNotExist"
+
+    cases = [
+        ("remove a P0 row", remove_a_row, "has no row"),
+        ("point a row at a test that does not exist", a_test_that_does_not_exist, "is not defined in"),
+        ("point a row at a file that does not exist", a_file_that_does_not_exist, "does not exist"),
+        ("claim control-off with a mutation that is not defined", control_off_without_a_mutation, "is not defined in"),
+        ("claim control-off with no variant", proven_without_a_variant, "no control-off variant"),
+        ("claim control-off for a test that is not in the row", a_control_off_for_a_test_of_another_row, "not a test of this row"),
+        ("block a row with no reason", blocked_without_a_reason, "needs blocked"),
+        ("drop an audit event type", drop_an_audit_event_type, "differ from audit.must_record"),
+        ("give an audit event type an owner that is not a work package", an_owner_that_is_not_a_work_package, "is not a work package"),
+        ("name an emitter that the sources do not hold", an_emitter_that_the_sources_do_not_hold, "does not contain"),
+    ]
+    problems = []
+    for label, change, expected in cases:
+        broken = copy.deepcopy(doc)
+        change(broken)
+        found, _, _ = validate(broken)
+        if not any(expected in e for e in found):
+            problems.append(f"self-test: '{label}' was not caught (wanted an error with '{expected}', got {found[:2]})")
+    return problems
+
+
 def main():
     mode = "--check" if len(sys.argv) < 2 else sys.argv[1]
-    if mode not in ("--check", "--write", "--summary"):
+    if mode not in ("--check", "--write", "--summary", "--self-test"):
         fail([f"unknown mode {mode}"])
     doc = json.loads(DATA.read_text(encoding="utf-8"))
     errors, catalog, owners = validate(doc)
     if errors:
         fail(errors)
+    if mode in ("--check", "--self-test"):
+        problems = self_test(doc)
+        if problems:
+            fail(problems)
+        if mode == "--self-test":
+            print("self-test: every deliberate break was caught")
+            return
     rows = doc["rows"]
     counts = {s: sum(1 for r in rows if r["status"] == s) for s in STATUSES}
     if mode == "--summary":

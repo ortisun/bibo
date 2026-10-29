@@ -2,6 +2,7 @@
 
 Status: DESIGNED baseline, written before any application code exists. Every control below is REQUIRED for the product and none is implemented yet. "Residual risk" values are proposals until a named human accepts them (see section 9).
 Date: 2026-10-27. Revised the same day to match ADR 0003, 0005, 0006 and 0009: the agent CLI runs inside the sandbox, authority comes from a named allowlist and not from GitHub roles, new direct dependencies always need a human, rework is capped at two rounds, the skill and slash-command flags are per stage, and API keys behind a broker are the credential default. Revised again after the agent-runtime spike and ADRs 0010 and 0012: row-level security is in Slice 1 (Q9, C-36), the CLI flags that neutralize repository configuration are the ones the spike proved (`--bare` is not among them), and budget exhaustion goes to a person.
+Review update: 2026-10-29, by the `s1-security-review-and-tests` work package. Five independent security reviews and two re-reviews have run since the baseline (`docs/reviews/`). Section 11 gives the status of every threat after them, adds six threats that the reviews found and the model lacked (T-36 to T-41), and states what is mitigated, what is residual and why, and what is open. **No residual risk in this document has been accepted by a person.** Section 11.5 says who can.
 Method: Shostack's four questions and STRIDE per element, with a likelihood by impact rating. No CVSS vectors are given because no implementation exists to score.
 Related files:
 
@@ -255,6 +256,12 @@ Rating follows the matrix in section 4. Residual is the proposed risk after the 
 | T-33 | SSRF through factory-side fetch tools | TB3 | M | H | High | Low |
 | T-34 | Artifact poisoning and extraction attacks | TB7 | M | M | Medium | Low |
 | T-35 | Memory, learning and evaluation poisoning | TB3 | M | M | Medium | Low |
+| T-36 | Provider-side server tools, remote servers and fetched content through the model broker | TB6 | M | H | High | Low |
+| T-37 | A forged result in the output channel of an agent run | TB5, TB7 | M | H | High | Medium |
+| T-38 | Forgery and starvation of the decision and audit channel by the API's database login | TB9, TB10 | L | H | Medium | Medium |
+| T-39 | Edit of the authorising issue between the label and the snapshot (time of check to time of use) | TB2 | L | M | Low | Medium |
+| T-40 | Edits to code and manifests that no dependency gate reads (vendored code, other ecosystems, files that run on open) | TB7, TB11 | M | H | High | Medium |
+| T-41 | Weak, mis-owned or long-lived signing and API key files | TB9, TB12 | L | H | Medium | Low |
 
 ## 7. Threat details
 
@@ -505,6 +512,48 @@ Each entry lists the concrete attacker action, the controls that address it, the
 * Residual (Low).
 * Proven by: NT-MEM-01 to NT-MEM-03, NT-GATE-08, NT-SEC-11.
 
+### T-36 Provider-side server tools, remote servers and fetched content through the model broker
+
+* Attack: a process in the sandbox holds a valid job token and does not need the model's help to use it. It sends the broker a request body of its own making: an `mcp_servers` entry, a `web_search`, `web_fetch` or `code_execution` server tool, a file or image by address, a `container`, a beta header that switches such a tool on. The provider then fetches, runs or contacts what the body names, from its own network, with the broker's billing account.
+* Mitigations: the broker forwards only a body that matches a closed schema (EGR-1), refuses with a fixed sentence and writes a `request_refused` event with a closed reason, forwards only the beta values that are recorded, and returns only a closed set of answer headers. `docs/reviews/isolation-core-security-review.md` found the gap; `docs/reviews/isolation-core-security-rereview.md` attacked the fix with 40,000 generated bodies per provider and 38 hand-built differential cases and found no accepted body that held a dangerous key, tag or address.
+* Residual (Low): the re-review's hypotheses RR-3 (an inline image of any subtype) and RR-4 (`$id` and `$schema` in a tool schema) are open and are pinned by two ignored tests. The cost of a request without an output limit on the OpenAI routes (RR-1) and the price of a one-hour cache write (RR-2) were fixed and are held by breaks.
+* Proven by: NT-SBX-17 (nine tests and the seven breaks that the catalog names), NT-SBX-05.
+
+### T-37 A forged result in the output channel of an agent run
+
+* Attack: the factory decides that a run succeeded from what the tool prints on its standard output and from its exit status. A process that was running in the container before the tool started opens the output pipe and writes a complete terminal line of its own, or tears the tool's real terminal line with an interleaved write, or pushes the real end of the stream past the capture limit after an early forged line.
+* Mitigations: a success needs one terminal event and a clean exit (RTM-1); a torn line, a truncated capture, a second terminal event and output after the terminal event each refuse a success; the tools are execute-only so that a sibling cannot open the pipe of a running tool (SBX-4); and a success is attested by the broker, which counts the answers it gave and must agree with the stream on the turns and the last answer (the breaks `attestation-*` of the runtime package). The stream is not trusted on its own any more.
+* Residual (Medium): the re-review showed that a process that opens the pipe before the tool starts keeps it (RR-14 of the isolation re-review, 8 of 8 trials on Docker). The attestation limits what the forged line can do, but it does not stop the write. The test of the pipe race needs Docker and is BLOCKED here. The private output channel that the first review proposed has not been built.
+* Proven by: the runtime package's `security_rereview` target and its breaks. NT-TOOL-07 (Docker, BLOCKED) covers the output cap.
+
+### T-38 Forgery and starvation of the decision and audit channel by the API's database login
+
+* Attack: the API holds a database login that can insert into four tables, `audit_events` among them. Anyone who holds that login can insert an audit row with any actor and any action, including a row that looks like the worker's marker that ends a signed request (RR-8), and can write unsigned requests faster than the worker clears them so that signed requests wait (RR-21).
+* Mitigations: decisions carry a keyed word over tenant, person, event, time, verb, job, run, head, evidence and target (AUT-12); the worker applies only records the API signed; the login cannot update, delete or truncate a row, holds no privilege on approvals, tokens or the ledger, and cannot read a file or run a program.
+* Residual (Medium): the re-review found that the markers that end a request were not authenticated (RR-8) and that junk could fill a pass (RR-21). Both are fixed: their tests `rr_8_*` and `rr_21_*` in `crates/composition/tests/security_rereview/hook.rs` pass on a real PostgreSQL in the review of 2026-10-29. What stays is the shared symmetric key: a compromised worker holds the key that verifies and can forge a decision (AUT-12). An asymmetric signature would remove that at the price of a dependency, and the choice is a person's.
+* Proven by: NT-AUD-01, NT-AUD-03 (coverage, not integrity), NT-AUTHZ-02.
+
+### T-39 Edit of the authorising issue between the label and the snapshot
+
+* Attack: an author who watches the label events edits the issue within the window after the label. The factory allows five seconds of skew (`LABEL_SKEW_SECONDS`), so the new words are stored as revision 1 of the request under the authority of the person who labelled.
+* Mitigations: the label must be on the issue now, the latest `labeled` event decides, the person is matched by numeric id, and a comment or another label after the label refuses the job (AUT-11). The text is still data behind the human gates.
+* Residual (Medium, hypothesis): RR-23 needs a timed trial on real GitHub. A person is not told when the text they authorised is not the text that was stored if the edit falls inside the window.
+* Proven by: NT-AUTHZ-05 (an edit after the snapshot), which does not cover the window.
+
+### T-40 Edits to code and manifests that no dependency gate reads
+
+* Attack: a builder edits a vendored crate and its checksum file, or adds a dependency in a manifest of another ecosystem below the root (`services/api/requirements.txt`, `tools/go.mod`, `web/yarn.lock`), or edits a file that runs on the machine of whoever opens the branch (`.devcontainer/devcontainer.json`, `.vscode/tasks.json`, `lefthook.yml`). The risk measure treats the change as an ordinary change to one module and no dependency gate runs.
+* Mitigations: protected paths and sensitive files in `policies/security.yaml`; the risk tier is measured from the paths of the diff and the maximum is taken; a rename counts at both ends. The re-review's tests `rr_14`, `rr_15` and `rr_16` of the risk target name the three gaps and run in the normal suite.
+* Residual (Medium): the three gaps (RR-14 manifests of other ecosystems, RR-15 files that run on open, RR-16 vendored code of the authority re-review) are fixed: `rr_14_*`, `rr_15_*` and `rr_16_*` of `crates/workflow/tests/security_rereview/risk.rs` pass. The list of globs is a list: a fourth kind of file that no row names is the same gap again, and only the independent reviews have found them so far.
+* Proven by: NT-SUP-03, NT-GATE-09 (not built).
+
+### T-41 Weak, mis-owned or long-lived signing and API key files
+
+* Attack: the key that authenticates every decision is a file. A key of 32 equal bytes passes the length check (RR-5). The reader checks the mode, the kind, the size and that the file is not a link, but not the owner of the file, the directories above it, or the gap between the check and the read (RR-25). The previous key is accepted until someone removes it from the configuration.
+* Mitigations: a file readable by group or others, a link, an empty key, a key under 32 bytes, a directory, and a missing file in production are refused; the marker of a refused row holds no word and no key; `Debug` never prints the key.
+* Residual (Low): the weak key (RR-5) is fixed: `rr_5_a_key_with_no_entropy_is_refused` passes. The owner of the file and of the directories above it (RR-25) and the life of the previous key are not enforced, and the rotation window is documented and not bounded. RR-25 is a hypothesis.
+* Proven by: the `signing` tests of the composition re-review. No catalog test covers it, because the catalog has no key-file row. That is a gap of the catalog and is listed in section 11.4.
+
 ## 8. Cross-cutting residual risks
 
 1. **Plausible but wrong code inside the allowed scope** (T-01, T-02, T-03, T-12). No sandbox or policy stops a compromised builder from writing a subtle bug in a file it owns. Defense is layered detection: tests, hidden holdouts, independent reviewers, mutation testing where cost-effective, and human approval of a draft pull request. Treat every factory pull request as untrusted input from a stranger.
@@ -542,3 +591,98 @@ Update this model, and the matching policy and tests, when any of the following 
 * a published container, kernel, runc, git or Docker vulnerability relevant to section 7 T-08 or T-10
 * any security incident or near miss
 * enabling autonomy level L2 or L3 for any repository, or any deployment capability
+
+## 11. Status after the reviews
+
+Written on 2026-10-29 by the `s1-security-review-and-tests` work package. An independent review of this section has not happened yet. The sources are the five reviews and two re-reviews in `docs/reviews/`, the coverage matrix `p0-coverage.md` (which is generated from `p0-coverage.json` and checked in CI), and the tests that run in this repository.
+
+### 11.1 How to read it
+
+* **Mitigated**: a control exists, and every test the catalog lists for the threat that is due before Slice 1 is built and runs here.
+* **Mitigated in part**: some of those tests need Docker or a live provider and are BLOCKED here, or a P1 or P2 test is not built yet. A BLOCKED test has not passed.
+* **Open**: a test or a review shows a defect that nobody has fixed, or a hypothesis that nobody has tried.
+* **Not built**: the control belongs to a later slice.
+* A test that exists is not a proof that it can fail. The matrix says, for each P0 test, whether a break that removes its control is on file and whether it was run.
+
+### 11.2 Status of each threat
+
+| Threat | Status | Tests built | BLOCKED here | Not built | Open items and notes |
+|---|---|---|---|---|---|
+| T-01 Prompt injection through issue text | Mitigated | NT-AUTHZ-05, NT-INJ-01, NT-INJ-02, NT-POL-05 | none | NT-INJ-08 | RR-23 (T-39) is a hypothesis about the window after the label. |
+| T-02 Indirect injection through repository files | Mitigated in part | NT-GATE-03, NT-INJ-03 | NT-INJ-07 | none | NT-INJ-07 needs Docker and an installed CLI. |
+| T-03 Injection through tool output, dependency text or web content | Open | NT-INJ-04 | none | NT-INJ-05, NT-WEB-03 | NT-INJ-04 is red on F-1. Its C part needs a real runtime and a key. Red today: NT-INJ-04. |
+| T-04 Repository-resident agent configuration hijack | Mitigated in part | NT-POL-08 | NT-INJ-07, NT-SBX-04, NT-SBX-13 | none | Three of four tests need Docker. The flag sets were proved by the spike, and no test of them runs here. |
+| T-05 Reviewer and gate manipulation, agent-to-agent injection | Mitigated | NT-GATE-06, NT-INJ-06, NT-MRG-01 | none | none |  |
+| T-06 Malicious tool requests | Mitigated in part | NT-INJ-01, NT-INJ-04, NT-POL-08, NT-TOOL-01, NT-TOOL-09 | none | none | NT-INJ-04 is red on F-1. Red today: NT-INJ-04. |
+| T-07 Structured-output abuse | Mitigated | NT-TOOL-09 | none | none |  |
+| T-08 Sandbox escape | Mitigated in part | NT-SBX-01, NT-SBX-02, NT-SBX-14 | NT-SBX-06, NT-SBX-12 | none | SBX-1 deny list: RR-10, RR-11, RR-12 fixed, each with a break in `crates/sandbox/tests/mutations.py`. Container tests need Docker. |
+| T-09 Sandbox resource abuse | Mitigated in part | none | NT-SBX-07, NT-SBX-08, NT-TOOL-07 | NT-BUD-05 | The resource tests need Docker. SBX-3 (a disk measurement that fails) was not re-exercised by the re-review. |
+| T-10 Hostile sandbox output attacking the control plane | Mitigated | NT-SBX-09, NT-SBX-10 | none | NT-WEB-04 | SBX-2 audit names: RR-13 fixed, with two breaks. |
+| T-11 Network abuse from the sandbox | Mitigated in part | NT-SBX-05 | NT-SBX-03, NT-SBX-04 | none | EGR-3: RR-5 fixed, with three breaks. NT-SBX-03 and 04 need Docker. |
+| T-12 Builder tampers with tests, CI or gate configuration to force a pass | Mitigated | NT-GATE-01, NT-GATE-05, NT-POL-04, NT-SBX-11 | none | NT-GATE-09 | AUT-4 lint rule: RR-11 to RR-13 are fixed (their tests pass). AUT-5 has a gate test in the validation target. |
+| T-13 Fabricated, stale or missing evidence treated as a pass | Mitigated | NT-GATE-06, NT-GATE-07, NT-GATE-10, NT-MRG-02 | none | none |  |
+| T-14 Merge on failing, changed or unverified evidence | Mitigated | NT-GATE-10, NT-MRG-01, NT-MRG-08 | none | none |  |
+| T-15 Policy engine bypass | Mitigated | NT-GATE-04, NT-POL-01, NT-POL-08 | none | none |  |
+| T-16 Secret exfiltration through logs, events, traces and artifacts | Open | NT-SEC-01, NT-SEC-02, NT-SEC-09 | none | NT-SBX-16, NT-SEC-06, NT-SEC-08 | F-3 (high): secrets in the fields of the builder's report reach the artifact store. NT-SEC-01 is red on it. RR-1 to RR-4 and RR-22 are narrower patterns, with tests of their own. Red today: NT-SEC-01. |
+| T-17 Secret exfiltration through network egress | Mitigated in part | NT-SBX-05, NT-SBX-17, NT-SEC-01 | NT-SBX-04 | none | NT-SBX-04 needs Docker. NT-SEC-01 is red on F-3, which is not about the network. Red today: NT-SEC-01. |
+| T-18 Exfiltration through pull request, comment and commit content | Mitigated | NT-SEC-03, NT-SEC-04, NT-SEC-05 | none | none | AUT-6 and AUT-7 hold except RR-19 and RR-20 (both depend on how GitHub renders the text). |
+| T-19 Credential theft from the sandbox | Mitigated in part | NT-SEC-01, NT-SEC-09, NT-SEC-10 | NT-SBX-13 | none | NT-SBX-13 needs Docker. NT-SEC-01 is red on F-3. Red today: NT-SEC-01. |
+| T-20 Repository secrets and private code reaching the model provider or public text | Mitigated | NT-SEC-07, NT-SEC-11 | none | none |  |
+| T-21 GitHub webhook spoofing | Mitigated | NT-AUTHZ-08, NT-WH-01, NT-WH-03 | none | NT-WH-08 |  |
+| T-22 Webhook replay, duplication and reordering | Mitigated | NT-LSE-03, NT-WH-04, NT-WH-06, NT-WH-09 | none | none | NT-WH-04 is partial: publishing to NATS is Slice 2. |
+| T-23 Unauthorized intake or approval | Mitigated | NT-AUTHZ-01, NT-AUTHZ-05, NT-MRG-06, NT-WEB-05, NT-WH-06, NT-WH-09 | none | none | AUT-11: RR-23 is open (T-39). |
+| T-24 Confused deputy through the GitHub App | Mitigated | NT-AUTHZ-06, NT-AUTHZ-07, NT-AUTHZ-09, NT-MRG-07, NT-SEC-10 | none | none | AUT-9 is a reading of GitHub's permission table, not checked against the live service. |
+| T-25 Lease and queue race abuse | Mitigated in part | NT-LSE-01 | none | NT-LSE-04 | NT-LSE-02, a P0 test, has no test of that name (F-4). `eight_workers_claim_one_stage_run_and_one_wins` covers part of it. |
+| T-26 Token, cost and queue exhaustion | Mitigated in part | NT-BUD-01 | none | NT-BUD-08, NT-WH-07, NT-WH-10 | Three P1 tests are not built. RR-1 and RR-2 of the isolation re-review (output cap, cache price) are fixed with breaks. |
+| T-27 Fail-open degradation | Mitigated in part | NT-POL-03, NT-SBX-14 | none | NT-BUD-09 | NT-BUD-09 is not built. |
+| T-28 Cross-tenant leakage | Mitigated in part | NT-TEN-01 | none | NT-SBX-15, NT-TEN-06 | Only the row-level security of the database is required for one tenant. The rest of C-36 is required before a second tenant. |
+| T-29 Supply-chain attack through generated dependencies | Mitigated | NT-SUP-01 | none | NT-SUP-04, NT-SUP-06 | SC-1 to SC-10 are fixed. H-2 is partial: a link that a change does not touch cannot be seen. |
+| T-30 Poisoned base images, toolchains or caches | Mitigated in part | NT-SUP-05 | none | NT-SBX-15 | The image tooling is outside the Rust tests. RR-15 (a signature by a revoked key) is named in `check-pins.sh`; it was not re-run here. |
+| T-31 Audit-log tampering and repudiation | Mitigated in part | NT-AUD-01 | none | NT-AUD-05 | See T-38 and F-2. |
+| T-32 Operator-facing XSS and CSRF through untrusted content | Not built | none | none | NT-WEB-01, NT-WEB-02 | The dashboard and its tests are Slice 3. |
+| T-33 SSRF through factory-side fetch tools | Not built | none | none | NT-INJ-05, NT-WEB-03 | The fetch tool is not in Slice 1. |
+| T-34 Artifact poisoning and extraction attacks | Mitigated in part | NT-SBX-09 | none | NT-WEB-04 | The extraction test is not built. |
+| T-35 Memory, learning and evaluation poisoning | Not built | NT-GATE-08, NT-SEC-11 | none | NT-MEM-01, NT-MEM-03 | Memory and evaluation are Slice 4. |
+| T-36 Provider-side server tools, remote servers and fetched content through the model broker | Mitigated | NT-SBX-05, NT-SBX-17 | none | none | RR-3 and RR-4 are hypotheses with ignored tests. |
+| T-37 A forged result in the output channel of an agent run | Mitigated in part | none | NT-TOOL-07 | none | The pipe race (RR-14) needs Docker to show and is not closed; the attestation limits its effect. |
+| T-38 Forgery and starvation of the decision and audit channel by the API's database login | Mitigated | NT-AUD-01, NT-AUD-03, NT-AUTHZ-02 | none | none | RR-8 and RR-21 are fixed (tests pass on PostgreSQL). The shared symmetric key remains. Red today: NT-AUD-03. |
+| T-39 Edit of the authorising issue between the label and the snapshot (time of check to time of use) | Open | NT-AUTHZ-05 | none | none | RR-23 is a hypothesis. |
+| T-40 Edits to code and manifests that no dependency gate reads (vendored code, other ecosystems, files that run on open) | Mitigated | NT-SUP-03 | none | NT-GATE-09 | RR-14, RR-15 and RR-16 of the authority re-review are fixed (tests pass). A kind of file that no row names is the same gap. |
+| T-41 Weak, mis-owned or long-lived signing and API key files | Mitigated in part | none | none | none | RR-5 fixed. RR-25 is a hypothesis. No catalog row covers key files (F-5). |
+
+### 11.3 Findings of the reviews
+
+The fix state below is what the repository holds on this date: an ignored test that shows a confirmed defect, or a test that now runs in the normal suite and passes, or the review's own status table.
+
+| Review | Findings | State |
+|---|---|---|
+| Supply chain and delivery (`supply-chain-and-delivery-security-review.md`) | SC-1 to SC-10, H-1 to H-8, and the seven policy contradictions | SC-1 to SC-10 fixed, with the tests `sc1_` to `sc10_` of `supply_chain_review`. SC-6 and SC-10 lack the policy row the review asked for. H-1 fixed. H-2 partial. H-3 to H-8 are hypotheses of low severity. |
+| API (`api-security-review.md`) | API-1 to API-11 | API-1, API-2, API-7, API-8, API-11 hold. API-3 holds except `audit_events` (T-38). API-4 and API-5 were partial (RR-1 to RR-4, RR-22). API-6 and API-9 were partial (RR-10: IPv6 grouping). API-10 was partial (RR-9). |
+| Authority and evidence (`authority-and-evidence-security-review.md`) | AUT-1 to AUT-13 | AUT-1, AUT-2, AUT-3, AUT-8, AUT-9, AUT-11, AUT-12 hold. AUT-4, AUT-6, AUT-7, AUT-10, AUT-13 were partial. AUT-5 (a new `build.rs`) was open in the re-review and has a gate test in the validation target. |
+| Isolation core, first review (`isolation-core-security-review.md`) | EGR-1 to EGR-3, SBX-1 to SBX-4, RTM-1, IMG-x | EGR-1, EGR-3, RTM-1, SBX-1, SBX-2 hold. SBX-3 was not re-exercised. SBX-4 holds for a tool started after the hardening and not for a descriptor opened before it (T-37). |
+| Authority, API and supply chain re-review (`authority-api-supply-chain-security-rereview.md`) | RR-1 to RR-29 | 22 confirmed defects in four targets. All four targets run and pass in the review of 2026-10-29: 114 tests of `factory-workflow` and `factory-github` (all review targets together), and 38 tests of `factory-composition` and `factory-api` on a real PostgreSQL (`cargo nextest run --run-ignored all -E 'binary(security_rereview)'`). So the confirmed defects are fixed. Hypotheses RR-13, RR-23, RR-25 and RR-28, and H-1 to H-8, are listed as open by `docs/reports/slice-1-acceptance.md`. |
+| Isolation core re-review (`isolation-core-security-rereview.md`) | RR-1 to RR-15 | RR-1, RR-2, RR-5 to RR-13 each have a break in the mutation script of their package (egress, runtime, sandbox). RR-14 (the pipe race) is limited by the attestation and not closed. RR-3 and RR-4 are hypotheses with ignored tests. RR-15 is in the image tooling. |
+
+The two numberings overlap: `RR-n` of the authority re-review and `RR-n` of the isolation re-review are different findings. Name the review when you cite one.
+
+### 11.4 Findings of this work package
+
+| ID | Severity | Owner | Finding | Test |
+|---|---|---|---|---|
+| F-1 | medium | s1-stage-implementation-and-review | The denials of a run whose report the stage rejects as invalid are not audited. A model that asks for exec.shell and approval.grant and also forges a field in its report is refused twice by the tool, and the stage rejects the report as invalid output. The audit log holds no tool_call_denied record for either denial, because the stage drops the denials it tallied when it returns the error. The cases fake-03 and fake-04 of the injection corpus show it. Smallest fix: call ctx.note_failed_run(&report) before each Err(StageError::InvalidOutput) that follows ports.runtime.run in crates/workflow/src/stages/implementation/run.rs. | NT-INJ-04 |
+| F-2 | medium | s1-apps-composition | Four of the fourteen audit event types the policy requires are not written under their name, or at all. The API writes webhook.accepted and webhook.rejected, which a reader that filters by type does not recognise as webhook_accepted_or_rejected. Nothing in production code writes command_executed or sandbox_created_posture_result_destroyed. The egress broker keeps egress_request facts in its own stream, which nothing carries to the audit log. Smallest fix: write the API actions under the required type (webhook_accepted_or_rejected.granted and .denied), and add emitters for the other three in the validation stage, the sandbox call sites of the stages and the composition root that owns the broker's audit sink, in that order. | NT-AUD-03 |
+| F-3 | high | s1-stage-implementation-and-review | Secrets in the fields of the builder's report are written to the content-addressed store. The implementation stage stores the names of the tests the model says it added, the arguments of the commands it says it ran and the instructions it says it ignored, in the implementation evidence document, unchanged. A secret in any of them lands in an artifact where the policy says a secret blocks the write (secrets.sinks.artifacts), and no secret_redacted_or_blocked record is written. The stage accepts the run. Smallest fix: run the redactor over the strings of reported_by_builder (or over the whole evidence document) before it is stored, and refuse the stage run with the code secret-found when it matches, as the stage does for a secret in the change. | NT-SEC-01 |
+| F-4 | medium | s1-storage-postgres | The P0 test NT-LSE-02 (a hundred interleavings of two workers claiming one job, and a renewal with a wrong owner or tenant) has no test of that name. The package's done command `cargo nextest run -p factory-storage negative_nt_lse_02` finds nothing. `eight_workers_claim_one_stage_run_and_one_wins` and `a_stale_epoch_is_fenced_at_the_statement_and_changes_nothing` cover part of it. Smallest fix: add `negative_nt_lse_02_*` to `crates/storage/tests/claims_and_leases.rs`: loop the two-worker claim a hundred times, and renew with another owner and another tenant. | NT-LSE-02 |
+| F-5 | low | software_architect | The catalog has no row for the key files of the signing and API keys (permissions, owner, rotation: T-41). The check `check_work_packages.py --check` that the work package names as its done command proves that each P0 test has an owner and does not look for a control-off variant, so that part of the criterion is checked by `check_p0_coverage.py`. | none |
+
+The audit coverage, the owners of the fourteen event types, and the four types with no correct producer today (F-2) are in the matrix `p0-coverage.md`.
+
+### 11.5 Open items of high severity and who can accept a residual
+
+| Item | Severity | Disposition |
+|---|---|---|
+| F-3 secrets in the builder's reported fields reach the artifact store (T-16) | high | Open defect. Owner `s1-stage-implementation-and-review`. Not accepted. The fix is one pass of the redactor over the evidence document before it is stored. NT-SEC-01 stays red until then. |
+| RR-14 of the isolation re-review: a process started before the tool can write into the output channel (T-37) | high | Limited by the broker's attestation, not closed. The pipe race itself needs Docker to show and is BLOCKED here. The private output channel that the first review proposed is the fix. Not accepted. |
+| AUT-5 a new `build.rs` in a repository's own crate | high at the review | Fixed: `aut_5_a_new_build_script_is_blocked_until_a_security_review` passes in the review of 2026-10-29, as does the gate test in the validation target. Listed for completeness. |
+
+No item in this document is accepted by a person. The Residual column of section 6 is a proposal. Risk acceptance and waivers belong to the people named in the allowlist with the `org_admin` designation, and the allowlist has no members yet (Q10). Until a person is named and writes the acceptance, every residual stays a proposal and every open item stays open.

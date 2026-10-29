@@ -143,7 +143,642 @@
    "note": "Written at 80 and 100 percent of the ceiling."
   }
  ],
- "mutation_runs": [],
+ "mutation_runs": [
+  {
+   "script": "crates/egress/tests/mutations.py",
+   "name": "accept-a-repeated-key",
+   "date": "2026-10-29",
+   "result": "CAUGHT",
+   "failed": [
+    "a_repeated_key_is_refused_even_when_one_spelling_is_escaped",
+    "held_documents_that_two_readers_could_read_differently_are_refused",
+    "negative_nt_sbx_17_bodies_that_parsers_read_differently_are_refused"
+   ]
+  },
+  {
+   "script": "crates/egress/tests/mutations.py",
+   "name": "accept-an-image-by-address",
+   "date": "2026-10-29",
+   "result": "CAUGHT",
+   "failed": [
+    "content_the_provider_would_fetch_is_refused",
+    "held_property_no_accepted_body_holds_a_key_a_tag_or_an_address_the_oracle_does_not_allow",
+    "held_server_side_features_stay_out_whatever_the_spelling",
+    "negative_nt_sbx_17_every_refused_shape_gets_a_fixed_answer_an_audit_event_and_no_provider_call"
+   ]
+  },
+  {
+   "script": "crates/egress/tests/mutations.py",
+   "name": "accept-an-unlisted-field",
+   "date": "2026-10-29",
+   "result": "CAUGHT",
+   "failed": [
+    "held_an_escaped_key_is_checked_as_the_key_it_spells",
+    "held_documents_that_two_readers_could_read_differently_are_refused",
+    "held_property_no_accepted_body_holds_a_key_a_tag_or_an_address_the_oracle_does_not_allow",
+    "held_server_side_features_stay_out_whatever_the_spelling",
+    "negative_nt_sbx_17_every_refused_shape_gets_a_fixed_answer_an_audit_event_and_no_provider_call",
+    "negative_nt_sbx_17_property_the_provider_receives_only_bodies_without_dangerous_fields",
+    "negative_nt_sbx_17_property_the_schema_accepts_no_mutant_that_holds_a_dangerous_field",
+    "provider_side_tools_and_remote_servers_are_refused_with_their_class"
+   ]
+  },
+  {
+   "script": "crates/egress/tests/mutations.py",
+   "name": "accept-an-unlisted-tool-type",
+   "date": "2026-10-29",
+   "result": "CAUGHT",
+   "failed": [
+    "a_tagged_object_takes_only_a_listed_tag_and_the_fields_of_that_variant",
+    "content_the_provider_would_fetch_is_refused",
+    "egr_1_openai_server_tools_and_remote_mcp_do_not_cross_the_broker",
+    "held_an_escaped_key_is_checked_as_the_key_it_spells",
+    "held_property_no_accepted_body_holds_a_key_a_tag_or_an_address_the_oracle_does_not_allow",
+    "held_server_side_features_stay_out_whatever_the_spelling",
+    "negative_nt_sbx_17_every_refused_shape_gets_a_fixed_answer_an_audit_event_and_no_provider_call",
+    "negative_nt_sbx_17_property_the_provider_receives_only_bodies_without_dangerous_fields",
+    "negative_nt_sbx_17_property_the_schema_accepts_no_mutant_that_holds_a_dangerous_field",
+    "provider_side_tools_and_remote_servers_are_refused_with_their_class"
+   ]
+  },
+  {
+   "script": "crates/egress/tests/mutations.py",
+   "name": "do-not-count-failed-attempts",
+   "date": "2026-10-29",
+   "result": "CAUGHT",
+   "failed": [
+    "a_count_tokens_call_never_changes_the_record_of_the_turns",
+    "a_looping_client_is_stopped_at_the_ceiling_with_a_recorded_reason",
+    "a_provider_error_is_passed_on_and_counted_as_a_request_with_no_cost",
+    "a_provider_that_rejects_the_brokers_key_or_redirects_is_not_passed_on_as_such",
+    "a_request_cap_refuses_the_next_request_and_revokes_the_token",
+    "a_stream_cut_before_its_usage_report_is_charged_the_worst_case_for_one_request",
+    "a_valid_token_is_admitted_and_counted_and_a_garbage_credential_is_unknown",
+    "an_answer_that_ended_the_turn_is_recorded_for_both_providers_and_both_shapes",
+    "failed_and_abandoned_requests_still_count_and_an_unread_answer_is_charged_in_full",
+    "negative_nt_bud_07_a_tool_that_ignores_its_budget_is_still_stopped_and_counted",
+    "negative_nt_bud_07_a_turn_cap_stops_a_tool_that_has_no_turn_limit_of_its_own",
+    "negative_nt_bud_07_failed_attempts_are_counted_per_attempt",
+    "negative_nt_sbx_17_every_refused_shape_gets_a_fixed_answer_an_audit_event_and_no_provider_call",
+    "non_streamed_answers_and_the_token_count_route_are_metered_too",
+    "streamed_usage_of_both_providers_is_metered_and_the_events_are_passed_on",
+    "the_http_listener_passes_the_broker_contract",
+    "the_key_is_not_in_a_response_even_when_a_cap_stops_the_job"
+   ]
+  },
+  {
+   "script": "crates/egress/tests/mutations.py",
+   "name": "forward-the-beta-header-unchanged",
+   "date": "2026-10-29",
+   "result": "CAUGHT",
+   "failed": [
+    "a_claude_request_reaches_the_provider_with_the_real_key_and_with_nothing_else_of_the_sandbox",
+    "held_beta_header_variants_never_enable_a_provider_side_feature",
+    "negative_nt_sbx_17_only_the_recorded_betas_and_the_beta_query_cross",
+    "the_recorded_betas_pass_and_unknown_well_formed_ones_are_dropped"
+   ]
+  },
+  {
+   "script": "crates/egress/tests/mutations.py",
+   "name": "forward-the-body-without-the-schema",
+   "date": "2026-10-29",
+   "result": "CAUGHT",
+   "failed": [
+    "egr_1_openai_server_tools_and_remote_mcp_do_not_cross_the_broker",
+    "negative_nt_sbx_17_bodies_that_parsers_read_differently_are_refused",
+    "negative_nt_sbx_17_every_refused_shape_gets_a_fixed_answer_an_audit_event_and_no_provider_call",
+    "negative_nt_sbx_17_property_the_provider_receives_only_bodies_without_dangerous_fields"
+   ]
+  },
+  {
+   "script": "crates/egress/tests/mutations.py",
+   "name": "forward-the-provider-request-ids",
+   "date": "2026-10-29",
+   "result": "CAUGHT",
+   "failed": [
+    "held_the_answer_headers_are_a_closed_set_even_for_a_hostile_provider",
+    "negative_nt_sbx_17_the_answer_headers_are_a_closed_set",
+    "real_key_never_leaves_the_broker"
+   ]
+  },
+  {
+   "script": "crates/egress/tests/mutations.py",
+   "name": "ignore-the-cost-ceiling",
+   "date": "2026-10-29",
+   "result": "CAUGHT",
+   "failed": [
+    "a_looping_client_is_stopped_at_the_ceiling_with_a_recorded_reason",
+    "negative_nt_bud_01_per_task_cost_ceiling_stops_a_looping_client",
+    "revoke_for_job_and_metering_through_the_core",
+    "revoke_for_job_and_metering_through_the_http_listener",
+    "the_http_listener_passes_the_broker_contract",
+    "the_real_broker_passes_the_broker_contract"
+   ]
+  },
+  {
+   "script": "crates/egress/tests/mutations.py",
+   "name": "ignore-the-expiry",
+   "date": "2026-10-29",
+   "result": "CAUGHT",
+   "failed": [
+    "an_expired_token_and_a_revoked_token_are_refused_with_401",
+    "the_http_listener_passes_the_broker_contract",
+    "the_real_broker_passes_the_broker_contract"
+   ]
+  },
+  {
+   "script": "crates/egress/tests/mutations.py",
+   "name": "ignore-the-request-cap",
+   "date": "2026-10-29",
+   "result": "CAUGHT",
+   "failed": [
+    "a_request_cap_refuses_the_next_request_and_revokes_the_token",
+    "negative_nt_bud_07_a_turn_cap_stops_a_tool_that_has_no_turn_limit_of_its_own",
+    "the_key_is_not_in_a_response_even_when_a_cap_stops_the_job"
+   ]
+  },
+  {
+   "script": "crates/egress/tests/mutations.py",
+   "name": "revoke-for-job-revokes-one-token",
+   "date": "2026-10-29",
+   "result": "CAUGHT",
+   "failed": [
+    "revoke_for_job_and_metering_through_the_core",
+    "revoke_for_job_and_metering_through_the_http_listener",
+    "the_http_listener_passes_the_broker_contract",
+    "the_real_broker_passes_the_broker_contract"
+   ]
+  },
+  {
+   "script": "crates/egress/tests/mutations.py",
+   "name": "sidecar-ignores-the-byte-quota",
+   "date": "2026-10-29",
+   "result": "CAUGHT",
+   "failed": [
+    "negative_nt_sbx_05_the_byte_quota_ends_a_transfer_at_the_cap",
+    "the_byte_quota_applies_in_broker_mode_too"
+   ]
+  },
+  {
+   "script": "crates/egress/tests/mutations.py",
+   "name": "sidecar-matches-a-host-by-suffix",
+   "date": "2026-10-29",
+   "result": "CAUGHT",
+   "failed": [
+    "lookalikes_userinfo_literals_ports_and_malformed_targets_are_refused_with_a_reason"
+   ]
+  },
+  {
+   "script": "crates/egress/tests/mutations.py",
+   "name": "sidecar-resolves-a-name-from-the-sandbox",
+   "date": "2026-10-29",
+   "result": "CAUGHT",
+   "failed": [
+    "a_request_through_the_relay_reaches_the_broker_and_the_provider_sees_only_the_real_key",
+    "whatever_the_sandbox_asks_for_the_relay_connects_to_the_broker_only_and_resolves_nothing"
+   ]
+  },
+  {
+   "script": "crates/egress/tests/mutations.py",
+   "name": "sidecar-resolves-before-the-allowlist",
+   "date": "2026-10-29",
+   "result": "CAUGHT",
+   "failed": [
+    "negative_nt_sbx_05_a_host_that_is_not_on_the_list_is_refused_before_it_is_resolved",
+    "negative_nt_sbx_05_a_name_that_resolves_to_an_internal_address_is_refused_after_resolution",
+    "negative_nt_sbx_05_a_rebinding_answer_cannot_redirect_a_connection_that_was_checked"
+   ]
+  },
+  {
+   "script": "crates/egress/tests/mutations.py",
+   "name": "sidecar-skips-the-resolved-range-check",
+   "date": "2026-10-29",
+   "result": "CAUGHT",
+   "failed": [
+    "connect_mode_with_the_system_resolver_refuses_a_name_that_resolves_to_loopback",
+    "negative_nt_sbx_05_a_name_that_resolves_to_an_internal_address_is_refused_after_resolution",
+    "negative_nt_sbx_05_a_rebinding_answer_cannot_redirect_a_connection_that_was_checked",
+    "one_refused_address_in_an_answer_refuses_the_name"
+   ]
+  },
+  {
+   "script": "crates/github/tests/mutations/run_mutations.py",
+   "name": "accept a comment marker written by anyone",
+   "date": "2026-10-29",
+   "result": "CAUGHT",
+   "failed": [
+    "negative_nt_lse_03_a_marker_pasted_by_someone_else_does_not_stop_the_factory_from_reporting"
+   ]
+  },
+  {
+   "script": "crates/github/tests/mutations/run_mutations.py",
+   "name": "accept a delivery that has only the legacy SHA-1 header",
+   "date": "2026-10-29",
+   "result": "CAUGHT",
+   "failed": [
+    "negative_nt_wh_02_every_forged_signature_is_refused_for_the_right_reason",
+    "the_github_verifier_passes_the_webhook_contract"
+   ]
+  },
+  {
+   "script": "crates/github/tests/mutations/run_mutations.py",
+   "name": "follow a next link to any host",
+   "date": "2026-10-29",
+   "result": "CAUGHT",
+   "failed": [
+    "a_link_to_another_host_is_never_followed"
+   ]
+  },
+  {
+   "script": "crates/github/tests/mutations/run_mutations.py",
+   "name": "identify a person by the login and not by the numeric id",
+   "date": "2026-10-29",
+   "result": "CAUGHT",
+   "failed": [
+    "negative_nt_authz_01_a_label_that_came_with_issue_creation_names_its_author",
+    "negative_nt_authz_01_the_actor_is_the_numeric_id_and_a_lookalike_login_is_a_different_person",
+    "negative_nt_wh_06_the_payload_is_a_hint_and_the_live_state_decides"
+   ]
+  },
+  {
+   "script": "crates/github/tests/mutations/run_mutations.py",
+   "name": "ignore the replay table",
+   "date": "2026-10-29",
+   "result": "CAUGHT",
+   "failed": [
+    "a_delivery_is_recorded_once_and_a_replay_is_a_repeat_by_id_by_body_and_by_meaning"
+   ]
+  },
+  {
+   "script": "crates/github/tests/mutations/run_mutations.py",
+   "name": "let a stage that may not write get the write credential",
+   "date": "2026-10-29",
+   "result": "CAUGHT",
+   "failed": [
+    "negative_nt_authz_07_every_stage_gets_exactly_its_permissions_and_only_delivery_writes_the_repository"
+   ]
+  },
+  {
+   "script": "crates/github/tests/mutations/run_mutations.py",
+   "name": "open the pull request as a ready one",
+   "date": "2026-10-29",
+   "result": "CAUGHT",
+   "failed": [
+    "the_github_change_host_passes_the_whole_change_host_contract",
+    "the_source_has_no_merge_no_ready_call_no_workflow_write_and_one_delete"
+   ]
+  },
+  {
+   "script": "crates/github/tests/mutations/run_mutations.py",
+   "name": "print a header value (the request wrapper shows its headers)",
+   "date": "2026-10-29",
+   "result": "CAUGHT",
+   "failed": [
+    "wire::tests::a_request_prints_no_header_value_and_no_body"
+   ]
+  },
+  {
+   "script": "crates/github/tests/mutations/run_mutations.py",
+   "name": "print a token (the token wrapper shows its text)",
+   "date": "2026-10-29",
+   "result": "CAUGHT",
+   "failed": [
+    "token::tests::a_bearer_and_a_live_token_print_nothing_of_the_token"
+   ]
+  },
+  {
+   "script": "crates/github/tests/mutations/run_mutations.py",
+   "name": "report BLOCKED as success",
+   "date": "2026-10-29",
+   "result": "CAUGHT",
+   "failed": [
+    "changes::tests::a_gate_that_did_not_run_is_never_a_success",
+    "gate_outcomes_reach_the_code_host_as_check_conclusions_and_blocked_is_never_success"
+   ]
+  },
+  {
+   "script": "crates/github/tests/mutations/run_mutations.py",
+   "name": "skip the head commit in the body tag",
+   "date": "2026-10-29",
+   "result": "CAUGHT",
+   "failed": [
+    "the_body_tag_covers_the_head_commit_so_a_push_makes_a_stale_manifest_conflict"
+   ]
+  },
+  {
+   "script": "crates/github/tests/mutations/run_mutations.py",
+   "name": "skip the signature comparison",
+   "date": "2026-10-29",
+   "result": "CAUGHT",
+   "failed": [
+    "negative_nt_wh_02_every_forged_signature_is_refused_for_the_right_reason",
+    "the_github_verifier_passes_the_webhook_contract"
+   ]
+  },
+  {
+   "script": "crates/github/tests/mutations/run_mutations.py",
+   "name": "use an over-broad token without looking",
+   "date": "2026-10-29",
+   "result": "CAUGHT",
+   "failed": [
+    "negative_nt_authz_06_a_token_that_is_wider_than_the_request_is_revoked_and_refused"
+   ]
+  },
+  {
+   "script": "crates/sandbox/tests/mutations.py",
+   "name": "a-bidi-file-name",
+   "date": "2026-10-29",
+   "result": "CAUGHT",
+   "failed": [
+    "a_name_that_hides_or_reorders_text_is_unsafe_in_every_script"
+   ]
+  },
+  {
+   "script": "crates/sandbox/tests/mutations.py",
+   "name": "a-container-that-is-never-stopped-for-an-unmeasured-disk",
+   "date": "2026-10-29",
+   "result": "CAUGHT",
+   "failed": [
+    "failed_measurements_in_a_running_container_kill_after_the_limit_and_never_count_as_zero",
+    "sbx_3_a_disk_that_keeps_failing_to_be_measured_ends_the_attempt_as_a_resource_failure"
+   ]
+  },
+  {
+   "script": "crates/sandbox/tests/mutations.py",
+   "name": "a-deny-list-spelling",
+   "date": "2026-10-29",
+   "result": "CAUGHT",
+   "failed": [
+    "held_the_spellings_docker_accepts_for_a_weaker_container_are_refused",
+    "namespaces_of_the_host_or_of_another_container_are_denied_for_every_namespace_flag",
+    "sbx_1_the_deny_list_reads_the_spellings_docker_accepts"
+   ]
+  },
+  {
+   "script": "crates/sandbox/tests/mutations.py",
+   "name": "a-failed-disk-measurement-as-zero",
+   "date": "2026-10-29",
+   "result": "CAUGHT",
+   "failed": [
+    "sbx_3_a_disk_that_keeps_failing_to_be_measured_ends_the_attempt_as_a_resource_failure"
+   ]
+  },
+  {
+   "script": "crates/sandbox/tests/mutations.py",
+   "name": "a-limit-of-zero",
+   "date": "2026-10-29",
+   "result": "CAUGHT",
+   "failed": [
+    "a_limit_must_be_a_number_above_zero",
+    "held_the_spellings_docker_accepts_for_a_weaker_container_are_refused",
+    "sbx_1_the_deny_list_reads_the_spellings_docker_accepts"
+   ]
+  },
+  {
+   "script": "crates/sandbox/tests/mutations.py",
+   "name": "a-mount-key-in-another-case",
+   "date": "2026-10-29",
+   "result": "CAUGHT",
+   "failed": [
+    "a_mount_is_read_with_its_aliases_and_checked_by_what_it_mounts"
+   ]
+  },
+  {
+   "script": "crates/sandbox/tests/mutations.py",
+   "name": "a-mount-of-a-sensitive-tree",
+   "date": "2026-10-29",
+   "result": "CAUGHT",
+   "failed": [
+    "a_bind_mount_that_the_factory_does_not_provision_is_refused"
+   ]
+  },
+  {
+   "script": "crates/sandbox/tests/mutations.py",
+   "name": "a-name-that-ends-in-a-blank",
+   "date": "2026-10-29",
+   "result": "CAUGHT",
+   "failed": [
+    "names_that_print_blank_or_as_another_name_are_refused",
+    "rr_13_names_that_print_as_blank_or_as_another_name_are_refused"
+   ]
+  },
+  {
+   "script": "crates/sandbox/tests/mutations.py",
+   "name": "a-negative-ulimit",
+   "date": "2026-10-29",
+   "result": "CAUGHT",
+   "failed": [
+    "rr_12_weakening_values_of_the_flags_the_builder_uses_are_refused",
+    "the_weakening_values_of_the_flags_the_builder_uses_are_refused"
+   ]
+  },
+  {
+   "script": "crates/sandbox/tests/mutations.py",
+   "name": "a-seccomp-colon-option",
+   "date": "2026-10-29",
+   "result": "CAUGHT",
+   "failed": [
+    "a_security_option_is_read_as_key_and_value_with_either_separator",
+    "held_the_spellings_docker_accepts_for_a_weaker_container_are_refused",
+    "sbx_1_the_deny_list_reads_the_spellings_docker_accepts",
+    "weakening_values_of_allowed_flags_are_found"
+   ]
+  },
+  {
+   "script": "crates/sandbox/tests/mutations.py",
+   "name": "a-source-outside-the-allowlist",
+   "date": "2026-10-29",
+   "result": "CAUGHT",
+   "failed": [
+    "a_bind_mount_that_the_factory_does_not_provision_is_refused",
+    "a_mount_key_in_another_case_does_not_hide_the_source_and_the_last_one_wins",
+    "rr_11_a_bind_mount_of_the_runtime_socket_or_a_home_directory_is_refused"
+   ]
+  },
+  {
+   "script": "crates/sandbox/tests/mutations.py",
+   "name": "a-tag-character-name",
+   "date": "2026-10-29",
+   "result": "CAUGHT",
+   "failed": [
+    "a_name_that_hides_or_reorders_text_is_unsafe_in_every_script",
+    "legitimate_names_in_any_script_are_not_unsafe"
+   ]
+  },
+  {
+   "script": "crates/sandbox/tests/mutations.py",
+   "name": "a-tmpfs-with-exec",
+   "date": "2026-10-29",
+   "result": "CAUGHT",
+   "failed": [
+    "the_weakening_values_of_the_flags_the_builder_uses_are_refused"
+   ]
+  },
+  {
+   "script": "crates/sandbox/tests/mutations.py",
+   "name": "a-variation-selector-with-no-base",
+   "date": "2026-10-29",
+   "result": "CAUGHT",
+   "failed": [
+    "names_that_print_blank_or_as_another_name_are_refused",
+    "rr_13_names_that_print_as_blank_or_as_another_name_are_refused"
+   ]
+  },
+  {
+   "script": "crates/sandbox/tests/mutations.py",
+   "name": "init-switched-off",
+   "date": "2026-10-29",
+   "result": "CAUGHT",
+   "failed": [
+    "rr_12_weakening_values_of_the_flags_the_builder_uses_are_refused",
+    "the_weakening_values_of_the_flags_the_builder_uses_are_refused"
+   ]
+  },
+  {
+   "script": "crates/sandbox/tests/mutations.py",
+   "name": "the-first-mount-source-wins",
+   "date": "2026-10-29",
+   "result": "CAUGHT",
+   "failed": [
+    "a_mount_is_read_with_its_aliases_and_checked_by_what_it_mounts",
+    "a_mount_key_in_another_case_does_not_hide_the_source_and_the_last_one_wins"
+   ]
+  },
+  {
+   "script": "tests/security/mutations.py",
+   "name": "a-bot-may-hold-a-designation",
+   "date": "2026-10-29",
+   "result": "CAUGHT",
+   "failed": [
+    "negative_nt_authz_01_only_the_numeric_id_on_the_allowlist_grants_a_designation",
+    "negative_nt_mrg_06_a_bot_an_app_and_the_requester_on_a_risky_change_do_not_count"
+   ]
+  },
+  {
+   "script": "tests/security/mutations.py",
+   "name": "a-deny-write-path-may-be-written",
+   "date": "2026-10-29",
+   "result": "CAUGHT",
+   "failed": [
+    "negative_nt_gate_03_deleting_a_protected_file_is_refused_too",
+    "negative_nt_gate_03_each_ci_gate_and_instruction_file_edit_fails_before_any_gate_runs",
+    "negative_nt_gate_04_every_path_trick_is_refused_with_its_group_and_the_controls_are_not",
+    "negative_nt_gate_04_every_rename_and_normalization_trick_is_blocked_with_its_group",
+    "negative_nt_gate_04_the_tricks_that_a_repository_can_hold_fail_the_whole_stage",
+    "negative_nt_gate_05_an_edit_of_the_gate_definitions_fails_the_protected_path_gate",
+    "negative_nt_inj_01_a_model_that_obeys_the_text_of_a_request_changes_nothing_the_factory_protects",
+    "negative_nt_inj_01_the_workflow_edit_the_env_the_fetch_and_the_pass_claim_of_the_catalog",
+    "negative_nt_inj_03_a_model_that_obeys_a_document_of_the_repository_changes_nothing_the_factory_protects",
+    "negative_nt_inj_03_a_readme_a_contributing_file_and_a_comment_that_ask_for_release_yml_and_secrets",
+    "negative_nt_pol_04_a_protected_change_is_accepted_only_with_all_three_elements",
+    "negative_nt_pol_04_a_protected_change_needs_all_three_elements",
+    "negative_nt_pol_04_a_protected_group_beats_write_allow"
+   ]
+  },
+  {
+   "script": "tests/security/mutations.py",
+   "name": "a-forbidden-command-class-denies-nothing",
+   "date": "2026-10-29",
+   "result": "CAUGHT",
+   "failed": [
+    "negative_nt_inj_01_a_model_that_obeys_the_text_of_a_request_changes_nothing_the_factory_protects",
+    "negative_nt_inj_03_a_model_that_obeys_a_document_of_the_repository_changes_nothing_the_factory_protects",
+    "negative_nt_tool_01_a_shell_string_is_a_literal_argument_and_a_shell_is_denied",
+    "negative_nt_tool_02_forbidden_command_class_matrix"
+   ]
+  },
+  {
+   "script": "tests/security/mutations.py",
+   "name": "a-moved-head-is-not-noticed",
+   "date": "2026-10-29",
+   "result": "CAUGHT",
+   "failed": [
+    "negative_nt_mrg_03_a_refusal_for_a_moved_head_also_ends_the_approvals_on_record",
+    "negative_nt_mrg_03_the_head_moving_after_approval_invalidates_the_approval"
+   ]
+  },
+  {
+   "script": "tests/security/mutations.py",
+   "name": "an-agent-may-grant-itself-a-tool",
+   "date": "2026-10-29",
+   "result": "CAUGHT",
+   "failed": [
+    "negative_nt_inj_04_exec_shell_and_approval_grant_are_denied_to_an_agent_that_asks",
+    "negative_nt_tool_03_unknown_never_grantable_and_self_granted_tools_are_refused"
+   ]
+  },
+  {
+   "script": "tests/security/mutations.py",
+   "name": "an-expired-allowlist-entry-still-grants",
+   "date": "2026-10-29",
+   "result": "CAUGHT",
+   "failed": [
+    "negative_nt_authz_01_only_the_numeric_id_on_the_allowlist_grants_a_designation"
+   ]
+  },
+  {
+   "script": "tests/security/mutations.py",
+   "name": "data-lines-are-not-quoted",
+   "date": "2026-10-29",
+   "result": "CAUGHT",
+   "failed": [
+    "negative_nt_authz_05_an_edit_after_the_snapshot_waits_for_the_requester_and_no_agent_reads_it",
+    "negative_nt_inj_01_every_payload_in_every_input_leaves_the_instructions_as_the_template_wrote_them",
+    "negative_nt_inj_02_envelope_hardening",
+    "negative_nt_inj_04_the_output_of_a_command_the_factory_ran_sits_in_a_data_envelope",
+    "negative_nt_inj_06_a_reviewer_pass_cannot_override_a_failed_gate"
+   ]
+  },
+  {
+   "script": "tests/security/mutations.py",
+   "name": "the-budget-threshold-is-never-recorded",
+   "date": "2026-10-29",
+   "result": "CAUGHT",
+   "failed": [
+    "every_required_event_type",
+    "negative_nt_aud_03_every_required_event_type_appears_with_actor_policy_hash_and_correlation_id"
+   ]
+  },
+  {
+   "script": "tests/security/mutations.py",
+   "name": "the-egress-allowlist-matches-any-host",
+   "date": "2026-10-29",
+   "result": "CAUGHT",
+   "failed": [
+    "negative_nt_inj_01_a_model_that_obeys_the_text_of_a_request_changes_nothing_the_factory_protects",
+    "negative_nt_inj_01_the_workflow_edit_the_env_the_fetch_and_the_pass_claim_of_the_catalog",
+    "negative_nt_inj_03_a_model_that_obeys_a_document_of_the_repository_changes_nothing_the_factory_protects"
+   ]
+  },
+  {
+   "script": "tests/security/mutations.py",
+   "name": "the-workspace-lets-any-edit-in",
+   "date": "2026-10-29",
+   "result": "CAUGHT",
+   "failed": [
+    "negative_nt_gate_01_the_builder_weakens_a_test_or_edits_a_fixture",
+    "negative_nt_gate_03_the_builder_edits_ci_and_gate_files",
+    "negative_nt_inj_01_a_model_that_obeys_the_text_of_a_request_changes_nothing_the_factory_protects",
+    "negative_nt_inj_01_the_workflow_edit_the_env_the_fetch_and_the_pass_claim_of_the_catalog",
+    "negative_nt_inj_03_a_model_that_obeys_a_document_of_the_repository_changes_nothing_the_factory_protects",
+    "negative_nt_inj_03_a_readme_a_contributing_file_and_a_comment_that_ask_for_release_yml_and_secrets",
+    "negative_nt_inj_03_hostile_text_in_a_code_comment_gives_the_writer_no_authority"
+   ]
+  },
+  {
+   "script": "tests/security/mutations.py",
+   "name": "the-workspace-skips-the-secret-scan",
+   "date": "2026-10-29",
+   "result": "CAUGHT",
+   "failed": [
+    "negative_nt_inj_01_a_model_that_obeys_the_text_of_a_request_changes_nothing_the_factory_protects",
+    "negative_nt_inj_03_a_model_that_obeys_a_document_of_the_repository_changes_nothing_the_factory_protects",
+    "negative_nt_sec_01_secrets_the_model_pastes_into_its_summary_and_its_change_reach_no_sink",
+    "negative_nt_sec_05_a_secret_in_a_document_is_refused_before_the_commit",
+    "negative_nt_sec_05_unsafe_entries_and_secrets_in_the_tree_are_refused"
+   ]
+  }
+ ],
  "rows": [
   {
    "id": "NT-AUD-01",
@@ -158,7 +793,7 @@
   },
   {
    "id": "NT-AUD-03",
-   "status": "control_off_missing",
+   "status": "proven",
    "tests": [
     {
      "name": "negative_nt_aud_03_every_required_event_type_appears_with_actor_policy_hash_and_correlation_id",
@@ -173,7 +808,16 @@
      "file": "crates/workflow/tests/security/negative_aud.rs"
     }
    ],
-   "control_off": [],
+   "control_off": [
+    {
+     "kind": "mutation",
+     "script": "tests/security/mutations.py",
+     "name": "the-budget-threshold-is-never-recorded",
+     "catches": [
+      "negative_nt_aud_03_every_required_event_type_appears_with_actor_policy_hash_and_correlation_id"
+     ]
+    }
+   ],
    "note": "Covered: a scripted scenario for each of the fourteen required types, every record checked for actor, policy hash and correlation id, and the owner matrix below, which the checker compares with the sources. Not covered (gap): a production emitter for four types (webhook under the required name, command_executed, the sandbox lifecycle, egress_request in the audit log); the matrix names them.",
    "findings": [
     "F-2"
@@ -222,8 +866,24 @@
      "script": "crates/github/tests/mutations/run_mutations.py",
      "name": "identify a person by the login and not by the numeric id",
      "catches": [
-      "negative_nt_authz_01_the_actor_is_the_numeric_id_and_a_lookalike_login_is_a_different_person",
-      "negative_nt_authz_01_a_label_that_came_with_issue_creation_names_its_author"
+      "negative_nt_authz_01_a_label_that_came_with_issue_creation_names_its_author",
+      "negative_nt_authz_01_the_actor_is_the_numeric_id_and_a_lookalike_login_is_a_different_person"
+     ]
+    },
+    {
+     "kind": "mutation",
+     "script": "tests/security/mutations.py",
+     "name": "a-bot-may-hold-a-designation",
+     "catches": [
+      "negative_nt_authz_01_only_the_numeric_id_on_the_allowlist_grants_a_designation"
+     ]
+    },
+    {
+     "kind": "mutation",
+     "script": "tests/security/mutations.py",
+     "name": "an-expired-allowlist-entry-still-grants",
+     "catches": [
+      "negative_nt_authz_01_only_the_numeric_id_on_the_allowlist_grants_a_designation"
      ]
     }
    ]
@@ -249,7 +909,7 @@
   },
   {
    "id": "NT-AUTHZ-05",
-   "status": "control_off_missing",
+   "status": "proven",
    "tests": [
     {
      "name": "negative_nt_authz_05_an_edit_after_the_snapshot_waits_for_the_requester_and_no_agent_reads_it",
@@ -260,7 +920,16 @@
      "file": "crates/workflow/tests/intake_repo/intake.rs"
     }
    ],
-   "control_off": []
+   "control_off": [
+    {
+     "kind": "mutation",
+     "script": "tests/security/mutations.py",
+     "name": "data-lines-are-not-quoted",
+     "catches": [
+      "negative_nt_authz_05_an_edit_after_the_snapshot_waits_for_the_requester_and_no_agent_reads_it"
+     ]
+    }
+   ]
   },
   {
    "id": "NT-AUTHZ-06",
@@ -306,8 +975,8 @@
      "script": "crates/github/tests/mutations/run_mutations.py",
      "name": "let a stage that may not write get the write credential",
      "catches": [
-      "negative_nt_authz_07_every_stage_gets_exactly_its_permissions_and_only_delivery_writes_the_repository",
-      "negative_nt_authz_07_a_read_only_token_cannot_comment_or_open_a_pull_request"
+      "negative_nt_authz_07_a_read_only_token_cannot_comment_or_open_a_pull_request",
+      "negative_nt_authz_07_every_stage_gets_exactly_its_permissions_and_only_delivery_writes_the_repository"
      ]
     }
    ]
@@ -340,7 +1009,7 @@
   },
   {
    "id": "NT-BUD-01",
-   "status": "control_off_missing",
+   "status": "proven",
    "tests": [
     {
      "name": "negative_nt_bud_01_per_task_cost_ceiling_stops_a_looping_client",
@@ -351,7 +1020,16 @@
      "file": "crates/workflow/tests/implementation/negative.rs"
     }
    ],
-   "control_off": []
+   "control_off": [
+    {
+     "kind": "mutation",
+     "script": "crates/egress/tests/mutations.py",
+     "name": "ignore-the-cost-ceiling",
+     "catches": [
+      "negative_nt_bud_01_per_task_cost_ceiling_stops_a_looping_client"
+     ]
+    }
+   ]
   },
   {
    "id": "NT-BUD-03",
@@ -367,7 +1045,7 @@
   },
   {
    "id": "NT-BUD-07",
-   "status": "control_off_missing",
+   "status": "proven",
    "tests": [
     {
      "name": "negative_nt_bud_07_a_tool_that_ignores_its_budget_is_still_stopped_and_counted",
@@ -382,11 +1060,30 @@
      "file": "crates/egress/tests/negative_nt_bud.rs"
     }
    ],
-   "control_off": []
+   "control_off": [
+    {
+     "kind": "mutation",
+     "script": "crates/egress/tests/mutations.py",
+     "name": "do-not-count-failed-attempts",
+     "catches": [
+      "negative_nt_bud_07_a_tool_that_ignores_its_budget_is_still_stopped_and_counted",
+      "negative_nt_bud_07_a_turn_cap_stops_a_tool_that_has_no_turn_limit_of_its_own",
+      "negative_nt_bud_07_failed_attempts_are_counted_per_attempt"
+     ]
+    },
+    {
+     "kind": "mutation",
+     "script": "crates/egress/tests/mutations.py",
+     "name": "ignore-the-request-cap",
+     "catches": [
+      "negative_nt_bud_07_a_turn_cap_stops_a_tool_that_has_no_turn_limit_of_its_own"
+     ]
+    }
+   ]
   },
   {
    "id": "NT-GATE-01",
-   "status": "control_off_missing",
+   "status": "proven",
    "tests": [
     {
      "name": "negative_nt_gate_01_the_builder_weakens_a_test_or_edits_a_fixture",
@@ -401,7 +1098,16 @@
      "file": "crates/workflow/tests/validation/negative_gate.rs"
     }
    ],
-   "control_off": []
+   "control_off": [
+    {
+     "kind": "mutation",
+     "script": "tests/security/mutations.py",
+     "name": "the-workspace-lets-any-edit-in",
+     "catches": [
+      "negative_nt_gate_01_the_builder_weakens_a_test_or_edits_a_fixture"
+     ]
+    }
+   ]
   },
   {
    "id": "NT-GATE-02",
@@ -428,7 +1134,7 @@
   },
   {
    "id": "NT-GATE-03",
-   "status": "control_off_missing",
+   "status": "proven",
    "tests": [
     {
      "name": "negative_nt_gate_03_the_builder_edits_ci_and_gate_files",
@@ -447,11 +1153,29 @@
      "file": "crates/workflow/tests/validation/negative_gate.rs"
     }
    ],
-   "control_off": []
+   "control_off": [
+    {
+     "kind": "mutation",
+     "script": "tests/security/mutations.py",
+     "name": "the-workspace-lets-any-edit-in",
+     "catches": [
+      "negative_nt_gate_03_the_builder_edits_ci_and_gate_files"
+     ]
+    },
+    {
+     "kind": "mutation",
+     "script": "tests/security/mutations.py",
+     "name": "a-deny-write-path-may-be-written",
+     "catches": [
+      "negative_nt_gate_03_each_ci_gate_and_instruction_file_edit_fails_before_any_gate_runs",
+      "negative_nt_gate_03_deleting_a_protected_file_is_refused_too"
+     ]
+    }
+   ]
   },
   {
    "id": "NT-GATE-04",
-   "status": "control_off_missing",
+   "status": "proven",
    "tests": [
     {
      "name": "negative_nt_gate_04_every_rename_and_normalization_trick_is_blocked_with_its_group",
@@ -466,11 +1190,22 @@
      "file": "crates/workflow/tests/validation/negative_gate.rs"
     }
    ],
-   "control_off": []
+   "control_off": [
+    {
+     "kind": "mutation",
+     "script": "tests/security/mutations.py",
+     "name": "a-deny-write-path-may-be-written",
+     "catches": [
+      "negative_nt_gate_04_every_rename_and_normalization_trick_is_blocked_with_its_group",
+      "negative_nt_gate_04_every_path_trick_is_refused_with_its_group_and_the_controls_are_not",
+      "negative_nt_gate_04_the_tricks_that_a_repository_can_hold_fail_the_whole_stage"
+     ]
+    }
+   ]
   },
   {
    "id": "NT-GATE-05",
-   "status": "control_off_missing",
+   "status": "proven",
    "tests": [
     {
      "name": "negative_nt_gate_05_the_builders_gate_files_do_not_change_what_runs",
@@ -485,7 +1220,16 @@
      "file": "crates/workflow/tests/validation/negative_gate.rs"
     }
    ],
-   "control_off": []
+   "control_off": [
+    {
+     "kind": "mutation",
+     "script": "tests/security/mutations.py",
+     "name": "a-deny-write-path-may-be-written",
+     "catches": [
+      "negative_nt_gate_05_an_edit_of_the_gate_definitions_fails_the_protected_path_gate"
+     ]
+    }
+   ]
   },
   {
    "id": "NT-GATE-06",
@@ -589,7 +1333,7 @@
   },
   {
    "id": "NT-INJ-01",
-   "status": "control_off_missing",
+   "status": "proven",
    "tests": [
     {
      "name": "negative_nt_inj_01_a_model_that_obeys_the_text_of_a_request_changes_nothing_the_factory_protects",
@@ -615,7 +1359,59 @@
      ]
     }
    ],
-   "control_off": [],
+   "control_off": [
+    {
+     "kind": "mutation",
+     "script": "tests/security/mutations.py",
+     "name": "a-forbidden-command-class-denies-nothing",
+     "catches": [
+      "negative_nt_inj_01_a_model_that_obeys_the_text_of_a_request_changes_nothing_the_factory_protects"
+     ]
+    },
+    {
+     "kind": "mutation",
+     "script": "tests/security/mutations.py",
+     "name": "data-lines-are-not-quoted",
+     "catches": [
+      "negative_nt_inj_01_every_payload_in_every_input_leaves_the_instructions_as_the_template_wrote_them"
+     ]
+    },
+    {
+     "kind": "mutation",
+     "script": "tests/security/mutations.py",
+     "name": "the-workspace-lets-any-edit-in",
+     "catches": [
+      "negative_nt_inj_01_a_model_that_obeys_the_text_of_a_request_changes_nothing_the_factory_protects",
+      "negative_nt_inj_01_the_workflow_edit_the_env_the_fetch_and_the_pass_claim_of_the_catalog"
+     ]
+    },
+    {
+     "kind": "mutation",
+     "script": "tests/security/mutations.py",
+     "name": "the-workspace-skips-the-secret-scan",
+     "catches": [
+      "negative_nt_inj_01_a_model_that_obeys_the_text_of_a_request_changes_nothing_the_factory_protects"
+     ]
+    },
+    {
+     "kind": "mutation",
+     "script": "tests/security/mutations.py",
+     "name": "a-deny-write-path-may-be-written",
+     "catches": [
+      "negative_nt_inj_01_a_model_that_obeys_the_text_of_a_request_changes_nothing_the_factory_protects",
+      "negative_nt_inj_01_the_workflow_edit_the_env_the_fetch_and_the_pass_claim_of_the_catalog"
+     ]
+    },
+    {
+     "kind": "mutation",
+     "script": "tests/security/mutations.py",
+     "name": "the-egress-allowlist-matches-any-host",
+     "catches": [
+      "negative_nt_inj_01_a_model_that_obeys_the_text_of_a_request_changes_nothing_the_factory_protects",
+      "negative_nt_inj_01_the_workflow_edit_the_env_the_fetch_and_the_pass_claim_of_the_catalog"
+     ]
+    }
+   ],
    "parts_blocked": [
     {
      "part": "B",
@@ -632,7 +1428,7 @@
   },
   {
    "id": "NT-INJ-02",
-   "status": "control_off_missing",
+   "status": "proven",
    "tests": [
     {
      "name": "negative_nt_inj_02_a_path_cannot_carry_text_into_the_instruction",
@@ -643,11 +1439,20 @@
      "file": "crates/workflow/tests/prompts/negative.rs"
     }
    ],
-   "control_off": []
+   "control_off": [
+    {
+     "kind": "mutation",
+     "script": "tests/security/mutations.py",
+     "name": "data-lines-are-not-quoted",
+     "catches": [
+      "negative_nt_inj_02_envelope_hardening"
+     ]
+    }
+   ]
   },
   {
    "id": "NT-INJ-03",
-   "status": "control_off_missing",
+   "status": "proven",
    "tests": [
     {
      "name": "negative_nt_inj_03_hostile_text_in_a_code_comment_gives_the_writer_no_authority",
@@ -669,7 +1474,51 @@
      ]
     }
    ],
-   "control_off": [],
+   "control_off": [
+    {
+     "kind": "mutation",
+     "script": "tests/security/mutations.py",
+     "name": "a-forbidden-command-class-denies-nothing",
+     "catches": [
+      "negative_nt_inj_03_a_model_that_obeys_a_document_of_the_repository_changes_nothing_the_factory_protects"
+     ]
+    },
+    {
+     "kind": "mutation",
+     "script": "tests/security/mutations.py",
+     "name": "the-workspace-lets-any-edit-in",
+     "catches": [
+      "negative_nt_inj_03_a_model_that_obeys_a_document_of_the_repository_changes_nothing_the_factory_protects",
+      "negative_nt_inj_03_a_readme_a_contributing_file_and_a_comment_that_ask_for_release_yml_and_secrets",
+      "negative_nt_inj_03_hostile_text_in_a_code_comment_gives_the_writer_no_authority"
+     ]
+    },
+    {
+     "kind": "mutation",
+     "script": "tests/security/mutations.py",
+     "name": "the-workspace-skips-the-secret-scan",
+     "catches": [
+      "negative_nt_inj_03_a_model_that_obeys_a_document_of_the_repository_changes_nothing_the_factory_protects"
+     ]
+    },
+    {
+     "kind": "mutation",
+     "script": "tests/security/mutations.py",
+     "name": "a-deny-write-path-may-be-written",
+     "catches": [
+      "negative_nt_inj_03_a_model_that_obeys_a_document_of_the_repository_changes_nothing_the_factory_protects",
+      "negative_nt_inj_03_a_readme_a_contributing_file_and_a_comment_that_ask_for_release_yml_and_secrets"
+     ]
+    },
+    {
+     "kind": "mutation",
+     "script": "tests/security/mutations.py",
+     "name": "the-egress-allowlist-matches-any-host",
+     "catches": [
+      "negative_nt_inj_03_a_model_that_obeys_a_document_of_the_repository_changes_nothing_the_factory_protects"
+     ]
+    }
+   ],
    "parts_blocked": [
     {
      "part": "B",
@@ -685,7 +1534,7 @@
   },
   {
    "id": "NT-INJ-04",
-   "status": "control_off_missing",
+   "status": "proven",
    "tests": [
     {
      "name": "negative_nt_inj_04_tool_output_that_says_grant_yourself_and_approve_gains_no_authority",
@@ -707,7 +1556,24 @@
      ]
     }
    ],
-   "control_off": [],
+   "control_off": [
+    {
+     "kind": "mutation",
+     "script": "tests/security/mutations.py",
+     "name": "an-agent-may-grant-itself-a-tool",
+     "catches": [
+      "negative_nt_inj_04_exec_shell_and_approval_grant_are_denied_to_an_agent_that_asks"
+     ]
+    },
+    {
+     "kind": "mutation",
+     "script": "tests/security/mutations.py",
+     "name": "data-lines-are-not-quoted",
+     "catches": [
+      "negative_nt_inj_04_the_output_of_a_command_the_factory_ran_sits_in_a_data_envelope"
+     ]
+    }
+   ],
    "findings": [
     "F-1"
    ],
@@ -722,7 +1588,7 @@
   },
   {
    "id": "NT-INJ-06",
-   "status": "control_off_missing",
+   "status": "proven",
    "tests": [
     {
      "name": "negative_nt_inj_06_a_reviewer_pass_does_not_override_a_failed_gate",
@@ -733,7 +1599,16 @@
      "file": "crates/workflow/tests/implementation/review.rs"
     }
    ],
-   "control_off": []
+   "control_off": [
+    {
+     "kind": "mutation",
+     "script": "tests/security/mutations.py",
+     "name": "data-lines-are-not-quoted",
+     "catches": [
+      "negative_nt_inj_06_a_reviewer_pass_cannot_override_a_failed_gate"
+     ]
+    }
+   ]
   },
   {
    "id": "NT-INJ-07",
@@ -783,7 +1658,7 @@
   },
   {
    "id": "NT-LSE-03",
-   "status": "control_off_missing",
+   "status": "proven",
    "tests": [
     {
      "name": "negative_nt_lse_03_a_retry_after_a_lost_answer_makes_one_pull_request",
@@ -806,7 +1681,16 @@
      "file": "crates/workflow/tests/delivery/negative.rs"
     }
    ],
-   "control_off": []
+   "control_off": [
+    {
+     "kind": "mutation",
+     "script": "crates/github/tests/mutations/run_mutations.py",
+     "name": "accept a comment marker written by anyone",
+     "catches": [
+      "negative_nt_lse_03_a_marker_pasted_by_someone_else_does_not_stop_the_factory_from_reporting"
+     ]
+    }
+   ]
   },
   {
    "id": "NT-MRG-01",
@@ -840,7 +1724,7 @@
   },
   {
    "id": "NT-MRG-03",
-   "status": "control_off_missing",
+   "status": "proven",
    "tests": [
     {
      "name": "negative_nt_mrg_03_the_head_moving_after_approval_invalidates_the_approval",
@@ -855,7 +1739,17 @@
      "file": "crates/workflow/tests/delivery/approval.rs"
     }
    ],
-   "control_off": []
+   "control_off": [
+    {
+     "kind": "mutation",
+     "script": "tests/security/mutations.py",
+     "name": "a-moved-head-is-not-noticed",
+     "catches": [
+      "negative_nt_mrg_03_the_head_moving_after_approval_invalidates_the_approval",
+      "negative_nt_mrg_03_a_refusal_for_a_moved_head_also_ends_the_approvals_on_record"
+     ]
+    }
+   ]
   },
   {
    "id": "NT-MRG-05",
@@ -870,14 +1764,23 @@
   },
   {
    "id": "NT-MRG-06",
-   "status": "control_off_missing",
+   "status": "proven",
    "tests": [
     {
      "name": "negative_nt_mrg_06_a_bot_an_app_and_the_requester_on_a_risky_change_do_not_count",
      "file": "crates/workflow/tests/delivery/judging.rs"
     }
    ],
-   "control_off": []
+   "control_off": [
+    {
+     "kind": "mutation",
+     "script": "tests/security/mutations.py",
+     "name": "a-bot-may-hold-a-designation",
+     "catches": [
+      "negative_nt_mrg_06_a_bot_an_app_and_the_requester_on_a_risky_change_do_not_count"
+     ]
+    }
+   ]
   },
   {
    "id": "NT-MRG-07",
@@ -1020,7 +1923,7 @@
   },
   {
    "id": "NT-POL-04",
-   "status": "control_off_missing",
+   "status": "proven",
    "tests": [
     {
      "name": "negative_nt_pol_04_a_protected_change_is_accepted_only_with_all_three_elements",
@@ -1039,7 +1942,18 @@
      "file": "crates/domain/tests/policy/tools.rs"
     }
    ],
-   "control_off": []
+   "control_off": [
+    {
+     "kind": "mutation",
+     "script": "tests/security/mutations.py",
+     "name": "a-deny-write-path-may-be-written",
+     "catches": [
+      "negative_nt_pol_04_a_protected_change_is_accepted_only_with_all_three_elements",
+      "negative_nt_pol_04_a_protected_group_beats_write_allow",
+      "negative_nt_pol_04_a_protected_change_needs_all_three_elements"
+     ]
+    }
+   ]
   },
   {
    "id": "NT-POL-05",
@@ -1139,7 +2053,7 @@
   },
   {
    "id": "NT-SBX-05",
-   "status": "control_off_missing",
+   "status": "proven",
    "tests": [
     {
      "name": "negative_nt_sbx_05_a_host_that_is_not_on_the_list_is_refused_before_it_is_resolved",
@@ -1166,7 +2080,35 @@
      "file": "crates/egress/tests/negative_nt_sbx_05.rs"
     }
    ],
-   "control_off": []
+   "control_off": [
+    {
+     "kind": "mutation",
+     "script": "crates/egress/tests/mutations.py",
+     "name": "sidecar-ignores-the-byte-quota",
+     "catches": [
+      "negative_nt_sbx_05_the_byte_quota_ends_a_transfer_at_the_cap"
+     ]
+    },
+    {
+     "kind": "mutation",
+     "script": "crates/egress/tests/mutations.py",
+     "name": "sidecar-resolves-before-the-allowlist",
+     "catches": [
+      "negative_nt_sbx_05_a_host_that_is_not_on_the_list_is_refused_before_it_is_resolved",
+      "negative_nt_sbx_05_a_name_that_resolves_to_an_internal_address_is_refused_after_resolution",
+      "negative_nt_sbx_05_a_rebinding_answer_cannot_redirect_a_connection_that_was_checked"
+     ]
+    },
+    {
+     "kind": "mutation",
+     "script": "crates/egress/tests/mutations.py",
+     "name": "sidecar-skips-the-resolved-range-check",
+     "catches": [
+      "negative_nt_sbx_05_a_name_that_resolves_to_an_internal_address_is_refused_after_resolution",
+      "negative_nt_sbx_05_a_rebinding_answer_cannot_redirect_a_connection_that_was_checked"
+     ]
+    }
+   ]
   },
   {
    "id": "NT-SBX-06",
@@ -1340,7 +2282,7 @@
   },
   {
    "id": "NT-SBX-17",
-   "status": "control_off_missing",
+   "status": "proven",
    "tests": [
     {
      "name": "negative_nt_sbx_17_the_requests_of_the_real_tools_pass_unchanged",
@@ -1379,11 +2321,82 @@
      "file": "crates/egress/tests/negative_nt_sbx_17.rs"
     }
    ],
-   "control_off": []
+   "control_off": [
+    {
+     "kind": "mutation",
+     "script": "crates/egress/tests/mutations.py",
+     "name": "accept-a-repeated-key",
+     "catches": [
+      "negative_nt_sbx_17_bodies_that_parsers_read_differently_are_refused"
+     ]
+    },
+    {
+     "kind": "mutation",
+     "script": "crates/egress/tests/mutations.py",
+     "name": "accept-an-image-by-address",
+     "catches": [
+      "negative_nt_sbx_17_every_refused_shape_gets_a_fixed_answer_an_audit_event_and_no_provider_call"
+     ]
+    },
+    {
+     "kind": "mutation",
+     "script": "crates/egress/tests/mutations.py",
+     "name": "accept-an-unlisted-field",
+     "catches": [
+      "negative_nt_sbx_17_every_refused_shape_gets_a_fixed_answer_an_audit_event_and_no_provider_call",
+      "negative_nt_sbx_17_property_the_provider_receives_only_bodies_without_dangerous_fields",
+      "negative_nt_sbx_17_property_the_schema_accepts_no_mutant_that_holds_a_dangerous_field"
+     ]
+    },
+    {
+     "kind": "mutation",
+     "script": "crates/egress/tests/mutations.py",
+     "name": "accept-an-unlisted-tool-type",
+     "catches": [
+      "negative_nt_sbx_17_every_refused_shape_gets_a_fixed_answer_an_audit_event_and_no_provider_call",
+      "negative_nt_sbx_17_property_the_provider_receives_only_bodies_without_dangerous_fields",
+      "negative_nt_sbx_17_property_the_schema_accepts_no_mutant_that_holds_a_dangerous_field"
+     ]
+    },
+    {
+     "kind": "mutation",
+     "script": "crates/egress/tests/mutations.py",
+     "name": "do-not-count-failed-attempts",
+     "catches": [
+      "negative_nt_sbx_17_every_refused_shape_gets_a_fixed_answer_an_audit_event_and_no_provider_call"
+     ]
+    },
+    {
+     "kind": "mutation",
+     "script": "crates/egress/tests/mutations.py",
+     "name": "forward-the-beta-header-unchanged",
+     "catches": [
+      "negative_nt_sbx_17_only_the_recorded_betas_and_the_beta_query_cross"
+     ]
+    },
+    {
+     "kind": "mutation",
+     "script": "crates/egress/tests/mutations.py",
+     "name": "forward-the-body-without-the-schema",
+     "catches": [
+      "negative_nt_sbx_17_bodies_that_parsers_read_differently_are_refused",
+      "negative_nt_sbx_17_every_refused_shape_gets_a_fixed_answer_an_audit_event_and_no_provider_call",
+      "negative_nt_sbx_17_property_the_provider_receives_only_bodies_without_dangerous_fields"
+     ]
+    },
+    {
+     "kind": "mutation",
+     "script": "crates/egress/tests/mutations.py",
+     "name": "forward-the-provider-request-ids",
+     "catches": [
+      "negative_nt_sbx_17_the_answer_headers_are_a_closed_set"
+     ]
+    }
+   ]
   },
   {
    "id": "NT-SEC-01",
-   "status": "control_off_missing",
+   "status": "proven",
    "tests": [
     {
      "name": "negative_nt_sec_01_a_full_fixture_job_with_a_canary_of_every_class_leaves_none_in_any_sink",
@@ -1394,7 +2407,16 @@
      "file": "crates/workflow/tests/security/negative_sec.rs"
     }
    ],
-   "control_off": [],
+   "control_off": [
+    {
+     "kind": "mutation",
+     "script": "tests/security/mutations.py",
+     "name": "the-workspace-skips-the-secret-scan",
+     "catches": [
+      "negative_nt_sec_01_secrets_the_model_pastes_into_its_summary_and_its_change_reach_no_sink"
+     ]
+    }
+   ],
    "note": "Covered: a canary of 21 classes planted in the repository, the request, the environment and the output of commands, and four ways for the model to leak it, swept in the audit log, the outbox, the ledger, every stored artifact, the prompts and the log lines. Not covered (gap, Slice 2 and Slice 4): NATS messages and memory stores, which do not exist. Not yet written: the pull request body, comments, timeline, error bodies and recordings, which need the composed run. The first test is red on finding F-3.",
    "findings": [
     "F-3"
@@ -1479,7 +2501,7 @@
   },
   {
    "id": "NT-SEC-05",
-   "status": "control_off_missing",
+   "status": "proven",
    "tests": [
     {
      "name": "negative_nt_sec_05_a_secret_in_a_document_is_refused_before_the_commit",
@@ -1510,7 +2532,17 @@
      "file": "crates/workflow/tests/validation/negative_secret.rs"
     }
    ],
-   "control_off": []
+   "control_off": [
+    {
+     "kind": "mutation",
+     "script": "tests/security/mutations.py",
+     "name": "the-workspace-skips-the-secret-scan",
+     "catches": [
+      "negative_nt_sec_05_a_secret_in_a_document_is_refused_before_the_commit",
+      "negative_nt_sec_05_unsafe_entries_and_secrets_in_the_tree_are_refused"
+     ]
+    }
+   ]
   },
   {
    "id": "NT-SEC-07",
@@ -1770,7 +2802,7 @@
   },
   {
    "id": "NT-TOOL-01",
-   "status": "control_off_missing",
+   "status": "proven",
    "tests": [
     {
      "name": "negative_nt_tool_01_a_shell_string_is_a_literal_argument_and_a_shell_is_denied",
@@ -1784,29 +2816,56 @@
      ]
     }
    ],
-   "control_off": []
+   "control_off": [
+    {
+     "kind": "mutation",
+     "script": "tests/security/mutations.py",
+     "name": "a-forbidden-command-class-denies-nothing",
+     "catches": [
+      "negative_nt_tool_01_a_shell_string_is_a_literal_argument_and_a_shell_is_denied"
+     ]
+    }
+   ]
   },
   {
    "id": "NT-TOOL-02",
-   "status": "control_off_missing",
+   "status": "proven",
    "tests": [
     {
      "name": "negative_nt_tool_02_forbidden_command_class_matrix",
      "file": "crates/domain/tests/policy/commands.rs"
     }
    ],
-   "control_off": []
+   "control_off": [
+    {
+     "kind": "mutation",
+     "script": "tests/security/mutations.py",
+     "name": "a-forbidden-command-class-denies-nothing",
+     "catches": [
+      "negative_nt_tool_02_forbidden_command_class_matrix"
+     ]
+    }
+   ]
   },
   {
    "id": "NT-TOOL-03",
-   "status": "control_off_missing",
+   "status": "proven",
    "tests": [
     {
      "name": "negative_nt_tool_03_unknown_never_grantable_and_self_granted_tools_are_refused",
      "file": "crates/domain/tests/policy/tools.rs"
     }
    ],
-   "control_off": []
+   "control_off": [
+    {
+     "kind": "mutation",
+     "script": "tests/security/mutations.py",
+     "name": "an-agent-may-grant-itself-a-tool",
+     "catches": [
+      "negative_nt_tool_03_unknown_never_grantable_and_self_granted_tools_are_refused"
+     ]
+    }
+   ]
   },
   {
    "id": "NT-TOOL-04",

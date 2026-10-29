@@ -61,8 +61,8 @@ MUTATIONS = {
         [(COMMANDS, "        if let Some(hard) = matched.iter().find(|c| c.action == CommandAction::Deny) {", "        if let Some(hard) = matched.iter().find(|c| c.action == CommandAction::Deny).filter(|_| false) {")],
     ),
     "the-egress-allowlist-matches-any-host": (
-        "the egress check takes the first entry of the profile for any host, so a host that is not on the list is looked up as if it were",
-        [(EGRESS, "entries.iter().find(|a| a.host == host)", "entries.iter().find(|_| true)")],
+        "the egress check lets a host that ends in .test through, so a host that is not on the list is allowed",
+        [(EGRESS, "        if self.never_allowed.contains(&host) {", "        if host.ends_with(\".test\") {\n            return EgressVerdict::Allowed {\n                rule: RuleRef::new(area, \"mutation\"),\n            };\n        }\n        if self.never_allowed.contains(&host) {")],
     ),
     "an-agent-may-grant-itself-a-tool": (
         "a request for a grant from the agent is answered like a request from the policy engine",
@@ -80,9 +80,13 @@ MUTATIONS = {
         "the approval judge no longer compares the head that the person saw with the head of the pull request now",
         [(JUDGE, "    if live.pr_head != &seen.pr_head {", "    if false && live.pr_head != &seen.pr_head {")],
     ),
-    "a-person-who-is-not-listed-may-ask": (
-        "admission treats a person that the allowlist cannot find as a requester",
-        [(AUTHORITY, "            .is_ok_and(|d| d.contains(&Designation::Requester));", "            .map_or(true, |_| true);")],
+    "an-expired-allowlist-entry-still-grants": (
+        "an entry of the allowlist that has expired is still read as a designation",
+        [(AUTHORITY, "        if entry.expires_at.as_ref().is_some_and(|end| end <= now) {", "        if false && entry.expires_at.as_ref().is_some_and(|end| end <= now) {")],
+    ),
+    "a-bot-may-hold-a-designation": (
+        "an actor that is not a person is looked up on the allowlist like a person",
+        [(AUTHORITY, "        if actor.kind != ActorKind::User {", "        if false && actor.kind != ActorKind::User {")],
     ),
     "data-lines-are-not-quoted": (
         "a line of data in the prompt is written without the quote prefix, so a line of data can pass for a delimiter",
@@ -102,7 +106,8 @@ TESTS = {
     "the-budget-threshold-is-never-recorded": ["-p", "factory-workflow", "negative_nt_aud_03", "every_required_event_type"],
     "a-deny-write-path-may-be-written": BROAD,
     "a-moved-head-is-not-noticed": BROAD,
-    "a-person-who-is-not-listed-may-ask": BROAD,
+    "an-expired-allowlist-entry-still-grants": BROAD,
+    "a-bot-may-hold-a-designation": BROAD,
     "data-lines-are-not-quoted": BROAD,
 }
 
