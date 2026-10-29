@@ -293,6 +293,15 @@ pub struct Rig {
         Arc<dyn factory_workflow::gates::supply_chain::approval::RecordedApprovals>,
 }
 
+impl Rig {
+    /// The directory the stored documents are in: the artifact root the API reads from and the
+    /// worker writes to. A sweep over what was stored walks this one, and not a directory of the
+    /// rig's own, which would be empty.
+    pub fn artifact_root(&self) -> PathBuf {
+        self.env.artifacts_root.clone()
+    }
+}
+
 impl Drop for Rig {
     fn drop(&mut self) {
         let _ = std::fs::remove_dir_all(&self.scratch);

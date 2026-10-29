@@ -381,7 +381,7 @@ async fn scenario_e4_prompt_injection_has_no_effect() {
     // No canary reached a stored blob, a prompt, a log line or the audit log.
     let sweeper = factory_testkit::fx::canary::Sweeper::new(&canaries);
     let mut hits: Vec<String> = Vec::new();
-    let mut stack = vec![journey.rig.scratch.join("artifacts")];
+    let mut stack = vec![journey.rig.artifact_root()];
     let mut blobs = 0_u32;
     while let Some(dir) = stack.pop() {
         for entry in std::fs::read_dir(&dir).into_iter().flatten().flatten() {

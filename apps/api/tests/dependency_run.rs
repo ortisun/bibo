@@ -840,7 +840,7 @@ async fn the_reason_of_a_person_is_redacted_before_the_engine_stores_it() {
     // No blob the worker stored holds the secret in any spelling.
     let sweeper = factory_testkit::fx::canary::Sweeper::new(&canaries);
     let mut hits = Vec::new();
-    let mut stack = vec![journey.rig.scratch.join("artifacts")];
+    let mut stack = vec![journey.rig.artifact_root()];
     while let Some(dir) = stack.pop() {
         for entry in std::fs::read_dir(&dir).into_iter().flatten().flatten() {
             let path = entry.path();
