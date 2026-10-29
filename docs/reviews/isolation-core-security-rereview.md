@@ -217,3 +217,130 @@ test` run), none of which invoke Docker from any code I wrote or touched, and th
 and nothing identifies them as mine, so, per the constraint to remove only what can be proven mine, I did
 not remove them. No image was built or pulled; the three pinned images already on the host were read
 from, never modified.
+
+## Status after fixes
+
+Written by the software engineer who made the fixes, not by the reviewer; the reviewer's text above is
+unchanged. A re-review follows and decides what is closed. Base: `feat/slice-0-foundation` at `9da293e`.
+Date: 2026-10-29.
+
+| ID | Status | What was done | Tests (each was `#[ignore]`d or is new) |
+| --- | --- | --- | --- |
+| RR-14 (a) | **Fixed in the recipe; image not rebuilt** | `infra/sandbox-images/lib/execute-only.txt` is the one list of the programs of the adapters' command chain (`/usr/bin/env`, `/usr/bin/timeout`, `claude`, `codex`, `codex-code-mode-host`). `harden.sh` sets mode 0711 on every line; `test.sh` rule `TOOLS-EXECUTE-ONLY` checks each with `stat` in the built image; a runtime test requires every program that `command.rs` puts in a command vector to be on the list. | `crates/runtime/tests/execute_only_chain.rs` (`a_hostile_process_that_exists_before_the_exec_cannot_forge_a_line_through_the_chain`, `every_program_the_adapters_put_in_a_command_vector_is_execute_only`, `harden_sh_reads_the_list_and_keeps_none_of_its_own`); `infra/sandbox-images/tools/selftest-execute-only.sh` |
+| RR-14 (b) | **Fixed** | A run is a success only when the model broker, outside the sandbox, saw it end (see below). New port `TurnAttestation`. | `crates/runtime/tests/stream_rule.rs` (attestation tests), `crates/egress/tests/turn_attestation.rs`, `attest::tests` |
+| RR-7, RR-8 | **Fixed** | Any malformed line before the terminal event, a cut capture, a second terminal event or any line after it fails the run with a fixed reason. | `rr_7_...`, `rr_8_...` in `crates/runtime/tests/security_rereview`; `stream_rule.rs` properties |
+| RR-9 | **Fixed** (it was a hypothesis) | The Codex rule reads the signal as the Claude rule does. | `rr_9_...` |
+| RR-1 | **Fixed** | An OpenAI request with no output limit gets the cap, in `max_output_tokens` (Responses) or `max_completion_tokens` (Chat). The recorded Codex requests name none, so the real tool is affected: the unchanged-body test now expects the cap. | `rr_1_...` |
+| RR-2 | **Fixed by refusing** | `cache_control.ttl` is `5m` or absent; `1h` is refused by the schema, because the price list has one cache-write rate and the usage report cannot tell the two apart, and the factory does not need the longer cache. | `rr_2_...` |
+| RR-5 | **Fixed** | `168.63.129.16/32`, `192.0.0.0/24`, `fec0::/10` joined `DEFAULT_DENY_RANGES`. | `rr_5_...` |
+| RR-6 | **Fixed** | The reader counts values as each starts and refuses past 100000 in all or 10000 in one array or object, before the tree is built (new class `too_many_values`). The recorded bodies hold about 2000 values at most. | `rr_6_...`, `json::tests::a_body_past_the_value_limits_is_refused_before_it_is_built` |
+| RR-10 | **Fixed** | `--mount` keys are lower-cased as Go's `ToLower` does, the last `src`, `dst` and `type` wins, an unknown key, a quote or a non-bind type is refused. | `rr_10_...`, `posture_args::tests` |
+| RR-11 | **Fixed** | The second look at the `docker create` vector allows a bind mount only as a (source, destination) pair derived from the spec and the plan (`allowed_binds`); the old roots stay as a second line. | `rr_11_...`, `posture_args::tests`, `scripted::denied_flags_are_never_emitted` |
+| RR-12 | **Fixed** | `--init=false`, a `--tmpfs` with `exec`/`suid`/`dev` or at another path, a negative or non-numeric `--ulimit`, two mounts at one destination are refused. The builder's tmpfs is `noexec`, so nothing allows `exec`. | `rr_12_...` |
+| RR-13 | **Partly fixed** | Refused: a name that begins or ends in a space-like character, the braille blank, a variation selector with no base, more than two stacked Latin combining marks. Not refused, on purpose: a non-ASCII space inside a name (the ideographic space is how Japanese names are written; it is logged), a name not in NFC (the standard library has no tables, and a dependency was not added for a hypothesis). The original test is split in two to say so. | `rr_13_...` (two tests), `audit::tests` |
+| RR-15 | **Fixed** | `check-pins.sh` needs `GOODSIG` and a `VALIDSIG` of the pinned key, none of `REVKEYSIG`, `EXPKEYSIG`, `EXPSIG`, `KEYREVOKED` and the other bad statuses, and no status line it does not know. | `tools/selftest-check-pins.sh` (a really revoked key, an expired key, a control, a table of status lines) |
+| SBX-3 | **Still not reproduced** | See below. | none added |
+| RR-3, RR-4 | **Untouched** | Hypotheses outside the order of this change; still `#[ignore]`d and still failing. | `rr_3_...`, `rr_4_...` |
+
+### A correction to the reproduction of RR-15
+
+The finding is real, but its reproduction (`gpg_revoked.sh`) never revoked the key: `gpg --batch --gen-revoke`
+answers "can't do this in batch mode", the revocation file was not made, and `gpg --list-keys` after the
+"revocation" shows an ordinary key. The `GOODSIG` it printed was the status of a live key. With a key that is really
+revoked (a revocation made with `--no-tty` and the answers on standard input, and checked with `--with-colons`),
+gpg 2.5.24 prints `REVKEYSIG`, `VALIDSIG`, `KEYREVOKED`: `VALIDSIG` of the pinned fingerprint is still there, which
+is what the old rule accepted. The self-test makes the revoked key this way and fails if gpg does not list it as revoked.
+
+### RR-14, what closes it and what does not
+
+**Part a, the window.** The pipe of one `docker exec` is held by `env`, then `timeout`, then the tool. The kernel
+closes `/proc/<pid>/fd/1` of a process started from a file nobody can read, but a descriptor opened while a readable
+program held the pipe stays valid across the `execve` calls that follow. With `env` execute-only, no process of the chain
+is ever dumpable, so there is no moment at which the pipe can be taken. Shown on a container of the pinned agent image with
+the modes of the list applied at start (not a rebuilt image: the images in the local store predate even the first version of
+the recipe, their tools are mode 0755, and a rebuild needs the network for the pinned downloads, which this change was not
+allowed): a racer started before the exec, looping over `/proc` in bash builtins, opens the output of every process
+that appears after it. With `env` left readable it forged lines on the first trial (and in 3 of 3 trials of the hand-run); with
+the list applied, 4 trials of about nine thousand refused open attempts each forged nothing, and the chain really ran
+(the real `claude` printed its init event). `test.sh --rule TOOLS-EXECUTE-ONLY` fails against the local image, as it should,
+until it is rebuilt.
+
+**Part b, the broker's word.** Before the tool starts the adapter takes a `TurnSummary` from the broker for the job
+token; after the tool ended it takes another. The run is a success only if, between the two: no request is in flight (it
+waits up to 2 seconds for one to settle), the broker admitted a request and read an answer, the most recent answer ended the turn
+(`end_turn`/`stop_sequence`, Responses `completed` with no call item, Chat `stop`), and the stream does not claim more
+messages than the broker read answers plus 2, nor more input or output tokens than the broker metered plus 10 percent and 256 tokens. The broker may
+have metered more than the stream says (side requests), never less. Otherwise the run fails as `OutputMissing` with the code
+`unattested_completion` or `claim_exceeds_ledger` in the transcript note. A broker that cannot answer before the run keeps
+the tool from starting (`ProviderUnavailable`); one that cannot answer after it leaves the run unattested. The broker settles
+a streamed answer before the last bytes reach the tool.
+
+What it does not cover: **the content of the final text**. A process that can alter the stream of a run that really ended can still
+replace the text with its own; the attestation removes the cheaper attack (a forged "completed" in a run that did not complete or
+never reached the model). Binding a digest of the last answer to the output was not done, because the tools reformat the text. It
+also trusts the broker's reading of the provider's stop reason, and it needs `ClaudeCodeRuntime::new` and `CodexRuntime::new`
+to be given the broker (a third argument), which the worker wiring does not do yet: see the report of this change.
+
+### SBX-3, the discrepancy
+
+Not reproduced, and the hand-run no longer reproduces either. Through `DockerSandboxProvider` a held process table
+(`pids.current` 25 against `pids.max` 24, the shell alive and blocked on a builtin `read`) did not stop `docker exec ... du` from
+working. The review's hand-run was repeated with its own flags and its own script on the same daemon: `docker exec cat
+/sys/fs/cgroup/pids.current` printed 25 three times out of three; none failed with "unable to spawn stage-1". The two observations
+agree with each other and not with the review's note. Why the review saw the failure is not known; a different `runc` in the
+Desktop VM at that time is the guess, and it is only a guess. No code was added; the fail-closed rule (three failed polls kill
+the container) stays as the defence.
+
+### What remains open
+
+* The agent image is not rebuilt, so `test.sh` fails `TOOLS-EXECUTE-ONLY` and `negative-tests.sh` reports `readable-env` and
+  `readable-tool` as `UNPROVEN` until someone with network access runs `build.sh`.
+* The content of the final text is not bound to the broker's record.
+* RR-3 and RR-4 (hypotheses) and the non-NFC part of RR-13.
+* `TurnAttestation` is pending architect confirmation (`ports-v1.1.md` section 16).
+
+### Deliberate breaks, shown caught
+
+Each was applied to the source, the tests were run, and the source was restored. The harnesses are
+`crates/{runtime,egress,sandbox}/tests/mutations.py` (new entries), plus two by hand for the Docker test and the pin check.
+
+| Break | Caught by |
+| --- | --- |
+| a readable `/usr/bin/env` left in the exec chain (removed from `execute-only.txt`) | the Docker test (`forged 11 line(s) into the output of the chain`), `every_program_the_adapters_put_in_a_command_vector_is_execute_only`, the list test; the control of the same test shows the race forges when `env` is readable |
+| success accepted without the broker's word (`attestation-skipped`) | six tests of `stream_rule.rs` |
+| a torn line before the terminal event ignored (`stream-torn-line-ignored`) | `a_line_torn_by_an_interleaved_write_never_makes_a_success`, `each_fault_of_a_stream_has_its_fixed_reason_in_the_transcript` |
+| the cut capture ignored (`stream-cut-capture-ignored`) | `a_cut_capture_is_never_a_success`, the fault table |
+| the whole stream rule off (`stream-rule-off`) | `rr_7_...`, `rr_8_...`, `rtm_1_...` and five tests of `stream_rule.rs` |
+| the OpenAI route without a cap (`openai-request-without-a-cap`) | `rr_1_...`, the unit test, the unchanged-body test |
+| `SRC=` after `src=` not read (`a-mount-key-in-another-case`, `the-first-mount-source-wins`) | `posture_args::tests` |
+| a source outside the allowlist (`a-source-outside-the-allowlist`) | `rr_11_...`, three unit tests |
+| a revoked-key signature accepted (the old VALIDSIG-only rule restored in `check-pins.sh`) | the real revoked key, the real expired key, and seven status-line cases of `selftest-check-pins.sh` |
+
+The others (`a-tmpfs-with-exec`, `a-negative-ulimit`, `init-switched-off`, `a-name-that-ends-in-a-blank`,
+`a-variation-selector-with-no-base`, the three relay ranges, `accept-a-one-hour-cache-write`,
+`json-reader-without-a-value-limit`, `broker-attests-a-tool-use-turn`, `attestation-ignores-the-last-answer`, `-the-baseline`
+and `-the-claim`, `codex-success-ignores-the-signal`) are in the same harnesses and were each CAUGHT.
+
+### Commands and results
+
+```text
+cargo fmt --all -- --check                                              clean
+cargo clippy --workspace --all-targets --locked -- -D warnings          clean
+cargo test -p factory-egress -p factory-sandbox -p factory-runtime \
+  --test security_rereview -- --ignored                                 only rr_3 and rr_4 (hypotheses, untouched) still fail
+cargo nextest run -p factory-egress -p factory-sandbox -p factory-runtime   518 tests; all pass (two real-Docker contract tests failed once
+                                                                        because a stand-in broker did not grow between two runs;
+                                                                        fixed in the stand-in, then both pass)
+cargo xtask check-architecture                                          passed
+cargo deny --locked check                                               advisories, bans, licenses, sources ok
+infra/sandbox-images/tools/selftest-check-pins.sh                       PASSED (revoked key, expired key, control, status table)
+infra/sandbox-images/tools/selftest-execute-only.sh                     PASSED
+infra/sandbox-images/test.sh --only agent --rule TOOLS-EXECUTE-ONLY     FAIL against the local image, as it must (all five programs 0755)
+infra/sandbox-images/negative-tests.sh --only readable-env              UNPROVEN, as it must be until the image is rebuilt
+```
+
+Docker cleanup: containers and networks identical before and after. The volume list grew by 48 anonymous
+volumes with no label (created in four bursts while the suites ran). None of the three images the tests use
+(`factory-sandbox/agent`, the stand-in sidecar, `python:3.13-alpine`) declares a volume, no container mounts
+them, and other stacks on the machine were restarting containers at the time, so they cannot be shown to be
+mine and were not removed.
