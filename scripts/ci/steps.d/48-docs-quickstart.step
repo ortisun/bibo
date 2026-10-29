@@ -1,0 +1,4 @@
+id       = docs-quickstart
+title    = The quickstart runs from a clean clone; a step that needs Docker or PostgreSQL is BLOCKED when it is absent (scripts/docs-check.sh --quickstart)
+requires = cargo python3 git
+run      = scripts/docs-check.sh --quickstart
