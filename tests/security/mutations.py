@@ -138,6 +138,8 @@ def run_tests(name):
 
 def load(script):
     spec = importlib.util.spec_from_file_location("mutation_script", ROOT / script)
+    if spec is None or spec.loader is None:
+        raise SystemExit(f"cannot load the mutation script {script}")
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
