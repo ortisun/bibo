@@ -167,6 +167,43 @@ fn run(program: &Path, args: &[&str]) -> Result<String, String> {
     }
 }
 
+/// Like `run`, but gives up after `limit`. A wedged Docker daemon never answers `docker info`, and a
+/// test process that waits for it holds a semaphore forever, so the probe must have an end.
+fn run_for(program: &Path, args: &[&str], limit: std::time::Duration) -> Result<String, String> {
+    let mut child = Command::new(program)
+        .args(args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(|error| format!("cannot run {}: {error}", program.display()))?;
+    let deadline = std::time::Instant::now() + limit;
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) if status.success() => return Ok(String::new()),
+            Ok(Some(status)) => {
+                return Err(format!(
+                    "{} {} exited with {status}",
+                    program.display(),
+                    args.join(" ")
+                ));
+            }
+            Ok(None) if std::time::Instant::now() >= deadline => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(format!(
+                    "{} {} did not answer in {}s",
+                    program.display(),
+                    args.join(" "),
+                    limit.as_secs()
+                ));
+            }
+            Ok(None) => std::thread::sleep(std::time::Duration::from_millis(100)),
+            Err(error) => return Err(format!("cannot wait for {}: {error}", program.display())),
+        }
+    }
+}
+
 impl Server {
     fn start() -> Result<Self, String> {
         let mode = std::env::var("FACTORY_DB_PROVISION").unwrap_or_else(|_| "auto".to_owned());
@@ -189,10 +226,16 @@ impl Server {
             "local" => Self::local().map_err(|why| {
                 format!("no local PostgreSQL server binaries were found, or the server did not start: {why}")
             }),
-            _ => Self::local().or_else(|_| Self::docker()).map_err(|_| {
-                "no PostgreSQL server: set FACTORY_DB_ADMIN_URL, install PostgreSQL 16 or later, or start Docker"
-                    .to_owned()
-            }),
+            _ => match Self::local() {
+                Ok(server) => Ok(server),
+                Err(local) => Self::docker().map_err(|docker| {
+                    format!(
+                        "no PostgreSQL server: set FACTORY_DB_ADMIN_URL, install PostgreSQL 16 or later, or start Docker. \
+                         The private server did not start ({local}); Docker failed ({docker}). \
+                         macOS allows 32 shared-memory segments; `ipcs -m` shows how many leaked test clusters hold them"
+                    )
+                }),
+            },
         }
     }
 
@@ -295,7 +338,8 @@ impl Server {
 
     fn docker() -> Result<Self, String> {
         let docker = Path::new("docker");
-        run(docker, &["info"]).map_err(|_| "the docker daemon does not answer".to_owned())?;
+        run_for(docker, &["info"], std::time::Duration::from_secs(15))
+            .map_err(|why| format!("the docker daemon does not answer: {why}"))?;
         let image = std::env::var("FACTORY_DB_IMAGE").unwrap_or_else(|_| "postgres:18".to_owned());
         let password = random_secret();
         let name = format!("factory-store-test-{}", unique_run());
