@@ -226,12 +226,11 @@ fn denied(text: &str) -> bool {
     is_denied(&default_deny_ranges(), ip)
 }
 
-/// EGR-3. The refused ranges stop after the policy list plus a few. Addresses that no registry or
+/// EGR-3, FIXED. The refused ranges used to stop after the policy list plus a few. Addresses that no registry or
 /// model API lives at, and that a host with a VPN or a transition mechanism routes somewhere
 /// private, are connectable: the benchmark range (used as the fake-IP pool of several VPN and
 /// proxy clients on developer laptops) and the IPv4-compatible IPv6 form of a refused address.
 #[test]
-#[ignore = "confirmed gap EGR-3 (low): 198.18.0.0/15 and ::a.b.c.d forms of refused addresses are not in the refused ranges; run: cargo test -p factory-egress --test security_review -- --ignored egr_3"]
 fn egr_3_benchmark_range_and_ipv4_compatible_forms_are_refused_after_resolution() {
     let mut missed = Vec::new();
     for address in [

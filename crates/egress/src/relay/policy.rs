@@ -62,7 +62,13 @@ fn prefix_matches(range: &[u8], ip: &[u8], prefix: u8) -> bool {
 
 /// The ranges the relay refuses after it resolved a name: `egress.proxy_rules.
 /// reject_resolved_ip_ranges` of `policies/security.yaml`, and a few more that no registry or
-/// model API lives in (this-network, multicast, reserved, NAT64).
+/// model API lives in (this-network, multicast, reserved, the benchmarking range, the NAT64 and
+/// transition prefixes).
+///
+/// 198.18.0.0/15 (RFC 2544) is the pool several VPN and proxy clients use for fake addresses on a
+/// developer machine, so an answer in it can reach a local service. The sandbox suites make their
+/// own Docker networks in the same range; those are networks of the test host, not targets of the
+/// relay, which never connects to a network address of a job.
 pub const DEFAULT_DENY_RANGES: &[&str] = &[
     "127.0.0.0/8",
     "10.0.0.0/8",
@@ -77,9 +83,15 @@ pub const DEFAULT_DENY_RANGES: &[&str] = &[
     "0.0.0.0/8",
     "224.0.0.0/4",
     "240.0.0.0/4",
+    "198.18.0.0/15",
     "::/128",
     "ff00::/8",
     "64:ff9b::/96",
+    // NAT64 for local use (RFC 8215), 6to4 (RFC 3056) and Teredo (RFC 4380) carry an IPv4 address
+    // inside an IPv6 one that a transition mechanism on the path may deliver to a private host.
+    "64:ff9b:1::/48",
+    "2002::/16",
+    "2001::/32",
 ];
 
 /// The hosts that no sandbox may reach, whatever else is configured
@@ -102,15 +114,53 @@ pub fn default_deny_ranges() -> Vec<Cidr> {
         .collect()
 }
 
-/// True when `ip` is in any range. An IPv6 address that embeds an IPv4 address (`::ffff:a.b.c.d`)
-/// is checked as the IPv4 address it stands for, so `::ffff:127.0.0.1` is loopback.
+/// The IPv4 addresses an IPv6 address stands for, in every form that embeds one:
+///
+/// * IPv4-mapped, `::ffff:a.b.c.d`;
+/// * IPv4-compatible, `::a.b.c.d` (deprecated, but still delivered by some stacks);
+/// * IPv4-translated, `::ffff:0:a.b.c.d` (SIIT);
+/// * the well-known NAT64 prefix, `64:ff9b::a.b.c.d`;
+/// * 6to4, `2002:AABB:CCDD::`, where the address is in bits 16 to 47.
+///
+/// The prefixes that carry one at another position (NAT64 for local use, Teredo) are refused whole
+/// by [`DEFAULT_DENY_RANGES`].
+#[must_use]
+pub fn embedded_ipv4(address: &Ipv6Addr) -> Vec<Ipv4Addr> {
+    let s = address.segments();
+    let o = address.octets();
+    let last = Ipv4Addr::new(o[12], o[13], o[14], o[15]);
+    let mut found = Vec::new();
+    if let Some(mapped) = address.to_ipv4_mapped() {
+        found.push(mapped);
+    }
+    if s[..6].iter().all(|part| *part == 0) {
+        found.push(last);
+    }
+    if s[..4].iter().all(|part| *part == 0) && s[4] == 0xffff && s[5] == 0 {
+        found.push(last);
+    }
+    if s[0] == 0x0064 && s[1] == 0xff9b && s[2..6].iter().all(|part| *part == 0) {
+        found.push(last);
+    }
+    if s[0] == 0x2002 {
+        found.push(Ipv4Addr::new(o[2], o[3], o[4], o[5]));
+    }
+    found
+}
+
+/// True when `ip` is in any range, or when it is an IPv6 address that embeds an IPv4 address (see
+/// [`embedded_ipv4`]) that is. `::ffff:127.0.0.1`, `::127.0.0.1` and `64:ff9b::7f00:1` are all
+/// loopback.
 #[must_use]
 pub fn is_denied(ranges: &[Cidr], ip: IpAddr) -> bool {
-    let plain = match ip {
-        IpAddr::V6(v6) => v6.to_ipv4_mapped().map_or(ip, IpAddr::V4),
-        IpAddr::V4(_) => ip,
+    let embedded: Vec<IpAddr> = match ip {
+        IpAddr::V6(v6) => embedded_ipv4(&v6).into_iter().map(IpAddr::V4).collect(),
+        IpAddr::V4(_) => Vec::new(),
     };
-    ranges.iter().any(|range| range.contains(plain)) || ranges.iter().any(|r| r.contains(ip))
+    ranges.iter().any(|range| range.contains(ip))
+        || embedded
+            .iter()
+            .any(|inner| ranges.iter().any(|range| range.contains(*inner)))
 }
 
 /// One host the relay may connect to, and the ports on it.
@@ -462,8 +512,24 @@ mod tests {
             "::ffff:10.0.0.5",
             "::ffff:169.254.169.254",
             "64:ff9b::7f00:1",
+            // The benchmarking range and the forms that carry a private IPv4 address inside an
+            // IPv6 one (finding EGR-3).
+            "198.18.0.1",
+            "198.19.255.254",
+            "::7f00:1",
+            "::a00:1",
+            "::c0a8:101",
+            "::ffff:0:7f00:1",
+            "64:ff9b:1::1",
+            "64:ff9b:1:ffff::1",
+            "2002:7f00:1::",
+            "2002:a00:1::1",
+            "2002:c0a8:101::",
+            "2001:0:4136:e378:8000:63bf:3fff:fdd2",
         ];
         let allowed = [
+            "198.17.255.255",
+            "198.20.0.0",
             "192.0.2.10",
             "8.8.8.8",
             "172.32.0.1",
