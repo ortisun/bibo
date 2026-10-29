@@ -220,14 +220,10 @@ impl Rig {
         for (name, roles) in [
             ("approver", vec![HumanRole::Approver]),
             ("approver-two", vec![HumanRole::Approver]),
-            (
-                "security-one",
-                vec![HumanRole::Approver, HumanRole::SecurityApprover],
-            ),
-            (
-                "security-two",
-                vec![HumanRole::Approver, HumanRole::SecurityApprover],
-            ),
+            // A security approver holds the engine role of that name and no other: the critical
+            // tier names this designation alone, so it must be enough (AUT-3).
+            ("security-one", vec![HumanRole::SecurityApprover]),
+            ("security-two", vec![HumanRole::SecurityApprover]),
             ("operator", vec![HumanRole::Operator]),
             ("outsider", vec![]),
         ] {
