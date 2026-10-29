@@ -19,15 +19,17 @@
 //!   [`price_table_with`] and [`broker_caps`]; the router offers only the models
 //!   [`enabled_models`] returns.
 //!
-//! # What the policy does not yet drive
+//! # The two port changes of SF-17
 //!
-//! * The broker applies one set of per-request caps to every token, so [`broker_caps`] takes the
-//!   largest cap of any role. A cap for each role needs a field on the job token request, which is
-//!   a change of the port (`docs/architecture/ports-v1.1.md`, section 16.1).
-//! * The router does not know the model the author of the work used, so the engine cannot ask it for
-//!   a reviewer of another family. [`PolicyModelRouter::route_after_author`] answers the question
-//!   for a caller that knows the author; passing the author through `RoutingNeed` is the same
-//!   proposal.
+//! * A job token carries the per-request caps of the role of its stage
+//!   (`JobTokenRequest::per_request`, built by [`request_caps`]). The broker holds one set of caps for
+//!   every token ([`broker_caps`] takes the largest cap of any role), and a request is held to the
+//!   smaller of that and the token's. A stage that two roles share (the specification writer and its
+//!   reviewer) gets the larger of their caps, since one token covers the whole stage run.
+//! * A reviewing stage names the model of the author in `RoutingNeed::author`, and
+//!   [`PolicyModelRouter::route`] then drops every candidate that is not independent of it. When
+//!   candidates remain and none is independent the answer is [`RoutingError::NoRoute`] (the engine
+//!   fails the stage closed); [`PolicyModelRouter::route_after_author`] keeps the finer answer.
 
 use std::collections::BTreeSet;
 use std::sync::Arc;
@@ -42,8 +44,8 @@ use factory_domain::values::NonEmptyString;
 use factory_domain::vocabulary::{Fidelity, StageKind};
 use factory_egress::broker::{CapPolicy, ModelPrice, PerRequestCaps, PriceTable, Provider};
 use factory_ports::agent::{
-    CostMicroUsd, FlagSet, JobTokenRequest, ModelRouter, ModelSelection, RoutingDecision,
-    RoutingError, RoutingNeed, RuntimeId,
+    CostMicroUsd, FlagSet, JobTokenRequest, ModelRouter, ModelSelection, RequestCaps,
+    RoutingDecision, RoutingError, RoutingNeed, RuntimeId,
 };
 
 /// Why the policy cannot be used to route.
@@ -309,6 +311,28 @@ pub fn broker_caps(policy: &ModelRoutingPolicy) -> Result<CapPolicy, RoutingBuil
     })
 }
 
+/// The limits on one request for the token of a stage: the caps of the role that runs it, or the
+/// larger of the caps when the stage has more than one role. `None` when the stage has no role.
+#[must_use]
+pub fn request_caps(policy: &ModelRoutingPolicy, stage: StageKind) -> Option<RequestCaps> {
+    let mut roles = policy.roles_of_stage(stage.as_str()).peekable();
+    roles.peek()?;
+    Some(roles.fold(
+        RequestCaps {
+            max_input_tokens: 0,
+            max_output_tokens: 0,
+        },
+        |caps, role| {
+            RequestCaps {
+                max_input_tokens: caps.max_input_tokens.max(role.per_request.max_input_tokens),
+                max_output_tokens: caps
+                    .max_output_tokens
+                    .max(role.per_request.max_output_tokens),
+            }
+        },
+    ))
+}
+
 /// The request for the job token of a stage: bound to the tenant, the job and the stage, holding
 /// the models of the stage's routes and no other, with the ceiling of a run of the stage.
 ///
@@ -339,6 +363,7 @@ pub fn token_request(
             .map(selection_of)
             .collect::<Result<_, _>>()?,
         ttl,
+        per_request: request_caps(policy, stage),
     })
 }
 
@@ -379,9 +404,7 @@ impl PolicyModelRouter {
     /// answer is [`AuthorRoutingError::NoIndependentModel`], and the policy says the stage then
     /// waits for a person. A stage that reviews nobody's work routes as `route` does.
     ///
-    /// The engine does not call this yet: `RoutingNeed` carries no author (proposal in
-    /// `docs/architecture/ports-v1.1.md`, section 16). The composition root that learns the
-    /// author's model calls it, and the tests show what it refuses.
+    /// [`ModelRouter::route`] calls this when the need names an author (`RoutingNeed::author`).
     ///
     /// # Errors
     /// [`AuthorRoutingError`].
@@ -488,6 +511,17 @@ impl ModelRouter for PolicyModelRouter {
     }
 
     fn route(&self, need: &RoutingNeed) -> Result<RoutingDecision, RoutingError> {
-        self.route_filtered(need, |_| true)
+        match &need.author {
+            None => self.route_filtered(need, |_| true),
+            // Candidates exist and none is independent of the author: the stage waits for a person,
+            // which the engine reads as a route that does not exist.
+            Some(author) => {
+                self.route_after_author(need, author)
+                    .map_err(|refusal| match refusal {
+                        AuthorRoutingError::Routing(error) => error,
+                        AuthorRoutingError::NoIndependentModel => RoutingError::NoRoute,
+                    })
+            }
+        }
     }
 }

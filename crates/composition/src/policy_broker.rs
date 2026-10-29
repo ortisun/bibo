@@ -13,6 +13,8 @@
 //!   is dropped; a request with none left is refused as `NoModels`.
 //! * The ceiling is the lowest of the request's, the stage's ceiling in the policy, and what is left
 //!   of the job's ceiling. A job that has spent all of its ceiling gets no token (`ZeroCeiling`).
+//! * The caps on one request are those of the stage's role (`JobTokenRequest::per_request`), and a
+//!   request that carries smaller caps keeps them.
 //! * It never adds a model and never raises a ceiling.
 //!
 //! # What it cannot do
@@ -107,6 +109,17 @@ impl PolicyBroker {
                 .min(stage_ceiling.max_micro_usd)
                 .min(left_for_the_job),
         );
+        // The caps on one request are those of the stage's role. A request that already carries
+        // smaller caps keeps them.
+        if let Some(role) = crate::routing::request_caps(&self.policy, req.stage) {
+            req.per_request = Some(match req.per_request {
+                Some(asked) => factory_ports::agent::RequestCaps {
+                    max_input_tokens: asked.max_input_tokens.min(role.max_input_tokens),
+                    max_output_tokens: asked.max_output_tokens.min(role.max_output_tokens),
+                },
+                None => role,
+            });
+        }
         if req.cost_ceiling == CostMicroUsd(0) {
             return Err(BrokerError::InvalidRequest(
                 InvalidTokenRequest::ZeroCeiling,

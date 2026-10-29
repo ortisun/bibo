@@ -289,6 +289,7 @@ impl StaticRouterSubject {
             risk: RiskTier::Medium,
             exclude: Vec::new(),
             probed: probed(&["fake", "fake-two"]),
+            author: None,
         }
     }
 }

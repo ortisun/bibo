@@ -37,8 +37,8 @@ use factory_domain::values::Timestamp;
 use factory_domain::vocabulary::{Fidelity, StageKind};
 use factory_ports::agent::{
     AnswerEnd, BrokerError, CostMicroUsd, InvalidTokenRequest, IssuedJobToken, JobTokenId,
-    JobTokenRequest, JobTokenSecret, MeteringOps, ModelBroker, ModelSelection, TokenState,
-    TokenUsage, TurnAttestation, TurnSummary, Usage,
+    JobTokenRequest, JobTokenSecret, MeteringOps, ModelBroker, ModelSelection, RequestCaps,
+    TokenState, TokenUsage, TurnAttestation, TurnSummary, Usage,
 };
 use factory_ports::clock::{Clock, IdGenerator, duration_between, timestamp_after};
 
@@ -167,6 +167,9 @@ struct Record {
     ceiling: CostMicroUsd,
     models: Vec<ModelSelection>,
     providers: Vec<Provider>,
+    /// The limits on one request that the role of the stage sets for this token. The broker's
+    /// own caps still hold; a request is held to the smaller of the two.
+    per_request: Option<RequestCaps>,
     expires_at: Timestamp,
     usage: Usage,
     revoked: Option<RevokeReason>,
@@ -309,6 +312,7 @@ impl BrokerCore {
                     ceiling: req.cost_ceiling,
                     models: req.allowed_models.clone(),
                     providers,
+                    per_request: req.per_request,
                     expires_at,
                     usage: Usage::default(),
                     revoked: None,
@@ -933,10 +937,17 @@ impl Permit {
         &self.model
     }
 
-    /// The most output tokens a request may ask for.
+    /// The most output tokens a request may ask for: the broker's cap, or the smaller cap of the
+    /// token's role (`JobTokenRequest::per_request`).
     #[must_use]
     pub fn max_output_tokens(&self) -> u64 {
-        self.core.caps.per_request.max_output_tokens
+        let broker = self.core.caps.per_request.max_output_tokens;
+        self.core
+            .lock()
+            .tokens
+            .get(&self.token)
+            .and_then(|record| record.per_request)
+            .map_or(broker, |caps| caps.max_output_tokens.min(broker))
     }
 
     /// Marks the request as a turn of the model conversation, so that its settlement is recorded
@@ -1109,6 +1120,7 @@ mod tests {
                     model: factory_domain::values::NonEmptyString::parse("m").expect("a name"),
                 }],
                 ttl: Duration::from_secs(60),
+                per_request: None,
             })
             .expect("a token");
         let everything = format!("{:?}", *core.lock());

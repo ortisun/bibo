@@ -160,6 +160,7 @@ impl Lab {
                 cost_ceiling: CostMicroUsd(10_000_000),
                 allowed_models: vec![selection(model)],
                 ttl: Duration::from_secs(900),
+                per_request: None,
             })
             .await
             .expect("a token");
@@ -465,6 +466,7 @@ async fn a_request_for_a_model_outside_the_route_of_the_token_is_refused_at_the_
             cost_ceiling: CostMicroUsd(1_000),
             allowed_models: vec![selection("claude-haiku-9")],
             ttl: Duration::from_secs(60),
+            per_request: None,
         })
         .await;
     assert!(refused.is_err());
@@ -553,6 +555,7 @@ async fn a_second_token_of_a_job_gets_only_what_is_left_of_the_job_ceiling() {
                 cost_ceiling: CostMicroUsd(10_000_000),
                 allowed_models: vec![selection(SONNET)],
                 ttl: Duration::from_secs(900),
+                per_request: None,
             })
             .await;
         let Ok(issued) = issued else { break };
@@ -578,6 +581,7 @@ async fn a_second_token_of_a_job_gets_only_what_is_left_of_the_job_ceiling() {
             cost_ceiling: CostMicroUsd(10_000_000),
             allowed_models: vec![selection(SONNET)],
             ttl: Duration::from_secs(900),
+            per_request: None,
         })
         .await;
     assert!(refused.is_err(), "a token was issued after the job ceiling");

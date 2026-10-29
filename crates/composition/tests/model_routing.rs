@@ -360,6 +360,7 @@ fn need(stage: StageKind, tier: RecommendedTier) -> RoutingNeed {
             &["claude-code-cli", "codex-cli"],
             &[Capability::JsonSchemaOutput],
         ),
+        author: None,
     }
 }
 

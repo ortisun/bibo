@@ -344,6 +344,7 @@ pub(super) async fn execute(
                         reported_commands: Vec::new(),
                         reported_tests: Vec::new(),
                         ignored_instructions: Vec::new(),
+                        model: None,
                     });
                     head = commit;
                     continue;
@@ -799,6 +800,7 @@ async fn build_in(
         risk: RiskTier::Medium,
         exclude: Vec::new(),
         probed: handler.probes.probed(),
+        author: None,
     };
     let route = match ports.router.route(&need) {
         Ok(route) => route,
@@ -808,6 +810,10 @@ async fn build_in(
         }
     };
     let token = ctx.job_token.ok_or(StageError::Internal)?;
+    let builder_model = (
+        route.model.runtime.as_str().to_owned(),
+        route.model.model.as_str().to_owned(),
+    );
     let request = AgentRunRequest {
         attempt: ctx.attempt,
         agent: VersionedRef {
@@ -966,6 +972,7 @@ async fn build_in(
             .iter()
             .map(|text| keep_no_secret(handler, ctx, text))
             .collect(),
+        model: Some(builder_model),
     };
     Ok(TaskOutcome::Committed(evidence, commit))
 }

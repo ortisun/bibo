@@ -269,6 +269,7 @@ impl StageHandler for PlanningHandler {
             risk: RiskTier::Medium,
             exclude: Vec::new(),
             probed: self.probes.probed(),
+            author: None,
         })
     }
 

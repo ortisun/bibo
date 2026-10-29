@@ -328,6 +328,14 @@ async fn review_in(
         true,
     )
     .await?;
+    // The same author the engine routed the token against, read from the same stored manifest, so
+    // that the model the reviewer is run with is one the token allows.
+    let author = crate::stages::implementation::evidence::builder_selection(
+        ports.artifacts,
+        &TenantScope::new(identity.tenant),
+        ctx.upstream,
+    )
+    .await;
     let need = RoutingNeed {
         stage: StageKind::Review,
         tier: RecommendedTier::Standard,
@@ -335,6 +343,7 @@ async fn review_in(
         risk: RiskTier::Low,
         exclude: Vec::new(),
         probed: handler.probes.probed(),
+        author,
     };
     let route = match ports.router.route(&need) {
         Ok(route) => route,

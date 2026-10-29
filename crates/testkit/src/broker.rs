@@ -393,6 +393,7 @@ impl BrokerSubject for FakeBrokerSubject {
                     .expect("a valid model name"),
             }],
             ttl: Duration::from_secs(3600),
+            per_request: None,
         }
     }
 

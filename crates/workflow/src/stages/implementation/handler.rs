@@ -141,6 +141,7 @@ impl StageHandler for ImplementationHandler {
             risk: RiskTier::Medium,
             exclude: Vec::new(),
             probed: self.probes.probed(),
+            author: None,
         })
     }
 

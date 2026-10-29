@@ -309,6 +309,7 @@ impl StageHandler for DocumentingHandler {
             risk: RiskTier::Low,
             exclude: Vec::new(),
             probed: self.probes.probed(),
+            author: None,
         })
     }
 

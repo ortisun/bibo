@@ -425,6 +425,7 @@ async fn run_skill_in(
         risk: RiskTier::Medium,
         exclude: Vec::new(),
         probed: h.probes.probed(),
+        author: None,
     };
     let route = match ports.router.route(&need) {
         Ok(route) => route,
@@ -851,6 +852,7 @@ async fn review_in(
         risk: RiskTier::Medium,
         exclude: Vec::new(),
         probed: h.probes.probed(),
+        author: None,
     };
     let route = match ports.router.route(&need) {
         Ok(route) => route,

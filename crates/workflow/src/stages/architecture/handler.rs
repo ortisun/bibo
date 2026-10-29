@@ -285,6 +285,7 @@ impl StageHandler for ArchitectureHandler {
             risk: RiskTier::Medium,
             exclude: Vec::new(),
             probed: self.probes.probed(),
+            author: None,
         })
     }
 

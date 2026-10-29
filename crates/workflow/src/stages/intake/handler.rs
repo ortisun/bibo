@@ -236,6 +236,7 @@ impl StageHandler for IntakeHandler {
             risk: factory_domain::vocabulary::RiskTier::Low,
             exclude: Vec::new(),
             probed: self.probes.probed(),
+            author: None,
         })
     }
 
@@ -460,6 +461,7 @@ impl StageHandler for IntakeHandler {
             risk: factory_domain::vocabulary::RiskTier::Low,
             exclude: Vec::new(),
             probed: self.probes.probed(),
+            author: None,
         };
         let route = ports.router.route(&need).map_err(|_| {
             StageError::Blocked(
