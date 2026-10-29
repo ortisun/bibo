@@ -402,6 +402,81 @@ async fn held_a_comment_for_another_repository_makes_no_request() {
     assert_eq!(world.fake.requests().len(), before);
 }
 
+// ---- AUT-11: the time a label was applied ------------------------------------------------------
+
+/// The adapter reads the time of the `labeled` event, so that intake can compare it with the time
+/// the issue was last changed. A label applied, removed and applied again is the later application,
+/// and an edit afterwards moves the issue's own time past it.
+#[tokio::test]
+async fn aut_11_the_application_of_a_label_carries_the_time_of_the_event() {
+    use factory_ports::githost::{IssueRef, IssueSource};
+    use factory_ports::paths::RepoRef;
+    use std::time::Duration;
+
+    let world = World::new();
+    let source = world.adapter.issue_source();
+    let number = world
+        .fake
+        .add_issue(FIXTURE, "Add word count", "Please.", "octocat", &[]);
+    let issue = IssueRef {
+        repo: RepoRef::parse(FIXTURE).unwrap(),
+        number,
+    };
+    let intake = GitScope {
+        stage: StageKind::Intake,
+        ..scope(1, 1)
+    };
+
+    // Nothing applied yet.
+    assert_eq!(
+        source.label_application(&intake, &issue, "factory").await,
+        Ok(None)
+    );
+
+    // The maintainer applies the label at 10:00:00.
+    world
+        .fake
+        .label_issue(FIXTURE, number, "factory", "maintainer");
+    let first = source
+        .label_application(&intake, &issue, "factory")
+        .await
+        .unwrap()
+        .expect("the label is on the issue");
+    assert_eq!(first.actor.id, 77);
+    assert_eq!(first.actor.login.as_str(), "maintainer");
+    let first_time = first.applied_at.expect("the host records the time");
+    assert_eq!(first_time.as_text(), "2026-10-28T10:00:00Z");
+
+    // The author edits the body ten minutes later. The issue's time moves past the label's.
+    world.clock.advance(Duration::from_secs(600));
+    world.fake.edit_issue_body(FIXTURE, number, "Other words.");
+    let issue_now = source.fetch_issue(&intake, &issue).await.unwrap();
+    assert!(issue_now.updated_at > first_time);
+
+    // The label comes off and another person puts it back: the application is the later one.
+    world.clock.advance(Duration::from_secs(60));
+    world
+        .fake
+        .unlabel_issue(FIXTURE, number, "factory", "maintainer");
+    world.clock.advance(Duration::from_secs(60));
+    world
+        .fake
+        .label_issue(FIXTURE, number, "factory", "octocat");
+    let second = source
+        .label_application(&intake, &issue, "factory")
+        .await
+        .unwrap()
+        .expect("the label is on the issue again");
+    assert_eq!(second.actor.id, 1);
+    assert!(second.applied_at.expect("a time") > first_time);
+
+    // `label_actor` says the same person, as it always did.
+    assert_eq!(
+        source.label_actor(&intake, &issue, "factory").await,
+        Ok(Some(second.actor))
+    );
+}
+
 // ---- AUT-9: the approval stage's acknowledgement cannot be posted -----------------------------
 
 /// `ApprovalService::submit` posts "The decision approve by ... is recorded" as the stage

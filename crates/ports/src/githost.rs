@@ -146,6 +146,19 @@ pub struct GithubActor {
     pub login: ActorLogin,
 }
 
+/// Who applied a label, and when the code host says it did.
+///
+/// Added after v1.1, pending architect confirmation (`docs/architecture/ports-v1.1.md`, "Additions
+/// after v1.1"): the intake stage compares the time with the time the issue was last changed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LabelApplication {
+    /// The person who applied the label now on the issue.
+    pub actor: GithubActor,
+    /// When the code host recorded it. `None` when the source cannot say; a caller then has no
+    /// time to compare and must not pretend it has.
+    pub applied_at: Option<Timestamp>,
+}
+
 /// An issue as fetched live. Its text is untrusted.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Issue {
@@ -492,6 +505,25 @@ pub trait IssueSource: Send + Sync {
         issue: &IssueRef,
         label: &str,
     ) -> Result<Option<GithubActor>, GitHostError>;
+
+    /// Like [`label_actor`](Self::label_actor), with the time the host recorded for the label that
+    /// is on the issue now. A label that was applied, removed and applied again is the later
+    /// application. The default is the actor with no time, which is all a source that keeps no
+    /// timeline can say; the code host adapter answers with the time of the `labeled` event.
+    async fn label_application(
+        &self,
+        scope: &GitScope,
+        issue: &IssueRef,
+        label: &str,
+    ) -> Result<Option<LabelApplication>, GitHostError> {
+        Ok(self
+            .label_actor(scope, issue, label)
+            .await?
+            .map(|actor| LabelApplication {
+                actor,
+                applied_at: None,
+            }))
+    }
 
     /// Reads the rules that apply to the default branch. A failure to read is an error, which the
     /// engine treats as level L0.

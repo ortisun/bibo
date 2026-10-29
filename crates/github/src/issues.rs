@@ -20,7 +20,7 @@ use factory_domain::vocabulary::Fidelity;
 use factory_ports::clock::Clock;
 use factory_ports::githost::{
     Comment, CommentRef, CommentTarget, GitHostError, GitScope, GithubActor, Issue, IssueRef,
-    IssueSource, ProtectionReport,
+    IssueSource, LabelApplication, ProtectionReport,
 };
 use factory_ports::paths::BranchName;
 
@@ -174,6 +174,18 @@ impl IssueSource for GithubIssueSource {
         issue: &IssueRef,
         label: &str,
     ) -> Result<Option<GithubActor>, GitHostError> {
+        Ok(self
+            .label_application(scope, issue, label)
+            .await?
+            .map(|application| application.actor))
+    }
+
+    async fn label_application(
+        &self,
+        scope: &GitScope,
+        issue: &IssueRef,
+        label: &str,
+    ) -> Result<Option<LabelApplication>, GitHostError> {
         same_repository(scope, &issue.repo)?;
         let base = format!("{}/issues/{}", repo_path(&issue.repo), issue.number);
         // The label must be on the issue now. A label that was applied and removed is not one.
@@ -195,7 +207,10 @@ impl IssueSource for GithubIssueSource {
             e["event"].as_str() == Some("labeled") && e["label"]["name"].as_str() == Some(label)
         });
         match latest {
-            Some(event) if !event["actor"].is_null() => Ok(Some(actor(&event["actor"])?)),
+            Some(event) if !event["actor"].is_null() => Ok(Some(LabelApplication {
+                actor: actor(&event["actor"])?,
+                applied_at: Some(timestamp(&event["created_at"])?),
+            })),
             // Present, but nobody is named for it: nobody is credited with it.
             Some(_) => Ok(None),
             // The list was cut short and the event may be further on: do not guess.

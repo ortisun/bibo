@@ -814,7 +814,7 @@ async fn the_label_actor_is_the_person_who_applied_it(
             .label_actor(&scope, &issue_ref(12), "factory:run")
             .await
             .ctx("label_actor")?,
-        Some(actor),
+        Some(actor.clone()),
         "who applied the label"
     );
     ensure_eq!(
@@ -825,6 +825,27 @@ async fn the_label_actor_is_the_person_who_applied_it(
             .ctx("label_actor")?,
         None,
         "who applied a label that is not on the issue"
+    );
+    // The application says the same person, with or without a time, and says nothing for a label
+    // that is not there.
+    let application = subject
+        .source()
+        .label_application(&scope, &issue_ref(12), "factory:run")
+        .await
+        .ctx("label_application")?;
+    ensure_eq!(
+        application.map(|found| found.actor),
+        Some(actor),
+        "who applied the label, with the time"
+    );
+    ensure_eq!(
+        subject
+            .source()
+            .label_application(&scope, &issue_ref(12), "no-such-label")
+            .await
+            .ctx("label_application")?,
+        None,
+        "the application of a label that is not on the issue"
     );
     Ok(())
 }

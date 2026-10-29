@@ -21,8 +21,8 @@ use factory_domain::vocabulary::Fidelity;
 use factory_ports::githost::{
     ActorLogin, AppId, ChangeHost, CheckRef, CheckRequest, Comment, CommentRef, CommentTarget,
     DraftPrRequest, GitHostError, GitScope, GithubActor, Issue, IssueRef, IssueSource,
-    ProtectionReport, ProtectionSource, PullRequestLifecycle, PullRequestRef, PullRequestState,
-    Rejection, RequiredCheck,
+    LabelApplication, ProtectionReport, ProtectionSource, PullRequestLifecycle, PullRequestRef,
+    PullRequestState, Rejection, RequiredCheck,
 };
 use factory_ports::paths::{BranchName, CommitSha, RepoRef};
 use factory_ports::workspace::{FetchCredential, FetchTarget, PushCredential, PushTarget};
@@ -676,6 +676,7 @@ struct IssueState {
     issues: BTreeMap<IssueRef, Issue>,
     cache: BTreeMap<IssueRef, Issue>,
     labels: BTreeMap<(IssueRef, String), GithubActor>,
+    label_times: BTreeMap<(IssueRef, String), Timestamp>,
     comments: BTreeMap<CommentRef, Comment>,
     protection: BTreeMap<RepoRef, ProtectionReport>,
     permissions_asked: Vec<String>,
@@ -710,6 +711,15 @@ impl FakeIssueSource {
     pub fn put_issue(&self, issue: Issue) {
         let mut state = self.state.lock().expect("the lock is never poisoned");
         state.issues.insert(issue.reference.clone(), issue);
+    }
+
+    /// Records that `actor` applied `label` to the issue at `at`. `seed_label` records the same
+    /// with no time, as a source that keeps no timeline would.
+    pub fn seed_label_at(&self, issue: &IssueRef, label: &str, actor: &GithubActor, at: Timestamp) {
+        let mut state = self.state.lock().expect("the lock is never poisoned");
+        let key = (issue.clone(), label.to_owned());
+        state.labels.insert(key.clone(), actor.clone());
+        state.label_times.insert(key, at);
     }
 
     fn has(&self, defect: IssueSourceDefect) -> bool {
@@ -805,6 +815,26 @@ impl IssueSource for FakeIssueSource {
             .labels
             .get(&(issue.clone(), label.to_owned()))
             .cloned())
+    }
+
+    async fn label_application(
+        &self,
+        scope: &GitScope,
+        issue: &IssueRef,
+        label: &str,
+    ) -> Result<Option<LabelApplication>, GitHostError> {
+        self.in_scope(scope, &issue.repo)?;
+        let state = self.state.lock().expect("the lock is never poisoned");
+        let key = (issue.clone(), label.to_owned());
+        let found = if self.has(IssueSourceDefect::GuessesLabelActor) {
+            state.labels.iter().next()
+        } else {
+            state.labels.get_key_value(&key)
+        };
+        Ok(found.map(|(held, actor)| LabelApplication {
+            actor: actor.clone(),
+            applied_at: state.label_times.get(held).copied(),
+        }))
     }
 
     async fn repository_protection(

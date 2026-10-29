@@ -27,10 +27,10 @@ use factory_domain::policy::PolicyEngine;
 use factory_domain::policy::RepoKind;
 use factory_domain::redaction::Redactor;
 use factory_domain::scope::TenantScope;
-use factory_domain::values::{GitSha, MediaType, Sha256Digest, Slug};
+use factory_domain::values::{GitSha, MediaType, Sha256Digest, Slug, Timestamp};
 use factory_domain::vocabulary::{Fidelity, StageKind};
 use factory_ports::agent::{AgentRunRequest, BrokerEndpoint, Capability, RoutingNeed};
-use factory_ports::githost::{GitScope, IssueRef, IssueSource};
+use factory_ports::githost::{GitScope, IssueRef, IssueSource, LabelApplication};
 use factory_ports::registry::VersionReq;
 use factory_ports::sandbox::TeardownReason;
 use serde_json::Value;
@@ -69,6 +69,11 @@ const OUTCOME_GATE_TEXT: &str = "intake-outcome 1.0.0: the request is accepted, 
 
 /// The most bytes of one human answer that go into a prompt.
 const ANSWER_MAX_BYTES: usize = 8 * 1024;
+
+/// How long after the label was applied the issue may still be recorded as changed, in seconds.
+/// Applying a label is itself a change to the issue, and the host stamps both in the same second or
+/// the next, so the two times are not compared to the instant.
+const LABEL_SKEW_SECONDS: u64 = 5;
 
 /// What the handler is configured with. All of it comes from protected configuration.
 #[derive(Debug, Clone)]
@@ -137,6 +142,42 @@ impl IntakeHandler {
             probes: deps.probes,
             readability: ReadabilityGate::new(Options::new()),
         }
+    }
+
+    /// Whether the person who applied the label may ask, by numeric id, read from the code host
+    /// and the allowlist now. Returns the application of the label too, for its time.
+    async fn authorize_label(
+        &self,
+        identity: &crate::handlers::RunIdentity,
+        issue: &IssueRef,
+        now: Timestamp,
+    ) -> Result<(Authorization, Option<LabelApplication>), StageError> {
+        let allowlist = self
+            .allowlists
+            .current(identity.tenant)
+            .await
+            .map_err(|_| {
+                StageError::Environment(
+                    factory_domain::machines::guards::EnvironmentCause::PolicyUnloadable,
+                )
+            })?;
+        let application = self
+            .issues
+            .label_application(&self.scope(identity, issue), issue, &self.config.label)
+            .await
+            .map_err(|_| StageError::Tool)?;
+        let repository = format!("{}/{}", issue.repo.owner(), issue.repo.name());
+        let decision = authorize(
+            &self.policy.authority,
+            &allowlist,
+            identity.tenant,
+            &repository,
+            application
+                .as_ref()
+                .map(|found| (found.actor.id, found.actor.login.as_str())),
+            &now,
+        );
+        Ok((decision, application))
     }
 
     fn scope(&self, ctx_identity: &crate::handlers::RunIdentity, issue: &IssueRef) -> GitScope {
@@ -320,7 +361,19 @@ impl StageHandler for IntakeHandler {
         // the stage fetches the issue live and stores it as revision 1.
         let snapshot = match self.requests.latest(identity.tenant, identity.job).await {
             Ok(snapshot) => snapshot,
-            Err(SeamError::NotFound) => self.first_request(&identity).await?,
+            Err(SeamError::NotFound) => {
+                match self.first_request(&identity, ports.clock.now()).await {
+                    Ok(snapshot) => snapshot,
+                    Err(StageError::PolicyDenied) => {
+                        ctx.note_audit(AuditAction::new(
+                            AuditKind::AuthorizationDecision,
+                            AuditDecision::Denied,
+                        ));
+                        return Err(StageError::PolicyDenied);
+                    }
+                    Err(other) => return Err(other),
+                }
+            }
             Err(other) => return Err(seam(other)),
         };
         if Sha256Digest::of(snapshot.text.as_bytes()) != snapshot.sha256 {
@@ -338,36 +391,10 @@ impl StageHandler for IntakeHandler {
 
         // 3. Who asked, by numeric id.
         let now = ports.clock.now();
-        let allowlist = self
-            .allowlists
-            .current(identity.tenant)
-            .await
-            .map_err(|_| {
-                StageError::Environment(
-                    factory_domain::machines::guards::EnvironmentCause::PolicyUnloadable,
-                )
-            })?;
-        let git_scope = self.scope(&identity, &snapshot.issue);
-        let labelled_by = self
-            .issues
-            .label_actor(&git_scope, &snapshot.issue, &self.config.label)
-            .await
-            .map_err(|_| StageError::Tool)?;
-        let repository = format!(
-            "{}/{}",
-            snapshot.issue.repo.owner(),
-            snapshot.issue.repo.name()
-        );
-        let decision = authorize(
-            &self.policy.authority,
-            &allowlist,
-            identity.tenant,
-            &repository,
-            labelled_by
-                .as_ref()
-                .map(|actor| (actor.id, actor.login.as_str())),
-            &now,
-        );
+        let (decision, application) = self
+            .authorize_label(&identity, &snapshot.issue, now)
+            .await?;
+        let labelled_by = application.as_ref().map(|found| &found.actor);
         if !decision.is_authorized() {
             ctx.note_audit(AuditAction::new(
                 AuditKind::AuthorizationDecision,
@@ -542,7 +569,7 @@ impl StageHandler for IntakeHandler {
                         Authorization::Authorized { allowlist_version, .. }
                         | Authorization::Denied { allowlist_version, .. } => allowlist_version,
                     },
-                    "actor_id": labelled_by.as_ref().map(|actor| actor.id),
+                    "actor_id": labelled_by.map(|actor| actor.id),
                 }),
             );
         }
@@ -792,9 +819,20 @@ impl IntakeHandler {
     /// code host, so this is the one place the text of such a job is read. It fails closed:
     /// a job that names no issue, an issue the host does not return, another issue than the one
     /// asked for, and an issue with no words in it all end the attempt, and nothing is stored.
+    ///
+    /// The snapshot is checked against the label before it is stored (AUT-11). The text of the
+    /// issue is what the factory will act on, under the authority of the person who applied the
+    /// label, so the label must be on the issue now, applied by a person on the allowlist (by
+    /// numeric id), and the issue must not have changed since the label was applied: an author who
+    /// edits the body after a requester labelled it must not have the new words acted on under the
+    /// requester's name. A source that cannot say when the label was applied gives no time to
+    /// compare, and the time check is then not made. Any activity on the issue after the label (a
+    /// comment, another label) moves the host's "last changed" time too, so the job is refused and
+    /// the requester applies the label again. That is the price of the check, and it fails closed.
     async fn first_request(
         &self,
         identity: &crate::handlers::RunIdentity,
+        now: Timestamp,
     ) -> Result<RequestSnapshot, StageError> {
         let issue = self
             .requests
@@ -807,6 +845,19 @@ impl IntakeHandler {
             .map_err(|_| StageError::Tool)?;
         if fetched.reference != issue {
             return Err(StageError::Tool);
+        }
+        let (decision, application) = self.authorize_label(identity, &issue, now).await?;
+        if !decision.is_authorized() {
+            return Err(StageError::PolicyDenied);
+        }
+        let changed_after_label = application
+            .and_then(|found| found.applied_at)
+            .and_then(|applied| {
+                applied.checked_add(std::time::Duration::from_secs(LABEL_SKEW_SECONDS))
+            })
+            .is_some_and(|limit| fetched.updated_at > limit);
+        if changed_after_label {
+            return Err(StageError::PolicyDenied);
         }
         let text = request_text(&fetched.title, &fetched.body);
         if text.trim().is_empty() {
