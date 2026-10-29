@@ -2878,7 +2878,7 @@
           "command": "scripts/docs-check.sh"
         },
         {
-          "check": "The quickstart works from a clean clone, executed in CI.",
+          "check": "The quickstart works from a clean clone, executed by the manual check below (the default CI run does not run it: it clones and builds the repository and its last step needs a Docker daemon).",
           "kind": "command",
           "command": "scripts/docs-check.sh --quickstart"
         },

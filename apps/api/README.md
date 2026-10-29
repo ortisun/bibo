@@ -166,17 +166,10 @@ artifacts: { root: /var/lib/factory/artifacts }   # accepted, not read by this p
 
 ### The local stack's example
 
-`infra/compose/config/api.local.example.yaml` is **parsed as written except for one missing setting**: the
-API reads the policy and the allowlist, so it needs `protected_checkout`. `infra/**` is not edited here.
-The corrected file is the existing one plus this line, and the container must mount that directory read-only:
-
-```yaml
-protected_checkout: /etc/factory/protected
-```
-
-`tests/profile.rs` (`the_api_example_of_the_local_stack_parses_once_it_names_the_protected_checkout`) parses the
-file as it is, shows the refusal naming `protected_checkout`, and parses the corrected text. The names the
-placeholder chose (`database.api`, `listen`, `artifacts`) are the names the API uses.
+`infra/compose/config/api.local.example.yaml` is parsed as written by `tests/profile.rs`. It names
+`protected_checkout` (the container mounts that directory read-only) and the same `decisions.key_file` as the
+worker's example, so the two processes share one signing key. The names the placeholder chose
+(`database.api`, `listen`, `artifacts`) are the names the API uses.
 
 ## Limits and hostile input
 

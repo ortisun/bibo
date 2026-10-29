@@ -2204,7 +2204,7 @@ Done when:
 | # | Check | How | Command or evidence |
 |---|---|---|---|
 | 1 | Links resolve, code snippets run, and every command in the documents exists in the real help output. | command | `scripts/docs-check.sh` |
-| 2 | The quickstart works from a clean clone, executed in CI. | command | `scripts/docs-check.sh --quickstart` |
+| 2 | The quickstart works from a clean clone, executed by the manual check below (the default CI run does not run it: it clones and builds the repository and its last step needs a Docker daemon). | command | `scripts/docs-check.sh --quickstart` |
 | 3 | Every configuration key in the reference exists in code and every key in code is documented. | command | `scripts/docs-check.sh --config-keys` |
 | 4 | Each claim in the walkthrough cites a recorded file or ledger entry. | command | `scripts/docs-check.sh --walkthrough` |
 | 5 | The documents pass the readability gate. | command | `scripts/docs-check.sh --readability` |

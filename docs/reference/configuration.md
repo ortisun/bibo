@@ -277,7 +277,7 @@ The command line reads no file. It takes its settings as options and one environ
 ## Examples in the repository
 
 - `infra/compose/config/worker.local.example.yaml` is a valid `local` configuration with no credential. The worker stops with `BLOCKED:` lines until a deployment adds the broker, the GitHub App and the tenants.
-- `infra/compose/config/api.local.example.yaml` is the API file of the local stack. At the time of writing it lacks `protected_checkout`, which the API requires. The [API README](../../apps/api/README.md) shows the line to add.
+- `infra/compose/config/api.local.example.yaml` is the API file of the local stack. It names `protected_checkout` and the same `decisions.key_file` as the worker, and a test parses it as written.
 
 ## How this page is checked
 
