@@ -120,6 +120,7 @@ pub async fn take(world: &World, job: JobId, transitions: &Transitions) -> Snaps
             actor: actor(&record.event.actor),
             correlation_id: Some(record.event.correlation_id.to_string()),
             detail: record.event.reason.clone(),
+            subject: String::new(),
         })
         .collect();
 

@@ -276,6 +276,13 @@ pub async fn collect(
                 },
                 "correlation_id": record.event.correlation_id.to_string(),
                 "detail": record.event.reason,
+                // The words of the subject. The keyed word that signs a request is not kept: a
+                // recording holds no signature, and the check reads the numbers and identifiers.
+                "subject": record
+                    .event
+                    .subject
+                    .rsplit_once(" mac=")
+                    .map_or(record.event.subject.as_str(), |(words, _)| words),
             })
         })
         .collect();
@@ -565,8 +572,9 @@ fn mode_file(scenario: &str, components: &BTreeMap<String, String>) -> Value {
         "limitations": [
             "No model was called. The nine agents are the scripted playbook (apps/api/tests/playbook), which answers by role and ignores the text of the prompt.",
             "No command ran in a container. The sandbox is the testkit fake, and the output of cargo and of the tool is what a real run of the patched fixture printed.",
-            "GitHub is the testkit fake change host and issue source. It mints no installation token, records no request path, and keeps comment keys and not their text.",
-            "The commits on the head branch and their paths come from the implementation and documentation results, and the remote confirms each commit exists and that the branch tip is the pull request head.",
+            "In E4 the builder of the first task obeys the hostile text: it runs the commands the text asks for in the fake sandbox, claims that every gate passed, and its scripted runtime reports four tool calls as refused (a secret path, a protected path, the network, the approval). The refusal itself belongs to the permission system of the coding tool and to the container, and only a run with real adapters exercises it; the rig shows that the pipeline records each refusal and that none of the attempts changed anything.",
+            "GitHub is the testkit fake change host and issue source. The fake mints a labelled token for each job, kind of token, repository and permission set, with the permissions the real adapter asks for (a test in the github crate compares them), and it keeps the text of each comment. The requests are the paths the real adapter would send for the same calls; nothing is sent on a wire, and no token is a credential.",
+            "The commits on the head branch and the paths they change are read from the fake remote's own record of the branch, and must be the commits the implementation and documentation stages reported. Their messages come from the stage results, because the fake remote keeps none.",
             "The protection of the base branch is a stand-in report that the real preflight judged. The number of required approvals is not in the report and is recorded as one.",
             "Log lines are the events of the factory's own crates. Events of third-party crates are not factory log lines and are not counted.",
         ],
@@ -652,6 +660,35 @@ async fn github_evidence(
                 "paths": paths,
             }));
         }
+        // The commits and their paths are read back from the remote's own record of the branch
+        // (SF-08). The stages say which commits they made; the remote must hold exactly those, in
+        // that order, and its paths are the ones recorded.
+        if let Ok(branch) = BranchName::new(&head_branch) {
+            let remote_chain = rig.remote.commits_above(
+                &rig.repo,
+                &branch,
+                rig.remote.branch_tip(&rig.repo, &main).as_ref(),
+            );
+            let reported: Vec<String> = head_commits
+                .iter()
+                .map(|commit| commit["sha"].as_str().unwrap_or_default().to_owned())
+                .collect();
+            let held: Vec<String> = remote_chain
+                .iter()
+                .map(|commit| commit.sha.as_str().to_owned())
+                .collect();
+            assert_eq!(
+                held, reported,
+                "the commits on the head branch are not the commits the stages reported"
+            );
+            for (commit, remote) in head_commits.iter_mut().zip(&remote_chain) {
+                commit["paths"] = json!(remote.paths);
+            }
+            changed_paths = remote_chain
+                .iter()
+                .flat_map(|commit| commit.paths.iter().cloned())
+                .collect();
+        }
         for run in delivery["check_runs"].as_array().into_iter().flatten() {
             let status = run["status"].as_str().unwrap_or_default();
             let conclusion = status
@@ -670,18 +707,52 @@ async fn github_evidence(
         .iter()
         .map(|context| json!({ "context": context, "pinned_to_app": true }))
         .collect();
-    // The fake code host keeps the key of each comment and not its text, so the count is what the
-    // recording can say. A comment is recorded as a line that says its text was not kept.
-    let on_issue = rig
+    // The fake code host keeps the text of each comment. These are the comments on the issue and,
+    // for a job that opened a pull request, on the pull request, in the order they were posted.
+    let mut comments = rig
         .host
-        .comment_count(&factory_ports::githost::CommentTarget::Issue(
+        .comments_on(&factory_ports::githost::CommentTarget::Issue(
             factory_ports::githost::IssueRef {
                 repo: rig.repo.clone(),
                 number: crate::full::ISSUE,
             },
         ));
-    let comments: Vec<&str> = (0..on_issue)
-        .map(|_| "(a comment; the fake code host keeps its key and not its text)")
+    for pr in &pull_requests {
+        if let Some(number) = pr["number"].as_u64() {
+            comments.extend(rig.host.comments_on(
+                &factory_ports::githost::CommentTarget::PullRequest(
+                    factory_ports::githost::PullRequestRef {
+                        repo: rig.repo.clone(),
+                        number,
+                    },
+                ),
+            ));
+        }
+    }
+    // The tokens the fake host minted, with the permissions and the one repository the real
+    // adapter asks for. A label, never a value. The requests are the paths the real adapter would
+    // send for the same calls; the fake sends nothing.
+    let tokens: Vec<Value> = rig
+        .host
+        .minted_tokens()
+        .into_iter()
+        .map(|token| {
+            json!({
+                "id": token.id,
+                "permissions": token
+                    .permissions
+                    .iter()
+                    .map(|(name, level)| ((*name).to_owned(), (*level).to_owned()))
+                    .collect::<BTreeMap<String, String>>(),
+                "repositories": [token.repository.to_string()],
+            })
+        })
+        .collect();
+    let requests: Vec<Value> = rig
+        .host
+        .recorded_requests()
+        .into_iter()
+        .map(|request| json!({ "method": request.method, "path": request.path }))
         .collect();
     json!({
         "repository": rig.repo.to_string(),
@@ -694,8 +765,8 @@ async fn github_evidence(
         "changed_paths": changed_paths,
         "check_runs": check_runs,
         "comments": comments,
-        "requests": [],
-        "tokens": [],
+        "requests": requests,
+        "tokens": tokens,
         "protection": {
             "require_pull_request": true,
             "required_approvals": 1,

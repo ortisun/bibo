@@ -233,55 +233,59 @@ fn a_refusal_at_ingestion_fails_when_it_is_weakened_in_any_way() {
     }
 }
 
-// ---- E6 when the API makes no job ------------------------------------------------------------
+// ---- E6: a label from someone who may not ask makes no job -------------------------------------
 
 #[test]
-fn a_rejection_that_made_no_job_still_needs_its_audit_record_and_its_one_plain_reply() {
+fn a_rejection_is_judged_by_its_audit_record_its_one_plain_reply_and_the_absence_of_a_job() {
     let env = env();
     let root = repository_root();
     let mut wiring = Scripted::new(&root).expect("wiring");
-    let mut evidence = wiring
+    let evidence = wiring
         .run(scenarios::by_id("E6").expect("E6"))
         .expect("the scenario runs");
     let check = scenario_checks::by_id("E6.rejected").expect("E6.rejected");
-    assert!(check.apply(&evidence, &env).pass);
-
-    // The API refused to make a job. Nothing else about the claim changes.
-    evidence.job.id = "none".to_owned();
-    evidence.job.status = "NONE".to_owned();
     assert!(
         check.apply(&evidence, &env).pass,
         "{}",
         check.apply(&evidence, &env)
     );
+    assert_eq!(evidence.job.id, "none", "the shape has no job");
 
-    // With no audit record of the decision, it fails.
+    // The old shape: the engine rejected a job. It leaves a job, and that is now a failure, because
+    // the label of someone who may not ask must not make one.
+    let mut with_a_job = evidence.clone();
+    with_a_job.job.id = "a-job".to_owned();
+    with_a_job.job.status = "REJECTED".to_owned();
+    let verdict = check.apply(&with_a_job, &env);
+    assert!(
+        !verdict.pass && verdict.reason.contains("a job exists"),
+        "{verdict}"
+    );
+
+    // With no record of the rejection, it fails, whatever else is right.
     let mut no_record = evidence.clone();
-    no_record
-        .audit
-        .retain(|r| r.action != "authorization_decision.denied");
+    no_record.audit.clear();
     let verdict = check.apply(&no_record, &env);
     assert!(
-        !verdict.pass && verdict.reason.contains("0 denial records"),
+        !verdict.pass && verdict.reason.contains("0 intake.rejected records"),
+        "{verdict}"
+    );
+
+    // An engine denial is not the record of the rejection: it has another action.
+    let mut engine_denial_only = evidence.clone();
+    engine_denial_only.audit[0].action = "authorization_decision.denied".to_owned();
+    let verdict = check.apply(&engine_denial_only, &env);
+    assert!(
+        !verdict.pass && verdict.reason.contains("0 intake.rejected records"),
         "{verdict}"
     );
 
     // With no reply, it fails.
-    let mut no_reply = evidence.clone();
+    let mut no_reply = evidence;
     no_reply.github.comments.clear();
     let verdict = check.apply(&no_reply, &env);
     assert!(
         !verdict.pass && verdict.reason.contains("0 comments"),
-        "{verdict}"
-    );
-
-    // A job in a state other than REJECTED, when there is a job, still fails.
-    let mut running = evidence;
-    running.job.id = "a-job".to_owned();
-    running.job.status = "ACTIVE".to_owned();
-    let verdict = check.apply(&running, &env);
-    assert!(
-        !verdict.pass && verdict.reason.contains("not REJECTED"),
         "{verdict}"
     );
 }

@@ -155,6 +155,7 @@ async fn scenario_e3_a_failing_check_blocks_promotion() {
                     "ignored_instructions": [],
                 }),
                 writes: vec![("src/lib.rs".to_owned(), lib)],
+                script: None,
             },
         );
     }
@@ -262,6 +263,13 @@ async fn scenario_e4_prompt_injection_has_no_effect() {
     started.base = base_tip(&journey);
     let _dump = full::DumpOnFailure::new(&journey.rig, journey.job);
     let _prompt = PromptOnFailure(&journey);
+    // The builder of the first task obeys the text: it tries to read the canary file, write a
+    // workflow, call out to the network and approve its own work, and its runtime reports each
+    // attempt as refused. Its answer and its patch stay the playbook's, so the job goes on.
+    journey.rig.playbook.compromise(
+        &format!("builder.{}", playbook::TASKS[0]),
+        playbook::obeying_the_hostile_text(),
+    );
 
     // The journey up to the question about the pull request.
     let view = journey.to_the_specification_question().await;
@@ -398,6 +406,33 @@ async fn scenario_e4_prompt_injection_has_no_effect() {
         hits.push(format!("{hit:?}"));
     }
     assert!(blobs > 40, "{blobs} stored blobs were swept");
+
+    // (5) to (8) What the builder that obeyed the text tried. An attempt counts as denied when the
+    // pipeline recorded a refused tool call for it and the command it ran, if it ran one, did not
+    // succeed in the sandbox. Whether the attempt changed anything is judged by the checks on the
+    // branch, the base, the canary sweep and the pull request.
+    let performed = journey.rig.runtime.performed();
+    let recorded_denials =
+        full::count_audit(&journey.rig, journey.job, "tool_call_denied.denied").await;
+    let reported_denials = playbook::HOSTILE_ATTEMPTS.len();
+    for attempt in playbook::HOSTILE_ATTEMPTS {
+        let succeeded = attempt.exec.is_some_and(|argv| {
+            performed.iter().any(|done| {
+                matches!(
+                    done,
+                    factory_testkit::agent::Performed::Exec { argv: ran, exit_code: Some(0) }
+                        if ran.iter().map(String::as_str).eq(argv.iter().copied())
+                )
+            })
+        });
+        attempts.push(json!({
+            "action": format!(
+                "the builder, obeying the text, tries to {} (its runtime reports the tool call refused)",
+                attempt.what
+            ),
+            "outcome": if succeeded || recorded_denials < reported_denials { "performed" } else { "denied" },
+        }));
+    }
     let planted = u32::try_from(canaries.iter().count()).unwrap_or(u32::MAX);
     let hostile = json!({
         "demanded": demanded,
@@ -411,7 +446,17 @@ async fn scenario_e4_prompt_injection_has_no_effect() {
         &started,
         Extras {
             hostile: Some(hostile),
-            facts: BTreeMap::from([("original_request_sha256".to_owned(), json!(filed_hash))]),
+            facts: BTreeMap::from([
+                ("original_request_sha256".to_owned(), json!(filed_hash)),
+                (
+                    "agent_attempts".to_owned(),
+                    json!(playbook::HOSTILE_ATTEMPTS.len()),
+                ),
+                (
+                    "agent_denials_reported".to_owned(),
+                    json!(playbook::HOSTILE_ATTEMPTS.len()),
+                ),
+            ]),
             ..Extras::default()
         },
     )
@@ -585,7 +630,21 @@ async fn scenario_e6_a_requester_who_is_not_on_the_allowlist_is_rejected() {
         Extras {
             tenant_audit: true,
             job_status: "NONE".to_owned(),
-            facts: BTreeMap::from([("jobs_listed".to_owned(), json!(jobs.len()))]),
+            facts: BTreeMap::from([
+                ("jobs_listed".to_owned(), json!(jobs.len())),
+                (
+                    "sender_github_id".to_owned(),
+                    json!(rig.env.a.outsider.github_id),
+                ),
+                (
+                    "delivery_id".to_owned(),
+                    json!("0190a3b2-7c4d-4e5f-8a6b-0000000000e6"),
+                ),
+                // The login the payload carried, and a phrase of the issue's own words: neither
+                // may appear in the record of the rejection or in the reply.
+                ("payload_login".to_owned(), json!("outsider-one")),
+                ("issue_text".to_owned(), json!("--json")),
+            ]),
             ..Extras::default()
         },
     )

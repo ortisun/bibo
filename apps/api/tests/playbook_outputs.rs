@@ -215,6 +215,7 @@ fn a_deliberate_break_replaces_an_answer_in_view_of_the_reader() {
             entry: "architect".to_owned(),
             output: json!({"status": "NEEDS_HUMAN"}),
             writes: Vec::new(),
+            script: None,
         },
     );
     let reply = playbook.answer("architect", "");
