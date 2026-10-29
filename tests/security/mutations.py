@@ -42,6 +42,9 @@ EGRESS = "crates/domain/src/policy/egress.rs"
 TOOLS = "crates/domain/src/policy/tools.rs"
 ATTEMPT = "crates/workflow/src/engine/attempt.rs"
 BLOCK = "crates/workflow/src/prompts/block.rs"
+PATHS = "crates/domain/src/policy/paths.rs"
+JUDGE = "crates/workflow/src/stages/approval/judge.rs"
+AUTHORITY = "crates/domain/src/policy/authority.rs"
 
 # name -> (what is broken, [(file, old, new), ...])
 MUTATIONS = {
@@ -63,11 +66,23 @@ MUTATIONS = {
     ),
     "an-agent-may-grant-itself-a-tool": (
         "a request for a grant from the agent is answered like a request from the policy engine",
-        [(TOOLS, "            Requester::Agent => ToolVerdict::Denied {\n                reason: ToolDenial::SelfGrant,\n                rule: RuleRef::new(\"tools\", \"agents_may_self_grant\"),\n            },", "            Requester::Agent => ToolVerdict::Allowed { human_gate: false },")],
+        [(TOOLS, "            Requester::Agent => ToolVerdict::Denied {\n                reason: ToolDenial::SelfGrant,\n                rule: RuleRef::new(\"tools\", \"agents_may_self_grant\"),\n            },", "            Requester::Agent => ToolVerdict::Allowed { human_gate: HumanGate::None },")],
     ),
     "the-budget-threshold-is-never-recorded": (
         "crossing the budget warning writes no audit record",
         [(ATTEMPT, "        if crossed || job_crossed {", "        if false && (crossed || job_crossed) {")],
+    ),
+    "a-deny-write-path-may-be-written": (
+        "the path policy lets every operation through on a path of a deny_write group",
+        [(PATHS, "        ProtectionMode::DenyWrite => matches!(op, Operation::Read),", "        ProtectionMode::DenyWrite => true,")],
+    ),
+    "a-moved-head-is-not-noticed": (
+        "the approval judge no longer compares the head that the person saw with the head of the pull request now",
+        [(JUDGE, "    if live.pr_head != &seen.pr_head {", "    if false && live.pr_head != &seen.pr_head {")],
+    ),
+    "a-person-who-is-not-listed-may-ask": (
+        "admission treats a person that the allowlist cannot find as a requester",
+        [(AUTHORITY, "            .is_ok_and(|d| d.contains(&Designation::Requester));", "            .map_or(true, |_| true);")],
     ),
     "data-lines-are-not-quoted": (
         "a line of data in the prompt is written without the quote prefix, so a line of data can pass for a delimiter",
@@ -85,7 +100,17 @@ TESTS = {
     "the-egress-allowlist-matches-any-host": BROAD,
     "an-agent-may-grant-itself-a-tool": BROAD,
     "the-budget-threshold-is-never-recorded": ["-p", "factory-workflow", "negative_nt_aud_03", "every_required_event_type"],
+    "a-deny-write-path-may-be-written": BROAD,
+    "a-moved-head-is-not-noticed": BROAD,
+    "a-person-who-is-not-listed-may-ask": BROAD,
     "data-lines-are-not-quoted": BROAD,
+}
+
+# Tests that are red with every control on (findings F-1 and F-3 of docs/security/p0-coverage.md).
+# They fail in every run, so a failure of theirs says nothing about the control that was removed.
+BASELINE_RED = {
+    "negative_nt_inj_04_tool_output_that_says_grant_yourself_and_approve_gains_no_authority",
+    "negative_nt_sec_01_a_full_fixture_job_with_a_canary_of_every_class_leaves_none_in_any_sink",
 }
 
 FAILED = re.compile(r"^\s+FAIL \[[^\]]*\] \(\s*\d+/\d+\) (.+)$", re.M)
@@ -101,9 +126,9 @@ def run_tests(name):
     command = ["cargo", "nextest", "run", "--locked", "--no-fail-fast", *TESTS[name]]
     done = subprocess.run(command, cwd=ROOT, capture_output=True, text=True, timeout=1800)
     text = done.stdout + done.stderr
-    if "could not compile" in text or re.search(r"^error(\[E\d+\])?:", text, re.M):
+    if "could not compile" in text or re.search(r"^error\[E\d+\]", text, re.M):
         return False, []
-    return True, names_of(FAILED.findall(text))
+    return True, [n for n in names_of(FAILED.findall(text)) if n not in BASELINE_RED]
 
 
 def load(script):
