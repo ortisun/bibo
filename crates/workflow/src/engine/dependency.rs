@@ -361,6 +361,18 @@ impl Engine {
         outputs: &[crate::handlers::NamedArtifact],
         cx: &Cx<'_>,
     ) -> Result<serde_json::Value, EngineError> {
+        self.stored_document(tx, outputs, cx, EVIDENCE).await
+    }
+
+    /// The first of the stage run's `outputs` that is a document of this `kind`, as it was stored,
+    /// or `null`. The kind is the document's own `kind` field.
+    pub(super) async fn stored_document(
+        &self,
+        tx: &mut dyn Tx,
+        outputs: &[crate::handlers::NamedArtifact],
+        cx: &Cx<'_>,
+        kind: &str,
+    ) -> Result<serde_json::Value, EngineError> {
         let scope = factory_domain::scope::TenantScope::new(cx.tenant);
         for output in outputs {
             let Ok(indexed) = tx.get_artifact_index(&output.artifact.sha256).await else {
@@ -372,7 +384,7 @@ impl Engine {
             let Ok(document) = serde_json::from_slice::<serde_json::Value>(&bytes) else {
                 continue;
             };
-            if document.get("kind").and_then(serde_json::Value::as_str) == Some(EVIDENCE) {
+            if document.get("kind").and_then(serde_json::Value::as_str) == Some(kind) {
                 return Ok(document);
             }
         }

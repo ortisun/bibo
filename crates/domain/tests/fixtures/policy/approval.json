@@ -649,7 +649,9 @@
       "cancel",
       "unblock",
       "approve-dependency",
-      "approve-build-code"
+      "approve-build-code",
+      "approve-project-build-code",
+      "ack-translation-warning"
     ]
   },
   "intake": {

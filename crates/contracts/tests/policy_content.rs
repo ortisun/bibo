@@ -1324,10 +1324,16 @@ fn letting_a_blocked_stage_run_go_again_is_an_operators_human_decision_at_every_
     );
     // The verb is one of the words of the command set, and the action is a human decision that no
     // setting can turn into none.
-    assert!(
-        policy.commands.verbs.iter().any(|verb| verb == "unblock"),
-        "commands.verbs lacks unblock"
-    );
+    for word in [
+        "unblock",
+        "approve-project-build-code",
+        "ack-translation-warning",
+    ] {
+        assert!(
+            policy.commands.verbs.iter().any(|verb| verb == word),
+            "commands.verbs lacks {word}"
+        );
+    }
     assert!(
         policy
             .always_human

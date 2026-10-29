@@ -34,6 +34,9 @@ use crate::gates::scope::own_build_code::{
     ARTIFACT_NOTE as BUILD_CODE_NOTE, ProjectBuildCodeApproval,
     STATEMENT_PREFIX as BUILD_CODE_PREFIX,
 };
+use crate::stages::approval::warnings::{
+    ARTIFACT_NOTE as WARNING_NOTE, STATEMENT_PREFIX as WARNING_PREFIX, WarningDecision,
+};
 
 /// How the statement of the claim of a recorded decision begins.
 pub const STATEMENT_PREFIX: &str = "A person decided on ";
@@ -136,6 +139,23 @@ impl LedgerApprovals {
         )
     }
 
+    async fn read_warnings(&self, tenant: TenantId, job: JobId) -> Option<Vec<WarningDecision>> {
+        let documents = self
+            .documents(tenant, job, (WARNING_PREFIX, WARNING_NOTE))
+            .await?;
+        Some(
+            documents
+                .into_iter()
+                .filter_map(|(statement, document)| {
+                    WarningDecision::from_json(&document).filter(|decision| {
+                        decision.scope == (DecisionScope { tenant, job })
+                            && decision.statement() == statement
+                    })
+                })
+                .collect(),
+        )
+    }
+
     async fn read_build_code(
         &self,
         tenant: TenantId,
@@ -178,5 +198,13 @@ impl RecordedApprovals for LedgerApprovals {
         job: JobId,
     ) -> Vec<ProjectBuildCodeApproval> {
         self.read_build_code(tenant, job).await.unwrap_or_default()
+    }
+
+    async fn warning_decisions_for_job(
+        &self,
+        tenant: TenantId,
+        job: JobId,
+    ) -> Vec<WarningDecision> {
+        self.read_warnings(tenant, job).await.unwrap_or_default()
     }
 }

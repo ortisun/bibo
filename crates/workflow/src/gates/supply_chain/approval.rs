@@ -41,6 +41,7 @@ use serde_json::{Value, json};
 
 use super::model::normalize;
 use crate::gates::scope::own_build_code::ProjectBuildCodeApproval;
+use crate::stages::approval::warnings::WarningDecision;
 
 /// The action row of `approval.yaml` for a new direct dependency.
 pub const ACTION: &str = "add_new_direct_dependency";
@@ -311,6 +312,17 @@ pub trait RecordedApprovals: Send + Sync {
         _tenant: TenantId,
         _job: JobId,
     ) -> Vec<ProjectBuildCodeApproval> {
+        Vec::new()
+    }
+
+    /// Every decision about a translation warning recorded for `job` of `tenant`
+    /// ([`WarningDecision`]). A source that keeps none answers with none, and an approval of a
+    /// request that has an open warning is then refused: the safe side.
+    async fn warning_decisions_for_job(
+        &self,
+        _tenant: TenantId,
+        _job: JobId,
+    ) -> Vec<WarningDecision> {
         Vec::new()
     }
 }

@@ -6,6 +6,7 @@
 //! | Verb | What it asks | Designation | Engine |
 //! |---|---|---|---|
 //! | `unblock` | let a `BLOCKED` stage run go again, after the cause is gone | `operator` | `Engine::decide` with `UnblockRerun` |
+//! | `ack-translation-warning` | decide about one open warning of the documentation reviewer's rule `translation-unfaithful`, so that the approval of the pull request can count it | `approver` (`acknowledge_documentation_warning`) | `Engine::record_warning_decision` |
 //! | `approve-project-build-code` | accept the project's own new build code, one file with the exact content a reviewer read | `security_approver` (`approve_build_code`) | `Engine::record_project_build_code_decision` |
 //!
 //! They are not among the six verbs of the approval service, and not dependency decisions. They
@@ -61,11 +62,14 @@ use factory_ports::store::{
     AuditAction, AuditActor, AuditDecision, AuditFilter, ConstraintRule, NewAuditEvent,
     PrincipalKind, Store, StoreError,
 };
-use factory_workflow::commands::{Actor, Decision, RecordProjectBuildCodeDecision, Subject};
+use factory_workflow::commands::{
+    Actor, Decision, RecordProjectBuildCodeDecision, RecordWarningDecision, Subject,
+};
 use factory_workflow::engine::{Engine, EngineError};
 use factory_workflow::gates::scope::own_build_code::{BuildScript, EVIDENCE_KEY};
 use factory_workflow::gates::supply_chain::approval::{
-    BUILD_CODE_ACTION, Request, authorize_build_code, authorize_unblock,
+    BUILD_CODE_ACTION, Request, WARNING_ACTION, authorize_build_code, authorize_unblock,
+    authorize_warning,
 };
 use factory_workflow::stages::approval::ApprovalSources;
 use factory_workflow::stages::validation::EVIDENCE;
@@ -83,6 +87,9 @@ const REQUEST_PREFIX: &str = "requested: ";
 
 /// The audit action of a request about a stage run (written by the API).
 pub const REQUESTED: &str = "decision.stage_requested";
+
+/// The highest number of a warning a request carries.
+pub const MAX_WARNING: u32 = 10_000;
 
 /// The longest repository path a request carries, in bytes.
 pub const MAX_PATH_BYTES: usize = 180;
@@ -109,11 +116,17 @@ pub enum StageVerb {
     Unblock,
     /// Accepts one file of the project's own new build code, with the content a reviewer read.
     ApproveProjectBuildCode,
+    /// Decides about one open translation warning of an approval request.
+    AckTranslationWarning,
 }
 
 impl StageVerb {
     /// Every verb.
-    pub const ALL: [StageVerb; 2] = [Self::Unblock, Self::ApproveProjectBuildCode];
+    pub const ALL: [StageVerb; 3] = [
+        Self::Unblock,
+        Self::ApproveProjectBuildCode,
+        Self::AckTranslationWarning,
+    ];
 
     /// The word a person types.
     #[must_use]
@@ -121,6 +134,7 @@ impl StageVerb {
         match self {
             Self::Unblock => "unblock",
             Self::ApproveProjectBuildCode => "approve-project-build-code",
+            Self::AckTranslationWarning => "ack-translation-warning",
         }
     }
 
@@ -130,6 +144,7 @@ impl StageVerb {
         match self {
             Self::Unblock => factory_workflow::gates::supply_chain::approval::UNBLOCK_ACTION,
             Self::ApproveProjectBuildCode => BUILD_CODE_ACTION,
+            Self::AckTranslationWarning => WARNING_ACTION,
         }
     }
 
@@ -235,6 +250,15 @@ impl StageFields {
             // run is optional, as for a decision on a dependency.
             StageVerb::ApproveProjectBuildCode => {
                 self.path.is_some() && self.digest.is_some() && self.index.is_none()
+            }
+            // The approval stage run and the number of the warning, counted from 1.
+            StageVerb::AckTranslationWarning => {
+                self.stage_run.is_some()
+                    && self.path.is_none()
+                    && self.digest.is_none()
+                    && self
+                        .index
+                        .is_some_and(|number| (1..=MAX_WARNING).contains(&number))
             }
         };
         words_of_the_verb
@@ -560,7 +584,7 @@ impl StageDecisions {
         // The stage run: the one the person named, or the blocked validation run of the job. For
         // build code the run also gives the file the words select, from its own stored evidence.
         let (stage_run, script) = match fields.verb {
-            StageVerb::Unblock => match fields.stage_run {
+            StageVerb::Unblock | StageVerb::AckTranslationWarning => match fields.stage_run {
                 Some(named) => (named, None),
                 None => return Verdict::Done(Reason::NoStageRun.into()),
             },
@@ -616,6 +640,7 @@ impl StageDecisions {
         let verdict = match fields.verb {
             StageVerb::Unblock => authorize_unblock(&authority_request),
             StageVerb::ApproveProjectBuildCode => authorize_build_code(&authority_request),
+            StageVerb::AckTranslationWarning => authorize_warning(&authority_request),
         };
         // A refusal is never explained, and a policy that needs no person for the action is not a
         // reason to accept one.
@@ -691,6 +716,37 @@ impl StageDecisions {
                 match applied {
                     Ok(_) => Verdict::Done(Marked::Applied(
                         "The decision on the build code was recorded.".to_owned(),
+                    )),
+                    Err(error) => engine_verdict(error),
+                }
+            }
+            (StageVerb::AckTranslationWarning, _) => {
+                // The reason: at least ten characters, and redacted, as for a decision on code.
+                let Some(reason) = self.reason_of(&request.reason) else {
+                    return Verdict::Done(Reason::Incomplete.into());
+                };
+                let Some(warning) = fields.index else {
+                    return Verdict::Done(Reason::Incomplete.into());
+                };
+                let applied = self
+                    .deps
+                    .engine
+                    .record_warning_decision(
+                        &actor,
+                        RecordWarningDecision {
+                            stage: Subject {
+                                job: fields.job,
+                                stage_run,
+                            },
+                            proof,
+                            warning,
+                            reason,
+                        },
+                    )
+                    .await;
+                match applied {
+                    Ok(_) => Verdict::Done(Marked::Applied(
+                        "The decision about the translation warning was recorded.".to_owned(),
                     )),
                     Err(error) => engine_verdict(error),
                 }
@@ -1168,8 +1224,48 @@ mod tests {
         assert!(longest.subject().len() + 4 + 30 + 5 + 64 <= 500);
     }
 
+    fn warning() -> StageFields {
+        StageFields {
+            verb: StageVerb::AckTranslationWarning,
+            job: JobId::from_uuid(uuid::Uuid::from_u128(0x1111)),
+            stage_run: Some(StageRunId::from_uuid(uuid::Uuid::from_u128(0x2222))),
+            path: None,
+            digest: None,
+            index: Some(2),
+        }
+    }
+
+    #[test]
+    fn a_request_about_a_warning_names_the_approval_run_and_the_number() {
+        let written = warning();
+        assert_eq!(
+            StageFields::parse_canonical(&written.subject()),
+            Some(written.clone())
+        );
+        let canonical = written.subject();
+        for changed in [
+            canonical.replace("index=2", "index=none"),
+            canonical.replace("index=2", "index=0"),
+            canonical.replace("index=2", "index=-1"),
+            canonical.replace("index=2", "index=10001"),
+            canonical.replace("index=2", "index=02x"),
+            canonical.replace("path=none", "path=build.rs"),
+            canonical.replace(&written.stage_run.expect("a run").as_text(), "none"),
+        ] {
+            assert_eq!(StageFields::parse_canonical(&changed), None, "{changed}");
+        }
+    }
+
     #[test]
     fn the_verb_names_the_action_row_of_the_policy() {
+        assert_eq!(
+            StageVerb::AckTranslationWarning.action(),
+            "acknowledge_documentation_warning"
+        );
+        assert_eq!(
+            StageVerb::parse("ack-translation-warning"),
+            Some(StageVerb::AckTranslationWarning)
+        );
         assert_eq!(StageVerb::Unblock.action(), "unblock_blocked_stage_run");
         assert_eq!(
             StageVerb::ApproveProjectBuildCode.action(),

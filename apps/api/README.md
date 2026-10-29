@@ -89,6 +89,18 @@ root (`artifacts.root`) and the three reads of migration `2026-10-29-002300`.
 
 The text of a document is untrusted. The command line prints it through the sanitizer (`factory-cli artifact`).
 
+### Translation warnings
+
+The approval request counts the open warnings of the documentation reviewer's rule `translation-unfaithful`
+(`open_translation_warnings`), and an approval is refused while one has no decision of the person who approves
+(`G_APPROVER_AUTHORIZED`, ADR 0009 item 17). `ack-translation-warning` takes the approval `stage_run_id`, the `warning`
+(its number, from 1, in the order the gate reports list them) and a `reason`, and needs the approver designation. The
+worker applies it through `Engine::record_warning_decision`, which reads the warnings and the manifest of the request from
+what the stage run stored, refuses a number the request does not count, and writes one ledger entry for each decision.
+The `approve` that follows reads those entries back for the person who approves, for that request and that stage run
+(`stages::approval::warnings::all_decided`); a decision of another person, of an earlier request (another manifest) or of
+a person who left the allowlist counts for nothing.
+
 ### The project's own build code
 
 A change that adds a `build.rs`, a procedural macro or build dependencies to the project itself blocks the gate `build`

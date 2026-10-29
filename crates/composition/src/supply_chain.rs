@@ -38,6 +38,7 @@ use factory_workflow::gates::supply_chain::approval::{DependencyApproval, Record
 use factory_workflow::gates::supply_chain::facts::{
     AdvisoryDatabase, RegistryMetadata, RegistryRecord,
 };
+use factory_workflow::stages::approval::warnings::WarningDecision;
 
 use crate::seams::FileAllowlist;
 
@@ -230,6 +231,18 @@ impl RecordedApprovals for CurrentApprovals {
         let recorded = self.inner.for_job(tenant, job).await;
         self.still_standing((tenant, job), recorded, |approval| {
             (approval.approver.get(), approval.designation)
+        })
+        .await
+    }
+
+    async fn warning_decisions_for_job(
+        &self,
+        tenant: TenantId,
+        job: JobId,
+    ) -> Vec<WarningDecision> {
+        let recorded = self.inner.warning_decisions_for_job(tenant, job).await;
+        self.still_standing((tenant, job), recorded, |decision| {
+            (decision.approver.get(), decision.designation)
         })
         .await
     }

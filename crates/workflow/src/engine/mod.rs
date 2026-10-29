@@ -44,6 +44,7 @@ pub(crate) mod record;
 mod replace;
 pub(crate) mod timeline;
 mod view;
+mod warning;
 
 use std::sync::Arc;
 

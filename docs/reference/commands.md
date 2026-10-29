@@ -36,6 +36,7 @@ The address of the API is the `--api` option or the `FACTORY_API_URL` environmen
 | `factory-cli resume` | `--api`, `--token-file`, `--key` | `JOB reason...` | Resumes a paused job. |
 | `factory-cli cancel` | `--api`, `--token-file`, `--key` | `JOB reason...` | Cancels a job. |
 | `factory-cli unblock` | `--api`, `--token-file`, `--key` | `JOB STAGE_RUN reason...` | Lets a `BLOCKED` stage run go again once the cause is gone. |
+| `factory-cli ack-translation-warning` | `--api`, `--token-file`, `--key` | `JOB STAGE_RUN WARNING reason...` | Records an approver's decision about one open translation warning of the approval request. `WARNING` is its number, from 1. |
 | `factory-cli approve-project-build-code` | `--api`, `--token-file`, `--key`, `--stage-run` | `JOB PATH SHA256 reason...` | Approves one file of build code that the change itself adds, with the exact content the person read. |
 | `factory-cli approve-dependency` | `--api`, `--token-file`, `--key`, `--stage-run` | `JOB NAME VERSION [CHECKSUM] reason...` | Approves one new direct dependency that the validation stage is waiting on. |
 | `factory-cli approve-build-code` | `--api`, `--token-file`, `--key`, `--stage-run` | `JOB NAME VERSION [CHECKSUM] reason...` | Approves the build script or procedural macro of one package that the validation stage is waiting on. |
@@ -84,6 +85,7 @@ The `key=value` words come first. The first word that is not a known `key=value`
 | `unblock` | `operator` | `stage_run_id`, a reason of 10 to 500 characters | Lets a `BLOCKED` stage run go again (transition S17) when the engine finds the block cleared: a decision for what the run waited for was recorded after the attempt that blocked it, or a capability re-probe passes. It passes no gate and is not an override. |
 | `approve-dependency` | `approver` | package, version, a reason of 10 to 500 characters | Lets one new direct dependency pass the supply chain gate. |
 | `approve-build-code` | `security_approver` | package, version, a reason of 10 to 500 characters | Lets the build code of one package run. |
+| `ack-translation-warning` | `approver` | `stage_run_id` (the approval stage run), `warning` (from 1), a reason of 10 to 500 characters | Decides about one open warning of the documentation reviewer's rule `translation-unfaithful`. The approval of the pull request counts only the decisions of the person who approves, for the request they saw. |
 | `approve-project-build-code` | `security_approver` | `path`, `digest` (12 to 64 lower case hex digits of the SHA-256 of the file), a reason of 10 to 500 characters | Lets one file of build code that the change adds run, bound to its path and to the hash of its content. A script that is edited afterwards needs a new decision. |
 
 The role is a designation on the protected allowlist. A GitHub role never grants one. The API records the decision and answers `202` with `"applied": false`. The worker applies it once, and the job timeline then shows `decision.applied` or `decision.rejected`.
@@ -175,7 +177,7 @@ The contract is [`apps/api/openapi.json`](../../apps/api/openapi.json). The serv
 | `POST /v1/jobs/{job_id}/decisions` | bearer token | by verb | Records a decision of a person. Needs an `Idempotency-Key` header. |
 | `POST /v1/webhooks/github` | HMAC-SHA256 of the raw body | none | A GitHub delivery. Verified on the raw body before anything is parsed. |
 
-The fields of a decision request are `verb`, `stage_run_id`, `head`, `evidence`, `target`, `reason`, `package`, `version`, `checksum`, `path` and `digest`. The OpenAPI document says which verb needs which field.
+The fields of a decision request are `verb`, `stage_run_id`, `head`, `evidence`, `target`, `reason`, `package`, `version`, `checksum`, `path`, `digest` and `warning`. The OpenAPI document says which verb needs which field.
 
 ### Statuses
 

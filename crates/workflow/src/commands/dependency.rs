@@ -72,3 +72,31 @@ pub struct ProjectBuildCodeRecorded {
     /// The hash of the ledger entry that names it.
     pub ledger_hash: Sha256Digest,
 }
+
+/// An approver's decision about one translation warning of the approval request, for the
+/// approval stage run that waits for a person.
+///
+/// The authority is the **proof** of the policy engine for the action
+/// `acknowledge_documentation_warning`. The engine checks it again against the principal that
+/// acts and the roles that principal holds now, and reads the warnings and the manifest of the
+/// request from what the stage run stored; it does not take them from the caller.
+#[derive(Debug, Clone)]
+pub struct RecordWarningDecision {
+    /// The job and the approval stage run that waits for the decision.
+    pub stage: Subject,
+    /// The proof that the policy engine authorized this person for this action.
+    pub proof: AuthorizedApproval,
+    /// The number of the warning, counted from 1.
+    pub warning: u32,
+    /// Why, in the person's words. Untrusted text; the caller has run it through the redactor.
+    pub reason: HumanText,
+}
+
+/// What the engine stored for a decision about a translation warning.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WarningDecisionRecorded {
+    /// The document of the decision, stored for the tenant.
+    pub artifact: ArtifactRef,
+    /// The hash of the ledger entry that names it.
+    pub ledger_hash: Sha256Digest,
+}

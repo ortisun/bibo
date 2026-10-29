@@ -925,6 +925,7 @@ pub fn assemble_pipeline(inputs: PipelineInputs) -> Result<Pipeline, PipelineErr
         .with_specification(spec_drafts.clone())
         .with_dependencies(dependency_decisions)
         .with_stage_decisions(stage_decisions)
+        .with_recorded_decisions(Arc::clone(&dependency_approvals))
         .with_rejections(rejections),
     );
     let check_names = [

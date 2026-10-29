@@ -1273,3 +1273,78 @@ async fn the_projects_own_build_script_waits_for_a_security_approvers_decision_o
     );
     journey.rig.finish();
 }
+
+/// A decision about a translation warning through the API, the worker and the engine. The real
+/// pipeline raises no warning in this journey, so the request is for a stage run that is not an
+/// approval run waiting for a person, and the engine says so: the property shown is the road from
+/// the person to the engine, and that nothing is recorded when the engine refuses. The decisions
+/// themselves, their count and their binding to the person and the request are shown by
+/// `crates/workflow/tests/warning_decision.rs` and by the unit tests of the approval's count.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_decision_about_a_warning_goes_to_the_engine_and_the_engine_checks_the_stage_run() {
+    let journey = begin().await;
+    let _dump = full::DumpOnFailure::new(&journey.rig, journey.job);
+    journey.the_builder_adds_the_dependency(false);
+    let view = journey.to_the_stop_at_validation().await;
+    let run = full::stage_run_of(&view, StageKind::Validation);
+
+    let body = |extra: Value| {
+        let mut body = json!({
+            "verb": "ack-translation-warning",
+            "stage_run_id": run.as_text(),
+            "warning": 1,
+            "reason": "The translation says what the original says.",
+        });
+        if let (Some(into), Some(from)) = (body.as_object_mut(), extra.as_object()) {
+            into.extend(from.clone());
+        }
+        body
+    };
+    // An operator and a security approver hold other designations: the API says no.
+    for (who, token) in [
+        ("operator", &journey.operator),
+        ("security", &journey.security),
+    ] {
+        let reply = full::decide(&journey.rig.env, token, journey.job, who, body(json!({}))).await;
+        assert_eq!(reply.status, 403, "{who}: {}", reply.text());
+    }
+    // A word that means nothing to the verb is named, and so is a missing one.
+    for (key, extra, field) in [
+        ("with-a-path", json!({"path": "build.rs"}), "path"),
+        ("with-a-package", json!({"package": "serde"}), "package"),
+        ("no-number", json!({"warning": 0}), "warning"),
+        ("too-big", json!({"warning": 100_000}), "warning"),
+    ] {
+        let reply = full::decide(
+            &journey.rig.env,
+            &journey.approver,
+            journey.job,
+            key,
+            body(extra),
+        )
+        .await;
+        assert_eq!(reply.status, 400, "{key}: {}", reply.text());
+        assert_eq!(reply.json()["field"], field, "{key}");
+    }
+    // An approver is heard. The worker hands it to the engine, which refuses: the stage run is not
+    // an approval run that waits for a person. Nothing is recorded.
+    let reply = full::decide(
+        &journey.rig.env,
+        &journey.approver,
+        journey.job,
+        "the-decision",
+        body(json!({})),
+    )
+    .await;
+    assert_eq!(reply.status, 202, "{}", reply.text());
+    journey.rig.hook.pass(journey.rig.tenant).await;
+    let text = journey.rig.audit_text(journey.job).await;
+    assert!(
+        text.lines()
+            .any(|line| line.starts_with("decision.rejected ")
+                && line.contains(" verb=ack-translation-warning ")
+                && line.contains(" code=wrong_state")),
+        "{text}"
+    );
+    journey.rig.finish();
+}

@@ -32,6 +32,7 @@ usage: factory-cli <command> [options]
   rework   --api URL --token-file FILE [--key K] JOB STAGE_RUN target=STAGE reason...
   pause | resume | cancel  --api URL --token-file FILE [--key K] JOB reason...
   unblock  --api URL --token-file FILE [--key K] JOB STAGE_RUN reason...
+  ack-translation-warning  --api URL --token-file FILE [--key K] JOB STAGE_RUN WARNING reason...
   approve-project-build-code  --api URL --token-file FILE [--key K] [--stage-run ID] JOB PATH SHA256 reason...
   approve-dependency  --api URL --token-file FILE [--key K] [--stage-run ID] JOB NAME VERSION [CHECKSUM] reason...
   approve-build-code  --api URL --token-file FILE [--key K] [--stage-run ID] JOB NAME VERSION [CHECKSUM] reason...
@@ -511,6 +512,58 @@ fn unblock(args: &[String], env: &dyn Fn(&str) -> Option<String>, ctx: &mut Cont
     })
 }
 
+/// `ack-translation-warning`: an approver decides about one open translation warning of the
+/// approval request, so that their approval of the pull request can count it. The warning is the
+/// number the gate reports list, from 1.
+fn ack_translation_warning(
+    args: &[String],
+    env: &dyn Fn(&str) -> Option<String>,
+    ctx: &mut Context<'_>,
+) -> Exit {
+    let parsed = match split(args, &["api", "token-file", "key"]) {
+        Ok(parsed) => parsed,
+        Err(why) => {
+            ctx.complain(&why);
+            return Exit::Failed;
+        }
+    };
+    let words = &parsed.positional;
+    let number = words
+        .get(2)
+        .and_then(|word| word.parse::<u32>().ok())
+        .filter(|number| (1..=factory_composition::stage_decisions::MAX_WARNING).contains(number));
+    let (Some(number), true) = (
+        number,
+        words.len() >= 4 && is_uuid(&words[0]) && is_uuid(&words[1]),
+    ) else {
+        ctx.complain(
+            "this decision takes a job id and the approval stage run id (both UUIDs), the number of the warning from 1, and then the reason",
+        );
+        return Exit::Failed;
+    };
+    let reason = words[3..].join(" ");
+    if reason.chars().count() < MIN_REASON_CHARS {
+        ctx.complain("a decision about a warning needs a reason of at least 10 characters");
+        return Exit::Failed;
+    }
+    let body = json!({
+        "verb": StageVerb::AckTranslationWarning.as_str(),
+        "stage_run_id": words[1],
+        "warning": number,
+        "reason": reason,
+    });
+    let client = match client(&parsed.options, env, true, ctx) {
+        Ok(client) => client,
+        Err(exit) => return exit,
+    };
+    let key = idempotency_key(&parsed.options);
+    let shown = key.clone();
+    let url = format!("/v1/jobs/{}/decisions", words[0]);
+    finish(client.post(&url, &key, &body), ctx, move |body| {
+        render::decided(body, &shown)
+    })
+}
+
 /// `approve-project-build-code`: a security approver accepts one file of the project's own new
 /// build code, with the content they read. The file is a path of the repository and the content is
 /// named by the start of its SHA-256 (12 to 64 lower case hex digits, with or without `sha256:`),
@@ -723,6 +776,7 @@ pub fn run(
         }
         "unblock" => unblock(rest, env, &mut ctx),
         "approve-project-build-code" => approve_project_build_code(rest, env, &mut ctx),
+        "ack-translation-warning" => ack_translation_warning(rest, env, &mut ctx),
         verb @ (APPROVE_DEPENDENCY | APPROVE_BUILD_CODE) => {
             decide_dependency(verb, rest, env, &mut ctx)
         }

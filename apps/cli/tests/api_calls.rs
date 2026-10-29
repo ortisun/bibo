@@ -720,3 +720,48 @@ fn artifact_prints_text_through_the_sanitizer_and_does_not_print_data() {
     }
     assert_eq!(api.requests.lock().expect("lock").len(), 3);
 }
+
+#[test]
+fn ack_translation_warning_names_the_approval_run_and_the_number() {
+    let api = fake(vec![(
+        202,
+        r#"{"decision_id":"d-7","status":"recorded","applied":false}"#,
+    )]);
+    let file = token_file(0o600);
+    let ran = cli(&format!(
+        "ack-translation-warning --api http://{} --token-file {} --key k-7 {JOB} {RUN} 2 The translation says what the original says.",
+        api.addr,
+        file.display()
+    ));
+    assert_eq!(ran.exit, Exit::Ok, "{}", ran.err);
+    assert!(ran.out.contains("Decision d-7 is recorded"), "{}", ran.out);
+    let sent = api.requests.lock().expect("lock")[0].clone();
+    assert!(sent.starts_with(&format!("POST /v1/jobs/{JOB}/decisions ")));
+    for part in [
+        r#""verb":"ack-translation-warning""#,
+        &format!(r#""stage_run_id":"{RUN}""#),
+        r#""warning":2"#,
+        r#""reason":"The translation says what the original says.""#,
+    ] {
+        assert!(sent.contains(part), "{part} in {sent}");
+    }
+    // What the command refuses stops here, before any request.
+    for line in [
+        format!("ack-translation-warning {JOB} {RUN}"),
+        format!("ack-translation-warning {JOB} {RUN} 0 A reason that is long enough"),
+        format!("ack-translation-warning {JOB} {RUN} -1 A reason that is long enough"),
+        format!("ack-translation-warning {JOB} {RUN} two A reason that is long enough"),
+        format!("ack-translation-warning {JOB} {RUN} 10001 A reason that is long enough"),
+        format!("ack-translation-warning {JOB} {RUN} 1 short"),
+        format!("ack-translation-warning {JOB} not-a-uuid 1 A reason that is long enough"),
+        format!("ack-translation-warning not-a-uuid {RUN} 1 A reason that is long enough"),
+    ] {
+        let ran = cli(&format!(
+            "{line} --api http://{} --token-file {}",
+            api.addr,
+            file.display()
+        ));
+        assert_eq!(ran.exit, Exit::Failed, "{line}: {}", ran.err);
+    }
+    assert_eq!(api.requests.lock().expect("lock").len(), 1);
+}

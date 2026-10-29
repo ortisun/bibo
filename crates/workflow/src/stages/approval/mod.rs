@@ -41,6 +41,7 @@ pub mod judge;
 pub mod request;
 pub mod seams;
 pub mod service;
+pub mod warnings;
 
 pub use command::{ApprovalCommand, CommentEvidence, Seen, Sender, Verb, VerbParse, parse_verb};
 pub use contract::{GATE, REQUEST};
