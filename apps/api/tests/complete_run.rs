@@ -592,7 +592,11 @@ async fn worker(env: &Env, markers: Option<Arc<dyn DecisionMarkers>>) -> Worker 
             Arc::new(SystemClock),
         )),
         markers: markers.unwrap_or_else(|| {
-            Arc::new(AuditMarkers::new(store_dyn.clone(), policies.hash.clone()))
+            Arc::new(AuditMarkers::new(
+                store_dyn.clone(),
+                policies.hash.clone(),
+                Arc::clone(&env.state.decision_keys),
+            ))
         }),
         clock: Arc::new(SystemClock),
         max_age: std::time::Duration::from_secs(72 * 3600),

@@ -262,6 +262,7 @@ impl Rig {
         Arc::new(AuditMarkers::new(
             self.world.store.clone(),
             self.policies.hash.clone(),
+            self.keys.clone(),
         ))
     }
 

@@ -9,10 +9,10 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use factory_composition::authority::StoreAuthority;
-use factory_composition::decision_signing::{DecisionKeys, Signing};
+use factory_composition::decision_signing::{DecisionKeys, MarkerSigning, Signing, actor_text};
 use factory_composition::decisions::{
-    AllowlistAuthority, ApprovalSubmitter, AuditMarkers, ClaimWork, ClaimWorkDeps,
-    DECISIONS_PER_PASS, DecisionFields, REJECTED, REQUESTED,
+    APPLIED, AllowlistAuthority, ApprovalSubmitter, AuditMarkers, ClaimWork, ClaimWorkDeps,
+    DECISIONS_PER_PASS, DecisionFields, JUNK_PER_PASS, MARKER_IGNORED, REJECTED, REQUESTED,
 };
 use factory_composition::delivery::StoreApprovalSources;
 use factory_composition::seams::FileAllowlist;
@@ -20,6 +20,7 @@ use factory_composition::startup::{LoadedPolicies, load_policy};
 use factory_domain::ids::{AuditEventId, JobId, PrincipalId, TenantId};
 use factory_domain::scope::TenantScope;
 use factory_domain::state::JobStatus;
+use factory_domain::values::{Sha256Digest, Slug};
 use factory_ports::clock::{Clock, IdGenerator};
 use factory_ports::store::{
     AuditAction, AuditActor, AuditDecision, AuditFilter, NewAuditEvent, NewPrincipal,
@@ -133,6 +134,7 @@ impl Rig {
             markers: Arc::new(AuditMarkers::new(
                 self.world.store.clone(),
                 self.policies.hash.clone(),
+                self.keys.clone(),
             )),
             clock,
             max_age: Duration::from_secs(72 * 3600),
@@ -205,6 +207,18 @@ impl Rig {
     /// Any audit record, as a login of the API's group can write one: the action, the actor and the
     /// subject are the writer's to choose.
     async fn forged_record(&self, action: &str, actor: AuditActor, subject: String) {
+        let id = AuditEventId::from_uuid(self.world.ids.new_uuid());
+        self.forged_record_as(id, action, actor, subject).await;
+    }
+
+    /// The same, under an id the writer chooses.
+    async fn forged_record_as(
+        &self,
+        id: AuditEventId,
+        action: &str,
+        actor: AuditActor,
+        subject: String,
+    ) {
         let mut tx = self
             .world
             .store
@@ -212,7 +226,7 @@ impl Rig {
             .await
             .expect("a tx");
         tx.record_audit(NewAuditEvent {
-            id: AuditEventId::from_uuid(self.world.ids.new_uuid()),
+            id,
             actor,
             action: AuditAction::new(action).expect("an action"),
             subject,
@@ -282,15 +296,15 @@ async fn held_a_signed_pause_is_applied_and_marked_by_the_worker() {
     assert_eq!(rig.actions().await, [REQUESTED, "decision.applied"]);
 }
 
-/// RR-8. A `decision.applied` or `decision.rejected` record ends a request. The hook accepts such a
-/// record from anyone: no actor check, no word. The API's database login may insert any audit row, so
-/// whoever holds that login (and not the API process, the key, or any role) can end a signed request
-/// before the worker looks at it. The request is never applied, the job keeps running, and the
-/// timeline shows a rejection that the worker did not write. The cheapest victim is the operator's
-/// pause or cancel, the kill switch. A forged `decision.applied` for the request of an approval does
-/// the same and also tells the person that their approval took effect.
+/// RR-8 (fixed). A `decision.applied` or `decision.rejected` record used to end a request when it
+/// came from anyone: no actor check, no word. The API's database login may insert any audit row, so
+/// whoever held that login (and not the API process, the key, or any role) could end a signed request
+/// before the worker looked at it. The request was never applied, the job kept running, and the
+/// timeline showed a rejection that the worker did not write. The cheapest victim was the operator's
+/// pause or cancel, the kill switch. Now the worker's marker carries a word of its own and the hook
+/// counts no other.
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "confirmed defect RR-8 (needs PostgreSQL): a forged decision marker silently drops a signed request; cargo test -p factory-composition --test security_rereview --locked -- --ignored rr_8 --exact"]
+#[ignore = "needs PostgreSQL (docs/database/running.md)"]
 async fn rr_8_a_forged_marker_does_not_drop_a_signed_request() {
     let rig = Rig::new().await;
     let job = rig.active().await;
@@ -316,14 +330,15 @@ async fn rr_8_a_forged_marker_does_not_drop_a_signed_request() {
     );
 }
 
-/// RR-21. A pass deals with malformed and unsigned records first and with signed requests in the room
-/// that is left (`apply_decisions`: `room = per_pass - malformed.len()`). A holder of the API's
+/// RR-21 (fixed). A pass used to deal with malformed and unsigned records first and with signed
+/// requests in the room that was left (`room = per_pass - malformed.len()`). A holder of the API's
 /// database login writes unsigned `decision.requested` rows at will, so a queue of them as long as the
-/// pass leaves no room at all: a signed request that arrived before the junk waits behind it, pass
-/// after pass, for as long as the writer keeps the queue full. The first victim is again a cancel or a
-/// pause. Here sixty junk rows (a pass deals with fifty) sit between the job and its pause.
+/// pass left no room at all: a signed request that arrived before the junk waited behind it, pass
+/// after pass, for as long as the writer kept the queue full. The first victim was again a cancel or a
+/// pause. Here sixty junk rows (a pass used to deal with fifty) sit between the job and its pause. Now
+/// junk has a budget of its own.
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "confirmed defect RR-21 (needs PostgreSQL): unsigned records ahead of a signed request starve it; cargo test -p factory-composition --test security_rereview --locked -- --ignored rr_21 --exact"]
+#[ignore = "needs PostgreSQL (docs/database/running.md)"]
 async fn rr_21_junk_records_do_not_starve_a_signed_request() {
     let rig = Rig::new().await;
     let job = rig.active().await;
@@ -347,4 +362,139 @@ async fn rr_21_junk_records_do_not_starve_a_signed_request() {
         JobStatus::Paused,
         "one pass dealt only with junk; the signed pause is still waiting"
     );
+}
+
+/// RR-8, the harder forgery: a row with the worker's own actor (`worker.decisions`) and the exact
+/// words of a marker, but no word, or a word under another key. The actor is a label the writer
+/// chooses, so it proves nothing. The request is applied, and each ignored row is written about once
+/// by the worker, however many passes (and workers) look at it.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "needs PostgreSQL (docs/database/running.md)"]
+async fn rr_8_a_marker_in_the_workers_name_without_its_word_is_ignored_and_audited_once() {
+    let rig = Rig::new().await;
+    let job = rig.active().await;
+    let request = rig.signed_pause(job).await;
+    let worker = AuditActor::System(Slug::parse("worker.decisions").expect("a slug"));
+    let base = format!(
+        "decision={} verb=pause job={} code=not_authorized actor=none allowlist=none",
+        request.as_uuid().hyphenated(),
+        job.as_text()
+    );
+    // No word at all.
+    rig.forged_record(REJECTED, worker.clone(), base.clone())
+        .await;
+    // A word, made with a key the worker does not hold.
+    let stranger_keys = DecisionKeys::generated().expect("a key");
+    let event = AuditEventId::from_uuid(rig.world.ids.new_uuid());
+    let word = stranger_keys.sign_marker(&MarkerSigning {
+        tenant: rig.tenant,
+        event,
+        action: REJECTED,
+        actor: &actor_text(&worker),
+        subject: &base,
+    });
+    rig.forged_record_as(event, REJECTED, worker, format!("{base} mac={word}"))
+        .await;
+    for _ in 0..3 {
+        rig.hook().pass(rig.tenant).await;
+    }
+    assert_eq!(
+        rig.status(job).await,
+        JobStatus::Paused,
+        "a row in the worker's name ended the request; the trail is {:?}",
+        rig.actions().await
+    );
+    let trail = rig.actions().await;
+    let ignored = trail
+        .iter()
+        .filter(|action| *action == MARKER_IGNORED)
+        .count();
+    assert_eq!(
+        ignored, 2,
+        "each forged row is written about once, in {trail:?}"
+    );
+    assert_eq!(
+        trail.iter().filter(|action| *action == APPLIED).count(),
+        1,
+        "the worker's own marker is written once, in {trail:?}"
+    );
+}
+
+/// RR-8, the squat. The worker writes its marker under an id. If that id could be worked out, a writer
+/// who sees a request land could put a row under it first, and the worker's marker would hit the
+/// unique key and be counted as written when it was not. The id is now keyed. A forged row under the
+/// id the old, unkeyed derivation gave changes nothing.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "needs PostgreSQL (docs/database/running.md)"]
+async fn rr_8_a_row_under_the_old_derived_marker_id_does_not_block_the_workers_marker() {
+    let rig = Rig::new().await;
+    let job = rig.active().await;
+    let request = rig.signed_pause(job).await;
+    let digest = Sha256Digest::of(format!("decision-marker\n{}", request.as_uuid()).as_bytes());
+    let number = u128::from_str_radix(&digest.hex()[..32], 16).expect("hex");
+    let squatted =
+        AuditEventId::from_uuid(uuid::Builder::from_random_bytes(number.to_be_bytes()).into_uuid());
+    rig.forged_record_as(
+        squatted,
+        REJECTED,
+        AuditActor::Human(rig.stranger),
+        format!(
+            "decision={} verb=pause job={} code=not_authorized actor=none allowlist=none",
+            request.as_uuid().hyphenated(),
+            job.as_text()
+        ),
+    )
+    .await;
+    rig.hook().pass(rig.tenant).await;
+    assert_eq!(rig.status(job).await, JobStatus::Paused);
+    // A restart finds the worker's marker and does not look at the request again.
+    rig.hook().pass(rig.tenant).await;
+    let trail = rig.actions().await;
+    assert_eq!(
+        trail.iter().filter(|action| *action == APPLIED).count(),
+        1,
+        "{trail:?}"
+    );
+}
+
+/// RR-21, the budgets. Junk is marked at its own rate (`JUNK_PER_PASS` a pass) and does not slow the
+/// signed requests at all; a long queue of it is cleared in a few passes, and the worker's markers
+/// for it are signed rows like any other.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "needs PostgreSQL (docs/database/running.md)"]
+async fn rr_21_junk_is_marked_within_its_own_budget_and_in_a_few_passes() {
+    let rig = Rig::new().await;
+    let job = rig.active().await;
+    let plain = DecisionFields {
+        verb: Verb::Cancel,
+        job,
+        stage_run: None,
+        head: None,
+        evidence: None,
+        target: None,
+    }
+    .subject();
+    // The junk comes first this time, and the signed pause after all of it.
+    let junk = DECISIONS_PER_PASS + 10;
+    for _ in 0..junk {
+        rig.forged_record(REQUESTED, AuditActor::Human(rig.stranger), plain.clone())
+            .await;
+    }
+    rig.signed_pause(job).await;
+    rig.hook().pass(rig.tenant).await;
+    assert_eq!(
+        rig.status(job).await,
+        JobStatus::Paused,
+        "the signed pause waited behind {junk} junk rows"
+    );
+    let rejected = |trail: &[String]| trail.iter().filter(|action| *action == REJECTED).count();
+    assert_eq!(
+        rejected(&rig.actions().await),
+        JUNK_PER_PASS,
+        "one pass marks no more junk than its budget"
+    );
+    for _ in 0..3 {
+        rig.hook().pass(rig.tenant).await;
+    }
+    assert_eq!(rejected(&rig.actions().await), junk);
 }

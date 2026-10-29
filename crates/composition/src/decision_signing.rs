@@ -32,6 +32,16 @@
 //! compared in constant time. A row with no word, or the wrong one, is rejected with the fixed code
 //! `not_signed`, and nothing else about it is read.
 //!
+//! # The marker is signed too (RR-8)
+//!
+//! The row that ends a request, `decision.applied` or `decision.rejected`, is a row in the same log,
+//! and a login of the API's group can write any row. So the worker's marker carries a word of its own,
+//! made with the same key over a distinct first line, the tenant, the id of the marker row, the action,
+//! the actor and the subject (see [`MarkerSigning`]). The hook counts a request as dealt with only when
+//! the marker that names it has a good word. A marker without one, or with a wrong one, is ignored and
+//! audited once. The id of the marker row is itself keyed ([`DecisionKeys::marker_id`]), so nobody can
+//! write a row under the id the worker will use before the worker does.
+//!
 //! # The key
 //!
 //! The key is a file, named in the configuration of the API and of the worker (`decisions.key_file`):
@@ -47,6 +57,7 @@ use std::path::Path;
 
 use factory_domain::ids::{AuditEventId, PrincipalId, TenantId};
 use factory_domain::redaction::Redactor;
+use factory_ports::store::AuditActor;
 use hmac::{Hmac, KeyInit, Mac};
 use sha2::Sha256;
 use subtle::{Choice, ConstantTimeEq};
@@ -71,6 +82,13 @@ const CONTEXT: &str = "factory-decision-request/1";
 /// so a word made for one kind of request is never the word of the other, even if the rest of the
 /// text could be made to look alike.
 const DEPENDENCY_CONTEXT: &str = "factory-dependency-decision-request/1";
+
+/// The first line of what is signed for the marker of a decision. It differs from [`CONTEXT`] and
+/// [`DEPENDENCY_CONTEXT`], so a word made for a request is never the word of a marker.
+const MARKER_CONTEXT: &str = "factory-decision-marker/1";
+
+/// The first line of what is hashed to make the id of a marker row.
+const MARKER_ID_CONTEXT: &str = "factory-decision-marker-id/1";
 
 /// Why a key cannot be used.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -169,6 +187,46 @@ impl DependencySigning<'_> {
             self.requested_at,
             self.fields.subject(),
         )
+    }
+}
+
+/// What the signature of a marker covers besides its subject.
+#[derive(Debug, Clone, Copy)]
+pub struct MarkerSigning<'a> {
+    /// The tenant the record belongs to.
+    pub tenant: TenantId,
+    /// The id of the marker row itself (see [`DecisionKeys::marker_id`]).
+    pub event: AuditEventId,
+    /// The audit action of the marker: `decision.applied` or `decision.rejected`.
+    pub action: &'a str,
+    /// The actor of the marker, as [`actor_text`] writes it.
+    pub actor: &'a str,
+    /// The subject without the word: `decision=<request id>` and the fixed words after it.
+    pub subject: &'a str,
+}
+
+impl MarkerSigning<'_> {
+    fn message(&self) -> String {
+        format!(
+            "{MARKER_CONTEXT}\ntenant={}\nevent={}\naction={}\nactor={}\n{}",
+            self.tenant.as_text(),
+            self.event.as_uuid().hyphenated(),
+            self.action,
+            self.actor,
+            self.subject,
+        )
+    }
+}
+
+/// The actor of an audit record as one word, for the message of a marker. A person, a service and a
+/// component of the system with the same text are different actors.
+#[must_use]
+pub fn actor_text(actor: &AuditActor) -> String {
+    match actor {
+        AuditActor::Human(id) => format!("human:{}", id.as_text()),
+        AuditActor::Service(id) => format!("service:{}", id.as_text()),
+        AuditActor::System(slug) => format!("system:{}", slug.as_str()),
+        AuditActor::Anonymous(slug) => format!("anonymous:{}", slug.as_str()),
     }
 }
 
@@ -385,6 +443,49 @@ impl DecisionKeys {
             self.sign(signing)
         )
     }
+
+    /// The word for a marker, made with the current key.
+    ///
+    /// # Panics
+    /// Never: an HMAC accepts a key of any length.
+    #[must_use]
+    pub fn sign_marker(&self, signing: &MarkerSigning<'_>) -> String {
+        let word = self
+            .current
+            .word(signing.message().as_bytes())
+            .expect("an HMAC key can have any length");
+        hex(&word)
+    }
+
+    /// True when `word` is the word of this marker under the current key or the previous one,
+    /// compared as [`verify`](Self::verify) does.
+    #[must_use]
+    pub fn verify_marker(&self, signing: &MarkerSigning<'_>, word: &str) -> bool {
+        self.verify_message(&signing.message(), word)
+    }
+
+    /// The subject of a signed marker: the words, then the word.
+    #[must_use]
+    pub fn signed_marker_subject(&self, signing: &MarkerSigning<'_>) -> String {
+        format!("{} mac={}", signing.subject, self.sign_marker(signing))
+    }
+
+    /// The id of the marker row for a request (or for a record the hook ignores). It is a keyed
+    /// function of the id, so that it is the same on every pass and in every worker that holds the
+    /// key, and nobody without the key can tell it in advance and write a row under it.
+    ///
+    /// # Panics
+    /// Never: an HMAC accepts a key of any length.
+    #[must_use]
+    pub fn marker_id(&self, decision: AuditEventId) -> AuditEventId {
+        let word = self
+            .current
+            .word(format!("{MARKER_ID_CONTEXT}\n{}", decision.as_uuid().hyphenated()).as_bytes())
+            .expect("an HMAC key can have any length");
+        let mut bytes = [0_u8; 16];
+        bytes.copy_from_slice(&word[..16]);
+        AuditEventId::from_uuid(uuid::Builder::from_random_bytes(bytes).into_uuid())
+    }
 }
 
 /// Makes the key file when it does not exist, so that two processes that start together end up with
@@ -466,6 +567,34 @@ pub fn read_subject(subject: &str) -> Option<SubjectKind> {
         });
     }
     DecisionFields::parse_canonical(subject).map(SubjectKind::Unsigned)
+}
+
+/// What the subject of a marker holds, split but not believed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MarkerSubject<'a> {
+    /// The request the marker says it belongs to.
+    pub decision: AuditEventId,
+    /// The subject without the word: what the word covers.
+    pub base: &'a str,
+    /// The word as written. [`DecisionKeys::verify_marker`] decides whether it is good.
+    pub word: &'a str,
+}
+
+/// Splits the subject of a marker: `decision=<id> ... mac=<word>`. `None` when it has no word or does
+/// not start with the id of a request.
+#[must_use]
+pub fn read_marker_subject(subject: &str) -> Option<MarkerSubject<'_>> {
+    let (base, word) = subject.rsplit_once(" mac=")?;
+    if word.is_empty() || word.contains(char::is_whitespace) {
+        return None;
+    }
+    let first = base.split_whitespace().next()?;
+    let decision = AuditEventId::parse(first.strip_prefix("decision=")?).ok()?;
+    Some(MarkerSubject {
+        decision,
+        base,
+        word,
+    })
 }
 
 /// What the subject of a `decision.dependency_requested` row holds.

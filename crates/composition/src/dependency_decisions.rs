@@ -75,9 +75,10 @@ use factory_workflow::stages::approval::ApprovalSources;
 use factory_workflow::stages::validation::EVIDENCE;
 
 use crate::decision_signing::{
-    DecisionKeys, DependencySigning, DependencySubject, read_dependency_subject,
+    DecisionKeys, DependencySigning, DependencySubject, MarkerSigning, actor_text,
+    read_dependency_subject,
 };
-use crate::decisions::{APPLIED, Marked, REJECTED, Reason, marker_id};
+use crate::decisions::{APPLIED, JUNK_PER_PASS, Marked, REJECTED, Reason, counted_marker};
 use crate::reading::Reader;
 
 /// The audit action of a request for a decision on a dependency (written by the API).
@@ -95,8 +96,12 @@ const REQUEST_PREFIX: &str = "requested: ";
 const PAGE: u32 = 500;
 /// The most pages one pass reads for one tenant.
 const PAGES_PER_PASS: usize = 20;
-/// The most requests one pass deals with for one tenant.
+/// The most signed requests one pass deals with for one tenant. Records that are not requests this
+/// step trusts have a budget of their own ([`JUNK_PER_PASS`]), so they never take the room of a
+/// signed one (RR-21).
 pub const PER_PASS: usize = 50;
+/// The most records that are not requests this step trusts that a scan keeps in memory.
+const JUNK_KEPT: usize = 10_000;
 /// The most passes a request that keeps failing for a reason that may pass is tried.
 pub const MAX_TRIES: u32 = 20;
 
@@ -291,11 +296,13 @@ impl DependencyDecisions {
                     let refused: Vec<_> = scan
                         .refused
                         .iter()
-                        .take(PER_PASS)
+                        .take(JUNK_PER_PASS)
                         .map(|(sequence, (id, reason))| (*sequence, *id, *reason))
                         .collect();
-                    let room = PER_PASS.saturating_sub(refused.len());
-                    (refused, scan.pending.values().take(room).cloned().collect())
+                    (
+                        refused,
+                        scan.pending.values().take(PER_PASS).cloned().collect(),
+                    )
                 },
             )
         };
@@ -368,12 +375,18 @@ impl DependencyDecisions {
                                 scan.pending.insert(record.sequence, pending);
                             }
                             Err(reason) => {
-                                scan.refused
-                                    .insert(record.sequence, (record.event.id, reason));
+                                if scan.refused.len() < JUNK_KEPT {
+                                    scan.refused
+                                        .insert(record.sequence, (record.event.id, reason));
+                                }
                             }
                         },
                         APPLIED | REJECTED => {
-                            if let Some(id) = marked_decision(&record.event.subject) {
+                            // Only a marker the worker signed ends a request (RR-8). A row that
+                            // only looks like one is ignored here; the hook of the decisions
+                            // records that it was ignored.
+                            if let Some(Some(id)) = counted_marker(tenant, &record, &self.deps.keys)
+                            {
                                 scan.pending.retain(|_, pending| pending.id != id);
                                 scan.refused.retain(|_, (refused, _)| *refused != id);
                             }
@@ -777,6 +790,15 @@ impl DependencyDecisions {
         let Ok(actor) = Slug::parse("worker.dependency-decisions").map(AuditActor::System) else {
             return false;
         };
+        // The marker carries the worker's word (RR-8), made over the id it is written under.
+        let marker = self.deps.keys.marker_id(request);
+        let subject = self.deps.keys.signed_marker_subject(&MarkerSigning {
+            tenant,
+            event: marker,
+            action,
+            actor: &actor_text(&actor),
+            subject: &subject,
+        });
         let Ok(action) = AuditAction::new(action) else {
             return false;
         };
@@ -796,7 +818,7 @@ impl DependencyDecisions {
             None => (None, None, CorrelationId::from_uuid(request.as_uuid())),
         };
         let event = NewAuditEvent {
-            id: marker_id(request),
+            id: marker,
             actor,
             action,
             subject,
@@ -898,13 +920,6 @@ fn requested_from(
         failures: 0,
         actor_github_id: None,
     })
-}
-
-/// The decision a marker belongs to, from its subject.
-fn marked_decision(subject: &str) -> Option<AuditEventId> {
-    let first = subject.split_whitespace().next()?;
-    let id = first.strip_prefix("decision=")?;
-    AuditEventId::parse(id).ok()
 }
 
 #[cfg(test)]

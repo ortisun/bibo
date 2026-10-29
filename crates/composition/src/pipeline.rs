@@ -860,7 +860,11 @@ pub fn assemble_pipeline(inputs: PipelineInputs) -> Result<Pipeline, PipelineErr
                 Arc::clone(&clock),
             )),
             markers: markers.unwrap_or_else(|| {
-                Arc::new(AuditMarkers::new(Arc::clone(&store), policies.hash.clone()))
+                Arc::new(AuditMarkers::new(
+                    Arc::clone(&store),
+                    policies.hash.clone(),
+                    Arc::clone(&decision_keys),
+                ))
             }),
             clock: Arc::clone(&clock),
             max_age: std::time::Duration::from_secs(crate::pipeline::APPROVAL_WINDOW_HOURS * 3600),
