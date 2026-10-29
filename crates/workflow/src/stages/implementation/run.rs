@@ -46,6 +46,7 @@ use super::input::{
     ARCHITECTURE, REPOSITORY_MAP, SPECIFICATION_CONTRACT, TASK_PLAN, input_artifact, map_commit,
 };
 use super::plan;
+use super::report::ReportedCommand;
 use super::report::{BuilderReport, Status};
 use super::seams::{
     Hold, LedgerError, PlannedTask, ReworkContext, SeamError, WorkspaceAccess, verify_spec,
@@ -843,13 +844,23 @@ async fn build_in(
         return Err(StageError::Cancelled);
     }
 
-    // The report, checked twice. It decides nothing about the change.
-    let validated = handler
+    // The report, checked twice. It decides nothing about the change. A report that is rejected is a
+    // failed run, and a failed run keeps its evidence: the engine audits each denial the tool made
+    // and indexes the transcript (finding F-1 of the cross-cutting security tests: a run whose
+    // report was invalid left its denials out of the audit log).
+    let Ok(validated) = handler
         .schemas
         .check(&shared.manifest.outputs_schema, output.as_bytes())
-        .map_err(|_| StageError::InvalidOutput)?;
-    let parsed = BuilderReport::read(&validated.value).map_err(|_| StageError::InvalidOutput)?;
+    else {
+        ctx.note_failed_run(&report);
+        return Err(StageError::InvalidOutput);
+    };
+    let Ok(parsed) = BuilderReport::read(&validated.value) else {
+        ctx.note_failed_run(&report);
+        return Err(StageError::InvalidOutput);
+    };
     if parsed.task_id != unit.key.as_str() {
+        ctx.note_failed_run(&report);
         return Err(StageError::InvalidOutput);
     }
     match parsed.status {
@@ -883,6 +894,7 @@ async fn build_in(
     };
     // The builder says it is done and the tree is the same as before: its word is contradicted.
     if change.is_empty() || change.base() != on {
+        ctx.note_failed_run(&report);
         return Err(StageError::InvalidOutput);
     }
     if ctx.cancel.is_cancelled() {
@@ -932,9 +944,59 @@ async fn build_in(
             .collect(),
         additions,
         deletions,
-        reported_commands: parsed.commands_run,
-        reported_tests: parsed.tests_added,
-        ignored_instructions: parsed.ignored_instructions,
+        reported_commands: parsed
+            .commands_run
+            .into_iter()
+            .map(|command| ReportedCommand {
+                argv: command
+                    .argv
+                    .iter()
+                    .map(|argument| keep_no_secret(handler, ctx, argument))
+                    .collect(),
+                exit_code: command.exit_code,
+            })
+            .collect(),
+        reported_tests: parsed
+            .tests_added
+            .iter()
+            .map(|name| keep_no_secret(handler, ctx, name))
+            .collect(),
+        ignored_instructions: parsed
+            .ignored_instructions
+            .iter()
+            .map(|text| keep_no_secret(handler, ctx, text))
+            .collect(),
     };
     Ok(TaskOutcome::Committed(evidence, commit))
+}
+
+/// What the builder says about its own work goes into the evidence document, and from there into
+/// the artifact store and the prompts of later stages. It is text written by a model, so it can hold
+/// a secret the model was shown or invented. The redactor runs over it before it is kept, a
+/// replacement is audited, and text the redactor cannot judge is dropped (finding F-3 of the
+/// cross-cutting security tests: reported test names, command arguments and ignored instructions
+/// reached the store unredacted).
+fn keep_no_secret(
+    handler: &ImplementationHandler,
+    ctx: &mut StageContext<'_>,
+    text: &str,
+) -> String {
+    match handler.redactor.redact_str(text) {
+        Ok(redacted) => {
+            if redacted.report.replacements() > 0 {
+                ctx.note_audit(AuditAction::new(
+                    AuditKind::SecretRedactedOrBlocked,
+                    AuditDecision::Noted,
+                ));
+            }
+            redacted.output.into_owned()
+        }
+        Err(_) => {
+            ctx.note_audit(AuditAction::new(
+                AuditKind::SecretRedactedOrBlocked,
+                AuditDecision::Denied,
+            ));
+            String::from("[dropped: the text could not be checked for secrets]")
+        }
+    }
 }
