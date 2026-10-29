@@ -20,8 +20,9 @@
 //!    (an approver cannot decide what needs a security approver). A decision is never recorded
 //!    for a package the person was not shown: a decision given ahead of time would cover a later
 //!    candidate of the same job.
-//! 5. **The record** is made by `DependencyApproval::record`, with the policy hash the job was
-//!    admitted under, and the tenant and the job.
+//! 5. **The record** is made by `DependencyApproval::record`, with the hash of the policy bundle
+//!    the engine runs under (the one the stages read as their policy input; the caller does not
+//!    choose it), and the tenant and the job.
 //!
 //! # What is written, in one transaction
 //!
