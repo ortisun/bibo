@@ -12,11 +12,13 @@
 #   not on; the broker network is internal; every published port is bound to 127.0.0.1; every image is pinned by digest
 #   or is never pulled; every service drops all capabilities, has a read-only root, no-new-privileges, memory and
 #   process limits and a profile, and mounts no Docker socket; no secret-looking variable holds a value; the factory
-#   services run as 10010:10010.
+#   services run as one non-root user (10010:10010, or FACTORY_UID:FACTORY_GID) that owns the artifact volume; the
+#   decision signing key is mounted in the api and the worker at one path and in no other service, and that path is
+#   the one both configuration files name.
 #
 # The dynamic checks, on a project named factory-smoke-<run> (profile test, one data network and one internal network,
 # both labelled factory.test=true, removed at the end, the machine-wide Docker lock held meanwhile):
-#   1. every container is healthy (PostgreSQL) or running (the probe), and the artifact volume belongs to 10010 with 0700;
+#   1. every container is healthy (PostgreSQL) or running (the probe), and the artifact volume belongs to the factory user (10010 unless FACTORY_UID is set) with 0700;
 #   2. the migrations apply and each of the three logins passes the start-up role check;
 #   3. nothing is published except on 127.0.0.1, and a connection to this machine's own LAN address on the
 #      database port is refused;
@@ -124,7 +126,7 @@ smoke_dynamic() {
   if [ -z "$bad" ]; then ops_check containers-healthy PASS "postgres healthy, sandbox-probe running"; else ops_check containers-healthy FAIL "$bad"; fi
   local owner
   owner=$(ops_volume_run "$OPS_ARTIFACT_VOLUME" ro 'stat -c "%u:%g %a" /v')
-  if [ "$owner" = "10010:10010 700" ]; then ops_check artifact-volume-owner-and-mode PASS "$owner"; else ops_check artifact-volume-owner-and-mode FAIL "got '$owner', expected '10010:10010 700'"; fi
+  if [ "$owner" = "$OPS_FACTORY_UID:$OPS_FACTORY_GID 700" ]; then ops_check artifact-volume-owner-and-mode PASS "$owner"; else ops_check artifact-volume-owner-and-mode FAIL "got '$owner', expected '$OPS_FACTORY_UID:$OPS_FACTORY_GID 700'"; fi
 
   # 2. The database is ready for the factory services.
   ops_migrate

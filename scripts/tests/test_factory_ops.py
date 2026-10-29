@@ -11,6 +11,9 @@ import copy
 import hashlib
 import json
 import os
+import re
+import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -75,15 +78,22 @@ LIST_TEXT = "%s 12 sha256/11/11/%s\n" % (BLOB, BLOB)
 
 
 class BackupFolderCase(TempDirCase):
-    """A backup folder built by `manifest` and `sums`, then checked and damaged."""
+    """A backup folder built by `manifest` and `sums`, then checked and damaged. The inputs of `manifest` are kept
+    in a second folder, so the backup folder holds only what a real backup holds."""
+
+    def setUp(self):
+        super().setUp()
+        self.scratch = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.scratch, ignore_errors=True)
 
     def make_backup(self):
         for name, text in (("database.dump", "dump bytes"), ("globals.sql", "SET x;\n"), ("artifacts.tar", "tar bytes")):
             write(self.path(name), text)
         write(self.path("artifacts.list"), LIST_TEXT)
-        write(self.path("facts.json"), json.dumps(FACTS))
-        write(self.path("tables.json"), json.dumps(TABLES))
-        code, _, done = run("manifest", "--dir", self.dir, "--facts", self.path("facts.json"), "--tables", self.path("tables.json"),
+        write(os.path.join(self.scratch, "facts.json"), json.dumps(FACTS))
+        write(os.path.join(self.scratch, "tables.json"), json.dumps(TABLES))
+        code, _, done = run("manifest", "--dir", self.dir, "--facts", os.path.join(self.scratch, "facts.json"),
+                            "--tables", os.path.join(self.scratch, "tables.json"),
                             "--artifact-list", self.path("artifacts.list"), "--database", "factory")
         self.assertEqual(code, 0, done.stderr)
         self.assertEqual(run("sums", "--dir", self.dir)[0], 0)
@@ -94,6 +104,30 @@ class BackupFolderCase(TempDirCase):
         self.assertEqual(code, 0)
         self.assertEqual(checks["backup-checksums"][0], "PASS")
         self.assertEqual(checks["manifest-names-the-same-hashes"][0], "PASS")
+
+    def test_a_good_backup_holds_exactly_the_documented_files(self):
+        self.make_backup()
+        self.assertEqual(sorted(os.listdir(self.dir)), ["SHA256SUMS", "artifacts.list", "artifacts.tar", "database.dump",
+                                                        "globals.sql", "manifest.json"])
+        code, checks, _ = run("check-sums", "--dir", self.dir)
+        self.assertEqual((code, checks["backup-holds-only-its-own-files"][0]), (0, "PASS"))
+
+    def test_a_secret_file_in_the_backup_folder_fails_and_is_named(self):
+        """The decision signing key, the webhook secret and the database URLs are never part of a backup. A copy of
+        one in the folder (a script that grew a `cp`, a person who meant well) is refused at restore time."""
+        self.make_backup()
+        for name in ("decision_signing_key", "webhook_secret", "pg_url_api", "pg_superuser_password"):
+            write(self.path(name), "not a real value")
+            code, checks, _ = run("check-sums", "--dir", self.dir)
+            self.assertEqual((code, checks["backup-holds-only-its-own-files"][0]), (1, "FAIL"), name)
+            self.assertIn(name, checks["backup-holds-only-its-own-files"][1])
+            os.remove(self.path(name))
+
+    def test_a_dot_file_from_a_file_manager_is_not_a_stray(self):
+        self.make_backup()
+        write(self.path(".DS_Store"), "x")
+        code, checks, _ = run("check-sums", "--dir", self.dir)
+        self.assertEqual((code, checks["backup-holds-only-its-own-files"][0]), (0, "PASS"))
 
     def test_one_flipped_byte_in_the_dump_fails(self):
         self.make_backup()
@@ -144,10 +178,10 @@ class BackupFolderCase(TempDirCase):
             facts_edit(facts)
         if tables_edit:
             tables_edit(tables)
-        write(self.path("restored-facts.json"), json.dumps(facts))
-        write(self.path("restored-tables.json"), json.dumps(tables))
-        return run("compare-db", "--manifest", self.path("manifest.json"), "--facts", self.path("restored-facts.json"),
-                   "--tables", self.path("restored-tables.json"))
+        write(os.path.join(self.scratch, "restored-facts.json"), json.dumps(facts))
+        write(os.path.join(self.scratch, "restored-tables.json"), json.dumps(tables))
+        return run("compare-db", "--manifest", self.path("manifest.json"), "--facts", os.path.join(self.scratch, "restored-facts.json"),
+                   "--tables", os.path.join(self.scratch, "restored-tables.json"))
 
     def test_an_identical_database_passes_every_comparison(self):
         code, checks, _ = self.compare()
@@ -327,8 +361,22 @@ class ReportCase(TempDirCase):
         self.assertEqual((code, report["result"]), (1, "FAIL"))
 
 
-def rendered():
+KEY_PATH = "/run/secrets/decision_signing_key"
+INIT_COMMAND = "install -d -m 0700 -o %s -g %s /artifacts && chown %s:%s /artifacts && chmod 0700 /artifacts"
+API_CONFIG = """profile: local
+decisions:
+  key_file: %s   # the SAME file the worker mounts
+artifacts: { root: /var/lib/factory/artifacts }
+""" % KEY_PATH
+WORKER_CONFIG = """profile: local
+decisions: { key_file: %s }
+""" % KEY_PATH
+
+
+def rendered(api_config="/nonexistent/api.yaml", worker_config="/nonexistent/worker.yaml", uid="10010", gid="10010"):
     """A rendered Compose file (docker compose config --format json) that follows the rules."""
+    user = "%s:%s" % (uid, gid)
+    key = [{"source": "decision_signing_key", "target": KEY_PATH}]
     hardened = {"cap_drop": ["ALL"], "read_only": True, "security_opt": ["no-new-privileges:true"], "mem_limit": "1", "pids_limit": 1}
     return {
         "networks": {"data": {}, "broker": {"internal": True}, "probe_net": {"internal": True}},
@@ -337,20 +385,26 @@ def rendered():
                              cap_add=["CHOWN", "DAC_OVERRIDE", "SETGID", "SETUID"],
                              ports=[{"host_ip": "127.0.0.1", "published": "55432", "target": 5432}]),
             "artifacts-init": dict(hardened, image="postgres:18.6@sha256:" + "a" * 64, profiles=["local"], cap_add=["CHOWN", "DAC_OVERRIDE", "FOWNER"],
-                                   network_mode="none"),
+                                   network_mode="none", command=[INIT_COMMAND % (uid, gid, uid, gid)]),
             "sandbox-probe": dict(hardened, image="factory-sandbox/agent:x", pull_policy="never", profiles=["test"],
                                   networks={"probe_net": None}),
             "api": dict(hardened, image="factory-api:local", pull_policy="never", profiles=["factory"], networks={"data": None},
-                        user="10010:10010", environment={"FACTORY_DB_API_PASSWORD_FILE": "/run/secrets/x"}),
+                        user=user, environment={"FACTORY_DB_API_PASSWORD_FILE": "/run/secrets/x"},
+                        secrets=[{"source": "pg_url_api", "target": "db_api"}] + copy.deepcopy(key),
+                        volumes=[{"type": "bind", "source": api_config, "target": "/etc/factory/api.yaml", "read_only": True}]),
             "worker": dict(hardened, image="factory-worker:local", pull_policy="never", profiles=["factory"],
-                           networks={"data": None, "broker": None}, user="10010:10010"),
+                           networks={"data": None, "broker": None}, user=user,
+                           secrets=[{"source": "pg_url_worker", "target": "db_worker"}] + copy.deepcopy(key),
+                           volumes=[{"type": "bind", "source": worker_config, "target": "/etc/factory/worker.yaml", "read_only": True}]),
         },
     }
 
 
 class TopologyCase(TempDirCase):
-    def check(self, edit=None):
-        config = rendered()
+    def check(self, edit=None, api_text=API_CONFIG, worker_text=WORKER_CONFIG, uid="10010", gid="10010"):
+        write(self.path("api.yaml"), api_text)
+        write(self.path("worker.yaml"), worker_text)
+        config = rendered(self.path("api.yaml"), self.path("worker.yaml"), uid, gid)
         if edit:
             edit(config)
         write(self.path("c.json"), json.dumps(config))
@@ -403,7 +457,88 @@ class TopologyCase(TempDirCase):
 
     def test_a_factory_service_running_as_root_fails(self):
         code, checks, _ = self.check(lambda c: c["services"]["api"].update(user="0:0"))
-        self.assertEqual((code, checks["factory-services-run-as-10010"][0]), (1, "FAIL"))
+        self.assertEqual((code, checks["factory-services-run-as-the-volume-owner"][0]), (1, "FAIL"))
+
+    def test_the_two_services_must_run_as_one_user(self):
+        code, checks, _ = self.check(lambda c: c["services"]["worker"].update(user="10011:10011"))
+        self.assertEqual((code, checks["factory-services-run-as-the-volume-owner"][0]), (1, "FAIL"))
+
+    def test_a_user_that_is_not_the_owner_of_the_artifact_volume_fails(self):
+        """A service that runs as a user the volume does not belong to cannot write its artifacts."""
+        def edit(c):
+            for name in ("api", "worker"):
+                c["services"][name]["user"] = "1000:1000"
+        code, checks, _ = self.check(edit)
+        self.assertEqual((code, checks["factory-services-run-as-the-volume-owner"][0]), (1, "FAIL"))
+        self.assertIn("10010", checks["factory-services-run-as-the-volume-owner"][1])
+
+    def test_a_host_user_passes_when_the_services_and_the_volume_agree(self):
+        """FACTORY_UID and FACTORY_GID set to the host user: the rendered file follows them in all three places."""
+        code, checks, _ = self.check(uid="1000", gid="1000")
+        self.assertEqual(code, 0, {k: v for k, v in checks.items() if v[0] != "PASS"})
+
+    def test_a_host_user_of_root_fails(self):
+        code, checks, _ = self.check(uid="0", gid="0")
+        self.assertEqual((code, checks["factory-services-run-as-the-volume-owner"][0]), (1, "FAIL"))
+
+    # ---- the decision signing key: one file, in the api and in the worker, and nowhere else ----
+
+    def test_the_key_mounted_in_both_services_passes(self):
+        code, checks, _ = self.check()
+        self.assertEqual(code, 0)
+        self.assertEqual(checks["decision-key-in-api-and-worker-only"][0], "PASS")
+        self.assertEqual(checks["decision-key-path-matches-configuration"][0], "PASS")
+
+    def test_the_key_in_only_the_api_fails(self):
+        """The worker would verify with no key, or another one, and reject every request as unsigned."""
+        def edit(c):
+            c["services"]["worker"]["secrets"] = [s for s in c["services"]["worker"]["secrets"] if s["source"] != "decision_signing_key"]
+        code, checks, _ = self.check(edit)
+        self.assertEqual((code, checks["decision-key-in-api-and-worker-only"][0]), (1, "FAIL"))
+        self.assertIn("api", checks["decision-key-in-api-and-worker-only"][1])
+
+    def test_the_key_in_only_the_worker_fails(self):
+        def edit(c):
+            c["services"]["api"]["secrets"] = [s for s in c["services"]["api"]["secrets"] if s["source"] != "decision_signing_key"]
+        code, checks, _ = self.check(edit)
+        self.assertEqual((code, checks["decision-key-in-api-and-worker-only"][0]), (1, "FAIL"))
+
+    def test_the_key_in_a_third_service_fails(self):
+        def edit(c):
+            c["services"]["postgres"]["secrets"] = [{"source": "decision_signing_key"}]
+        code, checks, _ = self.check(edit)
+        self.assertEqual((code, checks["decision-key-in-api-and-worker-only"][0]), (1, "FAIL"))
+        self.assertIn("postgres", checks["decision-key-in-api-and-worker-only"][1])
+
+    def test_the_key_mounted_at_two_different_paths_fails(self):
+        def edit(c):
+            c["services"]["worker"]["secrets"][-1]["target"] = "/run/secrets/decision_key_for_the_worker"
+        code, checks, _ = self.check(edit)
+        self.assertEqual((code, checks["decision-key-in-api-and-worker-only"][0]), (1, "FAIL"))
+
+    def test_a_short_target_means_a_file_under_run_secrets(self):
+        """Compose writes a long-form target without a slash as a name under /run/secrets."""
+        def edit(c):
+            for name in ("api", "worker"):
+                c["services"][name]["secrets"][-1]["target"] = "decision_signing_key"
+        code, checks, _ = self.check(edit)
+        self.assertEqual(code, 0, {k: v for k, v in checks.items() if v[0] != "PASS"})
+
+    def test_a_configuration_that_names_another_key_file_fails(self):
+        """The mount is right and the configuration looks for the key somewhere else: the process would not start."""
+        code, checks, _ = self.check(worker_text=WORKER_CONFIG.replace("decision_signing_key", "decision_key"))
+        self.assertEqual((code, checks["decision-key-path-matches-configuration"][0]), (1, "FAIL"))
+        self.assertIn("worker", checks["decision-key-path-matches-configuration"][1])
+
+    def test_a_configuration_that_names_no_key_fails(self):
+        code, checks, _ = self.check(api_text="profile: local\n")
+        self.assertEqual((code, checks["decision-key-path-matches-configuration"][0]), (1, "FAIL"))
+
+    def test_a_configuration_file_that_cannot_be_read_fails(self):
+        def edit(c):
+            c["services"]["api"]["volumes"][0]["source"] = "/nonexistent/api.yaml"
+        code, checks, _ = self.check(edit)
+        self.assertEqual((code, checks["decision-key-path-matches-configuration"][0]), (1, "FAIL"))
 
 
 class LockCase(TempDirCase):
@@ -448,6 +583,128 @@ class LockCase(TempDirCase):
         self.assertEqual(self.script("ops_lock_acquire 2; true").returncode, 0)
         done = self.script("ops_lock_acquire 2; echo got-it")
         self.assertEqual((done.returncode, done.stdout.strip().splitlines()[-1]), (0, "got-it"))
+
+
+def bash(body, *args, env=None):
+    """Run a snippet of bash that has sourced scripts/lib/ops.sh."""
+    return subprocess.run(["bash", "-c", ". '%s/ops.sh'; %s" % (LIB, body), "bash", *args],
+                          env=dict(os.environ, OPS_TOOL="secrets-test", **(env or {})), capture_output=True, text=True, timeout=60)
+
+
+class SecretFilesCase(TempDirCase):
+    """The files scripts/local-up.sh makes before it starts anything (ops_make_secrets)."""
+
+    def contents(self, folder):
+        found = {}
+        for name in sorted(os.listdir(folder)):
+            with open(os.path.join(folder, name), encoding="utf-8") as handle:
+                found[name] = handle.read()
+        return found
+
+    def make(self):
+        done = bash('ops_make_secrets "$1"', self.path("secrets"))
+        self.assertEqual(done.returncode, 0, done.stderr)
+        return self.path("secrets")
+
+    def test_the_signing_key_and_the_webhook_secret_are_made_closed_and_random(self):
+        folder = self.make()
+        self.assertEqual(stat.S_IMODE(os.stat(folder).st_mode), 0o700)
+        values = {}
+        for name in ("decision_signing_key", "webhook_secret"):
+            path = os.path.join(folder, name)
+            self.assertEqual(stat.S_IMODE(os.stat(path).st_mode), 0o600, name)
+            with open(path, encoding="utf-8") as handle:
+                values[name] = handle.read().strip()
+            # 32 bytes in hex is the least the programs accept; a key of one repeated byte is refused by them.
+            self.assertRegex(values[name], r"^[0-9a-f]{64}$", name)
+            self.assertGreaterEqual(len(set(bytes.fromhex(values[name]))), 16, name)
+        self.assertNotEqual(values["decision_signing_key"], values["webhook_secret"])
+
+    def test_an_existing_key_is_never_overwritten(self):
+        """Pending decision requests are signed with it. A new value would make every one of them unverifiable."""
+        folder = os.path.join(self.dir, "secrets")
+        os.makedirs(folder, mode=0o700)
+        existing = os.path.join(folder, "decision_signing_key")
+        write(existing, "an-existing-key-of-someone-elses-choice\n")
+        os.chmod(existing, 0o644)
+        self.make()
+        with open(existing, encoding="utf-8") as handle:
+            self.assertEqual(handle.read(), "an-existing-key-of-someone-elses-choice\n")
+        # The mode is tightened, the content is not touched: the services refuse a key that others can read.
+        self.assertEqual(stat.S_IMODE(os.stat(existing).st_mode), 0o600)
+
+    def test_a_second_run_changes_nothing(self):
+        folder = self.make()
+        before = self.contents(folder)
+        self.make()
+        self.assertEqual(before, self.contents(folder))
+
+    def test_an_empty_key_file_is_replaced_because_it_is_not_a_key(self):
+        folder = os.path.join(self.dir, "secrets")
+        os.makedirs(folder, mode=0o700)
+        write(os.path.join(folder, "decision_signing_key"), "")
+        self.make()
+        with open(os.path.join(folder, "decision_signing_key"), encoding="utf-8") as handle:
+            self.assertRegex(handle.read().strip(), r"^[0-9a-f]{64}$")
+
+
+class ContainerUserCase(TempDirCase):
+    """On Linux Compose mounts a secret with the owner of the host file, and the services refuse a file that
+    group or others can read, so the files must belong to the user the containers run as."""
+
+    def readers(self, platform, uid):
+        folder = os.path.join(self.dir, "secrets")
+        os.makedirs(folder, exist_ok=True)
+        for name in ("pg_url_api", "pg_url_worker", "pg_url_engine", "decision_signing_key", "webhook_secret"):
+            write(os.path.join(folder, name), "x")
+        return bash('ops_check_secret_readers "$1" "$2"', folder, str(uid), env={"OPS_PLATFORM": platform})
+
+    def test_secrets_owned_by_another_user_than_the_containers_are_refused_on_linux(self):
+        done = self.readers("Linux", os.getuid() + 1)
+        self.assertEqual(done.returncode, 1, done.stderr)
+        self.assertIn("FACTORY_UID", done.stderr)
+        self.assertIn(str(os.getuid()), done.stderr)
+
+    def test_secrets_owned_by_the_container_user_pass_on_linux(self):
+        self.assertEqual(self.readers("Linux", os.getuid()).returncode, 0)
+
+    def test_the_check_does_not_apply_to_docker_desktop_on_macos(self):
+        self.assertEqual(self.readers("Darwin", os.getuid() + 1).returncode, 0)
+
+    def test_a_container_user_of_root_or_a_non_number_is_refused(self):
+        for bad in ("0", "root", "-1", ""):
+            done = bash('ops_container_user_ok "$1" "$2"', bad, "10010")
+            self.assertEqual(done.returncode, 1, bad)
+        self.assertEqual(bash('ops_container_user_ok "$1" "$2"', "1000", "1000").returncode, 0)
+
+
+class BackupNeverTakesASecretCase(unittest.TestCase):
+    """Source scans. The backup holds the database and the artifacts and nothing the stack keeps in a secret file."""
+
+    SECRET_WORDS = ("decision_signing_key", "webhook_secret", "pg_url_", "pg_password_", "pg_superuser_password", "OPS_SECRETS_DIR",
+                    "FACTORY_SECRETS_DIR", "/run/secrets")
+
+    def test_the_backup_script_does_not_read_the_secrets_folder(self):
+        with open(os.path.join(HERE, "..", "backup.sh"), encoding="utf-8") as handle:
+            code = [line for line in handle if not line.lstrip().startswith("#")]
+        for word in self.SECRET_WORDS:
+            self.assertFalse([line for line in code if word in line], "scripts/backup.sh uses %s" % word)
+
+    def test_the_files_of_a_backup_are_the_documented_five_and_no_secret(self):
+        sys.path.insert(0, LIB)
+        try:
+            import factory_ops
+        finally:
+            sys.path.remove(LIB)
+        self.assertEqual(factory_ops.BACKUP_FILES, ["database.dump", "globals.sql", "artifacts.tar", "artifacts.list"])
+        for name in factory_ops.BACKUP_FILES:
+            self.assertFalse(re.search("key|secret|password|token", name), name)
+
+    def test_the_drill_searches_the_backup_for_the_key_and_the_webhook_secret_too(self):
+        with open(os.path.join(HERE, "..", "restore-drill.sh"), encoding="utf-8") as handle:
+            text = handle.read()
+        for name in ("decision_signing_key", "webhook_secret"):
+            self.assertTrue(name in text, "the drill's search for secret values must include %s" % name)
 
 
 if __name__ == "__main__":

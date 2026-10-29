@@ -25,6 +25,9 @@ import sys
 FORMAT = "factory-backup/1"
 # The files a backup holds, apart from the manifest, which names the others.
 BACKUP_FILES = ["database.dump", "globals.sql", "artifacts.tar", "artifacts.list"]
+# Everything a backup folder holds. Nothing else belongs there; in particular no secret file of the stack (the
+# decision signing key, the webhook secret, the database URLs and passwords): they are not part of a backup.
+BACKUP_FOLDER_FILES = set(BACKUP_FILES) | {"manifest.json", "SHA256SUMS"}
 BLOB_PATH = re.compile(r"^sha256/([0-9a-f]{2})/([0-9a-f]{2})/([0-9a-f]{64})$")
 
 
@@ -257,7 +260,7 @@ def cmd_compare_artifacts(args):
         state = load(args.state)
         bad = {k: v for k, v in state.items() if v}
         failed |= not emit("artifacts-owner-and-modes", not bad,
-                           "files 0400, folders 0700, owner 10010:10010, no link or other kind of entry"
+                           "files 0400, folders 0700, owned by the factory user (10010:10010 unless FACTORY_UID is set), no link or other kind of entry"
                            if not bad else "wrong: %s" % bad)
     return 1 if failed else 0
 
@@ -297,6 +300,46 @@ def cmd_report(args):
 
 CAP_ALLOWED = {"postgres": {"CHOWN", "DAC_OVERRIDE", "SETGID", "SETUID"}, "artifacts-init": {"CHOWN", "DAC_OVERRIDE", "FOWNER"}}
 SECRET_WORDS = ("PASSWORD", "SECRET", "TOKEN", "APIKEY", "API_KEY", "PRIVATE_KEY")
+
+
+KEY_SECRET = "decision_signing_key"
+
+
+def secret_target(service, source):
+    """Where a service mounts the secret `source`, as an absolute path, or None if it does not mount it. Compose
+    renders a long-form target without a slash as a name under /run/secrets."""
+    for entry in service.get("secrets") or []:
+        if entry.get("source") == source:
+            target = entry.get("target") or source
+            return target if target.startswith("/") else "/run/secrets/" + target
+    return None
+
+
+def decision_key_file(text):
+    """The decisions.key_file a configuration file names, or None. The files are small and written in one of two
+    shapes (a block, or a one-line table), and a full YAML reader is not in the standard library."""
+    lines = [re.sub(r"\s#.*$", "", line) for line in text.splitlines() if not line.lstrip().startswith("#")]
+    flat = "\n".join(lines)
+    inline = re.search(r"^decisions:\s*\{[^}]*\bkey_file:\s*([^\s,}]+)", flat, re.M)
+    if inline:
+        return inline.group(1)
+    block = re.search(r"^decisions:[ \t]*\n((?:[ \t]+.*\n?)+)", flat, re.M)
+    if block:
+        key = re.search(r"^[ \t]+key_file:\s*(\S+)", block.group(1), re.M)
+        return key.group(1) if key else None
+    return None
+
+
+def configuration_key_file(service, target):
+    """The key file named by the configuration file that the service mounts at `target`; None when it cannot be read."""
+    for volume in service.get("volumes") or []:
+        if volume.get("target") == target:
+            try:
+                with open(volume["source"], encoding="utf-8") as handle:
+                    return decision_key_file(handle.read())
+            except OSError:
+                return None
+    return None
 
 
 def cmd_check_topology(args):
@@ -365,8 +408,36 @@ def cmd_check_topology(args):
                 leaked.append("%s.%s" % (name, key))
     failed |= not emit("no-secret-in-environment", not leaked, "secret-like names are *_FILE paths only" if not leaked else "values in: %s" % leaked)
 
+    # The api and the worker run as one numeric, non-root user, and that user owns the artifact volume: the job
+    # artifacts-init gives the volume to the owner it names, and the storage crate writes as the service user.
+    # 10010:10010 unless FACTORY_UID and FACTORY_GID are set (a Linux host whose secret files belong to someone else).
     users = {n: services[n].get("user") for n in ("api", "worker") if n in services}
-    failed |= not emit("factory-services-run-as-10010", all(u == "10010:10010" for u in users.values()), "%s" % users)
+    init_command = " ".join(str(w) for w in (services.get("artifacts-init", {}).get("command") or []))
+    owner = re.search(r"install -d -m 0700 -o (\d+) -g (\d+) /artifacts", init_command)
+    volume_owner = "%s:%s" % owner.groups() if owner else None
+    one_user = len(set(users.values())) == 1 and bool(users)
+    numeric = all(isinstance(u, str) and re.fullmatch(r"[1-9]\d*:\d+", u) for u in users.values())
+    failed |= not emit("factory-services-run-as-the-volume-owner",
+                       one_user and numeric and all(u == volume_owner for u in users.values()),
+                       "api and worker run as %s; artifacts-init gives the volume to %s" % (users, volume_owner or "nobody (command not recognised)"))
+
+    # The decision signing key: the api signs with it and the worker verifies with it, so both mount the same file
+    # at the same path, and no other service has any business with it.
+    paths = {n: secret_target(svc, KEY_SECRET) for n, svc in services.items()}
+    holders = sorted(n for n, path in paths.items() if path)
+    shared = holders == ["api", "worker"] and paths["api"] == paths["worker"]
+    failed |= not emit("decision-key-in-api-and-worker-only", shared,
+                       "the api and the worker both mount %s" % paths.get("api") if shared else
+                       "the key is mounted in %s (paths %s); it belongs in api and worker, at one path" %
+                       (holders or "no service", sorted({paths[n] for n in holders}) or "none"))
+    # ...and the path each configuration file gives is the path the secret is mounted at.
+    wrong = []
+    for name in ("api", "worker"):
+        named = configuration_key_file(services.get(name, {}), "/etc/factory/%s.yaml" % name)
+        if named is None or named != paths.get(name):
+            wrong.append("%s: its configuration names %s, the key is mounted at %s" % (name, named or "no key file", paths.get(name)))
+    failed |= not emit("decision-key-path-matches-configuration", not wrong,
+                       "both configuration files name the path the key is mounted at" if not wrong else "; ".join(wrong))
     return 1 if failed else 0
 
 
@@ -492,6 +563,12 @@ def cmd_check_sums(args):
         elif sha256_file(path) != listed[name]:
             bad.append("%s does not match its checksum" % name)
     failed |= not emit("backup-checksums", not bad, "all %d files match SHA256SUMS" % len(listed) if not bad else "; ".join(bad))
+    # A file the backup does not define is refused and named. A name that starts with a dot (.DS_Store, a file
+    # manager's own) is not a stray.
+    strays = sorted(n for n in os.listdir(args.dir) if n not in BACKUP_FOLDER_FILES and not n.startswith("."))
+    failed |= not emit("backup-holds-only-its-own-files", not strays,
+                       "the folder holds only the files of a backup" if not strays else
+                       "not part of a backup: %s. A backup never holds a secret; take the file out" % ", ".join(strays))
     if not bad:
         manifest = load(os.path.join(args.dir, "manifest.json"))
         same = all(manifest["files"].get(n) == listed.get(n) for n in BACKUP_FILES)
