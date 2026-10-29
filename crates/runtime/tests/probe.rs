@@ -220,6 +220,7 @@ fn need(required: Vec<Capability>, probed: ProbedCapabilities) -> RoutingNeed {
         risk: RiskTier::Low,
         exclude: Vec::new(),
         probed,
+        author: None,
     }
 }
 

@@ -142,7 +142,7 @@ The crates.io API, asked about a package that a change adds as a new direct depe
 
 | Key | Type | Required | Default | Notes |
 |---|---|---|---|---|
-| `registry.base_url` | text | yes | no default | The base URL of the registry API, such as `https://crates.io`. The production profile needs https and a host that the egress policy lists for the cargo ecosystem. The stock policy lists `index.crates.io` and `static.crates.io` and not `crates.io`, so a person adds the host before production can use the API. |
+| `registry.base_url` | text | yes | no default | The base URL of the registry API, such as `https://crates.io`. The production profile needs https and a host that the egress policy lists for the cargo ecosystem. The stock policy lists `crates.io` (the entry `crates_api`, for the control plane's registry client), `index.crates.io` and `static.crates.io`. |
 | `registry.user_agent` | text | production | none | The `User-Agent` the client sends. The registry asks clients to say who to reach. |
 | `registry.timeout_seconds` | whole number | no | 10 | The wall time of one request. From 1 to 120. |
 | `registry.max_response_bytes` | whole number | no | 1048576 | The largest answer read. A larger one reads as unknown. From 1 KiB to 16 MiB. |

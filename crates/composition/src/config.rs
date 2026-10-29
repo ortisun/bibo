@@ -1642,6 +1642,36 @@ mod tests {
     }
 
     #[test]
+    fn break_the_registry_host_removed_from_the_egress_policy_is_refused_in_production() {
+        // The stock policy lists `crates.io` (the entry `crates_api`). With that line taken out,
+        // production refuses the registry client's address and names the key.
+        let mut policy = crate::startup::tests_support::repository_security_policy();
+        let registry = production_file(
+            "github:\n  app_id: 7\n  key_file: /run/secrets/app\nregistry: { base_url: 'https://crates.io', user_agent: factory }\n",
+        );
+        let config = FactoryConfig::from_yaml(&registry).expect("loads");
+        assert!(
+            config.check_endpoints(&policy).is_ok(),
+            "the stock policy lists it"
+        );
+        let before = policy.egress.profiles.fetch_deps.allow.len();
+        policy
+            .egress
+            .profiles
+            .fetch_deps
+            .allow
+            .retain(|entry| entry.host != "crates.io");
+        assert_eq!(policy.egress.profiles.fetch_deps.allow.len(), before - 1);
+        assert!(matches!(
+            config.check_endpoints(&policy),
+            Err(ConfigError::OutOfRange {
+                field: "registry.base_url",
+                ..
+            })
+        ));
+    }
+
+    #[test]
     fn the_production_hosts_are_checked_against_the_egress_policy() {
         let policy = crate::startup::tests_support::repository_security_policy();
         let listed = FactoryConfig::from_yaml(&production_file(
@@ -1661,13 +1691,20 @@ mod tests {
                 ..
             })
         ));
-        // The registry API of crates.io is not among the cargo hosts the stock policy lists, so
-        // production refuses it until a person adds the host.
+        // The registry API of crates.io is among the cargo hosts of the stock policy (`crates_api`),
+        // so production accepts it; a registry the policy does not list is refused.
         let registry = production_file(
             "github:\n  app_id: 7\n  key_file: /run/secrets/app\nregistry: { base_url: 'https://crates.io', user_agent: factory }\n",
         );
-        assert!(matches!(
+        assert!(
             FactoryConfig::from_yaml(&registry)
+                .expect("loads")
+                .check_endpoints(&policy)
+                .is_ok()
+        );
+        let elsewhere = registry.replace("https://crates.io", "https://registry.example.org");
+        assert!(matches!(
+            FactoryConfig::from_yaml(&elsewhere)
                 .expect("loads")
                 .check_endpoints(&policy),
             Err(ConfigError::OutOfRange {

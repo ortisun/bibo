@@ -18,7 +18,7 @@ CLI, are made of before each adds its own shell. A ring 3 **library**
 | `health` | Health and readiness as plain data |
 | `telemetry` | The telemetry configuration with the real scrubber, and the `factory.job` stretch span |
 | `system` | The real clock, identifier source, `Ticker` and shutdown signal |
-| `seams`, `authority`, `sandbox_specs` | The seams the stages declare that need no store state: schema check, manifests, allowlist, requests, repositories, probes, spec builders |
+| `seams`, `authority`, `sandbox_specs` | The seams the stages declare that need no store state: schema check, manifests, allowlist, requests, repositories, probes, spec builders. `sandbox_specs` also holds the address an agent reaches the broker at (`broker_endpoint`: the sidecar by its alias, over http), the directories of a scratch workspace (made when the spec is accepted) and the path of a program the build made (`built_program`) |
 | `ledger` | `TaskLedger` over `TaskNodeOps`, fenced by attempt and epoch |
 | `feedback`, `risk` | `ReworkSource`, `RoundSource` and `RiskSource`, read from the evidence the engine stored |
 | `drift` | `EvidenceDrift` as a channel to the loop that owns the engine |
@@ -26,7 +26,7 @@ CLI, are made of before each adds its own shell. A ring 3 **library**
 | `delivery` | `ApprovalSources` and `DeliverySources` (two methods fail closed) |
 | `commands` | The pure parsers from a comment, `argv` or a form to an approval command |
 | `reading` | Shared reads of stage run outputs, the ledger and the artifact store |
-| `providers` | The real Docker sandbox, host-side workspace and Spec Kit provider from the configuration; `specification_path_rules` (the stage's rules with the writes of its skills lifted); `spec_kit_provider` and `spec_kit_installation` from a checkout |
+| `providers` | The real Docker sandbox, host-side workspace and Spec Kit provider from the configuration; `specification_path_rules` (the stage's rules with the writes of its skills lifted) and `layer_policy` (the compiled policy the real workspace takes its second look with, with the same writes re-included); `spec_kit_provider` and `spec_kit_installation` from a checkout |
 | `runtimes` | One agent runtime that serves every tenant |
 | `indexing` | Indexes what a sandbox writes and what a workspace exports, for the tenant, when it is written |
 | `hooks` | The work a loop does before it claims (`BeforeClaim`) |
@@ -41,6 +41,7 @@ CLI, are made of before each adds its own shell. A ring 3 **library**
 | `external` | `assemble_external`: the issue source and change host (`factory-github` over `ureq`), the runtime set (Claude Code and Codex adapters, a tenant at a time), the router, the registry and advisory sources and the capability probes, from the configuration; every item it cannot build comes back as a `BlockedItem` that starts with the configuration key. `probe_at_startup` runs each runtime's probe in an `agent` sandbox. `ConfigAttestations` reads the administrators' statements |
 | `policy_broker` | `PolicyBroker`: stands in front of the broker and cuts every token request to the stage's models, the stage's ceiling and what is left of the job's ceiling (all from `policies/model_routing.yaml`) |
 | `token_sweep` | `RevokeEndedJobs`: a step before each claim that revokes the GitHub installation tokens of every job that is over |
+| `spec_skills` | `bundle_for_writer`: the pinned skills the specification writer may see, built from the Spec Kit installed in the **protected checkout** (never the repository under change): the skills the writer's manifest names, each refused unless the policy allows it and does not deny it, under the directory name the installation's separator gives, and only if the file hashes to the value of the pinned manifest. The worker passes the bundle to the Claude Code adapter; a checkout that cannot supply it is a `BLOCKED: agent runtime: protected_checkout:` line |
 | `crates_io` | The package registry source: a small client for the crates.io API with a timeout, a response cap and a `User-Agent`; anything it cannot read is unknown |
 | `advisory` | The advisory database date, read from `advisory_database.date_file` |
 | `webhook` | The webhook verifier of the API, built from secret files (one per secret in the rotation window) |
@@ -74,8 +75,8 @@ The configuration keys that point at the outside world are in [the reference](..
   blocks the issue source and the change host and says which key.
 * The production profile reaches the outside world over `https` only, and only hosts the policy lists: the model providers
   against `egress.broker_upstreams`, GitHub against `api.github.com`, the registry against the cargo hosts of the `fetch_deps`
-  profile. The stock policy lists `index.crates.io` and `static.crates.io` and not `crates.io`, so production needs the host added
-  by a person before the registry client can run there. The local and test profiles also accept plain `http` on the loopback
+  profile. The stock policy lists `crates.io` (the entry `crates_api`), `index.crates.io` and `static.crates.io`, so the
+  registry client can run in production against `https://crates.io`. The local and test profiles also accept plain `http` on the loopback
   interface, and only there.
 * The routing policy is loaded with the other policies. A missing file stops the start. The production profile also stops while
   `ModelRoutingPolicy::unconfirmed()` is not empty (every price and ceiling of the file waits for the project owner today).

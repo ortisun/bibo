@@ -403,7 +403,20 @@ impl Engine {
             .contract(&ccx)
             .map_err(|_| EngineError::Corrupt("the stage contract no longer resolves"))?;
         let identity = Self::identity(&cx, &run.value);
-        let need = handler.routing_need(&ccx);
+        let mut need = handler.routing_need(&ccx);
+        // A reviewing stage is routed against the model that made the work it reviews, read from
+        // the store and not from this process, because another worker may have run the builder.
+        if let Some(need) = need.as_mut()
+            && need.author.is_none()
+            && need.stage == factory_domain::vocabulary::StageKind::Review
+        {
+            need.author = crate::stages::implementation::evidence::builder_selection(
+                self.deps.artifacts.as_ref(),
+                &TenantScope::new(claimed.tenant),
+                &upstream,
+            )
+            .await;
+        }
         self.ensure_contract_stored(claimed.tenant, &run.value, &contract)
             .await?;
         Ok(Prepared {
@@ -564,6 +577,7 @@ impl Engine {
             cost_ceiling: ceiling,
             allowed_models: vec![decision.model],
             ttl: Duration::from_secs(attempt_seconds.saturating_add(300)),
+            per_request: None,
         };
         match self.deps.broker.issue(request).await {
             Ok(token) => {

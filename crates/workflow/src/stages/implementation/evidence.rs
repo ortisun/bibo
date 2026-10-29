@@ -52,6 +52,10 @@ pub struct TaskEvidence {
     pub reported_tests: Vec<String>,
     /// Instructions in the data that the builder says it ignored.
     pub ignored_instructions: Vec<String>,
+    /// The runtime and the model that built the task, as the router chose them. `None` for a task
+    /// an earlier attempt finished: this attempt did not run it and does not know. The reviewing
+    /// stage routes against it, so that the reviewer is independent of the builder (SF-17).
+    pub model: Option<(String, String)>,
 }
 
 /// A change the audit refused.
@@ -104,6 +108,17 @@ impl ImplementationEvidence {
         json!({ "base_commit": self.base_commit, "head_commit": self.head_commit })
     }
 
+    /// The runtime and the model of the latest task this attempt built: the model whose work the
+    /// reviewer judges. `None` when no task of this attempt was built.
+    #[must_use]
+    pub fn builder_model(&self) -> Option<(&str, &str)> {
+        self.tasks
+            .iter()
+            .rev()
+            .find_map(|task| task.model.as_ref())
+            .map(|(runtime, model)| (runtime.as_str(), model.as_str()))
+    }
+
     /// The manifest as a document.
     #[must_use]
     pub fn to_json(&self) -> Value {
@@ -119,6 +134,10 @@ impl ImplementationEvidence {
                         .map(|c| json!({ "path": c.path, "kind": c.kind }))
                         .collect::<Vec<_>>(),
                     "diff_stats": { "additions": task.additions, "deletions": task.deletions },
+                    "model": task.model.as_ref().map(|(runtime, model)| json!({
+                        "runtime": runtime,
+                        "model": model,
+                    })),
                     "reported_by_builder": {
                         "note": "These are the builder's own statements. They are not evidence.",
                         "commands": task.reported_commands.iter()
@@ -135,6 +154,10 @@ impl ImplementationEvidence {
             "base_commit": self.base_commit,
             "head_commit": self.head_commit,
             "tasks": tasks,
+            "builder_model": self.builder_model().map(|(runtime, model)| json!({
+                "runtime": runtime,
+                "model": model,
+            })),
             "refusal": self.refusal.as_ref().map(|r| json!({
                 "task": r.task,
                 "code": r.code,
@@ -165,6 +188,9 @@ impl ImplementationEvidence {
         for task in value.get("tasks")?.as_array()? {
             let reported = task.get("reported_by_builder")?;
             tasks.push(TaskEvidence {
+                model: task
+                    .get("model")
+                    .and_then(|m| Some((text(m, "runtime")?, text(m, "model")?))),
                 key: text(task, "key")?,
                 built_on: text(task, "built_on")?,
                 commit: text(task, "commit")?,
@@ -268,6 +294,44 @@ pub fn diff_stats(patch: &[u8]) -> (u64, u64) {
     (additions, deletions)
 }
 
+/// The model whose work a reviewing stage judges, as the router names it: the builder of the
+/// newest passed implementation run among `upstream`, read from the manifest that run stored
+/// (SF-17). `None` when there is no such run, its manifest cannot be read, or it names no model
+/// (every task was finished by an earlier attempt). The reviewing stage is then routed as if
+/// its author were unknown, and the order of the routes alone keeps the reviewer apart.
+pub async fn builder_selection(
+    artifacts: &dyn factory_ports::artifact::ArtifactStore,
+    tenant: &factory_domain::scope::TenantScope,
+    upstream: &[crate::handlers::UpstreamRun],
+) -> Option<factory_ports::agent::ModelSelection> {
+    let (_, stored) = super::input::upstream_output(
+        upstream,
+        factory_domain::vocabulary::StageKind::Implementation,
+        EVIDENCE,
+    )?;
+    let bytes = artifacts.get(tenant, stored).await.ok()?;
+    let (runtime, model) = builder_model_of(&bytes)?;
+    Some(factory_ports::agent::ModelSelection {
+        runtime: factory_ports::agent::RuntimeId::new(&runtime).ok()?,
+        model: factory_domain::values::NonEmptyString::parse(&model).ok()?,
+    })
+}
+
+/// The runtime and the model that built the work, read from the stored manifest of the
+/// implementation stage. `None` when the document is not that manifest or names no model.
+#[must_use]
+pub fn builder_model_of(bytes: &[u8]) -> Option<(String, String)> {
+    let value: Value = serde_json::from_slice(bytes).ok()?;
+    if value.get("kind")?.as_str()? != EVIDENCE {
+        return None;
+    }
+    let found = value.get("builder_model")?;
+    Some((
+        found.get("runtime")?.as_str()?.to_owned(),
+        found.get("model")?.as_str()?.to_owned(),
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -292,6 +356,7 @@ mod tests {
                 }],
                 reported_tests: vec!["it_prints_json".to_owned()],
                 ignored_instructions: Vec::new(),
+                model: Some(("claude-code-cli".to_owned(), "claude-sonnet-5-5".to_owned())),
             }],
             refusal: Some(Refusal {
                 task: "add-flag".to_owned(),
@@ -319,6 +384,110 @@ mod tests {
             ImplementationEvidence::from_json(&original.to_json()),
             Some(original)
         );
+    }
+
+    #[test]
+    fn the_manifest_names_the_model_that_built_the_work_for_the_reviewer_to_route_against() {
+        let evidence = sample();
+        assert_eq!(
+            evidence.builder_model(),
+            Some(("claude-code-cli", "claude-sonnet-5-5"))
+        );
+        let bytes = serde_json::to_vec(&evidence.to_json()).expect("json");
+        assert_eq!(
+            builder_model_of(&bytes),
+            Some(("claude-code-cli".to_owned(), "claude-sonnet-5-5".to_owned()))
+        );
+    }
+
+    #[test]
+    fn the_builder_model_is_the_latest_task_that_names_one_and_unknown_when_none_does() {
+        let mut evidence = sample();
+        let mut later = evidence.tasks[0].clone();
+        later.key = "second".to_owned();
+        later.model = Some(("codex-cli".to_owned(), "gpt-6.1-sol".to_owned()));
+        let mut resumed = evidence.tasks[0].clone();
+        resumed.key = "resumed".to_owned();
+        resumed.model = None;
+        evidence.tasks.push(later);
+        evidence.tasks.push(resumed);
+        assert_eq!(evidence.builder_model(), Some(("codex-cli", "gpt-6.1-sol")));
+        for task in &mut evidence.tasks {
+            task.model = None;
+        }
+        assert_eq!(evidence.builder_model(), None);
+        let bytes = serde_json::to_vec(&evidence.to_json()).expect("json");
+        assert_eq!(builder_model_of(&bytes), None);
+        // A document of another kind names no builder, even if it has the same key.
+        assert_eq!(
+            builder_model_of(
+                br#"{"kind":"something-else","builder_model":{"runtime":"a","model":"b"}}"#
+            ),
+            None
+        );
+        assert_eq!(builder_model_of(b"not json"), None);
+    }
+
+    /// An upstream implementation run that stored `document` as its manifest.
+    async fn upstream_with(
+        store: &factory_testkit::artifact::InMemoryArtifactStore,
+        document: &Value,
+        status: factory_domain::state::StageRunStatus,
+    ) -> Vec<crate::handlers::UpstreamRun> {
+        use factory_ports::artifact::ArtifactStore as _;
+        let artifact = store
+            .put(
+                serde_json::to_vec(document).expect("json"),
+                factory_domain::values::MediaType::parse("application/json").expect("a type"),
+            )
+            .await
+            .expect("stored");
+        // The store serves a blob to a tenant that was granted it, as the engine does by indexing
+        // every output for the tenant.
+        store.grant(
+            factory_domain::ids::TenantId::from_uuid(factory_ports::clock::Uuid::from_u128(7)),
+            &artifact.sha256,
+        );
+        vec![crate::handlers::UpstreamRun {
+            id: factory_domain::ids::StageRunId::from_uuid(factory_ports::clock::Uuid::from_u128(
+                1,
+            )),
+            kind: factory_domain::vocabulary::StageKind::Implementation,
+            status,
+            outputs: vec![crate::handlers::NamedArtifact {
+                name: factory_domain::values::Slug::parse(EVIDENCE).expect("a slug"),
+                artifact,
+            }],
+        }]
+    }
+
+    #[tokio::test]
+    async fn the_reviewer_is_routed_against_the_model_the_stored_manifest_names() {
+        use factory_domain::state::StageRunStatus;
+        let store = factory_testkit::artifact::InMemoryArtifactStore::new();
+        let tenant = factory_domain::scope::TenantScope::new(
+            factory_domain::ids::TenantId::from_uuid(factory_ports::clock::Uuid::from_u128(7)),
+        );
+        let upstream = upstream_with(&store, &sample().to_json(), StageRunStatus::Passed).await;
+        let found = builder_selection(&store, &tenant, &upstream).await;
+        let found = found.expect("the builder is named");
+        assert_eq!(found.runtime.as_str(), "claude-code-cli");
+        assert_eq!(found.model.as_str(), "claude-sonnet-5-5");
+
+        // Break: the run did not pass, so its manifest is not the work that is reviewed.
+        let failed = upstream_with(&store, &sample().to_json(), StageRunStatus::Failed).await;
+        assert!(builder_selection(&store, &tenant, &failed).await.is_none());
+        // Break: a manifest that names no model leaves the author unknown, and says so by `None`.
+        let mut nameless = sample();
+        nameless.tasks[0].model = None;
+        let upstream = upstream_with(&store, &nameless.to_json(), StageRunStatus::Passed).await;
+        assert!(
+            builder_selection(&store, &tenant, &upstream)
+                .await
+                .is_none()
+        );
+        // Break: no upstream run at all.
+        assert!(builder_selection(&store, &tenant, &[]).await.is_none());
     }
 
     #[test]

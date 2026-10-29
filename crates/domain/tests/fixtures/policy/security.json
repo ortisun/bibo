@@ -683,6 +683,20 @@
             "review_by": "2027-01-31"
           },
           {
+            "ecosystem": "cargo",
+            "host": "crates.io",
+            "id": "crates_api",
+            "justification": "crate metadata API, read by the control plane's registry client for the dependency gates",
+            "methods": [
+              "GET",
+              "HEAD"
+            ],
+            "ports": [
+              443
+            ],
+            "review_by": "2027-01-31"
+          },
+          {
             "ecosystem": "npm",
             "host": "registry.npmjs.org",
             "id": "npm_registry",

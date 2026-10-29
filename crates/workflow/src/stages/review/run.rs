@@ -28,7 +28,7 @@ use factory_domain::policy::RepoKind;
 use factory_domain::scope::TenantScope;
 use factory_domain::values::{MediaType, Sha256Digest, Slug};
 use factory_domain::vocabulary::{RiskTier, StageKind, Verdict};
-use factory_ports::agent::{AgentRunRequest, Capability, RoutingNeed};
+use factory_ports::agent::{AgentRunRequest, RoutingNeed};
 use factory_ports::registry::VersionReq;
 use factory_ports::workspace::{WorkspacePurpose, WorkspaceRequest};
 use serde_json::json;
@@ -101,7 +101,7 @@ async fn prove_sandbox(
         ctx,
         workspace.as_ref(),
         WorkspaceAccess::Inspect,
-        &[Capability::JsonSchemaOutput],
+        &[],
         true,
     )
     .await
@@ -325,17 +325,26 @@ async fn review_in(
         ctx,
         workspace,
         WorkspaceAccess::Inspect,
-        &[Capability::JsonSchemaOutput],
+        &[],
         true,
     )
     .await?;
+    // The same author the engine routed the token against, read from the same stored manifest, so
+    // that the model the reviewer is run with is one the token allows.
+    let author = crate::stages::implementation::evidence::builder_selection(
+        ports.artifacts,
+        &TenantScope::new(identity.tenant),
+        ctx.upstream,
+    )
+    .await;
     let need = RoutingNeed {
         stage: StageKind::Review,
         tier: RecommendedTier::Standard,
-        required: vec![Capability::JsonSchemaOutput],
+        required: Vec::new(),
         risk: RiskTier::Low,
         exclude: Vec::new(),
         probed: handler.probes.probed(),
+        author,
     };
     let route = match ports.router.route(&need) {
         Ok(route) => route,

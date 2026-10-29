@@ -31,6 +31,7 @@ use factory_composition::redaction::RegisteringBroker;
 use factory_composition::routing::{enabled_models, first_selection};
 use factory_composition::sandbox_specs::PolicySpecs;
 use factory_composition::seams::FileAllowlist;
+use factory_composition::spec_skills::bundle_for_writer;
 use factory_composition::startup::StartupFailure;
 use factory_composition::system::{RandomIds, Shutdown, SystemClock, TokioTicker};
 use factory_composition::token_sweep::RevokeEndedJobs;
@@ -159,7 +160,22 @@ pub async fn external_ports(
 ) -> Result<ExternalWorld, Vec<String>> {
     let probes = probe_runtimes(booted, config).await;
     let prepared = &booted.prepared;
-    assemble_external(ExternalInputs {
+    // The skills the specification writer may see, from the Spec Kit installed in the protected
+    // checkout. Without them the stage is unavailable with the real tool, so a checkout that cannot
+    // supply them is a BLOCKED line and not a stage that fails on its first job.
+    let (spec_skills, skills_blocked) = match bundle_for_writer(
+        &config.definitions_root,
+        &config.protected_checkout,
+        &prepared.policies.security,
+        &config.stages.agents.specification_writer,
+    ) {
+        Ok(bundle) => (Some(bundle), None),
+        Err(error) => (
+            None,
+            Some(format!("agent runtime: protected_checkout: {error}")),
+        ),
+    };
+    let built = assemble_external(ExternalInputs {
         config,
         security: &prepared.policies.security,
         routing: &prepared.routing,
@@ -168,10 +184,18 @@ pub async fn external_ports(
         artifacts: Arc::clone(&prepared.artifacts),
         jobs: Arc::clone(&booted.jobs),
         attestation: booted.broker.core.clone(),
-        spec_skills: None,
+        spec_skills,
         probes,
-    })
-    .map_err(|blocked| blocked.iter().map(ToString::to_string).collect())
+    });
+    match (built, skills_blocked) {
+        (Ok(world), None) => Ok(world),
+        (Ok(_), Some(line)) => Err(vec![line]),
+        (Err(blocked), skills) => Err(blocked
+            .iter()
+            .map(ToString::to_string)
+            .chain(skills)
+            .collect()),
+    }
 }
 
 /// The step before each claim that revokes the GitHub installation tokens of jobs that are over.

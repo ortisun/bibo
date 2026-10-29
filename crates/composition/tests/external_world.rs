@@ -578,6 +578,45 @@ async fn the_github_ports_talk_to_the_fake_server_with_narrowed_tokens_and_revok
 }
 
 #[tokio::test]
+async fn break_a_wrong_installation_id_is_refused_by_the_server_and_no_token_is_used() {
+    // The configuration names an installation the App does not have. The server refuses to mint,
+    // the adapter reports the host as unavailable, and nothing is read or written.
+    let lab = Lab::new("wrong-installation");
+    let world = World::new();
+    let config = FactoryConfig::from_yaml(
+        &lab.yaml(&world.server.base_url(), "")
+            .replace("app_id: 7", &format!("app_id: {}", world.fake.app().id))
+            .replace("installation_id: 1 }", "installation_id: 987654 }"),
+    )
+    .expect("config");
+    let adapter = factory_composition::external::github_adapter(
+        config.profile,
+        config.github.as_ref().expect("github"),
+        &lab.security,
+        Arc::new(redactor_from_policy(&lab.security).expect("redactor")),
+        world.clock.clone(),
+    )
+    .unwrap_or_else(|(key, reason)| panic!("{key}: {reason}"));
+    let number = world
+        .fake
+        .add_issue(FIXTURE, "A title", "A body.", "octocat", &["factory"]);
+    let refusal = adapter
+        .issue_source()
+        .fetch_issue(
+            &github_scope(StageKind::Intake),
+            &IssueRef {
+                repo: scope(1, 1).repo,
+                number,
+            },
+        )
+        .await
+        .expect_err("a wrong installation reads nothing");
+    println!("wrong installation: {refusal:?}");
+    assert!(world.fake.tokens().is_empty(), "no token was minted");
+    assert!(world.fake.mints().is_empty(), "the server minted nothing");
+}
+
+#[tokio::test]
 async fn a_job_the_sweep_is_told_is_open_keeps_its_tokens() {
     // Break: the sweep must not revoke the tokens of a job that is still open.
     let lab = Lab::new("github-open");

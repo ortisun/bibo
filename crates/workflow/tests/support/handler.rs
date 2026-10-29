@@ -377,6 +377,7 @@ impl StageHandler for ScriptedHandler {
                         observations: Vec::new(),
                     },
                 )])),
+                author: None,
             })
     }
 

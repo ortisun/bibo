@@ -381,7 +381,7 @@ async fn run_skill_in(
         ctx,
         workspace,
         WorkspaceAccess::Edit,
-        &[Capability::SkillInvocation, Capability::JsonSchemaOutput],
+        &[Capability::SkillInvocation],
         !work.tally.sandbox_reported,
     )
     .await?;
@@ -421,10 +421,11 @@ async fn run_skill_in(
     let need = RoutingNeed {
         stage: StageKind::Specification,
         tier: RecommendedTier::Standard,
-        required: vec![Capability::SkillInvocation, Capability::JsonSchemaOutput],
+        required: vec![Capability::SkillInvocation],
         risk: RiskTier::Medium,
         exclude: Vec::new(),
         probed: h.probes.probed(),
+        author: None,
     };
     let route = match ports.router.route(&need) {
         Ok(route) => route,
@@ -784,7 +785,7 @@ async fn review_in(
         ctx,
         workspace,
         WorkspaceAccess::Inspect,
-        &[Capability::JsonSchemaOutput],
+        &[],
         !work.tally.sandbox_reported,
     )
     .await?;
@@ -847,10 +848,11 @@ async fn review_in(
     let need = RoutingNeed {
         stage: StageKind::Specification,
         tier: RecommendedTier::Standard,
-        required: vec![Capability::JsonSchemaOutput],
+        required: Vec::new(),
         risk: RiskTier::Medium,
         exclude: Vec::new(),
         probed: h.probes.probed(),
+        author: None,
     };
     let route = match ports.router.route(&need) {
         Ok(route) => route,
@@ -1448,7 +1450,7 @@ async fn ready_check(
         ctx,
         workspace.as_ref(),
         WorkspaceAccess::Edit,
-        &[Capability::SkillInvocation, Capability::JsonSchemaOutput],
+        &[Capability::SkillInvocation],
         true,
     )
     .await

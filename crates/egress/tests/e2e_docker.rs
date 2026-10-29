@@ -391,6 +391,7 @@ impl Lab {
                     },
                 ],
                 ttl: Duration::from_secs(3600),
+                per_request: None,
             })
             .expect("a token")
     }

@@ -505,6 +505,11 @@ pub struct RoutingNeed {
     pub exclude: Vec<RuntimeId>,
     /// What the probes found. A runtime with no entry is not a candidate.
     pub probed: ProbedCapabilities,
+    /// The model that made the work this stage reviews, for a reviewing stage. The router then
+    /// never returns a model that is not independent of it under the rule of independence of the
+    /// routing policy, and refuses when no allowed model is. `None` for a stage that reviews
+    /// nobody's work (SF-17, `docs/architecture/ports-v1.1.md` section 16.1).
+    pub author: Option<ModelSelection>,
 }
 
 /// The answer to a routing question.
@@ -576,6 +581,20 @@ pub struct JobTokenRequest {
     pub allowed_models: Vec<ModelSelection>,
     /// How long the token lasts.
     pub ttl: Duration,
+    /// The limits on one request of this token, for the role of the stage. The broker applies the
+    /// smaller of these and its own caps: a request that asks for more output tokens is clamped to
+    /// this number. `None` leaves the broker's caps alone (SF-17, `docs/architecture/ports-v1.1.md`
+    /// section 16.1).
+    pub per_request: Option<RequestCaps>,
+}
+
+/// The limits on one model request of a token, in tokens.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RequestCaps {
+    /// The most input tokens one request is assumed to use when its answer cannot be read.
+    pub max_input_tokens: u64,
+    /// The most output tokens one request may ask for.
+    pub max_output_tokens: u64,
 }
 
 /// A token the broker issued.
@@ -886,6 +905,7 @@ mod tests {
             risk: RiskTier::Low,
             exclude: Vec::new(),
             probed: ProbedCapabilities::default(),
+            author: None,
         };
         assert!(need.probed.0.is_empty());
         assert!(need.exclude.is_empty());

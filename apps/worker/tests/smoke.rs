@@ -349,6 +349,7 @@ async fn smoke_body(options: Options) -> factory_workflow::engine::JobView {
                     model: factory_domain::values::NonEmptyString::parse("m").expect("model"),
                 }],
                 ttl: Duration::from_secs(60),
+                per_request: None,
             })
             .await
             .expect("a token");

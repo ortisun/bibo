@@ -500,6 +500,7 @@ async fn probe_inside(
             cost_ceiling: CostMicroUsd(1),
             allowed_models: vec![model],
             ttl: Duration::from_secs(300),
+            per_request: None,
         })
         .await
     {

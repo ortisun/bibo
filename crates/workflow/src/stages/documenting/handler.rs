@@ -12,7 +12,7 @@ use factory_domain::policy::PolicyEngine;
 use factory_domain::redaction::Redactor;
 use factory_domain::values::{GitSha, Slug};
 use factory_domain::vocabulary::{Fidelity, RiskTier, StageKind};
-use factory_ports::agent::{BrokerEndpoint, Capability, RoutingNeed};
+use factory_ports::agent::{BrokerEndpoint, RoutingNeed};
 use factory_ports::paths::PathRules;
 use serde_json::json;
 
@@ -305,10 +305,11 @@ impl StageHandler for DocumentingHandler {
         Some(RoutingNeed {
             stage: ctx.identity.kind,
             tier: RecommendedTier::Standard,
-            required: vec![Capability::JsonSchemaOutput],
+            required: Vec::new(),
             risk: RiskTier::Low,
             exclude: Vec::new(),
             probed: self.probes.probed(),
+            author: None,
         })
     }
 

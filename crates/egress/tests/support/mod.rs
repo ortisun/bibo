@@ -124,6 +124,7 @@ impl Rig {
                 model: NonEmptyString::parse(CLAUDE_MODEL).expect("a model name"),
             }],
             ttl: Duration::from_secs(3600),
+            per_request: None,
         }
     }
 

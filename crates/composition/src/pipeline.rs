@@ -37,9 +37,9 @@ use std::sync::Arc;
 use factory_contracts::registry::FileAgentRegistry;
 use factory_domain::ids::TenantId;
 use factory_domain::redaction::Redactor;
-use factory_domain::values::{GitSha, Slug, Uri};
+use factory_domain::values::{GitSha, Slug};
 use factory_domain::vocabulary::StageKind;
-use factory_ports::agent::{AgentRuntime, BrokerEndpoint, ModelBroker, ModelRouter};
+use factory_ports::agent::{AgentRuntime, ModelBroker, ModelRouter};
 use factory_ports::artifact::ArtifactStore;
 use factory_ports::clock::{Clock, IdGenerator};
 use factory_ports::githost::{AppId, ChangeHost, IssueSource};
@@ -527,10 +527,9 @@ pub fn assemble_pipeline(inputs: PipelineInputs) -> Result<Pipeline, PipelineErr
     ports.check(profile)?;
 
     // ---- the thirteen handlers ------------------------------------------------------------
-    let endpoint = BrokerEndpoint {
-        base_url: Uri::parse("https://model-broker.sandbox.internal:8443")
-            .map_err(|_| PipelineError::Settings("the broker address".to_owned()))?,
-    };
+    // The sidecar of the job network, by its alias. The placeholder host of the policy does not
+    // resolve in a sandbox, so a tool given it could not reach the broker.
+    let endpoint = crate::sandbox_specs::broker_endpoint();
     let budget = StageBudget {
         wall_time_seconds: settings.budget.wall_time_seconds,
         max_tokens: settings.budget.max_tokens,
@@ -767,7 +766,7 @@ pub fn assemble_pipeline(inputs: PipelineInputs) -> Result<Pipeline, PipelineErr
             verify: verify.clone(),
             toolchain: DocsToolchain {
                 build: settings.documentation.build.clone(),
-                binary: settings.documentation.binary.clone(),
+                binary: crate::sandbox_specs::built_program(&settings.documentation.binary),
                 diagrams: None,
                 command_timeout_seconds: settings.documentation.command_timeout_seconds,
                 max_output_bytes: settings.documentation.max_output_bytes,

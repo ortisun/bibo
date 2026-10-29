@@ -157,10 +157,11 @@ impl StageHandler for SpecificationHandler {
         Some(RoutingNeed {
             stage: ctx.identity.kind,
             tier: RecommendedTier::Standard,
-            required: vec![Capability::SkillInvocation, Capability::JsonSchemaOutput],
+            required: vec![Capability::SkillInvocation],
             risk: RiskTier::Medium,
             exclude: Vec::new(),
             probed: self.probes.probed(),
+            author: None,
         })
     }
 

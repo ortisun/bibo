@@ -143,6 +143,7 @@ These entries were found while fixing the first ones. They have the same fields 
 - **Owner.** `software_architect` (both are port changes: a field on `JobTokenRequest`, a field on `RoutingNeed`).
 - **Severity.** Medium for the second, Low for the first. Without the second, a builder that fell back to the model of the first family can be reviewed by a model of the same family when the first candidate of the review is excluded.
 - **Smallest change.** Add `author: Option<ModelSelection>` to `RoutingNeed` and make `PolicyModelRouter` drop the candidates the rule of independence refuses. Add the per-request caps to `JobTokenRequest`.
+- **Status: made, pending the architect.** Both fields exist and are enforced (`ports-v1.1.md` section 16.1): the broker clamps `max_tokens` to the caps of the role, and the `REVIEW` stage routes against the model that built the work, read from the stored manifest of the implementation stage. Not covered: the specification reviewer and the documentation reviewer (worker README, finding 45).
 
 ### SF-18: text about the missing routing policy is stale in one place outside the paths of this work package
 

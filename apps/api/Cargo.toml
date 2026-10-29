@@ -61,6 +61,12 @@ factory-storage.workspace = true
 # real server: the engine's stage handlers, the agent registry and the output schemas.
 factory-contracts.workspace = true
 factory-sandbox.workspace = true
+# The live-adapters run (`tests/live_run.rs`) builds the real model broker and its listener, and the
+# agent tools' runtime adapters and skill bundle, around the real pipeline. Dev only; an app may
+# depend on any library crate (DEP-01).
+factory-egress.workspace = true
+factory-runtime.workspace = true
+factory-github.workspace = true
 async-trait = "0.1.92"
 # The database test server of the storage crate is included with `#[path]` and needs these.
 diesel = { version = "2.3.14", default-features = false, features = ["postgres_backend"] }

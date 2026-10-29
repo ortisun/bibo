@@ -32,7 +32,7 @@ use factory_domain::policy::RepoKind;
 use factory_domain::scope::TenantScope;
 use factory_domain::values::{MediaType, Sha256Digest, Slug};
 use factory_domain::vocabulary::{Fidelity, RiskTier, StageKind, Verdict};
-use factory_ports::agent::{AgentRunRequest, Capability, RoutingNeed};
+use factory_ports::agent::{AgentRunRequest, RoutingNeed};
 use factory_ports::paths::CommitSha;
 use factory_ports::registry::VersionReq;
 use factory_ports::workspace::{WorkspacePurpose, WorkspaceRequest};
@@ -623,17 +623,18 @@ async fn review_in(
         ctx,
         workspace,
         WorkspaceAccess::Inspect,
-        &[Capability::JsonSchemaOutput],
+        &[],
         true,
     )
     .await?;
     let need = RoutingNeed {
         stage: StageKind::DocumentationReview,
         tier: RecommendedTier::Standard,
-        required: vec![Capability::JsonSchemaOutput],
+        required: Vec::new(),
         risk: RiskTier::Low,
         exclude: Vec::new(),
         probed: handler.probes.probed(),
+        author: None,
     };
     let route = match ports.router.route(&need) {
         Ok(route) => route,

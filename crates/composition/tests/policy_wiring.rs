@@ -87,6 +87,7 @@ fn engine_request(stage: StageKind, model: ModelSelection, ceiling: u64) -> JobT
         cost_ceiling: CostMicroUsd(ceiling),
         allowed_models: vec![model],
         ttl: Duration::from_secs(900),
+        per_request: None,
     }
 }
 
@@ -255,6 +256,198 @@ async fn the_ceiling_of_the_job_leaves_each_new_token_only_what_remains() {
     let _ = NoSpendKnown;
 }
 
+// ---- the author in the need (SF-17 a) ---------------------------------------------------------
+
+#[test]
+fn a_need_that_names_the_author_is_routed_to_an_independent_reviewer() {
+    use factory_ports::agent::ModelRouter as _;
+    let policy = loaded().policy;
+    let router = PolicyModelRouter::new(Arc::clone(&policy)).expect("router");
+    let builder_used = selection("claude-code-cli", "claude-sonnet-5-5");
+
+    // The same answer as `route_after_author`, through the port the engine calls.
+    let mut review = need(StageKind::Review);
+    review.author = Some(builder_used.clone());
+    assert_eq!(
+        router
+            .route(&review)
+            .expect("a reviewer")
+            .model
+            .model
+            .as_str(),
+        "gpt-6.1-sol"
+    );
+
+    // Break: the other family's runtime failed. The plain route would fall back to the builder's
+    // family; with the author in the need, the router refuses instead of reviewing its own work.
+    let mut fallen_back = review.clone();
+    fallen_back.exclude = vec![RuntimeId::new("codex-cli").expect("runtime")];
+    assert_eq!(
+        router.route(&fallen_back).unwrap_err(),
+        RoutingError::AllExcluded
+    );
+    let mut forgotten = fallen_back.clone();
+    forgotten.author = None;
+    assert_eq!(
+        router
+            .route(&forgotten)
+            .expect("without the author the router falls back")
+            .model
+            .model
+            .as_str(),
+        "claude-sonnet-5-5",
+        "this is the hole the author closes"
+    );
+
+    // Break: only the builder's provider is served. Candidates exist and none is independent.
+    let only_claude = PolicyModelRouter::new(Arc::clone(&policy))
+        .expect("router")
+        .with_enabled(BTreeSet::from(["claude-sonnet-5-5".to_owned()]));
+    assert_eq!(
+        only_claude.route(&review).unwrap_err(),
+        RoutingError::NoRoute
+    );
+
+    // A stage that reviews nobody's work is routed as before even when an author is named.
+    let mut intake = need(StageKind::Intake);
+    intake.author = Some(builder_used);
+    assert_eq!(
+        router.route(&intake).expect("routes").model.model.as_str(),
+        "claude-sonnet-5-5"
+    );
+}
+
+#[tokio::test]
+async fn a_reviewer_of_the_builders_family_gets_no_request_through_the_real_broker() {
+    // The router refuses the builder's family for the reviewer, and the token it leads to cannot be
+    // used for the builder's family either: the real broker refuses the model.
+    use factory_egress::broker::{Provider, RequestFacts};
+    let routing = loaded();
+    let core = core(&routing.policy);
+    let broker = policy_broker(&routing, &core);
+    let router = PolicyModelRouter::new(Arc::clone(&routing.policy)).expect("router");
+    use factory_ports::agent::ModelRouter as _;
+    let mut review = need(StageKind::Review);
+    review.author = Some(selection("claude-code-cli", "claude-sonnet-5-5"));
+    let decision = router.route(&review).expect("an independent reviewer");
+    let token = broker
+        .issue(engine_request(StageKind::Review, decision.model, 100_000))
+        .await
+        .expect("a token");
+    let refusal = core
+        .authorize(
+            token.secret.expose(),
+            &RequestFacts {
+                provider: Provider::Anthropic,
+                model: "claude-sonnet-5-5",
+                expected_job: None,
+            },
+        )
+        .expect_err("the builder's family is refused");
+    assert_eq!(refusal.as_str(), "wrong_audience");
+}
+
+// ---- the caps of the role (SF-17 b) -----------------------------------------------------------
+
+/// The most output tokens a request may ask for under a token, read from the real broker's
+/// permission for a request of that token.
+fn output_cap_of(core: &Arc<BrokerCore>, secret: &str, model: &str) -> u64 {
+    use factory_egress::broker::{Provider, RequestFacts};
+    core.authorize(
+        secret,
+        &RequestFacts {
+            provider: Provider::Anthropic,
+            model,
+            expected_job: None,
+        },
+    )
+    .expect("the broker lets the request in")
+    .max_output_tokens()
+}
+
+fn largest_output_cap(policy: &ModelRoutingPolicy, stage: &str) -> u64 {
+    policy
+        .roles_of_stage(stage)
+        .map(|role| role.per_request.max_output_tokens)
+        .max()
+        .expect("the stage has a role")
+}
+
+#[tokio::test]
+async fn a_token_is_held_to_the_cap_of_its_role_and_not_to_the_largest_cap_of_any_role() {
+    let routing = loaded();
+    let core = core(&routing.policy);
+    let broker = policy_broker(&routing, &core);
+    let model = selection("claude-code-cli", "claude-sonnet-5-5");
+    let intake_cap = largest_output_cap(&routing.policy, "INTAKE");
+    let builder_cap = largest_output_cap(&routing.policy, "IMPLEMENTATION");
+    assert!(
+        intake_cap < builder_cap,
+        "the policy gives the intake role the smaller cap"
+    );
+    // The broker's own cap is the largest of any role.
+    assert!(core.caps().per_request.max_output_tokens >= builder_cap);
+
+    let intake = broker
+        .issue(engine_request(StageKind::Intake, model.clone(), 100_000))
+        .await
+        .expect("a token");
+    let builder = broker
+        .issue(engine_request(StageKind::Implementation, model, 100_000))
+        .await
+        .expect("a token");
+    assert_eq!(
+        output_cap_of(&core, intake.secret.expose(), "claude-sonnet-5-5"),
+        intake_cap
+    );
+    assert_eq!(
+        output_cap_of(&core, builder.secret.expose(), "claude-sonnet-5-5"),
+        builder_cap
+    );
+}
+
+#[tokio::test]
+async fn a_stage_with_two_roles_gets_the_larger_of_their_caps() {
+    let routing = loaded();
+    let core = core(&routing.policy);
+    let broker = policy_broker(&routing, &core);
+    assert_eq!(routing.policy.roles_of_stage("SPECIFICATION").count(), 2);
+    let token = broker
+        .issue(engine_request(
+            StageKind::Specification,
+            selection("claude-code-cli", "claude-sonnet-5-5"),
+            100_000,
+        ))
+        .await
+        .expect("a token");
+    assert_eq!(
+        output_cap_of(&core, token.secret.expose(), "claude-sonnet-5-5"),
+        largest_output_cap(&routing.policy, "SPECIFICATION")
+    );
+}
+
+#[tokio::test]
+async fn the_engine_cannot_ask_for_more_room_than_the_role_has() {
+    // Break: the request already carries caps, larger than the role's. The policy keeps the smaller.
+    let routing = loaded();
+    let core = core(&routing.policy);
+    let broker = policy_broker(&routing, &core);
+    let mut request = engine_request(
+        StageKind::Intake,
+        selection("claude-code-cli", "claude-sonnet-5-5"),
+        100_000,
+    );
+    request.per_request = Some(factory_ports::agent::RequestCaps {
+        max_input_tokens: u64::MAX,
+        max_output_tokens: u64::MAX,
+    });
+    let token = broker.issue(request).await.expect("a token");
+    assert_eq!(
+        output_cap_of(&core, token.secret.expose(), "claude-sonnet-5-5"),
+        largest_output_cap(&routing.policy, "INTAKE")
+    );
+}
+
 #[tokio::test]
 async fn the_spend_of_a_job_is_read_from_the_brokers_own_ledger() {
     let routing = loaded();
@@ -286,6 +479,7 @@ async fn the_spend_of_a_job_is_read_from_the_brokers_own_ledger() {
         cost_ceiling: CostMicroUsd(10_000_000),
         allowed_models: vec![selection("codex-cli", "gpt-6.1-sol")],
         ttl: Duration::from_secs(900),
+        per_request: None,
     };
     let issued = broker.issue(next).await.expect("a token");
     let review = routing
@@ -410,6 +604,7 @@ fn need(stage: StageKind) -> RoutingNeed {
         risk: RiskTier::Low,
         exclude: Vec::new(),
         probed: probed_both(),
+        author: None,
     }
 }
 

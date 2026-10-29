@@ -14,7 +14,7 @@ use factory_domain::ids::GateReportId;
 use factory_domain::scope::TenantScope;
 use factory_domain::values::{GitSha, MediaType, Slug};
 use factory_domain::vocabulary::{RiskTier, StageKind};
-use factory_ports::agent::{AgentRunRequest, BrokerEndpoint, Capability, RoutingNeed, Usage};
+use factory_ports::agent::{AgentRunRequest, BrokerEndpoint, RoutingNeed, Usage};
 use factory_ports::paths::{CommitSha, PathRules};
 use factory_ports::registry::{LoadedPrompt, RegistryError, ValidatedOutput, VersionReq};
 use factory_ports::workspace::{Workspace, WorkspacePurpose, WorkspaceRequest};
@@ -321,17 +321,18 @@ async fn run_in(
         ctx,
         workspace,
         WorkspaceAccess::Inspect,
-        &[Capability::JsonSchemaOutput],
+        &[],
         call.report_ready,
     )
     .await?;
     let need = RoutingNeed {
         stage: call.stage,
         tier: RecommendedTier::Standard,
-        required: vec![Capability::JsonSchemaOutput],
+        required: Vec::new(),
         risk: call.risk,
         exclude: Vec::new(),
         probed: tools.probes.probed(),
+        author: None,
     };
     let route = match ports.router.route(&need) {
         Ok(route) => route,

@@ -55,7 +55,7 @@ use crate::stages::implementation::scope::outside;
 use crate::stages::implementation::seams::WorkspaceAccess;
 
 /// What the writer needs from the runtime.
-const NEEDS: [Capability; 1] = [Capability::JsonSchemaOutput];
+const NEEDS: [Capability; 0] = [];
 
 fn slug(text: &str) -> Result<Slug, StageError> {
     Slug::parse(text).map_err(|_| StageError::Internal)
@@ -562,6 +562,7 @@ async fn write_in(
         risk: RiskTier::Low,
         exclude: Vec::new(),
         probed: handler.probes.probed(),
+        author: None,
     };
     let route = match ports.router.route(&need) {
         Ok(route) => route,
