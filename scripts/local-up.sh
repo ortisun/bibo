@@ -135,7 +135,7 @@ else
 fi
 ops_ensure_logins
 
-for pair in "factory_worker:f|f|f|t|f|f|f" "factory_api:f|f|f|t|f|t|f" "factory_engine:f|f|f|f|t|f|f"; do
+for pair in "factory_worker:f|f|f|t|f|f|f|f" "factory_api:f|f|f|f|f|t|f|t" "factory_engine:f|f|f|f|t|f|f|f"; do
   login=${pair%%:*}; want=${pair#*:}
   got=$(ops_role_readiness "$login") || ops_die "cannot log in as $login"
   [ "$got" = "$want" ] || ops_die "$login failed the start-up role check: got '$got', expected '$want'"

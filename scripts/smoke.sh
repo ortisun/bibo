@@ -135,7 +135,7 @@ smoke_dynamic() {
   applied=$(ops_sql -c 'SELECT count(*) FROM __diesel_schema_migrations')
   expected=$(find "$OPS_ROOT/migrations" -mindepth 1 -maxdepth 1 -type d | wc -l | tr -d ' ')
   if [ "$applied" = "$expected" ]; then ops_check schema-version PASS "$applied migrations applied"; else ops_check schema-version FAIL "$applied of $expected migrations applied"; fi
-  for pair in "factory_worker:f|f|f|t|f|f|f" "factory_api:f|f|f|t|f|t|f" "factory_engine:f|f|f|f|t|f|f"; do
+  for pair in "factory_worker:f|f|f|t|f|f|f|f" "factory_api:f|f|f|f|f|t|f|t" "factory_engine:f|f|f|f|t|f|f|f"; do
     login=${pair%%:*}; want=${pair#*:}
     if got=$(ops_role_readiness "$login" 2>&1) && [ "$got" = "$want" ]; then ops_check "readiness-$login" PASS "logs in over 127.0.0.1:$OPS_PG_PORT; role check $got"
     else ops_check "readiness-$login" FAIL "got '$got', expected '$want'"; fi

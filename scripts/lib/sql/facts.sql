@@ -45,7 +45,8 @@ fp_default_acl AS (
 ),
 fp_policies AS (
   SELECT s.nspname || '.' || c.relname || '|' || p.polname || '|' || p.polcmd::text || '|' || p.polpermissive ||
-         '|' || coalesce((SELECT string_agg(CASE WHEN r = 0 THEN 'PUBLIC' ELSE r::regrole::text END, ',' ORDER BY r)
+         '|' || coalesce((SELECT string_agg(CASE WHEN r = 0 THEN 'PUBLIC' ELSE r::regrole::text END, ','
+                                          ORDER BY CASE WHEN r = 0 THEN 'PUBLIC' ELSE r::regrole::text END)
                             FROM unnest(p.polroles) AS r), '') ||
          '|' || coalesce(pg_get_expr(p.polqual, p.polrelid), '') ||
          '|' || coalesce(pg_get_expr(p.polwithcheck, p.polrelid), '') AS line

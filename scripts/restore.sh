@@ -160,7 +160,7 @@ fi
 
 # The three logins, as real logins over TCP, with the start-up check of the storage crate
 # (docs/database/tests/role_readiness.sql).
-for pair in "factory_worker:f|f|f|t|f|f|f" "factory_api:f|f|f|t|f|t|f" "factory_engine:f|f|f|f|t|f|f"; do
+for pair in "factory_worker:f|f|f|t|f|f|f|f" "factory_api:f|f|f|f|f|t|f|t" "factory_engine:f|f|f|f|t|f|f|f"; do
   login=${pair%%:*}; want=${pair#*:}
   if got=$(ops_role_readiness "$login" 2>&1); then
     if [ "$got" = "$want" ]; then ops_check "login-$login" PASS "logs in; role check $got"
