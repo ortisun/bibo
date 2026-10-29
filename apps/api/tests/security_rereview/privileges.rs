@@ -25,13 +25,14 @@ struct Name {
     name: String,
 }
 
-/// The hook ends a request when it reads a `decision.applied` or `decision.rejected` record that names
-/// it, whoever wrote the record (RR-8 in `crates/composition/tests/security_rereview/hook.rs`). The
-/// ground of that is here: the API's login may insert an audit row that says it was written by the
-/// worker, with the words the worker writes. The database cannot tell the two writers apart, because
-/// both go through the one table and the one trigger.
+/// RR-8 (fixed). The hook used to end a request when it read a `decision.applied` or
+/// `decision.rejected` record that named it, whoever wrote the record
+/// (`crates/composition/tests/security_rereview/hook.rs`). The ground of that was here: the API's login
+/// could insert an audit row that said it was written by the worker, with the words the worker writes.
+/// Migration `2026-10-29-002100_api_audit_actions` limits the login to the actions and actors the API
+/// uses, and the worker's markers carry a word of their own besides.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[ignore = "confirmed defect RR-8 (needs PostgreSQL): the API login can write a record in the name of the worker; cargo test -p factory-api --test security_rereview --locked -- --ignored rr_8 --exact"]
+#[ignore = "needs PostgreSQL (docs/database/running.md)"]
 async fn rr_8_the_api_login_cannot_write_a_record_in_the_name_of_the_worker() {
     let env = Env::start().await;
     let logins = env.db.server.logins().await;
@@ -50,10 +51,28 @@ async fn rr_8_the_api_login_cannot_write_a_record_in_the_name_of_the_worker() {
         correlation = new_uuid(),
     );
     let written = api.batch_execute(&sql).await;
+    let _ = api.batch_execute("ROLLBACK").await;
+    // What the API does write still works from the same login: the request of a person.
+    let own = format!(
+        "BEGIN; SELECT set_config('factory.tenant_id', '{tenant}', true); \
+         INSERT INTO audit_events (tenant_id, event_id, actor_type, actor_id, action, subject, decision, reason, policy_hash, correlation_id) \
+         VALUES ('{tenant}', '{id}', 'human', 'p1', 'decision.requested', 'subject', 'record', 'requested: stop', \
+                 'sha256:{zeros}', '{correlation}'); \
+         COMMIT;",
+        tenant = env.a.id.as_uuid(),
+        id = new_uuid(),
+        zeros = "0".repeat(64),
+        correlation = new_uuid(),
+    );
+    let own = api.batch_execute(&own).await;
     env.stop().await;
     assert!(
         written.is_err(),
         "the API login wrote a worker-looking marker into tenant A's audit log"
+    );
+    assert!(
+        own.is_ok(),
+        "the API login lost the right to write what it writes: {own:?}"
     );
 }
 
