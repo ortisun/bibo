@@ -145,9 +145,9 @@ entries:
 | `local` | `test` | the agent runtime, router, broker and the GitHub ports |
 | `test` | `test` | every port |
 
-`PortRegistry::check(profile)` runs `require_permitted` for each of the **25** ports (the 17 of the engine and
-the 8 seams of the stages that report a fidelity) and lists every refusal. The registry holds a `Seams`
-value that exists only when all 16 seams were supplied (`SeamsBuilder::build` names each one that is
+`PortRegistry::check(profile)` runs `require_permitted` for each of the **37** ports of `PortName::ALL` (the 17 of
+the engine and the 20 seams of the stages that report a fidelity; a test in `profile.rs` pins the total) and lists
+every refusal. The registry holds a `Seams` value that exists only when all 20 seams were supplied (`SeamsBuilder::build` names each one that is
 missing), so a seam forgotten at wiring stops the process at start-up. A fake never comes from
 `providers::assemble`; a test wiring that wants a stand-in builds its own registry from the testkit.
 
@@ -164,25 +164,29 @@ took from `migrations/`).
 
 ## What the deployment must do
 
-Checked by `tests/examples.rs` against `infra/compose/config/*.example.yaml`. This crate does not edit
-`infra/**`; these are the changes its owner makes.
+Checked by `tests/examples.rs`, which reads `infra/compose/config/*.example.yaml` itself (not a copy of their text),
+so an example the parser refuses fails the test. This crate does not edit `infra/**`; its owner made the changes
+below, and the test keeps them true.
 
 1. **The worker example parses.** It is a valid configuration of the `local` profile with no credential, so the
    worker is BLOCKED until the deployment adds `broker.upstreams`, `broker.prices`, `github` and
    `worker.tenants`. It may add `sandbox.remote` and `sandbox.sidecar_command`.
 2. **The API example is refused by the worker's parser, and is the API's own.** It names `database.api` and
-   `listen`, which `FactoryConfig` does not have, and lacks `protected_checkout` and `definitions_root`. The API
-   has its own type (`apps/api/src/config.rs`, `ApiConfig`), which reads `database.api` and `listen` as the
-   placeholder spells them and needs only one more setting, `protected_checkout`: see `apps/api/README.md`. Do not
-   point a worker at that file.
+   `listen`, which `FactoryConfig` does not have, and lacks `definitions_root`; the test
+   `the_api_example_is_refused_by_the_worker_parser` shows the refusal. The API has its own type
+   (`apps/api/src/config.rs`, `ApiConfig`), and `apps/api/tests/profile.rs` parses the file, which names the
+   protected checkout, the decision key and the webhook secret. Do not point a worker at that file. The worker
+   example names the same `decisions.key_file` as the API example, and `profile.rs` compares the two.
 3. **Secret files.** The worker refuses a secret file that is a symbolic link, is not a regular file, or is readable
    by group or others (mode bits `0o077`); `tests/examples.rs` shows `0600` and `0400` accepted and `0640`,
    `0644` and `0604` refused. Compose mounts a secret with the mode and owner of the host file, so
    `scripts/local-up.sh` (which creates them `0600`) satisfies the mode rule, and the file must also be
    *readable by the user the container runs as* (`10010:10010` in `local.yml`). On a Linux host that means
-   the secret files are owned by uid 10010 (`chown`) or the stack runs as the host user; a file owned by
-   another uid with mode `0600` passes the worker's check and then fails to open. On Docker Desktop for Mac
-   the ownership the container sees was not verified here. A value that must not be loosened: do not
+   the stack runs as the user who owns the files: `local.yml` takes the user from `FACTORY_UID` and
+   `FACTORY_GID` (default 10010), and `scripts/local-up.sh --factory` stops on Linux when the files belong to
+   someone else. A file owned by another uid with mode `0600` passes the worker's check and then fails to open.
+   Not run: no container of the factory profile has started. On Docker Desktop for Mac the ownership the
+   container sees was not verified here. A value that must not be loosened: do not
    `chmod 0644` to make a mount readable; the worker will refuse it, correctly.
 4. **Paths the daemon mounts.** `sandbox.token_root` and `sandbox.workspace_root` are mounted into sandbox
    containers by the Docker daemon, so they must be paths on the machine where the daemon runs, and must not
