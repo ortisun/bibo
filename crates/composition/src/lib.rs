@@ -43,16 +43,19 @@
 //! Composition is the one job of this crate, so no module here contains a business rule. The
 //! engine decides, the adapters act, and this crate chooses and connects them.
 
+pub mod advisory;
 pub mod assemble;
 pub mod authority;
 pub mod commands;
 pub mod config;
+pub mod crates_io;
 pub mod database;
 pub mod decision_signing;
 pub mod decisions;
 pub mod delivery;
 pub mod dependency_decisions;
 pub mod drift;
+pub mod external;
 pub mod feedback;
 pub mod health;
 pub mod hooks;
@@ -60,6 +63,7 @@ pub mod indexing;
 pub mod intake_rejections;
 pub mod ledger;
 pub mod pipeline;
+pub mod policy_broker;
 pub mod preflight;
 pub mod profile;
 pub mod providers;
@@ -76,4 +80,5 @@ pub mod startup;
 pub mod supply_chain;
 pub mod system;
 pub mod telemetry;
+pub mod token_sweep;
 pub mod webhook;

@@ -1,101 +1,27 @@
 //! The start-up path of the binary, from a configuration file and secret files to a connected
-//! store, a hosted broker and the list of adapters it cannot assemble.
+//! store, a hosted broker and the list of what the configuration does not yet supply.
 
 mod support;
 
-use std::os::unix::fs::PermissionsExt;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::Command;
 
 use factory_composition::assemble::blocked_adapters;
 use factory_composition::config::FactoryConfig;
 use factory_composition::profile::{PortName, Profile};
 use factory_worker::boot::boot;
-use support::server;
 
-fn repository_root() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../..")
-        .canonicalize()
-        .expect("the repository root")
-}
-
-fn write_private(path: &Path, text: &str) {
-    std::fs::write(path, text).expect("write");
-    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)).expect("mode");
-}
-
-/// A deployment on disk: a database with two logins of the right groups, URL files, a provider
-/// key file and a configuration file. Returns the configuration path and the scratch directory.
+/// A deployment with a provider and nothing else: the minimum the start-up checks need.
 async fn deployment(profile: &str, same_login: bool) -> (PathBuf, PathBuf, support::TestDb) {
-    let db = server().clone_database().await;
-    // A login is a role of the whole server, and tests of one process run at the same time, so the
-    // name carries a number that no other call of this process has (the process id alone made two
-    // tests of one `cargo test` run create the same role).
-    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-    let run = format!(
-        "{}_{}",
-        std::process::id(),
-        NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-    );
-    let worker = format!("dbtest_prep_w_{run}");
-    let engine = if same_login {
-        worker.clone()
-    } else {
-        format!("dbtest_prep_e_{run}")
-    };
-    // Passwords are made here and never written in source.
-    let password = ["pw", "-", &run, "-abcdef"].concat();
-    db.run(&format!(
-        "CREATE ROLE {worker} LOGIN PASSWORD '{password}' IN ROLE factory_app;"
-    ))
+    let made = support::deployment::deployment(
+        profile,
+        same_login,
+        "http://127.0.0.1:9",
+        "127.0.0.1:0",
+        |_| String::new(),
+    )
     .await;
-    if !same_login {
-        db.run(&format!(
-            "CREATE ROLE {engine} LOGIN PASSWORD '{password}' IN ROLE factory_system;"
-        ))
-        .await;
-    }
-    let port = db
-        .text("SELECT current_setting('port')")
-        .await
-        .expect("a port");
-    let sockets = db
-        .text("SELECT current_setting('unix_socket_directories')")
-        .await
-        .expect("a socket directory");
-    let host = sockets.split(',').next().expect("a host").trim().to_owned();
-    let url = |login: &str| {
-        format!(
-            "host={host} port={port} user={login} password={password} dbname={}",
-            db.name
-        )
-    };
-    let dir = repository_root()
-        .join("target/prepare-test")
-        .join(format!("{profile}-{run}"));
-    std::fs::create_dir_all(&dir).expect("a scratch directory");
-    write_private(&dir.join("tenant.url"), &url(&worker));
-    write_private(&dir.join("system.url"), &url(&engine));
-    write_private(
-        &dir.join("provider.key"),
-        &["provider", "-key-", &"ab".repeat(13)].concat(),
-    );
-    let root = repository_root();
-    let text = format!(
-        "profile: {profile}\n\
-         protected_checkout: {root}\n\
-         definitions_root: {root}\n\
-         database:\n  tenant: {{ url_file: {dir}/tenant.url, login: {worker} }}\n  system: {{ url_file: {dir}/system.url, login: {engine} }}\n\
-         artifacts: {{ root: {dir}/artifacts }}\n\
-         sandbox: {{ images_catalog: {root}/infra/sandbox-images/images.json, token_root: {dir}/tokens, workspace_root: {dir}/workspaces, platform: linux/arm64 }}\n\
-         broker:\n  listen: '127.0.0.1:0'\n  upstreams:\n    - {{ provider: anthropic, base_url: 'http://127.0.0.1:9', key_file: {dir}/provider.key }}\n",
-        root = root.display(),
-        dir = dir.display(),
-    );
-    let config_path = dir.join("worker.yaml");
-    std::fs::write(&config_path, text).expect("the configuration");
-    (config_path, dir, db)
+    (made.config_path, made.dir, made.db)
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -124,7 +50,7 @@ async fn prepare_connects_both_pools_hosts_the_broker_and_lists_what_is_blocked(
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn the_binary_stops_with_blocked_lines_and_code_three_after_its_checks_pass() {
+async fn the_binary_stops_with_blocked_lines_that_name_the_missing_keys_and_code_three() {
     let (config_path, dir, _db) = deployment("local", false).await;
     let output = tokio::task::spawn_blocking(move || {
         Command::new(env!("CARGO_BIN_EXE_factory-worker"))
@@ -136,7 +62,19 @@ async fn the_binary_stops_with_blocked_lines_and_code_three_after_its_checks_pas
     .expect("joins");
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert_eq!(output.status.code(), Some(3), "{stderr}");
-    assert!(stderr.contains("BLOCKED: agent runtime"), "{stderr}");
+    // The provider is configured, so the runtime and the router are not on the list; what the
+    // configuration lacks is, and each line starts with the key to write.
+    for line in [
+        "BLOCKED: issue source: github:",
+        "BLOCKED: change host: github:",
+        "BLOCKED: CapabilityProbes: worker.tenants:",
+        "BLOCKED: RegistryMetadata: registry.base_url:",
+        "BLOCKED: AdvisoryDatabase: advisory_database.date_file:",
+    ] {
+        assert!(stderr.contains(line), "{line} is missing from:\n{stderr}");
+    }
+    assert!(!stderr.contains("BLOCKED: agent runtime"), "{stderr}");
+    assert!(!stderr.contains("BLOCKED: model router"), "{stderr}");
     assert!(stderr.contains("BLOCKED is not a pass"), "{stderr}");
     // No secret reached the output.
     assert!(!stderr.contains(&"ab".repeat(13)));

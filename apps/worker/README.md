@@ -43,16 +43,23 @@ Exit codes: `0` a clean stop; `1` an engine error or a failed start-up check; `2
 was refused; `3` BLOCKED (one `BLOCKED: <port or seam>: <reason>` line on standard error for each adapter
 or seam method this build cannot assemble); `4` an attempt was abandoned at the end of the drain budget.
 
-Today the binary runs every start-up check (policy, image catalog, redactor, secrets, telemetry, both
-database pools with their roles and the schema version, the artifact store, the broker listener, the
-secret-kind check) and **assembles the real sandbox, workspace and specification providers**
-(`factory_composition::providers`), and then exits with code 3, because four ports need a credential
-or a file that does not exist (the agent runtime, the model router, the issue source and the change
-host), and three inputs of the pipeline have no adapter (`RegistryMetadata`, `AdvisoryDatabase` and
-`CapabilityProbes`; see "Blocked"). It never starts the loop on a half-built
-registry and never fills a hole with a fake: the fakes live in `factory-testkit`, which no binary may
-link (`DEP-03`). The loop, the seams and the engine are exercised by the tests, over the real
-PostgreSQL store.
+The binary runs every start-up check (policies, the routing policy, image catalog, redactor, secrets, telemetry, both
+database pools with their roles and the schema version, the artifact store, the broker listener, the secret-kind check),
+**assembles the real sandbox, workspace and specification providers** (`factory_composition::providers`), and then builds
+the adapters for the outside world from the configuration (`factory_composition::external`): the GitHub issue source and
+change host, the agent runtimes (Claude Code and Codex, one dispatcher), the router over the routing policy, the capability
+probes, the crates.io registry client and the advisory database date. It never fills a hole with a fake: the fakes live in
+`factory-testkit`, which no binary may link (`DEP-03`).
+
+* **With a complete configuration** the worker serves the broker, runs the loop and exits with code 0 when it gets SIGTERM
+  (`tests/composed_start.rs`, over a loopback GitHub and registry).
+* **With something missing** it prints one line for each item, `BLOCKED: <port>: <configuration key>: <reason>`, and exits
+  with code 3. The ports a line can be about are listed in `factory_composition::assemble::blocked_adapters` and
+  `blocked_pipeline_inputs`, and the documentation check compares them with `docs/reference/commands.md`.
+
+The engine's job tokens go through `PolicyBroker`, which cuts each request to the stage's models, the stage's ceiling and
+what is left of the job's ceiling. A step before each claim (`RevokeEndedJobs`) revokes the GitHub installation tokens of jobs
+that are over.
 
 ### Configuration
 
@@ -138,7 +145,9 @@ test that cannot get a server panics with `BLOCKED:` and is never a pass. The su
 | `tests/breaks.rs` | the deliberate breaks of the loop and the sandbox (below) |
 | `tests/telemetry.rs` | the real scrubber is in the pipeline; the loop's log line carries the job's correlation id |
 | `tests/broker.rs` | the broker listener is hosted, refuses a request with no token, never shows the key |
-| `tests/prepare.rs` | the binary's start-up path from files, exit codes 2 and 3 |
+| `tests/prepare.rs` | the binary's start-up path from files, exit codes 2 and 3, and that each BLOCKED line starts with the key to write |
+| `tests/composed_start.rs` | the binary with a complete loopback configuration serves the broker, runs the loop and exits 0 on SIGTERM; one key removed gives exit 3 naming it; no routing policy gives exit 1 |
+| `tests/composed_broker.rs` | the broker the worker hosts, the routing policy in front of it and the real Claude Code adapter, against a fake provider: attested run, allow-schema refusals, model outside the route, stage and job ceilings |
 | `tests/smoke.rs` | the word-count job, stage by stage, and where it stops |
 | `tests/domain_discovery.rs` | what the engine does for a stage with no handler, and the real skip handler over PostgreSQL |
 | `tests/claim_work.rs` | the loop with the step before each claim: a received job is admitted and runs; without it, never (the break) |
@@ -375,19 +384,32 @@ Whether that is enough needs the architect's confirmation, which has not been gi
 workflow stage package, in a file that was a placeholder, which is outside the paths this change was meant to
 own; it is reported for that reason.
 
-### The end-to-end `Wiring`
+### The end-to-end `Wiring` (`FACTORY_E2E_COMPOSED`)
 
-`tests/end_to_end/README.md` offers two ways in; the linked library is the one to take, because the harness
-reads the store, the ledger and the audit stream, which a program that prints JSON would have to rebuild.
-**Not implemented, and why it is not small.** (1) It cannot be a path dependency of a workspace member: the
-harness is a standalone cargo project (`[workspace]` in its manifest), it is not in the rules file, and
-`xtask check-architecture` would report an unlisted package and an unlisted edge; a ring 3 library linking
-a test harness also points the wrong way. It belongs in a standalone project beside the harness that
-depends on both `factory-e2e` and `factory-composition`, which is a second dependency tree to build. (2) Its
-body would be two methods, and both end in `Blocked` today: `protection()` reads the protection of the
-fixture remote through the GitHub App, and `run()` needs the runtime, the router, the issue source and the
-change host. So the first useful step is the project and the two `Blocked` returns that name each missing
-item, which `blocked_adapters` and `blocked_seams` already list. `FACTORY_E2E_COMPOSED` is not provided.
+`tests/end_to_end/README.md` offers two ways in: a linked library, or a program that `FACTORY_E2E_COMPOSED` names and that
+answers `PROGRAM protection` and `PROGRAM run SCENARIO_ID`. **Neither is provided.** What exists now: the worker can be
+assembled from a configuration (`external_ports`), so the program has something to stand on. What is missing, exactly:
+
+1. **A second program.** `factory-worker` takes no arguments, and adding `protection` and `run` to it would change its
+   command line (and `docs/reference/commands.md`). A `factory-worker-e2e` binary beside it is the shape that meets the
+   contract, and it is small.
+2. **`protection`.** It would build the GitHub adapter from the same configuration and print the fields of
+   `evidence::ProtectionFacts`. `ports::ProtectionReport` carries the rules of the default branch and the check pins but
+   not the number of required approvals or whether the rules bind administrators, and the App's bypass status comes from the
+   administrator's statement (`github.bypass_attestations`), not from GitHub. The mapping needs the architect to say which
+   `ProtectionFacts` fields are read from GitHub and which are the statement.
+3. **`run`.** It has to put an issue on the fixture repository and label it **as the requester**, which is a person and not the
+   App (the App holds no permission to create issues or labels). That needs a credential of the requester, which no
+   configuration key names yet. It then has to feed the signed webhook to the API, run the loop to a pull request, record the
+   approver's decision through the API, and collect `evidence::RunEvidence` (stage runs, ledger, audit stream, timeline,
+   texts, contract documents, GitHub's holdings, spans, spend). That collector exists only as test code in
+   `apps/api/tests/e2e/`, which no library may link, so it has to move into a library that depends on the harness types. The
+   harness is a standalone cargo project outside the workspace, so the dependency has to be declared in the rules file.
+4. **The live prerequisites** the harness already checks and names: a model key with a provider-side spend limit, a registered
+   GitHub App and its installations, a protected fixture repository with real code owners, the rebuilt agent image, and a
+   routing policy the owner has confirmed (production refuses it until then).
+
+Until then `scripts/e2e.sh --scenario E1 --scenario E2` is `BLOCKED` on its own prerequisites, as it was.
 
 ## Seams
 
@@ -402,7 +424,7 @@ All are in `crates/composition/src/`.
 | `AllowlistSource` | implemented | `seams::FileAllowlist` | the allowlist file, on every call |
 | `RequestSource` | implemented | `seams::StoreRequests` | `RequestOps`, with a cache for the synchronous `recorded` |
 | `JobRepository` | implemented | `seams::StoreRepositories` | `JobOps`, `RepositoryOps` |
-| `CapabilityProbes` | implemented | `seams::CachedProbes` | the probes taken at start-up; the live probe is BLOCKED |
+| `CapabilityProbes` | implemented | `seams::CachedProbes` | the probes taken at start-up (`external::probe_at_startup`), or a declared list in the local and test profiles |
 | `AgentSandboxSpecs`, `VerifySandboxSpecs`, `WorkspaceAgentSpecs` | implemented | `sandbox_specs::PolicySpecs` | the policy |
 | `Authority` | implemented | `authority::StoreAuthority` | the allowlist and `PrincipalOps` |
 | `TaskLedger` | implemented | `ledger::StoreTaskLedger` | `TaskNodeOps`, fenced by attempt and epoch |
@@ -436,6 +458,7 @@ functions in `commands`; the HTTP and the process arguments stay with the API an
 | A gate that cannot read the engine's documents | `crates/composition/tests/gate_reads_outputs.rs` (was the known defect; the assertion is flipped) |
 | A webhook job with no issue text proceeding | `crates/workflow/tests/intake_repo/webhook.rs`: an issue the host does not return, and an empty one, end the attempt with no prompt; `break_an_issue_source_that_invents_an_issue_lets_the_job_proceed` shows what the defective host does |
 | The smoke fixture without the constitution proceeding | `tests/smoke.rs::smoke_stops_at_the_specification_for_a_constitution` |
+| Production pointed at an http address; a secret key file readable by group; a missing routing policy; a model outside the route; a configuration with one key missing; the installation tokens of an ended job left live | `crates/composition/src/config.rs` tests (`production_refuses_plain_http_for_every_outside_service`), `crates/composition/tests/external_world.rs` (`a_secret_key_file_that_group_can_read_blocks_the_github_ports_and_says_why`, `each_missing_key_is_named_by_the_blocked_line_it_causes`), `crates/composition/tests/policy_wiring.rs` and `apps/worker/tests/composed_start.rs` (the missing policy), `apps/worker/tests/composed_broker.rs` (the model outside the route), `crates/composition/tests/token_sweep.rs` (tokens revoked once the job is over, and left live without the step) |
 | Skip the role readiness check, run a tenant transaction on the system pool, forget to index a sandbox output, drop the redactor, ignore SIGTERM | as before: `crates/composition/tests/database.rs`, `tests/breaks.rs`, `tests/telemetry.rs` |
 
 ## Cross-stage mismatches
@@ -606,11 +629,13 @@ smallest change.
 
 | Port or seam | Reason |
 |---|---|
-| Agent runtime | a live run needs a model credential and the tool in the agent image |
-| Model router | `policies/model_routing.yaml` exists and `PolicyModelRouter` reads it (`factory_composition::routing`), but every number in it waits for the project owner and the worker does not yet load it, probe the runtimes and hand the router and the prices to the engine and the broker |
-| Issue source, change host | need a registered GitHub App and its key |
-| `RegistryMetadata`, `AdvisoryDatabase` | blocked by design in production (`supply_chain::BlockedRegistry`, `BlockedAdvisoryDatabase`): they answer "unknown", so a new direct dependency waits for a security approver and the advisories gate is BLOCKED. Listed as `BLOCKED:` lines. The stand-ins are for `local` and `test`, and production refuses them |
-| `CapabilityProbes` | the capabilities of a runtime are probed when the runtime exists, and the runtime is one of the blocked adapters. Listed as a `BLOCKED:` line |
+| Agent runtime | built from `broker.upstreams` and `runtimes`; the live run needs a provider key and the tool in the agent image, which no test here ran (the sandbox in the loopback tests is a labelled stand-in) |
+| Model router | built from `policies/model_routing.yaml` and the models `broker.upstreams` enables. Every number in the file still waits for the project owner, so the production profile refuses it |
+| Issue source, change host | built from `github`; a live run needs a registered GitHub App, its key and its installations. Never run against the real GitHub |
+| `RegistryMetadata`, `AdvisoryDatabase` | built from `registry` and `advisory_database.date_file`. The registry client has never run against the real crates.io, and the stock policy does not list `crates.io` as a host, so production refuses it until a person adds it. An unreadable answer is unknown, and the gate fails closed on unknown |
+| `CapabilityProbes` | each runtime is probed in an `agent` sandbox at start-up, and is BLOCKED with the reason when the sandbox cannot be made. The success path ran only against a labelled stand-in session (`runtimes.declare_capabilities` in the local and test profiles takes a declared list) |
+| The skills of the specification stage | `external_ports` gives the Claude Code adapter no skill bundle (`spec_skills: None`), which makes the `SPECIFICATION` stage unavailable with the real tool. Building one needs a decision on which of the installed `speckit-*` skills the stage may see (the policy's allowed list) and on how their directory names map to the policy's names |
+| The 13-stage `word-count` job over real GitHub, real runtime and real broker, to a draft pull request and a person's approval | not run. The model path (`tests/composed_broker.rs`) and the GitHub path (`crates/composition/tests/external_world.rs`) are each proven over loopback; the stages in between still run only with the scripted runtime in `apps/api/tests/full_run.rs` |
 | `DeliverySources::tree_of`, `current_values` | implemented and wired by `assemble_pipeline` (mismatches 35 and 37), so the worker answers them. A binary that does not assemble the pipeline, such as the operator CLI, still gets the closed answer, and `factory-cli probe` lists the two as `BLOCKED:` |
 | The real Docker sandbox, run in a test | the pinned images are present; the one test of it is ignored because the daemon did not see its bind sources on four runs of five (see "How far the job gets") |
 
@@ -623,3 +648,8 @@ the `composition` entry, `DEP-11`, the `DEP-08` wording and `composition` in `st
 `signal` in the `tokio` features is applied. The direct dependencies of `factory-composition` are the ones
 the worker had (`async-trait`, `serde`, `serde_json`, `thiserror`, `tracing`, `tokio`, `time`, `uuid`) and
 the workspace crates; there is no new external crate, and `cargo deny --locked check` passes.
+
+Added by `s1-composition-external-world`: `ureq` (features `rustls` only) is a direct dependency of `factory-composition`, for the
+crates.io client, declared in the rules file with the same reason as the GitHub adapter. It is already in the resolved tree
+through `factory-github` and `factory-egress`, so `Cargo.lock` gains one dependency edge and no package, and
+`cargo deny --locked check` passes.

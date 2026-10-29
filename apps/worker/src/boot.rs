@@ -47,6 +47,7 @@ pub async fn boot(config: &FactoryConfig) -> Result<Booted, StartupFailure> {
     let ids = RandomIds::new().map_err(|error| StartupFailure::Other(error.to_string()))?;
     let broker = start_broker(
         &config.broker,
+        &prepared.routing.policy,
         Arc::clone(&prepared.redactor),
         Arc::new(SystemClock),
         Arc::new(ids),

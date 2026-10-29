@@ -8,7 +8,7 @@ use std::sync::Arc;
 
 use factory_composition::config::{BrokerConfig, SecretFile, UpstreamConfig};
 use factory_composition::redaction::{FactorySecrets, redactor_from_policy};
-use factory_composition::startup::load_policy;
+use factory_composition::startup::{load_policy, load_routing};
 use factory_composition::system::{RandomIds, SystemClock};
 use factory_worker::broker_host::start;
 
@@ -40,6 +40,7 @@ fn config(key: SecretFile) -> BrokerConfig {
             provider: "anthropic".to_owned(),
             base_url: "http://127.0.0.1:9".to_owned(),
             key_file: key,
+            models: Vec::new(),
         }],
         prices: Vec::new(),
     }
@@ -51,8 +52,10 @@ fn the_worker_hosts_the_broker_listener_and_it_refuses_a_request_with_no_token()
     let redactor = Arc::new(redactor_from_policy(&policies.security).expect("redactor"));
     let mut secrets = FactorySecrets::new(Arc::clone(&redactor), &policies.security);
     let dir = scratch("host");
+    let routing = load_routing(&repository_root(), &[], &policies.security).expect("routing");
     let hosted = start(
         &config(key_file(&dir, 0o600)),
+        &routing.policy,
         Arc::clone(&redactor),
         Arc::new(SystemClock),
         Arc::new(RandomIds::new().expect("random")),
@@ -89,8 +92,10 @@ fn a_provider_key_file_that_others_can_read_is_refused_before_the_listener_start
     let redactor = Arc::new(redactor_from_policy(&policies.security).expect("redactor"));
     let mut secrets = FactorySecrets::new(Arc::clone(&redactor), &policies.security);
     let dir = scratch("unsafe");
+    let routing = load_routing(&repository_root(), &[], &policies.security).expect("routing");
     let refusal = start(
         &config(key_file(&dir, 0o644)),
+        &routing.policy,
         redactor,
         Arc::new(SystemClock),
         Arc::new(RandomIds::new().expect("random")),

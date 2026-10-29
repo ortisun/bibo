@@ -50,6 +50,10 @@ time = { version = "0.3.55", default-features = false, features = ["std"] }
 hmac = "0.13.0"
 sha2 = { version = "0.11.1", default-features = false }
 subtle = { version = "2.6.1", default-features = false }
+# The package registry client (`crates_io`): a blocking HTTP client with rustls only, run under
+# `spawn_blocking`, with redirects and proxies off. The same crate, version and features as
+# factory-github and factory-egress, so the resolved tree gains nothing (rules file, `external_allow`).
+ureq = { version = "3.5.0", default-features = false, features = ["rustls"] }
 # Identifiers are built from 16 random bytes with `Builder::from_random_bytes`. No generator
 # feature (`v4`, `v7`) is turned on, because the DEP-05 resolved-feature rule forbids them.
 uuid = { version = "1.29.0", default-features = false, features = ["std"] }

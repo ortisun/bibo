@@ -101,6 +101,17 @@ impl ActiveJobs {
         tenants.all(|other| other == first).then_some(first)
     }
 
+    /// The jobs being worked on now.
+    #[must_use]
+    pub fn running(&self) -> std::collections::HashSet<JobId> {
+        self.tenants
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .keys()
+            .copied()
+            .collect()
+    }
+
     /// The tenant of a job being worked on.
     #[must_use]
     pub fn tenant_of(&self, job: JobId) -> Option<TenantId> {

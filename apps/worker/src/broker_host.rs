@@ -13,11 +13,9 @@
 
 use std::sync::Arc;
 
+use factory_domain::policy::routing::ModelRoutingPolicy;
 use factory_domain::redaction::Redactor;
-use factory_egress::broker::{
-    BrokerCore, BrokerParts, CapPolicy, JsonLinesAudit, ModelPrice, PriceTable, Provider,
-    SystemEntropy,
-};
+use factory_egress::broker::{BrokerCore, BrokerParts, JsonLinesAudit, Provider, SystemEntropy};
 use factory_egress::http::{
     BrokerServer, BrokerServerConfig, ProviderKey, ServerLimits, UpstreamConfig,
 };
@@ -25,6 +23,7 @@ use factory_ports::clock::{Clock, IdGenerator};
 
 use factory_composition::config::BrokerConfig;
 use factory_composition::redaction::{FactorySecrets, SecretKind};
+use factory_composition::routing::{broker_caps, price_table_with};
 use factory_composition::startup::StartupFailure;
 
 fn provider(name: &str) -> Result<Provider, StartupFailure> {
@@ -57,13 +56,14 @@ impl HostedBroker {
     }
 }
 
-/// Builds the broker core and starts the listener.
+/// Builds the broker core from the routing policy and starts the listener.
 ///
 /// # Errors
 /// [`StartupFailure`] when a key file is unsafe, a provider is unknown, a base URL is refused, or
 /// the listener cannot bind.
 pub fn start(
     config: &BrokerConfig,
+    routing: &ModelRoutingPolicy,
     redactor: Arc<Redactor>,
     clock: Arc<dyn Clock>,
     ids: Arc<dyn IdGenerator>,
@@ -82,25 +82,18 @@ pub fn start(
                 .map_err(|error| StartupFailure::Other(error.to_string()))?,
         );
     }
-    let mut prices = PriceTable::new();
-    for price in &config.prices {
-        prices = prices.with_model(
-            provider(&price.provider)?,
-            &price.model,
-            ModelPrice {
-                input: price.input,
-                cache_write: price.cache_write,
-                cache_read: price.cache_read,
-                output: price.output,
-            },
-        );
-    }
+    // The routing policy is the price list and the source of the per-request caps. A price in the
+    // configuration can only raise one of the policy's, and a model the policy does not list has no
+    // price at all, so the broker refuses it.
+    let prices = price_table_with(routing, &config.prices)
+        .map_err(|error| StartupFailure::Other(error.to_string()))?;
+    let caps = broker_caps(routing).map_err(|error| StartupFailure::Other(error.to_string()))?;
     let core = BrokerCore::new(BrokerParts {
         clock,
         ids,
         entropy: Arc::new(SystemEntropy),
         prices: Arc::new(prices),
-        caps: CapPolicy::default(),
+        caps,
         audit: Arc::new(JsonLinesAudit::new(std::io::stderr(), redactor)),
     });
     let server = BrokerServer::start(

@@ -123,17 +123,17 @@ FACTORY_CONFIG=/etc/factory/worker.yaml factory-worker
 
 ### The BLOCKED lines of the worker
 
-After the start-up checks pass, the worker prints these lines on standard error and exits with code 3. It claims no job. A line has the form `BLOCKED: <name>: <reason>`.
+After the start-up checks pass, the worker builds its adapters for the outside world from the configuration. For each one the configuration does not supply, it prints a line on standard error and exits with code 3. It claims no job. A line has the form `BLOCKED: <name>: <key>: <reason>`, and `<key>` is the configuration key to write (see the [configuration reference](configuration.md)). A worker with a complete configuration prints none of these lines and runs the loop.
 
 | Worker line | Why it is blocked |
 |---|---|
-| `BLOCKED: agent runtime` | A live run needs a model credential and the agent tool in the agent image. |
-| `BLOCKED: model router` | `policies/model_routing.yaml` does not exist, so there is no router to read it. |
-| `BLOCKED: issue source` | The GitHub issue source needs a registered GitHub App and its private key. |
-| `BLOCKED: change host` | The GitHub change host needs a registered GitHub App and its private key. |
-| `BLOCKED: RegistryMetadata` | No adapter asks the package registry about a package. The blocked adapter answers unknown, so every new direct dependency goes to a security approver. |
-| `BLOCKED: AdvisoryDatabase` | No adapter reports the date of the advisory database. The advisories gate is BLOCKED. |
-| `BLOCKED: CapabilityProbes` | The capabilities of a runtime are probed when the runtime exists, and the runtime is blocked. |
+| `BLOCKED: agent runtime` | `broker.upstreams` lists no provider, so there is no agent tool to run. |
+| `BLOCKED: model router` | `broker.upstreams` lists no provider, or enables a model that `policies/model_routing.yaml` does not list for it. |
+| `BLOCKED: issue source` | `github` is not set, `github.installations` is empty, or the key file or the API address is unusable. |
+| `BLOCKED: change host` | The same keys as the issue source: both ports come from the one GitHub App. |
+| `BLOCKED: RegistryMetadata` | `registry.base_url` is not set, or in production its host is not one the egress policy lists for the cargo ecosystem. |
+| `BLOCKED: AdvisoryDatabase` | `advisory_database.date_file` is not set. |
+| `BLOCKED: CapabilityProbes` | The runtimes could not be probed: the Docker daemon does not answer, the agent image is not on the host, or `worker.tenants` is empty. In the local and test profiles `runtimes.declare_capabilities` takes a declared list instead. |
 
 The last line reads `BLOCKED is not a pass: the start-up checks passed, and no job was claimed.`
 

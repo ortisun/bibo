@@ -10,7 +10,7 @@
 # files of its two logins and the decision signing key, which is the SAME file the API signs with.
 #
 # What this stack cannot fill in, because it needs a real credential, which a deployment script must not invent:
-#   * broker.upstreams (a model provider and its key file) and broker.prices
+#   * broker.upstreams (a model provider and its key file); the models and prices come from policies/model_routing.yaml
 #   * github.app_id and github.key_file (a registered GitHub App)
 #   * worker.tenants (the tenant ids the worker serves)
 # Until they are supplied the worker prints BLOCKED lines and exits with code 3, which is the right answer
@@ -50,4 +50,23 @@ decisions:
 # stages:
 #   definition_commit: 1405df66cbe219b0bf6355bc3d60361a8376b6b4   # required in production
 # github: { app_id: 0, key_file: /run/secrets/github_app_key }     # needs a registered GitHub App
+# The rest of the GitHub App, once it is registered (docs/reference/configuration.md, "github"):
+#   github:
+#     app_id: 0
+#     key_file: /run/secrets/github_app_key
+#     api_base_url: https://api.github.com          # production accepts this value only
+#     installations:                                # which installation covers which repository
+#       - { tenant: 00000000-0000-0000-0000-000000000000, repository: owner/name, installation_id: 0 }
+#     bypass_attestations:                          # an administrator's statement; without it the repository runs at L0
+#       - { tenant: 00000000-0000-0000-0000-000000000000, repository: owner/name, principal: 00000000-0000-0000-0000-000000000000, recorded_at: '2026-01-01T00:00:00Z' }
+# A model provider: the key is a file, and the models, prices and ceilings come from policies/model_routing.yaml.
+#   broker:
+#     upstreams:
+#       - { provider: anthropic, base_url: 'https://api.anthropic.com', key_file: /run/secrets/anthropic_key }
+#       - { provider: openai, base_url: 'https://api.openai.com', key_file: /run/secrets/openai_key, models: [gpt-6.1-sol] }
+# The package registry and the advisory database date, which the dependency gates read:
+# registry: { base_url: 'https://crates.io', user_agent: 'software-factory (operator@example.org)' }
+# advisory_database: { date_file: /srv/factory/protected/advisory-database.date }
+# Where the agent tools are in the agent image (the defaults match the pinned image):
+# runtimes: { claude_code: { binary: /usr/local/bin/claude, versions: ['2.1.311'] }, codex: {} }
 # worker: { name_prefix: worker, poll_interval_ms: 1000, sweep_interval_s: 10, drain_s: 120, tenants: [] }

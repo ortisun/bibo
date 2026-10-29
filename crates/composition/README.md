@@ -36,7 +36,12 @@ CLI, are made of before each adds its own shell. A ring 3 **library**
 | `pipeline` | `assemble_pipeline`: the thirteen handlers, the engine, the approval service, the hook and the preflight from the configuration (`stages:`), with `PortRegistry::check` for the profile over every port and a refusal of a registry that lacks a handler. The caller gives `ExternalPorts` (runtime, router, issue source, change host, probes, `SupplyChainSources`, the bypass attestations) and the `Providers`; production refuses a stand-in for any of them (AUT-13). The settings of the dependency gates come from the policy (`SupplyChainSettings::from_policy`: the policy is the ceiling, configuration may only lower it), the recorded decisions are read from the ledger (`LedgerApprovals` inside `CurrentApprovals`, never handed in), and the engine is given the blocks the policy says no override may pass |
 | `supply_chain` | `SupplyChainSources`: the registry source and the advisory-database date, for which no adapter exists. Production takes `BlockedRegistry` and `BlockedAdvisoryDatabase`, which answer "unknown" so that the gates fail closed; the `local` and `test` profiles take labelled stand-ins, which production refuses (`PipelineError::StandIn`). `CurrentApprovals` keeps a recorded decision only while its person still holds the designation on the allowlist, read at every call |
 | `dependency_decisions` | A person's decision on a new dependency or on its build code (`approve-dependency`, `approve-build-code`): the request the API records (`decision.dependency_requested`, signed with its own context line) and the step of `ClaimWork` that applies it: it reads the evidence the blocked validation run stored, finds the awaited package the words select, asks the policy engine for the proof, redacts the reason (the engine has no redactor) and calls `Engine::record_dependency_decision` |
-| `assemble` | Start-up in order (`prepare`), the list of adapters not assembled (`blocked_adapters`) and of seam methods that fail closed (`blocked_seams`) |
+| `assemble` | Start-up in order (`prepare`: policies, hosts, the routing policy), the ports a missing configuration key can block (`blocked_adapters`, `blocked_pipeline_inputs`) and the seam methods that fail closed (`blocked_seams`) |
+| `external` | `assemble_external`: the issue source and change host (`factory-github` over `ureq`), the runtime set (Claude Code and Codex adapters, a tenant at a time), the router, the registry and advisory sources and the capability probes, from the configuration; every item it cannot build comes back as a `BlockedItem` that starts with the configuration key. `probe_at_startup` runs each runtime's probe in an `agent` sandbox. `ConfigAttestations` reads the administrators' statements |
+| `policy_broker` | `PolicyBroker`: stands in front of the broker and cuts every token request to the stage's models, the stage's ceiling and what is left of the job's ceiling (all from `policies/model_routing.yaml`) |
+| `token_sweep` | `RevokeEndedJobs`: a step before each claim that revokes the GitHub installation tokens of every job that is over |
+| `crates_io` | The package registry source: a small client for the crates.io API with a timeout, a response cap and a `User-Agent`; anything it cannot read is unknown |
+| `advisory` | The advisory database date, read from `advisory_database.date_file` |
 | `webhook` | The webhook verifier of the API, built from secret files (one per secret in the rotation window) |
 
 ## What the full run needed of it
@@ -55,8 +60,27 @@ needed from this crate, and what it added:
   tenant of each attempt in `ActiveJobs` before it runs it.
 
 The function that builds the registry of handlers is `pipeline::assemble_pipeline` (worker README, mismatch 37). The worker binary
-calls it once the four ports with no adapter (runtime, router, issue source, change host) and the capability probes exist; until
-then it stops with `BLOCKED:` lines.
+builds the ports that reach the outside world with `external::assemble_external` and passes them in. What the configuration
+does not supply it lists as `BLOCKED:` lines that start with the key to write, and stops.
+
+## The outside world, from the configuration
+
+The configuration keys that point at the outside world are in [the reference](../../docs/reference/configuration.md): `github`
+(App id, key file, installations, API address, administrators' statements), `broker.upstreams[].models`, `registry`,
+`advisory_database` and `runtimes`. Rules the code keeps:
+
+* A secret is a file reference, mode-checked like the others. The App key is read when the adapter is built; an unsafe file
+  blocks the issue source and the change host and says which key.
+* The production profile reaches the outside world over `https` only, and only hosts the policy lists: the model providers
+  against `egress.broker_upstreams`, GitHub against `api.github.com`, the registry against the cargo hosts of the `fetch_deps`
+  profile. The stock policy lists `index.crates.io` and `static.crates.io` and not `crates.io`, so production needs the host added
+  by a person before the registry client can run there. The local and test profiles also accept plain `http` on the loopback
+  interface, and only there.
+* The routing policy is loaded with the other policies. A missing file stops the start. The production profile also stops while
+  `ModelRoutingPolicy::unconfirmed()` is not empty (every price and ceiling of the file waits for the project owner today).
+* Prices come from the policy. `broker.prices` may only raise one.
+* `RevokeEndedJobs` revokes the installation tokens of jobs that are over. It lists the open jobs of the tenants the worker
+  serves, and revokes nothing in a pass where it cannot list them.
 
 ## What a binary does with it
 
@@ -107,9 +131,13 @@ broker:
   listen: 127.0.0.1:8731
   upstreams:
     - { provider: anthropic, base_url: 'https://api.anthropic.com', key_file: /run/secrets/anthropic }
-  prices:
-    - { provider: anthropic, model: claude-sonnet-5-5, input: 3000000, cache_write: 3750000, cache_read: 300000, output: 15000000 }
-github: { app_id: 1, key_file: /run/secrets/github_app_key }
+  prices: []                                # the policy is the price list; an entry here may only raise a price
+github:
+  app_id: 1
+  key_file: /run/secrets/github_app_key
+  installations: [{ tenant: 2f0c7f64-0d1c-4c5e-9f0a-1b2c3d4e5f60, repository: org/repo, installation_id: 1 }]
+registry: { base_url: 'https://crates.io', user_agent: 'software-factory (ops@example.org)' }
+advisory_database: { date_file: /srv/factory/protected/advisory-database.date }
 stages:                                     # optional; the defaults are the numbers the stage tests use
   definition_commit: 1405df66cbe219b0bf6355bc3d60361a8376b6b4   # required in production
   # label: factory

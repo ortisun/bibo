@@ -33,7 +33,10 @@ use crate::config::FactoryConfig;
 use crate::database;
 use crate::profile::{PortName, Profile};
 use crate::redaction::{FactorySecrets, SecretKind, redactor_from_policy};
-use crate::startup::{LoadedPolicies, StartupFailure, check_image_catalog, load_policy};
+use crate::startup::{
+    LoadedPolicies, LoadedRouting, StartupFailure, check_image_catalog, confirm_routing,
+    load_policy, load_routing,
+};
 use crate::telemetry;
 
 /// Who is starting: the service name and version telemetry reports.
@@ -49,6 +52,9 @@ pub struct Identity {
 pub struct Prepared {
     /// The policies and their hash.
     pub policies: LoadedPolicies,
+    /// The routing policy: which models each stage may use, what they cost, what a stage and a
+    /// job may spend.
+    pub routing: LoadedRouting,
     /// The one redactor of the process.
     pub redactor: Arc<Redactor>,
     /// The secret values registered with it.
@@ -70,31 +76,32 @@ pub struct Blocked {
     pub reason: &'static str,
 }
 
-/// The adapters that are not assembled, with the reason for each.
+/// The adapters that depend on the configuration, with what each needs.
 ///
 /// The sandbox, the workspaces and the specification provider are assembled
-/// ([`crate::providers::assemble`]). What is left needs a credential or a file that does not
-/// exist, in the production profile and in the others alike: the local and test profiles may
-/// stand in for these four, but only a test wiring can supply the stand-ins, because the
-/// testkit that holds them may not be linked by a library or a binary (DEP-03).
+/// ([`crate::providers::assemble`]). The four below are assembled by
+/// [`crate::external::assemble_external`] from the configuration, and each is `BLOCKED` while the
+/// configuration lacks what it needs. The worker prints one line for each item that is missing,
+/// starting with the key to write; this list is the set of ports a line can be about. The operator
+/// CLI, which assembles none of them, prints these as the ones it cannot check.
 #[must_use]
 pub fn blocked_adapters(_profile: Profile) -> Vec<Blocked> {
     vec![
         Blocked {
             port: PortName::Runtime,
-            reason: "a live run needs a model credential and the tool in the agent image (the adapters bind one tenant, which crate::runtimes::TenantRuntimes handles)",
+            reason: "built from broker.upstreams (a provider and its key_file) and runtimes; blocked while broker.upstreams lists no provider",
         },
         Blocked {
             port: PortName::Router,
-            reason: "policies/model_routing.yaml exists and PolicyModelRouter reads it, but every number in it waits for the project owner and the worker does not yet load it, probe the runtimes and hand the router to the engine",
+            reason: "built from policies/model_routing.yaml and the models broker.upstreams enables; blocked while broker.upstreams lists no provider or enables a model the policy does not list",
         },
         Blocked {
             port: PortName::Issues,
-            reason: "the GitHub issue source needs a registered GitHub App and its private key",
+            reason: "built from github (app_id, key_file, installations, api_base_url); blocked while github is not set, github.installations is empty or the key file is unusable",
         },
         Blocked {
             port: PortName::Changes,
-            reason: "the GitHub change host needs a registered GitHub App and its private key",
+            reason: "built from github (app_id, key_file, installations, api_base_url); blocked while github is not set, github.installations is empty or the key file is unusable",
         },
     ]
 }
@@ -123,28 +130,30 @@ pub fn blocked_seams() -> Vec<BlockedSeam> {
     ]
 }
 
-/// What `pipeline::assemble_pipeline` still needs from the outside beyond the four blocked
-/// adapters, because nothing in this workspace implements it. A worker stops with these listed.
+/// What `pipeline::assemble_pipeline` needs beyond the four adapters above, and what decides each.
+/// A worker stops with these listed while the configuration lacks what they need.
 ///
-/// The recorded decisions of people are not on this list any more: `assemble_pipeline` reads them
-/// from the ledger itself (`LedgerApprovals`). The two sources below have an adapter that is
-/// blocked by design ([`crate::supply_chain::SupplyChainSources::blocked`]). The pipeline can be
-/// assembled with them in production, and the dependency gates fail closed on what they do not
-/// know: a new direct dependency waits for a security approver, and the advisories gate is BLOCKED.
+/// The recorded decisions of people are not on this list: `assemble_pipeline` reads them from the
+/// ledger itself (`LedgerApprovals`). The registry source ([`crate::crates_io`]) and the advisory
+/// date ([`crate::advisory`]) are adapters now, and each is blocked only while its key is not set;
+/// a source that cannot be read at run time answers unknown, and the dependency gates fail closed
+/// on unknown (a new direct dependency waits for a security approver, the advisories gate is
+/// BLOCKED). [`crate::supply_chain::SupplyChainSources::blocked`] remains for a process that does
+/// not assemble the outside world, such as the operator CLI.
 #[must_use]
 pub fn blocked_pipeline_inputs() -> Vec<BlockedSeam> {
     vec![
         BlockedSeam {
             seam: "RegistryMetadata",
-            reason: "no adapter asks the package registry about a package, and the registry is outside the egress allowlist; the blocked adapter answers all unknown, so every new direct dependency goes to a security approver",
+            reason: "built from registry (base_url, user_agent); blocked while registry.base_url is not set, and in production while the host is not one the egress policy lists for the cargo ecosystem",
         },
         BlockedSeam {
             seam: "AdvisoryDatabase",
-            reason: "no adapter reports the date of the advisory database the audit reads, and the image has no audit tool or database yet; the blocked adapter answers unknown, so the advisories gate is BLOCKED",
+            reason: "built from advisory_database.date_file, which the image build writes; blocked while the key is not set",
         },
         BlockedSeam {
             seam: "CapabilityProbes",
-            reason: "the capabilities of a runtime are probed when the runtime exists, and the runtime is one of the blocked adapters",
+            reason: "each runtime is probed in an agent sandbox at start-up; blocked while the Docker daemon does not answer or the agent image is not on the host, or while runtimes.declare_capabilities is unset in a profile that may declare",
         },
     ]
 }
@@ -160,6 +169,17 @@ pub async fn prepare(
     let untrusted = [config.sandbox.workspace_root.as_path()];
     let untrusted: Vec<&Path> = untrusted.to_vec();
     let policies = load_policy(&config.protected_checkout, &untrusted)?;
+    // The hosts the production profile may reach are the ones the policy lists, and the routing
+    // policy must load and be confirmed before anything is built from it.
+    config
+        .check_endpoints(&policies.security)
+        .map_err(|error| StartupFailure::Other(error.to_string()))?;
+    let routing = load_routing(&config.protected_checkout, &untrusted, &policies.security)?;
+    confirm_routing(config.profile, &routing)?;
+    crate::routing::enabled_models(&routing.policy, &config.broker.upstreams)
+        .map_err(|error| StartupFailure::Other(error.to_string()))?;
+    crate::routing::price_table_with(&routing.policy, &config.broker.prices)
+        .map_err(|error| StartupFailure::Other(error.to_string()))?;
 
     let catalog = std::fs::read_to_string(&config.sandbox.images_catalog).map_err(|_| {
         StartupFailure::Images(format!(
@@ -227,6 +247,7 @@ pub async fn prepare(
     );
     Ok(Prepared {
         policies,
+        routing,
         redactor,
         secrets,
         store,

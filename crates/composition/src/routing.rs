@@ -12,19 +12,28 @@
 //! * [`token_request`] builds the request for a job token: the models of the stage's routes, and
 //!   the ceiling of the stage run. [`broker_caps`] gives the broker the per-request caps.
 //!
+//! # How the running system uses it
+//!
+//! * `prepare` loads the file with the other policies; `PolicyBroker` (`crate::policy_broker`) applies
+//!   [`token_request`]'s rules to the request the engine builds; `broker_host::start` gives the broker
+//!   [`price_table_with`] and [`broker_caps`]; the router offers only the models
+//!   [`enabled_models`] returns.
+//!
 //! # What the policy does not yet drive
 //!
 //! * The broker applies one set of per-request caps to every token, so [`broker_caps`] takes the
 //!   largest cap of any role. A cap for each role needs a field on the job token request, which is
-//!   a change of the port.
-//! * The router does not know the model the author of the work used, so it cannot choose a
-//!   reviewer of another family by itself. The reviewing stages list the model of the other family
-//!   first, and `ModelRoutingPolicy::independent` answers the question for a caller that knows the
-//!   author. Passing the author to the router needs a field on `RoutingNeed`, a change of the port.
+//!   a change of the port (`docs/architecture/ports-v1.1.md`, section 16.1).
+//! * The router does not know the model the author of the work used, so the engine cannot ask it for
+//!   a reviewer of another family. [`PolicyModelRouter::route_after_author`] answers the question
+//!   for a caller that knows the author; passing the author through `RoutingNeed` is the same
+//!   proposal.
 
+use std::collections::BTreeSet;
 use std::sync::Arc;
 use std::time::Duration;
 
+use crate::config::{PriceConfig, UpstreamConfig};
 use factory_contracts::policy::routing::routing_problems;
 use factory_domain::contracts::agent_manifest::RecommendedTier;
 use factory_domain::ids::{JobId, TenantId};
@@ -60,6 +69,42 @@ pub enum RoutingBuildError {
     /// The stage has no route, so a token cannot be built for it.
     #[error("the stage {0} has no route in the routing policy")]
     NoRoute(String),
+    /// A provider the broker does not know.
+    #[error("the provider {0} is not one the broker knows")]
+    UnknownProvider(String),
+    /// The configuration enables a model for a provider, and the policy does not list the model
+    /// for that provider.
+    #[error(
+        "broker.upstreams enables the model {model} for the provider {provider}, and the routing policy does not list it for that provider"
+    )]
+    ModelNotInPolicy {
+        /// The provider.
+        provider: String,
+        /// The model.
+        model: String,
+    },
+    /// The configuration prices a model the policy does not list for that provider.
+    #[error(
+        "broker.prices names the model {0}, which the routing policy does not list for that provider"
+    )]
+    PriceForUnknownModel(String),
+    /// The configuration lowers a price of the policy.
+    #[error(
+        "broker.prices lowers a price of the routing policy for the model {0}; a price in the configuration may only raise one"
+    )]
+    PriceLowersPolicy(String),
+}
+
+/// Why an author-aware route found nothing.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum AuthorRoutingError {
+    /// The ordinary routing failed.
+    #[error(transparent)]
+    Routing(#[from] RoutingError),
+    /// Candidates exist, and none of them is independent of the author under the policy's rule.
+    /// The policy says the reviewing stage then waits for a person (`on_no_independent_model`).
+    #[error("no allowed model is independent of the author, so the stage waits for a person")]
+    NoIndependentModel,
 }
 
 fn provider_of(model: &Model) -> Result<Provider, RoutingBuildError> {
@@ -120,6 +165,119 @@ pub fn price_table(policy: &ModelRoutingPolicy) -> Result<PriceTable, RoutingBui
         );
     }
     Ok(table)
+}
+
+/// The price list of the broker: the policy's prices, each raised by the deployment's entry when
+/// there is one. A deployment may price a model of the policy higher than the policy does (the
+/// broker then counts more, which stops a job sooner), never lower, and may not price a model the
+/// policy does not list for that provider.
+///
+/// # Errors
+/// [`RoutingBuildError`] as for [`price_table`], and [`RoutingBuildError::PriceForUnknownModel`] or
+/// [`RoutingBuildError::PriceLowersPolicy`] for an entry that breaks the rule above.
+pub fn price_table_with(
+    policy: &ModelRoutingPolicy,
+    entries: &[PriceConfig],
+) -> Result<PriceTable, RoutingBuildError> {
+    checked(policy)?;
+    let mut table = PriceTable::new();
+    for model in &policy.models {
+        let provider = provider_of(model)?;
+        let mut prices = ModelPrice {
+            input: model.prices.input,
+            cache_write: model.prices.cache_write,
+            cache_read: model.prices.cache_read,
+            output: model.prices.output,
+        };
+        for entry in entries
+            .iter()
+            .filter(|entry| entry.model == model.id && entry.provider == model.provider)
+        {
+            let raised = ModelPrice {
+                input: entry.input,
+                cache_write: entry.cache_write,
+                cache_read: entry.cache_read,
+                output: entry.output,
+            };
+            if raised.input < prices.input
+                || raised.cache_write < prices.cache_write
+                || raised.cache_read < prices.cache_read
+                || raised.output < prices.output
+            {
+                return Err(RoutingBuildError::PriceLowersPolicy(model.id.clone()));
+            }
+            prices = raised;
+        }
+        table = table.with_model(provider, &model.id, prices);
+    }
+    for entry in entries {
+        let known = policy
+            .models
+            .iter()
+            .any(|model| model.id == entry.model && model.provider == entry.provider);
+        if !known {
+            return Err(RoutingBuildError::PriceForUnknownModel(entry.model.clone()));
+        }
+    }
+    Ok(table)
+}
+
+/// The models the deployment enabled: for each upstream, the models it lists, or every model of
+/// the policy for that provider when it lists none. A model the policy does not list for the
+/// provider stops the start.
+///
+/// # Errors
+/// [`RoutingBuildError::UnknownProvider`] or [`RoutingBuildError::ModelNotInPolicy`].
+pub fn enabled_models(
+    policy: &ModelRoutingPolicy,
+    upstreams: &[UpstreamConfig],
+) -> Result<BTreeSet<String>, RoutingBuildError> {
+    let mut enabled = BTreeSet::new();
+    for upstream in upstreams {
+        if !matches!(upstream.provider.as_str(), "anthropic" | "openai") {
+            return Err(RoutingBuildError::UnknownProvider(
+                upstream.provider.clone(),
+            ));
+        }
+        for name in &upstream.models {
+            let listed = policy
+                .models
+                .iter()
+                .any(|model| &model.id == name && model.provider == upstream.provider);
+            if !listed {
+                return Err(RoutingBuildError::ModelNotInPolicy {
+                    provider: upstream.provider.clone(),
+                    model: name.clone(),
+                });
+            }
+            enabled.insert(name.clone());
+        }
+        if upstream.models.is_empty() {
+            enabled.extend(
+                policy
+                    .models
+                    .iter()
+                    .filter(|model| model.provider == upstream.provider)
+                    .map(|model| model.id.clone()),
+            );
+        }
+    }
+    Ok(enabled)
+}
+
+/// The first model of a stage's routes that the deployment enabled, as the runtime and model a
+/// token holds. `None` when the stage has no route or no enabled model.
+#[must_use]
+pub fn first_selection(
+    policy: &ModelRoutingPolicy,
+    stage: StageKind,
+    enabled: &BTreeSet<String>,
+) -> Option<ModelSelection> {
+    policy
+        .allowed_models(stage.as_str())
+        .into_iter()
+        .find(|model| enabled.contains(&model.id))
+        .and_then(|model| selection_of(model).ok())
 }
 
 /// The caps the broker applies to every request: the largest cap of any role. A broker holds one
@@ -189,6 +347,8 @@ pub fn token_request(
 #[derive(Debug, Clone)]
 pub struct PolicyModelRouter {
     policy: Arc<ModelRoutingPolicy>,
+    /// The models the deployment enabled. `None` means every model of the policy.
+    enabled: Option<BTreeSet<String>>,
 }
 
 impl PolicyModelRouter {
@@ -199,24 +359,76 @@ impl PolicyModelRouter {
     /// runtime do not agree.
     pub fn new(policy: Arc<ModelRoutingPolicy>) -> Result<Self, RoutingBuildError> {
         checked(&policy)?;
-        Ok(Self { policy })
-    }
-}
-
-fn tier_of(need: &RoutingNeed) -> Tier {
-    match need.tier {
-        RecommendedTier::Small => Tier::Small,
-        RecommendedTier::Standard => Tier::Standard,
-        RecommendedTier::Large => Tier::Large,
-    }
-}
-
-impl ModelRouter for PolicyModelRouter {
-    fn fidelity(&self) -> Fidelity {
-        Fidelity::Real
+        Ok(Self {
+            policy,
+            enabled: None,
+        })
     }
 
-    fn route(&self, need: &RoutingNeed) -> Result<RoutingDecision, RoutingError> {
+    /// A router that offers only the models the deployment enabled (see [`enabled_models`]). A
+    /// model of the policy that no provider of the deployment serves is never a candidate.
+    #[must_use]
+    pub fn with_enabled(mut self, enabled: BTreeSet<String>) -> Self {
+        self.enabled = Some(enabled);
+        self
+    }
+
+    /// The same answer as [`ModelRouter::route`], for a stage that reviews the work of an author
+    /// whose model is known: a candidate that is not independent of the author under the policy's
+    /// rule for the reviewing role is dropped. When candidates remain and none is independent the
+    /// answer is [`AuthorRoutingError::NoIndependentModel`], and the policy says the stage then
+    /// waits for a person. A stage that reviews nobody's work routes as `route` does.
+    ///
+    /// The engine does not call this yet: `RoutingNeed` carries no author (proposal in
+    /// `docs/architecture/ports-v1.1.md`, section 16). The composition root that learns the
+    /// author's model calls it, and the tests show what it refuses.
+    ///
+    /// # Errors
+    /// [`AuthorRoutingError`].
+    pub fn route_after_author(
+        &self,
+        need: &RoutingNeed,
+        author: &ModelSelection,
+    ) -> Result<RoutingDecision, AuthorRoutingError> {
+        let rules: Vec<_> = self
+            .policy
+            .roles_of_stage(need.stage.as_str())
+            .filter_map(|role| self.policy.rule_for_reviewer(&role.role))
+            .collect();
+        if rules.is_empty() {
+            return Ok(self.route_filtered(need, |_| true)?);
+        }
+        let independent = |model: &Model| {
+            rules.iter().all(|rule| {
+                self.policy
+                    .independent(rule, author.model.as_str(), &model.id)
+            })
+        };
+        // Candidates the deployment serves exist, and not one is independent of the author: the
+        // policy sends the stage to a person, which is not the same as a runtime being excluded.
+        let served: Vec<&Model> = self
+            .policy
+            .candidates(need.stage.as_str(), tier_of(need))
+            .into_iter()
+            .filter(|model| self.serves(model))
+            .collect();
+        if !served.is_empty() && !served.iter().any(|model| independent(model)) {
+            return Err(AuthorRoutingError::NoIndependentModel);
+        }
+        Ok(self.route_filtered(need, independent)?)
+    }
+
+    fn serves(&self, model: &Model) -> bool {
+        self.enabled
+            .as_ref()
+            .is_none_or(|enabled| enabled.contains(&model.id))
+    }
+
+    fn route_filtered(
+        &self,
+        need: &RoutingNeed,
+        accept: impl Fn(&Model) -> bool,
+    ) -> Result<RoutingDecision, RoutingError> {
         let candidates = self.policy.candidates(need.stage.as_str(), tier_of(need));
         if candidates.is_empty() {
             return Err(RoutingError::NoRoute);
@@ -228,6 +440,12 @@ impl ModelRouter for PolicyModelRouter {
                 continue;
             };
             if need.exclude.contains(&selection.runtime) {
+                continue;
+            }
+            if !self.serves(model) {
+                continue;
+            }
+            if !accept(model) {
                 continue;
             }
             any_left = true;
@@ -253,5 +471,23 @@ impl ModelRouter for PolicyModelRouter {
             (true, Some(capability)) => RoutingError::CapabilityUnavailable(capability),
             (true, None) => RoutingError::NoRoute,
         })
+    }
+}
+
+fn tier_of(need: &RoutingNeed) -> Tier {
+    match need.tier {
+        RecommendedTier::Small => Tier::Small,
+        RecommendedTier::Standard => Tier::Standard,
+        RecommendedTier::Large => Tier::Large,
+    }
+}
+
+impl ModelRouter for PolicyModelRouter {
+    fn fidelity(&self) -> Fidelity {
+        Fidelity::Real
+    }
+
+    fn route(&self, need: &RoutingNeed) -> Result<RoutingDecision, RoutingError> {
+        self.route_filtered(need, |_| true)
     }
 }
