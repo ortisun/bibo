@@ -1340,6 +1340,7 @@ untrusted_content:
         - "-c model_providers.factory_broker={name=\"factory_broker\", base_url=\"<sidecar address>/v1\", wire_api=\"responses\", supports_websockets=false, auth={command=\"cat\", args=[\"/run/factory/job-token\"]}}"
         - "--disable plugins"
         - "-c analytics.enabled=false"
+        - "-c web_search=\"disabled\""   # Codex 0.163.0 sends a live web search tool by default; the broker refuses it
         - "--disable unbounded_connection_retries"
         - "-c project_doc_max_bytes=0"
         - "--ephemeral"

@@ -2606,6 +2606,7 @@
           "-c model_providers.factory_broker={name=\"factory_broker\", base_url=\"<sidecar address>/v1\", wire_api=\"responses\", supports_websockets=false, auth={command=\"cat\", args=[\"/run/factory/job-token\"]}}",
           "--disable plugins",
           "-c analytics.enabled=false",
+          "-c web_search=\"disabled\"",
           "--disable unbounded_connection_retries",
           "-c project_doc_max_bytes=0",
           "--ephemeral",
