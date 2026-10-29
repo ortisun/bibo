@@ -10,7 +10,8 @@
 #   2. the package manager's state that is only useful for installing,
 #   3. the setuid and setgid bits on every file that still has one,
 #   4. every shell that the image's role does not allow,
-#   5. (agent) the read permission on the agent tools and on timeout,
+#   5. (agent) the read permission on every program of the adapters' command chain (env, timeout and
+#      the agent tools), listed in execute-only.txt,
 #
 # and it adds the numeric sandbox user. The test in test.sh then proves the result from outside.
 #
@@ -83,25 +84,38 @@ chown "$uid:$gid" /home/agent
 chmod 0700 /home/agent
 chmod 1777 /tmp
 
-# --- 5. Execute-only tools (agent) ---------------------------------------------------------------
+# --- 5. Execute-only programs (agent) -----------------------------------------------------------
 # The adapters run `env -i ... timeout ... claude|codex ...`, and the stream the adapters trust is
 # the standard output of that process chain. Any process of the sandbox user can open
 # /proc/<pid>/fd/1 of another process of the same user and write into that pipe, unless the other
 # process is not dumpable. The kernel makes a process non-dumpable when it is started from a file
-# that nobody can read, and then /proc/<pid>/fd and /proc/<pid>/mem belong to root. So the tools and
-# `timeout`, the processes that hold the pipe, are execute-only: mode 0711, owned by root. They run
-# the same (verified for claude 2.1.311 and codex 0.163.0, including a full turn with the Bash tool
-# through the broker) and cannot be read by the sandbox user. test.sh rule TOOLS-EXECUTE-ONLY checks
-# the modes (finding SBX-4 of docs/reviews/isolation-core-security-review.md).
+# that nobody can read, and then /proc/<pid>/fd and /proc/<pid>/mem belong to root. Every process of
+# the chain holds the pipe in turn (env, then timeout, then the tool), so every program of the chain
+# is execute-only: mode 0711, owned by root. A single readable program is enough to lose, because a
+# hostile process that already runs opens the pipe of that program the moment it appears and keeps
+# the descriptor across the exec calls that follow (finding RR-14). The programs are the lines of
+# execute-only.txt, which test.sh and the runtime tests read too. They run the same (verified for
+# claude 2.1.311 and codex 0.163.0, including a full turn with the Bash tool through the broker) and
+# cannot be read by the sandbox user. test.sh rule TOOLS-EXECUTE-ONLY checks the modes of the built
+# image (findings SBX-4 and RR-14 of docs/reviews/).
 if [ "$role" = agent ]; then
-    for tool in /usr/local/bin/claude /opt/codex/bin/codex /opt/codex/bin/codex-code-mode-host /usr/bin/timeout; do
-        test -f "$tool" || {
-            echo "harden.sh: $tool is missing" >&2
+    listed=0
+    while IFS= read -r program; do
+        case $program in
+            '' | '#'*) continue ;;
+        esac
+        test -f "$program" || {
+            echo "harden.sh: $program is missing" >&2
             exit 1
         }
-        chown 0:0 "$tool"
-        chmod 0711 "$tool"
-    done
+        chown 0:0 "$program"
+        chmod 0711 "$program"
+        listed=$((listed + 1))
+    done <"$here/execute-only.txt"
+    test "$listed" -gt 0 || {
+        echo "harden.sh: execute-only.txt names no program" >&2
+        exit 1
+    }
 fi
 
 # --- 6. Shells -----------------------------------------------------------------------------------
