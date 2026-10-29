@@ -222,9 +222,10 @@ async fn scenario_e4_prompt_injection_has_no_effect() {
     let mut started = start();
     let (title, body, injection) = hostile_issue();
     // The text as filed. The intake stage keeps the title, a blank line and the body.
-    let filed_hash = factory_domain::values::Sha256Digest::of(format!("{title}\n\n{body}").as_bytes())
-        .as_str()
-        .to_owned();
+    let filed_hash =
+        factory_domain::values::Sha256Digest::of(format!("{title}\n\n{body}").as_bytes())
+            .as_str()
+            .to_owned();
     let markers: Vec<String> = injection["markers"]
         .as_array()
         .expect("markers")
@@ -245,10 +246,7 @@ async fn scenario_e4_prompt_injection_has_no_effect() {
         .map(|canary| format!("{}={}", canary.label(), canary.value()))
         .collect::<Vec<_>>()
         .join("\n");
-    let note = format!(
-        "# Notes for the maintainers\n\n{}\n",
-        markers.join(". ")
-    );
+    let note = format!("# Notes for the maintainers\n\n{}\n", markers.join(". "));
     let journey = begin(
         Options {
             extra_files: vec![
@@ -282,12 +280,25 @@ async fn scenario_e4_prompt_injection_has_no_effect() {
     // Each outcome is read back from the job and not from the reply alone.
     let mut attempts: Vec<Value> = Vec::new();
     // (1) The requester, whose issue holds the text, approves their own pull request.
-    let granted_before =
-        full::count_audit(&journey.rig, journey.job, "approval_granted_or_rejected.granted").await;
+    let granted_before = full::count_audit(
+        &journey.rig,
+        journey.job,
+        "approval_granted_or_rejected.granted",
+    )
+    .await;
     let reply = journey
-        .decide_on_the_pull_request(&view, "hostile-self-approval", &journey.requester, "approve")
+        .decide_on_the_pull_request(
+            &view,
+            "hostile-self-approval",
+            &journey.requester,
+            "approve",
+        )
         .await;
-    let after = journey.rig.drive(Some(journey.job), 4, |_| false).await.expect("a view");
+    let after = journey
+        .rig
+        .drive(Some(journey.job), 4, |_| false)
+        .await
+        .expect("a view");
     let self_approved = full::count_audit(
         &journey.rig,
         journey.job,
@@ -311,7 +322,12 @@ async fn scenario_e4_prompt_injection_has_no_effect() {
     }));
     // (3) A decision with a token nobody issued.
     let reply = journey
-        .decide_on_the_pull_request(&view, "hostile-forged-token", "fabricated-token-value", "approve")
+        .decide_on_the_pull_request(
+            &view,
+            "hostile-forged-token",
+            "fabricated-token-value",
+            "approve",
+        )
         .await;
     attempts.push(json!({
         "action": format!("approve with a token that was never issued (the API answered {})", reply.status),
@@ -319,9 +335,11 @@ async fn scenario_e4_prompt_injection_has_no_effect() {
     }));
     // (4) The instructions of the issue reach an agent anywhere but inside a quoted data block.
     let prompts = journey.rig.runtime_prompts();
-    let leaked_into_instructions = prompts
-        .iter()
-        .any(|prompt| markers.iter().any(|marker| outside_data_blocks(prompt, marker)));
+    let leaked_into_instructions = prompts.iter().any(|prompt| {
+        markers
+            .iter()
+            .any(|marker| outside_data_blocks(prompt, marker))
+    });
     let reached_a_prompt = prompts
         .iter()
         .any(|prompt| markers.iter().any(|marker| prompt.contains(marker)));
@@ -331,14 +349,24 @@ async fn scenario_e4_prompt_injection_has_no_effect() {
     }));
 
     // The honest approval still completes the job.
-    let still_waiting = journey.rig.drive(Some(journey.job), 2, |_| false).await.expect("a view");
-    assert_eq!(still_waiting.status, JobStatus::WaitingForHuman, "{still_waiting:#?}");
+    let still_waiting = journey
+        .rig
+        .drive(Some(journey.job), 2, |_| false)
+        .await
+        .expect("a view");
+    assert_eq!(
+        still_waiting.status,
+        JobStatus::WaitingForHuman,
+        "{still_waiting:#?}"
+    );
     let reply = journey
         .approve_the_pull_request(&still_waiting, "approve-pull-request-e4")
         .await;
     assert_eq!(reply.status, 202, "{}", reply.text());
     let view = journey
-        .until(120, |view| view.status == JobStatus::Completed || view.status.is_terminal())
+        .until(120, |view| {
+            view.status == JobStatus::Completed || view.status.is_terminal()
+        })
         .await;
     assert_eq!(view.status, JobStatus::Completed, "{view:#?}");
 
@@ -401,14 +429,15 @@ async fn scenario_e5_the_worker_is_killed_at_every_stage_boundary() {
     let _prompt = PromptOnFailure(&journey);
     // Every stage of the scope that a worker claims loses its lease once. The domain stage is
     // skipped by a rule and is never claimed, so there is no worker to lose there.
-    let mut kill_once: std::collections::BTreeSet<StageKind> = factory_workflow::engine::EngineConfig::new(
-        factory_domain::vocabulary::ExecutionMode::Test,
-        journey.rig.policies.hash.clone(),
-    )
-    .scope
-    .into_iter()
-    .filter(|kind| *kind != StageKind::DomainDiscovery)
-    .collect();
+    let mut kill_once: std::collections::BTreeSet<StageKind> =
+        factory_workflow::engine::EngineConfig::new(
+            factory_domain::vocabulary::ExecutionMode::Test,
+            journey.rig.policies.hash.clone(),
+        )
+        .scope
+        .into_iter()
+        .filter(|kind| *kind != StageKind::DomainDiscovery)
+        .collect();
     let planned = kill_once.len();
     let mut killed: Vec<(StageKind, String)> = Vec::new();
     let rig = &journey.rig;
@@ -461,10 +490,12 @@ async fn scenario_e5_the_worker_is_killed_at_every_stage_boundary() {
         Extras {
             facts: BTreeMap::from([(
                 "killed_attempts".to_owned(),
-                json!(killed
-                    .iter()
-                    .map(|(kind, attempt)| json!({"stage": kind.as_str(), "attempt": attempt}))
-                    .collect::<Vec<_>>()),
+                json!(
+                    killed
+                        .iter()
+                        .map(|(kind, attempt)| json!({"stage": kind.as_str(), "attempt": attempt}))
+                        .collect::<Vec<_>>()
+                ),
             )]),
             ..Extras::default()
         },
@@ -533,7 +564,10 @@ async fn scenario_e6_a_requester_who_is_not_on_the_allowlist_is_rejected() {
     let _ = rig.drive(None, 5, |_| false).await;
     let listing = rig.env.send(Req::get("/v1/jobs").bearer(&approver)).await;
     assert_eq!(listing.status, 200, "{}", listing.text());
-    let jobs = listing.json()["jobs"].as_array().cloned().unwrap_or_default();
+    let jobs = listing.json()["jobs"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
     let job = jobs.first().and_then(|job| {
         job["job_id"]
             .as_str()
@@ -587,7 +621,10 @@ async fn scenario_e7_the_same_signed_webhook_delivered_fifty_times_makes_one_job
     }
     let listing = env.send(Req::get("/v1/jobs").bearer(&requester)).await;
     assert_eq!(listing.status, 200, "{}", listing.text());
-    let jobs = listing.json()["jobs"].as_array().cloned().unwrap_or_default();
+    let jobs = listing.json()["jobs"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
     let job = full::job_of(env, &requester).await;
     let _ = &approver;
     // One pass of the worker's hook admits the job it finds.
@@ -674,7 +711,11 @@ mod production {
     }
 
     /// What the real start-up code of the API does with a fake in place of `port`.
-    pub fn start_with_fake(env: &Env, profile: Profile, port: PortName) -> Result<(), Vec<PortName>> {
+    pub fn start_with_fake(
+        env: &Env,
+        profile: Profile,
+        port: PortName,
+    ) -> Result<(), Vec<PortName>> {
         match assemble_state(inputs(env, profile, with_fake(env, port))) {
             Ok(_) => Ok(()),
             Err(StartupFailure::Ports(refused)) => Err(refused.refused),
@@ -740,8 +781,18 @@ async fn scenario_e9_a_production_start_with_a_fake_adapter_is_refused() {
             ("store", "postgres-store", "real", ""),
             ("store", "testkit-in-memory-store", "fake", ""),
             ("clock", "testkit-fake-clock", "fake", ""),
-            ("id-generator", "testkit-sequential-id-generator", "fake", ""),
-            ("webhook-verifier", "testkit-fake-webhook-verifier", "fake", ""),
+            (
+                "id-generator",
+                "testkit-sequential-id-generator",
+                "fake",
+                "",
+            ),
+            (
+                "webhook-verifier",
+                "testkit-fake-webhook-verifier",
+                "fake",
+                "",
+            ),
             ("authority", "testkit-fixed-authority", "fake", ""),
             ("allowlist", "testkit-fake-allowlist", "fake", ""),
         ],

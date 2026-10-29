@@ -1,0 +1,106 @@
+{
+  "adapters": [
+    {
+      "component": "",
+      "fidelity": "fake",
+      "name": "testkit-fake-sandbox",
+      "port": "sandbox"
+    },
+    {
+      "component": "",
+      "fidelity": "fake",
+      "name": "playbook-agent-runtime",
+      "port": "agent-runtime"
+    },
+    {
+      "component": "",
+      "fidelity": "fake",
+      "name": "testkit-fake-workspace-provider",
+      "port": "workspaces"
+    },
+    {
+      "component": "",
+      "fidelity": "fake",
+      "name": "testkit-fake-change-host",
+      "port": "change-host"
+    },
+    {
+      "component": "",
+      "fidelity": "fake",
+      "name": "testkit-fake-issue-source",
+      "port": "issue-source"
+    },
+    {
+      "component": "",
+      "fidelity": "fake",
+      "name": "testkit-fake-model-broker",
+      "port": "model-broker"
+    },
+    {
+      "component": "",
+      "fidelity": "fake",
+      "name": "testkit-static-model-router",
+      "port": "model-router"
+    },
+    {
+      "component": "",
+      "fidelity": "fake",
+      "name": "stand-in-capability-probes",
+      "port": "capability-probes"
+    },
+    {
+      "component": "",
+      "fidelity": "fake",
+      "name": "stand-in-registry",
+      "port": "supply-chain-registry"
+    },
+    {
+      "component": "",
+      "fidelity": "fake",
+      "name": "stand-in-advisory-database",
+      "port": "supply-chain-advisories"
+    },
+    {
+      "component": "",
+      "fidelity": "fake",
+      "name": "stand-in-operator-attestation",
+      "port": "bypass-attestation"
+    },
+    {
+      "component": "",
+      "fidelity": "real",
+      "name": "postgres-store",
+      "port": "store"
+    },
+    {
+      "component": "",
+      "fidelity": "real",
+      "name": "local-fs-artifact-store",
+      "port": "artifact-store"
+    },
+    {
+      "component": "",
+      "fidelity": "real",
+      "name": "factory-api-server",
+      "port": "api-server"
+    },
+    {
+      "component": "workflow.engine",
+      "fidelity": "fake",
+      "name": "workflow-engine-labelled-fake",
+      "port": "ledger-writer"
+    }
+  ],
+  "cost_micro_usd": 0,
+  "limitations": [
+    "No model was called. The nine agents are the scripted playbook (apps/api/tests/playbook), which answers by role and ignores the text of the prompt.",
+    "No command ran in a container. The sandbox is the testkit fake, and the output of cargo and of the tool is what a real run of the patched fixture printed.",
+    "GitHub is the testkit fake change host and issue source. It mints no installation token, records no request path, and keeps comment keys and not their text.",
+    "The commits on the head branch and their paths come from the implementation and documentation results, and the remote confirms each commit exists and that the branch tip is the pull request head.",
+    "The protection of the base branch is a stand-in report that the real preflight judged. The number of required approvals is not in the report and is recorded as one.",
+    "Log lines are the events of the factory's own crates. Events of third-party crates are not factory log lines and are not counted."
+  ],
+  "mode": "test",
+  "scenario": "E5",
+  "wiring": "composed-test"
+}

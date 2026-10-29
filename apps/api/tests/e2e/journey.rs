@@ -81,8 +81,9 @@ pub async fn file_as_outsider(options: Options) -> (Rig, String, String) {
     rig.issues.put_issue(factory_ports::githost::Issue {
         reference,
         title: "Add a --json flag".to_owned(),
-        body: "Please add a --json flag to the word count tool so other programs can read the counts."
-            .to_owned(),
+        body:
+            "Please add a --json flag to the word count tool so other programs can read the counts."
+                .to_owned(),
         author: outsider.clone(),
         labels: vec![full::LABEL.to_owned()],
         updated_at: now,
@@ -91,7 +92,10 @@ pub async fn file_as_outsider(options: Options) -> (Rig, String, String) {
     let body = label_body(&rig.env, rig.env.a.outsider.github_id, "outsider-one");
     let reply = rig
         .env
-        .send(rig.env.delivery("issues", "0190a3b2-7c4d-4e5f-8a6b-0000000000e6", &body))
+        .send(
+            rig.env
+                .delivery("issues", "0190a3b2-7c4d-4e5f-8a6b-0000000000e6", &body),
+        )
         .await;
     assert!(reply.status < 300, "{} {}", reply.status, reply.text());
     (rig, requester, approver)
@@ -222,7 +226,9 @@ impl Journey {
             Some(StageRunStatus::WaitingForHuman),
             "{view:#?}"
         );
-        let reply = self.approve_the_specification(&view, "approve-specification-1").await;
+        let reply = self
+            .approve_the_specification(&view, "approve-specification-1")
+            .await;
         assert_eq!(reply.status, 202, "{}", reply.text());
         let view = self.to_the_pull_request_question().await;
         assert_eq!(
@@ -230,7 +236,9 @@ impl Journey {
             Some(StageRunStatus::WaitingForHuman),
             "{view:#?}"
         );
-        let reply = self.approve_the_pull_request(&view, "approve-pull-request-1").await;
+        let reply = self
+            .approve_the_pull_request(&view, "approve-pull-request-1")
+            .await;
         assert_eq!(reply.status, 202, "{}", reply.text());
         let view = self
             .until(120, |view| {

@@ -1,0 +1,28 @@
+{
+  "gate_reports": {
+    "02521170-ad33-4192-a682-b2721ac919b2.0": "sha256:017ca8ce925ece708c783bff39c8a98d8cf6254f457d7559950e8552b8010693",
+    "3fe3259d-bb51-49ce-84ba-a3b377a13467.0": "sha256:6d391d844f7449ca0b168e15554ae58f8b58aff6b846885c86a29c66cc937051",
+    "475a6963-29dc-48c0-b86e-ce6f00f771bf.0": "sha256:1370b9c60de2afe19f451a717920c44c14ec5ddf52c9bf85d3bdf118ecee30d8",
+    "4f8a6b43-6762-4efc-b5c8-bfd585c50d03.0": "sha256:4167a673155dfb52caa54a0159787b2f15a4704354911e4f444152109e65bdb7",
+    "56126002-32c1-448b-978e-eecc3e1629c7.0": "sha256:11664d2785ec35d7a06737bca07ea0bd2f96319e9604b27342a894cf2cbe5081",
+    "976c064f-16b4-4d15-b289-0202dbadf434.0": "sha256:90da293265810dcb1df5c12a0718814827423cf0b1591b75b7533f5c3c4efebd"
+  },
+  "stage_outputs": {
+    "ARCHITECTURE adr-drafts": "sha256:84f94852e02864a176a5fb94a16a95428180da004b167c95bc8931b995bec5fd",
+    "ARCHITECTURE architecture-design": "sha256:8c80a68c4a3349165d4825642d6969a634104b081f31ee3b1c94f3601869853b",
+    "ARCHITECTURE architecture-record": "sha256:2264b6fb5d4e02ebf327a1eeb5f9c00acc8529b39aac9f1ee43121357754f49d",
+    "IMPLEMENTATION implementation-evidence": "sha256:0943ee4897561f126a849aae43918650621b8fb502506e0d1781cfa1a1df38d4",
+    "IMPLEMENTATION implementation-result": "sha256:5681b8b9d7b229f131d7068f239883a79b69db3dc4adc24d13db631d6b5d57ce",
+    "INTAKE intake-decision": "sha256:e8e05ee8f88ede2b6dcd5209e012b92d9e791535e62cbe4c228fe24128f98cf0",
+    "INTAKE normalized-request": "sha256:803873203174018bf1d760bd7a62798e94419b5cc4d76ceb12fd3a6d821b5142",
+    "INTAKE original-request": "sha256:84daece122f8e55d30841ca634cad5e979b067b8f870debc0f5ebeb783c78393",
+    "REPOSITORY_INTELLIGENCE context-summary": "sha256:43f843edfaac731dedff82394777d9f86fe9df6463d3493d1d5337e77ea3eb76",
+    "REPOSITORY_INTELLIGENCE repository-map": "sha256:0ff9d0de595116bf393282c11b1df359bf21b72f07b5dbf77f0af606f4b2cd2f",
+    "SPECIFICATION spec-draft-1": "sha256:88de517dd679b9b3df6276513c5d2f172179e7669a0176a82fd5dcd1d88a019e",
+    "SPECIFICATION specification-contract": "sha256:d2f2aef8aa9f7841c565a275e83fa2c6f6a679b8fb95aadbad25dc135290a98c",
+    "SPECIFICATION specification-evidence": "sha256:326d62ea94d4e36cbaaf91a9606dcded0402f341c13774e856762fcf0c0c4e11",
+    "TASK_PLANNING plan-record": "sha256:80ef214e23d8d70298a9daf26ad12e08cd3e902671a73b918c1e0dd4482ba547",
+    "TASK_PLANNING plan-traceability": "sha256:900b72668d62440c37756553ba8f9ee3a5f0259c2a9eddc739ef60cd0025cec7",
+    "TASK_PLANNING task-plan": "sha256:aa41789d74cbc3323a8c0bd95562ce18a41af5308e78e34bff063726758b33de"
+  }
+}

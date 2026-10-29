@@ -1,0 +1,8 @@
+{
+  "chain": {
+    "entries": 0,
+    "head_hash": null,
+    "verified_by": "factory_domain::ledger::verify_chain, when the recorder wrote the file"
+  },
+  "entries": []
+}

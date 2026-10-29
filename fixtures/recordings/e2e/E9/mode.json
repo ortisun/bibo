@@ -1,0 +1,60 @@
+{
+  "adapters": [
+    {
+      "component": "",
+      "fidelity": "real",
+      "name": "factory-api-start-up",
+      "port": "api-server"
+    },
+    {
+      "component": "",
+      "fidelity": "real",
+      "name": "postgres-store",
+      "port": "store"
+    },
+    {
+      "component": "",
+      "fidelity": "fake",
+      "name": "testkit-in-memory-store",
+      "port": "store"
+    },
+    {
+      "component": "",
+      "fidelity": "fake",
+      "name": "testkit-fake-clock",
+      "port": "clock"
+    },
+    {
+      "component": "",
+      "fidelity": "fake",
+      "name": "testkit-sequential-id-generator",
+      "port": "id-generator"
+    },
+    {
+      "component": "",
+      "fidelity": "fake",
+      "name": "testkit-fake-webhook-verifier",
+      "port": "webhook-verifier"
+    },
+    {
+      "component": "",
+      "fidelity": "fake",
+      "name": "testkit-fixed-authority",
+      "port": "authority"
+    },
+    {
+      "component": "",
+      "fidelity": "fake",
+      "name": "testkit-fake-allowlist",
+      "port": "allowlist"
+    }
+  ],
+  "cost_micro_usd": 0,
+  "limitations": [
+    "This scenario starts no job. It shows the production profile of the real start-up code refusing a fake for each port, and the test profile accepting one.",
+    "The worker's ports are judged by Profile::admit, which the worker's start-up calls for each of its 37 ports. The worker binary itself is not started here: the API and the worker cannot be linked into one test (DEP-01)."
+  ],
+  "mode": "test",
+  "scenario": "E9",
+  "wiring": "composed-test"
+}

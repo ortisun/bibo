@@ -157,12 +157,21 @@ pub async fn collect(
         if link.direction != factory_ports::store::ArtifactDirection::Output {
             continue;
         }
-        let name = link.role.as_str().split(".a").next().unwrap_or("").to_owned();
+        let name = link
+            .role
+            .as_str()
+            .split(".a")
+            .next()
+            .unwrap_or("")
+            .to_owned();
         stage_outputs.insert(
             format!("{} {name}", kind.as_str()),
             link.sha256.as_str().to_owned(),
         );
-        if let Ok(bytes) = rig.artifacts.get(&scope, &artifact_ref(link.sha256.clone())).await
+        if let Ok(bytes) = rig
+            .artifacts
+            .get(&scope, &artifact_ref(link.sha256.clone()))
+            .await
             && let Ok(value) = serde_json::from_slice::<Value>(&bytes)
         {
             documents.insert(format!("{} {name}", kind.as_str()), value);
@@ -196,7 +205,10 @@ pub async fn collect(
                 {
                     continue;
                 }
-                let Ok(bytes) = rig.artifacts.get(&scope, &artifact_ref(link.sha256.clone())).await
+                let Ok(bytes) = rig
+                    .artifacts
+                    .get(&scope, &artifact_ref(link.sha256.clone()))
+                    .await
                 else {
                     continue;
                 };
@@ -216,7 +228,10 @@ pub async fn collect(
     }
 
     // ---- stage runs --------------------------------------------------------------------------
-    let view_runs = view.as_ref().map(|v| v.stage_runs.clone()).unwrap_or_default();
+    let view_runs = view
+        .as_ref()
+        .map(|v| v.stage_runs.clone())
+        .unwrap_or_default();
     let stage_runs: Vec<Value> = view_runs
         .iter()
         .map(|run| {
@@ -242,7 +257,11 @@ pub async fn collect(
         .map(|entry| entry.to_json_value().expect("a ledger entry is JSON"))
         .collect();
     let chain = factory_domain::ledger::verify_chain(&ledger);
-    assert_eq!(chain, Ok(()), "the ledger chain verifies when it is recorded");
+    assert_eq!(
+        chain,
+        Ok(()),
+        "the ledger chain verifies when it is recorded"
+    );
     let audit: Vec<Value> = audit_rows
         .iter()
         .map(|record| {
@@ -272,7 +291,11 @@ pub async fn collect(
             continue;
         };
         let id = event.aggregate.id.to_string();
-        let initial = if subject == "job" { "RECEIVED" } else { "PENDING" };
+        let initial = if subject == "job" {
+            "RECEIVED"
+        } else {
+            "PENDING"
+        };
         let from = last_status
             .insert(id.clone(), to.to_owned())
             .unwrap_or_else(|| initial.to_owned());
@@ -309,7 +332,11 @@ pub async fn collect(
     // ---- contracts and documents ---------------------------------------------------------------
     let mut stored_hashes = serde_json::Map::new();
     for (name, kind, role) in [
-        ("specification", StageKind::Specification, "specification-contract"),
+        (
+            "specification",
+            StageKind::Specification,
+            "specification-contract",
+        ),
         ("task_dag", StageKind::TaskPlanning, "task-dag"),
     ] {
         if let Some(hash) = stage_outputs.get(&format!("{} {role}", kind.as_str())) {
@@ -320,7 +347,9 @@ pub async fn collect(
     if let Some(delivery) = document(StageKind::Delivery, "delivery-result")
         && let (Some(title), Some(body)) = (delivery["title"].as_str(), delivery["body"].as_str())
     {
-        docs.push(json!({ "kind": "pull_request", "path": "pull_request", "title": title, "body": body }));
+        docs.push(
+            json!({ "kind": "pull_request", "path": "pull_request", "title": title, "body": body }),
+        );
     }
     let contracts = json!({
         "specification": document(StageKind::Specification, "specification-contract"),
@@ -390,7 +419,10 @@ pub async fn collect(
     });
     let mut facts = extras.facts.clone();
     if let Some(view) = &view {
-        facts.insert("code_rework_rounds".to_owned(), json!(view.code_rework_rounds));
+        facts.insert(
+            "code_rework_rounds".to_owned(),
+            json!(view.code_rework_rounds),
+        );
     }
     // The outbox rows that say the job was admitted. One delivery makes one.
     facts.insert(
@@ -489,8 +521,16 @@ const RIG_ADAPTERS: [(&str, &str, &str); 14] = [
     ("model-router", "testkit-static-model-router", "fake"),
     ("capability-probes", "stand-in-capability-probes", "fake"),
     ("supply-chain-registry", "stand-in-registry", "fake"),
-    ("supply-chain-advisories", "stand-in-advisory-database", "fake"),
-    ("bypass-attestation", "stand-in-operator-attestation", "fake"),
+    (
+        "supply-chain-advisories",
+        "stand-in-advisory-database",
+        "fake",
+    ),
+    (
+        "bypass-attestation",
+        "stand-in-operator-attestation",
+        "fake",
+    ),
     ("store", "postgres-store", "real"),
     ("artifact-store", "local-fs-artifact-store", "real"),
     ("api-server", "factory-api-server", "real"),
@@ -566,7 +606,10 @@ async fn github_evidence(
         && let Some(job) = job
         && let Some(number) = delivery["pull_request"].as_u64()
     {
-        let head_branch = delivery["head_branch"].as_str().unwrap_or_default().to_owned();
+        let head_branch = delivery["head_branch"]
+            .as_str()
+            .unwrap_or_default()
+            .to_owned();
         // The branch tip is read back from the remote, not from the delivery result.
         let tip = BranchName::new(&head_branch)
             .ok()
@@ -762,7 +805,10 @@ pub fn write(dir: &Path, collected: &Collected) {
             },
         })),
     );
-    files.insert("timeline.api.json".to_owned(), pretty(&collected.timeline_api));
+    files.insert(
+        "timeline.api.json".to_owned(),
+        pretty(&collected.timeline_api),
+    );
     files.insert("timings.json".to_owned(), pretty(&collected.timings));
     let mut gate_hashes = serde_json::Map::new();
     for (stage_run, bytes) in &collected.gate_reports {

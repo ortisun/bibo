@@ -1,0 +1,265 @@
+{
+  "audit": [],
+  "contracts": {
+    "gate_reports": [],
+    "stored_hashes": {}
+  },
+  "documents": [],
+  "facts": {
+    "jobs_started": 0,
+    "refusals": [
+      {
+        "allowed_in_test": true,
+        "component": "api:store",
+        "refused_in_production": true
+      },
+      {
+        "allowed_in_test": true,
+        "component": "api:clock",
+        "refused_in_production": true
+      },
+      {
+        "allowed_in_test": true,
+        "component": "api:id generator",
+        "refused_in_production": true
+      },
+      {
+        "allowed_in_test": true,
+        "component": "api:webhook verifier",
+        "refused_in_production": true
+      },
+      {
+        "allowed_in_test": true,
+        "component": "api:authority",
+        "refused_in_production": true
+      },
+      {
+        "allowed_in_test": true,
+        "component": "api:allowlist source",
+        "refused_in_production": true
+      },
+      {
+        "allowed_in_test": true,
+        "component": "worker:store",
+        "refused_in_production": true
+      },
+      {
+        "allowed_in_test": true,
+        "component": "worker:clock",
+        "refused_in_production": true
+      },
+      {
+        "allowed_in_test": true,
+        "component": "worker:id generator",
+        "refused_in_production": true
+      },
+      {
+        "allowed_in_test": true,
+        "component": "worker:artifact store",
+        "refused_in_production": true
+      },
+      {
+        "allowed_in_test": true,
+        "component": "worker:sandbox provider",
+        "refused_in_production": true
+      },
+      {
+        "allowed_in_test": true,
+        "component": "worker:workspace provider",
+        "refused_in_production": true
+      },
+      {
+        "allowed_in_test": true,
+        "component": "worker:agent runtime",
+        "refused_in_production": true
+      },
+      {
+        "allowed_in_test": true,
+        "component": "worker:model router",
+        "refused_in_production": true
+      },
+      {
+        "allowed_in_test": true,
+        "component": "worker:agent registry",
+        "refused_in_production": true
+      },
+      {
+        "allowed_in_test": true,
+        "component": "worker:model broker",
+        "refused_in_production": true
+      },
+      {
+        "allowed_in_test": true,
+        "component": "worker:specification provider",
+        "refused_in_production": true
+      },
+      {
+        "allowed_in_test": true,
+        "component": "worker:issue source",
+        "refused_in_production": true
+      },
+      {
+        "allowed_in_test": true,
+        "component": "worker:change host",
+        "refused_in_production": true
+      },
+      {
+        "allowed_in_test": true,
+        "component": "worker:webhook verifier",
+        "refused_in_production": true
+      },
+      {
+        "allowed_in_test": true,
+        "component": "worker:process runner",
+        "refused_in_production": true
+      },
+      {
+        "allowed_in_test": true,
+        "component": "worker:ticker",
+        "refused_in_production": true
+      },
+      {
+        "allowed_in_test": true,
+        "component": "worker:authority",
+        "refused_in_production": true
+      },
+      {
+        "allowed_in_test": true,
+        "component": "worker:agent output check",
+        "refused_in_production": true
+      },
+      {
+        "allowed_in_test": true,
+        "component": "worker:allowlist source",
+        "refused_in_production": true
+      },
+      {
+        "allowed_in_test": true,
+        "component": "worker:request source",
+        "refused_in_production": true
+      },
+      {
+        "allowed_in_test": true,
+        "component": "worker:task ledger",
+        "refused_in_production": true
+      },
+      {
+        "allowed_in_test": true,
+        "component": "worker:specification approvals",
+        "refused_in_production": true
+      },
+      {
+        "allowed_in_test": true,
+        "component": "worker:specification drafts",
+        "refused_in_production": true
+      },
+      {
+        "allowed_in_test": true,
+        "component": "worker:delivery sources",
+        "refused_in_production": true
+      },
+      {
+        "allowed_in_test": true,
+        "component": "worker:approval sources",
+        "refused_in_production": true
+      },
+      {
+        "allowed_in_test": true,
+        "component": "worker:project manifest parser",
+        "refused_in_production": true
+      },
+      {
+        "allowed_in_test": true,
+        "component": "worker:job repository",
+        "refused_in_production": true
+      },
+      {
+        "allowed_in_test": true,
+        "component": "worker:capability probes",
+        "refused_in_production": true
+      },
+      {
+        "allowed_in_test": true,
+        "component": "worker:rework source",
+        "refused_in_production": true
+      },
+      {
+        "allowed_in_test": true,
+        "component": "worker:round source",
+        "refused_in_production": true
+      },
+      {
+        "allowed_in_test": true,
+        "component": "worker:risk source",
+        "refused_in_production": true
+      },
+      {
+        "allowed_in_test": true,
+        "component": "worker:evidence drift",
+        "refused_in_production": true
+      },
+      {
+        "allowed_in_test": true,
+        "component": "worker:specification history",
+        "refused_in_production": true
+      },
+      {
+        "allowed_in_test": true,
+        "component": "worker:package metadata source",
+        "refused_in_production": true
+      },
+      {
+        "allowed_in_test": true,
+        "component": "worker:advisory database date",
+        "refused_in_production": true
+      },
+      {
+        "allowed_in_test": true,
+        "component": "worker:recorded dependency decisions",
+        "refused_in_production": true
+      },
+      {
+        "allowed_in_test": true,
+        "component": "worker:bypass attestation",
+        "refused_in_production": true
+      }
+    ]
+  },
+  "github": {
+    "base_branch": "main",
+    "base_sha_after": "",
+    "base_sha_before": "",
+    "changed_paths": [],
+    "check_runs": [],
+    "comments": [],
+    "head_commits": [],
+    "head_files": {},
+    "pull_requests": [],
+    "repository": "none",
+    "requests": [],
+    "tokens": []
+  },
+  "job": {
+    "correlation_id": "none",
+    "id": "none",
+    "issue_number": 0,
+    "requester": "none",
+    "status": "NONE"
+  },
+  "ledger": [],
+  "mode": "test",
+  "scenario": "E9",
+  "source_language": "en",
+  "stage_runs": [],
+  "telemetry": {
+    "correlated": [],
+    "spans": []
+  },
+  "timeline": [],
+  "usage": {
+    "budget_micro_usd": 0,
+    "calls_after_exhaustion": 0,
+    "total_micro_usd": 0
+  },
+  "wiring": "composed-test"
+}
