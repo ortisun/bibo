@@ -29,6 +29,7 @@ fn the_self_tests_pass() {
     assert_eq!(code(&["self-test"]), 0);
     assert_eq!(code(&["blocked-self-test"]), 0);
     assert_eq!(code(&["preflight-self-test"]), 0);
+    assert_eq!(code(&["report-self-test"]), 0);
 }
 
 #[test]

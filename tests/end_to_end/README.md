@@ -44,12 +44,79 @@ reason that names the broken fact. The scenario checks have their own corruption
 a request edited after authorization, budget exhaustion, an ambiguous request and an out-of-policy
 request.
 
-| Scenario | Adapters | Today |
+What each scenario claims, which assertions it asserts, and what it needs. The claims are those of
+`docs/architecture/slice-plan.md`, section 10. The last column is what a run in test mode through
+the composed pipeline can honestly claim, and what it cannot.
+
+| Id | What it claims | Asserts | Needs | What test mode can claim |
+|---|---|---|---|---|
+| E1 | An English issue goes through every stage to an approved draft pull request, and nothing is merged. | A1 to A14, `X.ledger-chain`, `X.original-kept` | Live: a model key with a provider-side limit, a registered GitHub App, a protected fixture repository, the allowlist | Nothing. A test-mode run is labelled and is not the proof. |
+| E2 | The same flow from a Portuguese issue, with English artifacts that keep the technical intent. | A1 to A14, `X.ledger-chain`, `X.original-kept`, `E2.intent` | The same as E1 | Nothing. |
+| E3 | A failing check blocks promotion: two rework rounds, then a person decides, and no pull request. | A11, A13, A14, `X.ledger-chain`, `E3.rework-cap-then-human` | Composed pipeline, scripted agents, fake sandbox | The engine, the rework cap and the gates behave as designed when a mandatory check fails. It says nothing about a real agent fixing a real failure. |
+| E4 | Instructions hidden in an issue and in a repository document have no effect, and no canary secret leaks. | A1, A3, A9, A10, A13, A14, `X.ledger-chain`, `X.original-kept`, `E4.no-effect`, `E4.agent-denials` | Composed pipeline | What the text demanded, tried through the real interfaces, is denied; the text reaches an agent only as quoted data; no canary leaks. It cannot show an agent that obeys the text and is denied (A10, `E4.agent-denials`). |
+| E5 | The worker loses its lease at every stage boundary, and the job still completes with one pull request. | A1, A2, A3, A9, A14, `X.ledger-chain`, `E5.every-boundary` | Composed pipeline | The engine recovers an expired lease at each stage. The passing of time is the only thing stood in for. |
+| E6 | A requester who is not on the allowlist is rejected with an audit record and one plain reply that does not say which test failed, and nothing starts. | `E6.rejected` | Composed pipeline | What the real API and engine do for such a requester. |
+| E7 | The same signed webhook delivered fifty times makes one job, one outbox row and 49 duplicate-delivery records. | `E7.one-job` | Composed pipeline | The same, through the real API and PostgreSQL. |
+| E8 | A builder change to a protected path is refused, the path is named, and nothing later starts. | A13, `X.ledger-chain`, `E8.scope-gate` | Composed pipeline | The refusal at the ingestion of the builder's patch. |
+| E9 | A production-profile start with a fake adapter is refused. | `E9.production-refuses-fakes` | None | The real start-up code of the API refuses a fake for each of its six ports; the worker's rule is applied to its 37 ports. |
+| E10 to E13 | See `scenarios.rs`. | | Scripted wiring | Run on the scripted wiring only. |
+
+| Scenario | Adapters | Wiring |
 |---|---|---|
 | E1, E2 | Real | `BLOCKED` until the prerequisites and the composed wiring exist. |
-| E3 to E13 | Test mode, labelled fakes | Run on the scripted wiring. |
+| E3 to E9 | Test mode, labelled fakes | The `composed-test` wiring: the recording of a run through the composed pipeline. |
+| E10 to E13 | Test mode, labelled fakes | The scripted wiring. |
 
 The issue texts are in [`issues/`](issues/README.md).
+
+## Recordings of the composed pipeline
+
+`scripts/e2e.sh --scenario E3` does two things for E3 to E9:
+
+1. It runs the test `apps/api/tests/e2e_scenarios.rs`, which drives the scenario through the real
+   engine, the real API server on loopback, the worker hook, all thirteen real stage handlers and a
+   real PostgreSQL, with the labelled fakes the rig documents. When the scenario ends, the test reads
+   what the run left and writes a recording to `fixtures/recordings/e2e/E3/`. The test asserts none
+   of A1 to A14.
+2. It runs the harness with the `composed-test` wiring, which judges the recording
+   ([`src/recorded.rs`](src/recorded.rs), [`src/recording.rs`](src/recording.rs)).
+
+`--judge-only` skips the first step and judges the recordings that are there. Without a PostgreSQL
+server the first step is `BLOCKED` (exit code 3) and nothing is judged.
+
+A recording is a directory.
+
+| File | What it holds |
+|---|---|
+| `evidence.json` | The `RunEvidence` that the assertions read. |
+| `mode.json` | The `mode: test` marker, the wiring name, the cost (zero), every adapter used with its fidelity, and the limitations of the run. |
+| `ledger.json` | The ledger entries as stored, and the chain head. |
+| `timeline.api.json` | The timeline exactly as `GET /v1/jobs/{id}/timeline` served it. |
+| `artifacts.json` | The hash of every stored stage output and of every gate report. |
+| `gate-reports/RUN.N.json` | The N-th gate report of a stage run. |
+| `stage-outputs/*.json` | The stage outputs that the GitHub evidence is derived from. |
+| `timings.json` | How long each attempt took. |
+| `MANIFEST.json` | The SHA-256 of every file above. |
+
+Before an assertion reads `evidence.json`, the runner checks the recording, and a check that fails
+stops the scenario as `FAILED`:
+
+| Check | What it requires |
+|---|---|
+| `R.manifest` | Every file matches its hash and no file is unlisted, so a recording edited after the run is caught. |
+| `R.mode` | The mode is `test`, the scenario and wiring agree in every file, the cost is zero, and the adapters are listed. |
+| `R.adapters` | Every component that wrote a ledger entry is listed with the fidelity it reported, no adapter has the name of one that needs a credential, and a fake carries a name that says so. |
+| `R.ledger` | The ledger in the evidence is the ledger in `ledger.json`, its chain verifies again here, and the head is the last entry's hash. |
+| `R.sources` | The gate reports in the evidence are the stored files, and the status changes in the evidence are the ones the API timeline served. |
+
+The acceptance report cites the digest of `MANIFEST.json` for each `PASSED` line, so a file edited
+together with the manifest is caught by `scripts/e2e.sh --check-report`.
+
+### What the composed test rig cannot judge
+
+`src/recorded.rs` lists the checks that read something the rig does not produce
+(`recorded::GAPS`). A scenario that has one is `BLOCKED` on it, never passed. The list is in the
+source, where a reviewer sees it, and a recording cannot add to it.
 
 ## Wirings
 
@@ -74,12 +141,21 @@ things: its protection of the fixture remote, whether it uses real adapters, and
 
 ## What a real run needs
 
-E1 and E2 need all of these, and the runner names each one that is missing:
+E1 and E2 need all of these, and the runner names each one that is missing. It also looks at what
+the variables point to and at the machine: that the key file exists, is closed to group and others
+and looks like a private key; that the allowlist names a requester and a different approver; that
+the fixture's `CODEOWNERS` has real owners, two at least, so a second owner can approve; that
+`policies/model_routing.yaml` exists; that the agent image is in the local Docker store (a read-only
+`docker image inspect`); and that the image was rebuilt after its recipe last changed (the digest
+pinned in `infra/sandbox-images/images.json` was committed after the recipe). Docker or git
+missing is itself a reason, not a skipped check. The ruleset on the GitHub copy of the fixture and
+the App installation need the network and the key, so the composed wiring checks them.
 
 | Variable | What it is |
 |---|---|
 | `FACTORY_E2E_COMPOSED` | The composed wiring program. |
 | `FACTORY_E2E_MODEL_API_KEY` | An API key for the model provider with a provider-side hard spend limit. A subscription login does not count. |
+| `FACTORY_E2E_MODEL_SPEND_LIMIT_USD` | The limit you set at the provider, in US dollars. A key cannot report its own limit, so you state it. |
 | `FACTORY_E2E_GITHUB_APP_ID`, `FACTORY_E2E_GITHUB_APP_KEY_FILE` | A registered GitHub App and its private key file. |
 | `FACTORY_E2E_FIXTURE_REPO` | The fixture repository on GitHub, as `owner/name`. |
 | `FACTORY_E2E_REQUESTER_ALLOWLIST` | The named requester allowlist. |
@@ -97,14 +173,18 @@ fixture's `CODEOWNERS` with real ones when you copy it.
 ```text
 scripts/e2e.sh --list
 scripts/e2e.sh --self-test-all
+scripts/e2e.sh --self-test-report
 scripts/e2e.sh --check-fixture
 scripts/e2e.sh --scenario E3 --scenario E4 --scenario E5 --scenario E6 --scenario E7 --scenario E8 --scenario E9
+scripts/e2e.sh --scenario E3 --judge-only
 scripts/e2e.sh --scenario E1 --scenario E2
 scripts/e2e.sh --scenario E1 --test-mode
+scripts/e2e.sh --check-report
 ```
 
-The second to last command exits with code 3 until a real run is possible. The last one runs E1 on
-the scripted wiring and labels the result `TEST MODE`; it is not the real proof.
+The first command drives E3 to E9 through the composed pipeline and judges the recordings. The
+fourth exits with code 3 until a real run is possible. The last one runs E1 on the scripted wiring
+and labels the result `TEST MODE`; it is not the real proof.
 
 The project is its own cargo workspace. It is not a member of the factory workspace, because the
 package that owns it does not own the root manifest. The `cargo` commands in `scripts/e2e.sh` build

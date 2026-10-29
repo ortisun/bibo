@@ -12,8 +12,10 @@
 //! wiring, which reads the protection through the App, and they are named in the message of the
 //! variable that points to them.
 
+use std::io::Read;
 use std::path::Path;
-use std::process::Command;
+use std::process::{Command, Stdio};
+use std::time::{Duration, Instant};
 
 use serde_json::Value;
 
@@ -40,16 +42,85 @@ pub struct Host<'a> {
     pub git: &'a dyn Fn(&[&str]) -> Option<String>,
 }
 
+/// How long a read-only `docker` call may take before it counts as not answering. Docker Desktop
+/// can accept a call and never reply, and a check that waits for it would hang the whole run.
+pub const DOCKER_TIMEOUT: Duration = Duration::from_secs(20);
+/// How long a `git` call may take.
+pub const GIT_TIMEOUT: Duration = Duration::from_secs(20);
+
+/// What a bounded run of a program came to.
+enum Ran {
+    Finished(std::process::Output),
+    TimedOut,
+    Failed(std::io::Error),
+}
+
+/// Runs a program and kills it when it takes longer than `limit`.
+fn run_bounded(mut command: Command, limit: Duration) -> Ran {
+    command
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let mut child = match command.spawn() {
+        Ok(child) => child,
+        Err(error) => return Ran::Failed(error),
+    };
+    let mut stdout = child.stdout.take();
+    let mut stderr = child.stderr.take();
+    let (sender, receiver) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let mut out = Vec::new();
+        let mut err = Vec::new();
+        if let Some(pipe) = stdout.as_mut() {
+            let _ = pipe.read_to_end(&mut out);
+        }
+        if let Some(pipe) = stderr.as_mut() {
+            let _ = pipe.read_to_end(&mut err);
+        }
+        let _ = sender.send((out, err));
+    });
+    let started = Instant::now();
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                let (stdout, stderr) = receiver
+                    .recv_timeout(Duration::from_secs(2))
+                    .unwrap_or_default();
+                return Ran::Finished(std::process::Output {
+                    status,
+                    stdout,
+                    stderr,
+                });
+            }
+            Ok(None) if started.elapsed() > limit => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Ran::TimedOut;
+            }
+            Ok(None) => std::thread::sleep(Duration::from_millis(50)),
+            Err(error) => return Ran::Failed(error),
+        }
+    }
+}
+
 /// Runs the real `docker`. Only `image inspect` is used.
 #[must_use]
 pub fn system_docker(args: &[&str]) -> DockerAnswer {
-    match Command::new("docker").args(args).output() {
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => DockerAnswer::NotInstalled,
-        Err(error) => DockerAnswer::Failed(error.to_string()),
-        Ok(output) if output.status.success() => {
+    let mut command = Command::new("docker");
+    command.args(args);
+    match run_bounded(command, DOCKER_TIMEOUT) {
+        Ran::Failed(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            DockerAnswer::NotInstalled
+        }
+        Ran::Failed(error) => DockerAnswer::Failed(error.to_string()),
+        Ran::TimedOut => DockerAnswer::Failed(format!(
+            "docker did not answer within {} seconds",
+            DOCKER_TIMEOUT.as_secs()
+        )),
+        Ran::Finished(output) if output.status.success() => {
             DockerAnswer::Output(String::from_utf8_lossy(&output.stdout).trim().to_owned())
         }
-        Ok(output) => DockerAnswer::Failed(
+        Ran::Finished(output) => DockerAnswer::Failed(
             String::from_utf8_lossy(&output.stderr)
                 .lines()
                 .next()
@@ -62,16 +133,14 @@ pub fn system_docker(args: &[&str]) -> DockerAnswer {
 /// Runs the real `git` in the repository.
 #[must_use]
 pub fn system_git(root: &Path, args: &[&str]) -> Option<String> {
-    let output = Command::new("git")
-        .arg("-C")
-        .arg(root)
-        .args(args)
-        .output()
-        .ok()?;
-    output
-        .status
-        .success()
-        .then(|| String::from_utf8_lossy(&output.stdout).trim().to_owned())
+    let mut command = Command::new("git");
+    command.arg("-C").arg(root).args(args);
+    match run_bounded(command, GIT_TIMEOUT) {
+        Ran::Finished(output) if output.status.success() => {
+            Some(String::from_utf8_lossy(&output.stdout).trim().to_owned())
+        }
+        _ => None,
+    }
 }
 
 /// The reasons a real run cannot start, found by looking. One sentence each, ready to print after
@@ -281,30 +350,22 @@ fn agent_image(host: &Host<'_>, found: &mut Vec<String>) {
         }
     };
     // A locally built image has no repository digest, so it is looked up by its id, which
-    // images.json records as the digest.
+    // images.json records as the digest. Whether the image was rebuilt is a separate question,
+    // answered from git below, so a Docker that does not answer does not hide it.
     match (host.docker)(&["image", "inspect", "--format", "{{.Id}}", &digest]) {
-        DockerAnswer::NotInstalled => {
-            found.push(format!(
-                "Docker is not installed, so the agent image {reference} cannot be checked and no sandbox can start"
-            ));
-            return;
-        }
-        DockerAnswer::Failed(why) => {
-            found.push(format!(
-                "the agent image {reference} is not in the local Docker store, or Docker did not answer ({why}); build it with infra/sandbox-images/build.sh"
-            ));
-            return;
-        }
-        DockerAnswer::Output(id) if id.trim() != digest => {
-            found.push(format!(
-                "the agent image in the local store has the id {}, and images.json pins {digest}",
-                id.trim()
-            ));
-            return;
-        }
+        DockerAnswer::NotInstalled => found.push(format!(
+            "Docker is not installed, so the agent image {reference} cannot be checked and no sandbox can start"
+        )),
+        DockerAnswer::Failed(why) => found.push(format!(
+            "the agent image {reference} is not in the local Docker store, or Docker did not answer ({why}); build it with infra/sandbox-images/build.sh"
+        )),
+        DockerAnswer::Output(id) if id.trim() != digest => found.push(format!(
+            "the agent image in the local store has the id {}, and images.json pins {digest}",
+            id.trim()
+        )),
         DockerAnswer::Output(_) => {}
     }
-    // The image is the pinned one. Was it rebuilt after the recipe last changed? The digest in
+    // Was the image rebuilt after the recipe last changed? The digest in
     // images.json changes in the commit that records a rebuild, so the pinned digest must have
     // been committed after the commit that last changed the recipe.
     let recipe = ["infra/sandbox-images/lib", "infra/sandbox-images/build.sh"];
@@ -557,6 +618,26 @@ mod tests {
                 .join("\n")
                 .contains("images.json pins sha256:")
         );
+    }
+
+    #[test]
+    fn a_program_that_never_answers_is_killed_and_counts_as_not_answering() {
+        let mut sleeper = Command::new("sleep");
+        sleeper.arg("30");
+        let started = Instant::now();
+        assert!(matches!(
+            run_bounded(sleeper, Duration::from_millis(300)),
+            Ran::TimedOut
+        ));
+        assert!(started.elapsed() < Duration::from_secs(10));
+        let mut quick = Command::new("echo");
+        quick.arg("hello");
+        match run_bounded(quick, Duration::from_secs(10)) {
+            Ran::Finished(output) => {
+                assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), "hello");
+            }
+            _ => panic!("echo did not finish"),
+        }
     }
 
     #[test]

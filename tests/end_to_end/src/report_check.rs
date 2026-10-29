@@ -153,6 +153,93 @@ fn recording_links(line: &str) -> Vec<String> {
     links
 }
 
+/// Proves the report check on small reports it builds itself: an honest one is accepted, and each
+/// way of claiming more than the recordings show is a problem. Returns `(what was shown, whether
+/// it held)` for each case. `scripts/e2e.sh --self-test-report` prints them.
+#[must_use]
+pub fn self_test() -> Vec<(String, bool)> {
+    let root = std::env::temp_dir().join(format!("e2e-report-self-test-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    let dir = root.join("fixtures/recordings/e2e/E3");
+    let made = std::fs::create_dir_all(&dir)
+        .and_then(|()| std::fs::write(dir.join("evidence.json"), "{}\n"))
+        .and_then(|()| std::fs::write(dir.join("mode.json"), "{}\n"))
+        .ok()
+        .and_then(|()| crate::recording::reseal(&dir).ok());
+    let mut cases: Vec<(String, bool)> = Vec::new();
+    let Some(digest) = made.and(crate::recording::manifest_digest(&dir)) else {
+        cases.push((
+            "the self test could not write its sample recording".to_owned(),
+            false,
+        ));
+        return cases;
+    };
+    let row = |scenario: &str, words: &str, cite: &str| {
+        format!(
+            "| {scenario} | PASSED, {words} | [recording](../../fixtures/recordings/e2e/{cite}/evidence.json) | manifest {digest} |"
+        )
+    };
+    let mut case = |name: &str, report: &str, expect: Option<&str>| {
+        let found = problems(report, &root);
+        let holds = match expect {
+            None => found.is_empty(),
+            Some(needle) => found.iter().any(|problem| problem.contains(needle)),
+        };
+        cases.push((name.to_owned(), holds));
+    };
+    case(
+        "an honest PASSED line that cites its recording and the digest of its manifest is accepted",
+        &row("E3", "test mode with fakes", "E3"),
+        None,
+    );
+    case(
+        "a PASSED line that cites no recording is a problem",
+        "| E3 | PASSED, test mode with fakes | none |",
+        Some("cites no recording"),
+    );
+    case(
+        "a PASSED line whose recording does not exist is a problem",
+        &row("E4", "test mode with fakes", "E4"),
+        Some("does not exist"),
+    );
+    case(
+        "a PASSED line without the digest of the manifest is a problem",
+        "| E3 | PASSED, test mode with fakes | [r](../../fixtures/recordings/e2e/E3/evidence.json) |",
+        Some("does not cite the manifest digest"),
+    );
+    case(
+        "a test-mode result presented as the real proof is a problem",
+        &row("E1", "real adapters, test mode", "E3"),
+        Some("not the real proof"),
+    );
+    case(
+        "a BLOCKED line that names nothing is a problem",
+        "| E1 | BLOCKED |",
+        Some("does not name what is missing"),
+    );
+    case(
+        "a BLOCKED line that names what is missing is accepted",
+        "| E1 | BLOCKED | missing: the model API key |",
+        None,
+    );
+    // A file edited after the report was written.
+    let _ = std::fs::write(dir.join("mode.json"), "{\"edited\": true}\n");
+    case(
+        "a recording whose file changed after the run is a problem",
+        &row("E3", "test mode with fakes", "E3"),
+        Some("is damaged"),
+    );
+    // A file and the manifest edited together, so that the recording agrees with itself again.
+    let _ = crate::recording::reseal(&dir);
+    case(
+        "a recording edited together with its manifest is caught by the digest in the report",
+        &row("E3", "test mode with fakes", "E3"),
+        Some("changed after the report was written"),
+    );
+    let _ = std::fs::remove_dir_all(&root);
+    cases
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

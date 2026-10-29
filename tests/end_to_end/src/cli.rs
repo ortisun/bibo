@@ -35,6 +35,11 @@ Commands:
   blocked-self-test         Prove that a missing prerequisite is BLOCKED and not a pass.
   preflight-self-test       Prove that a remote that fails the protection preflight is BLOCKED.
   check-report [PATH]       Check the acceptance report against the recordings it cites.
+  report-self-test          Prove that the report check fails on a report that claims more than
+                            the recordings show.
+  readability PATH...       Run the readability gate over Markdown documents (the first heading is
+                            the title). Exit 1 when a rule that blocks is broken; warnings are
+                            printed and do not change the exit code.
   help                      Show this text.
 
 Exit codes: 0 passed, 1 failed, 2 wrong usage, 3 BLOCKED.
@@ -55,6 +60,8 @@ pub fn main(args: &[String]) -> i32 {
         Some("blocked-self-test") => blocked_self_test(&root),
         Some("preflight-self-test") => preflight_self_test(&root),
         Some("check-report") => check_report(&root, args.get(1).map(String::as_str)),
+        Some("report-self-test") => report_self_test(),
+        Some("readability") => readability(&root, &args[1..]),
         Some("run") => run(&root, &args[1..]),
         Some(other) => {
             eprintln!("e2e: unknown command '{other}'\n");
@@ -280,6 +287,78 @@ fn preflight_self_test(root: &Path) -> i32 {
 fn preflight_self_test(_root: &Path) -> i32 {
     eprintln!("e2e: this build has no scripted wiring (the `scripted` feature is off)");
     2
+}
+
+fn readability(root: &Path, paths: &[String]) -> i32 {
+    use factory_workflow::gates::readability::{Artifact, DocumentType, Options, Severity, check};
+    if paths.is_empty() {
+        return usage("readability needs at least one path");
+    }
+    let env = match Env::load(root) {
+        Ok(env) => env,
+        Err(error) => {
+            eprintln!("e2e: {error}");
+            return 2;
+        }
+    };
+    let mut blocked = false;
+    for path in paths {
+        let Ok(text) = std::fs::read_to_string(path) else {
+            eprintln!("e2e: cannot read {path}");
+            return 2;
+        };
+        let title = text
+            .lines()
+            .find_map(|line| line.strip_prefix("# "))
+            .unwrap_or("Untitled document")
+            .trim()
+            .to_owned();
+        let artifact = Artifact::documentation(&title, DocumentType::Reference, &text).at(path);
+        let findings = match check(&env.catalog, &Options::new(), &[artifact]) {
+            Ok(findings) => findings,
+            Err(error) => {
+                eprintln!("e2e: the readability gate could not run: {error:?}");
+                return 2;
+            }
+        };
+        let blocks = findings
+            .iter()
+            .filter(|finding| finding.severity == Severity::Block)
+            .count();
+        for finding in &findings {
+            println!(
+                "{} {path}: {} ({}): {}",
+                if finding.severity == Severity::Block {
+                    "BLOCK"
+                } else {
+                    "warn"
+                },
+                finding.rule.as_str(),
+                finding.line.map_or_else(
+                    || finding.part.as_str().to_owned(),
+                    |line| format!("line {line}")
+                ),
+                finding.message
+            );
+        }
+        println!(
+            "{} {path}: {} blocking finding(s), {} warning(s)",
+            if blocks == 0 { "PASS" } else { "FAIL" },
+            blocks,
+            findings.len() - blocks
+        );
+        blocked |= blocks > 0;
+    }
+    i32::from(blocked)
+}
+
+fn report_self_test() -> i32 {
+    let mut ok = true;
+    for (name, holds) in report_check::self_test() {
+        println!("{} {name}", if holds { "PASS" } else { "FAIL" });
+        ok &= holds;
+    }
+    i32::from(!ok)
 }
 
 fn check_report(root: &Path, path: Option<&str>) -> i32 {
