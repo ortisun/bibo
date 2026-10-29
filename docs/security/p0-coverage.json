@@ -1,0 +1,1827 @@
+{
+ "schema_version": 1,
+ "catalog": "docs/security/negative-test-catalog.md",
+ "work_packages": "docs/architecture/work-packages.json",
+ "recorded": "2026-10-29",
+ "mutation_runs": [],
+ "rows": [
+  {
+   "id": "NT-AUD-01",
+   "status": "control_off_missing",
+   "tests": [
+    {
+     "name": "negative_nt_aud_01",
+     "file": "crates/storage/tests/audit.rs"
+    }
+   ],
+   "control_off": []
+  },
+  {
+   "id": "NT-AUD-03",
+   "status": "missing",
+   "tests": [],
+   "control_off": [],
+   "note": "Covered: a scripted scenario for each of the fourteen required types, checked for actor, policy hash and correlation id, and the owner matrix in the data file. Not covered (gap): a production emitter for the types the source scan shows have none yet; the matrix names them."
+  },
+  {
+   "id": "NT-AUTHZ-01",
+   "status": "proven",
+   "tests": [
+    {
+     "name": "negative_nt_authz_01_only_the_numeric_id_on_the_allowlist_grants_a_designation",
+     "file": "crates/domain/tests/policy/authority.rs"
+    },
+    {
+     "name": "negative_nt_authz_01_the_actor_is_the_numeric_id_and_a_lookalike_login_is_a_different_person",
+     "file": "crates/github/tests/negative_authz.rs"
+    },
+    {
+     "name": "negative_nt_authz_01_a_label_that_came_with_issue_creation_names_its_author",
+     "file": "crates/github/tests/negative_authz.rs"
+    },
+    {
+     "name": "negative_nt_authz_01_the_label_of_someone_who_is_not_on_the_allowlist_is_refused",
+     "file": "crates/workflow/tests/intake_repo/intake.rs"
+    },
+    {
+     "name": "negative_nt_authz_01_a_label_applied_by_nobody_authorizes_nothing",
+     "file": "crates/workflow/tests/intake_repo/intake.rs"
+    },
+    {
+     "name": "negative_nt_authz_01_removing_a_person_from_the_allowlist_takes_effect_at_once",
+     "file": "crates/workflow/tests/intake_repo/intake.rs"
+    },
+    {
+     "name": "negative_nt_authz_01_a_person_listed_without_the_requester_designation_is_refused",
+     "file": "crates/workflow/tests/intake_repo/intake.rs"
+    },
+    {
+     "name": "negative_nt_authz_01_admission_refuses_a_requester_who_is_not_listed",
+     "file": "crates/workflow/tests/intake_repo/intake.rs"
+    }
+   ],
+   "control_off": [
+    {
+     "kind": "mutation",
+     "script": "crates/github/tests/mutations/run_mutations.py",
+     "name": "identify a person by the login and not by the numeric id",
+     "catches": [
+      "negative_nt_authz_01_the_actor_is_the_numeric_id_and_a_lookalike_login_is_a_different_person",
+      "negative_nt_authz_01_a_label_that_came_with_issue_creation_names_its_author"
+     ]
+    }
+   ]
+  },
+  {
+   "id": "NT-AUTHZ-02",
+   "status": "control_off_missing",
+   "tests": [
+    {
+     "name": "negative_nt_authz_02_a_command_comment_arrives_with_its_authors_numeric_id",
+     "file": "crates/github/tests/negative_authz.rs"
+    },
+    {
+     "name": "negative_nt_authz_02_an_unauthorized_command_is_audited_and_gets_no_reply",
+     "file": "crates/workflow/tests/delivery/approval.rs"
+    },
+    {
+     "name": "negative_nt_authz_02_a_sender_who_may_not_decide_is_refused_without_a_reply",
+     "file": "crates/workflow/tests/delivery/judging.rs"
+    }
+   ],
+   "control_off": []
+  },
+  {
+   "id": "NT-AUTHZ-05",
+   "status": "control_off_missing",
+   "tests": [
+    {
+     "name": "negative_nt_authz_05_an_edit_after_the_snapshot_waits_for_the_requester_and_no_agent_reads_it",
+     "file": "crates/workflow/tests/intake_repo/intake.rs"
+    },
+    {
+     "name": "negative_nt_authz_05_the_stage_refuses_an_edited_request_nobody_confirmed",
+     "file": "crates/workflow/tests/intake_repo/intake.rs"
+    }
+   ],
+   "control_off": []
+  },
+  {
+   "id": "NT-AUTHZ-06",
+   "status": "proven",
+   "tests": [
+    {
+     "name": "negative_nt_authz_06_a_token_is_minted_for_one_repository_and_nothing_else_is_reachable",
+     "file": "crates/github/tests/negative_tokens.rs"
+    },
+    {
+     "name": "negative_nt_authz_06_a_token_that_is_wider_than_the_request_is_revoked_and_refused",
+     "file": "crates/github/tests/negative_tokens.rs"
+    }
+   ],
+   "control_off": [
+    {
+     "kind": "mutation",
+     "script": "crates/github/tests/mutations/run_mutations.py",
+     "name": "use an over-broad token without looking",
+     "catches": [
+      "negative_nt_authz_06_a_token_is_minted_for_one_repository_and_nothing_else_is_reachable",
+      "negative_nt_authz_06_a_token_that_is_wider_than_the_request_is_revoked_and_refused"
+     ]
+    }
+   ]
+  },
+  {
+   "id": "NT-AUTHZ-07",
+   "status": "proven",
+   "tests": [
+    {
+     "name": "negative_nt_authz_07_every_stage_gets_exactly_its_permissions_and_only_delivery_writes_the_repository",
+     "file": "crates/github/tests/negative_tokens.rs"
+    },
+    {
+     "name": "negative_nt_authz_07_a_read_only_token_cannot_comment_or_open_a_pull_request",
+     "file": "crates/github/tests/negative_tokens.rs"
+    }
+   ],
+   "control_off": [
+    {
+     "kind": "mutation",
+     "script": "crates/github/tests/mutations/run_mutations.py",
+     "name": "let a stage that may not write get the write credential",
+     "catches": [
+      "negative_nt_authz_07_every_stage_gets_exactly_its_permissions_and_only_delivery_writes_the_repository",
+      "negative_nt_authz_07_a_read_only_token_cannot_comment_or_open_a_pull_request"
+     ]
+    }
+   ]
+  },
+  {
+   "id": "NT-AUTHZ-08",
+   "status": "control_off_missing",
+   "tests": [
+    {
+     "name": "negative_nt_authz_08",
+     "file": "apps/api/tests/webhook.rs"
+    }
+   ],
+   "control_off": []
+  },
+  {
+   "id": "NT-AUTHZ-09",
+   "status": "control_off_missing",
+   "tests": [
+    {
+     "name": "negative_nt_authz_09_an_app_that_holds_a_forbidden_permission_gets_no_token",
+     "file": "crates/github/tests/negative_tokens.rs"
+    },
+    {
+     "name": "negative_nt_authz_09_an_app_that_lacks_a_required_permission_is_capped",
+     "file": "crates/github/tests/negative_tokens.rs"
+    }
+   ],
+   "control_off": []
+  },
+  {
+   "id": "NT-BUD-01",
+   "status": "control_off_missing",
+   "tests": [
+    {
+     "name": "negative_nt_bud_01_per_task_cost_ceiling_stops_a_looping_client",
+     "file": "crates/egress/tests/negative_nt_bud.rs"
+    },
+    {
+     "name": "negative_nt_bud_01_a_run_over_its_limit_is_not_retried",
+     "file": "crates/workflow/tests/implementation/negative.rs"
+    }
+   ],
+   "control_off": []
+  },
+  {
+   "id": "NT-BUD-03",
+   "status": "control_off_missing",
+   "tests": [
+    {
+     "name": "negative_nt_bud_03_a_repeated_failure_asks_a_person_after_one_round",
+     "file": "crates/workflow/tests/engine_scenarios/body.rs"
+    }
+   ],
+   "control_off": [],
+   "note": "Covered: the engine detects stagnation and escalates to a person. Not covered (gap, needs a decision): a turn cap on the agent tool, because neither accepted CLI has a turn cap flag and only the broker request count could supply one."
+  },
+  {
+   "id": "NT-BUD-07",
+   "status": "control_off_missing",
+   "tests": [
+    {
+     "name": "negative_nt_bud_07_a_tool_that_ignores_its_budget_is_still_stopped_and_counted",
+     "file": "crates/egress/tests/negative_nt_bud.rs"
+    },
+    {
+     "name": "negative_nt_bud_07_a_turn_cap_stops_a_tool_that_has_no_turn_limit_of_its_own",
+     "file": "crates/egress/tests/negative_nt_bud.rs"
+    },
+    {
+     "name": "negative_nt_bud_07_failed_attempts_are_counted_per_attempt",
+     "file": "crates/egress/tests/negative_nt_bud.rs"
+    }
+   ],
+   "control_off": []
+  },
+  {
+   "id": "NT-GATE-01",
+   "status": "control_off_missing",
+   "tests": [
+    {
+     "name": "negative_nt_gate_01_the_builder_weakens_a_test_or_edits_a_fixture",
+     "file": "crates/workflow/tests/implementation/negative.rs"
+    },
+    {
+     "name": "negative_nt_gate_01_a_new_test_file_and_an_appended_test_pass_the_path_rule",
+     "file": "crates/workflow/tests/validation/negative_gate.rs"
+    },
+    {
+     "name": "negative_nt_gate_01_a_changed_removed_deleted_or_renamed_test_is_blocked_by_its_group",
+     "file": "crates/workflow/tests/validation/negative_gate.rs"
+    }
+   ],
+   "control_off": []
+  },
+  {
+   "id": "NT-GATE-02",
+   "status": "control_off_missing",
+   "tests": [
+    {
+     "name": "negative_nt_gate_02_a_test_removed_or_ignored_inside_a_source_file_is_found_at_the_source",
+     "file": "crates/workflow/tests/validation/negative_gate.rs"
+    },
+    {
+     "name": "negative_nt_gate_02_skip_xfail_and_focus_markers_in_new_files_are_found",
+     "file": "crates/workflow/tests/validation/negative_gate.rs"
+    },
+    {
+     "name": "negative_nt_gate_02_a_test_missing_from_the_run_of_the_candidate_is_found_by_the_baseline",
+     "file": "crates/workflow/tests/validation/negative_gate.rs"
+    },
+    {
+     "name": "negative_nt_gate_02_a_test_that_passed_before_and_is_ignored_now_is_found_by_the_baseline",
+     "file": "crates/workflow/tests/validation/negative_gate.rs"
+    }
+   ],
+   "control_off": []
+  },
+  {
+   "id": "NT-GATE-03",
+   "status": "control_off_missing",
+   "tests": [
+    {
+     "name": "negative_nt_gate_03_the_builder_edits_ci_and_gate_files",
+     "file": "crates/workflow/tests/implementation/negative.rs"
+    },
+    {
+     "name": "negative_nt_gate_03_each_ci_gate_and_instruction_file_edit_fails_before_any_gate_runs",
+     "file": "crates/workflow/tests/validation/negative_gate.rs"
+    },
+    {
+     "name": "negative_nt_gate_03_deleting_a_protected_file_is_refused_too",
+     "file": "crates/workflow/tests/validation/negative_gate.rs"
+    },
+    {
+     "name": "negative_nt_gate_03_a_held_out_test_a_fixture_and_the_project_policy_cannot_be_edited",
+     "file": "crates/workflow/tests/validation/negative_gate.rs"
+    }
+   ],
+   "control_off": []
+  },
+  {
+   "id": "NT-GATE-04",
+   "status": "control_off_missing",
+   "tests": [
+    {
+     "name": "negative_nt_gate_04_every_rename_and_normalization_trick_is_blocked_with_its_group",
+     "file": "crates/domain/tests/policy/paths.rs"
+    },
+    {
+     "name": "negative_nt_gate_04_every_path_trick_is_refused_with_its_group_and_the_controls_are_not",
+     "file": "crates/workflow/tests/validation/negative_gate.rs"
+    },
+    {
+     "name": "negative_nt_gate_04_the_tricks_that_a_repository_can_hold_fail_the_whole_stage",
+     "file": "crates/workflow/tests/validation/negative_gate.rs"
+    }
+   ],
+   "control_off": []
+  },
+  {
+   "id": "NT-GATE-05",
+   "status": "control_off_missing",
+   "tests": [
+    {
+     "name": "negative_nt_gate_05_the_builders_gate_files_do_not_change_what_runs",
+     "file": "crates/workflow/tests/validation/negative_gate.rs"
+    },
+    {
+     "name": "negative_nt_gate_05_an_edit_of_the_gate_definitions_fails_the_protected_path_gate",
+     "file": "crates/workflow/tests/validation/negative_gate.rs"
+    },
+    {
+     "name": "negative_nt_gate_05_a_test_target_without_the_harness_is_found",
+     "file": "crates/workflow/tests/validation/negative_gate.rs"
+    }
+   ],
+   "control_off": []
+  },
+  {
+   "id": "NT-GATE-06",
+   "status": "control_off_missing",
+   "tests": [
+    {
+     "name": "negative_nt_gate_06_a_forged_report_does_not_hide_a_failing_test",
+     "file": "crates/workflow/tests/validation/negative_gate.rs"
+    },
+    {
+     "name": "negative_nt_gate_06_a_forged_summary_with_exit_code_zero_is_not_accepted",
+     "file": "crates/workflow/tests/validation/negative_gate.rs"
+    }
+   ],
+   "control_off": []
+  },
+  {
+   "id": "NT-GATE-07",
+   "status": "control_off_missing",
+   "tests": [
+    {
+     "name": "negative_nt_gate_07_a_missing_build_tool_blocks_the_checks_that_need_it",
+     "file": "crates/workflow/tests/documentation/negative.rs"
+    },
+    {
+     "name": "negative_nt_gate_07_a_missing_diagram_parser_is_blocked_and_never_passed",
+     "file": "crates/workflow/tests/documentation/negative.rs"
+    },
+    {
+     "name": "negative_nt_gate_07_a_test_command_that_is_not_found_is_blocked",
+     "file": "crates/workflow/tests/validation/negative_gate.rs"
+    },
+    {
+     "name": "negative_nt_gate_07_a_scanner_missing_from_the_image_is_blocked",
+     "file": "crates/workflow/tests/validation/negative_gate.rs"
+    },
+    {
+     "name": "negative_nt_gate_07_tests_that_collect_zero_tests_are_blocked",
+     "file": "crates/workflow/tests/validation/negative_gate.rs"
+    },
+    {
+     "name": "negative_nt_gate_07_a_gate_that_times_out_is_blocked_and_so_is_one_that_is_killed",
+     "file": "crates/workflow/tests/validation/negative_gate.rs"
+    },
+    {
+     "name": "negative_nt_gate_07_a_cut_test_output_is_blocked",
+     "file": "crates/workflow/tests/validation/negative_gate.rs"
+    },
+    {
+     "name": "negative_nt_gate_07_a_daemon_that_is_down_blocks_the_stage_run_and_nothing_runs",
+     "file": "crates/workflow/tests/validation/negative_gate.rs"
+    },
+    {
+     "name": "negative_nt_gate_07_a_gate_without_a_report_blocks_whatever_the_rest_says",
+     "file": "crates/workflow/tests/validation/negative_gate.rs"
+    }
+   ],
+   "control_off": []
+  },
+  {
+   "id": "NT-GATE-08",
+   "status": "control_off_missing",
+   "tests": [
+    {
+     "name": "negative_nt_gate_08_the_holdout_is_invisible_to_the_agent_and_present_in_verify",
+     "file": "crates/sandbox/tests/workspace/behavior.rs"
+    },
+    {
+     "name": "negative_nt_gate_08_the_holdout_is_read_only_in_verify_and_a_clean_run_ingests",
+     "file": "crates/sandbox/tests/workspace/docker.rs",
+     "needs": [
+      "docker"
+     ]
+    }
+   ],
+   "control_off": [],
+   "note": "Covered: sandbox, prompts and sinks. Not covered (gap, Slice 4): held-out evaluation data in the evals component, which does not exist yet."
+  },
+  {
+   "id": "NT-GATE-10",
+   "status": "control_off_missing",
+   "tests": [
+    {
+     "name": "negative_nt_gate_10_evidence_for_one_commit_does_not_count_for_another",
+     "file": "crates/workflow/tests/validation/negative_gate.rs"
+    },
+    {
+     "name": "negative_nt_gate_10_a_changed_policy_or_image_makes_the_evidence_stale",
+     "file": "crates/workflow/tests/validation/negative_gate.rs"
+    },
+    {
+     "name": "negative_nt_gate_10_a_test_that_fails_once_and_is_not_in_the_flaky_registry_is_failed",
+     "file": "crates/workflow/tests/validation/negative_gate.rs"
+    },
+    {
+     "name": "negative_nt_gate_10_a_registry_flake_gets_one_recorded_retry_and_no_more",
+     "file": "crates/workflow/tests/validation/negative_gate.rs"
+    }
+   ],
+   "control_off": []
+  },
+  {
+   "id": "NT-INJ-01",
+   "status": "missing",
+   "tests": [],
+   "control_off": []
+  },
+  {
+   "id": "NT-INJ-02",
+   "status": "control_off_missing",
+   "tests": [
+    {
+     "name": "negative_nt_inj_02_a_path_cannot_carry_text_into_the_instruction",
+     "file": "crates/spec_adapter/tests/negative.rs"
+    },
+    {
+     "name": "negative_nt_inj_02_envelope_hardening",
+     "file": "crates/workflow/tests/prompts/negative.rs"
+    }
+   ],
+   "control_off": []
+  },
+  {
+   "id": "NT-INJ-03",
+   "status": "control_off_missing",
+   "tests": [
+    {
+     "name": "negative_nt_inj_03_hostile_text_in_a_code_comment_gives_the_writer_no_authority",
+     "file": "crates/workflow/tests/documentation/negative.rs"
+    }
+   ],
+   "control_off": []
+  },
+  {
+   "id": "NT-INJ-04",
+   "status": "missing",
+   "tests": [],
+   "control_off": []
+  },
+  {
+   "id": "NT-INJ-06",
+   "status": "control_off_missing",
+   "tests": [
+    {
+     "name": "negative_nt_inj_06_a_reviewer_pass_does_not_override_a_failed_gate",
+     "file": "crates/workflow/tests/documentation/negative.rs"
+    },
+    {
+     "name": "negative_nt_inj_06_a_reviewer_pass_cannot_override_a_failed_gate",
+     "file": "crates/workflow/tests/implementation/review.rs"
+    }
+   ],
+   "control_off": []
+  },
+  {
+   "id": "NT-INJ-07",
+   "status": "blocked",
+   "tests": [
+    {
+     "name": "negative_nt_inj_07_claude_code_ignores_the_repositorys_hooks_servers_settings_and_instructions",
+     "file": "crates/runtime/tests/negative.rs",
+     "needs": [
+      "docker"
+     ]
+    },
+    {
+     "name": "negative_nt_inj_07_codex_ignores_the_repositorys_provider_and_instruction_files",
+     "file": "crates/runtime/tests/negative.rs",
+     "needs": [
+      "docker"
+     ]
+    }
+   ],
+   "control_off": [],
+   "blocked": {
+    "kind": "docker",
+    "reason": "Every test of this row needs the Docker daemon, and `timeout 20 docker info` exits 124 on this machine. The tests exist and are registered; they have not run here, and a Docker test that cannot start is BLOCKED, never passed."
+   }
+  },
+  {
+   "id": "NT-LSE-01",
+   "status": "control_off_missing",
+   "tests": [
+    {
+     "name": "negative_nt_lse_01_a_stale_worker_that_comes_back_changes_nothing",
+     "file": "crates/workflow/tests/engine_scenarios/body.rs"
+    },
+    {
+     "name": "negative_nt_lse_01_a_stale_worker_makes_no_commit",
+     "file": "crates/workflow/tests/implementation/negative.rs"
+    }
+   ],
+   "control_off": []
+  },
+  {
+   "id": "NT-LSE-02",
+   "status": "missing",
+   "tests": [],
+   "control_off": []
+  },
+  {
+   "id": "NT-LSE-03",
+   "status": "control_off_missing",
+   "tests": [
+    {
+     "name": "negative_nt_lse_03_a_retry_after_a_lost_answer_makes_one_pull_request",
+     "file": "crates/github/tests/negative_text.rs"
+    },
+    {
+     "name": "negative_nt_lse_03_a_retry_after_a_lost_answer_posts_one_comment_per_key",
+     "file": "crates/github/tests/negative_text.rs"
+    },
+    {
+     "name": "negative_nt_lse_03_a_marker_pasted_by_someone_else_does_not_stop_the_factory_from_reporting",
+     "file": "crates/github/tests/negative_text.rs"
+    },
+    {
+     "name": "negative_nt_lse_03_a_replayed_command_is_applied_once_and_answered_once",
+     "file": "crates/workflow/tests/delivery/approval.rs"
+    },
+    {
+     "name": "negative_nt_lse_03_a_retry_between_push_and_open_makes_one_pull_request",
+     "file": "crates/workflow/tests/delivery/negative.rs"
+    }
+   ],
+   "control_off": []
+  },
+  {
+   "id": "NT-MRG-01",
+   "status": "control_off_missing",
+   "tests": [
+    {
+     "name": "negative_nt_mrg_01_a_failing_gate_refuses_approval_and_nothing_reaches_the_host",
+     "file": "crates/workflow/tests/delivery/approval.rs"
+    },
+    {
+     "name": "negative_nt_mrg_01_a_gate_that_is_not_clear_refuses_the_approval",
+     "file": "crates/workflow/tests/delivery/judging.rs"
+    }
+   ],
+   "control_off": []
+  },
+  {
+   "id": "NT-MRG-02",
+   "status": "control_off_missing",
+   "tests": [
+    {
+     "name": "negative_nt_mrg_02_missing_or_blocked_evidence_never_passes_a_stage",
+     "file": "crates/workflow/tests/engine_scenarios/body.rs"
+    },
+    {
+     "name": "negative_nt_mrg_02_an_approval_of_stale_evidence_is_refused",
+     "file": "crates/workflow/tests/engine_scenarios/body.rs"
+    }
+   ],
+   "control_off": []
+  },
+  {
+   "id": "NT-MRG-03",
+   "status": "control_off_missing",
+   "tests": [
+    {
+     "name": "negative_nt_mrg_03_the_head_moving_after_approval_invalidates_the_approval",
+     "file": "crates/workflow/tests/delivery/approval.rs"
+    },
+    {
+     "name": "negative_nt_mrg_03_a_refusal_for_a_moved_head_also_ends_the_approvals_on_record",
+     "file": "crates/workflow/tests/delivery/approval.rs"
+    },
+    {
+     "name": "negative_nt_mrg_03_the_second_approver_alone_does_not_pass_a_critical_change",
+     "file": "crates/workflow/tests/delivery/approval.rs"
+    }
+   ],
+   "control_off": []
+  },
+  {
+   "id": "NT-MRG-05",
+   "status": "control_off_missing",
+   "tests": [
+    {
+     "name": "negative_nt_mrg_05_there_is_no_verb_for_merge_deploy_or_ready",
+     "file": "crates/workflow/tests/delivery/judging.rs"
+    }
+   ],
+   "control_off": []
+  },
+  {
+   "id": "NT-MRG-06",
+   "status": "control_off_missing",
+   "tests": [
+    {
+     "name": "negative_nt_mrg_06_a_bot_an_app_and_the_requester_on_a_risky_change_do_not_count",
+     "file": "crates/workflow/tests/delivery/judging.rs"
+    }
+   ],
+   "control_off": []
+  },
+  {
+   "id": "NT-MRG-07",
+   "status": "control_off_missing",
+   "tests": [
+    {
+     "name": "negative_nt_mrg_07_a_repository_that_does_not_meet_the_requirements_runs_at_l0",
+     "file": "crates/github/tests/negative_tokens.rs"
+    },
+    {
+     "name": "negative_nt_mrg_07_the_app_holding_workflows_is_refused_and_nothing_is_pushed",
+     "file": "crates/github/tests/negative_tokens.rs"
+    }
+   ],
+   "control_off": []
+  },
+  {
+   "id": "NT-MRG-08",
+   "status": "control_off_missing",
+   "tests": [
+    {
+     "name": "negative_nt_mrg_08_the_pull_request_stays_a_draft",
+     "file": "crates/workflow/tests/delivery/negative.rs"
+    }
+   ],
+   "control_off": []
+  },
+  {
+   "id": "NT-POL-01",
+   "status": "control_off_missing",
+   "tests": [
+    {
+     "name": "negative_nt_pol_01_a_checkout_inside_a_job_workspace_is_refused",
+     "file": "crates/contracts/tests/policy_strictness.rs"
+    },
+    {
+     "name": "negative_nt_pol_01_a_link_into_an_untrusted_place_is_resolved_and_refused",
+     "file": "crates/contracts/tests/policy_strictness.rs"
+    },
+    {
+     "name": "negative_nt_pol_01_a_policy_file_that_is_a_symbolic_link_is_refused",
+     "file": "crates/contracts/tests/policy_strictness.rs"
+    },
+    {
+     "name": "negative_nt_pol_01_a_missing_policy_is_an_error_and_there_is_no_default",
+     "file": "crates/contracts/tests/policy_strictness.rs"
+    },
+    {
+     "name": "negative_nt_pol_01_only_the_two_fixed_file_names_are_read",
+     "file": "crates/contracts/tests/policy_strictness.rs"
+    },
+    {
+     "name": "negative_nt_pol_01_a_file_that_wants_a_signed_release_is_refused_from_the_branch_source",
+     "file": "crates/contracts/tests/policy_strictness.rs"
+    },
+    {
+     "name": "negative_nt_pol_01_the_loader_never_reads_the_environment",
+     "file": "crates/contracts/tests/policy_strictness.rs"
+    }
+   ],
+   "control_off": []
+  },
+  {
+   "id": "NT-POL-02",
+   "status": "control_off_missing",
+   "tests": [
+    {
+     "name": "negative_nt_pol_02_each_widening_is_refused_and_names_its_key",
+     "file": "crates/domain/tests/policy/tighten.rs"
+    },
+    {
+     "name": "negative_nt_pol_02_widenings_of_the_approval_policy_are_refused_too",
+     "file": "crates/domain/tests/policy/tighten.rs"
+    },
+    {
+     "name": "negative_nt_pol_02_tightenings_are_accepted",
+     "file": "crates/domain/tests/policy/tighten.rs"
+    },
+    {
+     "name": "negative_nt_pol_02_approval_tightenings_are_accepted",
+     "file": "crates/domain/tests/policy/tighten.rs"
+    }
+   ],
+   "control_off": []
+  },
+  {
+   "id": "NT-POL-03",
+   "status": "control_off_missing",
+   "tests": [
+    {
+     "name": "negative_nt_pol_03_control_the_unchanged_files_load_from_a_temporary_checkout",
+     "file": "crates/contracts/tests/policy_strictness.rs"
+    },
+    {
+     "name": "negative_nt_pol_03_an_unknown_key_is_refused_at_any_depth_and_named",
+     "file": "crates/contracts/tests/policy_strictness.rs"
+    },
+    {
+     "name": "negative_nt_pol_03_a_wrong_schema_version_is_refused_before_anything_else",
+     "file": "crates/contracts/tests/policy_strictness.rs"
+    },
+    {
+     "name": "negative_nt_pol_03_a_duplicate_key_is_refused_with_its_line",
+     "file": "crates/contracts/tests/policy_strictness.rs"
+    },
+    {
+     "name": "negative_nt_pol_03_an_anchor_an_alias_and_a_merge_key_are_refused",
+     "file": "crates/contracts/tests/policy_strictness.rs"
+    },
+    {
+     "name": "negative_nt_pol_03_a_wrong_type_is_refused_with_the_key_path_and_line",
+     "file": "crates/contracts/tests/policy_strictness.rs"
+    },
+    {
+     "name": "negative_nt_pol_03_an_invalid_regex_is_refused_with_its_key_and_line",
+     "file": "crates/contracts/tests/policy_strictness.rs"
+    },
+    {
+     "name": "negative_nt_pol_03_an_invalid_glob_is_refused_with_its_key_and_line",
+     "file": "crates/contracts/tests/policy_strictness.rs"
+    },
+    {
+     "name": "negative_nt_pol_03_a_missing_default_action_is_refused_and_so_is_any_other_value",
+     "file": "crates/contracts/tests/policy_strictness.rs"
+    },
+    {
+     "name": "negative_nt_pol_03_identifiers_must_be_unique_and_references_must_resolve",
+     "file": "crates/contracts/tests/policy_strictness.rs"
+    },
+    {
+     "name": "negative_nt_pol_03_the_wrong_file_is_refused_by_its_id",
+     "file": "crates/contracts/tests/policy_strictness.rs"
+    },
+    {
+     "name": "negative_nt_pol_03_a_file_over_the_size_limit_is_refused",
+     "file": "crates/contracts/tests/policy_strictness.rs"
+    }
+   ],
+   "control_off": []
+  },
+  {
+   "id": "NT-POL-04",
+   "status": "control_off_missing",
+   "tests": [
+    {
+     "name": "negative_nt_pol_04_a_protected_change_is_accepted_only_with_all_three_elements",
+     "file": "crates/domain/tests/policy/authority.rs"
+    },
+    {
+     "name": "negative_nt_pol_04_a_protected_group_beats_write_allow",
+     "file": "crates/domain/tests/policy/paths.rs"
+    },
+    {
+     "name": "negative_nt_pol_04_a_protected_change_needs_all_three_elements",
+     "file": "crates/domain/tests/policy/paths.rs"
+    },
+    {
+     "name": "negative_nt_pol_04_a_tool_allowed_in_a_profile_but_never_grantable_is_denied",
+     "file": "crates/domain/tests/policy/tools.rs"
+    }
+   ],
+   "control_off": []
+  },
+  {
+   "id": "NT-POL-05",
+   "status": "control_off_missing",
+   "tests": [
+    {
+     "name": "negative_nt_pol_05_an_issue_body_that_asks_for_another_skill_cannot_select_one",
+     "file": "crates/spec_adapter/tests/negative.rs"
+    },
+    {
+     "name": "negative_nt_pol_05_specification_text_that_claims_authorization_grants_nothing",
+     "file": "crates/spec_adapter/tests/negative.rs"
+    },
+    {
+     "name": "negative_nt_pol_05_a_writer_that_arrives_approved_is_refused",
+     "file": "crates/workflow/tests/specification/negative.rs"
+    },
+    {
+     "name": "negative_nt_pol_05_text_that_claims_authorization_grants_nothing",
+     "file": "crates/workflow/tests/specification/negative.rs"
+    }
+   ],
+   "control_off": []
+  },
+  {
+   "id": "NT-POL-08",
+   "status": "control_off_missing",
+   "tests": [
+    {
+     "name": "negative_nt_pol_08_the_specification_stage_may_run_four_skills_in_any_spelling_and_no_others",
+     "file": "crates/domain/tests/policy/tools.rs"
+    }
+   ],
+   "control_off": []
+  },
+  {
+   "id": "NT-SBX-01",
+   "status": "control_off_missing",
+   "tests": [
+    {
+     "name": "negative_nt_sbx_01_each_forbidden_setting_is_refused_before_the_start",
+     "file": "crates/sandbox/tests/scripted.rs"
+    },
+    {
+     "name": "negative_nt_sbx_01_a_container_the_policy_allows_is_started_after_the_inspect",
+     "file": "crates/sandbox/tests/scripted.rs"
+    }
+   ],
+   "control_off": []
+  },
+  {
+   "id": "NT-SBX-02",
+   "status": "control_off_missing",
+   "tests": [
+    {
+     "name": "negative_nt_sbx_02_each_bad_runtime_value_keeps_the_workload_from_starting",
+     "file": "crates/sandbox/tests/scripted.rs"
+    }
+   ],
+   "control_off": []
+  },
+  {
+   "id": "NT-SBX-03",
+   "status": "blocked",
+   "tests": [
+    {
+     "name": "negative_nt_sbx_03_the_verify_profile_has_no_network",
+     "file": "crates/sandbox/tests/container/behavior.rs",
+     "needs": [
+      "docker"
+     ]
+    }
+   ],
+   "control_off": [],
+   "blocked": {
+    "kind": "docker",
+    "reason": "Every test of this row needs the Docker daemon, and `timeout 20 docker info` exits 124 on this machine. The tests exist and are registered; they have not run here, and a Docker test that cannot start is BLOCKED, never passed."
+   }
+  },
+  {
+   "id": "NT-SBX-04",
+   "status": "blocked",
+   "tests": [
+    {
+     "name": "negative_nt_sbx_04_an_agent_on_its_job_network_reaches_no_other_job_no_external_address_and_no_metadata_address",
+     "file": "crates/sandbox/tests/container/behavior.rs",
+     "needs": [
+      "docker"
+     ]
+    }
+   ],
+   "control_off": [],
+   "blocked": {
+    "kind": "docker",
+    "reason": "Every test of this row needs the Docker daemon, and `timeout 20 docker info` exits 124 on this machine. The tests exist and are registered; they have not run here, and a Docker test that cannot start is BLOCKED, never passed."
+   }
+  },
+  {
+   "id": "NT-SBX-05",
+   "status": "control_off_missing",
+   "tests": [
+    {
+     "name": "negative_nt_sbx_05_a_host_that_is_not_on_the_list_is_refused_before_it_is_resolved",
+     "file": "crates/egress/tests/negative_nt_sbx_05.rs"
+    },
+    {
+     "name": "negative_nt_sbx_05_a_name_that_resolves_to_an_internal_address_is_refused_after_resolution",
+     "file": "crates/egress/tests/negative_nt_sbx_05.rs"
+    },
+    {
+     "name": "negative_nt_sbx_05_a_rebinding_answer_cannot_redirect_a_connection_that_was_checked",
+     "file": "crates/egress/tests/negative_nt_sbx_05.rs"
+    },
+    {
+     "name": "negative_nt_sbx_05_the_allowed_host_works_in_every_spelling_of_its_name",
+     "file": "crates/egress/tests/negative_nt_sbx_05.rs"
+    },
+    {
+     "name": "negative_nt_sbx_05_other_methods_and_plain_proxying_are_refused",
+     "file": "crates/egress/tests/negative_nt_sbx_05.rs"
+    },
+    {
+     "name": "negative_nt_sbx_05_the_byte_quota_ends_a_transfer_at_the_cap",
+     "file": "crates/egress/tests/negative_nt_sbx_05.rs"
+    }
+   ],
+   "control_off": []
+  },
+  {
+   "id": "NT-SBX-06",
+   "status": "blocked",
+   "tests": [
+    {
+     "name": "negative_nt_sbx_06_read_only_root_tmpfs_capabilities_and_masked_paths_hold",
+     "file": "crates/sandbox/tests/container/behavior.rs",
+     "needs": [
+      "docker"
+     ]
+    }
+   ],
+   "control_off": [],
+   "blocked": {
+    "kind": "docker",
+    "reason": "Every test of this row needs the Docker daemon, and `timeout 20 docker info` exits 124 on this machine. The tests exist and are registered; they have not run here, and a Docker test that cannot start is BLOCKED, never passed."
+   }
+  },
+  {
+   "id": "NT-SBX-07",
+   "status": "blocked",
+   "tests": [
+    {
+     "name": "negative_nt_sbx_07_resource_limits_are_in_effect_and_a_memory_hog_is_killed",
+     "file": "crates/sandbox/tests/container/behavior.rs",
+     "needs": [
+      "docker"
+     ]
+    },
+    {
+     "name": "negative_nt_sbx_07_the_disk_poll_kills_a_writer_that_passes_its_cap",
+     "file": "crates/sandbox/tests/container/behavior.rs",
+     "needs": [
+      "docker"
+     ]
+    }
+   ],
+   "control_off": [],
+   "blocked": {
+    "kind": "docker",
+    "reason": "Every test of this row needs the Docker daemon, and `timeout 20 docker info` exits 124 on this machine. The tests exist and are registered; they have not run here, and a Docker test that cannot start is BLOCKED, never passed."
+   }
+  },
+  {
+   "id": "NT-SBX-08",
+   "status": "blocked",
+   "tests": [
+    {
+     "name": "negative_nt_sbx_08_the_supervisor_kills_the_container_at_the_wall_clock",
+     "file": "crates/sandbox/tests/container/behavior.rs",
+     "needs": [
+      "docker"
+     ]
+    }
+   ],
+   "control_off": [],
+   "blocked": {
+    "kind": "docker",
+    "reason": "Every test of this row needs the Docker daemon, and `timeout 20 docker info` exits 124 on this machine. The tests exist and are registered; they have not run here, and a Docker test that cannot start is BLOCKED, never passed."
+   }
+  },
+  {
+   "id": "NT-SBX-09",
+   "status": "control_off_missing",
+   "tests": [
+    {
+     "name": "negative_nt_sbx_09_a_real_sandbox_plants_hostile_entries_and_the_audit_rejects_them",
+     "file": "crates/sandbox/tests/workspace/docker.rs",
+     "needs": [
+      "docker"
+     ]
+    },
+    {
+     "name": "negative_nt_sbx_09_every_hostile_entry_is_rejected_with_its_reason",
+     "file": "crates/sandbox/tests/workspace/hostile.rs"
+    },
+    {
+     "name": "negative_nt_sbx_09_a_link_to_a_host_canary_is_never_read",
+     "file": "crates/sandbox/tests/workspace/hostile.rs"
+    },
+    {
+     "name": "negative_nt_sbx_09_an_archive_entry_that_escapes_and_a_tar_bomb_are_refused",
+     "file": "crates/sandbox/tests/workspace/hostile.rs"
+    }
+   ],
+   "control_off": []
+  },
+  {
+   "id": "NT-SBX-10",
+   "status": "control_off_missing",
+   "tests": [
+    {
+     "name": "negative_nt_sbx_10_hostile_git_configuration_runs_nothing_on_the_host",
+     "file": "crates/sandbox/tests/workspace/hostile.rs"
+    }
+   ],
+   "control_off": []
+  },
+  {
+   "id": "NT-SBX-11",
+   "status": "control_off_missing",
+   "tests": [
+    {
+     "name": "negative_nt_sbx_11_the_mount_points_exist_and_a_hidden_write_fails_the_job",
+     "file": "crates/sandbox/tests/workspace/behavior.rs"
+    },
+    {
+     "name": "negative_nt_sbx_11_moving_a_protected_directory_is_not_stopped_inside_and_is_blocked_at_ingestion",
+     "file": "crates/sandbox/tests/workspace/docker.rs",
+     "needs": [
+      "docker"
+     ]
+    }
+   ],
+   "control_off": []
+  },
+  {
+   "id": "NT-SBX-12",
+   "status": "blocked",
+   "tests": [
+    {
+     "name": "negative_nt_sbx_12_no_daemon_socket_is_reachable_and_none_can_be_mounted",
+     "file": "crates/sandbox/tests/container/behavior.rs",
+     "needs": [
+      "docker"
+     ]
+    }
+   ],
+   "control_off": [],
+   "blocked": {
+    "kind": "docker",
+    "reason": "Every test of this row needs the Docker daemon, and `timeout 20 docker info` exits 124 on this machine. The tests exist and are registered; they have not run here, and a Docker test that cannot start is BLOCKED, never passed."
+   }
+  },
+  {
+   "id": "NT-SBX-13",
+   "status": "blocked",
+   "tests": [
+    {
+     "name": "negative_nt_sbx_13_the_job_token_is_a_file_and_no_other_credential_is_anywhere",
+     "file": "crates/sandbox/tests/container/behavior.rs",
+     "needs": [
+      "docker"
+     ]
+    }
+   ],
+   "control_off": [],
+   "blocked": {
+    "kind": "docker",
+    "reason": "Every test of this row needs the Docker daemon, and `timeout 20 docker info` exits 124 on this machine. The tests exist and are registered; they have not run here, and a Docker test that cannot start is BLOCKED, never passed."
+   }
+  },
+  {
+   "id": "NT-SBX-14",
+   "status": "control_off_missing",
+   "tests": [
+    {
+     "name": "negative_nt_sbx_14_a_stopped_daemon_a_missing_image_and_a_skeleton_sidecar_run_nothing",
+     "file": "crates/sandbox/tests/container/behavior.rs",
+     "needs": [
+      "docker"
+     ]
+    },
+    {
+     "name": "negative_nt_sbx_14_a_stopped_daemon_a_bad_catalog_and_a_failed_sidecar_run_nothing",
+     "file": "crates/sandbox/tests/scripted.rs"
+    }
+   ],
+   "control_off": []
+  },
+  {
+   "id": "NT-SBX-17",
+   "status": "control_off_missing",
+   "tests": [
+    {
+     "name": "negative_nt_sbx_17_the_requests_of_the_real_tools_pass_unchanged",
+     "file": "crates/egress/tests/negative_nt_sbx_17.rs"
+    },
+    {
+     "name": "negative_nt_sbx_17_history_blocks_of_a_long_session_pass",
+     "file": "crates/egress/tests/negative_nt_sbx_17.rs"
+    },
+    {
+     "name": "negative_nt_sbx_17_every_refused_shape_gets_a_fixed_answer_an_audit_event_and_no_provider_call",
+     "file": "crates/egress/tests/negative_nt_sbx_17.rs"
+    },
+    {
+     "name": "negative_nt_sbx_17_bodies_that_parsers_read_differently_are_refused",
+     "file": "crates/egress/tests/negative_nt_sbx_17.rs"
+    },
+    {
+     "name": "negative_nt_sbx_17_beta_headers_that_enable_provider_side_tools_refuse_the_request",
+     "file": "crates/egress/tests/negative_nt_sbx_17.rs"
+    },
+    {
+     "name": "negative_nt_sbx_17_only_the_recorded_betas_and_the_beta_query_cross",
+     "file": "crates/egress/tests/negative_nt_sbx_17.rs"
+    },
+    {
+     "name": "negative_nt_sbx_17_the_answer_headers_are_a_closed_set",
+     "file": "crates/egress/tests/negative_nt_sbx_17.rs"
+    },
+    {
+     "name": "negative_nt_sbx_17_property_the_schema_accepts_no_mutant_that_holds_a_dangerous_field",
+     "file": "crates/egress/tests/negative_nt_sbx_17.rs"
+    },
+    {
+     "name": "negative_nt_sbx_17_property_the_provider_receives_only_bodies_without_dangerous_fields",
+     "file": "crates/egress/tests/negative_nt_sbx_17.rs"
+    }
+   ],
+   "control_off": []
+  },
+  {
+   "id": "NT-SEC-01",
+   "status": "missing",
+   "tests": [],
+   "control_off": [],
+   "note": "Covered: the canary sweep of a full fixture job. Not covered (gap, Slice 2 and Slice 4): NATS messages and memory stores as sinks, which do not exist yet."
+  },
+  {
+   "id": "NT-SEC-02",
+   "status": "control_off_missing",
+   "tests": [
+    {
+     "name": "negative_nt_sec_02_a_token_split_over_two_writes_is_redacted",
+     "file": "crates/domain/tests/redaction.rs"
+    },
+    {
+     "name": "negative_nt_sec_02_terminal_codes_between_the_characters_do_not_hide_a_token",
+     "file": "crates/domain/tests/redaction.rs"
+    },
+    {
+     "name": "negative_nt_sec_02_control_bytes_between_the_characters_do_not_hide_a_token",
+     "file": "crates/domain/tests/redaction.rs"
+    },
+    {
+     "name": "negative_nt_sec_02_a_coloured_token_is_redacted",
+     "file": "crates/domain/tests/redaction.rs"
+    },
+    {
+     "name": "negative_nt_sec_02_zero_width_characters_between_the_characters_do_not_hide_a_token",
+     "file": "crates/domain/tests/redaction.rs"
+    },
+    {
+     "name": "negative_nt_sec_02_every_encoding_of_a_registered_secret_is_redacted",
+     "file": "crates/domain/tests/redaction.rs"
+    },
+    {
+     "name": "negative_nt_sec_02_encodings_mixed_with_invisible_characters_are_redacted",
+     "file": "crates/domain/tests/redaction.rs"
+    },
+    {
+     "name": "negative_nt_sec_02_an_unknown_random_string_is_flagged_and_not_blocked",
+     "file": "crates/domain/tests/redaction.rs"
+    },
+    {
+     "name": "negative_nt_sec_02_ordinary_text_with_the_word_password_is_untouched",
+     "file": "crates/domain/tests/redaction.rs"
+    }
+   ],
+   "control_off": []
+  },
+  {
+   "id": "NT-SEC-03",
+   "status": "control_off_missing",
+   "tests": [
+    {
+     "name": "negative_nt_sec_03_text_with_a_secret_is_blocked_everywhere_and_nothing_is_sent",
+     "file": "crates/github/tests/negative_text.rs"
+    }
+   ],
+   "control_off": []
+  },
+  {
+   "id": "NT-SEC-04",
+   "status": "control_off_missing",
+   "tests": [
+    {
+     "name": "negative_nt_sec_04_markdown_cannot_carry_data_out_through_any_path_to_the_code_host",
+     "file": "crates/github/tests/negative_text.rs"
+    },
+    {
+     "name": "negative_nt_sec_04_a_body_over_the_length_cap_is_refused_and_not_cut",
+     "file": "crates/github/tests/negative_text.rs"
+    },
+    {
+     "name": "negative_nt_sec_04_hostile_text_does_not_reach_the_pull_request",
+     "file": "crates/workflow/tests/delivery/negative.rs"
+    },
+    {
+     "name": "negative_nt_sec_04_a_linked_image_and_a_lone_backtick_do_not_reach_the_pull_request",
+     "file": "crates/workflow/tests/delivery/negative.rs"
+    }
+   ],
+   "control_off": []
+  },
+  {
+   "id": "NT-SEC-05",
+   "status": "control_off_missing",
+   "tests": [
+    {
+     "name": "negative_nt_sec_05_a_secret_in_a_document_is_refused_before_the_commit",
+     "file": "crates/workflow/tests/documentation/negative.rs"
+    },
+    {
+     "name": "negative_nt_sec_05_unsafe_entries_and_secrets_in_the_tree_are_refused",
+     "file": "crates/workflow/tests/implementation/negative.rs"
+    },
+    {
+     "name": "negative_nt_sec_05_a_token_in_source_blocks_the_change_and_its_text_is_never_kept",
+     "file": "crates/workflow/tests/validation/negative_secret.rs"
+    },
+    {
+     "name": "negative_nt_sec_05_a_private_key_in_documentation_blocks_the_change",
+     "file": "crates/workflow/tests/validation/negative_secret.rs"
+    },
+    {
+     "name": "negative_nt_sec_05_secret_bearing_files_are_hidden_paths_that_no_change_may_add",
+     "file": "crates/workflow/tests/validation/negative_secret.rs"
+    },
+    {
+     "name": "negative_nt_sec_05_only_the_lines_the_change_adds_are_scanned",
+     "file": "crates/workflow/tests/validation/negative_secret.rs"
+    },
+    {
+     "name": "negative_nt_sec_05_a_file_that_cannot_be_scanned_in_full_is_not_a_clean_file",
+     "file": "crates/workflow/tests/validation/negative_secret.rs"
+    }
+   ],
+   "control_off": []
+  },
+  {
+   "id": "NT-SEC-07",
+   "status": "control_off_missing",
+   "tests": [
+    {
+     "name": "negative_nt_sec_07_secret_bearing_files_are_not_read_and_nothing_secret_reaches_context",
+     "file": "crates/workflow/tests/intake_repo/repo_intel.rs"
+    }
+   ],
+   "control_off": []
+  },
+  {
+   "id": "NT-SEC-09",
+   "status": "control_off_missing",
+   "tests": [
+    {
+     "name": "negative_nt_sec_09_the_adapter_starts_no_process_and_prints_no_credential",
+     "file": "crates/github/tests/negative_tokens.rs"
+    },
+    {
+     "name": "negative_nt_sec_09_the_recorded_processes_hold_no_secret_and_start_no_shell",
+     "file": "crates/sandbox/tests/container/behavior.rs",
+     "needs": [
+      "docker"
+     ]
+    },
+    {
+     "name": "negative_nt_sec_09_no_argument_or_environment_holds_the_job_token",
+     "file": "crates/sandbox/tests/scripted.rs"
+    }
+   ],
+   "control_off": []
+  },
+  {
+   "id": "NT-SEC-10",
+   "status": "control_off_missing",
+   "tests": [
+    {
+     "name": "negative_nt_sec_10_tokens_are_revoked_when_a_job_succeeded_failed_was_cancelled_or_was_orphaned",
+     "file": "crates/github/tests/negative_tokens.rs"
+    },
+    {
+     "name": "negative_nt_sec_10_a_running_job_keeps_its_tokens_through_the_sweep",
+     "file": "crates/github/tests/negative_tokens.rs"
+    },
+    {
+     "name": "negative_nt_sec_10_a_revocation_that_fails_is_kept_and_retried",
+     "file": "crates/github/tests/negative_tokens.rs"
+    }
+   ],
+   "control_off": []
+  },
+  {
+   "id": "NT-SEC-11",
+   "status": "control_off_missing",
+   "tests": [
+    {
+     "name": "negative_nt_sec_11_model_context_exclusions",
+     "file": "crates/workflow/tests/prompts/negative.rs"
+    },
+    {
+     "name": "negative_nt_sec_11_reviewer_inputs_hold_no_builder_justification",
+     "file": "crates/workflow/tests/prompts/negative.rs"
+    }
+   ],
+   "control_off": []
+  },
+  {
+   "id": "NT-SUP-01",
+   "status": "control_off_missing",
+   "tests": [
+    {
+     "name": "negative_nt_sup_01_nothing_is_fetched_before_the_decision",
+     "file": "crates/workflow/tests/supply_chain/gate_run.rs"
+    },
+    {
+     "name": "negative_nt_sup_01_a_package_no_one_knows_goes_to_a_security_approver_and_nothing_is_fetched",
+     "file": "crates/workflow/tests/supply_chain/gate_run.rs"
+    },
+    {
+     "name": "negative_nt_sup_01_a_decision_for_another_version_starts_nothing",
+     "file": "crates/workflow/tests/supply_chain/gate_run.rs"
+    },
+    {
+     "name": "negative_nt_sup_01_a_name_absent_from_the_registry_needs_a_security_approver",
+     "file": "crates/workflow/tests/supply_chain/review.rs"
+    },
+    {
+     "name": "negative_nt_sup_01_a_package_first_published_three_days_ago_needs_a_security_approver",
+     "file": "crates/workflow/tests/supply_chain/review.rs"
+    },
+    {
+     "name": "negative_nt_sup_01_a_near_miss_of_a_popular_name_needs_a_security_approver",
+     "file": "crates/workflow/tests/supply_chain/review.rs"
+    },
+    {
+     "name": "negative_nt_sup_01_a_name_equal_to_an_internal_package_needs_a_security_approver",
+     "file": "crates/workflow/tests/supply_chain/review.rs"
+    },
+    {
+     "name": "negative_nt_sup_01_unknown_registry_facts_are_treated_as_the_worst_case",
+     "file": "crates/workflow/tests/supply_chain/review.rs"
+    },
+    {
+     "name": "negative_nt_sup_01_an_ordinary_package_still_needs_a_human",
+     "file": "crates/workflow/tests/supply_chain/review.rs"
+    },
+    {
+     "name": "negative_nt_sup_01_a_well_known_popular_package_new_to_the_repository_needs_a_human",
+     "file": "crates/workflow/tests/supply_chain/review.rs"
+    },
+    {
+     "name": "negative_nt_sup_01_a_name_on_the_organization_list_but_absent_from_the_lockfile_is_new",
+     "file": "crates/workflow/tests/supply_chain/review.rs"
+    },
+    {
+     "name": "negative_nt_sup_01_control_a_name_already_in_the_base_lockfile_asks_nobody",
+     "file": "crates/workflow/tests/supply_chain/review.rs"
+    },
+    {
+     "name": "negative_nt_sup_01_no_registry_fact_approves_anything",
+     "file": "crates/workflow/tests/supply_chain/review.rs"
+    },
+    {
+     "name": "negative_nt_sup_01_the_policy_has_no_automatic_approval_key",
+     "file": "crates/workflow/tests/supply_chain/review.rs"
+    },
+    {
+     "name": "negative_nt_sup_01_the_facts_the_human_sees_are_recorded",
+     "file": "crates/workflow/tests/supply_chain/review.rs"
+    },
+    {
+     "name": "negative_nt_sup_01_a_login_is_not_an_identity",
+     "file": "crates/workflow/tests/supply_chain/review.rs"
+    },
+    {
+     "name": "negative_nt_sup_01_an_approval_is_bound_to_the_exact_name_version_and_checksum",
+     "file": "crates/workflow/tests/supply_chain/review.rs"
+    }
+   ],
+   "control_off": []
+  },
+  {
+   "id": "NT-SUP-02",
+   "status": "control_off_missing",
+   "tests": [
+    {
+     "name": "negative_nt_sup_02_a_build_script_and_an_install_script_never_run_in_the_fetch_profile",
+     "file": "crates/workflow/tests/supply_chain/gate_run.rs"
+    },
+    {
+     "name": "negative_nt_sup_02_the_policy_denies_repository_code_and_installs_in_the_fetch_profile",
+     "file": "crates/workflow/tests/supply_chain/gate_run.rs"
+    },
+    {
+     "name": "negative_nt_sup_02_a_build_script_runs_only_in_the_verify_sandbox_which_has_no_network",
+     "file": "crates/workflow/tests/supply_chain/gate_run.rs"
+    }
+   ],
+   "control_off": []
+  },
+  {
+   "id": "NT-SUP-03",
+   "status": "control_off_missing",
+   "tests": [
+    {
+     "name": "negative_nt_sup_03_a_tampered_lockfile_fails_the_gate_and_makes_no_container",
+     "file": "crates/workflow/tests/supply_chain/gate_run.rs"
+    },
+    {
+     "name": "negative_nt_sup_03_a_git_dependency_and_a_patch_section_fail_the_gate",
+     "file": "crates/workflow/tests/supply_chain/gate_run.rs"
+    },
+    {
+     "name": "negative_nt_sup_03_a_lockfile_source_edit_fails",
+     "file": "crates/workflow/tests/supply_chain/integrity.rs"
+    },
+    {
+     "name": "negative_nt_sup_03_a_lockfile_checksum_edit_fails",
+     "file": "crates/workflow/tests/supply_chain/integrity.rs"
+    },
+    {
+     "name": "negative_nt_sup_03_a_git_dependency_fails",
+     "file": "crates/workflow/tests/supply_chain/integrity.rs"
+    },
+    {
+     "name": "negative_nt_sup_03_a_path_dependency_fails",
+     "file": "crates/workflow/tests/supply_chain/integrity.rs"
+    },
+    {
+     "name": "negative_nt_sup_03_a_lockfile_package_with_no_source_and_no_manifest_fails",
+     "file": "crates/workflow/tests/supply_chain/integrity.rs"
+    },
+    {
+     "name": "negative_nt_sup_03_a_patch_section_fails",
+     "file": "crates/workflow/tests/supply_chain/integrity.rs"
+    },
+    {
+     "name": "negative_nt_sup_03_a_replace_section_fails",
+     "file": "crates/workflow/tests/supply_chain/integrity.rs"
+    },
+    {
+     "name": "negative_nt_sup_03_an_alternate_registry_in_the_build_configuration_fails",
+     "file": "crates/workflow/tests/supply_chain/integrity.rs"
+    },
+    {
+     "name": "negative_nt_sup_03_an_alternate_registry_in_a_dependency_fails",
+     "file": "crates/workflow/tests/supply_chain/integrity.rs"
+    },
+    {
+     "name": "negative_nt_sup_03_the_hostile_fixture_build_configuration_fails",
+     "file": "crates/workflow/tests/supply_chain/integrity.rs"
+    }
+   ],
+   "control_off": []
+  },
+  {
+   "id": "NT-SUP-05",
+   "status": "control_off_missing",
+   "tests": [
+    {
+     "name": "negative_nt_sup_05_an_image_that_is_listed_but_not_on_this_host_is_refused",
+     "file": "crates/sandbox/tests/container/behavior.rs",
+     "needs": [
+      "docker"
+     ]
+    },
+    {
+     "name": "negative_nt_sup_05_a_tag_an_unknown_digest_or_a_missing_image_is_refused",
+     "file": "crates/sandbox/tests/scripted.rs"
+    }
+   ],
+   "control_off": []
+  },
+  {
+   "id": "NT-TEN-01",
+   "status": "control_off_missing",
+   "tests": [
+    {
+     "name": "negative_nt_ten_01",
+     "file": "crates/storage/tests/tenant_isolation.rs"
+    }
+   ],
+   "control_off": []
+  },
+  {
+   "id": "NT-TEN-05",
+   "status": "control_off_missing",
+   "tests": [
+    {
+     "name": "negative_nt_ten_05",
+     "file": "apps/api/tests/http_api.rs"
+    }
+   ],
+   "control_off": []
+  },
+  {
+   "id": "NT-TOOL-01",
+   "status": "control_off_missing",
+   "tests": [
+    {
+     "name": "negative_nt_tool_01_a_shell_string_is_a_literal_argument_and_a_shell_is_denied",
+     "file": "crates/domain/tests/policy/commands.rs"
+    },
+    {
+     "name": "negative_nt_tool_01_shell_metacharacters_are_literals_and_a_payload_runs_unprivileged",
+     "file": "crates/sandbox/tests/container/behavior.rs",
+     "needs": [
+      "docker"
+     ]
+    }
+   ],
+   "control_off": []
+  },
+  {
+   "id": "NT-TOOL-02",
+   "status": "control_off_missing",
+   "tests": [
+    {
+     "name": "negative_nt_tool_02_forbidden_command_class_matrix",
+     "file": "crates/domain/tests/policy/commands.rs"
+    }
+   ],
+   "control_off": []
+  },
+  {
+   "id": "NT-TOOL-03",
+   "status": "control_off_missing",
+   "tests": [
+    {
+     "name": "negative_nt_tool_03_unknown_never_grantable_and_self_granted_tools_are_refused",
+     "file": "crates/domain/tests/policy/tools.rs"
+    }
+   ],
+   "control_off": []
+  },
+  {
+   "id": "NT-TOOL-04",
+   "status": "control_off_missing",
+   "tests": [
+    {
+     "name": "negative_nt_tool_04_path_policy_refuses_traversal_encoding_and_hidden_files",
+     "file": "crates/domain/tests/policy/paths.rs"
+    },
+    {
+     "name": "negative_nt_tool_04_writes_outside_the_writable_mounts_and_protected_paths_are_refused",
+     "file": "crates/sandbox/tests/container/behavior.rs",
+     "needs": [
+      "docker"
+     ]
+    }
+   ],
+   "control_off": []
+  },
+  {
+   "id": "NT-TOOL-05",
+   "status": "control_off_missing",
+   "tests": [
+    {
+     "name": "negative_nt_tool_05_argument_injection_is_denied_by_forbidden_args",
+     "file": "crates/domain/tests/policy/commands.rs"
+    },
+    {
+     "name": "negative_nt_tool_05_argument_injection_changes_nothing_outside_the_sandbox",
+     "file": "crates/sandbox/tests/container/behavior.rs",
+     "needs": [
+      "docker"
+     ]
+    }
+   ],
+   "control_off": []
+  },
+  {
+   "id": "NT-TOOL-06",
+   "status": "control_off_missing",
+   "tests": [
+    {
+     "name": "negative_nt_tool_06_the_tools_environment_is_the_adapters_list_and_nothing_the_repository_or_agent_wrote",
+     "file": "crates/runtime/tests/negative.rs",
+     "needs": [
+      "docker"
+     ]
+    },
+    {
+     "name": "negative_nt_tool_06_a_container_created_with_a_loader_variable_is_not_a_target",
+     "file": "crates/runtime/tests/negative.rs",
+     "needs": [
+      "docker"
+     ]
+    },
+    {
+     "name": "negative_nt_tool_06_hostile_request_values_never_become_environment_names",
+     "file": "crates/runtime/tests/negative.rs"
+    }
+   ],
+   "control_off": []
+  },
+  {
+   "id": "NT-TOOL-07",
+   "status": "blocked",
+   "tests": [
+    {
+     "name": "negative_nt_tool_07_a_run_that_outlasts_its_deadline_is_interrupted_and_reports_what_it_has",
+     "file": "crates/runtime/tests/negative.rs",
+     "needs": [
+      "docker"
+     ]
+    },
+    {
+     "name": "negative_nt_tool_07_a_background_child_in_its_own_session_dies_with_the_container",
+     "file": "crates/runtime/tests/negative.rs",
+     "needs": [
+      "docker"
+     ]
+    },
+    {
+     "name": "negative_nt_tool_07_a_flood_of_output_is_cut_at_the_cap_and_the_run_still_ends",
+     "file": "crates/runtime/tests/negative.rs",
+     "needs": [
+      "docker"
+     ]
+    }
+   ],
+   "control_off": [],
+   "blocked": {
+    "kind": "docker",
+    "reason": "Every test of this row needs the Docker daemon, and `timeout 20 docker info` exits 124 on this machine. The tests exist and are registered; they have not run here, and a Docker test that cannot start is BLOCKED, never passed."
+   }
+  },
+  {
+   "id": "NT-TOOL-09",
+   "status": "control_off_missing",
+   "tests": [
+    {
+     "name": "negative_nt_tool_09_the_valid_document_is_accepted_so_the_rejections_below_mean_something",
+     "file": "crates/contracts/tests/validator_limits.rs"
+    },
+    {
+     "name": "negative_nt_tool_09_an_unknown_field_is_rejected_and_named",
+     "file": "crates/contracts/tests/validator_limits.rs"
+    },
+    {
+     "name": "negative_nt_tool_09_wrong_types_are_rejected",
+     "file": "crates/contracts/tests/validator_limits.rs"
+    },
+    {
+     "name": "negative_nt_tool_09_nesting_10000_deep_is_rejected_before_parsing",
+     "file": "crates/contracts/tests/validator_limits.rs"
+    },
+    {
+     "name": "negative_nt_tool_09_a_10_mb_body_is_rejected_for_its_size_without_being_read",
+     "file": "crates/contracts/tests/validator_limits.rs"
+    },
+    {
+     "name": "negative_nt_tool_09_invalid_utf8_is_rejected",
+     "file": "crates/contracts/tests/validator_limits.rs"
+    },
+    {
+     "name": "negative_nt_tool_09_a_traversal_path_is_rejected",
+     "file": "crates/contracts/tests/validator_limits.rs"
+    },
+    {
+     "name": "negative_nt_tool_09_duplicate_keys_and_trailing_data_are_rejected",
+     "file": "crates/contracts/tests/validator_limits.rs"
+    },
+    {
+     "name": "negative_nt_tool_09_messages_never_echo_what_the_document_said",
+     "file": "crates/contracts/tests/validator_limits.rs"
+    },
+    {
+     "name": "negative_nt_tool_09_a_value_that_is_too_deep_is_refused_by_the_port_without_recursion",
+     "file": "crates/contracts/tests/validator_limits.rs"
+    },
+    {
+     "name": "negative_nt_tool_09_the_port_refuses_a_large_value",
+     "file": "crates/contracts/tests/validator_limits.rs"
+    },
+    {
+     "name": "negative_nt_tool_09_every_valid_example_fits_the_default_limits",
+     "file": "crates/contracts/tests/validator_limits.rs"
+    },
+    {
+     "name": "negative_nt_tool_09_property_any_body_over_the_limit_is_too_large",
+     "file": "crates/contracts/tests/validator_limits.rs"
+    },
+    {
+     "name": "negative_nt_tool_09_property_nesting_is_refused_exactly_beyond_the_limit",
+     "file": "crates/contracts/tests/validator_limits.rs"
+    },
+    {
+     "name": "negative_nt_tool_09_property_arbitrary_bytes_never_panic",
+     "file": "crates/contracts/tests/validator_limits.rs"
+    },
+    {
+     "name": "negative_nt_tool_09_property_well_formed_documents_pass_the_pre_parse_checks",
+     "file": "crates/contracts/tests/validator_limits.rs"
+    }
+   ],
+   "control_off": []
+  },
+  {
+   "id": "NT-WEB-05",
+   "status": "control_off_missing",
+   "tests": [
+    {
+     "name": "negative_nt_web_05",
+     "file": "apps/api/tests/http_api.rs"
+    }
+   ],
+   "control_off": []
+  },
+  {
+   "id": "NT-WH-01",
+   "status": "control_off_missing",
+   "tests": [
+    {
+     "name": "negative_nt_wh_01",
+     "file": "apps/api/tests/webhook.rs"
+    }
+   ],
+   "control_off": []
+  },
+  {
+   "id": "NT-WH-02",
+   "status": "proven",
+   "tests": [
+    {
+     "name": "negative_nt_wh_02",
+     "file": "apps/api/tests/webhook.rs"
+    },
+    {
+     "name": "negative_nt_wh_02_every_forged_signature_is_refused_for_the_right_reason",
+     "file": "crates/github/tests/negative_webhooks.rs"
+    },
+    {
+     "name": "negative_nt_wh_02_the_signature_is_compared_with_a_constant_time_primitive",
+     "file": "crates/github/tests/negative_webhooks.rs"
+    }
+   ],
+   "control_off": [
+    {
+     "kind": "mutation",
+     "script": "crates/github/tests/mutations/run_mutations.py",
+     "name": "skip the signature comparison",
+     "catches": [
+      "negative_nt_wh_02_every_forged_signature_is_refused_for_the_right_reason",
+      "negative_nt_wh_02_the_signature_is_compared_with_a_constant_time_primitive"
+     ]
+    },
+    {
+     "kind": "mutation",
+     "script": "crates/github/tests/mutations/run_mutations.py",
+     "name": "accept a delivery that has only the legacy SHA-1 header",
+     "catches": [
+      "negative_nt_wh_02_every_forged_signature_is_refused_for_the_right_reason",
+      "negative_nt_wh_02_the_signature_is_compared_with_a_constant_time_primitive"
+     ]
+    }
+   ]
+  },
+  {
+   "id": "NT-WH-03",
+   "status": "control_off_missing",
+   "tests": [
+    {
+     "name": "negative_nt_wh_03_the_raw_body_decides_and_the_body_is_read_only_after_it",
+     "file": "crates/github/tests/negative_webhooks.rs"
+    }
+   ],
+   "control_off": []
+  },
+  {
+   "id": "NT-WH-04",
+   "status": "control_off_missing",
+   "tests": [
+    {
+     "name": "negative_nt_wh_04",
+     "file": "apps/api/tests/webhook.rs"
+    }
+   ],
+   "control_off": [],
+   "note": "Covered: one job and one outbox row for fifty concurrent deliveries of one signed request. Not covered (gap, Slice 2): publishing to NATS and the idempotent consumer."
+  },
+  {
+   "id": "NT-WH-06",
+   "status": "proven",
+   "tests": [
+    {
+     "name": "negative_nt_wh_06_the_payload_is_a_hint_and_the_live_state_decides",
+     "file": "crates/github/tests/negative_webhooks.rs"
+    }
+   ],
+   "control_off": [
+    {
+     "kind": "mutation",
+     "script": "crates/github/tests/mutations/run_mutations.py",
+     "name": "identify a person by the login and not by the numeric id",
+     "catches": [
+      "negative_nt_wh_06_the_payload_is_a_hint_and_the_live_state_decides"
+     ]
+    }
+   ]
+  },
+  {
+   "id": "NT-WH-09",
+   "status": "control_off_missing",
+   "tests": [
+    {
+     "name": "negative_nt_wh_09_the_factorys_own_events_and_other_bots_events_are_ignored",
+     "file": "crates/github/tests/negative_webhooks.rs"
+    }
+   ],
+   "control_off": []
+  }
+ ]
+}

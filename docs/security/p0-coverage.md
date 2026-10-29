@@ -1,0 +1,246 @@
+# P0 coverage matrix
+
+Status: GENERATED from [`p0-coverage.json`](p0-coverage.json) by `docs/security/tools/check_p0_coverage.py`. Do not edit the matrix by hand.
+Form: reference.
+Owner: the `s1-security-review-and-tests` work package. An independent review of the matrix and of its checker has not happened yet.
+
+## What this page is for
+
+The [negative test catalog](negative-test-catalog.md) lists every test that must pass before Slice 1 is accepted (priority P0). Principle 2 of the catalog says that every test must be able to fail: there has to be a variant of it with its control switched off, and the test has to fail on that variant. This page maps each P0 test to four things, so that a reader can see what is real and what is not:
+
+1. the owner of the test (a work package in [`work-packages.json`](../architecture/work-packages.json) and a crate);
+2. the tests in the repository that implement it, by function name;
+3. the control-off variant: a mutation that removes the control from the production source, or a break test that does the same through a seam;
+4. the status.
+
+## How to read the status
+
+| Status | Meaning |
+|---|---|
+| implemented, control-off proven | At least one test of the row runs without Docker or a live provider, and the row names a control-off variant that exists and is said to make a test of the row fail. A mutation shows when it was last run in this review. |
+| implemented, control-off missing | The test exists and runs, and nothing in the repository removes its control to show it fails. This is a gap in the evidence, not in the control. |
+| BLOCKED | Every test of the row needs Docker or a live provider that this machine does not have. The tests exist; they did not run here, and a test that did not run has not passed. |
+| missing | The repository holds no test with the catalog name. |
+
+The checker proves what a file can prove: the row exists, every named test is defined in the named file, every named mutation is defined in its script, every named break test exists, and a status never claims more than the evidence under it. It does not run a build. A mutation script rebuilds the crate for each break, so the scripts are run by hand and their results are recorded in `mutation_runs` of the data file, which is how "run in this review" below is known.
+
+## The check
+
+```console
+python3 -I docs/security/tools/check_p0_coverage.py --check
+python3 -I docs/security/tools/check_p0_coverage.py --write
+```
+
+The first command fails when a P0 test of the catalog has no row, when a row points to a test that is not in the source, when a row claims a control-off variant that does not exist, and when this page is out of date. The CI step is `scripts/ci/steps.d/49-p0-coverage.step`. The command is cheap and needs no Docker.
+
+## Matrix
+
+<!-- GENERATED:begin matrix -->
+| Status | Count |
+|---|---|
+| implemented, control-off proven | 5 |
+| implemented, control-off missing | 69 |
+| BLOCKED | 9 |
+| missing | 5 |
+| P0 tests of the catalog | 88 |
+
+### The matrix
+
+| Test | Title | Owner (work package, crate) | Tests in the repository | Control-off variant | Status |
+|---|---|---|---|---|---|
+| NT-AUD-01 | Append-only audit | s1-storage-postgres, storage | `negative_nt_aud_01` | none | implemented, control-off missing |
+| NT-AUD-03 | Coverage | s1-security-review-and-tests, workflow (partial) | none | none | missing |
+| NT-AUTHZ-01 | Unauthorized label | s1-stage-intake-and-repository, workflow | `negative_nt_authz_01_only_the_numeric_id_on_the_allowlist_grants_a_designation`<br>`negative_nt_authz_01_the_actor_is_the_numeric_id_and_a_lookalike_login_is_a_different_p…`<br>`negative_nt_authz_01_a_label_that_came_with_issue_creation_names_its_author`<br>and 5 more | mutation `identify a person by the login and not by the numeric id`, not run in this review | implemented, control-off proven |
+| NT-AUTHZ-02 | Command by an unauthorized user | s1-stage-delivery-and-approval, workflow | `negative_nt_authz_02_a_command_comment_arrives_with_its_authors_numeric_id`<br>`negative_nt_authz_02_an_unauthorized_command_is_audited_and_gets_no_reply`<br>`negative_nt_authz_02_a_sender_who_may_not_decide_is_refused_without_a_reply` | none | implemented, control-off missing |
+| NT-AUTHZ-05 | Issue edited after authorization | s1-stage-intake-and-repository, workflow | `negative_nt_authz_05_an_edit_after_the_snapshot_waits_for_the_requester_and_no_agent_re…`<br>`negative_nt_authz_05_the_stage_refuses_an_edited_request_nobody_confirmed` | none | implemented, control-off missing |
+| NT-AUTHZ-06 | Token narrowing across repositories | s1-github-adapter, github | `negative_nt_authz_06_a_token_is_minted_for_one_repository_and_nothing_else_is_reachable`<br>`negative_nt_authz_06_a_token_that_is_wider_than_the_request_is_revoked_and_refused` | mutation `use an over-broad token without looking`, not run in this review | implemented, control-off proven |
+| NT-AUTHZ-07 | Stage-scoped permissions | s1-github-adapter, github | `negative_nt_authz_07_every_stage_gets_exactly_its_permissions_and_only_delivery_writes_…`<br>`negative_nt_authz_07_a_read_only_token_cannot_comment_or_open_a_pull_request` | mutation `let a stage that may not write get the write credential`, not run in this review | implemented, control-off proven |
+| NT-AUTHZ-08 | Unknown tenant binding | s1-apps-composition, api | `negative_nt_authz_08` | none | implemented, control-off missing |
+| NT-AUTHZ-09 | App permission audit | s1-github-adapter, github | `negative_nt_authz_09_an_app_that_holds_a_forbidden_permission_gets_no_token`<br>`negative_nt_authz_09_an_app_that_lacks_a_required_permission_is_capped` | none | implemented, control-off missing |
+| NT-BUD-01 | Per-task cost ceiling | s1-egress-and-broker, egress | `negative_nt_bud_01_per_task_cost_ceiling_stops_a_looping_client`<br>`negative_nt_bud_01_a_run_over_its_limit_is_not_retried` | none | implemented, control-off missing |
+| NT-BUD-03 | Turns, tool calls, stagnation | s1-engine-core, workflow (partial) | `negative_nt_bud_03_a_repeated_failure_asks_a_person_after_one_round` | none | implemented, control-off missing |
+| NT-BUD-07 | CLI budget ignored, revocation latency | s1-egress-and-broker, egress | `negative_nt_bud_07_a_tool_that_ignores_its_budget_is_still_stopped_and_counted`<br>`negative_nt_bud_07_a_turn_cap_stops_a_tool_that_has_no_turn_limit_of_its_own`<br>`negative_nt_bud_07_failed_attempts_are_counted_per_attempt` | none | implemented, control-off missing |
+| NT-GATE-01 | Test code is additions-only | s1-trusted-gates-and-validation, workflow | `negative_nt_gate_01_the_builder_weakens_a_test_or_edits_a_fixture`<br>`negative_nt_gate_01_a_new_test_file_and_an_appended_test_pass_the_path_rule`<br>`negative_nt_gate_01_a_changed_removed_deleted_or_renamed_test_is_blocked_by_its_group` | none | implemented, control-off missing |
+| NT-GATE-02 | Removed, ignored or skipped tests | s1-trusted-gates-and-validation, workflow | `negative_nt_gate_02_a_test_removed_or_ignored_inside_a_source_file_is_found_at_the_sour…`<br>`negative_nt_gate_02_skip_xfail_and_focus_markers_in_new_files_are_found`<br>`negative_nt_gate_02_a_test_missing_from_the_run_of_the_candidate_is_found_by_the_baseli…`<br>and 1 more | none | implemented, control-off missing |
+| NT-GATE-03 | CI, gate and instruction file edits | s1-trusted-gates-and-validation, workflow | `negative_nt_gate_03_the_builder_edits_ci_and_gate_files`<br>`negative_nt_gate_03_each_ci_gate_and_instruction_file_edit_fails_before_any_gate_runs`<br>`negative_nt_gate_03_deleting_a_protected_file_is_refused_too`<br>and 1 more | none | implemented, control-off missing |
+| NT-GATE-04 | Path normalization and rename tricks | s1-policy-evaluation, domain | `negative_nt_gate_04_every_rename_and_normalization_trick_is_blocked_with_its_group`<br>`negative_nt_gate_04_every_path_trick_is_refused_with_its_group_and_the_controls_are_not`<br>`negative_nt_gate_04_the_tricks_that_a_repository_can_hold_fail_the_whole_stage` | none | implemented, control-off missing |
+| NT-GATE-05 | Builder-supplied gates are ignored | s1-trusted-gates-and-validation, workflow | `negative_nt_gate_05_the_builders_gate_files_do_not_change_what_runs`<br>`negative_nt_gate_05_an_edit_of_the_gate_definitions_fails_the_protected_path_gate`<br>`negative_nt_gate_05_a_test_target_without_the_harness_is_found` | none | implemented, control-off missing |
+| NT-GATE-06 | Fabricated evidence | s1-trusted-gates-and-validation, workflow | `negative_nt_gate_06_a_forged_report_does_not_hide_a_failing_test`<br>`negative_nt_gate_06_a_forged_summary_with_exit_code_zero_is_not_accepted` | none | implemented, control-off missing |
+| NT-GATE-07 | Missing evidence is BLOCKED | s1-trusted-gates-and-validation, workflow | `negative_nt_gate_07_a_missing_build_tool_blocks_the_checks_that_need_it`<br>`negative_nt_gate_07_a_missing_diagram_parser_is_blocked_and_never_passed`<br>`negative_nt_gate_07_a_test_command_that_is_not_found_is_blocked`<br>and 6 more | none | implemented, control-off missing |
+| NT-GATE-08 | Holdout visibility | s1-workspace-ingestion, sandbox (partial) | `negative_nt_gate_08_the_holdout_is_invisible_to_the_agent_and_present_in_verify`<br>`negative_nt_gate_08_the_holdout_is_read_only_in_verify_and_a_clean_run_ingests` [Docker] | none | implemented, control-off missing |
+| NT-GATE-10 | Evidence binding and flaky retries | s1-trusted-gates-and-validation, workflow | `negative_nt_gate_10_evidence_for_one_commit_does_not_count_for_another`<br>`negative_nt_gate_10_a_changed_policy_or_image_makes_the_evidence_stale`<br>`negative_nt_gate_10_a_test_that_fails_once_and_is_not_in_the_flaky_registry_is_failed`<br>and 1 more | none | implemented, control-off missing |
+| NT-INJ-01 | Compromised model obeys issue text | s1-security-review-and-tests, workflow | none | none | missing |
+| NT-INJ-02 | Envelope hardening | s1-prompt-assembly, workflow | `negative_nt_inj_02_a_path_cannot_carry_text_into_the_instruction`<br>`negative_nt_inj_02_envelope_hardening` | none | implemented, control-off missing |
+| NT-INJ-03 | Repository document injection | s1-security-review-and-tests, workflow | `negative_nt_inj_03_hostile_text_in_a_code_comment_gives_the_writer_no_authority` | none | implemented, control-off missing |
+| NT-INJ-04 | Tool-output injection | s1-security-review-and-tests, workflow | none | none | missing |
+| NT-INJ-06 | Reviewer manipulation and isolation | s1-stage-implementation-and-review, workflow | `negative_nt_inj_06_a_reviewer_pass_does_not_override_a_failed_gate`<br>`negative_nt_inj_06_a_reviewer_pass_cannot_override_a_failed_gate` | none | implemented, control-off missing |
+| NT-INJ-07 | Repository-resident agent configuration | s1-agent-runtime-adapters, runtime | `negative_nt_inj_07_claude_code_ignores_the_repositorys_hooks_servers_settings_and_instr…` [Docker]<br>`negative_nt_inj_07_codex_ignores_the_repositorys_provider_and_instruction_files` [Docker] | none | BLOCKED (docker) |
+| NT-LSE-01 | Stale worker fencing | s1-engine-core, workflow | `negative_nt_lse_01_a_stale_worker_that_comes_back_changes_nothing`<br>`negative_nt_lse_01_a_stale_worker_makes_no_commit` | none | implemented, control-off missing |
+| NT-LSE-02 | Claim race and forged renewal | s1-storage-postgres, storage | none | none | missing |
+| NT-LSE-03 | Idempotent side effects | s1-stage-delivery-and-approval, workflow | `negative_nt_lse_03_a_retry_after_a_lost_answer_makes_one_pull_request`<br>`negative_nt_lse_03_a_retry_after_a_lost_answer_posts_one_comment_per_key`<br>`negative_nt_lse_03_a_marker_pasted_by_someone_else_does_not_stop_the_factory_from_repor…`<br>and 2 more | none | implemented, control-off missing |
+| NT-MRG-01 | Failing gate | s1-stage-delivery-and-approval, workflow | `negative_nt_mrg_01_a_failing_gate_refuses_approval_and_nothing_reaches_the_host`<br>`negative_nt_mrg_01_a_gate_that_is_not_clear_refuses_the_approval` | none | implemented, control-off missing |
+| NT-MRG-02 | Missing, blocked or stale gates | s1-engine-core, workflow | `negative_nt_mrg_02_missing_or_blocked_evidence_never_passes_a_stage`<br>`negative_nt_mrg_02_an_approval_of_stale_evidence_is_refused` | none | implemented, control-off missing |
+| NT-MRG-03 | Head moves after approval | s1-stage-delivery-and-approval, workflow | `negative_nt_mrg_03_the_head_moving_after_approval_invalidates_the_approval`<br>`negative_nt_mrg_03_a_refusal_for_a_moved_head_also_ends_the_approvals_on_record`<br>`negative_nt_mrg_03_the_second_approver_alone_does_not_pass_a_critical_change` | none | implemented, control-off missing |
+| NT-MRG-05 | Auto-merge and deploy are off | s1-stage-delivery-and-approval, workflow | `negative_nt_mrg_05_there_is_no_verb_for_merge_deploy_or_ready` | none | implemented, control-off missing |
+| NT-MRG-06 | Self and bot approval | s1-stage-delivery-and-approval, workflow | `negative_nt_mrg_06_a_bot_an_app_and_the_requester_on_a_risky_change_do_not_count` | none | implemented, control-off missing |
+| NT-MRG-07 | Repository protection preflight | s1-github-adapter, github | `negative_nt_mrg_07_a_repository_that_does_not_meet_the_requirements_runs_at_l0`<br>`negative_nt_mrg_07_the_app_holding_workflows_is_refused_and_nothing_is_pushed` | none | implemented, control-off missing |
+| NT-MRG-08 | The factory never marks a pull request ready | s1-stage-delivery-and-approval, workflow | `negative_nt_mrg_08_the_pull_request_stays_a_draft` | none | implemented, control-off missing |
+| NT-POL-01 | Policy source | s0-contracts-and-registry, contracts | `negative_nt_pol_01_a_checkout_inside_a_job_workspace_is_refused`<br>`negative_nt_pol_01_a_link_into_an_untrusted_place_is_resolved_and_refused`<br>`negative_nt_pol_01_a_policy_file_that_is_a_symbolic_link_is_refused`<br>and 4 more | none | implemented, control-off missing |
+| NT-POL-02 | Tighten-only overrides | s1-policy-evaluation, domain | `negative_nt_pol_02_each_widening_is_refused_and_names_its_key`<br>`negative_nt_pol_02_widenings_of_the_approval_policy_are_refused_too`<br>`negative_nt_pol_02_tightenings_are_accepted`<br>and 1 more | none | implemented, control-off missing |
+| NT-POL-03 | Schema strictness | s0-contracts-and-registry, contracts | `negative_nt_pol_03_control_the_unchanged_files_load_from_a_temporary_checkout`<br>`negative_nt_pol_03_an_unknown_key_is_refused_at_any_depth_and_named`<br>`negative_nt_pol_03_a_wrong_schema_version_is_refused_before_anything_else`<br>and 9 more | none | implemented, control-off missing |
+| NT-POL-04 | Deny overrides and the exception flow | s1-policy-evaluation, domain | `negative_nt_pol_04_a_protected_change_is_accepted_only_with_all_three_elements`<br>`negative_nt_pol_04_a_protected_group_beats_write_allow`<br>`negative_nt_pol_04_a_protected_change_needs_all_three_elements`<br>and 1 more | none | implemented, control-off missing |
+| NT-POL-05 | Specification prose is not authorization | s1-spec-adapter-and-stage, spec_adapter | `negative_nt_pol_05_an_issue_body_that_asks_for_another_skill_cannot_select_one`<br>`negative_nt_pol_05_specification_text_that_claims_authorization_grants_nothing`<br>`negative_nt_pol_05_a_writer_that_arrives_approved_is_refused`<br>and 1 more | none | implemented, control-off missing |
+| NT-POL-08 | Stage tool profile denies forbidden Spec Kit skills | s1-spec-adapter-and-stage, spec_adapter | `negative_nt_pol_08_the_specification_stage_may_run_four_skills_in_any_spelling_and_no_o…` | none | implemented, control-off missing |
+| NT-SBX-01 | Posture verifier rejects forbidden settings | s1-sandbox-adapter, sandbox | `negative_nt_sbx_01_each_forbidden_setting_is_refused_before_the_start`<br>`negative_nt_sbx_01_a_container_the_policy_allows_is_started_after_the_inspect` | none | implemented, control-off missing |
+| NT-SBX-02 | Runtime self-check | s1-sandbox-adapter, sandbox | `negative_nt_sbx_02_each_bad_runtime_value_keeps_the_workload_from_starting` | none | implemented, control-off missing |
+| NT-SBX-03 | Network none | s1-sandbox-adapter, sandbox | `negative_nt_sbx_03_the_verify_profile_has_no_network` [Docker] | none | BLOCKED (docker) |
+| NT-SBX-04 | Internal network isolation | s1-sandbox-adapter, sandbox | `negative_nt_sbx_04_an_agent_on_its_job_network_reaches_no_other_job_no_external_address…` [Docker] | none | BLOCKED (docker) |
+| NT-SBX-05 | Egress sidecar allowlist | s1-egress-and-broker, egress | `negative_nt_sbx_05_a_host_that_is_not_on_the_list_is_refused_before_it_is_resolved`<br>`negative_nt_sbx_05_a_name_that_resolves_to_an_internal_address_is_refused_after_resolut…`<br>`negative_nt_sbx_05_a_rebinding_answer_cannot_redirect_a_connection_that_was_checked`<br>and 3 more | none | implemented, control-off missing |
+| NT-SBX-06 | Read-only root, tmpfs, capabilities, kernel paths | s1-sandbox-adapter, sandbox | `negative_nt_sbx_06_read_only_root_tmpfs_capabilities_and_masked_paths_hold` [Docker] | none | BLOCKED (docker) |
+| NT-SBX-07 | Resource limits | s1-sandbox-adapter, sandbox | `negative_nt_sbx_07_resource_limits_are_in_effect_and_a_memory_hog_is_killed` [Docker]<br>`negative_nt_sbx_07_the_disk_poll_kills_a_writer_that_passes_its_cap` [Docker] | none | BLOCKED (docker) |
+| NT-SBX-08 | Wall-clock deadline | s1-sandbox-adapter, sandbox | `negative_nt_sbx_08_the_supervisor_kills_the_container_at_the_wall_clock` [Docker] | none | BLOCKED (docker) |
+| NT-SBX-09 | Ingestion hardening | s1-workspace-ingestion, sandbox | `negative_nt_sbx_09_a_real_sandbox_plants_hostile_entries_and_the_audit_rejects_them` [Docker]<br>`negative_nt_sbx_09_every_hostile_entry_is_rejected_with_its_reason`<br>`negative_nt_sbx_09_a_link_to_a_host_canary_is_never_read`<br>and 1 more | none | implemented, control-off missing |
+| NT-SBX-10 | Hostile git | s1-workspace-ingestion, sandbox | `negative_nt_sbx_10_hostile_git_configuration_runs_nothing_on_the_host` | none | implemented, control-off missing |
+| NT-SBX-11 | Protected overlay and hidden paths | s1-workspace-ingestion, sandbox | `negative_nt_sbx_11_the_mount_points_exist_and_a_hidden_write_fails_the_job`<br>`negative_nt_sbx_11_moving_a_protected_directory_is_not_stopped_inside_and_is_blocked_at…` [Docker] | none | implemented, control-off missing |
+| NT-SBX-12 | No daemon access | s1-sandbox-adapter, sandbox | `negative_nt_sbx_12_no_daemon_socket_is_reachable_and_none_can_be_mounted` [Docker] | none | BLOCKED (docker) |
+| NT-SBX-13 | Credential isolation | s1-sandbox-adapter, sandbox | `negative_nt_sbx_13_the_job_token_is_a_file_and_no_other_credential_is_anywhere` [Docker] | none | BLOCKED (docker) |
+| NT-SBX-14 | Fail closed | s1-sandbox-adapter, sandbox | `negative_nt_sbx_14_a_stopped_daemon_a_missing_image_and_a_skeleton_sidecar_run_nothing` [Docker]<br>`negative_nt_sbx_14_a_stopped_daemon_a_bad_catalog_and_a_failed_sidecar_run_nothing` | none | implemented, control-off missing |
+| NT-SBX-17 | Model broker forwards no provider-side tool, remote server or fetched content (T-17) | s1-egress-and-broker, egress | `negative_nt_sbx_17_the_requests_of_the_real_tools_pass_unchanged`<br>`negative_nt_sbx_17_history_blocks_of_a_long_session_pass`<br>`negative_nt_sbx_17_every_refused_shape_gets_a_fixed_answer_an_audit_event_and_no_provid…`<br>and 6 more | none | implemented, control-off missing |
+| NT-SEC-01 | Canary sweep of a full job | s1-security-review-and-tests, workflow (partial) | none | none | missing |
+| NT-SEC-02 | Redaction evasion | s1-redaction, domain | `negative_nt_sec_02_a_token_split_over_two_writes_is_redacted`<br>`negative_nt_sec_02_terminal_codes_between_the_characters_do_not_hide_a_token`<br>`negative_nt_sec_02_control_bytes_between_the_characters_do_not_hide_a_token`<br>and 6 more | none | implemented, control-off missing |
+| NT-SEC-03 | GitHub-bound text is blocked | s1-github-adapter, github | `negative_nt_sec_03_text_with_a_secret_is_blocked_everywhere_and_nothing_is_sent` | none | implemented, control-off missing |
+| NT-SEC-04 | Markdown exfiltration | s1-github-adapter, github | `negative_nt_sec_04_markdown_cannot_carry_data_out_through_any_path_to_the_code_host`<br>`negative_nt_sec_04_a_body_over_the_length_cap_is_refused_and_not_cut`<br>`negative_nt_sec_04_hostile_text_does_not_reach_the_pull_request`<br>and 1 more | none | implemented, control-off missing |
+| NT-SEC-05 | Secrets in the diff | s1-trusted-gates-and-validation, workflow | `negative_nt_sec_05_a_secret_in_a_document_is_refused_before_the_commit`<br>`negative_nt_sec_05_unsafe_entries_and_secrets_in_the_tree_are_refused`<br>`negative_nt_sec_05_a_token_in_source_blocks_the_change_and_its_text_is_never_kept`<br>and 4 more | none | implemented, control-off missing |
+| NT-SEC-07 | Context builder | s1-stage-intake-and-repository, workflow | `negative_nt_sec_07_secret_bearing_files_are_not_read_and_nothing_secret_reaches_context` | none | implemented, control-off missing |
+| NT-SEC-09 | Process arguments and environment | s1-sandbox-adapter, sandbox | `negative_nt_sec_09_the_adapter_starts_no_process_and_prints_no_credential`<br>`negative_nt_sec_09_the_recorded_processes_hold_no_secret_and_start_no_shell` [Docker]<br>`negative_nt_sec_09_no_argument_or_environment_holds_the_job_token` | none | implemented, control-off missing |
+| NT-SEC-10 | Token revocation | s1-github-adapter, github | `negative_nt_sec_10_tokens_are_revoked_when_a_job_succeeded_failed_was_cancelled_or_was_…`<br>`negative_nt_sec_10_a_running_job_keeps_its_tokens_through_the_sweep`<br>`negative_nt_sec_10_a_revocation_that_fails_is_kept_and_retried` | none | implemented, control-off missing |
+| NT-SEC-11 | Model-context exclusions | s1-prompt-assembly, workflow | `negative_nt_sec_11_model_context_exclusions`<br>`negative_nt_sec_11_reviewer_inputs_hold_no_builder_justification` | none | implemented, control-off missing |
+| NT-SUP-01 | Slopsquat and typosquat requests | s1-supply-chain-gates, workflow | `negative_nt_sup_01_nothing_is_fetched_before_the_decision`<br>`negative_nt_sup_01_a_package_no_one_knows_goes_to_a_security_approver_and_nothing_is_fe…`<br>`negative_nt_sup_01_a_decision_for_another_version_starts_nothing`<br>and 14 more | none | implemented, control-off missing |
+| NT-SUP-02 | Install and build scripts | s1-supply-chain-gates, workflow | `negative_nt_sup_02_a_build_script_and_an_install_script_never_run_in_the_fetch_profile`<br>`negative_nt_sup_02_the_policy_denies_repository_code_and_installs_in_the_fetch_profile`<br>`negative_nt_sup_02_a_build_script_runs_only_in_the_verify_sandbox_which_has_no_network` | none | implemented, control-off missing |
+| NT-SUP-03 | Lockfile and source tampering | s1-supply-chain-gates, workflow | `negative_nt_sup_03_a_tampered_lockfile_fails_the_gate_and_makes_no_container`<br>`negative_nt_sup_03_a_git_dependency_and_a_patch_section_fail_the_gate`<br>`negative_nt_sup_03_a_lockfile_source_edit_fails`<br>and 9 more | none | implemented, control-off missing |
+| NT-SUP-05 | Image pinning | s1-sandbox-adapter, sandbox | `negative_nt_sup_05_an_image_that_is_listed_but_not_on_this_host_is_refused` [Docker]<br>`negative_nt_sup_05_a_tag_an_unknown_digest_or_a_missing_image_is_refused` | none | implemented, control-off missing |
+| NT-TEN-01 | Row-level security | s1-storage-postgres, storage | `negative_nt_ten_01` | none | implemented, control-off missing |
+| NT-TEN-05 | API object references | s1-apps-composition, api | `negative_nt_ten_05` | none | implemented, control-off missing |
+| NT-TOOL-01 | No shell interpretation | s1-sandbox-adapter, sandbox | `negative_nt_tool_01_a_shell_string_is_a_literal_argument_and_a_shell_is_denied`<br>`negative_nt_tool_01_shell_metacharacters_are_literals_and_a_payload_runs_unprivileged` [Docker] | none | implemented, control-off missing |
+| NT-TOOL-02 | Forbidden command class matrix | s1-policy-evaluation, domain | `negative_nt_tool_02_forbidden_command_class_matrix` | none | implemented, control-off missing |
+| NT-TOOL-03 | Unknown tools, never-grantable tools, self-grant | s1-policy-evaluation, domain | `negative_nt_tool_03_unknown_never_grantable_and_self_granted_tools_are_refused` | none | implemented, control-off missing |
+| NT-TOOL-04 | Path policy | s1-policy-evaluation, domain | `negative_nt_tool_04_path_policy_refuses_traversal_encoding_and_hidden_files`<br>`negative_nt_tool_04_writes_outside_the_writable_mounts_and_protected_paths_are_refused` [Docker] | none | implemented, control-off missing |
+| NT-TOOL-05 | Argument injection | s1-policy-evaluation, domain | `negative_nt_tool_05_argument_injection_is_denied_by_forbidden_args`<br>`negative_nt_tool_05_argument_injection_changes_nothing_outside_the_sandbox` [Docker] | none | implemented, control-off missing |
+| NT-TOOL-06 | Environment injection | s1-agent-runtime-adapters, runtime | `negative_nt_tool_06_the_tools_environment_is_the_adapters_list_and_nothing_the_reposito…` [Docker]<br>`negative_nt_tool_06_a_container_created_with_a_loader_variable_is_not_a_target` [Docker]<br>`negative_nt_tool_06_hostile_request_values_never_become_environment_names` | none | implemented, control-off missing |
+| NT-TOOL-07 | Output flood, timeout, process group | s1-agent-runtime-adapters, runtime | `negative_nt_tool_07_a_run_that_outlasts_its_deadline_is_interrupted_and_reports_what_it…` [Docker]<br>`negative_nt_tool_07_a_background_child_in_its_own_session_dies_with_the_container` [Docker]<br>`negative_nt_tool_07_a_flood_of_output_is_cut_at_the_cap_and_the_run_still_ends` [Docker] | none | BLOCKED (docker) |
+| NT-TOOL-09 | Structured output abuse | s0-contracts-and-registry, contracts | `negative_nt_tool_09_the_valid_document_is_accepted_so_the_rejections_below_mean_somethi…`<br>`negative_nt_tool_09_an_unknown_field_is_rejected_and_named`<br>`negative_nt_tool_09_wrong_types_are_rejected`<br>and 13 more | none | implemented, control-off missing |
+| NT-WEB-05 | API authentication | s1-apps-composition, api | `negative_nt_web_05` | none | implemented, control-off missing |
+| NT-WH-01 | Missing signature | s1-apps-composition, api | `negative_nt_wh_01` | none | implemented, control-off missing |
+| NT-WH-02 | Invalid signatures | s1-github-adapter, github | `negative_nt_wh_02`<br>`negative_nt_wh_02_every_forged_signature_is_refused_for_the_right_reason`<br>`negative_nt_wh_02_the_signature_is_compared_with_a_constant_time_primitive` | mutation `skip the signature comparison`, not run in this review<br>mutation `accept a delivery that has only the legacy SHA-1 header`, not run in this review | implemented, control-off proven |
+| NT-WH-03 | Raw body is used | s1-github-adapter, github | `negative_nt_wh_03_the_raw_body_decides_and_the_body_is_read_only_after_it` | none | implemented, control-off missing |
+| NT-WH-04 | Replay of one delivery | s1-apps-composition, api (partial) | `negative_nt_wh_04` | none | implemented, control-off missing |
+| NT-WH-06 | Out-of-order events and payload as a hint | s1-github-adapter, github | `negative_nt_wh_06_the_payload_is_a_hint_and_the_live_state_decides` | mutation `identify a person by the login and not by the numeric id`, not run in this review | implemented, control-off proven |
+| NT-WH-09 | Self-generated events | s1-github-adapter, github | `negative_nt_wh_09_the_factorys_own_events_and_other_bots_events_are_ignored` | none | implemented, control-off missing |
+
+### BLOCKED
+
+Each of these needs something this machine does not have. A test in this list has not passed here and is not counted as a pass.
+
+- **NT-INJ-07** Every test of this row needs the Docker daemon, and `timeout 20 docker info` exits 124 on this machine. The tests exist and are registered; they have not run here, and a Docker test that cannot start is BLOCKED, never passed.
+- **NT-SBX-03** Every test of this row needs the Docker daemon, and `timeout 20 docker info` exits 124 on this machine. The tests exist and are registered; they have not run here, and a Docker test that cannot start is BLOCKED, never passed.
+- **NT-SBX-04** Every test of this row needs the Docker daemon, and `timeout 20 docker info` exits 124 on this machine. The tests exist and are registered; they have not run here, and a Docker test that cannot start is BLOCKED, never passed.
+- **NT-SBX-06** Every test of this row needs the Docker daemon, and `timeout 20 docker info` exits 124 on this machine. The tests exist and are registered; they have not run here, and a Docker test that cannot start is BLOCKED, never passed.
+- **NT-SBX-07** Every test of this row needs the Docker daemon, and `timeout 20 docker info` exits 124 on this machine. The tests exist and are registered; they have not run here, and a Docker test that cannot start is BLOCKED, never passed.
+- **NT-SBX-08** Every test of this row needs the Docker daemon, and `timeout 20 docker info` exits 124 on this machine. The tests exist and are registered; they have not run here, and a Docker test that cannot start is BLOCKED, never passed.
+- **NT-SBX-12** Every test of this row needs the Docker daemon, and `timeout 20 docker info` exits 124 on this machine. The tests exist and are registered; they have not run here, and a Docker test that cannot start is BLOCKED, never passed.
+- **NT-SBX-13** Every test of this row needs the Docker daemon, and `timeout 20 docker info` exits 124 on this machine. The tests exist and are registered; they have not run here, and a Docker test that cannot start is BLOCKED, never passed.
+- **NT-TOOL-07** Every test of this row needs the Docker daemon, and `timeout 20 docker info` exits 124 on this machine. The tests exist and are registered; they have not run here, and a Docker test that cannot start is BLOCKED, never passed.
+
+### Missing
+
+Each of these P0 tests has no test of the catalog name in the repository.
+
+- **NT-AUD-03** Covered: a scripted scenario for each of the fourteen required types, checked for actor, policy hash and correlation id, and the owner matrix in the data file. Not covered (gap): a production emitter for the types the source scan shows have none yet; the matrix names them.
+- **NT-INJ-01**
+- **NT-INJ-04**
+- **NT-LSE-02**
+- **NT-SEC-01** Covered: the canary sweep of a full fixture job. Not covered (gap, Slice 2 and Slice 4): NATS messages and memory stores as sinks, which do not exist yet.
+
+### Implemented, control-off missing
+
+Each of these tests exists and runs, and nothing in the repository shows that it fails when its control is removed.
+
+- **NT-AUD-01**
+- **NT-AUTHZ-02**
+- **NT-AUTHZ-05**
+- **NT-AUTHZ-08**
+- **NT-AUTHZ-09**
+- **NT-BUD-01**
+- **NT-BUD-03** Covered: the engine detects stagnation and escalates to a person. Not covered (gap, needs a decision): a turn cap on the agent tool, because neither accepted CLI has a turn cap flag and only the broker request count could supply one.
+- **NT-BUD-07**
+- **NT-GATE-01**
+- **NT-GATE-02**
+- **NT-GATE-03**
+- **NT-GATE-04**
+- **NT-GATE-05**
+- **NT-GATE-06**
+- **NT-GATE-07**
+- **NT-GATE-08** Covered: sandbox, prompts and sinks. Not covered (gap, Slice 4): held-out evaluation data in the evals component, which does not exist yet.
+- **NT-GATE-10**
+- **NT-INJ-02**
+- **NT-INJ-03**
+- **NT-INJ-06**
+- **NT-LSE-01**
+- **NT-LSE-03**
+- **NT-MRG-01**
+- **NT-MRG-02**
+- **NT-MRG-03**
+- **NT-MRG-05**
+- **NT-MRG-06**
+- **NT-MRG-07**
+- **NT-MRG-08**
+- **NT-POL-01**
+- **NT-POL-02**
+- **NT-POL-03**
+- **NT-POL-04**
+- **NT-POL-05**
+- **NT-POL-08**
+- **NT-SBX-01**
+- **NT-SBX-02**
+- **NT-SBX-05**
+- **NT-SBX-09**
+- **NT-SBX-10**
+- **NT-SBX-11**
+- **NT-SBX-14**
+- **NT-SBX-17**
+- **NT-SEC-02**
+- **NT-SEC-03**
+- **NT-SEC-04**
+- **NT-SEC-05**
+- **NT-SEC-07**
+- **NT-SEC-09**
+- **NT-SEC-10**
+- **NT-SEC-11**
+- **NT-SUP-01**
+- **NT-SUP-02**
+- **NT-SUP-03**
+- **NT-SUP-05**
+- **NT-TEN-01**
+- **NT-TEN-05**
+- **NT-TOOL-01**
+- **NT-TOOL-02**
+- **NT-TOOL-03**
+- **NT-TOOL-04**
+- **NT-TOOL-05**
+- **NT-TOOL-06**
+- **NT-TOOL-09**
+- **NT-WEB-05**
+- **NT-WH-01**
+- **NT-WH-03**
+- **NT-WH-04** Covered: one job and one outbox row for fifty concurrent deliveries of one signed request. Not covered (gap, Slice 2): publishing to NATS and the idempotent consumer.
+- **NT-WH-09**
+
+### Parts that are BLOCKED inside a row
+
+None.
+
+### Control-off variants that were run for this review
+
+None were run.
+
+<!-- GENERATED:end matrix -->
