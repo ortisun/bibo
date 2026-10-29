@@ -429,7 +429,7 @@ def cmd_check_topology(args):
     failed |= not emit("decision-key-in-api-and-worker-only", shared,
                        "the api and the worker both mount %s" % paths.get("api") if shared else
                        "the key is mounted in %s (paths %s); it belongs in api and worker, at one path" %
-                       (holders or "no service", sorted({paths[n] for n in holders}) or "none"))
+                       (holders or "no service", sorted({str(paths[n]) for n in holders}) or "none"))
     # ...and the path each configuration file gives is the path the secret is mounted at.
     wrong = []
     for name in ("api", "worker"):

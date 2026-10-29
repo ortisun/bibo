@@ -671,6 +671,14 @@ class ContainerUserCase(TempDirCase):
     def test_the_check_does_not_apply_to_docker_desktop_on_macos(self):
         self.assertEqual(self.readers("Darwin", os.getuid() + 1).returncode, 0)
 
+    def test_the_artifact_volume_check_expects_the_owner_the_variables_name(self):
+        """The restore and the backup check the owner of the volume against FACTORY_UID and FACTORY_GID, 10010 by default."""
+        default = bash('printf %s "$OPS_STATE_SCRIPT"', env={"FACTORY_UID": "", "FACTORY_GID": ""})
+        self.assertIn("! -user 10010 -o ! -group 10010", default.stdout)
+        chosen = bash('printf %s "$OPS_STATE_SCRIPT"', env={"FACTORY_UID": "1000", "FACTORY_GID": "1001"})
+        self.assertIn("! -user 1000 -o ! -group 1001", chosen.stdout)
+        self.assertNotIn("-user 10010", chosen.stdout)
+
     def test_a_container_user_of_root_or_a_non_number_is_refused(self):
         for bad in ("0", "root", "-1", ""):
             done = bash('ops_container_user_ok "$1" "$2"', bad, "10010")
@@ -690,14 +698,14 @@ class BackupNeverTakesASecretCase(unittest.TestCase):
         for word in self.SECRET_WORDS:
             self.assertFalse([line for line in code if word in line], "scripts/backup.sh uses %s" % word)
 
-    def test_the_files_of_a_backup_are_the_documented_five_and_no_secret(self):
-        sys.path.insert(0, LIB)
-        try:
-            import factory_ops
-        finally:
-            sys.path.remove(LIB)
-        self.assertEqual(factory_ops.BACKUP_FILES, ["database.dump", "globals.sql", "artifacts.tar", "artifacts.list"])
-        for name in factory_ops.BACKUP_FILES:
+    def test_the_files_of_a_backup_are_the_documented_four_and_no_secret(self):
+        """The list is read by running the module, which keeps this test independent of how Python finds modules."""
+        done = subprocess.run([sys.executable, "-I", "-c", "import json, sys; sys.path.insert(0, sys.argv[1]); import factory_ops; "
+                               "print(json.dumps(factory_ops.BACKUP_FILES))", LIB], capture_output=True, text=True)
+        self.assertEqual(done.returncode, 0, done.stderr)
+        files = json.loads(done.stdout)
+        self.assertEqual(files, ["database.dump", "globals.sql", "artifacts.tar", "artifacts.list"])
+        for name in files:
             self.assertFalse(re.search("key|secret|password|token", name), name)
 
     def test_the_drill_searches_the_backup_for_the_key_and_the_webhook_secret_too(self):
