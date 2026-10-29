@@ -33,7 +33,10 @@ use crate::config::FactoryConfig;
 use crate::database;
 use crate::profile::{PortName, Profile};
 use crate::redaction::{FactorySecrets, SecretKind, redactor_from_policy};
-use crate::startup::{LoadedPolicies, StartupFailure, check_image_catalog, load_policy};
+use crate::startup::{
+    LoadedPolicies, LoadedRouting, StartupFailure, check_image_catalog, confirm_routing,
+    load_policy, load_routing,
+};
 use crate::telemetry;
 
 /// Who is starting: the service name and version telemetry reports.
@@ -49,6 +52,9 @@ pub struct Identity {
 pub struct Prepared {
     /// The policies and their hash.
     pub policies: LoadedPolicies,
+    /// The routing policy: which models each stage may use, what they cost, what a stage and a
+    /// job may spend.
+    pub routing: LoadedRouting,
     /// The one redactor of the process.
     pub redactor: Arc<Redactor>,
     /// The secret values registered with it.
@@ -160,6 +166,17 @@ pub async fn prepare(
     let untrusted = [config.sandbox.workspace_root.as_path()];
     let untrusted: Vec<&Path> = untrusted.to_vec();
     let policies = load_policy(&config.protected_checkout, &untrusted)?;
+    // The hosts the production profile may reach are the ones the policy lists, and the routing
+    // policy must load and be confirmed before anything is built from it.
+    config
+        .check_endpoints(&policies.security)
+        .map_err(|error| StartupFailure::Other(error.to_string()))?;
+    let routing = load_routing(&config.protected_checkout, &untrusted, &policies.security)?;
+    confirm_routing(config.profile, &routing)?;
+    crate::routing::enabled_models(&routing.policy, &config.broker.upstreams)
+        .map_err(|error| StartupFailure::Other(error.to_string()))?;
+    crate::routing::price_table_with(&routing.policy, &config.broker.prices)
+        .map_err(|error| StartupFailure::Other(error.to_string()))?;
 
     let catalog = std::fs::read_to_string(&config.sandbox.images_catalog).map_err(|_| {
         StartupFailure::Images(format!(
@@ -227,6 +244,7 @@ pub async fn prepare(
     );
     Ok(Prepared {
         policies,
+        routing,
         redactor,
         secrets,
         store,

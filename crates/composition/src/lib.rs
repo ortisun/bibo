@@ -60,6 +60,7 @@ pub mod indexing;
 pub mod intake_rejections;
 pub mod ledger;
 pub mod pipeline;
+pub mod policy_broker;
 pub mod preflight;
 pub mod profile;
 pub mod providers;

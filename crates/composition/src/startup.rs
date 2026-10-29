@@ -19,6 +19,7 @@ use std::sync::Arc;
 use factory_contracts::policy::{PolicyError, PolicyLoader, ProtectedPolicySource};
 use factory_domain::policy::PolicyEngine;
 use factory_domain::policy::approval::ApprovalPolicy;
+use factory_domain::policy::routing::ModelRoutingPolicy;
 use factory_domain::policy::security::SecurityPolicy;
 use factory_domain::values::Sha256Digest;
 use factory_ports::sandbox::SandboxProfile;
@@ -99,6 +100,64 @@ pub fn load_policy(
         hash,
         source: source.root().to_path_buf(),
     })
+}
+
+/// The routing policy as loaded.
+#[derive(Debug, Clone)]
+pub struct LoadedRouting {
+    /// `policies/model_routing.yaml`, checked against its own rules and against the security policy.
+    pub policy: Arc<ModelRoutingPolicy>,
+    /// The hash of the file, as the loader reports it.
+    pub hash: String,
+}
+
+/// Loads `policies/model_routing.yaml` from the protected checkout and checks it against the
+/// security policy. A missing, unsafe or broken file stops the start: a worker with no routing
+/// policy has no model to route to and no price to meter with.
+///
+/// # Errors
+/// [`StartupFailure::Policy`].
+pub fn load_routing(
+    checkout: &Path,
+    untrusted_roots: &[&Path],
+    security: &SecurityPolicy,
+) -> Result<LoadedRouting, StartupFailure> {
+    let source = ProtectedPolicySource::protected_default_branch(checkout, untrusted_roots)?;
+    let loaded = PolicyLoader::load_model_routing(&source, security)?;
+    Ok(LoadedRouting {
+        policy: Arc::new(loaded.document),
+        hash: loaded.hash.as_str().to_owned(),
+    })
+}
+
+/// Refuses a routing policy that still waits for a person, in the production profile.
+///
+/// Every price and every ceiling of the file is marked as waiting for the project owner while the
+/// status is `designed` or a price is `unchecked` (`ModelRoutingPolicy::unconfirmed`). The typed
+/// view says a production run starts only when nothing waits. The other profiles start, and the
+/// log says what is unconfirmed.
+///
+/// # Errors
+/// [`StartupFailure::Policy`] in the production profile.
+pub fn confirm_routing(
+    profile: crate::profile::Profile,
+    routing: &LoadedRouting,
+) -> Result<(), StartupFailure> {
+    let waiting = routing.policy.unconfirmed();
+    if waiting.is_empty() {
+        return Ok(());
+    }
+    if profile == crate::profile::Profile::Production {
+        return Err(StartupFailure::Policy(format!(
+            "policies/model_routing.yaml still waits for the project owner: {}",
+            waiting.join("; ")
+        )));
+    }
+    tracing::warn!(
+        unconfirmed = waiting.len(),
+        "the routing policy still waits for the project owner; a production start would refuse it"
+    );
+    Ok(())
 }
 
 /// The result of reading the catalog.
