@@ -125,8 +125,9 @@ pub(crate) struct AttemptNotes {
     pub(crate) audit: Vec<AuditAction>,
     pub(crate) sandbox_ready: Option<SandboxReady>,
     pub(crate) cost_micro_usd: u64,
-    /// The transcript of a run that failed, which the engine keeps for the tenant.
-    pub(crate) transcript: Option<ArtifactRef>,
+    /// The transcripts of runs the handler wants the tenant to be able to read back: those of a
+    /// run that failed, and those a stage asks to keep (see `StageContext::note_transcript`).
+    pub(crate) transcripts: Vec<ArtifactRef>,
     /// How many tool calls policy denied in a run that failed.
     pub(crate) denials: usize,
 }
@@ -160,9 +161,9 @@ impl Notes {
         self.lock().cost_micro_usd
     }
 
-    /// Takes the transcript of a failed run, leaving none behind.
-    pub(crate) fn take_transcript(&self) -> Option<ArtifactRef> {
-        self.lock().transcript.take()
+    /// Takes the transcripts the handler noted, leaving none behind.
+    pub(crate) fn take_transcripts(&self) -> Vec<ArtifactRef> {
+        std::mem::take(&mut self.lock().transcripts)
     }
 
     /// Takes the number of denied tool calls of a failed run, leaving none behind.
@@ -272,11 +273,20 @@ impl<'a> StageContext<'a> {
     pub fn note_failed_run(&mut self, report: &AgentRunReport) {
         let mut notes = self.notes.lock();
         if let Some(transcript) = &report.transcript {
-            notes.transcript = Some(transcript.clone());
+            notes.transcripts.push(transcript.clone());
         }
         notes.denials = notes
             .denials
             .saturating_add(report.permission_denials.len());
+    }
+
+    /// Asks the engine to keep the transcript of a run for the tenant, with the result of the
+    /// attempt. A stage whose gate reads a transcript back (the specification stage scans the
+    /// transcripts of its skills for a skill outside the profile) calls this for each run, because
+    /// the runtime stores the blob and nobody has indexed it for the tenant: without the index the
+    /// gate cannot read what it must check, and it fails closed.
+    pub fn note_transcript(&mut self, transcript: &ArtifactRef) {
+        self.notes.lock().transcripts.push(transcript.clone());
     }
 
     /// Asks the engine to record an audit event of a kind that only the handler sees, such as a

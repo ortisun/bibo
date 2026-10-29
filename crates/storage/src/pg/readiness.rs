@@ -26,13 +26,14 @@ const ROLE_QUERY: &str = include_str!("../../../../docs/database/tests/role_read
 pub(super) enum Expected {
     /// `factory_app` only.
     Worker,
-    /// `factory_app` and `factory_resolver`.
+    /// `factory_api_app` and `factory_resolver`, and not `factory_app`: the API login holds only the
+    /// privileges the API uses (finding API-3 of `docs/reviews/api-security-review.md`).
     Api,
     /// `factory_system` only.
     System,
 }
 
-/// The seven answers of the role query, in the order of the query.
+/// The eight answers of the role query, in the order of the query.
 #[derive(Debug, Clone, Copy, QueryableByName)]
 pub(super) struct RoleFacts {
     #[diesel(sql_type = Bool)]
@@ -49,6 +50,8 @@ pub(super) struct RoleFacts {
     pub resolver_group: bool,
     #[diesel(sql_type = Bool)]
     pub lookup_group: bool,
+    #[diesel(sql_type = Bool)]
+    pub api_group: bool,
 }
 
 /// Judges the facts about a login. Pure, so it can be tested without a database.
@@ -63,10 +66,10 @@ pub(super) fn judge(facts: &RoleFacts, expected: Expected) -> Result<(), RolePro
     if facts.owns_relations {
         return Err(RoleProblem::OwnsRelations);
     }
-    let (tenant, system, resolver) = match expected {
-        Expected::Worker => (true, false, false),
-        Expected::Api => (true, false, true),
-        Expected::System => (false, true, false),
+    let (tenant, system, resolver, api) = match expected {
+        Expected::Worker => (true, false, false, false),
+        Expected::Api => (false, false, true, true),
+        Expected::System => (false, true, false, false),
     };
     // The lookup group has no members at all.
     if facts.lookup_group {
@@ -76,6 +79,7 @@ pub(super) fn judge(facts: &RoleFacts, expected: Expected) -> Result<(), RolePro
         (tenant, facts.tenant_group),
         (system, facts.system_group),
         (resolver, facts.resolver_group),
+        (api, facts.api_group),
     ] {
         if needed && !actual {
             return Err(RoleProblem::MissingGroup);
@@ -170,13 +174,23 @@ mod tests {
             system_group: system,
             resolver_group: resolver,
             lookup_group: false,
+            api_group: false,
+        }
+    }
+
+    /// The API login: `factory_api_app` and `factory_resolver`.
+    fn api_login() -> RoleFacts {
+        RoleFacts {
+            resolver_group: true,
+            api_group: true,
+            ..facts(false, false, false)
         }
     }
 
     #[test]
     fn the_three_logins_of_the_design_are_accepted() {
         assert_eq!(judge(&facts(true, false, false), Expected::Worker), Ok(()));
-        assert_eq!(judge(&facts(true, false, true), Expected::Api), Ok(()));
+        assert_eq!(judge(&api_login(), Expected::Api), Ok(()));
         assert_eq!(judge(&facts(false, true, false), Expected::System), Ok(()));
     }
 
@@ -222,8 +236,45 @@ mod tests {
             Err(RoleProblem::MissingGroup)
         );
         assert_eq!(
-            judge(&facts(true, false, false), Expected::Api),
+            judge(&facts(false, false, false), Expected::Api),
             Err(RoleProblem::MissingGroup)
+        );
+        // A resolver without the API's own group is not the API login either.
+        assert_eq!(
+            judge(&facts(false, false, true), Expected::Api),
+            Err(RoleProblem::MissingGroup)
+        );
+    }
+
+    #[test]
+    fn the_api_login_must_not_also_be_in_the_worker_group() {
+        // The old shape of the API login (factory_app and factory_resolver) holds every privilege of the
+        // worker: it is refused, and so is the new shape with the worker group added back.
+        assert_eq!(
+            judge(&facts(true, false, true), Expected::Api),
+            Err(RoleProblem::ForbiddenGroup)
+        );
+        let mut both = api_login();
+        both.tenant_group = true;
+        assert_eq!(
+            judge(&both, Expected::Api),
+            Err(RoleProblem::ForbiddenGroup)
+        );
+    }
+
+    #[test]
+    fn the_api_group_is_forbidden_on_a_worker_or_system_login() {
+        let mut worker = facts(true, false, false);
+        worker.api_group = true;
+        assert_eq!(
+            judge(&worker, Expected::Worker),
+            Err(RoleProblem::ForbiddenGroup)
+        );
+        let mut system = facts(false, true, false);
+        system.api_group = true;
+        assert_eq!(
+            judge(&system, Expected::System),
+            Err(RoleProblem::ForbiddenGroup)
         );
     }
 

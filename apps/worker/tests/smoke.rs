@@ -18,6 +18,14 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
+use factory_composition::config::{LoopConfig, SecretFile};
+use factory_composition::redaction::{FactorySecrets, redactor_from_policy};
+use factory_composition::sandbox_specs::{PolicySpecs, sandbox_policy_from};
+use factory_composition::seams::{
+    CachedProbes, FileAllowlist, SchemaChecker, StoreRepositories, StoreRequests, YamlManifests,
+};
+use factory_composition::startup::load_policy;
+use factory_composition::system::{RandomIds, Shutdown, TokioTicker};
 use factory_contracts::registry::FileAgentRegistry;
 use factory_domain::ids::TenantId;
 use factory_domain::scope::TenantScope;
@@ -33,18 +41,9 @@ use factory_testkit::agent::{AdversarialScript, FakeAgentRuntime};
 use factory_testkit::clock::FakeClock;
 use factory_testkit::contracts::githost::IssueSourceSubject;
 use factory_testkit::githost::{FakeChangeHost, FakeIssueSource};
-use factory_testkit::router::probed;
 use factory_testkit::sandbox::{FakeSandbox, ProgramOutput};
 use factory_testkit::workspace::{FakeRemote, FakeWorkspaceProvider};
-use factory_worker::config::{LoopConfig, SecretFile};
-use factory_worker::redaction::{FactorySecrets, redactor_from_policy};
 use factory_worker::run::{Flow, Observer, WorkerLoop};
-use factory_worker::sandbox_specs::{PolicySpecs, sandbox_policy_from};
-use factory_worker::seams::{
-    CachedProbes, FileAllowlist, SchemaChecker, StoreRepositories, StoreRequests, YamlManifests,
-};
-use factory_worker::startup::load_policy;
-use factory_worker::system::{RandomIds, Shutdown, TokioTicker};
 use factory_workflow::engine::{AttemptOutcome, Engine};
 use factory_workflow::handlers::HandlerRegistry;
 use factory_workflow::scheduler::ClaimedAttempt;
@@ -86,6 +85,23 @@ fn fixture_files() -> Vec<(String, String)> {
     let mut files = Vec::new();
     walk(&root, &root, &mut files);
     files
+}
+
+/// The Spec Kit installation of this repository, as `(path, content)`: the files the adapter checks
+/// against its pins. Copied into the smoke's own copy of the fixture, in memory.
+fn spec_kit_installation() -> Vec<(String, String)> {
+    let integration = factory_spec_adapter::invocation::IntegrationConfig::parse(
+        &std::fs::read(repository_root().join(".specify/integration.json")).expect("the file"),
+    )
+    .expect("the installation file");
+    factory_spec_adapter::integrity::installation_paths(integration.host)
+        .into_iter()
+        .map(|path| {
+            let text = std::fs::read_to_string(repository_root().join(path))
+                .unwrap_or_else(|error| panic!("{path} is part of the installation: {error}"));
+            (path.to_owned(), text)
+        })
+        .collect()
 }
 
 /// Wraps a real handler and prints what it returns, so the smoke can say why a stage stopped.
@@ -160,7 +176,41 @@ impl Observer for StopWhenIdle {
     }
 }
 
-async fn smoke_body() {
+/// What a run of the smoke is asked to do.
+#[derive(Clone)]
+struct Options {
+    /// The stages in the pipeline scope.
+    scope: Vec<StageKind>,
+    /// Whether the fixture repository already holds a project constitution. The word-count fixture
+    /// has none, and nothing in the pipeline writes one.
+    constitution: bool,
+    /// Whether the fixture repository holds the Spec Kit installation the specification stage
+    /// checks (the pinned files the adapter lists). The word-count fixture has none. The smoke
+    /// copies the installation of this repository into its own copy of the fixture, in memory; the
+    /// fixture directory is never edited.
+    installation: bool,
+    /// Whether the scripted sandbox has the small file programs the specification stage runs in
+    /// it (`mkdir`, `tee`, `rm`, `cp`). Without them each exits 127, the way the testkit's sandbox
+    /// treats any program it does not know, and the stage ends with the closed error `Sandbox`.
+    file_programs: bool,
+}
+
+impl Options {
+    fn first_two() -> Self {
+        Self {
+            scope: vec![StageKind::Intake, StageKind::RepositoryIntelligence],
+            constitution: false,
+            installation: false,
+            file_programs: false,
+        }
+    }
+}
+
+/// A constitution that is not a template: no placeholder text, so the specification stage accepts
+/// it as the repository's own.
+const CONSTITUTION_TEXT: &str = "# word-count constitution\n\nThe tool reads text and prints counts. It never writes files and never reads the network.\n";
+
+async fn smoke_body(options: Options) -> factory_workflow::engine::JobView {
     // ---- database, tenant, store, scratch ----
     let db = server().clone_database().await;
     let ids = RandomIds::new().expect("random");
@@ -192,8 +242,9 @@ async fn smoke_body() {
     let _ = SecretFile::at(checkout.join("none"));
 
     // ---- the world: store, artifacts, fakes for model, sandbox, workspaces, GitHub ----
+    let scope = options.scope.clone();
     let world = PgWorld::new(store, tenant, seeded_repository(tenant), |config| {
-        config.scope = vec![StageKind::Intake, StageKind::RepositoryIntelligence];
+        config.scope = scope;
     })
     .await;
     let store_dyn: Arc<dyn Store> = world.store.clone();
@@ -201,7 +252,16 @@ async fn smoke_body() {
 
     let repo = RepoRef::parse(REPOSITORY).expect("a repository");
     let remote = FakeRemote::new();
-    let files = fixture_files();
+    let mut files = fixture_files();
+    if options.constitution {
+        files.push((
+            factory_spec_adapter::postcond::CONSTITUTION.to_owned(),
+            CONSTITUTION_TEXT.to_owned(),
+        ));
+    }
+    if options.installation {
+        files.extend(spec_kit_installation());
+    }
     let borrowed: Vec<(&str, &str)> = files
         .iter()
         .map(|(p, c)| (p.as_str(), c.as_str()))
@@ -222,8 +282,19 @@ async fn smoke_body() {
             stderr: Vec::new(),
         }
     };
-    let sandbox = FakeSandbox::new(fake_clock.clone(), world.deps.artifacts.clone(), derived)
+    let mut sandbox = FakeSandbox::new(fake_clock.clone(), world.deps.artifacts.clone(), derived)
         .with_program("cargo", cargo);
+    if options.file_programs {
+        // A stand-in: these succeed and change nothing. The files the skills write are a separate
+        // matter (the scripted runtime writes none).
+        for program in ["mkdir", "tee", "rm", "cp"] {
+            sandbox = sandbox.with_program(program, |_: &[String], _: &[u8]| ProgramOutput {
+                exit_code: Some(0),
+                stdout: Vec::new(),
+                stderr: Vec::new(),
+            });
+        }
+    }
 
     let runtime = FakeAgentRuntime::new(world.deps.artifacts.clone());
     let classification: serde_json::Value = serde_json::from_str(
@@ -253,7 +324,7 @@ async fn smoke_body() {
         .await;
 
     // The broker wrapper that keeps token secrets, over the world's broker.
-    let broker = Arc::new(factory_worker::redaction::RegisteringBroker::new(
+    let broker = Arc::new(factory_composition::redaction::RegisteringBroker::new(
         world.deps.broker.clone(),
         Arc::clone(&redactor),
     ));
@@ -296,13 +367,25 @@ async fn smoke_body() {
     }
     let requests = Arc::new(StoreRequests::new(store_dyn.clone()));
     let allowlist = Arc::new(FileAllowlist::in_checkout(&checkout));
-    let authority = Arc::new(factory_worker::authority::StoreAuthority::new(
+    let authority = Arc::new(factory_composition::authority::StoreAuthority::new(
         store_dyn.clone(),
         allowlist.clone(),
         Arc::clone(&policies.engine),
         world.deps.clock.clone(),
     ));
-    let probes = Arc::new(CachedProbes::new(probed(&["fake"])));
+    // The probe a live run would take is BLOCKED (it needs the tool in the agent image), so the
+    // smoke states what the one scripted runtime supports. The specification stage asks for skill
+    // invocation, which the testkit's default probe does not claim.
+    let probes = Arc::new(CachedProbes::new(factory_ports::agent::ProbedCapabilities(
+        std::collections::BTreeMap::from([(
+            factory_ports::agent::RuntimeId::new("fake").expect("a runtime"),
+            factory_testkit::router::probe_of(&[
+                factory_ports::agent::Capability::JsonSchemaOutput,
+                factory_ports::agent::Capability::HeadlessMultiTurn,
+                factory_ports::agent::Capability::SkillInvocation,
+            ]),
+        )]),
+    )));
     let checker = Arc::new(SchemaChecker::new(&root));
     let commit = GitSha::parse("1405df66cbe219b0bf6355bc3d60361a8376b6b4").expect("a commit");
     let endpoint = BrokerEndpoint {
@@ -351,6 +434,99 @@ async fn smoke_body() {
             },
         )))))
         .expect("one handler per stage");
+
+    if options.scope.contains(&StageKind::Specification) {
+        let integration = factory_spec_adapter::invocation::IntegrationConfig::parse(
+            &std::fs::read(root.join(".specify/integration.json")).expect("the installation"),
+        )
+        .expect("the installation file");
+        let provider = Arc::new(factory_spec_adapter::SpecKitProvider::new(
+            factory_spec_adapter::SpecKitConfig {
+                host: integration.host,
+                separator: integration.separator,
+                mode: factory_domain::vocabulary::ExecutionMode::Test,
+                fallback_adapter: factory_domain::values::Slug::parse("claude-code")
+                    .expect("a slug"),
+                fallback_adapter_version: integration.version,
+            },
+        ));
+        let feedback = Arc::new(factory_composition::feedback::StoreFeedback::new(
+            store_dyn.clone(),
+            world.deps.artifacts.clone(),
+        ));
+        handlers
+            .register(Arc::new(Traced(Arc::new(
+                factory_workflow::stages::specification::SpecificationHandler::new(
+                    factory_workflow::stages::specification::SpecificationConfig {
+                        writer: factory_domain::values::Slug::parse("specification-writer")
+                            .expect("a slug"),
+                        reviewer: factory_domain::values::Slug::parse("specification-reviewer")
+                            .expect("a slug"),
+                        definition_commit: GitSha::parse(
+                            "1405df66cbe219b0bf6355bc3d60361a8376b6b4",
+                        )
+                        .expect("a commit"),
+                        broker: endpoint.clone(),
+                        max_output_bytes: 524_288,
+                        path_rules: factory_composition::providers::path_rules(&policies.security),
+                        identity: factory_workflow::stages::specification::CommitIdentity {
+                            name: "Factory".to_owned(),
+                            email: "factory@example.invalid".to_owned(),
+                        },
+                        constitution_path: factory_ports::paths::RepoPath::new(
+                            factory_spec_adapter::postcond::CONSTITUTION,
+                        )
+                        .expect("a path"),
+                        probe_globs: vec![
+                            factory_ports::paths::RepoGlob::new(".specify/extensions.yml")
+                                .expect("a glob"),
+                            factory_ports::paths::RepoGlob::new("specs/*/plan.md").expect("a glob"),
+                        ],
+                        limits: factory_workflow::gates::spec::Limits::default(),
+                        max_file_bytes: 1_048_576,
+                        max_clarification_rounds: 2,
+                        human_approval_required: true,
+                        policy_principal: None,
+                        budget: factory_workflow::stages::specification::StageBudget {
+                            wall_time_seconds: 3_600,
+                            max_tokens: 2_000_000,
+                            max_cost_usd: 10.0,
+                            attempt_timeout_seconds: 3_600,
+                            max_attempts: 2,
+                        },
+                    },
+                    factory_workflow::stages::specification::SpecificationDeps {
+                        provider,
+                        policy: Arc::clone(&policies.engine),
+                        redactor: Arc::clone(&redactor),
+                        profile: Arc::new(
+                            factory_workflow::gates::spec::profile::ProfileRules::from_policy(
+                                &policies.security,
+                                "SPECIFICATION",
+                            )
+                            .expect("the specification profile"),
+                        ),
+                        schemas: checker.clone(),
+                        specs: specs.clone(),
+                        probes: probes.clone(),
+                        approvals: Arc::new(factory_composition::specs::StoreSpecApprovals::new(
+                            store_dyn.clone(),
+                            world.deps.artifacts.clone(),
+                        )),
+                        drafts: Arc::new(factory_composition::specs::StoreSpecDrafts::new(
+                            store_dyn.clone(),
+                            world.deps.artifacts.clone(),
+                        )),
+                        history: Arc::new(factory_composition::specs::StoreSpecHistory::new(
+                            store_dyn.clone(),
+                            world.deps.artifacts.clone(),
+                        )),
+                        rework: feedback,
+                    },
+                ),
+            ))))
+            .expect("one handler per stage");
+    }
 
     let mut deps = world.deps.clone();
     deps.registry = agents;
@@ -417,7 +593,7 @@ async fn smoke_body() {
         shutdown.clone(),
     )
     .with_observer(Arc::new(StopWhenIdle))
-    .with_before_claim(Arc::new(factory_worker::seams::RefreshRequests::new(
+    .with_before_claim(Arc::new(factory_composition::seams::RefreshRequests::new(
         requests.clone(),
         vec![tenant],
     )));
@@ -466,32 +642,19 @@ async fn smoke_body() {
     }
     let _ = std::fs::remove_dir_all(&checkout);
     let _ = runtime;
-    // How far it gets: both real stages pass and, because the scope of this smoke ends at the
-    // repository stage, the job completes. The stage after (`SPECIFICATION`) has no seam wiring
-    // yet: its approvals, drafts and history seams are not implemented (README, "Seams").
-    for kind in [StageKind::Intake, StageKind::RepositoryIntelligence] {
-        let run = view.newest(kind).expect("a run of the stage");
-        assert_eq!(run.status, StageRunStatus::Passed, "{kind}: {view:#?}");
-        assert_eq!(
-            run.attempts.len(),
-            1,
-            "{kind} must pass at the first attempt"
-        );
-    }
-    assert_eq!(view.status, factory_domain::state::JobStatus::Completed);
+    view
 }
 
 /// Runs the body with the telemetry pipeline of a worker as the current subscriber, so the
 /// engine's own log lines show on standard error.
-#[test]
-fn smoke_word_count_runs_the_real_intake_and_repository_stages() {
+fn run(options: Options) -> factory_workflow::engine::JobView {
     let policies = load_policy(&repository_root(), &[]).expect("the real policies load");
     let redactor = Arc::new(redactor_from_policy(&policies.security).expect("redactor"));
-    let config = factory_worker::telemetry::config_for(
+    let config = factory_composition::telemetry::config_for(
         "factory-worker-smoke",
         "0.0.0",
-        factory_worker::profile::Profile::Test,
-        &factory_worker::config::TelemetryConfig {
+        factory_composition::profile::Profile::Test,
+        &factory_composition::config::TelemetryConfig {
             otlp_endpoint: None,
             log_filter: Some("warn,factory_workflow=debug".to_owned()),
         },
@@ -505,5 +668,150 @@ fn smoke_word_count_runs_the_real_intake_and_repository_stages() {
         .enable_all()
         .build()
         .expect("runtime");
-    pipeline.in_scope(|| runtime.block_on(smoke_body()));
+    pipeline.in_scope(|| runtime.block_on(smoke_body(options)))
+}
+
+#[test]
+fn smoke_word_count_runs_the_real_intake_and_repository_stages() {
+    let view = run(Options::first_two());
+    // How far it gets with the first two stages in scope: both real stages pass at the first
+    // attempt and, because the scope ends at the repository stage, the job completes.
+    for kind in [StageKind::Intake, StageKind::RepositoryIntelligence] {
+        let run = view.newest(kind).expect("a run of the stage");
+        assert_eq!(run.status, StageRunStatus::Passed, "{kind}: {view:#?}");
+        assert_eq!(
+            run.attempts.len(),
+            1,
+            "{kind} must pass at the first attempt"
+        );
+    }
+    assert_eq!(view.status, factory_domain::state::JobStatus::Completed);
+}
+
+fn three(constitution: bool) -> Options {
+    Options {
+        scope: vec![
+            StageKind::Intake,
+            StageKind::RepositoryIntelligence,
+            StageKind::Specification,
+        ],
+        constitution,
+        installation: false,
+        file_programs: false,
+    }
+}
+
+/// The specification stage with everything its inputs need: the constitution and the installation
+/// in the repository, and the file programs in the scripted sandbox.
+fn three_ready() -> Options {
+    Options {
+        installation: true,
+        file_programs: true,
+        ..three(true)
+    }
+}
+
+fn print_states(label: &str, view: &factory_workflow::engine::JobView) {
+    println!("SMOKE {label}: job {:?}", view.status);
+    for run in &view.stage_runs {
+        println!(
+            "SMOKE   {:?}: {:?} after {} attempt(s) {:?}",
+            run.kind,
+            run.status,
+            run.attempts.len(),
+            run.attempts.iter().map(|a| a.status).collect::<Vec<_>>()
+        );
+    }
+}
+
+/// How far the word-count job gets, state by state, with the specification stage in scope.
+///
+/// `INTAKE` and `REPOSITORY_INTELLIGENCE` pass. `SPECIFICATION` runs the real handler over the
+/// real seams and the real Spec Kit provider and **stops at the first thing the fixture does not
+/// have**: a project constitution. The word-count fixture has none, no stage writes one (the
+/// constitution operation is run by none of them, and the writer agent is not granted the skill),
+/// so the stage asks a person (`constitution-required`) and the run waits for a human after its
+/// first attempt.
+#[test]
+fn smoke_stops_at_the_specification_for_a_constitution() {
+    let view = run(three(false));
+    print_states("without a constitution", &view);
+    for kind in [StageKind::Intake, StageKind::RepositoryIntelligence] {
+        assert_eq!(
+            view.newest(kind).expect("a run").status,
+            StageRunStatus::Passed
+        );
+    }
+    let spec = view.newest(StageKind::Specification).expect("a run");
+    assert_eq!(spec.status, StageRunStatus::WaitingForHuman, "{view:#?}");
+    assert_eq!(spec.attempts.len(), 1, "it asks at the first attempt");
+    assert_eq!(
+        view.status,
+        factory_domain::state::JobStatus::WaitingForHuman
+    );
+}
+
+/// With a constitution committed to the repository the stage goes on, and **stops in its own
+/// sandbox**: the attempt fails with the closed error `Sandbox` twice (the attempt limit of the
+/// stage), after which the engine asks a person (ADR 0010). The cause is the sandbox of this smoke,
+/// not the repository: see `smoke_the_sandbox_error_came_from_the_sandbox_not_from_the_installation`
+/// below, which gives it with evidence. This test keeps the old setup (no installation, no file
+/// programs) and pins that the stop is the same.
+#[test]
+fn smoke_with_a_constitution_stops_when_the_skills_write_no_files() {
+    let view = run(three(true));
+    print_states("with a constitution", &view);
+    let spec = view.newest(StageKind::Specification).expect("a run");
+    assert_eq!(spec.status, StageRunStatus::WaitingForHuman, "{view:#?}");
+    assert_eq!(
+        spec.attempts.len(),
+        2,
+        "both attempts of the stage are used"
+    );
+    assert!(
+        spec.attempts
+            .iter()
+            .all(|attempt| attempt.status == factory_domain::state::AttemptStatus::Failed),
+        "{:?}",
+        spec.attempts
+    );
+}
+
+/// Why the old smoke ended its specification stage with the closed error `Sandbox`, found with
+/// evidence, and where the stage stops once that is out of the way: at the first skill, because the
+/// scripted runtime has no script queued for it (`OutputMissing`, which the stage maps to `Tool`)
+/// and writes no Spec Kit file. To pass the stage the runtime must be scripted for the three skills
+/// and the reviewer, and must write `spec.md`, the checklists and the feature pointer into the
+/// workspace through `FakeWorkspaceProvider::edit_tree`, which the testkit's runtime cannot do; that
+/// is not done (see the README, "How far the job gets"). Evidence. The stage runs `mkdir`, `tee` and `rm` in its sandbox (`run_command` in
+/// `crates/workflow/src/stages/specification/run.rs`) and ends with `Sandbox` when one exits with a
+/// code other than 0. The testkit's sandbox answers exit code 127 and "command not found" for any
+/// program it was not told about, so the first of them fails. The installation of Spec Kit was
+/// not the cause: the provider reads it only after those commands. With the programs present and
+/// everything else as before, the stage goes on to the skills, which is where the next test picks
+/// it up.
+#[test]
+fn smoke_the_sandbox_error_came_from_the_sandbox_not_from_the_installation() {
+    // Everything the stage needs from the repository, and a sandbox without the file programs.
+    let without = run(Options {
+        file_programs: false,
+        ..three_ready()
+    });
+    print_states("installation and constitution, no file programs", &without);
+    let spec = without.newest(StageKind::Specification).expect("a run");
+    assert_eq!(spec.status, StageRunStatus::WaitingForHuman, "{without:#?}");
+    assert_eq!(
+        spec.attempts.len(),
+        2,
+        "both attempts end in the closed error Sandbox, as before"
+    );
+    // The same repository with the programs: the attempts no longer end in `Sandbox`. Where they
+    // end is printed, and pinned by the next test.
+    let with = run(three_ready());
+    print_states("installation, constitution and file programs", &with);
+    let spec = with.newest(StageKind::Specification).expect("a run");
+    assert!(
+        !spec.attempts.is_empty(),
+        "the stage ran at least one attempt: {with:#?}"
+    );
 }

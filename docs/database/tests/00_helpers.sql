@@ -37,13 +37,13 @@ CREATE FUNCTION dbtest.use_tenant(t int) RETURNS void LANGUAGE sql AS $$
   SELECT set_config('dbtest.tenant', t::text, false) IS NOT NULL
 $$;
 
--- SET LOCAL ROLE for the rest of the transaction (or subtransaction). For the application role it also
--- makes the tenant setting. Any other role gets an empty setting, so a test of the system scope or a
+-- SET LOCAL ROLE for the rest of the transaction (or subtransaction). For the application role and the
+-- API's group (factory_api_app) it also makes the tenant setting. Any other role gets an empty setting, so a test of the system scope or a
 -- lookup function cannot lean on a tenant left over from an earlier call.
 CREATE FUNCTION dbtest.become(p_role text, p_tenant int DEFAULT NULL) RETURNS void LANGUAGE plpgsql AS $$
 DECLARE
   t int := coalesce(p_tenant, nullif(current_setting('dbtest.tenant', true), '')::int, 0);
-  tenant_text text := CASE WHEN p_role <> 'factory_app' THEN ''
+  tenant_text text := CASE WHEN p_role NOT IN ('factory_app', 'factory_api_app') THEN ''
                            WHEN t = -1 THEN '00000000-0000-0000-0000-000000000001'   -- the platform tenant
                            WHEN t > 0 THEN dbtest.u(t)::text
                            ELSE '' END;
@@ -349,6 +349,11 @@ BEGIN
     GRANT USAGE ON SCHEMA dbtest TO factory_system;
     GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA dbtest TO factory_system;
     ALTER DEFAULT PRIVILEGES IN SCHEMA dbtest GRANT EXECUTE ON FUNCTIONS TO factory_system;
+  END IF;
+  IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'factory_api_app') THEN
+    GRANT USAGE ON SCHEMA dbtest TO factory_api_app;
+    GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA dbtest TO factory_api_app;
+    ALTER DEFAULT PRIVILEGES IN SCHEMA dbtest GRANT EXECUTE ON FUNCTIONS TO factory_api_app;
   END IF;
 END
 $$;

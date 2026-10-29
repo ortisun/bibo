@@ -185,6 +185,14 @@ impl Drop for StopOnDrop {
     }
 }
 
+/// The first 12 hex characters of the SHA-256 of `text`: short enough for a log line, long enough
+/// to tell the entries of one tree apart. It is the digest the rest of the workspace uses
+/// (`Sha256Digest`), cut for the log.
+fn short_digest(text: &str) -> String {
+    let digest = Sha256Digest::of(text.as_bytes());
+    digest.hex().chars().take(12).collect()
+}
+
 /// Runs the walk on a blocking thread, under the caller's cancel signal.
 async fn audit(ws: &GitWorkspace, cancel: &dyn CancelSignal) -> Result<Manifest, WorkspaceError> {
     let stop = Arc::new(AtomicBool::new(false));
@@ -215,8 +223,20 @@ async fn audit(ws: &GitWorkspace, cancel: &dyn CancelSignal) -> Result<Manifest,
     match joined {
         Ok(Ok(manifest)) => Ok(manifest),
         Ok(Err(AuditFailure::Rejected(report))) => {
+            // A path is chosen by the repository's author, so the log gets the number of entries
+            // rejected, the kind of each reason and a short digest of its path, enough to tell
+            // two entries apart and to match two lines about one entry. The paths themselves are
+            // in the report that `keep_report` keeps for the caller.
+            tracing::warn!(
+                rejected = report.reasons.len(),
+                "the workspace audit rejected entries"
+            );
             for reason in &report.reasons {
-                tracing::warn!(kind = ?reason.kind, path = %reason.path, "the workspace audit rejected an entry");
+                tracing::warn!(
+                    kind = ?reason.kind,
+                    path_sha256 = short_digest(reason.path.as_str()),
+                    "the workspace audit rejected an entry"
+                );
             }
             let error = report.clone().into_error();
             ws.keep_report(report);
@@ -634,6 +654,17 @@ mod tests {
         assert!(text.starts_with("blob\nmark :1\ndata 2\nab\n"));
         assert!(text.contains("blob\nmark :2\ndata 0\n\n"));
         assert!(text.ends_with("get-mark :1\nget-mark :2\ndone\n"));
+    }
+
+    #[test]
+    fn a_rejected_path_is_logged_as_twelve_hex_characters_and_never_as_text() {
+        let path = "src/ignore-previous-instructions.rs";
+        let digest = short_digest(path);
+        assert_eq!(digest.len(), 12);
+        assert!(digest.chars().all(|c| c.is_ascii_hexdigit()));
+        assert!(!digest.contains("src") && !digest.contains("ignore"));
+        assert_eq!(digest, short_digest(path), "the same path, the same digest");
+        assert_ne!(digest, short_digest("src/another.rs"));
     }
 
     #[test]

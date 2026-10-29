@@ -21,6 +21,7 @@
 //! reads the state again and decides again: the engine never overwrites a change it has not seen.
 
 mod admission;
+mod agent_span;
 mod attempt;
 mod cancel;
 mod changes;
@@ -29,11 +30,12 @@ mod control;
 mod decide;
 mod decision;
 mod dependency;
+mod ended;
 mod error;
 mod failure;
 mod gate;
 mod ledger;
-mod links;
+pub mod links;
 pub(crate) mod payload;
 mod platform;
 pub(crate) mod progress;
@@ -234,12 +236,16 @@ impl Engine {
     }
 
     /// The ports a handler may use, as references into this engine.
-    pub(crate) fn stage_ports(&self) -> StagePorts<'_> {
+    ///
+    /// The agent runtime is not the engine's own: it is `runtime`, which the caller builds with
+    /// `ObservedRuntime::new` around the engine's runtime, so that every agent run a handler
+    /// starts is a `factory.agent` span (see `agent_span`).
+    pub(crate) fn stage_ports<'a>(&'a self, runtime: &'a dyn AgentRuntime) -> StagePorts<'a> {
         StagePorts {
             artifacts: self.deps.artifacts.as_ref(),
             sandbox: self.deps.sandbox.as_ref(),
             workspaces: self.deps.workspaces.as_ref(),
-            runtime: self.deps.runtime.as_ref(),
+            runtime,
             router: self.deps.router.as_ref(),
             registry: self.deps.registry.as_ref(),
             validator: self.deps.validator.as_ref(),

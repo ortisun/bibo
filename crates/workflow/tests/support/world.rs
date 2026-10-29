@@ -99,6 +99,8 @@ pub struct World {
     /// The artifact store the engine writes through. A test can make its writes fail.
     pub artifact_switch: Arc<SwitchedArtifacts>,
     pub broker: Arc<FakeModelBroker>,
+    /// The agent runtime the engine runs, kept as the fake so a test can queue what a run does.
+    pub runtime: Arc<FakeAgentRuntime>,
     pub authority: Arc<StaticAuthority>,
     pub scripts: HashMap<StageKind, ScriptHandle>,
     pub deps: EngineDeps,
@@ -147,6 +149,7 @@ impl World {
         let authority = Arc::new(StaticAuthority::new());
         let ticker = Arc::new(ManualTicker::new());
         let broker = Arc::new(FakeModelBroker::new(clock.clone(), ids.clone()));
+        let runtime = Arc::new(FakeAgentRuntime::new(artifacts.clone()));
         let routes: Vec<RouteRule> = StageKind::ALL
             .iter()
             .map(|kind| RouteRule {
@@ -176,7 +179,7 @@ impl World {
                 artifacts.clone(),
                 fixture_rules(),
             )),
-            runtime: Arc::new(FakeAgentRuntime::new(artifacts.clone())),
+            runtime: runtime.clone(),
             router: Arc::new(StaticModelRouter::new(routes)),
             registry: Arc::new(InMemoryAgentRegistry::new()),
             validator: Arc::new(ScriptedValidator),
@@ -222,6 +225,7 @@ impl World {
             artifacts,
             artifact_switch,
             broker,
+            runtime,
             authority,
             scripts,
             deps,

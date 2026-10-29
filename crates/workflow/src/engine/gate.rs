@@ -257,20 +257,17 @@ impl Engine {
                 cx.audit_engine(tx, audit(AuditDecision::Noted)).await?;
             }
         }
-        let gate = gate_label(contract);
-        match metric_outcome {
-            "passed" => tracing::info!(
-                monotonic_counter.factory_stage_runs_total = 1_u64,
-                stage = gating.value.kind.as_str(),
-                outcome = "passed"
-            ),
-            "blocked" | "failed" => tracing::info!(
+        if matches!(metric_outcome, "blocked" | "failed") {
+            tracing::info!(
                 monotonic_counter.factory_gate_failures_total = 1_u64,
-                gate = gate,
+                gate = gate_label(contract),
                 outcome = metric_outcome
-            ),
-            _ => {}
+            );
         }
+        // Whether the stage run ended, and how, is read from the status the moves above left it
+        // in: a pass, a block, a rework and a final failure end it, a question to a person does
+        // not. The count and the duration are recorded when the decision commits.
+        self.note_stage_end(tx, cx, gating.value.id).await?;
         self.settle(tx, cx).await
     }
 

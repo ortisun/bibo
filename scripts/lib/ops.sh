@@ -269,12 +269,18 @@ ops_ensure_logins() {
     printf "\\\\set pw_worker '%s'\n" "$(ops_secret pg_password_worker)"
     printf "\\\\set pw_engine '%s'\n" "$(ops_secret pg_password_engine)"
     cat <<'SQL'
-SELECT format('CREATE ROLE factory_api LOGIN PASSWORD %L IN ROLE factory_app, factory_resolver', :'pw_api')
+SELECT format('CREATE ROLE factory_api LOGIN PASSWORD %L IN ROLE factory_api_app, factory_resolver', :'pw_api')
  WHERE NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'factory_api') \gexec
 SELECT format('CREATE ROLE factory_worker LOGIN PASSWORD %L IN ROLE factory_app', :'pw_worker')
  WHERE NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'factory_worker') \gexec
 SELECT format('CREATE ROLE factory_engine LOGIN PASSWORD %L IN ROLE factory_system', :'pw_engine')
  WHERE NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'factory_engine') \gexec
+-- A login made before migration 2026-10-28-002000 was a member of factory_app. Move it to the narrow group.
+SELECT 'GRANT factory_api_app TO factory_api'
+ WHERE EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'factory_api') \gexec
+SELECT 'REVOKE factory_app FROM factory_api'
+ WHERE EXISTS (SELECT 1 FROM pg_auth_members m JOIN pg_roles r ON r.oid = m.member JOIN pg_roles g ON g.oid = m.roleid
+                WHERE r.rolname = 'factory_api' AND g.rolname = 'factory_app') \gexec
 SELECT format('ALTER ROLE factory_api PASSWORD %L', :'pw_api') \gexec
 SELECT format('ALTER ROLE factory_worker PASSWORD %L', :'pw_worker') \gexec
 SELECT format('ALTER ROLE factory_engine PASSWORD %L', :'pw_engine') \gexec

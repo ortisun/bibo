@@ -122,7 +122,7 @@ async fn lookups_hide_the_reason() {
         ))
         .await;
 
-    let store = &scene.store;
+    let store = &scene.api;
     let found = store
         .resolve_token(&good, &audience())
         .await

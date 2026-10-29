@@ -35,9 +35,9 @@ The script warns when the installed CLI has another version, because `schema.rs`
 3. To check the down migrations, run `diesel migration redo --all --config-file crates/storage/diesel.toml`. It reverts every migration and applies them again.
 4. Never run the migrations from the application. Applications check the schema version at start-up and refuse to become ready if it is behind (ADR 0007).
 
-Expected result of step 2: eighteen `Running migration` lines, the last one `2026-10-27-001800_listings`. Verify with `psql "$DATABASE_URL" -c 'select version from __diesel_schema_migrations order by version'`.
+Expected result of step 2: twenty `Running migration` lines, the last one `2026-10-28-002000_api_login_narrow_group` (it creates the fifth group, `factory_api_app`, and needs the same powers as migration 11: a superuser, or a role that can create roles; a login made before it must be moved out of `factory_app` into `factory_api_app`, see [tenancy.md](tenancy.md)). Verify with `psql "$DATABASE_URL" -c 'select version from __diesel_schema_migrations order by version'`.
 
-The role that runs them must be a superuser or the role that created the four groups ([migration-safety.md](migration-safety.md)). After they ran, create the logins: [for-the-storage-crate.md](for-the-storage-crate.md).
+The role that runs them must be a superuser or the role that created the five groups ([migration-safety.md](migration-safety.md)). After they ran, create the logins: [for-the-storage-crate.md](for-the-storage-crate.md).
 
 ## Run the database tests
 
@@ -47,8 +47,8 @@ The role that runs them must be a superuser or the role that created the four gr
    scripts/db-test.sh
    ```
 
-   It provides a database, migrates it, runs the sixteen suites, drops everything it created (the databases, and the login roles the `rls` suite makes), and prints a last line that starts with `PASS` or `FAIL`.
-2. To run some suites only, name them. `scripts/db-test.sh ledger audit` runs two. `scripts/db-test.sh --list` prints all sixteen with one line each on what they prove.
+   It provides a database, migrates it, runs the eighteen suites, drops everything it created (the databases, and the login roles the `rls` suite makes), and prints a last line that starts with `PASS` or `FAIL`.
+2. To run some suites only, name them. `scripts/db-test.sh ledger audit` runs two. `scripts/db-test.sh --list` prints all eighteen with one line each on what they prove.
 3. To keep the server for inspection use `--keep`. It prints the URL of the maintenance database and leaves the process running, and you stop it yourself.
 
 ### Where the database comes from
@@ -59,7 +59,7 @@ The script picks the first of these that works:
 2. A private local cluster. The script looks for `initdb`, `pg_ctl` and `postgres` in `FACTORY_PG_BIN`, on `PATH`, and in the usual Homebrew and Debian directories. It starts a cluster on a unix socket in a mode 0700 directory, with TCP off and `fsync` off, and stops and deletes it at the end.
 3. Docker, with the image in `FACTORY_DB_IMAGE` (default `postgres:18`), published on a random loopback port with a random password.
 
-`FACTORY_DB_PROVISION=local`, `docker` or `none` forces one of them or turns provisioning off. `FACTORY_DB_LEASE_ROUNDS` (default 25) sets how many contested claims the lease suite makes. `FACTORY_DB_PLANS_SCALE` (default 1) sets the size of the plans suite: 1 is 10,000 rows in each large table, 10 is 100,000 and takes about three minutes.
+`FACTORY_DB_PROVISION=local`, `docker` or `none` forces one of them or turns provisioning off. `FACTORY_DB_LEASE_ROUNDS` (default 25) sets how many contested claims the lease suite makes. `FACTORY_DB_PLANS_SCALE` (default 1) sets the size of the plans suite: 1 is 10,000 rows in each large table, 10 is 100,000 and takes about three minutes. `scripts/db-test.sh plans --rows 100000` is the same as scale 10 (the number must be a multiple of 10,000).
 
 The `rls` suite opens sessions as real login roles (`dbtest_app_*`, `dbtest_system_*`, `dbtest_api_*`) with a random password, over the same address as the superuser connection. They are cluster wide, so the script drops them when it ends, also on Ctrl-C. On a server you provide, a run that was killed with `kill -9` leaves them behind; drop the `dbtest_*` roles by hand.
 
@@ -86,7 +86,8 @@ The `rls` suite opens sessions as real login roles (`dbtest_app_*`, `dbtest_syst
 | `scripts/db-test.sh tenancy` | A foreign key into another tenant's row is rejected, also for a session under row-level security, and unique keys include the tenant. Foreign key checks bypass row security. |
 | `scripts/db-test.sh rls` | Every table with a tenant column, found from the catalog, is isolated; the roles, the system scope and the two lookup functions; real logins, a reused connection and a claim race through two logins (NT-TEN-01, database part). |
 | `scripts/db-test.sh terminal_rows` | `UPDATE` of a terminal stage run fails except for the supersede transition, and every move out of a terminal state is checked against `state-machine.json`. |
-| `scripts/db-test.sh plans` | The claim, sweep, timeline and ledger-tail queries use index scans on 10,000 generated rows (100,000 with `FACTORY_DB_PLANS_SCALE=10`), as the roles that run them, with row-level security on. |
+| `scripts/db-test.sh plans` | The claim, sweep, timeline and ledger-tail queries use index scans on 10,000 generated rows (100,000 with `--rows 100000` or `FACTORY_DB_PLANS_SCALE=10`), as the roles that run them, with row-level security on. |
+| `scripts/db-test.sh compat` | Version N-1 code on version N schema: the schema after migration 14 with a row in every table, then migrations 15 to 19 one at a time; after each, every row is unchanged over its old columns and the statements of the code written for migration 14 (`tests/compat_earlier_code.sql`) still run. |
 | `scripts/db-test.sh audit` | The application role can only `INSERT` and `SELECT` on the audit table (NT-AUD-01). |
 | `scripts/db-test.sh webhook_delivery` | A second delivery with the same id violates a unique constraint and creates no second job or outbox row. |
 
@@ -109,6 +110,21 @@ The scenario suite connects with the API login, because one scenario records a w
 
 The server's clock cannot be set, so a scenario that waits past a lease, a deadline, a back-off or an approval's expiry moves every stored time that those rules read back by the same amount (the same repair the contract runner makes, with the triggers off for one transaction). The engine must therefore decide on the row it read in its transaction, never on a copy it carried from before the clock moved.
 
+## Measure the queries, and run the earlier code against the newer schema
+
+These two are not part of `scripts/db-test.sh`. They need no Docker, no network and no database but the scratch cluster each one starts and removes (a high port on 127.0.0.1, no unix socket, passwords made at run time).
+
+```bash
+scripts/db-perf.sh                     # the hot queries at 100,000 rows as the real logins; about 15 to 25 minutes
+scripts/db-perf.sh --check backup      # a dump and restore round trip on a scratch cluster
+scripts/db-perf.sh --check settings    # the server as deployed: timeouts, extensions, an idle transaction
+scripts/db-perf.sh --prototype partitions
+python3 -I scripts/db-perf/test_perf.py
+scripts/db-compat-rust.sh              # the storage crate of revision 53c0938 against schemas 14 to the newest
+```
+
+What they show, how, and the numbers: [performance.md](performance.md), [operating-settings.md](operating-settings.md), [retention-and-partitioning.md](retention-and-partitioning.md), [migration-safety.md](migration-safety.md).
+
 ## Regenerate `schema.rs`
 
 1. Run `scripts/db-test.sh write-schema`. It migrates a throwaway database and writes the output of `diesel print-schema` to `crates/storage/src/schema.rs`.
@@ -119,7 +135,7 @@ The server's clock cannot be set, so a scenario that waits past a lease, a deadl
 A passing run ends like this (the number of checks changes when a test is added):
 
 ```text
-PASS: migrations statuses ledger tenancy rls terminal_rows plans audit webhook_delivery lease outbox approvals tokens privileges contracts store_model (923 checks, PostgreSQL 18.6 (Homebrew), local)
+PASS: migrations statuses ledger tenancy rls terminal_rows plans audit webhook_delivery lease outbox approvals tokens privileges contracts store_model compat (967 checks, PostgreSQL 18.6 (Homebrew), local)
 ```
 
 A failing check prints `NOT OK - <what was expected>: <what happened>` and the statement, and the run exits 1.
@@ -227,3 +243,21 @@ Each was made in a copy of the package (migrations, tests and script), by changi
 | A migration that breaks a statement of the earlier code | `migrations` | `the earlier head move with a version bump is still accepted: expected rows=1, got ERR:23514 ...` |
 
 Two things the first version of the breaks showed. The break of the attestation time passed (rc 0) and drove a new check. And three of the breaks (the two index drops and the foreign key without the tenant) first failed at the template migration for a bad patch, which proves nothing about the suite: they were rewritten so that the migration runs and the suite's own check is what fails.
+
+### Runs of the work package `s1-database-review`
+
+Run on 2026-10-28 on the local Homebrew cluster, PostgreSQL 18.6. Docker and PostgreSQL 16 were not run.
+
+| Command | Result |
+|---|---|
+| `scripts/db-test.sh` | pass, 967 checks in 17 suites (the `lease` suite did not flake) |
+| `scripts/db-test.sh plans --rows 100000` | pass, 43 checks |
+| `scripts/db-test.sh compat` | pass: the control plus migrations 15 to 19, one at a time |
+| `scripts/db-test.sh lease` before migration 19, with the new check of section 14 | fail, `expected 1, got 0` (the red step); pass after |
+| `scripts/db-test.sh compat` with a deliberate migration that renames a column the earlier code uses | fail on both checks (removed again) |
+| `scripts/db-compat-rust.sh` (the storage crate of revision `53c0938`, schemas 14 to 19) | 49 tests at the control, 48 at each of 15 to 19; the one that fails simulates a schema behind the code (finding F-10 of the review) |
+| `cargo test -p factory-storage --locked --offline` at this commit | 15 unit and 48 integration tests pass |
+| `scripts/db-perf.sh --rows 100000` | exit 0, every verdict PASS; [performance.md](performance.md) |
+| `scripts/db-perf.sh --break superuser` / `--break chain` / `--break drop-index=stage_runs_claim_order_idx` | exit 4 / 4 / 1, as intended |
+| `scripts/db-perf.sh --prototype partitions`, `--check backup`, `--check settings`, `--check frame` | exit 0; the lines are quoted in the documents they support |
+| `python3 -I scripts/db-perf/test_perf.py` | 17 tests pass |

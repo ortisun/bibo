@@ -179,6 +179,30 @@ async fn read_specification(
     )
 }
 
+/// The two values the validation stage binds its evidence to besides the commits and the policy:
+/// the hash of the gate definitions, read from the protected base commit, and the digest of the
+/// verify image.
+///
+/// The delivery and approval stages read both again and compare them with the evidence
+/// (`DeliverySources::current_values`). They must come from the computation the stage itself uses,
+/// so this is that computation, called by the stage and by whoever answers that question, and
+/// public for that reason and no other. Definitions that cannot be read give the hash the stage
+/// gives them, so a base that lost its manifest no longer matches evidence made while it had one.
+///
+/// # Errors
+/// [`StageError::Cancelled`] when the read is cancelled, and [`StageError::Internal`] when the
+/// image reference has no digest.
+pub async fn current_values(
+    repo: &dyn JobRepo,
+    config: &ValidationConfig,
+    base: &CommitSha,
+) -> Result<(Sha256Digest, Sha256Digest), StageError> {
+    let definitions = load_definitions(repo, config, base).await?;
+    let (_, definition_hash) = definition_of(base, &definitions);
+    let image = image_digest(config.sandbox.image.reference()).map_err(report_error)?;
+    Ok((definition_hash, image))
+}
+
 fn definition_of(
     base: &CommitSha,
     definitions: &Result<TrustedGates, Unavailable>,

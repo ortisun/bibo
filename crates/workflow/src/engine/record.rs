@@ -25,6 +25,7 @@ use factory_domain::state::{
 use factory_domain::values::{
     MediaType, NonNegativeInt, Sha256Digest, Slug, Timestamp, Traceparent,
 };
+use factory_domain::vocabulary::StageKind;
 use factory_ports::store::{
     AppliedTransition, Attempt, AttemptEnd, AuditAction as PortAuditAction, AuditActor,
     AuditDecision as PortAuditDecision, Job, LeaseEpoch, NewArtifactIndexEntry, NewAuditEvent,
@@ -75,6 +76,19 @@ pub(crate) struct Cx<'e> {
     /// Blobs whose bytes are written to the artifact store after the commit, not during the
     /// transaction. See [`Cx::defer_blob`].
     blobs: RefCell<Vec<PendingBlob>>,
+    /// Stage runs this decision ended. They are counted only once the decision is committed, so a
+    /// decision that is rolled back or lost to a race counts nothing. See [`Cx::stage_ended`].
+    ended: RefCell<Vec<StageEnded>>,
+}
+
+/// A stage run that ended in a decision, as the metrics see it.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct StageEnded {
+    pub(crate) stage: StageKind,
+    /// An outcome value of the conventions page: a closed set the engine picks, never text.
+    pub(crate) outcome: &'static str,
+    /// Seconds from the first start of the stage run to its end, when both are known.
+    pub(crate) seconds: Option<f64>,
 }
 
 /// A blob that [`Cx::commit`] writes once the transaction is applied.
@@ -142,6 +156,32 @@ impl<'e> Cx<'e> {
             cost_micro_usd: 0,
             witness: Cell::new(None),
             blobs: RefCell::new(Vec::new()),
+            ended: RefCell::new(Vec::new()),
+        }
+    }
+
+    /// Notes that this decision ended a stage run. The metrics `factory_stage_runs_total` and
+    /// `factory_stage_duration_seconds` are recorded when [`Cx::commit`] succeeds, and not before.
+    pub(crate) fn stage_ended(&self, ended: StageEnded) {
+        self.ended.borrow_mut().push(ended);
+    }
+
+    /// Records the stage runs the committed decision ended. The names and the labels are those of
+    /// the metrics table of `docs/observability/conventions.md`.
+    fn record_ended(&self) {
+        for ended in self.ended.borrow_mut().drain(..) {
+            tracing::info!(
+                monotonic_counter.factory_stage_runs_total = 1_u64,
+                stage = ended.stage.as_str(),
+                outcome = ended.outcome
+            );
+            if let Some(seconds) = ended.seconds {
+                tracing::info!(
+                    histogram.factory_stage_duration_seconds = seconds,
+                    stage = ended.stage.as_str(),
+                    outcome = ended.outcome
+                );
+            }
         }
     }
 
@@ -198,6 +238,7 @@ impl<'e> Cx<'e> {
             }
             Err(other) => return Err(other.into()),
         }
+        self.record_ended();
         self.flush_blobs().await;
         Ok(())
     }

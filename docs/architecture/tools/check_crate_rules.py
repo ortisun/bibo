@@ -65,6 +65,18 @@ def validate(doc):
 
     for n in crates:
         visit(n, [])
+    # the composition library (ADR 0015) is ring 3 and only binaries may depend on it (DEP-11)
+    composition = [c["name"] for c in doc["crates"] if c["layer"] == "composition"]
+    others = [c for c in doc["crates"] if c["layer"] != "composition"]
+    for c in doc["crates"]:
+        if c["layer"] == "composition":
+            if c["ring"] <= max(o["ring"] for o in others):
+                errors.append(f"{c['name']}: the composition library must sit in a ring above every other library")
+            if c["dev_depends_on"] not in ([], ["testkit"]):
+                errors.append(f"{c['name']}: dev_depends_on may only name testkit")
+        for dep in c["depends_on"] + c["dev_depends_on"]:
+            if dep in composition:
+                errors.append(f"{c['name']} depends on the composition library {dep}; only binaries may (DEP-11)")
     # adapters and application crates must not depend on each other
     for c in doc["crates"]:
         for dep in c["depends_on"]:
@@ -97,9 +109,11 @@ def render(doc):
              "  classDef adapter fill:#fdf1e3,stroke:#a35a00,color:#3d2200;",
              "  classDef test fill:#f3f3f3,stroke:#777,color:#222,stroke-dasharray: 4 3;",
              "  classDef root fill:#f5e9f7,stroke:#7a2a8a,color:#2d0f33;",
-             "  subgraph roots[\"Ring 3: composition roots (binaries)\"]",
-             "    apps[\"" + ", ".join(a["name"] for a in doc["apps"]) + "\"]",
-             "  end",
+             "  subgraph roots[\"Ring 3: composition roots\"]",
+             "    apps[\"binaries: " + ", ".join(a["name"] for a in doc["apps"]) + "\"]"]
+    for n in by_layer.get("composition", []):
+        lines.append(f"    {n}[\"{n} (library)\"]")
+    lines += ["  end",
              "  subgraph application[\"Ring 2: application\"]"]
     for n in by_layer.get("application", []):
         lines.append(f"    {n}")
@@ -113,6 +127,8 @@ def render(doc):
               "  end",
               "  testkit[\"testkit (dev-dependency only)\"]"]
     lines += ["  apps --> application", "  apps --> adapters"]
+    for n in by_layer.get("composition", []):
+        lines += [f"  apps --> {n}", f"  {n} --> application", f"  {n} --> adapters", f"  {n} --> ports"]
     for c in crates:
         if c["layer"] in ("application", "adapter"):
             for d in c["depends_on"]:
@@ -134,6 +150,8 @@ def render(doc):
         lines.append(f"  class {n} adapter;")
     lines.append("  class testkit test;")
     lines.append("  class apps root;")
+    for n in by_layer.get("composition", []):
+        lines.append(f"  class {n} root;")
     graph = "```mermaid\n" + "\n".join(lines) + "\n```"
 
     rows = []

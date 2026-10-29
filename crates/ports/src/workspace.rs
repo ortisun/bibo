@@ -23,7 +23,7 @@ use std::path::PathBuf;
 use async_trait::async_trait;
 use factory_domain::contracts::ArtifactRef;
 use factory_domain::ids::{AttemptId, JobId};
-use factory_domain::values::Sha256Digest;
+use factory_domain::values::{GitSha, Sha256Digest};
 use factory_domain::vocabulary::Fidelity;
 
 use crate::clock::CancelSignal;
@@ -447,6 +447,20 @@ pub trait JobRepo: Send + Sync {
         commit: &CommitSha,
         cancel: &dyn CancelSignal,
     ) -> Result<(), WorkspaceError>;
+
+    /// The identifier of the tree of a commit: the object that names the files the commit holds.
+    /// Two commits with the same files have the same tree, which is what an approval of a pull
+    /// request is bound to besides its head commit (ADR 0009). Read from the job's own object
+    /// store; the code host is not asked.
+    ///
+    /// Added by the full run, pending architect confirmation (`docs/architecture/ports-v1.1.md`,
+    /// "Additions after v1.1"): the binding checks of the delivery stage needed the tree and no
+    /// port offered it.
+    ///
+    /// # Errors
+    /// [`WorkspaceError::UnknownCommit`] for a commit the job's store does not hold,
+    /// [`WorkspaceError::Git`] when the object store cannot be read.
+    async fn tree_of(&self, commit: &CommitSha) -> Result<GitSha, WorkspaceError>;
 }
 
 /// The host side of one attempt's checkout. All git runs here with a fixed environment.

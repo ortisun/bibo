@@ -8,16 +8,20 @@
 //! spans and metric events cost almost nothing.
 //!
 //! [`build_pipeline`] does the same work without touching process-wide state, which is what the
-//! tests use.
+//! tests use. [`build_pipeline_with_span_exporter`] does it with an in-memory exporter in place of
+//! the collector.
+//!
+//! Every configuration carries a scrubber, passed to [`TelemetryConfig::new`]. There is no default
+//! and no setter (ADR 0013), so a pipeline cannot be built without one.
 
 use crate::guard::{AttributeGuard, GuardStats};
 use crate::logging::{self, CorrelationLayer};
-use crate::redact::{PolicyPatternScrubber, Scrub};
+use crate::redact::Scrub;
 use crate::trace::SpanProcessing;
 use crate::{metrics, trace};
 use opentelemetry_otlp::{MetricExporter, Protocol, SpanExporter, WithExportConfig};
 use opentelemetry_sdk::metrics::SdkMeterProvider;
-use opentelemetry_sdk::trace::SdkTracerProvider;
+use opentelemetry_sdk::trace::{SdkTracerProvider, SpanExporter as SdkSpanExporter};
 use std::fmt;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
@@ -100,7 +104,13 @@ pub struct TelemetryConfig {
 
 impl TelemetryConfig {
     /// Settings with no collector, the `info` log level and the `local` environment.
-    pub fn new(service_name: &str, service_version: &str) -> Self {
+    ///
+    /// `scrubber` removes secrets from every log line and every exported span. It is a required
+    /// argument and there is no default (ADR 0013): a binary that has no redactor to hand over
+    /// does not compile, instead of starting with a weaker one. The composition root passes a
+    /// [`RedactorScrubber`](crate::redact::RedactorScrubber) over the redactor it built from the
+    /// loaded policy and the registry of the factory's own secret values.
+    pub fn new(service_name: &str, service_version: &str, scrubber: Arc<dyn Scrub>) -> Self {
         Self {
             service_name: service_name.to_string(),
             service_version: service_version.to_string(),
@@ -109,30 +119,29 @@ impl TelemetryConfig {
             log_filter: "info".to_string(),
             metric_interval: Duration::from_secs(15),
             export_timeout: Duration::from_secs(10),
-            scrubber: Arc::new(PolicyPatternScrubber::new()),
+            scrubber,
         }
     }
 
-    /// Use `scrubber` for every log line and every exported span, instead of the built-in
-    /// [`PolicyPatternScrubber`]. The composition root passes the factory's redactor here once
-    /// it exists.
-    pub fn with_scrubber(mut self, scrubber: Arc<dyn Scrub>) -> Self {
-        self.scrubber = scrubber;
-        self
-    }
-
     /// Read the settings from the process environment.
-    pub fn from_env(service_name: &str, service_version: &str) -> Result<Self, InitError> {
-        Self::from_lookup(service_name, service_version, |key| std::env::var(key).ok())
+    pub fn from_env(
+        service_name: &str,
+        service_version: &str,
+        scrubber: Arc<dyn Scrub>,
+    ) -> Result<Self, InitError> {
+        Self::from_lookup(service_name, service_version, scrubber, |key| {
+            std::env::var(key).ok()
+        })
     }
 
     /// Read the settings through `lookup`, so a test can supply the variables.
     pub fn from_lookup(
         service_name: &str,
         service_version: &str,
+        scrubber: Arc<dyn Scrub>,
         lookup: impl Fn(&str) -> Option<String>,
     ) -> Result<Self, InitError> {
-        let mut config = Self::new(service_name, service_version);
+        let mut config = Self::new(service_name, service_version, scrubber);
         let disabled =
             lookup(ENV_SDK_DISABLED).is_some_and(|v| v.trim().eq_ignore_ascii_case("true"));
         if !disabled
@@ -347,6 +356,66 @@ where
         _ => (None, None),
     };
 
+    Ok(assemble(
+        log_writer,
+        scrubber,
+        filter,
+        tracer_provider,
+        meter_provider,
+        stats,
+    ))
+}
+
+/// Build the pipeline with spans going to `exporter` instead of a collector.
+///
+/// The exporter sits behind the same attribute guard as the OTLP exporter does, built from the
+/// scrubber in `config`, and spans are exported as they end. Metrics are not exported. This is the
+/// seam for tests that must read what would leave the process, such as an in-memory exporter, and
+/// that must prove the scrubber in the configuration is the one that runs. A service uses
+/// [`build_pipeline`] or [`init`]: exporting each span on the thread that ended it makes every
+/// span wait for the exporter.
+pub fn build_pipeline_with_span_exporter<M, E>(
+    config: &TelemetryConfig,
+    log_writer: M,
+    exporter: E,
+) -> Result<Pipeline, InitError>
+where
+    M: for<'writer> MakeWriter<'writer> + Send + Sync + 'static,
+    E: SdkSpanExporter + 'static,
+{
+    let filter = EnvFilter::try_new(config.log_filter())
+        .map_err(|error| InitError::InvalidLogFilter(error.to_string()))?;
+    let scrubber = Arc::clone(&config.scrubber);
+    let guard = AttributeGuard::new(Arc::clone(&scrubber));
+    let stats = guard.stats();
+    let resource = trace::resource(
+        config.service_name(),
+        config.service_version(),
+        config.environment(),
+    );
+    let tracer_provider = trace::tracer_provider(exporter, guard, resource, SpanProcessing::Simple);
+    Ok(assemble(
+        log_writer,
+        scrubber,
+        filter,
+        Some(tracer_provider),
+        None,
+        stats,
+    ))
+}
+
+/// The subscriber over the providers: correlation, scrubbed logs, spans and metrics.
+fn assemble<M>(
+    log_writer: M,
+    scrubber: Arc<dyn Scrub>,
+    filter: EnvFilter,
+    tracer_provider: Option<SdkTracerProvider>,
+    meter_provider: Option<SdkMeterProvider>,
+    stats: Arc<GuardStats>,
+) -> Pipeline
+where
+    M: for<'writer> MakeWriter<'writer> + Send + Sync + 'static,
+{
     let trace_layer = tracer_provider.as_ref().map(trace::otel_layer);
     let metrics_layer = meter_provider.as_ref().map(metrics::metrics_layer);
     let subscriber = tracing_subscriber::registry()
@@ -354,13 +423,12 @@ where
         .with(logging::log_layer(log_writer, scrubber, filter))
         .with(trace_layer)
         .with(metrics_layer);
-
-    Ok(Pipeline {
+    Pipeline {
         dispatch: Dispatch::new(subscriber),
         tracer_provider,
         meter_provider,
         stats,
-    })
+    }
 }
 
 static INIT_LOCK: Mutex<()> = Mutex::new(());

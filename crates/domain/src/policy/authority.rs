@@ -150,6 +150,24 @@ pub struct AllowlistEntry {
     pub expires_at: Option<Timestamp>,
 }
 
+impl AllowlistEntry {
+    /// True when the entry's designations reach `repository` (`owner/name`).
+    ///
+    /// An entry with no `repositories` list covers every repository of the tenant. An entry with a
+    /// list covers exactly the repositories on it, compared whole and without regard to case (GitHub
+    /// names are case-insensitive), so `acme/rep` does not cover `acme/repo` and an empty list covers
+    /// none. This can only take authority away: it is asked in addition to the tenant, the numeric
+    /// id, the expiry and the designation, never instead of one of them.
+    #[must_use]
+    pub fn covers_repository(&self, repository: &str) -> bool {
+        self.repositories.as_ref().is_none_or(|repositories| {
+            repositories
+                .iter()
+                .any(|listed| listed.eq_ignore_ascii_case(repository))
+        })
+    }
+}
+
 /// Why an allowlist could not be built.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum AllowlistError {
@@ -942,11 +960,8 @@ impl AuthorityPolicy {
         if entry.expires_at.as_ref().is_some_and(|end| end <= now) {
             return Err(AuthorityDenial::EntryExpired);
         }
-        if let Some(repos) = &entry.repositories {
-            let wanted = repository.to_ascii_lowercase();
-            if !repos.iter().any(|r| r.to_ascii_lowercase() == wanted) {
-                return Err(AuthorityDenial::RepositoryNotListed);
-            }
+        if !entry.covers_repository(repository) {
+            return Err(AuthorityDenial::RepositoryNotListed);
         }
         if let Some(at_least) = self.permission_condition
             && !actor.github_permission.is_some_and(|p| p >= at_least)

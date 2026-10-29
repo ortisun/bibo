@@ -561,16 +561,14 @@ fn too_many_distinct_label_values_are_folded_into_an_overflow_series() {
 fn a_metric_event_never_reaches_the_log_or_the_trace() {
     use factory_observability::guard::AttributeGuard;
     use factory_observability::logging::{self, CorrelationLayer};
-    use factory_observability::redact::PolicyPatternScrubber;
     use factory_observability::trace::SpanProcessing;
     use opentelemetry_sdk::trace::InMemorySpanExporter;
-    use std::sync::Arc;
 
     let pipeline = Pipeline::new();
     let spans_out = InMemorySpanExporter::default();
     let tracer_provider = trace::tracer_provider(
         spans_out.clone(),
-        AttributeGuard::new(Arc::new(PolicyPatternScrubber::new())),
+        AttributeGuard::new(common::policy_scrubber()),
         trace::resource("test", "0.0.0", "test"),
         SpanProcessing::Simple,
     );
@@ -579,7 +577,7 @@ fn a_metric_event_never_reaches_the_log_or_the_trace() {
         .with(CorrelationLayer::new())
         .with(logging::log_layer(
             log.clone(),
-            Arc::new(PolicyPatternScrubber::new()),
+            common::policy_scrubber(),
             tracing_subscriber::EnvFilter::new("trace"),
         ))
         .with(trace::otel_layer(&tracer_provider))

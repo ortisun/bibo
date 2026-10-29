@@ -1,11 +1,11 @@
 //! A `tracing` subscriber that keeps the spans and events the engine emits, so assertion A11 reads
 //! what the engine actually emitted and not what the harness thinks it should have.
 //!
-//! The engine opens a `factory.attempt` span and a `factory.gate` span, and logs events. The
-//! scripted wiring plays the worker loop: it opens a `factory.job` span and a `factory.stage_run`
-//! span around the work, as the composition root's worker does (`s1-apps-composition`). The
-//! subscriber records every span with its parent and fields, and every event with the span it
-//! happened in.
+//! The engine opens a `factory.stage_run` span, a `factory.attempt` span under it and a
+//! `factory.gate` span, and logs events. The scripted wiring plays the worker loop: it opens a
+//! `factory.job` span around the work, as the composition root's worker does
+//! (`s1-apps-composition`). The subscriber records every span with its parent and fields, and
+//! every event with the span it happened in.
 
 use std::collections::{BTreeMap, HashMap};
 use std::fmt;

@@ -1,0 +1,40 @@
+
+running 7 tests
+test tests::a_last_line_without_a_break_is_not_a_line ... ok
+test tests::a_text_of_only_white_space_has_no_words ... ok
+test tests::an_empty_text_has_no_lines_words_or_characters ... ok
+test tests::characters_are_scalar_values_and_not_bytes ... ok
+test tests::the_plain_line_is_three_columns_and_an_optional_name ... ok
+test tests::words_are_split_on_any_white_space ... ok
+test tests::each_line_break_is_one_line ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+
+running 5 tests
+test two_files_in_one_run_are_a_usage_error ... ok
+test help_lists_the_options_and_exits_with_zero ... ok
+test a_file_that_does_not_exist_is_a_read_error ... ok
+test version_prints_the_package_version ... ok
+test an_unknown_option_is_a_usage_error ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.28s
+
+
+running 3 tests
+test standard_input_is_counted_when_there_is_no_file ... ok
+test an_empty_file_has_three_zero_counts ... ok
+test a_file_of_three_lines_and_seven_words_is_counted ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+

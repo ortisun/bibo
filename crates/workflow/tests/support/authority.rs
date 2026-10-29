@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use std::sync::Mutex;
 
 use async_trait::async_trait;
-use factory_domain::ids::{JobId, PrincipalId, TenantId};
+use factory_domain::ids::{JobId, PrincipalId, RepositoryId, TenantId};
 use factory_domain::machines::guards::AdmissionFacts;
 use factory_domain::vocabulary::{Fidelity, HumanRole};
 use factory_workflow::commands::{Authority, AuthorityError};
@@ -80,6 +80,7 @@ impl Authority for StaticAuthority {
         &self,
         _tenant: TenantId,
         _requester: PrincipalId,
+        _repository: RepositoryId,
     ) -> Result<AdmissionFacts, AuthorityError> {
         let state = self.state();
         if state.unavailable {

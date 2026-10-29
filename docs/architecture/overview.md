@@ -123,7 +123,7 @@ Generated from [`crate-dependency-rules.json`](crate-dependency-rules.json) by `
 | 0 | Domain | Pure model, state machines and contract types. No I/O, no clock, no randomness, no async runtime. |
 | 1 | Ports | Trait definitions the inner code needs from the outside. Depends on domain only. No I/O. |
 | 2 | Application and adapters | Application crates hold use cases and depend on domain and ports. Adapter crates implement ports and depend on domain and ports. Neither kind depends on the other, and no crate in this ring depends on a peer. |
-| 3 | Composition roots | Binaries. The only place where adapters are chosen and wired to use cases. |
+| 3 | Composition roots | Binaries, and the one composition library they share (ADR 0015). The only place where adapters are chosen and wired to use cases. The library has no main and only binaries may depend on it. |
 <!-- GENERATED:end rings -->
 
 <!-- GENERATED:begin crate-graph -->
@@ -134,8 +134,9 @@ flowchart TB
   classDef adapter fill:#fdf1e3,stroke:#a35a00,color:#3d2200;
   classDef test fill:#f3f3f3,stroke:#777,color:#222,stroke-dasharray: 4 3;
   classDef root fill:#f5e9f7,stroke:#7a2a8a,color:#2d0f33;
-  subgraph roots["Ring 3: composition roots (binaries)"]
-    apps["api, worker, cli, egress-sidecar"]
+  subgraph roots["Ring 3: composition roots"]
+    apps["binaries: api, worker, cli, egress-sidecar"]
+    composition["composition (library)"]
   end
   subgraph application["Ring 2: application"]
     workflow
@@ -157,6 +158,10 @@ flowchart TB
   testkit["testkit (dev-dependency only)"]
   apps --> application
   apps --> adapters
+  apps --> composition
+  composition --> application
+  composition --> adapters
+  composition --> ports
   ports --> domain
   workflow --> domain
   workflow --> ports
@@ -184,6 +189,7 @@ flowchart TB
   sandbox -. dev only .-> testkit
   github -. dev only .-> testkit
   egress -. dev only .-> testkit
+  composition -. dev only .-> testkit
   class domain inner;
   class ports inner;
   class workflow app;
@@ -197,6 +203,7 @@ flowchart TB
   class observability adapter;
   class testkit test;
   class apps root;
+  class composition root;
 ```
 <!-- GENERATED:end crate-graph -->
 
@@ -214,6 +221,7 @@ flowchart TB
 | `contracts` | `factory-contracts` | 2 | adapter | domain, ports | none | 0 | Embeds schemas/, implements OutputValidator, loads and validates agent manifests, domain capability profiles and policy files. |
 | `egress` | `factory-egress` | 2 | adapter | domain, ports | testkit | 1 | The model broker and the egress relay. The broker holds the real provider keys, issues and revokes per-job tokens, forwards only allowed API paths, and meters usage against the job ceiling. The relay is the per-job sidecar: exact-host allowlist, rejection of private and metadata address ranges after resolution, pinned connections and a byte quota. Implements ModelBroker. |
 | `observability` | `factory-observability` | 2 | adapter | domain | none | 0 | Initializes tracing and OpenTelemetry for the binaries and owns span and attribute naming. |
+| `composition` | `factory-composition` | 3 | composition | domain, ports, workflow, spec_adapter, storage, runtime, sandbox, github, contracts, egress, observability | testkit | 1 | The shared composition core, as a library (ADR 0015): the typed configuration, the profiles, the registry of ports with require_permitted, the start-up checks, the redactor and the registry of secret values, health reporting, the seams over the store, the sandbox output and workspace patch indexing wrappers, the telemetry configuration helper, and the providers assembled by profile. The only library that wires more than one adapter. It has no main, no HTTP routes, no handling of process arguments and no loop: those belong to the binary that uses it (the grammar of an approval decision is pure text and is in the library). |
 | `testkit` | `factory-testkit` | 2 | test-support | domain, ports | none | 0 | Labelled fakes: FakeClock, InMemoryStore, FakeSandbox, FakeAgentRuntime, FakeModelBroker, FakeChangeHost, FakeWorkspaceProvider, FakeJobRepo, FakeSpecificationProvider, ScriptedProcessRunner and FakeWebhookVerifier, with FakeRemote shared by the workspace and change host fakes. Every fake reports fidelity fake. Also the shared contract suites and the register that shows every check can fail. May appear only in dev-dependencies. |
 | `api` | `factory-api` | 3 | binary | all library crates it wires | none | 1 | HTTP API: GitHub webhook endpoint with signature verification, job submission, decisions, status and timeline queries, health endpoints. |
 | `worker` | `factory-worker` | 3 | binary | all library crates it wires | none | 1 | Runs the engine loop in one process: claim, execute stage handlers, sweep leases and deadlines, supervise sandboxes, and host the model broker listener in Slice 1. Single concurrency in Slice 1. |
@@ -233,9 +241,10 @@ flowchart TB
 | DEP-05 | domain, ports, workflow and spec_adapter contain no call to the clock, the filesystem, the network or process spawning. The clock comes from the Clock port. | clippy disallowed-methods and disallowed-types in each crate's clippy.toml, verified with cargo clippy -D warnings |
 | DEP-06 | No crate uses unsafe code. | workspace lint unsafe_code = forbid |
 | DEP-07 | Third-party licenses and advisories pass policy. | cargo deny check |
-| DEP-08 | Binaries are the only crates that depend on more than one adapter. | xtask check-architecture |
+| DEP-08 | Binaries and the composition library are the only crates that depend on more than one adapter. | xtask check-architecture |
 | DEP-09 | Store::begin_system is called only from the workflow crate, and ChangeHost has no method whose name starts with merge. The sources of the Spec Kit layout (.specify, speckit) appear only in spec_adapter, its fixtures and documentation. | xtask check-architecture, by source scan |
 | DEP-10 | Only the sandbox crate spawns docker or git. Only the runtime crate spawns an agent command line tool. No crate spawns a shell. The set of allowed spawned binaries is docker and git. | xtask check-architecture by source scan, plus the process spawn recorder in the end-to-end tests (negative test ST-03 and FX-SPAWN) |
+| DEP-11 | The composition library (layer composition, ring 3, ADR 0015) may be depended on by binaries in apps/ only; no crate in rings 0 to 2 may depend on it. It has no binary target and defines no function named main. | xtask check-architecture, from cargo metadata (the edge and the targets) and by source scan (main) |
 <!-- GENERATED:end dependency-rules -->
 
 ### Crates from the master prompt that are not created yet

@@ -676,6 +676,15 @@ fn samples() -> Vec<Sample> {
             vec![format!("sfjt_{}", rep('r', 10))],
         ),
         s(
+            "api_token",
+            format!("sfat_{}", rep('r', 43)),
+            vec![
+                format!("sfat_{}", rep('r', 42)),
+                format!("sfab_{}", rep('r', 43)),
+                format!("xsfat_{}", rep('r', 43)),
+            ],
+        ),
+        s(
             "nats_credentials",
             pem("NATS USER NKEY SEED", 's'),
             vec![pem("NATS UNKNOWN THING", 's')],
@@ -2147,4 +2156,494 @@ fn an_error_never_repeats_a_secret() {
         .unwrap_err();
     // The label is not a secret, so it may be shown, but the value never is.
     assert!(!err.to_string().contains("abcdefghijkl"));
+}
+
+// ===== URLs with credentials (API-5) ===============================================================
+//
+// The `url_with_credentials` pattern is the second line of defence for connection strings and clone
+// URLs that the registry of exact values has never seen. It was changed once to keep a second URL on
+// a JSON line from being swallowed (OBS-1), and that change stopped it from finding a password with
+// a quote in it. The tests below do not trust any one shape: a table of the shapes the review found,
+// and a seeded generator of URLs inside generated lines that checks two things at once, that no
+// password survives and that nothing outside the URL is eaten.
+
+/// The marker text the redactor writes, so that a test can take it out again.
+fn without_markers(text: &str) -> String {
+    let mut out = String::new();
+    let mut rest = text;
+    while let Some(start) = rest.find("[REDACTED:") {
+        out.push_str(&rest[..start]);
+        match rest[start..].find(']') {
+            Some(end) => rest = &rest[start + end + 1..],
+            None => {
+                rest = "";
+                break;
+            }
+        }
+    }
+    out.push_str(rest);
+    out
+}
+
+/// A URL assembled from pieces, so that no line of this file is a URL with a password.
+fn join_url(scheme: &str, user: &str, password: &str, host: &str) -> String {
+    format!("{scheme}://{user}:{password}@{host}")
+}
+
+fn a_secret_tail() -> String {
+    // Twelve characters that are not a word, made from pieces.
+    ["Zq", "7fK3", "mP9x", "Lw"].concat()
+}
+
+#[test]
+fn urls_with_a_password_are_redacted_in_every_shape_the_review_found() {
+    let r = redactor();
+    let secret = a_secret_tail();
+    let (sep, colon, at) = ("://", ":", "@");
+    let shapes: Vec<(&str, String)> = vec![
+        (
+            "a plain password",
+            join_url("postgres", "app", &secret, "db:5432/x"),
+        ),
+        (
+            "a double quote inside the password",
+            join_url("postgres", "app", &format!("{secret}\"x"), "db:5432/x"),
+        ),
+        (
+            "a single quote inside the password",
+            join_url("postgres", "app", &format!("{secret}'x"), "db:5432/x"),
+        ),
+        (
+            "a quote at the start of the password",
+            join_url("postgres", "app", &format!("\"{secret}"), "db:5432/x"),
+        ),
+        (
+            "a slash inside the password",
+            join_url("postgres", "app", &format!("{secret}+x/y=="), "db:5432/x"),
+        ),
+        (
+            "a slash at the start of the password",
+            join_url("postgres", "app", &format!("/{secret}"), "db:5432/x"),
+        ),
+        (
+            "an at sign inside the password",
+            join_url("postgres", "app", &format!("{secret}@tail"), "db:5432/x"),
+        ),
+        (
+            "an at sign and a slash inside the password",
+            join_url("postgres", "app", &format!("{secret}@a/b@c"), "db/x"),
+        ),
+        (
+            "percent escapes in the password",
+            join_url("postgres", "app", &format!("{secret}%40%2F%3A"), "db/x"),
+        ),
+        (
+            "colons in the password",
+            join_url("postgres", "app", &format!("{secret}:a::b"), "db/x"),
+        ),
+        (
+            "no user name (redis style)",
+            join_url("redis", "", &secret, "cache:6379/0"),
+        ),
+        (
+            "a token as the user name and no password",
+            format!("https{sep}{secret}{at}github.com/org/repo.git"),
+        ),
+        (
+            "an upper-case scheme",
+            join_url("HTTPS", "app", &secret, "db/x"),
+        ),
+        (
+            "a capitalised scheme",
+            join_url("Postgres", "app", &secret, "db/x"),
+        ),
+        (
+            "an IPv6 host",
+            join_url("postgres", "app", &secret, "[2001:db8::1]:5432/x"),
+        ),
+        (
+            "an IPv6 host and an at sign in the password",
+            join_url("postgres", "app", &format!("{secret}@z"), "[::1]:5432/x"),
+        ),
+        (
+            "an empty host (a socket)",
+            join_url("postgres", "app", &secret, "/var/run/x"),
+        ),
+        (
+            "slashes escaped for JSON",
+            format!("postgres:\\/\\/app{colon}{secret}{at}db\\/x"),
+        ),
+        (
+            "a JSON escaped quote in the password",
+            join_url("postgres", "app", &format!("{secret}\\\"x"), "db/x"),
+        ),
+        (
+            "the whole URL percent-encoded",
+            join_url("postgres", "app", &secret, "db/x")
+                .bytes()
+                .map(|byte| {
+                    if byte.is_ascii_alphanumeric() {
+                        char::from(byte).to_string()
+                    } else {
+                        format!("%{byte:02X}")
+                    }
+                })
+                .collect::<String>(),
+        ),
+    ];
+    let mut missed = Vec::new();
+    for (name, url) in &shapes {
+        for (context, line) in [
+            ("alone", url.clone()),
+            (
+                "in a sentence",
+                format!("could not connect to {url} (timeout)"),
+            ),
+            (
+                "in a log line",
+                format!("level=warn target={url} attempt=3"),
+            ),
+        ] {
+            let out = redact_text(&r, &line);
+            if out.contains(&secret) {
+                missed.push(format!("{name}, {context}: {out}"));
+            }
+        }
+    }
+    assert!(missed.is_empty(), "{missed:#?}");
+}
+
+#[test]
+fn a_user_name_alone_is_not_a_secret_and_a_url_without_userinfo_is_left_alone() {
+    let r = redactor();
+    for text in [
+        "clone ssh://git@github.com/org/repo.git please",
+        "see https://example.test/a:b@c for details",
+        "see https://example.test/docs for details",
+        "https://medium.com/@someone/a-post",
+        "https://registry.example.test/@scope/pkg",
+        "mailto:someone@example.test",
+        "postgres://db.internal:5432/path",
+    ] {
+        assert_eq!(redact_text(&r, text), text, "{text}");
+    }
+}
+
+/// The marker names the pattern, so the report and the logs say what was found.
+#[test]
+fn a_redacted_url_says_which_pattern_found_it() {
+    let r = redactor();
+    let url = join_url("postgres", "app", &a_secret_tail(), "db:5432/x");
+    assert!(redact_text(&r, &url).starts_with("[REDACTED:url_with_credentials]"));
+}
+
+/// The OBS-1 case as text: the same URL twice on one JSON line must lose both passwords and keep
+/// the text between them.
+#[test]
+fn the_same_url_twice_on_one_json_line_loses_both_passwords_and_only_them() {
+    let r = redactor();
+    let secret = a_secret_tail();
+    let url = join_url("postgres", "svc", &secret, "db.internal:5432");
+    let line = format!("{{\"msg\":\"connecting to {url}\",\"tool\":\"{url}\",\"n\":3}}");
+    let out = redact_text(&r, &line);
+    assert!(!out.contains(&secret), "{out}");
+    assert_eq!(
+        without_markers(&out),
+        "{\"msg\":\"connecting to \",\"tool\":\"\",\"n\":3}",
+        "{out}"
+    );
+}
+
+/// Overlap: two URLs with nothing, or one punctuation mark, between them. The first match must stop
+/// where its host stops, or it swallows the start of the second and the second keeps its password.
+#[test]
+fn urls_stuck_together_are_each_redacted_and_the_text_between_them_is_kept() {
+    let r = redactor();
+    let (first, second) = (["Zq", "81fK", "mP"].concat(), ["Yt", "30xC", "vN"].concat());
+    let one = join_url("postgres", "a", &first, "db1:5432/x");
+    let two = join_url("postgres", "b", &second, "db2");
+    for separator in [
+        ",", ";", " ", "|", "||", "!", "`", "{", "}", "*", "\",\"", "', '", ")(", "><", "\n",
+    ] {
+        // Without a path on the first URL, so that the separator is the next thing after its host.
+        let line = format!(
+            "{}{separator}{two}",
+            join_url("postgres", "a", &first, "db1")
+        );
+        let out = redact_text(&r, &line);
+        assert!(
+            !out.contains(&first) && !out.contains(&second),
+            "separator {separator:?}: {out}"
+        );
+    }
+    // And with a path, a port and a query in front of the separator.
+    for separator in [",", ";", " ", "|", "\n"] {
+        let out = redact_text(&r, &format!("{one}{separator}{two}"));
+        assert!(
+            !out.contains(&first) && !out.contains(&second),
+            "separator {separator:?}: {out}"
+        );
+        assert_eq!(
+            without_markers(&out),
+            format!("/x{separator}"),
+            "what is left is the path of the first URL and the separator: {out}"
+        );
+    }
+}
+
+// ---- A seeded generator of URLs inside lines ---------------------------------------------------
+
+/// Characters a password may hold, quotes and white space aside.
+const PASSWORD_CHARS: &[u8] =
+    b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~!$&*+=%/:@,;()[]{}<>|^`?#";
+const TOKEN_CHARS: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789._~%-";
+const SCHEMES: &[&str] = &[
+    "postgres",
+    "postgresql",
+    "redis",
+    "amqp",
+    "https",
+    "http",
+    "mongodb+srv",
+    "ftp",
+    "HTTPS",
+    "Postgres",
+];
+const HOSTS: &[&str] = &[
+    "db",
+    "db.internal",
+    "cache.example.test",
+    "10.0.0.7",
+    "[::1]",
+    "[2001:db8::7]",
+    "a-b.c",
+];
+
+/// How a generated line carries its URLs.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Style {
+    /// Inside JSON strings: quotes and backslashes escaped, slashes sometimes escaped too.
+    Json,
+    /// `key=value` pairs, the URL inside a quoted message or bare, as a logger writes them.
+    Logfmt,
+    /// One URL in running text, a bare quote allowed in the password.
+    Plain,
+}
+
+/// One generated URL, in the form in which it sits on the line.
+struct Generated {
+    /// The text on the line.
+    text: String,
+    /// Where the host ends, as a length from the start of `text`.
+    host_end: usize,
+    /// Every secret the URL carries, as it appears in `text`.
+    secrets: Vec<String>,
+}
+
+/// A password with punctuation, quotes and backslashes in it. `bare` says the line will not escape
+/// them (plain running text). The documented limit of the pattern is a bare double quote that is
+/// followed by a character that could end a string or a sentence, or by the at sign that ends the
+/// userinfo, when an at sign came before it: nobody can tell that quote from the end of a string.
+/// Such a password is not generated for plain text; in JSON and key=value lines the quote is escaped
+/// and every combination is.
+fn generated_password(rng: &mut Rng, bare: bool) -> String {
+    let mut password = String::new();
+    for _ in 0..(8 + rng.below(14)) {
+        let c = if rng.below(9) == 0 {
+            b"\"'\\"[rng.below(3)]
+        } else {
+            PASSWORD_CHARS[rng.below(PASSWORD_CHARS.len())]
+        };
+        password.push(char::from(c));
+    }
+    // A colon followed by a slash is the start of another URL, a trailing colon is ambiguous, and a
+    // trailing backslash would escape the at sign: none of them is a password worth the name.
+    let mut password = password.replace(":/", ":x").replace("//", "/x");
+    while password.ends_with([':', '\\']) {
+        password.push('x');
+    }
+    if bare {
+        let chars: Vec<char> = password.chars().collect();
+        password = chars
+            .iter()
+            .enumerate()
+            .flat_map(|(at, &c)| {
+                let next = chars.get(at + 1).copied();
+                let ambiguous = c == '"' && next.is_none_or(|n| ",}]):;<>.".contains(n));
+                [Some(c), ambiguous.then_some('x')]
+            })
+            .flatten()
+            .collect();
+    }
+    password
+}
+
+/// `text` as it appears inside a JSON string.
+fn json_escaped(text: &str, escape_slashes: bool) -> String {
+    let quoted = serde_json::to_string(text).expect("a string is JSON");
+    let inner = &quoted[1..quoted.len() - 1];
+    if escape_slashes {
+        inner.replace('/', "\\/")
+    } else {
+        inner.to_owned()
+    }
+}
+
+fn generated_url(rng: &mut Rng, style: Style) -> Generated {
+    let escaped = style != Style::Plain;
+    let escape_slashes = style == Style::Json && rng.below(3) == 0;
+    let embed = |text: &str| {
+        if escaped {
+            json_escaped(text, escape_slashes)
+        } else {
+            text.to_owned()
+        }
+    };
+    let slash = if escape_slashes { "\\/" } else { "/" };
+    let scheme = SCHEMES[rng.below(SCHEMES.len())];
+    let token_only = rng.below(5) == 0;
+    let mut secrets = Vec::new();
+    let userinfo = if token_only {
+        let len = 12 + rng.below(30);
+        let token = rng.string(TOKEN_CHARS, len);
+        secrets.push(token.clone());
+        token
+    } else {
+        let user = if rng.below(4) == 0 {
+            String::new()
+        } else {
+            let len = 3 + rng.below(8);
+            rng.string(ALNUM, len)
+        };
+        let password = generated_password(rng, style == Style::Plain);
+        secrets.push(embed(&password));
+        format!("{user}:{}", embed(&password))
+    };
+    let host = HOSTS[rng.below(HOSTS.len())];
+    let port = if rng.below(2) == 0 { ":5432" } else { "" };
+    let mut text = format!("{scheme}:{slash}{slash}{userinfo}@{host}{port}");
+    let host_end = text.len();
+    if rng.below(2) == 0 {
+        let path = ["x", "db/main", "a/b/c?sslmode=require", "p#frag"][rng.below(4)];
+        text.push_str(slash);
+        text.push_str(&path.replace('/', slash));
+    }
+    Generated {
+        text,
+        host_end,
+        secrets,
+    }
+}
+
+/// True when `out` is `original` with, for each URL in order, a stretch of the URL taken out that
+/// starts at its start, ends no earlier than its host and no later than its end.
+fn only_the_urls_were_eaten(original: &str, out: &str, urls: &[(usize, usize, usize)]) -> bool {
+    fn go(
+        original: &str,
+        out: &str,
+        from: usize,
+        taken: usize,
+        urls: &[(usize, usize, usize)],
+    ) -> bool {
+        let Some(&(start, host_end, end)) = urls.first() else {
+            return original[from..] == out[taken..];
+        };
+        let gap = &original[from..start];
+        if !out[taken..].starts_with(gap) {
+            return false;
+        }
+        let taken = taken + gap.len();
+        (host_end..=end).any(|eaten| go(original, out, eaten, taken, &urls[1..]))
+    }
+    go(original, out, 0, 0, urls)
+}
+
+#[test]
+fn generated_urls_in_generated_lines_lose_every_password_and_nothing_else() {
+    let r = redactor();
+    let mut rng = Rng::new(0x5eed_a915);
+    let mut failures = Vec::new();
+    for round in 0..4000 {
+        let style = [Style::Json, Style::Logfmt, Style::Plain][round % 3];
+        let count = if style == Style::Plain {
+            1
+        } else {
+            1 + rng.below(3)
+        };
+        let mut line = String::new();
+        let mut urls = Vec::new();
+        let mut secrets = Vec::new();
+        match style {
+            Style::Json => line.push_str("{\"level\":\"INFO\""),
+            Style::Logfmt => line.push_str("level=info"),
+            Style::Plain => line.push_str("could not connect to "),
+        }
+        for n in 0..count {
+            let generated = generated_url(&mut rng, style);
+            match style {
+                Style::Json => {
+                    line.push_str(&format!(",\"f{n}\":\""));
+                    if rng.below(2) == 0 {
+                        line.push_str("connecting to ");
+                    }
+                }
+                Style::Logfmt => {
+                    line.push_str(&format!(" f{n}="));
+                    if rng.below(2) == 0 {
+                        line.push_str("\"connecting to ");
+                    } else {
+                        line.push('"');
+                    }
+                }
+                Style::Plain => {}
+            }
+            let start = line.len();
+            line.push_str(&generated.text);
+            urls.push((
+                start,
+                start + generated.host_end,
+                start + generated.text.len(),
+            ));
+            secrets.extend(generated.secrets);
+            match style {
+                Style::Json => line.push('"'),
+                Style::Logfmt => line.push('"'),
+                Style::Plain => {}
+            }
+        }
+        match style {
+            Style::Json => line.push('}'),
+            Style::Logfmt => line.push_str(" attempt=3"),
+            Style::Plain => line.push_str(" (timeout)"),
+        }
+        let out = redact_text(&r, &line);
+        // 1. No secret survives, whole or in a piece of six characters.
+        for secret in &secrets {
+            let chars: Vec<char> = secret.chars().collect();
+            let leaked = out.contains(secret.as_str())
+                || chars
+                    .windows(6)
+                    .map(|w| w.iter().collect::<String>())
+                    .any(|piece| out.contains(&piece));
+            if leaked {
+                failures.push(format!("a secret survived ({style:?}): {line}\n  -> {out}"));
+                break;
+            }
+        }
+        // 2. Nothing but the URLs was eaten.
+        if !only_the_urls_were_eaten(&line, &without_markers(&out), &urls) {
+            failures.push(format!(
+                "text outside the URLs changed ({style:?}): {line}\n  -> {out}"
+            ));
+        }
+        if failures.len() >= 12 {
+            break;
+        }
+    }
+    assert!(
+        failures.is_empty(),
+        "{} failures:\n{}",
+        failures.len(),
+        failures.join("\n")
+    );
 }

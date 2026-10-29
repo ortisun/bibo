@@ -78,9 +78,89 @@ mod support {
     /// `PgStore` on a database of its own, with the local file artifact store beside it.
     struct PgBackend {
         db: TestDb,
+        /// The worker and engine logins.
         store: Arc<PgStore>,
+        /// What the engine is given as its store: the one above, plus the API login's store for the
+        /// platform audit (see `Split`). In the `worker` variant it is the one above, alone.
+        port: Arc<dyn Store>,
         artifacts: Arc<dyn ArtifactStore>,
         _scratch: Scratch,
+    }
+
+    /// The worker's store with the API login's store behind the platform audit and the two lookups,
+    /// the way the deployment's two processes divide them. Since finding API-3 the API login cannot
+    /// write the tables the engine writes, so no single login can run every scenario.
+    struct Split {
+        tenant: Arc<PgStore>,
+        api: PgStore,
+    }
+
+    #[async_trait]
+    impl Store for Split {
+        fn fidelity(&self) -> factory_domain::vocabulary::Fidelity {
+            self.tenant.fidelity()
+        }
+
+        async fn begin(
+            &self,
+            scope: TenantScope,
+        ) -> Result<Box<dyn factory_ports::store::Tx>, factory_ports::store::StoreError> {
+            self.tenant.begin(scope).await
+        }
+
+        async fn begin_system(
+            &self,
+            scope: SystemScope,
+        ) -> Result<Box<dyn factory_ports::store::SystemTx>, factory_ports::store::StoreError>
+        {
+            self.tenant.begin_system(scope).await
+        }
+
+        async fn resolve_token(
+            &self,
+            hash: &factory_ports::store::TokenHash,
+            audience: &factory_ports::store::Audience,
+        ) -> Result<
+            Option<factory_domain::scope::ResolvedPrincipal>,
+            factory_ports::store::StoreError,
+        > {
+            self.api.resolve_token(hash, audience).await
+        }
+
+        async fn resolve_installation(
+            &self,
+            installation: factory_ports::store::InstallationId,
+            repository: factory_ports::store::GithubRepositoryId,
+        ) -> Result<
+            Option<factory_domain::scope::ResolvedRepository>,
+            factory_ports::store::StoreError,
+        > {
+            self.api
+                .resolve_installation(installation, repository)
+                .await
+        }
+
+        async fn record_platform_audit(
+            &self,
+            scope: factory_domain::scope::PlatformScope,
+            event: factory_ports::store::NewAuditEvent,
+        ) -> Result<AuditRecord, factory_ports::store::StoreError> {
+            self.api.record_platform_audit(scope, event).await
+        }
+
+        async fn committed(
+            &self,
+            scope: TenantScope,
+            witness: factory_ports::store::Witness,
+        ) -> Result<bool, factory_ports::store::StoreError> {
+            self.tenant.committed(scope, witness).await
+        }
+
+        async fn schema_version(
+            &self,
+        ) -> Result<factory_ports::store::SchemaVersion, factory_ports::store::StoreError> {
+            self.tenant.schema_version().await
+        }
     }
 
     fn small_pool(url: factory_storage::pg::DatabaseUrl) -> PoolSettings {
@@ -95,26 +175,33 @@ mod support {
             let db = server().clone_database().await;
             let logins = db.server.logins().await;
             // The suite includes the one scenario that records a webhook rejection under the
-            // platform tenant, which only the API login may do (`Store::record_platform_audit`),
-            // so by default the tenant pool uses the API login, as the storage contract runner
-            // does. `FACTORY_SCENARIO_LOGIN=worker` connects as the worker does instead, and that
-            // scenario is then refused by design.
-            let config = if std::env::var("FACTORY_SCENARIO_LOGIN").as_deref() == Ok("worker") {
-                factory_worker::database::pools(
-                    small_pool(db.url(&logins.worker)),
-                    small_pool(db.url(&logins.engine)),
-                )
-            } else {
-                let mut config = PgStoreConfig::new(small_pool(db.url(&logins.api)));
-                config.tenant_login = TenantLogin::Api;
-                config.system = Some(small_pool(db.url(&logins.engine)));
-                config
-            };
+            // platform tenant, which only the API login may do (`Store::record_platform_audit`).
+            // The tenant and system work is done as the worker and engine logins, and by default
+            // the platform audit goes to a second store connected as the API login (`Split`), as
+            // the storage contract runner does. `FACTORY_SCENARIO_LOGIN=worker` gives the engine
+            // the worker's store alone, and that scenario is then refused by design.
+            let config = factory_composition::database::pools(
+                small_pool(db.url(&logins.worker)),
+                small_pool(db.url(&logins.engine)),
+            );
             let store = Arc::new(
                 PgStore::connect(config)
                     .await
                     .expect("the store becomes ready"),
             );
+            let port: Arc<dyn Store> =
+                if std::env::var("FACTORY_SCENARIO_LOGIN").as_deref() == Ok("worker") {
+                    store.clone()
+                } else {
+                    let mut api = PgStoreConfig::new(small_pool(db.url(&logins.api)));
+                    api.tenant_login = TenantLogin::Api;
+                    Arc::new(Split {
+                        tenant: store.clone(),
+                        api: PgStore::connect(api)
+                            .await
+                            .expect("the API store becomes ready"),
+                    })
+                };
             let scratch = Scratch(std::env::temp_dir().join(format!(
                 "factory-scenarios-{}",
                 Uuid::from_u128(rand_bits()).simple()
@@ -126,6 +213,7 @@ mod support {
             Arc::new(Self {
                 db,
                 store,
+                port,
                 artifacts,
                 _scratch: scratch,
             })
@@ -161,7 +249,7 @@ mod support {
         }
 
         fn store(&self) -> Arc<dyn Store> {
-            self.store.clone()
+            self.port.clone()
         }
 
         fn artifacts(&self) -> Arc<dyn ArtifactStore> {

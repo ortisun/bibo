@@ -201,6 +201,12 @@ impl JobRepo for RecordingRepo {
     ) -> Result<(), WorkspaceError> {
         self.inner.push(target, commit, cancel).await
     }
+    async fn tree_of(
+        &self,
+        commit: &CommitSha,
+    ) -> Result<factory_domain::values::GitSha, WorkspaceError> {
+        self.inner.tree_of(commit).await
+    }
 }
 
 /// The fake workspace provider, with every read of the job's repository recorded.

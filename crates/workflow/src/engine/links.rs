@@ -53,13 +53,13 @@ pub(crate) fn decision_attempts_before(role: &str) -> Option<u32> {
 ///
 /// # Errors
 /// [`EngineError::Invalid`] if the role is not a slug (it always is for a `u32`).
-pub(crate) fn answer_role(attempts_before: u32) -> Result<Slug, EngineError> {
+pub fn answer_role(attempts_before: u32) -> Result<Slug, EngineError> {
     Ok(Slug::parse(&format!("{ANSWER_PREFIX}{attempts_before}"))?)
 }
 
 /// How many attempts the stage run had when the answer under `role` was given, or `None` when the
 /// role is not an answer role.
-pub(crate) fn answer_attempts_before(role: &str) -> Option<u32> {
+pub fn answer_attempts_before(role: &str) -> Option<u32> {
     let digits = role.strip_prefix(ANSWER_PREFIX)?;
     all_digits(digits).then(|| digits.parse().ok()).flatten()
 }
@@ -69,7 +69,7 @@ pub(crate) fn answer_attempts_before(role: &str) -> Option<u32> {
 /// # Errors
 /// [`EngineError::Invalid`] when the name is so long that the role would pass the 64 characters a
 /// slug allows.
-pub(crate) fn output_role(name: &Slug, attempt: u32) -> Result<Slug, EngineError> {
+pub fn output_role(name: &Slug, attempt: u32) -> Result<Slug, EngineError> {
     Ok(Slug::parse(&format!(
         "{}{ATTEMPT_MARK}{attempt}",
         name.as_str()
@@ -78,7 +78,7 @@ pub(crate) fn output_role(name: &Slug, attempt: u32) -> Result<Slug, EngineError
 
 /// The deliverable name and the attempt number of an output role, or `None` when the role is not
 /// an output role of the engine.
-pub(crate) fn parse_output_role(role: &str) -> Option<(Slug, u32)> {
+pub fn parse_output_role(role: &str) -> Option<(Slug, u32)> {
     let (name, digits) = role.rsplit_once(ATTEMPT_MARK)?;
     if !all_digits(digits) {
         return None;

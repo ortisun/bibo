@@ -8,6 +8,7 @@
 pub mod docker;
 pub mod hostile;
 pub mod scripted;
+pub mod telemetry;
 
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};

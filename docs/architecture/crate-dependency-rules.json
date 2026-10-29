@@ -22,7 +22,7 @@
     {
       "ring": 3,
       "name": "Composition roots",
-      "rule": "Binaries. The only place where adapters are chosen and wired to use cases."
+      "rule": "Binaries, and the one composition library they share (ADR 0015). The only place where adapters are chosen and wired to use cases. The library has no main and only binaries may depend on it."
     }
   ],
   "crates": [
@@ -318,6 +318,45 @@
       "responsibility": "Initializes tracing and OpenTelemetry for the binaries and owns span and attribute naming."
     },
     {
+      "name": "composition",
+      "ring": 3,
+      "layer": "composition",
+      "path": "crates/composition",
+      "slice": 1,
+      "depends_on": [
+        "domain",
+        "ports",
+        "workflow",
+        "spec_adapter",
+        "storage",
+        "runtime",
+        "sandbox",
+        "github",
+        "contracts",
+        "egress",
+        "observability"
+      ],
+      "dev_depends_on": [
+        "testkit"
+      ],
+      "external_allow": [
+        "async-trait",
+        "serde",
+        "serde_json",
+        "thiserror",
+        "tracing",
+        "tokio[rt,time,sync,macros,signal]",
+        "time[std]",
+        "uuid[std]"
+      ],
+      "external_allow_notes": {
+        "tokio": "The engine's futures are not Send, so the binaries run on the current-thread runtime (rt). time is for the production Ticker, sync for the shutdown channel, macros for select!, signal for SIGTERM and SIGINT. These are the features the worker used before the extraction; nothing was added.",
+        "time": "OffsetDateTime::now_utc for the real Clock. The std feature is the only one.",
+        "uuid": "Identifiers are built from 16 random bytes read from the operating system with Builder::from_random_bytes. No generator feature (v4, v7) is on, because DEP-05 keeps them away from the inner crates that share the one uuid."
+      },
+      "responsibility": "The shared composition core, as a library (ADR 0015): the typed configuration, the profiles, the registry of ports with require_permitted, the start-up checks, the redactor and the registry of secret values, health reporting, the seams over the store, the sandbox output and workspace patch indexing wrappers, the telemetry configuration helper, and the providers assembled by profile. The only library that wires more than one adapter. It has no main, no HTTP routes, no handling of process arguments and no loop: those belong to the binary that uses it (the grammar of an approval decision is pure text and is in the library)."
+    },
+    {
       "name": "testkit",
       "ring": 2,
       "layer": "test-support",
@@ -341,7 +380,28 @@
       "name": "api",
       "path": "apps/api",
       "slice": 1,
-      "responsibility": "HTTP API: GitHub webhook endpoint with signature verification, job submission, decisions, status and timeline queries, health endpoints."
+      "responsibility": "HTTP API: GitHub webhook endpoint with signature verification, job submission, decisions, status and timeline queries, health endpoints.",
+      "external_dependencies": [
+        "axum[http1,tokio]",
+        "hyper[server,http1]",
+        "hyper-util[server,http1,tokio,service]",
+        "http-body-util",
+        "tower[util]",
+        "tokio[rt,rt-multi-thread,net,time,sync,macros,signal]",
+        "serde",
+        "serde_json",
+        "thiserror",
+        "tracing",
+        "uuid[std]"
+      ],
+      "external_dependencies_notes": {
+        "axum": "NEW DIRECT DEPENDENCY, pending confirmation by a person (policies/security.yaml, supply_chain.new_direct_dependency). The master prompt and the overview name Axum on Tokio for the API. 0.8.9, MIT. Routing by method and path only: no JSON, form, query or websocket extractor, so an error answer never carries a library message. It adds axum 0.8.9 (MIT), axum-core 0.5.6 (MIT), matchit 0.8.4 (MIT and BSD-3-Clause) and mime 0.3.17 (MIT or Apache-2.0) to Cargo.lock; every other crate it needs was already there through reqwest and tower-http. cargo deny passes with the unchanged deny.toml.",
+        "hyper": "NEW DIRECT DEPENDENCY, pending confirmation. 1.12.0, MIT. Already in Cargo.lock (through reqwest). The API serves its own connections so that the header read timeout, the limit on open connections and the TCP peer address are under its control; axum::serve offers none of them.",
+        "hyper-util": "NEW DIRECT DEPENDENCY, pending confirmation. 0.1.21, MIT. Already in Cargo.lock. TokioIo and TokioTimer for hyper's server connection.",
+        "http-body-util": "NEW DIRECT DEPENDENCY, pending confirmation. 0.1.5, MIT. Already in Cargo.lock. Limited, the body reader with a hard size limit.",
+        "tower": "NEW DIRECT DEPENDENCY, pending confirmation. 0.5.3, MIT. Already in Cargo.lock. ServiceExt::oneshot, the interface between the router and the connection.",
+        "tokio": "DEP-05 resolved features: rt-multi-thread and net are enabled by this app. Both are already in the allowed list in source_scans.dep_05.resolved_features, so no change is needed there."
+      }
     },
     {
       "name": "worker",
@@ -353,7 +413,14 @@
       "name": "cli",
       "path": "apps/cli",
       "slice": 1,
-      "responsibility": "Operator command line: submit, status, timeline, approve, reject, rework, pause, resume, cancel, probe. Calls the same use cases in process in Slice 1."
+      "responsibility": "Operator command line: submit, status, timeline, approve, reject, rework, pause, resume, cancel, probe. Calls the same use cases in process in Slice 1.",
+      "external_dependencies": [
+        "ureq[rustls]",
+        "serde_json"
+      ],
+      "external_dependencies_notes": {
+        "ureq": "NEW DIRECT DEPENDENCY FOR THIS APP, pending confirmation by a person (policies/security.yaml, supply_chain.new_direct_dependency). 3.5.0, MIT or Apache-2.0, with default features off and rustls only: the same crate and the same feature set the github and egress crates already use, so nothing is new to Cargo.lock. The command talks to the API over HTTP with a token read from a file (https, or http to a loopback address; no redirects, no proxy, a 30 second timeout). It starts no process (DEP-10): probe runs the composition start-up checks in process and lists the rest as BLOCKED."
+      }
     },
     {
       "name": "egress-sidecar",
@@ -408,7 +475,7 @@
     },
     {
       "id": "DEP-08",
-      "statement": "Binaries are the only crates that depend on more than one adapter.",
+      "statement": "Binaries and the composition library are the only crates that depend on more than one adapter.",
       "enforced_by": "xtask check-architecture"
     },
     {
@@ -420,6 +487,11 @@
       "id": "DEP-10",
       "statement": "Only the sandbox crate spawns docker or git. Only the runtime crate spawns an agent command line tool. No crate spawns a shell. The set of allowed spawned binaries is docker and git.",
       "enforced_by": "xtask check-architecture by source scan, plus the process spawn recorder in the end-to-end tests (negative test ST-03 and FX-SPAWN)"
+    },
+    {
+      "id": "DEP-11",
+      "statement": "The composition library (layer composition, ring 3, ADR 0015) may be depended on by binaries in apps/ only; no crate in rings 0 to 2 may depend on it. It has no binary target and defines no function named main.",
+      "enforced_by": "xtask check-architecture, from cargo metadata (the edge and the targets) and by source scan (main)"
     }
   ],
   "source_scans": {
@@ -521,6 +593,10 @@
       "spec_kit_terms": [
         ".specify",
         "speckit"
+      ],
+      "spec_kit_public_names": [
+        "SpecKitConfig",
+        "SpecKitProvider"
       ],
       "change_host_trait": "ChangeHost",
       "forbidden_method_prefixes": [
@@ -653,6 +729,7 @@
           "workflow",
           "storage",
           "testkit",
+          "composition",
           "api",
           "worker"
         ]

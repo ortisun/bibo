@@ -486,7 +486,7 @@ impl Server {
             .get_or_init(|| async {
                 let worker = self.create_login("worker", &["factory_app"]).await;
                 let api = self
-                    .create_login("api", &["factory_app", "factory_resolver"])
+                    .create_login("api", &["factory_api_app", "factory_resolver"])
                     .await;
                 let engine = self.create_login("engine", &["factory_system"]).await;
                 Logins {

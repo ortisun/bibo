@@ -151,6 +151,9 @@ pub struct Script {
     pub failed_run: Option<(u32, bool)>,
     /// The transcripts that failing runs stored, so a test can ask whether the engine kept them.
     pub transcripts: Vec<factory_domain::contracts::ArtifactRef>,
+    /// Whether `execute` starts an agent run through `ctx.ports.runtime`, as the stages that run
+    /// an agent do. What the run reports is what the test queued in the fake runtime.
+    pub run_agent: bool,
 }
 
 impl Default for Script {
@@ -176,6 +179,7 @@ impl Default for Script {
             document: None,
             failed_run: None,
             transcripts: Vec::new(),
+            run_agent: false,
         }
     }
 }
@@ -229,6 +233,12 @@ impl ScriptHandle {
         });
     }
 
+    /// Makes `execute` start one agent run through the ports it was given, in a fake sandbox. The
+    /// run does what the script queued in `World::runtime` says.
+    pub fn runs_an_agent(&self) {
+        self.with(|script| script.run_agent = true);
+    }
+
     /// The tokens the stage was given, one for each attempt.
     pub fn tokens(&self) -> Vec<Option<factory_ports::agent::JobTokenId>> {
         self.with(|script| script.tokens.clone())
@@ -265,6 +275,28 @@ impl ScriptedHandler {
     pub fn new(kind: StageKind, script: ScriptHandle) -> Self {
         Self { kind, script }
     }
+}
+
+/// Starts one agent run the way a stage does: in a sandbox from the sandbox port, through the
+/// runtime of the ports it was given. The request names the attempt being run.
+async fn run_an_agent(ctx: &StageContext<'_>) {
+    use factory_ports::sandbox::{SandboxProfile, TeardownReason};
+    use factory_testkit::fixtures::{Ids, agent_run_request, sandbox_spec};
+    let ids = Ids::new();
+    let mut session = ctx
+        .ports
+        .sandbox
+        .create_verified(sandbox_spec(&ids, SandboxProfile::Agent), ctx.cancel)
+        .await
+        .expect("the fake sandbox starts");
+    let mut request = agent_run_request(&ids);
+    request.attempt = ctx.attempt;
+    let _report = ctx
+        .ports
+        .runtime
+        .run(&mut *session, request, ctx.cancel)
+        .await;
+    let _ = session.stop_and_remove(TeardownReason::Completed).await;
 }
 
 const EXAMPLE: &str =
@@ -392,6 +424,9 @@ impl StageHandler for ScriptedHandler {
                 );
             }
         });
+        if self.script.with(|script| script.run_agent) {
+            run_an_agent(ctx).await;
+        }
         let step = self.script.with(|script| {
             script.executed.push(Executed {
                 attempt_number: ctx.attempt_number,

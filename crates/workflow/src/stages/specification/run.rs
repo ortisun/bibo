@@ -530,6 +530,10 @@ async fn run_skill_in(
             work.evidence
                 .transcripts
                 .push(transcript.sha256.as_str().to_owned());
+            // The gate reads the transcripts back to look for a skill outside the profile. The
+            // runtime stored the blob and nobody indexed it for the tenant, so the engine is asked
+            // to, with the result of this attempt.
+            ctx.note_transcript(transcript);
         }
     }
     if ctx.cancel.is_cancelled() {

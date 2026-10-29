@@ -1,4 +1,5 @@
-//! The rules that need a scan of the source: DEP-09 and DEP-10 from the rules file, and the static
+//! The rules that need a scan of the source: DEP-09, DEP-10 and DEP-11 (no `main` in the
+//! composition library) from the rules file, and the static
 //! checks ST-01 to ST-05, ST-09, ST-13 and ST-14 from the negative-test catalog.
 //!
 //! These scans are guard rails, not proofs. Most read the token stream of `syntax`, a few read
@@ -23,6 +24,8 @@ use std::path::Path;
 struct Scanned {
     /// The name in the rules file, such as `sandbox` or `api`.
     name: String,
+    /// True for the composition library (ADR 0015).
+    composition: bool,
     /// The crate directory relative to the workspace root.
     dir: String,
     sources: Vec<Source>,
@@ -32,14 +35,17 @@ pub fn check(rules: &Rules, ws: &Workspace) -> Result<Vec<Finding>, String> {
     let scans = &rules.source_scans;
     let mut scanned = Vec::new();
     for member in &ws.members {
-        let name = match rules.role_of_package(&member.name) {
+        let (name, composition) = match rules.role_of_package(&member.name) {
             // Test support is test code and may break rules that production code must keep.
-            Some(Role::Library(c)) if c.layer != "test-support" => c.name.clone(),
-            Some(Role::App(a)) => a.name.clone(),
+            Some(Role::Library(c)) if c.layer != "test-support" => {
+                (c.name.clone(), c.is_composition())
+            }
+            Some(Role::App(a)) => (a.name.clone(), false),
             _ => continue,
         };
         scanned.push(Scanned {
             name,
+            composition,
             dir: ws.relative_dir(member),
             sources: scan::production_sources(&ws.root, &member.dir, &member.production_targets)?,
         });
@@ -62,6 +68,7 @@ pub fn check(rules: &Rules, ws: &Workspace) -> Result<Vec<Finding>, String> {
                 findings.extend(st07::check(&conventions, &krate.name, source));
             }
             let resolver = Resolver::new(&source.syntax);
+            composition_library_has_no_main(krate, source, &mut findings);
             begin_system_only_in_workflow(scans, krate, source, &mut findings);
             spec_kit_layout_only_in_spec_adapter(scans, krate, source, &mut findings);
             change_host_has_no_merge_method(scans, source, &mut findings);
@@ -76,6 +83,29 @@ pub fn check(rules: &Rules, ws: &Workspace) -> Result<Vec<Finding>, String> {
     }
     tree_checks(scans, &ws.root, &mut findings)?;
     Ok(findings)
+}
+
+// ---------------------------------------------------------------------------------------------
+// DEP-11
+
+/// The composition library holds no `fn main`. A build script is a separate program that Cargo
+/// runs at build time and is not part of the library, so `build.rs` is skipped.
+fn composition_library_has_no_main(krate: &Scanned, source: &Source, findings: &mut Vec<Finding>) {
+    if !krate.composition || source.relative.ends_with("build.rs") {
+        return;
+    }
+    for at in find_word(&source.code, "main") {
+        if preceded_by_fn(&source.code, at) {
+            findings.push(Finding::new(
+                "DEP-11",
+                source.location(at),
+                format!(
+                    "{} is the composition library and defines a function named main; a program belongs in apps/",
+                    krate.name
+                ),
+            ));
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -123,7 +153,12 @@ fn spec_kit_layout_only_in_spec_adapter(
     if krate.name == rule.spec_kit_crate {
         return;
     }
-    let lowercase = source.with_strings.to_ascii_lowercase();
+    let mut lowercase = source.with_strings.to_ascii_lowercase();
+    for name in &rule.spec_kit_public_names {
+        // Same length, so every offset still maps to its line.
+        let name = name.to_ascii_lowercase();
+        lowercase = lowercase.replace(&name, &" ".repeat(name.len()));
+    }
     for term in &rule.spec_kit_terms {
         for (at, _) in lowercase.match_indices(term.as_str()) {
             findings.push(Finding::new(

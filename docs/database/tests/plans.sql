@@ -233,10 +233,13 @@ BEGIN
 
   -- Sweep: expired leases, passed deadlines, overdue teardowns. FOR NO KEY UPDATE, like the claim: FOR UPDATE
   -- on an attempt would block a ledger entry that points at it.
-  PERFORM dbtest.expect_plan('sweep: attempts whose lease expired',
+  -- Since migration 19 no index is keyed on lease_expires_at (a renewal must be a heap-only update, see lease.sql section 14),
+  -- so the live attempts are read through a partial index that covers them (the planner takes attempts_deadline_idx or the unique index of one live attempt per run), and the few of them are filtered and sorted.
+  -- The cost follows the number of live attempts, not the history. A sequential scan of attempts is still a failure.
+  PERFORM dbtest.expect_plan('sweep: attempts whose lease expired (the live attempts, through a partial index that covers them)',
     $q$SELECT tenant_id, id, stage_run_id, version, lease_epoch FROM attempts WHERE status IN ('STARTING', 'RUNNING') AND lease_expires_at < now()
         ORDER BY lease_expires_at LIMIT 100 FOR NO KEY UPDATE SKIP LOCKED$q$,
-    'attempts_lease_expiry_idx', 'attempts', sys);
+    'attempts_(one_active_per_stage_run|deadline_idx)', 'attempts', sys);
   PERFORM dbtest.expect_plan('sweep: attempts past their deadline',
     $q$SELECT tenant_id, id, stage_run_id, version, lease_epoch FROM attempts WHERE status IN ('STARTING', 'RUNNING') AND deadline_at < now()
         ORDER BY deadline_at LIMIT 100 FOR NO KEY UPDATE SKIP LOCKED$q$,

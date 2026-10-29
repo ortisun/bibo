@@ -1,0 +1,144 @@
+{
+  "schema_version": 1,
+  "status": "DONE",
+  "plan": {
+    "schema_version": 1,
+    "metadata": "{{PLAN_METADATA}}",
+    "title": "Plan for adding the JSON option to the word count tool",
+    "summary": "Two tasks: write the function that turns the counts into a JSON object, then read the option on the command line and prove the old output and the errors did not change. The function comes first because the command line depends on it.",
+    "critical_path": [
+      "write-json-formatter",
+      "read-json-option"
+    ],
+    "rollback_note": "Revert the job branch. No data or configuration is changed outside the repository.",
+    "tasks": [
+      {
+        "task_id": "write-json-formatter",
+        "title": "Write the counts as a JSON object",
+        "kind": "code_change",
+        "why_this_matters": "Programs cannot read the plain columns reliably. A function that writes the counts as JSON gives them a stable format, and a function in the library can be tested without running the program.",
+        "what_needs_to_change": "Add a function to the counting library that returns the text of one JSON object with the keys lines, words and characters, in that order. Add unit tests for a normal text and for an empty text.",
+        "acceptance_criteria": [
+          "The function returns an object with the three keys in the order lines, words and characters.",
+          "The text holds the object and no other text, so the caller adds the line break."
+        ],
+        "verification": [
+          "Unit tests compare the text for a sample and for an empty input."
+        ],
+        "acceptance_mapping": {
+          "acceptance_scenario_ids": [
+            "@FR-001",
+            "@FR-004"
+          ],
+          "requirement_ids": [
+            "FR-001",
+            "FR-004"
+          ]
+        },
+        "input_artifacts": [],
+        "expected_changes": [
+          {
+            "path_glob": "src/lib.rs",
+            "change": "modify"
+          }
+        ],
+        "owned_files": [
+          "src/lib.rs"
+        ],
+        "depends_on": [],
+        "required_specialist": {
+          "role": "builder",
+          "skills": [
+            "rust"
+          ]
+        },
+        "model_policy": {
+          "tier": "standard"
+        },
+        "estimated_cost": {
+          "tokens": 30000,
+          "usd": 0.4,
+          "wall_time_seconds": 300
+        },
+        "risks": [],
+        "evidence_required": [
+          "unit_test_result",
+          "gate_report",
+          "diff"
+        ]
+      },
+      {
+        "task_id": "read-json-option",
+        "title": "Read the JSON option on the command line",
+        "kind": "code_change",
+        "why_this_matters": "People ask for the JSON output with an option. The program must print it only then, and must keep the plain output and the error messages exactly as they are for everyone else.",
+        "what_needs_to_change": "Teach the argument reader about the --json option and print the JSON text when it is present. Add tests that run the real program with and without the option, on a missing file, and on standard input.",
+        "acceptance_criteria": [
+          "With the option the program prints the JSON text and nothing else.",
+          "Without the option the output is the same as before, byte for byte.",
+          "A missing file gives no output, a message on standard error and exit status 1, with or without the option."
+        ],
+        "verification": [
+          "Tests run the real program and compare its output and its exit status with the expected ones.",
+          "The existing usage tests still pass."
+        ],
+        "acceptance_mapping": {
+          "acceptance_scenario_ids": [
+            "@FR-001",
+            "@FR-002",
+            "@FR-003"
+          ],
+          "requirement_ids": [
+            "FR-001",
+            "FR-002",
+            "FR-003"
+          ]
+        },
+        "input_artifacts": [],
+        "expected_changes": [
+          {
+            "path_glob": "src/main.rs",
+            "change": "modify"
+          },
+          {
+            "path_glob": "tests/json_output.rs",
+            "change": "add"
+          }
+        ],
+        "owned_files": [
+          "src/main.rs",
+          "tests/json_output.rs"
+        ],
+        "depends_on": [
+          "write-json-formatter"
+        ],
+        "required_specialist": {
+          "role": "builder",
+          "skills": [
+            "rust"
+          ]
+        },
+        "model_policy": {
+          "tier": "standard"
+        },
+        "estimated_cost": {
+          "tokens": 40000,
+          "usd": 0.5,
+          "wall_time_seconds": 420
+        },
+        "risks": [
+          {
+            "description": "The argument reader may report an unknown option differently once a new option exists.",
+            "mitigation": "The existing usage tests run again and must pass unchanged."
+          }
+        ],
+        "evidence_required": [
+          "unit_test_result",
+          "gate_report",
+          "diff"
+        ]
+      }
+    ]
+  },
+  "ignored_instructions": []
+}

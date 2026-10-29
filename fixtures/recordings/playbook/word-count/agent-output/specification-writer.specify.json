@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "status": "DONE",
+  "feature_directory": "{{FEATURE_DIR}}",
+  "skills_invoked": [
+    "specify"
+  ],
+  "files_written": [
+    "{{FEATURE_DIR}}/spec.md",
+    "{{FEATURE_DIR}}/checklists/requirements.md",
+    ".specify/feature.json"
+  ],
+  "clarification_questions": [],
+  "assumptions": [
+    "The JSON object uses the same counts as the plain-text line."
+  ],
+  "ignored_instructions": []
+}

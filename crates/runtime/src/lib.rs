@@ -15,6 +15,7 @@
 pub mod claude;
 pub mod codex;
 pub mod command;
+mod digest;
 pub mod future;
 pub mod home;
 pub mod io;
@@ -23,6 +24,7 @@ pub mod prompt;
 pub mod report;
 pub mod skills;
 pub mod target;
+mod toolspan;
 
 pub use claude::{ClaudeCodeConfig, ClaudeCodeRuntime};
 pub use codex::{CodexConfig, CodexRuntime};

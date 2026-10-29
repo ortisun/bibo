@@ -246,6 +246,10 @@ pub(super) async fn execute(
         },
     );
     let plan_json = plan.to_json();
+    // The bytes the stage stores, kept: the writer's prompt needs the plan, and the engine has not
+    // indexed the artifact for the tenant yet (it does that when it records the result), so the
+    // stage cannot ask the artifact store for what it has just written.
+    let plan_bytes = serde_json::to_vec(&plan_json).map_err(|_| StageError::Internal)?;
     let plan_artifact = put(ctx, DOCUMENTATION_PLAN, &plan_json).await?;
 
     // The agent and the words it is given.
@@ -273,6 +277,7 @@ pub(super) async fn execute(
             &manifest,
             &on,
             &plan_artifact.artifact,
+            &plan_bytes,
             &specification,
             &spec_ref.sha256,
             &patch,
@@ -410,6 +415,7 @@ async fn write_in_sandbox(
     manifest: &AgentManifest,
     on: &CommitSha,
     plan_ref: &ArtifactRef,
+    plan_bytes: &[u8],
     specification: &[u8],
     spec_sha: &Sha256Digest,
     patch: &[u8],
@@ -439,6 +445,7 @@ async fn write_in_sandbox(
         manifest,
         on,
         plan_ref,
+        plan_bytes,
         specification,
         spec_sha,
         patch,
@@ -460,6 +467,7 @@ async fn write_in(
     manifest: &AgentManifest,
     on: &CommitSha,
     plan_ref: &ArtifactRef,
+    plan_bytes: &[u8],
     specification: &[u8],
     spec_sha: &Sha256Digest,
     patch: &[u8],
@@ -483,11 +491,6 @@ async fn write_in(
         .registry
         .prompt(manifest)
         .map_err(|_| StageError::Internal)?;
-    let plan_bytes = ports
-        .artifacts
-        .get(&scope, plan_ref)
-        .await
-        .map_err(|_| StageError::Tool)?;
     let assembled = {
         let now = ports.clock.now();
         let tenant = identity.tenant;

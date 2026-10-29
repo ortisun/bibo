@@ -152,7 +152,7 @@ pub const SPANS: &[SpanSpec] = &[
     SpanSpec {
         name: span::JOB,
         required: &[attr::CORRELATION_ID, attr::JOB_ID, attr::TENANT_ID],
-        meaning: "One request from admission to a terminal state.",
+        meaning: "One stretch of work on a job in one process. All stretches of a job are in one trace.",
     },
     SpanSpec {
         name: span::STAGE_RUN,
