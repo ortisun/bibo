@@ -384,6 +384,78 @@ Whether that is enough needs the architect's confirmation, which has not been gi
 workflow stage package, in a file that was a placeholder, which is outside the paths this change was meant to
 own; it is reported for that reason.
 
+### The live-adapters run (`apps/api/tests/live_run.rs`)
+
+One `word-count` job from a signed webhook to a draft pull request and a person's approval, **through the
+real adapters**. Only the model's answers and GitHub's server are fake, and both are labelled. It lives in the
+API package for the reason `full_run.rs` does (`DEP-01`), in four tests that are `#[ignore]`d in the default
+suite because they need the Docker daemon and the pinned images, and that panic with `BLOCKED:` and never pass
+without them. They hold the cross-process lock of the sandbox tests, label everything `factory.test=true`
+(plus `factory.test.owner=live-adapters` and the run label), remove only what carries those labels and sweep
+what a dead run of their own left. Run them one at a time, and not next to the sandbox tests of another crate:
+
+```text
+cargo nextest run -p factory-api --run-ignored only --test live_run
+```
+
+**Real:** the GitHub App adapter built by `assemble_external` from a configuration (JWT signed with a throwaway
+RSA key, installation tokens, issue source, change host, preflight) over loopback HTTP; the agent runtimes
+(Claude Code 2.1.311 and Codex 0.163.0, the real tools of the pinned agent image) in the real hardened Docker
+container, on its per-job internal network, behind the real egress sidecar program in broker mode; the model
+broker (`BrokerCore` and its listener) with the routing policy in front of it (`PolicyBroker`, `PolicyModelRouter`,
+the policy's prices and per-role caps); the real git workspaces over a bare repository (`sandbox.remote.directory`);
+the Spec Kit provider and the skill bundle built from the installed Spec Kit; the validation gates and the
+documentation gates in the real `verify` image, offline; the start-up probe of both tools in a real `agent`
+sandbox; the engine, the API server, the worker's hook, PostgreSQL and the thirteen handlers.
+
+**Fake, labelled:** the model (`live/provider.rs`: plays the playbook over the wire in the Anthropic Messages shape
+for Claude Code and the OpenAI Responses shape for Codex; an agent that writes files asks the real tool for `Read`
+and then `Write`, so the files are written by the real tool in the real container), GitHub's server (`live/github.rs`:
+FX-GH of the test kit, with a front for the rules of the default branch and check runs, and a map between the commit
+ids FX-GH invents and the real ones of the bare repository), and the registry server of the dependency gates (it
+knows no package; the patch adds none). The playbook's data is the one the other rigs use
+(`fixtures/recordings/playbook/word-count/`).
+
+State by state, from the run of 2026-10-29 on this machine (durations are the sum of the attempts of the stage;
+the total is 64.5 seconds, not counting the time a person would take to decide):
+
+| Stage | Agent / adapter | Sandbox | Result | Duration |
+|---|---|---|---|---|
+| `INTAKE` | issue source real (fake server); Claude Code real, `claude-sonnet-5-5` | real `agent` container + sidecar + broker | `PASSED`, 1 attempt | 1.9 s |
+| `REPOSITORY_INTELLIGENCE` | change host real (fake server), real git workspace | real `verify` image, offline | `PASSED`, 1 attempt | 3.2 s |
+| `SPECIFICATION` | Claude Code real with the pinned Spec Kit skills (the bundle holds specify, clarify and checklist; the stage ran specify and checklist), writer and reviewer both on `claude-sonnet-5-5` (finding 45) | real `agent` container, real workspace | `NEEDS_HUMAN` (draft approval), then `PASSED`, 2 attempts | 15.7 s |
+| `DOMAIN_DISCOVERY` | none | none | `SKIPPED` by `static-general-software-profile` | 0 |
+| `ARCHITECTURE` | Claude Code real | real `agent` container | `PASSED` | 2.2 s |
+| `TASK_PLANNING` | Claude Code real | real `agent` container | `PASSED` | 2.3 s |
+| `IMPLEMENTATION` | Claude Code real, two tasks, files written by the real `Write` tool | real `agent` container over the real git workspace; audited ingestion, real commits | `PASSED` | 6.3 s |
+| `VALIDATION` | gates real | real `verify` image: `cargo fmt --check`, `clippy`, `build`, `test`, offline | `PASSED` | 5.7 s |
+| `REVIEW` | Codex real, `gpt-6.1-sol` (the author wiring: the builder was `claude-sonnet-5-5`) | real `agent` container | `PASSED` | 7.4 s |
+| `DOCUMENTING` | Claude Code real, files written by the real `Write` tool | real `agent` container | `PASSED` | 5.4 s |
+| `DOCUMENTATION_REVIEW` | Codex real, `gpt-6.1-sol`; documentation gates real | real `agent` container and `verify` image (builds the program, runs `--help`) | `PASSED` | 10.6 s |
+| `DELIVERY` | change host real: push by the worker's git to the bare remote, draft pull request and two check runs through the adapter | none | `PASSED` | 0.5 s |
+| `APPROVAL` | approval service real | none | `WAITING_FOR_HUMAN`, then `PASSED` by the approver's decision through the API | 0.2 s |
+
+The job ends `COMPLETED`. The run asserts besides: one open **draft** pull request whose head branch is under
+`factory/` and whose head is the commit the worker's git pushed (the approval named it), the base branch did not
+move, nothing tried to merge, every installation token was narrowed to the one repository and held none of the
+forbidden permissions and all were revoked once the job was over, both checks of the factory were published by the
+App on the approved head, the code reviewer and the documentation reviewer ran on the other family than the
+builder, and the playbook answered every call it was asked.
+
+**Deliberate breaks, shown caught.** A model answer outside the recorded shape
+(`break_a_model_answer_outside_the_recorded_shape_stops_the_job_at_the_stage_that_asked`: the classifier's
+document travels the real wire and the engine's schema check refuses it; no later stage runs and no pull request
+is opened); a tool missing from the image (`break_a_probe_of_a_tool_that_is_not_in_the_image_blocks_the_worker_and_names_it`);
+the real GitHub adapter with a wrong installation id (`external_world.rs::break_a_wrong_installation_id_...`: the
+server mints nothing); a skill outside the allowed four, a denied skill, an edited skill file and a missing one
+(`spec_skills.rs`, and `composed_start.rs` for the worker's BLOCKED line); a reviewer of the builder's family
+(`policy_wiring.rs`, through the real policy and the real broker core); the registry host removed from the egress
+policy (`config.rs::break_the_registry_host_removed_...`).
+
+**What is still not live.** No real model, no real GitHub, no real crates.io; the Docker Desktop for Mac file
+sharing needed a labelled retry of `docker create` five times in the run (finding 46). The run does not exercise
+rework, a failing gate, a lease lost, or Codex writing files.
+
 ### The end-to-end `Wiring` (`FACTORY_E2E_COMPOSED`)
 
 `tests/end_to_end/README.md` offers two ways in: a linked library, or a program that `FACTORY_E2E_COMPOSED` names and that
@@ -410,6 +482,22 @@ assembled from a configuration (`external_ports`), so the program has something 
    routing policy the owner has confirmed (production refuses it until then).
 
 Until then `scripts/e2e.sh --scenario E1 --scenario E2` is `BLOCKED` on its own prerequisites, as it was.
+
+**Status after the live-adapters work: not started, and the rules do not forbid it.** What was learned about it:
+
+* The program contract needs no Rust type of the harness: `PROGRAM run` prints one JSON object, and the collector in
+  `apps/api/tests/e2e/` already builds `serde_json::Value`s, so `factory-e2e` need not be a dependency of the
+  workspace and `docs/architecture/crate-dependency-rules.json` needs no new edge. A second `[[bin]]` in
+  `apps/worker` (`factory-worker-e2e`) may depend on `factory-composition`, as the first does (`DEP-01`, `DEP-11`).
+* The collector cannot move as it is: it reads through the test rig (`crate::full::Rig`) and the API test
+  environment. Moving it means a module of `factory-composition` (suggested name `e2e_evidence`) that reads the stored
+  records through `Store` and `ArtifactStore`, and the timeline over HTTP with `ureq` (already a dependency of the
+  crate), and that the tests of the API then call. That is about a thousand lines and was not attempted.
+* Three decisions are not the engineer's: which fields of `evidence::ProtectionFacts` come from GitHub and which are
+  the administrator's statement (architect); a configuration key for the requester's credential, since the App holds
+  no permission to create or label an issue (architect and security); and the new binary's page in
+  `docs/reference/commands.md`, which `scripts/docs-check.sh` compares with the code.
+* Nothing here changes `scripts/e2e.sh`: with no composed program it still reports `BLOCKED` for E1 and E2 and exits 3.
 
 ## Seams
 
@@ -625,19 +713,68 @@ smallest change.
     `owner/name#number`, or names another repository than the job's. The spec says a job is for one accepted issue
     (FR-001, FR-027), and a job with no issue could not pass intake or be delivered.
 
+### Found by the live-adapters run (40 to 48)
+
+Each was found by running the real adapters together. "Fixed" says where; "Open" says the owner and the smallest
+change.
+
+40. **Every stage asked the router for `JsonSchemaOutput`, and neither real adapter reports it. Fixed** in
+    `crates/workflow/src/stages/**`. Both adapters report it unsupported on purpose (the tools reject the factory's
+    schemas; the engine validates the bytes), so with a real probe no stage could be routed at all, and the intake
+    stage reported `probe_satisfies_stage: false`, which the engine read as a sandbox that was not provisioned
+    (`SandboxError`). The declared capabilities of the local profile had hidden it. The needs now hold what a stage
+    uses (`SkillInvocation`, `HeadlessMultiTurn`), and `crates/composition/tests/stage_needs_match_real_probes.rs`
+    scans the sources so that no stage names the capability again.
+41. **The address given to the agents was a placeholder. Fixed** in `composition::sandbox_specs::broker_endpoint`:
+    `https://model-broker.sandbox.internal:8443` does not resolve in a job network, and the sidecar terminates no
+    TLS. The agents get `http://egress:8443`, the sidecar by its alias. *Open, owner `composition`:* the port is a
+    constant (`SIDECAR_PORT`) and `sandbox.sidecar_command` is free text; a deployment that sets another `--listen`
+    port breaks the agents. A start-up check of the argument is the smallest fix.
+42. **The scratch workspace of an agent stage with no repository was named and never made. Fixed** in
+    `PolicySpecs::agent_spec`: the daemon refuses a bind source that does not exist, so the probe and `INTAKE` could
+    not start a container. The directories are made when the spec is accepted, open to the sandbox user.
+43. **The real workspace's second look at a change refused what the specification stage's own rules allow. Fixed** in
+    `composition::providers::layer_policy`: the stricter of the request's rules and the compiled policy stands, and
+    only the rules lifted the writes of the Spec Kit skills (mismatch 25), so the pointer `.specify/feature.json` was
+    refused and the stage ended `BLOCKED`. The compiled policy now re-includes the same writes; every other stage's
+    rules still refuse them, and the rest of `.specify/`, the constitution and the CI files stay refused by both looks
+    (`tests/specification_paths.rs`).
+44. **The documentation review ran the built program by a bare name. Fixed** in `composition::sandbox_specs::built_program`:
+    `word-count` is not on the image's `PATH`, so `docs-commands` was `BLOCKED` ("the program could not be built or
+    run"). It runs `/out/target/debug/word-count` now. The default of `documentation.binary` is still the bare name,
+    which the pipeline completes; a path in the setting is left alone.
+45. **The specification reviewer ran on the writer's family. Open, owner `workflow`.** `specification_review_not_by_the_writers_family`
+    is in the routing policy, but the author is passed only to `REVIEW` (SF-17, `ports-v1.1.md` 16.1). In the run
+    the provider saw `claude-sonnet-5-5` for both the writer and the reviewer of the specification. The writer's
+    model is known inside the same stage run (the route of the writer's skill), so the smallest change is to keep it
+    and name it in the need of the reviewer (`specification/run.rs`, near the reviewer's `RoutingNeed`). The
+    documentation review has the same gap: the documenting stage stores no model.
+46. **Docker Desktop for Mac does not always see a directory made a moment ago. Open, owner `sandbox`.** `docker create`
+    answered "bind source path does not exist" for a path that existed on the host (the rig printed
+    `host_exists=true`). Two causes were found: a directory name reused after it was removed (the rig now uses a new
+    scratch directory for each lab), and a checkout made by git a moment before the container. The adapter does not
+    repeat the command; the rig's runner repeats it up to six times, a second apart, for that one answer only, and
+    counts the repeats (5 in the run). The smallest change for the adapter is the same bounded repeat.
+47. **The worker passed no skill bundle to the Claude Code adapter. Fixed** in `apps/worker/src/pipeline.rs`
+    (`external_ports`), with the bundle built by `composition::spec_skills` (see the table above).
+48. **A retried stage meets a playbook that answers each call once.** Not a defect of the factory: the engine runs a
+    stage again from its start after a failed attempt, and the playbook refuses a second ask by design. The live rig
+    allows the repeats and says so (`allow_repeats`).
+
+
 ## Blocked
 
 | Port or seam | Reason |
 |---|---|
-| Agent runtime | built from `broker.upstreams` and `runtimes`; the live run needs a provider key and the tool in the agent image, which no test here ran (the sandbox in the loopback tests is a labelled stand-in) |
+| Agent runtime | built from `broker.upstreams` and `runtimes`. **Ran for real** in `apps/api/tests/live_run.rs`: both tools of the pinned image, in the real sandbox, against a fake provider. A live run still needs a provider key |
 | Model router | built from `policies/model_routing.yaml` and the models `broker.upstreams` enables. Every number in the file still waits for the project owner, so the production profile refuses it |
 | Issue source, change host | built from `github`; a live run needs a registered GitHub App, its key and its installations. Never run against the real GitHub |
 | `RegistryMetadata`, `AdvisoryDatabase` | built from `registry` and `advisory_database.date_file`. The registry client has never run against the real crates.io; the stock policy lists `crates.io` for it (entry `crates_api`, added with the live-adapters work). An unreadable answer is unknown, and the gate fails closed on unknown |
-| `CapabilityProbes` | each runtime is probed in an `agent` sandbox at start-up, and is BLOCKED with the reason when the sandbox cannot be made. The success path ran only against a labelled stand-in session (`runtimes.declare_capabilities` in the local and test profiles takes a declared list) |
+| `CapabilityProbes` | each runtime is probed in an `agent` sandbox at start-up, and is BLOCKED with the reason when the sandbox cannot be made. **The success path ran** against the real sandbox and the real agent image (`live_run.rs`: `claude-code-cli` 2.1.311, `codex-cli` 0.163.0); a tool missing from the image is BLOCKED and named. `runtimes.declare_capabilities` (local and test profiles) hides mismatches between what a stage asks and what a probe finds (finding 40) |
 | The skills of the specification stage | **Built** by `factory_composition::spec_skills::bundle_for_writer` and passed to the Claude Code adapter by `external_ports`: the three skills the writer's manifest names (`speckit.specify`, `speckit.clarify`, `speckit.checklist`), checked against the policy's four allowed and six denied skills, read from the Spec Kit installed in the protected checkout under the directory name the installation's separator gives (`speckit-specify`), and pinned by hash. The constitution skill is allowed by the policy and not granted to the writer (the constitution is a precondition of the repository in Slice 1). A checkout that cannot supply the bundle makes the worker print `BLOCKED: agent runtime: protected_checkout: ...` and exit 3 (`tests/composed_start.rs`, `crates/composition/tests/spec_skills.rs`) |
-| The 13-stage `word-count` job over real GitHub, real runtime and real broker, to a draft pull request and a person's approval | not run. The model path (`tests/composed_broker.rs`) and the GitHub path (`crates/composition/tests/external_world.rs`) are each proven over loopback; the stages in between still run only with the scripted runtime in `apps/api/tests/full_run.rs` |
+| The 13-stage `word-count` job over real GitHub, real runtime and real broker, to a draft pull request and a person's approval | **ran over loopback** with the real adapters and only the model and GitHub's server faked (`apps/api/tests/live_run.rs`, "The live-adapters run" above). Not run: against a real model, a real GitHub or a real crates.io |
 | `DeliverySources::tree_of`, `current_values` | implemented and wired by `assemble_pipeline` (mismatches 35 and 37), so the worker answers them. A binary that does not assemble the pipeline, such as the operator CLI, still gets the closed answer, and `factory-cli probe` lists the two as `BLOCKED:` |
-| The real Docker sandbox, run in a test | the pinned images are present; the one test of it is ignored because the daemon did not see its bind sources on four runs of five (see "How far the job gets") |
+| The real Docker sandbox, run in a test | runs in `live_run.rs` and `docker_sandbox.rs` (both `#[ignore]`d). On Docker Desktop for Mac the daemon sometimes does not see a directory made a moment ago; `live_run.rs` repeats `docker create` for that one answer and counts the repeats (finding 46) |
 
 Everything about a live provider or live GitHub is BLOCKED and was not attempted.
 
