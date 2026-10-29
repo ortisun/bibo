@@ -18,8 +18,10 @@
 //!   in a sandbox used this fake**: `REPOSITORY_INTELLIGENCE`, `SPECIFICATION`, `VALIDATION` and
 //!   `DOCUMENTATION_REVIEW`. The agent stages run the playbook in a sandbox too.
 //! * The workspaces and the change host: the testkit's fakes over the files of the fixture.
-//! * The model broker, and the supply chain's registry, advisory database and recorded approvals
-//!   (the patch changes no dependency, so the supply chain gate does not apply).
+//! * The model broker, and the supply chain's registry and advisory database (labelled stand-ins of
+//!   `SupplyChainSources`). The decisions people record about a new dependency are real: the pipeline
+//!   reads them from the ledger. The ordinary patch changes no dependency, so the supply chain gate
+//!   does not apply; the dependency journeys of `full_run.rs` add one.
 //!
 //! # Where the worker loop is
 //!
@@ -45,6 +47,7 @@ use factory_composition::preflight::{BypassAttestations, ProtectionPreflight};
 use factory_composition::sandbox_specs::sandbox_policy_from;
 use factory_composition::seams::{CachedProbes, FileAllowlist, StoreRequests};
 use factory_composition::startup::{LoadedPolicies, load_policy};
+use factory_composition::supply_chain::{StandInAdvisoryDatabase, SupplyChainSources};
 use factory_composition::system::{RandomIds, SystemClock};
 use factory_domain::ids::{JobId, StageRunId, TenantId};
 use factory_domain::scope::TenantScope;
@@ -285,6 +288,9 @@ pub struct Rig {
     pub preflight: Arc<ProtectionPreflight>,
     pub delivery: Arc<StoreDeliverySources>,
     pub spec_drafts: Arc<factory_composition::specs::StoreSpecDrafts>,
+    /// The decisions people recorded about new dependencies, as the validation stage reads them.
+    pub dependency_approvals:
+        Arc<dyn factory_workflow::gates::supply_chain::approval::RecordedApprovals>,
 }
 
 impl Drop for Rig {
@@ -309,6 +315,9 @@ pub struct Options {
     /// Files added to the base commit of the repository, as `(path, text)`. The canary run plants
     /// its secrets here.
     pub extra_files: Vec<(String, String)>,
+    /// What the registry says about a package, when a journey needs it to say something. A
+    /// stand-in, as ever: the default describes no package.
+    pub registry: Option<Arc<dyn factory_workflow::gates::supply_chain::facts::RegistryMetadata>>,
 }
 
 fn nonzero(text: &str) -> GitSha {
@@ -589,10 +598,12 @@ impl Rig {
                     issues: issues.clone(),
                     changes: host.clone(),
                     probes,
-                    supply_chain: factory_composition::pipeline::SupplyChainParts {
-                        approvals: Arc::new(NoApprovals),
-                        registry: Arc::new(NoRegistry),
-                        advisory_db: Arc::new(RecentDatabase),
+                    supply_chain: match options.registry {
+                        Some(registry) => SupplyChainSources::stand_in_of(
+                            registry,
+                            Arc::new(StandInAdvisoryDatabase::new(Arc::new(SystemClock))),
+                        ),
+                        None => SupplyChainSources::stand_in(Arc::new(SystemClock)),
                     },
                     attestations: Arc::new(OperatorAttests(env.a.operator.principal)),
                     app: factory_testkit::githost::FAKE_APP_ID,
@@ -622,6 +633,7 @@ impl Rig {
             delivery,
             approvals: approvals_for_rig,
             spec_drafts,
+            dependency_approvals,
             ..
         } = pipeline;
         Self {
@@ -651,6 +663,7 @@ impl Rig {
             preflight,
             delivery,
             spec_drafts,
+            dependency_approvals,
         }
     }
 
@@ -729,46 +742,6 @@ impl BypassAttestations for OperatorAttests {
             by: self.0,
             at: Timestamp::parse("2026-10-28T09:00:00Z").expect("a time"),
         })
-    }
-}
-
-// ---- the three seams of the validation stage's supply chain that have no adapter yet --------
-
-/// No dependency was approved by a person. The patch adds none, so nothing asks.
-struct NoApprovals;
-
-#[async_trait::async_trait]
-impl factory_workflow::gates::supply_chain::approval::RecordedApprovals for NoApprovals {
-    async fn for_job(
-        &self,
-        _tenant: TenantId,
-        _job: JobId,
-    ) -> Vec<factory_workflow::gates::supply_chain::approval::DependencyApproval> {
-        Vec::new()
-    }
-}
-
-/// A registry that knows no package. The patch adds none, so nothing asks.
-struct NoRegistry;
-
-#[async_trait::async_trait]
-impl factory_workflow::gates::supply_chain::facts::RegistryMetadata for NoRegistry {
-    async fn lookup(
-        &self,
-        _name: &str,
-        _version: &str,
-    ) -> factory_workflow::gates::supply_chain::facts::RegistryRecord {
-        factory_workflow::gates::supply_chain::facts::RegistryRecord::default()
-    }
-}
-
-/// An advisory database that was updated a day ago.
-struct RecentDatabase;
-
-#[async_trait::async_trait]
-impl factory_workflow::gates::supply_chain::facts::AdvisoryDatabase for RecentDatabase {
-    async fn updated_at(&self) -> Option<Timestamp> {
-        Some(Timestamp::parse("2026-10-27T00:00:00Z").expect("a time"))
     }
 }
 
@@ -891,6 +864,62 @@ pub fn stopped(view: &JobView) -> bool {
 }
 
 impl Rig {
+    /// The newest stored output of the newest run of a stage, called `name`, as JSON.
+    pub async fn stage_output(&self, job: JobId, kind: StageKind, name: &str) -> serde_json::Value {
+        let scope = TenantScope::new(self.tenant);
+        let mut tx = self.store.begin(scope).await.expect("a tx");
+        let runs = tx.list_stage_runs(job).await.expect("stage runs");
+        let run = runs
+            .iter()
+            .filter(|run| run.value.kind == kind)
+            .max_by_key(|run| run.value.run_number)
+            .unwrap_or_else(|| panic!("{kind} has a stage run"))
+            .value
+            .id;
+        let outputs = factory_composition::reading::Reader::outputs(&mut *tx, run)
+            .await
+            .expect("the outputs");
+        let hash = outputs
+            .get(name)
+            .unwrap_or_else(|| panic!("{kind} stored no {name}: {:?}", outputs.keys()))
+            .clone();
+        let entry = tx.get_artifact_index(&hash).await.expect("indexed");
+        let _ = tx.rollback().await;
+        let bytes = self
+            .artifacts
+            .get(&scope, &entry.artifact)
+            .await
+            .expect("the blob");
+        serde_json::from_slice(&bytes).expect("a JSON document")
+    }
+
+    /// The operator lets a blocked stage run go again (`UnblockRerun`, S17). The engine reads for
+    /// itself whether a person recorded a decision on a dependency since the attempt that blocked
+    /// the run: the caller passes no flag for it, and both flags it does pass are false.
+    pub async fn unblock(
+        &self,
+        job: JobId,
+        stage_run: StageRunId,
+    ) -> Result<(), factory_workflow::engine::EngineError> {
+        let command = factory_domain::ids::CausationId::from_uuid(
+            RandomIds::new().expect("random").new_uuid(),
+        );
+        self.engine
+            .decide(
+                &factory_workflow::commands::Actor {
+                    tenant: self.tenant,
+                    principal: self.env.a.operator.principal,
+                    command,
+                },
+                factory_workflow::commands::Subject { job, stage_run },
+                factory_workflow::commands::Decision::UnblockRerun {
+                    capability_reprobe_passed: false,
+                    dependency_now_available: false,
+                },
+            )
+            .await
+    }
+
     /// Every prompt an agent was given.
     pub fn runtime_prompts(&self) -> Vec<String> {
         self.runtime.prompts()

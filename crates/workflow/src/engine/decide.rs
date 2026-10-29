@@ -423,8 +423,20 @@ impl Engine {
                         "an override needs the role the block requires",
                     ));
                 }
+                // What blocked the run is read from the event the engine wrote, and the
+                // blocks that no override may pass from the engine's own configuration. The
+                // caller's `policy_permits` can only narrow this: a caller that writes `true` by
+                // hand gets the engine's answer. A run whose stored block names nothing is
+                // refused, because nothing says what the override would accept.
+                let blocks = timeline
+                    .run(run.value.id)
+                    .map_or(&[][..], |record| record.blocks.as_slice());
+                let engine_permits = !blocks.is_empty()
+                    && blocks
+                        .iter()
+                        .all(|block| !self.config.non_overridable_blocks.contains(block));
                 let guard = DomainOverride {
-                    policy_permits_override_for_block_code: facts.policy_permits,
+                    policy_permits_override_for_block_code: facts.policy_permits && engine_permits,
                     block_is_security_class: facts.security_class,
                     principal_roles: roles,
                     role_required_by_policy: required,

@@ -239,6 +239,16 @@ const REVIEWED: &[(&str, &str, &str)] = &[
         "the identifier of a job, a UUID",
     ),
     (
+        "crates/composition/src/dependency_decisions.rs",
+        "code",
+        "the code of an outcome of a decision on a dependency: `applied` or the code of a `Reason`, a closed set of static strings",
+    ),
+    (
+        "crates/composition/src/dependency_decisions.rs",
+        "error",
+        "StoreError: a static sentence written by the code, as in the hook for the six verbs",
+    ),
+    (
         "apps/api/src/answers.rs",
         "error",
         "StoreError, a closed set",

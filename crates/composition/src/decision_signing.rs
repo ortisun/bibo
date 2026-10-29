@@ -53,6 +53,7 @@ use subtle::{Choice, ConstantTimeEq};
 
 use crate::config::{ConfigError, DecisionSigning, SecretFile};
 use crate::decisions::DecisionFields;
+use crate::dependency_decisions::DependencyFields;
 use crate::profile::Profile;
 use crate::startup::StartupFailure;
 
@@ -65,6 +66,11 @@ pub const WORD_HEX_DIGITS: usize = 64;
 /// The first line of what is signed, so that the same key could never sign another kind of text
 /// into a valid word.
 const CONTEXT: &str = "factory-decision-request/1";
+
+/// The first line of what is signed for a decision on a dependency. It differs from [`CONTEXT`],
+/// so a word made for one kind of request is never the word of the other, even if the rest of the
+/// text could be made to look alike.
+const DEPENDENCY_CONTEXT: &str = "factory-dependency-decision-request/1";
 
 /// Why a key cannot be used.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -129,6 +135,34 @@ impl Signing<'_> {
     fn message(&self) -> String {
         format!(
             "{CONTEXT}\ntenant={}\nactor={}\nevent={}\nat={}\n{}",
+            self.tenant.as_text(),
+            self.actor.as_text(),
+            self.event.as_uuid().hyphenated(),
+            self.requested_at,
+            self.fields.subject(),
+        )
+    }
+}
+
+/// What a signature of a decision on a dependency covers besides the words of the subject.
+#[derive(Debug, Clone, Copy)]
+pub struct DependencySigning<'a> {
+    /// The tenant the record belongs to.
+    pub tenant: TenantId,
+    /// The principal the record names as its actor.
+    pub actor: PrincipalId,
+    /// The id of the audit record.
+    pub event: AuditEventId,
+    /// The time of the request, as the text written in the subject.
+    pub requested_at: &'a str,
+    /// The words of the subject.
+    pub fields: &'a DependencyFields,
+}
+
+impl DependencySigning<'_> {
+    fn message(&self) -> String {
+        format!(
+            "{DEPENDENCY_CONTEXT}\ntenant={}\nactor={}\nevent={}\nat={}\n{}",
             self.tenant.as_text(),
             self.actor.as_text(),
             self.event.as_uuid().hyphenated(),
@@ -294,10 +328,13 @@ impl DecisionKeys {
     /// keys are always tried.
     #[must_use]
     pub fn verify(&self, signing: &Signing<'_>, word: &str) -> bool {
+        self.verify_message(&signing.message(), word)
+    }
+
+    fn verify_message(&self, message: &str, word: &str) -> bool {
         let Some(provided) = unhex(word) else {
             return false;
         };
-        let message = signing.message();
         let mut found = Choice::from(0);
         for key in std::iter::once(&self.current).chain(self.previous.as_ref()) {
             if let Some(expected) = key.word(message.as_bytes()) {
@@ -305,6 +342,37 @@ impl DecisionKeys {
             }
         }
         bool::from(found)
+    }
+
+    /// The word for a decision on a dependency, made with the current key.
+    ///
+    /// # Panics
+    /// Never: an HMAC accepts a key of any length.
+    #[must_use]
+    pub fn sign_dependency(&self, signing: &DependencySigning<'_>) -> String {
+        let word = self
+            .current
+            .word(signing.message().as_bytes())
+            .expect("an HMAC key can have any length");
+        hex(&word)
+    }
+
+    /// True when `word` is the word of this decision on a dependency under the current key or the
+    /// previous one, compared as [`verify`](Self::verify) does.
+    #[must_use]
+    pub fn verify_dependency(&self, signing: &DependencySigning<'_>, word: &str) -> bool {
+        self.verify_message(&signing.message(), word)
+    }
+
+    /// The subject of a signed decision on a dependency: the words, the time, the word.
+    #[must_use]
+    pub fn signed_dependency_subject(&self, signing: &DependencySigning<'_>) -> String {
+        format!(
+            "{} at={} mac={}",
+            signing.fields.subject(),
+            signing.requested_at,
+            self.sign_dependency(signing)
+        )
     }
 
     /// The subject of a signed request: the six words, the time, the word.
@@ -371,18 +439,24 @@ pub enum SubjectKind {
     Unsigned(DecisionFields),
 }
 
-/// Reads a subject back. `None` when it is neither the signed nor the unsigned canonical text.
-#[must_use]
-pub fn read_subject(subject: &str) -> Option<SubjectKind> {
-    if let Some((rest, word)) = subject.rsplit_once(" mac=")
-        && let Some((body, at)) = rest.rsplit_once(" at=")
-        && !word.is_empty()
+/// Splits a signed subject into the words, the time and the word, when it has the shape of one.
+fn split_signed(subject: &str) -> Option<(&str, &str, &str)> {
+    let (rest, word) = subject.rsplit_once(" mac=")?;
+    let (body, at) = rest.rsplit_once(" at=")?;
+    (!word.is_empty()
         && !word.contains(char::is_whitespace)
         && !at.is_empty()
         && at.len() <= 40
         && at
             .bytes()
-            .all(|byte| byte.is_ascii_digit() || matches!(byte, b'T' | b'Z' | b'-' | b':' | b'.'))
+            .all(|byte| byte.is_ascii_digit() || matches!(byte, b'T' | b'Z' | b'-' | b':' | b'.')))
+    .then_some((body, at, word))
+}
+
+/// Reads a subject back. `None` when it is neither the signed nor the unsigned canonical text.
+#[must_use]
+pub fn read_subject(subject: &str) -> Option<SubjectKind> {
+    if let Some((body, at, word)) = split_signed(subject)
         && let Some(fields) = DecisionFields::parse_canonical(body)
     {
         return Some(SubjectKind::Signed {
@@ -392,6 +466,38 @@ pub fn read_subject(subject: &str) -> Option<SubjectKind> {
         });
     }
     DecisionFields::parse_canonical(subject).map(SubjectKind::Unsigned)
+}
+
+/// What the subject of a `decision.dependency_requested` row holds.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DependencySubject {
+    /// The words, `at=` and `mac=`.
+    Signed {
+        /// The words.
+        fields: DependencyFields,
+        /// The time the API wrote.
+        requested_at: String,
+        /// The word, as written. It is not known to be well formed.
+        word: String,
+    },
+    /// The words alone: a row nobody signed.
+    Unsigned(DependencyFields),
+}
+
+/// Reads the subject of a decision on a dependency back. `None` when it is neither the signed nor
+/// the unsigned canonical text.
+#[must_use]
+pub fn read_dependency_subject(subject: &str) -> Option<DependencySubject> {
+    if let Some((body, at, word)) = split_signed(subject)
+        && let Some(fields) = DependencyFields::parse_canonical(body)
+    {
+        return Some(DependencySubject::Signed {
+            fields,
+            requested_at: at.to_owned(),
+            word: word.to_owned(),
+        });
+    }
+    DependencyFields::parse_canonical(subject).map(DependencySubject::Unsigned)
 }
 
 #[cfg(test)]

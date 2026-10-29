@@ -32,6 +32,11 @@ pub enum NameError {
     /// A control character (including NUL and newline) appears.
     #[error("the name contains a control character")]
     ControlCharacter,
+    /// A character that changes how the name reads without showing: a bidirectional control, a
+    /// zero width or other format character (Unicode category Cf), a line or paragraph separator
+    /// (Zl, Zp), a tag character, or a filler that renders as nothing.
+    #[error("the name contains a character that hides or reorders text")]
+    HiddenCharacter,
     /// Two `/` in a row, or a `/` at the end.
     #[error("the name has an empty component (a doubled or trailing `/`)")]
     EmptyComponent,
@@ -52,11 +57,73 @@ pub enum NameError {
     BadRepository,
 }
 
+/// True for a character that changes how a name reads without showing: the whole Unicode
+/// category Cf (format characters: the bidirectional controls U+202A to U+202E and U+2066 to
+/// U+2069, the zero width characters U+200B to U+200F and U+2060, the byte order mark U+FEFF, the
+/// soft hyphen, the Arabic number signs, the interlinear annotation marks and the others), the
+/// line and paragraph separators U+2028 and U+2029 (categories Zl and Zp), the tag block and the
+/// variation selector supplement (U+E0000 to U+E0FFF: tag characters can carry a hidden message),
+/// and the fillers that render as nothing and are not format characters (the combining grapheme
+/// joiner, the Hangul fillers, the Khmer inherent vowels).
+///
+/// The standard library has no category lookup, so the Cf ranges are listed, from Unicode 16, as
+/// the sandbox's audit of a checkout lists them (`workspace/audit.rs`, `hides_text`): a path the
+/// audit refuses is a path no other text can name either. Letters, digits, marks, punctuation,
+/// symbols, emoji and the variation selectors U+FE00 to U+FE0F, which emoji and CJK ideographs
+/// need, are not here: a name in any script passes. Two legitimate uses are refused with the rest
+/// of the category: the zero width non-joiner of Persian and the zero width joiner of emoji
+/// sequences and of some Indic scripts. A person renames such a file, which is the safe side.
+#[must_use]
+pub fn hides_text(c: char) -> bool {
+    matches!(
+        c,
+        '\u{00AD}'
+            | '\u{034F}'
+            | '\u{0600}'..='\u{0605}'
+            | '\u{061C}'
+            | '\u{06DD}'
+            | '\u{070F}'
+            | '\u{0890}'..='\u{0891}'
+            | '\u{08E2}'
+            | '\u{115F}'..='\u{1160}'
+            | '\u{17B4}'..='\u{17B5}'
+            | '\u{180E}'
+            | '\u{200B}'..='\u{200F}'
+            | '\u{2028}'..='\u{202E}'
+            | '\u{2060}'..='\u{206F}'
+            | '\u{3164}'
+            | '\u{FEFF}'
+            | '\u{FFA0}'
+            | '\u{FFF9}'..='\u{FFFB}'
+            | '\u{110BD}'
+            | '\u{110CD}'
+            | '\u{13430}'..='\u{1343F}'
+            | '\u{1BCA0}'..='\u{1BCA3}'
+            | '\u{1D173}'..='\u{1D17A}'
+            | '\u{E0000}'..='\u{E0FFF}'
+    )
+}
+
 const PATH_LIMIT: usize = 4096;
 const GLOB_LIMIT: usize = 1024;
 const BRANCH_LIMIT: usize = 200;
 
+/// The checks every path and glob passes: the shape of the text, then that no character hides
+/// or reorders it.
 fn check_text(text: &str, limit: usize) -> Result<(), NameError> {
+    check_shape(text, limit)?;
+    check_visible(text)
+}
+
+/// That no character of the text hides or reorders it ([`hides_text`]).
+fn check_visible(text: &str) -> Result<(), NameError> {
+    if text.chars().any(hides_text) {
+        return Err(NameError::HiddenCharacter);
+    }
+    Ok(())
+}
+
+fn check_shape(text: &str, limit: usize) -> Result<(), NameError> {
     if text.is_empty() {
         return Err(NameError::Empty);
     }
@@ -88,7 +155,7 @@ impl RepoPath {
     /// # Errors
     /// Returns the [`NameError`] for the first rule the text breaks.
     pub fn new(text: &str) -> Result<Self, NameError> {
-        check_text(text, PATH_LIMIT)?;
+        check_shape(text, PATH_LIMIT)?;
         for component in text.split('/') {
             match component {
                 "" => return Err(NameError::EmptyComponent),
@@ -100,6 +167,8 @@ impl RepoPath {
                 _ => {}
             }
         }
+        // After the components, so that `.g\u{200c}it` is named as the git directory it is.
+        check_visible(text)?;
         Ok(Self(text.to_owned()))
     }
 
@@ -377,6 +446,9 @@ impl BranchName {
         if text.chars().any(char::is_control) {
             return Err(NameError::ControlCharacter);
         }
+        if text.chars().any(hides_text) {
+            return Err(NameError::HiddenCharacter);
+        }
         let forbidden = [' ', '~', '^', ':', '?', '*', '[', '\\'];
         if text.chars().any(|c| forbidden.contains(&c))
             || text.contains("..")
@@ -513,6 +585,93 @@ mod tests {
         ];
         for (text, expected) in cases {
             assert_eq!(RepoPath::new(text), Err(expected), "{text:?}");
+        }
+    }
+
+    /// The names that reorder or hide text, in every constructor that takes a path, a glob or a
+    /// branch (SBX-2). The same list the sandbox's audit refuses in a checkout.
+    const HOSTILE: [&str; 12] = [
+        "gpj.\u{202E}rs",
+        "a\u{2028}b.rs",
+        "a\u{2029}b.rs",
+        "a\u{200B}b.rs",
+        "a\u{200D}b.rs",
+        "a\u{FEFF}b.rs",
+        "a\u{2066}b.rs",
+        "a\u{E0041}b.rs",
+        "a\u{3164}b.rs",
+        "a\u{00AD}b.rs",
+        "a\u{061C}b.rs",
+        "a\u{2060}b.rs",
+    ];
+
+    #[test]
+    fn a_name_that_hides_or_reorders_text_is_refused_by_every_constructor() {
+        for name in HOSTILE {
+            assert_eq!(
+                RepoPath::new(&format!("src/{name}")),
+                Err(NameError::HiddenCharacter),
+                "path {name:?}"
+            );
+            assert_eq!(
+                RepoPath::new(name),
+                Err(NameError::HiddenCharacter),
+                "path {name:?}"
+            );
+            assert_eq!(
+                RepoGlob::new(&format!("src/{name}")),
+                Err(NameError::HiddenCharacter),
+                "glob {name:?}"
+            );
+            assert_eq!(
+                BranchName::new(&format!("factory/{name}")),
+                Err(NameError::HiddenCharacter),
+                "branch {name:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_name_in_any_script_is_still_valid() {
+        for name in [
+            "caf\u{e9}.rs",
+            "\u{65e5}\u{672c}\u{8a9e}.md",
+            "\u{444}\u{430}\u{439}\u{43b}.txt",
+            "smile\u{1F600}.png",
+            "\u{1F468}\u{1F3FD}.png",
+            "e\u{0301}.rs",
+            "emoji\u{2764}\u{FE0F}.png",
+            "\u{0915}\u{094D}\u{0937}.txt",
+        ] {
+            assert!(RepoPath::new(&format!("src/{name}")).is_ok(), "{name:?}");
+            assert!(RepoGlob::new(&format!("src/{name}")).is_ok(), "{name:?}");
+            assert!(
+                BranchName::new(&format!("factory/{name}")).is_ok(),
+                "{name:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_rule_is_the_one_the_sandbox_audit_applies_to_a_checkout() {
+        // Letters, digits, marks, punctuation and symbols are not hidden; the format characters,
+        // the separators and the tags are.
+        for c in [
+            'a',
+            'Z',
+            '0',
+            '-',
+            '_',
+            '.',
+            ' ',
+            '\u{e9}',
+            '\u{FE0F}',
+            '\u{1F600}',
+        ] {
+            assert!(!hides_text(c), "{c:?}");
+        }
+        for c in ['\u{200B}', '\u{202E}', '\u{2028}', '\u{FEFF}', '\u{E0041}'] {
+            assert!(hides_text(c), "{c:?}");
         }
     }
 

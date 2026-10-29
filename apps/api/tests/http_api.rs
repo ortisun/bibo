@@ -1313,3 +1313,397 @@ env_test!(
         assert_eq!(elsewhere.status, 400, "{}", elsewhere.text());
     }
 );
+
+// ---- the two verbs of a decision on a dependency -------------------------------------------
+
+fn dependency_body(verb: &str) -> Value {
+    json!({
+        "verb": verb,
+        "package": "tally-counter",
+        "version": "0.3.1",
+        "reason": "Read the maintainers and the licence.",
+    })
+}
+
+/// A decision on a dependency is recorded under its own action, with the word only the API can
+/// make, and acknowledged as not applied: the worker reads the evidence the stage run stored and
+/// asks the policy engine before it records anything.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_decision_on_a_dependency_is_recorded_signed_and_not_yet_applied() {
+    use factory_composition::decision_signing::{
+        DependencySigning, DependencySubject, read_dependency_subject, read_subject,
+    };
+    use factory_domain::ids::AuditEventId;
+
+    let env = Env::start().await;
+    let job = new_job(&env, &env.a, "k").await;
+    let reply = env
+        .send(decision(
+            &env.a,
+            &env.a.approver,
+            &job,
+            "dep",
+            &dependency_body("approve-dependency"),
+        ))
+        .await;
+    assert_eq!(reply.status, 202, "{}", reply.text());
+    assert_eq!(reply.json()["applied"], false);
+    assert_eq!(reply.json()["status"], "recorded");
+    let event = AuditEventId::parse(reply.json()["decision_id"].as_str().expect("an id"))
+        .expect("an event id");
+    // Its own action: the hook that applies the six verbs never reads it.
+    assert_eq!(
+        env.db
+            .number(
+                "SELECT count(*) FROM audit_events WHERE action = 'decision.dependency_requested'"
+            )
+            .await,
+        1
+    );
+    assert_eq!(
+        env.db
+            .number("SELECT count(*) FROM audit_events WHERE action = 'decision.requested'")
+            .await,
+        0
+    );
+    let subject = env
+        .db
+        .text("SELECT subject FROM audit_events WHERE action = 'decision.dependency_requested'")
+        .await
+        .expect("a request is recorded");
+    assert!(
+        subject.starts_with(&format!(
+            "verb=approve-dependency job={job} run=none package=tally-counter version=0.3.1 checksum=none at="
+        )),
+        "{subject}"
+    );
+    assert!(
+        read_subject(&subject).is_none(),
+        "not a request of the six verbs"
+    );
+    let Some(DependencySubject::Signed {
+        fields,
+        requested_at,
+        word,
+    }) = read_dependency_subject(&subject)
+    else {
+        panic!("the record is not signed: {subject}");
+    };
+    let signing = DependencySigning {
+        tenant: env.a.id,
+        actor: env.a.approver.principal,
+        event,
+        requested_at: &requested_at,
+        fields: &fields,
+    };
+    let keys = &env.state.decision_keys;
+    assert!(
+        keys.verify_dependency(&signing, &word),
+        "the word is the API's"
+    );
+    // The word belongs to this tenant, this person, this event and these words.
+    let mut other_words = fields.clone();
+    other_words.version = "0.3.2".to_owned();
+    for other in [
+        DependencySigning {
+            tenant: env.b.id,
+            ..signing
+        },
+        DependencySigning {
+            actor: env.a.operator.principal,
+            ..signing
+        },
+        DependencySigning {
+            event: AuditEventId::from_uuid(uuid::Uuid::from_u128(rand_u128())),
+            ..signing
+        },
+        DependencySigning {
+            fields: &other_words,
+            ..signing
+        },
+    ] {
+        assert!(!keys.verify_dependency(&other, &word));
+    }
+    // The timeline shows it, as it shows the other requests.
+    let timeline = env
+        .send(Req::get(&format!("/v1/jobs/{job}/timeline")).bearer(&env.a.approver.token))
+        .await;
+    assert!(
+        timeline.text().contains("decision.dependency_requested"),
+        "{}",
+        timeline.text()
+    );
+    env.stop().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_decision_on_a_dependency_needs_the_designation_the_action_names() {
+    let env = Env::start().await;
+    let job = new_job(&env, &env.a, "k").await;
+    // approve-dependency: the approver. approve-build-code: the security approver, and only them.
+    let cases: [(&str, &Person, u16); 8] = [
+        ("approve-dependency", &env.a.approver, 202),
+        ("approve-dependency", &env.a.requester, 403),
+        ("approve-dependency", &env.a.operator, 403),
+        ("approve-dependency", &env.a.outsider, 403),
+        ("approve-build-code", &env.a.approver, 403),
+        ("approve-build-code", &env.a.requester, 403),
+        ("approve-build-code", &env.a.outsider, 403),
+        ("approve-build-code", &env.a.security, 202),
+    ];
+    for (index, (verb, person, status)) in cases.into_iter().enumerate() {
+        let reply = env
+            .send(decision(
+                &env.a,
+                person,
+                &job,
+                &format!("k-{index}"),
+                &dependency_body(verb),
+            ))
+            .await;
+        assert_eq!(
+            reply.status,
+            status,
+            "{verb} by {}: {}",
+            person.login,
+            reply.text()
+        );
+    }
+    // Two were recorded, the refusals were audited, and a refusal carries no word.
+    assert_eq!(
+        env.db
+            .number(
+                "SELECT count(*) FROM audit_events WHERE action = 'decision.dependency_requested'"
+            )
+            .await,
+        2
+    );
+    assert!(
+        env.db
+            .number("SELECT count(*) FROM audit_events WHERE action = 'decision.denied'")
+            .await
+            >= 1
+    );
+    let refused = env
+        .db
+        .text("SELECT subject FROM audit_events WHERE action = 'decision.denied' LIMIT 1")
+        .await
+        .expect("a refusal is recorded");
+    assert!(!refused.contains("mac="), "{refused}");
+    // The other tenant's approver cannot decide on this tenant's job.
+    let across = env
+        .send(decision(
+            &env.b,
+            &env.b.approver,
+            &job,
+            "across",
+            &dependency_body("approve-dependency"),
+        ))
+        .await;
+    assert!(matches!(across.status, 403 | 404), "{}", across.text());
+    env.stop().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_decision_on_a_dependency_is_read_by_the_grammar_of_the_dependency_commands() {
+    let env = Env::start().await;
+    let job = new_job(&env, &env.a, "k").await;
+    let run = stage_run(&env, &env.a, &job).await.as_text();
+    let with = |change: &dyn Fn(&mut Value)| {
+        let mut body = dependency_body("approve-dependency");
+        change(&mut body);
+        body
+    };
+    let cases: Vec<(&str, Value, u16, &str)> = vec![
+        (
+            "a package is needed",
+            with(&|b| {
+                b.as_object_mut().expect("object").remove("package");
+            }),
+            400,
+            "package",
+        ),
+        (
+            "a version is needed",
+            with(&|b| {
+                b.as_object_mut().expect("object").remove("version");
+            }),
+            400,
+            "version",
+        ),
+        (
+            "a reason is needed",
+            with(&|b| {
+                b.as_object_mut().expect("object").remove("reason");
+            }),
+            400,
+            "reason",
+        ),
+        (
+            "a reason has ten characters",
+            with(&|b| b["reason"] = json!("looks ok")),
+            400,
+            "reason",
+        ),
+        (
+            "a package name is a cargo package name",
+            with(&|b| b["package"] = json!("../etc/passwd")),
+            400,
+            "package",
+        ),
+        (
+            "a package name is one word",
+            with(&|b| b["package"] = json!("tally counter")),
+            400,
+            "package",
+        ),
+        (
+            "a package name is not a query",
+            with(&|b| b["package"] = json!("a?b=c")),
+            400,
+            "package",
+        ),
+        (
+            "a version is a version",
+            with(&|b| b["version"] = json!("latest")),
+            400,
+            "version",
+        ),
+        (
+            "a checksum is lower case hexadecimal of 12 or more digits",
+            with(&|b| b["checksum"] = json!("DEADBEEFDEADBEEF")),
+            400,
+            "checksum",
+        ),
+        (
+            "a short checksum is not a checksum",
+            with(&|b| b["checksum"] = json!("abcdef")),
+            400,
+            "checksum",
+        ),
+        (
+            "a head means nothing to this verb",
+            with(&|b| b["head"] = json!("a".repeat(40))),
+            400,
+            "head",
+        ),
+        (
+            "a target means nothing to this verb",
+            with(&|b| b["target"] = json!("IMPLEMENTATION")),
+            400,
+            "target",
+        ),
+        (
+            "a stage run is an id",
+            with(&|b| b["stage_run_id"] = json!("not an id")),
+            400,
+            "stage_run_id",
+        ),
+        (
+            "the words of a package mean nothing to the other verbs",
+            json!({"verb": "reject", "stage_run_id": run, "reason": "no", "package": "tally-counter"}),
+            400,
+            "package",
+        ),
+        (
+            "a version means nothing to the other verbs",
+            json!({"verb": "cancel", "reason": "no", "version": "1.0.0"}),
+            400,
+            "version",
+        ),
+    ];
+    for (index, (name, body, status, field)) in cases.into_iter().enumerate() {
+        let reply = env
+            .send(decision(
+                &env.a,
+                &env.a.approver,
+                &job,
+                &format!("k-{index}"),
+                &body,
+            ))
+            .await;
+        assert_eq!(reply.status, status, "{name}: {}", reply.text());
+        assert_eq!(reply.json()["field"], field, "{name}");
+    }
+    // A checksum may be written with its prefix, and a full one is fine.
+    for (key, checksum) in [
+        ("with-prefix", format!("sha256:{}", "ab".repeat(8))),
+        ("in-full", "ab".repeat(32)),
+    ] {
+        let mut body = dependency_body("approve-dependency");
+        body["checksum"] = json!(checksum);
+        let reply = env
+            .send(decision(&env.a, &env.a.approver, &job, key, &body))
+            .await;
+        assert_eq!(reply.status, 202, "{key}: {}", reply.text());
+    }
+    // A reason that holds a secret is refused, not stored. The key is built at run time.
+    let secret = ["gh", "p_", &"A1b2".repeat(9)].concat();
+    let mut body = dependency_body("approve-dependency");
+    body["reason"] = json!(format!("the maintainers wrote {secret} in the issue"));
+    let refused = env
+        .send(decision(&env.a, &env.a.approver, &job, "secret", &body))
+        .await;
+    assert_eq!(
+        (refused.status, refused.json()["field"].clone()),
+        (400, json!("reason"))
+    );
+    assert_eq!(
+        env.db
+            .number(
+                "SELECT count(*) FROM audit_events WHERE action = 'decision.dependency_requested'"
+            )
+            .await,
+        2,
+        "only the two good requests are stored"
+    );
+    env.stop().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_retried_decision_on_a_dependency_is_one_record_and_a_changed_one_is_a_conflict() {
+    let env = Env::start().await;
+    let job = new_job(&env, &env.a, "k").await;
+    let body = dependency_body("approve-dependency");
+    let first = env
+        .send(decision(&env.a, &env.a.approver, &job, "same", &body))
+        .await;
+    tokio::time::sleep(Duration::from_millis(1200)).await;
+    let second = env
+        .send(decision(&env.a, &env.a.approver, &job, "same", &body))
+        .await;
+    assert_eq!(
+        (first.status, second.status),
+        (202, 202),
+        "{}",
+        second.text()
+    );
+    assert_eq!(first.json(), second.json());
+    assert_eq!(
+        env.db
+            .number(
+                "SELECT count(*) FROM audit_events WHERE action = 'decision.dependency_requested'"
+            )
+            .await,
+        1
+    );
+    let mut changed = body.clone();
+    changed["version"] = json!("0.3.2");
+    let conflict = env
+        .send(decision(&env.a, &env.a.approver, &job, "same", &changed))
+        .await;
+    assert_eq!(conflict.status, 409, "{}", conflict.text());
+    // Another person who sends the same key writes a record of their own.
+    let theirs = env
+        .send(decision(
+            &env.a,
+            &env.a.security,
+            &job,
+            "same",
+            &dependency_body("approve-build-code"),
+        ))
+        .await;
+    assert_eq!(theirs.status, 202, "{}", theirs.text());
+    assert_ne!(first.json()["decision_id"], theirs.json()["decision_id"]);
+    env.stop().await;
+}

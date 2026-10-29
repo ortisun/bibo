@@ -10,20 +10,17 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use async_trait::async_trait;
 use factory_composition::config::StageSettings;
 use factory_composition::decision_signing::DecisionKeys;
 use factory_composition::pipeline::{
-    ExternalPorts, PipelineError, PipelineInputs, SupplyChainParts, Tuning, assemble_pipeline,
-    missing_handlers,
+    ExternalPorts, PipelineError, PipelineInputs, Tuning, assemble_pipeline, missing_handlers,
 };
 use factory_composition::preflight::NoAttestations;
 use factory_composition::profile::{PortName, Profile};
 use factory_composition::providers::Providers;
 use factory_composition::seams::{CachedProbes, FileAllowlist};
 use factory_composition::startup::load_policy;
-use factory_domain::ids::{JobId, TenantId};
-use factory_domain::values::Timestamp;
+use factory_composition::supply_chain::{Standing, SupplyChainSources};
 use factory_domain::vocabulary::{Fidelity, StageKind};
 use factory_ports::agent::ProbedCapabilities;
 use factory_ports::artifact::ArtifactStore;
@@ -43,43 +40,12 @@ use factory_testkit::spec::FakeSpecificationProvider;
 use factory_testkit::store::InMemoryStore;
 use factory_testkit::workspace::{FakeRemote, FakeWorkspaceProvider};
 use factory_workflow::engine::EngineConfig;
-use factory_workflow::gates::supply_chain::approval::{DependencyApproval, RecordedApprovals};
-use factory_workflow::gates::supply_chain::facts::{
-    AdvisoryDatabase, RegistryMetadata, RegistryRecord,
-};
 
 fn root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("../..")
         .canonicalize()
         .expect("the repository root")
-}
-
-struct NoApprovals;
-
-#[async_trait]
-impl RecordedApprovals for NoApprovals {
-    async fn for_job(&self, _: TenantId, _: JobId) -> Vec<DependencyApproval> {
-        Vec::new()
-    }
-}
-
-struct NoRegistry;
-
-#[async_trait]
-impl RegistryMetadata for NoRegistry {
-    async fn lookup(&self, _: &str, _: &str) -> RegistryRecord {
-        RegistryRecord::default()
-    }
-}
-
-struct Recent;
-
-#[async_trait]
-impl AdvisoryDatabase for Recent {
-    async fn updated_at(&self) -> Option<Timestamp> {
-        Timestamp::parse("2026-10-27T00:00:00Z").ok()
-    }
 }
 
 /// Inputs in which every port is a stand-in.
@@ -91,6 +57,7 @@ fn inputs(profile: Profile, settings: StageSettings) -> PipelineInputs {
     let repo = factory_ports::paths::RepoRef::parse("example-org/fixture").expect("a repository");
     let catalog_text = std::fs::read_to_string(root().join("infra/sandbox-images/images.json"))
         .expect("the catalog");
+    let sources = SupplyChainSources::stand_in(clock.clone());
     PipelineInputs {
         profile,
         settings,
@@ -129,11 +96,7 @@ fn inputs(profile: Profile, settings: StageSettings) -> PipelineInputs {
             issues: Arc::new(FakeIssueSource::new()),
             changes: Arc::new(FakeChangeHost::new()),
             probes: Arc::new(CachedProbes::new(ProbedCapabilities(BTreeMap::new()))),
-            supply_chain: SupplyChainParts {
-                approvals: Arc::new(NoApprovals),
-                registry: Arc::new(NoRegistry),
-                advisory_db: Arc::new(Recent),
-            },
+            supply_chain: sources,
             attestations: Arc::new(NoAttestations),
             app: FAKE_APP_ID,
         },
@@ -179,9 +142,17 @@ fn the_test_profile_assembles_all_thirteen_handlers_and_the_parts_around_them() 
     );
 }
 
+/// Production inputs: every port is still a stand-in, which production refuses, but the sources of
+/// the dependency gates are the blocked adapters production takes.
+fn production_inputs() -> PipelineInputs {
+    let mut inputs = inputs(Profile::Production, settings_with_commit());
+    inputs.external.supply_chain = SupplyChainSources::blocked();
+    inputs
+}
+
 #[test]
 fn the_production_profile_refuses_every_stand_in_and_lists_them() {
-    let refused = assemble_pipeline(inputs(Profile::Production, settings_with_commit()))
+    let refused = assemble_pipeline(production_inputs())
         .err()
         .expect("production refuses stand-ins");
     let PipelineError::Refused(refusal) = refused else {
@@ -228,6 +199,33 @@ fn the_local_profile_lets_the_model_and_github_side_stand_in_and_nothing_that_ho
 }
 
 #[test]
+fn the_engine_is_given_the_blocks_the_policy_says_no_override_may_pass() {
+    let policies = load_policy(&root(), &[]).expect("the real policies load");
+    let listed = factory_composition::pipeline::non_overridable_blocks(&policies);
+    assert!(
+        listed.contains(&(
+            "dependency-review".to_owned(),
+            "policy_unresolvable".to_owned()
+        )),
+        "{listed:?}"
+    );
+    // The floor the engine keeps is the same pair, so a configuration that lists nothing still
+    // holds the unresolved dependency review back.
+    let floor = EngineConfig::new(
+        Profile::Test.execution_mode(),
+        factory_domain::values::Sha256Digest::of(b"policy"),
+    );
+    assert!(floor.non_overridable_blocks.contains(&(
+        "dependency-review".to_owned(),
+        "policy_unresolvable".to_owned()
+    )));
+    let configured = floor.clone().with_non_overridable_blocks(listed.clone());
+    for pair in &listed {
+        assert!(configured.non_overridable_blocks.contains(pair));
+    }
+}
+
+#[test]
 fn the_production_profile_needs_the_commit_of_the_gate_definitions() {
     let refused = assemble_pipeline(inputs(Profile::Production, StageSettings::default()))
         .err()
@@ -266,4 +264,52 @@ fn a_registry_that_lacks_a_handler_is_named_before_any_job_runs() {
             .collect();
         assert_eq!(missing_handlers(&without, &scope), vec![*dropped]);
     }
+}
+
+#[test]
+fn the_production_profile_refuses_a_stand_in_for_the_registry_and_the_advisory_database() {
+    let refused = assemble_pipeline(inputs(Profile::Production, settings_with_commit()))
+        .err()
+        .expect("production refuses the stand-in sources");
+    match refused {
+        PipelineError::StandIn(names) => {
+            assert_eq!(names, ["RegistryMetadata", "AdvisoryDatabase"]);
+        }
+        other => panic!("not a refusal of the stand-in sources: {other}"),
+    }
+}
+
+#[test]
+fn the_blocked_sources_are_accepted_in_production_and_reported_as_blocked() {
+    // The ports are stand-ins here, so production still refuses the pipeline, but not for the
+    // sources: the refusal is the list of ports, and the sources are not in it.
+    let refused = assemble_pipeline(production_inputs())
+        .err()
+        .expect("production refuses stand-in ports");
+    assert!(matches!(refused, PipelineError::Refused(_)), "{refused}");
+    // The same sources assemble where the profile allows the ports.
+    let mut accepted = inputs(Profile::Test, StageSettings::default());
+    accepted.external.supply_chain = SupplyChainSources::blocked();
+    let pipeline = assemble_pipeline(accepted).unwrap_or_else(|error| panic!("{error}"));
+    assert!(
+        pipeline
+            .supply_chain
+            .iter()
+            .all(|(_, standing)| *standing == Standing::Blocked),
+        "{:?}",
+        pipeline.supply_chain
+    );
+}
+
+#[test]
+fn the_test_profile_reports_the_stand_in_sources_as_stand_ins() {
+    let pipeline = assemble_pipeline(inputs(Profile::Test, StageSettings::default()))
+        .unwrap_or_else(|error| panic!("{error}"));
+    assert_eq!(
+        pipeline.supply_chain,
+        [
+            ("RegistryMetadata", Standing::StandIn),
+            ("AdvisoryDatabase", Standing::StandIn)
+        ]
+    );
 }

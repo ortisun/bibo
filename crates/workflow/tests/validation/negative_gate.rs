@@ -640,11 +640,20 @@ fn negative_nt_gate_04_every_path_trick_is_refused_with_its_group_and_the_contro
 
 #[tokio::test]
 async fn negative_nt_gate_04_the_tricks_that_a_repository_can_hold_fail_the_whole_stage() {
-    for path in [
-        ".GitHub/Workflows/ci.yml",
+    // A zero width character in the name of a protected directory cannot be a path at all: since
+    // SBX-2 (`paths::hides_text`) `RepoPath` refuses it, so it never reaches a gate, and the
+    // fixture below could not build it. The trick that is left is the ones the type allows.
+    for hidden in [
         ".git\u{200b}hub/workflows/ci.yml",
-        ".github./workflows/ci.yml",
+        ".github/workflows/ci\u{202e}.yml",
     ] {
+        assert_eq!(
+            factory_ports::paths::RepoPath::new(hidden),
+            Err(factory_ports::paths::NameError::HiddenCharacter),
+            "{hidden:?}"
+        );
+    }
+    for path in [".GitHub/Workflows/ci.yml", ".github./workflows/ci.yml"] {
         let (w, ran) = run_change(&[(path, Some("x\n"))], head_run()).await;
         assert_eq!(
             ran.outcome("protected-paths-unchanged"),
@@ -1169,4 +1178,137 @@ async fn negative_nt_gate_10_a_registry_flake_gets_one_recorded_retry_and_no_mor
         .expect("evaluate works");
     assert_eq!(ran.outcome("unit-tests"), GateOutcome::Failed);
     assert_eq!(w.cargo.ran("test"), 3, "at most one retry");
+}
+
+// -------------------------------------------------------------------------------------------
+// AUT-5: build code of the project's own waits for a security approver
+// -------------------------------------------------------------------------------------------
+
+const BUILD_SCRIPT: &str = "fn main() {\n    println!(\"cargo:rerun-if-changed=build.rs\");\n}\n";
+
+/// The build gate of a change that adds build code is BLOCKED, with the code of a decision that is
+/// missing, before any command runs: a command that built the change would run the build script.
+fn assert_build_code_waits(w: &World, ran: &Ran, what: &str) {
+    assert_eq!(ran.outcome("build"), GateOutcome::Blocked, "{what}");
+    let blocked = ran
+        .report("build")
+        .blocked_reason
+        .as_ref()
+        .unwrap_or_else(|| panic!("{what}: a blocked report names its reason"));
+    assert_eq!(blocked.code, BlockedCode::PolicyUnresolvable, "{what}");
+    assert!(
+        blocked
+            .missing
+            .iter()
+            .any(|text| text.as_str().contains("approve_build_code")),
+        "{what}: {blocked:?}"
+    );
+    assert_eq!(w.sandbox.created(), 0, "{what}: no sandbox was made");
+    assert!(
+        w.cargo.calls().is_empty(),
+        "{what}: no command ran: {:?}",
+        w.cargo.calls()
+    );
+    assert_ne!(ran.resolution, Resolution::Pass, "{what}");
+    assert!(
+        matches!(
+            ran.resolution,
+            Resolution::Blocked(BlockCause::GateBlocked(_))
+        ),
+        "{what}: {:?}",
+        ran.resolution
+    );
+}
+
+#[tokio::test]
+async fn aut_5_a_new_build_script_blocks_the_build_gate_before_any_command_runs() {
+    for path in ["build.rs", "tools/gen/build.rs", "BUILD.RS"] {
+        let (w, ran) = run_change(&[(path, Some(BUILD_SCRIPT))], head_run()).await;
+        assert_build_code_waits(&w, &ran, path);
+    }
+}
+
+#[tokio::test]
+async fn aut_5_an_existing_build_script_that_is_edited_blocks_the_build_gate_too() {
+    let w = World::new();
+    let base = w.push(&with(&[("build.rs", Some(BUILD_SCRIPT))])).await;
+    let edited =
+        format!("{BUILD_SCRIPT}fn extra() {{ let _ = std::process::Command::new(\"sh\"); }}\n");
+    let head = w.push(&with(&[("build.rs", Some(&edited))])).await;
+    w.cargo.queue_test_run(head_run());
+    w.cargo.queue_test_run(base_run());
+    let ran = w.run(&base, &head).await;
+    assert_build_code_waits(&w, &ran, "an edited build.rs");
+}
+
+#[tokio::test]
+async fn aut_5_a_build_script_moved_into_place_or_into_a_subdirectory_blocks_the_build_gate() {
+    for (from, to) in [
+        ("scripts/gen.rs", "build.rs"),
+        ("build.rs", "crates/inner/build.rs"),
+    ] {
+        let w = World::new();
+        let base = w.push(&with(&[(from, Some(BUILD_SCRIPT))])).await;
+        let head = w
+            .push(&with(&[(from, None), (to, Some(BUILD_SCRIPT))]))
+            .await;
+        w.cargo.queue_test_run(head_run());
+        w.cargo.queue_test_run(base_run());
+        let ran = w.run(&base, &head).await;
+        assert_build_code_waits(&w, &ran, &format!("{from} moved to {to}"));
+    }
+}
+
+#[tokio::test]
+async fn aut_5_a_build_script_inside_a_vendored_dependency_is_build_code_too() {
+    for path in [
+        "vendor/some-crate/build.rs",
+        "third_party/deps/other/build.rs",
+    ] {
+        let (w, ran) = run_change(&[(path, Some(BUILD_SCRIPT))], head_run()).await;
+        assert_build_code_waits(&w, &ran, path);
+    }
+}
+
+#[tokio::test]
+async fn aut_5_a_build_key_a_procedural_macro_and_build_dependencies_in_a_manifest_block_the_build_gate()
+ {
+    let base = base_files()
+        .into_iter()
+        .find(|(path, _)| path == "Cargo.toml")
+        .map(|(_, text)| text)
+        .expect("the fixture holds a manifest");
+    for (what, addition) in [
+        ("a build key", "\n[package.metadata.x]\n"),
+        ("build dependencies", "\n[build-dependencies]\ncc = \"1\"\n"),
+        ("a procedural macro", "\n[lib]\nproc-macro = true\n"),
+    ] {
+        let changed = if what == "a build key" {
+            base.replace("[package]\n", "[package]\nbuild = \"gen.rs\"\n")
+        } else {
+            format!("{base}{addition}")
+        };
+        let (w, ran) = run_change(&[("Cargo.toml", Some(&changed))], head_run()).await;
+        assert_build_code_waits(&w, &ran, what);
+    }
+}
+
+#[tokio::test]
+async fn aut_5_an_ordinary_change_and_the_removal_of_a_build_script_do_not_block_the_build_gate() {
+    let lib = base_files()
+        .into_iter()
+        .find(|(path, _)| path == "src/lib.rs")
+        .map(|(_, text)| text)
+        .expect("the fixture holds a library");
+    let changed = format!("{lib}\npub fn extra() {{}}\n");
+    let (_w, ran) = run_change(&[("src/lib.rs", Some(&changed))], head_run()).await;
+    assert_eq!(ran.outcome("build"), GateOutcome::Passed);
+    // Removing a build script adds no code.
+    let w = World::new();
+    let base = w.push(&with(&[("build.rs", Some(BUILD_SCRIPT))])).await;
+    let head = w.push(&with(&[("build.rs", None)])).await;
+    w.cargo.queue_test_run(head_run());
+    w.cargo.queue_test_run(base_run());
+    let ran = w.run(&base, &head).await;
+    assert_eq!(ran.outcome("build"), GateOutcome::Passed);
 }

@@ -87,6 +87,7 @@ use factory_workflow::stages::specification::SpecDrafts;
 
 use crate::commands::{CommandContext, ParsedDecision};
 use crate::decision_signing::{DecisionKeys, Signing, SubjectKind, read_subject};
+use crate::dependency_decisions::DependencyDecisions;
 use crate::hooks::BeforeClaim;
 use crate::seams::{FileAllowlist, designation};
 
@@ -273,13 +274,18 @@ pub enum Reason {
     AlreadyDecided,
     /// The record does not carry the word that only the API can make (AUT-12).
     NotSigned,
+    /// A decision on a dependency names a package, a version or a checksum that the blocked stage
+    /// run does not wait for.
+    NotAwaited,
+    /// A decision on a dependency matches more than one package the stage run waits for.
+    Ambiguous,
     /// Any other refusal of the approval service.
     Refused,
 }
 
 impl Reason {
     /// Every reason, so that a sentence can be turned back into its code.
-    pub const ALL: [Reason; 22] = [
+    pub const ALL: [Reason; 24] = [
         Self::GaveUp,
         Self::NoJob,
         Self::Malformed,
@@ -301,6 +307,8 @@ impl Reason {
         Self::GatesNotClear,
         Self::AlreadyDecided,
         Self::NotSigned,
+        Self::NotAwaited,
+        Self::Ambiguous,
         Self::Refused,
     ];
 
@@ -331,6 +339,10 @@ impl Reason {
             Self::GatesNotClear => "A check is not clear, so the work cannot be approved.",
             Self::AlreadyDecided => "This person already took this decision for this version.",
             Self::NotSigned => "The record was not written by the service that takes decisions.",
+            Self::NotAwaited => "The stage run does not wait for a decision on that package.",
+            Self::Ambiguous => {
+                "More than one package matches; add the start of the checksum to say which."
+            }
             Self::Refused => "The decision was refused.",
         }
     }
@@ -360,6 +372,8 @@ impl Reason {
             Self::GatesNotClear => "gates_not_clear",
             Self::AlreadyDecided => "already_decided",
             Self::NotSigned => "not_signed",
+            Self::NotAwaited => "not_awaited",
+            Self::Ambiguous => "ambiguous_package",
             Self::Refused => "refused",
         }
     }
@@ -552,7 +566,7 @@ impl AuditMarkers {
 }
 
 /// The id of the marker of a decision: derived, so that a second write finds the first.
-fn marker_id(decision: AuditEventId) -> AuditEventId {
+pub(crate) fn marker_id(decision: AuditEventId) -> AuditEventId {
     let digest = Sha256Digest::of(format!("decision-marker\n{}", decision.as_uuid()).as_bytes());
     let number = u128::from_str_radix(&digest.hex()[..32], 16).unwrap_or(0);
     AuditEventId::from_uuid(uuid::Builder::from_random_bytes(number.to_be_bytes()).into_uuid())
@@ -763,6 +777,7 @@ pub struct ClaimWork {
     max_age: Duration,
     per_pass: usize,
     drafts: Option<Arc<dyn SpecDrafts>>,
+    dependencies: Option<Arc<DependencyDecisions>>,
     keys: Arc<DecisionKeys>,
     scans: Mutex<BTreeMap<TenantId, Scan>>,
 }
@@ -812,6 +827,7 @@ impl ClaimWork {
             max_age: deps.max_age,
             per_pass: deps.per_pass.max(1),
             drafts: None,
+            dependencies: None,
             keys: deps.keys,
             scans: Mutex::new(BTreeMap::new()),
         }
@@ -827,10 +843,22 @@ impl ClaimWork {
         self
     }
 
+    /// Lets a person decide on a new dependency or on its build code (`approve-dependency` and
+    /// `approve-build-code`). The step reads its own requests, which carry their own audit action,
+    /// and calls `Engine::record_dependency_decision`. Without it those requests are left alone.
+    #[must_use]
+    pub fn with_dependencies(mut self, dependencies: Arc<DependencyDecisions>) -> Self {
+        self.dependencies = Some(dependencies);
+        self
+    }
+
     /// One pass for one tenant: admit, then decide. Public so a test can run a pass without a loop.
     pub async fn pass(&self, tenant: TenantId) {
         self.admit_received(tenant).await;
         self.apply_decisions(tenant).await;
+        if let Some(dependencies) = &self.dependencies {
+            dependencies.pass(tenant).await;
+        }
     }
 
     // ---- admission -------------------------------------------------------------------------

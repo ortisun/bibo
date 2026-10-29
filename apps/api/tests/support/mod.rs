@@ -72,7 +72,7 @@ pub struct Person {
     pub token: String,
 }
 
-/// One tenant: a repository and four people.
+/// One tenant: a repository and five people.
 #[derive(Clone)]
 pub struct Tenant {
     pub id: TenantId,
@@ -83,6 +83,8 @@ pub struct Tenant {
     pub requester: Person,
     pub approver: Person,
     pub operator: Person,
+    /// A security approver: the one who decides on the build code of a new package.
+    pub security: Person,
     /// A principal that is not on the allowlist.
     pub outsider: Person,
 }
@@ -417,12 +419,13 @@ async fn seed_tenant(db: &TestDb, position: usize, base: u64) -> Tenant {
         requester: seed_person(db, id, base + 1, "requester-one").await,
         approver: seed_person(db, id, base + 2, "approver-one").await,
         operator: seed_person(db, id, base + 3, "operator-one").await,
+        security: seed_person(db, id, base + 5, "security-one").await,
         outsider: seed_person(db, id, base + 4, "outsider-one").await,
     }
 }
 
-/// The allowlist file for these tenants: a requester, an approver and an operator each; the
-/// outsider is not listed.
+/// The allowlist file for these tenants: a requester, an approver, an operator and a security
+/// approver each; the outsider is not listed.
 pub fn allowlist_text(tenants: &[&Tenant]) -> String {
     let mut text = String::from("version: 1\nentries:\n");
     for tenant in tenants {
@@ -430,6 +433,7 @@ pub fn allowlist_text(tenants: &[&Tenant]) -> String {
             (&tenant.requester, "requester"),
             (&tenant.approver, "approver"),
             (&tenant.operator, "operator"),
+            (&tenant.security, "security_approver"),
         ] {
             text.push_str(&format!(
                 "  - tenant: {}\n    github_user_id: {}\n    login: {}\n    designations: [{designation}]\n",

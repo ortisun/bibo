@@ -57,6 +57,9 @@ pub enum Eval {
     Fail(&'static str),
     /// A report of a gate that could not run.
     Blocked,
+    /// The scripted gate passes, and each of these gates reports `BLOCKED` with the given block
+    /// code, as `(gate id, block code)`. The block of the stage run is then those gates and codes.
+    BlockedAt(&'static [(&'static str, &'static str)]),
     /// Nothing at all: the nearest thing to an agent saying "it passed".
     NoEvidence,
     /// A passing report and a verdict that asks for changes of this defect class.
@@ -584,6 +587,18 @@ impl StageHandler for ScriptedHandler {
                 reports: vec![report(ctx, "BLOCKED", "scanner")],
                 ..GateDecision::default()
             },
+            Eval::BlockedAt(blocks) => {
+                let mut reports = vec![pass(ctx)];
+                reports.extend(
+                    blocks
+                        .iter()
+                        .map(|(gate, code)| blocked_at(ctx, gate, code)),
+                );
+                GateDecision {
+                    reports,
+                    ..GateDecision::default()
+                }
+            }
             Eval::NoEvidence => GateDecision::default(),
             Eval::ChangesRequired(defect) => GateDecision {
                 reports: vec![pass(ctx)],
@@ -664,6 +679,24 @@ fn report(ctx: &GateContext<'_>, outcome: &str, check: &str) -> GateReport {
             "message": "The scripted check found a problem in the change."
         }]);
     }
+    GateReport::from_json_value(doc).expect("a valid scripted report")
+}
+
+/// A report that another gate than the scripted one could not run, with a block code.
+fn blocked_at(ctx: &GateContext<'_>, gate: &str, code: &str) -> GateReport {
+    let mut doc: Value = serde_json::from_str(BLOCKED_REPORT).expect("the example is JSON");
+    let meta = doc["metadata"].as_object_mut().expect("metadata");
+    meta.insert("gate_report_id".into(), json!(uuid_text(ctx)));
+    meta.insert("gate_id".into(), json!(gate));
+    meta.insert("job_id".into(), json!(ctx.identity.job.to_string()));
+    meta.insert(
+        "stage_run_id".into(),
+        json!(ctx.identity.stage_run.to_string()),
+    );
+    meta.insert("attempt_id".into(), json!(ctx.attempt.to_string()));
+    meta.insert("execution_mode".into(), json!(ctx.mode.as_str()));
+    doc["environment"]["fidelity"] = json!("fake");
+    doc["blocked_reason"] = json!({"code": code, "missing": ["a recorded decision"]});
     GateReport::from_json_value(doc).expect("a valid scripted report")
 }
 

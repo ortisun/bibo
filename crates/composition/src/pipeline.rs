@@ -48,7 +48,7 @@ use factory_ports::store::Store;
 use factory_sandbox::container::images::ImageCatalog;
 use factory_workflow::engine::{Engine, EngineConfig, EngineDeps};
 use factory_workflow::gates::supply_chain::approval::RecordedApprovals;
-use factory_workflow::gates::supply_chain::facts::{AdvisoryDatabase, RegistryMetadata};
+use factory_workflow::gates::supply_chain::ledger::LedgerApprovals;
 use factory_workflow::handlers::{HandlerRegistry, StageHandler};
 use factory_workflow::stages::approval::{
     ApprovalConfig, ApprovalDeps, ApprovalHandler, ApprovalHandlerDeps, ApprovalService,
@@ -82,6 +82,7 @@ use crate::decisions::{
     AllowlistAuthority, AuditMarkers, ClaimWork, ClaimWorkDeps, DECISIONS_PER_PASS, DecisionMarkers,
 };
 use crate::delivery::{StoreApprovalSources, StoreDeliverySources};
+use crate::dependency_decisions::{DependencyDecisions, DependencyDecisionsDeps};
 use crate::drift::{ChannelDrift, DriftPump, channel as drift_channel};
 use crate::hooks::BeforeClaim;
 use crate::preflight::{BypassAttestations, PreflightDeps, ProtectionPreflight};
@@ -94,6 +95,7 @@ use crate::seams::{
     FileAllowlist, RefreshRequests, SchemaChecker, StoreRepositories, StoreRequests, YamlManifests,
 };
 use crate::startup::LoadedPolicies;
+use crate::supply_chain::{CurrentApprovals, Standing, SupplyChainSources};
 use crate::system::TokioTicker;
 
 /// Why the pipeline cannot be assembled.
@@ -108,6 +110,9 @@ pub enum PipelineError {
     /// The registry of handlers lacks a stage the engine's scope names.
     #[error("the registry of handlers lacks {} stage(s): {}", .0.len(), stage_list(.0))]
     MissingHandlers(Vec<StageKind>),
+    /// The production profile was given a stand-in for a source of the dependency gates.
+    #[error("the production profile refuses a stand-in for: {}", .0.join(", "))]
+    StandIn(Vec<&'static str>),
     /// A setting is missing or unusable.
     #[error("{0}")]
     Settings(String),
@@ -124,17 +129,6 @@ fn stage_list(stages: &[StageKind]) -> String {
         .join(", ")
 }
 
-/// The three seams of the dependency gates that no adapter implements yet.
-#[derive(Clone)]
-pub struct SupplyChainParts {
-    /// The decisions people recorded about new dependencies, by job.
-    pub approvals: Arc<dyn RecordedApprovals>,
-    /// What the package registry says about a package.
-    pub registry: Arc<dyn RegistryMetadata>,
-    /// The date of the advisory database.
-    pub advisory_db: Arc<dyn AdvisoryDatabase>,
-}
-
 /// What this library cannot build and a binary or a test must give.
 #[derive(Clone)]
 pub struct ExternalPorts {
@@ -148,8 +142,9 @@ pub struct ExternalPorts {
     pub changes: Arc<dyn ChangeHost>,
     /// What each runtime can do, probed.
     pub probes: Arc<dyn CapabilityProbes>,
-    /// The seams of the dependency gates.
-    pub supply_chain: SupplyChainParts,
+    /// What the registry says about a package and how old the advisory database is. The decisions
+    /// people recorded are not here: the pipeline reads them from the ledger itself.
+    pub supply_chain: SupplyChainSources,
     /// The administrator's statement that the App is on no bypass list.
     pub attestations: Arc<dyn BypassAttestations>,
     /// The GitHub App the factory's checks are pinned to.
@@ -241,10 +236,27 @@ pub struct Pipeline {
     /// The steps before each claim, in the order a loop runs them: the request cache, the
     /// preflight, the hook.
     pub before_claim: Vec<Arc<dyn BeforeClaim>>,
+    /// The decisions people recorded about new dependencies, read from the ledger by tenant and
+    /// job. This is the very value the validation stage's supply chain gate reads.
+    pub dependency_approvals: Arc<dyn RecordedApprovals>,
+    /// The kind of each source of the dependency gates, for the report of what the run is made of.
+    pub supply_chain: Vec<(&'static str, Standing)>,
 }
 
 fn slug(text: &str) -> Result<Slug, PipelineError> {
     Slug::parse(text).map_err(|_| PipelineError::Settings(format!("{text:?} is not an agent id")))
+}
+
+/// The blocks, as (gate, block code), that the policy says no override may pass.
+#[must_use]
+pub fn non_overridable_blocks(policies: &LoadedPolicies) -> Vec<(String, String)> {
+    policies
+        .security
+        .gate_integrity
+        .non_overridable_blocks
+        .iter()
+        .map(|block| (block.gate.clone(), block.code.clone()))
+        .collect()
 }
 
 /// The commit of the gate definitions: the configured one, and for the profiles that are not
@@ -372,6 +384,18 @@ pub fn assemble_pipeline(inputs: PipelineInputs) -> Result<Pipeline, PipelineErr
     let fetch = specs
         .fetch_sandbox()
         .map_err(|_| PipelineError::Load("the fetch sandbox cannot be specified".to_owned()))?;
+    // The decisions people recorded are read from the ledger, which only the engine appends to.
+    // They are never a value the caller hands in (review B-4): a pipeline assembled over another
+    // source would let a list the caller wrote stand for a person's decision.
+    let dependency_approvals: Arc<dyn RecordedApprovals> = Arc::new(CurrentApprovals::new(
+        Arc::new(LedgerApprovals::new(
+            Arc::clone(&store),
+            Arc::clone(&artifacts),
+        )),
+        Arc::clone(&allowlist),
+        Arc::clone(&store),
+        Arc::clone(&clock),
+    ));
     let validation = Arc::new(ValidationConfig {
         policy: Arc::clone(&policies.engine),
         path_rules: path_rules.clone(),
@@ -382,7 +406,10 @@ pub fn assemble_pipeline(inputs: PipelineInputs) -> Result<Pipeline, PipelineErr
         flaky_registry: std::collections::BTreeSet::new(),
         bounds: Bounds::default(),
         supply_chain: SupplyChainSeams {
-            settings: SupplyChainSettings::new(
+            // The policy's value is the ceiling: the age limit of the advisory database and the
+            // rule for when the gates run start from it, and configuration may only lower them.
+            settings: SupplyChainSettings::from_policy(
+                &policies.engine,
                 fetch,
                 factory_workflow::gates::supply_chain::licenses::LicensePolicy::owner_approved(),
                 factory_workflow::gates::supply_chain::names::PopularNames::bundled()
@@ -392,9 +419,9 @@ pub fn assemble_pipeline(inputs: PipelineInputs) -> Result<Pipeline, PipelineErr
                     tool: factory_workflow::gates::supply_chain::tools::SbomTool::default(),
                 },
             ),
-            approvals: Arc::clone(&external.supply_chain.approvals),
-            registry: Arc::clone(&external.supply_chain.registry),
-            advisory_db: Arc::clone(&external.supply_chain.advisory_db),
+            approvals: Arc::clone(&dependency_approvals),
+            registry: external.supply_chain.registry(),
+            advisory_db: external.supply_chain.advisory_db(),
         },
     });
     let delivery = Arc::new(
@@ -461,6 +488,15 @@ pub fn assemble_pipeline(inputs: PipelineInputs) -> Result<Pipeline, PipelineErr
         authority: authority.clone(),
         seams,
     };
+    // The two sources of the dependency gates are not ports with a fidelity, so the profile's
+    // check does not reach them. Production takes the blocked adapters, which fail closed, and
+    // refuses a stand-in.
+    if profile == Profile::Production {
+        let stand_ins = external.supply_chain.stand_ins();
+        if !stand_ins.is_empty() {
+            return Err(PipelineError::StandIn(stand_ins));
+        }
+    }
     ports.check(profile)?;
 
     // ---- the thirteen handlers ------------------------------------------------------------
@@ -748,7 +784,11 @@ pub fn assemble_pipeline(inputs: PipelineInputs) -> Result<Pipeline, PipelineErr
     )))?;
 
     // ---- the engine -----------------------------------------------------------------------
-    let mut config = EngineConfig::new(profile.execution_mode(), policies.hash.clone());
+    // The blocks that no override may pass are the policy's (`gate_integrity.non_overridable_blocks`),
+    // added to the floor the engine keeps. The engine reads the gate and the code of a block from
+    // the event it stored and holds these back, whatever facts a caller hands an override.
+    let mut config = EngineConfig::new(profile.execution_mode(), policies.hash.clone())
+        .with_non_overridable_blocks(non_overridable_blocks(&policies));
     config.claim_batch = 1;
     if let Some(tune) = tune_engine {
         tune(&mut config);
@@ -794,6 +834,19 @@ pub fn assemble_pipeline(inputs: PipelineInputs) -> Result<Pipeline, PipelineErr
         ids: Arc::clone(&ids),
         redactor: Arc::clone(&redactor),
     }));
+    let dependency_decisions = Arc::new(DependencyDecisions::new(DependencyDecisionsDeps {
+        engine: Arc::clone(&engine),
+        store: Arc::clone(&store),
+        artifacts: Arc::clone(&artifacts),
+        tenants: tenants.clone(),
+        policy: Arc::clone(&policies.engine),
+        policy_hash: policies.hash.clone(),
+        sources: approval_sources.clone(),
+        redactor: Arc::clone(&redactor),
+        clock: Arc::clone(&clock),
+        max_age: std::time::Duration::from_secs(crate::pipeline::APPROVAL_WINDOW_HOURS * 3600),
+        keys: Arc::clone(&decision_keys),
+    }));
     let hook = Arc::new(
         ClaimWork::new(ClaimWorkDeps {
             engine: Arc::clone(&engine),
@@ -814,7 +867,8 @@ pub fn assemble_pipeline(inputs: PipelineInputs) -> Result<Pipeline, PipelineErr
             per_pass: DECISIONS_PER_PASS,
             keys: decision_keys,
         })
-        .with_specification(spec_drafts.clone()),
+        .with_specification(spec_drafts.clone())
+        .with_dependencies(dependency_decisions),
     );
     let check_names = [
         factory_workflow::stages::delivery::CHECK_VALIDATION,
@@ -853,6 +907,8 @@ pub fn assemble_pipeline(inputs: PipelineInputs) -> Result<Pipeline, PipelineErr
         approvals: approval_sources,
         spec_drafts,
         before_claim,
+        dependency_approvals,
+        supply_chain: external.supply_chain.standings(),
     })
 }
 

@@ -27,6 +27,13 @@
 //! `key=value` words come before the reason. The first word that is not a `key=value` pair of a
 //! known key starts the reason, so a reason may contain `=` later. A key given twice is an error.
 //!
+//! # The two verbs of a dependency decision
+//!
+//! `approve-dependency <name> <version> [checksum prefix] <reason>` and `approve-build-code ...` are
+//! read by [`parse_dependency_command`], which lives with the gates that wait for them. They are
+//! re-exported here so that the API and the command line read them with the one grammar; they are
+//! not among the six verbs and have no [`ParsedDecision`].
+//!
 //! # What "seen" is
 //!
 //! An approval is bound to the head of the pull request, its tree, the base, the evidence
@@ -34,6 +41,11 @@
 //! the head (`head=`) and the evidence digest (`evidence=`, the hash of the last ledger entry they
 //! read). The tree, the base, the manifest and the version are determined by the head and are
 //! taken from the stored approval request that the head belongs to ([`ParsedDecision::into_command`]).
+
+pub use factory_workflow::gates::supply_chain::command::{
+    APPROVE_BUILD_CODE, APPROVE_DEPENDENCY, CommandError as DependencyCommandError,
+    DependencyCommand, ParsedLine, parse_dependency_command,
+};
 
 use factory_domain::ids::{CausationId, JobId, StageRunId, TenantId};
 use factory_domain::values::{GitSha, Sha256Digest};

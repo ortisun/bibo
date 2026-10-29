@@ -29,7 +29,15 @@ fn write_private(path: &Path, text: &str) {
 /// key file and a configuration file. Returns the configuration path and the scratch directory.
 async fn deployment(profile: &str, same_login: bool) -> (PathBuf, PathBuf, support::TestDb) {
     let db = server().clone_database().await;
-    let run = std::process::id();
+    // A login is a role of the whole server, and tests of one process run at the same time, so the
+    // name carries a number that no other call of this process has (the process id alone made two
+    // tests of one `cargo test` run create the same role).
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let run = format!(
+        "{}_{}",
+        std::process::id(),
+        NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    );
     let worker = format!("dbtest_prep_w_{run}");
     let engine = if same_login {
         worker.clone()
@@ -37,7 +45,7 @@ async fn deployment(profile: &str, same_login: bool) -> (PathBuf, PathBuf, suppo
         format!("dbtest_prep_e_{run}")
     };
     // Passwords are made here and never written in source.
-    let password = ["pw", "-", &run.to_string(), "-abcdef"].concat();
+    let password = ["pw", "-", &run, "-abcdef"].concat();
     db.run(&format!(
         "CREATE ROLE {worker} LOGIN PASSWORD '{password}' IN ROLE factory_app;"
     ))

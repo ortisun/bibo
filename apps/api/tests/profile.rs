@@ -151,3 +151,33 @@ fn the_api_example_of_the_local_stack_parses_once_it_names_the_protected_checkou
     assert_eq!(config.listen.port(), 8080);
     assert!(config.github.webhook_secret_files.is_empty());
 }
+
+/// The text the owner of `infra/compose` puts in `config/api.local.example.yaml`, in full: the
+/// protected checkout the API reads, the key that signs decision requests (the same file the
+/// worker mounts, or the worker rejects every request as unsigned), and the webhook secret. This
+/// test parses it with the API's own parser, so the text printed in the report is a text that works.
+const CORRECTED_API_EXAMPLE: &str = "\
+profile: local
+protected_checkout: /etc/factory/protected   # mounted read-only: policies/ and allowlist/allowlist.yaml
+database:
+  api: { url_file: /run/secrets/db_api, login: factory_api, max_connections: 8 }
+listen: 0.0.0.0:8080
+github:
+  webhook_secret_files: [/run/secrets/webhook_secret]
+  factory_label: factory
+decisions:
+  key_file: /run/secrets/decision_signing_key   # the SAME file the worker mounts; mode 0600; 32 bytes or more
+artifacts: { root: /var/lib/factory/artifacts }
+";
+
+#[test]
+fn the_corrected_api_example_for_the_local_stack_parses_and_names_the_key_the_worker_shares() {
+    let config = ApiConfig::from_yaml(CORRECTED_API_EXAMPLE).expect("the corrected example parses");
+    assert_eq!(config.profile, Profile::Local);
+    assert_eq!(config.listen.port(), 8080);
+    assert_eq!(config.github.webhook_secret_files.len(), 1);
+    assert!(
+        config.decisions.is_some(),
+        "the key that signs decision requests is named"
+    );
+}

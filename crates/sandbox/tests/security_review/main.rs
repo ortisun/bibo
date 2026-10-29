@@ -181,14 +181,12 @@ fn sbx_2_the_audit_refuses_names_that_hide_or_reorder_text() {
     }
 }
 
-/// SBX-2, second half, NOT FIXED here. `RepoPath` (the type every changed path goes through) is in
-/// the ports crate, which this change may not edit. It still accepts these names. The audit
-/// refuses them before a path is built from the sandbox, so the sandbox cannot produce one; a
-/// `RepoPath` made from any other text (a webhook, a model's output) is still not checked. The
-/// architect owns the change: reject the same class of characters in `check_text`
-/// (`crates/ports/src/paths.rs`).
+/// SBX-2, second half, FIXED. `RepoPath` (the type every changed path goes through) is in the
+/// ports crate. It used to accept these names; `check_text` now refuses the same class of characters
+/// the audit refuses (`hides_text` in `crates/ports/src/paths.rs`), for a path, a glob and a branch
+/// name. The change to the ports crate is pending the architect's confirmation
+/// (`docs/architecture/ports-v1.1.md`, section 16).
 #[test]
-#[ignore = "open gap SBX-2 (low), needs the ports crate: RepoPath::new accepts bidi, line separator, zero width and tag characters; fix in crates/ports/src/paths.rs check_text; run: cargo test -p factory-sandbox --test security_review -- --ignored sbx_2"]
 fn sbx_2_repo_path_refuses_names_that_hide_or_reorder_text() {
     for name in HOSTILE_NAMES {
         assert!(

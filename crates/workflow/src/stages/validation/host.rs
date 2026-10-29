@@ -10,7 +10,7 @@ use super::assemble::HostResult;
 use super::config::ValidationConfig;
 use super::gather::Gathered;
 use crate::gates::scope::secrets::{Scan, scan};
-use crate::gates::scope::{entries, lint, protected, weakening};
+use crate::gates::scope::{build_code, entries, lint, protected, weakening};
 
 /// The host-side results.
 #[derive(Debug, Clone)]
@@ -24,15 +24,25 @@ pub struct HostResults {
     pub tests: HostResult,
     /// `secret-scan`.
     pub secrets: HostResult,
+    /// Build code that is new to the project (`build_script_added`, AUT-5). A hit blocks the
+    /// `build` gate until a security approver decides (`approve_build_code`), and no command runs:
+    /// a command that built the change would run the build code first.
+    pub build_code: HostResult,
 }
 
 impl HostResults {
     /// True when no host-side rule refused or failed to run. Only then may a command run.
     #[must_use]
     pub fn clean(&self) -> bool {
-        [&self.protected, &self.lint, &self.tests, &self.secrets]
-            .iter()
-            .all(|result| matches!(result, HostResult::Passed(_)))
+        [
+            &self.protected,
+            &self.lint,
+            &self.tests,
+            &self.secrets,
+            &self.build_code,
+        ]
+        .iter()
+        .all(|result| matches!(result, HostResult::Passed(_)))
     }
 }
 
@@ -55,8 +65,9 @@ pub fn evaluate(cfg: &ValidationConfig, gathered: &Gathered) -> HostResults {
         return HostResults {
             protected: missing.clone(),
             lint: missing.clone(),
-            tests: missing,
+            tests: missing.clone(),
             secrets,
+            build_code: missing,
         };
     }
     let Some(facts) = gathered.facts.as_ref().filter(|facts| facts.understood()) else {
@@ -67,8 +78,9 @@ pub fn evaluate(cfg: &ValidationConfig, gathered: &Gathered) -> HostResults {
         return HostResults {
             protected: missing.clone(),
             lint: missing.clone(),
-            tests: missing,
+            tests: missing.clone(),
             secrets,
+            build_code: missing,
         };
     };
     let diff = entries(&gathered.files, facts);
@@ -114,12 +126,54 @@ pub fn evaluate(cfg: &ValidationConfig, gathered: &Gathered) -> HostResults {
             "A changed file could not be read at both commits, so a relaxed lint in it cannot be seen.",
         )
     };
+    let build_code = if gathered.all_readable() {
+        let found = build_code::added(&gathered.files);
+        if found.is_empty() {
+            HostResult::Passed(
+                "The change adds no build script, no procedural macro and no build dependency."
+                    .to_owned(),
+            )
+        } else {
+            HostResult::NeedsDecision {
+                missing: needs_decision(&found),
+                reason: "The change adds build code of the project's own. It runs whenever the project is built, so it waits for a security approver before any command builds it."
+                    .to_owned(),
+            }
+        }
+    } else {
+        blocked(
+            "readable versions of every changed file",
+            "A changed file could not be read at both commits, so new build code in it cannot be seen.",
+        )
+    };
     HostResults {
         protected,
         lint,
         tests,
         secrets,
+        build_code,
     }
+}
+
+/// What is awaited, naming the paths and not the content, within the length a report keeps.
+fn needs_decision(found: &[crate::gates::scope::Violation]) -> String {
+    const MOST_PATHS: usize = 5;
+    let mut paths: Vec<&str> = found
+        .iter()
+        .filter_map(|violation| violation.path.as_deref())
+        .collect();
+    paths.dedup();
+    let shown: Vec<&str> = paths.iter().copied().take(MOST_PATHS).collect();
+    let more = paths.len().saturating_sub(shown.len());
+    let mut text = format!(
+        "a security approver's decision ({}) on the new build code in: {}",
+        build_code::DECISION,
+        shown.join(", ")
+    );
+    if more > 0 {
+        text.push_str(&format!(" and {more} more"));
+    }
+    text
 }
 
 fn secrets(redactor: &Redactor, gathered: &Gathered) -> HostResult {

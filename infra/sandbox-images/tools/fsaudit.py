@@ -24,7 +24,35 @@ empty file means no finding. test.sh decides what a finding means for each image
     special.txt           device nodes and fifos outside /dev
     secrets.txt           content that matches a blocking pattern of policies/security.yaml
     skipped.txt           vendor binaries whose content matches were ignored, and why
+    documentation.txt     how many distro documentation files had their content left unread (below)
     summary.txt           counts
+
+Distro documentation is not read for secret CONTENT, and nothing else is exempt
+---------------------------------------------------------------------------
+
+The URL pattern of policies/security.yaml was widened (IMG-4) to catch a URL with a password in it,
+and about thirty Debian documentation files hold the anonymous CVS address of their upstream
+(`cvs://:pserver:anoncvs@host:/path`, a public login with no password). The rule
+NO-SECRET-CONTENT was red on the stock images for that reason. A pattern narrow enough to leave
+those files alone would also leave a real credential alone, so the pattern stays and the scan
+changes: it does not read the content of a regular file under
+
+    /usr/share/doc/    /usr/share/common-licenses/    /usr/share/man/
+
+and only of a file that the sandbox user cannot have written: owned by root (uid 0), with no write
+bit for the group or for others, a regular file (not a link, not a device), in a path that is
+already normalized (no `..`, no `.`, no doubled slash), and not named like an agent tool or the
+sidecar (their hashes are still taken). These three trees come from packages and hold text written
+for people. The exemption is NOT a tree the sandbox can write into: a file under them that the
+sandbox user owns, or that anyone can write, or whose path is not exactly under one of the three
+prefixes, is scanned like any other file.
+
+What is still checked for such a file, everywhere, and never skipped: its name against the
+credential names (`credential-names.txt`: an `id_rsa`, a `.env`, a `*.key` under /usr/share/doc is
+still a finding), its mode (`setid.txt`, `world-writable.txt`, `tool-modes.txt`), and that it is
+not a device or a fifo (`special.txt`). Only the read of its bytes for the secret patterns is
+left out, and `documentation.txt` says how many files and bytes that was, so a change in the size
+of the exemption is visible. `selftest-fsaudit.py` shows each of these cases.
 
 `config` reads `docker image inspect` and `docker history --no-trunc` output and prints one
 finding per line: an environment name that is not allowed or looks like a secret, a value that
@@ -39,6 +67,7 @@ import argparse
 import fnmatch
 import hashlib
 import json
+import posixpath
 import re
 import sys
 import tarfile
@@ -53,6 +82,16 @@ AGENT_TOOL_NAMES = ("claude", "codex", "codex-code-mode-host")
 # `env -i ... timeout ... <tool>`, and `timeout` keeps the pipe while the tool runs.
 EXEC_ONLY_EXTRA = ("/usr/bin/timeout",)
 SIDECAR_NAME = "factory-egress-sidecar"
+
+# The trees whose files are text written for people by the distribution's packages. The content of a
+# file in them is not read for secret patterns, under the conditions of `is_distro_documentation`.
+# Exactly these three, each with its trailing slash, so that `/usr/share/docs/x` and
+# `/usr/share/doc-base/x` are not under them.
+DOCUMENTATION_PREFIXES = (
+    "/usr/share/doc/",
+    "/usr/share/common-licenses/",
+    "/usr/share/man/",
+)
 
 # Names of files that exist only to hold a credential. A CA bundle (*.pem, *.crt) is public and is
 # not on this list.
@@ -147,6 +186,21 @@ def is_executable_or_link(member: tarfile.TarInfo) -> bool:
     return member.isfile() and (member.mode & 0o111) != 0
 
 
+def is_distro_documentation(path: str, member: tarfile.TarInfo) -> bool:
+    """True for a file whose content the secret scan does not read (see the module notes).
+
+    Everything must hold: a regular file; its path is already normalized and is exactly under one
+    of the three prefixes; it belongs to root; nobody but root can write it (no group or other
+    write bit); it carries no set-id bit. A file that the sandbox user could have written fails the
+    owner or the mode test, so planting a file under these trees never hides its content.
+    """
+    if not member.isfile():
+        return False
+    if posixpath.normpath(path) != path or not path.startswith(DOCUMENTATION_PREFIXES):
+        return False
+    return member.uid == 0 and not member.mode & 0o6022
+
+
 def matches_any(base: str, patterns: List[str]) -> Optional[str]:
     for pattern in patterns:
         if fnmatch.fnmatchcase(base, pattern):
@@ -196,6 +250,8 @@ def command_fs(args: argparse.Namespace) -> int:
     skipped: List[str] = []
     files = 0
     scanned_bytes = 0
+    documentation_files = 0
+    documentation_bytes = 0
 
     with tarfile.open(fileobj=sys.stdin.buffer, mode="r|") as archive:
         for member in archive:
@@ -236,6 +292,15 @@ def command_fs(args: argparse.Namespace) -> int:
                     credential_hits.append(path + "/")
 
             if not member.isfile() or member.size == 0:
+                continue
+            if (
+                base not in AGENT_TOOL_NAMES
+                and base != SIDECAR_NAME
+                and is_distro_documentation(path, member)
+            ):
+                # Names, modes and kinds were judged above. Only the read of the bytes is left out.
+                documentation_files += 1
+                documentation_bytes += member.size
                 continue
             handle = archive.extractfile(member)
             if handle is None:
@@ -288,8 +353,16 @@ def command_fs(args: argparse.Namespace) -> int:
     }
     for name, lines in outputs.items():
         (out_dir / name).write_text("".join(f"{line}\n" for line in sorted(set(lines))), encoding="utf-8")
+    (out_dir / "documentation.txt").write_text(
+        f"{documentation_files} distro documentation file(s), {documentation_bytes} byte(s), "
+        f"under {', '.join(DOCUMENTATION_PREFIXES)}: owned by root, not writable by group or others; "
+        "content not scanned, names and modes still audited\n",
+        encoding="utf-8",
+    )
     (out_dir / "summary.txt").write_text(
-        f"files {files}\nscanned_bytes {scanned_bytes}\npatterns {len(patterns)}\n", encoding="utf-8"
+        f"files {files}\nscanned_bytes {scanned_bytes}\npatterns {len(patterns)}\n"
+        f"documentation_files_not_read {documentation_files}\n",
+        encoding="utf-8",
     )
     return 0
 
