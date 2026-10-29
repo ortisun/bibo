@@ -6,9 +6,9 @@
 //! 4.7). With the capabilities a person declares (`runtimes.declare_capabilities`) the router found
 //! a runtime, so the mismatch showed only with a real probe, and then no stage could be routed.
 //!
-//! This is a scan of the stage sources: a `RoutingNeed` of a stage names the capabilities it needs
-//! in a `required:` list or in a constant called `NEEDS`, and none of them may be
-//! `JsonSchemaOutput`. The enforcement of the output schema is the engine's own check
+//! This is a scan of the stage sources: no line of code of a stage may name `JsonSchemaOutput`, in
+//! the `RoutingNeed` it builds, in the capabilities it checks the probe for when it opens its
+//! sandbox, or in the fact it reports to the guard of the sandbox (`probe_satisfies_stage`). The enforcement of the output schema is the engine's own check
 //! (`AgentOutputCheck`), which no capability stands for. The live test
 //! `apps/api/tests/live_run.rs` routes every agent stage through the real probes. The scan sits in the
 //! composition crate because the workflow crate does no file I/O, in its tests either.
@@ -41,8 +41,8 @@ fn no_stage_requires_the_capability_no_real_adapter_reports() {
         let text = std::fs::read_to_string(&file).expect("a source file");
         for (number, line) in text.lines().enumerate() {
             let code = line.split("//").next().unwrap_or(line);
-            let is_need = code.contains("required:") || code.contains("NEEDS");
-            if is_need && code.contains("JsonSchemaOutput") {
+            // A need, a sandbox check of the probe, or a guard fact: none may name it.
+            if code.contains("JsonSchemaOutput") {
                 offenders.push(format!("{}:{}", file.display(), number + 1));
             }
         }

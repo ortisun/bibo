@@ -31,6 +31,37 @@ use live::{Lab, build_world};
 use playbook::Playbook;
 use support::Env;
 
+/// Runs the body with the telemetry pipeline of the factory as the subscriber, so that the
+/// warnings of the sandbox and of the stages (a failed teardown, a refused posture) show in the log
+/// of the test. `LIVE_LOG` replaces the filter.
+fn live(body: impl std::future::Future<Output = ()>) {
+    let policies = factory_composition::startup::load_policy(&live::root(), &[]).expect("policies");
+    let redactor = Arc::new(
+        factory_composition::redaction::redactor_from_policy(&policies.security)
+            .expect("a redactor"),
+    );
+    let filter = std::env::var("LIVE_LOG").unwrap_or_else(|_| "warn".to_owned());
+    let telemetry = factory_composition::telemetry::config_for(
+        "factory-live-test",
+        "0.0.0",
+        factory_composition::profile::Profile::Test,
+        &factory_composition::config::TelemetryConfig {
+            otlp_endpoint: None,
+            log_filter: Some(filter),
+        },
+        &redactor,
+    )
+    .expect("a telemetry configuration");
+    let pipeline = factory_observability::telemetry::build_pipeline(&telemetry, std::io::stderr)
+        .expect("a pipeline");
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(4)
+        .enable_all()
+        .build()
+        .expect("a runtime");
+    pipeline.in_scope(|| runtime.block_on(body));
+}
+
 /// The lab, the environment and the fakes around the world, with the real providers.
 struct Setup {
     lab: Lab,
@@ -43,6 +74,23 @@ struct Setup {
 /// `extra` is appended to the configuration, for a break that changes it.
 async fn setup(extra: &str) -> Setup {
     let playbook = Playbook::word_count(&live::root());
+    // The real sandbox can fail an attempt for a reason of the machine (the daemon not yet seeing a
+    // directory), and the engine then runs the stage again from its start. The playbook has one
+    // answer for each entry and refuses a second ask by design; here a second ask is a retry of the
+    // same call and gets the same answer.
+    playbook.allow_repeats(&[
+        "intake-classifier",
+        "specification-writer.specify",
+        "specification-writer.checklist",
+        "specification-reviewer",
+        "architect",
+        "planner",
+        "builder.write-json-formatter",
+        "builder.read-json-option",
+        "code-reviewer",
+        "documentation-writer",
+        "documentation-reviewer",
+    ]);
     let lab = Lab::start(Arc::clone(&playbook));
     let env = Env::start().await;
     // The remote the workspaces clone from and push to: a bare repository with the fixture, the
@@ -94,7 +142,14 @@ async fn setup(extra: &str) -> Setup {
         )
         .expect("the artifact root opens"),
     );
-    let world = build_world(&lab, &env, &text, store, artifacts, None).await;
+    let skills = factory_composition::spec_skills::bundle_for_writer(
+        &lab.root,
+        &lab.root,
+        &lab.policies.security,
+        "specification-writer",
+    )
+    .expect("the skills of the specification writer");
+    let world = build_world(&lab, &env, &text, store, artifacts, Some(skills)).await;
     Setup {
         lab,
         github,
@@ -176,4 +231,202 @@ async fn break_a_probe_of_a_tool_that_is_not_in_the_image_blocks_the_worker_and_
         "{:?}",
         set.world.blocked
     );
+}
+
+// ---- the whole job ----------------------------------------------------------------------------
+
+/// The signed webhook that says a person labelled the issue. It carries no text.
+async fn label_the_issue(env: &Env, number: u64) {
+    let body = serde_json::to_vec(&serde_json::json!({
+        "action": "labeled",
+        "installation": {"id": env.a.installation},
+        "repository": {"id": env.a.github_repository, "full_name": env.a.full_name},
+        "sender": {"id": env.a.requester.github_id, "login": "requester-one", "type": "User"},
+        "issue": {"number": number, "node_id": "I_live", "updated_at": "2026-10-28T10:00:00Z"},
+        "label": {"name": "factory"},
+    }))
+    .expect("json");
+    let reply = env
+        .send(env.delivery("issues", "0190a3b2-7c4d-4e5f-8a6b-0000000000aa", &body))
+        .await;
+    assert_eq!(reply.status, 202, "{}", reply.text());
+}
+
+fn status_of(
+    view: &factory_workflow::engine::JobView,
+    kind: StageKind,
+) -> Option<factory_domain::state::StageRunStatus> {
+    view.newest(kind).map(|run| run.status)
+}
+
+#[test]
+#[ignore = "needs the Docker daemon, the pinned images and the shared network lock; see the head of the file"]
+fn a_labelled_issue_goes_through_the_real_adapters_to_a_draft_pull_request_and_an_approval() {
+    live(the_whole_job());
+}
+
+async fn the_whole_job() {
+    use factory_domain::state::{JobStatus, StageRunStatus, Status as _};
+    let Setup {
+        lab,
+        github,
+        registry,
+        world,
+        env,
+    } = setup("").await;
+    let requester = full::token_from_file(&env, "requester", &env.a.requester.token.clone());
+    let approver = full::token_from_file(&env, "approver", &env.a.approver.token.clone());
+    let repo = env.a.full_name.clone();
+    let issue = github.fake.add_issue(
+        &repo,
+        "Add a --json flag",
+        "Please add a --json flag to the word count tool so other programs can read the counts.",
+        "requester-one",
+        &["factory"],
+    );
+    let main_before = github.tip("main").expect("main exists");
+    let rig = live::LiveRig::start(&lab, env, world, &github).await;
+    label_the_issue(&rig.env, issue).await;
+    let job = full::job_of(&rig.env, &requester).await;
+    let started = std::time::Instant::now();
+
+    // 1. To the first question: the specification draft waits for a person.
+    let view = rig
+        .drive(job, 1500, |view| {
+            status_of(view, StageKind::Specification) == Some(StageRunStatus::WaitingForHuman)
+                || full::stopped(view)
+        })
+        .await
+        .expect("a view of the job");
+    full::print_states("first question", &view);
+    if status_of(&view, StageKind::Specification) != Some(StageRunStatus::WaitingForHuman) {
+        rig.dump(job).await;
+        println!("PROVIDER {:#?}", lab.provider.seen());
+    }
+    assert_eq!(
+        status_of(&view, StageKind::Specification),
+        Some(StageRunStatus::WaitingForHuman),
+        "{view:#?}"
+    );
+
+    // 2. The approver approves the draft through the API.
+    rig.dump(job).await;
+    println!("PROVIDER {:#?}", lab.provider.seen());
+    let run = full::stage_run_of(&view, StageKind::Specification);
+    let head = rig.spec_draft_commit(job, run).await;
+    let evidence = rig.ledger_head(job, StageKind::Specification, run).await;
+    let reply = full::decide(
+        &rig.env,
+        &approver,
+        job,
+        "approve-specification-1",
+        serde_json::json!({
+            "verb": "approve", "stage_run_id": run.as_text(), "head": head,
+            "evidence": evidence.as_str(),
+            "reason": "The specification says what the issue asked for.",
+        }),
+    )
+    .await;
+    assert_eq!(reply.status, 202, "{}", reply.text());
+
+    // 3. To the second question: the pull request waits for a person.
+    let view = rig
+        .drive(job, 2400, |view| {
+            status_of(view, StageKind::Approval) == Some(StageRunStatus::WaitingForHuman)
+                || (full::stopped(view)
+                    && status_of(view, StageKind::Specification)
+                        != Some(StageRunStatus::WaitingForHuman))
+        })
+        .await
+        .expect("a view of the job");
+    full::print_states("second question", &view);
+    if status_of(&view, StageKind::Approval) != Some(StageRunStatus::WaitingForHuman) {
+        rig.dump(job).await;
+        println!("PROVIDER {:#?}", lab.provider.seen());
+    }
+    assert_eq!(
+        status_of(&view, StageKind::Approval),
+        Some(StageRunStatus::WaitingForHuman),
+        "{view:#?}"
+    );
+
+    // 4. The approver approves the pull request, naming the head they saw.
+    use factory_workflow::stages::approval::ApprovalSources as _;
+    let run = full::stage_run_of(&view, StageKind::Approval);
+    let request = rig
+        .approvals
+        .request(rig.tenant, run)
+        .await
+        .expect("the approval stage stored its request");
+    let evidence = rig.ledger_head(job, StageKind::Approval, run).await;
+    let reply = full::decide(
+        &rig.env,
+        &approver,
+        job,
+        "approve-pull-request-1",
+        serde_json::json!({
+            "verb": "approve", "stage_run_id": run.as_text(),
+            "head": request.pr_head.as_str(), "evidence": evidence.as_str(),
+            "reason": "The change does what the issue asked.",
+        }),
+    )
+    .await;
+    assert_eq!(reply.status, 202, "{}", reply.text());
+    let view = rig
+        .drive(job, 600, |view| {
+            view.status == JobStatus::Completed || view.status.is_terminal()
+        })
+        .await
+        .expect("a view of the job");
+    full::print_states("after the second approval", &view);
+    if view.status != JobStatus::Completed {
+        rig.dump(job).await;
+    }
+    assert_eq!(view.status, JobStatus::Completed, "{view:#?}");
+    let took = started.elapsed();
+
+    // ---- what the run left ----------------------------------------------------------------
+    // One open draft pull request on the (fake) GitHub, whose head is the commit the worker's own
+    // git pushed, above the base, and nothing merged.
+    let pulls = github.fake.pull_numbers(&repo);
+    assert_eq!(pulls.len(), 1, "{pulls:?}");
+    let pull = github
+        .fake
+        .pull_json(&repo, pulls[0])
+        .expect("the pull request");
+    assert_eq!(pull["draft"], serde_json::json!(true));
+    assert_eq!(pull["state"], serde_json::json!("open"));
+    assert_eq!(pull["merged"], serde_json::json!(false));
+    let head_branch = pull["head"]["ref"].as_str().expect("a head branch");
+    assert!(head_branch.starts_with("factory/"), "{head_branch}");
+    let pushed = github
+        .tip(head_branch)
+        .expect("the branch was pushed to the remote");
+    assert_eq!(
+        request.pr_head.as_str(),
+        pushed,
+        "the approval named the pushed head"
+    );
+    assert_eq!(
+        github.tip("main"),
+        Some(main_before),
+        "the base branch did not move"
+    );
+    assert!(
+        github.fake.merge_attempts().is_empty(),
+        "nothing tried to merge"
+    );
+
+    // Only the model's answers and GitHub's server were faked: the report says what ran.
+    println!("LIVE-RUN took {took:.1?}");
+    for (stage, took) in rig.durations() {
+        println!("LIVE-RUN stage {stage}: {took:.1?}");
+    }
+    println!("LIVE-RUN provider requests: {:#?}", lab.provider.seen());
+    println!(
+        "LIVE-RUN create retries: {}",
+        live::CREATE_RETRIES.load(std::sync::atomic::Ordering::SeqCst)
+    );
+    println!("LIVE-RUN check runs: {:#?}", github.checks());
+    let _ = (&registry, StageRunStatus::Passed);
 }

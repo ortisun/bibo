@@ -155,11 +155,32 @@ fn answer(
         if let Some((_, reply)) = guard.replies.get(&fingerprint) {
             reply.clone()
         } else {
-            let reply = playbook.answer(&agent, &instructions);
-            guard
-                .replies
-                .insert(fingerprint.clone(), (agent.clone(), reply.clone()));
-            reply
+            // The playbook panics when it has no entry for a call, by design; here that is an
+            // error answer, and the miss stays in `Playbook::misses`.
+            let asked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                playbook.answer(&agent, &instructions)
+            }));
+            match asked {
+                Ok(reply) => {
+                    guard
+                        .replies
+                        .insert(fingerprint.clone(), (agent.clone(), reply.clone()));
+                    reply
+                }
+                Err(_) => {
+                    guard.seen.push(Seen {
+                        path,
+                        model,
+                        agent: format!("{agent} (the playbook has no entry)"),
+                        round: 0,
+                        stream,
+                    });
+                    return error(
+                        500,
+                        "FAKE-PROVIDER: the playbook has no entry for this call",
+                    );
+                }
+            }
         }
     };
 
@@ -269,6 +290,15 @@ fn tools_asked(body: &Value) -> Vec<String> {
 
 /// The agent a prompt is for, and the instructions the playbook reads.
 fn identify(prompt: &str) -> Option<(String, String)> {
+    // An agent of the factory: its template names it. This comes first, because the prompt of a
+    // reviewer quotes the instruction its writer was given.
+    if let Some(agent) = prompt
+        .lines()
+        .find_map(|line| line.strip_prefix("Agent: "))
+        .map(|rest| rest.trim().to_owned())
+    {
+        return Some((agent, prompt.to_owned()));
+    }
     // A Spec Kit skill: the host expanded `/speckit-<skill> <arguments>`; the arguments are the
     // fixed instruction of the adapter, which names the skill by its first words.
     for (skill, start) in [
@@ -295,12 +325,7 @@ fn identify(prompt: &str) -> Option<(String, String)> {
             ));
         }
     }
-    // An agent of the factory: its template names it.
-    let agent = prompt
-        .lines()
-        .find_map(|line| line.strip_prefix("Agent: "))
-        .map(|rest| rest.trim().to_owned())?;
-    Some((agent, prompt.to_owned()))
+    None
 }
 
 // ---- building the answer -----------------------------------------------------------------------

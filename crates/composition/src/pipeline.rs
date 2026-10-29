@@ -766,7 +766,7 @@ pub fn assemble_pipeline(inputs: PipelineInputs) -> Result<Pipeline, PipelineErr
             verify: verify.clone(),
             toolchain: DocsToolchain {
                 build: settings.documentation.build.clone(),
-                binary: settings.documentation.binary.clone(),
+                binary: crate::sandbox_specs::built_program(&settings.documentation.binary),
                 diagrams: None,
                 command_timeout_seconds: settings.documentation.command_timeout_seconds,
                 max_output_bytes: settings.documentation.max_output_bytes,

@@ -452,8 +452,9 @@ impl Rig {
         ));
         let help = playbook.recorded("word-count--help.txt");
         let version = playbook.recorded("word-count--version.txt");
-        sandbox = sandbox.with_program("word-count", move |argv: &[String], _: &[u8]| {
-            match argv.get(1).map(String::as_str) {
+        sandbox = sandbox.with_program(
+            &factory_composition::sandbox_specs::built_program("word-count"),
+            move |argv: &[String], _: &[u8]| match argv.get(1).map(String::as_str) {
                 Some("--help") => ProgramOutput {
                     exit_code: Some(0),
                     stdout: help.clone().into_bytes(),
@@ -470,8 +471,8 @@ impl Rig {
                     stderr: format!("the scripted word-count does not run {other:?}\n")
                         .into_bytes(),
                 },
-            }
-        });
+            },
+        );
         // The small file programs the specification stage runs in the sandbox. A stand-in: they
         // succeed and change nothing, because the files the skills write are written into the
         // checkout by the playbook runtime.

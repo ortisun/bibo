@@ -29,7 +29,7 @@ use factory_domain::redaction::Redactor;
 use factory_domain::scope::TenantScope;
 use factory_domain::values::{GitSha, MediaType, Sha256Digest, Slug, Timestamp};
 use factory_domain::vocabulary::{Fidelity, StageKind};
-use factory_ports::agent::{AgentRunRequest, BrokerEndpoint, Capability, RoutingNeed};
+use factory_ports::agent::{AgentRunRequest, BrokerEndpoint, RoutingNeed};
 use factory_ports::githost::{GitScope, IssueRef, IssueSource, LabelApplication};
 use factory_ports::registry::VersionReq;
 use factory_ports::sandbox::TeardownReason;
@@ -478,8 +478,8 @@ impl StageHandler for IntakeHandler {
             })?;
         let mut session = ports.sandbox.create_verified(spec, ctx.cancel).await?;
         let capabilities = ports.runtime.probe(&mut *session).await;
-        let capabilities = match capabilities {
-            Ok(found) => found,
+        match capabilities {
+            Ok(_) => {}
             Err(error) => {
                 let _ = session.stop_and_remove(TeardownReason::Failed).await;
                 return Err(error.into());
@@ -488,7 +488,8 @@ impl StageHandler for IntakeHandler {
         ctx.report_sandbox_ready(SandboxReady {
             posture_verified: true,
             tool_grants_recorded: true,
-            probe_satisfies_stage: capabilities.supports(Capability::JsonSchemaOutput),
+            // The classifier needs nothing of the runtime beyond a probe that succeeded.
+            probe_satisfies_stage: true,
         });
         let request = AgentRunRequest {
             attempt: ctx.attempt,

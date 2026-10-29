@@ -113,8 +113,54 @@ impl factory_ports::process::ProcessRunner for Printing {
                 break;
             }
             CREATE_RETRIES.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            // Is the path really missing on the host, or only for the daemon? The answer is
+            // printed, and the daemon is asked to list the parent, which makes it look again.
+            if let Ok(done) = &out {
+                let text = String::from_utf8_lossy(&done.stderr).into_owned();
+                if let Some(at) = text.find("bind source path does not exist: /host_mnt") {
+                    let path = text[at + "bind source path does not exist: /host_mnt".len()..]
+                        .lines()
+                        .next()
+                        .unwrap_or_default()
+                        .trim()
+                        .to_owned();
+                    let parent = std::path::Path::new(&path)
+                        .parent()
+                        .map(|p| p.display().to_string())
+                        .unwrap_or_default();
+                    println!(
+                        "BIND-SOURCE host_exists={} parent_exists={} {path}",
+                        std::path::Path::new(&path).exists(),
+                        std::path::Path::new(&parent).exists()
+                    );
+                    let _ = docker(&[
+                        "run",
+                        "--rm",
+                        "--pull=never",
+                        "--label",
+                        "factory.test=true",
+                        "--label",
+                        &format!("factory.test.run={}", std::process::id()),
+                        "--label",
+                        &format!("factory.test.owner={OWNER}"),
+                        "-v",
+                        &format!("{parent}:/p:ro"),
+                        &image("verify"),
+                        "ls",
+                        "-la",
+                        "/p",
+                    ]);
+                }
+            }
             tokio::time::sleep(Duration::from_secs(1)).await;
             out = self.0.run(req.clone(), cancel).await;
+        }
+        if std::env::var_os("LIVE_TRACE").is_some() {
+            let short: String = args.chars().take(150).collect();
+            match &out {
+                Ok(done) => println!("DOCKER-TRACE {short} => {:?}", done.exit_code),
+                Err(error) => println!("DOCKER-TRACE {short} => error {error:?}"),
+            }
         }
         match &out {
             Ok(done) if done.exit_code != Some(0) => println!(
@@ -610,6 +656,9 @@ pub struct LiveRig {
     pub jobs: Arc<ActiveJobs>,
     pub timings: Mutex<Vec<Timed>>,
     pub handlers: Vec<(StageKind, factory_domain::vocabulary::Fidelity)>,
+    pub delivery: Arc<factory_composition::delivery::StoreDeliverySources>,
+    pub approvals: Arc<factory_composition::delivery::StoreApprovalSources>,
+    pub spec_drafts: Arc<factory_composition::specs::StoreSpecDrafts>,
 }
 
 impl LiveRig {
@@ -687,6 +736,9 @@ impl LiveRig {
             preflight,
             requests,
             drift,
+            delivery,
+            approvals,
+            spec_drafts,
             ..
         } = pipeline;
         Self {
@@ -703,6 +755,188 @@ impl LiveRig {
             jobs: world.jobs,
             timings: Mutex::new(Vec::new()),
             handlers,
+            delivery,
+            approvals,
+            spec_drafts,
+        }
+    }
+
+    /// The identity of a stage run, as a seam is given it.
+    pub async fn identity(
+        &self,
+        job: JobId,
+        stage_run: factory_domain::ids::StageRunId,
+        kind: StageKind,
+    ) -> factory_workflow::handlers::RunIdentity {
+        let mut tx = self
+            .store
+            .begin(factory_domain::scope::TenantScope::new(self.tenant))
+            .await
+            .expect("a tx");
+        let correlation = tx.get_job(job).await.expect("a job").value.correlation_id;
+        let _ = tx.rollback().await;
+        factory_workflow::handlers::RunIdentity {
+            tenant: self.tenant,
+            job,
+            correlation,
+            stage_run,
+            kind,
+        }
+    }
+
+    /// The head of the job's evidence ledger: what a person looking at the job now has seen.
+    pub async fn ledger_head(
+        &self,
+        job: JobId,
+        kind: StageKind,
+        stage_run: factory_domain::ids::StageRunId,
+    ) -> factory_domain::values::Sha256Digest {
+        use factory_workflow::stages::delivery::DeliverySources as _;
+        let identity = self.identity(job, stage_run, kind).await;
+        self.delivery
+            .ledger(&identity)
+            .await
+            .expect("the ledger verifies and is read")
+            .head_hash
+    }
+
+    /// The commit of the specification draft the stage kept for a person to read.
+    pub async fn spec_draft_commit(
+        &self,
+        job: JobId,
+        stage_run: factory_domain::ids::StageRunId,
+    ) -> String {
+        use factory_workflow::stages::specification::SpecDrafts as _;
+        let identity = self
+            .identity(job, stage_run, StageKind::Specification)
+            .await;
+        self.spec_drafts
+            .load(&identity)
+            .await
+            .expect("the draft is readable")
+            .expect("the stage kept a draft")
+            .commit
+            .as_str()
+            .to_owned()
+    }
+
+    /// What a stopped job left, for the person reading a failure: the audit records, the status
+    /// and gate of each stage run, and the failure reasons.
+    pub async fn dump(&self, job: JobId) {
+        let scope = factory_domain::scope::TenantScope::new(self.tenant);
+        let mut tx = self.store.begin(scope).await.expect("a tx");
+        let audit = tx
+            .read_audit(factory_ports::store::AuditFilter::Job(job), 0, 2000)
+            .await
+            .expect("audit");
+        let runs = tx.list_stage_runs(job).await.expect("stage runs");
+        let _ = tx.rollback().await;
+        for record in &audit {
+            println!(
+                "AUDIT {} {} | {} | {}",
+                record.sequence,
+                record.event.action.as_str(),
+                record.event.subject,
+                record.event.reason
+            );
+        }
+        let mut tx = self.store.begin(scope).await.expect("a tx");
+        let mut links = Vec::new();
+        for run in &runs {
+            let found = tx
+                .list_stage_run_artifacts(run.value.id)
+                .await
+                .expect("links");
+            links.push((run.value.kind, run.value.status, found));
+        }
+        let _ = tx.rollback().await;
+        for (kind, status, found) in links {
+            if status == factory_domain::state::StageRunStatus::Passed {
+                continue;
+            }
+            println!("LINKS {kind:?} {status:?}");
+            for link in found {
+                let reference = factory_domain::contracts::ArtifactRef {
+                    sha256: link.sha256.clone(),
+                    media_type: factory_domain::values::MediaType::parse("application/json")
+                        .expect("a media type"),
+                    size_bytes: None,
+                };
+                let text = match self.artifacts.get(&scope, &reference).await {
+                    Ok(bytes) => String::from_utf8_lossy(&bytes).into_owned(),
+                    Err(error) => format!("(unreadable: {error:?})"),
+                };
+                if let Ok(value) = serde_json::from_str::<serde_json::Value>(&text)
+                    && let Some(list) = value["transcripts"].as_array()
+                {
+                    for hash in list.iter().filter_map(|h| h.as_str()) {
+                        for media in ["text/plain", "application/json"] {
+                            let probe = factory_domain::contracts::ArtifactRef {
+                                sha256: factory_domain::values::Sha256Digest::parse(hash)
+                                    .expect("a hash"),
+                                media_type: factory_domain::values::MediaType::parse(media)
+                                    .expect("a media type"),
+                                size_bytes: None,
+                            };
+                            if let Ok(bytes) = self.artifacts.get(&scope, &probe).await {
+                                let shown: String =
+                                    String::from_utf8_lossy(&bytes).chars().take(6000).collect();
+                                println!("  TRANSCRIPT {hash} ({media}): {shown}");
+                            }
+                        }
+                    }
+                }
+                if let Ok(value) = serde_json::from_str::<serde_json::Value>(&text)
+                    && let Some(reports) = value["reports"].as_array()
+                {
+                    for report in reports {
+                        println!(
+                            "  REPORT {} {} | {} | failures {} | commands {}",
+                            report["metadata"]["gate_id"],
+                            report["outcome"],
+                            report["reason"]
+                                .as_str()
+                                .unwrap_or_default()
+                                .chars()
+                                .take(300)
+                                .collect::<String>(),
+                            report["failures"]
+                                .to_string()
+                                .chars()
+                                .take(600)
+                                .collect::<String>(),
+                            report["commands"]
+                                .to_string()
+                                .chars()
+                                .take(900)
+                                .collect::<String>(),
+                        );
+                    }
+                }
+                let short: String = text.chars().take(1200).collect();
+                println!("  {:?} {} => {short}", link.direction, link.role.as_str());
+            }
+        }
+        for run in runs {
+            println!(
+                "STAGE {:?} {:?} gate {:?}",
+                run.value.kind, run.value.status, run.value.gate
+            );
+            if let Some(record) = run.value.gate
+                && record.outcome != factory_domain::vocabulary::GateOutcome::Passed
+                && let Some(hash) = record.report_sha256
+            {
+                let reference = factory_domain::contracts::ArtifactRef {
+                    sha256: hash,
+                    media_type: factory_domain::values::MediaType::parse("application/json")
+                        .expect("a media type"),
+                    size_bytes: None,
+                };
+                if let Ok(bytes) = self.artifacts.get(&scope, &reference).await {
+                    let text: String = String::from_utf8_lossy(&bytes).chars().take(4000).collect();
+                    println!("  GATE-REPORT {text}");
+                }
+            }
         }
     }
 

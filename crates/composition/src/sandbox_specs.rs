@@ -57,6 +57,24 @@ pub const ALLOWED_ENV: [&str; 8] = [
     "TMPDIR",
 ];
 
+/// Where a build in a `verify` or `fetch_deps` sandbox puts its output: the writable output
+/// directory, because the workspace is read-only there.
+pub const TARGET_DIR: &str = "/out/target";
+
+/// The path of a program that `cargo build` made in a `verify` sandbox. A bare name is not on the
+/// `PATH` of the image, so a gate that runs the built program (the documentation review runs it
+/// with `--help` to compare the names in the pages with what it prints) must name the file; found
+/// by the live-adapters run, where the command answered 127. A name that already holds a `/` is a
+/// path and is left as it is.
+#[must_use]
+pub fn built_program(name: &str) -> String {
+    if name.contains('/') {
+        name.to_owned()
+    } else {
+        format!("{TARGET_DIR}/debug/{name}")
+    }
+}
+
 /// The environment a sandbox of `profile` is given, besides `HOME`.
 ///
 /// The `verify` image mounts the workspace read-only and has a writable output directory, and a
@@ -72,13 +90,13 @@ fn profile_env(profile: SandboxProfile) -> Vec<(String, String)> {
     let pairs: &[(&str, &str)] = match profile {
         SandboxProfile::Agent => &[],
         SandboxProfile::Verify => &[
-            ("CARGO_TARGET_DIR", "/out/target"),
+            ("CARGO_TARGET_DIR", TARGET_DIR),
             ("CARGO_HOME", "/home/agent/.cargo"),
             ("CARGO_NET_OFFLINE", "true"),
             ("TMPDIR", "/out"),
         ],
         SandboxProfile::FetchDeps => &[
-            ("CARGO_TARGET_DIR", "/out/target"),
+            ("CARGO_TARGET_DIR", TARGET_DIR),
             ("CARGO_HOME", "/home/agent/.cargo"),
             ("CARGO_NET_OFFLINE", "false"),
             ("TMPDIR", "/out"),
@@ -424,6 +442,15 @@ mod tests {
             std::fs::read_to_string(repository_root().join("infra/sandbox-images/images.json"))
                 .expect("the catalog exists");
         ImageCatalog::from_json(&json, "linux/arm64").expect("a catalog")
+    }
+
+    #[test]
+    fn a_program_the_build_made_is_named_by_its_file_and_a_path_is_left_alone() {
+        assert_eq!(built_program("word-count"), "/out/target/debug/word-count");
+        assert_eq!(built_program("/opt/tool/bin/x"), "/opt/tool/bin/x");
+        // The directory is the one the sandbox tells cargo to build into.
+        let env = profile_env(SandboxProfile::Verify);
+        assert!(env.contains(&("CARGO_TARGET_DIR".to_owned(), TARGET_DIR.to_owned())));
     }
 
     #[test]

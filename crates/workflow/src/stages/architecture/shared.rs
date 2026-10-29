@@ -14,7 +14,7 @@ use factory_domain::ids::GateReportId;
 use factory_domain::scope::TenantScope;
 use factory_domain::values::{GitSha, MediaType, Slug};
 use factory_domain::vocabulary::{RiskTier, StageKind};
-use factory_ports::agent::{AgentRunRequest, BrokerEndpoint, Capability, RoutingNeed, Usage};
+use factory_ports::agent::{AgentRunRequest, BrokerEndpoint, RoutingNeed, Usage};
 use factory_ports::paths::{CommitSha, PathRules};
 use factory_ports::registry::{LoadedPrompt, RegistryError, ValidatedOutput, VersionReq};
 use factory_ports::workspace::{Workspace, WorkspacePurpose, WorkspaceRequest};
@@ -321,7 +321,7 @@ async fn run_in(
         ctx,
         workspace,
         WorkspaceAccess::Inspect,
-        &[Capability::JsonSchemaOutput],
+        &[],
         call.report_ready,
     )
     .await?;

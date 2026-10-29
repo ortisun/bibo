@@ -217,6 +217,55 @@ fn remote_of(config: &RemoteConfig) -> Result<RemoteLocation, ProviderError> {
     })
 }
 
+/// The policy the real workspace takes its second look at a change set with.
+///
+/// The workspace judges a change by the path rules of the request and by the compiled policy, and
+/// the stricter answer stands ([`PathPolicyLayer`]). The rules of the specification stage lift the
+/// writes the policy lists for its skills ([`specification_path_rules`]); the compiled policy did
+/// not, so the real workspace refused the pointer the specify skill had just written and the stage
+/// ended `BLOCKED` (found by the live-adapters run, not by the rigs, whose workspace had no second
+/// look). Here the same writes are re-included in the protected groups of the policy that the
+/// second look compiles. The rules of every other stage are the plain ones and still refuse those
+/// paths, so only the stage that lifts them can write them; everything else under `.specify/`, the
+/// constitution, the project configuration and the CI files stay refused by both looks.
+#[must_use]
+pub fn layer_policy(policy: &SecurityPolicy) -> SecurityPolicy {
+    let mut lifted = policy.clone();
+    let writes: Vec<String> = policy
+        .agent_stage_profiles
+        .profiles
+        .iter()
+        .find(|profile| {
+            profile
+                .applies_to_stage_kinds
+                .iter()
+                .any(|kind| kind == "SPECIFICATION")
+        })
+        .and_then(|profile| profile.skills.as_ref())
+        .map(|skills| {
+            skills
+                .allowed
+                .iter()
+                .filter(|skill| skill.protected_path_exception_required != Some(true))
+                .flat_map(|skill| skill.writes.iter().map(|write| write.pattern().to_owned()))
+                .collect()
+        })
+        .unwrap_or_default();
+    for group in &mut lifted.protected_paths.groups {
+        if matches!(group.applies_to, AppliesTo::FactoryRepo) {
+            continue;
+        }
+        for write in &writes {
+            group
+                .globs
+                .push(factory_domain::policy::common::GlobText(format!(
+                    "!{write}"
+                )));
+        }
+    }
+    lifted
+}
+
 /// The Spec Kit configuration for a profile, from the installation in the protected checkout.
 ///
 /// # Errors
@@ -345,7 +394,10 @@ pub fn assemble(inputs: ProviderInputs<'_>) -> Result<Providers, ProviderError> 
 
     // The workspace.
     let layer = PathPolicyLayer::new(
-        Arc::new(PathPolicy::from_policy(security).map_err(|_| ProviderError::PathPolicy)?),
+        Arc::new(
+            PathPolicy::from_policy(&layer_policy(security))
+                .map_err(|_| ProviderError::PathPolicy)?,
+        ),
         RepoKind::Target,
     );
     let git = GitWorkspaceProvider::new(

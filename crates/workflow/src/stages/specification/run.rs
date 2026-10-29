@@ -381,7 +381,7 @@ async fn run_skill_in(
         ctx,
         workspace,
         WorkspaceAccess::Edit,
-        &[Capability::SkillInvocation, Capability::JsonSchemaOutput],
+        &[Capability::SkillInvocation],
         !work.tally.sandbox_reported,
     )
     .await?;
@@ -785,7 +785,7 @@ async fn review_in(
         ctx,
         workspace,
         WorkspaceAccess::Inspect,
-        &[Capability::JsonSchemaOutput],
+        &[],
         !work.tally.sandbox_reported,
     )
     .await?;
@@ -1450,7 +1450,7 @@ async fn ready_check(
         ctx,
         workspace.as_ref(),
         WorkspaceAccess::Edit,
-        &[Capability::SkillInvocation, Capability::JsonSchemaOutput],
+        &[Capability::SkillInvocation],
         true,
     )
     .await
