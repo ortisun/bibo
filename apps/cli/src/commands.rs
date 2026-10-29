@@ -5,7 +5,9 @@ use std::collections::BTreeMap;
 use std::io::Write;
 use std::path::Path;
 
-use factory_composition::commands::parse_cli;
+use factory_composition::commands::{
+    APPROVE_BUILD_CODE, APPROVE_DEPENDENCY, ParsedLine, parse_cli, parse_dependency_command,
+};
 use factory_composition::profile::Profile;
 use factory_composition::system::RandomIds;
 use factory_ports::clock::IdGenerator;
@@ -26,6 +28,8 @@ usage: factory-cli <command> [options]
   reject   --api URL --token-file FILE [--key K] JOB STAGE_RUN reason...
   rework   --api URL --token-file FILE [--key K] JOB STAGE_RUN target=STAGE reason...
   pause | resume | cancel  --api URL --token-file FILE [--key K] JOB reason...
+  approve-dependency  --api URL --token-file FILE [--key K] [--stage-run ID] JOB NAME VERSION [CHECKSUM] reason...
+  approve-build-code  --api URL --token-file FILE [--key K] [--stage-run ID] JOB NAME VERSION [CHECKSUM] reason...
   probe    --protected-checkout DIR [--images-catalog FILE] [--profile production|local|test]
 
 The address may also be set in FACTORY_API_URL. The token is read from a file, never from an argument
@@ -365,6 +369,76 @@ fn decide(
     })
 }
 
+/// `approve-dependency` and `approve-build-code`: a decision on a new dependency or on its build
+/// code. The words after the job id are read by the one reader of those commands, so the package
+/// name, the version and the checksum prefix are the ones every channel accepts.
+fn decide_dependency(
+    verb: &str,
+    args: &[String],
+    env: &dyn Fn(&str) -> Option<String>,
+    ctx: &mut Context<'_>,
+) -> Exit {
+    let parsed = match split(args, &["api", "token-file", "key", "stage-run"]) {
+        Ok(parsed) => parsed,
+        Err(why) => {
+            ctx.complain(&why);
+            return Exit::Failed;
+        }
+    };
+    let words = &parsed.positional;
+    if words.len() < 3 || !is_uuid(&words[0]) {
+        ctx.complain(
+            "this decision takes a job id (a UUID), the package name, the version, and then the reason",
+        );
+        return Exit::Failed;
+    }
+    if let Some(stage_run) = parsed.options.get("stage-run")
+        && !is_uuid(stage_run)
+    {
+        ctx.complain("--stage-run is a stage run id (a UUID)");
+        return Exit::Failed;
+    }
+    let line = format!("{verb} {}", words[1..].join(" "));
+    let command = match parse_dependency_command(&line) {
+        Ok(ParsedLine::Command(command)) => command,
+        Ok(ParsedLine::NotOurs) => {
+            ctx.complain("the decision is not valid");
+            return Exit::Failed;
+        }
+        Err(error) => {
+            ctx.complain(&format!("the decision is not valid: {error}"));
+            return Exit::Failed;
+        }
+    };
+    // What the API would refuse for a missing reason is refused here first, before a request.
+    if command.reason.chars().count() < 10 {
+        ctx.complain("a decision on a dependency needs a reason of at least 10 characters");
+        return Exit::Failed;
+    }
+    let mut body = json!({
+        "verb": verb,
+        "package": command.name,
+        "version": command.version,
+        "reason": command.reason,
+    });
+    if let Some(prefix) = &command.checksum_prefix {
+        body["checksum"] = json!(prefix);
+    }
+    if let Some(stage_run) = parsed.options.get("stage-run") {
+        body["stage_run_id"] = json!(stage_run);
+    }
+    let client = match client(&parsed.options, env, true, ctx) {
+        Ok(client) => client,
+        Err(exit) => return exit,
+    };
+    let key = idempotency_key(&parsed.options);
+    let shown = key.clone();
+    let path = format!("/v1/jobs/{}/decisions", words[0]);
+    finish(client.post(&path, &key, &body), ctx, move |body| {
+        render::decided(body, &shown)
+    })
+}
+
 fn probe_command(args: &[String], ctx: &mut Context<'_>) -> Exit {
     let parsed = match split(args, &["protected-checkout", "images-catalog", "profile"]) {
         Ok(parsed) if parsed.positional.is_empty() => parsed,
@@ -425,6 +499,9 @@ pub fn run(
         "timeline" => read_job(rest, env, &mut ctx, "/timeline", render::timeline),
         verb @ ("approve" | "reject" | "rework" | "pause" | "resume" | "cancel") => {
             decide(verb, rest, env, &mut ctx)
+        }
+        verb @ (APPROVE_DEPENDENCY | APPROVE_BUILD_CODE) => {
+            decide_dependency(verb, rest, env, &mut ctx)
         }
         "probe" => probe_command(rest, &mut ctx),
         "help" | "--help" | "-h" => {

@@ -369,3 +369,77 @@ fn health_says_whether_the_api_is_running_and_ready() {
         ran.out
     );
 }
+
+#[test]
+fn the_two_dependency_verbs_are_read_by_the_dependency_grammar_and_sent_as_words() {
+    let api = fake(vec![
+        (
+            202,
+            r#"{"decision_id":"d-2","status":"recorded","applied":false}"#,
+        ),
+        (
+            202,
+            r#"{"decision_id":"d-3","status":"recorded","applied":false}"#,
+        ),
+    ]);
+    let file = token_file(0o600);
+    let ran = cli(&format!(
+        "approve-dependency --api http://{} --token-file {} --key k-2 {JOB} tally-counter 0.3.1 Read the maintainers and the licence.",
+        api.addr,
+        file.display()
+    ));
+    assert_eq!(ran.exit, Exit::Ok, "{}", ran.err);
+    assert!(ran.out.contains("Decision d-2 is recorded"), "{}", ran.out);
+    // A checksum prefix and a stage run may be named.
+    let checksum = "ab".repeat(8);
+    let ran = cli(&format!(
+        "approve-build-code --api http://{} --token-file {} --key k-3 --stage-run {RUN} {JOB} tally-counter 0.3.1 sha256:{checksum} Read the build script, it sets cfg flags.",
+        api.addr,
+        file.display()
+    ));
+    assert_eq!(ran.exit, Exit::Ok, "{}", ran.err);
+    let sent = api.requests.lock().expect("lock").clone();
+    assert_eq!(sent.len(), 2);
+    assert!(sent[0].starts_with(&format!("POST /v1/jobs/{JOB}/decisions ")));
+    for part in [
+        r#""verb":"approve-dependency""#,
+        r#""package":"tally-counter""#,
+        r#""version":"0.3.1""#,
+        r#""reason":"Read the maintainers and the licence.""#,
+    ] {
+        assert!(sent[0].contains(part), "{part} in {}", sent[0]);
+    }
+    assert!(!sent[0].contains("checksum"), "{}", sent[0]);
+    for part in [
+        r#""verb":"approve-build-code""#,
+        &format!(r#""checksum":"{checksum}""#),
+        &format!(r#""stage_run_id":"{RUN}""#),
+        r#""reason":"Read the build script, it sets cfg flags.""#,
+    ] {
+        assert!(sent[1].contains(part), "{part} in {}", sent[1]);
+    }
+    // What the grammar refuses stops here, before any request.
+    for line in [
+        format!("approve-dependency {JOB}"),
+        format!("approve-dependency {JOB} tally-counter"),
+        format!("approve-dependency {JOB} ../etc 1.0.0 A reason that is long enough"),
+        format!("approve-dependency {JOB} tally-counter latest A reason that is long enough"),
+        format!(
+            "approve-dependency {JOB} tally-counter 0.3.1 DEADBEEFDEADBEEF A reason that is long enough"
+        ),
+        format!("approve-dependency {JOB} tally-counter 0.3.1 short"),
+        format!("approve-dependency {JOB} tally-counter 0.3.1"),
+        "approve-dependency not-a-uuid tally-counter 0.3.1 A reason that is long enough".to_owned(),
+        format!(
+            "approve-dependency --stage-run nope {JOB} tally-counter 0.3.1 A reason that is long enough"
+        ),
+    ] {
+        let ran = cli(&format!(
+            "{line} --api http://{} --token-file {}",
+            api.addr,
+            file.display()
+        ));
+        assert_eq!(ran.exit, Exit::Failed, "{line}: {}", ran.err);
+    }
+    assert_eq!(api.requests.lock().expect("lock").len(), 2);
+}
