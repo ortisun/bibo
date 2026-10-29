@@ -66,6 +66,7 @@ use subtle::{Choice, ConstantTimeEq};
 use crate::config::{ConfigError, DecisionSigning};
 use crate::decisions::DecisionFields;
 use crate::dependency_decisions::DependencyFields;
+use crate::intake_rejections::RejectionFields;
 use crate::profile::Profile;
 use crate::startup::StartupFailure;
 
@@ -98,6 +99,14 @@ const MARKER_CONTEXT: &str = "factory-decision-marker/1";
 
 /// The first line of what is hashed to make the id of a marker row.
 const MARKER_ID_CONTEXT: &str = "factory-decision-marker-id/1";
+
+/// The first line of what is signed for a request to answer a label from someone who may not ask.
+/// It differs from the other contexts, so a word made for one kind of record is never the word of
+/// another.
+const REJECTION_CONTEXT: &str = "factory-intake-rejection-request/1";
+
+/// The first line of what is hashed to make the id of the record that a rejection leaves.
+const REJECTION_ID_CONTEXT: &str = "factory-intake-rejection-id/1";
 
 /// Why a key cannot be used.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -260,6 +269,33 @@ impl DependencySigning<'_> {
             "{DEPENDENCY_CONTEXT}\ntenant={}\nactor={}\nevent={}\nat={}\n{}",
             self.tenant.as_text(),
             self.actor.as_text(),
+            self.event.as_uuid().hyphenated(),
+            self.requested_at,
+            self.fields.subject(),
+        )
+    }
+}
+
+/// What the signature of a request to answer a rejected label covers besides the words of the
+/// subject. The API writes the request when it refuses to make a job for a label, and the worker
+/// reads it, so the one grammar is [`RejectionFields`].
+#[derive(Debug, Clone, Copy)]
+pub struct RejectionSigning<'a> {
+    /// The tenant the record belongs to.
+    pub tenant: TenantId,
+    /// The id of the audit record.
+    pub event: AuditEventId,
+    /// The time of the request, as the text written in the subject.
+    pub requested_at: &'a str,
+    /// The words of the subject.
+    pub fields: &'a RejectionFields,
+}
+
+impl RejectionSigning<'_> {
+    fn message(&self) -> String {
+        format!(
+            "{REJECTION_CONTEXT}\ntenant={}\nevent={}\nat={}\n{}",
+            self.tenant.as_text(),
             self.event.as_uuid().hyphenated(),
             self.requested_at,
             self.fields.subject(),
@@ -589,6 +625,54 @@ impl DecisionKeys {
         format!("{} mac={}", signing.subject, self.sign_marker(signing))
     }
 
+    /// The word for a request to answer a rejected label, made with the current key.
+    ///
+    /// # Panics
+    /// Never: an HMAC accepts a key of any length.
+    #[must_use]
+    pub fn sign_rejection(&self, signing: &RejectionSigning<'_>) -> String {
+        let word = self
+            .current
+            .word(signing.message().as_bytes())
+            .expect("an HMAC key can have any length");
+        hex(&word)
+    }
+
+    /// True when `word` is the word of this request under the current key or the previous one,
+    /// compared as [`verify`](Self::verify) does.
+    #[must_use]
+    pub fn verify_rejection(&self, signing: &RejectionSigning<'_>, word: &str) -> bool {
+        self.verify_message(&signing.message(), word)
+    }
+
+    /// The subject of a signed request to answer a rejected label: the words, the time, the word.
+    #[must_use]
+    pub fn signed_rejection_subject(&self, signing: &RejectionSigning<'_>) -> String {
+        format!(
+            "{} at={} mac={}",
+            signing.fields.subject(),
+            signing.requested_at,
+            self.sign_rejection(signing)
+        )
+    }
+
+    /// The id of the record that a rejection leaves, for a request. It is a keyed function of the
+    /// id of the request, so that it is the same on every pass and in every worker that holds the
+    /// key: a second write of the record is a repeat and not a second record.
+    ///
+    /// # Panics
+    /// Never: an HMAC accepts a key of any length.
+    #[must_use]
+    pub fn rejection_id(&self, request: AuditEventId) -> AuditEventId {
+        let word = self
+            .current
+            .word(format!("{REJECTION_ID_CONTEXT}\n{}", request.as_uuid().hyphenated()).as_bytes())
+            .expect("an HMAC key can have any length");
+        let mut bytes = [0_u8; 16];
+        bytes.copy_from_slice(&word[..16]);
+        AuditEventId::from_uuid(uuid::Builder::from_random_bytes(bytes).into_uuid())
+    }
+
     /// The id of the marker row for a request (or for a record the hook ignores). It is a keyed
     /// function of the id, so that it is the same on every pass and in every worker that holds the
     /// key, and nobody without the key can tell it in advance and write a row under it.
@@ -819,6 +903,29 @@ pub fn read_dependency_subject(subject: &str) -> Option<DependencySubject> {
         });
     }
     DependencyFields::parse_canonical(subject).map(DependencySubject::Unsigned)
+}
+
+/// What the subject of a request to answer a rejected label holds, split but not believed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RejectionSubject {
+    /// The words.
+    pub fields: RejectionFields,
+    /// The time the API wrote.
+    pub requested_at: String,
+    /// The word, as written. [`DecisionKeys::verify_rejection`] decides whether it is good.
+    pub word: String,
+}
+
+/// Reads the subject of a request to answer a rejected label back. `None` when it does not have
+/// the shape of a signed one, including a subject that is the canonical words alone.
+#[must_use]
+pub fn read_rejection_subject(subject: &str) -> Option<RejectionSubject> {
+    let (body, at, word) = split_signed(subject)?;
+    Some(RejectionSubject {
+        fields: RejectionFields::parse_canonical(body)?,
+        requested_at: at.to_owned(),
+        word: word.to_owned(),
+    })
 }
 
 #[cfg(test)]

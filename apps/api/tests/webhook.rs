@@ -362,6 +362,187 @@ async fn a_label_from_an_allowlisted_requester_makes_a_job_and_nothing_else_does
     env.stop().await;
 }
 
+/// The requests the API left for the worker to answer: the audit records with the action
+/// `webhook_accepted_or_rejected.denied`, read by the worker login.
+async fn rejection_requests(env: &Env) -> Vec<factory_ports::store::AuditRecord> {
+    use factory_ports::store::{AuditFilter, Store as _};
+    let mut tx = env
+        .worker
+        .begin(factory_domain::scope::TenantScope::new(env.a.id))
+        .await
+        .expect("a tx");
+    let all = tx
+        .read_audit(AuditFilter::Tenant, 0, 500)
+        .await
+        .expect("audit");
+    let _ = tx.rollback().await;
+    all.into_iter()
+        .filter(|record| record.event.action.as_str() == "webhook_accepted_or_rejected.denied")
+        .collect()
+}
+
+/// FR-002 and SC-002 (finding SF-01). A factory label from someone who may not ask makes no job
+/// and leaves one signed request for the worker to answer: the API holds no GitHub credential, so
+/// the reply and the record of the rejection are the worker's. The request is for every kind of
+/// sender who is not an authorized requester, and for no other delivery.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_label_from_someone_who_may_not_ask_leaves_one_signed_request_and_no_job() {
+    use factory_composition::decision_signing::{RejectionSigning, read_rejection_subject};
+    let env = Env::start().await;
+    let a = &env.a;
+    let bot = {
+        let mut value: serde_json::Value =
+            serde_json::from_slice(&payload(a, "factory", a.requester.github_id, 25))
+                .expect("json");
+        value["sender"]["type"] = json!("Bot");
+        serde_json::to_vec(&value).expect("json")
+    };
+    let refused = [
+        (
+            "a sender not on the allowlist",
+            payload(a, "factory", a.outsider.github_id, 22),
+            Some(a.outsider.github_id),
+        ),
+        (
+            "an approver, who is not a requester",
+            payload(a, "factory", a.approver.github_id, 23),
+            Some(a.approver.github_id),
+        ),
+        (
+            "a sender the tenant does not know",
+            payload(a, "factory", 999_999, 24),
+            Some(999_999),
+        ),
+    ];
+    let not_a_request = [
+        ("another label", payload(a, "bug", a.outsider.github_id, 21)),
+        // A bot, which includes the factory's own App, is never answered: the verifier reads its
+        // delivery as one the factory does not act on, so there is no reply to loop on.
+        ("a bot", bot),
+        (
+            "an authorized requester",
+            payload(a, "factory", a.requester.github_id, 26),
+        ),
+    ];
+    for (n, (name, body, _)) in refused.iter().enumerate() {
+        let reply = env
+            .send(env.delivery("issues", &delivery_id(70 + n as u64), body))
+            .await;
+        assert_eq!(reply.status, 202, "{name}");
+        // The answer is the one everybody gets.
+        assert_eq!(reply.json(), json!({"status": "accepted"}), "{name}");
+    }
+    for (n, (name, body)) in not_a_request.iter().enumerate() {
+        let reply = env
+            .send(env.delivery("issues", &delivery_id(80 + n as u64), body))
+            .await;
+        assert_eq!(reply.status, 202, "{name}");
+    }
+    // One job, for the requester. None for the four who may not ask.
+    assert_eq!(rows(&env, "jobs").await, 1);
+
+    let requests = rejection_requests(&env).await;
+    assert_eq!(
+        requests.len(),
+        refused.len(),
+        "one request for each refused label and none for the others: {requests:#?}"
+    );
+    for (record, (name, _, sender)) in requests.iter().zip(refused.iter()) {
+        let parsed = read_rejection_subject(&record.event.subject)
+            .unwrap_or_else(|| panic!("{name}: no signed request in {}", record.event.subject));
+        // The word is the API's: it verifies under the key the API signs with.
+        assert!(
+            env.state.decision_keys.verify_rejection(
+                &RejectionSigning {
+                    tenant: a.id,
+                    event: record.event.id,
+                    requested_at: &parsed.requested_at,
+                    fields: &parsed.fields,
+                },
+                &parsed.word
+            ),
+            "{name}"
+        );
+        assert_eq!(parsed.fields.sender, *sender, "{name}");
+        assert_eq!(
+            parsed.fields.repository, a.repository,
+            "{name}: the registered repository"
+        );
+        assert!(record.event.job.is_none(), "{name}: no job");
+        // Nothing the sender or the payload wrote is in the record: not the login, not the node id.
+        assert!(
+            !record.event.subject.contains("someone") && !record.event.subject.contains("I_"),
+            "{name}: {}",
+            record.event.subject
+        );
+        assert!(
+            !record.event.reason.contains("someone"),
+            "{name}: {}",
+            record.event.reason
+        );
+    }
+    // The record of each delivery says which delivery it is.
+    let deliveries: Vec<String> = requests
+        .iter()
+        .filter_map(|r| read_rejection_subject(&r.event.subject).map(|p| p.fields.delivery))
+        .collect();
+    assert_eq!(
+        deliveries,
+        (0..3).map(|n| delivery_id(70 + n)).collect::<Vec<_>>()
+    );
+    env.stop().await;
+}
+
+/// A delivery that GitHub sends again is a repeat. It leaves no second request, so the reply is
+/// sent once.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_redelivered_label_from_someone_who_may_not_ask_leaves_no_second_request() {
+    let env = Env::start().await;
+    let body = payload(&env.a, "factory", env.a.outsider.github_id, 31);
+    for _ in 0..5 {
+        let reply = env
+            .send(env.delivery("issues", &delivery_id(90), &body))
+            .await;
+        assert_eq!(reply.status, 202);
+    }
+    // The same label again, as a new delivery of the same event on the same revision of the issue.
+    let reply = env
+        .send(env.delivery("issues", &delivery_id(91), &body))
+        .await;
+    assert_eq!(reply.status, 202);
+    assert_eq!(rows(&env, "jobs").await, 0);
+    assert_eq!(
+        rejection_requests(&env).await.len(),
+        1,
+        "five copies of one delivery and a copy of its event leave one request"
+    );
+    env.stop().await;
+}
+
+/// A repository the factory is switched off for has no one to answer: a label there leaves no
+/// request, and no job.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_label_in_a_repository_that_is_switched_off_leaves_no_request() {
+    let env = Env::start().await;
+    env.db
+        .run(&format!(
+            "UPDATE repositories SET enabled = false, version = version + 1 WHERE tenant_id = '{}'",
+            env.a.id.as_uuid()
+        ))
+        .await;
+    let reply = env
+        .send(env.delivery(
+            "issues",
+            &delivery_id(95),
+            &payload(&env.a, "factory", env.a.outsider.github_id, 32),
+        ))
+        .await;
+    assert_eq!(reply.status, 202);
+    assert_eq!(rows(&env, "jobs").await, 0);
+    assert!(rejection_requests(&env).await.is_empty());
+    env.stop().await;
+}
+
 /// API-1 on the webhook path: a requester whose allowlist entry is narrowed to other repositories
 /// labels an issue of this one, and no job is made. Narrowed to this repository, the label works.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -396,6 +577,11 @@ async fn a_label_from_a_requester_narrowed_to_another_repository_makes_no_job() 
     assert_eq!(reply.status, 202);
     assert_eq!(rows(&env, "webhook_deliveries").await, 1, "it is recorded");
     assert_eq!(rows(&env, "jobs").await, 0, "and starts no job");
+    assert_eq!(
+        rejection_requests(&env).await.len(),
+        1,
+        "a requester who may not ask here is answered like anyone else who may not"
+    );
 
     std::fs::write(&path, narrowed(&a.full_name.to_ascii_uppercase())).expect("narrowed here");
     let reply = env

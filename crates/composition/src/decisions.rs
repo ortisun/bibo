@@ -100,6 +100,7 @@ use crate::decision_signing::{
 };
 use crate::dependency_decisions::DependencyDecisions;
 use crate::hooks::BeforeClaim;
+use crate::intake_rejections::IntakeRejections;
 use crate::seams::{FileAllowlist, designation};
 use crate::telemetry::{job_span_of, job_stretch};
 
@@ -918,6 +919,7 @@ pub struct ClaimWork {
     per_pass: usize,
     drafts: Option<Arc<dyn SpecDrafts>>,
     dependencies: Option<Arc<DependencyDecisions>>,
+    rejections: Option<Arc<IntakeRejections>>,
     keys: Arc<DecisionKeys>,
     scans: Mutex<BTreeMap<TenantId, Scan>>,
     /// Where the next round of tenants starts, so that the same tenant is not always first.
@@ -970,6 +972,7 @@ impl ClaimWork {
             per_pass: deps.per_pass.max(1),
             drafts: None,
             dependencies: None,
+            rejections: None,
             keys: deps.keys,
             scans: Mutex::new(BTreeMap::new()),
             turn: AtomicUsize::new(0),
@@ -995,12 +998,24 @@ impl ClaimWork {
         self
     }
 
+    /// Lets the worker answer a label from someone who may not ask (FR-002). The step reads the
+    /// signed requests the API leaves for such labels, posts the one fixed reply through the
+    /// change host, and records the rejection. Without it those requests are left alone.
+    #[must_use]
+    pub fn with_rejections(mut self, rejections: Arc<IntakeRejections>) -> Self {
+        self.rejections = Some(rejections);
+        self
+    }
+
     /// One pass for one tenant: admit, then decide. Public so a test can run a pass without a loop.
     pub async fn pass(&self, tenant: TenantId) {
         self.admit_received(tenant).await;
         self.apply_decisions(tenant).await;
         if let Some(dependencies) = &self.dependencies {
             dependencies.pass(tenant).await;
+        }
+        if let Some(rejections) = &self.rejections {
+            rejections.pass(tenant).await;
         }
     }
 

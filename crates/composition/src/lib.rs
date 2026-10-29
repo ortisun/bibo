@@ -57,6 +57,7 @@ pub mod feedback;
 pub mod health;
 pub mod hooks;
 pub mod indexing;
+pub mod intake_rejections;
 pub mod ledger;
 pub mod pipeline;
 pub mod preflight;

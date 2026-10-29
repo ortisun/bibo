@@ -22,11 +22,20 @@
 //!    issue is **not** in the payload the verifier reads and the API holds no GitHub credential, so
 //!    the job has no original request yet: the engine's intake fetches the live issue (README,
 //!    "What is not done").
+//! 6. **Refuse, say so, and let the worker answer.** The same label from anyone else (a person the
+//!    tenant does not know, a person who is not a requester, a requester narrowed to other
+//!    repositories) makes no job. FR-002 asks for a plain explanation on the issue and a record of
+//!    the rejection, and the API holds no GitHub credential, so it leaves one signed request in the
+//!    audit log in the same transaction (`ask_for_a_reply`); the worker's hook posts the reply and
+//!    writes the record `intake.rejected` (`factory_composition::intake_rejections`). A repeat of
+//!    a delivery leaves none, so the reply is not sent twice. A bot is never answered.
 //!
 //! Every outcome after a valid signature is `202 {"status": "accepted"}`: a sender learns nothing
 //! about tenants, repositories or the allowlist from the answer.
 
 use axum::http::{HeaderMap, StatusCode};
+use factory_composition::decision_signing::RejectionSigning;
+use factory_composition::intake_rejections::RejectionFields;
 use factory_domain::ids::{AuditEventId, CorrelationId, JobId, WebhookDeliveryId};
 use factory_domain::scope::TenantScope;
 use factory_domain::vocabulary::HumanRole;
@@ -181,7 +190,7 @@ pub async fn receive(state: &ApiState, headers: &HeaderMap, body: &[u8]) -> Answ
         ),
     };
     let mut witness = audit(state, &mut *tx, &subject, action, reason, None).await?;
-    if let (Some(delivery_row), Some(requester)) = (recorded, requester)
+    if let Some(delivery_row) = recorded
         && let WebhookHint::IssueLabeled { issue, label } = &delivery.hint
         && *label == state.github.factory_label
     {
@@ -194,7 +203,32 @@ pub async fn receive(state: &ApiState, headers: &HeaderMap, body: &[u8]) -> Answ
                 .map_err(|_| ApiError::Unavailable)?,
             None => false,
         };
-        if registered.value.enabled && in_reach {
+        let authorized = requester.filter(|_| in_reach);
+        if registered.value.enabled && authorized.is_none() {
+            // Someone who may not ask applied the factory label (FR-002, SC-002). No job. The
+            // API holds no GitHub credential, so it cannot answer; it leaves one signed request
+            // in the same transaction, which the worker answers and records.
+            witness = ask_for_a_reply(
+                state,
+                &mut *tx,
+                bound.tenant,
+                &RejectionFields {
+                    repository: bound.repository,
+                    issue: issue.number,
+                    sender: delivery.sender_github_user_id,
+                    delivery: delivery.delivery_id.clone(),
+                    allowlist: state
+                        .allowlist_file
+                        .entries()
+                        .map_err(|_| ApiError::Unavailable)?
+                        .0
+                        .as_str()
+                        .to_owned(),
+                },
+            )
+            .await?;
+        }
+        if let (true, Some(requester)) = (registered.value.enabled, authorized) {
             let job_id = JobId::from_uuid(ids.new_uuid());
             let pipeline_scope =
                 PipelineScope::new(SLICE_ONE_SCOPE.to_vec()).map_err(|_| ApiError::Unavailable)?;
@@ -262,6 +296,47 @@ async fn requester_of(
     Ok(roles
         .contains(&HumanRole::Requester)
         .then_some(principal.id))
+}
+
+/// Leaves the request for the reply to a label from someone who may not ask. The action is one the
+/// database trigger lets the API write (`webhook_accepted_or_rejected.denied`); the words are the
+/// registered repository, the issue number, the numeric id of the sender, the delivery id and the
+/// version of the allowlist, and nothing from the payload that the sender chose. The word that
+/// signs them is the one only the API can make, so the worker answers only a request that is the
+/// API's (the grammar and the worker's side are in `factory_composition::intake_rejections`).
+async fn ask_for_a_reply(
+    state: &ApiState,
+    tx: &mut dyn Tx,
+    tenant: factory_domain::ids::TenantId,
+    fields: &RejectionFields,
+) -> Result<AuditEventId, ApiError> {
+    let ids = &state.ports.ids;
+    let id = AuditEventId::from_uuid(ids.new_uuid());
+    let requested_at = state.ports.clock.now().as_text();
+    let subject = state
+        .decision_keys
+        .signed_rejection_subject(&RejectionSigning {
+            tenant,
+            event: id,
+            requested_at: &requested_at,
+            fields,
+        });
+    tx.record_audit(NewAuditEvent {
+        id,
+        actor: AuditActor::Anonymous(
+            factory_domain::values::Slug::parse("webhook").map_err(|_| ApiError::Unavailable)?,
+        ),
+        action: audit_action("webhook_accepted_or_rejected.denied")?,
+        subject,
+        decision: AuditDecision::Deny,
+        reason: "A label from a sender who is not an authorized requester was refused.".to_owned(),
+        policy_hash: state.policy_hash(),
+        job: None,
+        stage_run: None,
+        correlation_id: CorrelationId::from_uuid(ids.new_uuid()),
+    })
+    .await?;
+    Ok(id)
 }
 
 async fn audit(
