@@ -392,6 +392,17 @@ pub async fn run(
     main: Step,
     edit: impl FnOnce(&mut factory_ports::agent::AgentRunRequest),
 ) -> (factory_ports::agent::AgentRunReport, Watch) {
+    run_attested(h, tool, main, h.attestation(), edit).await
+}
+
+/// Like [`run`], with the model broker's record the test scripted.
+pub async fn run_attested(
+    h: &Harness,
+    tool: Tool,
+    main: Step,
+    attestation: Arc<dyn factory_ports::agent::TurnAttestation>,
+    edit: impl FnOnce(&mut factory_ports::agent::AgentRunRequest),
+) -> (factory_ports::agent::AgentRunReport, Watch) {
     use factory_ports::agent::AgentRuntime;
     let mut session = ScriptedSession::new(h, tool, main);
     let watch = session.watch();
@@ -400,6 +411,7 @@ pub async fn run(
             Box::new(factory_runtime::ClaudeCodeRuntime::new(
                 factory_runtime::ClaudeCodeConfig::default(),
                 h.io.clone(),
+                attestation,
             )),
             "claude-code-cli",
         ),
@@ -407,6 +419,7 @@ pub async fn run(
             Box::new(factory_runtime::CodexRuntime::new(
                 factory_runtime::CodexConfig::default(),
                 h.io.clone(),
+                attestation,
             )),
             "codex-cli",
         ),

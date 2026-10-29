@@ -23,6 +23,8 @@
 #   agent-tool-in-verify  a program named codex in the verify image           -> TOOLS-ONLY-IN-AGENT
 #   shell-in-verify       a shell named sh in the verify image                -> SHELLS
 #   readable-tool         claude made readable by everyone in the agent image -> TOOLS-EXECUTE-ONLY
+#   readable-env          /usr/bin/env, the first program of the adapters' command chain, made
+#                         readable in the agent image (finding RR-14)     -> TOOLS-EXECUTE-ONLY
 #   world-writable        a file in /etc that any user may write, in the agent image -> NO-WORLD-WRITABLE
 #   credential-file       a .netrc file in the verify image                   -> NO-CREDENTIAL-FILES
 #
@@ -179,6 +181,16 @@ AGENT_USER="$(sbx_json_get "$REAL_JSON" "$PLATFORM" agent user.uid):$(sbx_json_g
 mutation readable-tool agent TOOLS-EXECUTE-ONLY "/usr/local/bin/claude mode 0755" "FROM $AGENT_TAGGED
 USER 0:0
 RUN chmod 0755 /usr/local/bin/claude
+USER $AGENT_USER"
+
+# The first program of the chain `env -i ... timeout ... <tool>`. A readable env lets a hostile process
+# that already runs open the exec's output pipe the moment env appears (finding RR-14). Like the copy
+# above, this one is UNPROVEN while the real image is red for the same marker, that is, until the agent
+# image is rebuilt with lib/execute-only.txt; tools/selftest-execute-only.sh proves the judgement
+# itself without an image.
+mutation readable-env agent TOOLS-EXECUTE-ONLY "/usr/bin/env mode 0755" "FROM $AGENT_TAGGED
+USER 0:0
+RUN chmod 0755 /usr/bin/env
 USER $AGENT_USER"
 
 # The file is in /etc so that it sorts before the toolchain files that the real image still lists:

@@ -24,6 +24,7 @@
 pub mod argv;
 pub mod events;
 
+use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
@@ -31,11 +32,12 @@ use factory_domain::vocabulary::Fidelity;
 use factory_ports::agent::{
     AgentRunError, AgentRunReport, AgentRunRequest, AgentRuntime, Capability,
     CapabilityObservation, Denial, ExitInfo, FlagSet, ProbeError, ProbeStep, RuntimeCapabilities,
-    RuntimeId,
+    RuntimeId, TurnAttestation,
 };
 use factory_ports::clock::CancelSignal;
 use factory_ports::sandbox::{ExecResult, SandboxSession};
 
+use crate::attest::{Attestor, Claim, rejected_note};
 use crate::command::{EnvName, HARD_DEADLINE_MARGIN_SECONDS, ToolCommand, ToolEnv, broker_origin};
 use crate::future::BoxFuture;
 use crate::home::{HomeAllocator, make_home_argv};
@@ -50,6 +52,7 @@ use crate::report::{
     usage_of,
 };
 use crate::target::VerifiedTarget;
+use crate::trust::{Rejection, Shape, check_shape};
 
 /// The runtime's name in manifests and routing.
 pub const RUNTIME_NAME: &str = "codex-cli";
@@ -101,6 +104,7 @@ pub struct CodexRuntime {
     cache: ProbeCache,
     homes: HomeAllocator,
     runs: AtomicU64,
+    attestor: Attestor,
 }
 
 impl std::fmt::Debug for CodexRuntime {
@@ -112,12 +116,14 @@ impl std::fmt::Debug for CodexRuntime {
 }
 
 impl CodexRuntime {
-    /// Makes the runtime.
+    /// Makes the runtime. `attestation` is the model broker's record of the turns of a job token:
+    /// the real broker in production, a stand-in in tests. A run is a success only when it bears
+    /// the stream out (see [`crate::attest`]), so there is no runtime without one.
     ///
     /// # Panics
     /// Never in practice: the runtime name is a valid slug.
     #[must_use]
-    pub fn new(config: CodexConfig, io: RunIo) -> Self {
+    pub fn new(config: CodexConfig, io: RunIo, attestation: Arc<dyn TurnAttestation>) -> Self {
         let homes = HomeAllocator::new(&config.home_root);
         Self {
             id: RuntimeId::new(RUNTIME_NAME).expect("the runtime name is a valid slug"),
@@ -126,6 +132,7 @@ impl CodexRuntime {
             cache: ProbeCache::default(),
             homes,
             runs: AtomicU64::new(0),
+            attestor: Attestor::new(attestation),
         }
     }
 
@@ -345,6 +352,14 @@ impl CodexRuntime {
             .config
             .transcript_cap_bytes
             .max(capture_floor(req.max_output_bytes));
+        // What the model broker has seen of this token before the tool starts. The broker is
+        // outside the sandbox and its record is what the stream's "completed" is checked against
+        // (RR-14); a token it cannot answer for is a run that could not be attested, so it does
+        // not start.
+        let token = req.job_token.id;
+        let Some(baseline) = self.attestor.summary(&token).await else {
+            return early(AgentRunError::ProviderUnavailable, version);
+        };
         let ended = exec_tool(
             session,
             &self.io,
@@ -361,7 +376,10 @@ impl CodexRuntime {
                 result,
                 stdout,
                 stderr,
-            } => interpret(&result, stdout, stderr, cancel.is_cancelled(), &req),
+            } => {
+                let (end, claim) = interpret(&result, stdout, stderr, cancel.is_cancelled(), &req);
+                self.attestor.require(&token, &baseline, &claim, end).await
+            }
         };
         assemble(&self.io, version, &req, end).await
     }
@@ -458,7 +476,7 @@ fn interpret(
     stderr: Vec<u8>,
     cancel_set: bool,
     req: &AgentRunRequest,
-) -> RunEnd {
+) -> (RunEnd, Claim) {
     let stream = events::parse(&stdout);
     // One `factory.tool_call` span for each call in the stream: a fixed name, a digest of the
     // arguments and the outcome, and none of the text the tool printed.
@@ -478,50 +496,83 @@ fn interpret(
             reason: d.reason.chars().take(300).collect(),
         })
         .collect();
-    let outcome = classify(result, &stream, exit, cancel_set);
-    RunEnd {
+    // What the stream implies at least: one answer, and a second when a tool ran, whatever number
+    // of calls one answer made. The tokens are the ones `turn.completed` reports.
+    let claim = Claim {
+        turns: if stream.completed {
+            1 + u64::from(stream.tool_items > 0)
+        } else {
+            0
+        },
+        input_tokens: usage.input_tokens,
+        output_tokens: usage.output_tokens,
+    };
+    let (outcome, note) = match classify(result, &stream, exit, cancel_set) {
+        Ok(bytes) => (Ok(bytes), crate::report::NOTE_FINISHED.to_owned()),
+        Err(Rejection { error, distrust }) => {
+            if let Some(why) = distrust {
+                // One of a fixed set of words (`Distrust::code`), in the message and not a field.
+                tracing::warn!(
+                    "the stream says the run completed and the stream's own shape refutes it: {}",
+                    why.code()
+                );
+            }
+            let note =
+                distrust.map_or_else(|| crate::report::NOTE_FINISHED.to_owned(), rejected_note);
+            (Err(error), note)
+        }
+    };
+    let end = RunEnd {
         outcome,
         usage,
         denials,
         exit: Some(exit),
         stdout,
         stderr,
-        note: crate::report::NOTE_FINISHED.to_owned(),
-    }
+        note,
+    };
+    (end, claim)
 }
 
-/// Success is one `turn.completed` event with nothing after it, no `turn.failed` and exit code 0.
-/// The same rule as the Claude Code adapter: the exit status is not something a process inside
-/// the sandbox can write, and a second terminal event was not written by the tool.
+/// Success is one `turn.completed` event, no `turn.failed`, a clean exit (code 0, no signal) and a
+/// stream of the right shape: the capture was not cut, no line before the completion was
+/// unreadable, there is one completion and nothing after it ([`crate::trust`], findings RTM-1,
+/// RR-7, RR-8 and RR-9). The same rule as the Claude Code adapter: the exit status is not something
+/// a process inside the sandbox can write, and a second terminal event, a torn line or a line
+/// after the completion was not written by the tool.
 fn classify(
     result: &ExecResult,
     stream: &events::Stream,
     exit: ExitInfo,
     cancel_set: bool,
-) -> Result<Vec<u8>, AgentRunError> {
+) -> Result<Vec<u8>, Rejection> {
     if result.timed_out || soft_deadline_passed(result) {
-        return Err(AgentRunError::Timeout);
+        return Err(AgentRunError::Timeout.into());
     }
     if result.oom_killed {
-        return Err(AgentRunError::ProcessFailed(exit));
+        return Err(AgentRunError::ProcessFailed(exit).into());
     }
     if let Some(message) = stream
         .failed
         .as_ref()
         .or(stream.last_error.as_ref().filter(|_| !stream.completed))
     {
-        return Err(classify_message(message, exit));
+        return Err(classify_message(message, exit).into());
     }
-    if stream.completed
-        && exit.code == Some(0)
-        && stream.completed_events == 1
-        && !stream.events_after_completed
-    {
-        return stream
-            .final_message
-            .clone()
-            .map(String::into_bytes)
-            .ok_or(AgentRunError::OutputMissing);
+    if stream.completed && exit.code == Some(0) && result.signal.is_none() {
+        let shape = Shape {
+            terminal_events: stream.completed_events,
+            malformed_before: stream.malformed_before_completed,
+            lines_after: stream.lines_after_completed,
+            truncated: result.stdout_truncated,
+        };
+        return check_shape(&shape).map_err(Rejection::from).and_then(|()| {
+            stream
+                .final_message
+                .clone()
+                .map(String::into_bytes)
+                .ok_or_else(|| AgentRunError::OutputMissing.into())
+        });
     }
     Err(if result.stdout_truncated {
         AgentRunError::OutputTooLarge
@@ -533,7 +584,8 @@ fn classify(
         AgentRunError::OutputMissing
     } else {
         AgentRunError::ProcessFailed(exit)
-    })
+    }
+    .into())
 }
 
 /// True when `text` holds `code` as a whole number, such as `status 401`, and not `10401`.

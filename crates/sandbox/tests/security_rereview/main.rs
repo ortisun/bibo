@@ -226,7 +226,6 @@ fn held_docker_reads_flags_the_way_the_deny_list_does() {
 /// `type=bind,src=/tmp,SRC=/etc,dst=/x` mounts `/etc` (shown with `docker inspect`, Docker Desktop
 /// 29.9.2). The deny list reads only lower-case keys, takes `/tmp` as the source and accepts it.
 #[test]
-#[ignore = "confirmed defect RR-10: mount keys are case-insensitive in Docker and case-sensitive in the deny list. Run: cargo test -p factory-sandbox --test security_rereview -- --ignored rr_10"]
 fn rr_10_a_mount_key_in_another_case_does_not_hide_the_host_source() {
     let escaped = not_denied(&[
         &["create", "--mount", "type=bind,src=/tmp/ok,SRC=/etc,dst=/x"],
@@ -251,7 +250,6 @@ fn rr_10_a_mount_key_in_another_case_does_not_hide_the_host_source() {
 /// all pass. `docker create` accepted each (Docker Desktop 29.9.2). The builder's own mounts all lie
 /// under paths it creates, so a list of the paths that may be mounted would be the right shape.
 #[test]
-#[ignore = "confirmed defect RR-11: the host-path check is a short list of roots. Run: cargo test -p factory-sandbox --test security_rereview -- --ignored rr_11"]
 fn rr_11_a_bind_mount_of_the_runtime_socket_or_a_home_directory_is_refused() {
     let escaped = not_denied(&[
         &[
@@ -285,7 +283,6 @@ fn rr_11_a_bind_mount_of_the_runtime_socket_or_a_home_directory_is_refused() {
 /// boolean given `false`, a run without the init process, and a mount destination over a file of
 /// the image. Each is accepted by `docker create`.
 #[test]
-#[ignore = "confirmed defect RR-12: weakening values of allowed flags are not read. Run: cargo test -p factory-sandbox --test security_rereview -- --ignored rr_12"]
 fn rr_12_weakening_values_of_the_flags_the_builder_uses_are_refused() {
     let escaped = not_denied(&[
         &["create", "--tmpfs", "/t:rw,exec,suid,dev"],
@@ -316,28 +313,26 @@ fn rr_12_weakening_values_of_the_flags_the_builder_uses_are_refused() {
     assert!(unexpected.is_empty(), "not refused: {unexpected:?}");
 }
 
-/// RR-13 (hypothesis). The audit refuses the characters that hide or reorder text, and passes the
-/// ones that only look blank: the Braille blank, the no-break and ideographic spaces, a trailing
-/// space-like character, and the combining marks that render as nothing. Two names that print the
-/// same can then be two files in a change list.
+/// RR-13. The audit refused the characters that hide or reorder text and passed the ones that only
+/// look blank. It now also refuses a name that begins or ends with a space-like character, the
+/// braille blank, a variation selector with no base, and a stack of more than two combining marks.
+/// A space that is not an ASCII space in the middle of a name still passes, and is logged: the
+/// ideographic space is how Japanese file names are written, and refusing it would refuse legitimate
+/// names. A name that is not in normal form NFC also passes: the standard library cannot tell, and a
+/// new dependency was not added for a hypothesis.
 #[test]
-#[ignore = "RR-13 hypothesis: names that print as blank or as another name pass the audit. Run: cargo test -p factory-sandbox --test security_rereview -- --ignored rr_13"]
 fn rr_13_names_that_print_as_blank_or_as_another_name_are_refused() {
     let scratch = support::Scratch::new("rr13");
-    let mut accepted = Vec::new();
-    for (i, name) in [
+    let refused = [
         "report.md\u{00A0}",
         "report\u{2800}.md",
         "\u{2800}",
-        "a\u{3000}b.rs",
-        "a\u{2009}b.rs",
         "a\u{FE0E}b.rs",
         "a\u{180B}b.rs",
         "a\u{0300}\u{0301}\u{0302}b.rs",
-    ]
-    .iter()
-    .enumerate()
-    {
+    ];
+    let mut accepted = Vec::new();
+    for (i, name) in refused.iter().enumerate() {
         let dir = scratch.path().join(format!("case-{i}"));
         std::fs::create_dir_all(&dir).expect("a case directory");
         std::fs::write(dir.join(name), b"").expect("an empty file");
@@ -347,4 +342,18 @@ fn rr_13_names_that_print_as_blank_or_as_another_name_are_refused() {
         }
     }
     assert!(accepted.is_empty(), "accepted: {accepted:?}");
+}
+
+/// The part of RR-13 that stays a log line: a non-ASCII space inside a name.
+#[test]
+fn rr_13_a_space_inside_a_name_that_is_not_an_ascii_space_is_accepted() {
+    let scratch = support::Scratch::new("rr13-inner");
+    for (i, name) in ["a\u{3000}b.rs", "a\u{2009}b.rs"].iter().enumerate() {
+        let dir = scratch.path().join(format!("case-{i}"));
+        std::fs::create_dir_all(&dir).expect("a case directory");
+        std::fs::write(dir.join(name), b"").expect("an empty file");
+        let stop = AtomicBool::new(false);
+        let files = audit_output(&dir, &AuditLimits::default(), &stop);
+        assert!(files.is_ok_and(|files| files.len() == 1), "{name:?}");
+    }
 }

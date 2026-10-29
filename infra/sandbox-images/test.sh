@@ -103,7 +103,7 @@ register NO-WORLD-WRITABLE  rule_no_world_writable  "posture audit"         "no 
 register NO-FORBIDDEN       rule_no_forbidden       "posture audit"         "no git, GitHub CLI, package manager, network client, account tool or unneeded interpreter"
 register SHELLS             rule_shells             "posture"               "agent keeps only bash, sh and dash; verify and the sidecar have no shell"
 register TOOLS-ONLY-IN-AGENT rule_tools_only_agent  "posture audit"         "claude and codex exist only in the agent image, at the pinned checksums"
-register TOOLS-EXECUTE-ONLY rule_tools_execute_only "posture audit"         "in the agent image the tools and timeout are execute-only (0711), so their processes are not dumpable"
+register TOOLS-EXECUTE-ONLY rule_tools_execute_only "posture audit"         "in the agent image every program of the adapters' command chain (env, timeout, the tools) is execute-only (0711), so their processes are not dumpable"
 register NO-CREDENTIAL-FILES rule_no_credential_files "posture audit"       "no credential file or credential directory in any image"
 register NO-SECRET-CONTENT  rule_no_secret_content  "posture audit"         "a scan of every file finds no secret that policies/security.yaml blocks"
 register RUNTIME-PROFILE    rule_runtime_profile    "posture"               "under the hardened profile: non-root, no capabilities, no-new-privileges, seccomp, no network interface"
@@ -399,28 +399,36 @@ rule_tools_only_agent() {
 # exec). Its /proc/<pid>/fd, /proc/<pid>/mem and /proc/<pid>/environ then belong to root, so a
 # process of the sandbox user, such as a command the model asked the tool to run, can neither write
 # the standard output pipe of the tool through /proc/<pid>/fd/1 nor attach to it (finding SBX-4).
-# The adapters start `env -i ... timeout ... <tool>`, and `timeout` holds the same pipe, so it is
-# execute-only too. Each of these files must be exactly 0711: execute for everyone, read for nobody
-# but root, no write.
+# The adapters start `env -i ... timeout ... <tool>`, and every one of those programs holds the same
+# pipe in turn, so a hostile process that already runs when the exec starts wins the pipe of the
+# first READABLE program of the chain and keeps it across the exec calls that follow (finding RR-14).
+# Every program of lib/execute-only.txt must therefore be exactly 0711: execute for everyone, read
+# for nobody but root, no write, a regular file owned by root. The modes are read with `stat`, run
+# under the hardened profile as the sandbox user, so the rule needs nothing the image does not have.
 rule_tools_execute_only() {
-  local role
+  local role list paths problems
+  list="$here/lib/execute-only.txt"
   for role in $SELECTED; do
-    fs_audit "$role" || { t_fail TOOLS-EXECUTE-ONLY "$role: could not read the image file system"; continue; }
     if [ "$role" != agent ]; then
       t_pass TOOLS-EXECUTE-ONLY "$role: not applicable, the image holds no agent tool"
       continue
     fi
-    local modes wrong missing name
-    modes="$WORK/fs-agent/tool-modes.txt"
-    wrong=$(grep -v ' mode 0711$' "$modes" || true)
-    missing=""
-    for name in /usr/local/bin/claude /opt/codex/bin/codex /opt/codex/bin/codex-code-mode-host /usr/bin/timeout; do
-      grep -q "^$name mode 0711\$" "$modes" || missing="$missing $name"
-    done
-    if [ -z "$wrong" ] && [ -z "$missing" ]; then
-      t_pass TOOLS-EXECUTE-ONLY "agent: claude, codex, codex-code-mode-host and timeout are mode 0711"
+    paths=$(sbx_execute_only_paths "$list")
+    if [ -z "$paths" ]; then
+      t_fail TOOLS-EXECUTE-ONLY "agent: $list names no program"
+      continue
+    fi
+    # shellcheck disable=SC2086  # the paths are absolute and contain no space
+    run_in agent -- stat -c '%n|%a|%u:%g|%F' $paths
+    if [ "$RC" -ne 0 ] && ! printf '%s' "$OUT" | grep -q -F 'No such file'; then
+      t_fail TOOLS-EXECUTE-ONLY "agent: stat could not run: $(first_lines "$OUT" 2)"
+      continue
+    fi
+    problems=$(printf '%s\n' "$OUT" | grep -v -e '^stat: ' | sbx_execute_only_problems "$list")
+    if [ -z "$problems" ]; then
+      t_pass TOOLS-EXECUTE-ONLY "agent: $(printf '%s\n' "$paths" | wc -l | tr -d ' ') programs of the command chain are mode 0711, owner root: $(printf '%s' "$paths" | tr '\n' ' ')"
     else
-      t_fail TOOLS-EXECUTE-ONLY "agent: not execute-only:${missing:+ missing or wrong:$missing}${wrong:+ $(first_lines "$wrong" 4)}"
+      t_fail TOOLS-EXECUTE-ONLY "agent: not execute-only: $(first_lines "$problems" 6)"
     fi
   done
 }

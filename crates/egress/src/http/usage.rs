@@ -14,6 +14,7 @@
 //! against a real provider (docs/spikes/agent-runtime.md); the shapes here follow the recorded fake
 //! provider and the providers' published formats.
 
+use factory_ports::agent::AnswerEnd;
 use serde_json::Value;
 
 use crate::broker::{Provider, TokenCounts};
@@ -58,6 +59,76 @@ fn openai(usage: &Value) -> TokenCounts {
     }
 }
 
+/// How an Anthropic `stop_reason` ends the turn.
+fn anthropic_end(reason: &str) -> AnswerEnd {
+    match reason {
+        "end_turn" | "stop_sequence" => AnswerEnd::EndTurn,
+        "tool_use" => AnswerEnd::ToolUse,
+        // `max_tokens`, `pause_turn`, `refusal`, `model_context_window_exceeded` and any reason this
+        // reader does not know: the turn did not end normally.
+        _ => AnswerEnd::Cut,
+    }
+}
+
+/// How a Chat Completions `finish_reason` ends the turn.
+fn chat_end(reason: &str) -> AnswerEnd {
+    match reason {
+        "stop" => AnswerEnd::EndTurn,
+        "tool_calls" | "function_call" => AnswerEnd::ToolUse,
+        _ => AnswerEnd::Cut,
+    }
+}
+
+/// How an OpenAI Responses object ends the turn. `completed` with a call in the output is a request
+/// for a tool result; `completed` without one ends the turn; `incomplete` is cut; the rest failed.
+fn responses_end(response: &Value) -> AnswerEnd {
+    match response.get("status").and_then(Value::as_str) {
+        Some("completed") => {
+            let calls = response
+                .get("output")
+                .and_then(Value::as_array)
+                .is_some_and(|items| {
+                    items.iter().any(|item| {
+                        item.get("type")
+                            .and_then(Value::as_str)
+                            .is_some_and(|kind| kind.ends_with("_call"))
+                    })
+                });
+            if calls {
+                AnswerEnd::ToolUse
+            } else {
+                AnswerEnd::EndTurn
+            }
+        }
+        Some("incomplete") => AnswerEnd::Cut,
+        _ => AnswerEnd::Failed,
+    }
+}
+
+/// How the answer in a complete JSON body ended. A body that does not say is `Failed`: the broker
+/// attests only an ending it read.
+#[must_use]
+pub fn answer_end_from_json(provider: Provider, body: &[u8]) -> AnswerEnd {
+    let Ok(value) = serde_json::from_slice::<Value>(body) else {
+        return AnswerEnd::Failed;
+    };
+    match provider {
+        Provider::Anthropic => value
+            .get("stop_reason")
+            .and_then(Value::as_str)
+            .map_or(AnswerEnd::Failed, anthropic_end),
+        Provider::OpenAi => {
+            if value.get("status").is_some() {
+                return responses_end(&value);
+            }
+            value
+                .pointer("/choices/0/finish_reason")
+                .and_then(Value::as_str)
+                .map_or(AnswerEnd::Failed, chat_end)
+        }
+    }
+}
+
 /// The usage in a complete JSON answer, or `None` when it holds none.
 #[must_use]
 pub fn counts_from_json(provider: Provider, body: &[u8]) -> Option<TokenCounts> {
@@ -84,6 +155,9 @@ pub struct StreamUsage {
     counts: TokenCounts,
     saw_start: bool,
     saw_final: bool,
+    end: AnswerEnd,
+    /// A Responses stream announced a call item (`function_call` and its kin) before it completed.
+    saw_call: bool,
 }
 
 impl StreamUsage {
@@ -97,6 +171,8 @@ impl StreamUsage {
             counts: TokenCounts::default(),
             saw_start: false,
             saw_final: false,
+            end: AnswerEnd::Failed,
+            saw_call: false,
         }
     }
 
@@ -132,12 +208,23 @@ impl StreamUsage {
 
     /// The counts, when the whole report was seen.
     #[must_use]
-    pub fn finish(mut self) -> Option<TokenCounts> {
+    pub fn finish(self) -> Option<TokenCounts> {
+        self.finish_with_end().0
+    }
+
+    /// The counts, when the whole report was seen, and how the answer ended. A stream that was cut
+    /// before its report is complete ends `Failed`, whatever stop reason it carried so far.
+    #[must_use]
+    pub fn finish_with_end(mut self) -> (Option<TokenCounts>, AnswerEnd) {
         if !self.line.is_empty() && !self.discarding {
             let line = std::mem::take(&mut self.line);
             self.line_done(&line);
         }
-        self.is_complete().then_some(self.counts)
+        if self.is_complete() {
+            (Some(self.counts), self.end)
+        } else {
+            (None, AnswerEnd::Failed)
+        }
     }
 
     fn line_done(&mut self, raw: &[u8]) {
@@ -168,6 +255,9 @@ impl StreamUsage {
                 }
             }
             "message_delta" => {
+                if let Some(reason) = event.pointer("/delta/stop_reason").and_then(Value::as_str) {
+                    self.end = anthropic_end(reason);
+                }
                 if let Some(usage) = event.get("usage") {
                     // The usage of a delta is cumulative. Fields it does not carry keep the value
                     // from `message_start`.
@@ -192,10 +282,44 @@ impl StreamUsage {
     fn openai_event(&mut self, kind: &str, event: &Value) {
         let usage = match kind {
             "response.completed" | "response.incomplete" | "response.failed" => {
+                if let Some(response) = event.get("response") {
+                    // The event type decides the status: a `response.completed` event whose object
+                    // carries no status is still a completion.
+                    self.end = match kind {
+                        "response.completed" => match responses_end(response) {
+                            AnswerEnd::Failed => AnswerEnd::EndTurn,
+                            other => other,
+                        },
+                        "response.incomplete" => AnswerEnd::Cut,
+                        _ => AnswerEnd::Failed,
+                    };
+                    if self.end == AnswerEnd::EndTurn && self.saw_call {
+                        self.end = AnswerEnd::ToolUse;
+                    }
+                }
                 event.pointer("/response/usage")
             }
-            // A Chat Completions chunk has no `type`; the last one carries `usage`.
-            "" => event.get("usage"),
+            "response.output_item.added" | "response.output_item.done" => {
+                if event
+                    .pointer("/item/type")
+                    .and_then(Value::as_str)
+                    .is_some_and(|item| item.ends_with("_call"))
+                {
+                    self.saw_call = true;
+                }
+                None
+            }
+            // A Chat Completions chunk has no `type`; the last one carries `usage`, and the one
+            // before it names the reason the choice ended.
+            "" => {
+                if let Some(reason) = event
+                    .pointer("/choices/0/finish_reason")
+                    .and_then(Value::as_str)
+                {
+                    self.end = chat_end(reason);
+                }
+                event.get("usage")
+            }
             _ => None,
         };
         if let Some(usage) = usage.filter(|u| u.is_object()) {

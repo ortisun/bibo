@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-"""Deliberate breaks of the success rule of the agent adapters (findings RTM-1 and SBX-4 of the
-isolation core review), to show that the tests catch each one.
+"""Deliberate breaks of the success rule of the agent adapters (findings RTM-1, RR-7, RR-8, RR-9
+and RR-14 of the security reviews of the isolation core), to show that the tests catch each one.
 
 Run from the repository root:  python3 -I crates/runtime/tests/mutations.py [name ...]
 
@@ -19,6 +19,8 @@ from pathlib import Path
 ROOT = Path.cwd()
 CLAUDE = "crates/runtime/src/claude/mod.rs"
 CODEX = "crates/runtime/src/codex/mod.rs"
+TRUST = "crates/runtime/src/trust.rs"
+ATTEST = "crates/runtime/src/attest.rs"
 
 # name -> (what is broken, [(file, old, new), ...])
 MUTATIONS = {
@@ -27,14 +29,53 @@ MUTATIONS = {
         [(CLAUDE, "        let clean_exit = exit.code == Some(0) && result.signal.is_none();",
           "        let clean_exit = true;")],
     ),
-    "claude-success-with-a-second-result": (
-        "a second result event, or an event after the result, does not stop a success",
-        [(CLAUDE, "        let one_result_last = stream.result_events == 1 && !stream.events_after_result;",
-          "        let one_result_last = true;")],
+    "codex-success-ignores-the-signal": (
+        "a turn.completed with exit code 0 is a success although a signal ended the process (RR-9)",
+        [(CODEX, "    if stream.completed && exit.code == Some(0) && result.signal.is_none() {",
+          "    if stream.completed && exit.code == Some(0) {")],
     ),
-    "codex-success-with-a-second-completion": (
-        "a second turn.completed, or an item after it, does not stop a success",
-        [(CODEX, "        && stream.completed_events == 1\n        && !stream.events_after_completed\n", "\n")],
+    "stream-rule-off": (
+        "the shape of the stream is not looked at at all (RR-7, RR-8, RTM-1)",
+        [(TRUST, "pub fn check_shape(shape: &Shape) -> Result<(), Distrust> {\n    if shape.truncated {",
+          "pub fn check_shape(shape: &Shape) -> Result<(), Distrust> {\n    if true {\n        return Ok(());\n    }\n    if shape.truncated {")],
+    ),
+    "stream-torn-line-ignored": (
+        "a line before the terminal event that is not a JSON object does not stop a success (RR-7)",
+        [(TRUST, "    } else if shape.malformed_before > 0 {\n        Err(Distrust::MalformedLine)\n    } else if",
+          "    } else if")],
+    ),
+    "stream-cut-capture-ignored": (
+        "a capture cut at the output limit does not stop a success (RR-8)",
+        [(TRUST, "    if shape.truncated {\n        Err(Distrust::StreamTruncated)\n    } else if",
+          "    if false {\n        Err(Distrust::StreamTruncated)\n    } else if")],
+    ),
+    "stream-second-terminal-ignored": (
+        "a second terminal event does not stop a success",
+        [(TRUST, "    } else if shape.terminal_events > 1 {\n        Err(Distrust::SecondTerminalEvent)\n    } else if",
+          "    } else if")],
+    ),
+    "stream-output-after-terminal-ignored": (
+        "a line after the terminal event does not stop a success",
+        [(TRUST, "    } else if shape.lines_after > 0 {\n        Err(Distrust::OutputAfterTerminalEvent)\n    } else {",
+          "    } else {")],
+    ),
+    "attestation-skipped": (
+        "a stream that says completed is a success whatever the broker saw (RR-14)",
+        [(ATTEST, "        if end.outcome.is_err() {\n            return end;\n        }",
+          "        if true {\n            return end;\n        }")],
+    ),
+    "attestation-ignores-the-last-answer": (
+        "a run whose last answer asked for a tool, was cut or failed is attested (RR-14)",
+        [(ATTEST, "        || after.last_answer != Some(AnswerEnd::EndTurn)\n", "\n")],
+    ),
+    "attestation-ignores-the-baseline": (
+        "an earlier run of the same token attests this one (RR-14)",
+        [(ATTEST, "    let answers = after.answers.saturating_sub(before.answers);\n    let requests = after.usage.requests.saturating_sub(before.usage.requests);",
+          "    let answers = after.answers;\n    let requests = after.usage.requests;")],
+    ),
+    "attestation-ignores-the-claim": (
+        "a stream that claims more turns or tokens than the broker metered is attested (RR-14)",
+        [(ATTEST, "    if claim.turns > answers.saturating_add(REQUEST_SLACK)", "    if false && claim.turns > answers.saturating_add(REQUEST_SLACK)")],
     ),
 }
 
@@ -43,7 +84,7 @@ def run_tests() -> tuple[bool, list[str]]:
     """Returns (compiled, failed test names)."""
     proc = subprocess.run(
         ["cargo", "nextest", "run", "-p", "factory-runtime", "--no-fail-fast", "-E",
-         "kind(lib) | binary(security_review)"],
+         "kind(lib) | binary(security_review) | binary(security_rereview) | binary(stream_rule)"],
         cwd=ROOT, capture_output=True, text=True,
     )
     text = proc.stdout + proc.stderr

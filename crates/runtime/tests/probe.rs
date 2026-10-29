@@ -19,11 +19,11 @@ use support::Harness;
 use support::scripted::{ScriptedSession, Step, Tool};
 
 fn claude(h: &Harness) -> ClaudeCodeRuntime {
-    ClaudeCodeRuntime::new(ClaudeCodeConfig::default(), h.io.clone())
+    ClaudeCodeRuntime::new(ClaudeCodeConfig::default(), h.io.clone(), h.attestation())
 }
 
 fn codex(h: &Harness) -> CodexRuntime {
-    CodexRuntime::new(CodexConfig::default(), h.io.clone())
+    CodexRuntime::new(CodexConfig::default(), h.io.clone(), h.attestation())
 }
 
 fn session(h: &Harness, tool: Tool) -> ScriptedSession {

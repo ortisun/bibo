@@ -92,6 +92,14 @@ pub const DEFAULT_DENY_RANGES: &[&str] = &[
     "64:ff9b:1::/48",
     "2002::/16",
     "2001::/32",
+    // Other special-purpose ranges of the IANA registries that a cloud or a lab host reaches without a
+    // route (finding RR-5): the platform address of Azure, which serves the metadata of a virtual
+    // machine like 169.254.169.254 does elsewhere; the IETF protocol block 192.0.0.0/24, where the
+    // DS-Lite and PCP addresses live; and the deprecated site-local range (RFC 3879) that some
+    // stacks still assign.
+    "168.63.129.16/32",
+    "192.0.0.0/24",
+    "fec0::/10",
 ];
 
 /// The hosts that no sandbox may reach, whatever else is configured

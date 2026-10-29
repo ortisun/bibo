@@ -12,7 +12,12 @@
 #   * the same section with no Docker daemon at all is BLOCKED, not a pass;
 #   * a pin with no value does not match an upstream lookup that found nothing;
 #   * a signature made by another key that sits in the downloaded key file is refused, and one
-#     made by the pinned key is accepted. The keys are made here, at run time, and thrown away.
+#     made by the pinned key is accepted. The keys are made here, at run time, and thrown away;
+#   * a signature made by the pinned key before the key was REVOKED is refused (finding RR-15: gpg
+#     prints VALIDSIG for it, next to REVKEYSIG and KEYREVOKED), and so is one made by a key that
+#     has EXPIRED since; the same expiring key, checked while it is still good, is accepted;
+#   * the judgement of the status lines on its own: a revoked, expired or bad status, a status
+#     line nobody has read, a missing GOODSIG and a VALIDSIG of another key each refuse.
 #
 # Exit codes: 0 every case behaved, 1 one did not, 3 BLOCKED (gpg or python3 is missing).
 set -uo pipefail
@@ -107,33 +112,91 @@ expect "an empty pin does not match an empty lookup" "$(printf '%s' "$OUT" | gre
 # --- verify_signature(): the pinned key, not any key in the downloaded file ------------------------
 export GNUPGHOME="$work/gnupg-src"
 mkdir -m 700 "$GNUPGHOME"
-for who in pinned other; do
+for who in pinned other revoked; do
   gpg --batch --quiet --pinentry-mode loopback --passphrase '' --quick-generate-key "$who <$who@example.test>" ed25519 sign never 2>/dev/null
 done
+gpg --batch --quiet --pinentry-mode loopback --passphrase '' --quick-generate-key "expiring <expiring@example.test>" ed25519 sign 1d 2>/dev/null
 fingerprint=$(gpg --batch --with-colons --list-keys pinned@example.test 2>/dev/null | awk -F: '/^fpr:/{print $10; exit}')
 gpg --batch --armor --export pinned@example.test other@example.test >"$work/ring.asc" 2>/dev/null
 printf '{"platforms":{}}\n' >"$work/manifest.json"
 gpg --batch --quiet --pinentry-mode loopback --passphrase '' --local-user other@example.test --detach-sign --output "$work/by-other.sig" "$work/manifest.json" 2>/dev/null
 gpg --batch --quiet --pinentry-mode loopback --passphrase '' --local-user pinned@example.test --detach-sign --output "$work/by-pinned.sig" "$work/manifest.json" 2>/dev/null
+# The key that signs and is revoked afterwards, and the key that signs and expires afterwards.
+gpg --batch --quiet --pinentry-mode loopback --passphrase '' --local-user revoked@example.test --detach-sign --output "$work/by-revoked.sig" "$work/manifest.json" 2>/dev/null
+gpg --batch --quiet --pinentry-mode loopback --passphrase '' --local-user expiring@example.test --detach-sign --output "$work/by-expiring.sig" "$work/manifest.json" 2>/dev/null
+fp_revoked=$(gpg --batch --with-colons --list-keys revoked@example.test 2>/dev/null | awk -F: '/^fpr:/{print $10; exit}')
+fp_expiring=$(gpg --batch --with-colons --list-keys expiring@example.test 2>/dev/null | awk -F: '/^fpr:/{print $10; exit}')
+gpg --batch --armor --export expiring@example.test >"$work/ring-expiring.asc" 2>/dev/null
+# A revocation certificate needs a terminal prompt in some gpg versions; --no-tty with the answers on
+# standard input works for gpg 2.5. Whether the key really is revoked is checked, so that a failure
+# to revoke is a failure of this test and not a pass (the first reproduction of RR-15 never revoked
+# its key).
+printf 'y\n0\n\ny\n' | gpg --no-tty --yes --pinentry-mode loopback --passphrase '' --command-fd 0 \
+  --output "$work/revoked.rev.asc" --gen-revoke "$fp_revoked" >/dev/null 2>&1
+gpg --batch --import "$work/revoked.rev.asc" >/dev/null 2>&1
+revoked_for_real=1
+gpg --batch --with-colons --list-keys "$fp_revoked" 2>/dev/null | grep -q '^pub:r:' && revoked_for_real=0
+gpg --batch --armor --export revoked@example.test >"$work/ring-revoked.asc" 2>/dev/null
 gpgconf --homedir "$GNUPGHOME" --kill gpg-agent >/dev/null 2>&1
 unset GNUPGHOME
-awk '/^verify_signature\(\) \{/,/^}/' "$here/check-pins.sh" >"$work/verify_fn.sh"
+{
+  awk '/^signature_status_accepts\(\) \{/,/^}/' "$here/check-pins.sh"
+  awk '/^verify_signature\(\) \{/,/^}/' "$here/check-pins.sh"
+} >"$work/verify_fn.sh"
 verify_with() {
-  # verify_with SIGNATURE-FILE -> prints bad=0|1
+  # verify_with SIGNATURE-FILE RING-FILE FINGERPRINT [FAKED-EPOCH-SECONDS] -> prints bad=0|1
   (
     bad=0
+    ring=$2
+    want=$3
+    faked=${4:-}
     work="$work/verify-$RANDOM"
     mkdir -p "$work"
     sbx_blocked() { echo "BLOCKED: $*"; }
-    fetch() { cp "$work/../ring.asc" "$2"; }
+    fetch() { cp "$ring" "$2"; }
+    if [ -n "$faked" ]; then
+      # Judge the signature as of a later day, as gpg would when the key has expired by then.
+      gpg() { command gpg --faked-system-time "$faked!" "$@"; }
+    fi
     # shellcheck source=/dev/null
     . "$work/../verify_fn.sh"
-    verify_signature probe "unused" "$fingerprint" "$1" "$work/../manifest.json" >/dev/null 2>&1
+    verify_signature probe "unused" "$want" "$1" "$work/../manifest.json" >/dev/null 2>&1
     echo "bad=$bad"
   )
 }
-expect "a signature by another key in the downloaded file is refused" "$(verify_with "$work/by-other.sig" | grep -q 'bad=1' && echo 0 || echo 1)"
-expect "a signature by the pinned key is accepted" "$(verify_with "$work/by-pinned.sig" | grep -q 'bad=0' && echo 0 || echo 1)"
+expect "a signature by another key in the downloaded file is refused" "$(verify_with "$work/by-other.sig" "$work/ring.asc" "$fingerprint" | grep -q 'bad=1' && echo 0 || echo 1)"
+expect "a signature by the pinned key is accepted" "$(verify_with "$work/by-pinned.sig" "$work/ring.asc" "$fingerprint" | grep -q 'bad=0' && echo 0 || echo 1)"
+expect "the test revoked its key for real (gpg lists it as revoked)" "$revoked_for_real"
+expect "a signature by the pinned key that has been REVOKED since is refused" "$(verify_with "$work/by-revoked.sig" "$work/ring-revoked.asc" "$fp_revoked" | grep -q 'bad=1' && echo 0 || echo 1)"
+expect "a signature by the pinned key that has EXPIRED since is refused" "$(verify_with "$work/by-expiring.sig" "$work/ring-expiring.asc" "$fp_expiring" "$(($(date +%s) + 864000))" | grep -q 'bad=1' && echo 0 || echo 1)"
+expect "the same expiring key is accepted while it is still good" "$(verify_with "$work/by-expiring.sig" "$work/ring-expiring.asc" "$fp_expiring" | grep -q 'bad=0' && echo 0 || echo 1)"
+
+# --- signature_status_accepts(): the judgement of the status lines on its own ---------------------
+# shellcheck source=/dev/null
+. "$work/verify_fn.sh"
+status_case() {
+  # status_case EXPECTED(0|1) FINGERPRINT LINES... -> 0 when the verdict was as expected
+  local want=$1 fp=$2 verdict
+  shift 2
+  printf '%s\n' "$@" | signature_status_accepts "$fp" >/dev/null
+  verdict=$?
+  [ "$verdict" -eq "$want" ] && echo 0 || echo 1
+}
+# The fingerprints are those of the throwaway keys made above, not literals.
+KEY=$fingerprint
+KEYID=${KEY: -16}
+OTHER=$fp_revoked
+GOOD=("[GNUPG:] NEWSIG" "[GNUPG:] KEY_CONSIDERED $KEY 0" "[GNUPG:] SIG_ID x 2026-01-01 1" "[GNUPG:] GOODSIG $KEYID a <a@b>" "[GNUPG:] VALIDSIG $KEY 2026-01-01 1 0 4 0 22 10 00 $KEY" "[GNUPG:] TRUST_ULTIMATE 0 pgp")
+expect "the status of a good signature by the pinned key is accepted" "$(status_case 0 "$KEY" "${GOOD[@]}")"
+expect "a status with REVKEYSIG and KEYREVOKED next to VALIDSIG is refused" "$(status_case 1 "$KEY" "${GOOD[@]/GOODSIG/REVKEYSIG}" "[GNUPG:] KEYREVOKED")"
+expect "a status with KEYREVOKED added to a good one is refused" "$(status_case 1 "$KEY" "${GOOD[@]}" "[GNUPG:] KEYREVOKED")"
+expect "a status with EXPKEYSIG is refused" "$(status_case 1 "$KEY" "${GOOD[@]}" "[GNUPG:] EXPKEYSIG $KEYID a <a@b>")"
+expect "a status with EXPSIG is refused" "$(status_case 1 "$KEY" "${GOOD[@]}" "[GNUPG:] EXPSIG $KEYID a <a@b>")"
+expect "a status with BADSIG is refused" "$(status_case 1 "$KEY" "${GOOD[@]}" "[GNUPG:] BADSIG $KEYID a <a@b>")"
+expect "a status line nobody has read is refused" "$(status_case 1 "$KEY" "${GOOD[@]}" "[GNUPG:] SOMETHING_NEW 1 2")"
+expect "a status with no GOODSIG is refused" "$(status_case 1 "$KEY" "${GOOD[@]/GOODSIG/NOTHING}")"
+expect "a status with a VALIDSIG of another key is refused" "$(status_case 1 "$OTHER" "${GOOD[@]}")"
+expect "an empty status is refused" "$(status_case 1 "$KEY")"
 for home in "$work"/verify-*/gpg-*; do
   [ -d "$home" ] && gpgconf --homedir "$home" --kill gpg-agent >/dev/null 2>&1
 done

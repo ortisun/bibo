@@ -81,11 +81,19 @@ impl World {
     }
 
     fn claude(&self) -> ClaudeCodeRuntime {
-        ClaudeCodeRuntime::new(ClaudeCodeConfig::default(), self.h.io.clone())
+        ClaudeCodeRuntime::new(
+            ClaudeCodeConfig::default(),
+            self.h.io.clone(),
+            self.h.attestation(),
+        )
     }
 
     fn codex(&self) -> CodexRuntime {
-        CodexRuntime::new(CodexConfig::default(), self.h.io.clone())
+        CodexRuntime::new(
+            CodexConfig::default(),
+            self.h.io.clone(),
+            self.h.attestation(),
+        )
     }
 
     async fn session(&self, ws: &HostWorkspace) -> RealSession {
@@ -113,6 +121,7 @@ async fn verdict_skills_claude_code_standard_stages_see_none() {
             ..ClaudeCodeConfig::default()
         },
         w.h.io.clone(),
+        w.h.attestation(),
     );
     let report = runtime
         .run(
@@ -147,6 +156,7 @@ async fn verdict_skills_claude_code_specification_stage_sees_exactly_the_pinned_
             ..ClaudeCodeConfig::default()
         },
         w.h.io.clone(),
+        w.h.attestation(),
     );
     let mut req = w.claude_request("/alpha-one build the thing");
     req.flag_set = FlagSet::Specification;
@@ -302,6 +312,7 @@ async fn verdict_skills_codex_is_refused_unless_the_sandbox_shows_exactly_the_st
             ..CodexConfig::default()
         },
         w.h.io.clone(),
+        w.h.attestation(),
     );
     let mut req = w.codex_request("$alpha-one build the thing");
     req.flag_set = FlagSet::Specification;

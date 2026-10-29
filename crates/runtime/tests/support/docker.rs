@@ -42,7 +42,7 @@ use super::{GrantingStore, Harness, IMAGES_JSON, PLATFORM, agent_image, runtime_
 // the `sandbox` crate), so both crates take the same lock file in the system temporary directory
 // and a sandbox run and a runtime run wait for each other.
 #[path = "../../../sandbox/tests/support/docker_lock.rs"]
-mod docker_lock;
+pub mod docker_lock;
 
 use docker_lock::{DockerLock, is_network_pool_exhausted, retry_while_pool_exhausted};
 

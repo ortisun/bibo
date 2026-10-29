@@ -10,6 +10,11 @@
 //!   `"mod\u0065l"` are the same key). `serde_json` alone keeps the last of two equal keys, and a
 //!   provider may keep the first;
 //! * nesting deeper than [`MAX_DEPTH`], so that no later recursion can run out of stack;
+//! * more than [`MAX_VALUES`] values in all, or more than [`MAX_WIDTH`] in one array or object. The
+//!   reader builds the whole document before the schema looks at it, and a body of the largest size
+//!   the listener accepts, made of `0,0,0,...`, holds millions of values and took 218 MB to build
+//!   (finding RR-6). The count is checked as each value starts, so the tree never grows past the
+//!   limit;
 //! * anything `serde_json` refuses for a scalar: bad numbers, raw control characters in a string,
 //!   bad escapes, lone surrogates, invalid UTF-8.
 //!
@@ -26,14 +31,28 @@ use super::Violation;
 /// about ten levels deep.
 pub const MAX_DEPTH: usize = 64;
 
+/// The most values (scalars, strings, arrays and objects, and each object member) a body may hold
+/// in all. The largest request recorded from the real tools holds about 2,000; a long conversation
+/// with tool results holds some tens of thousands at most, because the text of a result is one
+/// string. At about 70 bytes a value this bounds the tree of one body to about 7 MB.
+pub const MAX_VALUES: usize = 100_000;
+
+/// The most members of one array or object. The widest array in the recordings has 25.
+pub const MAX_WIDTH: usize = 10_000;
+
 /// Reads `bytes` as one JSON document.
 ///
 /// # Errors
 /// [`Violation::Malformed`] for anything that is not exactly one well-formed document,
-/// [`Violation::DuplicateKey`] for an object with a repeated key and [`Violation::TooDeep`] for
-/// nesting past [`MAX_DEPTH`].
+/// [`Violation::DuplicateKey`] for an object with a repeated key, [`Violation::TooDeep`] for
+/// nesting past [`MAX_DEPTH`] and [`Violation::TooManyValues`] for a document past [`MAX_VALUES`]
+/// values or [`MAX_WIDTH`] members in one array or object.
 pub fn parse(bytes: &[u8]) -> Result<Value, Violation> {
-    let mut reader = Reader { bytes, at: 0 };
+    let mut reader = Reader {
+        bytes,
+        at: 0,
+        values: 0,
+    };
     reader.skip_space();
     let value = reader.value(0)?;
     reader.skip_space();
@@ -46,6 +65,8 @@ pub fn parse(bytes: &[u8]) -> Result<Value, Violation> {
 struct Reader<'a> {
     bytes: &'a [u8],
     at: usize,
+    /// How many values have been started so far.
+    values: usize,
 }
 
 impl Reader<'_> {
@@ -59,7 +80,18 @@ impl Reader<'_> {
         }
     }
 
+    /// Counts one more value and refuses the document when the total is past the limit. Called
+    /// before the value is built, so memory never grows past the limit.
+    fn count(&mut self) -> Result<(), Violation> {
+        self.values += 1;
+        if self.values > MAX_VALUES {
+            return Err(Violation::TooManyValues);
+        }
+        Ok(())
+    }
+
     fn value(&mut self, depth: usize) -> Result<Value, Violation> {
+        self.count()?;
         match self.peek().ok_or(Violation::Malformed)? {
             b'{' => self.object(depth + 1),
             b'[' => self.array(depth + 1),
@@ -93,6 +125,9 @@ impl Reader<'_> {
             }
             self.at += 1;
             self.skip_space();
+            if map.len() >= MAX_WIDTH {
+                return Err(Violation::TooManyValues);
+            }
             let value = self.value(depth)?;
             if !seen.insert(key.clone()) {
                 return Err(Violation::DuplicateKey);
@@ -123,6 +158,9 @@ impl Reader<'_> {
         }
         loop {
             self.skip_space();
+            if items.len() >= MAX_WIDTH {
+                return Err(Violation::TooManyValues);
+            }
             items.push(self.value(depth)?);
             self.skip_space();
             match self.peek() {
@@ -237,6 +275,40 @@ mod tests {
                 String::from_utf8_lossy(bad)
             );
         }
+    }
+
+    #[test]
+    fn a_body_past_the_value_limits_is_refused_before_it_is_built() {
+        // Too wide: more members than one array or object may hold.
+        let wide = |n: usize| format!("[{}0]", "0,".repeat(n));
+        assert!(parse(wide(MAX_WIDTH - 1).as_bytes()).is_ok());
+        assert_eq!(
+            parse(wide(MAX_WIDTH).as_bytes()),
+            Err(Violation::TooManyValues)
+        );
+        let members = |n: usize| {
+            let body: Vec<String> = (0..n).map(|i| format!("\"k{i}\":0")).collect();
+            format!("{{{}}}", body.join(","))
+        };
+        assert!(parse(members(MAX_WIDTH).as_bytes()).is_ok());
+        assert_eq!(
+            parse(members(MAX_WIDTH + 1).as_bytes()),
+            Err(Violation::TooManyValues)
+        );
+        // Too many in all, though no array is wide: rows of twenty values.
+        let row = format!("[{}0],", "0,".repeat(19));
+        let rows = |n: usize| format!("[{}[]]", row.repeat(n));
+        assert!(parse(rows(2_000).as_bytes()).is_ok());
+        const { assert!(MAX_VALUES / 21 < MAX_WIDTH) };
+        assert_eq!(
+            parse(rows(MAX_VALUES / 21 + 100).as_bytes()),
+            Err(Violation::TooManyValues)
+        );
+        // The count stops the reader at the limit: it does not read on to the end of a huge body.
+        let huge = format!("[{}]", "[0],".repeat(10_000_000));
+        assert_eq!(parse(huge.as_bytes()), Err(Violation::TooManyValues));
+        // A legitimate body of the largest recorded size is nowhere near the limit.
+        assert!(parse(wide(25).as_bytes()).is_ok());
     }
 
     #[test]

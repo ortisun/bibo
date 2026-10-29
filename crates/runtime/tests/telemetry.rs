@@ -28,7 +28,7 @@ async fn the_skill_check_logs_counts_and_digests_and_never_the_names() {
     let _installed = recorder.install();
     let mut session = ScriptedSession::new(&h, Tool::Codex, Step::exits(0, ""))
         .with_visible_skills(&[planted, "another-skill"]);
-    let runtime = CodexRuntime::new(CodexConfig::default(), h.io.clone());
+    let runtime = CodexRuntime::new(CodexConfig::default(), h.io.clone(), h.attestation());
     let mut req = request(&h, "codex-cli", "some-model", "http://egress:8080");
     req.flag_set = FlagSet::Standard;
 

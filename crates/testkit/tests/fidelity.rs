@@ -7,7 +7,7 @@
 use std::sync::Arc;
 
 use factory_domain::vocabulary::{ExecutionMode, Fidelity};
-use factory_ports::agent::{AgentRuntime, ModelBroker, ModelRouter};
+use factory_ports::agent::{AgentRuntime, ModelBroker, ModelRouter, TurnAttestation};
 use factory_ports::artifact::ArtifactStore;
 use factory_ports::clock::{CancelSignal, Clock, IdGenerator};
 use factory_ports::githost::{ChangeHost, IssueSource, WebhookVerifier};
@@ -69,7 +69,11 @@ fn every_fake() -> Vec<(&'static str, Fidelity)> {
         ),
         (
             "ModelBroker",
-            FakeModelBroker::new(clock.clone(), ids).fidelity(),
+            ModelBroker::fidelity(&FakeModelBroker::new(clock.clone(), ids.clone())),
+        ),
+        (
+            "TurnAttestation",
+            TurnAttestation::fidelity(&FakeModelBroker::new(clock.clone(), ids)),
         ),
         (
             "AgentRegistry",

@@ -712,6 +712,76 @@ pub trait MeteringOps: Send + Sync {
     ) -> Result<TokenUsage, BrokerError>;
 }
 
+/// How the broker read the end of one model answer. The broker sits outside the sandbox and reads
+/// the provider's own answer, so a process inside the sandbox cannot write this.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AnswerEnd {
+    /// The model finished its turn: Anthropic `end_turn` or `stop_sequence`, the OpenAI Responses
+    /// status `completed` with no tool call in the output, Chat Completions `stop`.
+    EndTurn,
+    /// The model stopped to call a tool and expects a tool result in the next request.
+    ToolUse,
+    /// The answer was cut or refused: an output limit, a pause, a content filter, `incomplete`.
+    Cut,
+    /// The provider answered with a failure, could not be reached, or the answer could not be read
+    /// to its end.
+    Failed,
+}
+
+/// What the model broker observed for one job token: the broker's own ledger of the turns, not the
+/// tool's report of them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TurnSummary {
+    /// Everything metered for the token so far, as [`ModelBroker::usage`] reports it.
+    pub usage: Usage,
+    /// How many model answers the broker read to their end (a provider answer with a status in the
+    /// 200s whose stop reason it could read). It only grows.
+    pub answers: u64,
+    /// How the answer to the most recently settled model request ended, or `None` when no model
+    /// request has settled for the token. A request that fell back to `Failed` is recorded as such.
+    pub last_answer: Option<AnswerEnd>,
+    /// Model requests admitted and not yet settled.
+    pub in_flight: u32,
+}
+
+/// The broker's record of the turns of a job, for the adapter that runs the agent tool.
+///
+/// The agent tool runs in a sandbox and its report is bytes that something inside the sandbox could
+/// have written (finding RR-14 of `docs/reviews/isolation-core-security-rereview.md`). The broker
+/// sees every model request and answer of the job from outside, so an adapter asks it whether a
+/// run that claims to have finished did finish: the last answer ended the turn, and the claimed
+/// turns and tokens do not exceed what the broker metered. The adapter sends no request through
+/// this trait and learns nothing but the summary.
+///
+/// # Preconditions
+/// The token was issued by the broker that answers. The adapter takes a summary before it starts
+/// the tool and another after the tool ended, and compares the two, so a token that already served
+/// an earlier run cannot attest a later one.
+///
+/// # Postconditions
+/// The summary is a read of the broker's state at one moment. `answers` and `usage.requests` never
+/// decrease between two summaries of one token. A summary of a revoked or expired token is still
+/// returned: the record of what happened stays readable. `last_answer` is the end of the most
+/// recently settled model request; a count-tokens call or a refused request never changes it.
+///
+/// # Errors
+/// [`BrokerError::UnknownToken`] when the broker never issued the token and
+/// [`BrokerError::Unavailable`] when it cannot be reached. An adapter treats both as "not attested".
+///
+/// # Idempotency
+/// A read: any number of calls give the same answer while no request settles.
+///
+/// # Cancellation and timeouts
+/// Safe to drop. The adapter sets its own timeout and reports a timeout as `Unavailable`.
+#[async_trait]
+pub trait TurnAttestation: Send + Sync {
+    /// Says whether this answers from the real broker (`real`) or from an in-memory stand-in (`fake`).
+    fn fidelity(&self) -> Fidelity;
+
+    /// The broker's record of the turns of `token`.
+    async fn turn_summary(&self, token: &JobTokenId) -> Result<TurnSummary, BrokerError>;
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

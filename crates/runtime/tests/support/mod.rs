@@ -5,6 +5,7 @@
 //! Compiled into each test target with `mod support;`, so a target uses only part of it.
 #![allow(dead_code)]
 
+pub mod attest;
 pub mod docker;
 pub mod hostile;
 pub mod scripted;
@@ -156,6 +157,12 @@ impl Harness {
             io,
             ids,
         }
+    }
+
+    /// The model broker's record for a test that is about something other than the attestation: a
+    /// broker that saw a long run end well, so that it attests whatever the stream says.
+    pub fn attestation(&self) -> Arc<dyn factory_ports::agent::TurnAttestation> {
+        Arc::new(attest::ScriptedAttestation::generous())
     }
 
     /// Makes `value` a secret the redactor finds, as the composition root does for a job token.

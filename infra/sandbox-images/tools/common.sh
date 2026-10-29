@@ -293,3 +293,42 @@ sbx_set_hardened() {
     HARDENED+=("$line")
   done < <(sbx_hardened_args "$1")
 }
+
+# The paths of lib/execute-only.txt, one per line (comments and blank lines left out).
+#   sbx_execute_only_paths LIST_FILE
+sbx_execute_only_paths() {
+  local line
+  while IFS= read -r line; do
+    case $line in
+      '' | '#'*) continue ;;
+    esac
+    printf '%s\n' "$line"
+  done <"$1"
+}
+
+# Judges what `stat -c '%n|%a|%u:%g|%F'` printed for the paths of lib/execute-only.txt. Each path
+# must be a regular file of mode 711 owned by root, so that a process started from it is not
+# dumpable (finding RR-14: a readable program anywhere in the command chain of an adapter lets a
+# hostile process that already runs open the exec's output pipe). One problem per line on standard
+# output, nothing when the image is right. A path that stat did not print is reported missing.
+#   sbx_execute_only_problems LIST_FILE < stat-lines
+sbx_execute_only_problems() {
+  local list=$1 seen path mode owner kind wanted
+  seen=$(cat)
+  while IFS='|' read -r path mode owner kind; do
+    [ -n "$path" ] || continue
+    if [ "$kind" != "regular file" ]; then
+      printf '%s is a %s, not a regular file\n' "$path" "$kind"
+    elif [ "$mode" != 711 ]; then
+      case $mode in
+        ???) mode="0$mode" ;;
+      esac
+      printf '%s mode %s\n' "$path" "$mode"
+    elif [ "$owner" != "0:0" ]; then
+      printf '%s owner %s\n' "$path" "$owner"
+    fi
+  done <<<"$seen"
+  while IFS= read -r wanted; do
+    printf '%s\n' "$seen" | grep -q -F -e "$wanted|" || printf '%s missing\n' "$wanted"
+  done < <(sbx_execute_only_paths "$list")
+}

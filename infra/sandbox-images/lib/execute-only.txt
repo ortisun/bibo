@@ -1,0 +1,31 @@
+# Programs of the agent image that the sandbox user may run and may not read (mode 0711, owner root),
+# one absolute path per line. Blank lines and lines that start with # are ignored.
+#
+# Why. The agent adapters read the event stream of the tool from the standard output of one
+# `docker exec`, and that output is one pipe shared by every process of the command chain. Any
+# process of the sandbox user can open /proc/<pid>/fd/1 of another process of the same user and
+# write into that pipe, unless the other process is not dumpable. The kernel makes a process
+# non-dumpable when it starts from a file that its user cannot read. The processes that hold the
+# pipe are all the programs of the chain, in order:
+#
+#   /usr/bin/env  ->  /usr/bin/timeout  ->  the tool  ->  (for Codex) its code-mode host
+#
+# so EVERY program of the chain must be on this list. A readable first program is enough to lose:
+# a hostile process that already runs when the exec starts opens the pipe of that program the
+# moment it appears and keeps the descriptor across the exec calls that follow (finding RR-14 of
+# docs/reviews/isolation-core-security-rereview.md).
+#
+# Three things read this file, so they cannot drift apart:
+#   lib/harden.sh   sets the mode and the owner while building the agent image.
+#   test.sh         rule TOOLS-EXECUTE-ONLY requires exactly this mode and owner in the built image.
+#   crates/runtime/tests/execute_only_chain.rs
+#                   requires every program that crates/runtime/src/command.rs puts in a command
+#                   vector to be on this list, and races a hostile process against the chain with
+#                   exactly these modes applied.
+#
+# Adding a program to the command vector of an adapter without adding it here fails that test.
+/usr/bin/env
+/usr/bin/timeout
+/usr/local/bin/claude
+/opt/codex/bin/codex
+/opt/codex/bin/codex-code-mode-host

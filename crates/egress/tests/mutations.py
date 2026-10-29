@@ -118,6 +118,37 @@ MUTATIONS = {
         "a request may ask for any number of output tokens",
         [(SERVER, "let over = match value.as_u64() {\n                Some(asked) => asked > cap,\n                // A negative, fractional or non-numeric limit is replaced by the cap.\n                None => true,\n            };", "let over = false;")],
     ),
+    "openai-request-without-a-cap": (
+        "a Responses or Chat request that names no output limit is forwarded without one (RR-1)",
+        [(SERVER, "    if !present {\n        object.insert(insert.to_owned(), Value::from(cap));\n        changed = true;\n    }",
+          "    if !present && wire == Wire::AnthropicMessages {\n        object.insert(insert.to_owned(), Value::from(cap));\n        changed = true;\n    }")],
+    ),
+    "accept-a-one-hour-cache-write": (
+        "ttl 1h is accepted, and booked at the five-minute rate (RR-2)",
+        [("crates/egress/src/broker/shape/anthropic.rs", '("ttl", Rule::Enum(&["5m"])),',
+          '("ttl", Rule::Enum(&["5m", "1h"])),')],
+    ),
+    "relay-allows-the-azure-platform-address": (
+        "168.63.129.16 is not in the relay's deny ranges (RR-5)",
+        [(POLICY, '    "168.63.129.16/32",\n', "")],
+    ),
+    "relay-allows-the-ietf-protocol-block": (
+        "192.0.0.0/24 is not in the relay's deny ranges (RR-5)",
+        [(POLICY, '    "192.0.0.0/24",\n', "")],
+    ),
+    "relay-allows-site-local-ipv6": (
+        "fec0::/10 is not in the relay's deny ranges (RR-5)",
+        [(POLICY, '    "fec0::/10",\n', "")],
+    ),
+    "json-reader-without-a-value-limit": (
+        "the strict reader builds a body of millions of values (RR-6)",
+        [(JSON, "        if self.values > MAX_VALUES {", "        if false && self.values > MAX_VALUES {")],
+    ),
+    "broker-attests-a-tool-use-turn": (
+        "a stop reason of tool_use is recorded as the end of a turn (RR-14)",
+        [("crates/egress/src/http/usage.rs", '        "tool_use" => AnswerEnd::ToolUse,\n        // `max_tokens`',
+          '        "tool_use" => AnswerEnd::EndTurn,\n        // `max_tokens`')],
+    ),
     "do-not-count-failed-attempts": (
         "a request counts only when the answer was good",
         [(CORE, "        record.usage.requests = record.usage.requests.saturating_add(1);\n        record.in_flight = record.in_flight.saturating_add(1);", "        record.in_flight = record.in_flight.saturating_add(1);")],

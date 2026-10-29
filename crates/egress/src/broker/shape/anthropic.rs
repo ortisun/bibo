@@ -5,10 +5,16 @@
 use super::Violation;
 use super::rules::{Fields, Rule, TEXT, Tagged};
 
+// `ttl` is `5m` or absent. Anthropic bills a one-hour cache write at about twice the five-minute
+// rate, and the price list has one cache-write rate per model and the usage report names one count
+// (`cache_creation_input_tokens`), so a `1h` write would be booked at the lower rate (finding RR-2).
+// The factory does not need the longer cache (nothing recorded from the real tools sends it), so the
+// schema refuses it instead of pricing it. Pricing it would take a second rate and the per-TTL
+// counts of `usage.cache_creation`, and is left until a stage needs it.
 static CACHE_CONTROL: Fields = Fields {
     fields: &[
         ("type", Rule::Const("ephemeral")),
-        ("ttl", Rule::Enum(&["5m", "1h"])),
+        ("ttl", Rule::Enum(&["5m"])),
     ],
     required: &[],
 };

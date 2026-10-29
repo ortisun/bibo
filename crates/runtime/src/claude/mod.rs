@@ -22,17 +22,19 @@
 pub mod argv;
 pub mod events;
 
+use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use factory_domain::vocabulary::Fidelity;
 use factory_ports::agent::{
     AgentRunError, AgentRunReport, AgentRunRequest, AgentRuntime, Capability, Denial, ExitInfo,
-    FlagSet, ProbeError, ProbeStep, RuntimeCapabilities, RuntimeId,
+    FlagSet, ProbeError, ProbeStep, RuntimeCapabilities, RuntimeId, TurnAttestation,
 };
 use factory_ports::clock::CancelSignal;
 use factory_ports::sandbox::SandboxSession;
 
+use crate::attest::{Attestor, Claim, rejected_note};
 use crate::command::{EnvName, HARD_DEADLINE_MARGIN_SECONDS, ToolCommand, ToolEnv, broker_origin};
 use crate::future::BoxFuture;
 use crate::home::{HomeAllocator, make_home_argv};
@@ -48,6 +50,7 @@ use crate::report::{
 };
 use crate::skills::SkillBundle;
 use crate::target::VerifiedTarget;
+use crate::trust::{Rejection, Shape, check_shape};
 
 /// The runtime's name in manifests and routing (`recommended_models[].runtime_id`).
 pub const RUNTIME_NAME: &str = "claude-code-cli";
@@ -102,6 +105,7 @@ pub struct ClaudeCodeRuntime {
     cache: ProbeCache,
     homes: HomeAllocator,
     runs: AtomicU64,
+    attestor: Attestor,
 }
 
 impl std::fmt::Debug for ClaudeCodeRuntime {
@@ -113,12 +117,14 @@ impl std::fmt::Debug for ClaudeCodeRuntime {
 }
 
 impl ClaudeCodeRuntime {
-    /// Makes the runtime.
+    /// Makes the runtime. `attestation` is the model broker's record of the turns of a job token:
+    /// the real broker in production, a stand-in in tests. A run is a success only when it bears
+    /// the stream out (see [`crate::attest`]), so there is no runtime without one.
     ///
     /// # Panics
     /// Never in practice: the runtime name is a valid slug.
     #[must_use]
-    pub fn new(config: ClaudeCodeConfig, io: RunIo) -> Self {
+    pub fn new(config: ClaudeCodeConfig, io: RunIo, attestation: Arc<dyn TurnAttestation>) -> Self {
         let homes = HomeAllocator::new(&config.home_root);
         Self {
             id: RuntimeId::new(RUNTIME_NAME).expect("the runtime name is a valid slug"),
@@ -127,6 +133,7 @@ impl ClaudeCodeRuntime {
             cache: ProbeCache::default(),
             homes,
             runs: AtomicU64::new(0),
+            attestor: Attestor::new(attestation),
         }
     }
 
@@ -316,6 +323,14 @@ impl ClaudeCodeRuntime {
             .config
             .transcript_cap_bytes
             .max(capture_floor(req.max_output_bytes));
+        // What the model broker has seen of this token before the tool starts. The broker is
+        // outside the sandbox and its record is what the stream's "completed" is checked against
+        // (RR-14); a token it cannot answer for is a run that could not be attested, so it does
+        // not start.
+        let token = req.job_token.id;
+        let Some(baseline) = self.attestor.summary(&token).await else {
+            return early(AgentRunError::ProviderUnavailable, version);
+        };
         let ended = exec_tool(
             session,
             &self.io,
@@ -332,7 +347,10 @@ impl ClaudeCodeRuntime {
                 result,
                 stdout,
                 stderr,
-            } => interpret(&result, stdout, stderr, cancel.is_cancelled(), &req),
+            } => {
+                let (end, claim) = interpret(&result, stdout, stderr, cancel.is_cancelled(), &req);
+                self.attestor.require(&token, &baseline, &claim, end).await
+            }
         };
         assemble(&self.io, version, &req, end).await
     }
@@ -455,7 +473,7 @@ fn interpret(
     stderr: Vec<u8>,
     cancel_set: bool,
     req: &AgentRunRequest,
-) -> RunEnd {
+) -> (RunEnd, Claim) {
     let stream = events::parse(&stdout);
     // One `factory.tool_call` span for each call in the stream: a fixed name, a digest of the
     // arguments and the outcome, and none of the text the tool printed.
@@ -489,41 +507,64 @@ fn interpret(
                 .collect()
         })
         .unwrap_or_default();
-    let outcome = classify(result, &stream, exit, cancel_set);
-    RunEnd {
+    let claim = Claim {
+        turns: stream.message_ids.len() as u64,
+        input_tokens: usage.input_tokens,
+        output_tokens: usage.output_tokens,
+    };
+    let (outcome, note) = match classify(result, &stream, exit, cancel_set) {
+        Ok(bytes) => (Ok(bytes), crate::report::NOTE_FINISHED.to_owned()),
+        Err(Rejection { error, distrust }) => {
+            if let Some(why) = distrust {
+                // One of a fixed set of words (`Distrust::code`), in the message and not a field.
+                tracing::warn!(
+                    "the stream says the run completed and the stream's own shape refutes it: {}",
+                    why.code()
+                );
+            }
+            let note =
+                distrust.map_or_else(|| crate::report::NOTE_FINISHED.to_owned(), rejected_note);
+            (Err(error), note)
+        }
+    };
+    let end = RunEnd {
         outcome,
         usage,
         denials,
         exit: Some(exit),
         stdout,
         stderr,
-        note: crate::report::NOTE_FINISHED.to_owned(),
-    }
+        note,
+    };
+    (end, claim)
 }
 
 /// Success is `is_error == false` and `terminal_reason == "completed"` in the one result the tool
-/// wrote, and a clean exit: code 0 and no signal. Anything else is a failure with one closed
-/// variant.
+/// wrote, a clean exit (code 0 and no signal), and a stream of the right shape: the capture was not
+/// cut, no line before the result was unreadable, there is one result and nothing after it
+/// ([`crate::trust`], findings RTM-1, RR-7 and RR-8). Anything else is a failure with one closed
+/// variant, and a stream that said `completed` and was refused carries a fixed reason code.
 ///
 /// The exit status is the part of the outcome that a process inside the sandbox cannot write:
 /// the stream is the tool's standard output, and a sibling of the tool can add lines to it
 /// (finding SBX-4). A `completed` line followed by a kill, or by an error exit, is therefore not a
-/// success (finding RTM-1), and neither is a stream with a second result or with events after
-/// the result: the tool writes exactly one result, last. The Codex adapter has the same rule.
-/// What these checks do not do is authenticate the lines before the result; the image does that
-/// for the tools it installs (their processes cannot be written to through `/proc`), see
-/// `infra/sandbox-images/agent/README.md`.
+/// success (finding RTM-1). The tool writes whole JSON objects and exactly one result, last, so a
+/// torn line, a cut capture, a second result or a line after it is not the tool's (the 141
+/// recorded streams of the two tools hold none of them). What these checks do not do is
+/// authenticate a stream that is whole and well formed: the image makes the tools' processes
+/// unreadable so that nothing can write to their pipe, and the broker's own record of the run
+/// ([`crate::attest`]) is the check a forger inside the sandbox cannot reach.
 fn classify(
     result: &factory_ports::sandbox::ExecResult,
     stream: &events::Stream,
     exit: ExitInfo,
     cancel_set: bool,
-) -> Result<Vec<u8>, AgentRunError> {
+) -> Result<Vec<u8>, Rejection> {
     if result.timed_out || soft_deadline_passed(result) {
-        return Err(AgentRunError::Timeout);
+        return Err(AgentRunError::Timeout.into());
     }
     if result.oom_killed {
-        return Err(AgentRunError::ProcessFailed(exit));
+        return Err(AgentRunError::ProcessFailed(exit).into());
     }
     let Some(done) = &stream.result else {
         return Err(if result.stdout_truncated {
@@ -534,25 +575,33 @@ fn classify(
             AgentRunError::OutputMissing
         } else {
             AgentRunError::ProcessFailed(exit)
-        });
+        }
+        .into());
     };
     if !done.is_error && done.terminal_reason.as_deref() == Some("completed") {
         let clean_exit = exit.code == Some(0) && result.signal.is_none();
-        let one_result_last = stream.result_events == 1 && !stream.events_after_result;
-        if clean_exit && one_result_last {
-            return Ok(done.text.clone().into_bytes());
+        if clean_exit {
+            let shape = Shape {
+                terminal_events: stream.result_events,
+                malformed_before: stream.malformed_before_result,
+                lines_after: stream.lines_after_result,
+                truncated: result.stdout_truncated,
+            };
+            return check_shape(&shape)
+                .map(|()| done.text.clone().into_bytes())
+                .map_err(Rejection::from);
         }
-        // A result that says `completed`, written by a tool that did not end cleanly or by a
-        // stream that was added to.
+        // A result that says `completed`, written by a tool that did not end cleanly.
         return Err(if result.stdout_truncated {
             AgentRunError::OutputTooLarge
         } else if cancel_set || result.signal.is_some() || exit.code == Some(143) {
             AgentRunError::Cancelled
         } else {
             AgentRunError::ProcessFailed(exit)
-        });
+        }
+        .into());
     }
-    Err(classify_error(done, stream, exit))
+    Err(classify_error(done, stream, exit).into())
 }
 
 fn classify_error(

@@ -22,8 +22,8 @@ const SOURCES: [(&str, &str); 11] = [
 
 /// The ports of work package `s0-ports-and-testkit`, plus the parts of `Tx`, and what ports v1.1
 /// adds: the read-only system transaction, the job repository, the process runner, the webhook
-/// verifier and the metering seam.
-const EXPECTED_TRAITS: [&str; 37] = [
+/// verifier, the metering seam and the turn attestation (additions after v1.1).
+const EXPECTED_TRAITS: [&str; 38] = [
     "Clock",
     "IdGenerator",
     "CancelSignal",
@@ -53,6 +53,7 @@ const EXPECTED_TRAITS: [&str; 37] = [
     "ProcessRunner",
     "WebhookVerifier",
     "MeteringOps",
+    "TurnAttestation",
     "AgentRuntime",
     "ModelRouter",
     "ModelBroker",

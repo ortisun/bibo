@@ -1538,7 +1538,6 @@ fn held_the_answer_headers_are_a_closed_set_even_for_a_hostile_provider() {
 /// may produce (and reason) up to its own maximum for one request, past `per_request.max_output_tokens`.
 /// The cost cap is checked only after the answer is paid for.
 #[test]
-#[ignore = "confirmed defect RR-1: a Responses or Chat request without an output limit is forwarded without one. Run: cargo test -p factory-egress --test security_rereview -- --ignored rr_1"]
 fn rr_1_an_openai_request_without_an_output_limit_gets_the_per_request_cap() {
     let rig = HttpRig::new();
     let token = rig.codex_token(CEILING);
@@ -1584,7 +1583,6 @@ fn rr_1_an_openai_request_without_an_output_limit_gets_the_per_request_cap() {
 /// list has one cache-write price per model and reads one count (`cache_creation_input_tokens`).
 /// The broker therefore books the spend of such a write at the five-minute rate.
 #[test]
-#[ignore = "confirmed defect RR-2: a one-hour cache write is accepted and booked at the five-minute price. Run: cargo test -p factory-egress --test security_rereview -- --ignored rr_2"]
 fn rr_2_a_one_hour_cache_ttl_is_not_forwarded_while_it_is_booked_at_the_five_minute_price() {
     let body = json!({"model": "m", "max_tokens": 5,
         "system": [{"type": "text", "text": "x", "cache_control": {"type": "ephemeral", "ttl": "1h"}}],
@@ -1642,7 +1640,6 @@ fn rr_4_a_tool_schema_names_no_remote_base_or_dialect() {
 /// without a route: Azure's platform address `168.63.129.16`, the IETF protocol block
 /// `192.0.0.0/24` (DS-Lite and PCP addresses among them) and the site-local `fec0::/10`.
 #[test]
-#[ignore = "confirmed defect RR-5: special-purpose addresses are not in the relay's deny ranges. Run: cargo test -p factory-egress --test security_rereview -- --ignored rr_5"]
 fn rr_5_special_purpose_addresses_are_refused_after_resolution() {
     let ranges = default_deny_ranges();
     let mut allowed = Vec::new();
@@ -1741,7 +1738,6 @@ fn held_every_spelling_of_a_private_address_the_relay_policy_names_is_refused() 
 /// checked and before the request is counted, so a holder of one job token can ask for 64 of them
 /// at once.
 #[test]
-#[ignore = "confirmed defect RR-6: the strict JSON reader has no limit on the number of values. Run: cargo test -p factory-egress --test security_rereview -- --ignored rr_6_a_body"]
 fn rr_6_a_body_of_millions_of_values_is_refused_before_it_is_built() {
     let mut body = String::from("[");
     for _ in 0..3_000_000 {
