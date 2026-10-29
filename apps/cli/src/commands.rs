@@ -23,7 +23,9 @@ usage: factory-cli <command> [options]
 
   health   --api URL
   submit   --api URL --token-file FILE --repository ID --text-file FILE --source-ref OWNER/NAME#N [--key K]
-  status   --api URL --token-file FILE JOB
+  status   --api URL --token-file FILE [--gates] JOB
+  show-draft  --api URL --token-file FILE [--stage-run ID] JOB
+  artifact --api URL --token-file FILE JOB SHA256
   timeline --api URL --token-file FILE JOB
   approve  --api URL --token-file FILE [--key K] JOB STAGE_RUN head=H evidence=sha256:D [reason...]
   reject   --api URL --token-file FILE [--key K] JOB STAGE_RUN reason...
@@ -300,6 +302,104 @@ fn read_job(
     };
     let path = format!("/v1/jobs/{}{suffix}", parsed.positional[0]);
     finish(client.get(&path), ctx, show)
+}
+
+/// `status`, and with `--gates` the gate reports of the job after it.
+fn status(args: &[String], env: &dyn Fn(&str) -> Option<String>, ctx: &mut Context<'_>) -> Exit {
+    let with_gates = args.iter().any(|word| word == "--gates");
+    let rest: Vec<String> = args
+        .iter()
+        .filter(|word| *word != "--gates")
+        .cloned()
+        .collect();
+    let exit = read_job(&rest, env, ctx, "", render::job);
+    if !with_gates || exit != Exit::Ok {
+        return exit;
+    }
+    read_job(&rest, env, ctx, "/gate-reports", render::gate_reports)
+}
+
+/// `show-draft`: the specification draft a person is asked to approve.
+fn show_draft(
+    args: &[String],
+    env: &dyn Fn(&str) -> Option<String>,
+    ctx: &mut Context<'_>,
+) -> Exit {
+    let parsed = match split(args, &["api", "token-file", "stage-run"]) {
+        Ok(parsed) if parsed.positional.len() == 1 && is_uuid(&parsed.positional[0]) => parsed,
+        Ok(_) => {
+            ctx.complain("show-draft takes one job id (a UUID)");
+            return Exit::Failed;
+        }
+        Err(why) => {
+            ctx.complain(&why);
+            return Exit::Failed;
+        }
+    };
+    let mut path = format!("/v1/jobs/{}/specification-draft", parsed.positional[0]);
+    if let Some(stage_run) = parsed.options.get("stage-run") {
+        if !is_uuid(stage_run) {
+            ctx.complain("--stage-run is a stage run id (a UUID)");
+            return Exit::Failed;
+        }
+        path.push_str(&format!("?stage_run_id={stage_run}"));
+    }
+    let client = match client(&parsed.options, env, true, ctx) {
+        Ok(client) => client,
+        Err(exit) => return exit,
+    };
+    finish(client.get(&path), ctx, render::draft)
+}
+
+/// `artifact`: prints one stored document of a job. The text is untrusted, so it passes the same
+/// sanitizer as everything the command prints; a document that is not text is not printed.
+fn artifact(args: &[String], env: &dyn Fn(&str) -> Option<String>, ctx: &mut Context<'_>) -> Exit {
+    let parsed = match split(args, &["api", "token-file"]) {
+        Ok(parsed) if parsed.positional.len() == 2 && is_uuid(&parsed.positional[0]) => parsed,
+        Ok(_) => {
+            ctx.complain("artifact takes a job id (a UUID) and the SHA-256 of the document");
+            return Exit::Failed;
+        }
+        Err(why) => {
+            ctx.complain(&why);
+            return Exit::Failed;
+        }
+    };
+    let hash = parsed.positional[1]
+        .strip_prefix("sha256:")
+        .unwrap_or(&parsed.positional[1]);
+    if hash.len() != 64 || !hash.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f')) {
+        ctx.complain("the hash is 64 lower case hexadecimal digits");
+        return Exit::Failed;
+    }
+    let client = match client(&parsed.options, env, true, ctx) {
+        Ok(client) => client,
+        Err(exit) => return exit,
+    };
+    let path = format!("/v1/jobs/{}/artifacts/{hash}", parsed.positional[0]);
+    match client.get_document(&path) {
+        Err(unreachable) => {
+            ctx.complain(&format!("{unreachable}."));
+            Exit::Unreachable
+        }
+        Ok(document) if document.status == 200 => {
+            if document.content_type.starts_with("text/plain") {
+                ctx.say(&String::from_utf8_lossy(&document.bytes));
+                Exit::Ok
+            } else {
+                ctx.complain(&format!(
+                    "the document is {} bytes of data that is not text; it is not printed",
+                    document.bytes.len()
+                ));
+                Exit::Failed
+            }
+        }
+        Ok(document) => {
+            let body = serde_json::from_slice(&document.bytes).unwrap_or(Value::Null);
+            ctx.complain(&render::refusal(document.status, &body));
+            Exit::of_status(document.status)
+        }
+    }
 }
 
 fn decide(
@@ -614,7 +714,9 @@ pub fn run(
     match command.as_str() {
         "health" => health(rest, env, &mut ctx),
         "submit" => submit(rest, env, &mut ctx),
-        "status" => read_job(rest, env, &mut ctx, "", render::job),
+        "status" => status(rest, env, &mut ctx),
+        "show-draft" => show_draft(rest, env, &mut ctx),
+        "artifact" => artifact(rest, env, &mut ctx),
         "timeline" => read_job(rest, env, &mut ctx, "/timeline", render::timeline),
         verb @ ("approve" | "reject" | "rework" | "pause" | "resume" | "cancel") => {
             decide(verb, rest, env, &mut ctx)

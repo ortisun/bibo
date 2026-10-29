@@ -205,7 +205,7 @@ The API reads `FACTORY_CONFIG` too. It has its own type. It has one database poo
 | `protected_checkout` | path | yes | no default | The checkout that holds `policies/` and `allowlist/allowlist.yaml`. |
 | `database` | table | yes | no default | The one pool of the API. |
 | `listen` | address | yes | no default | Where the server binds, for example `127.0.0.1:8080`. Put TLS and a proxy in front of it. |
-| `artifacts` | table | no | none | Accepted so that the local stack file parses. This part of the API does not read artifacts. |
+| `artifacts` | table | no | none | Where the API reads the documents of a job from: the artifact volume the worker writes. Without it the three endpoints that serve documents (`specification-draft`, `gate-reports`, `artifacts/{sha256}`) answer 503. The API reads and never writes it. |
 | `github` | table | no | see keys | The webhook settings. |
 | `decisions` | table | production | none | The key that signs decision requests. The same file the worker verifies with. |
 | `tokens` | table | no | see keys | Token settings. |
@@ -226,7 +226,7 @@ The API reads `FACTORY_CONFIG` too. It has its own type. It has one database poo
 | Key | Type | Required | Default | Notes |
 |---|---|---|---|---|
 | `artifacts.root` | path | yes | no default | The artifact volume. Required once the table is written. |
-| `artifacts.max_bytes` | whole number | no | 67108864 | Accepted and not read. |
+| `artifacts.max_bytes` | whole number | no | 67108864 | The largest document the store reads. The API serves at most 4 MiB of it in one download. |
 
 ### github
 

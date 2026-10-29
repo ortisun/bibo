@@ -48,18 +48,25 @@ fn with_fake(env: &Env, port: PortName) -> ApiPorts {
         }
         PortName::Authority => ports.authority = Arc::new(FixedAuthority { roles: Vec::new() }),
         PortName::Allowlist => ports.allowlist = Arc::new(FakeAllowlist),
+        PortName::Artifacts => {
+            ports.artifacts = Some(
+                Arc::new(factory_testkit::artifact::InMemoryArtifactStore::new())
+                    as Arc<dyn factory_ports::artifact::ArtifactStore>,
+            );
+        }
         other => panic!("the API has no {other:?} port"),
     }
     ports
 }
 
-const API_PORTS: [PortName; 6] = [
+const API_PORTS: [PortName; 7] = [
     PortName::Store,
     PortName::Clock,
     PortName::Ids,
     PortName::Webhooks,
     PortName::Authority,
     PortName::Allowlist,
+    PortName::Artifacts,
 ];
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

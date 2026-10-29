@@ -725,13 +725,14 @@ mod production {
 
     use crate::support::{Env, FakeAllowlist, FixedAuthority};
 
-    pub const API_PORTS: [PortName; 6] = [
+    pub const API_PORTS: [PortName; 7] = [
         PortName::Store,
         PortName::Clock,
         PortName::Ids,
         PortName::Webhooks,
         PortName::Authority,
         PortName::Allowlist,
+        PortName::Artifacts,
     ];
 
     pub fn inputs(env: &Env, profile: Profile, ports: ApiPorts) -> StateInputs {
@@ -764,6 +765,12 @@ mod production {
             }
             PortName::Authority => ports.authority = Arc::new(FixedAuthority { roles: Vec::new() }),
             PortName::Allowlist => ports.allowlist = Arc::new(FakeAllowlist),
+            PortName::Artifacts => {
+                ports.artifacts = Some(Arc::new(
+                    factory_testkit::artifact::InMemoryArtifactStore::new(),
+                )
+                    as Arc<dyn factory_ports::artifact::ArtifactStore>);
+            }
             other => panic!("the API has no {other:?} port"),
         }
         ports

@@ -155,6 +155,8 @@ pub struct Env {
     pub webhook_secret: String,
     pub shutdown: Shutdown,
     pub checkout: PathBuf,
+    /// The artifact root the API reads from. A rig that writes documents opens the same one.
+    pub artifacts_root: PathBuf,
     server: JoinHandle<std::io::Result<()>>,
     writer: JoinHandle<()>,
 }
@@ -243,6 +245,13 @@ impl Env {
                 Arc::clone(&clock),
             ))
         };
+        let artifacts_root = checkout.join("artifacts");
+        let artifacts = factory_composition::database::open_artifacts(
+            &artifacts_root,
+            64 * 1024 * 1024,
+            Arc::clone(&store_dyn),
+        )
+        .expect("the artifact root opens");
         let ports = ApiPorts {
             store: store_dyn,
             clock,
@@ -250,6 +259,7 @@ impl Env {
             webhooks: verifier,
             authority,
             allowlist: allowlist_file.clone(),
+            artifacts: Some(artifacts),
         };
         let (state, writer) = assemble_state(StateInputs {
             profile: options.profile,
@@ -292,6 +302,7 @@ impl Env {
             webhook_secret,
             shutdown,
             checkout,
+            artifacts_root,
             server,
             writer,
         }

@@ -67,8 +67,17 @@ fn fake(answers: Vec<(u16, &'static str)>) -> Fake {
             seen.lock()
                 .expect("lock")
                 .push(String::from_utf8_lossy(&raw).into_owned());
+            // A body that is not a JSON object is a document, and the API sends a document as text
+            // or as bytes. A leading `!` marks one that is bytes.
+            let (content_type, body) = if body.starts_with('{') {
+                ("application/json", body)
+            } else if let Some(rest) = body.strip_prefix('!') {
+                ("application/octet-stream", rest)
+            } else {
+                ("text/plain; charset=utf-8", body)
+            };
             let reply = format!(
-                "HTTP/1.1 {status} X\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                "HTTP/1.1 {status} X\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
                 body.len()
             );
             let _ = stream.write_all(reply.as_bytes());
@@ -564,4 +573,150 @@ fn approve_project_build_code_names_the_file_and_the_start_of_its_hash() {
         assert_eq!(ran.exit, Exit::Failed, "{line}: {}", ran.err);
     }
     assert_eq!(api.requests.lock().expect("lock").len(), 2);
+}
+
+const GATE_REPORTS: &str = r#"{"job_id":"j","truncated":false,"reports":[
+  {"stage_run_id":"r1","stage":"VALIDATION","gate":"build","title":"Build","outcome":"BLOCKED","code":"policy_unresolvable","reason":"waits","report_sha256":"sha256:aaaa","recorded_at":"2026-10-29T10:00:00Z","readable":true},
+  {"stage_run_id":"r1","stage":"VALIDATION","gate":"format","title":"Format","outcome":"PASSED","code":null,"reason":"ok","report_sha256":"sha256:bbbb","recorded_at":"2026-10-29T10:00:01Z","readable":true},
+  {"stage_run_id":"r2","stage":"REVIEW","gate":null,"title":null,"outcome":null,"code":null,"reason":null,"report_sha256":"sha256:cccc","recorded_at":"2026-10-29T10:00:02Z","readable":false}
+]}"#;
+
+#[test]
+fn status_with_gates_prints_the_job_and_then_the_gate_reports() {
+    let api = fake(vec![
+        (
+            200,
+            r#"{"job_id":"j","status":"BLOCKED","repository_id":"r","requester_id":"p","autonomy_level":"L1","execution_mode":"test","created_at":"2026-10-29T09:00:00Z","stages":[]}"#,
+        ),
+        (200, GATE_REPORTS),
+    ]);
+    let file = token_file(0o600);
+    let ran = cli(&format!(
+        "status --gates --api http://{} --token-file {} {JOB}",
+        api.addr,
+        file.display()
+    ));
+    assert_eq!(ran.exit, Exit::Ok, "{}", ran.err);
+    assert!(ran.out.contains("Job j is BLOCKED."), "{}", ran.out);
+    for line in [
+        "Gate reports (3):",
+        "VALIDATION build: BLOCKED (policy_unresolvable), sha256:aaaa",
+        "VALIDATION format: PASSED, sha256:bbbb",
+        "REVIEW: a report that could not be read, sha256:cccc",
+    ] {
+        assert!(ran.out.contains(line), "{line} in {}", ran.out);
+    }
+    let sent = api.requests.lock().expect("lock").clone();
+    assert_eq!(sent.len(), 2);
+    assert!(sent[0].starts_with(&format!("GET /v1/jobs/{JOB} ")));
+    assert!(sent[1].starts_with(&format!("GET /v1/jobs/{JOB}/gate-reports ")));
+    // Without the flag, the second request is not made.
+    let api = fake(vec![(
+        200,
+        r#"{"job_id":"j","status":"BLOCKED","repository_id":"r","requester_id":"p","autonomy_level":"L1","execution_mode":"test","created_at":"x","stages":[]}"#,
+    )]);
+    let ran = cli(&format!(
+        "status --api http://{} --token-file {} {JOB}",
+        api.addr,
+        file.display()
+    ));
+    assert_eq!(ran.exit, Exit::Ok);
+    assert!(!ran.out.contains("Gate reports"));
+    assert_eq!(api.requests.lock().expect("lock").len(), 1);
+}
+
+#[test]
+fn show_draft_prints_the_values_an_approval_needs_and_nothing_a_server_can_inject() {
+    let escape = r"\u001b[2J";
+    let body = format!(
+        r#"{{"job_id":"j","stage_run_id":"{RUN}","status":"WAITING_FOR_HUMAN","run_number":1,
+        "draft":{{"number":2,"commit":"{}","feature_directory":"specs/x{escape}","artifact_sha256":"sha256:dddd","saved_at":"2026-10-29T10:00:00Z"}},
+        "ledger_head":{{"sequence":7,"hash":"sha256:eeee"}},
+        "approval":{{"window_hours":72,"approvable":true,"head":"{}","evidence":"sha256:eeee"}}}}"#,
+        "a".repeat(40),
+        "a".repeat(40)
+    );
+    let body: &'static str = Box::leak(body.into_boxed_str());
+    let api = fake(vec![(200, body)]);
+    let file = token_file(0o600);
+    let ran = cli(&format!(
+        "show-draft --api http://{} --token-file {} --stage-run {RUN} {JOB}",
+        api.addr,
+        file.display()
+    ));
+    assert_eq!(ran.exit, Exit::Ok, "{}", ran.err);
+    for part in [
+        &format!("Commit that holds it: {}", "a".repeat(40)),
+        "Ledger head: entry 7, sha256:eeee",
+        "Draft document: sha256:dddd",
+        &format!("head={} evidence=sha256:eeee", "a".repeat(40)),
+        "72 hours",
+    ] {
+        assert!(ran.out.contains(part), "{part} in {}", ran.out);
+    }
+    assert!(
+        !ran.out.contains('\u{1b}'),
+        "an escape reached the terminal"
+    );
+    let sent = api.requests.lock().expect("lock")[0].clone();
+    assert!(sent.starts_with(&format!(
+        "GET /v1/jobs/{JOB}/specification-draft?stage_run_id={RUN} "
+    )));
+    // What is not a job id or a stage run id is not sent.
+    for line in [
+        "show-draft not-a-uuid".to_owned(),
+        format!("show-draft --stage-run nope {JOB}"),
+        "show-draft".to_owned(),
+    ] {
+        let ran = cli(&format!(
+            "{line} --api http://{} --token-file {}",
+            api.addr,
+            file.display()
+        ));
+        assert_eq!(ran.exit, Exit::Failed, "{line}");
+    }
+    assert_eq!(api.requests.lock().expect("lock").len(), 1);
+}
+
+#[test]
+fn artifact_prints_text_through_the_sanitizer_and_does_not_print_data() {
+    let hash = "ab".repeat(32);
+    let api = fake(vec![
+        (200, "line one\n\u{1b}[2Jline two\r\n"),
+        (200, "!\u{0}\u{1}binary"),
+        (404, r#"{"error":"not_found"}"#),
+    ]);
+    let file = token_file(0o600);
+    let line = |what: &str| {
+        format!(
+            "artifact --api http://{} --token-file {} {JOB} {what}",
+            api.addr,
+            file.display()
+        )
+    };
+    let ran = cli(&line(&hash));
+    assert_eq!(ran.exit, Exit::Ok, "{}", ran.err);
+    assert!(ran.out.contains("line one\n"), "{:?}", ran.out);
+    assert!(
+        !ran.out.contains('\u{1b}') && !ran.out.contains('\r'),
+        "a control character reached the terminal: {:?}",
+        ran.out
+    );
+    assert!(ran.out.contains("line two"));
+    // Data that is not text is not printed.
+    let ran = cli(&line(&format!("sha256:{hash}")));
+    assert_eq!(ran.exit, Exit::Failed);
+    assert!(ran.out.is_empty(), "{:?}", ran.out);
+    assert!(ran.err.contains("not text"), "{}", ran.err);
+    // A refusal ends as any other.
+    let ran = cli(&line(&hash));
+    assert_eq!(ran.exit, Exit::Refused, "{}", ran.err);
+    let sent = api.requests.lock().expect("lock").clone();
+    assert!(sent[0].starts_with(&format!("GET /v1/jobs/{JOB}/artifacts/{hash} ")));
+    // A hash that is not 64 lower case digits is not sent.
+    for bad in ["abc", &hash.to_ascii_uppercase(), "../etc/passwd"] {
+        let ran = cli(&line(bad));
+        assert_eq!(ran.exit, Exit::Failed, "{bad}");
+    }
+    assert_eq!(api.requests.lock().expect("lock").len(), 3);
 }

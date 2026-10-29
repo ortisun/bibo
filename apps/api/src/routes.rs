@@ -41,7 +41,7 @@ use crate::answers::{Answer, ApiError, CORRELATION_HEADER, Reply, render};
 use crate::auth::{Caller, authenticate};
 use crate::limits::Key;
 use crate::state::ApiState;
-use crate::{decisions, health, jobs, openapi, webhook};
+use crate::{decisions, health, jobs, openapi, reads, webhook};
 
 /// The TCP peer of a connection, put in the request by the server. Nothing else is ever used as
 /// the source address.
@@ -68,6 +68,12 @@ pub enum Op {
     JobStatus,
     /// `GET /v1/jobs/{job_id}/timeline`.
     JobTimeline,
+    /// `GET /v1/jobs/{job_id}/specification-draft`.
+    SpecificationDraft,
+    /// `GET /v1/jobs/{job_id}/gate-reports`.
+    GateReports,
+    /// `GET /v1/jobs/{job_id}/artifacts/{sha256}`.
+    Artifact,
     /// `POST /v1/jobs/{job_id}/decisions`.
     Decide,
     /// `POST /v1/webhooks/github`.
@@ -157,6 +163,30 @@ pub const ROUTES: &[RouteSpec] = &[
         path: "/v1/jobs/{job_id}/timeline",
         op: Op::JobTimeline,
         operation_id: "getJobTimeline",
+        auth: Auth::Token,
+        has_body: false,
+    },
+    RouteSpec {
+        method: "GET",
+        path: "/v1/jobs/{job_id}/specification-draft",
+        op: Op::SpecificationDraft,
+        operation_id: "getSpecificationDraft",
+        auth: Auth::Token,
+        has_body: false,
+    },
+    RouteSpec {
+        method: "GET",
+        path: "/v1/jobs/{job_id}/gate-reports",
+        op: Op::GateReports,
+        operation_id: "listGateReports",
+        auth: Auth::Token,
+        has_body: false,
+    },
+    RouteSpec {
+        method: "GET",
+        path: "/v1/jobs/{job_id}/artifacts/{sha256}",
+        op: Op::Artifact,
+        operation_id: "getArtifact",
         auth: Auth::Token,
         has_body: false,
     },
@@ -315,6 +345,21 @@ async fn run(
                 .instrument(job_span(&caller))
                 .await
         }
+        (Op::SpecificationDraft, Some(caller)) => {
+            reads::specification_draft(state, &caller, job_id, parts.uri.query())
+                .instrument(job_span(&caller))
+                .await
+        }
+        (Op::GateReports, Some(caller)) => {
+            reads::gate_reports(state, &caller, job_id)
+                .instrument(job_span(&caller))
+                .await
+        }
+        (Op::Artifact, Some(caller)) => {
+            reads::artifact(state, &caller, job_id, params.get(1).copied().unwrap_or(""))
+                .instrument(job_span(&caller))
+                .await
+        }
         (Op::Decide, Some(caller)) => {
             decisions::decide(state, &caller, job_id, &parts.headers, &bytes)
                 .instrument(job_span(&caller))
@@ -377,7 +422,12 @@ pub fn declared_statuses(op: Op) -> &'static [StatusCode] {
         Op::Ready => &[StatusCode::OK, StatusCode::SERVICE_UNAVAILABLE],
         Op::OpenApi => &[StatusCode::OK],
         Op::SubmitJob => &[StatusCode::OK, StatusCode::CREATED],
-        Op::ListJobs | Op::JobStatus | Op::JobTimeline => &[StatusCode::OK],
+        Op::ListJobs
+        | Op::JobStatus
+        | Op::JobTimeline
+        | Op::SpecificationDraft
+        | Op::GateReports
+        | Op::Artifact => &[StatusCode::OK],
         Op::Decide => &[StatusCode::ACCEPTED],
         Op::GithubWebhook => &[StatusCode::ACCEPTED],
     }

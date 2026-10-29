@@ -38,7 +38,7 @@ The constitution of this repository, `.specify/memory/constitution.md`, carries 
 - **Budget.** `stages.budget.max_cost_usd` defaults to 10.0 dollars for each stage run, and a job has up to 13 stage runs, more after rework. That is far above a small smoke budget. Lower it, and rely on the provider-side limit as the hard stop. The broker refuses a model that has no entry in `broker.prices`.
 - **Autonomy level.** The default level is `L1`: the factory makes branches and draft pull requests, and a person decides every promotion. Do not raise it. Raising a level needs an `org_admin`.
 - **Tenants.** `worker.tenants` is empty by default. An empty list means the worker admits no received job.
-- **Profile.** Run `production`. It refuses a fake for any port. The scenario E9 shows that refusal for the API's six ports and the worker's ports, in test mode.
+- **Profile.** Run `production`. It refuses a fake for any port. The scenario E9 shows that refusal for the API's ports (six, and a seventh when it has an artifact root) and the worker's ports, in test mode.
 - **First job.** Run it at `L1` with a person reading the audit log. Check that every `decision.applied` and `decision.rejected` row was written by the worker's decision step and carries the allowlist hash. This is condition 9 of the re-review.
 
 ## What the reviews found

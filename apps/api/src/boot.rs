@@ -189,6 +189,17 @@ pub async fn boot(config: &ApiConfig) -> Result<Booted, StartupFailure> {
         Arc::clone(&policies.engine),
         Arc::clone(&clock),
     ));
+    let artifacts = config
+        .artifacts
+        .as_ref()
+        .map(|settings| {
+            factory_composition::database::open_artifacts(
+                &settings.root,
+                settings.max_bytes,
+                Arc::clone(&store),
+            )
+        })
+        .transpose()?;
     let ports = ApiPorts {
         store,
         clock,
@@ -196,6 +207,7 @@ pub async fn boot(config: &ApiConfig) -> Result<Booted, StartupFailure> {
         webhooks,
         authority,
         allowlist: allowlist_file.clone(),
+        artifacts,
     };
     let (state, audit_writer) = assemble_state(StateInputs {
         profile: config.profile,

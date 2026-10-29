@@ -29,6 +29,19 @@ factory-cli timeline --api "$FACTORY_API_URL" --token-file approver.token JOB
 
 ### 2. Read what you are deciding on
 
+For the specification draft, `show-draft` gives the commit that holds it, the head of the ledger and the values to approve with, and `artifact` prints the draft document:
+
+```bash no-run reason="needs a running API and a token"
+factory-cli show-draft --api "$FACTORY_API_URL" --token-file approver.token JOB
+factory-cli artifact --api "$FACTORY_API_URL" --token-file approver.token JOB DRAFT_SHA256
+```
+
+For the gate reports, `status --gates` lists them with their hashes, and `artifact` prints one:
+
+```bash no-run reason="needs a running API and a token"
+factory-cli status --gates --api "$FACTORY_API_URL" --token-file approver.token JOB
+```
+
 For the `APPROVAL` stage run, open the draft pull request on GitHub. Its description holds the evidence manifest hash, the gates that ran and the ones that did not, and the line `Ledger head, entry N` with a hash. Read the diff and the gate list.
 
 ### 3. Answer
@@ -73,7 +86,7 @@ You should see `recorded: decision.requested` and then `recorded: decision.appli
 | Exit code 2 and `you are not permitted to do this` | You do not hold the designation, or you are not on the allowlist. | Ask an `org_admin` to check the allowlist. The answer never says which test failed. |
 | `recorded: decision.rejected` after your request | The worker refused it. The marker holds a fixed code, not a reason in words. Common codes: the request is not signed with the key the worker holds (`not_signed`), the specification draft moved since you read it (`draft_moved`), or the head is no longer the head the approval request names. | Read the head and the evidence again and repeat the decision. For `not_signed`, check that the API and the worker use the same decision key, see [rotate the decision key](rotate-the-decision-key.md). |
 | Nothing after `decision.requested` for several minutes | No worker serves the tenant, or the worker is stopped. | Start the worker. Check `worker.tenants`. A request that stays unapplied for 72 hours is rejected. |
-| You cannot find the head and the ledger hash of a specification draft | No endpoint serves them. This is an open gap. | Read them from the store, or ask whoever runs the factory. The worker README, item 26 of the cross-stage mismatches, names the gap. |
+| You cannot find the head and the ledger hash of a specification draft | `factory-cli show-draft JOB` prints them. If it answers `503`, the API has no artifact root in its configuration. | Add `artifacts.root` to the API configuration. |
 | An approval is refused while a translation warning is open | No endpoint records a decision about a warning. This is an open gap. | The same item 19 of the worker README. Reject or send back instead. |
 
 ## Related

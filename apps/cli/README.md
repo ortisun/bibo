@@ -8,7 +8,9 @@ It holds no database login and starts no process (rule DEP-10).
 ```text
 factory-cli health   --api URL
 factory-cli submit   --api URL --token-file FILE --repository ID --text-file FILE --source-ref OWNER/NAME#N [--key K]
-factory-cli status   --api URL --token-file FILE JOB
+factory-cli status   --api URL --token-file FILE [--gates] JOB
+factory-cli show-draft --api URL --token-file FILE [--stage-run ID] JOB
+factory-cli artifact --api URL --token-file FILE JOB SHA256
 factory-cli timeline --api URL --token-file FILE JOB
 factory-cli approve  --api URL --token-file FILE [--key K] JOB STAGE_RUN head=H evidence=sha256:D [reason...]
 factory-cli reject   --api URL --token-file FILE [--key K] JOB STAGE_RUN reason...

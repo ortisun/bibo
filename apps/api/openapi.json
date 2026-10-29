@@ -132,6 +132,78 @@
         }
       }
     },
+    "/v1/jobs/{job_id}/specification-draft": {
+      "get": {
+        "operationId": "getSpecificationDraft",
+        "tags": ["jobs"],
+        "summary": "The specification draft a person is asked to approve: the commit that holds it, the head of the ledger and the facts of the approval window.",
+        "description": "Gives the values an approve needs: head is the commit of the draft and evidence is the hash of the last ledger entry, both as they are now. The commit is the one the worker compares with. An approval is refused if the draft moved or a gate result arrived after the person read it. The text of the draft is untrusted: download it with getArtifact by artifact_sha256. Any designation of the tenant may read it, on the repositories its allowlist entry reaches. 503 when the API has no artifact root configured.",
+        "security": [{ "bearerToken": [] }],
+        "parameters": [
+          { "$ref": "#/components/parameters/JobId" },
+          { "name": "stage_run_id", "in": "query", "required": false, "description": "A specification stage run of the job. Without it the newest one.", "schema": { "type": "string", "format": "uuid" } }
+        ],
+        "responses": {
+          "200": { "description": "The draft.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/SpecificationDraft" } } } },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "429": { "$ref": "#/components/responses/RateLimited" },
+          "503": { "$ref": "#/components/responses/Unavailable" }
+        }
+      }
+    },
+    "/v1/jobs/{job_id}/gate-reports": {
+      "get": {
+        "operationId": "listGateReports",
+        "tags": ["jobs"],
+        "summary": "The gate reports of a job: the gate, the outcome, the block code and the hash of each report.",
+        "description": "Lists every gate report the engine wrote into the ledger of the job, oldest first, at most 200. A person who approves a pull request reads the evidence here, and downloads one report with getArtifact by report_sha256. Any designation of the tenant may read it, on the repositories its allowlist entry reaches. 503 when the API has no artifact root configured.",
+        "security": [{ "bearerToken": [] }],
+        "parameters": [{ "$ref": "#/components/parameters/JobId" }],
+        "responses": {
+          "200": { "description": "The reports.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/GateReports" } } } },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "429": { "$ref": "#/components/responses/RateLimited" },
+          "503": { "$ref": "#/components/responses/Unavailable" }
+        }
+      }
+    },
+    "/v1/jobs/{job_id}/artifacts/{sha256}": {
+      "get": {
+        "operationId": "getArtifact",
+        "tags": ["jobs"],
+        "summary": "One stored document of a job, for download.",
+        "description": "The document is untrusted. It is served as an attachment, under text/plain; charset=utf-8 when the stages stored it as text or JSON and under application/octet-stream otherwise, never under the type it claims, with X-Content-Type-Options: nosniff. It must be linked to a stage run of the job in the path and indexed for the caller's tenant, or the answer is 404 (another tenant's document looks the same as no document). A document larger than 4 MiB is 413. Any designation of the tenant may read it, on the repositories its allowlist entry reaches.",
+        "security": [{ "bearerToken": [] }],
+        "parameters": [
+          { "$ref": "#/components/parameters/JobId" },
+          { "name": "sha256", "in": "path", "required": true, "description": "64 lower case hexadecimal digits, without sha256:.", "schema": { "type": "string", "pattern": "^[0-9a-f]{64}$" } }
+        ],
+        "responses": {
+          "200": {
+            "description": "The bytes of the document.",
+            "headers": {
+              "Content-Disposition": { "schema": { "type": "string" }, "description": "attachment, with a file name the API makes." },
+              "X-Content-Type-Options": { "schema": { "type": "string", "enum": ["nosniff"] } }
+            },
+            "content": {
+              "text/plain; charset=utf-8": { "schema": { "type": "string" } },
+              "application/octet-stream": { "schema": { "type": "string", "format": "binary" } }
+            }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "413": { "$ref": "#/components/responses/PayloadTooLarge" },
+          "429": { "$ref": "#/components/responses/RateLimited" },
+          "503": { "$ref": "#/components/responses/Unavailable" }
+        }
+      }
+    },
     "/v1/jobs/{job_id}/decisions": {
       "post": {
         "operationId": "decideJob",
@@ -328,6 +400,72 @@
             }
           },
           "next": { "type": "string", "nullable": true }
+        }
+      },
+      "SpecificationDraft": {
+        "type": "object",
+        "required": ["job_id", "stage_run_id", "status", "run_number", "draft", "ledger_head", "approval"],
+        "properties": {
+          "job_id": { "type": "string", "format": "uuid" },
+          "stage_run_id": { "type": "string", "format": "uuid" },
+          "status": { "type": "string" },
+          "run_number": { "type": "integer" },
+          "draft": {
+            "type": "object",
+            "nullable": true,
+            "description": "Null until the stage run has kept a draft.",
+            "required": ["number", "commit", "feature_directory", "artifact_sha256", "saved_at"],
+            "properties": {
+              "number": { "type": "integer" },
+              "commit": { "type": "string" },
+              "feature_directory": { "type": "string" },
+              "artifact_sha256": { "type": "string" },
+              "saved_at": { "type": "string", "format": "date-time" }
+            }
+          },
+          "ledger_head": {
+            "type": "object",
+            "nullable": true,
+            "required": ["sequence", "hash"],
+            "properties": { "sequence": { "type": "integer" }, "hash": { "type": "string" } }
+          },
+          "approval": {
+            "type": "object",
+            "required": ["window_hours", "approvable", "head", "evidence"],
+            "properties": {
+              "window_hours": { "type": "integer", "description": "How long a request for a decision stays good before the worker rejects it as expired." },
+              "approvable": { "type": "boolean", "description": "True when the stage run waits for a person and holds a draft." },
+              "head": { "type": "string", "nullable": true, "description": "The value to give as head." },
+              "evidence": { "type": "string", "nullable": true, "description": "The value to give as evidence." }
+            }
+          }
+        }
+      },
+      "GateReports": {
+        "type": "object",
+        "required": ["job_id", "reports", "truncated"],
+        "properties": {
+          "job_id": { "type": "string", "format": "uuid" },
+          "truncated": { "type": "boolean" },
+          "reports": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["stage_run_id", "stage", "report_sha256", "recorded_at", "readable"],
+              "properties": {
+                "stage_run_id": { "type": "string", "format": "uuid" },
+                "stage": { "type": "string" },
+                "gate": { "type": "string", "nullable": true },
+                "title": { "type": "string", "nullable": true },
+                "outcome": { "type": "string", "nullable": true, "enum": ["PASSED", "FAILED", "BLOCKED", "NOT_APPLICABLE", null] },
+                "code": { "type": "string", "nullable": true, "description": "The block code of a BLOCKED report." },
+                "reason": { "type": "string", "nullable": true },
+                "report_sha256": { "type": "string" },
+                "recorded_at": { "type": "string", "format": "date-time" },
+                "readable": { "type": "boolean", "description": "False when the stored report could not be read or is not a gate report." }
+              }
+            }
+          }
         }
       },
       "Timeline": {

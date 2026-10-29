@@ -25,7 +25,7 @@ factory-cli status --api "$FACTORY_API_URL" --token-file approver.token JOB
 factory-cli timeline --api "$FACTORY_API_URL" --token-file approver.token JOB
 ```
 
-The `VALIDATION` stage run shows `BLOCKED`, and the timeline shows `stage_run.blocked`. The gate report of `dependency-review` names the awaited packages with their versions and checksums. No API endpoint serves gate reports today. An operator reads the report from the artifact store, by the hash in the ledger entry `The gate dependency-review reported BLOCKED`.
+The `VALIDATION` stage run shows `BLOCKED`, and the timeline shows `stage_run.blocked`. The gate report of `dependency-review` names the awaited packages with their versions and checksums. `factory-cli status --gates JOB` lists the gate reports with their hashes, and `factory-cli artifact JOB HASH` prints one.
 
 ### 2. Decide
 

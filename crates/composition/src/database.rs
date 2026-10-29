@@ -13,6 +13,12 @@
 //! role query on each pool and refuses a login that is a superuser, bypasses row-level security,
 //! owns a table or is in the wrong groups, and refuses a database that is behind the code.
 
+use std::path::Path;
+use std::sync::Arc;
+
+use factory_ports::artifact::ArtifactStore;
+use factory_ports::store::Store;
+use factory_storage::artifact_fs::LocalFsArtifactStore;
 use factory_storage::pg::{
     DatabaseUrl, PgStore, PgStoreConfig, PoolSettings, StartupError, TenantLogin,
 };
@@ -117,6 +123,22 @@ pub async fn connect_api(
 ) -> Result<PgStore, StartupFailure> {
     let config = api_store_config(api, secrets)?;
     PgStore::connect(config).await.map_err(describe)
+}
+
+/// Opens the artifact store on `root` for a process that only reads it, such as the API. `index`
+/// is the store that holds each tenant's artifact index: a read answers only for a hash the
+/// tenant's own row names. The directory is made when it is missing, as for the worker.
+///
+/// # Errors
+/// [`StartupFailure::Other`] when the directory cannot be made or opened.
+pub fn open_artifacts(
+    root: &Path,
+    max_bytes: u64,
+    index: Arc<dyn Store>,
+) -> Result<Arc<dyn ArtifactStore>, StartupFailure> {
+    LocalFsArtifactStore::open(root, max_bytes, index)
+        .map(|opened| Arc::new(opened) as Arc<dyn ArtifactStore>)
+        .map_err(|error| StartupFailure::Other(format!("the artifact store cannot open: {error}")))
 }
 
 /// A start-up error as plain text, without any URL.

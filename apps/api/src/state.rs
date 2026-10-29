@@ -19,6 +19,7 @@ use factory_composition::seams::FileAllowlist;
 use factory_domain::redaction::Redactor;
 use factory_domain::values::Sha256Digest;
 use factory_domain::vocabulary::Fidelity;
+use factory_ports::artifact::ArtifactStore;
 use factory_ports::clock::{Clock, IdGenerator};
 use factory_ports::githost::WebhookVerifier;
 use factory_ports::store::Store;
@@ -44,6 +45,10 @@ pub struct ApiPorts {
     pub authority: Arc<dyn Authority>,
     /// The allowlist as a source (the same file the authority reads).
     pub allowlist: Arc<dyn AllowlistSource>,
+    /// The artifact store, read-only in use, for the documents of a job (`artifacts` in the
+    /// configuration). `None` when the configuration names no artifact root: the endpoints that
+    /// need a stored document then answer `503`, and the others are unaffected.
+    pub artifacts: Option<Arc<dyn ArtifactStore>>,
 }
 
 impl ApiPorts {
@@ -59,6 +64,9 @@ impl ApiPorts {
         ];
         if let Some(verifier) = &self.webhooks {
             found.push((PortName::Webhooks, verifier.fidelity()));
+        }
+        if let Some(artifacts) = &self.artifacts {
+            found.push((PortName::Artifacts, artifacts.fidelity()));
         }
         found
     }

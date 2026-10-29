@@ -128,6 +128,93 @@ pub fn job(body: &Value) -> String {
     out
 }
 
+/// The gate reports of a job, one line each.
+#[must_use]
+pub fn gate_reports(body: &Value) -> String {
+    let reports = body
+        .get("reports")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    if reports.is_empty() {
+        return "No gate has reported yet.\n".to_owned();
+    }
+    let mut out = format!("Gate reports ({}):\n", reports.len());
+    for report in &reports {
+        let hash = text(report, "report_sha256");
+        if report.get("readable").and_then(Value::as_bool) == Some(false) {
+            out.push_str(&format!(
+                "  {}: a report that could not be read, {hash}\n",
+                text(report, "stage"),
+            ));
+            continue;
+        }
+        let code = report
+            .get("code")
+            .and_then(Value::as_str)
+            .map(|code| format!(" ({})", printable(code)))
+            .unwrap_or_default();
+        out.push_str(&format!(
+            "  {} {}: {}{code}, {hash}\n",
+            text(report, "stage"),
+            text(report, "gate"),
+            text(report, "outcome"),
+        ));
+    }
+    if body.get("truncated").and_then(Value::as_bool) == Some(true) {
+        out.push_str("There are more reports than this list holds.\n");
+    }
+    out.push_str(
+        "Read one with: factory-cli artifact --api URL --token-file FILE JOB <the hash without sha256:>\n",
+    );
+    out
+}
+
+/// The specification draft a person is asked to approve, with the values an approval needs.
+#[must_use]
+pub fn draft(body: &Value) -> String {
+    let mut out = format!(
+        "Specification stage run {} of job {} is {}.\n",
+        text(body, "stage_run_id"),
+        text(body, "job_id"),
+        text(body, "status"),
+    );
+    match body.get("draft").filter(|draft| !draft.is_null()) {
+        None => out.push_str("The stage run has kept no draft yet.\n"),
+        Some(draft) => out.push_str(&format!(
+            "Draft {} saved at {}.\nCommit that holds it: {}\nFeature directory: {}\nDraft document: {}\n",
+            draft.get("number").and_then(Value::as_u64).unwrap_or(0),
+            text(draft, "saved_at"),
+            text(draft, "commit"),
+            text(draft, "feature_directory"),
+            text(draft, "artifact_sha256"),
+        )),
+    }
+    match body.get("ledger_head").filter(|head| !head.is_null()) {
+        None => out.push_str("The ledger of the job is empty.\n"),
+        Some(head) => out.push_str(&format!(
+            "Ledger head: entry {}, {}\n",
+            head.get("sequence").and_then(Value::as_u64).unwrap_or(0),
+            text(head, "hash"),
+        )),
+    }
+    let approval = body.get("approval").cloned().unwrap_or(Value::Null);
+    let hours = approval
+        .get("window_hours")
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    if approval.get("approvable").and_then(Value::as_bool) == Some(true) {
+        out.push_str(&format!(
+            "To approve what you read: head={} evidence={}\nA decision stays good for {hours} hours.\n",
+            text(&approval, "head"),
+            text(&approval, "evidence"),
+        ));
+    } else {
+        out.push_str("It cannot be approved now: the stage run does not wait for a person or holds no draft.\n");
+    }
+    out
+}
+
 /// The timeline of a job.
 #[must_use]
 pub fn timeline(body: &Value) -> String {

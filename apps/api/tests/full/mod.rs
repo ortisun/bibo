@@ -352,7 +352,7 @@ impl Rig {
         );
         let store_dyn: Arc<dyn Store> = store.clone();
         let artifacts: Arc<dyn factory_ports::artifact::ArtifactStore> = Arc::new(
-            LocalFsArtifactStore::open(scratch.join("artifacts"), 64 * 1024 * 1024, store.clone())
+            LocalFsArtifactStore::open(env.artifacts_root.clone(), 64 * 1024 * 1024, store.clone())
                 .expect("the artifact root opens"),
         );
         let fake_clock = Arc::new(FakeClock::new());
