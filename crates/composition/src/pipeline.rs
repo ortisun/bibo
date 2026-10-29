@@ -247,6 +247,18 @@ fn slug(text: &str) -> Result<Slug, PipelineError> {
     Slug::parse(text).map_err(|_| PipelineError::Settings(format!("{text:?} is not an agent id")))
 }
 
+/// The blocks, as (gate, block code), that the policy says no override may pass.
+#[must_use]
+pub fn non_overridable_blocks(policies: &LoadedPolicies) -> Vec<(String, String)> {
+    policies
+        .security
+        .gate_integrity
+        .non_overridable_blocks
+        .iter()
+        .map(|block| (block.gate.clone(), block.code.clone()))
+        .collect()
+}
+
 /// The commit of the gate definitions: the configured one, and for the profiles that are not
 /// production a stand-in made from the policy hash, so that a report names something.
 fn definition_commit(
@@ -772,7 +784,11 @@ pub fn assemble_pipeline(inputs: PipelineInputs) -> Result<Pipeline, PipelineErr
     )))?;
 
     // ---- the engine -----------------------------------------------------------------------
-    let mut config = EngineConfig::new(profile.execution_mode(), policies.hash.clone());
+    // The blocks that no override may pass are the policy's (`gate_integrity.non_overridable_blocks`),
+    // added to the floor the engine keeps. The engine reads the gate and the code of a block from
+    // the event it stored and holds these back, whatever facts a caller hands an override.
+    let mut config = EngineConfig::new(profile.execution_mode(), policies.hash.clone())
+        .with_non_overridable_blocks(non_overridable_blocks(&policies));
     config.claim_batch = 1;
     if let Some(tune) = tune_engine {
         tune(&mut config);

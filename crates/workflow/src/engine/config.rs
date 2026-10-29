@@ -5,6 +5,7 @@
 //! raise it, which `ReworkLimits::from_policy` and `RepairCap::from_policy` enforce, so a config
 //! built from them cannot hold a larger one.
 
+use std::collections::BTreeSet;
 use std::time::Duration;
 
 use factory_domain::machines::limits::{RepairCap, ReworkLimits};
@@ -55,6 +56,12 @@ pub const DEFAULT_JOB_BUDGET_MICRO_USD: u64 = 25_000_000;
 /// (`budgets.thresholds.warn_at_fraction`).
 pub const DEFAULT_BUDGET_WARN_PERCENT: u64 = 80;
 
+/// The gate and the block code of the block that no override may pass whatever the policy says
+/// elsewhere: a new direct dependency with no recorded decision. It is the entry the policy file
+/// must list (`gate_integrity.non_overridable_blocks`) and the engine refuses to build without; the
+/// engine keeps it as the floor of [`EngineConfig::non_overridable_blocks`].
+pub const UNRESOLVED_DEPENDENCY_REVIEW: (&str, &str) = ("dependency-review", "policy_unresolvable");
+
 /// The stage kinds of Slice 1, in pipeline order. `MERGE` is not implemented and is disabled by
 /// default (state-machine.md, pipeline table).
 pub const SLICE_ONE_SCOPE: [StageKind; 13] = [
@@ -101,6 +108,13 @@ pub struct EngineConfig {
     pub job_budget_micro_usd: u64,
     /// The share of a ceiling at which the engine records a threshold audit event.
     pub budget_warn_percent: u64,
+    /// The blocks, as (gate, block code), that no override may pass
+    /// (`gate_integrity.non_overridable_blocks`). The engine reads the gate and the code of a
+    /// block from the event it stored when the stage run blocked, and refuses an override of a
+    /// stage run any of whose blocks is listed here, whatever facts the caller hands in. The
+    /// default holds the block of an unresolved dependency review; a composition root adds the
+    /// entries of the policy and never takes this one away.
+    pub non_overridable_blocks: BTreeSet<(String, String)>,
 }
 
 impl EngineConfig {
@@ -119,7 +133,21 @@ impl EngineConfig {
             claim_batch: DEFAULT_CLAIM_BATCH,
             job_budget_micro_usd: DEFAULT_JOB_BUDGET_MICRO_USD,
             budget_warn_percent: DEFAULT_BUDGET_WARN_PERCENT,
+            non_overridable_blocks: BTreeSet::from([(
+                UNRESOLVED_DEPENDENCY_REVIEW.0.to_owned(),
+                UNRESOLVED_DEPENDENCY_REVIEW.1.to_owned(),
+            )]),
         }
+    }
+
+    /// Adds blocks that no override may pass. The floor stays: this adds and never removes.
+    #[must_use]
+    pub fn with_non_overridable_blocks(
+        mut self,
+        blocks: impl IntoIterator<Item = (String, String)>,
+    ) -> Self {
+        self.non_overridable_blocks.extend(blocks);
+        self
     }
 
     /// Checks the settings the engine relies on.

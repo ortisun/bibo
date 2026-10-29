@@ -487,6 +487,14 @@ impl Engine {
             key::CAUSE,
             json!(cause.code()),
         );
+        // The gate and the code of every block, so that an override reads what stopped the run
+        // from what the engine stored and not from what the caller says (the override rule of
+        // `gate_integrity.non_overridable_blocks`).
+        let blocks: Vec<serde_json::Value> = blocks_of(cause, judged)
+            .into_iter()
+            .map(|(gate, code)| json!({"gate": gate, "code": code}))
+            .collect();
+        let payload = payload::with(payload, key::BLOCKS, json!(blocks));
         let record = gate_record(
             tx,
             cx,
@@ -742,6 +750,42 @@ async fn gate_record(
         failing_set_sha256: failing.cloned(),
     })
 }
+
+/// The gate and the block code of each block that stopped a stage run. A gate that reported
+/// `BLOCKED` gives its own id and the code it carries (`unspecified` when it carries none); a gate
+/// that did not run gives its id and `gate-did-not-run`; any other cause (a policy violation, a
+/// reviewer, evidence that was refused) is not a gate's block and gives `stage` and the cause's
+/// code. Every blocked report counts, not only the first.
+fn blocks_of(cause: &BlockCause, judged: &Judged) -> Vec<(String, String)> {
+    let mut found: Vec<(String, String)> = judged
+        .decision
+        .reports
+        .iter()
+        .filter(|report| report.outcome == GateOutcome::Blocked)
+        .map(|report| {
+            (
+                report.metadata.gate_id.as_str().to_owned(),
+                report
+                    .blocked_reason
+                    .as_ref()
+                    .map_or("unspecified", |reason| reason.code.as_str())
+                    .to_owned(),
+            )
+        })
+        .collect();
+    match cause {
+        BlockCause::MissingGate(gate) => {
+            found.push((gate.as_str().to_owned(), cause.code().to_owned()));
+        }
+        BlockCause::GateBlocked(_) => {}
+        other => found.push(("stage".to_owned(), other.code().to_owned())),
+    }
+    found.truncate(MOST_BLOCKS);
+    found
+}
+
+/// The most blocks one event lists; the payload of an event is small.
+const MOST_BLOCKS: usize = 16;
 
 fn needs_human_facts(cause: NeedsHumanCause) -> (NeedsHumanFacts, &'static str) {
     let code = match cause {

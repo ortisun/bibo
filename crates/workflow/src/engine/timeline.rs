@@ -111,6 +111,10 @@ pub(crate) struct RunRecord {
     /// How many attempts the run had when each decision on a dependency was recorded
     /// ([`links::decision_attempts_before`]), in the order of the links.
     pub(crate) dependency_decisions: Vec<u32>,
+    /// The blocks that stopped the run at its latest block, as (gate, block code), read from the
+    /// block event the engine itself wrote. Empty for a run that never blocked, and for a block
+    /// whose event carries none, which no override may then pass.
+    pub(crate) blocks: Vec<(String, String)>,
 }
 
 impl RunRecord {
@@ -171,6 +175,7 @@ impl RunRecord {
             approved: false,
             rejected: false,
             dependency_decisions,
+            blocks: Vec::new(),
         })
     }
 
@@ -475,6 +480,13 @@ impl Timeline {
                 self.run_mut(id)?.rejected = true;
                 Ok(())
             }
+            // The block event names the gate and the code of each block. The newest block of a
+            // run replaces an older one: events are read in order.
+            ("stage_run.blocked", "S11") => {
+                let id = aggregate_run(event);
+                self.run_mut(id)?.blocks = blocks_of(&event.payload);
+                Ok(())
+            }
             (
                 "attempt.succeeded" | "attempt.failed" | "attempt.timed_out" | "attempt.lease_lost"
                 | "attempt.cancelled",
@@ -492,6 +504,26 @@ impl Timeline {
             _ => Ok(()),
         }
     }
+}
+
+/// The (gate, code) pairs a block event carries. A payload without them, or with an entry that
+/// is not a pair of words, yields nothing for that entry.
+fn blocks_of(payload: &serde_json::Map<String, Value>) -> Vec<(String, String)> {
+    payload
+        .get(key::BLOCKS)
+        .and_then(Value::as_array)
+        .map(|entries| {
+            entries
+                .iter()
+                .filter_map(|entry| {
+                    Some((
+                        entry.get("gate")?.as_str()?.to_owned(),
+                        entry.get("code")?.as_str()?.to_owned(),
+                    ))
+                })
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 fn aggregate_run(event: &DomainEvent) -> StageRunId {
@@ -756,6 +788,7 @@ mod tests {
                 approved: false,
                 rejected: false,
                 dependency_decisions: Vec::new(),
+                blocks: Vec::new(),
             }],
             ..Timeline::default()
         }

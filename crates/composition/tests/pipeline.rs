@@ -199,6 +199,33 @@ fn the_local_profile_lets_the_model_and_github_side_stand_in_and_nothing_that_ho
 }
 
 #[test]
+fn the_engine_is_given_the_blocks_the_policy_says_no_override_may_pass() {
+    let policies = load_policy(&root(), &[]).expect("the real policies load");
+    let listed = factory_composition::pipeline::non_overridable_blocks(&policies);
+    assert!(
+        listed.contains(&(
+            "dependency-review".to_owned(),
+            "policy_unresolvable".to_owned()
+        )),
+        "{listed:?}"
+    );
+    // The floor the engine keeps is the same pair, so a configuration that lists nothing still
+    // holds the unresolved dependency review back.
+    let floor = EngineConfig::new(
+        Profile::Test.execution_mode(),
+        factory_domain::values::Sha256Digest::of(b"policy"),
+    );
+    assert!(floor.non_overridable_blocks.contains(&(
+        "dependency-review".to_owned(),
+        "policy_unresolvable".to_owned()
+    )));
+    let configured = floor.clone().with_non_overridable_blocks(listed.clone());
+    for pair in &listed {
+        assert!(configured.non_overridable_blocks.contains(pair));
+    }
+}
+
+#[test]
 fn the_production_profile_needs_the_commit_of_the_gate_definitions() {
     let refused = assemble_pipeline(inputs(Profile::Production, StageSettings::default()))
         .err()

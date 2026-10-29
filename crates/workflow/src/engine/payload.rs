@@ -32,6 +32,9 @@ pub(crate) mod key {
     pub const COST: &str = "cost_micro_usd";
     /// A short machine code for why a move happened.
     pub const CAUSE: &str = "cause";
+    /// The blocks that stopped a stage run at its gate, each as `{"gate": .., "code": ..}`: the gate
+    /// that was blocked and the code of its block. The override of a block reads them back.
+    pub const BLOCKS: &str = "blocks";
     /// The principal who took a human decision.
     pub const PRINCIPAL: &str = "principal_id";
     /// The guard that held for the move an event announces (ADR 0014, decision 3).
