@@ -54,6 +54,14 @@ pub const TOKEN_TOLERANCE_ABSOLUTE: u64 = 256;
 /// attested.
 pub const CALL_TIMEOUT: Duration = Duration::from_secs(10);
 
+/// How long the adapter waits for a request that is still in flight at the broker to settle. The
+/// broker settles a request before the tool has seen the end of its answer, so this is a margin for
+/// a slow broker thread and not a part of the design.
+pub const SETTLE_GRACE: Duration = Duration::from_secs(2);
+
+/// The pause between two reads while a request is in flight.
+const SETTLE_POLL: Duration = Duration::from_millis(50);
+
 /// What the stream says the run used, as the adapter read it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Claim {
@@ -138,6 +146,18 @@ impl Attestor {
         }
     }
 
+    /// The summary once no request is in flight, waiting at most [`SETTLE_GRACE`] for that.
+    async fn settled_summary(&self, token: &JobTokenId) -> Option<TurnSummary> {
+        let mut summary = self.summary(token).await?;
+        let mut waited = Duration::ZERO;
+        while summary.in_flight != 0 && waited < SETTLE_GRACE {
+            tokio::time::sleep(SETTLE_POLL).await;
+            waited += SETTLE_POLL;
+            summary = self.summary(token).await?;
+        }
+        Some(summary)
+    }
+
     /// Judges a run that ended: the summary after it against the baseline from before it.
     ///
     /// # Errors
@@ -148,7 +168,7 @@ impl Attestor {
         before: &TurnSummary,
         claim: &Claim,
     ) -> Result<(), Distrust> {
-        let Some(after) = self.summary(token).await else {
+        let Some(after) = self.settled_summary(token).await else {
             return Err(Distrust::UnattestedCompletion);
         };
         judge(before, &after, claim)

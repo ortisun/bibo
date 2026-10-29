@@ -708,8 +708,15 @@ fn forward(
         .starts_with("text/event-stream");
     if (200..300).contains(&status) && is_stream {
         let reader = response.body_mut().with_config().limit(u64::MAX).reader();
-        let (outcome, end) = relay_stream(stream, provider, status, &header_refs, reader, upstream);
-        permit.settle_with_end(outcome, end);
+        relay_stream(
+            stream,
+            provider,
+            status,
+            &header_refs,
+            reader,
+            upstream,
+            permit,
+        );
         return;
     }
     // Everything else is held, up to a bound, so that it can be scrubbed whole and read for usage.
@@ -780,7 +787,12 @@ fn canonical(name: &str) -> String {
         .join("-")
 }
 
-/// Copies a server-sent event stream to the tool as it arrives, reading its usage on the way.
+/// Copies a server-sent event stream to the tool as it arrives, reading its usage on the way, and
+/// settles the permit with what the stream reported.
+///
+/// The permit is settled BEFORE the scrubber's held-back tail and the terminating chunk reach the
+/// tool, so that by the time the tool has seen the whole answer the broker's record of it is
+/// already written (`TurnAttestation`: the adapter reads that record when the tool ends).
 fn relay_stream(
     client: &mut TcpStream,
     provider: Provider,
@@ -788,11 +800,13 @@ fn relay_stream(
     headers: &[(&str, &str)],
     mut upstream_body: impl Read,
     upstream: &Upstream,
-) -> (Outcome, AnswerEnd) {
+    permit: Permit,
+) {
     let mut head_headers: Vec<(&str, &str)> = headers.to_vec();
     head_headers.push(("Cache-Control", "no-cache"));
     if wire::write_chunked_head(client, status, &head_headers).is_err() {
-        return (Outcome::Unreadable, AnswerEnd::Failed);
+        permit.settle_with_end(Outcome::Unreadable, AnswerEnd::Failed);
+        return;
     }
     let mut usage = StreamUsage::new(provider);
     let mut scrubber = StreamScrubber::new([upstream.key.expose()]);
@@ -815,15 +829,16 @@ fn relay_stream(
             Err(_) => break,
         }
     }
+    // Usage that was seen in full is charged whatever happened to the client; a stream that was
+    // cut before its report is charged the worst case.
+    let (outcome, end) = match usage.finish_with_end() {
+        (Some(counts), end) => (Outcome::Counted(counts), end),
+        (None, _) => (Outcome::Unreadable, AnswerEnd::Failed),
+    };
+    permit.settle_with_end(outcome, end);
     if finished_cleanly {
         let _ = wire::write_chunk(client, &scrubber.finish());
         let _ = wire::write_last_chunk(client);
-    }
-    // Usage that was seen in full is charged whatever happened to the client; a stream that was
-    // cut before its report is charged the worst case.
-    match usage.finish_with_end() {
-        (Some(counts), end) => (Outcome::Counted(counts), end),
-        (None, _) => (Outcome::Unreadable, AnswerEnd::Failed),
     }
 }
 

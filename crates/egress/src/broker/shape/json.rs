@@ -295,11 +295,16 @@ mod tests {
             parse(members(MAX_WIDTH + 1).as_bytes()),
             Err(Violation::TooManyValues)
         );
-        // Too many in all, though no array is wide: arrays of arrays.
-        let rows = |n: usize| format!("[{}[]]", "[0,0,0,0,0,0,0,0,0],".repeat(n));
-        assert!(parse(rows(5_000).as_bytes()).is_ok());
+        // Too many in all, though no array is wide: rows of twenty values.
+        let row = format!("[{}0],", "0,".repeat(19));
+        let rows = |n: usize| format!("[{}[]]", row.repeat(n));
+        assert!(parse(rows(2_000).as_bytes()).is_ok());
+        assert!(
+            MAX_VALUES / 21 < MAX_WIDTH,
+            "the rows must be narrower than the width limit"
+        );
         assert_eq!(
-            parse(rows(MAX_VALUES / 10 + 1).as_bytes()),
+            parse(rows(MAX_VALUES / 21 + 100).as_bytes()),
             Err(Violation::TooManyValues)
         );
         // The count stops the reader at the limit: it does not read on to the end of a huge body.

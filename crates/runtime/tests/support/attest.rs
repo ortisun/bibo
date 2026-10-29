@@ -54,7 +54,8 @@ pub fn ended(answers: u64, input_tokens: u64, output_tokens: u64) -> TurnSummary
 /// The attestation: the first call answers `first` (the baseline), every later call `later`.
 pub struct ScriptedAttestation {
     first: Answer,
-    later: Mutex<Answer>,
+    /// The answers after the first, in order; the last one repeats.
+    later: Mutex<Vec<Answer>>,
     calls: AtomicUsize,
     tokens: Mutex<Vec<JobTokenId>>,
 }
@@ -70,6 +71,12 @@ impl ScriptedAttestation {
 
     /// A baseline and an answer after the run.
     pub fn new(first: Answer, later: Answer) -> Self {
+        Self::sequence(first, vec![later])
+    }
+
+    /// A baseline, then these answers in order (the last one repeats).
+    pub fn sequence(first: Answer, later: Vec<Answer>) -> Self {
+        assert!(!later.is_empty());
         Self {
             first,
             later: Mutex::new(later),
@@ -106,7 +113,8 @@ impl TurnAttestation for ScriptedAttestation {
         let answer = if call == 0 {
             self.first
         } else {
-            *self.later.lock().expect("lock")
+            let later = self.later.lock().expect("lock");
+            later[(call - 1).min(later.len() - 1)]
         };
         match answer {
             Answer::Summary(summary) => Ok(summary),

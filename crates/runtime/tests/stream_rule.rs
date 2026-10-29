@@ -447,6 +447,7 @@ async fn a_last_answer_that_is_not_the_end_of_a_turn_is_unattested() {
             "{end:?}"
         );
     }
+    // A request that never settles is not an end.
     let in_flight = TurnSummary {
         in_flight: 1,
         ..ended(2, 2660, 112)
@@ -460,6 +461,33 @@ async fn a_last_answer_that_is_not_the_end_of_a_turn_is_unattested() {
     )
     .await;
     assert!(report.outcome.is_err());
+}
+
+#[tokio::test]
+async fn a_request_that_settles_a_moment_after_the_tool_ended_is_waited_for() {
+    let h = Harness::new();
+    let open = TurnSummary {
+        in_flight: 1,
+        ..ended(2, 2660, 112)
+    };
+    let attestation = Arc::new(ScriptedAttestation::sequence(
+        Answer::Summary(nothing()),
+        vec![
+            Answer::Summary(open),
+            Answer::Summary(open),
+            Answer::Summary(ended(2, 2660, 112)),
+        ],
+    ));
+    let (report, _) = run_attested(
+        &h,
+        Tool::Claude,
+        exits(&recorded::stdout(CLAUDE_TOOLS)),
+        attestation.clone(),
+        |_| {},
+    )
+    .await;
+    assert!(report.outcome.is_ok(), "{:?}", report.outcome);
+    assert_eq!(attestation.calls(), 4);
 }
 
 #[tokio::test]
