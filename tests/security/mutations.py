@@ -45,6 +45,10 @@ BLOCK = "crates/workflow/src/prompts/block.rs"
 PATHS = "crates/domain/src/policy/paths.rs"
 JUDGE = "crates/workflow/src/stages/approval/judge.rs"
 AUTHORITY = "crates/domain/src/policy/authority.rs"
+ATTEMPTS = "crates/storage/src/pg/attempts.rs"
+SANDBOX_AUDIT = "crates/workflow/src/engine/sandbox_audit.rs"
+WEBHOOK = "apps/api/src/webhook.rs"
+IMPLEMENTATION = "crates/workflow/src/stages/implementation/run.rs"
 
 # name -> (what is broken, [(file, old, new), ...])
 MUTATIONS = {
@@ -92,6 +96,38 @@ MUTATIONS = {
         "a line of data in the prompt is written without the quote prefix, so a line of data can pass for a delimiter",
         [(BLOCK, 'pub(super) const QUOTE: &str = "> ";', 'pub(super) const QUOTE: &str = "";')],
     ),
+    "a-renewal-ignores-the-lapse": (
+        "a lease that has lapsed can still be renewed by the worker that held it, so the sweeper and the worker can both act on one attempt (the lease-expiry fence is gone)",
+        [(ATTEMPTS, "AND status IN ('STARTING', 'RUNNING', 'CANCELLING') AND lease_expires_at > now() \\\n          RETURNING status, lease_expires_at, deadline_at", "AND status IN ('STARTING', 'RUNNING', 'CANCELLING') \\\n          RETURNING status, lease_expires_at, deadline_at")],
+    ),
+    "a-renewal-ignores-the-owner": (
+        "a renewal in the name of another worker renews the lease",
+        [(ATTEMPTS, "AND id = $2 AND lease_owner = $3 AND lease_epoch = $4 \\\n            AND status IN", "AND id = $2 AND $3 <> '' AND lease_epoch = $4 \\\n            AND status IN")],
+    ),
+    "a-renewal-ignores-the-epoch": (
+        "a renewal at an epoch the lease does not hold renews the lease",
+        [(ATTEMPTS, "AND lease_owner = $3 AND lease_epoch = $4 \\\n            AND status IN", "AND lease_owner = $3 AND $4 >= 0 \\\n            AND status IN")],
+    ),
+    "a-second-claimant-is-not-told-it-lost": (
+        "the check that a claim was read at the version the run still has is gone, so the second worker is refused by a later rule with another answer",
+        [(ATTEMPTS, 'if run.version != start.expected.get() || run.status != "READY" {', "if false {")],
+    ),
+    "the-engine-does-not-write-command-executed": (
+        "the engine writes no audit record for a command the sandbox ran",
+        [(SANDBOX_AUDIT, "if seen < MAX_COMMAND_RECORDS {", "if false && seen < MAX_COMMAND_RECORDS {")],
+    ),
+    "the-api-writes-the-old-webhook-name": (
+        "the API audits an accepted delivery as webhook.accepted again, a name a reader that filters by the type of the policy does not know",
+        [(WEBHOOK, '            "webhook_accepted_or_rejected.granted",\n            "The delivery was verified and recorded.",', '            "webhook.accepted",\n            "The delivery was verified and recorded.",')],
+    ),
+    "the-job-token-is-accepted-by-the-webhook-endpoint": (
+        "the webhook endpoint takes a job token in the Authorization header in place of the signature, so one operation of the API trusts the credential of a job",
+        [(WEBHOOK, "    let verifier = state.ports.webhooks.as_ref().ok_or(ApiError::NotFound)?;\n", "    let verifier = state.ports.webhooks.as_ref().ok_or(ApiError::NotFound)?;\n    if headers\n        .get(\"authorization\")\n        .is_some_and(|value| value.as_bytes().windows(5).any(|window| window == b\"sfjt_\"))\n    {\n        return accepted();\n    }\n")],
+    ),
+    "the-builder-report-is-stored-as-written": (
+        "the text the builder reports about its own work is stored without the redactor having looked at it",
+        [(IMPLEMENTATION, "    match handler.redactor.redact_str(text) {\n        Ok(redacted) => {\n            if redacted.report.replacements() > 0 {", "    match handler.redactor.redact_str(text).map(|mut redacted| {\n        redacted.output = std::borrow::Cow::Owned(text.to_owned());\n        redacted\n    }) {\n        Ok(redacted) => {\n            if redacted.report.replacements() > 0 {")],
+    ),
 }
 
 # name -> the arguments of cargo nextest for the tests that must fail. The tests that are named
@@ -109,13 +145,21 @@ TESTS = {
     "an-expired-allowlist-entry-still-grants": BROAD,
     "a-bot-may-hold-a-designation": BROAD,
     "data-lines-are-not-quoted": BROAD,
+    "a-renewal-ignores-the-lapse": ["-p", "factory-storage", "negative_nt_lse_02"],
+    "a-renewal-ignores-the-owner": ["-p", "factory-storage", "negative_nt_lse_02"],
+    "a-renewal-ignores-the-epoch": ["-p", "factory-storage", "negative_nt_lse_02"],
+    "a-second-claimant-is-not-told-it-lost": ["-p", "factory-storage", "negative_nt_lse_02"],
+    "the-engine-does-not-write-command-executed": ["-p", "factory-workflow", "negative_nt_aud_03"],
+    "the-api-writes-the-old-webhook-name": ["-p", "factory-api", "--test", "negative_composed", "negative_nt_aud_03"],
+    "the-job-token-is-accepted-by-the-webhook-endpoint": ["-p", "factory-api", "--test", "negative_composed", "negative_nt_inj_04"],
+    "the-builder-report-is-stored-as-written": ["-p", "factory-workflow", "-p", "factory-api", "negative_nt_sec_01"],
 }
 
-# Tests that are red with every control on (findings F-1 and F-3 of docs/security/p0-coverage.md).
-# They fail in every run, so a failure of theirs says nothing about the control that was removed.
+# Tests that are red with every control on. They fail in every run, so a failure of theirs says
+# nothing about the control that was removed. Findings F-1 and F-3 of the first review are fixed in
+# the base branch (their tests pass); the composed run reports F-6 and F-7 (docs/security/p0-coverage.md).
 BASELINE_RED = {
-    "negative_nt_inj_04_tool_output_that_says_grant_yourself_and_approve_gains_no_authority",
-    "negative_nt_sec_01_a_full_fixture_job_with_a_canary_of_every_class_leaves_none_in_any_sink",
+    "negative_nt_sec_01_composed_a_full_job_with_a_canary_of_every_class_leaves_none_in_any_sink",
 }
 
 FAILED = re.compile(r"^\s+FAIL \[[^\]]*\] \(\s*\d+/\d+\) (.+)$", re.M)

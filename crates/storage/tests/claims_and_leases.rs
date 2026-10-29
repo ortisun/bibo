@@ -360,3 +360,222 @@ async fn a_lock_for_update_would_block_the_audit_insert() {
     drop(audit);
     holder.batch_execute("ROLLBACK").await.expect("release");
 }
+
+// ---- NT-LSE-02: claim race and forged renewal -------------------------------------------------
+
+/// A small deterministic generator, so that the interleavings differ from one another and a failure
+/// can be repeated.
+fn next_pause(state: &mut u64) -> Duration {
+    *state = state
+        .wrapping_mul(6_364_136_223_846_793_005)
+        .wrapping_add(1_442_695_040_888_963_407);
+    Duration::from_micros((*state >> 33) % 1_500)
+}
+
+/// A hundred interleavings of two workers that claim one stage run. In each, both hold the same
+/// candidate, each waits a different time and starts in a transaction of its own. Exactly one wins
+/// and commits, the other is told it lost, and the database holds one live attempt at the epoch the
+/// win granted.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn negative_nt_lse_02_a_hundred_interleavings_of_two_workers_claim_one_job_with_one_winner() {
+    let scene = Arc::new(Scene::new().await);
+    let mut state = 0x9e37_79b9_7f4a_7c15_u64;
+    let mut winners_by_worker = [0_u32; 2];
+    for round in 0..100 {
+        let job = scene.active_job(scene.a).await;
+        let run = scene.ready_stage_run(scene.a, job).await;
+        let mut sys = scene.system().await;
+        let candidate = sys
+            .find_claim_candidates(10)
+            .await
+            .expect("find")
+            .into_iter()
+            .find(|c| c.stage_run == run)
+            .expect("the run is a candidate");
+        sys.finish().await.expect("finish");
+
+        let barrier = Arc::new(Barrier::new(2));
+        let mut tasks = Vec::new();
+        for number in 0..2_usize {
+            let (scene, barrier) = (scene.clone(), barrier.clone());
+            let pause = next_pause(&mut state);
+            tasks.push(tokio::spawn(async move {
+                let mut tx = scene.tx(scene.a).await;
+                barrier.wait().await;
+                tokio::time::sleep(pause).await;
+                let outcome = start_in(
+                    &mut *tx,
+                    candidate.stage_run,
+                    candidate.version,
+                    &format!("worker-{number}"),
+                )
+                .await;
+                match outcome {
+                    Ok(started) => {
+                        tx.commit().await.expect("the winner commits");
+                        Ok((number, started))
+                    }
+                    Err(error) => {
+                        let _ = tx.rollback().await;
+                        Err(error)
+                    }
+                }
+            }));
+        }
+        let mut won = Vec::new();
+        let mut lost = Vec::new();
+        for task in tasks {
+            match task.await.expect("the task does not panic") {
+                Ok(win) => won.push(win),
+                Err(error) => lost.push(error),
+            }
+        }
+        assert_eq!(won.len(), 1, "round {round}: exactly one worker wins");
+        assert_eq!(
+            lost,
+            vec![StoreError::Conflict],
+            "round {round}: the other is told it lost"
+        );
+        winners_by_worker[won[0].0] += 1;
+        assert_eq!(won[0].1.attempt.value.epoch.get(), 1, "round {round}");
+        assert_eq!(
+            scene.attempts_of(run).await.len(),
+            1,
+            "round {round}: one attempt exists"
+        );
+        assert_eq!(
+            scene
+                .db
+                .number(&format!(
+                    "SELECT count(*) FROM attempts WHERE stage_run_id = '{}' \
+                     AND status IN ('STARTING', 'RUNNING', 'CANCELLING')",
+                    run.as_uuid()
+                ))
+                .await,
+            1,
+            "round {round}: one active lease row"
+        );
+        assert_eq!(
+            scene
+                .db
+                .text(&format!(
+                    "SELECT lease_owner FROM attempts WHERE stage_run_id = '{}'",
+                    run.as_uuid()
+                ))
+                .await,
+            Some(format!("worker-{}", won[0].0)),
+            "round {round}: the lease belongs to the winner"
+        );
+    }
+    // The pauses differ, so both workers win some rounds: the hundred rounds are not one order.
+    assert!(
+        winners_by_worker.iter().all(|wins| *wins >= 5),
+        "the interleavings are not varied enough: {winners_by_worker:?}"
+    );
+}
+
+/// A renewal that does not come from the owner of the lease at its epoch changes nothing: the
+/// wrong owner, the wrong epoch, another tenant, and a lease that has lapsed. After all of them the
+/// row is as it was; the owner's own renewal then works, so the refusals mean something.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn negative_nt_lse_02_a_renewal_with_the_wrong_owner_epoch_tenant_or_a_lapsed_lease_changes_nothing()
+ {
+    let scene = Scene::new().await;
+    let job = scene.active_job(scene.a).await;
+    let run = scene.ready_stage_run(scene.a, job).await;
+    let started = scene.start(scene.a, run, "worker-1").await.expect("start");
+    let attempt = started.attempt.value.id;
+    let epoch = started.attempt.value.epoch;
+    let held = |worker: &str, epoch| Fence {
+        attempt,
+        epoch,
+        worker: WorkerId::new(worker).expect("name"),
+    };
+    let snapshot = || async {
+        scene
+            .db
+            .text(&format!(
+                "SELECT version || '|' || lease_owner || '|' || lease_epoch || '|' || lease_expires_at || '|' || \
+                 coalesce(last_heartbeat_at::text, '-') FROM attempts WHERE id = '{}'",
+                attempt.as_uuid()
+            ))
+            .await
+            .expect("the attempt")
+    };
+    let before = snapshot().await;
+
+    // The wrong owner: the right attempt and the right epoch, named by another worker.
+    let mut tx = scene.tx(scene.a).await;
+    assert_eq!(
+        tx.heartbeat(held("worker-2", epoch), Duration::from_secs(600))
+            .await,
+        Err(StoreError::LeaseFenced),
+        "a renewal in the name of another worker is refused"
+    );
+    // The wrong epoch: the owner, one epoch above the lease.
+    let above = factory_ports::store::LeaseEpoch::new(epoch.get() + 1);
+    assert_eq!(
+        tx.heartbeat(held("worker-1", above), Duration::from_secs(600))
+            .await,
+        Err(StoreError::LeaseFenced),
+        "a renewal at an epoch the lease does not hold is refused"
+    );
+    tx.rollback().await.expect("rollback");
+    // The wrong tenant: the fence of the lease, presented by a session of the other tenant.
+    let mut other = scene.tx(scene.b).await;
+    let forged = other
+        .heartbeat(held("worker-1", epoch), Duration::from_secs(600))
+        .await;
+    assert!(
+        matches!(forged, Err(StoreError::LeaseFenced | StoreError::NotFound)),
+        "a renewal from another tenant reaches nothing: {forged:?}"
+    );
+    other.rollback().await.expect("rollback");
+    assert_eq!(
+        snapshot().await,
+        before,
+        "no refused renewal changed the row"
+    );
+
+    // A lease that lapsed is the sweeper's, not the worker's: the owner cannot renew it.
+    scene
+        .db
+        .run(&format!(
+            "UPDATE attempts SET lease_expires_at = now() - interval '1 second', version = version + 1 WHERE id = '{}'",
+            attempt.as_uuid()
+        ))
+        .await;
+    let lapsed = snapshot().await;
+    let mut tx = scene.tx(scene.a).await;
+    assert_eq!(
+        tx.heartbeat(held("worker-1", epoch), Duration::from_secs(600))
+            .await,
+        Err(StoreError::LeaseFenced),
+        "a lapsed lease is not renewed by its owner"
+    );
+    tx.rollback().await.expect("rollback");
+    assert_eq!(snapshot().await, lapsed, "the lapsed lease is as it was");
+
+    // The control: while the lease holds, the owner renews it.
+    scene
+        .db
+        .run(&format!(
+            "UPDATE attempts SET lease_expires_at = now() + interval '30 seconds', version = version + 1 WHERE id = '{}'",
+            attempt.as_uuid()
+        ))
+        .await;
+    let mut tx = scene.tx(scene.a).await;
+    let renewed = tx
+        .heartbeat(held("worker-1", epoch), Duration::from_secs(600))
+        .await
+        .expect("the owner renews a live lease");
+    let now = tx.database_time().await.expect("time");
+    tx.commit().await.expect("commit");
+    assert!(
+        renewed
+            .lease_expires_at
+            .duration_since(&now)
+            .is_some_and(|ahead| ahead > Duration::from_secs(300)),
+        "the renewal moved the end of the lease"
+    );
+}
