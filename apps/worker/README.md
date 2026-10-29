@@ -634,6 +634,7 @@ smallest change.
 | Issue source, change host | built from `github`; a live run needs a registered GitHub App, its key and its installations. Never run against the real GitHub |
 | `RegistryMetadata`, `AdvisoryDatabase` | built from `registry` and `advisory_database.date_file`. The registry client has never run against the real crates.io, and the stock policy does not list `crates.io` as a host, so production refuses it until a person adds it. An unreadable answer is unknown, and the gate fails closed on unknown |
 | `CapabilityProbes` | each runtime is probed in an `agent` sandbox at start-up, and is BLOCKED with the reason when the sandbox cannot be made. The success path ran only against a labelled stand-in session (`runtimes.declare_capabilities` in the local and test profiles takes a declared list) |
+| The skills of the specification stage | `external_ports` gives the Claude Code adapter no skill bundle (`spec_skills: None`), which makes the `SPECIFICATION` stage unavailable with the real tool. Building one needs a decision on which of the installed `speckit-*` skills the stage may see (the policy's allowed list) and on how their directory names map to the policy's names |
 | The 13-stage `word-count` job over real GitHub, real runtime and real broker, to a draft pull request and a person's approval | not run. The model path (`tests/composed_broker.rs`) and the GitHub path (`crates/composition/tests/external_world.rs`) are each proven over loopback; the stages in between still run only with the scripted runtime in `apps/api/tests/full_run.rs` |
 | `DeliverySources::tree_of`, `current_values` | implemented and wired by `assemble_pipeline` (mismatches 35 and 37), so the worker answers them. A binary that does not assemble the pipeline, such as the operator CLI, still gets the closed answer, and `factory-cli probe` lists the two as `BLOCKED:` |
 | The real Docker sandbox, run in a test | the pinned images are present; the one test of it is ignored because the daemon did not see its bind sources on four runs of five (see "How far the job gets") |
@@ -647,3 +648,8 @@ the `composition` entry, `DEP-11`, the `DEP-08` wording and `composition` in `st
 `signal` in the `tokio` features is applied. The direct dependencies of `factory-composition` are the ones
 the worker had (`async-trait`, `serde`, `serde_json`, `thiserror`, `tracing`, `tokio`, `time`, `uuid`) and
 the workspace crates; there is no new external crate, and `cargo deny --locked check` passes.
+
+Added by `s1-composition-external-world`: `ureq` (features `rustls` only) is a direct dependency of `factory-composition`, for the
+crates.io client, declared in the rules file with the same reason as the GitHub adapter. It is already in the resolved tree
+through `factory-github` and `factory-egress`, so `Cargo.lock` gains one dependency edge and no package, and
+`cargo deny --locked check` passes.

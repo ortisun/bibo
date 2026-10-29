@@ -264,6 +264,16 @@ const REVIEWED: &[(&str, &str, &str)] = &[
         "a boolean: whether the one reply was posted",
     ),
     (
+        "crates/composition/src/startup.rs",
+        "unconfirmed",
+        "a count: how many things in the routing policy still wait for the project owner",
+    ),
+    (
+        "crates/composition/src/token_sweep.rs",
+        "revoked",
+        "a count: how many installation tokens of ended jobs the pass revoked",
+    ),
+    (
         "apps/api/src/answers.rs",
         "error",
         "StoreError, a closed set",

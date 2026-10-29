@@ -10,7 +10,7 @@
 # files of its two logins and the decision signing key, which is the SAME file the API signs with.
 #
 # What this stack cannot fill in, because it needs a real credential, which a deployment script must not invent:
-#   * broker.upstreams (a model provider and its key file) and broker.prices
+#   * broker.upstreams (a model provider and its key file); the models and prices come from policies/model_routing.yaml
 #   * github.app_id and github.key_file (a registered GitHub App)
 #   * worker.tenants (the tenant ids the worker serves)
 # Until they are supplied the worker prints BLOCKED lines and exits with code 3, which is the right answer

@@ -131,9 +131,13 @@ broker:
   listen: 127.0.0.1:8731
   upstreams:
     - { provider: anthropic, base_url: 'https://api.anthropic.com', key_file: /run/secrets/anthropic }
-  prices:
-    - { provider: anthropic, model: claude-sonnet-5-5, input: 3000000, cache_write: 3750000, cache_read: 300000, output: 15000000 }
-github: { app_id: 1, key_file: /run/secrets/github_app_key }
+  prices: []                                # the policy is the price list; an entry here may only raise a price
+github:
+  app_id: 1
+  key_file: /run/secrets/github_app_key
+  installations: [{ tenant: 2f0c7f64-0d1c-4c5e-9f0a-1b2c3d4e5f60, repository: org/repo, installation_id: 1 }]
+registry: { base_url: 'https://crates.io', user_agent: 'software-factory (ops@example.org)' }
+advisory_database: { date_file: /srv/factory/protected/advisory-database.date }
 stages:                                     # optional; the defaults are the numbers the stage tests use
   definition_commit: 1405df66cbe219b0bf6355bc3d60361a8376b6b4   # required in production
   # label: factory
