@@ -638,12 +638,30 @@
   },
   {
    "script": "tests/security/mutations.py",
+   "name": "a-bot-is-not-a-bot",
+   "date": "2026-10-29",
+   "result": "CAUGHT",
+   "failed": [
+    "negative_nt_wh_09_the_factorys_own_events_and_other_bots_events_are_ignored"
+   ]
+  },
+  {
+   "script": "tests/security/mutations.py",
    "name": "a-bot-may-hold-a-designation",
    "date": "2026-10-29",
    "result": "CAUGHT",
    "failed": [
     "negative_nt_authz_01_only_the_numeric_id_on_the_allowlist_grants_a_designation",
     "negative_nt_mrg_06_a_bot_an_app_and_the_requester_on_a_risky_change_do_not_count"
+   ]
+  },
+  {
+   "script": "tests/security/mutations.py",
+   "name": "a-delivery-that-fails-verification-is-acknowledged",
+   "date": "2026-10-29",
+   "result": "CAUGHT",
+   "failed": [
+    "negative_nt_wh_01"
    ]
   },
   {
@@ -669,6 +687,25 @@
   },
   {
    "script": "tests/security/mutations.py",
+   "name": "a-failing-gate-does-not-stop-an-approval",
+   "date": "2026-10-29",
+   "result": "CAUGHT",
+   "failed": [
+    "negative_nt_mrg_01_a_failing_gate_refuses_approval_and_nothing_reaches_the_host",
+    "negative_nt_mrg_01_a_gate_that_is_not_clear_refuses_the_approval"
+   ]
+  },
+  {
+   "script": "tests/security/mutations.py",
+   "name": "a-forbidden-argument-is-allowed",
+   "date": "2026-10-29",
+   "result": "CAUGHT",
+   "failed": [
+    "negative_nt_tool_05_argument_injection_is_denied_by_forbidden_args"
+   ]
+  },
+  {
+   "script": "tests/security/mutations.py",
    "name": "a-forbidden-command-class-denies-nothing",
    "date": "2026-10-29",
    "result": "CAUGHT",
@@ -688,6 +725,13 @@
     "negative_nt_mrg_03_a_refusal_for_a_moved_head_also_ends_the_approvals_on_record",
     "negative_nt_mrg_03_the_head_moving_after_approval_invalidates_the_approval"
    ]
+  },
+  {
+   "script": "tests/security/mutations.py",
+   "name": "a-parent-component-is-not-refused",
+   "date": "2026-10-29",
+   "result": "MISSED",
+   "failed": []
   },
   {
    "script": "tests/security/mutations.py",
@@ -718,11 +762,39 @@
   },
   {
    "script": "tests/security/mutations.py",
+   "name": "a-rotation-to-the-same-key-is-accepted",
+   "date": "2026-10-29",
+   "result": "MISSED",
+   "failed": []
+  },
+  {
+   "script": "tests/security/mutations.py",
    "name": "a-second-claimant-is-not-told-it-lost",
    "date": "2026-10-29",
    "result": "CAUGHT",
    "failed": [
     "negative_nt_lse_02_a_hundred_interleavings_of_two_workers_claim_one_job_with_one_winner"
+   ]
+  },
+  {
+   "script": "tests/security/mutations.py",
+   "name": "a-secret-file-may-be-read-by-group-and-others",
+   "date": "2026-10-29",
+   "result": "CAUGHT",
+   "failed": [
+    "a_secret_key_file_that_group_can_read_blocks_the_github_ports_and_says_why",
+    "held_the_key_file_is_checked_for_mode_link_size_and_kind"
+   ]
+  },
+  {
+   "script": "tests/security/mutations.py",
+   "name": "a-widening-of-a-switch-counts-as-a-tightening",
+   "date": "2026-10-29",
+   "result": "CAUGHT",
+   "failed": [
+    "negative_nt_pol_02_each_widening_is_refused_and_names_its_key",
+    "negative_nt_pol_02_tightenings_are_accepted",
+    "negative_nt_pol_02_widenings_of_the_approval_policy_are_refused_too"
    ]
   },
   {
@@ -759,6 +831,22 @@
   },
   {
    "script": "tests/security/mutations.py",
+   "name": "markdown-bound-for-github-is-sent-as-written",
+   "date": "2026-10-29",
+   "result": "CAUGHT",
+   "failed": [
+    "negative_nt_sec_04_markdown_cannot_carry_data_out_through_any_path_to_the_code_host"
+   ]
+  },
+  {
+   "script": "tests/security/mutations.py",
+   "name": "stale-evidence-does-not-stop-an-approval",
+   "date": "2026-10-29",
+   "result": "MISSED",
+   "failed": []
+  },
+  {
+   "script": "tests/security/mutations.py",
    "name": "the-api-writes-the-old-webhook-name",
    "date": "2026-10-29",
    "result": "CAUGHT",
@@ -782,7 +870,8 @@
    "date": "2026-10-29",
    "result": "CAUGHT",
    "failed": [
-    "negative_nt_sec_01_a_full_fixture_job_with_a_canary_of_every_class_leaves_none_in_any_sink"
+    "negative_nt_sec_01_a_full_fixture_job_with_a_canary_of_every_class_leaves_none_in_any_sink",
+    "negative_nt_sec_01_composed_canaries_in_the_repository_the_builder_report_and_refused_requests_leave_none_in_any_sink"
    ]
   },
   {
@@ -814,6 +903,15 @@
    "result": "CAUGHT",
    "failed": [
     "negative_nt_inj_04_composed_a_job_token_is_refused_by_every_operation_of_the_api_and_changes_nothing"
+   ]
+  },
+  {
+   "script": "tests/security/mutations.py",
+   "name": "the-text-bound-for-github-is-not-checked-for-a-secret",
+   "date": "2026-10-29",
+   "result": "CAUGHT",
+   "failed": [
+    "negative_nt_sec_03_text_with_a_secret_is_blocked_everywhere_and_nothing_is_sent"
    ]
   },
   {

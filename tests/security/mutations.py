@@ -49,6 +49,11 @@ ATTEMPTS = "crates/storage/src/pg/attempts.rs"
 SANDBOX_AUDIT = "crates/workflow/src/engine/sandbox_audit.rs"
 WEBHOOK = "apps/api/src/webhook.rs"
 IMPLEMENTATION = "crates/workflow/src/stages/implementation/run.rs"
+GITHUB_TEXT = "crates/github/src/text.rs"
+GITHUB_WEBHOOK = "crates/github/src/webhook.rs"
+CONFIG = "crates/composition/src/config.rs"
+SIGNING = "crates/composition/src/decision_signing.rs"
+TIGHTEN = "crates/domain/src/policy/tighten.rs"
 
 # name -> (what is broken, [(file, old, new), ...])
 MUTATIONS = {
@@ -128,6 +133,50 @@ MUTATIONS = {
         "the text the builder reports about its own work is stored without the redactor having looked at it",
         [(IMPLEMENTATION, "    match handler.redactor.redact_str(text) {\n        Ok(redacted) => {\n            if redacted.report.replacements() > 0 {", "    match handler.redactor.redact_str(text).map(|mut redacted| {\n        redacted.output = std::borrow::Cow::Owned(text.to_owned());\n        redacted\n    }) {\n        Ok(redacted) => {\n            if redacted.report.replacements() > 0 {")],
     ),
+    "a-failing-gate-does-not-stop-an-approval": (
+        "the approval judge no longer refuses an approval when the gates of the pull request are not clear",
+        [(JUDGE, "    if !request.gates_clear {\n        return Err(Refusal::GatesNotClear);", "    if false && !request.gates_clear {\n        return Err(Refusal::GatesNotClear);")],
+    ),
+    "stale-evidence-does-not-stop-an-approval": (
+        "the approval judge no longer compares the evidence the person saw with the evidence now",
+        [(JUDGE, "    if let Some((part, _)) = stale {\n        return Err(Refusal::StaleBinding(part));", "    if false && let Some((part, _)) = stale {\n        return Err(Refusal::StaleBinding(part));")],
+    ),
+    "a-forbidden-argument-is-allowed": (
+        "an argument that the policy forbids for a program no longer denies the command",
+        [(COMMANDS, "            .find(|f| matches_forbidden_arg(f, tail))", "            .find(|f| false && matches_forbidden_arg(f, tail))")],
+    ),
+    "a-parent-component-is-not-refused": (
+        "a path that is `..` is no longer refused on sight",
+        [(PATHS, "        if squashed == \"..\" {\n            return Err(PathRefusal::ParentComponent);", "        if false && squashed == \"..\" {\n            return Err(PathRefusal::ParentComponent);")],
+    ),
+    "a-widening-of-a-switch-counts-as-a-tightening": (
+        "a project override that turns on a setting that widens the central policy is read as a tightening",
+        [(TIGHTEN, "const fn off() -> Rule {\n    Rule::Switch {\n        tight: false,", "const fn off() -> Rule {\n    Rule::Switch {\n        tight: true,")],
+    ),
+    "the-text-bound-for-github-is-not-checked-for-a-secret": (
+        "text that holds a secret is sent to the code host",
+        [(GITHUB_TEXT, "            Ok(true) | Err(_) => Err(GitHostError::UnsafeText),", "            Ok(true) | Err(_) => Ok(()),")],
+    ),
+    "markdown-bound-for-github-is-sent-as-written": (
+        "links and images in the markdown sent to the code host are not neutralized",
+        [(GITHUB_TEXT, "            TextKind::Markdown => clean_markdown(text, &self.policy.link_domains),", "            TextKind::Markdown => text.to_owned(),")],
+    ),
+    "a-bot-is-not-a-bot": (
+        "a delivery sent by a bot, which includes the factory's own App, is read as the hint of a person",
+        [(GITHUB_WEBHOOK, "fn sent_by_a_bot(object: &Map<String, Value>) -> bool {\n    object.get(\"sender\")", "fn sent_by_a_bot(object: &Map<String, Value>) -> bool {\n    if true {\n        return false;\n    }\n    object.get(\"sender\")")],
+    ),
+    "a-delivery-that-fails-verification-is-acknowledged": (
+        "the API answers a delivery whose signature does not verify with the acknowledgement of an accepted one",
+        [(WEBHOOK, "                reason: \"The delivery did not pass its checks.\",\n            });\n            return Err(ApiError::Unauthorized);", "                reason: \"The delivery did not pass its checks.\",\n            });\n            return accepted();")],
+    ),
+    "a-secret-file-may-be-read-by-group-and-others": (
+        "the mode of a secret file is not checked, so a key that group or others can read is loaded",
+        [(CONFIG, "        if meta.permissions().mode() & 0o077 != 0 {", "        if false && meta.permissions().mode() & 0o077 != 0 {")],
+    ),
+    "a-rotation-to-the-same-key-is-accepted": (
+        "a previous decision signing key equal to the current one is accepted",
+        [(SIGNING, "        let previous = previous.map(Key::from_bytes).transpose()?;\n        if previous.as_ref().is_some_and(|old| old.0 == current.0) {", "        let previous = previous.map(Key::from_bytes).transpose()?;\n        if false && previous.as_ref().is_some_and(|old| old.0 == current.0) {")],
+    ),
 }
 
 # name -> the arguments of cargo nextest for the tests that must fail. The tests that are named
@@ -153,6 +202,17 @@ TESTS = {
     "the-api-writes-the-old-webhook-name": ["-p", "factory-api", "--test", "negative_composed", "negative_nt_aud_03"],
     "the-job-token-is-accepted-by-the-webhook-endpoint": ["-p", "factory-api", "--test", "negative_composed", "negative_nt_inj_04"],
     "the-builder-report-is-stored-as-written": ["-p", "factory-workflow", "-p", "factory-api", "negative_nt_sec_01"],
+    "a-failing-gate-does-not-stop-an-approval": ["-p", "factory-workflow", "negative_nt_mrg_01"],
+    "stale-evidence-does-not-stop-an-approval": ["-p", "factory-workflow", "negative_nt_mrg_02"],
+    "a-forbidden-argument-is-allowed": ["-p", "factory-domain", "negative_nt_tool_05"],
+    "a-parent-component-is-not-refused": ["-p", "factory-domain", "negative_nt_tool_04"],
+    "a-widening-of-a-switch-counts-as-a-tightening": ["-p", "factory-domain", "negative_nt_pol_02"],
+    "the-text-bound-for-github-is-not-checked-for-a-secret": ["-p", "factory-github", "negative_nt_sec_03", "negative_nt_sec_04"],
+    "markdown-bound-for-github-is-sent-as-written": ["-p", "factory-github", "negative_nt_sec_04"],
+    "a-bot-is-not-a-bot": ["-p", "factory-github", "negative_nt_wh_09"],
+    "a-delivery-that-fails-verification-is-acknowledged": ["-p", "factory-api", "--test", "webhook", "negative_nt_wh_01"],
+    "a-secret-file-may-be-read-by-group-and-others": ["-p", "factory-composition", "--test", "security_rereview", "--test", "external_world", "held_the_key_file", "a_secret_key_file_that"],
+    "a-rotation-to-the-same-key-is-accepted": ["-p", "factory-composition", "--test", "security_rereview", "held_a_rotation_to_the_same_key"],
 }
 
 # Tests that are red with every control on. They fail in every run, so a failure of theirs says
