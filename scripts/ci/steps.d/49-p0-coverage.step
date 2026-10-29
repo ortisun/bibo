@@ -1,0 +1,4 @@
+id       = p0-coverage
+title    = Every P0 test of the negative test catalog has a row with real tests and a control-off variant, and the matrix is in sync (docs/security/tools/check_p0_coverage.py)
+requires = python3
+run      = python3 -I docs/security/tools/check_p0_coverage.py --check
