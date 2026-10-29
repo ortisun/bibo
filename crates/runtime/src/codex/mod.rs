@@ -511,9 +511,10 @@ fn interpret(
         Ok(bytes) => (Ok(bytes), crate::report::NOTE_FINISHED.to_owned()),
         Err(Rejection { error, distrust }) => {
             if let Some(why) = distrust {
+                // One of a fixed set of words (`Distrust::code`), in the message and not a field.
                 tracing::warn!(
-                    reason = why.code(),
-                    "the stream says the run completed and the stream's own shape refutes it"
+                    "the stream says the run completed and the stream's own shape refutes it: {}",
+                    why.code()
                 );
             }
             let note =

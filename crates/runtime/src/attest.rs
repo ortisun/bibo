@@ -34,7 +34,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use factory_ports::agent::{AnswerEnd, JobTokenId, TurnAttestation, TurnSummary};
+use factory_ports::agent::{AnswerEnd, BrokerError, JobTokenId, TurnAttestation, TurnSummary};
 
 use crate::report::{NOTE_FINISHED, RunEnd};
 use crate::trust::Distrust;
@@ -135,8 +135,14 @@ impl Attestor {
     pub async fn summary(&self, token: &JobTokenId) -> Option<TurnSummary> {
         match tokio::time::timeout(CALL_TIMEOUT, self.source.turn_summary(token)).await {
             Ok(Ok(summary)) => Some(summary),
-            Ok(Err(error)) => {
-                tracing::warn!(?error, "the broker could not give the summary of the turns");
+            Ok(Err(BrokerError::UnknownToken)) => {
+                tracing::warn!(
+                    "the broker does not know the job token, so the run cannot be attested"
+                );
+                None
+            }
+            Ok(Err(_)) => {
+                tracing::warn!("the broker could not give the summary of the turns");
                 None
             }
             Err(_) => {
@@ -189,9 +195,11 @@ impl Attestor {
             return end;
         }
         if let Err(why) = self.verdict(token, before, claim).await {
+            // The reason is one of a fixed set of words (`Distrust::code`), so it may sit in the
+            // message; it is not a log field.
             tracing::warn!(
-                reason = why.code(),
-                "the stream says the run completed and the broker's record does not bear that out"
+                "the stream says the run completed and the broker's record does not bear that out: {}",
+                why.code()
             );
             end.outcome = Err(why.error());
             end.note = rejected_note(why);

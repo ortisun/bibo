@@ -425,6 +425,8 @@ pub(crate) fn walk(root: &Path, ctx: &WalkContext<'_>) -> Result<Manifest, Audit
     let mut manifest = Manifest::default();
     let mut symlinks: BTreeMap<String, String> = BTreeMap::new();
     let mut visited: usize = 0;
+    // Names with a space that is not an ASCII space: accepted, and counted for one log line.
+    let mut inner_blanks: usize = 0;
     let mut stack = vec![Pending {
         abs: root.to_path_buf(),
         rel: String::new(),
@@ -499,10 +501,7 @@ pub(crate) fn walk(root: &Path, ctx: &WalkContext<'_>) -> Result<Manifest, Audit
                 continue;
             }
             if has_inner_blank(text) {
-                tracing::warn!(
-                    entry = %report_path(&full_raw),
-                    "a name holds a space that is not an ASCII space; it is accepted, and prints like an ordinary one"
-                );
+                inner_blanks += 1;
             }
             let rel = String::from_utf8_lossy(&full_raw).into_owned();
             let Ok(path) = RepoPath::new(&rel) else {
@@ -596,6 +595,13 @@ pub(crate) fn walk(root: &Path, ctx: &WalkContext<'_>) -> Result<Manifest, Audit
         }
     }
 
+    if inner_blanks > 0 {
+        // The names are not printed: they come from the repository, and a count is what a person
+        // needs to know to look for them.
+        tracing::warn!(
+            "{inner_blanks} name(s) hold a space that is not an ASCII space; they are accepted and print like an ordinary one"
+        );
+    }
     if rec.reasons.is_empty() {
         Ok(manifest)
     } else {
