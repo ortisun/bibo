@@ -11,6 +11,8 @@ at all (the egress sidecar). It writes one small text file per finding class int
 empty file means no finding. test.sh decides what a finding means for each image.
 
     setid.txt             regular files with the setuid or setgid bit
+    world-writable.txt    files and directories that any user may write, other than the sticky
+                          directories (/tmp and its kin) and symbolic links
     forbidden.txt         executables or symlinks whose name is in forbidden-binaries.txt
     shells.txt            executables or symlinks whose name is in shells.txt
     agent-tools.txt       executables or symlinks named claude or codex, with the SHA-256 of files
@@ -182,6 +184,7 @@ def command_fs(args: argparse.Namespace) -> int:
     known = {value.lower() for value in args.known_sha256}
 
     setid: List[str] = []
+    world_writable: List[str] = []
     forbidden_hits: List[str] = []
     shell_hits: List[str] = []
     tool_hits: List[str] = []
@@ -206,6 +209,9 @@ def command_fs(args: argparse.Namespace) -> int:
                     setid.append(f"{path} mode {member.mode & 0o7777:04o}")
                 if member.isfile() and (base in AGENT_TOOL_NAMES or path in EXEC_ONLY_EXTRA):
                     mode_hits.append(f"{path} mode {member.mode & 0o7777:04o}")
+
+            if (member.isfile() or member.isdir()) and member.mode & 0o002 and not member.mode & 0o1000:
+                world_writable.append(f"{path} mode {member.mode & 0o7777:04o}")
 
             if member.isdev() or member.isfifo():
                 if not path.startswith("/dev/"):
@@ -269,6 +275,7 @@ def command_fs(args: argparse.Namespace) -> int:
 
     outputs = {
         "setid.txt": setid,
+        "world-writable.txt": world_writable,
         "forbidden.txt": forbidden_hits,
         "shells.txt": shell_hits,
         "agent-tools.txt": tool_hits,

@@ -12,6 +12,9 @@
 #      rust-toolchain.toml asks for both components.
 #   4. Deletes rustup, the cargo proxies and cargo's registry. Nothing can fetch a toolchain
 #      or a crate at run time.
+#   5. Removes the group and world write bits from /opt/rust. The base image ships cargo, rustc,
+#      rustdoc and the libraries in it with mode 0777 (170 files and directories); a compiler that
+#      any user can replace is not a compiler to trust the day the root file system is writable.
 #
 # usage: toolchain.sh VERSION
 set -eu
@@ -53,3 +56,4 @@ test -x /opt/rust/bin/rustfmt
 test -x /opt/rust/bin/cargo-fmt
 
 rm -rf /tmp/dl /usr/local/rustup /usr/local/cargo
+chmod -R go-w /opt/rust

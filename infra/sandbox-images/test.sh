@@ -99,6 +99,7 @@ register IMAGES-JSON        rule_images_json        "posture"               "ima
 register IMAGE-USER         rule_image_user         "posture"               "the image user is a numeric, non-root uid:gid of 10000 or higher"
 register IMAGE-CONFIG       rule_image_config       "posture audit"         "image environment, labels, command and history hold no secret, no unexpected variable, no volume"
 register NO-SETID           rule_no_setid           "posture"               "no setuid or setgid file"
+register NO-WORLD-WRITABLE  rule_no_world_writable  "posture audit"         "no file or directory that any user may write, other than the sticky temporary directories"
 register NO-FORBIDDEN       rule_no_forbidden       "posture audit"         "no git, GitHub CLI, package manager, network client, account tool or unneeded interpreter"
 register SHELLS             rule_shells             "posture"               "agent keeps only bash, sh and dash; verify and the sidecar have no shell"
 register TOOLS-ONLY-IN-AGENT rule_tools_only_agent  "posture audit"         "claude and codex exist only in the agent image, at the pinned checksums"
@@ -329,6 +330,11 @@ rule_image_config() {
 rule_no_setid() {
   local role
   for role in $SELECTED; do expect_empty NO-SETID "$role" setid.txt "setuid or setgid files"; done
+}
+
+rule_no_world_writable() {
+  local role
+  for role in $SELECTED; do expect_empty NO-WORLD-WRITABLE "$role" world-writable.txt "world-writable files or directories"; done
 }
 
 rule_no_forbidden() {

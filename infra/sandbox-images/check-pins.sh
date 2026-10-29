@@ -12,8 +12,12 @@
 #   Codex         compares the SHA-256 that GitHub lists for the npm platform packages.
 #   Base images   compares the index digest that the registry reports for each tag with the pin.
 #
+# A signature counts only when it was made by the key whose fingerprint is pinned: the downloaded
+# key file is not trusted to hold only that key. A pin with no value, and a part that could not be
+# checked (no Docker daemon for the base image digests), never read as a pass.
+#
 # Exit codes: 0 every pin matches, 1 a pin differs or a signature is bad, 2 misuse, 3 BLOCKED
-# (no network, or a tool is missing). BLOCKED proves nothing.
+# (no network, a tool is missing, or a part was not checked). BLOCKED proves nothing.
 set -uo pipefail
 
 here=$(cd "$(dirname "$0")" && pwd -P)
@@ -30,6 +34,7 @@ python3 -c 'import tomllib' 2>/dev/null || sbx_blocked "python3 has no tomllib (
 work=$(mktemp -d "${TMPDIR:-/tmp}/sbx-pins.XXXXXX")
 trap 'rm -rf "$work"' EXIT
 bad=0
+unchecked=0
 
 fetch() {
   curl --fail --silent --show-error --location --max-time 120 --retry 2 --output "$2" "$1" ||
@@ -38,7 +43,11 @@ fetch() {
 
 report() {
   # report NAME PINNED UPSTREAM
-  if [ "$2" = "$3" ]; then
+  if [ -z "$2" ]; then
+    # An emptied pin must not match an upstream lookup that also gave nothing.
+    printf 'DIFF  %-34s the pin has no value\n' "$1"
+    bad=1
+  elif [ "$2" = "$3" ]; then
     printf 'OK    %-34s %s\n' "$1" "$2"
   else
     printf 'DIFF  %-34s pinned %s, upstream %s\n' "$1" "$2" "${3:-nothing}"
@@ -57,10 +66,16 @@ verify_signature() {
     bad=1
     return
   fi
-  if gpg --homedir "$home" --batch --verify "$signature" "$file" >/dev/null 2>&1; then
+  # gpg --verify succeeds for a signature by ANY key in the downloaded file, and that file comes
+  # from the same place as the manifest. Ask for the status lines and accept only a VALIDSIG whose
+  # signing key, or whose primary key, is the pinned one.
+  local status
+  status=$(gpg --homedir "$home" --batch --status-fd 1 --verify "$signature" "$file" 2>/dev/null) || status=""
+  if printf '%s\n' "$status" | awk -v want="$fingerprint" \
+    '$1 == "[GNUPG:]" && $2 == "VALIDSIG" && ($3 == want || $NF == want) { found = 1 } END { exit !found }'; then
     printf 'OK    %-34s signature verified, key %s\n' "$name manifest" "$fingerprint"
   else
-    printf 'DIFF  %-34s BAD SIGNATURE\n' "$name manifest"
+    printf 'DIFF  %-34s BAD SIGNATURE, or not made by the key %s\n' "$name manifest" "$fingerprint"
     bad=1
   fi
 }
@@ -107,10 +122,14 @@ if type -P docker >/dev/null 2>&1 && sbx_timeout 60 docker info >/dev/null 2>&1;
   done
 else
   echo "SKIP  base image digests: no Docker daemon to ask"
+  unchecked=1
 fi
 
 if [ "$bad" -ne 0 ]; then
   echo "RESULT: FAILED (a pin differs from upstream; see README.md, Update a pin)"
   exit "$EXIT_FAILED"
+fi
+if [ "$unchecked" -ne 0 ]; then
+  sbx_blocked "the base image digests were not checked, so this is not a pass"
 fi
 echo "RESULT: PASSED"
