@@ -4,3 +4,11 @@
 # in under a minute, so a run is flagged as slow after one minute and killed after ten.
 [profile.default]
 slow-timeout = { period = "60s", terminate-after = 10 }
+
+# The Docker tests of the sandbox and the runtime take a lock that all test processes of the
+# machine share (the daemon's address pool is small), so with two or three runs at once a test can
+# wait a long time for its turn without being stuck. They get a longer limit: killed after
+# thirty minutes instead of ten.
+[[profile.default.overrides]]
+filter = 'package(factory-sandbox) | package(factory-runtime) | package(factory-egress) | package(factory-composition)'
+slow-timeout = { period = "60s", terminate-after = 30 }
