@@ -132,10 +132,20 @@ impl AuditEvent {
                 "event": "request_admitted", "token": token.to_string(), "job": job.to_string(),
                 "provider": provider.as_str(),
             }),
-            AuditKind::RequestRefused { token, reason } => json!({
-                "event": "request_refused", "token": token.map(|t| t.to_string()),
-                "reason": reason.as_str(), "status": reason.http_status(),
-            }),
+            AuditKind::RequestRefused { token, reason } => {
+                let mut line = json!({
+                    "event": "request_refused", "token": token.map(|t| t.to_string()),
+                    "reason": reason.as_str(), "status": reason.http_status(),
+                });
+                // The class of what the broker would not forward: a closed name, never the key,
+                // the value or the position.
+                if let (Refusal::RequestShape(violation), Some(object)) =
+                    (reason, line.as_object_mut())
+                {
+                    object.insert("detail".to_owned(), json!(violation.as_str()));
+                }
+                line
+            }
             AuditKind::RequestSettled {
                 token,
                 job,

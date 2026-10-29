@@ -1,0 +1,501 @@
+{
+ "client_metadata": {
+  "root_turn_id": "00000000-0000-4000-8000-000000000000",
+  "session_id": "00000000-0000-4000-8000-000000000000",
+  "thread_id": "00000000-0000-4000-8000-000000000000",
+  "turn_id": "00000000-0000-4000-8000-000000000000",
+  "x-codex-installation-id": "00000000-0000-4000-8000-000000000000",
+  "x-codex-turn-metadata": "{\"installation_id\":\"00000000-0000-4000-8000-000000000000\",\"s [cut for the fixture]",
+  "x-codex-window-id": "00000000-0000-4000-8000-000000000000:0"
+ },
+ "include": [
+  "reasoning.encrypted_content"
+ ],
+ "input": [
+  {
+   "content": [
+    {
+     "text": "You are a coding agent running in the Codex CLI, a terminal- [cut for the fixture]",
+     "type": "input_text"
+    }
+   ],
+   "id": "msg_00000000-0000-4000-8000-000000000000",
+   "role": "developer",
+   "type": "message"
+  },
+  {
+   "content": [
+    {
+     "text": "<permissions instructions>\nFilesystem sandboxing defines whi [cut for the fixture]",
+     "type": "input_text"
+    }
+   ],
+   "id": "msg_00000000-0000-4000-8000-000000000000",
+   "role": "developer",
+   "type": "message"
+  },
+  {
+   "content": [
+    {
+     "text": "<environment_context>\n  <cwd>/workspace</cwd>\n  <shell>bash< [cut for the fixture]",
+     "type": "input_text"
+    }
+   ],
+   "id": "msg_00000000-0000-4000-8000-000000000000",
+   "role": "user",
+   "type": "message"
+  },
+  {
+   "content": [
+    {
+     "text": "FAKE:TOOL exec text(JSON.stringify(await tools.exec_command({cmd: \"echo hi\"})))",
+     "type": "input_text"
+    }
+   ],
+   "id": "msg_00000000-0000-4000-8000-000000000000",
+   "role": "user",
+   "type": "message"
+  }
+ ],
+ "model": "gpt-fake",
+ "parallel_tool_calls": true,
+ "prompt_cache_key": "00000000-0000-4000-8000-000000000000",
+ "reasoning": {
+  "summary": "auto"
+ },
+ "store": false,
+ "stream": true,
+ "tool_choice": "auto",
+ "tools": [
+  {
+   "description": "Runs a command in a PTY, returning output or a session ID fo [cut for the fixture]",
+   "name": "exec_command",
+   "parameters": {
+    "additionalProperties": false,
+    "properties": {
+     "cmd": {
+      "description": "Shell command to execute.",
+      "type": "string"
+     },
+     "justification": {
+      "description": "User-facing approval question for `require_escalated`; omit otherwise.",
+      "type": "string"
+     },
+     "login": {
+      "description": "True runs the shell with -l/-i semantics; false disables them. Defaults to true.",
+      "type": "boolean"
+     },
+     "max_output_tokens": {
+      "description": "Output token budget. Defaults to 10000 tokens; larger reques [cut for the fixture]",
+      "type": "number"
+     },
+     "prefix_rule": {
+      "description": "Reusable approval prefix for `cmd`, only with `sandbox_permi [cut for the fixture]",
+      "items": {
+       "type": "string"
+      },
+      "type": "array"
+     },
+     "sandbox_permissions": {
+      "description": "Per-command sandbox override. Defaults to `use_default`; use [cut for the fixture]",
+      "enum": [
+       "use_default",
+       "require_escalated"
+      ],
+      "type": "string"
+     },
+     "shell": {
+      "description": "Shell binary to launch. Defaults to the user's default shell.",
+      "type": "string"
+     },
+     "tty": {
+      "description": "True allocates a PTY for the command; false or omitted uses plain pipes.",
+      "type": "boolean"
+     },
+     "workdir": {
+      "description": "Working directory for the command. Defaults to the turn cwd.",
+      "type": "string"
+     },
+     "yield_time_ms": {
+      "description": "Wait before yielding output. Defaults to 10000 ms; effective [cut for the fixture]",
+      "type": "number"
+     }
+    },
+    "required": [
+     "cmd"
+    ],
+    "type": "object"
+   },
+   "strict": false,
+   "type": "function"
+  },
+  {
+   "description": "Writes characters to an existing unified exec session and returns recent output.",
+   "name": "write_stdin",
+   "parameters": {
+    "additionalProperties": false,
+    "properties": {
+     "chars": {
+      "description": "Bytes to write to stdin. Defaults to empty, which polls without writing.",
+      "type": "string"
+     },
+     "max_output_tokens": {
+      "description": "Output token budget. Defaults to 10000 tokens; larger reques [cut for the fixture]",
+      "type": "number"
+     },
+     "session_id": {
+      "description": "Identifier of the running unified exec session.",
+      "type": "number"
+     },
+     "yield_time_ms": {
+      "description": "Wait before yielding output. Non-empty writes default to 250 [cut for the fixture]",
+      "type": "number"
+     }
+    },
+    "required": [
+     "session_id"
+    ],
+    "type": "object"
+   },
+   "strict": false,
+   "type": "function"
+  },
+  {
+   "description": "Request user input for one to three short questions and wait [cut for the fixture]",
+   "name": "request_user_input",
+   "parameters": {
+    "additionalProperties": false,
+    "properties": {
+     "questions": {
+      "description": "Questions to show the user. Prefer 1 and do not exceed 3",
+      "items": {
+       "additionalProperties": false,
+       "properties": {
+        "header": {
+         "description": "Short header label shown in the UI (12 or fewer chars).",
+         "type": "string"
+        },
+        "id": {
+         "description": "Stable identifier for mapping answers (snake_case).",
+         "type": "string"
+        },
+        "options": {
+         "description": "Provide 2-3 mutually exclusive choices. Put the recommended  [cut for the fixture]",
+         "items": {
+          "additionalProperties": false,
+          "properties": {
+           "description": {
+            "description": "One short sentence explaining impact/tradeoff if selected.",
+            "type": "string"
+           },
+           "label": {
+            "description": "User-facing label (1-5 words).",
+            "type": "string"
+           }
+          },
+          "required": [
+           "label",
+           "description"
+          ],
+          "type": "object"
+         },
+         "type": "array"
+        },
+        "question": {
+         "description": "Single-sentence prompt shown to the user.",
+         "type": "string"
+        }
+       },
+       "required": [
+        "id",
+        "header",
+        "question",
+        "options"
+       ],
+       "type": "object"
+      },
+      "type": "array"
+     }
+    },
+    "required": [
+     "questions"
+    ],
+    "type": "object"
+   },
+   "strict": false,
+   "type": "function"
+  },
+  {
+   "description": "View a local image file from the filesystem when visual insp [cut for the fixture]",
+   "name": "view_image",
+   "parameters": {
+    "additionalProperties": false,
+    "properties": {
+     "path": {
+      "description": "Local filesystem path to an image file.",
+      "type": "string"
+     }
+    },
+    "required": [
+     "path"
+    ],
+    "type": "object"
+   },
+   "strict": false,
+   "type": "function"
+  },
+  {
+   "description": "Tools for spawning and managing sub-agents.",
+   "name": "multi_agent_v1",
+   "tools": [
+    {
+     "description": "Close an agent and any open descendants when they are no lon [cut for the fixture]",
+     "name": "close_agent",
+     "parameters": {
+      "additionalProperties": false,
+      "properties": {
+       "target": {
+        "description": "Agent id to close (from spawn_agent).",
+        "type": "string"
+       }
+      },
+      "required": [
+       "target"
+      ],
+      "type": "object"
+     },
+     "strict": false,
+     "type": "function"
+    },
+    {
+     "description": "Resume a previously closed agent by id so it can receive sen [cut for the fixture]",
+     "name": "resume_agent",
+     "parameters": {
+      "additionalProperties": false,
+      "properties": {
+       "id": {
+        "description": "Agent id to resume.",
+        "type": "string"
+       }
+      },
+      "required": [
+       "id"
+      ],
+      "type": "object"
+     },
+     "strict": false,
+     "type": "function"
+    },
+    {
+     "description": "Send a message to an existing agent. Use interrupt=true to r [cut for the fixture]",
+     "name": "send_input",
+     "parameters": {
+      "additionalProperties": false,
+      "properties": {
+       "interrupt": {
+        "description": "True interrupts the current task and handles this message im [cut for the fixture]",
+        "type": "boolean"
+       },
+       "items": {
+        "description": "Structured input items. Use this to pass explicit mentions ( [cut for the fixture]",
+        "items": {
+         "additionalProperties": false,
+         "properties": {
+          "audio_url": {
+           "description": "Audio data URL when type is audio.",
+           "type": "string"
+          },
+          "image_url": {
+           "description": "Image URL when type is image.",
+           "type": "string"
+          },
+          "name": {
+           "description": "Display name when type is skill or mention.",
+           "type": "string"
+          },
+          "path": {
+           "description": "Path when type is local_image/local_audio/skill, or structur [cut for the fixture]",
+           "type": "string"
+          },
+          "text": {
+           "description": "Text content when type is text.",
+           "type": "string"
+          },
+          "type": {
+           "description": "Input item type: text, image, local_image, audio, local_audi [cut for the fixture]",
+           "type": "string"
+          }
+         },
+         "type": "object"
+        },
+        "type": "array"
+       },
+       "message": {
+        "description": "Legacy plain-text message to send to the agent. Use either message or items.",
+        "type": "string"
+       },
+       "target": {
+        "description": "Agent id to message (from spawn_agent).",
+        "type": "string"
+       }
+      },
+      "required": [
+       "target"
+      ],
+      "type": "object"
+     },
+     "strict": false,
+     "type": "function"
+    },
+    {
+     "description": "\n        \n        Available model overrides (optional; inher [cut for the fixture]",
+     "name": "spawn_agent",
+     "parameters": {
+      "additionalProperties": false,
+      "properties": {
+       "fork_context": {
+        "description": "True forks the current thread history into the new agent; fa [cut for the fixture]",
+        "type": "boolean"
+       },
+       "items": {
+        "description": "Structured input items. Use this to pass explicit mentions ( [cut for the fixture]",
+        "items": {
+         "additionalProperties": false,
+         "properties": {
+          "audio_url": {
+           "description": "Audio data URL when type is audio.",
+           "type": "string"
+          },
+          "image_url": {
+           "description": "Image URL when type is image.",
+           "type": "string"
+          },
+          "name": {
+           "description": "Display name when type is skill or mention.",
+           "type": "string"
+          },
+          "path": {
+           "description": "Path when type is local_image/local_audio/skill, or structur [cut for the fixture]",
+           "type": "string"
+          },
+          "text": {
+           "description": "Text content when type is text.",
+           "type": "string"
+          },
+          "type": {
+           "description": "Input item type: text, image, local_image, audio, local_audi [cut for the fixture]",
+           "type": "string"
+          }
+         },
+         "type": "object"
+        },
+        "type": "array"
+       },
+       "message": {
+        "description": "Initial plain-text task for the new agent. Use either message or items.",
+        "type": "string"
+       },
+       "model": {
+        "description": "Model override for the new agent. Omit unless an explicit override is needed.",
+        "type": "string"
+       },
+       "reasoning_effort": {
+        "description": "Reasoning effort override for the new agent. Omit to inherit the parent effort.",
+        "type": "string"
+       }
+      },
+      "type": "object"
+     },
+     "strict": false,
+     "type": "function"
+    },
+    {
+     "description": "Wait for agents to reach a final status. Completed statuses  [cut for the fixture]",
+     "name": "wait_agent",
+     "parameters": {
+      "additionalProperties": false,
+      "properties": {
+       "targets": {
+        "description": "Agent ids to wait on. Pass multiple ids to wait for whichever finishes first.",
+        "items": {
+         "type": "string"
+        },
+        "type": "array"
+       },
+       "timeout_ms": {
+        "description": "Timeout in milliseconds. Defaults to 30000, min 10000, max 3 [cut for the fixture]",
+        "type": "number"
+       }
+      },
+      "required": [
+       "targets"
+      ],
+      "type": "object"
+     },
+     "strict": false,
+     "type": "function"
+    }
+   ],
+   "type": "namespace"
+  },
+  {
+   "description": "Get the current goal for this thread, including status, budg [cut for the fixture]",
+   "name": "get_goal",
+   "parameters": {
+    "additionalProperties": false,
+    "properties": {},
+    "required": [],
+    "type": "object"
+   },
+   "strict": false,
+   "type": "function"
+  },
+  {
+   "description": "Create a goal only when explicitly requested by the user or  [cut for the fixture]",
+   "name": "create_goal",
+   "parameters": {
+    "additionalProperties": false,
+    "properties": {
+     "objective": {
+      "description": "Required. The concrete objective to start pursuing. This sta [cut for the fixture]",
+      "type": "string"
+     },
+     "token_budget": {
+      "description": "Positive token budget for the new goal. Omit unless explicitly requested.",
+      "type": "integer"
+     }
+    },
+    "required": [
+     "objective"
+    ],
+    "type": "object"
+   },
+   "strict": false,
+   "type": "function"
+  },
+  {
+   "description": "Update the existing goal.\nSet status to `paused` only at the [cut for the fixture]",
+   "name": "update_goal",
+   "parameters": {
+    "additionalProperties": false,
+    "properties": {
+     "status": {
+      "description": "Required. `paused` requires an explicit user request. Set to [cut for the fixture]",
+      "enum": [
+       "complete",
+       "blocked",
+       "paused"
+      ],
+      "type": "string"
+     }
+    },
+    "required": [
+     "status"
+    ],
+    "type": "object"
+   },
+   "strict": false,
+   "type": "function"
+  }
+ ]
+}

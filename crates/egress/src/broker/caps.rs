@@ -9,6 +9,8 @@
 
 use std::fmt;
 
+use super::shape::Violation;
+
 /// Why a token was revoked. The reason is kept with the token and written to the audit stream, so
 /// "why did this job stop" has an answer that is not a log line.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -72,6 +74,10 @@ pub enum Refusal {
     },
     /// The token already has the largest number of requests in flight.
     TooManyInFlight,
+    /// The request holds something the broker does not forward to a provider: a provider-side
+    /// tool, a remote server, a field outside the allow schema. The class is inside; nothing of
+    /// the request is.
+    RequestShape(Violation),
 }
 
 impl Refusal {
@@ -87,6 +93,7 @@ impl Refusal {
             Self::PriceUnknown => "price_unknown",
             Self::RateLimited { .. } => "rate_limited",
             Self::TooManyInFlight => "too_many_in_flight",
+            Self::RequestShape(_) => "request_shape",
         }
     }
 
@@ -94,7 +101,7 @@ impl Refusal {
     ///
     /// 401 for a credential that does not work (Claude Code retries it ten times and Codex five),
     /// 402 for a budget stop (Claude Code stops at once), 403 for a valid credential used where
-    /// it must not be, 429 for a rate limit.
+    /// it must not be, 429 for a rate limit, 400 for a request the broker will not forward.
     #[must_use]
     pub const fn http_status(self) -> u16 {
         match self {
@@ -108,6 +115,7 @@ impl Refusal {
             }
             Self::WrongAudience | Self::ModelNotAllowed | Self::PriceUnknown => 403,
             Self::RateLimited { .. } | Self::TooManyInFlight => 429,
+            Self::RequestShape(_) => 400,
         }
     }
 }

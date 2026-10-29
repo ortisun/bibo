@@ -45,6 +45,7 @@ use super::audit::{AuditEvent, AuditKind, AuditSink};
 use super::caps::{CapPolicy, Refusal, RevokeReason};
 use super::pricing::{PriceList, TokenCounts};
 use super::provider::Provider;
+use super::shape::Violation;
 use super::token::{TokenEntropy, TokenHash, has_token_shape, mint_secret};
 
 /// The most ledger entries kept for one job. Older entries are dropped; the totals stay exact.
@@ -447,6 +448,35 @@ impl BrokerCore {
                 Err(reason)
             }
         }
+    }
+
+    /// Records that a request was refused for what its body or headers hold (see
+    /// [`crate::broker::shape`]) and returns the refusal to answer with. The request is not
+    /// admitted and does not count against the token's caps, because nothing is sent to a
+    /// provider for it. The audit line and the ledger entry name the class and nothing else.
+    ///
+    /// A credential that is not valid gets the refusal it deserves instead, so that this method
+    /// cannot be used to learn anything about a token.
+    pub fn refuse_request_shape(
+        &self,
+        presented: &str,
+        expected_job: Option<JobId>,
+        violation: Violation,
+    ) -> Refusal {
+        let now = self.clock.now();
+        let (token, reason) = {
+            let mut state = self.lock();
+            match check_credential(&mut state, presented, expected_job, now) {
+                Ok((id, view)) => {
+                    let reason = Refusal::RequestShape(violation);
+                    record_refusal(&mut state, &view, id, reason, now);
+                    (Some(id), reason)
+                }
+                Err((token, reason)) => (token, reason),
+            }
+        };
+        self.emit(now, vec![AuditKind::RequestRefused { token, reason }]);
+        reason
     }
 
     /// Checks a request and, when every check passes, admits it and counts it.

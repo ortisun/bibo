@@ -287,7 +287,10 @@ impl HttpRig {
                 ("Content-Type", "application/json"),
                 credential,
                 ("anthropic-version", "2023-06-01"),
-                ("anthropic-beta", "test-beta-1,test-beta-2"),
+                (
+                    "anthropic-beta",
+                    "claude-code-20250219,test-beta-1,test-beta-2",
+                ),
                 ("x-claude-code-session-id", "session-should-not-cross"),
                 ("Cookie", "cookie-should-not-cross=1"),
             ],

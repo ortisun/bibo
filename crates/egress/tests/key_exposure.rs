@@ -36,8 +36,9 @@ fn real_key_never_leaves_the_broker() {
     let codex = rig.codex_token(CEILING);
 
     // A provider that echoes the credential it was called with, in a header and in its text.
-    // The header is one the broker passes on (`request-id`), so only its check of the value
-    // stands between the key and the sandbox.
+    // `request-id` is a header the broker once passed on. It no longer is (the answer's headers
+    // are a closed set of a media type and a delay), and this sweep shows the key does not
+    // reach the sandbox through it or through the text.
     let leaked_key = rig.anthropic_key.clone();
     rig.provider.set(move |s: &mut Script| {
         s.echo_credential_in_body = true;

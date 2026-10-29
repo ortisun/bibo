@@ -23,6 +23,10 @@ SECRET = "crates/egress/src/http/secret.rs"
 SERVER = "crates/egress/src/http/server.rs"
 POLICY = "crates/egress/src/relay/policy.rs"
 ENGINE = "crates/egress/src/relay/engine.rs"
+SHAPE = "crates/egress/src/broker/shape/mod.rs"
+RULES = "crates/egress/src/broker/shape/rules.rs"
+JSON = "crates/egress/src/broker/shape/json.rs"
+HEADERS = "crates/egress/src/broker/shape/headers.rs"
 
 # name -> (what is broken, [(file, old, new), ...])
 MUTATIONS = {
@@ -31,9 +35,10 @@ MUTATIONS = {
         [(CORE, "let id = *state\n        .by_hash\n        .get(&TokenHash::of(presented))\n        .ok_or((None, Refusal::UnknownToken))?;",
           "let id = *state\n        .by_hash\n        .values()\n        .next()\n        .ok_or((None, Refusal::UnknownToken))?;")],
     ),
-    "leak-the-real-key-in-a-response-header": (
-        "the answer's headers are passed on without looking for the key",
-        [(SERVER, "            && !shared\n                .redactor\n                .contains_secret(value.as_bytes())\n                .unwrap_or(true)\n", "")],
+    "forward-the-provider-request-ids": (
+        "the provider's request identifier, which names the broker's account, reaches the sandbox",
+        [(SERVER, "    if let Some(seconds) = response\n        .headers()\n        .get(\"retry-after\")",
+          "    if let Some(value) = response.headers().get(\"request-id\").and_then(|v| v.to_str().ok()) {\n        out.push((canonical(\"request-id\"), value.to_owned()));\n    }\n    if let Some(seconds) = response\n        .headers()\n        .get(\"retry-after\")")],
     ),
     "leak-the-real-key-in-a-log": (
         "the key prints itself in Debug output, which any log line can carry",
@@ -83,6 +88,31 @@ MUTATIONS = {
     "forward-the-job-token-upstream": (
         "the job token is passed to the provider in a header",
         [(SERVER, '        .header("user-agent", "factory-model-broker");', '        .header("user-agent", "factory-model-broker")\n        .header("x-forwarded-credential", head.header("x-api-key").unwrap_or(""));')],
+    ),
+    "forward-the-body-without-the-schema": (
+        "the body is read as JSON and forwarded, as it was before finding EGR-1: mcp_servers and server tools reach the provider",
+        [(SERVER, "    let mut object = match shape::check_body(wire, &body) {\n        Ok(object) => object,\n        Err(violation) => return refuse_shape(stream, violation),\n    };",
+          "    let mut object = match serde_json::from_slice::<Value>(&body) {\n        Ok(Value::Object(object)) => object,\n        _ => return respond_error(stream, 400, \"invalid_request\", &[]),\n    };")],
+    ),
+    "accept-an-unlisted-field": (
+        "a top-level key that the schema does not list is accepted (mcp_servers, container, betas)",
+        [(SHAPE, "            None => return Err(rules::classify_key(key)),", "            None => {}")],
+    ),
+    "accept-an-unlisted-tool-type": (
+        "a tool or block of a type the schema does not list is accepted (web_search, web_fetch, mcp)",
+        [(RULES, "        return Err(classify_tag(chosen, tagged.unknown));", "        return Ok(());")],
+    ),
+    "accept-a-repeated-key": (
+        "an object that names a key twice is read, the last one winning",
+        [(JSON, "            if !seen.insert(key.clone()) {\n                return Err(Violation::DuplicateKey);\n            }", "            seen.insert(key.clone());")],
+    ),
+    "accept-an-image-by-address": (
+        "an image the provider would have to fetch from an address is accepted",
+        [(RULES, "            Some(text) if text.len() <= *max && text.starts_with(\"data:image/\") => Ok(()),\n            Some(_) => Err(Violation::RemoteContent),", "            Some(_) => Ok(()),")],
+    ),
+    "forward-the-beta-header-unchanged": (
+        "the sandbox's anthropic-beta list is forwarded as it came, server tool betas included",
+        [(HEADERS, "    Ok((!kept.is_empty()).then(|| kept.join(\",\")))", "    Ok(Some(value.to_owned()))")],
     ),
     "do-not-clamp-the-output-limit": (
         "a request may ask for any number of output tokens",
