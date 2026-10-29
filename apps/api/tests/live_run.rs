@@ -529,7 +529,7 @@ fn break_a_model_answer_outside_the_recorded_shape_stops_the_job_at_the_stage_th
         label_the_issue(&rig.env, issue).await;
         let job = full::job_of(&rig.env, &requester).await;
         let view = rig
-            .drive(job, 300, |view| full::stopped(view))
+            .drive(job, 300, full::stopped)
             .await
             .expect("a view of the job");
         let intake = status_of(&view, StageKind::Intake);
