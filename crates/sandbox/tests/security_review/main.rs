@@ -361,7 +361,7 @@ fn lab_out_dir(lab: &Lab) -> std::path::PathBuf {
 /// parent and a child: the child's own output is captured by the parent, and a line still arrives
 /// on the exec's output.
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "confirmed defect SBX-4 (medium): a child process can write lines into the exec stdout of its parent through /proc/PPID/fd/1, so the event stream is not authentic; run: cargo test -p factory-sandbox --test security_review -- --ignored sbx_4"]
+#[ignore = "residual SBX-4 (medium), true for any READABLE program such as bash: the stdout pipe of an exec is reachable through /proc/PPID/fd/1; the installed tools are made execute-only by the image (sbx_4_a_tool_that_nobody_can_read_has_a_stdout_that_proc_does_not_open shows the mechanism, infra/sandbox-images/lib/harden.sh installs it); run: cargo test -p factory-sandbox --test security_review -- --ignored sbx_4_a_child"]
 async fn sbx_4_a_child_cannot_write_into_the_stdout_pipe_of_its_parent() {
     let lab = Lab::new(true);
     let mut session = lab
@@ -393,6 +393,125 @@ async fn sbx_4_a_child_cannot_write_into_the_stdout_pipe_of_its_parent() {
     assert!(
         !out.lines().any(|line| line == forged),
         "a child wrote a line into its parent's stdout pipe: {out:?}"
+    );
+}
+
+/// SBX-4, the fix, shown with the mechanism. The kernel clears the dumpable flag of a process that
+/// was started from a file nobody can read. The `/proc/<pid>/fd` of such a process belongs to root,
+/// so the sandbox user, and anything it starts, cannot open the standard output pipe of the exec
+/// through it. The image installs `claude`, `codex`, `codex-code-mode-host` and `timeout` this way
+/// (mode 0711, `infra/sandbox-images/lib/harden.sh`); the real tools were run that way, a full turn
+/// through the broker, as the image README records.
+///
+/// This test needs a place where a file can be executable and unreadable, which a bind mount from
+/// a macOS host is not (its permission bits are those of the host file). So it uses a container
+/// made by hand with the agent image, the same hardening flags and no network, and an executable
+/// tmpfs. The stand-in for the tool is an execute-only copy of bash, the first process of the exec,
+/// as the tool is.
+///
+/// The control runs the same attack against the readable bash: the forged line arrives. A test
+/// without the control would show nothing.
+#[tokio::test(flavor = "multi_thread")]
+async fn sbx_4_a_tool_that_nobody_can_read_has_a_stdout_that_proc_does_not_open() {
+    let lab = Lab::new(true);
+    let image = lab
+        .spec(SandboxProfile::Agent, 2, Duration::from_secs(120))
+        .image
+        .reference()
+        .to_owned();
+    let cli = lab.scope.cli();
+    let name = format!("sbx4-{}", lab.scope.label().value());
+    let labels = lab.scope.label_args();
+    let started = cli
+        .run(&[
+            "run",
+            "--detach",
+            "--pull=never",
+            "--name",
+            &name,
+            &labels[0],
+            &labels[1],
+            "--network",
+            "none",
+            "--read-only",
+            "--cap-drop",
+            "ALL",
+            "--security-opt",
+            "no-new-privileges",
+            "--init",
+            "--user",
+            "10001:10001",
+            "--pids-limit",
+            "64",
+            "--memory",
+            "256m",
+            "--log-driver",
+            "none",
+            "--tmpfs",
+            "/w:rw,exec,nosuid,nodev,size=32m,mode=1777",
+            &image,
+            "sleep",
+            "120",
+        ])
+        .expect("docker run");
+    assert!(
+        started.success(),
+        "the container did not start: {}",
+        started.stderr
+    );
+
+    let forged = "FORGED-EVENT-LINE";
+    // `$me` is the first process of the exec, the one whose stdout is the exec's pipe. A child
+    // tries to write into it through /proc; its own output is captured by the parent.
+    let attack = |tool: &str| {
+        format!(
+            "me=$$; captured=$({tool} -c \"echo {forged} > /proc/$me/fd/1; echo inner-own-output\" 2>&1); \
+             echo \"captured=$captured\""
+        )
+    };
+    let exec = |argv: &[&str]| {
+        let mut words = vec!["exec", name.as_str()];
+        words.extend_from_slice(argv);
+        cli.run(&words).expect("docker exec")
+    };
+    let made = exec(&[
+        "bash",
+        "-c",
+        "cp /bin/bash /w/tool && chmod 0111 /w/tool && ! cat /w/tool >/dev/null 2>&1",
+    ]);
+    // The control: the readable program is forged through.
+    let readable = exec(&["bash", "-c", &attack("bash")]);
+    // The program that cannot be read, as the first process of the exec.
+    let closed = exec(&["/w/tool", "-c", &attack("/w/tool")]);
+    let _ = cli.run(&["rm", "--force", &name]);
+
+    assert!(
+        made.success(),
+        "the stand-in could not be made: {}",
+        made.stderr
+    );
+    assert!(readable.success(), "{}{}", readable.stdout, readable.stderr);
+    assert!(
+        readable.stdout.lines().any(|line| line == forged),
+        "the control failed: the readable program must be forgeable, or this test shows nothing: {:?}",
+        readable.stdout
+    );
+    assert!(closed.success(), "{}{}", closed.stdout, closed.stderr);
+    assert!(
+        closed.stdout.contains("captured=") && closed.stdout.contains("inner-own-output"),
+        "the attack did not run: {}{}",
+        closed.stdout,
+        closed.stderr
+    );
+    assert!(
+        !closed.stdout.lines().any(|line| line == forged),
+        "a child wrote a line into the stdout pipe of a program that nobody can read: {:?}",
+        closed.stdout
+    );
+    assert!(
+        closed.stdout.contains("Permission denied"),
+        "the write must have been refused by /proc: {:?}",
+        closed.stdout
     );
 }
 
