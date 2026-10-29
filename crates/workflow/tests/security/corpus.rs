@@ -1,4 +1,4 @@
-//! The injection corpus (`fixtures/injection`): data, read here by a strict reader.
+//! The injection corpus (`tests/security/injection`): data, read here by a strict reader.
 //!
 //! The files are included at compile time, because the inner crates may not read files (rule
 //! DEP-05, tests included). The reader refuses a key it does not know, an action it cannot run and
@@ -10,43 +10,43 @@ use serde_json::Value;
 const FILES: [(&str, &str); 10] = [
     (
         "approval-forgery.json",
-        include_str!("../../../../fixtures/injection/approval-forgery.json"),
+        include_str!("../../../../tests/security/injection/approval-forgery.json"),
     ),
     (
         "carrier-specific.json",
-        include_str!("../../../../fixtures/injection/carrier-specific.json"),
+        include_str!("../../../../tests/security/injection/carrier-specific.json"),
     ),
     (
         "delimiter-forging.json",
-        include_str!("../../../../fixtures/injection/delimiter-forging.json"),
+        include_str!("../../../../tests/security/injection/delimiter-forging.json"),
     ),
     (
         "encoded-or-obfuscated.json",
-        include_str!("../../../../fixtures/injection/encoded-or-obfuscated.json"),
+        include_str!("../../../../tests/security/injection/encoded-or-obfuscated.json"),
     ),
     (
         "exfiltration.json",
-        include_str!("../../../../fixtures/injection/exfiltration.json"),
+        include_str!("../../../../tests/security/injection/exfiltration.json"),
     ),
     (
         "fake-system-blocks.json",
-        include_str!("../../../../fixtures/injection/fake-system-blocks.json"),
+        include_str!("../../../../tests/security/injection/fake-system-blocks.json"),
     ),
     (
         "instruction-override.json",
-        include_str!("../../../../fixtures/injection/instruction-override.json"),
+        include_str!("../../../../tests/security/injection/instruction-override.json"),
     ),
     (
         "policy-edit.json",
-        include_str!("../../../../fixtures/injection/policy-edit.json"),
+        include_str!("../../../../tests/security/injection/policy-edit.json"),
     ),
     (
         "role-confusion.json",
-        include_str!("../../../../fixtures/injection/role-confusion.json"),
+        include_str!("../../../../tests/security/injection/role-confusion.json"),
     ),
     (
         "secret-requests.json",
-        include_str!("../../../../fixtures/injection/secret-requests.json"),
+        include_str!("../../../../tests/security/injection/secret-requests.json"),
     ),
 ];
 

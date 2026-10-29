@@ -2,7 +2,7 @@
 //!
 //! The catalog's principle 1: a deterministic test cannot show that a real model resists an
 //! injected instruction, so the gating tests assume the model is fully controlled by the attacker
-//! and assert that the factory stops the effect. The corpus is `fixtures/injection`; the runner is
+//! and assert that the factory stops the effect. The corpus is `tests/security/injection`; the runner is
 //! `obey.rs`. Each test here picks the cases of the carriers it owns and runs them all.
 //!
 //! | Test | Carriers | What the catalog row says |
