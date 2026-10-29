@@ -3,7 +3,8 @@
 //! A check run is how a result reaches the code host as the App's own word, and a ruleset can
 //! require it. The rule here is the one that keeps a required check honest: **only a gate that
 //! passed is a success.** A gate that did not run, or could not, asks a person; a gate that does
-//! not apply is neutral; nothing that is not a pass is ever a success.
+//! not apply is neutral on its own, but a set in which nothing passed asks a person too; nothing
+//! that is not a pass is ever a success.
 //!
 //! | Gate outcome | Conclusion |
 //! |---|---|
@@ -43,8 +44,9 @@ pub const fn conclusion_for_gate(outcome: GateOutcome) -> CheckConclusion {
 }
 
 /// How a set of gates is shown together: any failure fails it, else any blocked gate needs a
-/// person, else it is a success only when at least one gate passed, else it is neutral. An empty
-/// set is neutral: no evidence is not a pass.
+/// person, else it is a success only when at least one gate passed. An empty set, and a set in
+/// which no gate applied, needs a person: no evidence is not a pass, and a required check accepts
+/// `neutral` as passing (AUT-8).
 #[must_use]
 pub fn conclusion_for_gates(outcomes: &[GateOutcome]) -> CheckConclusion {
     if outcomes.contains(&GateOutcome::Failed) {
@@ -54,7 +56,7 @@ pub fn conclusion_for_gates(outcomes: &[GateOutcome]) -> CheckConclusion {
     } else if outcomes.contains(&GateOutcome::Passed) {
         CheckConclusion::Success
     } else {
-        CheckConclusion::Neutral
+        CheckConclusion::ActionRequired
     }
 }
 
@@ -216,9 +218,9 @@ mod tests {
         );
         assert_eq!(
             conclusion_for_gates(&[NotApplicable]),
-            CheckConclusion::Neutral
+            CheckConclusion::ActionRequired
         );
-        assert_eq!(conclusion_for_gates(&[]), CheckConclusion::Neutral);
+        assert_eq!(conclusion_for_gates(&[]), CheckConclusion::ActionRequired);
     }
 
     #[test]

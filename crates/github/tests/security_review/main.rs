@@ -14,6 +14,7 @@
 mod common;
 
 use common::harness::{FIXTURE, World};
+use common::spans::assert_no_live_mention;
 use factory_domain::vocabulary::{GateOutcome, StageKind};
 use factory_ports::githost::{
     ChangeHost, CheckConclusion, CommentTarget, DraftPrRequest, GitHostError, GitScope,
@@ -61,7 +62,6 @@ async fn stored_body(body: &str) -> String {
 /// GitHub fetches it through its image proxy is not verified here (no real GitHub); the filter's
 /// own contract, "no image", is what fails.
 #[tokio::test]
-#[ignore = "confirmed defect AUT-6: a linked image with a protocol-relative URL passes the outbound text filter unchanged"]
 async fn aut_6_an_image_inside_a_link_to_an_allowed_host_is_removed() {
     let body = stored_body(
         "Result: [![chart](//attacker.test/b.png?d=1)](https://github.com/example-org/fixture)",
@@ -76,7 +76,6 @@ async fn aut_6_an_image_inside_a_link_to_an_allowed_host_is_removed() {
 /// The same hole through an image reference whose definition sits in a block quote, where
 /// `drop_definitions` does not look. The reference is the label of an allowed link.
 #[tokio::test]
-#[ignore = "confirmed defect AUT-6: a linked image reference with a protocol-relative definition passes the outbound text filter"]
 async fn aut_6_a_linked_image_reference_is_removed() {
     let body = stored_body(
         "[![chart][r]](https://github.com/example-org/fixture)\n\n> [r]: //attacker.test/b.png",
@@ -96,25 +95,26 @@ async fn aut_6_a_linked_image_reference_is_removed() {
 /// one and notifies the person or the whole team. The existing NT-SEC-04 test cannot see this,
 /// because it checks only that an `@` is *preceded* by a backtick, which the attack satisfies.
 #[tokio::test]
-#[ignore = "confirmed defect AUT-7: an unmatched backtick leaves a live @team mention in a pull request body"]
 async fn aut_7_a_mention_after_an_unmatched_backtick_is_made_inert() {
     let body = stored_body("Please look, `@example-org/security-team now").await;
     assert!(
         body.contains("`@example-org/security-team`"),
         "the mention is not inside a closed code span: {body:?}"
     );
+    // Read independently of the filter: nothing is left outside a code span.
+    assert_no_live_mention(&body, "the pull request body");
 }
 
 /// The same switch for a reference to another repository (`owner/repo#12`), which makes a
 /// back-link in that repository's issue.
 #[tokio::test]
-#[ignore = "confirmed defect AUT-7: an unmatched backtick leaves a live cross-repository reference in a pull request body"]
 async fn aut_7_a_cross_repository_reference_after_an_unmatched_backtick_is_made_inert() {
     let body = stored_body("See `victim/repo#12 for details").await;
     assert!(
         body.contains("`victim/repo#12`"),
         "the reference is not inside a closed code span: {body:?}"
     );
+    assert_no_live_mention(&body, "the pull request body");
 }
 
 // ---- AUT-8: neutral means passed for a required check -----------------------------------------
@@ -126,19 +126,30 @@ async fn aut_7_a_cross_repository_reference_after_an_unmatched_backtick_is_made_
 /// The delivery stage cannot reach it today (`parse_validation` refuses an empty report list),
 /// so the finding is latent.
 #[test]
-#[ignore = "confirmed defect AUT-8 (latent): no evidence at all is published as a conclusion that a required check accepts"]
 fn aut_8_no_gate_reports_is_not_a_conclusion_that_passes_a_required_check() {
+    // A required check accepts success, skipped and neutral. Nothing shown must be none of them.
+    let accepted = [CheckConclusion::Success, CheckConclusion::Neutral];
     let conclusion = factory_github::conclusion_for_gates(&[]);
-    assert_ne!(
-        conclusion,
-        CheckConclusion::Neutral,
-        "an empty set of gates is published as neutral, which GitHub counts as passing"
+    assert!(
+        !accepted.contains(&conclusion),
+        "an empty set of gates is published as {conclusion:?}, which GitHub counts as passing"
     );
     let all_not_applicable = factory_github::conclusion_for_gates(&[
         GateOutcome::NotApplicable,
         GateOutcome::NotApplicable,
     ]);
-    assert_ne!(all_not_applicable, CheckConclusion::Neutral);
+    assert!(!accepted.contains(&all_not_applicable));
+    assert_eq!(conclusion, CheckConclusion::ActionRequired);
+    assert_eq!(all_not_applicable, CheckConclusion::ActionRequired);
+    // A set with a pass in it is still a success, and one failure still fails it.
+    assert_eq!(
+        factory_github::conclusion_for_gates(&[GateOutcome::NotApplicable, GateOutcome::Passed]),
+        CheckConclusion::Success
+    );
+    assert_eq!(
+        factory_github::conclusion_for_gates(&[GateOutcome::Passed, GateOutcome::Failed]),
+        CheckConclusion::Failure
+    );
 }
 
 // ---- held --------------------------------------------------------------------------------------
@@ -174,6 +185,160 @@ fn held_the_adapter_has_no_call_that_merges_or_marks_ready() {
         ] {
             assert!(!code.contains(needle), "{name} names {needle}");
         }
+    }
+}
+
+/// NT-MRG-05, pinned at the wire. The source scan above reads names; this one drives every call of
+/// both ports against the fake and lists the method and route of every request the adapter made. A
+/// new route, or a method other than GET, POST, PATCH and (for the installation token) DELETE,
+/// fails this test, so adding a call that merges, marks a pull request ready or enables auto-merge
+/// cannot be done without editing the list below on purpose.
+#[tokio::test]
+async fn held_every_request_of_the_adapter_is_on_a_short_list_of_methods_and_routes() {
+    use factory_ports::githost::{CommentRef, IssueRef, IssueSource};
+    use factory_ports::paths::RepoRef;
+
+    let world = World::new();
+    let host = world.adapter.change_host();
+    let source = world.adapter.issue_source();
+    let repo = RepoRef::parse(FIXTURE).unwrap();
+    let issue_number = world.fake.add_issue(
+        FIXTURE,
+        "Add word count",
+        "Please.",
+        "octocat",
+        &["factory"],
+    );
+    let issue = IssueRef {
+        repo: repo.clone(),
+        number: issue_number,
+    };
+
+    // Every call of the issue source, then every call of the change host. Answers do not matter:
+    // the requests are what is pinned.
+    let intake = GitScope {
+        stage: StageKind::Intake,
+        ..scope(1, 1)
+    };
+    let _ = source.fetch_issue(&intake, &issue).await;
+    let _ = source.label_actor(&intake, &issue, "factory").await;
+    let _ = source
+        .fetch_comment(
+            &intake,
+            &CommentRef {
+                target: CommentTarget::Issue(issue.clone()),
+                id: 1,
+            },
+        )
+        .await;
+    let _ = source.repository_protection(&intake).await;
+
+    let _ = host.fetch_target(&delivery()).await;
+    let _ = host
+        .push_target(&delivery(), &BranchName::new("factory/job-1").unwrap())
+        .await;
+    let _ = host
+        .resolve_branch(&delivery(), &BranchName::new("main").unwrap())
+        .await;
+    let pr = host
+        .open_draft_pull_request(&delivery(), draft("Evidence follows."))
+        .await
+        .unwrap();
+    let _ = host
+        .update_pull_request_body(&delivery(), &pr, "Evidence follows, again.", None)
+        .await;
+    let _ = host
+        .post_comment(
+            &delivery(),
+            &CommentTarget::PullRequest(pr.clone()),
+            "Validation passed.",
+            "k1",
+        )
+        .await;
+    let _ = host.pull_request_state(&delivery(), &pr).await;
+    let as_approval = GitScope {
+        stage: StageKind::Approval,
+        ..scope(1, 1)
+    };
+    let _ = host
+        .post_comment(
+            &as_approval,
+            &CommentTarget::PullRequest(pr.clone()),
+            "The decision is recorded.",
+            "k2",
+        )
+        .await;
+    let _ = host.revoke_job_tokens(delivery().job).await;
+
+    let _ = host
+        .publish_check(
+            &delivery(),
+            factory_ports::githost::CheckRequest {
+                commit: factory_ports::paths::CommitSha::parse(
+                    &world.fake.branch_sha(FIXTURE, "factory/job-1").unwrap(),
+                )
+                .unwrap(),
+                name: factory_domain::values::Slug::parse("factory-validation").unwrap(),
+                external_id: factory_domain::values::Slug::parse("run-1").unwrap(),
+                status: factory_ports::githost::CheckStatus::Completed(CheckConclusion::Success),
+                title: "Validation".to_owned(),
+                summary: "Every gate ran.".to_owned(),
+                details_url: None,
+            },
+        )
+        .await;
+
+    // The routes the adapter may use, and no others. None names a merge, a ready-for-review move,
+    // auto-merge or GraphQL, and the only DELETE is the installation token's.
+    const PINNED: &[&str] = &[
+        "DELETE /installation/token",
+        "GET /app",
+        "GET /repos/{owner}/{repo}",
+        "GET /repos/{owner}/{repo}/branches/{branch}",
+        "GET /repos/{owner}/{repo}/issues/{number}",
+        "GET /repos/{owner}/{repo}/issues/{number}/comments",
+        "GET /repos/{owner}/{repo}/issues/{number}/events",
+        "GET /repos/{owner}/{repo}/pulls",
+        "GET /repos/{owner}/{repo}/pulls/{number}",
+        "GET /repos/{owner}/{repo}/rules/branches/{branch}",
+        "GET /repos/{owner}/{repo}/commits/{sha}/check-runs",
+        "PATCH /repos/{owner}/{repo}/pulls/{number}",
+        "PATCH /repos/{owner}/{repo}/check-runs/{id}",
+        "POST /app/installations/{id}/access_tokens",
+        "POST /repos/{owner}/{repo}/issues/{number}/comments",
+        "POST /repos/{owner}/{repo}/pulls",
+        "POST /repos/{owner}/{repo}/check-runs",
+    ];
+    for route in PINNED {
+        for forbidden in ["merge", "ready", "graphql", "auto", "PUT "] {
+            assert!(
+                !route.contains(forbidden),
+                "the pinned list names {forbidden:?}: {route}"
+            );
+        }
+    }
+    let mut seen: Vec<String> = world
+        .fake
+        .requests()
+        .iter()
+        .map(|request| request.route.clone())
+        .collect();
+    seen.sort();
+    seen.dedup();
+    assert!(!seen.is_empty(), "the calls made no request");
+    for route in &seen {
+        assert!(
+            PINNED.contains(&route.as_str()),
+            "the adapter made a request that is not on the list: {route}"
+        );
+    }
+    // The routes this sequence reached include the three that change a pull request.
+    for route in [
+        "POST /repos/{owner}/{repo}/pulls",
+        "PATCH /repos/{owner}/{repo}/pulls/{number}",
+        "POST /repos/{owner}/{repo}/issues/{number}/comments",
+    ] {
+        assert!(seen.iter().any(|s| s == route), "{route} was not reached");
     }
 }
 
@@ -245,7 +410,6 @@ async fn held_a_comment_for_another_repository_makes_no_request() {
 /// host that comment is refused. Nothing is lost on the authority side (the decision is recorded
 /// first), but the person is never told, and a reader of the service would think they are.
 #[tokio::test]
-#[ignore = "confirmed defect AUT-9: the acknowledgement comment of the approval stage is posted with a read-only token"]
 async fn aut_9_the_approval_stage_can_post_the_acknowledgement_it_tries_to_post() {
     let world = World::new();
     let host = world.adapter.change_host();

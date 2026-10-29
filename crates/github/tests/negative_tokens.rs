@@ -208,8 +208,8 @@ const ALL_STAGES: [StageKind; 14] = [
 ];
 
 #[tokio::test]
-async fn negative_nt_authz_07_every_stage_gets_exactly_its_permissions_and_only_delivery_can_write()
-{
+async fn negative_nt_authz_07_every_stage_gets_exactly_its_permissions_and_only_delivery_writes_the_repository()
+ {
     let world = World::new();
     let host = world.adapter.change_host();
     let source = world.adapter.issue_source();
@@ -225,10 +225,25 @@ async fn negative_nt_authz_07_every_stage_gets_exactly_its_permissions_and_only_
             .map(|(n, l)| (n.to_owned(), l.as_str().to_owned()))
             .collect();
         assert_eq!(minted.requested_permissions, Some(expected), "{stage:?}");
-        let writes = minted.granted_permissions.values().any(|l| l == "write");
-        assert_eq!(writes, *stage == StageKind::Delivery, "{stage:?}");
+        // Only the delivery stage writes to the repository. The approval stage holds `issues:
+        // write` for its one acknowledgement comment and nothing else (AUT-9).
+        let writes: Vec<&str> = minted
+            .granted_permissions
+            .iter()
+            .filter(|(_, level)| level.as_str() == "write")
+            .map(|(name, _)| name.as_str())
+            .collect();
+        match stage {
+            StageKind::Delivery => assert_eq!(
+                writes,
+                ["checks", "contents", "issues", "pull_requests"],
+                "{stage:?}"
+            ),
+            StageKind::Approval => assert_eq!(writes, ["issues"], "{stage:?}"),
+            _ => assert!(writes.is_empty(), "{stage:?}: {writes:?}"),
+        }
         if *stage != StageKind::Delivery {
-            // The write credential is never minted for it.
+            // The credential that writes the repository is never minted for it.
             let before = world.fake.mints().len();
             assert_eq!(
                 host.push_target(&scope, &branch("factory/job-1"))
@@ -774,7 +789,11 @@ async fn a_token_the_server_calls_dead_is_replaced_once_and_the_call_is_tried_ag
 
 #[test]
 fn the_permission_sets_name_no_level_above_write_and_the_policy_lists_agree() {
-    for set in [PermissionSet::read_stage(), PermissionSet::delivery_stage()] {
+    for set in [
+        PermissionSet::read_stage(),
+        PermissionSet::delivery_stage(),
+        PermissionSet::approval_stage(),
+    ] {
         assert!(
             set.entries()
                 .iter()

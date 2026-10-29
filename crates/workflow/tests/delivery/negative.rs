@@ -236,6 +236,28 @@ async fn negative_nt_sec_04_hostile_text_does_not_reach_the_pull_request() {
     assert_eq!(ran.resolution, Resolution::Pass);
 }
 
+/// The linked image and the lone backtick of AUT-6 and AUT-7, through the whole stage. The title
+/// is a fragment of the frozen specification, which the stage cleans on its own before the adapter
+/// ever sees it.
+#[tokio::test]
+async fn negative_nt_sec_04_a_linked_image_and_a_lone_backtick_do_not_reach_the_pull_request() {
+    let hostile =
+        "Add [![c](//evil.test/c.png)](https://github.com/o/r) `@security-team `victim/repo#12 now";
+    let world = World::with(Scenario {
+        spec_title: Some(hostile.to_owned()),
+        ..Scenario::default()
+    });
+    let ran = world.run().await;
+    let sent = &world.host.opened()[0];
+    for text in [&sent.title, &sent.body] {
+        for bad in ["evil.test", "![", "@", "victim/repo#"] {
+            assert!(!text.contains(bad), "{bad:?} reached the host in {text:?}");
+        }
+        assert_eq!(finish(text, &world.redactor, &["github.com"]), Ok(()));
+    }
+    assert_eq!(ran.resolution, Resolution::Pass);
+}
+
 #[tokio::test]
 async fn nothing_that_an_agent_wrote_is_copied_into_the_pull_request() {
     // The specification summary and the review summary are prose from agents. The body is
