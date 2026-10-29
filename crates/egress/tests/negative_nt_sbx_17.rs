@@ -135,7 +135,8 @@ fn responses_body(patch: Value) -> Value {
 // ---- what the real tools send ------------------------------------------------------------------
 
 /// The requests Claude Code and Codex really made reach the provider as they are (the model name
-/// is the test's, and the output limit is the cap Claude Code's own 128000 was clamped to).
+/// is the test's, and the output limit is the cap: Claude Code's own 128000 was clamped to it, and
+/// Codex, which names none, gets it).
 #[test]
 fn negative_nt_sbx_17_the_requests_of_the_real_tools_pass_unchanged() {
     let rig = HttpRig::new();
@@ -170,10 +171,14 @@ fn negative_nt_sbx_17_the_requests_of_the_real_tools_pass_unchanged() {
         assert_eq!(answer.status, 200, "{name}: {}", answer.text());
         let seen = rig.provider.requests();
         let last = seen.last().expect("the provider was called");
+        // Codex names no output limit, so the broker sets the per-request cap (finding RR-1) and
+        // changes nothing else.
+        let mut expected = body.clone();
+        expected["max_output_tokens"] = json!(rig.rig.core.caps().per_request.max_output_tokens);
         assert_eq!(
             last.json(),
-            body,
-            "{name}: the body must be forwarded as it came"
+            expected,
+            "{name}: the body must be forwarded as it came, with the output cap added"
         );
     }
     assert_eq!(rig.provider.hits(), 4);
