@@ -85,6 +85,11 @@ async fn aut_6_a_linked_image_reference_is_removed() {
         !body.contains("attacker.test"),
         "the body still holds the image: {body:?}"
     );
+    // The image reference itself is gone too, not only its definition.
+    assert!(
+        !body.contains("!["),
+        "the body still holds an image: {body:?}"
+    );
 }
 
 // ---- AUT-7: a lone backtick switches the mention filter off -----------------------------------
