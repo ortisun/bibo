@@ -12,9 +12,9 @@ use factory_ports::sandbox::{
     Confinement, ImageDigest, Namespace, NetworkAttachment, ProvisionStage, SandboxError,
     SandboxProfile, SandboxProvider, SandboxSpec, TeardownReason,
 };
-use factory_sandbox::container::args::{CreatePlan, create_args};
+use factory_sandbox::container::args::{CreatePlan, allowed_binds, create_args};
 use factory_sandbox::container::names::{Kind, SandboxNames, labels};
-use factory_sandbox::container::posture::denied_flag_in;
+use factory_sandbox::container::posture::denied_flag_in_allowing;
 use factory_testkit::clock::FakeCancel;
 use factory_testkit::fx::rng::FxRng;
 use serde_json::{Value, json};
@@ -280,7 +280,11 @@ fn denied_flags_are_never_emitted() {
         match create_args(&spec, &plan) {
             Ok(args) => {
                 built += 1;
-                assert_eq!(denied_flag_in(&args), None, "{args:?}");
+                assert_eq!(
+                    denied_flag_in_allowing(&args, &allowed_binds(&spec, &plan)),
+                    None,
+                    "{args:?}"
+                );
                 for arg in args.iter().filter(|a| a.starts_with('-')) {
                     let flag = arg.split('=').next().unwrap_or(arg);
                     assert!(

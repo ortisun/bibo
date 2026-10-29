@@ -228,6 +228,7 @@ pub(crate) fn report_path(raw: &[u8]) -> RepoPath {
     // that the finding that names it cannot hide or reorder the text around it.
     if let Ok(text) = std::str::from_utf8(raw)
         && !text.chars().any(hides_text)
+        && !looks_blank_or_alike(text)
         && let Ok(path) = RepoPath::new(text)
     {
         return path;
@@ -272,7 +273,8 @@ fn name_problem(raw: &[u8], limits: &AuditLimits) -> Option<AuditKind> {
 /// paragraph separators U+2028 and U+2029 (categories Zl and Zp), the tag block and the variation
 /// selector supplement (U+E0000 to U+E0FFF: tag characters can carry a hidden message), and the
 /// fillers that render as nothing and are not format characters (the combining grapheme joiner,
-/// the Hangul fillers, the Khmer inherent vowels).
+/// the Hangul fillers, the Khmer inherent vowels), and the braille pattern blank U+2800, a symbol
+/// that prints as an empty cell (finding RR-13).
 ///
 /// The standard library has no category lookup, so the Cf ranges are listed, from Unicode 16.
 /// Letters, digits, marks, punctuation, symbols, emoji and the variation selectors U+FE00 to
@@ -297,6 +299,7 @@ pub(crate) fn hides_text(c: char) -> bool {
             | '\u{200B}'..='\u{200F}'
             | '\u{2028}'..='\u{202E}'
             | '\u{2060}'..='\u{206F}'
+            | '\u{2800}'
             | '\u{3164}'
             | '\u{FEFF}'
             | '\u{FFA0}'
@@ -308,6 +311,97 @@ pub(crate) fn hides_text(c: char) -> bool {
             | '\u{1D173}'..='\u{1D17A}'
             | '\u{E0000}'..='\u{E0FFF}'
     )
+}
+
+/// True for a character that prints as empty space: Unicode White_Space (the no-break space, the
+/// en and em spaces, the thin space, the narrow no-break space, the ideographic space and the
+/// rest) and the braille blank. The control characters among them were refused before.
+fn prints_blank(c: char) -> bool {
+    c.is_whitespace() || c == '\u{2800}'
+}
+
+/// True for a variation selector: the basic block U+FE00 to U+FE0F, which emoji and CJK
+/// ideographs need, and the Mongolian ones U+180B to U+180D. (The supplement U+E0100 to U+E01EF is
+/// in the tag block that [`hides_text`] refuses.)
+fn is_variation_selector(c: char) -> bool {
+    matches!(c, '\u{FE00}'..='\u{FE0F}' | '\u{180B}'..='\u{180D}')
+}
+
+/// True for a combining mark of the blocks used to stack diacritics on a Latin letter. Marks of
+/// other scripts (Hebrew points, Arabic vowels, Thai tone marks, Indic signs) are not counted, so a
+/// name in those scripts is never judged by this.
+fn is_stacking_mark(c: char) -> bool {
+    matches!(
+        c,
+        '\u{0300}'..='\u{036F}'
+            | '\u{1AB0}'..='\u{1AFF}'
+            | '\u{1DC0}'..='\u{1DFF}'
+            | '\u{20D0}'..='\u{20FF}'
+            | '\u{FE20}'..='\u{FE2F}'
+    )
+}
+
+/// The most marks of [`is_stacking_mark`] one base character may carry in a name. Vietnamese needs
+/// two (a vowel with a circumflex and a dot below); three or more are decoration.
+const MAX_STACKED_MARKS: usize = 2;
+
+/// True for a name that prints as empty or as another name, and that has no plain reason to
+/// (finding RR-13). It is a second filter, next to [`hides_text`], for the things that are not
+/// format characters:
+///
+/// * a name that begins or ends with a character that prints as a space (`report.md` followed by a
+///   no-break space is two files that read the same in a change list), which includes a name made of
+///   nothing else;
+/// * a variation selector with nothing before it that can take one: at the start, after another
+///   selector, or after an ASCII character other than the digit, `#` or `*` of a keycap sequence
+///   (`1` followed by U+FE0F and U+20E3). Emoji and CJK ideographs, which are not ASCII, keep theirs;
+/// * more than [`MAX_STACKED_MARKS`] combining marks in a row.
+///
+/// What it leaves alone, and why. A space that is not ASCII in the middle of a name passes: the
+/// ideographic space is how Japanese file names are written, and typographic spaces occur in names
+/// from word processors. The audit logs those (see [`has_inner_blank`]) and does not refuse them. A
+/// name that is not in Unicode normal form NFC (`e` and a combining acute, where one character
+/// exists) also passes: macOS writes names that way, and the standard library has no normalization
+/// tables to tell the two forms apart, so two names that differ only in that cannot be told here
+/// without a new dependency. Marks of scripts other than the Latin diacritics are not counted at
+/// all.
+pub(crate) fn looks_blank_or_alike(text: &str) -> bool {
+    let chars: Vec<char> = text.chars().collect();
+    if chars.first().copied().is_some_and(prints_blank)
+        || chars.last().copied().is_some_and(prints_blank)
+    {
+        return true;
+    }
+    let mut marks = 0;
+    for (at, &c) in chars.iter().enumerate() {
+        if is_variation_selector(c) {
+            let base = at.checked_sub(1).map(|before| chars[before]);
+            let keycap = c == '\u{FE0F}'
+                && chars.get(at + 1) == Some(&'\u{20E3}')
+                && base.is_some_and(|b| b.is_ascii_digit() || b == '#' || b == '*');
+            let takes_one = base
+                .is_some_and(|b| !b.is_ascii() && !is_variation_selector(b) && !prints_blank(b));
+            if !keycap && !takes_one {
+                return true;
+            }
+        }
+        if is_stacking_mark(c) {
+            marks += 1;
+            if marks > MAX_STACKED_MARKS {
+                return true;
+            }
+        } else {
+            marks = 0;
+        }
+    }
+    false
+}
+
+/// True for a name with a space that is not an ASCII space inside it (the no-break, thin and
+/// ideographic spaces and the like). It is accepted and logged: such a name prints like one with an
+/// ordinary space, and a person reading a change list cannot tell the two apart.
+pub(crate) fn has_inner_blank(text: &str) -> bool {
+    text.chars().any(|c| prints_blank(c) && c != ' ')
 }
 
 struct Pending {
@@ -400,9 +494,15 @@ pub(crate) fn walk(root: &Path, ctx: &WalkContext<'_>) -> Result<Manifest, Audit
                 rec.add_raw(kind, holder);
                 continue;
             }
-            if text.chars().any(hides_text) {
+            if text.chars().any(hides_text) || looks_blank_or_alike(text) {
                 rec.add_raw(AuditKind::UnsafeName, &full_raw);
                 continue;
+            }
+            if has_inner_blank(text) {
+                tracing::warn!(
+                    entry = %report_path(&full_raw),
+                    "a name holds a space that is not an ASCII space; it is accepted, and prints like an ordinary one"
+                );
             }
             let rel = String::from_utf8_lossy(&full_raw).into_owned();
             let Ok(path) = RepoPath::new(&rel) else {
@@ -1177,6 +1277,91 @@ mod tests {
         );
     }
 
+    /// RR-13. Names that print as empty, or as another name, are refused: a space-like character at
+    /// either end, a variation selector with no base, a long stack of combining marks, and the
+    /// braille blank.
+    #[test]
+    fn names_that_print_blank_or_as_another_name_are_refused() {
+        for name in [
+            "report.md\u{00A0}",
+            "\u{00A0}nbsp.txt",
+            "\u{00A0}",
+            "\u{3000}",
+            "a.rs\u{3000}",
+            "\u{2009}a.rs",
+            "a.rs\u{202F}",
+            "a.rs ",
+            " a.rs",
+            "report\u{2800}.md",
+            "\u{2800}",
+            "a\u{FE0E}b.rs",
+            "a\u{FE0F}b.rs",
+            "a\u{180B}b.rs",
+            "\u{FE0F}a.rs",
+            "1\u{FE0F}.png",
+            "#\u{FE0F}.png",
+            "heart\u{2764}\u{FE0F}\u{FE0F}.png",
+            "a\u{0300}\u{0301}\u{0302}b.rs",
+            "a\u{20D0}\u{20D1}\u{20D2}.rs",
+        ] {
+            assert!(
+                name.chars().any(hides_text) || looks_blank_or_alike(name),
+                "{name:?} passes"
+            );
+        }
+        let dir = FxTempDir::new("audit-blank").expect("tmp");
+        for (i, name) in [
+            "report.md\u{00A0}",
+            "report\u{2800}.md",
+            "\u{2800}",
+            "a\u{FE0E}b.rs",
+            "a\u{180B}b.rs",
+            "a\u{0300}\u{0301}\u{0302}b.rs",
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let case = dir.join(format!("case-{i}"));
+            fs::create_dir(&case).expect("a case directory");
+            fs::write(case.join(name), b"").expect("a file");
+            let found = kinds(run(&case, false));
+            assert_eq!(found.len(), 1, "{name:?}: {found:?}");
+            assert_eq!(found[0].0, AuditKind::UnsafeName, "{name:?}");
+        }
+    }
+
+    /// What RR-13 leaves alone: the ideographic and typographic spaces inside a name (they are
+    /// logged), keycap and emoji selectors, two stacked marks, marks of other scripts, and a name
+    /// that is not in normal form NFC (it cannot be told apart without normalization tables).
+    #[test]
+    fn names_with_a_plain_reason_to_look_the_way_they_do_are_not_refused() {
+        for name in [
+            "\u{65e5}\u{672c}\u{3000}\u{8a9e}.txt",
+            "10\u{2009}000\u{00A0}EUR.pdf",
+            "1\u{FE0F}\u{20E3}.png",
+            "#\u{FE0F}\u{20E3}.png",
+            "heart\u{2764}\u{FE0F}.png",
+            "\u{1820}\u{180B}.txt",
+            "e\u{323}\u{302}.txt",
+            "cafe\u{301}.rs",
+            "\u{e17}\u{e35}\u{e48}.txt",
+            "\u{5e7}\u{5b8}\u{5d1}\u{5bc}\u{5b9}.txt",
+            "a b.rs",
+        ] {
+            assert!(!looks_blank_or_alike(name), "{name:?}");
+        }
+        for name in ["a\u{3000}b.rs", "a\u{2009}b.rs", "a\u{00A0}b.rs"] {
+            assert!(has_inner_blank(name), "{name:?}");
+            let dir = FxTempDir::new("audit-inner").expect("tmp");
+            fs::write(dir.join(name), b"").expect("a file");
+            assert_eq!(
+                run(dir.path(), false).map(|m| m.entries.len()).ok(),
+                Some(1)
+            );
+        }
+        assert!(!has_inner_blank("a b.rs"));
+    }
+
     #[test]
     fn legitimate_names_in_any_script_are_not_unsafe() {
         let limits = limits();
@@ -1194,11 +1379,11 @@ mod tests {
             "heart\u{2764}\u{FE0F}.png",
             "\u{1820}\u{180B}.txt",
             "a b-c_d.e",
-            "\u{a0}nbsp.txt",
             "\u{30a2}\u{30a4}\u{30a6}\u{30a8}\u{30aa}.rs",
         ] {
             assert_eq!(name_problem(name.as_bytes(), &limits), None, "{name:?}");
             assert!(!name.chars().any(hides_text), "{name:?}");
+            assert!(!looks_blank_or_alike(name), "{name:?}");
         }
         // The boundaries of the ranges are exact: the characters next to them pass.
         for edge in [

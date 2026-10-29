@@ -66,8 +66,19 @@ pub const DENIED_FLAGS: &[&str] = &[
 /// zero, and a namespace is not the host's or another container's.
 #[must_use]
 pub fn denied_flag_in(args: &[String]) -> Option<String> {
-    super::posture_args::first_denied(args)
+    super::posture_args::first_denied(args, &BindAllowlist::none())
 }
+
+/// Like [`denied_flag_in`], for a vector that may bind the mounts on `binds` (finding RR-11: a bind
+/// mount of any source the factory does not provision is refused, so a list of host roots to deny
+/// is no longer the only defence). The argument builder derives the list from the spec and the
+/// plan it was given, and checks the vector it built against it.
+#[must_use]
+pub fn denied_flag_in_allowing(args: &[String], binds: &BindAllowlist) -> Option<String> {
+    super::posture_args::first_denied(args, binds)
+}
+
+pub use super::posture_args::BindAllowlist;
 
 /// What was read from an inspect document.
 #[derive(Debug, Clone, PartialEq, Eq)]

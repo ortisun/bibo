@@ -38,7 +38,7 @@ use factory_ports::sandbox::{
     NetworkAttachment, OUT_TARGET, SCRATCH_TARGET, SandboxSpec, WORKSPACE_TARGET,
 };
 
-use super::posture::denied_flag_in;
+use super::posture::{BindAllowlist, denied_flag_in, denied_flag_in_allowing};
 
 /// The program the container runs as its first process.
 pub const IDLE_PROGRAM: &str = "sleep";
@@ -297,10 +297,49 @@ pub fn create_args(spec: &SandboxSpec, plan: &CreatePlan<'_>) -> Result<Vec<Stri
     out.push(IDLE_PROGRAM.to_owned());
     out.push(idle_seconds(limits.wall_clock).to_string());
 
-    match denied_flag_in(&out) {
+    match denied_flag_in_allowing(&out, &allowed_binds(spec, plan)) {
         Some(reason) => Err(ArgsError::DeniedArgument(reason)),
         None => Ok(out),
     }
+}
+
+/// The bind mounts a sandbox of this spec and plan may have: the second look at the vector allows
+/// these and no other (finding RR-11). Read from the spec and the plan, not from the vector that
+/// was built, so a mount the builder wrote by mistake is not on it.
+///
+/// * the workspace, the protected paths inside it, and the mask of its `.git` file (which
+///   [`BindAllowlist`] always allows);
+/// * the output directory;
+/// * the caches the spec names, from the directories the plan gives;
+/// * the job token file.
+#[must_use]
+pub fn allowed_binds(spec: &SandboxSpec, plan: &CreatePlan<'_>) -> BindAllowlist {
+    let workspace = &spec.mounts.workspace;
+    let workspace_dir = workspace.workspace.to_string_lossy().into_owned();
+    let mut allowed = BindAllowlist::none().allow(&workspace_dir, WORKSPACE_TARGET);
+    for overlay in &workspace.protected_overlays {
+        allowed = allowed.allow(
+            &format!("{workspace_dir}/{}", overlay.as_str()),
+            &format!("{WORKSPACE_TARGET}/{}", overlay.as_str()),
+        );
+    }
+    allowed = allowed.allow(&workspace.out.to_string_lossy(), OUT_TARGET);
+    for cache in &spec.mounts.caches {
+        if let Some((_, directory)) = plan
+            .cache_dirs
+            .iter()
+            .find(|(name, _)| name == cache.name.0.as_str())
+        {
+            allowed = allowed.allow(
+                &directory.to_string_lossy(),
+                &format!("{CACHE_ROOT}/{}", cache.name.0.as_str()),
+            );
+        }
+    }
+    if let Some(file) = plan.token_file {
+        allowed = allowed.allow(&file.to_string_lossy(), JOB_TOKEN_TARGET);
+    }
+    allowed
 }
 
 /// What the sidecar's `docker create` needs.

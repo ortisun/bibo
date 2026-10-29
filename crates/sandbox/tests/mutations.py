@@ -33,9 +33,45 @@ MUTATIONS = {
         [(POSTURE_ARGS, "    let allowed = key == \"no-new-privileges\" && matches!(setting, \"\" | \"true\");",
           "    let allowed = key.starts_with(\"no-new-privileges\") || key.starts_with(\"seccomp\");")],
     ),
-    "a-mount-of-the-host-root": (
-        "a bind mount of `/`, `/etc` or `/proc` is allowed",
-        [(POSTURE_ARGS, "        if host_root || system {", "        if false && (host_root || system) {")],
+    "a-mount-of-a-sensitive-tree": (
+        "a bind mount of `/`, `/etc` or `/proc` is allowed even when the pair is on the list",
+        [(POSTURE_ARGS, "    if sensitive {", "    if false && sensitive {")],
+    ),
+    "a-source-outside-the-allowlist": (
+        "a bind mount of a source the factory does not provision is allowed (RR-11)",
+        [(POSTURE_ARGS, "    if !binds.contains(source, destination) {",
+          "    if false && !binds.contains(source, destination) {")],
+    ),
+    "a-mount-key-in-another-case": (
+        "a mount key is read as written, so `SRC=/etc` after `src=/tmp/ok` is not seen (RR-10)",
+        [(POSTURE_ARGS, "        match go_lower(raw_key).as_str() {", "        match raw_key {")],
+    ),
+    "the-first-mount-source-wins": (
+        "the first `src` is the effective one, where Docker takes the last (RR-10)",
+        [(POSTURE_ARGS, '            "src" | "source" => source = Some(setting),',
+          '            "src" | "source" => source = source.or(Some(setting)),')],
+    ),
+    "a-tmpfs-with-exec": (
+        "a scratch tmpfs may be executable, setuid and device-bearing (RR-12)",
+        [(POSTURE_ARGS, '        if matches!(option.as_str(), "exec" | "suid" | "dev") {', "        if false {")],
+    ),
+    "a-negative-ulimit": (
+        "`--ulimit core=-1` and the other unlimited values are allowed (RR-12)",
+        [(POSTURE_ARGS, "    (!plain || limits.split(':').count() > 2)",
+          "    (false && (!plain || limits.split(':').count() > 2))")],
+    ),
+    "init-switched-off": (
+        "`--init=false` is allowed (RR-12)",
+        [(POSTURE_ARGS, '        "--init" => switched_off(given).then(|| "no init process".to_owned()),',
+          '        "--init" => None,')],
+    ),
+    "a-name-that-ends-in-a-blank": (
+        "a name that ends in a no-break space is accepted (RR-13)",
+        [(AUDIT, "        || chars.last().copied().is_some_and(prints_blank)", "        || false")],
+    ),
+    "a-variation-selector-with-no-base": (
+        "a variation selector after an ASCII letter is accepted (RR-13)",
+        [(AUDIT, "            if !keycap && !takes_one {", "            if false && !keycap && !takes_one {")],
     ),
     "a-limit-of-zero": (
         "a process limit of -1 or 0 is allowed",
@@ -68,7 +104,7 @@ def run_tests() -> tuple[bool, list[str]]:
     """Returns (compiled, failed test names)."""
     proc = subprocess.run(
         ["cargo", "nextest", "run", "-p", "factory-sandbox", "--no-fail-fast", "-E",
-         "kind(lib) | binary(scripted) | (binary(security_review) & (test(sbx_1) | test(sbx_2)))"],
+         "kind(lib) | binary(scripted) | binary(security_rereview) | (binary(security_review) & (test(sbx_1) | test(sbx_2)))"],
         cwd=ROOT, capture_output=True, text=True,
     )
     text = proc.stdout + proc.stderr
