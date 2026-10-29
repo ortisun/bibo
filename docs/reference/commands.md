@@ -95,6 +95,18 @@ The role is a designation on the protected allowlist. A GitHub role never grants
 
 Each line starts with `OK:`, `FAILED:` or `BLOCKED:`. `probe` checks the policy from the protected checkout, the redactor built from it and the image catalog. It then prints one `BLOCKED:` line for each agent runtime and each adapter or seam method it cannot check, and exits with code 3. A `BLOCKED:` line is never a pass.
 
+### Try it
+
+These two blocks are run by `scripts/docs-check.sh --snippets`. The first prints the usage text of the command line. The second lists the end-to-end scenarios and shows which ones need real adapters.
+
+```bash run expect="usage: factory-cli <command> [options]" expect="approve-build-code"
+cargo run --quiet --locked -p factory-cli -- --help
+```
+
+```bash run timeout=600 expect="E1   real adapters" expect="E7   test mode with labelled fakes"
+scripts/e2e.sh --list
+```
+
 ## The worker
 
 ```text

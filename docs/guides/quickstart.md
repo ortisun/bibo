@@ -22,7 +22,7 @@ You need these programs.
 
 Docker is optional. The steps below that need it are marked, and you can skip them. The [Docker section](#when-docker-is-missing) says what you lose.
 
-Allow about 2 GB of disk for the build directory.
+Allow about 3 GB of disk for the build directories. The check of this guide measured 2.7 GB.
 
 ## Steps
 
@@ -40,7 +40,7 @@ If this prints another version, `rustup` is not in use, or the repository's `rus
 cargo build --locked -p factory-cli -p factory-api -p factory-worker
 ```
 
-The build needs the crates.io packages in `Cargo.lock`. On a machine with no network, `CARGO_NET_OFFLINE=true` works once the packages are in the local cache. On the laptop used to write this guide the build took 26 seconds, with every crate already in the local cache.
+The build needs the crates.io packages in `Cargo.lock`. On a machine with no network, `CARGO_NET_OFFLINE=true` works once the packages are in the local cache. On the laptop used to write this guide the build took 38 seconds from an empty build directory, with every crate already in the local cache.
 
 ### 3. See the command line
 
@@ -127,7 +127,7 @@ This starts a throwaway copy of the local stack and probes its networks with the
 - Steps 6 to 9 pass when PostgreSQL 18 is installed. Step 7 reports `10 tests run: 10 passed`.
 - Steps 10 and 11 pass when Docker is available.
 
-Run `scripts/docs-check.sh --quickstart` to have every marked step run in a fresh clone. The check ends in `PASSED`, `FAILED` or `BLOCKED`. `BLOCKED` is the right answer on a machine without Docker: it says which steps could not run.
+Run `scripts/docs-check.sh --quickstart` to have every marked step run in a fresh clone of the committed code. On the laptop used to write this guide it took 173 seconds. It ended `BLOCKED` with steps 1 to 10 passed, because step 11 needs a Docker daemon that did not answer. `BLOCKED` is the right answer on a machine without Docker: it says which steps could not run, and it is not a pass.
 
 ## When Docker is missing
 
