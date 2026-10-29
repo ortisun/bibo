@@ -28,8 +28,9 @@
 //!
 //! # What is read
 //!
-//! * Only the first line. A second line, a quotation, a code fence and an HTML comment are not
-//!   commands (`approval.yaml` `commands.github_comment`).
+//! * Only the first line, and only when it starts at its first column. A second line, an indented
+//!   line, a quotation, a code fence and an HTML comment are not commands (`approval.yaml`
+//!   `commands.github_comment`).
 //! * The prefix `/factory ` is optional, so the same text serves the comment and the command line.
 //! * The verb is matched exactly, in lower case. Anything else is [`ParsedLine::NotOurs`], which
 //!   the caller passes on to the other command readers.
@@ -106,9 +107,17 @@ pub enum CommandError {
 /// # Errors
 /// [`CommandError`] when the line names one of the two verbs and the rest is wrong.
 pub fn parse_dependency_command(text: &str) -> Result<ParsedLine, CommandError> {
-    let line = text.lines().next().unwrap_or_default().trim();
+    // Only the end of the line is trimmed. A line with anything in front of the prefix, white space
+    // included, is not a command (RR-17): four spaces make a code block in a comment on a pull
+    // request, which is how a person quotes an example of the command to a colleague, and the other
+    // reader of comment commands (`factory_composition::commands::parse_comment`) refuses such a
+    // line too.
+    let line = text.lines().next().unwrap_or_default().trim_end();
     // A quotation, a code fence and an HTML comment are not commands.
     if line.starts_with(['>', '`', '<']) || line.starts_with("~~~") {
+        return Ok(ParsedLine::NotOurs);
+    }
+    if line.starts_with(char::is_whitespace) {
         return Ok(ParsedLine::NotOurs);
     }
     let line = line

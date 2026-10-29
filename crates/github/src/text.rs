@@ -318,9 +318,17 @@ fn host_of(url: &str) -> Option<String> {
     let rest = lower
         .strip_prefix("https://")
         .or_else(|| lower.strip_prefix("http://"))?;
-    let authority = rest.split(['/', '?', '#']).next().unwrap_or_default();
-    // A user-information part is a way to put one host before the real one.
-    if authority.contains('@') {
+    // A browser ends the host at a backslash like it does at a slash, for the `http` and `https`
+    // schemes: `https://attacker.test\.github.com/x` goes to `attacker.test` (RR-19). So the
+    // authority ends there too.
+    let authority = rest.split(['/', '\\', '?', '#']).next().unwrap_or_default();
+    // A user-information part is a way to put one host before the real one, and anything else that
+    // is not part of a name, a port or an address makes the authority one this filter does not read
+    // the way a browser does: the host is then unknown and the link is not kept.
+    if !authority
+        .bytes()
+        .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-' | b':'))
+    {
         return None;
     }
     let host = authority.split(':').next().unwrap_or_default();
@@ -342,6 +350,13 @@ fn host_allowed(url: &str, domains: &[String]) -> bool {
 
 fn is_word(c: char) -> bool {
     c.is_ascii_alphanumeric() || matches!(c, '_' | '-')
+}
+
+/// A character that makes an `@` after it part of a word (an address such as `a@b`) and so not the
+/// start of a mention. A hyphen is not one: GitHub starts a mention after a hyphen, so `x-@name`
+/// notifies `name` (RR-20).
+fn glues_an_at_sign(c: char) -> bool {
+    c.is_ascii_alphanumeric() || c == '_'
 }
 
 /// The number of backticks in the string that starts at `from`.
@@ -498,7 +513,7 @@ fn neutralize_tokens(text: &str, domains: &[String]) -> String {
         }
         if c == '@'
             && !protected
-            && previous.is_none_or(|p| !is_word(p) && p != '@')
+            && previous.is_none_or(|p| !glues_an_at_sign(p) && p != '@')
             && chars
                 .get(index + 1)
                 .is_some_and(|n| n.is_ascii_alphanumeric())

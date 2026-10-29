@@ -3,22 +3,20 @@
 
 use std::borrow::Cow;
 
+use factory_ports::paths::hides_text;
 use serde_json::Value;
 
-/// True for a character that a terminal acts on or that changes how the text around it reads: the
-/// C0 and C1 controls (escape, bell, carriage return, line feed, the single-character CSI), and the
-/// characters that hide, reorder or split text (zero-width marks, bidirectional overrides and
-/// isolates, line and paragraph separators, the byte order mark).
-const fn is_unsafe(c: char) -> bool {
-    c.is_control()
-        || matches!(
-            c,
-            '\u{200b}'..='\u{200f}'
-                | '\u{2028}'..='\u{202e}'
-                | '\u{2060}'..='\u{2064}'
-                | '\u{2066}'..='\u{2069}'
-                | '\u{feff}'
-        )
+/// True for a character that a terminal acts on or that changes how the text around it reads: every
+/// control (the C0 range, DEL and the C1 range, which holds the single-character CSI 0x9B, the
+/// operating system command 0x9D and the device control string 0x90), and every character that
+/// hides, reorders or splits text. The second part is the rule that names in a repository are held
+/// to, [`hides_text`]: the whole Unicode category Cf (zero-width marks, bidirectional controls and
+/// isolates, the soft hyphen, the Arabic letter mark, the deprecated format characters U+206A to
+/// U+206F, the byte order mark), the line and paragraph separators, the tag characters, and the
+/// fillers that render as nothing. One function decides it for both, so a character that cannot be in
+/// a path cannot be in a line the CLI prints (RR-9).
+fn is_unsafe(c: char) -> bool {
+    c.is_control() || hides_text(c)
 }
 
 /// Text that came from the server, made safe to print on one line: every character that

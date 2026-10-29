@@ -172,7 +172,7 @@ async fn held_mentions_in_odd_places_are_made_inert() {
     }
 }
 
-/// RR-19. A bare URL is judged by its host as the filter splits it (at `/`, `?` and `#`), and a
+/// RR-19 (fixed). A bare URL is judged by its host as the filter splits it (at `/`, `?` and `#`), and a
 /// browser splits it differently: for the `http` and `https` schemes a backslash ends the host like a
 /// slash does. `https://attacker.test\.github.com/x` has the host `attacker.test\.github.com` to the
 /// filter, which ends with `.github.com` and is kept; a browser, following the link GitHub makes of a
@@ -180,7 +180,6 @@ async fn held_mentions_in_odd_places_are_made_inert() {
 /// differently (the backslash escapes the dot), so only the bare form is a hole. Not run against
 /// GitHub: whether it links the whole address or stops at the backslash is the renderer's.
 #[tokio::test]
-#[ignore = "confirmed defect RR-19: a bare URL whose host ends in an allowed domain after a backslash is kept; cargo test -p factory-github --test security_rereview --locked -- --ignored rr_19 --exact"]
 async fn rr_19_a_bare_url_with_a_backslash_in_its_host_is_not_kept() {
     let vectors = vec![
         (
@@ -196,12 +195,11 @@ async fn rr_19_a_bare_url_with_a_backslash_in_its_host_is_not_kept() {
     assert!(leaks.is_empty(), "{leaks:#?}");
 }
 
-/// RR-20. A mention is only neutralised when the character before the `@` is not a word character,
+/// RR-20 (fixed). A mention was only neutralised when the character before the `@` is not a word character,
 /// and the filter counts the hyphen as one. GitHub's own pattern for a mention treats a hyphen as a
 /// boundary (the character class is `\W`, and a hyphen is not `\w`), so `x-@someone` notifies
 /// `someone` on GitHub and is left alone here. Not run against GitHub.
 #[tokio::test]
-#[ignore = "confirmed defect RR-20 (renderer behaviour unverified): a mention after a hyphen is left live; cargo test -p factory-github --test security_rereview --locked -- --ignored rr_20 --exact"]
 async fn rr_20_a_mention_after_a_hyphen_is_made_inert() {
     for body in [
         "see x-@example-org/security-team",

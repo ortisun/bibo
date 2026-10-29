@@ -37,16 +37,23 @@ pub enum Key {
 /// * An IPv4 address is itself.
 /// * An IPv4-mapped IPv6 address (`::ffff:a.b.c.d`, how a dual-stack listener reports an IPv4 peer)
 ///   is the IPv4 address, so one client is not two sources.
-/// * Any other IPv6 address is its /64, the smallest block a provider hands to one subscriber: a
-///   client that holds a prefix has 2^64 addresses and must not get a count for each (API-9).
+/// * Any other IPv6 address is its /48. A provider hands a subscriber a /64 at the least, a /56 to
+///   most and a /48 to some, and a cloud tenant routinely holds a /48; a client that holds a prefix
+///   has 2^64 addresses per /64 and must not get a count for each, nor a count for each of the 256
+///   /64s of a /56 (API-9, RR-10).
+///
+///   The tradeoff: unrelated clients that share a /48 (a small provider that routes one /48 to a
+///   whole site, a university behind one prefix) share one count and one share of the connections.
+///   That errs towards refusing a crowd over letting one client fill the server, and the shares
+///   are set so that one source cannot take all the connections (`max_connections_per_source`).
 #[must_use]
 pub fn source_of(address: IpAddr) -> IpAddr {
     match address {
         IpAddr::V4(_) => address,
         IpAddr::V6(v6) => v6.to_ipv4_mapped().map_or_else(
             || {
-                let [a, b, c, d, ..] = v6.segments();
-                IpAddr::V6(Ipv6Addr::new(a, b, c, d, 0, 0, 0, 0))
+                let [a, b, c, ..] = v6.segments();
+                IpAddr::V6(Ipv6Addr::new(a, b, c, 0, 0, 0, 0, 0))
             },
             IpAddr::V4,
         ),
@@ -402,13 +409,18 @@ mod tests {
     }
 
     #[test]
-    fn an_ipv6_source_is_its_64_bit_prefix_and_a_mapped_address_is_the_ipv4_one() {
+    fn an_ipv6_source_is_its_48_bit_prefix_and_a_mapped_address_is_the_ipv4_one() {
         let in_prefix = |last: u16| IpAddr::V6(Ipv6Addr::new(0x2001, 0xdb8, 0, 1, 0, 0, 0, last));
         assert_eq!(source_of(in_prefix(1)), source_of(in_prefix(65_535)));
-        assert_ne!(
+        assert_eq!(
             source_of(in_prefix(1)),
             source_of(IpAddr::V6(Ipv6Addr::new(0x2001, 0xdb8, 0, 2, 0, 0, 0, 1))),
-            "another /64 is another source"
+            "another /64 of the same /48 is the same source"
+        );
+        assert_ne!(
+            source_of(in_prefix(1)),
+            source_of(IpAddr::V6(Ipv6Addr::new(0x2001, 0xdb8, 1, 1, 0, 0, 0, 1))),
+            "another /48 is another source"
         );
         let plain = IpAddr::from([192, 0, 2, 7]);
         assert_eq!(source_of(plain), plain);

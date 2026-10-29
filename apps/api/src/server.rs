@@ -8,7 +8,7 @@
 //!   request line and headers in time (a slow-loris sender). A body that is slow is cut off by the
 //!   pipeline's own deadline (`routes`).
 //! * **Open connections** are bounded by a semaphore, and each source (an address, or an IPv6
-//!   /64) by a count of its own that is smaller than the table (API-6). A connection over either
+//!   /48) by a count of its own that is smaller than the table (API-6). A connection over either
 //!   limit is closed at once, before anything is read from it.
 //! * **The peer** is the address the operating system reports for the connection. It is put in the
 //!   request as [`Peer`](crate::routes::Peer) and nothing else is ever used as a source address.
@@ -47,7 +47,7 @@ const MAX_HEAD_BYTES: usize = 32 * 1024;
 /// A silent connection costs its sender nothing and is never counted as a request, so the request
 /// rate limit cannot see it; without a count per source one address could hold every slot of the
 /// table until the header timeout, and again after it. The count is made when the connection is
-/// accepted, before a byte is read, under [`source_of`]: an IPv6 client is its /64 and an IPv4
+/// accepted, before a byte is read, under [`source_of`]: an IPv6 client is its /48 and an IPv4
 /// client behind a dual-stack listener is its IPv4 address.
 #[derive(Debug)]
 pub struct Sources {

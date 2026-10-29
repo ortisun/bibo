@@ -50,14 +50,13 @@ fn held_every_control_character_and_every_escape_sequence_is_removed() {
     );
 }
 
-/// RR-9. The rule lists the zero-width marks, the embeddings and overrides, the isolates and the line
+/// RR-9 (fixed). The rule listed the zero-width marks, the embeddings and overrides, the isolates and the line
 /// separators, and misses others of the same kind. The Arabic letter mark (U+061C) is a bidirectional
 /// control and reorders the text around it; the six deprecated format characters (U+206A to U+206F)
 /// switch shaping and swapping; and the tag characters (U+E0000 to U+E007F) are invisible copies of
 /// ASCII that a terminal or a pasted line carries without showing them. The outbound text filter of
 /// the GitHub adapter already removes U+061C, U+00AD and U+180E; the CLI does not.
 #[test]
-#[ignore = "confirmed defect RR-9: the CLI prints the Arabic letter mark, the deprecated format characters and the tag characters from the server; cargo test -p factory-api --test security_rereview --locked -- --ignored rr_9 --exact"]
 fn rr_9_characters_that_reorder_or_hide_text_are_removed_from_server_text() {
     let mut survivors = Vec::new();
     let candidates: Vec<char> = std::iter::once('\u{061c}')
@@ -96,4 +95,28 @@ fn held_ordinary_text_is_left_alone() {
     ] {
         assert_eq!(render::printable(text), text);
     }
+}
+
+/// The CLI and the names in a repository share one rule for text that hides or reorders (RR-9): every
+/// character that `RepoPath` refuses as hidden, and every control character, is replaced by
+/// `printable`, over the whole range of code points. A character added to one rule is in the other,
+/// because there is one function.
+#[test]
+fn rr_9_the_cli_removes_every_character_that_a_repository_name_may_not_hold() {
+    let mut survivors = Vec::new();
+    for code in 0_u32..=0x0010_ffff {
+        let Some(c) = char::from_u32(code) else {
+            continue;
+        };
+        if !(c.is_control() || factory_ports::paths::hides_text(c)) {
+            continue;
+        }
+        if render::printable(&format!("a{c}b")).contains(c) {
+            survivors.push(code);
+            if survivors.len() > 5 {
+                break;
+            }
+        }
+    }
+    assert!(survivors.is_empty(), "survivors: {survivors:x?}");
 }
