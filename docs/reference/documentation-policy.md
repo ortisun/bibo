@@ -1,6 +1,6 @@
 # Documentation policy
 
-- Status: Slice 1 baseline. The readability gate and the documentation stage that apply this policy are not built yet. Nothing in it has been run by the factory.
+- Status: Slice 1 baseline, revised on 2026-10-29. The readability gate (`crates/workflow/src/gates/readability`) and the documentation gate (`crates/workflow/src/gates/docs`) are built and ran in the test-mode runs of the factory. No live run has applied this policy to a real repository.
 - Date: 2026-10-27
 - Author: documenter
 - Review: not yet independently reviewed. An architecture review is still needed before this policy is treated as settled.
@@ -81,7 +81,7 @@ All of them are in the test corpus with the rule they break.
 
 ## 5. Abbreviations
 
-Spell out an uncommon abbreviation at its first mention: "discounted cash flow (DCF)". Keep widely understood names such as API, SQL, GPU, ML and OIDC when the audience knows them. Spell the name out where it could be read two ways: FPS can mean frames per second or first-person shooter. Avoid internal acronyms even when they are technically valid.
+Spell out an uncommon abbreviation at its first mention: "discounted cash flow (DCF)". Keep widely understood names such as API, SQL, GPU, ML and OIDC when the audience knows them. Spell the name out where it could be read two ways: `FPS` can mean frames per second or first-person shooter. Avoid internal acronyms even when they are technically valid.
 
 "Widely understood" is a list, not a feeling. The starter list is `lists.acronym_allowlist` in `rules.json`. The master prompt names API, SQL, GPU, ML and OIDC. The other entries are the documenter's starting choice. Change the list through a reviewed change that adds a case.
 
@@ -323,7 +323,7 @@ The result is stored with the source-to-document traceability, the documentation
 
 These need an owner. None of them is settled by this file.
 
-1. **Where warnings go in a gate report.** `gate-report.schema.json` version 1 has `failures` but no field for warnings, and a PASSED report must have an empty `failures`. The readability gate has to report warnings separately from blocking findings. The architect could add an optional `warnings` array shaped like `failures`. The schema README says adding an optional field keeps the version.
+1. **Where warnings go in a gate report.** Settled. `gate-report.schema.json` now has an optional `warnings` array beside `failures`, and a PASSED report may carry warnings. The [schema README](../../schemas/README.md) records the change.
 2. **Duplicate tasks.** Master prompt rule 10 lists duplicate task detection. It compares tasks with each other, so it does not fit a one-artifact corpus. A set-based case kind would be needed.
 3. **External links.** The sandbox may have no network. Whether the documentation gate checks external URLs, and what it reports for the ones it cannot check, is not decided. Until then it must not report them as valid.
 4. **Conventional-commit tags.** `feat(auth):` is a warning here because many teams use it by habit. Whether a target repository may switch the rule off is not decided.
