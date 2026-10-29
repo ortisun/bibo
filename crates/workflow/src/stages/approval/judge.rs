@@ -44,8 +44,12 @@ pub struct Live<'a> {
     pub pr_draft: bool,
     /// The commit the pull request points at.
     pub pr_head: &'a GitSha,
-    /// The git tree of that commit.
-    pub tree: &'a GitSha,
+    /// The branch the pull request targets now. An approval is about a merge into the branch the
+    /// person was shown, not only into a commit that this branch once pointed at (AUT-1).
+    pub pr_base: &'a str,
+    /// The git tree of that commit. `None` when the head moved and the tree was not read: a head
+    /// that is not the one shown is refused before any tree is compared (AUT-2).
+    pub tree: Option<&'a GitSha>,
     /// The commit the base branch points at.
     pub base_tip: &'a GitSha,
     /// The hash of the last ledger entry.
@@ -103,6 +107,8 @@ pub enum Refusal {
     HeadMoved,
     /// The base branch moved after the person looked.
     BaseMoved,
+    /// The pull request targets another base branch than the one the person was shown.
+    BaseRetargeted,
     /// The tree of the head is not the one seen.
     TreeChanged,
     /// Evidence was added to the ledger after the person looked.
@@ -142,6 +148,7 @@ impl Refusal {
             Self::StaleBinding(_) => "stale_binding",
             Self::HeadMoved => "new_commit",
             Self::BaseMoved => "base_moved",
+            Self::BaseRetargeted => "base_retargeted",
             Self::TreeChanged => "tree_changed",
             Self::EvidenceMoved => "evidence_moved",
             Self::EvidenceDrift(_) => "evidence_drift",
@@ -306,14 +313,18 @@ fn approve(
         return Err(Refusal::NotDraft);
     }
 
-    // The world must still be what they saw.
+    // The world must still be what they saw. The head comes first: a head that moved has no tree
+    // worth comparing, and the job's object store has never seen a commit that someone else pushed.
     if live.pr_head != &seen.pr_head {
         return Err(Refusal::HeadMoved);
+    }
+    if live.pr_base != request.base_branch {
+        return Err(Refusal::BaseRetargeted);
     }
     if live.base_tip != &seen.base {
         return Err(Refusal::BaseMoved);
     }
-    if live.tree != &seen.tree {
+    if live.tree != Some(&seen.tree) {
         return Err(Refusal::TreeChanged);
     }
     if live.ledger_head != &seen.ledger_head {

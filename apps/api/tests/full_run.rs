@@ -1137,6 +1137,12 @@ async fn break_an_approval_given_for_a_stale_head_is_refused_and_moves_nothing()
         ["decision.requested", "decision.rejected"],
         "the refusal is in the timeline the API serves"
     );
+    // The refusal is for the right reason: the pull request changed (AUT-2). Before the fix the
+    // job's object store could not read the tree of a commit someone else pushed, the service
+    // answered "unavailable", and the hook gave up after twenty tries with `code=gave_up`.
+    let audit = journey.rig.audit_text(journey.job).await;
+    assert!(audit.contains("code=new_commit"), "{audit}");
+    assert!(!audit.contains("code=gave_up"), "{audit}");
     assert_eq!(
         full::count_audit(&journey.rig, journey.job, "approval.recorded").await,
         0

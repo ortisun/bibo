@@ -246,7 +246,15 @@ impl ApprovalService {
             stage_run: cmd.stage_run,
             kind: StageKind::Approval,
         };
-        let tree = d.delivery.tree_of(&run, &head_now).await?;
+        // The tree is read only for the head that was shown. A head that someone else pushed is a
+        // commit the job's object store has never seen, so reading its tree answers "not found",
+        // which is not a reason to ask again: the judge refuses the moved head before it reads
+        // the tree (AUT-2).
+        let tree = if head_now == shown {
+            Some(d.delivery.tree_of(&run, &head_now).await?)
+        } else {
+            None
+        };
         let ledger = d.delivery.ledger(&run).await?;
         let current = d
             .delivery
@@ -285,7 +293,8 @@ impl ApprovalService {
                     pr_open: pr.lifecycle == factory_ports::githost::PullRequestLifecycle::Open,
                     pr_draft: pr.draft,
                     pr_head: &head_git,
-                    tree: &tree,
+                    pr_base: pr.base.as_str(),
+                    tree: tree.as_ref(),
                     base_tip: &base_git,
                     ledger_head: &ledger.head_hash,
                     drift: &drift,
@@ -598,7 +607,7 @@ impl ApprovalService {
         // changed. Only a reason the store knows is written.
         let invalidate = match refusal {
             Refusal::HeadMoved => Some(ApprovalInvalidation::NewCommit),
-            Refusal::BaseMoved => Some(ApprovalInvalidation::BaseMoved),
+            Refusal::BaseMoved | Refusal::BaseRetargeted => Some(ApprovalInvalidation::BaseMoved),
             Refusal::EvidenceDrift(names) => names.first().map(|name| invalidation_of(name)),
             _ => None,
         };

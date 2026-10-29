@@ -269,6 +269,7 @@ impl StageHandler for ApprovalHandler {
             || !state.draft
             || state.head != head_branch
             || state.head_sha != head_commit
+            || state.base != base_branch
         {
             return Err(StageError::PolicyDenied);
         }

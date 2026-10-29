@@ -43,6 +43,9 @@ struct Fixed {
     head: Mutex<Sha256Digest>,
     values: Mutex<CurrentValues>,
     tree: GitSha,
+    /// The only commit the job's object store holds. The real source answers "not found" for a
+    /// commit that someone else pushed to the branch (AUT-2).
+    known: CommitSha,
 }
 
 #[async_trait]
@@ -70,8 +73,12 @@ impl DeliverySources for Fixed {
             dispositions: Vec::<(_, LedgerEntryId)>::new(),
         })
     }
-    async fn tree_of(&self, _run: &RunIdentity, _commit: &CommitSha) -> Result<GitSha, SeamError> {
-        Ok(self.tree.clone())
+    async fn tree_of(&self, _run: &RunIdentity, commit: &CommitSha) -> Result<GitSha, SeamError> {
+        if commit == &self.known {
+            Ok(self.tree.clone())
+        } else {
+            Err(SeamError::NotFound)
+        }
     }
 }
 
@@ -289,6 +296,7 @@ impl Rig {
                 image_digest: Sha256Digest::of(b"image"),
             }),
             tree: judging::sha('d'),
+            known: head.clone(),
         });
         let fixture = Arc::new(Fixture {
             allowlist: Mutex::new(allowlist),

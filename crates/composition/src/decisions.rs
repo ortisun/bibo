@@ -246,6 +246,8 @@ pub enum Reason {
     DraftMoved,
     /// The base branch moved.
     BaseMoved,
+    /// The pull request targets another base branch than the one the decision was asked for.
+    BaseRetargeted,
     /// What the person saw is not what the pull request holds.
     StaleBinding,
     /// The evidence changed.
@@ -264,7 +266,7 @@ pub enum Reason {
 
 impl Reason {
     /// Every reason, so that a sentence can be turned back into its code.
-    pub const ALL: [Reason; 20] = [
+    pub const ALL: [Reason; 21] = [
         Self::GaveUp,
         Self::NoJob,
         Self::Malformed,
@@ -278,6 +280,7 @@ impl Reason {
         Self::NewCommit,
         Self::DraftMoved,
         Self::BaseMoved,
+        Self::BaseRetargeted,
         Self::StaleBinding,
         Self::EvidenceMoved,
         Self::ApprovalExpired,
@@ -304,6 +307,9 @@ impl Reason {
             Self::NewCommit => "The pull request changed after the decision was asked for.",
             Self::DraftMoved => "The specification draft is not the one the person approved.",
             Self::BaseMoved => "The base branch moved after the decision was asked for.",
+            Self::BaseRetargeted => {
+                "The pull request now targets another branch than the one the decision was asked for."
+            }
             Self::StaleBinding => "What the person saw is not what the pull request holds now.",
             Self::EvidenceMoved => "The evidence changed after the decision was asked for.",
             Self::ApprovalExpired => "The request for approval has expired.",
@@ -331,6 +337,7 @@ impl Reason {
             Self::NewCommit => "new_commit",
             Self::DraftMoved => "draft_moved",
             Self::BaseMoved => "base_moved",
+            Self::BaseRetargeted => "base_retargeted",
             Self::StaleBinding => "stale_binding",
             Self::EvidenceMoved => "evidence_moved",
             Self::ApprovalExpired => "approval_expired",
@@ -1415,6 +1422,7 @@ fn refusal_reason(code: &str) -> Reason {
         "not_authorized" | "ineligible_approver" | "not_a_command" => Reason::NotAuthorized,
         "new_commit" => Reason::NewCommit,
         "base_moved" => Reason::BaseMoved,
+        "base_retargeted" => Reason::BaseRetargeted,
         "tree_changed" | "stale_binding" | "not_bound" => Reason::StaleBinding,
         "evidence_moved" | "evidence_drift" => Reason::EvidenceMoved,
         "expired" => Reason::ApprovalExpired,
