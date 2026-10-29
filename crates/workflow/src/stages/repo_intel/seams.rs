@@ -4,6 +4,7 @@
 use async_trait::async_trait;
 use factory_domain::contracts::ProjectManifest;
 use factory_domain::ids::{AttemptId, JobId, TenantId};
+use factory_domain::vocabulary::Fidelity;
 use factory_ports::paths::{BranchName, RepoRef};
 use factory_ports::sandbox::SandboxSpec;
 use factory_ports::workspace::WorkspaceMounts;
@@ -22,6 +23,11 @@ pub struct TargetRepository {
 /// Finds the repository of a job. The tenant registered it, and the job names it.
 #[async_trait]
 pub trait JobRepository: Send + Sync {
+    /// Says whether this reads the real store (`real`) or a fixed answer (`fake`). The profile
+    /// check refuses a `fake` in production (RR-6): a stand-in that names any repository names the
+    /// one the job is built against.
+    fn fidelity(&self) -> Fidelity;
+
     /// The repository and branch of the job.
     ///
     /// # Errors
@@ -54,6 +60,10 @@ pub struct ManifestProblem(pub String);
 /// `factory_contracts::loader::DefinitionLoader::project_manifest`, which parses the restricted YAML
 /// and checks the manifest against its schema.
 pub trait ProjectManifestParser: Send + Sync {
+    /// Says whether this is the parser of the contracts crate (`real`) or a stand-in that accepts
+    /// what it is given (`fake`). The profile check refuses a `fake` in production (RR-6).
+    fn fidelity(&self) -> Fidelity;
+
     /// Parses the manifest from the bytes read at the protected base commit.
     ///
     /// # Errors

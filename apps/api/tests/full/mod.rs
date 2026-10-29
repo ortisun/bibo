@@ -480,16 +480,17 @@ impl Rig {
         ));
         let catalog_text = std::fs::read_to_string(root().join("infra/sandbox-images/images.json"))
             .expect("the catalog");
-        let probes = Arc::new(CachedProbes::new(factory_ports::agent::ProbedCapabilities(
-            BTreeMap::from([(
+        let probes = Arc::new(CachedProbes::new(
+            factory_ports::agent::ProbedCapabilities(BTreeMap::from([(
                 factory_ports::agent::RuntimeId::new("fake").expect("a runtime"),
                 factory_testkit::router::probe_of(&[
                     factory_ports::agent::Capability::JsonSchemaOutput,
                     factory_ports::agent::Capability::HeadlessMultiTurn,
                     factory_ports::agent::Capability::SkillInvocation,
                 ]),
-            )]),
-        )));
+            )])),
+            factory_domain::vocabulary::Fidelity::Fake,
+        ));
         let jobs = Arc::new(ActiveJobs::new());
         // The fake exports a patch no reader can parse (see `gitshape`); the stages need the shape
         // of `git diff`, so the repository it hands out is wrapped, and the indexing wrapper of
@@ -733,6 +734,10 @@ struct OperatorAttests(factory_domain::ids::PrincipalId);
 
 #[async_trait::async_trait]
 impl BypassAttestations for OperatorAttests {
+    fn fidelity(&self) -> factory_domain::vocabulary::Fidelity {
+        factory_domain::vocabulary::Fidelity::Fake
+    }
+
     async fn attestation(
         &self,
         _: TenantId,

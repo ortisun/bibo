@@ -22,6 +22,10 @@ struct Recording(Mutex<Vec<(String, String)>>);
 
 #[async_trait]
 impl RegistryMetadata for Recording {
+    fn fidelity(&self) -> factory_domain::vocabulary::Fidelity {
+        factory_domain::vocabulary::Fidelity::Fake
+    }
+
     async fn lookup(&self, name: &str, version: &str) -> RegistryRecord {
         self.0
             .lock()

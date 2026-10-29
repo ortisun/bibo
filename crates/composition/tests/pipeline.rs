@@ -95,7 +95,10 @@ fn inputs(profile: Profile, settings: StageSettings) -> PipelineInputs {
             router: Arc::new(StaticModelRouter::new(Vec::new())),
             issues: Arc::new(FakeIssueSource::new()),
             changes: Arc::new(FakeChangeHost::new()),
-            probes: Arc::new(CachedProbes::new(ProbedCapabilities(BTreeMap::new()))),
+            probes: Arc::new(CachedProbes::new(
+                ProbedCapabilities(BTreeMap::new()),
+                Fidelity::Fake,
+            )),
             supply_chain: sources,
             attestations: Arc::new(NoAttestations),
             app: FAKE_APP_ID,

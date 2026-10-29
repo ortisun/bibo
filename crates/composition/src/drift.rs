@@ -27,6 +27,7 @@
 use async_trait::async_trait;
 use factory_domain::ids::{JobId, TenantId};
 use factory_domain::machines::invalidation::ArtifactChange;
+use factory_domain::vocabulary::Fidelity;
 use factory_workflow::engine::Engine;
 use factory_workflow::stages::delivery::SeamError;
 use factory_workflow::stages::delivery::seams::EvidenceDrift;
@@ -64,6 +65,12 @@ pub fn channel() -> (ChannelDrift, DriftPump) {
 
 #[async_trait]
 impl EvidenceDrift for ChannelDrift {
+    fn fidelity(&self) -> Fidelity {
+        // It hands the report to the task that owns the engine. A pump that is gone reads as
+        // unavailable, never as success.
+        Fidelity::Real
+    }
+
     async fn binding_changed(&self, tenant: TenantId, job: JobId) -> Result<(), SeamError> {
         let (reply, answer) = oneshot::channel();
         self.requests

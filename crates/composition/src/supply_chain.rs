@@ -30,6 +30,7 @@ use async_trait::async_trait;
 use factory_domain::ids::{JobId, TenantId};
 use factory_domain::scope::TenantScope;
 use factory_domain::values::Timestamp;
+use factory_domain::vocabulary::Fidelity;
 use factory_ports::clock::Clock;
 use factory_ports::store::Store;
 use factory_workflow::gates::supply_chain::approval::{DependencyApproval, RecordedApprovals};
@@ -69,6 +70,12 @@ pub struct BlockedRegistry;
 
 #[async_trait]
 impl RegistryMetadata for BlockedRegistry {
+    fn fidelity(&self) -> Fidelity {
+        // It knows nothing and says so: it cannot make a false pass, which is all the profile
+        // asks of a source that has no real adapter yet.
+        Fidelity::Real
+    }
+
     async fn lookup(&self, _name: &str, _version: &str) -> RegistryRecord {
         RegistryRecord::default()
     }
@@ -81,6 +88,11 @@ pub struct BlockedAdvisoryDatabase;
 
 #[async_trait]
 impl AdvisoryDatabase for BlockedAdvisoryDatabase {
+    fn fidelity(&self) -> Fidelity {
+        // It does not know the date and says so: it cannot make a false pass.
+        Fidelity::Real
+    }
+
     async fn updated_at(&self) -> Option<Timestamp> {
         None
     }
@@ -96,6 +108,10 @@ pub struct StandInRegistry;
 
 #[async_trait]
 impl RegistryMetadata for StandInRegistry {
+    fn fidelity(&self) -> Fidelity {
+        Fidelity::Fake
+    }
+
     async fn lookup(&self, _name: &str, _version: &str) -> RegistryRecord {
         RegistryRecord::default()
     }
@@ -120,6 +136,10 @@ impl StandInAdvisoryDatabase {
 
 #[async_trait]
 impl AdvisoryDatabase for StandInAdvisoryDatabase {
+    fn fidelity(&self) -> Fidelity {
+        Fidelity::Fake
+    }
+
     async fn updated_at(&self) -> Option<Timestamp> {
         self.clock.now().checked_sub(STAND_IN_DATABASE_AGE)
     }
@@ -175,6 +195,11 @@ impl CurrentApprovals {
 
 #[async_trait]
 impl RecordedApprovals for CurrentApprovals {
+    fn fidelity(&self) -> Fidelity {
+        // As real as the decisions it filters. The allowlist file is read at every call.
+        self.inner.fidelity()
+    }
+
     async fn for_job(&self, tenant: TenantId, job: JobId) -> Vec<DependencyApproval> {
         let recorded = self.inner.for_job(tenant, job).await;
         if recorded.is_empty() {

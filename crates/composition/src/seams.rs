@@ -104,6 +104,10 @@ impl YamlManifests {
 }
 
 impl ProjectManifestParser for YamlManifests {
+    fn fidelity(&self) -> Fidelity {
+        Fidelity::Real
+    }
+
     fn parse(&self, file: &str, bytes: &[u8]) -> Result<ProjectManifest, ManifestProblem> {
         let format = DefinitionFormat::from_path(Path::new(file))
             .ok_or_else(|| ManifestProblem(format!("{file} is neither YAML nor JSON")))?;
@@ -586,6 +590,10 @@ impl StoreRepositories {
 
 #[async_trait]
 impl JobRepository for StoreRepositories {
+    fn fidelity(&self) -> Fidelity {
+        self.store.fidelity()
+    }
+
     async fn of(&self, tenant: TenantId, job: JobId) -> Result<TargetRepository, SeamError> {
         let mut tx = self
             .store
@@ -618,14 +626,19 @@ impl JobRepository for StoreRepositories {
 /// repeated. The router considers only a runtime that appears here.
 pub struct CachedProbes {
     current: RwLock<ProbedCapabilities>,
+    fidelity: Fidelity,
 }
 
 impl CachedProbes {
-    /// A cache holding `probed`.
+    /// A cache holding `probed`. The caller says where the capabilities came from: `Real` when the
+    /// runtimes were probed, `Fake` when a person wrote them down. The profile check refuses a `Fake`
+    /// in production (RR-6): a list that claims every capability sends work to a runtime that cannot
+    /// do it.
     #[must_use]
-    pub fn new(probed: ProbedCapabilities) -> Self {
+    pub fn new(probed: ProbedCapabilities, fidelity: Fidelity) -> Self {
         Self {
             current: RwLock::new(probed),
+            fidelity,
         }
     }
 
@@ -636,6 +649,10 @@ impl CachedProbes {
 }
 
 impl CapabilityProbes for CachedProbes {
+    fn fidelity(&self) -> Fidelity {
+        self.fidelity
+    }
+
     fn probed(&self) -> ProbedCapabilities {
         self.current
             .read()

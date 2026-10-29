@@ -23,6 +23,7 @@ use factory_domain::contracts::evidence_ledger_entry::{ClaimKind, Evidence};
 use factory_domain::ids::{JobId, TenantId};
 use factory_domain::ledger::verify_chain;
 use factory_domain::scope::TenantScope;
+use factory_domain::vocabulary::Fidelity;
 use factory_ports::artifact::ArtifactStore;
 use factory_ports::store::Store;
 
@@ -114,6 +115,12 @@ impl LedgerApprovals {
 
 #[async_trait]
 impl RecordedApprovals for LedgerApprovals {
+    fn fidelity(&self) -> Fidelity {
+        // It reads the ledger of the store it is given, and verifies the rows. What the store is
+        // (real or in memory) is the store's own fidelity in the registry.
+        Fidelity::Real
+    }
+
     /// Every decision recorded for `job`, or none when the ledger cannot be read or does not
     /// verify. None means the gate asks the person again, which is the safe side.
     async fn for_job(&self, tenant: TenantId, job: JobId) -> Vec<DependencyApproval> {

@@ -162,6 +162,11 @@ pub trait AgentSandboxSpecs: Send + Sync {
 
 /// What the runtime probes found, cached by the composition root.
 pub trait CapabilityProbes: Send + Sync {
+    /// Says whether these are the capabilities the runtimes reported (`real`) or a fixed list
+    /// (`fake`). The profile check refuses a `fake` in production (RR-6): a list that claims every
+    /// capability sends work to a runtime that cannot do it.
+    fn fidelity(&self) -> Fidelity;
+
     /// The probed capabilities of the available runtimes.
     fn probed(&self) -> ProbedCapabilities;
 }

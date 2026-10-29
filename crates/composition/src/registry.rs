@@ -11,8 +11,13 @@
 //! entry per name, and a test fails if a name is missing. Adding a port means adding a name, a
 //! field and an entry, and the compiler and that test say where.
 //!
-//! The seams of the stages are part of the registry. [`Seams`] exists only when every one was
-//! supplied, and the ones that report a fidelity are checked like any port.
+//! The seams of the stages are part of the registry, and so are the four inputs of the security
+//! decisions of the dependency gates and the preflight (what the registry says about a package,
+//! the date of the advisory database, the decisions people recorded, the statement about the
+//! bypass list). [`Seams`] exists only when every one was supplied, and every one reports a
+//! fidelity that is checked like any port. The macro that declares them calls `fidelity()` on each,
+//! so a seam whose trait has none does not compile, and none can be left out of the report
+//! (RR-6, RR-7).
 //!
 //! `OutputValidator` reports no fidelity (it is a pure port, and the port crate gives it no
 //! stand-in label), so the registry cannot refuse a fake validator. That is a gap in the port
@@ -32,6 +37,8 @@ use factory_ports::spec::SpecificationProvider;
 use factory_ports::store::Store;
 use factory_ports::workspace::WorkspaceProvider;
 use factory_workflow::commands::Authority;
+use factory_workflow::gates::supply_chain::approval::RecordedApprovals;
+use factory_workflow::gates::supply_chain::facts::{AdvisoryDatabase, RegistryMetadata};
 use factory_workflow::scheduler::Ticker;
 use factory_workflow::stages::approval::ApprovalSources;
 use factory_workflow::stages::architecture::seams::{RiskSource, RoundSource};
@@ -43,6 +50,7 @@ use factory_workflow::stages::intake::seams::{
 use factory_workflow::stages::repo_intel::seams::{JobRepository, ProjectManifestParser};
 use factory_workflow::stages::specification::seams::{SpecApprovals, SpecDrafts, SpecHistory};
 
+use crate::preflight::BypassAttestations;
 use crate::profile::{PortName, Profile};
 
 /// Every adapter a binary may hold. `webhooks` is `None` in the worker, which does not verify
@@ -203,8 +211,12 @@ pub struct SeamsIncomplete {
     pub missing: Vec<&'static str>,
 }
 
+/// Declares every seam once: its field, its trait, its label and the name under which the profile
+/// refuses a stand-in for it. The report of fidelities is written by the macro from the same list,
+/// by calling `fidelity()` on each seam, so a seam whose trait has no such method does not compile
+/// and a seam cannot be left out of the report (RR-6, RR-7).
 macro_rules! seams {
-    ($( $field:ident : $ty:ty = $label:literal, )*) => {
+    ($( $field:ident : $ty:ty = $label:literal => $port:ident, )*) => {
         /// Every seam the stage handlers and the engine declare, in one value.
         ///
         /// A value of this type exists only if every seam was supplied: [`SeamsBuilder::build`]
@@ -250,48 +262,87 @@ macro_rules! seams {
                 })
             }
         }
+
+        impl Seams {
+            /// The fidelity of every seam, under its port name. All of them: a seam that reports
+            /// none does not compile (RR-6, RR-7).
+            #[must_use]
+            pub fn fidelities(&self) -> Vec<(PortName, Fidelity)> {
+                vec![ $( (PortName::$port, self.$field.fidelity()), )* ]
+            }
+
+            /// The port name of each seam, in the order of the declaration. A test compares it with
+            /// [`PortName::ALL`].
+            #[must_use]
+            pub const fn port_names() -> &'static [PortName] {
+                &[ $( PortName::$port, )* ]
+            }
+        }
     };
 }
 
 seams! {
-    output_check: dyn AgentOutputCheck = "agent output check",
-    manifests: dyn ProjectManifestParser = "project manifest parser",
-    allowlist: dyn AllowlistSource = "allowlist source",
-    requests: dyn RequestSource = "request source",
-    repositories: dyn JobRepository = "job repository",
-    probes: dyn CapabilityProbes = "capability probes",
-    ledger: dyn TaskLedger = "task ledger",
-    rework: dyn ReworkSource = "rework source",
-    rounds: dyn RoundSource = "round source",
-    risk: dyn RiskSource = "risk source",
-    drift: dyn EvidenceDrift = "evidence drift",
-    spec_approvals: dyn SpecApprovals = "specification approvals",
-    spec_drafts: dyn SpecDrafts = "specification drafts",
-    spec_history: dyn SpecHistory = "specification history",
-    delivery: dyn DeliverySources = "delivery sources",
-    approvals: dyn ApprovalSources = "approval sources",
-}
-
-impl Seams {
-    /// The fidelity of each seam that reports one, under its port name.
-    #[must_use]
-    pub fn fidelities(&self) -> Vec<(PortName, Fidelity)> {
-        vec![
-            (PortName::OutputCheck, self.output_check.fidelity()),
-            (PortName::Allowlist, self.allowlist.fidelity()),
-            (PortName::Requests, self.requests.fidelity()),
-            (PortName::TaskLedger, self.ledger.fidelity()),
-            (PortName::SpecApprovals, self.spec_approvals.fidelity()),
-            (PortName::SpecDrafts, self.spec_drafts.fidelity()),
-            (PortName::Delivery, self.delivery.fidelity()),
-            (PortName::Approvals, self.approvals.fidelity()),
-        ]
-    }
+    output_check: dyn AgentOutputCheck = "agent output check" => OutputCheck,
+    manifests: dyn ProjectManifestParser = "project manifest parser" => Manifests,
+    allowlist: dyn AllowlistSource = "allowlist source" => Allowlist,
+    requests: dyn RequestSource = "request source" => Requests,
+    repositories: dyn JobRepository = "job repository" => Repositories,
+    probes: dyn CapabilityProbes = "capability probes" => Probes,
+    ledger: dyn TaskLedger = "task ledger" => TaskLedger,
+    rework: dyn ReworkSource = "rework source" => Rework,
+    rounds: dyn RoundSource = "round source" => Rounds,
+    risk: dyn RiskSource = "risk source" => Risk,
+    drift: dyn EvidenceDrift = "evidence drift" => Drift,
+    spec_approvals: dyn SpecApprovals = "specification approvals" => SpecApprovals,
+    spec_drafts: dyn SpecDrafts = "specification drafts" => SpecDrafts,
+    spec_history: dyn SpecHistory = "specification history" => SpecHistory,
+    delivery: dyn DeliverySources = "delivery sources" => Delivery,
+    approvals: dyn ApprovalSources = "approval sources" => Approvals,
+    package_metadata: dyn RegistryMetadata = "package metadata source" => PackageMetadata,
+    advisory_database: dyn AdvisoryDatabase = "advisory database date" => AdvisoryDatabase,
+    recorded_approvals: dyn RecordedApprovals = "recorded dependency decisions" => RecordedApprovals,
+    attestations: dyn BypassAttestations = "bypass attestation" => Attestations,
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The ports of the engine, which `PortRegistry` holds as fields. Every other name belongs to a
+    /// seam, and [`Seams::port_names`] lists those from the one macro call.
+    const ENGINE_PORTS: [PortName; 17] = [
+        PortName::Store,
+        PortName::Clock,
+        PortName::Ids,
+        PortName::Artifacts,
+        PortName::Sandbox,
+        PortName::Workspaces,
+        PortName::Runtime,
+        PortName::Router,
+        PortName::Agents,
+        PortName::Broker,
+        PortName::Specification,
+        PortName::Issues,
+        PortName::Changes,
+        PortName::Webhooks,
+        PortName::Process,
+        PortName::Ticker,
+        PortName::Authority,
+    ];
+
+    #[test]
+    fn every_name_of_the_list_is_a_port_of_the_engine_or_a_seam_and_none_is_both() {
+        let mut named: Vec<PortName> = ENGINE_PORTS.to_vec();
+        named.extend(Seams::port_names());
+        named.sort();
+        let mut all = PortName::ALL.to_vec();
+        all.sort();
+        assert_eq!(
+            named, all,
+            "a name of the list belongs to no port or to two, or a seam reports under another name"
+        );
+        assert_eq!(Seams::port_names().len(), 20);
+    }
 
     #[test]
     fn one_fake_among_real_ports_is_named_and_refused_in_production() {

@@ -191,6 +191,11 @@ pub struct ReworkContext {
 /// store holds (`StageRun::rework_of`, the stored gate reports and the stored review verdict).
 #[async_trait]
 pub trait ReworkSource: Send + Sync {
+    /// Says whether this reads the store (`real`) or a fixed answer (`fake`). The profile check
+    /// refuses a `fake` in production (RR-6): a stand-in that always says "first run" drops the
+    /// feedback of a reviewer.
+    fn fidelity(&self) -> Fidelity;
+
     /// The feedback for this run, or `None` for a first run.
     ///
     /// # Errors

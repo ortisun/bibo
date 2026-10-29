@@ -466,6 +466,12 @@ pub fn assemble_pipeline(inputs: PipelineInputs) -> Result<Pipeline, PipelineErr
         .spec_history(spec_history.clone())
         .delivery(delivery.clone())
         .approvals(approval_sources.clone())
+        // The four inputs of the security decisions are seams of the registry like the others
+        // (RR-7): the profile refuses a stand-in for each, whatever label it was handed with.
+        .package_metadata(external.supply_chain.registry())
+        .advisory_database(external.supply_chain.advisory_db())
+        .recorded_approvals(Arc::clone(&dependency_approvals))
+        .attestations(Arc::clone(&external.attestations))
         .build()?;
     let ports = PortRegistry {
         store: Arc::clone(&store),
@@ -488,9 +494,10 @@ pub fn assemble_pipeline(inputs: PipelineInputs) -> Result<Pipeline, PipelineErr
         authority: authority.clone(),
         seams,
     };
-    // The two sources of the dependency gates are not ports with a fidelity, so the profile's
-    // check does not reach them. Production takes the blocked adapters, which fail closed, and
-    // refuses a stand-in.
+    // The two sources of the dependency gates carry a label of their own (blocked, stand-in,
+    // real), which names them in the report. The profile's check below reads what each one says
+    // it is (RR-7), so a stand-in handed over as "real" is refused in production too. Production
+    // takes the blocked adapters, which fail closed, and refuses a stand-in.
     if profile == Profile::Production {
         let stand_ins = external.supply_chain.stand_ins();
         if !stand_ins.is_empty() {

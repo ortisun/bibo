@@ -6,7 +6,7 @@
 use async_trait::async_trait;
 use factory_domain::contracts::{ArtifactRef, GateReport};
 use factory_domain::policy::risk::RiskFacts;
-use factory_domain::vocabulary::RiskTier;
+use factory_domain::vocabulary::{Fidelity, RiskTier};
 
 use crate::handlers::RunIdentity;
 
@@ -28,6 +28,11 @@ pub struct JobRisk {
 /// Where the stage learns the risk facts of the job.
 #[async_trait]
 pub trait RiskSource: Send + Sync {
+    /// Says whether this reads the store (`real`) or a fixed answer (`fake`). The profile check
+    /// refuses a `fake` in production (RR-6): a stand-in that always says "low" lowers the tier of
+    /// every job.
+    fn fidelity(&self) -> Fidelity;
+
     /// The facts for the job of this run.
     ///
     /// # Errors
@@ -56,6 +61,10 @@ pub struct PreviousRound {
 /// store holds.
 #[async_trait]
 pub trait RoundSource: Send + Sync {
+    /// Says whether this reads the store (`real`) or a fixed answer (`fake`). The profile check
+    /// refuses a `fake` in production (RR-6).
+    fn fidelity(&self) -> Fidelity;
+
     /// The earlier round, or `None` for a first run.
     ///
     /// # Errors

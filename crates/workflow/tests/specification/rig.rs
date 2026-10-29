@@ -244,6 +244,10 @@ impl AgentOutputCheck for StandInCheck {
 pub struct FixedProbes;
 
 impl CapabilityProbes for FixedProbes {
+    fn fidelity(&self) -> factory_domain::vocabulary::Fidelity {
+        factory_domain::vocabulary::Fidelity::Fake
+    }
+
     fn probed(&self) -> ProbedCapabilities {
         let mut all = ProbedCapabilities::default();
         all.0.insert(
@@ -390,6 +394,10 @@ impl RigHistory {
 
 #[async_trait]
 impl SpecHistory for RigHistory {
+    fn fidelity(&self) -> factory_domain::vocabulary::Fidelity {
+        factory_domain::vocabulary::Fidelity::Fake
+    }
+
     async fn previous(&self, _run: &RunIdentity) -> Result<Option<PreviousSpec>, SeamError> {
         Ok(lock(&self.previous).clone())
     }
@@ -399,6 +407,10 @@ pub struct RigRework;
 
 #[async_trait]
 impl ReworkSource for RigRework {
+    fn fidelity(&self) -> factory_domain::vocabulary::Fidelity {
+        factory_domain::vocabulary::Fidelity::Fake
+    }
+
     async fn of(&self, _run: &RunIdentity) -> Result<Option<ReworkContext>, SeamError> {
         Ok(None)
     }

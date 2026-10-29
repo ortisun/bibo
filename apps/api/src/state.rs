@@ -2,7 +2,7 @@
 //!
 //! [`ApiPorts`] is the API's own registry: the store, the clock, the identifier source, the webhook
 //! verifier, the authority and the allowlist. [`ApiPorts::check`] runs the profile's rule over each
-//! of them, the same rule the worker's registry runs over its 25 ports
+//! of them, the same rule the worker's registry runs over its 37 ports
 //! (`factory_composition::registry::check_fidelities`), so the production profile refuses a fake
 //! here as it does there. [`ApiState`] is what a handler gets.
 

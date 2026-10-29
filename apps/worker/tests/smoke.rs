@@ -376,16 +376,17 @@ async fn smoke_body(options: Options) -> factory_workflow::engine::JobView {
     // The probe a live run would take is BLOCKED (it needs the tool in the agent image), so the
     // smoke states what the one scripted runtime supports. The specification stage asks for skill
     // invocation, which the testkit's default probe does not claim.
-    let probes = Arc::new(CachedProbes::new(factory_ports::agent::ProbedCapabilities(
-        std::collections::BTreeMap::from([(
+    let probes = Arc::new(CachedProbes::new(
+        factory_ports::agent::ProbedCapabilities(std::collections::BTreeMap::from([(
             factory_ports::agent::RuntimeId::new("fake").expect("a runtime"),
             factory_testkit::router::probe_of(&[
                 factory_ports::agent::Capability::JsonSchemaOutput,
                 factory_ports::agent::Capability::HeadlessMultiTurn,
                 factory_ports::agent::Capability::SkillInvocation,
             ]),
-        )]),
-    )));
+        )])),
+        factory_domain::vocabulary::Fidelity::Fake,
+    ));
     let checker = Arc::new(SchemaChecker::new(&root));
     let commit = GitSha::parse("1405df66cbe219b0bf6355bc3d60361a8376b6b4").expect("a commit");
     let endpoint = BrokerEndpoint {

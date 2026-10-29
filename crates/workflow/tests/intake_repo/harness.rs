@@ -386,6 +386,10 @@ impl AgentSandboxSpecs for TestSpecs {
 pub struct FixedProbes;
 
 impl CapabilityProbes for FixedProbes {
+    fn fidelity(&self) -> factory_domain::vocabulary::Fidelity {
+        factory_domain::vocabulary::Fidelity::Fake
+    }
+
     fn probed(&self) -> ProbedCapabilities {
         probed(&["fake"])
     }

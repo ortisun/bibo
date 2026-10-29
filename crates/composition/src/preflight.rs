@@ -43,7 +43,7 @@ use factory_domain::ids::{AuditEventId, CorrelationId, JobId, RepositoryId, Tena
 use factory_domain::scope::TenantScope;
 use factory_domain::state::JobStatus;
 use factory_domain::values::{Sha256Digest, Slug};
-use factory_domain::vocabulary::StageKind;
+use factory_domain::vocabulary::{Fidelity, StageKind};
 use factory_ports::clock::IdGenerator;
 use factory_ports::githost::{
     AppId, BypassAttestation, GitScope, IssueSource, PreflightFailure, PreflightVerdict,
@@ -62,6 +62,13 @@ const PER_PASS: u32 = 50;
 /// this repository".
 #[async_trait]
 pub trait BypassAttestations: Send + Sync {
+    /// Says whether the statement comes from an administrator (`real`) or from a stand-in that
+    /// attests whatever it is asked (`fake`). The profile check refuses a `fake` in production
+    /// (RR-7): a source that always answers "nobody can bypass" turns the preflight into a pass.
+    /// A source with nothing to say ([`NoAttestations`]) is `real` in this sense: it cannot make a
+    /// false pass.
+    fn fidelity(&self) -> Fidelity;
+
     /// The statement for the repository, or `None`. A source that cannot be read answers `None`:
     /// the preflight then fails closed.
     async fn attestation(
@@ -76,6 +83,10 @@ pub struct NoAttestations;
 
 #[async_trait]
 impl BypassAttestations for NoAttestations {
+    fn fidelity(&self) -> Fidelity {
+        Fidelity::Real
+    }
+
     async fn attestation(&self, _: TenantId, _: &RepoRef) -> Option<BypassAttestation> {
         None
     }

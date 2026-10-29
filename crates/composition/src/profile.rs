@@ -9,12 +9,19 @@
 //! | Profile | Fakes allowed for |
 //! |---|---|
 //! | `production` | nothing |
-//! | `local` | the model and GitHub side only: the agent runtime, the router, the broker, the GitHub ports. Everything that holds state or runs code (store, artifacts, sandbox, workspaces, specification provider, registry, clock, ids, process runner, ticker, authority) is real. |
+//! | `local` | the model and GitHub side only: the agent runtime, the router, the broker, the GitHub ports, the capability probes of the runtimes, the registry and the advisory database that the dependency gates ask, and the statement about the bypass list. Everything that holds state or runs code (store, artifacts, sandbox, workspaces, specification provider, registry, clock, ids, process runner, ticker, authority) is real. |
 //! | `test` | every port |
 //!
 //! `local` exists for a developer who has a database and Docker on a machine and no credentials.
 //! It labels what it records as test mode, so no record of it can pass for production evidence
 //! (invariant INV-08), and it still refuses an in-memory store that would lose the job on exit.
+//!
+//! # The list of ports is closed
+//!
+//! [`PortName`], [`PortName::ALL`] and [`PortName::label`] come from one macro call, so a name
+//! cannot be in one and missing from another. The registry ([`crate::registry`]) builds its report
+//! from the same names, and a test enumerates the trait of every seam and the input of a security
+//! decision and fails for one that reports no fidelity.
 
 use factory_domain::vocabulary::{ExecutionMode, Fidelity};
 use factory_ports::{FakeRefused, require_permitted};
@@ -79,125 +86,112 @@ impl Profile {
     }
 }
 
-/// Every port of the composition, by the name used in refusals.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub enum PortName {
+/// Declares [`PortName`] with its list and its labels in one place.
+macro_rules! port_names {
+    ($( $(#[$doc:meta])* $variant:ident => $label:literal, )*) => {
+        /// Every port of the composition, by the name used in refusals.
+        #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+        pub enum PortName {
+            $( $(#[$doc])* $variant, )*
+        }
+
+        impl PortName {
+            /// Every port, in a fixed order. The first 17 are the ports of the engine; the others
+            /// are the seams of the stages and the inputs of the security decisions, each of which
+            /// reports a fidelity, so a stand-in among them is refused like any other.
+            pub const ALL: [PortName; PortName::COUNT] = [ $( Self::$variant, )* ];
+
+            const COUNT: usize = [ $( stringify!($variant), )* ].len();
+
+            /// The name in a refusal and in the health report.
+            #[must_use]
+            pub const fn label(self) -> &'static str {
+                match self {
+                    $( Self::$variant => $label, )*
+                }
+            }
+        }
+    };
+}
+
+port_names! {
     /// `Store`.
-    Store,
+    Store => "store",
     /// `Clock`.
-    Clock,
+    Clock => "clock",
     /// `IdGenerator`.
-    Ids,
+    Ids => "id generator",
     /// `ArtifactStore`.
-    Artifacts,
+    Artifacts => "artifact store",
     /// `SandboxProvider`.
-    Sandbox,
+    Sandbox => "sandbox provider",
     /// `WorkspaceProvider`.
-    Workspaces,
+    Workspaces => "workspace provider",
     /// `AgentRuntime`.
-    Runtime,
+    Runtime => "agent runtime",
     /// `ModelRouter`.
-    Router,
+    Router => "model router",
     /// `AgentRegistry`.
-    Agents,
+    Agents => "agent registry",
     /// `ModelBroker`.
-    Broker,
+    Broker => "model broker",
     /// `SpecificationProvider`.
-    Specification,
+    Specification => "specification provider",
     /// `IssueSource`.
-    Issues,
+    Issues => "issue source",
     /// `ChangeHost`.
-    Changes,
+    Changes => "change host",
     /// `WebhookVerifier`.
-    Webhooks,
+    Webhooks => "webhook verifier",
     /// `ProcessRunner`.
-    Process,
+    Process => "process runner",
     /// The engine's `Ticker`.
-    Ticker,
+    Ticker => "ticker",
     /// The engine's `Authority`.
-    Authority,
+    Authority => "authority",
     /// `AgentOutputCheck`, a seam of the stages.
-    OutputCheck,
+    OutputCheck => "agent output check",
     /// `AllowlistSource`, a seam of the stages.
-    Allowlist,
+    Allowlist => "allowlist source",
     /// `RequestSource`, a seam of the stages.
-    Requests,
+    Requests => "request source",
     /// `TaskLedger`, a seam of the implementation stage.
-    TaskLedger,
+    TaskLedger => "task ledger",
     /// `SpecApprovals`, a seam of the specification stage.
-    SpecApprovals,
+    SpecApprovals => "specification approvals",
     /// `SpecDrafts`, a seam of the specification stage.
-    SpecDrafts,
+    SpecDrafts => "specification drafts",
     /// `DeliverySources`, a seam of the delivery stage.
-    Delivery,
+    Delivery => "delivery sources",
     /// `ApprovalSources`, a seam of the approval stage.
-    Approvals,
+    Approvals => "approval sources",
+    /// `ProjectManifestParser`, a seam of the repository stage (RR-6).
+    Manifests => "project manifest parser",
+    /// `JobRepository`, a seam of the repository stage (RR-6).
+    Repositories => "job repository",
+    /// `CapabilityProbes`, a seam of the intake stage (RR-6).
+    Probes => "capability probes",
+    /// `ReworkSource`, a seam of the implementation stage (RR-6).
+    Rework => "rework source",
+    /// `RoundSource`, a seam of the architecture stage (RR-6).
+    Rounds => "round source",
+    /// `RiskSource`, a seam of the architecture stage (RR-6).
+    Risk => "risk source",
+    /// `EvidenceDrift`, a seam of the delivery stage (RR-6).
+    Drift => "evidence drift",
+    /// `SpecHistory`, a seam of the specification stage (RR-6).
+    SpecHistory => "specification history",
+    /// `RegistryMetadata`: what the package registry says about a package (RR-7).
+    PackageMetadata => "package metadata source",
+    /// `AdvisoryDatabase`: the date of the database the audit reads (RR-7).
+    AdvisoryDatabase => "advisory database date",
+    /// `RecordedApprovals`: the decisions people recorded about new dependencies (RR-7).
+    RecordedApprovals => "recorded dependency decisions",
+    /// `BypassAttestations`: the administrator's statement about the bypass list (RR-7).
+    Attestations => "bypass attestation",
 }
 
 impl PortName {
-    /// Every port, in a fixed order. The first 17 are the ports of the engine; the last 8 are the
-    /// seams of the stages that report a fidelity, so a stand-in among them is refused like any
-    /// other.
-    pub const ALL: [PortName; 25] = [
-        Self::Store,
-        Self::Clock,
-        Self::Ids,
-        Self::Artifacts,
-        Self::Sandbox,
-        Self::Workspaces,
-        Self::Runtime,
-        Self::Router,
-        Self::Agents,
-        Self::Broker,
-        Self::Specification,
-        Self::Issues,
-        Self::Changes,
-        Self::Webhooks,
-        Self::Process,
-        Self::Ticker,
-        Self::Authority,
-        Self::OutputCheck,
-        Self::Allowlist,
-        Self::Requests,
-        Self::TaskLedger,
-        Self::SpecApprovals,
-        Self::SpecDrafts,
-        Self::Delivery,
-        Self::Approvals,
-    ];
-
-    /// The name in a refusal and in the health report.
-    #[must_use]
-    pub const fn label(self) -> &'static str {
-        match self {
-            Self::Store => "store",
-            Self::Clock => "clock",
-            Self::Ids => "id generator",
-            Self::Artifacts => "artifact store",
-            Self::Sandbox => "sandbox provider",
-            Self::Workspaces => "workspace provider",
-            Self::Runtime => "agent runtime",
-            Self::Router => "model router",
-            Self::Agents => "agent registry",
-            Self::Broker => "model broker",
-            Self::Specification => "specification provider",
-            Self::Issues => "issue source",
-            Self::Changes => "change host",
-            Self::Webhooks => "webhook verifier",
-            Self::Process => "process runner",
-            Self::Ticker => "ticker",
-            Self::Authority => "authority",
-            Self::OutputCheck => "agent output check",
-            Self::Allowlist => "allowlist source",
-            Self::Requests => "request source",
-            Self::TaskLedger => "task ledger",
-            Self::SpecApprovals => "specification approvals",
-            Self::SpecDrafts => "specification drafts",
-            Self::Delivery => "delivery sources",
-            Self::Approvals => "approval sources",
-        }
-    }
-
     /// True for the ports that need a credential or a paid service the `local` profile may lack.
     #[must_use]
     pub const fn is_credentialed(self) -> bool {
@@ -209,6 +203,13 @@ impl PortName {
                 | Self::Issues
                 | Self::Changes
                 | Self::Webhooks
+                // What the runtimes report they can do comes from running them.
+                | Self::Probes
+                // The package registry and the audit image's database are outside services, and
+                // the statement about the bypass list is about GitHub.
+                | Self::PackageMetadata
+                | Self::AdvisoryDatabase
+                | Self::Attestations
         )
     }
 }
@@ -248,5 +249,18 @@ mod tests {
         );
         assert_eq!(Profile::Local.execution_mode(), ExecutionMode::Test);
         assert_eq!(Profile::Test.execution_mode(), ExecutionMode::Test);
+    }
+
+    #[test]
+    fn the_list_has_every_name_once_and_every_label_once() {
+        let mut labels: Vec<&str> = PortName::ALL.iter().map(|port| port.label()).collect();
+        labels.sort_unstable();
+        labels.dedup();
+        assert_eq!(labels.len(), PortName::ALL.len(), "a label is used twice");
+        let mut names = PortName::ALL.to_vec();
+        names.sort();
+        names.dedup();
+        assert_eq!(names.len(), PortName::ALL.len(), "a name is listed twice");
+        assert_eq!(PortName::ALL.len(), 37);
     }
 }

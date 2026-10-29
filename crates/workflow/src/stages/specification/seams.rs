@@ -103,6 +103,10 @@ pub struct PreviousSpec {
 /// Where the stage learns that its run revises a frozen specification.
 #[async_trait]
 pub trait SpecHistory: Send + Sync {
+    /// Says whether this reads the store (`real`) or a fixed answer (`fake`). The profile check
+    /// refuses a `fake` in production (RR-6).
+    fn fidelity(&self) -> Fidelity;
+
     /// The specification this run revises, or `None` for the first one of the job.
     ///
     /// # Errors

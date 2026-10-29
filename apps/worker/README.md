@@ -418,7 +418,7 @@ functions in `commands`; the HTTP and the process arguments stay with the API an
 
 | Break | Caught by |
 |---|---|
-| The production profile built with a fake adapter, for each of the 25 ports | `crates/composition/tests/profiles.rs`: a registry of fakes is refused for all 25; one fake among real ports is named; the eight seams that report a fidelity are each refused in production and in `local` |
+| The production profile built with a fake adapter, for each of the 37 ports | `crates/composition/tests/profiles.rs`: a registry of fakes is refused for all 37; one fake among real ports is named; the twenty seams (the sixteen of the stages and the four inputs of the security decisions) are each refused in production, and in `local` unless they stand for an outside service |
 | A seam forgotten at wiring | `profiles.rs::a_seam_forgotten_at_wiring_stops_start_up_and_is_named`: the seam set cannot be built and names the missing seam, so there is no registry and no engine |
 | An unfenced `TaskLedger` write | `crates/composition/tests/ledger.rs`: a stale epoch is `Fenced` and writes nothing; the store itself refuses a start with no fence and one with a wrong epoch |
 | Stale evidence drift ignored | `tests/drift.rs`: with the real seam the dependent runs are replaced; with a seam that says "done" and tells nobody they stay `PASSED` |

@@ -22,45 +22,54 @@ fn trait_text(text: &str, name: &str) -> String {
     rest[..end].to_owned()
 }
 
-/// RR-6. The registry has sixteen seams and the fidelity of eight. The other eight (the capability
-/// probes, the job repository, the project manifest parser, the rework, round, risk and history
-/// sources, the evidence drift channel) are read by the stages and cannot be refused, in any profile,
-/// whatever they are.
+/// RR-6 (fixed). The registry had sixteen seams and the fidelity of eight. The other eight (the
+/// capability probes, the job repository, the project manifest parser, the rework, round, risk and
+/// history sources, the evidence drift channel) were read by the stages and could not be refused, in
+/// any profile, whatever they were. Now one macro call declares every seam with the name under which
+/// the profile checks it, and writes the report by calling `fidelity()` on each: a seam whose trait
+/// has no such method does not compile, and none can be left out. This test reads the call and
+/// compares it with the report and with the list of names.
 #[test]
-#[ignore = "confirmed defect RR-6: eight of the sixteen seams of the registry report no fidelity, so the production profile cannot refuse them; cargo test -p factory-composition --test security_rereview --locked -- --ignored rr_6 --exact"]
 fn rr_6_every_seam_of_the_registry_is_checked_by_the_profile() {
+    use factory_composition::profile::PortName;
+    use factory_composition::registry::Seams;
     let text = source("crates/composition/src/registry.rs");
     let declared = text
-        .split("seams! {")
+        .split("\nseams! {\n")
         .nth(1)
         .and_then(|rest| rest.split("\n}\n").next())
         .expect("the seams macro call");
-    let seams = declared
+    let seams: Vec<&str> = declared
         .lines()
         .filter(|line| line.contains(": dyn "))
-        .count();
-    let checked = text
-        .split("pub fn fidelities(&self) -> Vec<(PortName, Fidelity)> {\n        vec![")
-        .nth(1)
-        .and_then(|rest| rest.split("]\n").next())
-        .expect("the seam fidelities")
-        .matches("(PortName::")
-        .count();
-    assert_eq!(
-        checked, seams,
-        "{seams} seams are declared and {checked} are checked against the profile"
+        .collect();
+    // Every declared seam names the port under which the profile checks it ...
+    for line in &seams {
+        assert!(line.contains("=> "), "no port name on: {line}");
+    }
+    // ... the report is written from that same list, by asking each seam ...
+    assert!(
+        text.contains("vec![ $( (PortName::$port, self.$field.fidelity()), )* ]"),
+        "the report is not written from the declaration"
     );
+    // ... and the names are the ones of the list, once each.
+    let mut named: Vec<PortName> = Seams::port_names().to_vec();
+    assert_eq!(named.len(), seams.len());
+    named.sort();
+    named.dedup();
+    assert_eq!(named.len(), seams.len(), "two seams share a port name");
+    for port in named {
+        assert!(PortName::ALL.contains(&port), "{port:?} is not in the list");
+    }
 }
 
-/// RR-7. The four inputs that carry facts into a security decision have no fidelity method at all:
-/// the registry facts about a package (its age, its owners), the date of the advisory database, the
-/// recorded dependency decisions, and the administrator's statement about the bypass list. A stand-in
-/// that always answers "old and clean", "updated yesterday", "approved" or "nobody can bypass" would
-/// be accepted by the production profile, and by the engine's own check, which reads only what has a
-/// fidelity. Nothing builds such a stand-in today; the worker stops with `BLOCKED:` for want of an
-/// adapter. The day an adapter is written, nothing will tell a real one from a convenient one.
+/// RR-7 (fixed). The four inputs that carry facts into a security decision had no fidelity method at
+/// all: the registry facts about a package (its age, its owners), the date of the advisory database,
+/// the recorded dependency decisions, and the administrator's statement about the bypass list. A
+/// stand-in that always answers "old and clean", "updated yesterday", "approved" or "nobody can
+/// bypass" would have been accepted by the production profile, and by the engine's own check, which
+/// reads only what has a fidelity. Now each trait has the method and each is a seam of the registry.
 #[test]
-#[ignore = "confirmed defect RR-7: the supply chain seams and the bypass attestation report no fidelity; cargo test -p factory-composition --test security_rereview --locked -- --ignored rr_7 --exact"]
 fn rr_7_the_inputs_of_security_decisions_report_a_fidelity() {
     let facts = source("crates/workflow/src/gates/supply_chain/facts.rs");
     let approval = source("crates/workflow/src/gates/supply_chain/approval.rs");
@@ -80,10 +89,23 @@ fn rr_7_the_inputs_of_security_decisions_report_a_fidelity() {
         silent.is_empty(),
         "these seams cannot be refused by a profile: {silent:?}"
     );
+    // And each is in the registry under a name of its own.
+    use factory_composition::profile::PortName;
+    for port in [
+        PortName::PackageMetadata,
+        PortName::AdvisoryDatabase,
+        PortName::RecordedApprovals,
+        PortName::Attestations,
+    ] {
+        assert!(
+            factory_composition::registry::Seams::port_names().contains(&port),
+            "{port:?} is not a seam of the registry"
+        );
+    }
 }
 
-/// What does hold: the ports and eight of the seams are in the list, and the list is checked for
-/// every profile. A port added to the registry without a name fails to compile.
+/// What holds: the ports and every seam are in the list, and the list is checked for every profile.
+/// A port added to the registry without a name fails to compile.
 #[test]
 fn held_the_ports_and_the_listed_seams_are_refused_one_by_one() {
     use factory_composition::profile::{PortName, Profile};

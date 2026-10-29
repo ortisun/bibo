@@ -1,6 +1,6 @@
 //! The profile rule over the API's own ports, and the configuration file of the local stack.
 //!
-//! The worker's registry runs `require_permitted` for its 25 ports and a test shows a fake refused
+//! The worker's registry runs `require_permitted` for its 37 ports and a test shows a fake refused
 //! for each. The API has six ports of its own; `assemble_state` is the code start-up runs, so these
 //! tests run the production rule, not a copy of it.
 
