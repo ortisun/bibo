@@ -347,9 +347,15 @@
         "tracing",
         "tokio[rt,time,sync,macros,signal]",
         "time[std]",
-        "uuid[std]"
+        "uuid[std]",
+        "hmac",
+        "sha2",
+        "subtle"
       ],
       "external_allow_notes": {
+        "hmac": "R-1 and AUT-12: the hook only applies decision records the API signed; same crates and versions as factory-github.",
+        "sha2": "R-1 and AUT-12: the hook only applies decision records the API signed; same crates and versions as factory-github.",
+        "subtle": "R-1 and AUT-12: the hook only applies decision records the API signed; same crates and versions as factory-github.",
         "tokio": "The engine's futures are not Send, so the binaries run on the current-thread runtime (rt). time is for the production Ticker, sync for the shutdown channel, macros for select!, signal for SIGTERM and SIGINT. These are the features the worker used before the extraction; nothing was added.",
         "time": "OffsetDateTime::now_utc for the real Clock. The std feature is the only one.",
         "uuid": "Identifiers are built from 16 random bytes read from the operating system with Builder::from_random_bytes. No generator feature (v4, v7) is on, because DEP-05 keeps them away from the inner crates that share the one uuid."

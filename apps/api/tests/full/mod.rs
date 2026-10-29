@@ -1011,6 +1011,7 @@ impl Rig {
             clock: Arc::new(SystemClock),
             max_age: Duration::from_secs(72 * 3600),
             per_pass: factory_composition::decisions::DECISIONS_PER_PASS,
+            keys: Arc::clone(&env.state.decision_keys),
         })
         .with_specification(spec_drafts.clone());
         Self {

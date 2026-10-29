@@ -35,6 +35,7 @@
 //! | [`preflight`] | The protection preflight recorder: a step before each claim that reads the protection of the default branch, judges it against the policy and records the result |
 //! | [`assemble`] | Start-up in order, and the list of adapters that are not assembled |
 //! | [`webhook`] | The webhook verifier of the API, built from secret files (one per secret in the rotation window) |
+//! | [`decision_signing`] | The keyed word that proves the API wrote a request for a decision, and the keys it is made and checked with (AUT-12) |
 //!
 //! Composition is the one job of this crate, so no module here contains a business rule. The
 //! engine decides, the adapters act, and this crate chooses and connects them.
@@ -44,6 +45,7 @@ pub mod authority;
 pub mod commands;
 pub mod config;
 pub mod database;
+pub mod decision_signing;
 pub mod decisions;
 pub mod delivery;
 pub mod drift;

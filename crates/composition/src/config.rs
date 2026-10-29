@@ -328,6 +328,22 @@ pub struct GithubConfig {
     pub webhook_secret_file: Option<SecretFile>,
 }
 
+/// The key that signs the requests for decisions (AUT-12, R-1 of the API review).
+///
+/// The API signs each `decision.requested` record with it and the worker's hook verifies the
+/// record with it before anything else. Both processes name the same file. The key is a secret: a
+/// reference to a file that only its owner may read, never a value.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DecisionSigning {
+    /// The file holding the current key: signs and verifies. At least 32 bytes.
+    pub key_file: SecretFile,
+    /// The file holding the previous key, during a rotation: verifies only. Remove it once every
+    /// request signed with it has been dealt with (the approval window is 72 hours).
+    #[serde(default)]
+    pub previous_key_file: Option<SecretFile>,
+}
+
 /// How the worker loop paces itself.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -460,6 +476,9 @@ pub struct FactoryConfig {
     /// GitHub, when configured.
     #[serde(default)]
     pub github: Option<GithubConfig>,
+    /// The key that signs the requests for decisions. The production profile needs it.
+    #[serde(default)]
+    pub decisions: Option<DecisionSigning>,
     /// The worker loop.
     #[serde(default)]
     pub worker: LoopConfig,
@@ -583,6 +602,12 @@ impl FactoryConfig {
                 return Err(ConfigError::OutOfRange {
                     field: "github",
                     problem: "the production profile needs the GitHub App",
+                });
+            }
+            if self.decisions.is_none() {
+                return Err(ConfigError::OutOfRange {
+                    field: "decisions.key_file",
+                    problem: "the production profile needs the key that signs decision requests",
                 });
             }
         }

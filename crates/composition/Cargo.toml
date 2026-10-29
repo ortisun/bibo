@@ -45,6 +45,11 @@ tracing = "0.1.44"
 tokio = { version = "1.54.1", default-features = false, features = ["rt", "time", "sync", "macros", "signal"] }
 # Instants for the clock and the lease arithmetic. `std` provides `OffsetDateTime::now_utc`.
 time = { version = "0.3.55", default-features = false, features = ["std"] }
+# R-1 and AUT-12: the hook applies only the decision requests the API signed. HMAC-SHA256 of the
+# request, and the constant-time comparison of the word. Same crates and versions as factory-github.
+hmac = "0.13.0"
+sha2 = { version = "0.11.1", default-features = false }
+subtle = { version = "2.6.1", default-features = false }
 # Identifiers are built from 16 random bytes with `Builder::from_random_bytes`. No generator
 # feature (`v4`, `v7`) is turned on, because the DEP-05 resolved-feature rule forbids them.
 uuid = { version = "1.29.0", default-features = false, features = ["std"] }

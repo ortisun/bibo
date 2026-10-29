@@ -88,7 +88,11 @@ every claim. A worker adds two:
    admits the `RECEIVED` jobs of the tenants the worker serves and applies the decisions that people asked
    for. The API records both and does neither.
 
-For decisions: the API writes the audit record `decision.requested`; `ClaimWork` reads it, checks the
+For decisions: the API writes the audit record `decision.requested`, ending with a keyed word
+(`mac=`) that only the API can make; `ClaimWork` recomputes the word with each key it holds
+(`decisions.key_file` and, in a rotation, `decisions.previous_key_file`) and compares in constant time before
+it reads anything else in the record, and rejects a record with no word or the wrong one with the fixed
+code `not_signed`. It then reads the record, checks the
 allowlist **again, now, by the numeric GitHub id** of the principal behind the record, and applies it once:
 pause, resume and cancel through `Engine::control`; approve, reject and rework through
 `ApprovalService::submit`. The record's id is the command id the engine uses, so a repeat is a no-op

@@ -108,6 +108,10 @@ async fn setup(db: &support::TestDb) -> Setup {
         clock: world.deps.clock.clone(),
         max_age: std::time::Duration::from_secs(72 * 3600),
         per_pass: factory_composition::decisions::DECISIONS_PER_PASS,
+        keys: Arc::new(
+            factory_composition::decision_signing::DecisionKeys::generated()
+                .expect("a signing key"),
+        ),
     }));
     Setup {
         world,

@@ -14,7 +14,11 @@
 //!    verbs here as they are in a pull request comment.
 //! 3. **Record.** The request is written to the audit log in the caller's tenant, with an id
 //!    derived from the tenant, the job and the `Idempotency-Key`, so a retry writes nothing new
-//!    and the same key with a different decision is a conflict.
+//!    and the same key with a different decision is a conflict. The subject ends with the time of
+//!    the request and a keyed word (`at=` and `mac=`, HMAC-SHA256 over the tenant, the person, the
+//!    event id, the time and the other words) that only this service can make. The worker's hook
+//!    applies a request only if the word is right (AUT-12). A retry of the same request, which has
+//!    a later time and so another word, finds the record it wrote and answers as the first did.
 //!
 //! **What this module does not do: apply the decision.** Moving the stage run needs the engine
 //! (`Engine::decide`, `Engine::control`) and, for a pull request approval, the change host and the
@@ -30,6 +34,7 @@
 
 use axum::http::{HeaderMap, StatusCode};
 use factory_composition::commands::{CommandError, ParsedDecision, parse_form};
+use factory_composition::decision_signing::{Signing, SubjectKind, read_subject};
 use factory_composition::decisions::DecisionFields;
 use factory_domain::ids::{AuditEventId, CorrelationId, JobId, StageRunId};
 use factory_domain::vocabulary::HumanRole;
@@ -233,18 +238,47 @@ pub async fn decide(
     };
     // The one grammar of the subject is shared with the worker, which reads it back to apply the
     // decision.
-    let subject = DecisionFields {
+    let fields = DecisionFields {
         verb: decision.verb,
         job: job_id,
         stage_run,
         head: decision.head.as_ref().map(|h| h.as_str().to_owned()),
         evidence: decision.evidence.as_ref().map(|e| e.as_str().to_owned()),
         target: decision.target.map(|t| t.as_str().to_owned()),
-    }
-    .subject();
+    };
     if !allowed {
-        return refuse(state, caller, tx, subject, correlation_id).await;
+        return refuse(state, caller, tx, fields.subject(), correlation_id).await;
     }
+    let reason = format!("requested: {}", kept(&decision.reason));
+    let accepted = || {
+        Reply::new(
+            StatusCode::ACCEPTED,
+            json!({
+                "decision_id": command.hyphenated().to_string(),
+                "status": "recorded",
+                "applied": false,
+            }),
+        )
+    };
+    // A retry of a request that was recorded finds its record. The record carries the time of the
+    // first request, so a retry's own subject differs in its last two words and the store would call
+    // it another record under the same id.
+    if let Some(earlier) = recorded_request(&mut *tx, job_id, audit_id).await? {
+        return if earlier.is_the_same_request(caller, &fields, stage_run, &reason) {
+            let _ = tx.rollback().await;
+            Ok(accepted())
+        } else {
+            Err(ApiError::Conflict)
+        };
+    }
+    let requested_at = state.ports.clock.now().as_text();
+    let subject = state.decision_keys.signed_subject(&Signing {
+        tenant: caller.tenant,
+        actor: caller.principal,
+        event: audit_id,
+        requested_at: &requested_at,
+        fields: &fields,
+    });
     let written = tx
         .record_audit(NewAuditEvent {
             id: audit_id,
@@ -252,7 +286,7 @@ pub async fn decide(
             action: audit_action("decision.requested")?,
             subject,
             decision: AuditDecision::Record,
-            reason: format!("requested: {}", kept(&decision.reason)),
+            reason,
             policy_hash: state.policy_hash(),
             job: job_ref,
             stage_run,
@@ -267,14 +301,60 @@ pub async fn decide(
         Err(other) => return Err(other.into()),
     }
     commit(state, caller.scope(), tx, Witness::Audit(audit_id)).await?;
-    Ok(Reply::new(
-        StatusCode::ACCEPTED,
-        json!({
-            "decision_id": command.hyphenated().to_string(),
-            "status": "recorded",
-            "applied": false,
-        }),
-    ))
+    Ok(accepted())
+}
+
+/// The most pages of a job's audit log read to find an earlier request.
+const REPLAY_PAGES: u32 = 20;
+
+/// A `decision.requested` record this service wrote earlier.
+struct Earlier(factory_ports::store::AuditRecord);
+
+impl Earlier {
+    /// True when the record is the same request: the same person, the same words, the same reason.
+    /// Only the time and the keyed word may differ.
+    fn is_the_same_request(
+        &self,
+        caller: &Caller,
+        fields: &DecisionFields,
+        stage_run: Option<StageRunId>,
+        reason: &str,
+    ) -> bool {
+        let event = &self.0.event;
+        let same_fields = matches!(
+            read_subject(&event.subject),
+            Some(SubjectKind::Signed { fields: stored, .. }) if &stored == fields
+        );
+        same_fields
+            && event.actor == AuditActor::Human(caller.principal)
+            && event.stage_run == stage_run
+            && event.reason == reason
+    }
+}
+
+/// The `decision.requested` record of this id, if the job's audit log holds it.
+async fn recorded_request(
+    tx: &mut dyn Tx,
+    job: JobId,
+    id: AuditEventId,
+) -> Result<Option<Earlier>, ApiError> {
+    let mut after = 0;
+    for _ in 0..REPLAY_PAGES {
+        let page = tx
+            .read_audit(factory_ports::store::AuditFilter::Job(job), after, 500)
+            .await?;
+        let count = page.len();
+        for record in page {
+            after = record.sequence;
+            if record.event.id == id {
+                return Ok(Some(Earlier(record)));
+            }
+        }
+        if count < 500 {
+            break;
+        }
+    }
+    Ok(None)
 }
 
 /// The refusal of someone who does not hold the designation: audited, within what the audit log

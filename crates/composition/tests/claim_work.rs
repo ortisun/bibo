@@ -13,6 +13,7 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use factory_composition::authority::StoreAuthority;
+use factory_composition::decision_signing::{DecisionKeys, Signing};
 use factory_composition::decisions::{
     APPLIED, AllowlistAuthority, ApprovalSubmitter, AuditMarkers, ClaimWork, ClaimWorkDeps,
     DECISIONS_PER_PASS, DecisionAuthority, DecisionFields, DecisionMarkers, MAX_TRIES, Marked,
@@ -112,6 +113,8 @@ struct Rig {
     clock: Arc<dyn Clock>,
     /// How many decisions a pass deals with for the tenant.
     per_pass: usize,
+    /// The keys the API signs with and the hook verifies with (AUT-12).
+    keys: Arc<DecisionKeys>,
 }
 
 /// The system clock, `ahead` of itself: how a request looks after it has waited.
@@ -167,6 +170,7 @@ impl Rig {
             stranger: world.requester,
             clock: world.deps.clock.clone(),
             per_pass: DECISIONS_PER_PASS,
+            keys: Arc::new(DecisionKeys::generated().expect("a signing key")),
             world,
         };
         rig.write_allowlist(&[
@@ -242,6 +246,7 @@ impl Rig {
             clock: self.clock.clone(),
             max_age: Duration::from_secs(72 * 3600),
             per_pass: self.per_pass,
+            keys: self.keys.clone(),
         })
     }
 
@@ -318,7 +323,7 @@ impl Rig {
             id,
             actor: AuditActor::Human(by),
             action: AuditAction::new(REQUESTED).expect("an action"),
-            subject: fields.subject(),
+            subject: self.signed(id, by, &fields),
             decision: AuditDecision::Record,
             reason: format!("requested: {reason}"),
             policy_hash: self.policies.hash.clone(),
@@ -788,6 +793,49 @@ impl Rig {
         reason: &str,
     ) -> AuditEventId {
         let id = AuditEventId::from_uuid(self.world.ids.new_uuid());
+        self.write_request(id, actor, subject, job, stage_run, reason)
+            .await;
+        id
+    }
+
+    /// The subject the API writes for `fields`, with the word that only the API can make, for this
+    /// event and this person.
+    fn signed(&self, id: AuditEventId, by: PrincipalId, fields: &DecisionFields) -> String {
+        self.keys.signed_subject(&Signing {
+            tenant: self.tenant,
+            actor: by,
+            event: id,
+            requested_at: "2026-10-28T12:00:00Z",
+            fields,
+        })
+    }
+
+    /// Writes a record with a correct word, as the API would, but with the columns the caller
+    /// chooses (they may disagree with the subject).
+    async fn raw_signed(
+        &self,
+        by: PrincipalId,
+        fields: &DecisionFields,
+        job: Option<JobId>,
+        stage_run: Option<StageRunId>,
+        reason: &str,
+    ) -> AuditEventId {
+        let id = AuditEventId::from_uuid(self.world.ids.new_uuid());
+        let subject = self.signed(id, by, fields);
+        self.write_request(id, AuditActor::Human(by), &subject, job, stage_run, reason)
+            .await;
+        id
+    }
+
+    async fn write_request(
+        &self,
+        id: AuditEventId,
+        actor: AuditActor,
+        subject: &str,
+        job: Option<JobId>,
+        stage_run: Option<StageRunId>,
+        reason: &str,
+    ) {
         let mut tx = self
             .world
             .store
@@ -811,7 +859,6 @@ impl Rig {
         .await
         .expect("the record is written");
         tx.commit().await.expect("commit");
-        id
     }
 
     /// Every audit record of the tenant that the hook writes, as `(action, subject, reason)`.
@@ -849,15 +896,15 @@ async fn r2_a_subject_that_is_not_the_canonical_text_is_rejected_and_nothing_mov
     let rig = Rig::new().await;
     let job = rig.active().await;
     let human = AuditActor::Human(rig.operator);
-    let canonical = DecisionFields {
+    let cancel = DecisionFields {
         verb: Verb::Cancel,
         job,
         stage_run: None,
         head: None,
         evidence: None,
         target: None,
-    }
-    .subject();
+    };
+    let canonical = cancel.subject();
     let id = job.as_text();
     let shapes = [
         // Same words, another order.
@@ -901,9 +948,16 @@ async fn r2_a_subject_that_is_not_the_canonical_text_is_rejected_and_nothing_mov
     // The records are no longer candidates: a worker that starts from nothing writes no more markers.
     rig.hook().pass(rig.tenant).await;
     assert_eq!(rig.markers().await.len(), shapes.len());
-    // And the same words in the canonical order, from the same actor, are a decision.
-    rig.raw_request(human, &canonical, Some(job), None, "requested: not needed")
-        .await;
+    // And the same words in the canonical order, from the same actor, with the API's word, are a
+    // decision.
+    rig.raw_signed(
+        rig.operator,
+        &cancel,
+        Some(job),
+        None,
+        "requested: not needed",
+    )
+    .await;
     rig.hook().pass(rig.tenant).await;
     assert!(matches!(
         rig.status(job).await,
@@ -924,40 +978,37 @@ async fn r2_the_columns_and_the_actor_must_agree_with_the_subject() {
         .expect("a view")
         .stage_runs[0]
         .id;
-    let subject_for = |job: JobId, stage_run: Option<StageRunId>| {
-        DecisionFields {
-            verb: Verb::Pause,
-            job,
-            stage_run,
-            head: None,
-            evidence: None,
-            target: None,
-        }
-        .subject()
+    let fields_for = |job: JobId, stage_run: Option<StageRunId>| DecisionFields {
+        verb: Verb::Pause,
+        job,
+        stage_run,
+        head: None,
+        evidence: None,
+        target: None,
     };
-    let human = AuditActor::Human(rig.operator);
-    // The subject names one job and the column another.
-    rig.raw_request(
-        human.clone(),
-        &subject_for(job, None),
+    // The subject names one job and the column another. Each record carries the API's word, so the
+    // columns are what is wrong with it.
+    rig.raw_signed(
+        rig.operator,
+        &fields_for(job, None),
         Some(other),
         None,
         "requested: x",
     )
     .await;
     // The subject names a job and the column names none.
-    rig.raw_request(
-        human.clone(),
-        &subject_for(job, None),
+    rig.raw_signed(
+        rig.operator,
+        &fields_for(job, None),
         None,
         None,
         "requested: x",
     )
     .await;
     // The subject names a stage run and the column names none.
-    rig.raw_request(
-        human.clone(),
-        &subject_for(job, Some(run)),
+    rig.raw_signed(
+        rig.operator,
+        &fields_for(job, Some(run)),
         Some(job),
         None,
         "requested: x",
@@ -966,7 +1017,7 @@ async fn r2_the_columns_and_the_actor_must_agree_with_the_subject() {
     // A service, not a person, asks.
     rig.raw_request(
         AuditActor::System(Slug::parse("api-bot").expect("a slug")),
-        &subject_for(job, None),
+        &fields_for(job, None).subject(),
         Some(job),
         None,
         "requested: x",
@@ -982,6 +1033,169 @@ async fn r2_the_columns_and_the_actor_must_agree_with_the_subject() {
             .iter()
             .all(|(action, _, reason)| action == REJECTED && reason == Reason::Malformed.text())
     );
+}
+
+fn fields_of(verb: Verb, job: JobId) -> DecisionFields {
+    DecisionFields {
+        verb,
+        job,
+        stage_run: None,
+        head: None,
+        evidence: None,
+        target: None,
+    }
+}
+
+/// AUT-12 (R-1). A row that any login of the application group could write is not a decision unless
+/// it carries the word only the API can make. Six forgeries, each with a different flaw, all
+/// rejected with the one fixed code, and nothing moves: no word; a word made with another key; a
+/// word over another job; a word over another verb; a word over another person; and a genuine
+/// subject copied onto a new event id.
+#[tokio::test(flavor = "multi_thread")]
+async fn aut_12_a_forged_row_is_rejected_with_a_fixed_code_and_nothing_moves() {
+    let rig = Rig::new().await;
+    let job = rig.active().await;
+    let other = rig.active().await;
+    let operator = || AuditActor::Human(rig.operator);
+    let new_id = || AuditEventId::from_uuid(rig.world.ids.new_uuid());
+    let cancel = fields_of(Verb::Cancel, job);
+
+    // 1. No word at all: the canonical text of the grammar, as the API wrote it before the word.
+    rig.raw_request(
+        operator(),
+        &cancel.subject(),
+        Some(job),
+        None,
+        "requested: x",
+    )
+    .await;
+    // 2. A word made with a key the API does not hold.
+    let stranger_key = DecisionKeys::generated().expect("a key");
+    let id = new_id();
+    let subject = stranger_key.signed_subject(&Signing {
+        tenant: rig.tenant,
+        actor: rig.operator,
+        event: id,
+        requested_at: "2026-10-28T12:00:00Z",
+        fields: &cancel,
+    });
+    rig.write_request(id, operator(), &subject, Some(job), None, "requested: x")
+        .await;
+    // 3. A genuine word for a cancel of another job, on a subject that names this one.
+    let id = new_id();
+    let genuine = rig.signed(id, rig.operator, &fields_of(Verb::Cancel, other));
+    let forged = genuine.replace(&other.as_text(), &job.as_text());
+    assert_ne!(forged, genuine);
+    rig.write_request(id, operator(), &forged, Some(job), None, "requested: x")
+        .await;
+    // 4. A genuine word for a pause, on a subject that says cancel.
+    let id = new_id();
+    let genuine = rig.signed(id, rig.operator, &fields_of(Verb::Pause, job));
+    let forged = genuine.replace("verb=pause", "verb=cancel");
+    assert_ne!(forged, genuine);
+    rig.write_request(id, operator(), &forged, Some(job), None, "requested: x")
+        .await;
+    // 5. A genuine word made for the operator, on a row that names the approver as its actor.
+    let id = new_id();
+    let genuine = rig.signed(id, rig.operator, &cancel);
+    rig.write_request(
+        id,
+        AuditActor::Human(rig.approver),
+        &genuine,
+        Some(job),
+        None,
+        "requested: x",
+    )
+    .await;
+    // 6. A replay: a subject that was genuine for one event id, written under another.
+    let genuine = rig.signed(new_id(), rig.operator, &cancel);
+    rig.write_request(
+        new_id(),
+        operator(),
+        &genuine,
+        Some(job),
+        None,
+        "requested: x",
+    )
+    .await;
+
+    rig.hook().pass(rig.tenant).await;
+    assert_eq!(rig.status(job).await, JobStatus::Active, "nothing moved");
+    assert_eq!(rig.status(other).await, JobStatus::Active);
+    let markers = rig.markers().await;
+    assert_eq!(markers.len(), 6, "one marker for each: {markers:#?}");
+    for (action, subject, reason) in &markers {
+        assert_eq!(action, REJECTED);
+        assert_eq!(reason, Reason::NotSigned.text());
+        assert!(subject.contains("code=not_signed"), "{subject}");
+        // The marker holds nothing from the record: not its verb, not the job, not the person.
+        assert!(subject.contains("actor=none"), "{subject}");
+        assert!(!subject.contains(&job.as_text()), "{subject}");
+    }
+    // They are no longer candidates, and a genuine request on top of them is applied.
+    rig.hook().pass(rig.tenant).await;
+    assert_eq!(rig.markers().await.len(), 6);
+    rig.request(rig.operator, job, Verb::Cancel, None, None, "a real one")
+        .await;
+    rig.hook().pass(rig.tenant).await;
+    assert!(matches!(
+        rig.status(job).await,
+        JobStatus::Cancelling | JobStatus::Cancelled
+    ));
+}
+
+/// AUT-12. A row that is replayed with its own event id is the same row and applies once, as before.
+#[tokio::test(flavor = "multi_thread")]
+async fn aut_12_a_genuine_request_still_applies_exactly_once() {
+    let rig = Rig::new().await;
+    let job = rig.active().await;
+    let id = rig
+        .request(rig.operator, job, Verb::Pause, None, None, "a short stop")
+        .await;
+    rig.hook().pass(rig.tenant).await;
+    rig.hook().pass(rig.tenant).await;
+    assert_eq!(rig.status(job).await, JobStatus::Paused);
+    assert_eq!(rig.effects_of(job, id).await, 1);
+    assert_eq!(rig.trail(job).await, [REQUESTED, APPLIED]);
+}
+
+/// AUT-12. During a rotation the hook accepts a word made with the previous key and with the
+/// current one, and one made with a key older than both is rejected with the fixed code.
+#[tokio::test(flavor = "multi_thread")]
+async fn aut_12_a_rotation_accepts_the_previous_key_and_nothing_older() {
+    let mut rig = Rig::new().await;
+    let (a, b, c) = (rig.active().await, rig.active().await, rig.active().await);
+    rig.keys = Arc::new(DecisionKeys::from_bytes(&[1; 48], None).expect("a key"));
+    rig.request(rig.operator, a, Verb::Pause, None, None, "signed before")
+        .await;
+    // The rotation: the API now signs with the second key; the hook holds both.
+    rig.keys = Arc::new(DecisionKeys::from_bytes(&[2; 48], Some(&[1; 48])).expect("keys"));
+    rig.request(rig.operator, b, Verb::Pause, None, None, "signed after")
+        .await;
+    // A third key, which neither side holds.
+    let hook_keys = rig.keys.clone();
+    rig.keys = Arc::new(DecisionKeys::from_bytes(&[3; 48], None).expect("a key"));
+    rig.request(
+        rig.operator,
+        c,
+        Verb::Pause,
+        None,
+        None,
+        "signed with an old key",
+    )
+    .await;
+    rig.keys = hook_keys;
+    rig.hook().pass(rig.tenant).await;
+    assert_eq!(rig.status(a).await, JobStatus::Paused);
+    assert_eq!(rig.status(b).await, JobStatus::Paused);
+    assert_eq!(rig.status(c).await, JobStatus::Active);
+    let markers = rig.markers().await;
+    let rejected: Vec<_> = markers
+        .iter()
+        .filter(|(action, _, _)| action == REJECTED)
+        .collect();
+    assert_eq!(rejected.len(), 1, "{markers:#?}");
+    assert!(rejected[0].1.contains("code=not_signed"), "{rejected:?}");
 }
 
 /// R-3. A request that names a job of another tenant finds nothing in its own: it is rejected with a
@@ -1010,25 +1224,18 @@ async fn r3_a_request_for_a_job_of_another_tenant_is_rejected_and_that_job_does_
         .await;
     let foreign = JobId::from_uuid(job);
     let ours = rig.active().await;
-    let subject = DecisionFields {
+    let fields = DecisionFields {
         verb: Verb::Cancel,
         job: foreign,
         stage_run: None,
         head: None,
         evidence: None,
         target: None,
-    }
-    .subject();
+    };
     // The record lives in our tenant; it can name the job only in its text, because the column is a
-    // foreign key into our own jobs.
-    rig.raw_request(
-        AuditActor::Human(rig.operator),
-        &subject,
-        None,
-        None,
-        "requested: x",
-    )
-    .await;
+    // foreign key into our own jobs. It carries the API's word, so it is the job that is wrong.
+    rig.raw_signed(rig.operator, &fields, None, None, "requested: x")
+        .await;
     rig.hook().pass(rig.tenant).await;
     let markers = rig.markers().await;
     assert_eq!(markers.len(), 1, "{markers:#?}");

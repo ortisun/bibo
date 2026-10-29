@@ -15,7 +15,8 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use factory_composition::config::{
-    ArtifactsConfig, ConfigError, PoolConfig, SecretFile, TelemetryConfig, read_document,
+    ArtifactsConfig, ConfigError, DecisionSigning, PoolConfig, SecretFile, TelemetryConfig,
+    read_document,
 };
 use factory_composition::profile::Profile;
 use serde::Deserialize;
@@ -208,6 +209,10 @@ pub struct ApiConfig {
     /// GitHub-facing settings.
     #[serde(default)]
     pub github: GithubSettings,
+    /// The key that signs the requests for decisions, the same file the worker verifies with. The
+    /// production profile needs it; the other profiles create it when the file is missing.
+    #[serde(default)]
+    pub decisions: Option<DecisionSigning>,
     /// Tokens.
     #[serde(default)]
     pub tokens: TokenSettings,
@@ -283,6 +288,12 @@ impl ApiConfig {
             return out_of_range(
                 "github.webhook_secret_files",
                 "the production profile needs at least one webhook secret",
+            );
+        }
+        if self.profile == Profile::Production && self.decisions.is_none() {
+            return out_of_range(
+                "decisions.key_file",
+                "the production profile needs the key that signs decision requests",
             );
         }
         let label = &self.github.factory_label;
@@ -412,7 +423,29 @@ mod tests {
             "{}github: {{ webhook_secret_files: [/run/secrets/webhook] }}\n",
             minimal("production")
         );
-        assert!(ApiConfig::from_yaml(&with_secret).is_ok());
+        // The key that signs decision requests is needed too (AUT-12).
+        assert!(matches!(
+            ApiConfig::from_yaml(&with_secret).unwrap_err(),
+            ConfigError::OutOfRange {
+                field: "decisions.key_file",
+                ..
+            }
+        ));
+        let with_both =
+            format!("{with_secret}decisions: {{ key_file: /run/secrets/decision_key }}\n");
+        assert!(ApiConfig::from_yaml(&with_both).is_ok());
+        // The other profiles may leave it out: the process makes a key, or the file.
+        assert!(ApiConfig::from_yaml(&minimal("local")).is_ok());
+        let rotating = format!(
+            "{}decisions: {{ key_file: /run/secrets/new, previous_key_file: /run/secrets/old }}\n",
+            minimal("local")
+        );
+        let config = ApiConfig::from_yaml(&rotating).expect("a rotation window");
+        assert!(
+            config
+                .decisions
+                .is_some_and(|d| d.previous_key_file.is_some())
+        );
     }
 
     #[test]

@@ -62,6 +62,23 @@ whose subject carries the verb, the job, the stage run, the head, the evidence d
 is `factory_composition::decisions::DecisionFields`, shared with the worker). A caller who does not hold the
 designation gets `403` with no reason and a `decision.denied` audit record, whether or not the job exists.
 
+**The record carries the API's word (AUT-12, R-1 of the API review).** A row in the audit log proves nothing
+about who wrote it: any login of the API's database group can write one. So the subject ends with
+`at=<the time of the request> mac=<64 hex digits>`, and the word is HMAC-SHA256 over the tenant, the person,
+the event id, that time and the six other words (`factory_composition::decision_signing`). The key is a file
+named by `decisions.key_file`, readable by its owner only, and the worker's hook verifies with the same file,
+in constant time, before it reads anything else in the row. A row with no word, or the wrong one, is rejected
+with the fixed code `not_signed`. A retry of a request that was recorded (same `Idempotency-Key`) has a later
+time and so another word; the API finds the record it wrote, checks that it is the same request, and answers as
+the first did. A refusal (`decision.denied`) is not a request and carries no word.
+
+**Rotation.** Put the new key in `decisions.key_file` and the old one in `decisions.previous_key_file`, on the
+API and the worker. The API signs with the current key; the worker accepts a word made with either. Remove
+the previous key once the requests signed with it have been dealt with (the approval window is 72 hours).
+The `production` profile does not start without `decisions.key_file`. The `local` and `test` profiles make
+the file (mode `0600`) when it is missing, so the API and the worker that name the same path share it; with no
+`decisions` section a process keeps a key in memory, which no other process shares.
+
 `"applied": false` is true of the moment of the answer and says nothing about what comes after. The worker
 (`factory_composition::decisions::ClaimWork`, a step before each claim) reads the record, checks the allowlist again by
 numeric id, applies the decision once and writes `decision.applied` or `decision.rejected` for the same job. Both
@@ -115,6 +132,9 @@ listen: 127.0.0.1:8080
 github:
   webhook_secret_files: [/run/secrets/webhook_secret]   # one file per secret in the rotation window; required in production
   factory_label: factory
+decisions:
+  key_file: /run/secrets/decision_signing_key           # required in production; at least 32 bytes, mode 0600
+  # previous_key_file: /run/secrets/decision_signing_key_previous   # during a rotation only
 tokens: { audience: factory-api }
 limits:                                 # all optional
   max_body_bytes: 262144

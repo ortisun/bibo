@@ -9,6 +9,7 @@
 use std::sync::Arc;
 
 use factory_composition::config::SecretFile;
+use factory_composition::decision_signing::DecisionKeys;
 use factory_composition::health::{
     CheckResult, EXPECTED_SCHEMA_VERSION, HealthReport, check_schema,
 };
@@ -83,6 +84,9 @@ pub struct ApiState {
     pub policies: factory_composition::startup::LoadedPolicies,
     /// The one redactor of the process.
     pub redactor: Arc<Redactor>,
+    /// The keys that sign the requests for decisions (AUT-12). The worker's hook verifies with the
+    /// same file.
+    pub decision_keys: Arc<DecisionKeys>,
     /// The audience of the tokens this API serves.
     pub audience: factory_ports::store::Audience,
     /// GitHub-facing settings.
