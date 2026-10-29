@@ -137,7 +137,7 @@ impl StageHandler for ImplementationHandler {
         Some(RoutingNeed {
             stage: ctx.identity.kind,
             tier: RecommendedTier::Standard,
-            required: vec![Capability::JsonSchemaOutput, Capability::HeadlessMultiTurn],
+            required: vec![Capability::HeadlessMultiTurn],
             risk: RiskTier::Medium,
             exclude: Vec::new(),
             probed: self.probes.probed(),

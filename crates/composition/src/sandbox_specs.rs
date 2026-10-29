@@ -95,6 +95,25 @@ fn profile_env(profile: SandboxProfile) -> Vec<(String, String)> {
 /// The alias of the egress sidecar on the per-job network. The broker URL the agent uses names it.
 pub const SIDECAR_ALIAS: &str = "egress";
 
+/// The port the egress sidecar listens on inside the job network: the one in the arguments of
+/// `sandbox.sidecar_command` (`--listen 0.0.0.0:8443`) that a deployment that runs agents sets.
+pub const SIDECAR_PORT: u16 = 8443;
+
+/// Where an agent in the sandbox reaches the model broker: the sidecar of its job network, by its
+/// alias, over plain HTTP. The sidecar relays the bytes to the broker (`--mode broker`) and
+/// terminates no TLS, and the sandbox resolves no other name, so this is the only address the tool
+/// can be given. (The placeholder host of `policies/security.yaml`, `model-broker.sandbox.internal`,
+/// does not resolve inside a job network.)
+#[must_use]
+pub fn broker_endpoint() -> factory_ports::agent::BrokerEndpoint {
+    factory_ports::agent::BrokerEndpoint {
+        base_url: factory_domain::values::Uri::parse(&format!(
+            "http://{SIDECAR_ALIAS}:{SIDECAR_PORT}"
+        ))
+        .expect("the alias and the port make a URI"),
+    }
+}
+
 fn limits_of(limits: &ProfileLimits) -> Option<SandboxLimits> {
     let non_zero = |value: u64| u32::try_from(value).ok().and_then(NonZeroU32::new);
     // Rounded to a whole millicore; a fraction of one is not a limit anyone sets.
@@ -320,6 +339,29 @@ impl PolicySpecs {
             git_masked: true,
         }
     }
+
+    /// Makes the directories of a scratch workspace.
+    ///
+    /// The daemon binds a path that exists and refuses one that does not ("bind source path does
+    /// not exist"), so a spec that only named them could not be started. A stage with a checkout
+    /// gets its directories from the workspace provider; this is the same for a stage with none.
+    /// The attempt's own directory is private to the worker, and the two directories the sandbox
+    /// user writes are open to it, as the workspace provider makes its own shared directories. The
+    /// pointer file is what the mask over `.git` is bound onto.
+    fn make_scratch(&self, attempt: AttemptId, mounts: &WorkspaceMounts) {
+        use std::os::unix::fs::PermissionsExt as _;
+        let root = self.scratch_root.join(attempt.to_string());
+        // A failure leaves the path missing, and the sandbox provider then refuses the spec at
+        // creation with the daemon's reason; nothing is guessed.
+        let _ = std::fs::create_dir_all(&root)
+            .and_then(|()| std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o700)));
+        for open in [&mounts.workspace, &mounts.out] {
+            let _ = std::fs::create_dir_all(open).and_then(|()| {
+                std::fs::set_permissions(open, std::fs::Permissions::from_mode(0o777))
+            });
+        }
+        let _ = std::fs::write(mounts.workspace.join(".git"), b"");
+    }
 }
 
 impl AgentSandboxSpecs for PolicySpecs {
@@ -329,13 +371,16 @@ impl AgentSandboxSpecs for PolicySpecs {
         attempt: AttemptId,
         token: JobTokenRef,
     ) -> Result<SandboxSpec, SeamError> {
-        self.build(
+        let mounts = self.scratch(attempt);
+        let spec = self.build(
             SandboxProfile::Agent,
             job,
             attempt,
-            self.scratch(attempt),
+            mounts.clone(),
             Some(token),
-        )
+        )?;
+        self.make_scratch(attempt, &mounts);
+        Ok(spec)
     }
 }
 
@@ -379,6 +424,22 @@ mod tests {
             std::fs::read_to_string(repository_root().join("infra/sandbox-images/images.json"))
                 .expect("the catalog exists");
         ImageCatalog::from_json(&json, "linux/arm64").expect("a catalog")
+    }
+
+    #[test]
+    fn the_address_an_agent_is_given_names_the_sidecar_of_its_job_network() {
+        // The job network resolves the alias of its sidecar and nothing else, and the sidecar
+        // relays plain bytes. An address with another host or an https scheme cannot be reached.
+        let endpoint = broker_endpoint();
+        let url = endpoint.base_url.as_str();
+        assert_eq!(url, "http://egress:8443");
+        assert!(url.contains(SIDECAR_ALIAS));
+        assert!(
+            !url.contains("sandbox.internal"),
+            "the placeholder host of the policy does not resolve in a sandbox"
+        );
+        // The tool accepts it as a broker address.
+        assert!(factory_runtime::command::broker_origin(url).is_ok());
     }
 
     #[test]
@@ -431,6 +492,90 @@ mod tests {
             Arc::new(factory_testkit::clock::FakeClock::new()),
             Arc::new(factory_testkit::clock::SequentialIdGenerator::new()),
         ))
+    }
+
+    #[tokio::test]
+    async fn an_agent_sandbox_with_no_repository_gets_directories_that_exist() {
+        use factory_ports::agent::{CostMicroUsd, JobTokenRequest, ModelBroker as _};
+        use std::os::unix::fs::PermissionsExt as _;
+        let dir = repository_root()
+            .join("target/sandbox-specs-scratch")
+            .join(std::process::id().to_string());
+        let _ = std::fs::remove_dir_all(&dir);
+        let policy = Arc::new(repository_security_policy());
+        let redactor = Arc::new(crate::redaction::redactor_from_policy(&policy).expect("builds"));
+        let registering = Arc::new(RegisteringBroker::new(unreachable_broker(), redactor));
+        let specs = PolicySpecs::new(policy, catalog(), Arc::clone(&registering), dir.clone());
+        let ids = factory_testkit::fixtures::Ids::new();
+        let token = registering
+            .issue(JobTokenRequest {
+                tenant: ids.tenant(),
+                job: ids.job(),
+                stage: factory_domain::vocabulary::StageKind::Intake,
+                cost_ceiling: CostMicroUsd(1_000),
+                allowed_models: vec![factory_ports::agent::ModelSelection {
+                    runtime: factory_ports::agent::RuntimeId::new("fake").expect("a runtime"),
+                    model: factory_domain::values::NonEmptyString::parse("fake-model")
+                        .expect("a model"),
+                }],
+                ttl: Duration::from_secs(60),
+                per_request: None,
+            })
+            .await
+            .expect("a token");
+        let attempt = ids.attempt();
+        let spec = specs
+            .agent_spec(ids.job(), attempt, JobTokenRef { id: token.id })
+            .expect("an agent spec");
+        let work = dir.join(attempt.to_string()).join("work");
+        let out = dir.join(attempt.to_string()).join("out");
+        for path in [&work, &out] {
+            assert!(path.is_dir(), "{} does not exist", path.display());
+            let mode = std::fs::metadata(path)
+                .expect("metadata")
+                .permissions()
+                .mode();
+            assert_eq!(
+                mode & 0o777,
+                0o777,
+                "the sandbox user writes {}",
+                path.display()
+            );
+        }
+        assert!(work.join(".git").exists(), "the mask has a file to cover");
+        assert_eq!(
+            std::fs::metadata(dir.join(attempt.to_string()))
+                .expect("metadata")
+                .permissions()
+                .mode()
+                & 0o777,
+            0o700,
+            "the attempt's own directory stays private to the worker"
+        );
+        assert_eq!(spec.mounts.workspace.workspace, work);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_refused_agent_spec_makes_no_directories() {
+        let dir = repository_root()
+            .join("target/sandbox-specs-refused")
+            .join(std::process::id().to_string());
+        let _ = std::fs::remove_dir_all(&dir);
+        let policy = Arc::new(repository_security_policy());
+        let redactor = Arc::new(crate::redaction::redactor_from_policy(&policy).expect("builds"));
+        let specs = PolicySpecs::new(
+            policy,
+            catalog(),
+            Arc::new(RegisteringBroker::new(unreachable_broker(), redactor)),
+            dir.clone(),
+        );
+        let ids = factory_testkit::fixtures::Ids::new();
+        let unknown = JobTokenRef {
+            id: factory_ports::agent::JobTokenId::from_uuid(ids.job().as_uuid()),
+        };
+        assert!(specs.agent_spec(ids.job(), ids.attempt(), unknown).is_err());
+        assert!(!dir.exists(), "a refused spec litters nothing");
     }
 
     #[test]

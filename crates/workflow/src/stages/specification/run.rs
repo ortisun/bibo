@@ -421,7 +421,7 @@ async fn run_skill_in(
     let need = RoutingNeed {
         stage: StageKind::Specification,
         tier: RecommendedTier::Standard,
-        required: vec![Capability::SkillInvocation, Capability::JsonSchemaOutput],
+        required: vec![Capability::SkillInvocation],
         risk: RiskTier::Medium,
         exclude: Vec::new(),
         probed: h.probes.probed(),
@@ -848,7 +848,7 @@ async fn review_in(
     let need = RoutingNeed {
         stage: StageKind::Specification,
         tier: RecommendedTier::Standard,
-        required: vec![Capability::JsonSchemaOutput],
+        required: Vec::new(),
         risk: RiskTier::Medium,
         exclude: Vec::new(),
         probed: h.probes.probed(),

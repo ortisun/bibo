@@ -328,7 +328,7 @@ async fn run_in(
     let need = RoutingNeed {
         stage: call.stage,
         tier: RecommendedTier::Standard,
-        required: vec![Capability::JsonSchemaOutput],
+        required: Vec::new(),
         risk: call.risk,
         exclude: Vec::new(),
         probed: tools.probes.probed(),

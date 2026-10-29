@@ -30,7 +30,9 @@ use factory_domain::policy::SecurityPolicy;
 use factory_domain::values::{Sha256Digest, Slug};
 use factory_ports::registry::{AgentRegistry, VersionReq};
 use factory_runtime::{PinnedSkill, SkillBundle, SkillFile};
-use factory_spec_adapter::invocation::{Host, IntegrationConfig};
+use factory_spec_adapter::invocation::{
+    Host, IntegrationConfig, Recognised, recognise, skill_name,
+};
 use factory_spec_adapter::pinned::CLAUDE_SKILLS;
 
 /// The profile of the policy that governs the specification stage.
@@ -140,14 +142,27 @@ pub fn bundle_from_ids(
 
     let mut skills = Vec::with_capacity(ids.len());
     for id in ids {
-        // The ids were checked against the policy above, so the name is one of the four.
-        let name = id.strip_prefix("speckit.").unwrap_or(id);
-        let directory = format!("speckit{}{name}", integration.separator.as_char());
-        let relative = format!("{}/{directory}/SKILL.md", Host::ClaudeCode.skill_root());
+        // The ids were checked against the policy above. The adapter's own reading of a prompt
+        // says which of its four operations the dotted id stands for, and the pinned table gives
+        // the directory of that operation under the separator the installation uses, so this
+        // crate holds no part of the layout.
+        let operation = match recognise(&format!("/{}", id.replace('.', "-"))) {
+            Some(Recognised::Allowed(operation)) => operation,
+            _ => return Err(SpecSkillsError::NotAllowed((*id).to_owned())),
+        };
+        let name = skill_name(operation);
+        let suffix = format!("{}{name}/SKILL.md", integration.separator.as_char());
+        let root = format!("{}/", Host::ClaudeCode.skill_root());
         let pinned = CLAUDE_SKILLS
             .iter()
-            .find(|file| file.path == relative)
-            .ok_or_else(|| SpecSkillsError::NotPinned(directory.clone()))?;
+            .find(|file| file.path.starts_with(&root) && file.path.ends_with(&suffix))
+            .ok_or_else(|| SpecSkillsError::NotPinned((*id).to_owned()))?;
+        let relative = pinned.path.to_owned();
+        let directory = relative
+            .strip_prefix(&root)
+            .and_then(|rest| rest.strip_suffix("/SKILL.md"))
+            .unwrap_or_default()
+            .to_owned();
         let bytes = std::fs::read(protected_checkout.join(&relative))
             .map_err(|_| SpecSkillsError::Unreadable(relative.clone()))?;
         let sha256 = Sha256Digest::parse(&format!("sha256:{}", pinned.sha256))

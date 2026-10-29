@@ -339,7 +339,7 @@ async fn review_in(
     let need = RoutingNeed {
         stage: StageKind::Review,
         tier: RecommendedTier::Standard,
-        required: vec![Capability::JsonSchemaOutput],
+        required: Vec::new(),
         risk: RiskTier::Low,
         exclude: Vec::new(),
         probed: handler.probes.probed(),

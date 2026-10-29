@@ -232,7 +232,7 @@ impl StageHandler for IntakeHandler {
         Some(RoutingNeed {
             stage: ctx.identity.kind,
             tier: factory_domain::contracts::agent_manifest::RecommendedTier::Standard,
-            required: vec![Capability::JsonSchemaOutput],
+            required: Vec::new(),
             risk: factory_domain::vocabulary::RiskTier::Low,
             exclude: Vec::new(),
             probed: self.probes.probed(),
@@ -457,7 +457,7 @@ impl StageHandler for IntakeHandler {
         let need = RoutingNeed {
             stage: StageKind::Intake,
             tier: factory_domain::contracts::agent_manifest::RecommendedTier::Standard,
-            required: vec![Capability::JsonSchemaOutput],
+            required: Vec::new(),
             risk: factory_domain::vocabulary::RiskTier::Low,
             exclude: Vec::new(),
             probed: self.probes.probed(),

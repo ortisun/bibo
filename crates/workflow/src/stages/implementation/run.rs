@@ -601,8 +601,7 @@ pub(crate) async fn open_sandbox(
 }
 
 /// What the builder needs from the runtime.
-const BUILDER_NEEDS: [Capability; 2] =
-    [Capability::JsonSchemaOutput, Capability::HeadlessMultiTurn];
+const BUILDER_NEEDS: [Capability; 1] = [Capability::HeadlessMultiTurn];
 
 async fn open_builder_sandbox(
     handler: &ImplementationHandler,

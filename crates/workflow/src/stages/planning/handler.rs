@@ -13,7 +13,7 @@ use factory_domain::policy::PolicyEngine;
 use factory_domain::redaction::Redactor;
 use factory_domain::values::{GitSha, Slug};
 use factory_domain::vocabulary::{Fidelity, RiskTier, StageKind};
-use factory_ports::agent::{Capability, RoutingNeed};
+use factory_ports::agent::RoutingNeed;
 
 use crate::gates::dag::{GATE_ID as VALIDATOR_GATE, Limits};
 use crate::gates::framework::GateDecision;
@@ -265,7 +265,7 @@ impl StageHandler for PlanningHandler {
         Some(RoutingNeed {
             stage: ctx.identity.kind,
             tier: factory_domain::contracts::agent_manifest::RecommendedTier::Standard,
-            required: vec![Capability::JsonSchemaOutput],
+            required: Vec::new(),
             risk: RiskTier::Medium,
             exclude: Vec::new(),
             probed: self.probes.probed(),
