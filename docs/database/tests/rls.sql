@@ -240,13 +240,15 @@ BEGIN
   END IF;
   IF p.polcmd <> '*' THEN problems := problems || 'the policy does not cover all commands; '; END IF;
   IF NOT p.polpermissive THEN problems := problems || 'the policy is not permissive; '; END IF;
-  -- factory_app, and also factory_api_app for the eight tables the HTTP API reads or writes (migration 2026-10-28-002000).
+  -- factory_app, and also factory_api_app for the eleven tables the HTTP API reads or writes (migrations
+  -- 2026-10-28-002000 and 2026-10-29-002300).
   IF (SELECT array_agg(r ORDER BY r) FROM unnest(p.polroles) r) IS DISTINCT FROM
      (SELECT array_agg(r ORDER BY r) FROM unnest(CASE
-        WHEN p_tbl IN ('repositories', 'principals', 'jobs', 'original_requests', 'stage_runs', 'audit_events', 'outbox', 'webhook_deliveries')
+        WHEN p_tbl IN ('repositories', 'principals', 'jobs', 'original_requests', 'stage_runs', 'audit_events', 'outbox', 'webhook_deliveries',
+                     'artifacts', 'stage_run_artifacts', 'ledger_entries')
         THEN ARRAY['factory_app'::regrole::oid, 'factory_api_app'::regrole::oid]
         ELSE ARRAY['factory_app'::regrole::oid] END) r) THEN
-    problems := problems || 'the policy does not name exactly the roles it should (factory_app, and factory_api_app on the eight tables of the API); ';
+    problems := problems || 'the policy does not name exactly the roles it should (factory_app, and factory_api_app on the eleven tables of the API); ';
   END IF;
   qual := pg_get_expr(p.polqual, p.polrelid);
   check_text := pg_get_expr(p.polwithcheck, p.polrelid);
@@ -753,11 +755,12 @@ $$;
 -- missing one: the list is the review surface of the design.
 
 CREATE TEMP TABLE expected_policies (tbl text, policy text, cmd text, role text);
--- The roles of a policy are listed by name, joined with '+'. The eight tables the HTTP API reads or writes
+-- The roles of a policy are listed by name, joined with '+'. The eleven tables the HTTP API reads or writes
 -- name factory_api_app too (migration 2026-10-28-002000, finding API-3).
 INSERT INTO expected_policies
 SELECT t, 'tenant_isolation', '*',
-       CASE WHEN t IN ('repositories', 'principals', 'jobs', 'original_requests', 'stage_runs', 'audit_events', 'outbox', 'webhook_deliveries')
+       CASE WHEN t IN ('repositories', 'principals', 'jobs', 'original_requests', 'stage_runs', 'audit_events', 'outbox', 'webhook_deliveries',
+                     'artifacts', 'stage_run_artifacts', 'ledger_entries')
             THEN 'factory_api_app+factory_app' ELSE 'factory_app' END
   FROM dbtest.tenant_tables() AS t;
 INSERT INTO expected_policies VALUES
