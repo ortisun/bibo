@@ -65,7 +65,7 @@ The API records what people ask for and never runs work. The worker holds the en
 
 ## Checking the documents
 
-`scripts/docs-check.sh` checks these documents the way the factory checks the documents of others: links, runnable examples, command names, configuration keys, walkthrough citations and readability. The [documentation policy](docs/reference/documentation-policy.md) holds the rules.
+`scripts/docs-check.sh` checks these documents the way the factory checks the documents of others: links, runnable examples, command names, configuration keys, walkthrough citations and readability. The [documentation policy](docs/reference/documentation-policy.md) holds the rules, and [documentation checks](docs/reference/documentation-checks.md) says what each check reads.
 
 ## Working in this repository
 

@@ -256,7 +256,7 @@ def build_cli(root: Path) -> str | None:
     else:
         ran = run(["cargo", "build", "--locked", "--quiet", "-p", "factory-cli"], root, timeout=1500)
         if ran is None or ran.code != 0:
-            tail = "" if ran is None else ran.output.strip().splitlines()[-1:] or [""]
+            tail = "" if ran is None else (ran.output.strip().splitlines() or [""])[-1]
             reason = f"factory-cli did not build: {tail}"
         elif not (target_dir(root) / "debug" / "factory-cli").is_file():
             reason = "factory-cli built but is not in the target directory"
@@ -716,8 +716,11 @@ def literal_default(expression: str) -> str | None:
     text = re.sub(r"(?<=\d)_(?=\d)", "", text)
     if re.fullmatch(r"[\d\s*.]+(?:u\d+|usize|f64)?", text):
         number = re.sub(r"(u\d+|usize|f64)$", "", text).strip()
-        value = eval(number, {"__builtins__": {}}, {})  # digits and * only, checked above
-        return str(value)
+        product: float = 1
+        for part in number.split("*"):
+            word = part.strip()
+            product *= float(word) if "." in word else int(word)
+        return str(product)
     quoted = re.fullmatch(r'"([^"]*)"\.to_owned\(\)', text)
     return quoted.group(1) if quoted else None
 
