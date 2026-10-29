@@ -632,7 +632,9 @@
       "pause",
       "resume",
       "rework",
-      "cancel"
+      "cancel",
+      "approve-dependency",
+      "approve-build-code"
     ]
   },
   "intake": {

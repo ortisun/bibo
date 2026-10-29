@@ -328,7 +328,7 @@ approval_binding:
 # -----------------------------------------------------------------------------
 # One command set, three channels. The authorization rules are identical.
 commands:
-  verbs: [approve, reject, pause, resume, rework, cancel]
+  verbs: [approve, reject, pause, resume, rework, cancel, approve-dependency, approve-build-code]
   channels: [dashboard, cli, github_comment]
   github_comment:
     prefix: "/factory"
