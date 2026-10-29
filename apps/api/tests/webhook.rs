@@ -86,7 +86,7 @@ async fn negative_nt_wh_01() {
     assert!(
         eventually(Duration::from_secs(10), || async {
             env.db
-                .number("SELECT count(*) FROM audit_events WHERE action = 'webhook.rejected'")
+                .number("SELECT count(*) FROM audit_events WHERE action = 'webhook_accepted_or_rejected.denied'")
                 .await
                 >= 3
         })
@@ -289,7 +289,7 @@ async fn negative_nt_wh_04() {
     );
     assert_eq!(
         env.db
-            .number("SELECT count(*) FROM audit_events WHERE action = 'webhook.accepted'")
+            .number("SELECT count(*) FROM audit_events WHERE action = 'webhook_accepted_or_rejected.granted'")
             .await,
         2
     );
@@ -904,7 +904,7 @@ async fn a_flood_is_limited_and_does_not_become_a_flood_of_audit_rows() {
     assert!(
         eventually(Duration::from_secs(15), || async {
             env.db
-                .number("SELECT count(*) FROM audit_events WHERE action = 'webhook.rejected'")
+                .number("SELECT count(*) FROM audit_events WHERE action = 'webhook_accepted_or_rejected.denied'")
                 .await
                 > 0
         })
@@ -913,7 +913,7 @@ async fn a_flood_is_limited_and_does_not_become_a_flood_of_audit_rows() {
     tokio::time::sleep(Duration::from_millis(500)).await;
     let audited = env
         .db
-        .number("SELECT count(*) FROM audit_events WHERE action = 'webhook.rejected'")
+        .number("SELECT count(*) FROM audit_events WHERE action = 'webhook_accepted_or_rejected.denied'")
         .await;
     assert!(
         audited <= 60,

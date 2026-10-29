@@ -14,6 +14,8 @@ pub enum Production {
     Engine,
     /// A stage handler notes it through `StageContext::note_audit`.
     Handler,
+    /// The API writes it under the required name. The composed run in `apps/api/tests` checks it.
+    Api,
     /// A component writes the facts under other names than the required type.
     DifferentlyNamed,
     /// The component keeps its own stream, which is not the audit log of the store.
@@ -42,6 +44,7 @@ pub fn rows() -> Vec<Row> {
             production: match row["production"].as_str().expect("a production") {
                 "engine" => Production::Engine,
                 "handler" => Production::Handler,
+                "api" => Production::Api,
                 "differently_named" => Production::DifferentlyNamed,
                 "other_stream" => Production::OtherStream,
                 "none" => Production::Nothing,

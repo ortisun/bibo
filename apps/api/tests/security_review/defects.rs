@@ -535,7 +535,7 @@ async fn api_7_forged_deliveries_do_not_use_up_the_audit_of_a_real_one() {
     }
     let filled = eventually(Duration::from_secs(15), || async {
         env.db
-            .number("SELECT count(*) FROM audit_events WHERE action = 'webhook.rejected'")
+            .number("SELECT count(*) FROM audit_events WHERE action = 'webhook_accepted_or_rejected.denied'")
             .await
             >= 60
     })

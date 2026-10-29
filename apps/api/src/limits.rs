@@ -136,7 +136,7 @@ impl RateLimiter {
 /// One event for the platform audit trail.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PlatformEvent {
-    /// The action, such as `webhook.rejected`.
+    /// The action, such as `webhook_accepted_or_rejected.denied`.
     pub action: &'static str,
     /// What it concerned: a delivery id that passed the shape check, or `none`.
     pub subject: String,
@@ -170,7 +170,7 @@ pub const AUDIT_DROPPED: &str = "webhook.audit_dropped";
 /// How many platform audit events of each kind are written in a window, and how many are left out.
 ///
 /// Each kind has its own budget (API-7). With one budget for every kind, an unauthenticated flood of
-/// forged deliveries (`webhook.rejected`) used the whole minute and a genuine delivery for an
+/// forged deliveries (`webhook_accepted_or_rejected.denied`) used the whole minute and a genuine delivery for an
 /// unregistered installation (`webhook.unbound`), which NT-AUTHZ-08 says is audited, was dropped
 /// without a trace. Left-out events are counted, and when the window ends one row per kind says
 /// how many, so a flood is visible in the audit log and not only in a log line.
@@ -462,7 +462,9 @@ mod tests {
         let start = Instant::now();
         let mut budget = AuditBudget::new(2, WINDOW, start);
         // A flood of one kind uses its own budget and nobody else's.
-        let admitted = (0..70).filter(|_| budget.admit("webhook.rejected")).count();
+        let admitted = (0..70)
+            .filter(|_| budget.admit("webhook_accepted_or_rejected.denied"))
+            .count();
         assert_eq!(admitted, 2);
         assert!(
             budget.admit("webhook.unbound"),
@@ -475,19 +477,20 @@ mod tests {
         // When it ends, one entry per kind that left events out, with the count.
         assert_eq!(
             budget.roll(start + WINDOW),
+            // Sorted by the action, and "webhook.unbound" sorts before "webhook_accepted_or_rejected".
             vec![
-                Left {
-                    action: "webhook.rejected",
-                    count: 68
-                },
                 Left {
                     action: "webhook.unbound",
                     count: 1
                 },
+                Left {
+                    action: "webhook_accepted_or_rejected.denied",
+                    count: 68
+                },
             ]
         );
         // The next window starts clean, and a window with nothing left out says nothing.
-        assert!(budget.admit("webhook.rejected"));
+        assert!(budget.admit("webhook_accepted_or_rejected.denied"));
         assert!(budget.roll(start + WINDOW * 2).is_empty());
         assert_eq!(budget.ends_at(), start + WINDOW * 2 + WINDOW);
     }
@@ -532,7 +535,7 @@ mod tests {
     async fn the_queue_never_waits_and_refuses_when_full() {
         let (queue, _receiver) = PlatformAudit::channel(1);
         let event = PlatformEvent {
-            action: "webhook.rejected",
+            action: "webhook_accepted_or_rejected.denied",
             subject: "none".to_owned(),
             reason: "the delivery did not pass its checks",
         };

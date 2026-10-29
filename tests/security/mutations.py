@@ -45,6 +45,17 @@ BLOCK = "crates/workflow/src/prompts/block.rs"
 PATHS = "crates/domain/src/policy/paths.rs"
 JUDGE = "crates/workflow/src/stages/approval/judge.rs"
 AUTHORITY = "crates/domain/src/policy/authority.rs"
+ATTEMPTS = "crates/storage/src/pg/attempts.rs"
+SANDBOX_AUDIT = "crates/workflow/src/engine/sandbox_audit.rs"
+WEBHOOK = "apps/api/src/webhook.rs"
+IMPLEMENTATION = "crates/workflow/src/stages/implementation/run.rs"
+GITHUB_TEXT = "crates/github/src/text.rs"
+GITHUB_WEBHOOK = "crates/github/src/webhook.rs"
+CONFIG = "crates/composition/src/config.rs"
+SIGNING = "crates/composition/src/decision_signing.rs"
+TIGHTEN = "crates/domain/src/policy/tighten.rs"
+PORTS_SANDBOX = "crates/ports/src/sandbox.rs"
+GITHUB_PERMISSIONS = "crates/github/src/permissions.rs"
 
 # name -> (what is broken, [(file, old, new), ...])
 MUTATIONS = {
@@ -92,6 +103,90 @@ MUTATIONS = {
         "a line of data in the prompt is written without the quote prefix, so a line of data can pass for a delimiter",
         [(BLOCK, 'pub(super) const QUOTE: &str = "> ";', 'pub(super) const QUOTE: &str = "";')],
     ),
+    "a-renewal-ignores-the-lapse": (
+        "a lease that has lapsed can still be renewed by the worker that held it, so the sweeper and the worker can both act on one attempt (the lease-expiry fence is gone)",
+        [(ATTEMPTS, "AND status IN ('STARTING', 'RUNNING', 'CANCELLING') AND lease_expires_at > now() \\\n          RETURNING status, lease_expires_at, deadline_at", "AND status IN ('STARTING', 'RUNNING', 'CANCELLING') \\\n          RETURNING status, lease_expires_at, deadline_at")],
+    ),
+    "a-renewal-ignores-the-owner": (
+        "a renewal in the name of another worker renews the lease",
+        [(ATTEMPTS, "AND id = $2 AND lease_owner = $3 AND lease_epoch = $4 \\\n            AND status IN", "AND id = $2 AND $3 <> '' AND lease_epoch = $4 \\\n            AND status IN")],
+    ),
+    "a-renewal-ignores-the-epoch": (
+        "a renewal at an epoch the lease does not hold renews the lease",
+        [(ATTEMPTS, "AND lease_owner = $3 AND lease_epoch = $4 \\\n            AND status IN", "AND lease_owner = $3 AND $4 >= 0 \\\n            AND status IN")],
+    ),
+    "a-second-claimant-is-not-told-it-lost": (
+        "the check that a claim was read at the version the run still has is gone, so the second worker is refused by a later rule with another answer",
+        [(ATTEMPTS, 'if run.version != start.expected.get() || run.status != "READY" {', "if false {")],
+    ),
+    "the-engine-does-not-write-command-executed": (
+        "the engine writes no audit record for a command the sandbox ran",
+        [(SANDBOX_AUDIT, "if seen < MAX_COMMAND_RECORDS {", "if false && seen < MAX_COMMAND_RECORDS {")],
+    ),
+    "the-api-writes-the-old-webhook-name": (
+        "the API audits an accepted delivery as webhook.accepted again, a name a reader that filters by the type of the policy does not know",
+        [(WEBHOOK, '            "webhook_accepted_or_rejected.granted",\n            "The delivery was verified and recorded.",', '            "webhook.accepted",\n            "The delivery was verified and recorded.",')],
+    ),
+    "the-job-token-is-accepted-by-the-webhook-endpoint": (
+        "the webhook endpoint takes a job token in the Authorization header in place of the signature, so one operation of the API trusts the credential of a job",
+        [(WEBHOOK, "    let verifier = state.ports.webhooks.as_ref().ok_or(ApiError::NotFound)?;\n", "    let verifier = state.ports.webhooks.as_ref().ok_or(ApiError::NotFound)?;\n    if headers\n        .get(\"authorization\")\n        .is_some_and(|value| value.as_bytes().windows(5).any(|window| window == b\"sfjt_\"))\n    {\n        return accepted();\n    }\n")],
+    ),
+    "the-builder-report-is-stored-as-written": (
+        "the text the builder reports about its own work is stored without the redactor having looked at it",
+        [(IMPLEMENTATION, "    match handler.redactor.redact_str(text) {\n        Ok(redacted) => {\n            if redacted.report.replacements() > 0 {", "    match handler.redactor.redact_str(text).map(|mut redacted| {\n        redacted.output = std::borrow::Cow::Owned(text.to_owned());\n        redacted\n    }) {\n        Ok(redacted) => {\n            if redacted.report.replacements() > 0 {")],
+    ),
+    "a-failing-gate-does-not-stop-an-approval": (
+        "the approval judge no longer refuses an approval when the gates of the pull request are not clear",
+        [(JUDGE, "    if !request.gates_clear {\n        return Err(Refusal::GatesNotClear);", "    if false && !request.gates_clear {\n        return Err(Refusal::GatesNotClear);")],
+    ),
+    "stale-evidence-does-not-stop-an-approval": (
+        "the approval judge no longer compares the evidence the person saw with the evidence now",
+        [(JUDGE, "    if let Some((part, _)) = stale {\n        return Err(Refusal::StaleBinding(part));", "    if false && let Some((part, _)) = stale {\n        return Err(Refusal::StaleBinding(part));")],
+    ),
+    "a-forbidden-argument-is-allowed": (
+        "an argument that the policy forbids for a program no longer denies the command",
+        [(COMMANDS, "            .find(|f| matches_forbidden_arg(f, tail))", "            .find(|f| false && matches_forbidden_arg(f, tail))")],
+    ),
+    "a-parent-component-is-not-refused": (
+        "a path that is `..` is no longer refused on sight",
+        [(PATHS, "        if squashed == \"..\" {\n            return Err(PathRefusal::ParentComponent);", "        if false && squashed == \"..\" {\n            return Err(PathRefusal::ParentComponent);")],
+    ),
+    "a-widening-of-a-switch-counts-as-a-tightening": (
+        "a project override that turns on a setting that widens the central policy is read as a tightening",
+        [(TIGHTEN, "const fn off() -> Rule {\n    Rule::Switch {\n        tight: false,", "const fn off() -> Rule {\n    Rule::Switch {\n        tight: true,")],
+    ),
+    "the-text-bound-for-github-is-not-checked-for-a-secret": (
+        "text that holds a secret is sent to the code host",
+        [(GITHUB_TEXT, "            Ok(true) | Err(_) => Err(GitHostError::UnsafeText),", "            Ok(true) | Err(_) => Ok(()),")],
+    ),
+    "markdown-bound-for-github-is-sent-as-written": (
+        "links and images in the markdown sent to the code host are not neutralized",
+        [(GITHUB_TEXT, "            TextKind::Markdown => clean_markdown(text, &self.policy.link_domains),", "            TextKind::Markdown => text.to_owned(),")],
+    ),
+    "a-bot-is-not-a-bot": (
+        "a delivery sent by a bot, which includes the factory's own App, is read as the hint of a person",
+        [(GITHUB_WEBHOOK, "fn sent_by_a_bot(object: &Map<String, Value>) -> bool {\n    object.get(\"sender\")", "fn sent_by_a_bot(object: &Map<String, Value>) -> bool {\n    if true {\n        return false;\n    }\n    object.get(\"sender\")")],
+    ),
+    "a-delivery-that-fails-verification-is-acknowledged": (
+        "the API answers a delivery whose signature does not verify with the acknowledgement of an accepted one",
+        [(WEBHOOK, "                reason: \"The delivery did not pass its checks.\",\n            });\n            return Err(ApiError::Unauthorized);", "                reason: \"The delivery did not pass its checks.\",\n            });\n            return accepted();")],
+    ),
+    "a-secret-file-may-be-read-by-group-and-others": (
+        "the mode of a secret file is not checked, so a key that group or others can read is loaded",
+        [(CONFIG, "        if meta.permissions().mode() & 0o077 != 0 {", "        if false && meta.permissions().mode() & 0o077 != 0 {")],
+    ),
+    "a-rotation-to-the-same-key-is-accepted": (
+        "a previous decision signing key equal to the current one is accepted",
+        [(SIGNING, "        let previous = previous.map(Key::from_bytes).transpose()?;\n        if previous.as_ref().is_some_and(|old| old.0 == current.0) {", "        let previous = previous.map(Key::from_bytes).transpose()?;\n        if false && previous.as_ref().is_some_and(|old| old.0 == current.0) {")],
+    ),
+    "a-privileged-container-is-not-refused": (
+        "the check of a sandbox spec no longer refuses privileged mode",
+        [(PORTS_SANDBOX, "        if h.privileged {\n            rules.push(SandboxRule::Privileged);", "        if false && h.privileged {\n            rules.push(SandboxRule::Privileged);")],
+    ),
+    "an-app-with-a-forbidden-permission-gets-a-token": (
+        "the audit of the App no longer refuses an App that holds a permission the policy forbids",
+        [(GITHUB_PERMISSIONS, "    if !forbidden_held.is_empty() {\n        return AppAudit::Refuse { forbidden_held };", "    if false && !forbidden_held.is_empty() {\n        return AppAudit::Refuse { forbidden_held };")],
+    ),
 }
 
 # name -> the arguments of cargo nextest for the tests that must fail. The tests that are named
@@ -109,13 +204,34 @@ TESTS = {
     "an-expired-allowlist-entry-still-grants": BROAD,
     "a-bot-may-hold-a-designation": BROAD,
     "data-lines-are-not-quoted": BROAD,
+    "a-renewal-ignores-the-lapse": ["-p", "factory-storage", "negative_nt_lse_02"],
+    "a-renewal-ignores-the-owner": ["-p", "factory-storage", "negative_nt_lse_02"],
+    "a-renewal-ignores-the-epoch": ["-p", "factory-storage", "negative_nt_lse_02"],
+    "a-second-claimant-is-not-told-it-lost": ["-p", "factory-storage", "negative_nt_lse_02"],
+    "the-engine-does-not-write-command-executed": ["-p", "factory-workflow", "negative_nt_aud_03"],
+    "the-api-writes-the-old-webhook-name": ["-p", "factory-api", "--test", "negative_composed", "negative_nt_aud_03"],
+    "the-job-token-is-accepted-by-the-webhook-endpoint": ["-p", "factory-api", "--test", "negative_composed", "negative_nt_inj_04"],
+    "the-builder-report-is-stored-as-written": ["-p", "factory-workflow", "-p", "factory-api", "negative_nt_sec_01"],
+    "a-failing-gate-does-not-stop-an-approval": ["-p", "factory-workflow", "negative_nt_mrg_01"],
+    "stale-evidence-does-not-stop-an-approval": ["-p", "factory-workflow", "negative_nt_mrg_02"],
+    "a-forbidden-argument-is-allowed": ["-p", "factory-domain", "negative_nt_tool_05"],
+    "a-parent-component-is-not-refused": ["-p", "factory-domain", "negative_nt_tool_04"],
+    "a-widening-of-a-switch-counts-as-a-tightening": ["-p", "factory-domain", "negative_nt_pol_02"],
+    "the-text-bound-for-github-is-not-checked-for-a-secret": ["-p", "factory-github", "negative_nt_sec_03", "negative_nt_sec_04"],
+    "markdown-bound-for-github-is-sent-as-written": ["-p", "factory-github", "negative_nt_sec_04"],
+    "a-bot-is-not-a-bot": ["-p", "factory-github", "negative_nt_wh_09"],
+    "a-delivery-that-fails-verification-is-acknowledged": ["-p", "factory-api", "--test", "webhook", "negative_nt_wh_01"],
+    "a-secret-file-may-be-read-by-group-and-others": ["-p", "factory-composition", "--test", "security_rereview", "--test", "external_world", "held_the_key_file", "a_secret_key_file_that"],
+    "a-rotation-to-the-same-key-is-accepted": ["-p", "factory-composition", "--test", "security_rereview", "held_a_rotation_to_the_same_key"],
+    "a-privileged-container-is-not-refused": ["-p", "factory-sandbox", "negative_nt_sbx_01"],
+    "an-app-with-a-forbidden-permission-gets-a-token": ["-p", "factory-github", "negative_nt_authz_09"],
 }
 
-# Tests that are red with every control on (findings F-1 and F-3 of docs/security/p0-coverage.md).
-# They fail in every run, so a failure of theirs says nothing about the control that was removed.
+# Tests that are red with every control on. They fail in every run, so a failure of theirs says
+# nothing about the control that was removed. Findings F-1 and F-3 of the first review are fixed in
+# the base branch (their tests pass); the composed run reports F-6 and F-7 (docs/security/p0-coverage.md).
 BASELINE_RED = {
-    "negative_nt_inj_04_tool_output_that_says_grant_yourself_and_approve_gains_no_authority",
-    "negative_nt_sec_01_a_full_fixture_job_with_a_canary_of_every_class_leaves_none_in_any_sink",
+    "negative_nt_sec_01_composed_a_full_job_with_a_canary_of_every_class_leaves_none_in_any_sink",
 }
 
 FAILED = re.compile(r"^\s+FAIL \[[^\]]*\] \(\s*\d+/\d+\) (.+)$", re.M)

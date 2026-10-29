@@ -121,7 +121,7 @@ pub async fn receive(state: &ApiState, headers: &HeaderMap, body: &[u8]) -> Answ
         }
         Err(_) => {
             state.platform_audit.report(PlatformEvent {
-                action: "webhook.rejected",
+                action: "webhook_accepted_or_rejected.denied",
                 subject: subject_of(read.delivery.as_deref()),
                 reason: "The delivery did not pass its checks.",
             });
@@ -184,7 +184,7 @@ pub async fn receive(state: &ApiState, headers: &HeaderMap, body: &[u8]) -> Answ
             None,
         ),
         DeliveryOutcome::Recorded(id) => (
-            "webhook.accepted",
+            "webhook_accepted_or_rejected.granted",
             "The delivery was verified and recorded.",
             Some(id),
         ),
@@ -361,7 +361,12 @@ async fn audit(
         ),
         action: audit_action(action)?,
         subject: subject.to_owned(),
-        decision: AuditDecision::Record,
+        // The accepted delivery is a grant under the required type name; a repeat is only noted.
+        decision: if action.ends_with(".granted") {
+            AuditDecision::Allow
+        } else {
+            AuditDecision::Record
+        },
         reason: reason.to_owned(),
         policy_hash: state.policy_hash(),
         job: job.map(|(job, _)| job),

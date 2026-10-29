@@ -46,6 +46,7 @@ use super::gate::Judged;
 use super::payload;
 use super::progress::{Board, clear, upstream_runs};
 use super::record::{Cx, Step, index_entry};
+use super::sandbox_audit::AuditedSandbox;
 use super::timeline::Timeline;
 use crate::audit::{AuditAction, AuditDecision, AuditKind};
 use crate::gates::framework::{Expectation, GateDecision, check_evidence, resolve};
@@ -265,6 +266,9 @@ impl Engine {
         // The handler runs its agents through this wrapper, so each run is a `factory.agent` span.
         let observed =
             ObservedRuntime::new(self.deps.runtime.as_ref(), claimed.correlation, claimed.job);
+        // It also makes its sandboxes and runs its commands through this wrapper, so each is an
+        // audit record of the attempt.
+        let audited = AuditedSandbox::new(self.deps.sandbox.as_ref(), notes.clone());
         let mut ctx = StageContext::new(
             prepared.identity,
             claimed.attempt,
@@ -272,7 +276,7 @@ impl Engine {
             claimed.epoch,
             self.config.mode,
             &prepared.contract,
-            self.stage_ports(&observed),
+            self.stage_ports(&observed, &audited),
             &cancel,
             job_token,
             &prepared.human_inputs,
@@ -288,6 +292,7 @@ impl Engine {
             )
             .await;
         drop(ctx);
+        audited.finish();
         // What the model cost is read once the handler has stopped, so the events of this attempt
         // can carry it.
         if let Some(token) = job_token {
@@ -623,10 +628,8 @@ impl Engine {
         token: JobTokenId,
         notes: &Notes,
     ) -> Result<(), EngineError> {
-        let ceiling = match self.deps.broker.usage(&token).await {
-            Ok(usage) => usage.ceiling.0,
-            Err(_) => 0,
-        };
+        let metered = self.deps.broker.usage(&token).await.ok();
+        let ceiling = metered.as_ref().map_or(0, |metered| metered.ceiling.0);
         // A broker that cannot be reached cannot revoke, and the token's own expiry ends it.
         let _ = self.deps.broker.revoke(&token).await;
         let cost = notes.cost();
@@ -640,6 +643,30 @@ impl Engine {
             AuditAction::new(AuditKind::CredentialMintedAndRevoked, AuditDecision::Ended),
         )
         .await?;
+        // The model requests this token made through the broker, which is the egress of an agent
+        // stage: one summary record for the token, with the counts the broker metered, written
+        // when the token is settled. The broker's own stream keeps one line for each request and
+        // each refusal; the audit log keeps the sum, so a stage that loops on a model cannot fill
+        // it, and a reader still sees that requests left and how many.
+        if let Some(usage) = metered
+            .map(|metered| metered.usage)
+            .filter(|u| u.requests > 0)
+        {
+            let requests = if usage.requests == 1 {
+                "1 request".to_owned()
+            } else {
+                format!("{} requests", usage.requests)
+            };
+            cx.audit_engine_because(
+                &mut *tx,
+                AuditAction::new(AuditKind::EgressRequest, AuditDecision::Noted),
+                format!(
+                    "the model broker metered {requests} for this job token; {} input tokens, {} output tokens, cost {} millionths of a US dollar",
+                    usage.input_tokens, usage.output_tokens, usage.cost.0
+                ),
+            )
+            .await?;
+        }
         let timeline = Timeline::load(&mut *tx, claimed.job).await?;
         let job_crossed = timeline.spent_micro_usd.saturating_mul(100)
             >= self.config.job_budget_micro_usd.saturating_mul(warn);
@@ -1280,6 +1307,11 @@ impl Engine {
         ))?);
         for action in notes.take_audit() {
             cx.audit(tx, actor.clone(), action).await?;
+        }
+        // The sandboxes the handler made, the commands it ran in them and the ones it removed,
+        // as the wrapper of the sandbox port saw them.
+        for (action, reason) in notes.take_facts() {
+            cx.audit_because(tx, actor.clone(), action, reason).await?;
         }
         // A run that failed still reports the tool calls policy denied and its transcript.
         for _ in 0..notes.take_denials() {

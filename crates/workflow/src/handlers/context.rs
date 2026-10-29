@@ -123,6 +123,9 @@ pub struct SandboxReady {
 #[derive(Debug, Default)]
 pub(crate) struct AttemptNotes {
     pub(crate) audit: Vec<AuditAction>,
+    /// Audit events the engine's own wrappers of the ports noted while the handler ran (the sandbox
+    /// it used, the commands it ran), each with the reason to store. See `engine::sandbox_audit`.
+    pub(crate) facts: Vec<(AuditAction, String)>,
     pub(crate) sandbox_ready: Option<SandboxReady>,
     pub(crate) cost_micro_usd: u64,
     /// The transcripts of runs the handler wants the tenant to be able to read back: those of a
@@ -174,6 +177,16 @@ impl Notes {
     /// Takes the audit actions the handler noted, leaving none behind.
     pub(crate) fn take_audit(&self) -> Vec<AuditAction> {
         std::mem::take(&mut self.lock().audit)
+    }
+
+    /// Notes an audit event that the engine's own wrapper of a port saw, with the reason to store.
+    pub(crate) fn note_fact(&self, action: AuditAction, reason: String) {
+        self.lock().facts.push((action, reason));
+    }
+
+    /// Takes the facts the wrappers noted, in the order they happened, leaving none behind.
+    pub(crate) fn take_facts(&self) -> Vec<(AuditAction, String)> {
+        std::mem::take(&mut self.lock().facts)
     }
 }
 
