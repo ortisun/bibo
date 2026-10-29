@@ -1661,13 +1661,20 @@ mod tests {
                 ..
             })
         ));
-        // The registry API of crates.io is not among the cargo hosts the stock policy lists, so
-        // production refuses it until a person adds the host.
+        // The registry API of crates.io is among the cargo hosts of the stock policy (`crates_api`),
+        // so production accepts it; a registry the policy does not list is refused.
         let registry = production_file(
             "github:\n  app_id: 7\n  key_file: /run/secrets/app\nregistry: { base_url: 'https://crates.io', user_agent: factory }\n",
         );
-        assert!(matches!(
+        assert!(
             FactoryConfig::from_yaml(&registry)
+                .expect("loads")
+                .check_endpoints(&policy)
+                .is_ok()
+        );
+        let elsewhere = registry.replace("https://crates.io", "https://registry.example.org");
+        assert!(matches!(
+            FactoryConfig::from_yaml(&elsewhere)
                 .expect("loads")
                 .check_endpoints(&policy),
             Err(ConfigError::OutOfRange {

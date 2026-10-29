@@ -908,6 +908,7 @@ egress:
       allow:
         - { id: crates_index,    host: index.crates.io,        ports: [443], methods: [GET, HEAD], ecosystem: cargo, justification: "sparse registry index", review_by: "2027-01-31" }
         - { id: crates_files,    host: static.crates.io,       ports: [443], methods: [GET, HEAD], ecosystem: cargo, justification: "crate downloads", review_by: "2027-01-31" }
+        - { id: crates_api,      host: crates.io,              ports: [443], methods: [GET, HEAD], ecosystem: cargo, justification: "crate metadata API, read by the control plane's registry client for the dependency gates", review_by: "2027-01-31" }
         - { id: npm_registry,    host: registry.npmjs.org,     ports: [443], methods: [GET, HEAD], ecosystem: npm,   justification: "package metadata and tarballs", review_by: "2027-01-31" }
         - { id: pypi_index,      host: pypi.org,               ports: [443], methods: [GET, HEAD], ecosystem: pip,   justification: "package index", review_by: "2027-01-31" }
         - { id: pypi_files,      host: files.pythonhosted.org, ports: [443], methods: [GET, HEAD], ecosystem: pip,   justification: "package files", review_by: "2027-01-31" }

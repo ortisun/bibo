@@ -90,13 +90,16 @@ fn hosts_ports_and_methods_are_checked_against_the_profile_entry() {
             "GET",
             Some(EgressDenial::HostNotAllowed),
         ),
+        // The parent domain of an allowed host is not allowed with it. (`crates.io` itself is
+        // listed since the registry client of the control plane reads its API.)
         (
             FetchDeps,
-            "crates.io",
+            "npmjs.org",
             443,
             "GET",
             Some(EgressDenial::HostNotAllowed),
         ),
+        (FetchDeps, "crates.io", 443, "GET", None),
         (
             FetchDeps,
             "sub.index.crates.io",
@@ -315,7 +318,7 @@ proptest! {
         let verdict = policy().check(profile, &host, port, &method);
         if verdict.is_allowed() {
             let listed = [
-                "index.crates.io", "static.crates.io", "registry.npmjs.org", "pypi.org",
+                "index.crates.io", "static.crates.io", "crates.io", "registry.npmjs.org", "pypi.org",
                 "files.pythonhosted.org", "proxy.golang.org", "sum.golang.org",
                 "model-broker.sandbox.internal",
             ];

@@ -74,8 +74,8 @@ The configuration keys that point at the outside world are in [the reference](..
   blocks the issue source and the change host and says which key.
 * The production profile reaches the outside world over `https` only, and only hosts the policy lists: the model providers
   against `egress.broker_upstreams`, GitHub against `api.github.com`, the registry against the cargo hosts of the `fetch_deps`
-  profile. The stock policy lists `index.crates.io` and `static.crates.io` and not `crates.io`, so production needs the host added
-  by a person before the registry client can run there. The local and test profiles also accept plain `http` on the loopback
+  profile. The stock policy lists `crates.io` (the entry `crates_api`), `index.crates.io` and `static.crates.io`, so the
+  registry client can run in production against `https://crates.io`. The local and test profiles also accept plain `http` on the loopback
   interface, and only there.
 * The routing policy is loaded with the other policies. A missing file stops the start. The production profile also stops while
   `ModelRoutingPolicy::unconfirmed()` is not empty (every price and ceiling of the file waits for the project owner today).
