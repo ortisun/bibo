@@ -691,6 +691,42 @@
   },
   {
    "script": "tests/security/mutations.py",
+   "name": "a-renewal-ignores-the-epoch",
+   "date": "2026-10-29",
+   "result": "CAUGHT",
+   "failed": [
+    "negative_nt_lse_02_a_renewal_with_the_wrong_owner_epoch_tenant_or_a_lapsed_lease_changes_nothing"
+   ]
+  },
+  {
+   "script": "tests/security/mutations.py",
+   "name": "a-renewal-ignores-the-lapse",
+   "date": "2026-10-29",
+   "result": "CAUGHT",
+   "failed": [
+    "negative_nt_lse_02_a_renewal_with_the_wrong_owner_epoch_tenant_or_a_lapsed_lease_changes_nothing"
+   ]
+  },
+  {
+   "script": "tests/security/mutations.py",
+   "name": "a-renewal-ignores-the-owner",
+   "date": "2026-10-29",
+   "result": "CAUGHT",
+   "failed": [
+    "negative_nt_lse_02_a_renewal_with_the_wrong_owner_epoch_tenant_or_a_lapsed_lease_changes_nothing"
+   ]
+  },
+  {
+   "script": "tests/security/mutations.py",
+   "name": "a-second-claimant-is-not-told-it-lost",
+   "date": "2026-10-29",
+   "result": "CAUGHT",
+   "failed": [
+    "negative_nt_lse_02_a_hundred_interleavings_of_two_workers_claim_one_job_with_one_winner"
+   ]
+  },
+  {
+   "script": "tests/security/mutations.py",
    "name": "an-agent-may-grant-itself-a-tool",
    "date": "2026-10-29",
    "result": "CAUGHT",
@@ -723,12 +759,30 @@
   },
   {
    "script": "tests/security/mutations.py",
+   "name": "the-api-writes-the-old-webhook-name",
+   "date": "2026-10-29",
+   "result": "CAUGHT",
+   "failed": [
+    "negative_nt_aud_03_the_api_writes_a_webhook_under_the_required_type_name"
+   ]
+  },
+  {
+   "script": "tests/security/mutations.py",
    "name": "the-budget-threshold-is-never-recorded",
    "date": "2026-10-29",
    "result": "CAUGHT",
    "failed": [
     "every_required_event_type",
     "negative_nt_aud_03_every_required_event_type_appears_with_actor_policy_hash_and_correlation_id"
+   ]
+  },
+  {
+   "script": "tests/security/mutations.py",
+   "name": "the-builder-report-is-stored-as-written",
+   "date": "2026-10-29",
+   "result": "CAUGHT",
+   "failed": [
+    "negative_nt_sec_01_a_full_fixture_job_with_a_canary_of_every_class_leaves_none_in_any_sink"
    ]
   },
   {
@@ -740,6 +794,26 @@
     "negative_nt_inj_01_a_model_that_obeys_the_text_of_a_request_changes_nothing_the_factory_protects",
     "negative_nt_inj_01_the_workflow_edit_the_env_the_fetch_and_the_pass_claim_of_the_catalog",
     "negative_nt_inj_03_a_model_that_obeys_a_document_of_the_repository_changes_nothing_the_factory_protects"
+   ]
+  },
+  {
+   "script": "tests/security/mutations.py",
+   "name": "the-engine-does-not-write-command-executed",
+   "date": "2026-10-29",
+   "result": "CAUGHT",
+   "failed": [
+    "negative_nt_aud_03_every_required_event_type_appears_with_actor_policy_hash_and_correlation_id",
+    "negative_nt_aud_03_the_engine_writes_the_sandbox_lifecycle_the_commands_and_the_egress_summary",
+    "negative_nt_aud_03_the_facts_of_an_attempt_name_who_wrote_them"
+   ]
+  },
+  {
+   "script": "tests/security/mutations.py",
+   "name": "the-job-token-is-accepted-by-the-webhook-endpoint",
+   "date": "2026-10-29",
+   "result": "CAUGHT",
+   "failed": [
+    "negative_nt_inj_04_composed_a_job_token_is_refused_by_every_operation_of_the_api_and_changes_nothing"
    ]
   },
   {
