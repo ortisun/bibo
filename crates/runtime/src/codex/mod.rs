@@ -490,7 +490,9 @@ fn interpret(
     }
 }
 
-/// Success is a `turn.completed` event, no `turn.failed` and exit code 0.
+/// Success is one `turn.completed` event with nothing after it, no `turn.failed` and exit code 0.
+/// The same rule as the Claude Code adapter: the exit status is not something a process inside
+/// the sandbox can write, and a second terminal event was not written by the tool.
 fn classify(
     result: &ExecResult,
     stream: &events::Stream,
@@ -510,7 +512,11 @@ fn classify(
     {
         return Err(classify_message(message, exit));
     }
-    if stream.completed && exit.code == Some(0) {
+    if stream.completed
+        && exit.code == Some(0)
+        && stream.completed_events == 1
+        && !stream.events_after_completed
+    {
         return stream
             .final_message
             .clone()
@@ -521,6 +527,8 @@ fn classify(
         AgentRunError::OutputTooLarge
     } else if cancel_set || result.signal.is_some() || exit.code == Some(143) {
         AgentRunError::Cancelled
+    } else if exit.code == Some(0) && stream.completed {
+        AgentRunError::ProcessFailed(exit)
     } else if exit.code == Some(0) {
         AgentRunError::OutputMissing
     } else {

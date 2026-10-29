@@ -501,8 +501,18 @@ fn interpret(
     }
 }
 
-/// Success is `is_error == false` and `terminal_reason == "completed"`. Anything else is a failure
-/// with one closed variant.
+/// Success is `is_error == false` and `terminal_reason == "completed"` in the one result the tool
+/// wrote, and a clean exit: code 0 and no signal. Anything else is a failure with one closed
+/// variant.
+///
+/// The exit status is the part of the outcome that a process inside the sandbox cannot write:
+/// the stream is the tool's standard output, and a sibling of the tool can add lines to it
+/// (finding SBX-4). A `completed` line followed by a kill, or by an error exit, is therefore not a
+/// success (finding RTM-1), and neither is a stream with a second result or with events after
+/// the result: the tool writes exactly one result, last. The Codex adapter has the same rule.
+/// What these checks do not do is authenticate the lines before the result; the image does that
+/// for the tools it installs (their processes cannot be written to through `/proc`), see
+/// `infra/sandbox-images/agent/README.md`.
 fn classify(
     result: &factory_ports::sandbox::ExecResult,
     stream: &events::Stream,
@@ -527,7 +537,20 @@ fn classify(
         });
     };
     if !done.is_error && done.terminal_reason.as_deref() == Some("completed") {
-        return Ok(done.text.clone().into_bytes());
+        let clean_exit = exit.code == Some(0) && result.signal.is_none();
+        let one_result_last = stream.result_events == 1 && !stream.events_after_result;
+        if clean_exit && one_result_last {
+            return Ok(done.text.clone().into_bytes());
+        }
+        // A result that says `completed`, written by a tool that did not end cleanly or by a
+        // stream that was added to.
+        return Err(if result.stdout_truncated {
+            AgentRunError::OutputTooLarge
+        } else if cancel_set || result.signal.is_some() || exit.code == Some(143) {
+            AgentRunError::Cancelled
+        } else {
+            AgentRunError::ProcessFailed(exit)
+        });
     }
     Err(classify_error(done, stream, exit))
 }
