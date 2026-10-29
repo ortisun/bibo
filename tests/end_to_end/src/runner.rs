@@ -51,6 +51,23 @@ pub trait Wiring {
     /// # Errors
     /// [`Blocked`] when something the scenario needs is not available.
     fn run(&mut self, scenario: &Scenario) -> Result<RunEvidence, Blocked>;
+
+    /// Checks that the evidence of this scenario can be trusted, before any assertion reads it. A
+    /// wiring that replays a recording says here whether the recording is intact. A failing
+    /// verdict fails the scenario and no assertion runs. A wiring that collects evidence itself
+    /// has nothing to add.
+    fn integrity(&mut self, _scenario: &Scenario) -> Vec<Verdict> {
+        Vec::new()
+    }
+
+    /// The checks of this scenario that this wiring cannot judge, because the thing they read does
+    /// not exist in its runs, each with the reason. They are not run and not passed: the scenario
+    /// is `BLOCKED` on them unless something else fails. The list is in the source of the wiring,
+    /// where a reviewer sees it, and not in the evidence, which a run could use to excuse a
+    /// failure.
+    fn unevidenced(&self, _scenario: &Scenario) -> Vec<(&'static str, &'static str)> {
+        Vec::new()
+    }
 }
 
 /// How the scenario ended.
@@ -156,6 +173,20 @@ pub fn run_scenario(
         }
     }
 
+    let mut verdicts = wiring.integrity(scenario);
+    if verdicts.iter().any(|v| !v.pass) {
+        // The evidence cannot be trusted, so no assertion reads it.
+        return ScenarioReport {
+            id: scenario.id,
+            title: scenario.title,
+            status: Status::Failed,
+            label,
+            verdicts,
+            blocked: Vec::new(),
+            seconds: started.elapsed().as_secs_f64(),
+        };
+    }
+
     if scenario.needs_protected_remote {
         match wiring.protection() {
             Err(Blocked(reasons)) => return blocked_report(scenario, label, reasons, started),
@@ -177,17 +208,30 @@ pub fn run_scenario(
         Err(Blocked(reasons)) => return blocked_report(scenario, label, reasons, started),
     };
 
-    let mut verdicts = vec![provenance(&evidence, scenario, wiring)];
+    let gaps = wiring.unevidenced(scenario);
+    verdicts.push(provenance(&evidence, scenario, wiring));
     verdicts.extend(
         scenario
             .checks()
             .iter()
+            .filter(|check| !gaps.iter().any(|(id, _)| *id == check.id))
             .map(|check| check.apply(&evidence, env)),
     );
-    let status = if verdicts.iter().all(|v| v.pass) {
+    let blocked: Vec<String> = scenario
+        .checks()
+        .iter()
+        .filter_map(|check| {
+            gaps.iter()
+                .find(|(id, _)| *id == check.id)
+                .map(|(id, why)| format!("{id} cannot be judged from this wiring: {why}"))
+        })
+        .collect();
+    let status = if verdicts.iter().any(|v| !v.pass) {
+        Status::Failed
+    } else if blocked.is_empty() {
         Status::Passed
     } else {
-        Status::Failed
+        Status::Blocked
     };
     ScenarioReport {
         id: scenario.id,
@@ -195,7 +239,7 @@ pub fn run_scenario(
         status,
         label,
         verdicts,
-        blocked: Vec::new(),
+        blocked,
         seconds: started.elapsed().as_secs_f64(),
     }
 }

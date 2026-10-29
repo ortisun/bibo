@@ -213,6 +213,10 @@ pub const SCENARIOS: [Scenario; 13] = [
     },
 ];
 
+/// The scenarios whose recording the composed pipeline makes in test mode: the scenarios of the
+/// plan that need no real adapter. The test `apps/api/tests/e2e_scenarios.rs` drives them.
+pub const COMPOSED_TEST: [&str; 7] = ["E3", "E4", "E5", "E6", "E7", "E8", "E9"];
+
 /// The scenario with this id.
 #[must_use]
 pub fn by_id(id: &str) -> Option<&'static Scenario> {

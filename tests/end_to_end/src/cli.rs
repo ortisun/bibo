@@ -25,7 +25,10 @@ Commands:
   run --scenario ID ...     Run scenarios. Repeat --scenario. Options:
                               --test-mode        Run a scenario that is defined for real adapters
                                                  (E1, E2) on the scripted wiring, labelled test mode.
-                              --wiring W         auto (default), scripted or composed.
+                              --wiring W         auto (default), scripted, composed or recorded.
+                                                 auto replays the recording of the composed pipeline
+                                                 for E3 to E9, runs the scripted wiring for E10 to
+                                                 E13, and needs the real prerequisites for E1, E2.
                               --evidence-dir D   Write the evidence of each run to D/ID.json.
   self-test                 Prove the assertions: the honest evidence passes, and every deliberate
                             corruption makes the assertion that guards it fail.
@@ -320,10 +323,12 @@ fn run(root: &Path, args: &[String]) -> i32 {
             },
             "--test-mode" => test_mode = true,
             "--wiring" => match iter.next() {
-                Some(choice) if ["auto", "scripted", "composed"].contains(&choice.as_str()) => {
+                Some(choice)
+                    if ["auto", "scripted", "composed", "recorded"].contains(&choice.as_str()) =>
+                {
                     wiring_choice.clone_from(choice);
                 }
-                _ => return usage("--wiring needs auto, scripted or composed"),
+                _ => return usage("--wiring needs auto, scripted, composed or recorded"),
             },
             "--evidence-dir" => match iter.next() {
                 Some(dir) => evidence_dir = Some(PathBuf::from(dir)),
@@ -385,25 +390,42 @@ fn run_one(
     let options = RunOptions {
         test_mode_for_real_scenarios: test_mode,
     };
-    let prefer_scripted = choice == "scripted"
-        || test_mode
+    let recorded = choice == "recorded"
         || (choice == "auto"
-            && scenario.adapters != Adapters::Real
+            && !test_mode
+            && crate::scenarios::COMPOSED_TEST.contains(&scenario.id)
             && env_lookup(crate::external::PROGRAM_VARIABLE).is_none());
-    let mut wiring: Box<dyn Wiring> = if prefer_scripted {
+    let prefer_scripted = !recorded
+        && (choice == "scripted"
+            || test_mode
+            || (choice == "auto"
+                && scenario.adapters != Adapters::Real
+                && env_lookup(crate::external::PROGRAM_VARIABLE).is_none()));
+    let mut wiring: Box<dyn Wiring> = if recorded {
+        match crate::recorded::Recorded::new(root, scenario.id) {
+            Ok(wiring) => Box::new(wiring),
+            Err(why) => return blocked_report(scenario, Blocked::because(why)),
+        }
+    } else if prefer_scripted {
         match scripted_wiring(root) {
             Ok(wiring) => wiring,
             Err(blocked) => return blocked_report(scenario, blocked),
         }
     } else {
-        match External::from_lookup(&env_lookup) {
-            Ok(wiring) => Box::new(wiring),
-            Err(Blocked(mut reasons)) => {
-                if scenario.adapters == Adapters::Real {
-                    reasons.extend(missing_needs(env_lookup));
-                }
-                return blocked_report(scenario, Blocked(reasons));
-            }
+        // A real run. Every prerequisite is looked for, and every one that is missing is named,
+        // before anything starts.
+        let external = External::from_lookup(&env_lookup);
+        let mut reasons = Vec::new();
+        if let Err(Blocked(found)) = &external {
+            reasons.extend(found.iter().cloned());
+        }
+        if scenario.adapters == Adapters::Real {
+            reasons.extend(missing_needs(env_lookup));
+            reasons.extend(host_problems(root));
+        }
+        match external {
+            Ok(wiring) if reasons.is_empty() => Box::new(wiring),
+            _ => return blocked_report(scenario, Blocked(reasons)),
         }
     };
     let report = run_scenario(wiring.as_mut(), scenario, env, options, &env_lookup);
@@ -411,6 +433,17 @@ fn run_one(
         record_report(dir, &report);
     }
     report
+}
+
+/// What the machine, the repository and Docker show to be missing for a real run.
+fn host_problems(root: &Path) -> Vec<String> {
+    let git = |args: &[&str]| crate::prerequisites::system_git(root, args);
+    crate::prerequisites::problems(&crate::prerequisites::Host {
+        root,
+        env: &env_lookup,
+        docker: &crate::prerequisites::system_docker,
+        git: &git,
+    })
 }
 
 fn blocked_report(scenario: &'static Scenario, Blocked(reasons): Blocked) -> ScenarioReport {

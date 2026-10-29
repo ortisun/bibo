@@ -19,11 +19,16 @@ pub struct Need {
 }
 
 /// The prerequisites of the scenarios that use real adapters (E1 and E2).
-pub const REAL_NEEDS: [Need; 5] = [
+pub const REAL_NEEDS: [Need; 6] = [
     Need {
         what: "an API key for the model provider with a provider-side hard spend limit",
         variable: "FACTORY_E2E_MODEL_API_KEY",
         why: "the agent tools run behind a broker that holds the real key; a subscription login cannot be brokered or metered",
+    },
+    Need {
+        what: "the provider-side hard spend limit of that key, stated in US dollars",
+        variable: "FACTORY_E2E_MODEL_SPEND_LIMIT_USD",
+        why: "a key cannot report its own limit, and the run must never be able to spend more than the person who owns the key allowed",
     },
     Need {
         what: "a registered GitHub App (its id)",
