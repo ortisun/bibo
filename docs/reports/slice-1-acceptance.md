@@ -122,6 +122,12 @@ The [findings file](slice-1-findings.md) holds the full entries. In short:
 | `scripts/e2e.sh --scenario E3 --scenario E4 --scenario E5 --scenario E6 --scenario E7 --scenario E8 --scenario E9` | Exit code 1: four passed, two failed, one blocked |
 | `scripts/e2e.sh --check-report` | Passed once the digests in this report matched the recordings |
 | `scripts/e2e.sh --self-test-all` | Passed |
+| `cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets --locked -- -D warnings`, `cargo xtask check-links` | Passed |
+| `scripts/e2e.sh --check-readability` over this report, the findings and the harness README | No blocking finding and no warning |
+| `./scripts/ci.sh` | 30 of its 31 steps passed. `rust-test` failed: 16 Docker tests of the egress and runtime packages stopped with "BLOCKED: docker did not answer within 60s", the first failures stopped the run at 2029 of 4620 tests, and `docker ps` timed out right after, so the shared Docker daemon had stopped answering. It is not mine to restart. The seven new scenario tests passed in that run, in parallel with the rest, in 5 to 51 seconds |
+| `cargo nextest run --workspace --locked --no-fail-fast`, without the sandbox, runtime and egress packages | 4099 passed and 2 failed. The two failures are Docker tests of the testkit with the same message |
+
+A full green `./scripts/ci.sh` therefore still needs a run on a machine whose Docker answers. Nothing in the failures comes from this work package: they are tests that need the daemon, and the scenarios of this report that passed or failed did so without it.
 
 ## What remains before a live acceptance run
 
