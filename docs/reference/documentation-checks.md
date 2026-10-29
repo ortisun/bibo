@@ -95,6 +95,12 @@ It clones the repository into a scratch directory at the commit of the current c
 
 A block that needs Docker or PostgreSQL is BLOCKED when the program is missing or does not answer. A block that ends with exit code 3 is BLOCKED too, because the scripts of this repository use that code for BLOCKED, unless the block says `exit=3`. If no block failed and one is BLOCKED, the check is BLOCKED. On the machine used to write this page, the Docker daemon did not answer and the check ended BLOCKED with every other step passed.
 
-## In CI
+## In CI, and by hand
 
-`scripts/ci/steps.d/47-docs-check.step` runs the default checks, and `scripts/ci/steps.d/48-docs-quickstart.step` runs the quickstart. A step file in that directory is a protected path and needs a code owner's review.
+`scripts/ci/steps.d/47-docs-check.step` runs the default checks. The quickstart is **not** a CI step. It clones the repository and builds it, which takes minutes, and on a machine whose Docker daemon does not answer it ends BLOCKED, which would turn the whole `scripts/ci.sh` summary BLOCKED (exit code 3) for a reason that has nothing to do with the change under test. The step convention of `scripts/ci.sh` has no way to mark a step as manual, so the step file was removed. Run the quickstart by hand, on a machine with Docker, when the guide changes and before a release:
+
+```bash no-run reason="clones and builds the repository, takes minutes, and needs Docker for its last steps"
+scripts/docs-check.sh --quickstart
+```
+
+A step file in `scripts/ci/steps.d` is a protected path and needs a code owner's review.

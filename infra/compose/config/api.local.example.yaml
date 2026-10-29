@@ -1,17 +1,35 @@
-# A PLACEHOLDER for the API's configuration file (infra/compose/local.yml, profile "factory").
+# The API's configuration file in the local stack (infra/compose/local.yml, profile "factory").
 #
-# apps/api prints "not implemented yet" and has no configuration schema. The worker's README says the API will
-# reuse the same typed configuration core (profile, database, artifacts), one YAML file whose path comes from
-# FACTORY_CONFIG, with secrets as files. This file records only the values this stack decides for the API, so that
-# the composition work has them in one place. It has NOT been run through any parser. Replace it when the API's
-# configuration exists, and copy it to a file of your own (FACTORY_API_CONFIG) to change it.
+# This is the file the stack mounts at /etc/factory/api.yaml. apps/api/tests/profile.rs reads THIS file and runs
+# it through the API's own parser, so it cannot drift from the code: a setting the API does not know, or one it
+# requires and this file lacks, fails that test. The keys are listed in docs/reference/configuration.md.
+# Copy it to a file of your own (FACTORY_API_CONFIG) to change it.
+#
+# No secret is here. Every secret is the path of a file that Compose mounts under /run/secrets, and the files
+# are made by scripts/local-up.sh (infra/compose/secrets, never committed):
+#   db_api                  the database URL of the login factory_api
+#   webhook_secret          the secret that signs the GitHub webhook deliveries; the same value goes into the
+#                           webhook settings of the GitHub App when one exists
+#   decision_signing_key    signs the decision requests the API writes. The worker mounts the SAME file and
+#                           verifies with it; if the two differ, every request is rejected as unsigned.
 
 profile: local
+# policies/ and allowlist/allowlist.yaml, mounted read-only (infra/compose/local.yml). The allowlist is not in the
+# repository: a person writes it (FACTORY_ALLOWLIST_DIR). Until it exists the API refuses every request that needs
+# a designation.
+protected_checkout: /etc/factory/protected
 
 database:
   # The API process uses the login that is also in the resolver group (docs/database/for-the-storage-crate.md).
   api: { url_file: /run/secrets/db_api, login: factory_api, max_connections: 8 }
 
-artifacts: { root: /var/lib/factory/artifacts }
-
 listen: 0.0.0.0:8080
+
+github:
+  webhook_secret_files: [/run/secrets/webhook_secret]
+  factory_label: factory
+
+decisions:
+  key_file: /run/secrets/decision_signing_key   # the SAME file the worker mounts; mode 0600; 32 bytes or more
+
+artifacts: { root: /var/lib/factory/artifacts }

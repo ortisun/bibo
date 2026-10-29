@@ -41,8 +41,19 @@ Exit codes of every script here, the same as `scripts/ci.sh`: `0` done, `1` fail
   local-up: error: the stack did not start or did not become healthy (the reason is in the lines above; ...)
   ```
 
-- **Why.** The factory images are built on this machine and are never pulled (`pull_policy: never`), and nobody builds them yet: `apps/api` prints "not implemented yet", and the worker binary exits 3. So the profile cannot start. This is the expected state until the composition work produces images.
+- **Why.** The factory images are built on this machine and are never pulled (`pull_policy: never`), and nobody builds them yet: the programs exist (`factory-api` serves HTTP, `factory-worker` runs its start-up checks and exits 3 until the credentials are supplied), but no Dockerfile for either is in the repository. So the profile cannot start. This is the expected state until someone writes the two Dockerfiles.
 - **Do.** Run `scripts/local-up.sh` without `--factory`. To try your own build, tag it `factory-worker:local` / `factory-api:local`, or set `FACTORY_WORKER_IMAGE` / `FACTORY_API_IMAGE`. What the failed start already created (PostgreSQL, the `data` and `broker` networks) is removed by `scripts/local-up.sh --down` or `--destroy --yes`. An earlier version of the script named only the `local` profile when it removed things and left the `broker` network behind; that is fixed, and the smoke and drill scripts name every profile when they clean up.
+
+### `the secret files ... do not belong to the user the factory containers run as` (Linux)
+
+- **You see** (`scripts/local-up.sh --factory` on a Linux host, exit 1, before anything starts). The text is from the script; this case was **not provoked**, because the factory profile cannot start without its images:
+
+  ```text
+  local-up: error: the secret files pg_url_api(owner 1000) pg_url_worker(owner 1000) ... do not belong to the user the factory containers run as (10010). The services refuse a secret that others can read, and Compose keeps the owner of the host file, so they could not read it. Either run the stack as the owner of the files: FACTORY_UID=$(id -u) FACTORY_GID=$(id -g) scripts/local-up.sh --factory (...), or give the files to 10010: sudo chown ...
+  ```
+
+- **Why.** Compose mounts a file secret with the owner and mode of the host file. The api and the worker refuse a secret that group or others can read, so the files are mode 0600, and only their owner can read them. The containers run as `10010:10010` unless told otherwise.
+- **Do.** Set `FACTORY_UID` and `FACTORY_GID` to your numbers, for this command and for `scripts/backup.sh` and `scripts/restore.sh` (they check the owner of the artifact volume against the same two variables). Choose them before the first start. `artifacts-init` gives the top folder of the artifact volume to the user it is told about, but it never touches the blobs inside; a volume that already holds artifacts written by another user keeps them with that owner, and the new user may not be able to read them. That consequence is reasoned from the file modes and was not tried. See [local-deployment.md](local-deployment.md), "File secrets and the container user".
 
 ### `waiting for the Docker lock (held by: pid ... thread ...)`
 
@@ -156,7 +167,7 @@ Each of these is a failed check in the report of `scripts/restore.sh`. The targe
 ### `ledger-verify-chain-in-database` and `ledger-chain-rebuilt-outside-postgresql` fail
 
 - **Why.** The chain in the restored database does not verify: a row was edited, one is missing, or a head is behind. If `content-hash` and `row-counts` pass, the damage was already in the backup.
-- **Do.** The restored database is not trustworthy as evidence. Compare with an older backup (`scripts/restore-drill.sh` shows the procedure) and with any head hash kept outside the database (the pull request body carries one per job, ADR 0008).
+- **Do.** The restored database is not trustworthy as evidence. Compare with an older backup (`scripts/restore-drill.sh` shows the procedure) and with any head hash kept outside the database (the pull request body carries one per job, architecture decision record (ADR) 0008).
 
 ## Wrong tools
 
@@ -164,9 +175,9 @@ Each of these is a failed check in the report of `scripts/restore.sh`. The targe
 - Diesel CLI other than 2.3.11: a warning, because `schema.rs` formats differently; the migrations still run. Install the pinned one: `cargo install diesel_cli --version 2.3.11 --locked --no-default-features --features postgres`.
 - bash 3.2 (the macOS default) is supported and was the shell for every run above.
 
-## What stays unverified until the binaries exist
+## What stays unverified until the images exist
 
-- `api` and `worker` have not started. Nothing was checked about their configuration files, the way they read the secret files (and whether uid 10010 can read a file secret that is mode 0600 on the host), the artifact directory permissions as seen by the storage crate (the volume is `10010:10010 700` and the crate's modes are 0700 and 0400, but no Rust code wrote to it), or how the worker reaches Docker.
+- `api` and `worker` have not started, because no Dockerfile for either is in the repository. The two example configuration files are parsed by the programs' own tests, which says nothing about a container. Nothing was checked about the way a container reads the secret files (whether the user in the container can read a file secret that is mode 0600 on the host; the `FACTORY_UID` handling is written for this and has not run), the artifact directory permissions as seen by the storage crate (the volume is `10010:10010 700` and the crate's modes are 0700 and 0400, but no Rust code wrote to it), or how the worker reaches Docker.
 - The model broker, the per-job sidecars on the `broker` network, and a sandbox that is started by the supervisor. The smoke test uses the real agent image as a probe on a similar network; it is not the supervisor.
 - `docker compose up` of the `factory` profile without the script.
 - A Linux host, and the pool-exhaustion case above.

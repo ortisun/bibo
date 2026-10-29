@@ -33,6 +33,20 @@ ops_usage_error() { printf '%s: %s\n' "$OPS_TOOL" "$*" >&2; exit 2; }
 
 ops_py() { python3 -I "$OPS_LIB_DIR/factory_ops.py" "$@"; }
 
+# The user the api and the worker run as, and that owns the artifact volume: 10010:10010 unless FACTORY_UID and
+# FACTORY_GID say otherwise (infra/compose/local.yml reads the same two names). A Linux host needs them when the
+# secret files belong to a user other than 10010, because Compose mounts a file secret with the owner and mode of
+# the host file and the services refuse a secret that group or others can read.
+OPS_FACTORY_UID=${FACTORY_UID:-10010}
+OPS_FACTORY_GID=${FACTORY_GID:-10010}
+
+# True when $1 and $2 are a user and a group id the factory services may run as: whole numbers, the user not root.
+ops_container_user_ok() {
+  case "$1" in '' | *[!0-9]* | 0) return 1 ;; esac
+  case "$2" in '' | *[!0-9]*) return 1 ;; esac
+  return 0
+}
+
 # ---- cleanup ------------------------------------------------------------------------------------
 
 OPS_CLEANUPS=()
@@ -202,6 +216,18 @@ ops_make_secrets() {
     fi
     chmod 0600 "$dir/$name"
   done
+  # The decision signing key and the webhook secret. The API signs decision requests with the key and the worker
+  # verifies them with it, so both mount this one file; the programs refuse a key under 32 bytes or one with no
+  # entropy, and a file that group or others can read. 32 random bytes in hex, from the operating system's random
+  # source. A key or secret that exists is NEVER replaced: requests that were signed with it and are still waiting
+  # for a decision would become unverifiable, and the webhook would stop matching the one GitHub holds. (A file
+  # that is empty is not a key, and is made again.) Neither is part of a backup (docs/operations/backup-and-restore.md).
+  for name in decision_signing_key webhook_secret; do
+    if [ ! -s "$dir/$name" ]; then
+      (umask 077 && python3 -I -c 'import secrets; print(secrets.token_hex(32))' >"$dir/$name")
+    fi
+    chmod 0600 "$dir/$name"
+  done
   # The worker wants each database URL in a file of its own (url_file in its configuration). The URLs are made from
   # the password files, every time, so the two never disagree. No newline at the end: the file is exactly the URL.
   local pair
@@ -212,6 +238,21 @@ ops_make_secrets() {
 }
 
 ops_secret() { tr -d '\n' <"$OPS_SECRETS_DIR/$1"; }
+
+# On a Linux host a file secret keeps the owner of the host file inside the container, and the services refuse a
+# secret that group or others can read, so they can read it only when they run as that owner. Stop before anything
+# starts, with the two ways out, when the files in $1 belong to a user other than $2. Docker Desktop for macOS
+# presents the files to the container differently, so nothing is checked there (UNVERIFIED either way: no run of
+# the factory profile has happened). OPS_PLATFORM stands in for `uname -s` in the tests.
+ops_check_secret_readers() {
+  local dir=$1 uid=$2 name owner wrong=""
+  [ "${OPS_PLATFORM:-$(uname -s)}" = Linux ] || return 0
+  for name in pg_url_api pg_url_worker pg_url_engine decision_signing_key webhook_secret; do
+    owner=$(python3 -I -c 'import os, sys; print(os.stat(sys.argv[1]).st_uid)' "$dir/$name") || ops_die "cannot read the owner of $dir/$name"
+    [ "$owner" = "$uid" ] || wrong="$wrong $name(owner $owner)"
+  done
+  [ -z "$wrong" ] || ops_die "the secret files$wrong do not belong to the user the factory containers run as ($uid). The services refuse a secret that others can read, and Compose keeps the owner of the host file, so they could not read it. Either run the stack as the owner of the files: FACTORY_UID=\$(id -u) FACTORY_GID=\$(id -g) scripts/local-up.sh --factory (use the same two variables for backup and restore), or give the files to $uid: sudo chown $uid:${OPS_FACTORY_GID} $dir/*"
+}
 
 ops_free_port() {
   python3 -I -c 'import socket
@@ -315,11 +356,12 @@ find sha256 -type f -printf "%s %p\n" 2>/dev/null | LC_ALL=C sort -k2 >/tmp/s
 awk '"'"'NR==FNR{h[$2]=$1;next}{print h[$2], $1, $2}'"'"' /tmp/h /tmp/s'
 
 # Permissions the storage crate sets (crates/storage/src/artifact_fs): blobs 0400, folders 0700, owned by the
-# factory user, nothing but files and folders, nothing outside sha256/.
+# factory user (OPS_FACTORY_UID:OPS_FACTORY_GID, 10010:10010 unless FACTORY_UID and FACTORY_GID are set), nothing
+# but files and folders, nothing outside sha256/. The key "not_owned_by_10010" keeps its name for the reports.
 OPS_STATE_SCRIPT='cd /v || exit 1
 a=$(find sha256 -type f ! -perm 0400 2>/dev/null | wc -l)
 b=$(find . -type d ! -perm 0700 | wc -l)
-c=$(find . \( ! -user 10010 -o ! -group 10010 \) | wc -l)
+c=$(find . \( ! -user '"$OPS_FACTORY_UID"' -o ! -group '"$OPS_FACTORY_GID"' \) | wc -l)
 d=$(find . -mindepth 1 ! -type f ! -type d | wc -l)
 e=$(find . -mindepth 1 -type f ! -path "./sha256/*" | wc -l)
 printf "{\"files_not_0400\":%s,\"folders_not_0700\":%s,\"not_owned_by_10010\":%s,\"links_or_special_files\":%s,\"files_outside_sha256\":%s}\n" $a $b $c $d $e'

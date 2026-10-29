@@ -8,7 +8,7 @@
 #
 # HOW TO START IT
 #   scripts/local-up.sh              the "local" profile: PostgreSQL 18 and the artifact volume
-#   scripts/local-up.sh --factory    also the "factory" profile (only once the images exist)
+#   scripts/local-up.sh --factory    also the "factory" profile (only once you have built the two images)
 #   scripts/smoke.sh                 starts a throwaway copy with the "test" profile and checks it
 #   Every setting comes from the environment (see the list below). Nothing is read from a file
 #   that is committed, and no secret is in this file.
@@ -19,11 +19,11 @@
 #            a loopback port chosen by the script, no restart, every object labelled
 #            factory.test=true. Adds "sandbox-probe", a container that behaves like a sandbox so
 #            the smoke script can prove it has no route to PostgreSQL.
-#   factory  the factory's own services, "api" and "worker". ENABLED WHEN THE BINARIES EXIST: today
-#            apps/api and apps/worker print "not implemented yet" and exit, so nothing builds an
-#            image for them. They are written down here so the composition work has one place to
-#            plug in. The contract (image names, command, environment variables) is in
-#            docs/operations/local-deployment.md, section "Contract for the factory services".
+#   factory  the factory's own services, "api" and "worker". The programs exist (apps/api serves HTTP; apps/worker
+#            runs its start-up checks and, until the credentials are supplied, exits with code 3, BLOCKED), but
+#            no Dockerfile for either is in the repository, so nobody has built the two images and this profile
+#            has never been started. The contract (image names, configuration files, secret files, the user) is
+#            in docs/operations/local-deployment.md, section "Contract for the factory services".
 #
 # NETWORK LAYOUT (docs/security/sandbox-policy.md section 5)
 #   data       PostgreSQL, api, worker. The only network PostgreSQL is on. Sandbox containers and
@@ -39,6 +39,15 @@
 # SETTINGS (environment variables, all optional unless marked)
 #   FACTORY_SECRETS_DIR   REQUIRED. A folder holding the secret files named under "secrets:" below.
 #                         scripts/local-up.sh creates it (mode 0700, files 0600).
+#   FACTORY_UID, FACTORY_GID   The user the api and the worker run as, and the owner of the artifact volume.
+#                         Default 10010:10010. Compose mounts a file secret with the owner and mode of the host
+#                         file, and the services refuse a secret that group or others can read, so on a Linux
+#                         host the container user has to be the user that owns the files: set these to
+#                         `id -u` and `id -g` of the person who ran scripts/local-up.sh. Set them the same way
+#                         for every script (backup, restore). See docs/operations/local-deployment.md.
+#   FACTORY_ALLOWLIST_DIR A folder that holds allowlist.yaml, the named people and their designations. Mounted
+#                         read-only into the api and the worker. Default ./allowlist next to this file
+#                         (ignored by Git). Without the file every request that needs a designation is refused.
 #   FACTORY_PG_PORT       Loopback port for PostgreSQL. Default 55432.
 #   FACTORY_API_PORT      Loopback port for the API (factory profile). Default 8080.
 #   FACTORY_PG_IMAGE      Override the PostgreSQL image. Keep it pinned by digest.
@@ -79,8 +88,9 @@ x-hardened: &hardened
       max-file: "3"
 
 # The user the factory services and the artifact volume use. A number, not a name, so it means the
-# same thing in every image. 10001 to 10003 are taken by the sandbox images.
-x-factory-user: &factory-user "10010:10010"
+# same thing in every image. 10001 to 10003 are taken by the sandbox images. It is 10010:10010 unless
+# FACTORY_UID and FACTORY_GID say otherwise (see the settings above for why a Linux host may need that).
+x-factory-user: &factory-user "${FACTORY_UID:-10010}:${FACTORY_GID:-10010}"
 
 # The PostgreSQL image: 18.6 on Debian, pinned by the digest of its multi-platform index, as ADR 0007
 # (revised by ADR 0012) requires. It is the image the database tests ran on (docs/database/running.md).
@@ -139,8 +149,9 @@ services:
   # A one-shot job that gives the volume the owner and mode the storage crate expects. The crate
   # (crates/storage/src/artifact_fs) creates its directories as 0700 and its blobs as 0400, and it
   # opens the root with no way to fix permissions, so the root must already belong to the factory user
-  # and be closed to everyone else. The job changes only the top folder, never the blobs inside, so
-  # it is safe to run on a volume that already holds data. It has no network at all.
+  # (FACTORY_UID:FACTORY_GID, 10010:10010 by default) and be closed to everyone else. The job changes only
+  # the top folder, never the blobs inside, so it is safe to run on a volume that already holds data. It
+  # has no network at all.
   artifacts-init:
     image: *postgres-image
     profiles: [local, test, factory]
@@ -149,7 +160,7 @@ services:
     network_mode: none
     user: "0:0"
     entrypoint: ["/bin/sh", "-c"]
-    command: ["install -d -m 0700 -o 10010 -g 10010 /artifacts && chown 10010:10010 /artifacts && chmod 0700 /artifacts"]
+    command: ["install -d -m 0700 -o ${FACTORY_UID:-10010} -g ${FACTORY_GID:-10010} /artifacts && chown ${FACTORY_UID:-10010}:${FACTORY_GID:-10010} /artifacts && chmod 0700 /artifacts"]
     volumes:
       - artifacts:/artifacts
     cap_drop: [ALL]
@@ -181,14 +192,20 @@ services:
     cpus: 0.5
     pids_limit: 64
 
-  # ---- The factory services (profile "factory": ENABLED WHEN THE BINARIES EXIST) ---------------
-  # State on 2026-10-28, read from feat/slice-0-foundation (apps/worker/README.md): the worker is a library and a
-  # binary. The binary runs its start-up checks and exits with code 3 (BLOCKED) because several adapters are
-  # not assembled yet. apps/api still prints "not implemented yet". Nothing builds an image for either.
+  # ---- The factory services (profile "factory": needs two images that nobody has built yet) ----
+  # State on 2026-10-29: apps/api is a working HTTP server (docs/reference/commands.md, "The API server"). apps/worker
+  # runs its start-up checks and exits with code 3 (BLOCKED) until a deployment supplies the model provider, the
+  # GitHub App and the tenants. No Dockerfile for either is in the repository, so there is no image to run, and
+  # nothing in this profile has been started. The files below are what the programs read, taken from the code.
   #
-  # How they are configured is the composition work's decision, and this file follows it: ONE YAML file named
-  # by FACTORY_CONFIG, an environment that can only tighten it (FACTORY_PROFILE, FACTORY_LOG), and every secret
+  # How they are configured: ONE YAML file named by FACTORY_CONFIG (the examples in config/ are parsed by the
+  # programs' own tests), an environment that can only tighten it (FACTORY_PROFILE, FACTORY_LOG), and every secret
   # a path to a file. The contract is in docs/operations/local-deployment.md, "Contract for the factory services".
+  #
+  # The decision signing key (secret "decision_signing_key") is mounted in BOTH services, at the same path. The API
+  # signs each decision request with it and the worker verifies the signature before it reads the record; a worker
+  # that holds another value rejects every request as unsigned. scripts/smoke.sh --static fails when only one of the
+  # two lists it.
   api:
     image: ${FACTORY_API_IMAGE:-factory-api:local}
     # Built on this machine, never pulled.
@@ -204,19 +221,25 @@ services:
     secrets:
       - source: pg_url_api
         target: db_api
+      - decision_signing_key
+      - webhook_secret
     ports:
       - "127.0.0.1:${FACTORY_API_PORT:-8080}:8080"
     volumes:
       - ${FACTORY_API_CONFIG:-./config/api.local.example.yaml}:/etc/factory/api.yaml:ro
       - artifacts:/var/lib/factory/artifacts
+      # The protected checkout the API reads (protected_checkout in its configuration): the policies, and the
+      # allowlist file that gives a person a designation. Read-only; the repository root is not mounted.
+      - ../../policies:/etc/factory/protected/policies:ro
+      - ${FACTORY_ALLOWLIST_DIR:-./allowlist}:/etc/factory/protected/allowlist:ro
     networks: [data]
     depends_on:
       postgres:
         condition: service_healthy
       artifacts-init:
         condition: service_completed_successfully
-    # No health check yet: the binary does not exist. When it offers one, add it here. The image will have no
-    # shell and no curl, so the check has to be a subcommand of the binary.
+    # No health check yet. The API answers GET /healthz and GET /readyz, but the image will have no shell and no
+    # curl, and the binary has no subcommand that asks them, so a check has to wait for one.
     tmpfs:
       - /tmp
     mem_limit: 512m
@@ -228,8 +251,8 @@ services:
     pull_policy: never
     <<: *hardened
     profiles: [factory]
-    # Exit code 3 is BLOCKED (adapters not assembled): try a few times, then stop. A worker that restarts for ever
-    # on a condition that only a person can fix hides the condition.
+    # Exit code 3 is BLOCKED (a credential or an adapter is missing): try a few times, then stop. A worker that
+    # restarts for ever on a condition that only a person can fix hides the condition.
     restart: on-failure:5
     labels: *labels
     user: *factory-user
@@ -249,6 +272,7 @@ services:
         target: db_worker
       - source: pg_url_engine
         target: db_engine
+      - decision_signing_key
     volumes:
       - ${FACTORY_WORKER_CONFIG:-./config/worker.local.example.yaml}:/etc/factory/worker.yaml:ro
       - artifacts:/var/lib/factory/artifacts
@@ -258,6 +282,7 @@ services:
       - ../../agents:/srv/factory/protected/agents:ro
       - ../../profiles:/srv/factory/protected/profiles:ro
       - ../../schemas:/srv/factory/protected/schemas:ro
+      - ${FACTORY_ALLOWLIST_DIR:-./allowlist}:/srv/factory/protected/allowlist:ro
       - ../sandbox-images/images.json:/srv/factory/protected/infra/sandbox-images/images.json:ro
     networks: [data, broker]
     depends_on:
@@ -294,6 +319,10 @@ volumes:
 # (infra/compose/secrets/.gitignore). A service gets only the secrets it lists.
 #   pg_superuser_password   the bootstrap superuser; only the postgres image reads it
 #   pg_url_*                the database URL of one login, in the form the worker's configuration wants (url_file)
+#   decision_signing_key    32 random bytes in hex. The API signs decision requests with it and the worker verifies
+#                           with it: both services mount this one file. It is NOT in a backup (see
+#                           docs/operations/backup-and-restore.md for what its loss means).
+#   webhook_secret          the secret of the GitHub webhook deliveries; only the API reads it.
 secrets:
   pg_superuser_password:
     file: ${FACTORY_SECRETS_DIR:?Set FACTORY_SECRETS_DIR to a folder of secret files, or run scripts/local-up.sh}/pg_superuser_password
@@ -303,3 +332,7 @@ secrets:
     file: ${FACTORY_SECRETS_DIR:?Set FACTORY_SECRETS_DIR to a folder of secret files, or run scripts/local-up.sh}/pg_url_worker
   pg_url_engine:
     file: ${FACTORY_SECRETS_DIR:?Set FACTORY_SECRETS_DIR to a folder of secret files, or run scripts/local-up.sh}/pg_url_engine
+  decision_signing_key:
+    file: ${FACTORY_SECRETS_DIR:?Set FACTORY_SECRETS_DIR to a folder of secret files, or run scripts/local-up.sh}/decision_signing_key
+  webhook_secret:
+    file: ${FACTORY_SECRETS_DIR:?Set FACTORY_SECRETS_DIR to a folder of secret files, or run scripts/local-up.sh}/webhook_secret

@@ -1,7 +1,7 @@
 # Architecture overview
 
-- Status: Slice 0 baseline. **Nothing described here is built.** Every box in the diagrams is a plan, tagged with the slice that builds it.
-- Date: 2026-10-27
+- Status: Slice 0 baseline, brought up to date on 2026-10-29. The boxes tagged S1 are built: the crates and binaries in the table below exist and are tested in test mode. The boxes tagged S2 and S4 (the event stream, the S3-compatible store, the dashboard) are plans. The factory has not run against a real model, a real GitHub App or a protected repository: see the [production guide](../guides/production.md).
+- Date: 2026-10-27, revised 2026-10-29
 - Author: software_architect
 - Decisions behind this document: [ADR index](../adr/README.md)
 - Companion documents: [state machines](state-machine.md), [slice plan](slice-plan.md), [contract schemas](../../schemas/README.md). The detailed threat model is written by the security specialist under `docs/security/` and is not duplicated here.
@@ -40,13 +40,13 @@ Tags: **S1** is built in Slice 1, **S2** in Slice 2, **S4** in Slice 4. Solid ar
 
 ```mermaid
 C4Container
-  title Container view - Software Factory (last updated 2026-10-27)
+  title Container view - Software Factory (last updated 2026-10-29)
   Person(approver, "Approver and operator", "Decides on the draft pull request")
   System_Ext(github, "GitHub", "Issues, pull requests, status checks, webhooks")
   System_Ext(providers, "Model providers", "Anthropic and OpenAI services")
   System_Boundary(factory, "Software Factory") {
     Container(api, "API", "Rust, Axum - S1", "Verifies webhook signatures, accepts jobs and decisions, serves status and timeline")
-    Container(cli, "CLI", "Rust - S1", "Operator commands, same use cases as the API")
+    Container(cli, "CLI", "Rust - S1", "Operator commands. An HTTP client of the API, with no database login")
     Container(worker, "Worker", "Rust, Tokio - S1", "Engine loop, sandbox supervisor, host-side git, and the model broker listener that holds the real provider keys")
     ContainerDb(pg, "PostgreSQL", "PostgreSQL - S1", "Jobs, stage runs, attempts, leases, approvals, outbox, evidence ledger")
     ContainerDb(blobs, "Artifact store", "Local filesystem S1, S3-compatible S2", "Content-addressed blobs: logs, diffs, reports")
@@ -58,7 +58,7 @@ C4Container
   Rel(github, api, "Sends webhooks", "HTTPS, HMAC signature")
   Rel(approver, cli, "Runs commands", "terminal")
   Rel(api, pg, "Reads and writes state", "SQL over TCP")
-  Rel(cli, pg, "Reads and writes state", "SQL over TCP")
+  Rel(cli, api, "Sends commands and queries", "HTTP JSON, bearer token")
   Rel(worker, pg, "Transitions, leases, ledger, outbox", "SQL over TCP")
   Rel(worker, blobs, "Stores and reads artifacts", "file I/O")
   Rel(worker, sandbox, "Creates, verifies, starts, kills, ingests output", "docker CLI, argument vectors")
@@ -70,7 +70,7 @@ C4Container
   Rel(dash, api, "Queries (S4)", "HTTPS JSON")
 ```
 
-Process boundaries to keep in mind. The worker is the only process that starts containers, runs git, writes artifacts, holds the provider keys and pushes to GitHub. Agent command line tools, Spec Kit skills and the builder's commands run inside the sandbox container and never on the host. The API never executes work. The CLI uses the same use cases in process in Slice 1 and becomes an HTTP client later. Spec Kit is not drawn as a container: it is a set of files and scripts that the agent runs inside the sandbox.
+Process boundaries to keep in mind. The worker is the only process that starts containers, runs git, writes artifacts, holds the provider keys and pushes to GitHub. Agent command line tools, Spec Kit skills and the builder's commands run inside the sandbox container and never on the host. The API never executes work. The CLI is an HTTP client of the API and holds no database login; only its `probe` command runs checks in process. Spec Kit is not drawn as a container: it is a set of files and scripts that the agent runs inside the sandbox.
 
 ## Pipeline
 
@@ -225,7 +225,7 @@ flowchart TB
 | `testkit` | `factory-testkit` | 2 | test-support | domain, ports | none | 0 | Labelled fakes: FakeClock, InMemoryStore, FakeSandbox, FakeAgentRuntime, FakeModelBroker, FakeChangeHost, FakeWorkspaceProvider, FakeJobRepo, FakeSpecificationProvider, ScriptedProcessRunner and FakeWebhookVerifier, with FakeRemote shared by the workspace and change host fakes. Every fake reports fidelity fake. Also the shared contract suites and the register that shows every check can fail. May appear only in dev-dependencies. |
 | `api` | `factory-api` | 3 | binary | all library crates it wires | none | 1 | HTTP API: GitHub webhook endpoint with signature verification, job submission, decisions, status and timeline queries, health endpoints. |
 | `worker` | `factory-worker` | 3 | binary | all library crates it wires | none | 1 | Runs the engine loop in one process: claim, execute stage handlers, sweep leases and deadlines, supervise sandboxes, and host the model broker listener in Slice 1. Single concurrency in Slice 1. |
-| `cli` | `factory-cli` | 3 | binary | all library crates it wires | none | 1 | Operator command line: submit, status, timeline, approve, reject, rework, pause, resume, cancel, probe. Calls the same use cases in process in Slice 1. |
+| `cli` | `factory-cli` | 3 | binary | all library crates it wires | none | 1 | Operator command line and HTTP client of the API: health, submit, status, timeline, approve, reject, rework, pause, resume, cancel, approve-dependency, approve-build-code, probe. Holds no database login: every command but probe goes to the API over HTTP, and probe runs the start-up checks that need no credential. |
 | `egress-sidecar` | `factory-egress-sidecar` | 3 | binary | all library crates it wires | none | 1 | The per-job relay binary, shipped as a container image next to the sandbox image. Holds no real credential. |
 <!-- GENERATED:end crate-table -->
 
@@ -342,7 +342,7 @@ Targets, not measurements. Nothing has been built or measured yet. Each row name
 | Every Mermaid block in the architecture documents parses | `docs/architecture/tools/check-mermaid.sh docs/architecture/overview.md docs/architecture/state-machine.md docs/architecture/slice-plan.md` | see the Slice 0 report |
 | The Python tools type-check | `pyright docs/architecture/tools/*.py` | 0 errors |
 
-Checks that are designed but not built: the `xtask` architecture check, the clippy configuration per crate, `cargo deny`, the Rust conformance tests. They belong to the Slice 0 work packages in the [slice plan](slice-plan.md).
+The checks that were designed but not built when this table was written now run: the `xtask` architecture check (`cargo xtask check-architecture`), the clippy ban list (`cargo xtask clippy-toml`), `cargo deny` and the workspace tests. `scripts/ci.sh --list` names every step.
 
 ## Environment facts
 

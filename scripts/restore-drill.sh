@@ -95,14 +95,15 @@ ops_say "restore-drill: project $OPS_PROJECT, mode $mode$([ "$breaks" = 1 ] && e
 
 # ---- helpers ------------------------------------------------------------------------------------------------------
 
-# Five blobs, written the way the storage crate writes them: sha256/ab/cd/<hash>, mode 0400, folders 0700, owner 10010.
+# Five blobs, written the way the storage crate writes them: sha256/ab/cd/<hash>, mode 0400, folders 0700, owned by the
+# factory user (10010:10010 unless FACTORY_UID and FACTORY_GID are set).
 # Prints "<hash> <size>" for each. One of them is about 200 KB so that the archive is not trivially small.
 SEED_BLOBS_SCRIPT='cd /v && umask 077
 put() { h=$(sha256sum "$1" | cut -d" " -f1); d="sha256/$(echo "$h" | cut -c1-2)/$(echo "$h" | cut -c3-4)"
   mkdir -p "$d"; cp "$1" "$d/$h"; chmod 0400 "$d/$h"; echo "$h $(wc -c <"$1" | tr -d " ")"; }
 i=1; while [ $i -le 4 ]; do printf "factory drill artifact number %s\n" "$i" >/tmp/b; put /tmp/b; i=$((i+1)); done
 yes "a large drill block that repeats" | head -n 6000 >/tmp/b; put /tmp/b
-chown -R 10010:10010 /v/sha256; chown 10010:10010 /v; find /v -type d -exec chmod 0700 {} +'
+chown -R '"$OPS_FACTORY_UID:$OPS_FACTORY_GID"' /v/sha256; chown '"$OPS_FACTORY_UID:$OPS_FACTORY_GID"' /v; find /v -type d -exec chmod 0700 {} +'
 
 drill_prepare_volume() { ops_compose run --rm --no-deps -T artifacts-init >/dev/null || ops_die "cannot prepare the artifact volume"; }
 
@@ -323,14 +324,15 @@ for n in sorted(os.listdir(d)):
     if m != 0o600: bad.append("%s=%o" % (n, m))
 print(" ".join(bad) or "ok")' "$dir")
   if [ "$modes" = ok ]; then ops_check backup-modes PASS "folder 0700, every file 0600"; else ops_check backup-modes FAIL "wrong modes: $modes"; fi
-  # No secret value may appear in the backup. The database dump is compressed, so the plain-text form of the
-  # same dump is searched too.
+  # No secret value may appear in the backup: the four database passwords, the decision signing key and the webhook
+  # secret (the stack's other secrets, which a backup never holds). The database dump is compressed, so the
+  # plain-text form of the same dump is searched too.
   pat="$OPS_RUN_DIR/patterns"
-  (umask 077; for s in pg_superuser_password pg_password_api pg_password_worker pg_password_engine; do ops_secret "$s"; echo; done >"$pat")
+  (umask 077; for s in pg_superuser_password pg_password_api pg_password_worker pg_password_engine decision_signing_key webhook_secret; do ops_secret "$s"; echo; done >"$pat")
   local hits=0 f
   for f in "$dir"/*; do grep -a -F -q -f "$pat" "$f" && hits=$((hits + 1)); done
   if docker exec "$OPS_PG" pg_dump -U factory_admin -d factory --format=plain | grep -a -F -q -f "$pat"; then hits=$((hits + 1)); fi
-  if [ "$hits" = 0 ]; then ops_check backup-has-no-secrets PASS "none of the 4 generated passwords is in any backup file or in the plain-text dump"; else
+  if [ "$hits" = 0 ]; then ops_check backup-has-no-secrets PASS "none of the 6 generated secrets (4 passwords, the decision signing key, the webhook secret) is in any backup file or in the plain-text dump"; else
     ops_check backup-has-no-secrets FAIL "$hits file(s) contain a secret value"; fi
   rm -f "$pat"
 }

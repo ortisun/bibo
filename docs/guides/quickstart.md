@@ -127,7 +127,7 @@ This starts a throwaway copy of the local stack and probes its networks with the
 - Steps 6 to 9 pass when PostgreSQL 18 is installed. Step 7 reports `10 tests run: 10 passed`.
 - Steps 10 and 11 pass when Docker is available.
 
-Run `scripts/docs-check.sh --quickstart` to have every marked step run in a fresh clone of the committed code. On the laptop used to write this guide it took 173 seconds. It ended `BLOCKED` with steps 1 to 10 passed, because step 11 needs a Docker daemon that did not answer. `BLOCKED` is the right answer on a machine without Docker: it says which steps could not run, and it is not a pass.
+Run `scripts/docs-check.sh --quickstart` to have every marked step run in a fresh clone of the committed code. This is a check you run by hand: `scripts/ci.sh` does not run it, because it builds the repository and ends BLOCKED on a machine without Docker. On the laptop used to write this guide it took 173 seconds. It ended `BLOCKED` with steps 1 to 10 passed, because step 11 needs a Docker daemon that did not answer. `BLOCKED` is the right answer on a machine without Docker: it says which steps could not run, and it is not a pass.
 
 ## When Docker is missing
 

@@ -3,7 +3,7 @@
 - Status: written for the work package `s1-local-deployment`. Every command and result below was run on 2026-10-28 on a macOS laptop with Docker Desktop 29.9.2, PostgreSQL 18.6 in Docker, `psql` 18.6 and Diesel 2.3.11. The results are in the last section.
 - Form: how-to guide and reference.
 - Goal: take a backup of the factory database and the artifact directory, restore it into a new stack, and know, from a script that exits non-zero on any difference, that the restore is the same system.
-- Source: ADR 0007 and 0012 (roles, row-level security), ADR 0008 (artifact layout, the ledger, "backups of the artifact directory are an `sre` item for Slice 1"), `docs/database/ledger-and-audit.md`, `docs/database/for-the-storage-crate.md`.
+- Source: architecture decision records (ADR) 0007 and 0012 (roles, row-level security), ADR 0008 (artifact layout, the ledger, "backups of the artifact directory are an `sre` item for Slice 1"), `docs/database/ledger-and-audit.md`, `docs/database/for-the-storage-crate.md`.
 
 ## Back up
 
@@ -37,7 +37,21 @@ The manifest records: the format (`factory-backup/1`), the time (read from the s
 
 **Backups are not encrypted at rest.** This is a local setup. The folder holds tenant data in clear text, protected by modes 0700 and 0600 and by the user account, which is the same exposure as the Docker volumes it copies. Keep the folder on an encrypted disk (FileVault). Encrypt a backup (for example with `age`) before it goes anywhere else. A shared or production backup needs encryption, a key held elsewhere, and a retention rule that someone owns; this package does not provide them.
 
-**No secret is stored.** The role passwords stay out of `globals.sql`; a restore sets them again from the secret files. The drill searches every backup file, and a plain-text dump of the database, for each of the four generated passwords and requires no match. The database itself should hold no secret (tokens are stored hashed, ADR 0007); that is a property of the application, and this check can only prove the four values it knows about.
+**No secret is stored.** The role passwords stay out of `globals.sql`; a restore sets them again from the secret files. The decision signing key and the webhook secret are not in the backup either: `scripts/backup.sh` never reads the secrets folder (a unit test scans the script for the names of the secret files), and `restore.sh` refuses a backup folder that holds any file a backup does not define (check `backup-holds-only-its-own-files`; a name that starts with a dot is ignored). The drill searches every backup file, and a plain-text dump of the database, for each of the four generated passwords, the signing key and the webhook secret, and requires no match. The database itself should hold no secret (tokens are stored hashed, ADR 0007); that is a property of the application, and this check can only prove the six values it knows about.
+
+### The decision signing key is not in the backup
+
+The API signs each decision request with one key, and the worker applies a request only if its signature verifies with the same key (`decisions.key_file`; [local-deployment.md](local-deployment.md), "The decision signing key"). The key lives in `infra/compose/secrets/decision_signing_key`. **It is not in the backup. Keep the secrets folder as you keep the backups, and keep it apart from them**, because a key stored next to the backup it protects is no protection.
+
+What losing it means (read from `crates/composition/src/decisions.rs` and `decision_signing.rs`; not run, because no container of the factory profile has run). The ledger, the audit chains and the artifacts do not depend on the key, so the restore verifies as usual. Every `decision.requested` record is signed with the key that existed when the API wrote it, and so is every marker (`decision.applied`, `decision.rejected`) that the worker wrote after it. With a new key none of them verifies. The worker reads the audit log from the beginning when it starts, so it treats each old request as a request that nobody signed and writes `decision.rejected` with the fixed code `not_signed` for it, and it records the old markers as `decision.marker_ignored`. For a request that was **still waiting for a person** this is the real loss: the person asked and the factory did not act. List those as rejected. For a request that was **already applied** the job and the ledger keep the effect, and the new `decision.rejected` row is noise in the timeline that a reader must not take for a refusal of the earlier decision.
+
+What to do.
+
+1. **Best: bring the old key back before the stack starts.** Copy the old `decision_signing_key` into the secrets folder of the new stack (mode 0600) before the first `scripts/local-up.sh` or `scripts/local-up.sh --bare`. The script makes a key only when the file is absent and never replaces one, so it keeps yours.
+2. **If the old key is gone,** let `scripts/local-up.sh` make a new one. Every request that was waiting for a person is rejected as `not_signed` once the worker reads it. For each job that waits (`factory-cli status JOB`, [stuck waiting for a person](../runbooks/stuck-waiting-for-a-person.md)), the person **repeats the decision**, and the API signs the new request with the new key. Leave out `--key` when you repeat it: the command makes a new idempotency key, and the old key would find the old, rejected record and answer as the first request did.
+3. **If the old key may have leaked,** do not bring it back. Follow [rotate the decision key](../runbooks/rotate-the-decision-key.md) and [a secret may have leaked](../runbooks/suspected-leaked-token.md).
+
+A restore does not need the key, and neither does `scripts/backup.sh`.
 
 ## Restore
 
@@ -50,7 +64,7 @@ scripts/restore.sh --backup ~/.local/share/factory/backups/factory-backup-202610
 scripts/local-up.sh                     # optional: confirms the schema is current and the logins work
 ```
 
-`restore.sh` takes the secrets from `infra/compose/secrets/` (or `--secrets-dir`) and sets the three login passwords from them. It stops at the first failure and prints one line per check.
+`restore.sh` takes the secrets from `infra/compose/secrets/` (or `--secrets-dir`) and sets the three login passwords from them. It does not read the decision signing key; put the old one in that folder before the first start of the new stack (see the previous section). It stops at the first failure and prints one line per check.
 
 1. **The backup is checked first.** `SHA256SUMS` against the files, and the manifest against `SHA256SUMS`. A damaged backup is refused before the target is touched.
 2. **The target must be PostgreSQL 18 (the same major as the backup) and fresh**: no table in `public`, no `factory_*` role besides the bootstrap superuser, an empty artifact volume.
@@ -64,14 +78,15 @@ scripts/local-up.sh                     # optional: confirms the schema is curre
 | `fingerprint-tables`, `-columns`, `-functions`, `-schemas`, `-default_acl`, `-policies`, `-triggers`, `-constraints`, `-indexes` | Grants, owners, row-level security flags and policies, and the definitions are the same. A failure names the kind. |
 | `tables-exist`, `row-counts`, `content-hash` | Every table has the same number of rows and the same SHA-256 over all its rows. |
 | `ledger-heads`, `audit-heads` | The head of every chain equals the one recorded. A chain that lost its tail still verifies on its own (`docs/database/ledger-and-audit.md`), so the head is what notices. |
-| `ledger-verify-chain-in-database`, `audit-verify-chain-in-database` | The database's own verifier functions return NULL for every chain. |
+| `ledger-verify-chain-in-database`, `audit-verify-chain-in-database` | The database's own verifier functions return NULL (no bad link) for every chain. |
 | `ledger-chain-rebuilt-outside-postgresql`, `ledger-heads-equal-manifest` | The ledger chain rebuilt in Python from an export of the rows (`SHA-256(prev_entry_hash + "\n" + canonical_json)`), which does not trust the function that lives in the database being checked. |
 | `audit-chain-rebuilt-outside-postgresql` | The audit chain of every tenant checked by `docs/database/tools/verify_audit_chain.py`. |
 | `login-factory_worker`, `login-factory_api`, `login-factory_engine` | Each logs in over TCP with its restored password and passes the start-up check `role_readiness.sql` with the expected answer. |
 | `forced-rls-isolates-tenants` | Through the tenant login: for every tenant and for `jobs`, `ledger_entries` and `audit_events`, the rows it sees with that tenant's setting are exactly that tenant's rows (counted by the superuser) and none of another tenant's; with no setting it sees nothing; the system login cannot read the ledger. |
 | `artifacts-same-files`, `artifacts-byte-identical`, `artifacts-hash-equals-name`, `artifacts-list-hash` | The same blobs, each with the recorded hash and size, each hashing to its own file name. |
 | `artifact-index-rows-have-blobs` | Every `artifacts` row with backend `local-fs` has a blob on disk. |
-| `artifacts-owner-and-modes` | Blobs 0400, folders 0700, owner `10010:10010`, no link or special file, nothing outside `sha256/`. |
+| `artifacts-owner-and-modes` | Blobs 0400, folders 0700, owner `10010:10010` (or `FACTORY_UID:FACTORY_GID`, which you set for the restore as you did for `scripts/local-up.sh`), no link or special file, nothing outside `sha256/`. |
+| `backup-holds-only-its-own-files` | The backup folder holds the files a backup defines and no other, so no secret file was copied in. |
 
 Exit 0 means the restore finished and every check passed. Exit 1 means it did not. The report (`--report FILE`, JSON, mode 0600) has the format `factory-report/1`: `result`, `failed` (the names), `counts`, `meta` and every check with `name`, `status` (`PASS`, `FAIL`, `SKIP`) and `detail`.
 
@@ -89,7 +104,7 @@ scripts/restore-drill.sh --artifacts --breaks
 scripts/restore-drill.sh --report drill.json
 ```
 
-It makes one Compose project (`factory-drill-<run>`) with one network and two volumes, every object labelled `factory.test=true`, under the Docker lock, and removes it. The steps: start PostgreSQL 18 with a random loopback port, apply the migrations, create the three logins, seed two tenants, three jobs, three ledger chains (4, 3 and 3 entries), two audit chains (5 events each), five artifact blobs (one of 200 KB, one shared by two tenants) and their index rows, with the fixture builders of `docs/database/tests/00_helpers.sql`; run `scripts/backup.sh`; check the modes and look for the four secrets; destroy the container **and both volumes**; start a fresh container on fresh volumes; run `scripts/restore.sh`.
+It makes one Compose project (`factory-drill-<run>`) with one network and two volumes, every object labelled `factory.test=true`, under the Docker lock, and removes it. The steps: start PostgreSQL 18 with a random loopback port, apply the migrations, create the three logins, seed two tenants, three jobs, three ledger chains (4, 3 and 3 entries), two audit chains (5 events each), five artifact blobs (one of 200 KB, one shared by two tenants) and their index rows, with the fixture builders of `docs/database/tests/00_helpers.sql`; run `scripts/backup.sh`; check the modes and look for the six secrets (four passwords, the signing key, the webhook secret); destroy the container **and both volumes**; start a fresh container on fresh volumes; run `scripts/restore.sh`.
 
 `--artifacts` does the artifact half alone: seed blobs, archive, delete the volume, make a new one, unpack, compare the list of hashes, sizes and modes.
 

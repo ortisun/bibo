@@ -1,7 +1,6 @@
 //! The example configurations of the local deployment (`infra/compose/config/*.example.yaml`),
-//! run through the real parser. They were written before the parser was used on them; this test is
-//! the first time. Where the parser refuses an example, the test says so and the README tells the
-//! owner of `infra/**` what to change, because this crate does not edit that directory.
+//! run through the real parser. The tests read the files the Compose stack mounts, not a copy of
+//! their text, so an example that the parser refuses fails here and cannot drift again.
 
 use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
@@ -33,14 +32,13 @@ fn the_worker_example_of_the_local_stack_parses() {
     assert!(config.worker.tenants.is_empty());
 }
 
-/// A deliberate break: an example that the parser refuses. The API example of the same directory
-/// is one, and this test keeps the refusal visible until the API has its own configuration type:
-/// the API example names `database.api` and `listen`, which the worker's configuration does not
-/// have, and lacks the protected checkout and the definitions root, which it requires.
+/// A deliberate break: the API's file given to the worker. The two programs have their own
+/// configuration types, and the API example names `database.api` and `listen`, which the worker's
+/// configuration does not have. Handing it to the worker is refused, not half read.
 #[test]
-fn the_api_example_is_refused_by_the_parser_it_was_never_run_through() {
+fn the_api_example_is_refused_by_the_worker_parser() {
     let refused = FactoryConfig::from_yaml(&example("api.local.example.yaml"))
-        .expect_err("the placeholder is not a worker configuration");
+        .expect_err("the API file is not a worker configuration");
     assert!(matches!(refused, ConfigError::Invalid(_)), "{refused:?}");
 }
 
@@ -75,51 +73,39 @@ fn a_secret_file_is_refused_when_group_or_others_can_read_it_and_accepted_at_060
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// The text the owner of `infra/compose` puts in `config/worker.local.example.yaml`: the existing
-/// file with the key that verifies the decision requests (the same file the API signs with), the
-/// two settings of the sandbox that a deployment that runs agents sets, and the gate definitions
-/// commit that production requires. The credentials stay out: the worker is still BLOCKED until
-/// they are supplied, which is the right answer.
-const CORRECTED_WORKER_EXAMPLE: &str = "\
-profile: local
-protected_checkout: /srv/factory/protected
-definitions_root: /srv/factory/protected
-
-database:
-  tenant: { url_file: /run/secrets/db_worker, login: factory_worker, max_connections: 8 }
-  system: { url_file: /run/secrets/db_engine, login: factory_engine, max_connections: 4 }
-
-artifacts: { root: /var/lib/factory/artifacts }
-
-sandbox:
-  images_catalog: /srv/factory/protected/infra/sandbox-images/images.json
-  token_root: /var/lib/factory/tokens
-  workspace_root: /var/lib/factory/workspaces
-  # remote: { https_host: github.com }   # or { directory: /abs/path } outside production
-  # sidecar_command: []                  # the egress sidecar's arguments; with none the real sidecar refuses to start
-
-broker:
-  listen: 0.0.0.0:8731
-  upstreams: []
-  prices: []
-
-decisions:
-  key_file: /run/secrets/decision_signing_key   # the SAME file the API signs with; mode 0600; 32 bytes or more
-
-# stages:
-#   definition_commit: 1405df66cbe219b0bf6355bc3d60361a8376b6b4   # required in production
-# github: { app_id: 0, key_file: /run/secrets/github_app_key }     # needs a registered GitHub App
-# worker: { name_prefix: worker, poll_interval_ms: 1000, sweep_interval_s: 10, drain_s: 120, tenants: [] }
-";
-
+/// The key that verifies decision requests is the one the API signs with. The worker example names
+/// a key file, the sandbox settings a deployment that runs agents sets, and still holds no
+/// credential: the worker stays BLOCKED until a person supplies them, which is the right answer.
 #[test]
 fn the_corrected_worker_example_for_the_local_stack_parses_and_names_the_shared_key() {
-    let config = FactoryConfig::from_yaml(CORRECTED_WORKER_EXAMPLE).expect("the text parses");
+    let config = FactoryConfig::from_yaml(&example("worker.local.example.yaml"))
+        .expect("the example in infra/compose/config parses");
     assert_eq!(config.profile, Profile::Local);
     assert_eq!(config.broker.listen.port(), 8731);
-    assert!(
-        config.decisions.is_some(),
-        "the key that verifies decision requests is named"
+    let decisions = config
+        .decisions
+        .as_ref()
+        .expect("the key that verifies decision requests is named");
+    assert_eq!(
+        decisions.key_file.path(),
+        std::path::Path::new("/run/secrets/decision_signing_key"),
+        "the path the Compose file mounts the shared secret at"
     );
     assert!(config.broker.upstreams.is_empty() && config.github.is_none());
+}
+
+/// A deliberate break: the example without the decision key still parses in the local profile (the
+/// production profile is the one that requires it), so this test pins the key down by name.
+#[test]
+fn an_example_that_drops_the_decision_key_no_longer_names_the_shared_key() {
+    let without: String = example("worker.local.example.yaml")
+        .lines()
+        .filter(|line| {
+            !line.starts_with("decisions:")
+                && !line.contains("key_file: /run/secrets/decision_signing_key")
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    let config = FactoryConfig::from_yaml(&without).expect("the rest still parses");
+    assert!(config.decisions.is_none());
 }

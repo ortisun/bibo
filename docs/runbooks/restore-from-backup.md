@@ -13,6 +13,7 @@ The database or the artifact directory is lost or damaged: a deleted volume, a d
 - A backup folder made by `scripts/backup.sh`, named `factory-backup-<UTC time>`.
 - Docker, `psql` and the Diesel command line. Without Docker the scripts exit with code 3 and the word `BLOCKED`.
 - The secret files of the stack in `infra/compose/secrets/`, or a folder named with `--secrets-dir`. A backup holds no password. The restore sets the three login passwords from these files.
+- The decision signing key, `decision_signing_key` in the same folder, **kept apart from the backup because the backup does not hold it**. Put the old one in the folder of the new stack before step 2. If it is gone, the restore still works, but every decision request that was waiting for a person is rejected as `not_signed` and the person has to repeat it. See [the key is not in the backup](../operations/backup-and-restore.md).
 - Stop the API and the worker. A restore goes into a new stack, never over data.
 
 ## Steps
@@ -67,6 +68,8 @@ Then start the API and the worker, and read a job you know with `factory-cli sta
 | `FAIL target-major-version` | The target runs another PostgreSQL major version than the backup. Use the same major version. |
 | `FAIL database-restored` | `pg_restore` stopped and rolled back. Read the first two error lines. |
 | `BLOCKED` and exit code 3 | Docker, `psql` or the Diesel command line is missing or not running. Nothing was restored. |
+| `FAIL backup-holds-only-its-own-files` | A file that a backup does not define is in the folder. If it is a secret file, someone copied it in: take it out, and treat it as exposed. |
+| Decisions that were waiting show `decision.rejected` with `not_signed` after the restore | The new stack has another decision signing key than the one that signed them, because the backup does not hold the key. | Each person repeats the decision, without `--key`. See [the key is not in the backup](../operations/backup-and-restore.md). |
 
 [Troubleshooting](../operations/troubleshooting.md), "Restoring", lists every failure with its message and cause.
 

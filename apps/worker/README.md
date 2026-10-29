@@ -48,7 +48,8 @@ database pools with their roles and the schema version, the artifact store, the 
 secret-kind check) and **assembles the real sandbox, workspace and specification providers**
 (`factory_composition::providers`), and then exits with code 3, because four ports need a credential
 or a file that does not exist (the agent runtime, the model router, the issue source and the change
-host), and two delivery methods fail closed (see "Blocked"). It never starts the loop on a half-built
+host), and three inputs of the pipeline have no adapter (`RegistryMetadata`, `AdvisoryDatabase` and
+`CapabilityProbes`; see "Blocked"). It never starts the loop on a half-built
 registry and never fills a hole with a fake: the fakes live in `factory-testkit`, which no binary may
 link (`DEP-03`). The loop, the seams and the engine are exercised by the tests, over the real
 PostgreSQL store.
@@ -360,11 +361,12 @@ run satisfy the stages that need it and the completion of the job.
 records the skip with the basis `DomainProfile`, the rule `static-general-software-profile` and the reason
 "Slice 1 does not profile the domain. It resolves one static profile, general-software, so there is no domain
 to discover." It reports fidelity `real` (no collaborator), and `execute` and `evaluate` fail closed.
-`tests/domain_discovery.rs` runs it over PostgreSQL and reads the ledger back (no assurance level). No function
-of the worker builds the registry of handlers yet: the binary stops at BLOCKED before it would, because the
-agent runtime, the router, the issue source and the change host need credentials. When it does, it registers
-`DomainDiscoveryHandler::new()` with the others; the complete run (`apps/api/tests/complete_run.rs`) registers
-it today.
+`tests/domain_discovery.rs` runs it over PostgreSQL and reads the ledger back (no assurance level). The registry
+of handlers is built by `assemble_loop` in `apps/worker/src/pipeline.rs`, through
+`composition::pipeline::assemble_pipeline`, which registers `DomainDiscoveryHandler::new()` with the others; the
+binary calls it as soon as `external_ports` returns the four ports. Until then the binary stops at BLOCKED before it gets there, because the agent runtime,
+the router, the issue source and the change host need credentials. The complete run
+(`apps/api/tests/complete_run.rs`) registers it today.
 
 **Pending the architect.** The stage's second duty, the tool capability probes with a `BLOCKED` outcome when a
 mandatory profile gate cannot run, is **not** taken by this handler. It stays with the start-up probes
@@ -608,7 +610,8 @@ smallest change.
 | Model router | `policies/model_routing.yaml` exists and `PolicyModelRouter` reads it (`factory_composition::routing`), but every number in it waits for the project owner and the worker does not yet load it, probe the runtimes and hand the router and the prices to the engine and the broker |
 | Issue source, change host | need a registered GitHub App and its key |
 | `RegistryMetadata`, `AdvisoryDatabase` | blocked by design in production (`supply_chain::BlockedRegistry`, `BlockedAdvisoryDatabase`): they answer "unknown", so a new direct dependency waits for a security approver and the advisories gate is BLOCKED. Listed as `BLOCKED:` lines. The stand-ins are for `local` and `test`, and production refuses them |
-| `DeliverySources::tree_of`, `current_values` | implemented; no worker assembly registers the handlers yet (mismatches 35 and 37) |
+| `CapabilityProbes` | the capabilities of a runtime are probed when the runtime exists, and the runtime is one of the blocked adapters. Listed as a `BLOCKED:` line |
+| `DeliverySources::tree_of`, `current_values` | implemented and wired by `assemble_pipeline` (mismatches 35 and 37), so the worker answers them. A binary that does not assemble the pipeline, such as the operator CLI, still gets the closed answer, and `factory-cli probe` lists the two as `BLOCKED:` |
 | The real Docker sandbox, run in a test | the pinned images are present; the one test of it is ignored because the daemon did not see its bind sources on four runs of five (see "How far the job gets") |
 
 Everything about a live provider or live GitHub is BLOCKED and was not attempted.

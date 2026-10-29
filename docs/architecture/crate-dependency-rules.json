@@ -419,7 +419,7 @@
       "name": "cli",
       "path": "apps/cli",
       "slice": 1,
-      "responsibility": "Operator command line: submit, status, timeline, approve, reject, rework, pause, resume, cancel, probe. Calls the same use cases in process in Slice 1.",
+      "responsibility": "Operator command line and HTTP client of the API: health, submit, status, timeline, approve, reject, rework, pause, resume, cancel, approve-dependency, approve-build-code, probe. Holds no database login: every command but probe goes to the API over HTTP, and probe runs the start-up checks that need no credential.",
       "external_dependencies": [
         "ureq[rustls]",
         "serde_json"

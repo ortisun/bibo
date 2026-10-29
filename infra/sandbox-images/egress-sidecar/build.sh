@@ -5,8 +5,8 @@
 #
 # Without --binary the result is a skeleton: the right user and entrypoint, and no program.
 # images.json marks it "awaiting-binary" and the adapter must refuse to use it. The program
-# factory-egress-sidecar is written by work package s1-egress-and-broker and does not exist yet;
-# this script never creates a stand-in for it.
+# factory-egress-sidecar is built from apps/egress-sidecar (work package s1-egress-and-broker), which this script
+# does not compile: pass the compiled Linux program with --binary. It never creates a stand-in for it.
 #
 # With --binary the file must be a Linux executable for the platform, and its SHA-256 must equal
 # --sha256, so the person who supplies it states exactly which build they mean. The hash is

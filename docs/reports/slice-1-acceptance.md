@@ -140,7 +140,7 @@ First run:
 |---|---|
 | `scripts/e2e.sh --scenario E1 --scenario E2` | Exit code 3. Prints `BLOCKED:` once for each missing item, found by looking |
 | `scripts/e2e.sh --scenario E3 --scenario E4 --scenario E5 --scenario E6 --scenario E7 --scenario E8 --scenario E9` | Exit code 1: four passed, two failed, one blocked |
-| `./scripts/ci.sh` | 30 of its 31 steps passed. `rust-test` failed on 16 Docker tests, which stopped with "BLOCKED: docker did not answer within 60s" |
+| `./scripts/ci.sh` | Every step but one passed (the script had 31 steps on that day; `scripts/ci.sh --list` names the steps it has now). `rust-test` failed on 16 Docker tests, which stopped with "BLOCKED: docker did not answer within 60s" |
 
 Second run:
 
