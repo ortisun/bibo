@@ -65,7 +65,7 @@ CONTROL_KEYS = {
 RUN_KEYS = {"script", "name", "date", "result", "failed"}
 TOP_KEYS = {"schema_version", "catalog", "work_packages", "recorded", "findings", "audit_events", "mutation_runs", "rows"}
 POLICY = ROOT / "policies/security.yaml"
-PRODUCTIONS = ("engine", "handler", "differently_named", "other_stream", "none")
+PRODUCTIONS = ("engine", "handler", "api", "differently_named", "other_stream", "none")
 EVENT_KEYS = {"type", "owner", "production", "source", "token", "note"}
 
 
@@ -491,6 +491,7 @@ def render(doc, catalog, owners):
     meaning = {
         "engine": "yes, by the engine",
         "handler": "yes, by a stage handler",
+        "api": "yes, by the API under the required name",
         "differently_named": "under other names",
         "other_stream": "in another stream",
         "none": "no",

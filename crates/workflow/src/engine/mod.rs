@@ -42,6 +42,7 @@ mod platform;
 pub(crate) mod progress;
 pub(crate) mod record;
 mod replace;
+mod sandbox_audit;
 pub(crate) mod timeline;
 mod view;
 mod warning;
@@ -241,11 +242,18 @@ impl Engine {
     ///
     /// The agent runtime is not the engine's own: it is `runtime`, which the caller builds with
     /// `ObservedRuntime::new` around the engine's runtime, so that every agent run a handler
-    /// starts is a `factory.agent` span (see `agent_span`).
-    pub(crate) fn stage_ports<'a>(&'a self, runtime: &'a dyn AgentRuntime) -> StagePorts<'a> {
+    /// starts is a `factory.agent` span (see `agent_span`). The sandbox provider is not the
+    /// engine's own either: it is `sandbox`, which the caller builds with `AuditedSandbox::new`
+    /// around the engine's provider, so that every sandbox, command and removal is an audit
+    /// record (see `sandbox_audit`).
+    pub(crate) fn stage_ports<'a>(
+        &'a self,
+        runtime: &'a dyn AgentRuntime,
+        sandbox: &'a dyn SandboxProvider,
+    ) -> StagePorts<'a> {
         StagePorts {
             artifacts: self.deps.artifacts.as_ref(),
-            sandbox: self.deps.sandbox.as_ref(),
+            sandbox,
             workspaces: self.deps.workspaces.as_ref(),
             runtime,
             router: self.deps.router.as_ref(),

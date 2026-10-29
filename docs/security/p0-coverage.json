@@ -13,14 +13,6 @@
    "smallest_fix": "call ctx.note_failed_run(&report) before each Err(StageError::InvalidOutput) that follows ports.runtime.run in crates/workflow/src/stages/implementation/run.rs."
   },
   {
-   "id": "F-2",
-   "owner": "s1-apps-composition",
-   "severity": "medium",
-   "title": "Four of the fourteen audit event types the policy requires are not written under their name, or at all.",
-   "detail": "The API writes webhook.accepted and webhook.rejected, which a reader that filters by type does not recognise as webhook_accepted_or_rejected. Nothing in production code writes command_executed or sandbox_created_posture_result_destroyed. The egress broker keeps egress_request facts in its own stream, which nothing carries to the audit log.",
-   "smallest_fix": "write the API actions under the required type (webhook_accepted_or_rejected.granted and .denied), and add emitters for the other three in the validation stage, the sandbox call sites of the stages and the composition root that owns the broker's audit sink, in that order."
-  },
-  {
    "id": "F-3",
    "owner": "s1-stage-implementation-and-review",
    "severity": "high",
@@ -33,10 +25,10 @@
   {
    "type": "webhook_accepted_or_rejected",
    "owner": "s1-apps-composition",
-   "production": "differently_named",
+   "production": "api",
    "source": "apps/api/src/webhook.rs",
-   "token": "webhook.accepted | webhook.rejected",
-   "note": "The API writes the facts under the names webhook.accepted and webhook.rejected. They are not the required type name, so a reader that filters the audit log by type does not see them."
+   "token": "webhook_accepted_or_rejected.granted | webhook_accepted_or_rejected.denied",
+   "note": "The API writes an accepted delivery as webhook_accepted_or_rejected.granted and a rejected one (a bad signature, or a sender who may not ask) as webhook_accepted_or_rejected.denied. A repeat and an unbound installation keep their own names (webhook.duplicate_delivery, webhook.unbound): they are neither an acceptance nor a rejection of the delivery. The database trigger of the API login allows both required names."
   },
   {
    "type": "authorization_decision",
@@ -65,26 +57,26 @@
   {
    "type": "command_executed",
    "owner": "s1-trusted-gates-and-validation",
-   "production": "none",
-   "source": "",
+   "production": "engine",
+   "source": "crates/workflow/src/engine/sandbox_audit.rs",
    "token": "AuditKind::CommandExecuted",
-   "note": "No production code writes it. The validation stage records the gate result and not the command that produced it."
+   "note": "The engine wraps the sandbox a stage uses and writes one record for each command the sandbox ran, from the result the supervisor returned: the program (file name only), the exit code, the signal, whether it timed out, was killed for memory or had its output cut, and how long it ran. Arguments are not recorded. At most 256 commands of an attempt get a record each; a record says how many more ran."
   },
   {
    "type": "sandbox_created_posture_result_destroyed",
    "owner": "s1-sandbox-adapter",
-   "production": "none",
-   "source": "",
+   "production": "engine",
+   "source": "crates/workflow/src/engine/sandbox_audit.rs",
    "token": "AuditKind::SandboxCreatedPostureResultDestroyed",
-   "note": "No production code writes it. The sandbox adapter returns its posture report to the stage, and the stage does not write the lifecycle to the audit log."
+   "note": "The same wrapper writes the lifecycle from what the provider returned: granted when a session came back (its posture matched), denied when the provider refused or failed (a posture mismatch lists the differing parts), ended when the sandbox was removed."
   },
   {
    "type": "egress_request",
    "owner": "s1-egress-and-broker",
-   "production": "other_stream",
-   "source": "crates/egress/src/broker/audit.rs",
-   "token": "RequestAdmitted",
-   "note": "The broker keeps its own audit events (token issued, request admitted, refused, settled, revoked). Nothing carries them to the audit log of the store yet."
+   "production": "engine",
+   "source": "crates/workflow/src/engine/attempt.rs",
+   "token": "AuditKind::EgressRequest",
+   "note": "The engine settles the job token of an attempt and writes one summary record with the counts the broker metered (requests, input and output tokens, cost). One row for each token and not one for each request, so a loop on a model cannot fill the log; the broker keeps its own line for each request and each refusal in its stream. Requests the broker refused before forwarding are not in the usage the port returns, so they are not in the summary."
   },
   {
    "type": "secret_redacted_or_blocked",
@@ -818,10 +810,7 @@
      ]
     }
    ],
-   "note": "Covered: a scripted scenario for each of the fourteen required types, every record checked for actor, policy hash and correlation id, and the owner matrix below, which the checker compares with the sources. Not covered (gap): a production emitter for four types (webhook under the required name, command_executed, the sandbox lifecycle, egress_request in the audit log); the matrix names them.",
-   "findings": [
-    "F-2"
-   ]
+   "note": "Covered: a scripted scenario for each of the fourteen required types in which the engine itself writes the sandbox lifecycle, each command and the egress summary from the results of the attempt (only the two types a stage handler writes, and the one the API writes, are scripted), every record checked for actor, policy hash and correlation id, and the owner matrix below, which the checker compares with the sources. Every type has a correct producer. The webhook type is produced by the API under the required name; the API test of the composed rig checks the name. Finding F-2 is closed."
   },
   {
    "id": "NT-AUTHZ-01",

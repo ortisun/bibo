@@ -480,7 +480,28 @@ impl<'e> Cx<'e> {
         actor: AuditActor,
         action: AuditAction,
     ) -> Result<(), EngineError> {
+        let reason = format!("the engine recorded {}", action.slug()?.as_str());
+        self.audit_because(tx, actor, action, reason).await
+    }
+
+    /// Records an audit event of the engine with the reason the caller states: the facts of a
+    /// sandbox, a command or the broker's meter. The reason is fixed words and numbers, at most
+    /// 1000 bytes (the store refuses more); a longer one is cut at a character boundary.
+    pub(crate) async fn audit_because(
+        &self,
+        tx: &mut dyn Tx,
+        actor: AuditActor,
+        action: AuditAction,
+        mut reason: String,
+    ) -> Result<(), EngineError> {
         let text = action.slug()?;
+        if reason.len() > 1000 {
+            let mut end = 1000;
+            while !reason.is_char_boundary(end) {
+                end -= 1;
+            }
+            reason.truncate(end);
+        }
         let id = AuditEventId::from_uuid(self.engine.deps.ids.new_uuid());
         tx.record_audit(NewAuditEvent {
             id,
@@ -492,7 +513,7 @@ impl<'e> Cx<'e> {
                 AuditDecision::Denied => PortAuditDecision::Deny,
                 AuditDecision::Ended | AuditDecision::Noted => PortAuditDecision::Record,
             },
-            reason: format!("the engine recorded {}", text.as_str()),
+            reason,
             policy_hash: self.engine.config.policy_hash.clone(),
             job: Some(self.job),
             stage_run: None,
@@ -510,6 +531,17 @@ impl<'e> Cx<'e> {
         action: AuditAction,
     ) -> Result<(), EngineError> {
         self.audit(tx, AuditActor::System(Self::component()?), action)
+            .await
+    }
+
+    /// Records an audit event with the engine as the actor and the reason the caller states.
+    pub(crate) async fn audit_engine_because(
+        &self,
+        tx: &mut dyn Tx,
+        action: AuditAction,
+        reason: String,
+    ) -> Result<(), EngineError> {
+        self.audit_because(tx, AuditActor::System(Self::component()?), action, reason)
             .await
     }
 }
