@@ -91,15 +91,14 @@ fn strings(words: &[&str]) -> Vec<String> {
 
 // ---- SBX-1: the second layer of the argument deny list ---------------------------------------
 
-/// The deny list is the second look at a `docker create` vector ("a later edit of the builder
-/// cannot start a weaker container without this check failing"). It reads `--flag=value` and
-/// `--flag value`. It does not read the spellings Docker also accepts, so a builder that was edited
-/// to write one of them would pass both layers. The builder does not write them today, which is
-/// why this is a gap in depth and not a way in.
+/// SBX-1, FIXED. The deny list is the second look at a `docker create` vector ("a later edit of
+/// the builder cannot start a weaker container without this check failing"). It used to read only
+/// `--flag=value` and `--flag value`, not the spellings Docker also accepts, so a builder that was
+/// edited to write one of them would have passed both layers. It now reads the vector the way
+/// Docker does and checks what each flag means (`container/posture_args.rs`).
 ///
 /// Each vector below was accepted by `docker create` (Docker 29.9.2) in the review.
 #[test]
-#[ignore = "confirmed defect SBX-1 (low, defence in depth): denied_flag_in misses -v/path, -p8080:80, mount source=/target=, seccomp:unconfined, --cgroupns host and unlimited limits; run: cargo test -p factory-sandbox --test security_review -- --ignored sbx_1"]
 fn sbx_1_the_deny_list_reads_the_spellings_docker_accepts() {
     let vectors: &[&[&str]] = &[
         &["create", "-v/private/tmp:/h:ro"],
@@ -128,28 +127,27 @@ fn sbx_1_the_deny_list_reads_the_spellings_docker_accepts() {
 
 // ---- SBX-2: names that a reader cannot read ----------------------------------------------------
 
-/// The audit walk rejects control characters (Unicode category Cc) and a backslash in a name. The
-/// characters that reorder or hide text (bidirectional controls, line and paragraph separators,
-/// zero width characters, tag characters, the Hangul filler) are accepted as part of a path. A
-/// path then reaches the change list, the evidence, the pull request text and any prompt that
-/// lists the files of a diff. The prompt assembler strips exactly these characters from text it
-/// quotes, but a path listed outside a quoted block is not text it quotes.
+/// SBX-2, FIXED for the audit walk. The audit used to reject control characters (Unicode category
+/// Cc) and a backslash in a name, and accept the characters that reorder or hide text
+/// (bidirectional controls, line and paragraph separators, zero width characters, tag characters,
+/// the Hangul filler). It now rejects the whole category Cf, Zl and Zp, the tag block and the
+/// fillers (`hides_text` in `workspace/audit.rs`), and a name in any script still passes.
+const HOSTILE_NAMES: [&str; 8] = [
+    "gpj.\u{202E}rs",
+    "a\u{2028}b.rs",
+    "a\u{2029}b.rs",
+    "a\u{200B}b.rs",
+    "a\u{FEFF}b.rs",
+    "a\u{2066}b.rs",
+    "a\u{E0041}b.rs",
+    "a\u{3164}b.rs",
+];
+
 #[test]
-#[ignore = "confirmed defect SBX-2 (low): the audit accepts file names with bidi, U+2028, zero-width and tag characters; run: cargo test -p factory-sandbox --test security_review -- --ignored sbx_2"]
 fn sbx_2_the_audit_refuses_names_that_hide_or_reorder_text() {
     let scratch = support::Scratch::new("sbx2");
-    let hostile = [
-        "gpj.\u{202E}rs",
-        "a\u{2028}b.rs",
-        "a\u{2029}b.rs",
-        "a\u{200B}b.rs",
-        "a\u{FEFF}b.rs",
-        "a\u{2066}b.rs",
-        "a\u{E0041}b.rs",
-        "a\u{3164}b.rs",
-    ];
     let mut accepted = Vec::new();
-    for name in hostile {
+    for name in HOSTILE_NAMES {
         let dir = scratch.path().join(format!("case-{}", accepted.len()));
         std::fs::create_dir_all(&dir).expect("a case directory");
         std::fs::write(dir.join(name), b"").expect("an empty file");
@@ -163,8 +161,36 @@ fn sbx_2_the_audit_refuses_names_that_hide_or_reorder_text() {
         accepted.is_empty(),
         "the audit accepted these names: {accepted:?}"
     );
-    // The type that every path of a change set goes through accepts them too.
-    for name in hostile {
+    // The control: names in other scripts, with accents, with an emoji, still pass.
+    for (i, name) in [
+        "caf\u{e9}.rs",
+        "\u{65e5}\u{672c}\u{8a9e}.md",
+        "\u{444}\u{430}\u{439}\u{43b}.txt",
+        "smile\u{1F600}.png",
+    ]
+    .iter()
+    .enumerate()
+    {
+        let dir = scratch.path().join(format!("ok-{i}"));
+        std::fs::create_dir_all(&dir).expect("a case directory");
+        std::fs::write(dir.join(name), b"").expect("an empty file");
+        let stop = AtomicBool::new(false);
+        let files = audit_output(&dir, &AuditLimits::default(), &stop)
+            .unwrap_or_else(|e| panic!("{name:?} must pass the audit: {e:?}"));
+        assert_eq!(files.len(), 1, "{name:?}");
+    }
+}
+
+/// SBX-2, second half, NOT FIXED here. `RepoPath` (the type every changed path goes through) is in
+/// the ports crate, which this change may not edit. It still accepts these names. The audit
+/// refuses them before a path is built from the sandbox, so the sandbox cannot produce one; a
+/// `RepoPath` made from any other text (a webhook, a model's output) is still not checked. The
+/// architect owns the change: reject the same class of characters in `check_text`
+/// (`crates/ports/src/paths.rs`).
+#[test]
+#[ignore = "open gap SBX-2 (low), needs the ports crate: RepoPath::new accepts bidi, line separator, zero width and tag characters; fix in crates/ports/src/paths.rs check_text; run: cargo test -p factory-sandbox --test security_review -- --ignored sbx_2"]
+fn sbx_2_repo_path_refuses_names_that_hide_or_reorder_text() {
+    for name in HOSTILE_NAMES {
         assert!(
             RepoPath::new(&format!("src/{name}")).is_err(),
             "RepoPath accepts {name:?}"
