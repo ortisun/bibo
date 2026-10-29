@@ -28,7 +28,8 @@
 //! | [`model`], [`cargo`] | the ecosystem-neutral types and the Cargo reader |
 //! | [`diff`], [`integrity`], [`findings`] | the lockfile difference and the checks over it |
 //! | [`names`], [`facts`], [`licenses`] | the popular-name data, the registry facts, the license rule |
-//! | [`approval`], [`review`] | the recorded human decision and the plan that depends on it |
+//! | [`approval`], [`review`] | the recorded human decision (on a dependency, or on its build code: two actions of `approval.yaml`, and one never stands for the other) and the plan that depends on it |
+//! | [`command`], [`ledger`] | the words a person writes to decide, and the ledger form of a recorded decision with the reader that gives it back to the gate; `Engine::record_dependency_decision` writes it |
 //! | [`run`], [`tools`] | the two sandboxes and the readers of their output |
 //! | [`report`], [`gate`] | the four reports and the whole run |
 //!
@@ -47,11 +48,13 @@
 
 pub mod approval;
 pub mod cargo;
+pub mod command;
 pub mod diff;
 pub mod facts;
 pub mod findings;
 pub mod gate;
 pub mod integrity;
+pub mod ledger;
 pub mod licenses;
 pub mod model;
 pub mod names;

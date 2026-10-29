@@ -30,7 +30,7 @@ use super::integrity::{BaseUnreadable, Context, inspect};
 use super::model::{DependencyFormat, Side, normalize};
 use super::report::{Evaluation, Reporter};
 use super::review::{Conclusion, Plan, RegistryTable, Settings, conclude};
-use super::run::{Io, SupplyChainConfig, fetch, scan};
+use super::run::{Io, SupplyChainConfig, effective_advisory_db_max_age_days, fetch, scan};
 use super::version::Version;
 use crate::gates::command::report::{ReportContext, image_digest};
 use crate::handlers::StageError;
@@ -107,6 +107,7 @@ pub async fn run(io: &Io<'_>, inputs: &Inputs<'_>) -> Result<Done, StageError> {
     }
     let settings = Settings {
         dependency: &cfg.policy.dependency,
+        authority: &cfg.policy.authority,
         licenses: &cfg.licenses,
         internal_names: &cfg.internal_names,
         popular,
@@ -141,7 +142,7 @@ pub async fn run(io: &Io<'_>, inputs: &Inputs<'_>) -> Result<Done, StageError> {
     let database = DatabaseAge::judge(
         &now,
         inputs.advisory_db.updated_at().await,
-        cfg.advisory_db_max_age_days,
+        effective_advisory_db_max_age_days(cfg),
     );
     let evaluation = Evaluation {
         plan: Ok(&plan),

@@ -643,6 +643,7 @@ fn sample_facts(kind: FactsKind) -> GuardFacts<'static> {
         FactsKind::Unblock => GuardFacts::Unblock(UnblockFacts {
             capability_reprobe_passed: true,
             missing_dependency_now_available: false,
+            dependency_decision_recorded: false,
         }),
         FactsKind::Override => GuardFacts::Override(OverrideFacts {
             policy_permits_override_for_block_code: true,

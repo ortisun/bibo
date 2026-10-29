@@ -293,3 +293,69 @@ Each break was made in the source, the named tests were run, and the source was 
 | The approved-specification check removed from delivery and approval | `negative::a_specification_that_is_not_approved_is_not_delivered`, `approval_stage::a_specification_that_is_not_approved_stops_the_approval_stage`, `boundary::break_a_specification_that_is_not_approved_*` (the first version of the last two passed for another reason, because the changed specification no longer matched the verdict, and were sharpened) |
 | The documentation review read by hash only | three tests in the delivery target and one in `stage_contracts::boundary` |
 | `gates_clear` without the documentation reports | `approval_stage::the_documentation_gate_is_part_of_what_the_person_is_told_is_clear` |
+
+## Changes by the lead, after the fixes
+
+- Author: the software engineer, on branch `worktree-agent-a2deb145ce58a4797`, from `520aa88`. This section lists what the fix author could not edit (the policies, the state machine, the domain crate) and the Rust that had to travel with it. It is a claim for the re-reviewer, not a verdict.
+- Each change was written test first, and each has a deliberate break in the table at the end.
+
+### What was done
+
+| Item | What changed | Where the proof is |
+|---|---|---|
+| B-2, SC-10 | `approval.yaml` has the action `approve_build_code` (a security approver, human at every level, bound to the exact name, version and checksum of the package whose build script or macro comes in, threats T-29 and T-30), and the row `add_new_direct_dependency` says it does not cover build code. The policy engine refuses to build when the row names anyone but the security approver, and answers `approver_designations(action)`, so the gate names no designation. The gate records two kinds of decision (`ApprovalKind`) and one never stands for the other. The person is asked about the package that has the build code, not the direct dependency above it. The evidence key is now `build_code_awaiting_a_decision`. | `policy_content::build_code_of_a_new_package_is_a_security_approvers_own_decision`, `authority::approving_build_code_is_a_security_approvers_decision_and_nobody_elses`, `engine::a_policy_that_lets_anyone_but_a_security_approver_approve_build_code_does_not_build`, `build_code::sc10_*` |
+| SC-6, SC-3 wording | `supply_chain.advisory_database.max_age_days: 7` (the `P7D` of `deny.toml`, checked equal by a test), a typed field of the loaded policy, a ceiling in the tighten table. `SupplyChainSettings::from_policy` starts from it, and the gate uses the lower of the configured value and the policy's: a composition root may lower the limit and never raise it. `new_means` is `name_absent_from_base_commit_lockfile_as_anything_but_a_project_member`; the engine reads exactly that and refuses the old wording. | `validation::supply::the_composition_root_may_lower_the_database_age_limit_and_never_raise_it`, `..._even_when_the_stage_was_built_without_reading_the_policy`, `tighten::negative_nt_pol_02_*`, `dependency_risk_budget::the_wording_of_new_*` |
+| Run always, or only on a dependency file | **Only when a change touches a dependency file**, written as the policy value `supply_chain.dependency_gates.run_when: dependency_files_change`. `always` is the stricter value: a project policy or the configuration may move to it and never back. Reasons below. | `validation::supply::the_policy_can_make_the_gates_run_on_every_change_and_the_configuration_cannot_undo_it`, `tighten::a_project_cannot_move_the_dependency_gates_back_*` |
+| Override of an unresolved review | `gate_integrity.non_overridable_blocks` lists `dependency-review` with `policy_unresolvable`. The engine will not build without that entry, `authorize_override` returns `NoOverrideForBlock`, and `OverrideFacts::from_policy` and `OverrideFacts::for_reports` compute the fact `policy_permits` from the policy and from the stage's gate reports, so a caller does not write it. A project may add entries and never remove one. | `validation::supply::nobody_overrides_the_block_of_a_dependency_that_waits_for_a_decision` (through the stage), `override_policy.rs` (through the engine and the in-memory store), `authority::nobody_overrides_*` |
+| `UnblockRerun` guard | `G_BLOCK_CLEARED_RERUN` has a third alternative, "a decision on the dependency was recorded". It is in `state-machine.json`, in the rendered document, in the domain guard and in the engine, which reads it from what it stored. There is no flag to pass. A decision counts only for the attempt that blocked the run. | `guards::tests::a_block_is_cleared_by_*`, `dependency_decision::an_unblock_with_no_recorded_decision_is_refused_*`, `..::a_decision_made_before_a_later_block_does_not_clear_it`; `cargo xtask check-invariants` still finds INV-01 to INV-11 |
+| B-4 | `Engine::record_dependency_decision`, over the existing ports, and `LedgerApprovals` (a `RecordedApprovals` that reads the ledger). No port changed. The pure parser and resolver of the words a person writes are in `gates::supply_chain::command`. See below. | `crates/workflow/tests/dependency_decision.rs` (14 tests), `command::tests::*` |
+| B-6, H-4 | `within_one_edit`, `is_decorated` and `DECORATIONS` are public in `domain::policy::dependency`. The policy engine uses both (a decorated popular name goes to a security approver), and the gate's copies are deleted. | `dependency_risk_budget::the_edit_rule_and_the_decoration_rule_*`, `..::a_popular_name_with_a_decoration_*` |
+| `Origin::Git` | Holds host, repository and pinned revision. A git package that moves repository or revision on the same host is a `SourceChanged`. | `cargo::tests::a_git_package_that_moves_repository_or_revision_on_one_host_is_a_difference`, `diff::tests::a_git_package_on_the_same_host_*` |
+| C-d | `implementation::input` re-exports the one `Candidate` and `parse_candidate` of the validation stage. | `implementation::input::tests::the_candidate_is_the_one_the_validation_stage_reads` |
+
+### Why the dependency gates run only when a dependency file changes
+
+The master prompt asks for "dependency/SBOM/license checks ... where applicable". The gates judge a change: new names, changed sources, the code that comes in. Run on every change, the advisory scan would fail an unrelated change for an advisory published after the base commit against a package the change never touched, and the change could not fix it. That judgment, whether the repository's existing dependencies have a known advisory today, belongs to a scheduled scan of the base branch. **That scan does not exist yet**, so nothing currently notices a new advisory against a dependency that stays unchanged. The policy owner should decide whether to build it or to switch `run_when` to `always`. The value is in the policy so that this is a one-line decision and not a code change.
+
+### How a person decides, now
+
+1. The review blocks with `policy_unresolvable` and stores, in `validation-evidence.dependency_review`, the packages that await a decision (`new_direct_dependencies` with `approval: null`, and `build_code_awaiting_a_decision`), each with name, version, checksum and the designation the policy names.
+2. The API or the command line reads the words (`parse_dependency_command`: `/factory approve-dependency <name> <version> [checksum prefix] [reason]`, or the same without the prefix; `approve-build-code` for build code), finds the one awaited package they name (`resolve`), asks the policy engine for the proof (`approval::authorize` or `authorize_build_code`), and calls `Engine::record_dependency_decision` with the proof and the exact package.
+3. The engine checks the proof against the acting principal's numeric id and the roles that principal holds now, that the stage run is a blocked validation run, and that its own stored evidence awaits exactly that package of that kind with a designation that is enough. It binds the record to the policy hash it runs under, stores the document, links it to the stage run, appends one ledger entry (an expert judgment that names the person and cites the document by hash) and audits it. A repeated command writes nothing.
+4. The operator's `UnblockRerun` now passes the guard, the stage runs again, and the gate reads the decisions back through `LedgerApprovals`.
+
+### What the composition root still has to do
+
+- Build `SupplyChainSettings` with `from_policy`. Use `LedgerApprovals` as `SupplyChainSeams.approvals`. Build `OverrideFacts` with `from_policy` or `for_reports` and never write `policy_permits` by hand.
+- Implement the entry point that reads a comment or a command line and calls the functions in step 2. It must run the person's reason through the redactor first: **the engine has no redactor** (`EngineDeps` has none), so `RecordDependencyDecision.reason` is `HumanText` and not redacted text. This is the one requirement of item 6 above that the engine cannot meet by itself.
+- Keep reading the allowlist for each call (`Authority::roles`). The engine re-reads the roles, but the proof is made by the caller with the allowlist version it read.
+
+### What is not done, and the contradictions I found
+
+- **The engine does not enforce the override rule on its own.** `Decision::Override` still takes `OverrideFacts` from the caller, and the engine's block event records the cause code (`gate-blocked`) and not the gate or the report's code. A caller that writes `policy_permits: true` by hand still gets the override accepted. The rule is enforced where the facts are computed. To make the engine enforce it, the block event would carry the blocked gate and code and the override would read them back. That is a change to the engine's event payload, and I did not make it.
+- **No scheduled scan of the base branch** (see above).
+- **The decision is not stored in a table of its own.** It is a ledger entry plus an artifact plus a stage-run link. That is enough for the gate and for `UnblockRerun`, and it needs no port change. A query "every decision of tenant X" would need a scan of ledgers.
+- **A repeated command is recognised through the role of its link**, not through the outbox, because a decision writes no outbox event (it changes no status). The duplicate check of ground rule 7 by `Timeline::has_applied` does not see it.
+- **`approval.yaml` `commands.verbs`** still lists the six verbs of the pull request. The two new verbs are read by the dependency parser and are not in that list. If the project wants one list, the verb table of `stages::approval::command` and the policy list change together.
+- **H-3, H-5, B-1, B-3, B-5, C-e** are untouched, as before.
+
+### Deliberate breaks of this section
+
+Each was made in the source (or the policy file), the named tests were run, and the source was restored.
+
+| Break | Caught by |
+|---|---|
+| An override accepted for the unresolved review (`block_may_be_overridden` always true) | six tests: `authority::nobody_overrides_*`, `engine::a_policy_that_allows_an_override_*`, `override_policy` (three), `validation::supply::nobody_overrides_*` |
+| The guard alternative removed | five tests: `guards::tests` (two), `dependency_decision` (three) |
+| The approval taken without comparing the numeric id | not caught at first: the test used a person of another designation, so the role check refused it before the id was compared. The test now uses a second approver, and `a_proof_made_for_another_person_is_refused` fails on the break |
+| A stored record that names a person by login accepted as an approval | `review::a_stored_record_that_names_a_person_by_login_is_not_an_approval` |
+| `approve_build_code` granted to an ordinary approver, in the policy file | seven tests, among them `policy_content::build_code_of_a_new_package_is_a_security_approvers_own_decision` and `policy_domain_fixture` |
+| The same, in the engine's own check | `engine::a_policy_that_lets_anyone_but_a_security_approver_approve_build_code_does_not_build` |
+| A project policy that raises the database age limit (the rule turned into a floor) | `tighten::negative_nt_pol_02_each_widening_is_refused_and_names_its_key` and `..._tightenings_are_accepted` |
+| The row for the age limit removed from the tighten table | `tighten::negative_nt_pol_02_tightenings_are_accepted` (the key is frozen, so a lower value is refused) |
+| The configuration may raise the limit above the policy | `validation::supply::the_composition_root_may_lower_*` and `..._even_when_the_stage_was_built_without_reading_the_policy` |
+| The stage ignores the policy's `run_when` | `validation::supply::the_policy_can_make_the_gates_run_on_every_change_*` |
+| A dependency decision accepted as the decision on build code | `build_code::sc10_only_a_build_code_decision_*`, `gate_run::build_code_blocks_until_*` |
+| The engine does not check that the evidence awaits the package | `dependency_decision::a_decision_is_recorded_only_for_a_package_the_evidence_shows` and two more |
+| The engine does not check that the designation is enough | `dependency_decision::an_ordinary_approver_cannot_decide_what_needs_a_security_approver` |
+| The parser in `cargo.rs` keeps the host only | `cargo::tests::a_git_package_that_moves_repository_or_revision_on_one_host_is_a_difference` (the diff test builds origins by hand and did not notice) |

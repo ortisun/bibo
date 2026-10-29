@@ -105,6 +105,90 @@ fn an_action_row_that_contradicts_always_human_does_not_build() {
 }
 
 #[test]
+fn a_policy_that_allows_an_override_of_an_unresolved_dependency_review_does_not_build() {
+    // The protection is not only in the shipped file: a policy that drops the pair
+    // (`dependency-review`, `policy_unresolvable`) from the blocks nobody may override, or names
+    // a code that is not a block code, is found when the engine is built.
+    let drop_it = builds_with_security(|j| {
+        j["gate_integrity"]["non_overridable_blocks"] = serde_json::json!([]);
+    });
+    assert!(
+        matches!(drop_it, Err(BuildError::ProtectionDisabled { .. })),
+        "{drop_it:?}"
+    );
+    let renamed = builds_with_security(|j| {
+        j["gate_integrity"]["non_overridable_blocks"][0]["code"] = "policy-unresolvable".into();
+    });
+    assert!(
+        matches!(renamed, Err(BuildError::UnknownValue { .. })),
+        "{renamed:?}"
+    );
+    // The control: another pair, added, builds, and is then not overridable either.
+    let more = builds_with_security(|j| {
+        j["gate_integrity"]["non_overridable_blocks"]
+            .as_array_mut()
+            .expect("the list")
+            .push(serde_json::json!({
+                "id": "advisories-unavailable",
+                "gate": "dependency-advisories",
+                "code": "dependency_unavailable",
+                "reason": "a test"
+            }));
+    })
+    .expect("a longer list builds");
+    assert!(
+        !more
+            .authority
+            .block_may_be_overridden("dependency-advisories", "dependency_unavailable")
+    );
+}
+
+#[test]
+fn a_policy_that_lets_anyone_but_a_security_approver_approve_build_code_does_not_build() {
+    // The rules about build code rely on one human decision by one designation. A row that is
+    // missing, that lets the action happen with no human, or that adds a designation is found
+    // when the engine is built.
+    type Change = fn(&mut serde_json::Value);
+    fn row(json: &mut serde_json::Value) -> &mut serde_json::Value {
+        json["actions"]
+            .as_array_mut()
+            .expect("actions")
+            .iter_mut()
+            .find(|row| row["id"] == "approve_build_code")
+            .expect("the real policy has the row")
+    }
+    let cases: [(&str, Change); 5] = [
+        ("an ordinary approver may approve it", |j| {
+            row(j)["approver_roles"] = serde_json::json!(["approver", "security_approver"]);
+        }),
+        ("only an ordinary approver may approve it", |j| {
+            row(j)["approver_roles"] = serde_json::json!(["approver"]);
+        }),
+        ("an organization administrator may approve it", |j| {
+            row(j)["approver_roles"] = serde_json::json!(["security_approver", "org_admin"]);
+        }),
+        ("no human is needed", |j| {
+            row(j)["requires"] = "none".into();
+        }),
+        ("there is no row", |j| {
+            j["actions"]
+                .as_array_mut()
+                .expect("actions")
+                .retain(|row| row["id"] != "approve_build_code");
+        }),
+    ];
+    for (name, change) in cases {
+        assert!(
+            matches!(
+                builds_with_approval(change),
+                Err(BuildError::Contradiction(_))
+            ),
+            "{name} must not build"
+        );
+    }
+}
+
+#[test]
 fn a_rework_or_repair_cap_above_two_does_not_build() {
     for set in [
         (|j: &mut serde_json::Value| {

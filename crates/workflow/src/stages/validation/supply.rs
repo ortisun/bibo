@@ -9,7 +9,7 @@
 //! | Situation | Reports |
 //! |---|---|
 //! | A host-side rule refused the change or could not run | all four `BLOCKED`: the gate runs a container, and none is made for a change the host refused |
-//! | The change touches no dependency file (and the settings say "only then") | all four `NOT_APPLICABLE`; nothing is read, nothing is made |
+//! | The change touches no dependency file, and neither the policy (`supply_chain.dependency_gates.run_when`) nor the settings say "always" | all four `NOT_APPLICABLE`; nothing is read, nothing is made |
 //! | A dependency file is a link or a submodule, a listing is cut, a file is unreadable or too big | all four `BLOCKED` with what is missing |
 //! | Otherwise | the gate runs: integrity first, then the decision on each new direct dependency, then the fetch and the scan |
 //!
@@ -25,6 +25,7 @@
 
 use factory_domain::contracts::GateReport;
 use factory_domain::contracts::gate_report::BlockedCode;
+use factory_domain::policy::dependency::RunWhen;
 use factory_domain::scope::TenantScope;
 use factory_domain::values::Sha256Digest;
 use factory_ports::clock::CancelSignal;
@@ -149,7 +150,10 @@ pub async fn reports(x: &Context<'_>) -> Result<Outcome, StageError> {
         .files
         .iter()
         .any(|file| format.kind_of(&file.path).is_some());
-    if settings.run == RunSupplyChain::WhenDependencyFilesChange && !touched {
+    // The policy says when the gates run. The configuration may tighten that and never loosen it.
+    let always = settings.run == RunSupplyChain::Always
+        || x.cfg.policy.dependency.run_when() == RunWhen::Always;
+    if !always && !touched {
         return Ok(Outcome {
             reports: gate::skipped(&io, &x.report, &Skip::Untouched)?,
             evidence: None,

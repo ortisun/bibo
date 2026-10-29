@@ -2,7 +2,10 @@
 //! ADR 0009 item 4).
 //!
 //! A dependency is **new** when its package name is absent from the resolved lockfile at the base
-//! commit, direct or transitive. A new dependency always needs a human. There is no allowlist, no
+//! commit, direct or transitive, as anything but a member of the project ([`NEW_MEANS`]). A
+//! member of the project (a package with no source) that has the name does not count, because a
+//! registry package named like a member is how a dependency confusion looks. A new dependency
+//! always needs a human. There is no allowlist, no
 //! age or popularity threshold and no earlier approval that makes it automatic, and
 //! [`DependencyDecision`] has no variant that approves one. The registry facts (does the name
 //! exist, how old is its first publication, is it near a popular name, does it collide with an
@@ -11,7 +14,8 @@
 //! * an ordinary approver for a name that exists, is old enough and looks ordinary;
 //! * a security approver when the first publication is younger than
 //!   `min_first_publish_age_days`, or its age is unknown, or the name is not in the registry or its
-//!   existence is unknown, or it is one edit away from a popular name, or it equals an internal
+//!   existence is unknown, or it is one edit away from a popular name or is a popular name with
+//!   one or two decorations (`reqwest-rs`, see [`is_decorated`]), or it equals an internal
 //!   package name.
 //!
 //! A request is refused before any of that when the name is not a name of its ecosystem, or the
@@ -79,7 +83,10 @@ impl Ecosystem {
         }
     }
 
-    fn valid_name(self, name: &str) -> bool {
+    /// True when `name` is a name of this ecosystem: the same grammar `decide` refuses a request
+    /// by. A caller that reads a name from text uses it, and does not write a grammar of its own.
+    #[must_use]
+    pub fn valid_name(self, name: &str) -> bool {
         if name.is_empty() || name.len() > MAX_NAME_BYTES {
             return false;
         }
@@ -216,13 +223,100 @@ pub enum DependencyDecision {
     },
 }
 
+/// When the dependency and supply chain gates run (`supply_chain.dependency_gates.run_when`).
+///
+/// The gates judge a change. Run only when a dependency file changes, they say nothing about the
+/// advisories published since the base commit against packages the change did not touch; that is
+/// a property of the repository, and a scheduled scan of the base branch is where it is judged.
+/// Run on every change, an unrelated change fails for an old advisory. The policy says which, so
+/// that the composition root reads it and does not choose. `Always` is the stricter value, and a
+/// project policy may move to it and never back.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum RunWhen {
+    /// Only for a change that touches a dependency file. Otherwise the four reports say that
+    /// nothing applies.
+    DependencyFilesChange,
+    /// For every change.
+    Always,
+}
+
+impl RunWhen {
+    /// Reads the policy spelling.
+    #[must_use]
+    pub fn parse(text: &str) -> Option<Self> {
+        match text {
+            "dependency_files_change" => Some(Self::DependencyFilesChange),
+            "always" => Some(Self::Always),
+            _ => None,
+        }
+    }
+
+    /// The stricter of two settings.
+    #[must_use]
+    pub fn stricter(self, other: Self) -> Self {
+        self.max(other)
+    }
+}
+
+/// The one wording of "new" the engine implements: the name is absent from the base commit's
+/// lockfile as anything but a member of the project (a package with no source). A member of the
+/// project that has the name does not make a registry package of that name "not new", because
+/// that is how a dependency confusion looks.
+pub const NEW_MEANS: &str =
+    "name_absent_from_base_commit_lockfile_as_anything_but_a_project_member";
+
 /// The dependency rules of one security policy.
 #[derive(Debug, Clone, Copy)]
 pub struct DependencyPolicy {
     min_first_publish_age_days: u64,
+    advisory_database_max_age_days: u64,
+    run_when: RunWhen,
 }
 
-fn within_one_edit(a: &str, b: &str) -> bool {
+/// Words a squatter puts before or after a popular name. A word that is a package of its own
+/// (`derive`, `core`, `sys`) is on the list too, because `clap-derive-macros` is not
+/// `clap_derive`.
+pub const DECORATIONS: [&str; 22] = [
+    "rs", "rust", "ext", "extra", "plus", "fork", "patched", "fix", "new", "lib", "util", "utils",
+    "derive", "macros", "macro", "core", "sys", "api", "sdk", "client", "cli", "the",
+];
+
+/// True when `wanted` is `popular` with one or two decorations ([`DECORATIONS`]) in front of it
+/// or behind it, separated as the ecosystems separate words (`-` and `_` are one separator,
+/// and case is ignored). `reqwest-rs`, `clap-derive-macros` and `rust-serde` are decorations of
+/// `reqwest`, `clap` and `serde`. The name itself is not a decoration of itself, and `serde_json`
+/// is not a decoration of `serde`, because `json` is not a decoration.
+///
+/// This is the one decoration rule of the factory. The dependency gate calls it, so the rule
+/// that the policy engine applies and the rule the gate warns with cannot differ.
+#[must_use]
+pub fn is_decorated(popular: &str, wanted: &str) -> bool {
+    let fold = |text: &str| text.to_ascii_lowercase().replace('-', "_");
+    let (popular, wanted) = (fold(popular), fold(wanted));
+    let all = |text: &str| {
+        !text.is_empty()
+            && text.split('_').count() <= 2
+            && text.split('_').all(|word| DECORATIONS.contains(&word))
+    };
+    wanted
+        .strip_prefix(&popular)
+        .and_then(|rest| rest.strip_prefix('_'))
+        .is_some_and(all)
+        || wanted
+            .strip_suffix(&popular)
+            .and_then(|rest| rest.strip_suffix('_'))
+            .is_some_and(all)
+}
+
+/// True when `a` and `b` differ and are one edit apart: one letter changed, added or dropped, or
+/// two neighbouring letters swapped (`reqwset`). Equal names are not one edit apart.
+///
+/// This is the one edit rule of the factory (see [`is_decorated`]).
+#[must_use]
+pub fn within_one_edit(a: &str, b: &str) -> bool {
+    if a == b {
+        return false;
+    }
     let (a, b): (Vec<char>, Vec<char>) = (a.chars().collect(), b.chars().collect());
     if a.len().abs_diff(b.len()) > 1 {
         return false;
@@ -260,19 +354,42 @@ impl DependencyPolicy {
                 found: rule.approval.clone(),
             });
         }
-        if rule.new_means != "name_absent_from_base_commit_lockfile" {
+        if rule.new_means != NEW_MEANS {
             return Err(BuildError::UnknownValue {
                 key: "supply_chain.new_direct_dependency.new_means",
                 found: rule.new_means.clone(),
             });
         }
+        let run_when =
+            RunWhen::parse(&policy.supply_chain.dependency_gates.run_when).ok_or_else(|| {
+                BuildError::UnknownValue {
+                    key: "supply_chain.dependency_gates.run_when",
+                    found: policy.supply_chain.dependency_gates.run_when.clone(),
+                }
+            })?;
         Ok(Self {
             min_first_publish_age_days: rule.min_first_publish_age_days,
+            advisory_database_max_age_days: policy.supply_chain.advisory_database.max_age_days,
+            run_when,
         })
     }
 
+    /// The most whole days old the advisory database may be for a scan to count
+    /// (`supply_chain.advisory_database.max_age_days`).
+    #[must_use]
+    pub fn advisory_database_max_age_days(&self) -> u64 {
+        self.advisory_database_max_age_days
+    }
+
+    /// When the dependency gates run (`supply_chain.dependency_gates.run_when`).
+    #[must_use]
+    pub fn run_when(&self) -> RunWhen {
+        self.run_when
+    }
+
     /// Decides what a dependency request needs. `base_lockfile_names` are the package names of
-    /// the resolved lockfile at the base commit, direct and transitive.
+    /// the resolved lockfile at the base commit, direct and transitive, **except the members of
+    /// the project** (see [`NEW_MEANS`]); the caller leaves them out.
     #[must_use]
     pub fn decide(
         &self,
@@ -330,9 +447,19 @@ impl DependencyPolicy {
                 flags.insert(DependencyFlag::FirstPublishUnknown);
             }
         }
+        // A name on the popular list is not the imitation of a shorter name on it by being
+        // `tokio-util` beside `tokio`: the decoration rule is for names that are not listed.
+        let listed = facts
+            .popular_names
+            .iter()
+            .take(100_000)
+            .any(|popular| ecosystem.normalize(popular) == wanted);
         for popular in facts.popular_names.iter().take(100_000) {
             let popular_norm = ecosystem.normalize(popular);
-            if popular_norm != wanted && within_one_edit(&popular_norm, &wanted) {
+            if popular_norm != wanted
+                && (within_one_edit(&popular_norm, &wanted)
+                    || (!listed && is_decorated(&popular_norm, &wanted)))
+            {
                 flags.insert(DependencyFlag::NearPopularName(popular.clone()));
             }
         }

@@ -143,6 +143,9 @@ pub struct Script {
     pub extra_document: bool,
     /// Whether the output leaves out the required deliverable.
     pub omit_deliverable: bool,
+    /// The document a succeeding attempt returns, in place of `{ "stage": ... }`. A test that
+    /// needs the engine to read something out of a stage's output sets it.
+    pub document: Option<Value>,
     /// What a failing run leaves behind: the number of denied tool calls and whether it stored a
     /// transcript. The handler reports them with `note_failed_run` before it returns the error.
     pub failed_run: Option<(u32, bool)>,
@@ -173,6 +176,7 @@ impl Default for Script {
             report_sandbox: true,
             extra_document: false,
             omit_deliverable: false,
+            document: None,
             failed_run: None,
             transcripts: Vec::new(),
             run_agent: false,
@@ -386,12 +390,13 @@ impl StageHandler for ScriptedHandler {
     }
 
     async fn execute(&self, ctx: &mut StageContext<'_>) -> Result<StageOutput, StageError> {
-        let (report, extra, omit, denials) = self.script.with(|script| {
+        let (report, extra, omit, denials, scripted_document) = self.script.with(|script| {
             (
                 script.report_sandbox,
                 script.extra_document,
                 script.omit_deliverable,
                 script.denials,
+                script.document.clone(),
             )
         });
         if report {
@@ -451,7 +456,10 @@ impl StageHandler for ScriptedHandler {
         };
         match step {
             Step::Succeed => Ok(StageOutput {
-                documents: documents(json!({ "stage": ctx.identity.kind.as_str() })),
+                documents: documents(
+                    scripted_document
+                        .unwrap_or_else(|| json!({ "stage": ctx.identity.kind.as_str() })),
+                ),
                 usage: Usage::default(),
                 permission_denials: (0..denials)
                     .map(|_| Denial {

@@ -7,6 +7,8 @@
 
 mod authority;
 mod decision;
+mod dependency;
 
 pub use authority::{Authority, AuthorityError};
 pub use decision::{Actor, Decision, JobCommand, OverrideFacts, Subject};
+pub use dependency::{DependencyDecisionRecorded, RecordDependencyDecision};

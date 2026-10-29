@@ -127,18 +127,31 @@ pub struct SupplyChainConfig {
     pub internal_names: Vec<String>,
     /// The SBOM rule.
     pub sbom: SbomRule,
-    /// The most whole days old the advisory database may be. `policies/security.yaml` has no row
-    /// for this yet, so it is configuration with a conservative default
-    /// ([`DEFAULT_ADVISORY_DB_MAX_AGE_DAYS`], the 7 days `deny.toml` demands of the factory's
-    /// own CI). A database older than this, or of unknown age, blocks the advisory gate.
+    /// The most whole days old the advisory database may be, as the composition root configures
+    /// it. The policy has the last word: the limit that counts is never higher than
+    /// `supply_chain.advisory_database.max_age_days`, whatever this says
+    /// ([`effective_advisory_db_max_age_days`]). A configuration may lower the limit and never
+    /// raise it. A database older than the limit, or of unknown age, blocks the advisory gate.
     pub advisory_db_max_age_days: u64,
     /// Bounds.
     pub bounds: Bounds,
 }
 
-/// The default limit on the age of the advisory database, equal to `maximum-db-staleness = "P7D"`
-/// in `deny.toml`.
+/// The limit on the age of the advisory database that a stage built without a policy value falls
+/// back on, equal to `maximum-db-staleness = "P7D"` in `deny.toml` and to the value in
+/// `policies/security.yaml`. A stage built from policy
+/// ([`SupplyChainSettings::from_policy`](crate::stages::validation::SupplyChainSettings::from_policy))
+/// takes the policy's value instead.
 pub const DEFAULT_ADVISORY_DB_MAX_AGE_DAYS: u64 = 7;
+
+/// The limit on the age of the advisory database that counts: the lower of what the composition
+/// root configured and what the policy says. Policy is tightened and never loosened, so a
+/// configuration above the policy is ignored.
+#[must_use]
+pub fn effective_advisory_db_max_age_days(cfg: &SupplyChainConfig) -> u64 {
+    cfg.advisory_db_max_age_days
+        .min(cfg.policy.dependency.advisory_database_max_age_days())
+}
 
 impl std::fmt::Debug for SupplyChainConfig {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {

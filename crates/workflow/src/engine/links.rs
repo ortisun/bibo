@@ -10,15 +10,44 @@
 //! |---|---|---|
 //! | input | `human-answer-<k>` | A person's answer. `k` is how many attempts the stage run had when the person answered, which is the number the database keeps as `stage_runs.attempts_before_last_answer` (set at `S13` from the highest attempt number). The window of attempts since the last answer is every attempt numbered above the highest `k`. |
 //! | output | `<name>.a<n>` | The deliverable `name` that attempt number `n` produced. A stage run can reach its gate more than once (a person answers a gate and a second attempt succeeds), and a link is never replaced, so each attempt keeps its own. The outputs of the stage run are those of the highest `n`. |
+//! | input | `dependency-decision-<k>-<command>` | A person's decision on a dependency (`add_new_direct_dependency`) or on its build code (`approve_build_code`), recorded while the stage run was blocked. `k` is how many attempts the stage run had then, and `<command>` is the id of the command without hyphens, so a command that arrives twice names the same role. The decision counts for a rerun when `k` is the number of attempts the stage run has now: a decision recorded before an earlier block does not clear a later one. |
 //!
 //! A role that does not follow these forms was not written by the engine, and the readers skip it.
 
+use factory_domain::ids::CausationId;
 use factory_domain::values::Slug;
 
 use super::error::EngineError;
 
 const ANSWER_PREFIX: &str = "human-answer-";
+const DECISION_PREFIX: &str = "dependency-decision-";
 const ATTEMPT_MARK: &str = ".a";
+
+/// The role of a decision on a dependency recorded after `attempts_before` attempts, by the
+/// command `command`.
+///
+/// # Errors
+/// [`EngineError::Invalid`] if the role is not a slug (it always is).
+pub(crate) fn decision_role(
+    attempts_before: u32,
+    command: CausationId,
+) -> Result<Slug, EngineError> {
+    Ok(Slug::parse(&format!(
+        "{DECISION_PREFIX}{attempts_before}-{}",
+        command.as_uuid().simple()
+    ))?)
+}
+
+/// How many attempts the stage run had when the decision under `role` was recorded, or `None` when
+/// the role is not a decision role.
+pub(crate) fn decision_attempts_before(role: &str) -> Option<u32> {
+    let rest = role.strip_prefix(DECISION_PREFIX)?;
+    let (digits, command) = rest.split_once('-')?;
+    let hex = !command.is_empty() && command.bytes().all(|byte| byte.is_ascii_hexdigit());
+    (all_digits(digits) && hex)
+        .then(|| digits.parse().ok())
+        .flatten()
+}
 
 /// The role of an answer given after `attempts_before` attempts.
 ///
@@ -75,6 +104,33 @@ mod tests {
         assert_eq!(role.as_str(), "human-answer-3");
         assert_eq!(answer_attempts_before(role.as_str()), Some(3));
         assert_eq!(answer_attempts_before("human-answer-0"), Some(0));
+    }
+
+    #[test]
+    fn a_decision_role_carries_the_attempts_before_it_and_the_command_and_reads_back() {
+        let command = CausationId::from_uuid(uuid::Uuid::from_u128(
+            0x018f_3a00_0000_7000_8000_0000_0000_0a01,
+        ));
+        let role = decision_role(2, command).expect("a role");
+        assert_eq!(
+            role.as_str(),
+            "dependency-decision-2-018f3a00000070008000000000000a01"
+        );
+        assert_eq!(decision_attempts_before(role.as_str()), Some(2));
+        // The same command names the same role, which is what makes a repeat recognisable.
+        assert_eq!(decision_role(2, command).expect("a role"), role);
+        // Neither an answer, nor an output, nor a malformed role is a decision.
+        for other in [
+            "human-answer-2",
+            "spec.a1",
+            "dependency-decision-",
+            "dependency-decision-x-ab",
+            "dependency-decision-2",
+            "dependency-decision-2-",
+            "dependency-decision-2-zz",
+        ] {
+            assert_eq!(decision_attempts_before(other), None, "{other}");
+        }
     }
 
     #[test]

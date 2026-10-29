@@ -28,6 +28,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use crate::contracts::gate_report::BlockedCode;
 use crate::ids::TenantId;
 use crate::machines::guards::stage_run::override_permitted;
 use crate::machines::guards::{AdmissionFacts, OverrideFacts, job::admission_ok};
@@ -351,6 +352,8 @@ pub enum AllowlistChangeDenial {
 pub struct OverrideContext<'a> {
     /// The blocked gate, such as `protected_path_check`.
     pub gate: &'a str,
+    /// The block code of the gate report that blocked it, such as `policy_unresolvable`.
+    pub block_code: &'a str,
     /// The block is a security-class block.
     pub block_is_security_class: bool,
     /// The gate is a mandatory gate of an active domain profile (INV-07).
@@ -370,6 +373,10 @@ pub enum OverrideDenial {
     NonWaivableGate,
     /// The gate is a mandatory gate of an active domain profile (INV-07).
     MandatoryGateOfActiveProfile,
+    /// The policy lists this gate with this block code as a block no override may pass
+    /// (`gate_integrity.non_overridable_blocks`). A person records the decision the gate waits
+    /// for, and the stage is run again.
+    NoOverrideForBlock,
     /// The justification is empty.
     NoJustification,
     /// The waiver has no owner, or no expiry, or an expiry that has passed.
@@ -487,7 +494,13 @@ pub struct AuthorityPolicy {
     permission_condition: Option<GithubPermission>,
     distinct_org_admins: u32,
     nonwaivable_gates: BTreeSet<String>,
+    /// The (gate, block code) pairs that no override may pass.
+    non_overridable_blocks: BTreeSet<(String, String)>,
 }
+
+/// The block that must always be on the list: a new direct dependency waits for a recorded human
+/// decision on its name, version and checksum, and an override would pass the stage without one.
+const UNRESOLVED_DEPENDENCY_REVIEW: (&str, &str) = ("dependency-review", "policy_unresolvable");
 
 fn designation_list(key: &'static str, names: &[String]) -> Result<Vec<Designation>, BuildError> {
     names
@@ -797,6 +810,32 @@ impl AuthorityPolicy {
             }
         }
 
+        let mut non_overridable_blocks = BTreeSet::new();
+        for block in &security.gate_integrity.non_overridable_blocks {
+            BlockedCode::parse(&block.code).map_err(|_| BuildError::UnknownValue {
+                key: "gate_integrity.non_overridable_blocks.code",
+                found: block.code.clone(),
+            })?;
+            if !non_overridable_blocks.insert((block.gate.clone(), block.code.clone())) {
+                return Err(BuildError::Duplicate {
+                    what: "non-overridable block",
+                    name: format!("{} {}", block.gate, block.code),
+                });
+            }
+        }
+        if !non_overridable_blocks.contains(&(
+            UNRESOLVED_DEPENDENCY_REVIEW.0.to_owned(),
+            UNRESOLVED_DEPENDENCY_REVIEW.1.to_owned(),
+        )) {
+            return Err(BuildError::ProtectionDisabled {
+                key: "gate_integrity.non_overridable_blocks",
+                found: format!(
+                    "no entry for {} {}",
+                    UNRESOLVED_DEPENDENCY_REVIEW.0, UNRESOLVED_DEPENDENCY_REVIEW.1
+                ),
+            });
+        }
+
         Ok(Self {
             levels,
             default_level,
@@ -821,6 +860,7 @@ impl AuthorityPolicy {
                 .iter()
                 .cloned()
                 .collect(),
+            non_overridable_blocks,
         })
     }
 
@@ -864,6 +904,17 @@ impl AuthorityPolicy {
             .is_some_and(|a| a.by_level.values().all(|n| *n != Need::Nothing))
     }
 
+    /// The designations the action row names as approvers, in the order of the row. Empty when
+    /// the action has no row (such an action needs an organization administrator by the policy's
+    /// default). A caller that must know who may decide an action asks here instead of naming a
+    /// designation of its own, so the row is the one place that says it.
+    #[must_use]
+    pub fn approver_designations(&self, action: &str) -> &[Designation] {
+        self.actions
+            .get(action)
+            .map_or(&[], |row| row.roles.as_slice())
+    }
+
     /// True when the name is on the list of things nobody may do through the factory.
     #[must_use]
     pub fn is_never_allowed(&self, name: &str) -> bool {
@@ -874,6 +925,17 @@ impl AuthorityPolicy {
     #[must_use]
     pub fn is_nonwaivable_gate(&self, gate: &str) -> bool {
         self.nonwaivable_gates.contains(gate)
+    }
+
+    /// True when policy permits an override of a block of `gate` with `code`
+    /// (`gate_integrity.non_overridable_blocks` lists the ones it does not). This is the
+    /// `policy_permits_override_for_block_code` fact of guard `G_OVERRIDE_PERMITTED`, computed
+    /// from the policy so that no caller asserts it.
+    #[must_use]
+    pub fn block_may_be_overridden(&self, gate: &str, code: &str) -> bool {
+        !self
+            .non_overridable_blocks
+            .contains(&(gate.to_owned(), code.to_owned()))
     }
 
     /// The designations an actor holds, or why they hold none.
@@ -1227,6 +1289,9 @@ impl AuthorityPolicy {
         if self.nonwaivable_gates.contains(request.gate) {
             return Err(OverrideDenial::NonWaivableGate);
         }
+        if !self.block_may_be_overridden(request.gate, request.block_code) {
+            return Err(OverrideDenial::NoOverrideForBlock);
+        }
         if request.gate_is_mandatory_of_active_profile {
             return Err(OverrideDenial::MandatoryGateOfActiveProfile);
         }
@@ -1258,7 +1323,8 @@ impl AuthorityPolicy {
         let security: &[HumanRole] = &[HumanRole::SecurityApprover];
         let nothing: &[HumanRole] = &[];
         let facts = OverrideFacts {
-            policy_permits_override_for_block_code: true,
+            policy_permits_override_for_block_code: self
+                .block_may_be_overridden(request.gate, request.block_code),
             block_is_security_class: request.block_is_security_class,
             principal_roles: if approval.designation() == Designation::SecurityApprover {
                 security

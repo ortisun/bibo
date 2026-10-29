@@ -108,6 +108,24 @@ pub(crate) struct RunRecord {
     pub(crate) approved: bool,
     /// An approver rejected the run (`S16`).
     pub(crate) rejected: bool,
+    /// How many attempts the run had when each decision on a dependency was recorded
+    /// ([`links::decision_attempts_before`]), in the order of the links.
+    pub(crate) dependency_decisions: Vec<u32>,
+}
+
+impl RunRecord {
+    /// True when a decision on a dependency was recorded after the latest attempt of the run, that
+    /// is, while the run was blocked by that attempt. A decision recorded before an earlier block
+    /// does not count for a later one.
+    pub(crate) fn dependency_decision_since_last_attempt(&self) -> bool {
+        let latest = self
+            .attempts
+            .iter()
+            .map(|attempt| attempt.number)
+            .max()
+            .unwrap_or(0);
+        self.dependency_decisions.contains(&latest)
+    }
 }
 
 impl RunRecord {
@@ -134,6 +152,11 @@ impl RunRecord {
             .map(|answer| answer.artifact.clone())
             .collect();
         let outputs = read_outputs(tx, &linked).await?;
+        let dependency_decisions = linked
+            .iter()
+            .filter(|link| link.direction == ArtifactDirection::Input)
+            .filter_map(|link| links::decision_attempts_before(link.role.as_str()))
+            .collect();
         let reauthorize =
             kind == StageKind::Intake && row.value.run_number > 1 && row.value.rework_of.is_none();
         Ok(Self {
@@ -147,6 +170,7 @@ impl RunRecord {
             reauthorize,
             approved: false,
             rejected: false,
+            dependency_decisions,
         })
     }
 
@@ -731,6 +755,7 @@ mod tests {
                 reauthorize: false,
                 approved: false,
                 rejected: false,
+                dependency_decisions: Vec::new(),
             }],
             ..Timeline::default()
         }

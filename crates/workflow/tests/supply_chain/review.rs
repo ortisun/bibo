@@ -18,8 +18,8 @@ use serde_json::json;
 
 use super::files::{Files, base, files, head_adding, lock, manifest, member, reg, side, sum, with};
 use super::people::{
-    APPROVER, OPERATOR, REQUESTER, SECURITY, approve, authorized, decide, engine, human, now,
-    policy_hash, scope,
+    APPROVER, OPERATOR, REQUESTER, SECURITY, approve, approve_build_code, authorized, decide,
+    engine, human, now, policy_hash, scope,
 };
 
 pub fn at(text: &str) -> Timestamp {
@@ -68,6 +68,7 @@ pub fn plan_with(
         approvals,
         &Settings {
             dependency: &engine().dependency,
+            authority: &engine().authority,
             licenses: &licenses,
             internal_names: internal,
             popular: &popular,
@@ -737,7 +738,7 @@ fn the_license_allow_list_is_the_one_in_deny_toml() {
 // ---------------------------------------------------------------------------------------------
 
 #[test]
-fn build_code_that_comes_in_under_an_approver_decision_asks_for_a_security_approver() {
+fn build_code_that_comes_in_under_an_approver_decision_asks_for_the_decision_on_that_code() {
     let by_approver = approve(
         APPROVER,
         "bob",
@@ -762,23 +763,86 @@ fn build_code_that_comes_in_under_an_approver_decision_asks_for_a_security_appro
             .iter()
             .any(|f| f.check == "build-code-added" && f.message.contains("inner"))
     );
+    // The person is asked about the package that has the code, bound to its own version and
+    // checksum, and the designation is the one the policy row names.
     assert_eq!(conclusion.escalated.len(), 1);
-    assert_eq!(conclusion.escalated[0].name, "some-crate");
+    assert_eq!(conclusion.escalated[0], subject("inner", "2.0.0", 'd'));
+    assert_eq!(conclusion.needs, [Designation::SecurityApprover]);
 
-    // A security approver's decision clears it.
-    let by_security = approve(
+    // The decision on the dependency, even by a security approver, does not accept its code.
+    let dependency_by_security = approve(
         SECURITY,
         "sam",
         Designation::SecurityApprover,
         &subject("some-crate", "0.1.0", 'c'),
     )
     .expect("recorded");
+    let carried = decided_plan(
+        &head_with_transitive(),
+        &[by_approver.clone(), dependency_by_security],
+    );
+    assert_eq!(conclude(&carried, &metadata, &licenses).escalated.len(), 1);
+
+    // A decision on the code of the dependency is not a decision on the code of what it brings.
+    let wrong_package = approve_build_code(SECURITY, "sam", &subject("some-crate", "0.1.0", 'c'))
+        .expect("recorded");
+    let other = decided_plan(
+        &head_with_transitive(),
+        &[by_approver.clone(), wrong_package],
+    );
+    assert_eq!(conclude(&other, &metadata, &licenses).escalated.len(), 1);
+
+    // The decision on that code clears it.
+    let by_security =
+        approve_build_code(SECURITY, "sam", &subject("inner", "2.0.0", 'd')).expect("recorded");
     let cleared = decided_plan(&head_with_transitive(), &[by_approver, by_security]);
     assert!(
         conclude(&cleared, &metadata, &licenses)
             .escalated
             .is_empty()
     );
+}
+
+/// The engine decides which decisions a stage run awaits by reading the evidence document this
+/// module writes, so the reader and the writer are tested against each other: what the evidence
+/// shows as awaited is what `awaiting_in` returns, with the designation the policy engine said.
+#[test]
+fn the_evidence_shows_what_awaits_a_decision_and_the_engine_reads_the_same() {
+    use factory_workflow::gates::supply_chain::approval::ApprovalKind;
+    use factory_workflow::gates::supply_chain::review::awaiting_in;
+
+    // Nobody decided anything: the dependency awaits an approver.
+    let plan = decided_plan(&head_with_transitive(), &[]);
+    let awaited = awaiting_in(&plan.evidence());
+    assert_eq!(awaited.len(), 1);
+    assert_eq!(awaited[0].kind, ApprovalKind::NewDependency);
+    assert_eq!(awaited[0].subject, subject("some-crate", "0.1.0", 'c'));
+    assert_eq!(awaited[0].needs, Designation::Approver);
+
+    // The dependency is decided, and the fetched metadata says a package it brings has build
+    // code: the code awaits the decision of the designation the policy names.
+    let by_approver = approve(
+        APPROVER,
+        "bob",
+        Designation::Approver,
+        &subject("some-crate", "0.1.0", 'c'),
+    )
+    .expect("recorded");
+    let plan = decided_plan(&head_with_transitive(), &[by_approver]);
+    let metadata = [
+        meta("some-crate", "0.1.0", Some("MIT"), false, false),
+        meta("inner", "2.0.0", Some("MIT"), true, false),
+    ];
+    let conclusion = conclude(&plan, &metadata, &LicensePolicy::owner_approved());
+    let awaited = awaiting_in(&plan.evidence_with(Some(&conclusion)));
+    assert_eq!(awaited.len(), 1, "the dependency is decided: {awaited:?}");
+    assert_eq!(awaited[0].kind, ApprovalKind::BuildCode);
+    assert_eq!(awaited[0].subject, subject("inner", "2.0.0", 'd'));
+    assert_eq!(awaited[0].needs, Designation::SecurityApprover);
+
+    // A document that is not in the shape the writer makes awaits nothing.
+    assert!(awaiting_in(&json!({})).is_empty());
+    assert!(awaiting_in(&json!({"new_direct_dependencies": [{"name": "x"}]})).is_empty());
 }
 
 #[test]

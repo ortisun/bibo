@@ -82,6 +82,7 @@ fn plan_with_approval(approval: DependencyApproval) -> Plan {
         &[approval],
         &Settings {
             dependency: &engine().dependency,
+            authority: &engine().authority,
             licenses: &licenses,
             internal_names: &[],
             popular: &popular,

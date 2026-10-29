@@ -459,7 +459,7 @@ Each entry lists the concrete attacker action, the controls that address it, the
 ### T-29 Supply-chain attack through generated dependencies
 
 * Attack: the model suggests a package that does not exist and an attacker has registered it ("slopsquatting"); a typosquat; a package with an install script or `build.rs`; a lockfile edited to point at another source; a git or path dependency; an unpinned GitHub Action.
-* Mitigations: C-39, C-18 (installs only in `fetch_deps`, scripts disabled, no repository code), C-17, C-40. A new direct dependency always needs a human; no allowlist or heuristic approves one automatically.
+* Mitigations: C-39, C-18 (installs only in `fetch_deps`, scripts disabled, no repository code), C-17, C-40. A new direct dependency always needs a human; no allowlist or heuristic approves one automatically. The build script or procedural macro of a package that is new to the build needs its own human decision, `approve_build_code`, by a security approver and bound to that package's name, version and checksum; the decision on the dependency does not cover it.
 * Residual (Medium): a human can approve a malicious package that looks legitimate; the heuristics shown to the human lower that risk and do not remove it. `build.rs` and tests still run attacker code, only inside the sandbox with no network and no secrets.
 * Proven by: NT-SUP-01 to NT-SUP-04, NT-SUP-06.
 

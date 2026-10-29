@@ -1189,6 +1189,20 @@ gate_integrity:
   reviewer_verdict_can_override_gate: false
   reviewer_sees_builder_self_justification: false
   nonwaivable_gates: [protected_path_check, secret_scan, sandbox_posture, evidence_binding, test_regression_check, signature_verification, stage_profile_check]
+  # Blocks that no override may pass (state machine transition S18, guard G_OVERRIDE_PERMITTED,
+  # `policy_permits_override_for_block_code`). The gate itself may be waived for another reason;
+  # only this gate with this block code may not. A new direct dependency with no recorded decision
+  # blocks `dependency-review` with `policy_unresolvable`. An override would pass the stage without
+  # a decision bound to a package, a version and a checksum, so a person records that decision
+  # (`add_new_direct_dependency`, or `approve_build_code` for build code) and the stage is run
+  # again (`UnblockRerun`, guard alternative "a dependency decision is recorded"). The engine
+  # refuses to build when the first entry is missing, and a project policy may add entries and
+  # never remove one. `code` is a block code of the gate report schema.
+  non_overridable_blocks:
+    - id: dependency-review-policy-unresolvable
+      gate: dependency-review
+      code: policy_unresolvable
+      reason: "The block waits for a recorded human decision bound to the exact name, version and checksum; an override would pass the stage with none."
   evidence_binding: [head_sha, tree_hash, gate_definition_hash, policy_hash, image_digest, base_sha]
   # Each item maps to a row of the invalidation table in docs/architecture/state-machine.md
   # (section Invalidation, "How each item of gate_integrity.invalidated_by maps to a row"),
@@ -1472,14 +1486,38 @@ supply_chain:
   # automatic approval condition: no organization allowlist, no popularity or age
   # threshold, no "approved before" shortcut. Do not add an `auto_approve_when` key.
   # "New" means the package name is absent from the resolved lockfile at the base
-  # commit (direct or transitive). A name already in that lockfile is not new, so
-  # this rule does not fire for it; a version change to it is still a lockfile
-  # change and goes through the lockfile, source and scanner checks below.
+  # commit (direct or transitive) as anything but a member of the project, that is, a
+  # package with no source. A name already in that lockfile from a registry or another
+  # source is not new, so this rule does not fire for it; a version change to it is still
+  # a lockfile change and goes through the lockfile, source and scanner checks below. A
+  # member of the project that has the name does not make a registry package of that name
+  # "not new": that is how a dependency confusion looks (review SC-2, SC-3). The engine
+  # reads exactly this wording and refuses to build from another.
   new_direct_dependency:
     approval: human_always
-    new_means: name_absent_from_base_commit_lockfile
+    new_means: name_absent_from_base_commit_lockfile_as_anything_but_a_project_member
     heuristics_recorded: [registry_existence, first_publish_age_days, download_count, repository_link, typosquat_distance_to_popular_names, license]   # shown to the human; they never approve anything
     min_first_publish_age_days: 30                          # a younger package needs a security_approver, not an ordinary approver
+  # The audit tool run offline cannot tell how old its advisory database is, so the image
+  # records the date and the gate reads it. A clean audit against a database older than this,
+  # or of unknown age, is BLOCKED. 7 days is the `maximum-db-staleness = "P7D"` that deny.toml
+  # demands of the factory's own CI. The stage reads this value; the composition root may
+  # configure a lower one and never a higher one. A project policy may lower it, never raise it.
+  advisory_database:
+    max_age_days: 7
+  # When the dependency gates (dependency-integrity, dependency-review, dependency-advisories
+  # and sbom) run. They judge a change, and the master prompt asks for dependency, SBOM and
+  # license checks "where applicable". `dependency_files_change` runs them for a change that
+  # touches a dependency file (a lockfile, a manifest, a build configuration, the configuration
+  # of a scanner, a build script) and reports NOT_APPLICABLE otherwise, with nothing read and no
+  # container made. Run on every change, an unrelated change would fail for an advisory
+  # published after the base commit against a package the change never touched, and the
+  # change could not fix it; that judgment belongs to a scheduled scan of the base branch (not
+  # built yet: see the review of the supply chain gates).
+  # `always` is the stricter value. A project policy may move to it and never back, and the
+  # composition root may do the same.
+  dependency_gates:
+    run_when: dependency_files_change
   scanners: [cargo-deny, cargo-audit, osv-scanner, gitleaks, semgrep]   # applicable subset per ecosystem; tool absence is BLOCKED
   sbom: { format: cyclonedx, required_for: [release, high_risk_jobs] }
   images: { pinned_by_digest: true, built_from_source_by_factory: true, rebuild_interval_days: 14, vulnerability_scan: required }

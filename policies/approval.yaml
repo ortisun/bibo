@@ -214,7 +214,8 @@ actions:
   - { id: pause_or_resume_job,            min_level: L1, requires: human,            approver_roles: [operator], threats: [T-23] }
   - { id: cancel_job,                     min_level: L1, requires: human,            approver_roles: [operator], threats: [T-23] }
   - { id: close_or_label_issue,           min_level: L1, requires: none,             when: "limited to labels in the factory namespace" }
-  - { id: add_new_direct_dependency,      min_level: L1, requires: human,            approver_roles: [approver], when: "always, for a package name absent from the base commit lockfile; no allowlist or heuristic approves it; a package first published less than 30 days ago needs a security_approver", threats: [T-29] }
+  - { id: add_new_direct_dependency,      min_level: L1, requires: human,            approver_roles: [approver], when: "always, for a package name absent from the base commit lockfile as anything but a member of the project; no allowlist or heuristic approves it; a package first published less than 30 days ago needs a security_approver; the decision is bound to the exact name, version and checksum, and it does not cover the build code of a new package: a build script or a procedural macro that comes in needs its own decision, approve_build_code", threats: [T-29] }
+  - { id: approve_build_code,             min_level: L1, requires: human,            approver_roles: [security_approver], when: "always, for each package that is new to the build and has a build script or is a procedural macro, whoever asked for it (new direct dependency or not); the decision is bound to the exact name, version and checksum of that package, and nothing else lifts the block of the semantic check build_script_added", threats: [T-29, T-30] }
   - { id: run_fetch_deps,                 min_level: L1, requires: none,             when: "after dependency policy decision; allowlisted registries only", threats: [T-29] }
   - { id: change_protected_path,          min_level: L1, requires: human_and_policy, approver_roles: [security_approver], when: "needs spec_authorization AND independent_policy_review AND human_approval", threats: [T-12] }
   - { id: grant_tool_outside_manifest,    min_level: L1, requires: human,            approver_roles: [security_approver], threats: [T-06] }
@@ -252,6 +253,7 @@ always_human:
   - raise_autonomy_level
   - change_protected_path
   - add_new_direct_dependency
+  - approve_build_code
   - widen_egress_allowlist
   - grant_tool_outside_manifest
   - use_exec_shell_breakglass

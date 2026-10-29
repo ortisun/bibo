@@ -1426,10 +1426,11 @@ fn a_rejection_needs_an_authorized_approver_a_decision_and_a_reason() {
 }
 
 #[test]
-fn a_block_is_cleared_by_a_passing_probe_or_an_available_dependency() {
+fn a_block_is_cleared_by_a_passing_probe_an_available_dependency_or_a_recorded_decision() {
     let neither = UnblockFacts {
         capability_reprobe_passed: false,
         missing_dependency_now_available: false,
+        dependency_decision_recorded: false,
     };
     assert!(stage_run::block_cleared_rerun(&neither).is_err());
     assert_holds(stage_run::block_cleared_rerun(&UnblockFacts {
@@ -1440,6 +1441,29 @@ fn a_block_is_cleared_by_a_passing_probe_or_an_available_dependency() {
         missing_dependency_now_available: true,
         ..neither
     }));
+    // The third alternative: a person recorded the decision the dependency review waits for.
+    assert_holds(stage_run::block_cleared_rerun(&UnblockFacts {
+        dependency_decision_recorded: true,
+        ..neither
+    }));
+}
+
+#[test]
+fn a_block_that_nothing_has_cleared_names_all_three_alternatives() {
+    let neither = UnblockFacts {
+        capability_reprobe_passed: false,
+        missing_dependency_now_available: false,
+        dependency_decision_recorded: false,
+    };
+    let failure = stage_run::block_cleared_rerun(&neither).expect_err("nothing cleared it");
+    let text = failure.to_string();
+    for alternative in [
+        "the capability re-probe passed",
+        "the missing dependency is now available",
+        "a decision on the dependency was recorded",
+    ] {
+        assert!(text.contains(alternative), "{alternative}: {text}");
+    }
 }
 
 fn override_facts<'a>(roles: &'a [HumanRole]) -> OverrideFacts<'a> {

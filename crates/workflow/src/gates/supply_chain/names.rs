@@ -5,6 +5,7 @@
 //! list means a security approver) and by the integrity checks (a transitive package one edit
 //! away from a name on the list is a warning). It never approves anything.
 
+use factory_domain::policy::dependency::{is_decorated, within_one_edit};
 use serde_json::Value;
 
 use super::model::normalize;
@@ -99,7 +100,7 @@ impl PopularNames {
         }
         self.normalized
             .iter()
-            .position(|popular| near_miss(popular, &wanted) || decorated(popular, &wanted))
+            .position(|popular| within_one_edit(popular, &wanted) || is_decorated(popular, &wanted))
             .and_then(|index| self.names.get(index))
     }
 
@@ -113,59 +114,6 @@ impl PopularNames {
     #[must_use]
     pub fn provenance(&self) -> &str {
         &self.provenance
-    }
-}
-
-/// Words a squatter puts before or after a popular name. A word that is a package of its own
-/// (`derive`, `core`, `sys`) is on the list too, because `clap-derive-macros` is not `clap_derive`.
-const DECORATIONS: [&str; 22] = [
-    "rs", "rust", "ext", "extra", "plus", "fork", "patched", "fix", "new", "lib", "util", "utils",
-    "derive", "macros", "macro", "core", "sys", "api", "sdk", "client", "cli", "the",
-];
-
-/// True when `wanted` is `popular` with one or two decorations in front of it or behind it,
-/// separated as cargo separates words.
-fn decorated(popular: &str, wanted: &str) -> bool {
-    let all = |text: &str| {
-        !text.is_empty()
-            && text.split('_').count() <= 2
-            && text.split('_').all(|word| DECORATIONS.contains(&word))
-    };
-    wanted
-        .strip_prefix(popular)
-        .and_then(|rest| rest.strip_prefix('_'))
-        .is_some_and(all)
-        || wanted
-            .strip_suffix(popular)
-            .and_then(|rest| rest.strip_suffix('_'))
-            .is_some_and(all)
-}
-
-/// True when `a` and `b` differ and are one edit apart: one letter changed, added, dropped, or
-/// two neighbouring letters swapped. This is the rule of `DependencyPolicy`.
-fn near_miss(a: &str, b: &str) -> bool {
-    if a == b {
-        return false;
-    }
-    let (a, b): (Vec<char>, Vec<char>) = (a.chars().collect(), b.chars().collect());
-    if a.len().abs_diff(b.len()) > 1 {
-        return false;
-    }
-    let common = a.iter().zip(&b).take_while(|(x, y)| x == y).count();
-    let (ra, rb) = (
-        a.get(common..).unwrap_or_default(),
-        b.get(common..).unwrap_or_default(),
-    );
-    match ra.len().cmp(&rb.len()) {
-        std::cmp::Ordering::Equal => {
-            ra.get(1..) == rb.get(1..)
-                || (ra.len() >= 2
-                    && ra.first() == rb.get(1)
-                    && ra.get(1) == rb.first()
-                    && ra.get(2..) == rb.get(2..))
-        }
-        std::cmp::Ordering::Less => ra == rb.get(1..).unwrap_or_default(),
-        std::cmp::Ordering::Greater => ra.get(1..).unwrap_or_default() == rb,
     }
 }
 

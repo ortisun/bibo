@@ -21,6 +21,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use factory_domain::policy::authority::AuthorityPolicy;
 use factory_domain::policy::decision::Designation;
 use factory_domain::policy::dependency::{
     DependencyDecision, DependencyFlag, DependencyPolicy, DependencyRequest, RegistryFacts,
@@ -28,7 +29,9 @@ use factory_domain::policy::dependency::{
 use factory_domain::values::{Sha256Digest, Timestamp};
 use serde_json::{Value, json};
 
-use super::approval::{DecisionScope, DependencyApproval, Subject};
+use super::approval::{
+    ApprovalKind, BUILD_CODE_ACTION, DecisionScope, DependencyApproval, Subject,
+};
 use super::facts::RegistryRecord;
 use super::findings::{Finding, check};
 use super::integrity::{Integrity, NewDirect};
@@ -48,6 +51,9 @@ pub type RegistryTable = BTreeMap<String, RegistryRecord>;
 pub struct Settings<'a> {
     /// The dependency rules of the policy engine.
     pub dependency: &'a DependencyPolicy,
+    /// The authority rules of the policy engine. The gate asks it who may approve build code
+    /// (`approve_build_code`) and names no designation of its own.
+    pub authority: &'a AuthorityPolicy,
     /// The license rule.
     pub licenses: &'a LicensePolicy,
     /// The names of the organization's internal packages.
@@ -103,6 +109,8 @@ pub struct Plan {
     approvals: Vec<DependencyApproval>,
     /// The names that count as internal: the operator's list and the members of the project.
     internal_names: Vec<String>,
+    /// The designations the policy names for the action `approve_build_code`.
+    build_code_designations: Vec<Designation>,
 }
 
 impl Plan {
@@ -129,6 +137,10 @@ impl Plan {
                 .cloned()
                 .collect(),
             internal_names,
+            build_code_designations: settings
+                .authority
+                .approver_designations(BUILD_CODE_ACTION)
+                .to_vec(),
             integrity,
         };
         // A change the integrity checks refuse asks nobody anything.
@@ -188,21 +200,6 @@ impl Plan {
                 designation, flags, ..
             } => (designation, flags),
         };
-        // The policy engine measures one edit. A squatter also adds a word to a popular name
-        // (`reqwest-rs`, `clap-derive-macros`), and the same scrutiny applies: the name is flagged
-        // and a security approver decides. This only raises the level, never lowers it.
-        let (designation, flags) = match settings.popular.lookalike(&package.name) {
-            Some(popular)
-                if !flags
-                    .iter()
-                    .any(|flag| matches!(flag, DependencyFlag::NearPopularName(_))) =>
-            {
-                let mut flags = flags;
-                flags.push(DependencyFlag::NearPopularName(popular.clone()));
-                (Designation::SecurityApprover, flags)
-            }
-            _ => (designation, flags),
-        };
         if let Some(license) = &record.license
             && let Err(denial) = settings.licenses.check(Some(license))
         {
@@ -216,7 +213,10 @@ impl Plan {
         let approval = self
             .approvals
             .iter()
-            .find(|approval| approval.covers(&subject) && approval.satisfies(designation))
+            .find(|approval| {
+                approval.is_for(ApprovalKind::NewDependency, &subject)
+                    && approval.satisfies(designation)
+            })
             .cloned();
         self.needs.push(Need {
             lockfile: entry.lockfile.clone(),
@@ -274,8 +274,8 @@ impl Plan {
         self.evidence_with(None)
     }
 
-    /// The same, and the packages whose build code waits for a security approver, with the exact
-    /// subject (name, version, checksum) the person decides on.
+    /// The same, and the packages whose build code waits for a decision, with the exact subject
+    /// (name, version, checksum) the person decides on and the designation the policy names.
     #[must_use]
     pub fn evidence_with(&self, conclusion: Option<&Conclusion>) -> Value {
         let needs: Vec<Value> = self
@@ -311,15 +311,70 @@ impl Plan {
                     "name": subject.name,
                     "version": subject.version,
                     "checksum": subject.checksum,
-                    "needs": Designation::SecurityApprover.as_str(),
+                    "action": BUILD_CODE_ACTION,
+                    "needs": self.build_code_designations.first().map(|d| d.as_str()),
                 })
             })
             .collect();
         json!({
             "new_direct_dependencies": needs,
-            "build_code_awaiting_a_security_approver": build_code,
+            "build_code_awaiting_a_decision": build_code,
         })
     }
+}
+
+/// The decisions an evidence document of [`Plan::evidence_with`] says are still awaited: each new
+/// direct dependency with no decision on it and each package whose build code has none, with the
+/// exact subject (name, version, checksum) a person was shown. The writer and the reader of the
+/// document are in this module, so they cannot drift apart. An entry that is not in the shape the
+/// writer makes is skipped, so a document that was damaged awaits nothing and no decision can be
+/// recorded against it.
+#[must_use]
+pub fn awaiting_in(evidence: &Value) -> Vec<Awaited> {
+    let read = |entry: &Value, kind: ApprovalKind| -> Option<Awaited> {
+        let text = |key: &str| entry.get(key).and_then(Value::as_str);
+        Some(Awaited {
+            kind,
+            subject: Subject {
+                name: text("name")?.to_owned(),
+                version: text("version")?.to_owned(),
+                checksum: text("checksum")?.to_owned(),
+            },
+            needs: Designation::parse(text("needs")?)?,
+        })
+    };
+    let list = |key: &str| -> Vec<Value> {
+        evidence
+            .get(key)
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default()
+    };
+    let mut awaited = Vec::new();
+    for entry in list("new_direct_dependencies") {
+        if entry.get("approval").is_some_and(Value::is_null)
+            && let Some(found) = read(&entry, ApprovalKind::NewDependency)
+        {
+            awaited.push(found);
+        }
+    }
+    for entry in list("build_code_awaiting_a_decision") {
+        if let Some(found) = read(&entry, ApprovalKind::BuildCode) {
+            awaited.push(found);
+        }
+    }
+    awaited
+}
+
+/// One decision an evidence document says is awaited.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Awaited {
+    /// A decision on the dependency, or on its build code.
+    pub kind: ApprovalKind,
+    /// The exact subject the person was shown.
+    pub subject: Subject,
+    /// The designation that must decide, as the policy engine said when the evidence was made.
+    pub needs: Designation,
 }
 
 /// The name of a flag for the evidence.
@@ -393,12 +448,15 @@ fn touched(plan: &Plan) -> impl Iterator<Item = &LockedPackage> {
 pub struct Conclusion {
     /// Licenses outside the list (violations) and build code that came in (a warning).
     pub findings: Vec<Finding>,
-    /// Packages whose build code waits for a security approver: a new direct dependency that was
-    /// approved by an approver and brings build code, and any other package that is new to the
-    /// build and has a build script or is a procedural macro. The decision is recorded as a
-    /// [`DependencyApproval`] of a security approver on exactly this subject (name, version and
-    /// checksum).
+    /// Packages whose build code waits for a decision: every package that is new to the build
+    /// (a new direct dependency, a package that comes in under one, or any other added package)
+    /// and has a build script or is a procedural macro. The decision is the action
+    /// `approve_build_code`, recorded as a [`DependencyApproval`] of kind
+    /// [`ApprovalKind::BuildCode`] on exactly this subject (name, version and checksum).
     pub escalated: Vec<Subject>,
+    /// The designations the policy names for that action. A report says who must decide from
+    /// this list and not from a designation written in the gate.
+    pub needs: Vec<Designation>,
 }
 
 impl Conclusion {
@@ -444,35 +502,42 @@ pub fn conclude(plan: &Plan, metadata: &[PackageMeta], licenses: &LicensePolicy)
             ),
         ));
     }
-    // A decision of a security approver on a subject covers it and, for a new direct dependency,
-    // everything it brings in. Nothing else lifts the block of build code.
-    let security_decided = |subject: &Subject| {
-        plan.approvals
-            .iter()
-            .any(|a| a.covers(subject) && a.satisfies(Designation::SecurityApprover))
+    // Build code waits for the decision `approve_build_code`, which the policy gives to the
+    // designations of that row, and for nothing else: a decision on the dependency itself, by any
+    // designation, does not accept the code that runs when the project is built. The decision is
+    // given for the package that has the code, bound to its name, version and checksum.
+    let decided = |subject: &Subject| {
+        plan.approvals.iter().any(|approval| {
+            approval.is_for(ApprovalKind::BuildCode, subject)
+                && approval.satisfies_any(&plan.build_code_designations)
+        })
     };
-    let mut under_a_need: BTreeSet<(String, String)> = BTreeSet::new();
+    // A package is asked about when it is new to the build and has build code, whether it is a
+    // new direct dependency, comes in under one or is a transitive crate pulled by a feature flag
+    // or a changed manifest: `build_script_added` blocks until a security review, whoever asked
+    // for the package. A package that only changed version, outside the closure of a new direct
+    // dependency, is not asked again, because the gate has no record of what the base commit's
+    // version ran (see the review notes, H-3).
+    let mut in_a_closure: BTreeSet<(String, String)> = BTreeSet::new();
     for need in &plan.needs {
-        let Some(lock) = plan.integrity.head.locks.get(&need.lockfile) else {
-            continue;
-        };
-        let reached = closure(lock, &need.subject);
-        let brings_code = reached.iter().any(|key| with_build_code.contains(key));
-        if brings_code && !security_decided(&need.subject) {
-            conclusion.escalated.push(need.subject.clone());
+        if let Some(lock) = plan.integrity.head.locks.get(&need.lockfile) {
+            in_a_closure.extend(closure(lock, &need.subject));
         }
-        under_a_need.extend(reached);
     }
-    // Build code in a package that is new to the build and that no new direct dependency brings
-    // (a transitive crate pulled by a feature flag or a changed manifest) waits for a security
-    // approver as well: `build_script_added` blocks until a security review, whoever asked for
-    // the package. A package that only changed version is not asked again here, because the
-    // gate has no record of what the base commit's version ran (see the review notes, H-3).
-    for package in &plan.integrity.diff.added {
+    let added: BTreeSet<(String, String)> = plan
+        .integrity
+        .diff
+        .added
+        .iter()
+        .filter(|package| package.origin != Origin::Path)
+        .map(|package| (normalize(&package.name), package.version.clone()))
+        .collect();
+    let mut asked: BTreeSet<(String, String)> = BTreeSet::new();
+    for package in touched(plan) {
         let key = (normalize(&package.name), package.version.clone());
-        if package.origin == Origin::Path
-            || !with_build_code.contains(&key)
-            || under_a_need.contains(&key)
+        if !with_build_code.contains(&key)
+            || !(in_a_closure.contains(&key) || added.contains(&key))
+            || !asked.insert(key)
         {
             continue;
         }
@@ -481,10 +546,11 @@ pub fn conclude(plan: &Plan, metadata: &[PackageMeta], licenses: &LicensePolicy)
             version: package.version.clone(),
             checksum: package.checksum.clone().unwrap_or_default(),
         };
-        if !security_decided(&subject) {
+        if !decided(&subject) {
             conclusion.escalated.push(subject);
         }
     }
+    conclusion.needs.clone_from(&plan.build_code_designations);
     conclusion
 }
 

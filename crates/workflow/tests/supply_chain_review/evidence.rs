@@ -34,6 +34,7 @@ fn plan_for(record: RegistryRecord) -> Plan {
         &[],
         &Settings {
             dependency: &engine().dependency,
+            authority: &engine().authority,
             licenses: &licenses,
             internal_names: &[],
             popular: &popular,

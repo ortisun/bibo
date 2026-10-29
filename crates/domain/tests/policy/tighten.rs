@@ -56,6 +56,21 @@ fn row_index(json: &Value, list: &str, id: &str) -> usize {
 }
 
 #[test]
+fn a_project_cannot_move_the_dependency_gates_back_from_always_to_only_when_a_file_changes() {
+    // The central policy here says `always`. The real central policy says the other value, so the
+    // reverse move is made against a central policy that is changed for this test.
+    let mut central = security_json();
+    central["supply_chain"]["dependency_gates"]["run_when"] = "always".into();
+    let central = security_from(central);
+    assert_eq!(
+        keys_of(check_security(&central, &security())),
+        ["supply_chain.dependency_gates.run_when"]
+    );
+    // The same value is no change.
+    assert_eq!(check_security(&central, &central), Ok(()));
+}
+
+#[test]
 fn a_policy_equal_to_the_central_one_is_a_tightening_of_it() {
     assert_eq!(check_security(&security(), &security()), Ok(()));
     assert_eq!(check_approval(&approval(), &approval()), Ok(()));
@@ -392,6 +407,39 @@ fn negative_nt_pol_02_each_widening_is_refused_and_names_its_key() {
             "supply_chain.new_direct_dependency.min_first_publish_age_days",
             Box::new(|j| {
                 j["supply_chain"]["new_direct_dependency"]["min_first_publish_age_days"] = 1.into()
+            }),
+        ),
+        (
+            "removes the block nobody may override",
+            "gate_integrity.non_overridable_blocks[dependency-review-policy-unresolvable]",
+            Box::new(|j| {
+                j["gate_integrity"]["non_overridable_blocks"]
+                    .as_array_mut()
+                    .expect("list")
+                    .remove(0);
+            }),
+        ),
+        (
+            "points the block nobody may override at another code",
+            "gate_integrity.non_overridable_blocks[dependency-review-policy-unresolvable].code",
+            Box::new(|j| {
+                j["gate_integrity"]["non_overridable_blocks"][0]["code"] =
+                    "tool_unavailable".into();
+            }),
+        ),
+        (
+            "raises the age the advisory database may have",
+            "supply_chain.advisory_database.max_age_days",
+            Box::new(|j| {
+                j["supply_chain"]["advisory_database"]["max_age_days"] = 30.into();
+            }),
+        ),
+        (
+            "makes the dependency gates run never",
+            "supply_chain.dependency_gates.run_when",
+            Box::new(|j| {
+                // A value that is not one of the two, so it is not on the way to stricter.
+                j["supply_chain"]["dependency_gates"]["run_when"] = "never".into();
             }),
         ),
         (
@@ -848,6 +896,32 @@ fn negative_nt_pol_02_tightenings_are_accepted() {
             "raises the minimum age",
             Box::new(|j| {
                 j["supply_chain"]["new_direct_dependency"]["min_first_publish_age_days"] = 90.into()
+            }),
+        ),
+        (
+            "adds a block nobody may override",
+            Box::new(|j| {
+                j["gate_integrity"]["non_overridable_blocks"]
+                    .as_array_mut()
+                    .expect("list")
+                    .push(json!({
+                        "id": "advisories-unavailable",
+                        "gate": "dependency-advisories",
+                        "code": "dependency_unavailable",
+                        "reason": "a project that wants it stricter"
+                    }));
+            }),
+        ),
+        (
+            "lowers the age the advisory database may have",
+            Box::new(|j| {
+                j["supply_chain"]["advisory_database"]["max_age_days"] = 1.into();
+            }),
+        ),
+        (
+            "runs the dependency gates on every change",
+            Box::new(|j| {
+                j["supply_chain"]["dependency_gates"]["run_when"] = "always".into();
             }),
         ),
         (

@@ -1113,6 +1113,14 @@
       "rerun_critical_gates_after_sync": true
     },
     "missing_evidence_is": "BLOCKED",
+    "non_overridable_blocks": [
+      {
+        "code": "policy_unresolvable",
+        "gate": "dependency-review",
+        "id": "dependency-review-policy-unresolvable",
+        "reason": "The block waits for a recorded human decision bound to the exact name, version and checksum; an override would pass the stage with none."
+      }
+    ],
     "nonwaivable_gates": [
       "protected_path_check",
       "secret_scan",
@@ -2025,7 +2033,13 @@
     ]
   },
   "supply_chain": {
+    "advisory_database": {
+      "max_age_days": 7
+    },
     "ci_actions_pinned_to_commit_sha": true,
+    "dependency_gates": {
+      "run_when": "dependency_files_change"
+    },
     "images": {
       "built_from_source_by_factory": true,
       "pinned_by_digest": true,
@@ -2058,7 +2072,7 @@
         "license"
       ],
       "min_first_publish_age_days": 30,
-      "new_means": "name_absent_from_base_commit_lockfile"
+      "new_means": "name_absent_from_base_commit_lockfile_as_anything_but_a_project_member"
     },
     "registries_allowed_ref": "egress.profiles.fetch_deps",
     "sbom": {

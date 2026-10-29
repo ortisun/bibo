@@ -83,6 +83,18 @@ pub const MANIFEST: &str = r#"{
 pub const LIB: &str = "pub fn count(text: &str) -> usize {\n    text.split_whitespace().count()\n}\n\n#[cfg(test)]\nmod tests {\n    use super::*;\n\n    #[test]\n    fn unit_counts_words() {\n        assert_eq!(count(\"a b c\"), 3);\n    }\n}\n";
 
 /// The files of the base commit.
+/// The policy engine of the world's fixtures, with one change made to the security policy.
+pub fn policy_with(change: impl FnOnce(&mut serde_json::Value)) -> Arc<PolicyEngine> {
+    let mut security: serde_json::Value =
+        serde_json::from_str(SECURITY).expect("the security policy fixture");
+    change(&mut security);
+    let security: SecurityPolicy =
+        serde_json::from_value(security).expect("the changed security policy");
+    let approval: ApprovalPolicy =
+        serde_json::from_str(APPROVAL).expect("the approval policy fixture");
+    Arc::new(PolicyEngine::new(&security, &approval).expect("a policy engine"))
+}
+
 pub fn base_files() -> Vec<(String, String)> {
     [
         ("Cargo.toml", "[package]\nname = \"word-count\"\nversion = \"0.1.0\"\nedition = \"2021\"\n"),
@@ -416,6 +428,7 @@ pub struct World {
     pub approvals: Arc<Approvals>,
     pub packages: Arc<Registry>,
     pub database: Arc<Database>,
+    supply_tweak: Mutex<Option<fn(&mut SupplyChainSettings)>>,
     runtime: FakeAgentRuntime,
     router: StaticModelRouter,
     registry: InMemoryAgentRegistry,
@@ -483,6 +496,7 @@ impl World {
             correlation: fixture.correlation(),
             policy_hash: Sha256Digest::of(b"policy bundle one"),
             approvals: Arc::new(Approvals::default()),
+            supply_tweak: Mutex::new(None),
             packages: Arc::new(Registry::default()),
             // One day old at the time of the fake clock.
             database: Arc::new(Database(Mutex::new(Some(
@@ -530,6 +544,50 @@ impl World {
         fetched.commit
     }
 
+    /// The settings of the dependency gates as a stage built from the world's policy has them,
+    /// and then changed by the test through [`tweak_supply`](Self::tweak_supply), the way a
+    /// composition root's configuration would change them.
+    pub fn supply_settings(&self) -> SupplyChainSettings {
+        let mut settings = SupplyChainSettings::from_policy(
+            &self.policy,
+            FetchSandbox {
+                image: image(),
+                limits: limits_for_fetch(),
+                env: factory_ports::sandbox::FixedEnv::new(vec![(
+                    "HOME".to_owned(),
+                    "/home/agent".to_owned(),
+                )])
+                .expect("an environment"),
+                hardening: Hardening::strict(10_001, 10_001),
+                caches: Vec::new(),
+                sidecar: "sidecar-fixture".to_owned(),
+                arch: "arm64".to_owned(),
+            },
+            LicensePolicy::owner_approved(),
+            PopularNames::bundled().expect("the bundled list"),
+            SbomRule {
+                required: false,
+                tool: SbomTool::default(),
+            },
+        );
+        if let Some(change) = *self
+            .supply_tweak
+            .lock()
+            .expect("the lock is never poisoned")
+        {
+            change(&mut settings);
+        }
+        settings
+    }
+
+    /// Changes the settings of the dependency gates after they were built from policy.
+    pub fn tweak_supply(&self, change: fn(&mut SupplyChainSettings)) {
+        *self
+            .supply_tweak
+            .lock()
+            .expect("the lock is never poisoned") = Some(change);
+    }
+
     pub fn config(&self) -> ValidationConfig {
         let limits = limits_for_verify();
         ValidationConfig {
@@ -553,27 +611,7 @@ impl World {
             flaky_registry: BTreeSet::new(),
             bounds: Bounds::default(),
             supply_chain: SupplyChainSeams {
-                settings: SupplyChainSettings::new(
-                    FetchSandbox {
-                        image: image(),
-                        limits: limits_for_fetch(),
-                        env: factory_ports::sandbox::FixedEnv::new(vec![(
-                            "HOME".to_owned(),
-                            "/home/agent".to_owned(),
-                        )])
-                        .expect("an environment"),
-                        hardening: Hardening::strict(10_001, 10_001),
-                        caches: Vec::new(),
-                        sidecar: "sidecar-fixture".to_owned(),
-                        arch: "arm64".to_owned(),
-                    },
-                    LicensePolicy::owner_approved(),
-                    PopularNames::bundled().expect("the bundled list"),
-                    SbomRule {
-                        required: false,
-                        tool: SbomTool::default(),
-                    },
-                ),
+                settings: self.supply_settings(),
                 approvals: self.approvals.clone(),
                 registry: self.packages.clone(),
                 advisory_db: self.database.clone(),

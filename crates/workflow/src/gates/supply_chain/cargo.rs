@@ -228,9 +228,31 @@ fn origin_of(source: &str) -> Origin {
         };
     }
     if let Some(url) = source.strip_prefix("git+") {
-        return Origin::Git(host_of(url));
+        return git_origin(url);
     }
     Origin::Unknown
+}
+
+/// The host, the repository and the pinned revision of a `git+` source. Credentials and the port
+/// are dropped. Cargo writes `git+<url>?<selector>#<commit>`, and the commit is the revision; a
+/// lockfile with no commit is identified by the selector.
+fn git_origin(url: &str) -> Origin {
+    let (without_fragment, fragment) = url.split_once('#').unwrap_or((url, ""));
+    let (location, query) = without_fragment
+        .split_once('?')
+        .unwrap_or((without_fragment, ""));
+    let after_scheme = location
+        .split_once("://")
+        .map_or(location, |(_, rest)| rest);
+    let path = after_scheme
+        .find('/')
+        .and_then(|at| after_scheme.get(at..))
+        .unwrap_or_default();
+    Origin::Git {
+        host: host_of(url),
+        repository: plain(path, 200),
+        revision: plain(if fragment.is_empty() { query } else { fragment }, 200),
+    }
 }
 
 /// The host of a URL, without credentials, port, path or query.
@@ -388,12 +410,42 @@ mod tests {
             lock.packages[1].checksum.as_deref(),
             Some("a".repeat(64).as_str())
         );
-        // The host is kept; the credential, the port and the path are not.
+        // The host, the repository and the revision are kept; the credential and the port are not.
         assert_eq!(
             lock.packages[2].origin,
-            Origin::Git("example.test".to_owned())
+            Origin::Git {
+                host: "example.test".to_owned(),
+                repository: "/org/odd".to_owned(),
+                revision: "abc".to_owned(),
+            }
         );
         assert_eq!(lock.members().count(), 1);
+    }
+
+    /// The review's A-gap: a git package that stays on the same host while its repository or its
+    /// revision changes has an equal origin when only the host is kept, and no checksum shows the
+    /// difference. The two lockfiles are read as the gate reads them.
+    #[test]
+    fn a_git_package_that_moves_repository_or_revision_on_one_host_is_a_difference() {
+        use super::super::diff::LockDiff;
+        let lock = |source: &str| {
+            let text = format!(
+                "version = 4\n\n[[package]]\nname = \"odd\"\nversion = \"1.0.0\"\nsource = \"git+{source}\"\n"
+            );
+            CargoFormat.parse_lockfile(&text).expect("a lockfile")
+        };
+        let base = lock("https://example.test/org/odd?rev=1#1111");
+        assert!(LockDiff::between(&base, &base).is_empty());
+        for (moved, what) in [
+            (
+                "https://example.test/someone-else/odd?rev=1#1111",
+                "repository",
+            ),
+            ("https://example.test/org/odd?rev=2#2222", "revision"),
+        ] {
+            let diff = LockDiff::between(&base, &lock(moved));
+            assert!(!diff.is_empty(), "a changed {what} looks unchanged");
+        }
     }
 
     #[test]

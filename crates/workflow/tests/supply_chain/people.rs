@@ -12,6 +12,7 @@ use factory_domain::values::{Sha256Digest, Timestamp};
 use factory_domain::vocabulary::RiskTier;
 use factory_workflow::gates::supply_chain::approval::{
     ApprovalError, DecisionScope, DependencyApproval, Request, Subject, authorize,
+    authorize_build_code,
 };
 
 const SECURITY_POLICY: &str = include_str!("../../../domain/tests/fixtures/policy/security.json");
@@ -153,6 +154,42 @@ pub fn authorized(verdict: ActionVerdict) -> AuthorizedApproval {
         ActionVerdict::Authorized(proof) => proof,
         other => panic!("expected an authorization, got {other:?}"),
     }
+}
+
+/// Asks the policy engine whether `actor` may approve the build code of a package, for a job that
+/// `requester` asked for.
+pub fn decide_build_code(actor: &Actor<'_>, requester: Option<u64>) -> ActionVerdict {
+    let (tenant, now, allowlist) = (tenant(), now(), allowlist());
+    authorize_build_code(&Request {
+        policy: &engine().authority,
+        level: AutonomyLevel::L1,
+        tenant: &tenant,
+        repository: REPOSITORY,
+        actor,
+        allowlist: &allowlist,
+        now: &now,
+        requester: requester.map(id),
+        risk_tier: RiskTier::Low,
+        protected_path_change: false,
+        sensitive_file_change: false,
+    })
+}
+
+/// A recorded decision on the build code of `subject` by `number`. The policy engine decides
+/// whether `number` may; a person it refuses has no proof to record, and the test panics there.
+pub fn approve_build_code(
+    number: u64,
+    login: &str,
+    subject: &Subject,
+) -> Result<DependencyApproval, ApprovalError> {
+    let proof = authorized(decide_build_code(&human(number, login), Some(REQUESTER)));
+    DependencyApproval::record(
+        &proof,
+        subject.clone(),
+        policy_hash(),
+        scope(),
+        "Read the build script and the macro; they do only what the crate says.",
+    )
 }
 
 /// A recorded decision by `number`, who must hold `needed`, on `subject`.

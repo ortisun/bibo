@@ -50,6 +50,7 @@ fn plan_adding(name: &'static str) -> Plan {
         &[],
         &Settings {
             dependency: &engine().dependency,
+            authority: &engine().authority,
             licenses: &LicensePolicy::owner_approved(),
             internal_names: &[],
             popular: &popular,
