@@ -248,8 +248,10 @@ fn stand_in() -> RepoPath {
     RepoPath::new("_unsafe_entry_").expect("a fixed safe name")
 }
 
-/// The first rule one name breaks: too long, not UTF-8, a control character, a backslash, or a
-/// character that hides or reorders text (see [`hides_text`]).
+/// The first rule one name breaks: too long, not UTF-8, a control character or a backslash. A name
+/// that hides or reorders text is checked separately, after the git directory aliases (see
+/// [`hides_text`]), because `.git` followed by a zero width character is a nested git directory
+/// first and an unreadable name second.
 fn name_problem(raw: &[u8], limits: &AuditLimits) -> Option<AuditKind> {
     if raw.len() > limits.max_name_bytes {
         return Some(AuditKind::NameTooLong);
@@ -257,7 +259,7 @@ fn name_problem(raw: &[u8], limits: &AuditLimits) -> Option<AuditKind> {
     let Ok(text) = std::str::from_utf8(raw) else {
         return Some(AuditKind::UnsafeName);
     };
-    if text.chars().any(|c| c.is_control() || hides_text(c)) || text.contains('\\') {
+    if text.chars().any(char::is_control) || text.contains('\\') {
         return Some(AuditKind::UnsafeName);
     }
     None
@@ -396,6 +398,10 @@ pub(crate) fn walk(root: &Path, ctx: &WalkContext<'_>) -> Result<Manifest, Audit
                     AuditKind::NestedGit
                 };
                 rec.add_raw(kind, holder);
+                continue;
+            }
+            if text.chars().any(hides_text) {
+                rec.add_raw(AuditKind::UnsafeName, &full_raw);
                 continue;
             }
             let rel = String::from_utf8_lossy(&full_raw).into_owned();
@@ -1097,12 +1103,11 @@ mod tests {
 
     #[test]
     fn a_name_that_hides_or_reorders_text_is_unsafe_in_every_script() {
-        let limits = limits();
         // One character of each kind: bidirectional controls and isolates, zero width characters,
         // the line and paragraph separators, the byte order mark, a tag character, the Hangul
         // filler, the soft hyphen, the Arabic number sign, a variation selector supplement, a
         // musical format control and the interlinear annotation marks.
-        for hidden in [
+        let hidden_characters = [
             '\u{202A}',
             '\u{202B}',
             '\u{202C}',
@@ -1137,15 +1142,39 @@ mod tests {
             '\u{FFF9}',
             '\u{FFFB}',
             '\u{13430}',
-        ] {
+        ];
+        let dir = FxTempDir::new("audit-hidden").expect("tmp");
+        for (i, hidden) in hidden_characters.into_iter().enumerate() {
+            assert!(hides_text(hidden), "U+{:04X}", hidden as u32);
+            // Through the walk of a directory that holds a file with that name.
+            let case = dir.join(format!("case-{i}"));
+            fs::create_dir(&case).expect("a case directory");
             let name = format!("a{hidden}b.rs");
-            assert_eq!(
-                name_problem(name.as_bytes(), &limits),
-                Some(AuditKind::UnsafeName),
-                "U+{:04X}",
-                hidden as u32
+            fs::write(case.join(&name), b"").expect("a file");
+            let found = kinds(run(&case, false));
+            assert_eq!(found.len(), 1, "U+{:04X}: {found:?}", hidden as u32);
+            assert_eq!(found[0].0, AuditKind::UnsafeName, "U+{:04X}", hidden as u32);
+            assert!(
+                !found[0].1.contains(hidden),
+                "the finding must not carry the character: {:?}",
+                found[0].1
             );
         }
+    }
+
+    #[test]
+    fn a_git_directory_alias_with_a_hidden_character_is_a_nested_git_directory_first() {
+        let dir = FxTempDir::new("audit-alias").expect("tmp");
+        let nested = dir.join("vendor").join(".git\u{200d}");
+        fs::create_dir_all(&nested).expect("a nested directory");
+        fs::write(nested.join("config"), "[core]\n").expect("a file");
+        let found = kinds(run(dir.path(), false));
+        assert!(
+            found
+                .iter()
+                .any(|(kind, path)| *kind == AuditKind::NestedGit && path == "vendor"),
+            "{found:?}"
+        );
     }
 
     #[test]
@@ -1169,29 +1198,20 @@ mod tests {
             "\u{30a2}\u{30a4}\u{30a6}\u{30a8}\u{30aa}.rs",
         ] {
             assert_eq!(name_problem(name.as_bytes(), &limits), None, "{name:?}");
+            assert!(!name.chars().any(hides_text), "{name:?}");
         }
         // The boundaries of the ranges are exact: the characters next to them pass.
         for edge in [
             '\u{2027}',
             '\u{202F}',
-            '\u{206F}',
             '\u{2070}',
             '\u{200A}',
             '\u{FEFE}',
             '\u{FF00}',
             '\u{E1000}',
         ] {
-            let name = format!("a{edge}b");
-            let hidden = hides_text(edge);
-            assert_eq!(
-                name_problem(name.as_bytes(), &limits).is_some(),
-                hidden,
-                "U+{:04X}",
-                edge as u32
-            );
+            assert!(!hides_text(edge), "U+{:04X}", edge as u32);
         }
-        assert!(!hides_text('\u{2027}') && !hides_text('\u{202F}') && !hides_text('\u{2070}'));
-        assert!(!hides_text('\u{200A}') && !hides_text('\u{E1000}') && !hides_text('\u{FEFE}'));
         assert!(hides_text('\u{206F}') && hides_text('\u{E0FFF}'));
     }
 }
