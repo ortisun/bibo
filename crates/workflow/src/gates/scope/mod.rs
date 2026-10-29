@@ -9,6 +9,7 @@
 //! |---|---|---|
 //! | [`protected`] | `protected-paths-unchanged`, and the refusals that belong to `test-file-protection` | whether the policy lets this diff through |
 //! | [`weakening`] | `test-file-protection` | whether a test was skipped, removed or weakened inside a file |
+//! | [`lint`] | `lint` | whether a lint level was lowered, an allow attribute added or an ignore list grown (`lint_relaxation`) |
 //! | [`secrets`] | `secret-scan` | whether a new line is a secret |
 //! | [`acceptance`] | `acceptance-evidence` | whether every requirement has a passed covering test |
 //!
@@ -17,6 +18,7 @@
 pub mod acceptance;
 pub mod diff;
 pub mod lines;
+pub mod lint;
 pub mod patch;
 pub mod protected;
 pub mod secrets;

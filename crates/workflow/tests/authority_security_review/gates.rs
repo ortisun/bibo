@@ -5,7 +5,7 @@ use factory_domain::vocabulary::RiskTier;
 use factory_ports::githost::PullRequestRef;
 use factory_ports::paths::{BranchName, RepoRef};
 use factory_ports::workspace::ChangeKind;
-use factory_workflow::gates::scope::{FileChange, protected, weakening};
+use factory_workflow::gates::scope::{FileChange, lint, protected, weakening};
 use factory_workflow::stages::approval::{Outcome, Refusal, ServiceError};
 
 use crate::approval_rig::{Rig, policy};
@@ -88,14 +88,13 @@ fn modified(path: &str, before: &str, after: &str) -> FileChange {
     }
 }
 
-/// `policies/security.yaml` `gate_integrity.semantic_checks` lists `lint_relaxation` ("lint level
-/// lowered, allow attributes added, ignore lists grown", blocks until a human approves). The
-/// host-side gates are `protected::check`, `weakening::weakened` and the secret scan
-/// (`stages/validation/host.rs`). None of them reads a lint attribute. A crate-level
-/// `#![allow(warnings)]` outranks the `-D warnings` of the lint command, so the lint gate, which
-/// reads only the exit code, reports PASSED for code that has warnings.
+/// FIXED (AUT-4). `policies/security.yaml` `gate_integrity.semantic_checks` lists
+/// `lint_relaxation` ("lint level lowered, allow attributes added, ignore lists grown", blocks until
+/// a human approves) and no host-side rule read a lint attribute. A crate-level `#![allow(warnings)]`
+/// outranks the `-D warnings` of the lint command, so the lint gate, which reads only the exit code,
+/// reported PASSED for code that has warnings. `lint::relaxed` now reads the change on the host and
+/// the lint gate fails (see `validation::negative_gate::aut_4_*` for the whole stage).
 #[test]
-#[ignore = "confirmed defect AUT-4: a new crate-level allow attribute that silences the lint gate is not seen by any host-side rule"]
 fn aut_4_a_new_allow_attribute_is_seen_by_a_host_side_gate() {
     let before = "pub fn one() {}\n";
     for added in [
@@ -103,17 +102,19 @@ fn aut_4_a_new_allow_attribute_is_seen_by_a_host_side_gate() {
         "#![allow(clippy::all)]\npub fn one() {}\n",
         "#![allow(unused)]\npub fn one() {}\n",
     ] {
-        let found = weakening::weakened(&[modified("src/lib.rs", before, added)]);
-        let diff = [DiffEntry::Modified {
-            path: "src/lib.rs".to_owned(),
-            gained_lines_only: false,
-        }];
-        let refused = protected::check(&policy().paths, &diff);
-        assert!(
-            !found.is_empty() || !refused.protected.is_empty() || !refused.tests.is_empty(),
-            "no host-side rule saw {added:?}"
-        );
+        let found = lint::relaxed(&[modified("src/lib.rs", before, added)]);
+        assert!(!found.is_empty(), "no host-side rule saw {added:?}");
+        assert_eq!(found[0].check, "lint-relaxed");
     }
+    // The same change without the attribute is clean.
+    assert!(
+        lint::relaxed(&[modified(
+            "src/lib.rs",
+            before,
+            "pub fn one() {}\npub fn two() {}\n"
+        )])
+        .is_empty()
+    );
 }
 
 /// The same policy list names `build_script_added` ("new build.rs, setup.py, postinstall",
@@ -123,7 +124,7 @@ fn aut_4_a_new_allow_attribute_is_seen_by_a_host_side_gate() {
 /// and nothing consumes the "sensitive" hit at gate time: the tier at approval comes from the
 /// architect's design (see AUT-10 in the review).
 #[test]
-#[ignore = "confirmed defect AUT-5: a new build.rs is allowed by the path gate and no gate blocks it for a security review"]
+#[ignore = "confirmed defect AUT-5: waiting for approve_build_code in policies/approval.yaml (policy work); a new build.rs is allowed by the path gate and no gate blocks it for a security review"]
 fn aut_5_a_new_build_script_is_blocked_until_a_security_review() {
     let diff = [DiffEntry::Added {
         path: "build.rs".to_owned(),
