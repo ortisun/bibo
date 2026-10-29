@@ -1,0 +1,898 @@
+{
+  "entries": [
+    {
+      "action": "job.received_from_webhook",
+      "at": "2026-10-29T07:29:30.67364Z",
+      "decision": "record",
+      "kind": "audit"
+    },
+    {
+      "at": "2026-10-29T07:29:30.686492Z",
+      "event": "job.admitted",
+      "kind": "transition",
+      "reason": null,
+      "transition": "J01"
+    },
+    {
+      "at": "2026-10-29T07:29:30.686492Z",
+      "event": "stage_run.ready",
+      "kind": "transition",
+      "reason": null,
+      "transition": "S01"
+    },
+    {
+      "action": "authorization_decision.granted",
+      "at": "2026-10-29T07:29:30.697491Z",
+      "decision": "allow",
+      "kind": "audit"
+    },
+    {
+      "at": "2026-10-29T07:29:30.727179Z",
+      "event": "stage_run.started",
+      "kind": "transition",
+      "reason": null,
+      "transition": "S03"
+    },
+    {
+      "action": "tool_grant_issued.granted",
+      "at": "2026-10-29T07:29:30.734313Z",
+      "decision": "allow",
+      "kind": "audit"
+    },
+    {
+      "action": "credential_minted_and_revoked.granted",
+      "at": "2026-10-29T07:29:30.740743Z",
+      "decision": "allow",
+      "kind": "audit"
+    },
+    {
+      "at": "2026-10-29T07:29:30.808458Z",
+      "event": "attempt.running",
+      "kind": "transition",
+      "reason": null,
+      "transition": "A01"
+    },
+    {
+      "at": "2026-10-29T07:29:30.810347Z",
+      "event": "attempt.succeeded",
+      "kind": "transition",
+      "reason": null,
+      "transition": "A04"
+    },
+    {
+      "at": "2026-10-29T07:29:30.810347Z",
+      "event": "stage_run.gating",
+      "kind": "transition",
+      "reason": null,
+      "transition": "S04"
+    },
+    {
+      "at": "2026-10-29T07:29:30.810347Z",
+      "event": "stage_run.passed",
+      "kind": "transition",
+      "reason": null,
+      "transition": "S08"
+    },
+    {
+      "at": "2026-10-29T07:29:30.810347Z",
+      "event": "stage_run.ready",
+      "kind": "transition",
+      "reason": null,
+      "transition": "S01"
+    },
+    {
+      "action": "gate_result.granted",
+      "at": "2026-10-29T07:29:30.824032Z",
+      "decision": "allow",
+      "kind": "audit"
+    },
+    {
+      "action": "authorization_decision.granted",
+      "at": "2026-10-29T07:29:30.831575Z",
+      "decision": "allow",
+      "kind": "audit"
+    },
+    {
+      "action": "credential_minted_and_revoked.ended",
+      "at": "2026-10-29T07:29:30.837875Z",
+      "decision": "record",
+      "kind": "audit"
+    },
+    {
+      "at": "2026-10-29T07:29:30.957891Z",
+      "event": "stage_run.started",
+      "kind": "transition",
+      "reason": null,
+      "transition": "S03"
+    },
+    {
+      "action": "tool_grant_issued.granted",
+      "at": "2026-10-29T07:29:30.965663Z",
+      "decision": "allow",
+      "kind": "audit"
+    },
+    {
+      "at": "2026-10-29T07:29:30.972275Z",
+      "event": "attempt.running",
+      "kind": "transition",
+      "reason": null,
+      "transition": "A01"
+    },
+    {
+      "at": "2026-10-29T07:29:31.191856Z",
+      "event": "attempt.succeeded",
+      "kind": "transition",
+      "reason": null,
+      "transition": "A04"
+    },
+    {
+      "at": "2026-10-29T07:29:31.191856Z",
+      "event": "stage_run.gating",
+      "kind": "transition",
+      "reason": null,
+      "transition": "S04"
+    },
+    {
+      "at": "2026-10-29T07:29:31.191856Z",
+      "event": "stage_run.passed",
+      "kind": "transition",
+      "reason": null,
+      "transition": "S08"
+    },
+    {
+      "at": "2026-10-29T07:29:31.191856Z",
+      "event": "stage_run.ready",
+      "kind": "transition",
+      "reason": null,
+      "transition": "S01"
+    },
+    {
+      "action": "gate_result.granted",
+      "at": "2026-10-29T07:29:31.202377Z",
+      "decision": "allow",
+      "kind": "audit"
+    },
+    {
+      "action": "protected_path_decision.noted",
+      "at": "2026-10-29T07:29:31.211666Z",
+      "decision": "record",
+      "kind": "audit"
+    },
+    {
+      "at": "2026-10-29T07:29:31.335246Z",
+      "event": "stage_run.started",
+      "kind": "transition",
+      "reason": null,
+      "transition": "S03"
+    },
+    {
+      "action": "tool_grant_issued.granted",
+      "at": "2026-10-29T07:29:31.344179Z",
+      "decision": "allow",
+      "kind": "audit"
+    },
+    {
+      "action": "credential_minted_and_revoked.granted",
+      "at": "2026-10-29T07:29:31.35251Z",
+      "decision": "allow",
+      "kind": "audit"
+    },
+    {
+      "at": "2026-10-29T07:29:32.139953Z",
+      "event": "attempt.running",
+      "kind": "transition",
+      "reason": null,
+      "transition": "A01"
+    },
+    {
+      "at": "2026-10-29T07:29:32.141702Z",
+      "event": "attempt.succeeded",
+      "kind": "transition",
+      "reason": null,
+      "transition": "A04"
+    },
+    {
+      "at": "2026-10-29T07:29:32.141702Z",
+      "event": "stage_run.waiting_for_human",
+      "kind": "transition",
+      "reason": "agent-requested-a-human",
+      "transition": "S07"
+    },
+    {
+      "at": "2026-10-29T07:29:32.141702Z",
+      "event": "job.waiting_for_human",
+      "kind": "transition",
+      "reason": null,
+      "transition": "J03"
+    },
+    {
+      "action": "credential_minted_and_revoked.ended",
+      "at": "2026-10-29T07:29:32.158884Z",
+      "decision": "record",
+      "kind": "audit"
+    },
+    {
+      "action": "decision.requested",
+      "at": "2026-10-29T07:29:32.178309Z",
+      "decision": "record",
+      "kind": "audit"
+    },
+    {
+      "at": "2026-10-29T07:29:32.200389Z",
+      "event": "stage_run.ready",
+      "kind": "transition",
+      "reason": "approved-for-freezing",
+      "transition": "S13"
+    },
+    {
+      "at": "2026-10-29T07:29:32.200389Z",
+      "event": "job.resumed",
+      "kind": "transition",
+      "reason": null,
+      "transition": "J04"
+    },
+    {
+      "action": "approval_granted_or_rejected.granted",
+      "at": "2026-10-29T07:29:32.20391Z",
+      "decision": "allow",
+      "kind": "audit"
+    },
+    {
+      "action": "decision.applied",
+      "at": "2026-10-29T07:29:32.216105Z",
+      "decision": "allow",
+      "kind": "audit"
+    },
+    {
+      "at": "2026-10-29T07:29:32.219887Z",
+      "event": "stage_run.started",
+      "kind": "transition",
+      "reason": null,
+      "transition": "S03"
+    },
+    {
+      "action": "tool_grant_issued.granted",
+      "at": "2026-10-29T07:29:32.226331Z",
+      "decision": "allow",
+      "kind": "audit"
+    },
+    {
+      "action": "credential_minted_and_revoked.granted",
+      "at": "2026-10-29T07:29:32.232773Z",
+      "decision": "allow",
+      "kind": "audit"
+    },
+    {
+      "at": "2026-10-29T07:29:32.530463Z",
+      "event": "attempt.running",
+      "kind": "transition",
+      "reason": null,
+      "transition": "A01"
+    },
+    {
+      "at": "2026-10-29T07:29:32.532472Z",
+      "event": "attempt.succeeded",
+      "kind": "transition",
+      "reason": null,
+      "transition": "A04"
+    },
+    {
+      "at": "2026-10-29T07:29:32.532472Z",
+      "event": "stage_run.gating",
+      "kind": "transition",
+      "reason": null,
+      "transition": "S04"
+    },
+    {
+      "at": "2026-10-29T07:29:32.532472Z",
+      "event": "stage_run.passed",
+      "kind": "transition",
+      "reason": null,
+      "transition": "S08"
+    },
+    {
+      "at": "2026-10-29T07:29:32.532472Z",
+      "event": "stage_run.skipped",
+      "kind": "transition",
+      "reason": "not-applicable",
+      "transition": "S02"
+    },
+    {
+      "at": "2026-10-29T07:29:32.532472Z",
+      "event": "stage_run.ready",
+      "kind": "transition",
+      "reason": null,
+      "transition": "S01"
+    },
+    {
+      "action": "gate_result.granted",
+      "at": "2026-10-29T07:29:32.572288Z",
+      "decision": "allow",
+      "kind": "audit"
+    },
+    {
+      "action": "credential_minted_and_revoked.ended",
+      "at": "2026-10-29T07:29:32.603303Z",
+      "decision": "record",
+      "kind": "audit"
+    },
+    {
+      "at": "2026-10-29T07:29:32.725631Z",
+      "event": "stage_run.started",
+      "kind": "transition",
+      "reason": null,
+      "transition": "S03"
+    },
+    {
+      "action": "tool_grant_issued.granted",
+      "at": "2026-10-29T07:29:32.733832Z",
+      "decision": "allow",
+      "kind": "audit"
+    },
+    {
+      "action": "credential_minted_and_revoked.granted",
+      "at": "2026-10-29T07:29:32.741829Z",
+      "decision": "allow",
+      "kind": "audit"
+    },
+    {
+      "at": "2026-10-29T07:29:32.917389Z",
+      "event": "attempt.running",
+      "kind": "transition",
+      "reason": null,
+      "transition": "A01"
+    },
+    {
+      "at": "2026-10-29T07:29:32.919137Z",
+      "event": "attempt.succeeded",
+      "kind": "transition",
+      "reason": null,
+      "transition": "A04"
+    },
+    {
+      "at": "2026-10-29T07:29:32.919137Z",
+      "event": "stage_run.gating",
+      "kind": "transition",
+      "reason": null,
+      "transition": "S04"
+    },
+    {
+      "at": "2026-10-29T07:29:32.919137Z",
+      "event": "stage_run.passed",
+      "kind": "transition",
+      "reason": null,
+      "transition": "S08"
+    },
+    {
+      "at": "2026-10-29T07:29:32.919137Z",
+      "event": "stage_run.ready",
+      "kind": "transition",
+      "reason": null,
+      "transition": "S01"
+    },
+    {
+      "action": "gate_result.granted",
+      "at": "2026-10-29T07:29:32.932921Z",
+      "decision": "allow",
+      "kind": "audit"
+    },
+    {
+      "action": "credential_minted_and_revoked.ended",
+      "at": "2026-10-29T07:29:32.953318Z",
+      "decision": "record",
+      "kind": "audit"
+    },
+    {
+      "at": "2026-10-29T07:29:33.075168Z",
+      "event": "stage_run.started",
+      "kind": "transition",
+      "reason": null,
+      "transition": "S03"
+    },
+    {
+      "action": "tool_grant_issued.granted",
+      "at": "2026-10-29T07:29:33.084101Z",
+      "decision": "allow",
+      "kind": "audit"
+    },
+    {
+      "action": "credential_minted_and_revoked.granted",
+      "at": "2026-10-29T07:29:33.093206Z",
+      "decision": "allow",
+      "kind": "audit"
+    },
+    {
+      "at": "2026-10-29T07:29:33.27497Z",
+      "event": "attempt.running",
+      "kind": "transition",
+      "reason": null,
+      "transition": "A01"
+    },
+    {
+      "at": "2026-10-29T07:29:33.276657Z",
+      "event": "attempt.succeeded",
+      "kind": "transition",
+      "reason": null,
+      "transition": "A04"
+    },
+    {
+      "at": "2026-10-29T07:29:33.276657Z",
+      "event": "stage_run.gating",
+      "kind": "transition",
+      "reason": null,
+      "transition": "S04"
+    },
+    {
+      "at": "2026-10-29T07:29:33.276657Z",
+      "event": "stage_run.passed",
+      "kind": "transition",
+      "reason": null,
+      "transition": "S08"
+    },
+    {
+      "at": "2026-10-29T07:29:33.276657Z",
+      "event": "stage_run.ready",
+      "kind": "transition",
+      "reason": null,
+      "transition": "S01"
+    },
+    {
+      "action": "gate_result.granted",
+      "at": "2026-10-29T07:29:33.290117Z",
+      "decision": "allow",
+      "kind": "audit"
+    },
+    {
+      "action": "credential_minted_and_revoked.ended",
+      "at": "2026-10-29T07:29:33.312983Z",
+      "decision": "record",
+      "kind": "audit"
+    },
+    {
+      "at": "2026-10-29T07:29:33.439402Z",
+      "event": "stage_run.started",
+      "kind": "transition",
+      "reason": null,
+      "transition": "S03"
+    },
+    {
+      "action": "tool_grant_issued.granted",
+      "at": "2026-10-29T07:29:33.453109Z",
+      "decision": "allow",
+      "kind": "audit"
+    },
+    {
+      "action": "credential_minted_and_revoked.granted",
+      "at": "2026-10-29T07:29:33.467105Z",
+      "decision": "allow",
+      "kind": "audit"
+    },
+    {
+      "at": "2026-10-29T07:29:33.875936Z",
+      "event": "attempt.running",
+      "kind": "transition",
+      "reason": null,
+      "transition": "A01"
+    },
+    {
+      "at": "2026-10-29T07:29:33.877438Z",
+      "event": "attempt.succeeded",
+      "kind": "transition",
+      "reason": null,
+      "transition": "A04"
+    },
+    {
+      "at": "2026-10-29T07:29:33.877438Z",
+      "event": "stage_run.gating",
+      "kind": "transition",
+      "reason": null,
+      "transition": "S04"
+    },
+    {
+      "at": "2026-10-29T07:29:33.877438Z",
+      "event": "stage_run.passed",
+      "kind": "transition",
+      "reason": null,
+      "transition": "S08"
+    },
+    {
+      "at": "2026-10-29T07:29:33.877438Z",
+      "event": "stage_run.ready",
+      "kind": "transition",
+      "reason": null,
+      "transition": "S01"
+    },
+    {
+      "action": "gate_result.granted",
+      "at": "2026-10-29T07:29:33.887144Z",
+      "decision": "allow",
+      "kind": "audit"
+    },
+    {
+      "action": "credential_minted_and_revoked.ended",
+      "at": "2026-10-29T07:29:33.912071Z",
+      "decision": "record",
+      "kind": "audit"
+    },
+    {
+      "at": "2026-10-29T07:29:34.037056Z",
+      "event": "stage_run.started",
+      "kind": "transition",
+      "reason": null,
+      "transition": "S03"
+    },
+    {
+      "action": "tool_grant_issued.granted",
+      "at": "2026-10-29T07:29:34.048278Z",
+      "decision": "allow",
+      "kind": "audit"
+    },
+    {
+      "at": "2026-10-29T07:29:34.062619Z",
+      "event": "attempt.running",
+      "kind": "transition",
+      "reason": null,
+      "transition": "A01"
+    },
+    {
+      "at": "2026-10-29T07:29:34.401532Z",
+      "event": "attempt.succeeded",
+      "kind": "transition",
+      "reason": null,
+      "transition": "A04"
+    },
+    {
+      "at": "2026-10-29T07:29:34.401532Z",
+      "event": "stage_run.gating",
+      "kind": "transition",
+      "reason": null,
+      "transition": "S04"
+    },
+    {
+      "at": "2026-10-29T07:29:34.401532Z",
+      "event": "stage_run.superseded",
+      "kind": "transition",
+      "reason": "rework",
+      "transition": "S20"
+    },
+    {
+      "at": "2026-10-29T07:29:34.401532Z",
+      "event": "stage_run.superseded",
+      "kind": "transition",
+      "reason": "rework",
+      "transition": "S20"
+    },
+    {
+      "at": "2026-10-29T07:29:34.401532Z",
+      "event": "stage_run.superseded",
+      "kind": "transition",
+      "reason": "rework",
+      "transition": "S20"
+    },
+    {
+      "at": "2026-10-29T07:29:34.401532Z",
+      "event": "stage_run.superseded",
+      "kind": "transition",
+      "reason": "rework",
+      "transition": "S20"
+    },
+    {
+      "at": "2026-10-29T07:29:34.401532Z",
+      "event": "stage_run.superseded",
+      "kind": "transition",
+      "reason": "rework",
+      "transition": "S20"
+    },
+    {
+      "at": "2026-10-29T07:29:34.401532Z",
+      "event": "stage_run.superseded",
+      "kind": "transition",
+      "reason": "rework",
+      "transition": "S20"
+    },
+    {
+      "at": "2026-10-29T07:29:34.401532Z",
+      "event": "stage_run.rework_requested",
+      "kind": "transition",
+      "reason": "rework",
+      "transition": "S09"
+    },
+    {
+      "at": "2026-10-29T07:29:34.401532Z",
+      "event": "stage_run.ready",
+      "kind": "transition",
+      "reason": null,
+      "transition": "S01"
+    },
+    {
+      "action": "gate_result.denied",
+      "at": "2026-10-29T07:29:34.462922Z",
+      "decision": "deny",
+      "kind": "audit"
+    },
+    {
+      "at": "2026-10-29T07:29:34.621748Z",
+      "event": "stage_run.started",
+      "kind": "transition",
+      "reason": null,
+      "transition": "S03"
+    },
+    {
+      "action": "tool_grant_issued.granted",
+      "at": "2026-10-29T07:29:34.63842Z",
+      "decision": "allow",
+      "kind": "audit"
+    },
+    {
+      "action": "credential_minted_and_revoked.granted",
+      "at": "2026-10-29T07:29:34.65329Z",
+      "decision": "allow",
+      "kind": "audit"
+    },
+    {
+      "at": "2026-10-29T07:29:34.890835Z",
+      "event": "attempt.running",
+      "kind": "transition",
+      "reason": null,
+      "transition": "A01"
+    },
+    {
+      "at": "2026-10-29T07:29:34.892511Z",
+      "event": "attempt.succeeded",
+      "kind": "transition",
+      "reason": null,
+      "transition": "A04"
+    },
+    {
+      "at": "2026-10-29T07:29:34.892511Z",
+      "event": "stage_run.gating",
+      "kind": "transition",
+      "reason": null,
+      "transition": "S04"
+    },
+    {
+      "at": "2026-10-29T07:29:34.892511Z",
+      "event": "stage_run.passed",
+      "kind": "transition",
+      "reason": null,
+      "transition": "S08"
+    },
+    {
+      "at": "2026-10-29T07:29:34.892511Z",
+      "event": "stage_run.ready",
+      "kind": "transition",
+      "reason": null,
+      "transition": "S01"
+    },
+    {
+      "action": "gate_result.granted",
+      "at": "2026-10-29T07:29:34.905341Z",
+      "decision": "allow",
+      "kind": "audit"
+    },
+    {
+      "action": "credential_minted_and_revoked.ended",
+      "at": "2026-10-29T07:29:34.942607Z",
+      "decision": "record",
+      "kind": "audit"
+    },
+    {
+      "at": "2026-10-29T07:29:35.076849Z",
+      "event": "stage_run.started",
+      "kind": "transition",
+      "reason": null,
+      "transition": "S03"
+    },
+    {
+      "action": "tool_grant_issued.granted",
+      "at": "2026-10-29T07:29:35.094537Z",
+      "decision": "allow",
+      "kind": "audit"
+    },
+    {
+      "at": "2026-10-29T07:29:35.11262Z",
+      "event": "attempt.running",
+      "kind": "transition",
+      "reason": null,
+      "transition": "A01"
+    },
+    {
+      "at": "2026-10-29T07:29:35.448956Z",
+      "event": "attempt.succeeded",
+      "kind": "transition",
+      "reason": null,
+      "transition": "A04"
+    },
+    {
+      "at": "2026-10-29T07:29:35.448956Z",
+      "event": "stage_run.gating",
+      "kind": "transition",
+      "reason": null,
+      "transition": "S04"
+    },
+    {
+      "at": "2026-10-29T07:29:35.448956Z",
+      "event": "stage_run.superseded",
+      "kind": "transition",
+      "reason": "rework",
+      "transition": "S20"
+    },
+    {
+      "at": "2026-10-29T07:29:35.448956Z",
+      "event": "stage_run.superseded",
+      "kind": "transition",
+      "reason": "rework",
+      "transition": "S20"
+    },
+    {
+      "at": "2026-10-29T07:29:35.448956Z",
+      "event": "stage_run.superseded",
+      "kind": "transition",
+      "reason": "rework",
+      "transition": "S20"
+    },
+    {
+      "at": "2026-10-29T07:29:35.448956Z",
+      "event": "stage_run.superseded",
+      "kind": "transition",
+      "reason": "rework",
+      "transition": "S20"
+    },
+    {
+      "at": "2026-10-29T07:29:35.448956Z",
+      "event": "stage_run.superseded",
+      "kind": "transition",
+      "reason": "rework",
+      "transition": "S20"
+    },
+    {
+      "at": "2026-10-29T07:29:35.448956Z",
+      "event": "stage_run.superseded",
+      "kind": "transition",
+      "reason": "rework",
+      "transition": "S20"
+    },
+    {
+      "at": "2026-10-29T07:29:35.448956Z",
+      "event": "stage_run.rework_requested",
+      "kind": "transition",
+      "reason": "rework",
+      "transition": "S09"
+    },
+    {
+      "at": "2026-10-29T07:29:35.448956Z",
+      "event": "stage_run.ready",
+      "kind": "transition",
+      "reason": null,
+      "transition": "S01"
+    },
+    {
+      "action": "gate_result.denied",
+      "at": "2026-10-29T07:29:35.517947Z",
+      "decision": "deny",
+      "kind": "audit"
+    },
+    {
+      "at": "2026-10-29T07:29:35.682269Z",
+      "event": "stage_run.started",
+      "kind": "transition",
+      "reason": null,
+      "transition": "S03"
+    },
+    {
+      "action": "tool_grant_issued.granted",
+      "at": "2026-10-29T07:29:35.7005Z",
+      "decision": "allow",
+      "kind": "audit"
+    },
+    {
+      "action": "credential_minted_and_revoked.granted",
+      "at": "2026-10-29T07:29:35.718779Z",
+      "decision": "allow",
+      "kind": "audit"
+    },
+    {
+      "at": "2026-10-29T07:29:35.949433Z",
+      "event": "attempt.running",
+      "kind": "transition",
+      "reason": null,
+      "transition": "A01"
+    },
+    {
+      "at": "2026-10-29T07:29:35.950881Z",
+      "event": "attempt.succeeded",
+      "kind": "transition",
+      "reason": null,
+      "transition": "A04"
+    },
+    {
+      "at": "2026-10-29T07:29:35.950881Z",
+      "event": "stage_run.gating",
+      "kind": "transition",
+      "reason": null,
+      "transition": "S04"
+    },
+    {
+      "at": "2026-10-29T07:29:35.950881Z",
+      "event": "stage_run.passed",
+      "kind": "transition",
+      "reason": null,
+      "transition": "S08"
+    },
+    {
+      "at": "2026-10-29T07:29:35.950881Z",
+      "event": "stage_run.ready",
+      "kind": "transition",
+      "reason": null,
+      "transition": "S01"
+    },
+    {
+      "action": "gate_result.granted",
+      "at": "2026-10-29T07:29:35.960827Z",
+      "decision": "allow",
+      "kind": "audit"
+    },
+    {
+      "action": "credential_minted_and_revoked.ended",
+      "at": "2026-10-29T07:29:36.001818Z",
+      "decision": "record",
+      "kind": "audit"
+    },
+    {
+      "at": "2026-10-29T07:29:36.148227Z",
+      "event": "stage_run.started",
+      "kind": "transition",
+      "reason": null,
+      "transition": "S03"
+    },
+    {
+      "action": "tool_grant_issued.granted",
+      "at": "2026-10-29T07:29:36.166879Z",
+      "decision": "allow",
+      "kind": "audit"
+    },
+    {
+      "at": "2026-10-29T07:29:36.185728Z",
+      "event": "attempt.running",
+      "kind": "transition",
+      "reason": null,
+      "transition": "A01"
+    },
+    {
+      "at": "2026-10-29T07:29:36.508896Z",
+      "event": "attempt.succeeded",
+      "kind": "transition",
+      "reason": null,
+      "transition": "A04"
+    },
+    {
+      "at": "2026-10-29T07:29:36.508896Z",
+      "event": "stage_run.gating",
+      "kind": "transition",
+      "reason": null,
+      "transition": "S04"
+    },
+    {
+      "at": "2026-10-29T07:29:36.508896Z",
+      "event": "stage_run.waiting_for_human",
+      "kind": "transition",
+      "reason": "rework-limit",
+      "transition": "S10"
+    },
+    {
+      "at": "2026-10-29T07:29:36.508896Z",
+      "event": "job.waiting_for_human",
+      "kind": "transition",
+      "reason": null,
+      "transition": "J03"
+    },
+    {
+      "action": "gate_result.denied",
+      "at": "2026-10-29T07:29:36.546879Z",
+      "decision": "deny",
+      "kind": "audit"
+    }
+  ],
+  "job_id": "27ff9ff1-9756-433d-b5df-a23e2cedbabe",
+  "truncated": false
+}

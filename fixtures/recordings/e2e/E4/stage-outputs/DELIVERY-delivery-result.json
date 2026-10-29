@@ -1,0 +1,35 @@
+{
+  "base_branch": "main",
+  "base_commit": "b1004d88b4019a97db4cd379fcdb3c35fb0ddda2",
+  "body": "This change implements version 1 of the frozen specification, \"Add a JSON output option\", for issue #12. It changes 5 files: 498 lines added and 305 lines removed.\n\nCloses #12.\n\nWhat was checked\n\n| Check | Result |\n|---|---|\n| format | passed |\n| lint | passed |\n| build | passed |\n| unit-tests | passed |\n| protected-paths-unchanged | passed |\n| test-file-protection | passed |\n| secret-scan | passed |\n| acceptance-evidence | passed |\n| dependency-integrity | does not apply |\n| dependency-review | does not apply |\n| dependency-advisories | does not apply |\n| sbom | does not apply |\n\nAn independent reviewer read the change and the gate reports and gave the verdict pass with 0 findings.\n\nRisk\n\nThe policy computed the tier low (score 10 of 100). It needs 1 approval before anyone merges.\n\nEvidence\n\n- Evidence manifest hash: `856082901f3bce120947e0ca4fe1f712543262c07d7bf0cb7624610db9ef3d71`\n- Specification version 1: `fe9a4254f1bb4c7649efe2ef1c50851c6fab9b8a5375f339713540f923682fb8`\n- Task plan version 1: `b762eac6ed53b2fb73f194db3f94cd9f8dde55053c7d10dbf5d34f63d63ab400`\n- Architecture design: `8c80a68c4a3349165d4825642d6969a634104b081f31ee3b1c94f3601869853b`\n- Documentation plan: `edff16c6e5405016c0df95595b594a7a9abf32950d3f2d6d0fc47e90e99d09dd`\n- Ledger head, entry 120: `99ea9ff4bf3b36778e6b0b1639f6392f4dea55dfb56501aef08e5fa169f743a8`\n\nWhat was not verified\n\n- The gate dependency-integrity does not apply to this change, so it did not run.\n- The gate dependency-review does not apply to this change, so it did not run.\n- The gate dependency-advisories does not apply to this change, so it did not run.\n- The gate sbom does not apply to this change, so it did not run.\n- The gate evidence-binding has no report, so it did not run.\n- The agent runtime (agent-runtime) was a stand-in, not the real system.\n- The sandbox (sandbox) was a stand-in, not the real system.\n- The code host (change-host) was a stand-in, not the real system.\n- The pull request is a draft. A person reviews it, marks it ready and merges it on the code host; the factory does neither.\n- Checks ran in a sandbox. Nothing was verified on a device, in a simulator, on paper trading or in production.\n\nWhat happens next\n\nThis is a draft pull request. A person reads it, marks it ready for review and merges it on the code host. The factory does not merge and does not deploy.\n",
+  "check_runs": [
+    {
+      "id": 1,
+      "name": "factory-validation",
+      "status": "Completed(Success)"
+    },
+    {
+      "id": 2,
+      "name": "factory-review",
+      "status": "Completed(Success)"
+    }
+  ],
+  "code_head": "4d534fad2a5c971ac2f4e45de080adc0485d4ba6",
+  "delivered": true,
+  "head_branch": "factory/job-2ac7bf16-8a51-42c7-9c26-a24008bc47a0",
+  "head_commit": "956020377495b6a59d076fb0a76ae4041c2a47bf",
+  "issue": 12,
+  "kind": "delivery-result",
+  "manifest_sha256": "sha256:856082901f3bce120947e0ca4fe1f712543262c07d7bf0cb7624610db9ef3d71",
+  "pull_request": 1,
+  "repository": "org/repo-0",
+  "risk": {
+    "new_dependency": false,
+    "protected_path_change": false,
+    "sensitive_file_change": false,
+    "tier": "low"
+  },
+  "spec_version": 1,
+  "title": "Add a JSON output option",
+  "tree": "0f7da301ce96870773fae5bd0368b7ce859937d0"
+}

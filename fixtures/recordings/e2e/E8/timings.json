@@ -1,0 +1,41 @@
+{
+  "attempts": [
+    {
+      "milliseconds": 131,
+      "outcome": "Ok(Succeeded)",
+      "stage": "INTAKE"
+    },
+    {
+      "milliseconds": 265,
+      "outcome": "Ok(Succeeded)",
+      "stage": "REPOSITORY_INTELLIGENCE"
+    },
+    {
+      "milliseconds": 791,
+      "outcome": "Ok(NeedsHuman)",
+      "stage": "SPECIFICATION"
+    },
+    {
+      "milliseconds": 346,
+      "outcome": "Ok(Succeeded)",
+      "stage": "SPECIFICATION"
+    },
+    {
+      "milliseconds": 225,
+      "outcome": "Ok(Succeeded)",
+      "stage": "ARCHITECTURE"
+    },
+    {
+      "milliseconds": 247,
+      "outcome": "Ok(Succeeded)",
+      "stage": "TASK_PLANNING"
+    },
+    {
+      "milliseconds": 460,
+      "outcome": "Ok(Succeeded)",
+      "stage": "IMPLEMENTATION"
+    }
+  ],
+  "note": "Durations of a run in test mode on one machine. They are not a measure of the factory.",
+  "scenario_seconds": 4.509418042
+}

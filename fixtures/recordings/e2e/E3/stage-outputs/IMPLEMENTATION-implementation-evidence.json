@@ -1,0 +1,46 @@
+{
+  "base_commit": "95f3b5a0bfd1e5d831af913e1b1560cf552875de",
+  "fake": true,
+  "head_commit": "b8eb1aae5c28d333ef07234aba033c3844228c24",
+  "kind": "implementation-evidence",
+  "refusal": null,
+  "rework_round": 2,
+  "tasks": [
+    {
+      "built_on": "f4faf7aeb4b5fd673943731f5a45b31c13b735a1",
+      "changes": [
+        {
+          "kind": "modified",
+          "path": "src/lib.rs"
+        }
+      ],
+      "commit": "b8eb1aae5c28d333ef07234aba033c3844228c24",
+      "diff_stats": {
+        "additions": 144,
+        "deletions": 144
+      },
+      "key": "rework-round-2",
+      "reported_by_builder": {
+        "commands": [
+          {
+            "argv": [
+              "cargo",
+              "build",
+              "--locked"
+            ],
+            "exit_code": 0
+          }
+        ],
+        "ignored_instructions": [],
+        "note": "These are the builder's own statements. They are not evidence.",
+        "tests_added": []
+      }
+    }
+  ],
+  "usage": {
+    "cost_micro_usd": 0,
+    "input_tokens": 0,
+    "output_tokens": 0,
+    "requests": 0
+  }
+}

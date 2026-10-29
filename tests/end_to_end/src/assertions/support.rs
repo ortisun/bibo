@@ -6,6 +6,8 @@ use crate::evidence::{RunEvidence, StageRunRecord};
 
 /// The status a stage run has when it passed.
 pub const PASSED: &str = "PASSED";
+/// The status a stage run has when a rule skipped it.
+pub const SKIPPED: &str = "SKIPPED";
 
 /// Every run of a stage kind, in the order the evidence lists them.
 pub fn runs_of<'a>(ev: &'a RunEvidence, kind: &str) -> Vec<&'a StageRunRecord> {
@@ -15,26 +17,44 @@ pub fn runs_of<'a>(ev: &'a RunEvidence, kind: &str) -> Vec<&'a StageRunRecord> {
         .collect()
 }
 
-/// The one passed run of a stage kind, or `None` when there is none or more than one.
+/// The run that settles a stage: the one `PASSED` run of the kind, or, when none passed, the one
+/// `SKIPPED` run whose skip the ledger records. ADR 0010 (decision 2) lets a stage that a rule
+/// skips satisfy the stages that require it and the completion of the job, so a skipped stage
+/// has no passed run and is settled all the same. A skip with no ledger entry settles nothing:
+/// nobody can say which rule skipped the stage. `None` when there is no such run, or more than one.
 pub fn the_passed_run<'a>(ev: &'a RunEvidence, kind: &str) -> Option<&'a StageRunRecord> {
-    let mut passed = ev
+    let one = |status: &str| -> Option<&'a StageRunRecord> {
+        let mut found = ev
+            .stage_runs
+            .iter()
+            .filter(|run| run.kind == kind && run.status == status);
+        let first = found.next()?;
+        found.next().is_none().then_some(first)
+    };
+    if ev
         .stage_runs
         .iter()
-        .filter(|run| run.kind == kind && run.status == PASSED);
-    let first = passed.next()?;
-    if passed.next().is_some() {
-        None
-    } else {
-        Some(first)
+        .any(|run| run.kind == kind && run.status == PASSED)
+    {
+        return one(PASSED);
     }
+    one(SKIPPED).filter(|run| !ledger_sequences_for(ev, &run.id).is_empty())
 }
 
-/// The timeline position where a stage run became `PASSED`.
+/// True when `run` settles its stage by being skipped, not by passing.
+pub fn is_skipped(run: &StageRunRecord) -> bool {
+    run.status == SKIPPED
+}
+
+/// The timeline position where a stage run became `PASSED` (or `SKIPPED`, which settles a stage
+/// in the same way).
 pub fn passed_at(ev: &RunEvidence, run: &StageRunRecord) -> Option<u64> {
     ev.timeline
         .iter()
         .filter(|entry| {
-            entry.subject == "stage_run" && entry.subject_id == run.id && entry.to == PASSED
+            entry.subject == "stage_run"
+                && entry.subject_id == run.id
+                && (entry.to == PASSED || entry.to == SKIPPED)
         })
         .map(|entry| entry.seq)
         .max()

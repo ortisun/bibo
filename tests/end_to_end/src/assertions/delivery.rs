@@ -148,27 +148,31 @@ pub fn a9(ev: &RunEvidence, _env: &Env) -> Verdict {
         .iter()
         .filter(|record| record.action == "approval_granted_or_rejected.granted")
         .collect();
-    let [record] = approvals.as_slice() else {
-        return Verdict::fail(
-            ID,
-            format!(
-                "the audit stream holds {} approval records, and it must hold one",
-                approvals.len()
-            ),
-        );
-    };
-    let Some(approver_id) = record.actor.strip_prefix("human:") else {
-        return Verdict::fail(
-            ID,
-            format!(
-                "the approval was recorded for {}, which is not a person",
-                record.actor
-            ),
-        );
-    };
-    if record.actor == ev.job.requester {
-        return Verdict::fail(ID, "the requester approved their own request");
+    // A job has two gates a person decides: the specification draft and the pull request. Each
+    // leaves a granted record. Every one of them must be a person other than the requester, and
+    // the last one is the approval of the pull request, whose judgment the ledger must hold under
+    // the APPROVAL run.
+    for record in &approvals {
+        if record.actor == ev.job.requester {
+            return Verdict::fail(ID, "the requester approved their own request");
+        }
+        if !record.actor.starts_with("human:") {
+            return Verdict::fail(
+                ID,
+                format!(
+                    "the approval was recorded for {}, which is not a person",
+                    record.actor
+                ),
+            );
+        }
     }
+    let Some(record) = approvals.last().copied() else {
+        return Verdict::fail(
+            ID,
+            "the audit stream holds 0 approval records, and it must hold one for the pull request",
+        );
+    };
+    let approver_id = record.actor.trim_start_matches("human:");
     // The audit record names who. The ledger holds the judgment and the role that allowed it.
     let judged = ev.ledger.iter().any(|entry| {
         text_at(entry, "/metadata/stage_run_id") == Some(approval.id.as_str())

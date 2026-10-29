@@ -8,22 +8,38 @@
 # USAGE
 #   scripts/e2e.sh --list                       List the scenarios.
 #   scripts/e2e.sh --scenario ID [--scenario ID ...] [--test-mode] [--wiring W] [--evidence-dir D]
+#                  [--judge-only]
 #                                               Run scenarios. E1 and E2 need real adapters and are
 #                                               BLOCKED until the prerequisites and the composed
-#                                               wiring exist. --test-mode runs them on the
-#                                               scripted wiring, labelled as test mode with fakes.
-#                                               W is auto (default), scripted or composed.
+#                                               wiring exist; each missing item is looked for and
+#                                               named. --test-mode runs them on the scripted wiring,
+#                                               labelled as test mode with fakes.
+#                                               E3 to E9 are driven through the real composed
+#                                               pipeline in test mode (the test
+#                                               apps/api/tests/e2e_scenarios.rs, which needs a
+#                                               PostgreSQL server), which writes a recording under
+#                                               fixtures/recordings/e2e/ID, and the harness then
+#                                               judges the recording. --judge-only skips the first
+#                                               step and judges the recordings that are there.
+#                                               W is auto (default), scripted, composed or recorded.
 #   scripts/e2e.sh --self-test                  Prove the assertions: the canned passing evidence
 #                                               passes, and each corrupted copy fails the
 #                                               assertion that guards it.
 #   scripts/e2e.sh --self-test-blocked          Prove that a missing prerequisite is BLOCKED (3).
 #   scripts/e2e.sh --self-test-preflight        Prove that a remote that fails the protection
 #                                               preflight is BLOCKED and that nothing runs on it.
-#   scripts/e2e.sh --self-test-all              The three self tests above.
+#   scripts/e2e.sh --self-test-report           Prove that the report check fails on a report
+#                                               that claims PASSED with no recording, with a
+#                                               recording that changed, or with BLOCKED naming
+#                                               nothing, and accepts an honest one.
+#   scripts/e2e.sh --self-test-all              The four self tests above.
 #   scripts/e2e.sh --check-fixture              Build and test the fixture on the host and in the
 #                                               pinned verify image, and check that its gap is open.
 #   scripts/e2e.sh --check-fixture-host         The same, on the host only.
 #   scripts/e2e.sh --check-report [PATH]        Check the acceptance report against its recordings.
+#   scripts/e2e.sh --check-readability PATH...  Run the readability gate of the factory over
+#                                               Markdown documents. Exit 1 when a rule that blocks
+#                                               is broken.
 #   scripts/e2e.sh --help                       Show this text.
 #
 # EXIT CODES
@@ -91,6 +107,7 @@ run_e2e() {
 REAL_VARIABLES=(
   FACTORY_E2E_COMPOSED
   FACTORY_E2E_MODEL_API_KEY
+  FACTORY_E2E_MODEL_SPEND_LIMIT_USD
   FACTORY_E2E_GITHUB_APP_ID
   FACTORY_E2E_GITHUB_APP_KEY_FILE
   FACTORY_E2E_FIXTURE_REPO
@@ -124,6 +141,68 @@ self_test_blocked() {
   return 0
 }
 
+# The scenarios whose recording the composed pipeline makes in test mode.
+COMPOSED_TEST_SCENARIOS=(E3 E4 E5 E6 E7 E8 E9)
+
+# Drives the scenarios of E3 to E9 that were asked for through the real composed pipeline and
+# writes their recordings. Exit 3 (BLOCKED) when no PostgreSQL server can be had, 1 when a
+# scenario could not be driven to the end.
+record_scenarios() { # record_scenarios ID...
+  local -a filters=()
+  local id lower
+  for id in "$@"; do
+    lower=$(printf '%s' "$id" | tr '[:upper:]' '[:lower:]')
+    filters+=("scenario_${lower}_")
+  done
+  need_cargo
+  printf '== recording %s through the composed pipeline (real engine, API, worker hook and PostgreSQL; labelled fakes)\n' "$*"
+  local log
+  log=$(mktemp "${TMPDIR:-/tmp}/e2e-record.XXXXXX")
+  local rc=0
+  (
+    cd "$ROOT" || exit 1
+    FACTORY_E2E_RECORD_DIR="$ROOT/fixtures/recordings/e2e" \
+      CARGO_TARGET_DIR="${FACTORY_E2E_WORKSPACE_TARGET:-$ROOT/target}" \
+      cargo test -p factory-api --locked --test e2e_scenarios -- "${filters[@]}" --test-threads=1 --nocapture 2>&1
+  ) >"$log" 2>&1 || rc=$?
+  grep -E '^(RECORDED|test |test result)' "$log" | sed 's/^/  /'
+  if [ "$rc" -ne 0 ]; then
+    if grep -q 'BLOCKED: no PostgreSQL' "$log"; then
+      printf 'BLOCKED: %s\n' "no PostgreSQL server could be had for the recording of $* (set FACTORY_DB_ADMIN_URL, install PostgreSQL 16 or later, or start Docker); nothing was recorded and nothing was judged"
+      rm -f "$log"
+      exit "$EXIT_BLOCKED"
+    fi
+    err "the recording of $* failed (cargo exit code $rc); the end of its output follows"
+    tail -n 40 "$log" >&2
+    rm -f "$log"
+    exit "$EXIT_FAILED"
+  fi
+  rm -f "$log"
+}
+
+# Picks the scenarios of E3 to E9 out of the arguments of a run, unless the run is something other
+# than the composed pipeline (a test-mode run of E1, an explicit scripted or composed wiring).
+composed_ids_of() { # composed_ids_of ARGS...
+  local -a ids=()
+  local wiring=auto test_mode=0
+  while [ "$#" -gt 0 ]; do
+    case $1 in
+      --scenario) ids+=("$2"); shift ;;
+      --wiring) wiring=$2; shift ;;
+      --test-mode) test_mode=1 ;;
+    esac
+    shift
+  done
+  [ "$test_mode" -eq 0 ] || return 0
+  case $wiring in auto | recorded) ;; *) return 0 ;; esac
+  local id known
+  for id in ${ids[@]+"${ids[@]}"}; do
+    for known in "${COMPOSED_TEST_SCENARIOS[@]}"; do
+      [ "$id" = "$known" ] && printf '%s\n' "$id"
+    done
+  done
+}
+
 check_fixture() { # check_fixture MODE...
   build contract check-fixture
   "$(fixture_bin)" "$@"
@@ -133,17 +212,18 @@ main() {
   [ "$#" -gt 0 ] || usage_error "give one of the modes; see --help"
   local -a run_args=()
   local mode=""
+  local judge_only=0
   while [ "$#" -gt 0 ]; do
     case $1 in
       --help | -h)
         show_help
         exit 0
         ;;
-      --list | --self-test | --self-test-blocked | --self-test-preflight | --self-test-all | --check-fixture | --check-fixture-host)
+      --list | --self-test | --self-test-blocked | --self-test-preflight | --self-test-report | --self-test-all | --check-fixture | --check-fixture-host)
         [ -z "$mode" ] || [ "$mode" = "$1" ] || usage_error "give one mode, not $mode and $1"
         mode=$1
         ;;
-      --check-report)
+      --check-report | --check-readability)
         mode=$1
         shift
         run_args+=("$@")
@@ -161,6 +241,11 @@ main() {
         mode=--run
         run_args+=("$1")
         ;;
+      --judge-only)
+        [ -z "$mode" ] || [ "$mode" = "--run" ] || usage_error "give one mode, not $mode and $1"
+        mode=--run
+        judge_only=1
+        ;;
       *) usage_error "unknown argument '$1'" ;;
     esac
     shift
@@ -171,9 +256,10 @@ main() {
     --self-test) run_e2e self-test ;;
     --self-test-blocked) self_test_blocked ;;
     --self-test-preflight) run_e2e preflight-self-test ;;
+    --self-test-report) run_e2e report-self-test ;;
     --self-test-all)
       local rc=0 step
-      for step in --self-test --self-test-blocked --self-test-preflight; do
+      for step in --self-test --self-test-blocked --self-test-preflight --self-test-report; do
         printf '== %s\n' "$step"
         "$0" "$step" || rc=$?
         [ "$rc" -eq 0 ] || exit "$rc"
@@ -182,7 +268,20 @@ main() {
     --check-fixture) check_fixture --host --image ;;
     --check-fixture-host) check_fixture --host ;;
     --check-report) run_e2e check-report ${run_args[@]+"${run_args[@]}"} ;;
-    --run) run_e2e run ${run_args[@]+"${run_args[@]}"} ;;
+    --check-readability) run_e2e readability ${run_args[@]+"${run_args[@]}"} ;;
+    --run)
+      if [ "$judge_only" -eq 0 ]; then
+        local -a composed=()
+        local composed_id
+        while IFS= read -r composed_id; do
+          [ -z "$composed_id" ] || composed+=("$composed_id")
+        done < <(composed_ids_of ${run_args[@]+"${run_args[@]}"})
+        if [ "${#composed[@]}" -gt 0 ]; then
+          record_scenarios "${composed[@]}"
+        fi
+      fi
+      run_e2e run ${run_args[@]+"${run_args[@]}"}
+      ;;
     *) usage_error "give one of the modes; see --help" ;;
   esac
 }

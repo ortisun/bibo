@@ -25,17 +25,18 @@ pub fn a11(ev: &RunEvidence, _env: &Env) -> Verdict {
                 span.name == STAGE_RUN_SPAN && span.stage_run_id.as_deref() == Some(run.id.as_str())
             })
             .collect();
-        let [stage_span] = stage_spans.as_slice() else {
+        // A stage run that waits for a person is claimed again after the answer, and the engine
+        // opens a stage run span for each claim. So a run has one span or more, and what must
+        // hold is that an attempt hangs under a stage run span of its own run.
+        if stage_spans.is_empty() {
             return Verdict::fail(
                 ID,
                 format!(
-                    "the {} run {} has {} stage run spans, and it must have one",
-                    run.kind,
-                    run.id,
-                    stage_spans.len()
+                    "the {} run {} has no stage run span, and an attempt needs one above it",
+                    run.kind, run.id
                 ),
             );
-        };
+        }
         for attempt in &run.attempts {
             attempts_seen += 1;
             let attempt_spans: Vec<_> = spans
@@ -56,12 +57,15 @@ pub fn a11(ev: &RunEvidence, _env: &Env) -> Verdict {
                     ),
                 );
             };
-            if attempt_span.parent_id.as_deref() != Some(stage_span.id.as_str()) {
+            let under_own_run = stage_spans
+                .iter()
+                .any(|span| attempt_span.parent_id.as_deref() == Some(span.id.as_str()));
+            if !under_own_run {
                 return Verdict::fail(
                     ID,
                     format!(
-                        "the span of attempt {} has the parent {:?}, not the stage run span {}",
-                        attempt.id, attempt_span.parent_id, stage_span.id
+                        "the span of attempt {} has the parent {:?}, which is not a stage run span of the {} run {}",
+                        attempt.id, attempt_span.parent_id, run.kind, run.id
                     ),
                 );
             }

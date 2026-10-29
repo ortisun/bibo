@@ -244,6 +244,24 @@ pub fn all() -> Vec<Mutation> {
             apply: |ev| ev.stage_runs.retain(|run| run.kind != "DOMAIN_DISCOVERY"),
         },
         Mutation {
+            name: "a-stage-is-skipped-and-no-rule-is-recorded",
+            assertion: "A1",
+            what: "DOMAIN_DISCOVERY is SKIPPED and the ledger holds no entry about the skip.",
+            expect: "SKIPPED runs",
+            base: Production,
+            apply: |ev| {
+                let skipped = run_id(ev, "DOMAIN_DISCOVERY");
+                for run in &mut ev.stage_runs {
+                    if run.id == skipped {
+                        run.status = "SKIPPED".to_owned();
+                    }
+                }
+                ev.ledger
+                    .retain(|entry| entry["metadata"]["stage_run_id"].as_str() != Some(&skipped));
+                reseal(ev);
+            },
+        },
+        Mutation {
             name: "a-stage-passed-before-the-one-it-requires",
             assertion: "A1",
             what: "SPECIFICATION is shown passing before INTAKE.",
@@ -1044,7 +1062,7 @@ pub fn all() -> Vec<Mutation> {
             name: "an-attempt-span-hangs-under-the-wrong-parent",
             assertion: "A11",
             what: "An attempt span has no parent.",
-            expect: "not the stage run span",
+            expect: "which is not a stage run span of the",
             base: Production,
             apply: |ev| {
                 if let Some(span) = ev

@@ -107,7 +107,12 @@ pub const SCENARIOS: [Scenario; 13] = [
         issue: Some("hostile-injection"),
         variant: None,
         assertions: &["A1", "A3", "A9", "A10", "A13", "A14"],
-        checks: &["X.ledger-chain", "X.original-kept", "E4.no-effect"],
+        checks: &[
+            "X.ledger-chain",
+            "X.original-kept",
+            "E4.no-effect",
+            "E4.agent-denials",
+        ],
         needs_protected_remote: true,
     },
     Scenario {
@@ -212,6 +217,10 @@ pub const SCENARIOS: [Scenario; 13] = [
         needs_protected_remote: false,
     },
 ];
+
+/// The scenarios whose recording the composed pipeline makes in test mode: the scenarios of the
+/// plan that need no real adapter. The test `apps/api/tests/e2e_scenarios.rs` drives them.
+pub const COMPOSED_TEST: [&str; 7] = ["E3", "E4", "E5", "E6", "E7", "E8", "E9"];
 
 /// The scenario with this id.
 #[must_use]
