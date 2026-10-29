@@ -20,11 +20,10 @@
 //!
 //! # What is not here
 //!
-//! * **`ModelRouter`.** The slice plan lists `PolicyModelRouter` for this crate, and the port says
-//!   it reads `policies/model_routing.yaml`. That file does not exist, and no schema or parser
-//!   contract describes it, so a router would have to invent the file format. The work package that
-//!   owns `policies/` has to write the file first. The in-memory `StaticModelRouter` in `testkit`
-//!   covers tests until then.
+//! * **`ModelRouter`.** `policies/model_routing.yaml` exists, and [`policy::routing`] reads it into
+//!   typed values. The router that applies it, `PolicyModelRouter`, is not in this crate: it is in
+//!   `factory_composition::routing`. Every number in the file still waits for the project owner. The
+//!   in-memory `StaticModelRouter` in `testkit` covers tests.
 //! * **Policy evaluation.** Which tool is granted, which path is protected and who may approve what
 //!   is `s1-policy-evaluation`. This crate only reads and validates the documents.
 //!
