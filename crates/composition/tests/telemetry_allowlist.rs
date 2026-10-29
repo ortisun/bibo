@@ -249,6 +249,16 @@ const REVIEWED: &[(&str, &str, &str)] = &[
         "StoreError: a static sentence written by the code, as in the hook for the six verbs",
     ),
     (
+        "crates/composition/src/stage_decisions.rs",
+        "code",
+        "the code of an outcome of a decision about a stage run: `applied` or the code of a `Reason`, a closed set of static strings",
+    ),
+    (
+        "crates/composition/src/stage_decisions.rs",
+        "error",
+        "StoreError: a static sentence written by the code, as in the hook for the six verbs",
+    ),
+    (
         "crates/composition/src/intake_rejections.rs",
         "code",
         "the fixed reason code `unauthorized_actor`, a static string",

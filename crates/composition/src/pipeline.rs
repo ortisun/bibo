@@ -878,11 +878,13 @@ pub fn assemble_pipeline(inputs: PipelineInputs) -> Result<Pipeline, PipelineErr
         crate::stage_decisions::StageDecisionsDeps {
             engine: Arc::clone(&engine),
             store: Arc::clone(&store),
+            artifacts: Arc::clone(&artifacts),
             tenants: tenants.clone(),
             policy: Arc::clone(&policies.engine),
             policy_hash: policies.hash.clone(),
             sources: approval_sources.clone(),
             reprobe: Arc::new(crate::stage_decisions::NoReprobe),
+            redactor: Arc::clone(&redactor),
             clock: Arc::clone(&clock),
             max_age: std::time::Duration::from_secs(crate::pipeline::APPROVAL_WINDOW_HOURS * 3600),
             keys: Arc::clone(&decision_keys),

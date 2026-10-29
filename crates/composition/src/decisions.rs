@@ -356,7 +356,9 @@ impl Reason {
             Self::GatesNotClear => "A check is not clear, so the work cannot be approved.",
             Self::AlreadyDecided => "This person already took this decision for this version.",
             Self::NotSigned => "The record was not written by the service that takes decisions.",
-            Self::NotAwaited => "The stage run does not wait for a decision on that package.",
+            Self::NotAwaited => {
+                "The stage run does not wait for a decision on that package or file."
+            }
             Self::Ambiguous => {
                 "More than one package matches; add the start of the checksum to say which."
             }

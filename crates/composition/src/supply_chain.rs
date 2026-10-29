@@ -33,6 +33,7 @@ use factory_domain::values::Timestamp;
 use factory_domain::vocabulary::Fidelity;
 use factory_ports::clock::Clock;
 use factory_ports::store::Store;
+use factory_workflow::gates::scope::own_build_code::ProjectBuildCodeApproval;
 use factory_workflow::gates::supply_chain::approval::{DependencyApproval, RecordedApprovals};
 use factory_workflow::gates::supply_chain::facts::{
     AdvisoryDatabase, RegistryMetadata, RegistryRecord,
@@ -180,6 +181,31 @@ impl CurrentApprovals {
         }
     }
 
+    /// Keeps the decisions whose person still holds, now, the designation they decided under.
+    async fn still_standing<T>(
+        &self,
+        (tenant, job): (TenantId, JobId),
+        recorded: Vec<T>,
+        who: impl Fn(&T) -> (u64, factory_domain::policy::decision::Designation),
+    ) -> Vec<T> {
+        if recorded.is_empty() {
+            return recorded;
+        }
+        let Some(repository) = self.repository_of(tenant, job).await else {
+            return Vec::new();
+        };
+        let now = self.clock.now();
+        recorded
+            .into_iter()
+            .filter(|approval| {
+                let (approver, designation) = who(approval);
+                self.allowlist
+                    .designations_on(tenant, approver, Some(&repository), now)
+                    .is_ok_and(|held| held.contains(&designation))
+            })
+            .collect()
+    }
+
     async fn repository_of(&self, tenant: TenantId, job: JobId) -> Option<String> {
         let mut tx = self.store.begin(TenantScope::new(tenant)).await.ok()?;
         let found = async {
@@ -202,21 +228,22 @@ impl RecordedApprovals for CurrentApprovals {
 
     async fn for_job(&self, tenant: TenantId, job: JobId) -> Vec<DependencyApproval> {
         let recorded = self.inner.for_job(tenant, job).await;
-        if recorded.is_empty() {
-            return recorded;
-        }
-        let Some(repository) = self.repository_of(tenant, job).await else {
-            return Vec::new();
-        };
-        let now = self.clock.now();
-        recorded
-            .into_iter()
-            .filter(|approval| {
-                self.allowlist
-                    .designations_on(tenant, approval.approver.get(), Some(&repository), now)
-                    .is_ok_and(|held| held.contains(&approval.designation))
-            })
-            .collect()
+        self.still_standing((tenant, job), recorded, |approval| {
+            (approval.approver.get(), approval.designation)
+        })
+        .await
+    }
+
+    async fn build_code_for_job(
+        &self,
+        tenant: TenantId,
+        job: JobId,
+    ) -> Vec<ProjectBuildCodeApproval> {
+        let recorded = self.inner.build_code_for_job(tenant, job).await;
+        self.still_standing((tenant, job), recorded, |approval| {
+            (approval.approver.get(), approval.designation)
+        })
+        .await
     }
 }
 

@@ -9,6 +9,7 @@ use factory_composition::commands::{
     APPROVE_BUILD_CODE, APPROVE_DEPENDENCY, ParsedLine, parse_cli, parse_dependency_command,
 };
 use factory_composition::profile::Profile;
+use factory_composition::stage_decisions::{StageFields, StageVerb};
 use factory_composition::system::RandomIds;
 use factory_ports::clock::IdGenerator;
 use serde_json::{Value, json};
@@ -29,6 +30,7 @@ usage: factory-cli <command> [options]
   rework   --api URL --token-file FILE [--key K] JOB STAGE_RUN target=STAGE reason...
   pause | resume | cancel  --api URL --token-file FILE [--key K] JOB reason...
   unblock  --api URL --token-file FILE [--key K] JOB STAGE_RUN reason...
+  approve-project-build-code  --api URL --token-file FILE [--key K] [--stage-run ID] JOB PATH SHA256 reason...
   approve-dependency  --api URL --token-file FILE [--key K] [--stage-run ID] JOB NAME VERSION [CHECKSUM] reason...
   approve-build-code  --api URL --token-file FILE [--key K] [--stage-run ID] JOB NAME VERSION [CHECKSUM] reason...
   probe    --protected-checkout DIR [--images-catalog FILE] [--profile production|local|test]
@@ -409,6 +411,83 @@ fn unblock(args: &[String], env: &dyn Fn(&str) -> Option<String>, ctx: &mut Cont
     })
 }
 
+/// `approve-project-build-code`: a security approver accepts one file of the project's own new
+/// build code, with the content they read. The file is a path of the repository and the content is
+/// named by the start of its SHA-256 (12 to 64 lower case hex digits, with or without `sha256:`),
+/// as the evidence of the blocked stage run shows them (`status --gates` is not needed: the
+/// evidence of the stage run lists both).
+fn approve_project_build_code(
+    args: &[String],
+    env: &dyn Fn(&str) -> Option<String>,
+    ctx: &mut Context<'_>,
+) -> Exit {
+    let parsed = match split(args, &["api", "token-file", "key", "stage-run"]) {
+        Ok(parsed) => parsed,
+        Err(why) => {
+            ctx.complain(&why);
+            return Exit::Failed;
+        }
+    };
+    let words = &parsed.positional;
+    if words.len() < 4 || !is_uuid(&words[0]) {
+        ctx.complain(
+            "this decision takes a job id (a UUID), the path of the file, the start of the SHA-256 of its content, and then the reason",
+        );
+        return Exit::Failed;
+    }
+    let stage_run = parsed.options.get("stage-run");
+    if stage_run.is_some_and(|stage_run| !is_uuid(stage_run)) {
+        ctx.complain("--stage-run is a stage run id (a UUID)");
+        return Exit::Failed;
+    }
+    let path = words[1].clone();
+    let digest = words[2]
+        .strip_prefix("sha256:")
+        .unwrap_or(&words[2])
+        .to_owned();
+    // The words are checked with the grammar the API and the worker use, before a request.
+    let Ok(job) = factory_domain::ids::JobId::parse(&words[0]) else {
+        ctx.complain("the job id is not one");
+        return Exit::Failed;
+    };
+    let probe = StageFields {
+        verb: StageVerb::ApproveProjectBuildCode,
+        job,
+        stage_run: None,
+        path: Some(path.clone()),
+        digest: Some(digest.clone()),
+        index: None,
+    };
+    if !probe.is_well_formed() {
+        ctx.complain("the path is a path inside the repository, and the hash is 12 to 64 lower case hexadecimal digits");
+        return Exit::Failed;
+    }
+    let reason = words[3..].join(" ");
+    if reason.chars().count() < MIN_REASON_CHARS {
+        ctx.complain("a decision on build code needs a reason of at least 10 characters");
+        return Exit::Failed;
+    }
+    let mut body = json!({
+        "verb": StageVerb::ApproveProjectBuildCode.as_str(),
+        "path": path,
+        "digest": digest,
+        "reason": reason,
+    });
+    if let Some(stage_run) = stage_run {
+        body["stage_run_id"] = json!(stage_run);
+    }
+    let client = match client(&parsed.options, env, true, ctx) {
+        Ok(client) => client,
+        Err(exit) => return exit,
+    };
+    let key = idempotency_key(&parsed.options);
+    let shown = key.clone();
+    let url = format!("/v1/jobs/{}/decisions", words[0]);
+    finish(client.post(&url, &key, &body), ctx, move |body| {
+        render::decided(body, &shown)
+    })
+}
+
 /// `approve-dependency` and `approve-build-code`: a decision on a new dependency or on its build
 /// code. The words after the job id are read by the one reader of those commands, so the package
 /// name, the version and the checksum prefix are the ones every channel accepts.
@@ -541,6 +620,7 @@ pub fn run(
             decide(verb, rest, env, &mut ctx)
         }
         "unblock" => unblock(rest, env, &mut ctx),
+        "approve-project-build-code" => approve_project_build_code(rest, env, &mut ctx),
         verb @ (APPROVE_DEPENDENCY | APPROVE_BUILD_CODE) => {
             decide_dependency(verb, rest, env, &mut ctx)
         }

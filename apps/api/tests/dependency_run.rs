@@ -175,6 +175,89 @@ impl Journey {
         }
     }
 
+    /// The builder adds a build script of the project's own, which the plan owns.
+    fn the_builder_adds_a_build_script(&self, content: &'static str) {
+        self.rig.playbook.tweak("planner", |reply| {
+            let task = &mut reply.output["plan"]["tasks"][0];
+            task["expected_changes"]
+                .as_array_mut()
+                .expect("the task lists its changes")
+                .push(json!({"path_glob": "build.rs", "change": "add"}));
+            task["owned_files"]
+                .as_array_mut()
+                .expect("the task lists its files")
+                .push(json!("build.rs"));
+        });
+        self.rig
+            .playbook
+            .tweak("builder.write-json-formatter", move |reply| {
+                reply
+                    .writes
+                    .push(("build.rs".to_owned(), content.as_bytes().to_vec()));
+                if let Some(list) = reply.output["files_changed"].as_array_mut() {
+                    list.push(json!("build.rs"));
+                }
+            });
+        // The validation stage runs the tests of the head and of the baseline each time it runs,
+        // and it runs again after the decision. The rig queued the first run only.
+        for _ in 0..3 {
+            for side in ["head", "base"] {
+                let recorded = |name: &str| self.rig.playbook.recorded(name);
+                self.rig.cargo.queue_test_run(cargo::TestRun {
+                    stdout: recorded(&format!("cargo-test.{side}.stdout")),
+                    stderr: recorded(&format!("cargo-test.{side}.stderr")),
+                    exit: 0,
+                });
+            }
+        }
+    }
+
+    /// A security approver's decision on a file of build code through the API, and one pass of the
+    /// worker's step over it.
+    async fn decide_build_code(
+        &self,
+        token: &str,
+        key: &str,
+        path: &str,
+        digest: &str,
+    ) -> support::Reply {
+        let reply = full::decide(
+            &self.rig.env,
+            token,
+            self.job,
+            key,
+            json!({
+                "verb": "approve-project-build-code",
+                "path": path,
+                "digest": digest,
+                "reason": "Read the script; it only prints cargo directives.",
+            }),
+        )
+        .await;
+        self.rig.hook.pass(self.rig.tenant).await;
+        reply
+    }
+
+    /// The markers the worker wrote for the decisions on build code: `(action, code)`.
+    async fn build_code_markers(&self) -> Vec<(String, String)> {
+        let text = self.rig.audit_text(self.job).await;
+        text.lines()
+            .filter(|line| {
+                (line.starts_with("decision.applied ") || line.starts_with("decision.rejected "))
+                    && line.contains(" verb=approve-project-build-code ")
+                    && line.contains(" code=")
+            })
+            .filter_map(|line| {
+                let action = line.split_whitespace().next()?.to_owned();
+                let code = line
+                    .split_whitespace()
+                    .find_map(|word| word.strip_prefix("code="))?
+                    .to_owned();
+                Some((action, code))
+            })
+            .collect()
+    }
+
     /// Runs to the specification question, approves the draft, and runs on until the validation
     /// stage is blocked, or something else stops the job.
     async fn to_the_stop_at_validation(&self) -> JobView {
@@ -1035,5 +1118,158 @@ async fn an_operator_who_left_the_allowlist_before_the_worker_read_the_request_i
         "the stage run is untouched"
     );
     std::fs::write(&allowlist, &original).expect("the allowlist again");
+    journey.rig.finish();
+}
+
+const BUILD_SCRIPT: &str = "fn main() {\n    println!(\"cargo:rerun-if-changed=build.rs\");\n}\n";
+
+/// The project's own build code through the real pipeline: the gate `build` waits for a security
+/// approver and no command builds the change; the decision is bound to the path and to the hash of
+/// the content the stage run showed; the operator lets the run go; the stage passes.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_projects_own_build_script_waits_for_a_security_approvers_decision_on_its_exact_content()
+ {
+    let journey = begin().await;
+    let _dump = full::DumpOnFailure::new(&journey.rig, journey.job);
+    journey.the_builder_adds_a_build_script(BUILD_SCRIPT);
+    let view = journey.to_the_stop_at_validation().await;
+    let run = full::stage_run_of(&view, StageKind::Validation);
+
+    // 1. The stage blocks before any command builds the change, and the evidence lists the file
+    // with the hash of its content: the exact thing a person decides on.
+    assert!(blocked(&view), "{:#?}\n{view:#?}", gates(&journey).await);
+    // The implementation stage ran its own commands. The validation stage runs none on this
+    // change: a command that built it would run the build script it waits for a person to read.
+    let tests_so_far = journey.rig.cargo.ran("test");
+    let evidence = journey
+        .rig
+        .stage_output(journey.job, StageKind::Validation, "validation-evidence")
+        .await;
+    let hash = factory_domain::values::Sha256Digest::of(BUILD_SCRIPT.as_bytes());
+    assert_eq!(
+        evidence["project_build_code"]["awaiting"],
+        json!([{"path": "build.rs", "sha256": hash.as_str()}]),
+        "{evidence}"
+    );
+    let build = evidence["reports"]
+        .as_array()
+        .and_then(|reports| {
+            reports
+                .iter()
+                .find(|report| report["metadata"]["gate_id"] == "build")
+        })
+        .expect("a report of the gate build");
+    assert_eq!(build["outcome"], "BLOCKED");
+    assert_eq!(build["blocked_reason"]["code"], "policy_unresolvable");
+    assert_eq!(build["commands"], json!([]), "the gate ran no command");
+
+    // 2. An approver may not decide on build code: the API says no, and nothing is recorded. The
+    // operator cannot let the run go either.
+    let reply = journey
+        .decide_build_code(
+            &journey.approver,
+            "approver-on-build-code",
+            "build.rs",
+            &hash.hex()[..12],
+        )
+        .await;
+    assert_eq!(reply.status, 403, "{}", reply.text());
+    assert!(matches!(
+        journey.rig.unblock(journey.job, run).await,
+        Err(EngineError::GuardUnmet(_))
+    ));
+
+    // 3. A security approver who names another hash, or another file, is not heard: the run does
+    // not wait for that, and the words are never the subject.
+    for (key, path, digest) in [
+        ("another-hash", "build.rs", "d".repeat(12)),
+        (
+            "another-file",
+            "tools/build.rs",
+            hash.hex()[..12].to_owned(),
+        ),
+    ] {
+        let reply = journey
+            .decide_build_code(&journey.security, key, path, &digest)
+            .await;
+        assert_eq!(reply.status, 202, "{}", reply.text());
+    }
+    assert_eq!(
+        journey.build_code_markers().await,
+        [
+            ("decision.rejected".to_owned(), "not_awaited".to_owned()),
+            ("decision.rejected".to_owned(), "not_awaited".to_owned())
+        ]
+    );
+    assert!(
+        journey
+            .rig
+            .dependency_approvals
+            .build_code_for_job(journey.rig.tenant, journey.job)
+            .await
+            .is_empty()
+    );
+    assert!(matches!(
+        journey.rig.unblock(journey.job, run).await,
+        Err(EngineError::GuardUnmet(_))
+    ));
+
+    // 4. The security approver decides on the file with the content they were shown.
+    let reply = journey
+        .decide_build_code(
+            &journey.security,
+            "the-decision",
+            "build.rs",
+            &hash.hex()[..12],
+        )
+        .await;
+    assert_eq!(reply.status, 202, "{}", reply.text());
+    let recorded = journey
+        .rig
+        .dependency_approvals
+        .build_code_for_job(journey.rig.tenant, journey.job)
+        .await;
+    assert_eq!(recorded.len(), 1, "{recorded:?}");
+    assert_eq!(recorded[0].script.path, "build.rs");
+    assert_eq!(recorded[0].script.sha256, hash);
+    assert_eq!(
+        recorded[0].approver.get(),
+        journey.rig.env.a.security.github_id
+    );
+    assert!(
+        journey
+            .build_code_markers()
+            .await
+            .contains(&("decision.applied".to_owned(), "applied".to_owned()))
+    );
+
+    // 5. The operator lets the run go, and the stage passes: the gate sees a decision on exactly
+    // this content, and the commands run.
+    journey
+        .rig
+        .unblock(journey.job, run)
+        .await
+        .expect("a recorded decision clears the block");
+    let view = journey
+        .until(240, |view| passed(view) || journey_stopped(view))
+        .await;
+    assert!(passed(&view), "{:#?}\n{view:#?}", gates(&journey).await);
+    assert!(
+        journey.rig.cargo.ran("test") > tests_so_far,
+        "the commands of the stage ran once the decision was in"
+    );
+    let evidence = journey
+        .rig
+        .stage_output(journey.job, StageKind::Validation, "validation-evidence")
+        .await;
+    assert_eq!(
+        evidence["project_build_code"]["awaiting"],
+        json!([]),
+        "{evidence}"
+    );
+    assert_eq!(
+        evidence["project_build_code"]["decided"],
+        json!([{"path": "build.rs", "sha256": hash.as_str()}])
+    );
     journey.rig.finish();
 }

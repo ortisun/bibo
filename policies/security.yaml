@@ -1207,6 +1207,14 @@ gate_integrity:
       gate: dependency-review
       code: policy_unresolvable
       reason: "The block waits for a recorded human decision bound to the exact name, version and checksum; an override would pass the stage with none."
+    # New build code of the project's own (a build script, a procedural macro, build dependencies)
+    # blocks the gate `build` with the same code. A security approver decides on it with
+    # `approve-project-build-code`, bound to the path and to the hash of the content of each file
+    # (`approve_build_code`), and the stage is run again. A changed script needs a new decision.
+    - id: build-code-policy-unresolvable
+      gate: build
+      code: policy_unresolvable
+      reason: "waits for a security approver's decision on new build code"
   evidence_binding: [head_sha, tree_hash, gate_definition_hash, policy_hash, image_digest, base_sha]
   # Each item maps to a row of the invalidation table in docs/architecture/state-machine.md
   # (section Invalidation, "How each item of gate_integrity.invalidated_by maps to a row"),

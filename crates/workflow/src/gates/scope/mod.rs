@@ -12,6 +12,7 @@
 //! | [`lint`] | `lint` | whether a lint level was lowered, an allow attribute added or an ignore list grown (`lint_relaxation`) |
 //! | [`hardening`] | the risk measure and `dependency-review` | vendored code, dependency files of other places and ecosystems, and files that run on a reviewer's machine, which the path policy does not name (RR-14, RR-15, RR-16) |
 //! | [`build_code`] | `build` | whether the change adds build code of the project's own: a build script, a procedural macro, build dependencies (`build_script_added`, `approve_build_code`) |
+//! | [`own_build_code`] | `build` | the decision of a security approver on that build code, bound to the path and the hash of the content, and the list of what still waits |
 //! | [`secrets`] | `secret-scan` | whether a new line is a secret |
 //! | [`acceptance`] | `acceptance-evidence` | whether every requirement has a passed covering test |
 //!
@@ -23,6 +24,7 @@ pub mod diff;
 pub mod hardening;
 pub mod lines;
 pub mod lint;
+pub mod own_build_code;
 pub mod patch;
 pub mod protected;
 pub mod secrets;

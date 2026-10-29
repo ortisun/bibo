@@ -1,4 +1,5 @@
-//! Decisions about a stage run that are not an approval of a pull request: `unblock`.
+//! Decisions about a stage run that are not an approval of a pull request: `unblock` and
+//! `approve-project-build-code`.
 //!
 //! The front door does here what it does for the other decisions (`decisions.rs`) and nothing the
 //! engine decides: it reads who the caller is, checks the designation the action row names and the
@@ -12,6 +13,7 @@
 //! | Verb | Designation | Needs | Names |
 //! |---|---|---|---|
 //! | `unblock` | operator (`unblock_blocked_stage_run`) | `stage_run_id`, `reason` | nothing else |
+//! | `approve-project-build-code` | security approver (`approve_build_code`) | `path`, `digest`, `reason`; `stage_run_id` is optional | the file and the start of the SHA-256 of its content |
 //!
 //! A word that means nothing to the verb is refused and not ignored.
 
@@ -35,6 +37,7 @@ use crate::state::ApiState;
 const fn takes(verb: StageVerb) -> &'static [&'static str] {
     match verb {
         StageVerb::Unblock => &["stage_run_id", "reason"],
+        StageVerb::ApproveProjectBuildCode => &["stage_run_id", "reason", "path", "digest"],
     }
 }
 
@@ -56,6 +59,25 @@ fn given(body: &DecisionBody) -> Vec<&'static str> {
     .into_iter()
     .filter_map(|(name, set)| set.then_some(name))
     .collect()
+}
+
+/// The name of the field of the body to blame when the words of a request are not well formed.
+fn bad_word(fields: &StageFields) -> &'static str {
+    match fields.verb {
+        StageVerb::Unblock => "stage_run_id",
+        StageVerb::ApproveProjectBuildCode => {
+            // The path is the first word of a file; the hash is blamed when the path is fine.
+            let with_a_good_hash = StageFields {
+                digest: Some("0".repeat(12)),
+                ..fields.clone()
+            };
+            if with_a_good_hash.is_well_formed() {
+                "digest"
+            } else {
+                "path"
+            }
+        }
+    }
 }
 
 /// `POST /v1/jobs/{job_id}/decisions` with a verb about a stage run.
@@ -98,16 +120,29 @@ pub(crate) async fn decide(
     {
         return Err(ApiError::BadRequest("reason"));
     }
+    // The words of a file: its path, and the start of the hash of its content, with or without the
+    // `sha256:` prefix. Each is one word: a space would end the field of the record early.
+    for (field, value) in [("path", &parsed.path), ("digest", &parsed.digest)] {
+        if value
+            .as_ref()
+            .is_some_and(|text| !clean_line(text) || text.contains(char::is_whitespace))
+        {
+            return Err(ApiError::BadRequest(field));
+        }
+    }
     let fields = StageFields {
         verb,
         job: job_id,
         stage_run,
-        path: None,
-        digest: None,
+        path: parsed.path.clone(),
+        digest: parsed
+            .digest
+            .as_deref()
+            .map(|text| text.strip_prefix("sha256:").unwrap_or(text).to_owned()),
         index: None,
     };
     if !fields.is_well_formed() {
-        return Err(ApiError::BadRequest("stage_run_id"));
+        return Err(ApiError::BadRequest(bad_word(&fields)));
     }
 
     let ids = &state.ports.ids;

@@ -12,6 +12,7 @@ use factory_domain::policy::decision::AuthorizedApproval;
 use factory_domain::values::{HumanText, Sha256Digest};
 
 use super::Subject;
+use crate::gates::scope::own_build_code::BuildScript;
 use crate::gates::supply_chain::approval::{ApprovalKind, Subject as Package};
 
 /// A person's decision on a dependency, or on its build code, for a blocked stage run.
@@ -39,6 +40,33 @@ pub struct RecordDependencyDecision {
 pub struct DependencyDecisionRecorded {
     /// The decision on the dependency, or on its build code.
     pub kind: ApprovalKind,
+    /// The document of the decision, stored for the tenant.
+    pub artifact: ArtifactRef,
+    /// The hash of the ledger entry that names it.
+    pub ledger_hash: Sha256Digest,
+}
+
+/// A security approver's decision on the project's own build code, for a blocked stage run.
+///
+/// The authority is the **proof** of the policy engine for the action `approve_build_code`
+/// (`gates::supply_chain::approval::authorize_build_code`). The engine checks it again against the
+/// principal that acts, the roles that principal holds now and the evidence the blocked stage run
+/// stored; it does not take the proof as the whole truth.
+#[derive(Debug, Clone)]
+pub struct RecordProjectBuildCodeDecision {
+    /// The job and the blocked `VALIDATION` stage run that waits for the decision.
+    pub stage: Subject,
+    /// The proof that the policy engine authorized this person for this action.
+    pub proof: AuthorizedApproval,
+    /// The file and the hash of its content, as the stage run's evidence showed them.
+    pub script: BuildScript,
+    /// Why, in the person's words. Untrusted text; the caller has run it through the redactor.
+    pub reason: HumanText,
+}
+
+/// What the engine stored for a decision on the project's own build code.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProjectBuildCodeRecorded {
     /// The document of the decision, stored for the tenant.
     pub artifact: ArtifactRef,
     /// The hash of the ledger entry that names it.

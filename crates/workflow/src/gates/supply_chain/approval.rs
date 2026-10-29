@@ -40,6 +40,7 @@ use factory_domain::vocabulary::{Fidelity, RiskTier};
 use serde_json::{Value, json};
 
 use super::model::normalize;
+use crate::gates::scope::own_build_code::ProjectBuildCodeApproval;
 
 /// The action row of `approval.yaml` for a new direct dependency.
 pub const ACTION: &str = "add_new_direct_dependency";
@@ -301,6 +302,17 @@ pub trait RecordedApprovals: Send + Sync {
 
     /// Every decision recorded for `job` of `tenant`.
     async fn for_job(&self, tenant: TenantId, job: JobId) -> Vec<DependencyApproval>;
+
+    /// Every decision on the project's own build code recorded for `job` of `tenant`
+    /// ([`ProjectBuildCodeApproval`]). A source that keeps none answers with none, and the gate
+    /// `build` then asks the person: the safe side.
+    async fn build_code_for_job(
+        &self,
+        _tenant: TenantId,
+        _job: JobId,
+    ) -> Vec<ProjectBuildCodeApproval> {
+        Vec::new()
+    }
 }
 
 /// A fixed list of decisions, for a source that was filled before the run and for tests.

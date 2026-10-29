@@ -6,9 +6,10 @@
 //! | Verb | What it asks | Designation | Engine |
 //! |---|---|---|---|
 //! | `unblock` | let a `BLOCKED` stage run go again, after the cause is gone | `operator` | `Engine::decide` with `UnblockRerun` |
+//! | `approve-project-build-code` | accept the project's own new build code, one file with the exact content a reviewer read | `security_approver` (`approve_build_code`) | `Engine::record_project_build_code_decision` |
 //!
 //! They are not among the six verbs of the approval service, and not dependency decisions. They
-//! name a stage run (and, for the later verbs, a file or a warning), and each is a request the API
+//! name a stage run (and a file, or a warning), and each is a request the API
 //! records as the audit record [`REQUESTED`], signed with the same key as the other requests but
 //! under a context line of its own, so a word made for one kind of request is never the word of
 //! another.
@@ -49,32 +50,42 @@ use factory_domain::ids::{
 use factory_domain::policy::PolicyEngine;
 use factory_domain::policy::authority::{ActionVerdict, Actor as PolicyActor, ActorKind};
 use factory_domain::policy::decision::GithubUserId;
+use factory_domain::redaction::Redactor;
 use factory_domain::scope::TenantScope;
 use factory_domain::state::{JobStatus, StageRunStatus, Status as _};
-use factory_domain::values::{Sha256Digest, Slug, Timestamp};
-use factory_domain::vocabulary::RiskTier;
+use factory_domain::values::{HumanText, Sha256Digest, Slug, Timestamp};
+use factory_domain::vocabulary::{RiskTier, StageKind};
+use factory_ports::artifact::ArtifactStore;
 use factory_ports::clock::Clock;
 use factory_ports::store::{
     AuditAction, AuditActor, AuditDecision, AuditFilter, ConstraintRule, NewAuditEvent,
     PrincipalKind, Store, StoreError,
 };
-use factory_workflow::commands::{Actor, Decision, Subject};
+use factory_workflow::commands::{Actor, Decision, RecordProjectBuildCodeDecision, Subject};
 use factory_workflow::engine::{Engine, EngineError};
-use factory_workflow::gates::supply_chain::approval::{Request, authorize_unblock};
+use factory_workflow::gates::scope::own_build_code::{BuildScript, EVIDENCE_KEY};
+use factory_workflow::gates::supply_chain::approval::{
+    BUILD_CODE_ACTION, Request, authorize_build_code, authorize_unblock,
+};
 use factory_workflow::stages::approval::ApprovalSources;
+use factory_workflow::stages::validation::EVIDENCE;
 use tracing::Instrument as _;
 
 use crate::decision_signing::{
     DecisionKeys, MarkerSigning, StageSigning, StageSubject, actor_text, read_stage_subject,
 };
 use crate::decisions::{APPLIED, JUNK_PER_PASS, Marked, REJECTED, Reason, counted_marker};
+use crate::reading::Reader;
 use crate::telemetry::job_span_of;
+
+/// The text the API puts before the person's reason.
+const REQUEST_PREFIX: &str = "requested: ";
 
 /// The audit action of a request about a stage run (written by the API).
 pub const REQUESTED: &str = "decision.stage_requested";
 
 /// The longest repository path a request carries, in bytes.
-pub const MAX_PATH_BYTES: usize = 200;
+pub const MAX_PATH_BYTES: usize = 180;
 
 /// The audit records read in one page.
 const PAGE: u32 = 500;
@@ -96,17 +107,20 @@ pub const MAX_TRIES: u32 = 20;
 pub enum StageVerb {
     /// Lets a blocked stage run go again (`S17`).
     Unblock,
+    /// Accepts one file of the project's own new build code, with the content a reviewer read.
+    ApproveProjectBuildCode,
 }
 
 impl StageVerb {
     /// Every verb.
-    pub const ALL: [StageVerb; 1] = [Self::Unblock];
+    pub const ALL: [StageVerb; 2] = [Self::Unblock, Self::ApproveProjectBuildCode];
 
     /// The word a person types.
     #[must_use]
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Unblock => "unblock",
+            Self::ApproveProjectBuildCode => "approve-project-build-code",
         }
     }
 
@@ -115,6 +129,7 @@ impl StageVerb {
     pub const fn action(self) -> &'static str {
         match self {
             Self::Unblock => factory_workflow::gates::supply_chain::approval::UNBLOCK_ACTION,
+            Self::ApproveProjectBuildCode => BUILD_CODE_ACTION,
         }
     }
 
@@ -216,6 +231,11 @@ impl StageFields {
                     && self.digest.is_none()
                     && self.index.is_none()
             }
+            // The file and the start of its hash are the two words a reviewer gives; the stage
+            // run is optional, as for a decision on a dependency.
+            StageVerb::ApproveProjectBuildCode => {
+                self.path.is_some() && self.digest.is_some() && self.index.is_none()
+            }
         };
         words_of_the_verb
             && self.path.as_deref().is_none_or(path_ok)
@@ -270,6 +290,8 @@ pub struct StageDecisionsDeps {
     pub engine: Arc<Engine>,
     /// The store, on the worker's tenant pool.
     pub store: Arc<dyn Store>,
+    /// The artifact store, to read the evidence a blocked stage run stored.
+    pub artifacts: Arc<dyn ArtifactStore>,
     /// The tenants the worker serves.
     pub tenants: Vec<TenantId>,
     /// The evaluators of the policies.
@@ -280,6 +302,9 @@ pub struct StageDecisionsDeps {
     pub sources: Arc<dyn ApprovalSources>,
     /// The capability re-probe.
     pub reprobe: Arc<dyn Reprobe>,
+    /// The redactor of the process. A reason goes through it before the engine sees it: the
+    /// engine has none.
+    pub redactor: Arc<Redactor>,
     /// The time now.
     pub clock: Arc<dyn Clock>,
     /// How long a request stays good.
@@ -295,6 +320,7 @@ struct Pending {
     sequence: u64,
     principal: PrincipalId,
     fields: StageFields,
+    reason: String,
     requested_at: Timestamp,
     failures: u32,
     actor_github_id: Option<u64>,
@@ -318,6 +344,22 @@ enum Verdict {
 /// A source of facts could not answer. Nothing was decided.
 struct Unreadable;
 
+/// What reading the job for a request about build code found.
+enum Found {
+    /// The blocked validation run, and the one file of build code it awaits that the words select.
+    Run {
+        stage_run: StageRunId,
+        script: BuildScript,
+    },
+    /// The job has no blocked validation run.
+    NoRun,
+    /// The run awaits no such file, or the words match more than one.
+    NotAwaited,
+}
+
+/// The shortest reason accepted, in characters.
+const MIN_REASON_CHARS: usize = factory_workflow::gates::supply_chain::approval::MIN_REASON_CHARS;
+
 fn already() -> Marked {
     Marked::Applied("The engine had applied this decision already.".to_owned())
 }
@@ -325,6 +367,7 @@ fn already() -> Marked {
 /// Applies the requests about a stage run.
 pub struct StageDecisions {
     deps: StageDecisionsDeps,
+    reader: Reader,
     scans: Mutex<BTreeMap<TenantId, Scan>>,
 }
 
@@ -332,8 +375,10 @@ impl StageDecisions {
     /// The step over its collaborators.
     #[must_use]
     pub fn new(deps: StageDecisionsDeps) -> Self {
+        let reader = Reader::new(Arc::clone(&deps.store), Arc::clone(&deps.artifacts));
         Self {
             deps,
+            reader,
             scans: Mutex::new(BTreeMap::new()),
         }
     }
@@ -512,8 +557,21 @@ impl StageDecisions {
             Ok(None) => return Verdict::Done(Reason::NoJob.into()),
             Err(Unreadable) => return Verdict::Later,
         };
-        let Some(stage_run) = fields.stage_run else {
-            return Verdict::Done(Reason::NoStageRun.into());
+        // The stage run: the one the person named, or the blocked validation run of the job. For
+        // build code the run also gives the file the words select, from its own stored evidence.
+        let (stage_run, script) = match fields.verb {
+            StageVerb::Unblock => match fields.stage_run {
+                Some(named) => (named, None),
+                None => return Verdict::Done(Reason::NoStageRun.into()),
+            },
+            StageVerb::ApproveProjectBuildCode => {
+                match self.awaited_script(tenant, &fields).await {
+                    Ok(Found::Run { stage_run, script }) => (stage_run, Some(script)),
+                    Ok(Found::NoRun) => return Verdict::Done(Reason::WrongState.into()),
+                    Ok(Found::NotAwaited) => return Verdict::Done(Reason::NotAwaited.into()),
+                    Err(Unreadable) => return Verdict::Later,
+                }
+            }
         };
 
         // 5. The proof of authority from the policy engine, with the allowlist read now.
@@ -557,15 +615,13 @@ impl StageDecisions {
         };
         let verdict = match fields.verb {
             StageVerb::Unblock => authorize_unblock(&authority_request),
+            StageVerb::ApproveProjectBuildCode => authorize_build_code(&authority_request),
         };
-        match verdict {
-            ActionVerdict::Authorized(_) => {}
-            // A refusal is never explained, and a policy that needs no person for the action is
-            // not a reason to accept one.
-            ActionVerdict::Denied(_) | ActionVerdict::NoHumanNeeded { .. } => {
-                return Verdict::Done(Reason::NotAuthorized.into());
-            }
-        }
+        // A refusal is never explained, and a policy that needs no person for the action is not a
+        // reason to accept one.
+        let ActionVerdict::Authorized(proof) = verdict else {
+            return Verdict::Done(Reason::NotAuthorized.into());
+        };
 
         // 6. The engine applies it, and checks the roles and the guard again.
         let actor = Actor {
@@ -573,8 +629,8 @@ impl StageDecisions {
             principal: request.principal,
             command,
         };
-        match fields.verb {
-            StageVerb::Unblock => {
+        match (fields.verb, script) {
+            (StageVerb::Unblock, _) => {
                 // Only a blocked stage run is let go. The engine would say the guard does not hold
                 // for any other, which is true and is the wrong answer to give a person.
                 match self.status_of(tenant, fields.job, stage_run).await {
@@ -610,7 +666,47 @@ impl StageDecisions {
                     Err(error) => engine_verdict(error),
                 }
             }
+            (StageVerb::ApproveProjectBuildCode, Some(script)) => {
+                // The reason: at least ten characters, and redacted, because the engine has no
+                // redactor and the document it stores is read by people and by the gate.
+                let Some(reason) = self.reason_of(&request.reason) else {
+                    return Verdict::Done(Reason::Incomplete.into());
+                };
+                let applied = self
+                    .deps
+                    .engine
+                    .record_project_build_code_decision(
+                        &actor,
+                        RecordProjectBuildCodeDecision {
+                            stage: Subject {
+                                job: fields.job,
+                                stage_run,
+                            },
+                            proof,
+                            script,
+                            reason,
+                        },
+                    )
+                    .await;
+                match applied {
+                    Ok(_) => Verdict::Done(Marked::Applied(
+                        "The decision on the build code was recorded.".to_owned(),
+                    )),
+                    Err(error) => engine_verdict(error),
+                }
+            }
+            (StageVerb::ApproveProjectBuildCode, None) => Verdict::Done(Reason::Refused.into()),
         }
+    }
+
+    /// The person's reason, redacted, when it is long enough.
+    fn reason_of(&self, reason: &str) -> Option<HumanText> {
+        if reason.trim().chars().count() < MIN_REASON_CHARS {
+            return None;
+        }
+        // The redactor failed: raw text is never written because of that.
+        let redacted = self.deps.redactor.redact_str(reason.trim()).ok()?;
+        HumanText::parse(redacted.output.as_ref()).ok()
     }
 
     // ---- reads ----------------------------------------------------------------------------
@@ -642,6 +738,79 @@ impl StageDecisions {
             Err(StoreError::NotFound) => Ok(None),
             Err(_) => Err(Unreadable),
         }
+    }
+
+    /// The blocked validation run of the job and the file of build code its stored evidence
+    /// awaits that the words select: the path, and the start of the hash of its content.
+    async fn awaited_script(
+        &self,
+        tenant: TenantId,
+        fields: &StageFields,
+    ) -> Result<Found, Unreadable> {
+        let (Some(path), Some(prefix)) = (fields.path.as_deref(), fields.digest.as_deref()) else {
+            return Ok(Found::NotAwaited);
+        };
+        let mut tx = self
+            .deps
+            .store
+            .begin(TenantScope::new(tenant))
+            .await
+            .map_err(|_| Unreadable)?;
+        let outcome = async {
+            let runs = tx
+                .list_stage_runs(fields.job)
+                .await
+                .map_err(|_| Unreadable)?;
+            let run = runs
+                .iter()
+                .filter(|candidate| {
+                    candidate.value.kind == StageKind::Validation
+                        && candidate.value.status == StageRunStatus::Blocked
+                        && fields
+                            .stage_run
+                            .is_none_or(|named| named == candidate.value.id)
+                })
+                .max_by_key(|candidate| candidate.value.run_number);
+            let Some(run) = run else {
+                return Ok(Found::NoRun);
+            };
+            let outputs = Reader::outputs(&mut *tx, run.value.id)
+                .await
+                .map_err(|_| Unreadable)?;
+            let Some(hash) = outputs.get(EVIDENCE) else {
+                return Ok(Found::NoRun);
+            };
+            let bytes = self
+                .reader
+                .bytes(&mut *tx, tenant, hash)
+                .await
+                .map_err(|_| Unreadable)?;
+            let awaiting: Vec<BuildScript> = serde_json::from_slice::<serde_json::Value>(&bytes)
+                .ok()
+                .filter(|document| {
+                    document.get("kind").and_then(serde_json::Value::as_str) == Some(EVIDENCE)
+                })
+                .and_then(|document| document.get(EVIDENCE_KEY).cloned())
+                .and_then(|section| section.get("awaiting").cloned())
+                .and_then(|list| list.as_array().cloned())
+                .map(|entries| entries.iter().filter_map(BuildScript::from_json).collect())
+                .unwrap_or_default();
+            // The path is whole, and the hash is the start the person gave. The person's words
+            // select an entry of what the run stored; they are never the subject.
+            let mut selected = awaiting
+                .into_iter()
+                .filter(|script| script.path == path && script.sha256.hex().starts_with(prefix));
+            Ok(match (selected.next(), selected.next()) {
+                (Some(script), None) => Found::Run {
+                    stage_run: run.value.id,
+                    script,
+                },
+                _ => Found::NotAwaited,
+            })
+        }
+        .await;
+        let _ = tx.rollback().await;
+        outcome
     }
 
     /// The status of a stage run of the job, as it is now, or `None` for a run the job does not
@@ -886,11 +1055,18 @@ fn requested_from(
     if record.event.job != Some(fields.job) || record.event.stage_run != fields.stage_run {
         return Err(Reason::Malformed);
     }
+    let reason = record
+        .event
+        .reason
+        .strip_prefix(REQUEST_PREFIX)
+        .unwrap_or(&record.event.reason)
+        .to_owned();
     Ok(Pending {
         id: record.event.id,
         sequence: record.sequence,
         principal,
         fields,
+        reason,
         requested_at: record.created_at,
         failures: 0,
         actor_github_id: None,
@@ -941,9 +1117,68 @@ mod tests {
         }
     }
 
+    fn build_code() -> StageFields {
+        StageFields {
+            verb: StageVerb::ApproveProjectBuildCode,
+            job: JobId::from_uuid(uuid::Uuid::from_u128(0x1111)),
+            stage_run: None,
+            path: Some("crates/a/build.rs".to_owned()),
+            digest: Some("ab".repeat(8)),
+            index: None,
+        }
+    }
+
+    #[test]
+    fn a_request_about_build_code_names_the_file_and_the_start_of_its_hash() {
+        let written = build_code();
+        assert_eq!(
+            StageFields::parse_canonical(&written.subject()),
+            Some(written.clone())
+        );
+        let with_run = StageFields {
+            stage_run: Some(StageRunId::from_uuid(uuid::Uuid::from_u128(0x2222))),
+            ..written.clone()
+        };
+        assert_eq!(
+            StageFields::parse_canonical(&with_run.subject()),
+            Some(with_run)
+        );
+        // Neither word may be missing, and neither may be malformed.
+        let canonical = written.subject();
+        for changed in [
+            canonical.replace("path=crates/a/build.rs", "path=none"),
+            canonical.replace(&"ab".repeat(8), "none"),
+            canonical.replace("path=crates/a/build.rs", "path=../build.rs"),
+            canonical.replace("path=crates/a/build.rs", "path=/etc/passwd"),
+            canonical.replace("path=crates/a/build.rs", "path=a//build.rs"),
+            canonical.replace(&"ab".repeat(8), "ABABABABABABABAB"),
+            canonical.replace(&"ab".repeat(8), "abab"),
+            canonical.replace("index=none", "index=1"),
+        ] {
+            assert_eq!(StageFields::parse_canonical(&changed), None, "{changed}");
+        }
+        let longest = StageFields {
+            path: Some("a".repeat(MAX_PATH_BYTES)),
+            digest: Some("f".repeat(64)),
+            stage_run: Some(StageRunId::from_uuid(uuid::Uuid::from_u128(0x2222))),
+            ..written
+        };
+        assert!(longest.is_well_formed());
+        // " at=" + 30 + " mac=" + 64
+        assert!(longest.subject().len() + 4 + 30 + 5 + 64 <= 500);
+    }
+
     #[test]
     fn the_verb_names_the_action_row_of_the_policy() {
         assert_eq!(StageVerb::Unblock.action(), "unblock_blocked_stage_run");
+        assert_eq!(
+            StageVerb::ApproveProjectBuildCode.action(),
+            "approve_build_code"
+        );
+        assert_eq!(
+            StageVerb::parse("approve-project-build-code"),
+            Some(StageVerb::ApproveProjectBuildCode)
+        );
         assert_eq!(StageVerb::parse("unblock"), Some(StageVerb::Unblock));
         for word in ["", "merge", "deploy", "ready", "override", "Unblock"] {
             assert_eq!(StageVerb::parse(word), None, "{word}");

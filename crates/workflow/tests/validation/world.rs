@@ -35,6 +35,7 @@ use factory_testkit::workspace::{FakeRemote, FakeWorkspaceProvider};
 use factory_workflow::gates::framework::{
     EvidenceProblem, Expectation, GateDecision, Resolution, check_evidence, resolve,
 };
+use factory_workflow::gates::scope::own_build_code::ProjectBuildCodeApproval;
 use factory_workflow::gates::supply_chain::approval::{
     DecisionScope, DependencyApproval, RecordedApprovals,
 };
@@ -264,11 +265,21 @@ impl SandboxSession for TamperSession {
 
 /// The decisions recorded for the job, as the composition root would load them from the ledger.
 #[derive(Default)]
-pub struct Approvals(Mutex<Vec<DependencyApproval>>);
+pub struct Approvals {
+    dependencies: Mutex<Vec<DependencyApproval>>,
+    build_code: Mutex<Vec<ProjectBuildCodeApproval>>,
+}
 
 impl Approvals {
     pub fn record(&self, approval: DependencyApproval) {
-        self.0
+        self.dependencies
+            .lock()
+            .expect("the lock is never poisoned")
+            .push(approval);
+    }
+
+    pub fn record_build_code(&self, approval: ProjectBuildCodeApproval) {
+        self.build_code
             .lock()
             .expect("the lock is never poisoned")
             .push(approval);
@@ -282,7 +293,21 @@ impl RecordedApprovals for Approvals {
     }
 
     async fn for_job(&self, tenant: TenantId, job: JobId) -> Vec<DependencyApproval> {
-        self.0
+        self.dependencies
+            .lock()
+            .expect("the lock is never poisoned")
+            .iter()
+            .filter(|approval| approval.scope == DecisionScope { tenant, job })
+            .cloned()
+            .collect()
+    }
+
+    async fn build_code_for_job(
+        &self,
+        tenant: TenantId,
+        job: JobId,
+    ) -> Vec<ProjectBuildCodeApproval> {
+        self.build_code
             .lock()
             .expect("the lock is never poisoned")
             .iter()

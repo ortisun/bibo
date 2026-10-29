@@ -23,6 +23,7 @@
 mod admission;
 mod agent_span;
 mod attempt;
+mod build_code;
 mod cancel;
 mod changes;
 pub mod config;

@@ -1244,6 +1244,149 @@ async fn aut_5_an_existing_build_script_that_is_edited_blocks_the_build_gate_too
     assert_build_code_waits(&w, &ran, "an edited build.rs");
 }
 
+/// A decision of a person on `path`, as the ledger would hold it after the engine recorded it.
+fn decided(
+    w: &World,
+    designation: factory_domain::policy::decision::Designation,
+    path: &str,
+    content: &str,
+) -> factory_workflow::gates::scope::own_build_code::ProjectBuildCodeApproval {
+    use factory_workflow::gates::scope::own_build_code::{BuildScript, ProjectBuildCodeApproval};
+    use factory_workflow::gates::supply_chain::approval::DecisionScope;
+    ProjectBuildCodeApproval {
+        script: BuildScript {
+            path: path.to_owned(),
+            sha256: factory_domain::values::Sha256Digest::of(content.as_bytes()),
+        },
+        approver: factory_domain::policy::decision::GithubUserId::new(1004).expect("an id"),
+        designation,
+        allowlist_version: "sha256:allowlist".to_owned(),
+        policy_hash: w.policy_hash.clone(),
+        scope: DecisionScope {
+            tenant: w.tenant,
+            job: w.job,
+        },
+        reason: "Read the script; it only prints cargo directives.".to_owned(),
+        decided_at: factory_domain::values::Timestamp::parse("2026-10-29T12:00:00Z")
+            .expect("a time"),
+    }
+}
+
+/// What the stage shows the person: the files that wait and the files decided on, each with the
+/// hash of its content.
+fn listing(ran: &Ran, list: &str) -> Vec<String> {
+    ran.evidence["project_build_code"][list]
+        .as_array()
+        .map(|entries| {
+            entries
+                .iter()
+                .map(|entry| {
+                    format!(
+                        "{} {}",
+                        entry["path"].as_str().unwrap_or_default(),
+                        entry["sha256"].as_str().unwrap_or_default()
+                    )
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+#[tokio::test]
+async fn aut_5_the_evidence_lists_the_file_and_the_hash_of_its_content_for_the_person() {
+    let (_, ran) = run_change(&[("build.rs", Some(BUILD_SCRIPT))], head_run()).await;
+    let hash = factory_domain::values::Sha256Digest::of(BUILD_SCRIPT.as_bytes());
+    assert_eq!(
+        listing(&ran, "awaiting"),
+        [format!("build.rs {}", hash.as_str())]
+    );
+    assert!(listing(&ran, "decided").is_empty());
+}
+
+#[tokio::test]
+async fn aut_5_a_security_approvers_decision_on_exactly_this_content_lets_the_build_gate_run() {
+    use factory_domain::policy::decision::Designation;
+    let w = World::new();
+    let (base, head) = w.project(&[("build.rs", Some(BUILD_SCRIPT))]).await;
+    w.approvals.record_build_code(decided(
+        &w,
+        Designation::SecurityApprover,
+        "build.rs",
+        BUILD_SCRIPT,
+    ));
+    w.cargo.queue_test_run(head_run());
+    w.cargo.queue_test_run(base_run());
+    let ran = w.run(&base, &head).await;
+    // The host rule passes, so the commands run in the sandbox as for any other change.
+    assert_ne!(
+        ran.outcome("build"),
+        GateOutcome::Blocked,
+        "{:?}",
+        ran.report("build")
+    );
+    assert!(w.sandbox.created() >= 1, "the commands ran");
+    assert!(listing(&ran, "awaiting").is_empty());
+    assert_eq!(listing(&ran, "decided").len(), 1);
+}
+
+#[tokio::test]
+async fn aut_5_a_decision_does_not_cover_a_script_that_changed_or_moved_or_was_made_by_an_approver()
+{
+    use factory_domain::policy::decision::Designation;
+    // The reviewer read BUILD_SCRIPT. The change now carries an edited script: a new decision is
+    // needed, and the gate waits again before any command runs.
+    let w = World::new();
+    let edited =
+        format!("{BUILD_SCRIPT}fn extra() {{ let _ = std::process::Command::new(\"sh\"); }}\n");
+    let (base, head) = w.project(&[("build.rs", Some(&edited))]).await;
+    w.approvals.record_build_code(decided(
+        &w,
+        Designation::SecurityApprover,
+        "build.rs",
+        BUILD_SCRIPT,
+    ));
+    w.cargo.queue_test_run(head_run());
+    w.cargo.queue_test_run(base_run());
+    let ran = w.run(&base, &head).await;
+    assert_build_code_waits(&w, &ran, "a script edited after the decision");
+    assert_eq!(listing(&ran, "awaiting").len(), 1);
+
+    // The same text at another path is another file.
+    let w = World::new();
+    let (base, head) = w.project(&[("tools/build.rs", Some(BUILD_SCRIPT))]).await;
+    w.approvals.record_build_code(decided(
+        &w,
+        Designation::SecurityApprover,
+        "build.rs",
+        BUILD_SCRIPT,
+    ));
+    w.cargo.queue_test_run(head_run());
+    w.cargo.queue_test_run(base_run());
+    let ran = w.run(&base, &head).await;
+    assert_build_code_waits(&w, &ran, "the same text at another path");
+
+    // A decision of an ordinary approver is not the decision the action row names.
+    let w = World::new();
+    let (base, head) = w.project(&[("build.rs", Some(BUILD_SCRIPT))]).await;
+    w.approvals
+        .record_build_code(decided(&w, Designation::Approver, "build.rs", BUILD_SCRIPT));
+    w.cargo.queue_test_run(head_run());
+    w.cargo.queue_test_run(base_run());
+    let ran = w.run(&base, &head).await;
+    assert_build_code_waits(&w, &ran, "an approver's decision");
+
+    // A decision taken under another policy bundle does not carry over.
+    let w = World::new();
+    let (base, head) = w.project(&[("build.rs", Some(BUILD_SCRIPT))]).await;
+    let mut other = decided(&w, Designation::SecurityApprover, "build.rs", BUILD_SCRIPT);
+    other.policy_hash = factory_domain::values::Sha256Digest::of(b"another policy bundle");
+    w.approvals.record_build_code(other);
+    w.cargo.queue_test_run(head_run());
+    w.cargo.queue_test_run(base_run());
+    let ran = w.run(&base, &head).await;
+    assert_build_code_waits(&w, &ran, "a decision under another policy");
+}
+
 #[tokio::test]
 async fn aut_5_a_build_script_moved_into_place_or_into_a_subdirectory_blocks_the_build_gate() {
     for (from, to) in [

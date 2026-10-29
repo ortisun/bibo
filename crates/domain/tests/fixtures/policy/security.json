@@ -1119,6 +1119,12 @@
         "gate": "dependency-review",
         "id": "dependency-review-policy-unresolvable",
         "reason": "The block waits for a recorded human decision bound to the exact name, version and checksum; an override would pass the stage with none."
+      },
+      {
+        "code": "policy_unresolvable",
+        "gate": "build",
+        "id": "build-code-policy-unresolvable",
+        "reason": "waits for a security approver's decision on new build code"
       }
     ],
     "nonwaivable_gates": [

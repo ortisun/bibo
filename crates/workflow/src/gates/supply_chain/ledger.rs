@@ -30,6 +30,10 @@ use factory_ports::store::Store;
 use super::approval::RecordedApprovals;
 use super::approval::{ApprovalKind, DecisionScope, DependencyApproval};
 use crate::engine::read_all_ledger;
+use crate::gates::scope::own_build_code::{
+    ARTIFACT_NOTE as BUILD_CODE_NOTE, ProjectBuildCodeApproval,
+    STATEMENT_PREFIX as BUILD_CODE_PREFIX,
+};
 
 /// How the statement of the claim of a recorded decision begins.
 pub const STATEMENT_PREFIX: &str = "A person decided on ";
@@ -65,7 +69,15 @@ impl LedgerApprovals {
         Self { store, artifacts }
     }
 
-    async fn read(&self, tenant: TenantId, job: JobId) -> Option<Vec<DependencyApproval>> {
+    /// The documents that the entries of the job's ledger cite, each with the statement of its
+    /// entry: the entries whose statement begins with `prefix` and whose artifact evidence has the
+    /// description `note`. `None` when the ledger cannot be read or its chain does not verify.
+    async fn documents(
+        &self,
+        tenant: TenantId,
+        job: JobId,
+        (prefix, note): (&str, &str),
+    ) -> Option<Vec<(String, serde_json::Value)>> {
         let scope = TenantScope::new(tenant);
         let mut tx = self.store.begin(scope).await.ok()?;
         let entries = read_all_ledger(&mut *tx, job).await;
@@ -80,7 +92,7 @@ impl LedgerApprovals {
         for entry in &entries {
             if entry.metadata.job_id != job
                 || entry.claim.kind != ClaimKind::ExpertJudgment
-                || !entry.claim.statement.as_str().starts_with(STATEMENT_PREFIX)
+                || !entry.claim.statement.as_str().starts_with(prefix)
             {
                 continue;
             }
@@ -88,7 +100,7 @@ impl LedgerApprovals {
                 let Evidence::Artifact(held) = evidence else {
                     continue;
                 };
-                if held.description.as_ref().map(|d| d.as_str()) != Some(ARTIFACT_NOTE) {
+                if held.description.as_ref().map(|d| d.as_str()) != Some(note) {
                     continue;
                 }
                 let Ok(indexed) = tx.get_artifact_index(&held.sha256).await else {
@@ -100,16 +112,49 @@ impl LedgerApprovals {
                 let Ok(document) = serde_json::from_slice::<serde_json::Value>(&bytes) else {
                     continue;
                 };
-                if let Some(approval) = DependencyApproval::from_json(&document)
-                    && approval.scope == (DecisionScope { tenant, job })
-                    && statement_of(&approval) == entry.claim.statement.as_str()
-                {
-                    found.push(approval);
-                }
+                found.push((entry.claim.statement.as_str().to_owned(), document));
             }
         }
         let _ = tx.rollback().await;
         Some(found)
+    }
+
+    async fn read(&self, tenant: TenantId, job: JobId) -> Option<Vec<DependencyApproval>> {
+        let documents = self
+            .documents(tenant, job, (STATEMENT_PREFIX, ARTIFACT_NOTE))
+            .await?;
+        Some(
+            documents
+                .into_iter()
+                .filter_map(|(statement, document)| {
+                    DependencyApproval::from_json(&document).filter(|approval| {
+                        approval.scope == (DecisionScope { tenant, job })
+                            && statement_of(approval) == statement
+                    })
+                })
+                .collect(),
+        )
+    }
+
+    async fn read_build_code(
+        &self,
+        tenant: TenantId,
+        job: JobId,
+    ) -> Option<Vec<ProjectBuildCodeApproval>> {
+        let documents = self
+            .documents(tenant, job, (BUILD_CODE_PREFIX, BUILD_CODE_NOTE))
+            .await?;
+        Some(
+            documents
+                .into_iter()
+                .filter_map(|(statement, document)| {
+                    ProjectBuildCodeApproval::from_json(&document).filter(|approval| {
+                        approval.scope == (DecisionScope { tenant, job })
+                            && approval.statement() == statement
+                    })
+                })
+                .collect(),
+        )
     }
 }
 
@@ -125,5 +170,13 @@ impl RecordedApprovals for LedgerApprovals {
     /// verify. None means the gate asks the person again, which is the safe side.
     async fn for_job(&self, tenant: TenantId, job: JobId) -> Vec<DependencyApproval> {
         self.read(tenant, job).await.unwrap_or_default()
+    }
+
+    async fn build_code_for_job(
+        &self,
+        tenant: TenantId,
+        job: JobId,
+    ) -> Vec<ProjectBuildCodeApproval> {
+        self.read_build_code(tenant, job).await.unwrap_or_default()
     }
 }

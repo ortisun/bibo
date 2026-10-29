@@ -43,7 +43,7 @@ use factory_domain::contracts::evidence_ledger_entry::{
     ArtifactEvidence, Attestor, ClaimKind, Evidence, ExpertJudgmentEvidence,
 };
 use factory_domain::ids::PrincipalId;
-use factory_domain::policy::decision::Designation;
+use factory_domain::policy::decision::{AuthorizedApproval, Designation};
 use factory_domain::values::{HumanText, MediaType};
 use factory_domain::vocabulary::{ConfidenceLevel, HumanRole, StageKind};
 use factory_ports::store::{ArtifactDirection, AuditActor, PrincipalKind, StageRun, Tx, Versioned};
@@ -73,6 +73,50 @@ fn role_of(designation: Designation) -> Option<HumanRole> {
 }
 
 impl Engine {
+    /// Checks the person behind a proof of authority, for the decisions that are bound to what a
+    /// blocked stage run waits for: the acting principal is a person of the tenant whose numeric
+    /// GitHub id is the one on the proof, is not the person who asked for the job (separation of
+    /// duties, RR-24: the requester is known here and nowhere else), and holds *now* the role of
+    /// the designation the proof names, which must be one of `wanted`. Returns that role.
+    pub(super) async fn check_person(
+        &self,
+        tx: &mut dyn Tx,
+        actor: &Actor,
+        roles: &[HumanRole],
+        requester: PrincipalId,
+        proof: &AuthorizedApproval,
+        (wanted, requester_refusal): (&[Designation], &'static str),
+    ) -> Result<HumanRole, EngineError> {
+        let principal = tx.get_principal(actor.principal).await?;
+        let PrincipalKind::Human { github_user_id } = principal.kind else {
+            return Err(EngineError::NotAuthorized(
+                "only a person records a decision on what a blocked stage run waits for",
+            ));
+        };
+        if principal.disabled_at.is_some() || github_user_id != proof.approver().get() {
+            return Err(EngineError::NotAuthorized(
+                "the proof of authority is for another person",
+            ));
+        }
+        if actor.principal == requester {
+            return Err(EngineError::NotAuthorized(requester_refusal));
+        }
+        let designation = proof.designation();
+        let role = wanted
+            .contains(&designation)
+            .then(|| role_of(designation))
+            .flatten()
+            .ok_or(EngineError::NotAuthorized(
+                "the proof names a designation that does not decide on this",
+            ))?;
+        if !roles.contains(&role) {
+            return Err(EngineError::NotAuthorized(
+                "the person no longer holds the role the proof names",
+            ));
+        }
+        Ok(role)
+    }
+
     /// Records a person's decision on a dependency or on its build code. See the module notes.
     ///
     /// # Errors
@@ -145,37 +189,21 @@ impl Engine {
         timeline: &Timeline,
         request: &RecordDependencyDecision,
     ) -> Result<DependencyDecisionRecorded, EngineError> {
-        // 1. The acting principal is the person the proof is for, and holds the role now.
-        let principal = tx.get_principal(actor.principal).await?;
-        let PrincipalKind::Human { github_user_id } = principal.kind else {
-            return Err(EngineError::NotAuthorized(
-                "only a person records a decision on a dependency",
-            ));
-        };
-        if principal.disabled_at.is_some() || github_user_id != request.proof.approver().get() {
-            return Err(EngineError::NotAuthorized(
-                "the proof of authority is for another person",
-            ));
-        }
-        // The person who asked for the job does not decide on its dependencies. A new dependency is
-        // a high-tier change, and the policy says the approver of a high-tier change differs from
-        // the requester (`approver_must_differ_from_requester`). The proof was made for a risk the
-        // policy engine was told; the engine does not rely on it for this, because the requester is
-        // known here and nowhere else (RR-24).
-        if actor.principal == requester {
-            return Err(EngineError::NotAuthorized(
-                "the person who asked for the job may not decide on its dependencies",
-            ));
-        }
-        let designation = request.proof.designation();
-        let role = role_of(designation).ok_or(EngineError::NotAuthorized(
-            "the proof names a designation that does not decide on a dependency",
-        ))?;
-        if !roles.contains(&role) {
-            return Err(EngineError::NotAuthorized(
-                "the person no longer holds the role the proof names",
-            ));
-        }
+        // 1. The acting principal is the person the proof is for, is not the requester, and holds
+        // the role now.
+        let role = self
+            .check_person(
+                tx,
+                actor,
+                roles,
+                requester,
+                &request.proof,
+                (
+                    &[Designation::Approver, Designation::SecurityApprover],
+                    "the person who asked for the job may not decide on its dependencies",
+                ),
+            )
+            .await?;
 
         // 2. The proof is for one of the two actions.
         let kind =
@@ -310,9 +338,24 @@ impl Engine {
         })
     }
 
-    /// The evidence document of the blocked stage run, read from the artifact the run stored.
-    /// A run that stored none, or none the engine can read, awaits nothing.
+    /// The dependency review in the evidence document of the blocked stage run, read from the
+    /// artifact the run stored. A run that stored none, or none the engine can read, awaits nothing.
     async fn stored_evidence(
+        &self,
+        tx: &mut dyn Tx,
+        outputs: &[crate::handlers::NamedArtifact],
+        cx: &Cx<'_>,
+    ) -> Result<serde_json::Value, EngineError> {
+        Ok(self
+            .stored_evidence_document(tx, outputs, cx)
+            .await?
+            .get("dependency_review")
+            .cloned()
+            .unwrap_or(serde_json::Value::Null))
+    }
+
+    /// The whole evidence document of the blocked stage run, as the run stored it, or `null`.
+    pub(super) async fn stored_evidence_document(
         &self,
         tx: &mut dyn Tx,
         outputs: &[crate::handlers::NamedArtifact],
@@ -330,10 +373,7 @@ impl Engine {
                 continue;
             };
             if document.get("kind").and_then(serde_json::Value::as_str) == Some(EVIDENCE) {
-                return Ok(document
-                    .get("dependency_review")
-                    .cloned()
-                    .unwrap_or(serde_json::Value::Null));
+                return Ok(document);
             }
         }
         Ok(serde_json::Value::Null)

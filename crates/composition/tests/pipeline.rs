@@ -263,6 +263,19 @@ fn the_engine_is_given_the_blocks_the_policy_says_no_override_may_pass() {
 }
 
 #[test]
+fn new_build_code_of_the_project_waits_for_a_decision_that_no_override_may_replace() {
+    // The writer of that decision exists (`approve-project-build-code`, bound to the path and
+    // the hash of the content), so an override that would pass the gate `build` with no decision
+    // is held back, as it is for an unresolved dependency review.
+    let policies = load_policy(&root(), &[]).expect("the real policies load");
+    let listed = factory_composition::pipeline::non_overridable_blocks(&policies);
+    assert!(
+        listed.contains(&("build".to_owned(), "policy_unresolvable".to_owned())),
+        "{listed:?}"
+    );
+}
+
+#[test]
 fn the_production_profile_needs_the_commit_of_the_gate_definitions() {
     let refused = assemble_pipeline(inputs(Profile::Production, StageSettings::default()))
         .err()

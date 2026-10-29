@@ -59,6 +59,16 @@ The engine lets the run go only when a decision for what it waited for was recor
 
 The timeline shows `decision.dependency_requested`, then `decision.applied`. The validation stage run leaves `BLOCKED` when every awaited package has a decision that matches its exact name, version and checksum. The engine reads what it stored when the stage run blocked. It does not take the package from your words.
 
+### The project's own build code
+
+When the change itself adds a build script, a procedural macro or build dependencies, the gate `build` is blocked with `policy_unresolvable` and no command builds the change. The evidence of the stage run lists each file with the SHA-256 of its content. Read the file in the head commit of the pull request, then decide with the path and the start of the hash:
+
+```bash no-run reason="needs a running API, a token and a blocked job"
+factory-cli approve-project-build-code --api "$FACTORY_API_URL" --token-file security.token JOB build.rs HASH_PREFIX I read the build script and it only prints cargo directives.
+```
+
+Only a security approver other than the requester may decide. The decision counts for exactly that content: if the script is edited, it has another hash and the gate asks again. Then let the stage run go again with `unblock`, as above.
+
 ## If something goes wrong
 
 | You see | Why | What to do |

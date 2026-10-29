@@ -489,3 +489,79 @@ fn unblock_names_the_stage_run_and_says_why_and_sends_nothing_else() {
     }
     assert_eq!(api.requests.lock().expect("lock").len(), 1);
 }
+
+#[test]
+fn approve_project_build_code_names_the_file_and_the_start_of_its_hash() {
+    let api = fake(vec![
+        (
+            202,
+            r#"{"decision_id":"d-5","status":"recorded","applied":false}"#,
+        ),
+        (
+            202,
+            r#"{"decision_id":"d-6","status":"recorded","applied":false}"#,
+        ),
+    ]);
+    let file = token_file(0o600);
+    let hash = "ab".repeat(8);
+    let ran = cli(&format!(
+        "approve-project-build-code --api http://{} --token-file {} --key k-5 {JOB} build.rs {hash} Read the script, it only prints cargo directives.",
+        api.addr,
+        file.display()
+    ));
+    assert_eq!(ran.exit, Exit::Ok, "{}", ran.err);
+    assert!(ran.out.contains("Decision d-5 is recorded"), "{}", ran.out);
+    // A prefix with sha256: and a stage run may be given.
+    let ran = cli(&format!(
+        "approve-project-build-code --api http://{} --token-file {} --key k-6 --stage-run {RUN} {JOB} crates/a/build.rs sha256:{hash} Read the script, it only prints cargo directives.",
+        api.addr,
+        file.display()
+    ));
+    assert_eq!(ran.exit, Exit::Ok, "{}", ran.err);
+    let sent = api.requests.lock().expect("lock").clone();
+    assert_eq!(sent.len(), 2);
+    assert!(sent[0].starts_with(&format!("POST /v1/jobs/{JOB}/decisions ")));
+    for part in [
+        r#""verb":"approve-project-build-code""#,
+        r#""path":"build.rs""#,
+        &format!(r#""digest":"{hash}""#),
+        r#""reason":"Read the script, it only prints cargo directives.""#,
+    ] {
+        assert!(sent[0].contains(part), "{part} in {}", sent[0]);
+    }
+    assert!(!sent[0].contains("stage_run_id"), "{}", sent[0]);
+    for part in [
+        r#""path":"crates/a/build.rs""#,
+        &format!(r#""digest":"{hash}""#),
+        &format!(r#""stage_run_id":"{RUN}""#),
+    ] {
+        assert!(sent[1].contains(part), "{part} in {}", sent[1]);
+    }
+    // What the grammar refuses stops here, before any request.
+    for line in [
+        format!("approve-project-build-code {JOB}"),
+        format!("approve-project-build-code {JOB} build.rs"),
+        format!("approve-project-build-code {JOB} build.rs {hash}"),
+        format!("approve-project-build-code {JOB} build.rs {hash} short"),
+        format!("approve-project-build-code {JOB} ../build.rs {hash} A reason that is long enough"),
+        format!("approve-project-build-code {JOB} /etc/passwd {hash} A reason that is long enough"),
+        format!("approve-project-build-code {JOB} build.rs abab A reason that is long enough"),
+        format!(
+            "approve-project-build-code {JOB} build.rs ABABABABABABABAB A reason that is long enough"
+        ),
+        format!(
+            "approve-project-build-code not-a-uuid build.rs {hash} A reason that is long enough"
+        ),
+        format!(
+            "approve-project-build-code --stage-run nope {JOB} build.rs {hash} A reason that is long enough"
+        ),
+    ] {
+        let ran = cli(&format!(
+            "{line} --api http://{} --token-file {}",
+            api.addr,
+            file.display()
+        ));
+        assert_eq!(ran.exit, Exit::Failed, "{line}: {}", ran.err);
+    }
+    assert_eq!(api.requests.lock().expect("lock").len(), 2);
+}
