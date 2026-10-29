@@ -35,6 +35,7 @@ infra/sandbox-images/audit.sh                 # group "audit": no secret, no git
 infra/sandbox-images/negative-tests.sh        # break nine rules on purpose and check that test.sh fails for that reason
 infra/sandbox-images/check-pins.sh            # compare pins.env with what the upstream projects publish now (needs the network)
 infra/sandbox-images/tools/selftest-check-pins.sh   # check-pins.sh fails when it should, with no network
+infra/sandbox-images/tools/selftest-execute-only.sh # the TOOLS-EXECUTE-ONLY judgement fails when it should, with no Docker
 ```
 
 Exit codes, the same as `scripts/ci.sh`: `0` passed, `1` failed, `2` misuse, `3` **BLOCKED**. A run prints `BLOCKED` and exits 3 when there is no Docker command, no reachable daemon, no `images.json` or a missing image. Nothing was tested then, and that is never a pass. A rule that does not apply to the selected images prints `SKIP`, which is not a pass either.
@@ -43,7 +44,7 @@ The rules inspect each image from outside (its file system is read with `docker 
 
 `negative-tests.sh` is the proof that the tests can fail. It builds copies of the real images with one defect each (a program named `git`, a setuid file, the user set to root, an API-key-shaped value in the environment or in a file, an agent tool in the verify image, a shell in the verify image, a readable or a world-writable agent tool, a `.netrc`) and requires `test.sh` to exit 1 with a `FAIL` line for the matching rule **that names what the defect added**, and the same rule on the real image not to show it. A rule that is already red on the real image (a false positive, an image not yet rebuilt) would otherwise make every defect look caught; such a case is reported as `UNPROVEN` and counts as missed. The secret-shaped strings are made at run time.
 
-`tools/selftest-check-pins.sh` does the same for `check-pins.sh`, which reads the network and so cannot be watched failing there: with a stand-in `docker` and keys made at run time it shows that a base image with no digest, a wrong digest or an empty pin fails, that a missing Docker daemon is BLOCKED, and that a signature made by another key in the downloaded key file is refused.
+`tools/selftest-check-pins.sh` does the same for `check-pins.sh`, which reads the network and so cannot be watched failing there: with a stand-in `docker` and keys made at run time it shows that a base image with no digest, a wrong digest or an empty pin fails, that a missing Docker daemon is BLOCKED, that a signature made by another key in the downloaded key file is refused, and that a signature made by the pinned key before it was revoked, or after it expired, is refused (gpg prints VALIDSIG for both; the keys are made at run time, and the test checks that the revoked one really is revoked). `tools/selftest-execute-only.sh` does the same for the execute-only rule: a readable `/usr/bin/env`, `timeout` or tool, a missing program, a program owned by the sandbox user, a link and a setuid program are each named. The local images predate the recipe of `lib/execute-only.txt`, so `negative-tests.sh` reports `readable-env` and `readable-tool` as `UNPROVEN` until the agent image is rebuilt; the self-test and `crates/runtime/tests/execute_only_chain.rs` prove the same rule meanwhile.
 
 ## Pins and reproducibility
 
@@ -111,10 +112,10 @@ images.json               digests, written by build.sh (digests.json is a link t
 build.sh smoke.sh audit.sh test.sh negative-tests.sh check-pins.sh
 agent/ verify/ egress-sidecar/   Dockerfile, build.sh, README.md
 lib/                      files the Dockerfiles mount: harden.sh, toolchain.sh, the name lists
-tools/                    common.sh, fsaudit.py (reads an image from outside), images_json.py, pincheck.py, selftest-check-pins.sh
+tools/                    common.sh, fsaudit.py (reads an image from outside), images_json.py, pincheck.py, selftest-check-pins.sh, selftest-execute-only.sh
 ```
 
-`lib/forbidden-binaries.txt` and `lib/shells.txt` are read by both the build (to delete) and the audit (to check), so the two cannot disagree.
+`lib/forbidden-binaries.txt` and `lib/shells.txt` are read by both the build (to delete) and the audit (to check), so the two cannot disagree. `lib/execute-only.txt` is read by `harden.sh` (to set mode 0711), by `test.sh` rule `TOOLS-EXECUTE-ONLY` (to check the built image) and by the runtime tests (to require every program of the adapters' command chain to be on it).
 
 ## What is not verified
 

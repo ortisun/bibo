@@ -53,6 +53,9 @@ pub fn ended(answers: u64, input_tokens: u64, output_tokens: u64) -> TurnSummary
 
 /// The attestation: the first call answers `first` (the baseline), every later call `later`.
 pub struct ScriptedAttestation {
+    /// A broker that serves a long run of requests: every call finds more answers and more tokens
+    /// than the one before, so that any two calls bracket a run that ended well.
+    growing: bool,
     first: Answer,
     /// The answers after the first, in order; the last one repeats.
     later: Mutex<Vec<Answer>>,
@@ -61,12 +64,13 @@ pub struct ScriptedAttestation {
 }
 
 impl ScriptedAttestation {
-    /// A broker that attests any run: nothing before, a great deal after, ending its turn.
+    /// A broker that attests any run, however many runs share it: every call finds a thousand more
+    /// answers and a million million more tokens than the call before, ending its turn.
     pub fn generous() -> Self {
-        Self::new(
-            Answer::Summary(nothing()),
-            Answer::Summary(ended(1_000_000, u64::MAX / 4, u64::MAX / 4)),
-        )
+        Self {
+            growing: true,
+            ..Self::new(Answer::Summary(nothing()), Answer::Summary(nothing()))
+        }
     }
 
     /// A baseline and an answer after the run.
@@ -78,6 +82,7 @@ impl ScriptedAttestation {
     pub fn sequence(first: Answer, later: Vec<Answer>) -> Self {
         assert!(!later.is_empty());
         Self {
+            growing: false,
             first,
             later: Mutex::new(later),
             calls: AtomicUsize::new(0),
@@ -110,6 +115,14 @@ impl TurnAttestation for ScriptedAttestation {
     async fn turn_summary(&self, token: &JobTokenId) -> Result<TurnSummary, BrokerError> {
         let call = self.calls.fetch_add(1, Ordering::SeqCst);
         self.tokens.lock().expect("lock").push(*token);
+        if self.growing {
+            let n = call as u64;
+            return Ok(ended(
+                n * 1_000,
+                n * 1_000_000_000_000,
+                n * 1_000_000_000_000,
+            ));
+        }
         let answer = if call == 0 {
             self.first
         } else {

@@ -299,10 +299,7 @@ mod tests {
         let row = format!("[{}0],", "0,".repeat(19));
         let rows = |n: usize| format!("[{}[]]", row.repeat(n));
         assert!(parse(rows(2_000).as_bytes()).is_ok());
-        assert!(
-            MAX_VALUES / 21 < MAX_WIDTH,
-            "the rows must be narrower than the width limit"
-        );
+        const { assert!(MAX_VALUES / 21 < MAX_WIDTH) };
         assert_eq!(
             parse(rows(MAX_VALUES / 21 + 100).as_bytes()),
             Err(Violation::TooManyValues)
