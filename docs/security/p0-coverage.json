@@ -735,6 +735,13 @@
   },
   {
    "script": "tests/security/mutations.py",
+   "name": "a-privileged-container-is-not-refused",
+   "date": "2026-10-29",
+   "result": "MISSED",
+   "failed": []
+  },
+  {
+   "script": "tests/security/mutations.py",
    "name": "a-renewal-ignores-the-epoch",
    "date": "2026-10-29",
    "result": "CAUGHT",
@@ -805,6 +812,15 @@
    "failed": [
     "negative_nt_inj_04_exec_shell_and_approval_grant_are_denied_to_an_agent_that_asks",
     "negative_nt_tool_03_unknown_never_grantable_and_self_granted_tools_are_refused"
+   ]
+  },
+  {
+   "script": "tests/security/mutations.py",
+   "name": "an-app-with-a-forbidden-permission-gets-a-token",
+   "date": "2026-10-29",
+   "result": "CAUGHT",
+   "failed": [
+    "negative_nt_authz_09_an_app_that_holds_a_forbidden_permission_gets_no_token"
    ]
   },
   {
@@ -1185,7 +1201,7 @@
   },
   {
    "id": "NT-AUTHZ-09",
-   "status": "control_off_missing",
+   "status": "proven",
    "tests": [
     {
      "name": "negative_nt_authz_09_an_app_that_holds_a_forbidden_permission_gets_no_token",
@@ -1196,7 +1212,16 @@
      "file": "crates/github/tests/negative_tokens.rs"
     }
    ],
-   "control_off": []
+   "control_off": [
+    {
+     "kind": "mutation",
+     "script": "tests/security/mutations.py",
+     "name": "an-app-with-a-forbidden-permission-gets-a-token",
+     "catches": [
+      "negative_nt_authz_09_an_app_that_holds_a_forbidden_permission_gets_no_token"
+     ]
+    }
+   ]
   },
   {
    "id": "NT-BUD-01",

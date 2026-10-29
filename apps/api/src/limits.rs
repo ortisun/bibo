@@ -477,14 +477,15 @@ mod tests {
         // When it ends, one entry per kind that left events out, with the count.
         assert_eq!(
             budget.roll(start + WINDOW),
+            // Sorted by the action, and "webhook.unbound" sorts before "webhook_accepted_or_rejected".
             vec![
-                Left {
-                    action: "webhook_accepted_or_rejected.denied",
-                    count: 68
-                },
                 Left {
                     action: "webhook.unbound",
                     count: 1
+                },
+                Left {
+                    action: "webhook_accepted_or_rejected.denied",
+                    count: 68
                 },
             ]
         );

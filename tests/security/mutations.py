@@ -54,6 +54,8 @@ GITHUB_WEBHOOK = "crates/github/src/webhook.rs"
 CONFIG = "crates/composition/src/config.rs"
 SIGNING = "crates/composition/src/decision_signing.rs"
 TIGHTEN = "crates/domain/src/policy/tighten.rs"
+PORTS_SANDBOX = "crates/ports/src/sandbox.rs"
+GITHUB_PERMISSIONS = "crates/github/src/permissions.rs"
 
 # name -> (what is broken, [(file, old, new), ...])
 MUTATIONS = {
@@ -177,6 +179,14 @@ MUTATIONS = {
         "a previous decision signing key equal to the current one is accepted",
         [(SIGNING, "        let previous = previous.map(Key::from_bytes).transpose()?;\n        if previous.as_ref().is_some_and(|old| old.0 == current.0) {", "        let previous = previous.map(Key::from_bytes).transpose()?;\n        if false && previous.as_ref().is_some_and(|old| old.0 == current.0) {")],
     ),
+    "a-privileged-container-is-not-refused": (
+        "the check of a sandbox spec no longer refuses privileged mode",
+        [(PORTS_SANDBOX, "        if h.privileged {\n            rules.push(SandboxRule::Privileged);", "        if false && h.privileged {\n            rules.push(SandboxRule::Privileged);")],
+    ),
+    "an-app-with-a-forbidden-permission-gets-a-token": (
+        "the audit of the App no longer refuses an App that holds a permission the policy forbids",
+        [(GITHUB_PERMISSIONS, "    if !forbidden_held.is_empty() {\n        return AppAudit::Refuse { forbidden_held };", "    if false && !forbidden_held.is_empty() {\n        return AppAudit::Refuse { forbidden_held };")],
+    ),
 }
 
 # name -> the arguments of cargo nextest for the tests that must fail. The tests that are named
@@ -213,6 +223,8 @@ TESTS = {
     "a-delivery-that-fails-verification-is-acknowledged": ["-p", "factory-api", "--test", "webhook", "negative_nt_wh_01"],
     "a-secret-file-may-be-read-by-group-and-others": ["-p", "factory-composition", "--test", "security_rereview", "--test", "external_world", "held_the_key_file", "a_secret_key_file_that"],
     "a-rotation-to-the-same-key-is-accepted": ["-p", "factory-composition", "--test", "security_rereview", "held_a_rotation_to_the_same_key"],
+    "a-privileged-container-is-not-refused": ["-p", "factory-sandbox", "negative_nt_sbx_01"],
+    "an-app-with-a-forbidden-permission-gets-a-token": ["-p", "factory-github", "negative_nt_authz_09"],
 }
 
 # Tests that are red with every control on. They fail in every run, so a failure of theirs says

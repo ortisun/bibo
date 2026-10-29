@@ -49,8 +49,8 @@ Each run applies the change, runs `cargo nextest`, writes down which tests faile
 <!-- GENERATED:begin matrix -->
 | Status | Count |
 |---|---|
-| implemented, control-off proven | 37 |
-| implemented, control-off missing | 51 |
+| implemented, control-off proven | 38 |
+| implemented, control-off missing | 50 |
 | BLOCKED | 0 |
 | missing | 0 |
 | P0 tests of the catalog | 88 |
@@ -67,7 +67,7 @@ Each run applies the change, runs `cargo nextest`, writes down which tests faile
 | NT-AUTHZ-06 | Token narrowing across repositories | s1-github-adapter, github | `negative_nt_authz_06_a_token_is_minted_for_one_repository_and_nothing_else_is_reachable`<br>`negative_nt_authz_06_a_token_that_is_wider_than_the_request_is_revoked_and_refused` | mutation `use an over-broad token without looking`, caught 2026-10-29 | implemented, control-off proven |
 | NT-AUTHZ-07 | Stage-scoped permissions | s1-github-adapter, github | `negative_nt_authz_07_every_stage_gets_exactly_its_permissions_and_only_delivery_writes_…`<br>`negative_nt_authz_07_a_read_only_token_cannot_comment_or_open_a_pull_request` | mutation `let a stage that may not write get the write credential`, caught 2026-10-29 | implemented, control-off proven |
 | NT-AUTHZ-08 | Unknown tenant binding | s1-apps-composition, api | `negative_nt_authz_08` | none | implemented, control-off missing |
-| NT-AUTHZ-09 | App permission audit | s1-github-adapter, github | `negative_nt_authz_09_an_app_that_holds_a_forbidden_permission_gets_no_token`<br>`negative_nt_authz_09_an_app_that_lacks_a_required_permission_is_capped` | none | implemented, control-off missing |
+| NT-AUTHZ-09 | App permission audit | s1-github-adapter, github | `negative_nt_authz_09_an_app_that_holds_a_forbidden_permission_gets_no_token`<br>`negative_nt_authz_09_an_app_that_lacks_a_required_permission_is_capped` | mutation `an-app-with-a-forbidden-permission-gets-a-token`, caught 2026-10-29 | implemented, control-off proven |
 | NT-BUD-01 | Per-task cost ceiling | s1-egress-and-broker, egress | `negative_nt_bud_01_per_task_cost_ceiling_stops_a_looping_client`<br>`negative_nt_bud_01_a_run_over_its_limit_is_not_retried` | mutation `ignore-the-cost-ceiling`, caught 2026-10-29 | implemented, control-off proven |
 | NT-BUD-03 | Turns, tool calls, stagnation | s1-engine-core, workflow (partial) | `negative_nt_bud_03_a_repeated_failure_asks_a_person_after_one_round` | none | implemented, control-off missing |
 | NT-BUD-07 | CLI budget ignored, revocation latency | s1-egress-and-broker, egress | `negative_nt_bud_07_a_tool_that_ignores_its_budget_is_still_stopped_and_counted`<br>`negative_nt_bud_07_a_turn_cap_stops_a_tool_that_has_no_turn_limit_of_its_own`<br>`negative_nt_bud_07_failed_attempts_are_counted_per_attempt` | mutation `do-not-count-failed-attempts`, caught 2026-10-29<br>mutation `ignore-the-request-cap`, caught 2026-10-29 | implemented, control-off proven |
@@ -163,7 +163,6 @@ Each of these tests exists and runs, and nothing in the repository shows that it
 - **NT-AUD-01**
 - **NT-AUTHZ-02**
 - **NT-AUTHZ-08**
-- **NT-AUTHZ-09**
 - **NT-BUD-03** Covered: the engine detects stagnation and escalates to a person. Not covered (gap, needs a decision): a turn cap on the agent tool, because neither accepted CLI has a turn cap flag and only the broker request count could supply one.
 - **NT-GATE-02**
 - **NT-GATE-06**
@@ -327,6 +326,7 @@ The policy requires fourteen types of audit event (`audit.must_record`). The scr
 | `tests/security/mutations.py` | `a-forbidden-command-class-denies-nothing` | 2026-10-29 | CAUGHT | `negative_nt_inj_01_a_model_that_obeys_the_text_of_a_request_changes_n…`, `negative_nt_inj_03_a_model_that_obeys_a_document_of_the_repository_ch…`, `negative_nt_tool_01_a_shell_string_is_a_literal_argument_and_a_shell_…`, `negative_nt_tool_02_forbidden_command_class_matrix` |
 | `tests/security/mutations.py` | `a-moved-head-is-not-noticed` | 2026-10-29 | CAUGHT | `negative_nt_mrg_03_a_refusal_for_a_moved_head_also_ends_the_approvals…`, `negative_nt_mrg_03_the_head_moving_after_approval_invalidates_the_app…` |
 | `tests/security/mutations.py` | `a-parent-component-is-not-refused` | 2026-10-29 | MISSED | none |
+| `tests/security/mutations.py` | `a-privileged-container-is-not-refused` | 2026-10-29 | MISSED | none |
 | `tests/security/mutations.py` | `a-renewal-ignores-the-epoch` | 2026-10-29 | CAUGHT | `negative_nt_lse_02_a_renewal_with_the_wrong_owner_epoch_tenant_or_a_l…` |
 | `tests/security/mutations.py` | `a-renewal-ignores-the-lapse` | 2026-10-29 | CAUGHT | `negative_nt_lse_02_a_renewal_with_the_wrong_owner_epoch_tenant_or_a_l…` |
 | `tests/security/mutations.py` | `a-renewal-ignores-the-owner` | 2026-10-29 | CAUGHT | `negative_nt_lse_02_a_renewal_with_the_wrong_owner_epoch_tenant_or_a_l…` |
@@ -335,6 +335,7 @@ The policy requires fourteen types of audit event (`audit.must_record`). The scr
 | `tests/security/mutations.py` | `a-secret-file-may-be-read-by-group-and-others` | 2026-10-29 | CAUGHT | `a_secret_key_file_that_group_can_read_blocks_the_github_ports_and_say…`, `held_the_key_file_is_checked_for_mode_link_size_and_kind` |
 | `tests/security/mutations.py` | `a-widening-of-a-switch-counts-as-a-tightening` | 2026-10-29 | CAUGHT | `negative_nt_pol_02_each_widening_is_refused_and_names_its_key`, `negative_nt_pol_02_tightenings_are_accepted`, `negative_nt_pol_02_widenings_of_the_approval_policy_are_refused_too` |
 | `tests/security/mutations.py` | `an-agent-may-grant-itself-a-tool` | 2026-10-29 | CAUGHT | `negative_nt_inj_04_exec_shell_and_approval_grant_are_denied_to_an_age…`, `negative_nt_tool_03_unknown_never_grantable_and_self_granted_tools_ar…` |
+| `tests/security/mutations.py` | `an-app-with-a-forbidden-permission-gets-a-token` | 2026-10-29 | CAUGHT | `negative_nt_authz_09_an_app_that_holds_a_forbidden_permission_gets_no…` |
 | `tests/security/mutations.py` | `an-expired-allowlist-entry-still-grants` | 2026-10-29 | CAUGHT | `negative_nt_authz_01_only_the_numeric_id_on_the_allowlist_grants_a_de…` |
 | `tests/security/mutations.py` | `data-lines-are-not-quoted` | 2026-10-29 | CAUGHT | `negative_nt_authz_05_an_edit_after_the_snapshot_waits_for_the_request…`, `negative_nt_inj_01_every_payload_in_every_input_leaves_the_instructio…`, `negative_nt_inj_02_envelope_hardening`, `negative_nt_inj_04_the_output_of_a_command_the_factory_ran_sits_in_a_…`, `negative_nt_inj_06_a_reviewer_pass_cannot_override_a_failed_gate` |
 | `tests/security/mutations.py` | `markdown-bound-for-github-is-sent-as-written` | 2026-10-29 | CAUGHT | `negative_nt_sec_04_markdown_cannot_carry_data_out_through_any_path_to…` |
