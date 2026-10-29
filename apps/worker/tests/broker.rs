@@ -40,6 +40,7 @@ fn config(key: SecretFile) -> BrokerConfig {
             provider: "anthropic".to_owned(),
             base_url: "http://127.0.0.1:9".to_owned(),
             key_file: key,
+            models: Vec::new(),
         }],
         prices: Vec::new(),
     }

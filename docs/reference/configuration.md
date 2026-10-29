@@ -53,6 +53,9 @@ The worker reads `FACTORY_CONFIG`. In the column "Required", `yes` means the fil
 | `broker` | table | yes | no default | The model broker that the worker hosts. |
 | `github` | table | production | none | The GitHub App. |
 | `decisions` | table | production | none | The key that signs decision requests. |
+| `registry` | table | no | none | The package registry the dependency gate asks about a new package. Without it the gate treats every package as unknown. |
+| `advisory_database` | table | no | none | Where the date of the advisory database is kept. Without it the advisories gate is blocked. |
+| `runtimes` | table | no | see keys | The agent tools in the agent image. |
 | `stages` | table | no | see keys | Agents, budgets and limits of the stages. |
 | `worker` | table | no | see keys | Pacing of the worker loop. |
 | `telemetry` | table | no | see keys | Logs and traces. |
@@ -106,7 +109,8 @@ The two root paths that the Docker daemon mounts, `sandbox.token_root` and `sand
 | `broker.upstreams[].provider` | text | yes | no default | `anthropic` or `openai`. |
 | `broker.upstreams[].base_url` | text | yes | no default | The base URL, `scheme://host[:port]`. |
 | `broker.upstreams[].key_file` | secret file | yes | no default | The file that holds the provider key. |
-| `broker.prices` | list of tables | no | empty | The price list. A model with no entry is refused by the broker. |
+| `broker.upstreams[].models` | list of text | no | empty | The models of the routing policy that this provider is enabled for. Empty means every model the policy lists for the provider. A name the policy does not list for it stops the start. |
+| `broker.prices` | list of tables | no | empty | A price that may only raise a price of `policies/model_routing.yaml`. The policy is the price list; a model it does not list stops the start. |
 | `broker.prices[].provider` | text | yes | no default | `anthropic` or `openai`. |
 | `broker.prices[].model` | text | yes | no default | The model name as the provider spells it. |
 | `broker.prices[].input` | whole number | yes | no default | Millionths of a dollar for one million input tokens. |
@@ -121,6 +125,47 @@ The two root paths that the Docker daemon mounts, `sandbox.token_root` and `sand
 | `github.app_id` | whole number | yes | no default | The GitHub App identifier. |
 | `github.key_file` | secret file | yes | no default | The file that holds the App private key. |
 | `github.webhook_secret_file` | secret file | no | none | The webhook secret. The API holds this secret, so the worker leaves it out. |
+| `github.api_base_url` | text | no | https://api.github.com | Where the GitHub API is. The production profile accepts `https://api.github.com` only. The other profiles also accept plain http on the loopback interface. |
+| `github.installations` | list of tables | no | empty | Which installation of the App covers which repository of which tenant. A repository with no entry is unreachable, and the worker is blocked while the list is empty. |
+| `github.installations[].tenant` | text | yes | no default | The tenant, as a UUID. |
+| `github.installations[].repository` | text | yes | no default | The repository, as `owner/name`. |
+| `github.installations[].installation_id` | whole number | yes | no default | The installation of the App on that repository. Above zero. |
+| `github.bypass_attestations` | list of tables | no | empty | An administrator's statement that the App is on no bypass list of a repository. The App cannot read the list. Without a statement the repository runs at level L0. |
+| `github.bypass_attestations[].tenant` | text | yes | no default | The tenant, as a UUID. |
+| `github.bypass_attestations[].repository` | text | yes | no default | The repository, as `owner/name`. |
+| `github.bypass_attestations[].principal` | text | yes | no default | The administrator who made the statement, as the UUID of their principal. |
+| `github.bypass_attestations[].recorded_at` | text | yes | no default | When the statement was recorded, as a UTC time such as `2026-10-28T09:00:00Z`. |
+
+### registry
+
+The crates.io API, asked about a package that a change adds as a new direct dependency. Anything the worker cannot read from the answer is unknown, and the gate reads unknown as the worst case.
+
+| Key | Type | Required | Default | Notes |
+|---|---|---|---|---|
+| `registry.base_url` | text | yes | no default | The base URL of the registry API, such as `https://crates.io`. The production profile needs https and a host that the egress policy lists for the cargo ecosystem. The stock policy lists `index.crates.io` and `static.crates.io` and not `crates.io`, so a person adds the host before production can use the API. |
+| `registry.user_agent` | text | production | none | The `User-Agent` the client sends. The registry asks clients to say who to reach. |
+| `registry.timeout_seconds` | whole number | no | 10 | The wall time of one request. From 1 to 120. |
+| `registry.max_response_bytes` | whole number | no | 1048576 | The largest answer read. A larger one reads as unknown. From 1 KiB to 16 MiB. |
+
+### advisory_database
+
+| Key | Type | Required | Default | Notes |
+|---|---|---|---|---|
+| `advisory_database.date_file` | path | yes | no default | A file with one line, the UTC time the database was last updated, such as `2026-10-28T09:00:00Z` or `2026-10-28`. The image build writes it, or a person keeps it in the protected checkout. A file that is missing, not a date or in the future reads as unknown. |
+
+### runtimes
+
+Which runtimes exist follows from `broker.upstreams`: the provider `anthropic` gives `claude-code-cli` and `openai` gives `codex-cli`. The keys below say where the tool is and which versions the adapter accepts. At start-up the worker probes each runtime in a sandbox. If the Docker daemon does not answer, the worker is blocked and says why.
+
+| Key | Type | Required | Default | Notes |
+|---|---|---|---|---|
+| `runtimes.claude_code` | table | no | none | The Claude Code tool. |
+| `runtimes.claude_code.binary` | text | no | none | The path of the tool inside the image. Without it the adapter's own default is used. |
+| `runtimes.claude_code.versions` | list of text | no | empty | The versions the adapter accepts. Empty means the one it was tested with. |
+| `runtimes.codex` | table | no | none | The Codex tool. |
+| `runtimes.codex.binary` | text | no | none | The path of the tool inside the image. |
+| `runtimes.codex.versions` | list of text | no | empty | The versions the adapter accepts. |
+| `runtimes.declare_capabilities` | true or false | no | false | Takes the capabilities of the runtimes from a declaration and not from a probe. The local and test profiles only: the production profile refuses it, because a declared list is a claim nobody checked. |
 
 ### decisions
 

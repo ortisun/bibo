@@ -280,6 +280,10 @@ pub struct UpstreamConfig {
     pub base_url: String,
     /// The file holding the provider key.
     pub key_file: SecretFile,
+    /// The models of the routing policy that this provider is enabled for. Empty means every model
+    /// the policy lists for the provider. A name the policy does not list for it is an error.
+    #[serde(default)]
+    pub models: Vec<String>,
 }
 
 /// What a model costs, in millionths of a dollar per million tokens. The repository has no price
@@ -315,6 +319,35 @@ pub struct BrokerConfig {
     pub prices: Vec<PriceConfig>,
 }
 
+/// The GitHub App installation that covers one repository of one tenant. The adapter does not
+/// discover installations: a repository with no entry here is unreachable.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct InstallationConfig {
+    /// The tenant, as a UUID.
+    pub tenant: String,
+    /// The repository, as `owner/name`.
+    pub repository: String,
+    /// The installation of the App on that repository.
+    pub installation_id: u64,
+}
+
+/// An administrator's statement that the App is on no bypass list of a repository. The App cannot
+/// read the bypass list itself (it may not hold the Administration permission), so a person says it
+/// and the deployment records it here. Without a statement the repository runs at level L0.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AttestationConfig {
+    /// The tenant, as a UUID.
+    pub tenant: String,
+    /// The repository, as `owner/name`.
+    pub repository: String,
+    /// The administrator who made the statement, as the UUID of their principal.
+    pub principal: String,
+    /// When the statement was recorded, as a UTC time such as `2026-10-28T09:00:00Z`.
+    pub recorded_at: String,
+}
+
 /// The GitHub App.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -326,6 +359,85 @@ pub struct GithubConfig {
     /// The file holding the webhook secret (API only).
     #[serde(default)]
     pub webhook_secret_file: Option<SecretFile>,
+    /// Where the GitHub API is. The production profile needs `https://api.github.com`; the other
+    /// profiles also accept plain http on the loopback interface.
+    #[serde(default = "default_github_api")]
+    pub api_base_url: String,
+    /// Which installation covers which repository of which tenant.
+    #[serde(default)]
+    pub installations: Vec<InstallationConfig>,
+    /// The administrators' statements about the bypass list.
+    #[serde(default)]
+    pub bypass_attestations: Vec<AttestationConfig>,
+}
+
+fn default_github_api() -> String {
+    "https://api.github.com".to_owned()
+}
+
+/// The package registry the dependency gate asks about a new package (the crates.io API).
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RegistryConfig {
+    /// The base URL of the registry API, such as `https://crates.io`. The production profile needs
+    /// https and a host the egress policy lists for the cargo ecosystem.
+    pub base_url: String,
+    /// The `User-Agent` the client sends. The registry asks clients to identify themselves with a
+    /// way to reach the operator. The production profile needs it.
+    #[serde(default)]
+    pub user_agent: Option<String>,
+    /// The wall time of one request, in seconds.
+    #[serde(default = "default_registry_timeout")]
+    pub timeout_seconds: u64,
+    /// The largest answer read, in bytes. A larger one reads as unknown.
+    #[serde(default = "default_registry_max_bytes")]
+    pub max_response_bytes: u64,
+}
+
+const fn default_registry_timeout() -> u64 {
+    10
+}
+const fn default_registry_max_bytes() -> u64 {
+    1_048_576
+}
+
+/// Where the date of the advisory database the audit reads is kept.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AdvisoryConfig {
+    /// A file with one line, the UTC time the database was last updated, such as
+    /// `2026-10-28T09:00:00Z` or `2026-10-28`. The image build writes it. A file that is missing,
+    /// unreadable, not a date or in the future reads as unknown, and the advisories gate is BLOCKED.
+    pub date_file: PathBuf,
+}
+
+/// Where one agent tool is in the agent image and which versions the adapter accepts.
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RuntimeToolConfig {
+    /// The path of the tool inside the image. When absent the adapter's own default is used.
+    #[serde(default)]
+    pub binary: Option<String>,
+    /// The versions the adapter accepts. Empty means the one the adapter was tested with.
+    #[serde(default)]
+    pub versions: Vec<String>,
+}
+
+/// The agent runtimes. Which ones exist follows from the providers in `broker.upstreams`
+/// (`anthropic` gives `claude-code-cli`, `openai` gives `codex-cli`).
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RuntimesConfig {
+    /// The Claude Code tool.
+    #[serde(default)]
+    pub claude_code: Option<RuntimeToolConfig>,
+    /// The Codex tool.
+    #[serde(default)]
+    pub codex: Option<RuntimeToolConfig>,
+    /// Takes the capabilities of the runtimes from a declaration and not from a probe in a
+    /// sandbox. For the local and test profiles only: a declared list is a claim nobody checked.
+    #[serde(default)]
+    pub declare_capabilities: bool,
 }
 
 /// The key that signs the requests for decisions (AUT-12, R-1 of the API review).
@@ -743,6 +855,15 @@ pub struct FactoryConfig {
     /// The key that signs the requests for decisions. The production profile needs it.
     #[serde(default)]
     pub decisions: Option<DecisionSigning>,
+    /// The package registry the dependency gate asks about a new package.
+    #[serde(default)]
+    pub registry: Option<RegistryConfig>,
+    /// Where the date of the advisory database is kept.
+    #[serde(default)]
+    pub advisory_database: Option<AdvisoryConfig>,
+    /// The agent tools in the agent image.
+    #[serde(default)]
+    pub runtimes: RuntimesConfig,
     /// The settings of the stages: agents, budgets, limits.
     #[serde(default)]
     pub stages: StageSettings,
@@ -898,6 +1019,186 @@ impl FactoryConfig {
                 problem: "the poll and sweep intervals must be above zero",
             });
         }
+        self.validate_external_world()
+    }
+
+    /// The rules for the settings that point at the outside world: the schemes of the URLs, the
+    /// shape of the identifiers and the settings that only the other profiles may use.
+    fn validate_external_world(&self) -> Result<(), ConfigError> {
+        let production = self.profile == Profile::Production;
+        for upstream in &self.broker.upstreams {
+            if !matches!(upstream.provider.as_str(), "anthropic" | "openai") {
+                return Err(ConfigError::OutOfRange {
+                    field: "broker.upstreams[].provider",
+                    problem: "must be anthropic or openai",
+                });
+            }
+            endpoint_problem(self.profile, &upstream.base_url)
+                .map_or(Ok(()), |problem| {
+                    Err(ConfigError::OutOfRange {
+                        field: "broker.upstreams[].base_url",
+                        problem,
+                    })
+                })?;
+        }
+        if let Some(github) = &self.github {
+            endpoint_problem(self.profile, &github.api_base_url).map_or(Ok(()), |problem| {
+                Err(ConfigError::OutOfRange {
+                    field: "github.api_base_url",
+                    problem,
+                })
+            })?;
+            for installation in &github.installations {
+                installation.tenant.parse::<uuid::Uuid>().map_err(|_| {
+                    ConfigError::OutOfRange {
+                        field: "github.installations[].tenant",
+                        problem: "must be a UUID",
+                    }
+                })?;
+                if !is_repository_name(&installation.repository) {
+                    return Err(ConfigError::OutOfRange {
+                        field: "github.installations[].repository",
+                        problem: "must be owner/name",
+                    });
+                }
+                if installation.installation_id == 0 {
+                    return Err(ConfigError::OutOfRange {
+                        field: "github.installations[].installation_id",
+                        problem: "must be above zero",
+                    });
+                }
+            }
+            for statement in &github.bypass_attestations {
+                if statement.tenant.parse::<uuid::Uuid>().is_err() {
+                    return Err(ConfigError::OutOfRange {
+                        field: "github.bypass_attestations[].tenant",
+                        problem: "must be a UUID",
+                    });
+                }
+                if !is_repository_name(&statement.repository) {
+                    return Err(ConfigError::OutOfRange {
+                        field: "github.bypass_attestations[].repository",
+                        problem: "must be owner/name",
+                    });
+                }
+                if statement.principal.parse::<uuid::Uuid>().is_err() {
+                    return Err(ConfigError::OutOfRange {
+                        field: "github.bypass_attestations[].principal",
+                        problem: "must be a UUID",
+                    });
+                }
+                if factory_domain::values::Timestamp::parse(&statement.recorded_at).is_err() {
+                    return Err(ConfigError::OutOfRange {
+                        field: "github.bypass_attestations[].recorded_at",
+                        problem: "must be a UTC time such as 2026-10-28T09:00:00Z",
+                    });
+                }
+            }
+        }
+        if let Some(registry) = &self.registry {
+            endpoint_problem(self.profile, &registry.base_url).map_or(Ok(()), |problem| {
+                Err(ConfigError::OutOfRange {
+                    field: "registry.base_url",
+                    problem,
+                })
+            })?;
+            if registry.timeout_seconds == 0 || registry.timeout_seconds > 120 {
+                return Err(ConfigError::OutOfRange {
+                    field: "registry.timeout_seconds",
+                    problem: "must be between 1 and 120",
+                });
+            }
+            if registry.max_response_bytes < 1024 || registry.max_response_bytes > 16 * 1024 * 1024
+            {
+                return Err(ConfigError::OutOfRange {
+                    field: "registry.max_response_bytes",
+                    problem: "must be between 1 KiB and 16 MiB",
+                });
+            }
+            if let Some(agent) = &registry.user_agent
+                && (agent.trim().is_empty()
+                    || agent.len() > 200
+                    || agent.chars().any(char::is_control))
+            {
+                return Err(ConfigError::OutOfRange {
+                    field: "registry.user_agent",
+                    problem: "must be a short line of printable text",
+                });
+            }
+            if production && registry.user_agent.is_none() {
+                return Err(ConfigError::OutOfRange {
+                    field: "registry.user_agent",
+                    problem: "the production profile needs a User-Agent that says who to reach",
+                });
+            }
+        }
+        if let Some(advisory) = &self.advisory_database
+            && !advisory.date_file.is_absolute()
+        {
+            return Err(ConfigError::OutOfRange {
+                field: "advisory_database.date_file",
+                problem: "must be an absolute path",
+            });
+        }
+        if production && self.runtimes.declare_capabilities {
+            return Err(ConfigError::OutOfRange {
+                field: "runtimes.declare_capabilities",
+                problem: "the production profile probes the runtimes; a declaration is a claim nobody checked",
+            });
+        }
+        Ok(())
+    }
+
+    /// Checks the hosts the production profile may reach against the egress policy: the model
+    /// providers against `egress.broker_upstreams`, the registry against the cargo hosts of the
+    /// `fetch_deps` profile, and GitHub against `api.github.com`. The other profiles may point
+    /// anywhere that [`FactoryConfig::validate`] accepts, which includes the loopback interface.
+    ///
+    /// # Errors
+    /// [`ConfigError::OutOfRange`] naming the key whose host the policy does not list.
+    pub fn check_endpoints(
+        &self,
+        policy: &factory_domain::policy::SecurityPolicy,
+    ) -> Result<(), ConfigError> {
+        if self.profile != Profile::Production {
+            return Ok(());
+        }
+        let not_listed = |field| ConfigError::OutOfRange {
+            field,
+            problem: "the host is not one the policy lists for the control plane",
+        };
+        for upstream in &self.broker.upstreams {
+            let host = host_of(&upstream.base_url);
+            let listed = policy
+                .egress
+                .broker_upstreams
+                .iter()
+                .any(|entry| Some(entry.host.as_str()) == host);
+            if !listed {
+                return Err(not_listed("broker.upstreams[].base_url"));
+            }
+        }
+        if let Some(github) = &self.github
+            && host_of(&github.api_base_url) != Some("api.github.com")
+        {
+            return Err(not_listed("github.api_base_url"));
+        }
+        if let Some(registry) = &self.registry {
+            let host = host_of(&registry.base_url);
+            let listed = policy
+                .egress
+                .profiles
+                .fetch_deps
+                .allow
+                .iter()
+                .any(|entry| {
+                    entry.ecosystem.as_deref() == Some("cargo")
+                        && Some(entry.host.as_str()) == host
+                });
+            if !listed {
+                return Err(not_listed("registry.base_url"));
+            }
+        }
         Ok(())
     }
 
@@ -971,6 +1272,64 @@ fn looks_like_url_with_password(text: &str) -> bool {
     authority
         .rsplit_once('@')
         .is_some_and(|(userinfo, _)| userinfo.contains(':'))
+}
+
+/// The host of a `scheme://host[:port][/path]` URL, without brackets for an IPv6 address.
+#[must_use]
+pub fn host_of(url: &str) -> Option<&str> {
+    let (_, rest) = url.split_once("://")?;
+    let authority = rest.split(['/', '?', '#']).next()?;
+    if authority.contains('@') {
+        return None;
+    }
+    if let Some(inner) = authority.strip_prefix('[') {
+        return inner.split_once(']').map(|(host, _)| host);
+    }
+    authority.split(':').next().filter(|host| !host.is_empty())
+}
+
+/// True for a host that is on this machine.
+fn is_loopback_host(host: &str) -> bool {
+    matches!(host, "127.0.0.1" | "localhost" | "::1")
+}
+
+/// Why `url` may not be used as the address of an outside service in `profile`, or `None`.
+///
+/// `https` is accepted in every profile. Plain `http` is accepted only for the loopback interface
+/// and never in the production profile. A URL with user information, a query or a fragment, with
+/// white space or without a host is refused.
+#[must_use]
+pub fn endpoint_problem(profile: Profile, url: &str) -> Option<&'static str> {
+    if url.chars().any(|c| c.is_control() || c.is_whitespace()) || url.contains(['?', '#']) {
+        return Some("must be a plain URL with no white space, query or fragment");
+    }
+    let Some(host) = host_of(url) else {
+        return Some("must be scheme://host with no user information");
+    };
+    if url.starts_with("https://") {
+        return None;
+    }
+    if url.starts_with("http://") {
+        if profile == Profile::Production {
+            return Some("the production profile reaches the outside world over https only");
+        }
+        return (!is_loopback_host(host))
+            .then_some("plain http is accepted only for the loopback interface");
+    }
+    Some("must start with https://")
+}
+
+/// True for `owner/name` with the characters GitHub allows in both parts.
+fn is_repository_name(text: &str) -> bool {
+    let valid = |part: &str| {
+        !part.is_empty()
+            && part.len() <= 100
+            && part
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
+    };
+    text.split_once('/')
+        .is_some_and(|(owner, name)| valid(owner) && valid(name) && !name.contains('/'))
 }
 
 /// The value of one `key=value` word of a libpq connection string.
@@ -1125,6 +1484,177 @@ mod tests {
         let config = FactoryConfig::from_environment(lookup("local")).expect("agrees");
         assert_eq!(config.telemetry.log_filter.as_deref(), Some("debug"));
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    const LOOPBACK_WORLD: &str = "github:\n  app_id: 7\n  key_file: /run/secrets/app\n  api_base_url: http://127.0.0.1:9\n  installations:\n    - { tenant: 2f0c7f64-0d1c-4c5e-9f0a-1b2c3d4e5f60, repository: example-org/fixture, installation_id: 1 }\n  bypass_attestations:\n    - { tenant: 2f0c7f64-0d1c-4c5e-9f0a-1b2c3d4e5f60, repository: example-org/fixture, principal: 9d1f2b1c-3c71-4d51-9a6d-0c3b6a5f7a10, recorded_at: '2026-10-28T09:00:00Z' }\nregistry: { base_url: 'http://127.0.0.1:9', user_agent: factory-test }\nadvisory_database: { date_file: /srv/db/date }\nruntimes:\n  claude_code: { versions: ['2.1.311'] }\n  declare_capabilities: true\n";
+
+    fn with_world(profile: &str, world: &str) -> String {
+        format!("{}{world}", minimal(profile, "factory_worker", "factory_engine"))
+    }
+
+    #[test]
+    fn a_complete_loopback_world_loads_in_the_local_profile() {
+        let config = FactoryConfig::from_yaml(&with_world("local", LOOPBACK_WORLD)).expect("loads");
+        let github = config.github.expect("github");
+        assert_eq!(github.installations.len(), 1);
+        assert_eq!(github.bypass_attestations.len(), 1);
+        assert_eq!(config.registry.expect("registry").timeout_seconds, 10);
+        assert!(config.runtimes.declare_capabilities);
+    }
+
+    #[test]
+    fn production_refuses_plain_http_for_every_outside_service() {
+        // Break: production pointed at an http URL. Each outside address is refused on its own,
+        // and not even the loopback interface is an exception in production.
+        for (what, field) in [
+            (
+                "github:\n  app_id: 7\n  key_file: /run/secrets/app\n  api_base_url: http://api.github.com\n",
+                "github.api_base_url",
+            ),
+            (
+                "github:\n  app_id: 7\n  key_file: /run/secrets/app\n  api_base_url: http://127.0.0.1:9\n",
+                "github.api_base_url",
+            ),
+        ] {
+            let text = production_file(what);
+            match FactoryConfig::from_yaml(&text) {
+                Err(ConfigError::OutOfRange { field: found, .. }) => assert_eq!(found, field),
+                other => panic!("{field}: {other:?}"),
+            }
+        }
+        let registry = production_file(
+            "github:\n  app_id: 7\n  key_file: /run/secrets/app\nregistry: { base_url: 'http://crates.io', user_agent: factory }\n",
+        );
+        assert!(matches!(
+            FactoryConfig::from_yaml(&registry),
+            Err(ConfigError::OutOfRange {
+                field: "registry.base_url",
+                ..
+            })
+        ));
+        let provider = production_file("github:\n  app_id: 7\n  key_file: /run/secrets/app\n")
+            .replace("https://api.anthropic.com", "http://api.anthropic.com");
+        assert!(matches!(
+            FactoryConfig::from_yaml(&provider),
+            Err(ConfigError::OutOfRange {
+                field: "broker.upstreams[].base_url",
+                ..
+            })
+        ));
+    }
+
+    /// A production file that satisfies every production rule except what `world` changes.
+    fn production_file(world: &str) -> String {
+        format!(
+            "profile: production\nprotected_checkout: /srv/protected\ndefinitions_root: /srv/protected\n\
+             database:\n  tenant: {{ url_file: /run/secrets/a, login: factory_worker }}\n  system: {{ url_file: /run/secrets/b, login: factory_engine }}\n\
+             artifacts: {{ root: /var/artifacts }}\n\
+             sandbox: {{ images_catalog: /srv/protected/images.json, token_root: /var/tokens, workspace_root: /var/ws }}\n\
+             broker:\n  listen: '127.0.0.1:0'\n  upstreams:\n    - {{ provider: anthropic, base_url: 'https://api.anthropic.com', key_file: /run/secrets/k }}\n\
+             decisions: {{ key_file: /run/secrets/d }}\n\
+             stages: {{ definition_commit: 1405df66cbe219b0bf6355bc3d60361a8376b6b4 }}\n{world}"
+        )
+    }
+
+    #[test]
+    fn the_production_baseline_loads_and_each_world_rule_is_checked_on_top_of_it() {
+        let baseline = production_file("github:\n  app_id: 7\n  key_file: /run/secrets/app\n");
+        assert!(FactoryConfig::from_yaml(&baseline).is_ok());
+        // The registry needs a User-Agent in production.
+        let no_agent = production_file(
+            "github:\n  app_id: 7\n  key_file: /run/secrets/app\nregistry: { base_url: 'https://crates.io' }\n",
+        );
+        assert!(matches!(
+            FactoryConfig::from_yaml(&no_agent),
+            Err(ConfigError::OutOfRange {
+                field: "registry.user_agent",
+                ..
+            })
+        ));
+        // A declared capability list is a claim nobody checked.
+        let declared = production_file(
+            "github:\n  app_id: 7\n  key_file: /run/secrets/app\nruntimes: { declare_capabilities: true }\n",
+        );
+        assert!(matches!(
+            FactoryConfig::from_yaml(&declared),
+            Err(ConfigError::OutOfRange {
+                field: "runtimes.declare_capabilities",
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn plain_http_is_for_the_loopback_interface_only_even_outside_production() {
+        let elsewhere = with_world("local", LOOPBACK_WORLD).replace("http://127.0.0.1:9'", "http://example.org'");
+        assert!(matches!(
+            FactoryConfig::from_yaml(&elsewhere),
+            Err(ConfigError::OutOfRange {
+                field: "registry.base_url",
+                ..
+            })
+        ));
+        for bad in ["ftp://x", "https://user:x@host", "https://h/p?q=1", "https://h h", "host"] {
+            assert!(endpoint_problem(Profile::Local, bad).is_some(), "{bad}");
+        }
+        assert!(endpoint_problem(Profile::Local, "http://[::1]:80").is_none());
+        assert!(endpoint_problem(Profile::Production, "https://api.github.com").is_none());
+    }
+
+    #[test]
+    fn an_installation_or_a_statement_with_a_bad_identifier_is_refused() {
+        for (from, to, field) in [
+            ("tenant: 2f0c7f64-0d1c-4c5e-9f0a-1b2c3d4e5f60, repository: example-org/fixture, installation_id: 1", "tenant: nope, repository: example-org/fixture, installation_id: 1", "github.installations[].tenant"),
+            ("repository: example-org/fixture, installation_id: 1", "repository: fixture, installation_id: 1", "github.installations[].repository"),
+            ("installation_id: 1", "installation_id: 0", "github.installations[].installation_id"),
+            ("principal: 9d1f2b1c-3c71-4d51-9a6d-0c3b6a5f7a10", "principal: root", "github.bypass_attestations[].principal"),
+            ("recorded_at: '2026-10-28T09:00:00Z'", "recorded_at: yesterday", "github.bypass_attestations[].recorded_at"),
+        ] {
+            let text = with_world("local", &LOOPBACK_WORLD.replacen(from, to, 1));
+            match FactoryConfig::from_yaml(&text) {
+                Err(ConfigError::OutOfRange { field: found, .. }) => assert_eq!(found, field),
+                other => panic!("{field}: {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn the_production_hosts_are_checked_against_the_egress_policy() {
+        let policy = crate::startup::tests_support::repository_security_policy();
+        let listed = FactoryConfig::from_yaml(&production_file(
+            "github:\n  app_id: 7\n  key_file: /run/secrets/app\n",
+        ))
+        .expect("loads");
+        assert!(listed.check_endpoints(&policy).is_ok());
+        // A provider host the policy does not list.
+        let other = production_file("github:\n  app_id: 7\n  key_file: /run/secrets/app\n")
+            .replace("https://api.anthropic.com", "https://models.example.org");
+        assert!(matches!(
+            FactoryConfig::from_yaml(&other).expect("loads").check_endpoints(&policy),
+            Err(ConfigError::OutOfRange { field: "broker.upstreams[].base_url", .. })
+        ));
+        // The registry API of crates.io is not among the cargo hosts the stock policy lists, so
+        // production refuses it until a person adds the host.
+        let registry = production_file(
+            "github:\n  app_id: 7\n  key_file: /run/secrets/app\nregistry: { base_url: 'https://crates.io', user_agent: factory }\n",
+        );
+        assert!(matches!(
+            FactoryConfig::from_yaml(&registry).expect("loads").check_endpoints(&policy),
+            Err(ConfigError::OutOfRange { field: "registry.base_url", .. })
+        ));
+        let index = registry.replace("https://crates.io", "https://index.crates.io");
+        assert!(FactoryConfig::from_yaml(&index).expect("loads").check_endpoints(&policy).is_ok());
+        // GitHub: only api.github.com in production.
+        let ghe = production_file(
+            "github:\n  app_id: 7\n  key_file: /run/secrets/app\n  api_base_url: https://ghe.example.org/api/v3\n",
+        );
+        assert!(matches!(
+            FactoryConfig::from_yaml(&ghe).expect("loads").check_endpoints(&policy),
+            Err(ConfigError::OutOfRange { field: "github.api_base_url", .. })
+        ));
+        // The other profiles are not held to the list.
+        let local = FactoryConfig::from_yaml(&with_world("local", LOOPBACK_WORLD)).expect("loads");
+        assert!(local.check_endpoints(&policy).is_ok());
     }
 
     #[test]
