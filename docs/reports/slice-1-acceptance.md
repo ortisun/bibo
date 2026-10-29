@@ -153,6 +153,8 @@ Second run:
 | `cargo test --manifest-path tests/end_to_end/Cargo.toml --locked` | Passed: all the tests of the harness, including the mutations of the E6 and E4 checks |
 | `cargo fmt --all -- --check` and `cargo clippy --workspace --all-targets --locked -- -D warnings` | Passed |
 | `cargo nextest run -p factory-composition -p factory-api -p factory-github -p factory-contracts -p factory-domain -p factory-testkit --locked --no-fail-fast` | 1804 passed, 2 failed, 26 skipped. The two failures are `fx::repos::tests::hostile_git_configuration_runs_code_when_unhardened_and_nothing_when_hardened` and `fx::docker::tests::docker_guard_blocks_and_cleans` of the testkit, which stopped with "BLOCKED: docker did not answer within 60s". They are not passes |
+| `cargo nextest run -p factory-worker -p factory-cli -p factory-workflow -p xtask --locked --no-fail-fast` | 1584 passed in the first three packages (the worker, the command line client and the workflow engine, on a real PostgreSQL) and 412 passed in `xtask`, none failed |
+| `cargo deny --locked check` and `cargo xtask check-links` | Passed |
 | `schemas/validate.sh` | Passed: 137 checks, with the new schema `policy-model-routing` and its twelve examples |
 | `cargo xtask check-architecture` | Passed |
 | `./scripts/ci.sh --only policy-yaml` | Passed: three policy files, `policies/model_routing.yaml` among them |
