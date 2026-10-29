@@ -1051,6 +1051,52 @@ async fn an_attempt_past_its_deadline_is_stopped_and_timed_out() {
     assert_eq!(intake(&view).status, StageRunStatus::Ready);
 }
 
+/// The driver of a scenario can reach its tick before the engine reaches its first wait. On a
+/// real database that is a matter of speed: the engine makes several round trips (the contract,
+/// the token, the first change of state) before it waits for the heartbeat, and the driver needs
+/// one to move the stored times, so on a loaded machine the driver often wins. A tick spent
+/// before there is a wait to end is lost, the wait the engine opens afterwards is due a whole
+/// interval later, and nothing moves the ticker again: the attempt never ended and the test hung
+/// for ever.
+///
+/// Here the engine starts one poll late, which on the in-memory store puts the tick first every
+/// time. The attempt must still time out, and a hang is a failure within the limit below.
+#[tokio::test]
+async fn a_tick_that_comes_before_the_engine_waits_is_not_lost() {
+    let world = World::new().await;
+    let job = world.admitted_job().await;
+    let release = std::sync::Arc::new(tokio::sync::Notify::new());
+    world.script(StageKind::Intake).with(|s| {
+        s.tweaks.attempt_timeout_seconds = 30;
+        s.steps.push_back(Step::Hang(release.clone()));
+    });
+    let claimed = world.claim_one("worker-a").await;
+    let work = async {
+        // The driver is polled before the engine has begun.
+        tokio::task::yield_now().await;
+        world.engine.run_attempt(&claimed).await
+    };
+    let driver = async {
+        world.advance_time(40).await;
+        world.tick(16).await;
+    };
+    let (outcome, ()) = factory_testkit::clock::within(
+        std::time::Duration::from_secs(30),
+        "the attempt (a tick spent before the engine waited was lost)",
+        async { tokio::join!(work, driver) },
+    )
+    .await;
+    assert_eq!(
+        outcome.expect("the attempt runs"),
+        AttemptOutcome::Failed {
+            class: FailureClass::TimedOut,
+            then: AttemptDisposition::Retry
+        }
+    );
+    let view = world.view(job).await;
+    assert_eq!(intake(&view).attempts[0].status, AttemptStatus::TimedOut);
+}
+
 // ---- the gate, rework and supersession ---------------------------------------------------
 
 use factory_domain::ids::StageRunId;

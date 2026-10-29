@@ -301,8 +301,16 @@ impl World {
 
     /// Moves the engine's ticker, which ends the heartbeat and teardown waits that are due, and
     /// lets the engine run until it waits again. The database clock does not move.
+    ///
+    /// The move is held back until the engine has a wait open that it ends. A move that came
+    /// first would end nothing, and the wait that the engine opened afterwards would be due a
+    /// whole interval later, with nobody to move the ticker again: on a real database the engine
+    /// is slower to its first wait than a test that has little else to do, and the test hung. A
+    /// tick that no wait of the engine can use fails the test after a minute and says so.
     pub async fn tick(&self, seconds: u64) {
-        self.ticker.advance(Duration::from_secs(seconds));
+        self.ticker
+            .advance_when_a_wait_is_due(Duration::from_secs(seconds))
+            .await;
         tokio::task::yield_now().await;
     }
 

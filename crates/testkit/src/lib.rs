@@ -19,7 +19,7 @@
 //!
 //! | Module | Fake | Contract suite |
 //! |---|---|---|
-//! | [`clock`] | `FakeClock` (FX-CLOCK), `SequentialIdGenerator`, `FakeCancel` | none: three small types with unit tests |
+//! | [`clock`] | `FakeClock` (FX-CLOCK), `SequentialIdGenerator`, `FakeCancel`, and `within`, a real-time guard that fails a wait nothing ends | none: small types and one function with unit tests |
 //! | [`store`] | `InMemoryStore` | `contracts::store` |
 //! | [`artifact`] | `InMemoryArtifactStore` | `contracts::artifact` |
 //! | [`sandbox`] | `FakeSandbox` | `contracts::sandbox` |

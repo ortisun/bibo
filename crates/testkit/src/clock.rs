@@ -165,9 +165,47 @@ impl CancelSignal for FakeCancel {
     }
 }
 
+/// Runs `work` and fails the test if it takes more than `limit` of real time.
+///
+/// A scenario that moves time by hand has no timer of its own to end it: when a wait is never
+/// ended, nothing wakes the runtime and the test hangs for ever (the engine scenarios on
+/// PostgreSQL once did, for hours). This turns that into a failure that names what was waited for.
+/// It is a guard for a wait that must end, not a way to wait; a limit is a safety margin that no
+/// healthy run comes near.
+///
+/// # Panics
+/// With a message that names `what` when `work` has not finished after `limit`.
+pub async fn within<F: std::future::Future>(limit: Duration, what: &str, work: F) -> F::Output {
+    match tokio::time::timeout(limit, work).await {
+        Ok(output) => output,
+        Err(_elapsed) => {
+            panic!(
+                "{what}: not finished after {limit:?} of real time, so nothing is going to end it"
+            )
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test(start_paused = true)]
+    async fn within_returns_what_the_work_returns() {
+        let value = within(Duration::from_secs(5), "a quick job", async { 7 }).await;
+        assert_eq!(value, 7);
+    }
+
+    #[tokio::test(start_paused = true)]
+    #[should_panic(expected = "a wait nobody ends: not finished after 5s")]
+    async fn within_fails_a_wait_that_never_ends_and_says_what_it_was() {
+        within(
+            Duration::from_secs(5),
+            "a wait nobody ends",
+            std::future::pending::<()>(),
+        )
+        .await;
+    }
 
     #[test]
     fn the_clock_stands_still_until_it_is_moved() {
