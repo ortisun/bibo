@@ -136,6 +136,10 @@ pub struct AuditRecord {
     /// A short plain-English detail. Never a secret.
     #[serde(default)]
     pub detail: String,
+    /// What the record was about, as the store holds it, without any signing word: numbers,
+    /// identifiers and fixed words. Never issue text and never a secret.
+    #[serde(default)]
+    pub subject: String,
 }
 
 /// One status change.

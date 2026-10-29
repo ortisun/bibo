@@ -550,6 +550,7 @@ pub fn honest(env: &Env, o: Options) -> RunEvidence {
             actor: actor.to_owned(),
             correlation_id: Some(CORRELATION.to_owned()),
             detail: detail.to_owned(),
+            subject: String::new(),
         });
         correlated.push(Correlated {
             source: "audit".to_owned(),

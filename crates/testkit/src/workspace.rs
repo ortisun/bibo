@@ -246,6 +246,15 @@ struct RemoteState {
     move_during_fetch: Option<(BranchName, CommitSha)>,
 }
 
+/// A commit on the fake remote, as the remote itself records it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RemoteCommit {
+    /// The commit.
+    pub sha: CommitSha,
+    /// The paths it adds, changes or deletes against its parent, sorted.
+    pub paths: Vec<String>,
+}
+
 /// The code host's repository. The fake workspace provider and the fake change host share one, so
 /// a push in one is visible in the other. It is not a port.
 #[derive(Clone, Default)]
@@ -340,6 +349,57 @@ impl FakeRemote {
             .branches
             .get(&(repo.clone(), branch.clone()))
             .cloned()
+    }
+
+    /// The commits on a branch above `base` (the base itself and everything below it are left out),
+    /// oldest first, each with the paths it changes against its parent. This is the remote's own
+    /// record of the branch: a check reads the commits a job pushed from here and not from what the
+    /// stages said they pushed. A branch that does not exist has none.
+    #[must_use]
+    pub fn commits_above(
+        &self,
+        repo: &RepoRef,
+        branch: &BranchName,
+        base: Option<&CommitSha>,
+    ) -> Vec<RemoteCommit> {
+        let state = self.state.lock().expect("the lock is never poisoned");
+        let mut chain = Vec::new();
+        let mut at = state.branches.get(&(repo.clone(), branch.clone())).cloned();
+        while let Some(sha) = at {
+            if base == Some(&sha) {
+                break;
+            }
+            let Some(object) = state.commits.get(&sha) else {
+                break;
+            };
+            let before = object
+                .parent
+                .as_ref()
+                .and_then(|parent| state.commits.get(parent))
+                .map(|parent| &parent.tree);
+            let mut paths: Vec<String> = object
+                .tree
+                .iter()
+                .filter(|(path, entry)| before.and_then(|tree| tree.get(*path)) != Some(*entry))
+                .map(|(path, _)| path.as_str().to_owned())
+                .collect();
+            if let Some(before) = before {
+                paths.extend(
+                    before
+                        .keys()
+                        .filter(|path| !object.tree.contains_key(*path))
+                        .map(|path| path.as_str().to_owned()),
+                );
+            }
+            paths.sort();
+            chain.push(RemoteCommit {
+                sha: sha.clone(),
+                paths,
+            });
+            at = object.parent.clone();
+        }
+        chain.reverse();
+        chain
     }
 
     /// True when the remote holds the commit.

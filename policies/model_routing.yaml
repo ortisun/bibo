@@ -1,0 +1,235 @@
+# =============================================================================
+# policies/model_routing.yaml  -  which models each agent role may use, what a
+# model costs, and how much a stage or a job may spend
+# =============================================================================
+# STATUS: DESIGNED.
+# EVERY NUMBER IN THIS FILE IS PENDING CONFIRMATION BY THE PROJECT OWNER: every price, every ceiling and every cap.
+# The ceilings and caps were chosen to be low, so that a mistake stops a job early and costs little. The prices
+# were chosen to be high, so that the broker counts more than a real bill would. The model names are the ones the
+# agent manifests already list (`recommended_models` in agents/*/manifest.json); no other name was added, and none
+# was made up.
+#
+# This file shares the parser contract of policies/security.yaml: YAML 1.2
+# subset, no anchors or merge keys, no nulls, `deny_unknown_fields`, a
+# `schema_version` check, deny_overrides, tighten-only project overrides and a
+# policy hash. Read the header of security.yaml first.
+#
+# WHAT READS THIS FILE
+#   The model router asks it for the candidates of a stage and a tier. The
+#   engine asks it for the ceiling of a stage run and gives the broker a token
+#   that holds only the models of the route and that ceiling. The broker prices
+#   every answer with the `prices` below and stops the token when its ceiling
+#   is reached. The loader (crates/contracts/src/policy/routing.rs) refuses a
+#   file that breaks a rule written at the end of this header.
+#
+# WHAT IS NOT IN THIS FILE
+#   * No key, no token and no secret. A provider key is a file named in the
+#     worker configuration (`broker.upstreams[].key_file`), never a value here.
+#   * No base URL. Where a provider is reached is deployment configuration.
+#
+# HOW TO READ A PRICE
+#   A price is a whole number of millionths of a US dollar for a million tokens.
+#   1000000 means one dollar for a million tokens. `price_checked_on` is the date
+#   a person read the price on the provider's price page, or `unchecked`. Every
+#   price here is `unchecked` and is a placeholder chosen to be high, so that the
+#   broker counts more than a real bill would. `price_source` says where to read
+#   the real figure.
+#
+# HOW TO READ A CEILING
+#   `max_micro_usd` is millionths of a US dollar: 1000000 is one dollar.
+#   `max_tokens` counts input and output tokens together.
+#
+# RULES THE LOADER CHECKS (a file that breaks one does not load)
+#   * Every model has a provider that the broker knows (anthropic or openai), a
+#     runtime, a family, a tier and four prices.
+#   * Every role names models that exist, starts with one of them, and escalates
+#     only to a model of a larger tier.
+#   * Every route names a stage that has a role and models that the role may use.
+#   * Every ceiling of a role is at or under the limit in the role's agent
+#     manifest, every per-job ceiling is at or under the hard ceiling of
+#     policies/security.yaml, and the per-request caps are at or under the
+#     per-request caps there.
+#   * Every independence rule names two roles, and for every model its author
+#     role may use, at least one model its reviewer role may use differs from it
+#     in the way the rule says.
+# =============================================================================
+
+schema_version: 1
+
+policy:
+  id: model_routing
+  version: 1
+  status: designed                    # enum: designed | enforced
+  default_action: deny                # a model that a role does not list is refused
+  conflict_resolution: deny_overrides
+  project_overrides: tighten_only
+  config_source: protected_default_branch
+  threats: [T-05, T-20, T-26, T-27]
+
+# -----------------------------------------------------------------------------
+# 1. Models
+# -----------------------------------------------------------------------------
+# The three names below are the ones in the manifests. The family is the part of
+# the name that says who trained it: two models of one family are the same kind
+# of reviewer for the purpose of independence (section 4).
+models:
+  - id: claude-sonnet-5-5
+    provider: anthropic
+    runtime: claude-code-cli
+    family: claude
+    tier: standard
+    prices: { input: 6000000, cache_write: 7500000, cache_read: 600000, output: 30000000 }       # PENDING CONFIRMATION
+    price_checked_on: unchecked                                                                    # PENDING CONFIRMATION
+    price_source: "Not read from a price page. Placeholder chosen to be high. The owner reads the current price of this model on the provider's pricing page and sets the date."
+  - id: claude-opus-5-5
+    provider: anthropic
+    runtime: claude-code-cli
+    family: claude
+    tier: large
+    prices: { input: 30000000, cache_write: 37500000, cache_read: 3000000, output: 150000000 }   # PENDING CONFIRMATION
+    price_checked_on: unchecked                                                                    # PENDING CONFIRMATION
+    price_source: "Not read from a price page. Placeholder chosen to be high. The owner reads the current price of this model on the provider's pricing page and sets the date."
+  - id: gpt-6.1-sol
+    provider: openai
+    runtime: codex-cli
+    family: gpt
+    tier: standard
+    prices: { input: 10000000, cache_write: 10000000, cache_read: 1000000, output: 40000000 }    # PENDING CONFIRMATION
+    price_checked_on: unchecked                                                                    # PENDING CONFIRMATION
+    price_source: "Not read from a price page. Placeholder chosen to be high; the model has no separate cache write price here, so it is priced as input. The owner reads the current price on the provider's pricing page and sets the date. The manifests say its price tier is not confirmed."
+
+# -----------------------------------------------------------------------------
+# 2. Roles
+# -----------------------------------------------------------------------------
+# One entry for each agent role in agents/*/manifest.json. `allowed_models` is
+# every model the role may ever use. `start_with` is the first attempt.
+# `escalate_to` is used only after `escalate_after_failed_repairs` failed
+# repairs, never as a first attempt (the notes of the manifests say the same).
+#
+# `per_stage_run` is the most one run of the stage may spend. `per_request` is
+# the largest request the broker forwards for the role. All of them are lower
+# than the limits in the manifests.
+roles:
+  - role: intake
+    stage: INTAKE
+    allowed_models: [claude-sonnet-5-5, claude-opus-5-5, gpt-6.1-sol]
+    start_with: claude-sonnet-5-5
+    escalate_to: claude-opus-5-5
+    escalate_after_failed_repairs: 2
+    per_stage_run: { max_micro_usd: 100000, max_tokens: 20000 }                 # PENDING CONFIRMATION ($0.10)
+    per_request: { max_input_tokens: 15000, max_output_tokens: 2000 }            # PENDING CONFIRMATION
+  - role: specification_writer
+    stage: SPECIFICATION
+    allowed_models: [claude-sonnet-5-5, claude-opus-5-5, gpt-6.1-sol]
+    start_with: claude-sonnet-5-5
+    escalate_to: claude-opus-5-5
+    escalate_after_failed_repairs: 2
+    per_stage_run: { max_micro_usd: 2000000, max_tokens: 150000 }               # PENDING CONFIRMATION ($2.00)
+    per_request: { max_input_tokens: 100000, max_output_tokens: 16000 }          # PENDING CONFIRMATION
+  - role: specification_reviewer
+    stage: SPECIFICATION
+    allowed_models: [claude-sonnet-5-5, claude-opus-5-5, gpt-6.1-sol]
+    start_with: gpt-6.1-sol
+    escalate_to: claude-opus-5-5
+    escalate_after_failed_repairs: 2
+    per_stage_run: { max_micro_usd: 750000, max_tokens: 60000 }                 # PENDING CONFIRMATION ($0.75)
+    per_request: { max_input_tokens: 45000, max_output_tokens: 8000 }            # PENDING CONFIRMATION
+  - role: architect
+    stage: ARCHITECTURE
+    allowed_models: [claude-sonnet-5-5, claude-opus-5-5, gpt-6.1-sol]
+    start_with: claude-sonnet-5-5
+    escalate_to: claude-opus-5-5
+    escalate_after_failed_repairs: 2
+    per_stage_run: { max_micro_usd: 2000000, max_tokens: 125000 }               # PENDING CONFIRMATION ($2.00)
+    per_request: { max_input_tokens: 100000, max_output_tokens: 16000 }          # PENDING CONFIRMATION
+  - role: planner
+    stage: TASK_PLANNING
+    allowed_models: [claude-sonnet-5-5, claude-opus-5-5, gpt-6.1-sol]
+    start_with: claude-sonnet-5-5
+    escalate_to: claude-opus-5-5
+    escalate_after_failed_repairs: 2
+    per_stage_run: { max_micro_usd: 1500000, max_tokens: 100000 }               # PENDING CONFIRMATION ($1.50)
+    per_request: { max_input_tokens: 80000, max_output_tokens: 16000 }          # PENDING CONFIRMATION
+  - role: builder
+    stage: IMPLEMENTATION
+    allowed_models: [claude-sonnet-5-5, claude-opus-5-5, gpt-6.1-sol]
+    start_with: claude-sonnet-5-5
+    escalate_to: claude-opus-5-5
+    escalate_after_failed_repairs: 2
+    per_stage_run: { max_micro_usd: 2500000, max_tokens: 200000 }               # PENDING CONFIRMATION ($2.50)
+    per_request: { max_input_tokens: 150000, max_output_tokens: 16000 }          # PENDING CONFIRMATION
+  - role: code_reviewer
+    stage: REVIEW
+    allowed_models: [claude-sonnet-5-5, claude-opus-5-5, gpt-6.1-sol]
+    start_with: gpt-6.1-sol
+    escalate_to: claude-opus-5-5
+    escalate_after_failed_repairs: 2
+    per_stage_run: { max_micro_usd: 1250000, max_tokens: 100000 }               # PENDING CONFIRMATION ($1.25)
+    per_request: { max_input_tokens: 85000, max_output_tokens: 8000 }           # PENDING CONFIRMATION
+  - role: technical_writer
+    stage: DOCUMENTING
+    allowed_models: [claude-sonnet-5-5, claude-opus-5-5, gpt-6.1-sol]
+    start_with: claude-sonnet-5-5
+    escalate_to: claude-opus-5-5
+    escalate_after_failed_repairs: 2
+    per_stage_run: { max_micro_usd: 750000, max_tokens: 75000 }                 # PENDING CONFIRMATION ($0.75)
+    per_request: { max_input_tokens: 55000, max_output_tokens: 16000 }           # PENDING CONFIRMATION
+  - role: documentation_reviewer
+    stage: DOCUMENTATION_REVIEW
+    allowed_models: [claude-sonnet-5-5, claude-opus-5-5, gpt-6.1-sol]
+    start_with: gpt-6.1-sol
+    escalate_to: claude-opus-5-5
+    escalate_after_failed_repairs: 2
+    per_stage_run: { max_micro_usd: 500000, max_tokens: 60000 }                 # PENDING CONFIRMATION ($0.50)
+    per_request: { max_input_tokens: 50000, max_output_tokens: 8000 }            # PENDING CONFIRMATION
+
+# -----------------------------------------------------------------------------
+# 3. Routes
+# -----------------------------------------------------------------------------
+# For a stage and a tier, the models to try, in this order. The router never
+# returns a model that is not listed here. The reviewing stages list the model
+# of the other family first, so that the first choice is independent of a
+# builder or a writer that started with the model of the first family
+# (section 4). There is no `small` tier: the manifests name no small model.
+routes:
+  - { stage: INTAKE,               tier: standard, candidates: [claude-sonnet-5-5, gpt-6.1-sol] }
+  - { stage: INTAKE,               tier: large,    candidates: [claude-opus-5-5] }
+  - { stage: SPECIFICATION,        tier: standard, candidates: [claude-sonnet-5-5, gpt-6.1-sol] }
+  - { stage: SPECIFICATION,        tier: large,    candidates: [claude-opus-5-5] }
+  - { stage: ARCHITECTURE,         tier: standard, candidates: [claude-sonnet-5-5, gpt-6.1-sol] }
+  - { stage: ARCHITECTURE,         tier: large,    candidates: [claude-opus-5-5] }
+  - { stage: TASK_PLANNING,        tier: standard, candidates: [claude-sonnet-5-5, gpt-6.1-sol] }
+  - { stage: TASK_PLANNING,        tier: large,    candidates: [claude-opus-5-5] }
+  - { stage: IMPLEMENTATION,       tier: standard, candidates: [claude-sonnet-5-5, gpt-6.1-sol] }
+  - { stage: IMPLEMENTATION,       tier: large,    candidates: [claude-opus-5-5] }
+  - { stage: REVIEW,               tier: standard, candidates: [gpt-6.1-sol, claude-sonnet-5-5] }
+  - { stage: REVIEW,               tier: large,    candidates: [claude-opus-5-5] }
+  - { stage: DOCUMENTING,          tier: standard, candidates: [claude-sonnet-5-5, gpt-6.1-sol] }
+  - { stage: DOCUMENTING,          tier: large,    candidates: [claude-opus-5-5] }
+  - { stage: DOCUMENTATION_REVIEW, tier: standard, candidates: [gpt-6.1-sol, claude-sonnet-5-5] }
+  - { stage: DOCUMENTATION_REVIEW, tier: large,    candidates: [claude-opus-5-5] }
+
+# -----------------------------------------------------------------------------
+# 4. Reviewer independence
+# -----------------------------------------------------------------------------
+# A reviewer must not be the same kind of model as the agent whose work it
+# reviews. `must_differ_by: family` means the two models must be of different
+# families. `provider` and `model` are the weaker and the stronger choices.
+# When no allowed model differs, the reviewing stage does not run on a model of
+# the author's kind; it waits for a person (`on_no_independent_model`).
+independence:
+  on_no_independent_model: wait_for_human
+  rules:
+    - { id: code_review_not_by_the_builders_family,        author_role: builder,              reviewer_role: code_reviewer,          must_differ_by: family }
+    - { id: documentation_review_not_by_the_writers_family, author_role: technical_writer,     reviewer_role: documentation_reviewer, must_differ_by: family }
+    - { id: specification_review_not_by_the_writers_family, author_role: specification_writer, reviewer_role: specification_reviewer, must_differ_by: family }
+
+# -----------------------------------------------------------------------------
+# 5. Job ceilings
+# -----------------------------------------------------------------------------
+# What all the stages of one job may spend together. Under the hard ceiling of
+# policies/security.yaml (`budgets.hard_ceilings.per_job.max_usd`), which is 25
+# dollars. A stage run is held to its own ceiling in section 2 first.
+job:
+  max_micro_usd: 10000000             # PENDING CONFIRMATION ($10.00)
+  max_tokens: 1500000                 # PENDING CONFIRMATION

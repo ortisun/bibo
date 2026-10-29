@@ -123,6 +123,15 @@ A labeled issue makes a `RECEIVED` job only if the label is the factory label, t
 principal of the tenant, and the allowlist lists that numeric id as a requester. The job has no original request:
 the text of the issue is not in the payload the verifier reads and the API holds no GitHub credential.
 
+The same label from anyone else (a person the tenant does not know, a person who is not a requester, a requester
+narrowed to other repositories) makes no job (FR-002, SC-002). Because the API holds no GitHub credential, it leaves
+one signed request in the audit log, in the transaction that records the delivery, under the action
+`webhook_accepted_or_rejected.denied`, which its database trigger allows. The worker's hook answers it: one fixed
+reply on the issue and the record `intake.rejected`
+(`factory_composition::intake_rejections`). A repeated delivery leaves no second request, a bot is never answered,
+and a repository that is switched off is not answered either. The answer to the sender of the webhook is the same
+`202` in every case.
+
 ## Configuration
 
 One YAML file, read with the restricted reader, `deny_unknown_fields`, secrets as paths to files that only

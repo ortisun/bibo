@@ -85,6 +85,7 @@ use crate::delivery::{StoreApprovalSources, StoreDeliverySources};
 use crate::dependency_decisions::{DependencyDecisions, DependencyDecisionsDeps};
 use crate::drift::{ChannelDrift, DriftPump, channel as drift_channel};
 use crate::hooks::BeforeClaim;
+use crate::intake_rejections::{IntakeRejections, IntakeRejectionsDeps};
 use crate::preflight::{BypassAttestations, PreflightDeps, ProtectionPreflight};
 use crate::profile::Profile;
 use crate::providers::Providers;
@@ -873,6 +874,14 @@ pub fn assemble_pipeline(inputs: PipelineInputs) -> Result<Pipeline, PipelineErr
         max_age: std::time::Duration::from_secs(crate::pipeline::APPROVAL_WINDOW_HOURS * 3600),
         keys: Arc::clone(&decision_keys),
     }));
+    // The reply to a label from someone who may not ask goes through the change host with the
+    // narrow token of the approval stage, from this process: the API holds no credential.
+    let rejections = Arc::new(IntakeRejections::new(IntakeRejectionsDeps {
+        store: Arc::clone(&store),
+        host: Arc::clone(&external.changes),
+        policy_hash: policies.hash.clone(),
+        keys: Arc::clone(&decision_keys),
+    }));
     let hook = Arc::new(
         ClaimWork::new(ClaimWorkDeps {
             engine: Arc::clone(&engine),
@@ -898,7 +907,8 @@ pub fn assemble_pipeline(inputs: PipelineInputs) -> Result<Pipeline, PipelineErr
             keys: decision_keys,
         })
         .with_specification(spec_drafts.clone())
-        .with_dependencies(dependency_decisions),
+        .with_dependencies(dependency_decisions)
+        .with_rejections(rejections),
     );
     let check_names = [
         factory_workflow::stages::delivery::CHECK_VALIDATION,

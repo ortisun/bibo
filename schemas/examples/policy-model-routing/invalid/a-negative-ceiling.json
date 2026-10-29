@@ -1,0 +1,396 @@
+{
+  "schema_version": 1,
+  "policy": {
+    "id": "model_routing",
+    "version": 1,
+    "status": "designed",
+    "default_action": "deny",
+    "conflict_resolution": "deny_overrides",
+    "project_overrides": "tighten_only",
+    "config_source": "protected_default_branch",
+    "threats": [
+      "T-05",
+      "T-20",
+      "T-26",
+      "T-27"
+    ]
+  },
+  "models": [
+    {
+      "id": "claude-sonnet-5-5",
+      "provider": "anthropic",
+      "runtime": "claude-code-cli",
+      "family": "claude",
+      "tier": "standard",
+      "prices": {
+        "input": 6000000,
+        "cache_write": 7500000,
+        "cache_read": 600000,
+        "output": 30000000
+      },
+      "price_checked_on": "unchecked",
+      "price_source": "Not read from a price page. Placeholder chosen to be high. The owner reads the current price of this model on the provider's pricing page and sets the date."
+    },
+    {
+      "id": "claude-opus-5-5",
+      "provider": "anthropic",
+      "runtime": "claude-code-cli",
+      "family": "claude",
+      "tier": "large",
+      "prices": {
+        "input": 30000000,
+        "cache_write": 37500000,
+        "cache_read": 3000000,
+        "output": 150000000
+      },
+      "price_checked_on": "unchecked",
+      "price_source": "Not read from a price page. Placeholder chosen to be high. The owner reads the current price of this model on the provider's pricing page and sets the date."
+    },
+    {
+      "id": "gpt-6.1-sol",
+      "provider": "openai",
+      "runtime": "codex-cli",
+      "family": "gpt",
+      "tier": "standard",
+      "prices": {
+        "input": 10000000,
+        "cache_write": 10000000,
+        "cache_read": 1000000,
+        "output": 40000000
+      },
+      "price_checked_on": "unchecked",
+      "price_source": "Not read from a price page. Placeholder chosen to be high; the model has no separate cache write price here, so it is priced as input. The owner reads the current price on the provider's pricing page and sets the date. The manifests say its price tier is not confirmed."
+    }
+  ],
+  "roles": [
+    {
+      "role": "intake",
+      "stage": "INTAKE",
+      "allowed_models": [
+        "claude-sonnet-5-5",
+        "claude-opus-5-5",
+        "gpt-6.1-sol"
+      ],
+      "start_with": "claude-sonnet-5-5",
+      "escalate_to": "claude-opus-5-5",
+      "escalate_after_failed_repairs": 2,
+      "per_stage_run": {
+        "max_micro_usd": -1,
+        "max_tokens": 20000
+      },
+      "per_request": {
+        "max_input_tokens": 15000,
+        "max_output_tokens": 2000
+      }
+    },
+    {
+      "role": "specification_writer",
+      "stage": "SPECIFICATION",
+      "allowed_models": [
+        "claude-sonnet-5-5",
+        "claude-opus-5-5",
+        "gpt-6.1-sol"
+      ],
+      "start_with": "claude-sonnet-5-5",
+      "escalate_to": "claude-opus-5-5",
+      "escalate_after_failed_repairs": 2,
+      "per_stage_run": {
+        "max_micro_usd": 2000000,
+        "max_tokens": 150000
+      },
+      "per_request": {
+        "max_input_tokens": 100000,
+        "max_output_tokens": 16000
+      }
+    },
+    {
+      "role": "specification_reviewer",
+      "stage": "SPECIFICATION",
+      "allowed_models": [
+        "claude-sonnet-5-5",
+        "claude-opus-5-5",
+        "gpt-6.1-sol"
+      ],
+      "start_with": "gpt-6.1-sol",
+      "escalate_to": "claude-opus-5-5",
+      "escalate_after_failed_repairs": 2,
+      "per_stage_run": {
+        "max_micro_usd": 750000,
+        "max_tokens": 60000
+      },
+      "per_request": {
+        "max_input_tokens": 45000,
+        "max_output_tokens": 8000
+      }
+    },
+    {
+      "role": "architect",
+      "stage": "ARCHITECTURE",
+      "allowed_models": [
+        "claude-sonnet-5-5",
+        "claude-opus-5-5",
+        "gpt-6.1-sol"
+      ],
+      "start_with": "claude-sonnet-5-5",
+      "escalate_to": "claude-opus-5-5",
+      "escalate_after_failed_repairs": 2,
+      "per_stage_run": {
+        "max_micro_usd": 2000000,
+        "max_tokens": 125000
+      },
+      "per_request": {
+        "max_input_tokens": 100000,
+        "max_output_tokens": 16000
+      }
+    },
+    {
+      "role": "planner",
+      "stage": "TASK_PLANNING",
+      "allowed_models": [
+        "claude-sonnet-5-5",
+        "claude-opus-5-5",
+        "gpt-6.1-sol"
+      ],
+      "start_with": "claude-sonnet-5-5",
+      "escalate_to": "claude-opus-5-5",
+      "escalate_after_failed_repairs": 2,
+      "per_stage_run": {
+        "max_micro_usd": 1500000,
+        "max_tokens": 100000
+      },
+      "per_request": {
+        "max_input_tokens": 80000,
+        "max_output_tokens": 16000
+      }
+    },
+    {
+      "role": "builder",
+      "stage": "IMPLEMENTATION",
+      "allowed_models": [
+        "claude-sonnet-5-5",
+        "claude-opus-5-5",
+        "gpt-6.1-sol"
+      ],
+      "start_with": "claude-sonnet-5-5",
+      "escalate_to": "claude-opus-5-5",
+      "escalate_after_failed_repairs": 2,
+      "per_stage_run": {
+        "max_micro_usd": 2500000,
+        "max_tokens": 200000
+      },
+      "per_request": {
+        "max_input_tokens": 150000,
+        "max_output_tokens": 16000
+      }
+    },
+    {
+      "role": "code_reviewer",
+      "stage": "REVIEW",
+      "allowed_models": [
+        "claude-sonnet-5-5",
+        "claude-opus-5-5",
+        "gpt-6.1-sol"
+      ],
+      "start_with": "gpt-6.1-sol",
+      "escalate_to": "claude-opus-5-5",
+      "escalate_after_failed_repairs": 2,
+      "per_stage_run": {
+        "max_micro_usd": 1250000,
+        "max_tokens": 100000
+      },
+      "per_request": {
+        "max_input_tokens": 85000,
+        "max_output_tokens": 8000
+      }
+    },
+    {
+      "role": "technical_writer",
+      "stage": "DOCUMENTING",
+      "allowed_models": [
+        "claude-sonnet-5-5",
+        "claude-opus-5-5",
+        "gpt-6.1-sol"
+      ],
+      "start_with": "claude-sonnet-5-5",
+      "escalate_to": "claude-opus-5-5",
+      "escalate_after_failed_repairs": 2,
+      "per_stage_run": {
+        "max_micro_usd": 750000,
+        "max_tokens": 75000
+      },
+      "per_request": {
+        "max_input_tokens": 55000,
+        "max_output_tokens": 16000
+      }
+    },
+    {
+      "role": "documentation_reviewer",
+      "stage": "DOCUMENTATION_REVIEW",
+      "allowed_models": [
+        "claude-sonnet-5-5",
+        "claude-opus-5-5",
+        "gpt-6.1-sol"
+      ],
+      "start_with": "gpt-6.1-sol",
+      "escalate_to": "claude-opus-5-5",
+      "escalate_after_failed_repairs": 2,
+      "per_stage_run": {
+        "max_micro_usd": 500000,
+        "max_tokens": 60000
+      },
+      "per_request": {
+        "max_input_tokens": 50000,
+        "max_output_tokens": 8000
+      }
+    }
+  ],
+  "routes": [
+    {
+      "stage": "INTAKE",
+      "tier": "standard",
+      "candidates": [
+        "claude-sonnet-5-5",
+        "gpt-6.1-sol"
+      ]
+    },
+    {
+      "stage": "INTAKE",
+      "tier": "large",
+      "candidates": [
+        "claude-opus-5-5"
+      ]
+    },
+    {
+      "stage": "SPECIFICATION",
+      "tier": "standard",
+      "candidates": [
+        "claude-sonnet-5-5",
+        "gpt-6.1-sol"
+      ]
+    },
+    {
+      "stage": "SPECIFICATION",
+      "tier": "large",
+      "candidates": [
+        "claude-opus-5-5"
+      ]
+    },
+    {
+      "stage": "ARCHITECTURE",
+      "tier": "standard",
+      "candidates": [
+        "claude-sonnet-5-5",
+        "gpt-6.1-sol"
+      ]
+    },
+    {
+      "stage": "ARCHITECTURE",
+      "tier": "large",
+      "candidates": [
+        "claude-opus-5-5"
+      ]
+    },
+    {
+      "stage": "TASK_PLANNING",
+      "tier": "standard",
+      "candidates": [
+        "claude-sonnet-5-5",
+        "gpt-6.1-sol"
+      ]
+    },
+    {
+      "stage": "TASK_PLANNING",
+      "tier": "large",
+      "candidates": [
+        "claude-opus-5-5"
+      ]
+    },
+    {
+      "stage": "IMPLEMENTATION",
+      "tier": "standard",
+      "candidates": [
+        "claude-sonnet-5-5",
+        "gpt-6.1-sol"
+      ]
+    },
+    {
+      "stage": "IMPLEMENTATION",
+      "tier": "large",
+      "candidates": [
+        "claude-opus-5-5"
+      ]
+    },
+    {
+      "stage": "REVIEW",
+      "tier": "standard",
+      "candidates": [
+        "gpt-6.1-sol",
+        "claude-sonnet-5-5"
+      ]
+    },
+    {
+      "stage": "REVIEW",
+      "tier": "large",
+      "candidates": [
+        "claude-opus-5-5"
+      ]
+    },
+    {
+      "stage": "DOCUMENTING",
+      "tier": "standard",
+      "candidates": [
+        "claude-sonnet-5-5",
+        "gpt-6.1-sol"
+      ]
+    },
+    {
+      "stage": "DOCUMENTING",
+      "tier": "large",
+      "candidates": [
+        "claude-opus-5-5"
+      ]
+    },
+    {
+      "stage": "DOCUMENTATION_REVIEW",
+      "tier": "standard",
+      "candidates": [
+        "gpt-6.1-sol",
+        "claude-sonnet-5-5"
+      ]
+    },
+    {
+      "stage": "DOCUMENTATION_REVIEW",
+      "tier": "large",
+      "candidates": [
+        "claude-opus-5-5"
+      ]
+    }
+  ],
+  "independence": {
+    "on_no_independent_model": "wait_for_human",
+    "rules": [
+      {
+        "id": "code_review_not_by_the_builders_family",
+        "author_role": "builder",
+        "reviewer_role": "code_reviewer",
+        "must_differ_by": "family"
+      },
+      {
+        "id": "documentation_review_not_by_the_writers_family",
+        "author_role": "technical_writer",
+        "reviewer_role": "documentation_reviewer",
+        "must_differ_by": "family"
+      },
+      {
+        "id": "specification_review_not_by_the_writers_family",
+        "author_role": "specification_writer",
+        "reviewer_role": "specification_reviewer",
+        "must_differ_by": "family"
+      }
+    ]
+  },
+  "job": {
+    "max_micro_usd": 10000000,
+    "max_tokens": 1500000
+  }
+}

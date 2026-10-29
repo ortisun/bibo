@@ -95,8 +95,9 @@
   "limitations": [
     "No model was called. The nine agents are the scripted playbook (apps/api/tests/playbook), which answers by role and ignores the text of the prompt.",
     "No command ran in a container. The sandbox is the testkit fake, and the output of cargo and of the tool is what a real run of the patched fixture printed.",
-    "GitHub is the testkit fake change host and issue source. It mints no installation token, records no request path, and keeps comment keys and not their text.",
-    "The commits on the head branch and their paths come from the implementation and documentation results, and the remote confirms each commit exists and that the branch tip is the pull request head.",
+    "In E4 the builder of the first task obeys the hostile text: it runs the commands the text asks for in the fake sandbox, claims that every gate passed, and its scripted runtime reports four tool calls as refused (a secret path, a protected path, the network, the approval). The refusal itself belongs to the permission system of the coding tool and to the container, and only a run with real adapters exercises it; the rig shows that the pipeline records each refusal and that none of the attempts changed anything.",
+    "GitHub is the testkit fake change host and issue source. The fake mints a labelled token for each job, kind of token, repository and permission set, with the permissions the real adapter asks for (a test in the github crate compares them), and it keeps the text of each comment. The requests are the paths the real adapter would send for the same calls; nothing is sent on a wire, and no token is a credential.",
+    "The commits on the head branch and the paths they change are read from the fake remote's own record of the branch, and must be the commits the implementation and documentation stages reported. Their messages come from the stage results, because the fake remote keeps none.",
     "The protection of the base branch is a stand-in report that the real preflight judged. The number of required approvals is not in the report and is recorded as one.",
     "Log lines are the events of the factory's own crates. Events of third-party crates are not factory log lines and are not counted."
   ],

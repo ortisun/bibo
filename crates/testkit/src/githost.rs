@@ -17,7 +17,7 @@ use std::sync::Mutex;
 use async_trait::async_trait;
 use factory_domain::ids::{JobId, TenantId};
 use factory_domain::values::Timestamp;
-use factory_domain::vocabulary::Fidelity;
+use factory_domain::vocabulary::{Fidelity, StageKind};
 use factory_ports::githost::{
     ActorLogin, AppId, ChangeHost, CheckRef, CheckRequest, Comment, CommentRef, CommentTarget,
     DraftPrRequest, GitHostError, GitScope, GithubActor, Issue, IssueRef, IssueSource,
@@ -158,6 +158,78 @@ pub fn looks_like_a_secret(text: &str) -> bool {
         || (text.contains("-----BEGIN") && text.contains("PRIVATE KEY-----"))
 }
 
+/// The kind of installation token a call needs. The real adapter mints one token for each kind,
+/// each repository and each permission set, and keeps it for a job until it is revoked.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum TokenKind {
+    /// For the calls a stage makes to the code host: the permissions depend on the stage.
+    Stage,
+    /// For fetching the repository: contents read.
+    Fetch,
+    /// For pushing a factory branch: contents write.
+    Push,
+}
+
+/// An installation token the fake minted, as the real adapter would have asked for it. It is a
+/// label and a record of what was asked for. It is not a credential and it opens nothing.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MintedToken {
+    /// A label for the token, `fake-token-N`. Never a value.
+    pub id: String,
+    /// The job it was minted for.
+    pub job: JobId,
+    /// The stage that asked.
+    pub stage: StageKind,
+    /// What it is for.
+    pub kind: TokenKind,
+    /// The one repository it is narrowed to.
+    pub repository: RepoRef,
+    /// The permissions it carries, by GitHub's names, sorted.
+    pub permissions: Vec<(&'static str, &'static str)>,
+    /// True once the tokens of the job were revoked.
+    pub revoked: bool,
+}
+
+/// One request the real adapter would have sent for a call to the fake, in its own method and path
+/// form. The fake sends nothing: this is the record of what the port call stands for.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RecordedRequest {
+    /// The HTTP method.
+    pub method: &'static str,
+    /// The path, with the ids in it.
+    pub path: String,
+}
+
+/// The permissions the real adapter asks for, by stage and kind of token. This is a copy of
+/// `PermissionSet` in the `github` crate, which this crate may not depend on. A test in that crate
+/// (`the_fake_asks_for_what_the_adapter_asks_for`) compares the two, so they cannot drift apart.
+#[must_use]
+pub fn permissions_asked(stage: StageKind, kind: TokenKind) -> Vec<(&'static str, &'static str)> {
+    match (kind, stage) {
+        (TokenKind::Fetch, _) => vec![("contents", "read"), ("metadata", "read")],
+        (TokenKind::Push, _) => vec![("contents", "write"), ("metadata", "read")],
+        (TokenKind::Stage, StageKind::Delivery) => vec![
+            ("checks", "write"),
+            ("contents", "write"),
+            ("issues", "write"),
+            ("metadata", "read"),
+            ("pull_requests", "write"),
+        ],
+        (TokenKind::Stage, StageKind::Approval) => vec![
+            ("contents", "read"),
+            ("issues", "write"),
+            ("metadata", "read"),
+            ("pull_requests", "read"),
+        ],
+        (TokenKind::Stage, _) => vec![
+            ("contents", "read"),
+            ("issues", "read"),
+            ("metadata", "read"),
+            ("pull_requests", "read"),
+        ],
+    }
+}
+
 struct PullRecord {
     tenant: TenantId,
     head: BranchName,
@@ -176,7 +248,11 @@ struct HostState {
     heads: BTreeMap<(RepoRef, BranchName), PullRequestRef>,
     next_pull: u64,
     comments: BTreeMap<(CommentTarget, String), CommentRef>,
+    /// The text of each comment, by the id of the comment.
+    comment_text: BTreeMap<u64, String>,
     next_comment: u64,
+    tokens: Vec<MintedToken>,
+    requests: Vec<RecordedRequest>,
     checks: BTreeMap<(String, String, String, u64), (CheckRef, AppId)>,
     next_check: u64,
 }
@@ -260,6 +336,81 @@ impl FakeChangeHost {
             .count()
     }
 
+    /// The text of the comments the target holds, in the order they were posted. The text is what
+    /// was sent, without the marker the real adapter adds.
+    #[must_use]
+    pub fn comments_on(&self, target: &CommentTarget) -> Vec<String> {
+        let state = self.state.lock().expect("the lock is never poisoned");
+        let mut found: Vec<(u64, String)> = state
+            .comments
+            .iter()
+            .filter(|((held, _), _)| held == target)
+            .filter_map(|(_, comment)| {
+                state
+                    .comment_text
+                    .get(&comment.id)
+                    .map(|text| (comment.id, text.clone()))
+            })
+            .collect();
+        found.sort_by_key(|(id, _)| *id);
+        found.into_iter().map(|(_, text)| text).collect()
+    }
+
+    /// The installation tokens the fake minted, in order: one for each job, kind of token,
+    /// repository and permission set, as the real adapter keeps them. Labels, never values.
+    #[must_use]
+    pub fn minted_tokens(&self) -> Vec<MintedToken> {
+        self.state
+            .lock()
+            .expect("the lock is never poisoned")
+            .tokens
+            .clone()
+    }
+
+    /// The requests the real adapter would have sent for the calls so far, in order.
+    #[must_use]
+    pub fn recorded_requests(&self) -> Vec<RecordedRequest> {
+        self.state
+            .lock()
+            .expect("the lock is never poisoned")
+            .requests
+            .clone()
+    }
+
+    /// Notes the token a call needs and the request the real adapter would send for it. A token
+    /// that the job already holds for the same repository, kind and permissions is not minted
+    /// again.
+    fn note(
+        state: &mut HostState,
+        scope: &GitScope,
+        kind: TokenKind,
+        request: Option<(&'static str, String)>,
+    ) {
+        let permissions = permissions_asked(scope.stage, kind);
+        let held = state.tokens.iter().any(|token| {
+            token.job == scope.job
+                && token.kind == kind
+                && token.repository == scope.repo
+                && token.permissions == permissions
+                && !token.revoked
+        });
+        if !held {
+            let id = format!("fake-token-{}", state.tokens.len() + 1);
+            state.tokens.push(MintedToken {
+                id,
+                job: scope.job,
+                stage: scope.stage,
+                kind,
+                repository: scope.repo.clone(),
+                permissions,
+                revoked: false,
+            });
+        }
+        if let Some((method, path)) = request {
+            state.requests.push(RecordedRequest { method, path });
+        }
+    }
+
     /// How many check runs exist for the commit and name.
     #[must_use]
     pub fn check_run_count(&self, commit: &CommitSha, name: &str) -> usize {
@@ -328,6 +479,11 @@ impl Default for FakeChangeHost {
     }
 }
 
+/// The path of a repository, `/repos/owner/name`, as the real adapter writes it.
+fn repo_path(repo: &RepoRef) -> String {
+    format!("/repos/{}/{}", repo.owner(), repo.name())
+}
+
 fn etag(revision: u64) -> String {
     format!("\"rev-{revision}\"")
 }
@@ -344,8 +500,9 @@ impl ChangeHost for FakeChangeHost {
     }
 
     async fn fetch_target(&self, scope: &GitScope) -> Result<FetchTarget, GitHostError> {
-        let state = self.state.lock().expect("the lock is never poisoned");
+        let mut state = self.state.lock().expect("the lock is never poisoned");
         self.live(&state, scope)?;
+        Self::note(&mut state, scope, TokenKind::Fetch, None);
         Ok(FetchTarget {
             repo: scope.repo.clone(),
             credential: FetchCredential::new(format!("fake-read-credential-{}", scope.job)),
@@ -357,11 +514,12 @@ impl ChangeHost for FakeChangeHost {
         scope: &GitScope,
         branch: &BranchName,
     ) -> Result<PushTarget, GitHostError> {
-        let state = self.state.lock().expect("the lock is never poisoned");
+        let mut state = self.state.lock().expect("the lock is never poisoned");
         self.live(&state, scope)?;
         if !self.branch_ok(branch) {
             return Err(GitHostError::BranchNotAllowed);
         }
+        Self::note(&mut state, scope, TokenKind::Push, None);
         Ok(PushTarget {
             repo: scope.repo.clone(),
             branch: branch.clone(),
@@ -374,8 +532,17 @@ impl ChangeHost for FakeChangeHost {
         scope: &GitScope,
         branch: &BranchName,
     ) -> Result<CommitSha, GitHostError> {
-        let state = self.state.lock().expect("the lock is never poisoned");
+        let mut state = self.state.lock().expect("the lock is never poisoned");
         self.live(&state, scope)?;
+        Self::note(
+            &mut state,
+            scope,
+            TokenKind::Stage,
+            Some((
+                "GET",
+                format!("{}/branches/{}", repo_path(&scope.repo), branch),
+            )),
+        );
         self.remote
             .branch_tip(&scope.repo, branch)
             .ok_or(GitHostError::NotFound)
@@ -394,6 +561,12 @@ impl ChangeHost for FakeChangeHost {
         if !self.text_ok(&req.body) || !self.text_ok(&req.title) {
             return Err(GitHostError::UnsafeText);
         }
+        Self::note(
+            &mut state,
+            scope,
+            TokenKind::Stage,
+            Some(("POST", format!("{}/pulls", repo_path(&scope.repo)))),
+        );
         let tip = self.remote.branch_tip(&scope.repo, &req.head);
         if tip.is_none() && !self.has(ChangeHostDefect::OpensForUnpushedHead) {
             return Err(GitHostError::Rejected(Rejection::HeadNotPushed));
@@ -450,6 +623,15 @@ impl ChangeHost for FakeChangeHost {
     ) -> Result<(), GitHostError> {
         let mut state = self.state.lock().expect("the lock is never poisoned");
         self.live(&state, scope)?;
+        Self::note(
+            &mut state,
+            scope,
+            TokenKind::Stage,
+            Some((
+                "PATCH",
+                format!("{}/pulls/{}", repo_path(&pr.repo), pr.number),
+            )),
+        );
         let record = self.pull(&mut state, scope, pr)?;
         if !self.text_ok(body) {
             return Err(GitHostError::UnsafeText);
@@ -487,6 +669,17 @@ impl ChangeHost for FakeChangeHost {
         if !self.text_ok(body) {
             return Err(GitHostError::UnsafeText);
         }
+        let number = match target {
+            CommentTarget::Issue(issue) => issue.number,
+            CommentTarget::PullRequest(pr) => pr.number,
+        };
+        let comments_path = format!("{}/issues/{number}/comments", repo_path(&scope.repo));
+        Self::note(
+            &mut state,
+            scope,
+            TokenKind::Stage,
+            Some(("GET", comments_path.clone())),
+        );
         // The adapter finds its marker before posting: the same key finds the same comment.
         let lookup = if self.has(ChangeHostDefect::OneCommentForAllKeys) {
             "all".to_owned()
@@ -504,6 +697,11 @@ impl ChangeHost for FakeChangeHost {
             target: target.clone(),
             id: state.next_comment,
         };
+        state.requests.push(RecordedRequest {
+            method: "POST",
+            path: comments_path,
+        });
+        state.comment_text.insert(comment.id, body.to_owned());
         // With the duplicate defect the key is made unique, so every call keeps its own comment.
         let stored_key = if self.has(ChangeHostDefect::DuplicateComments) {
             (target.clone(), format!("{}#{}", key.1, comment.id))
@@ -524,6 +722,12 @@ impl ChangeHost for FakeChangeHost {
         if !self.text_ok(&req.summary) || !self.text_ok(&req.title) {
             return Err(GitHostError::UnsafeText);
         }
+        Self::note(
+            &mut state,
+            scope,
+            TokenKind::Stage,
+            Some(("POST", format!("{}/check-runs", repo_path(&scope.repo)))),
+        );
         let duplicate_suffix = if self.has(ChangeHostDefect::DuplicatesChecks) {
             state.next_check + 1
         } else {
@@ -558,6 +762,15 @@ impl ChangeHost for FakeChangeHost {
     ) -> Result<PullRequestState, GitHostError> {
         let mut state = self.state.lock().expect("the lock is never poisoned");
         self.live(&state, scope)?;
+        Self::note(
+            &mut state,
+            scope,
+            TokenKind::Stage,
+            Some((
+                "GET",
+                format!("{}/pulls/{}", repo_path(&pr.repo), pr.number),
+            )),
+        );
         let record = self.pull(&mut state, scope, pr)?;
         Ok(PullRequestState {
             lifecycle: if self.has(ChangeHostDefect::MergedReadsAsOpen) {
@@ -575,11 +788,11 @@ impl ChangeHost for FakeChangeHost {
 
     async fn revoke_job_tokens(&self, job: JobId) -> Result<(), GitHostError> {
         if !self.has(ChangeHostDefect::RevokeDoesNothing) {
-            self.state
-                .lock()
-                .expect("the lock is never poisoned")
-                .revoked
-                .insert(job);
+            let mut state = self.state.lock().expect("the lock is never poisoned");
+            state.revoked.insert(job);
+            for token in state.tokens.iter_mut().filter(|token| token.job == job) {
+                token.revoked = true;
+            }
         }
         Ok(())
     }

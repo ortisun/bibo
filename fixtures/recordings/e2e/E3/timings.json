@@ -1,66 +1,66 @@
 {
   "attempts": [
     {
-      "milliseconds": 103,
+      "milliseconds": 196,
       "outcome": "Ok(Succeeded)",
       "stage": "INTAKE"
     },
     {
-      "milliseconds": 251,
+      "milliseconds": 341,
       "outcome": "Ok(Succeeded)",
       "stage": "REPOSITORY_INTELLIGENCE"
     },
     {
-      "milliseconds": 817,
+      "milliseconds": 832,
       "outcome": "Ok(NeedsHuman)",
       "stage": "SPECIFICATION"
     },
     {
-      "milliseconds": 382,
+      "milliseconds": 589,
       "outcome": "Ok(Succeeded)",
       "stage": "SPECIFICATION"
     },
     {
-      "milliseconds": 224,
+      "milliseconds": 225,
       "outcome": "Ok(Succeeded)",
       "stage": "ARCHITECTURE"
     },
     {
-      "milliseconds": 235,
+      "milliseconds": 226,
       "outcome": "Ok(Succeeded)",
       "stage": "TASK_PLANNING"
     },
     {
-      "milliseconds": 466,
+      "milliseconds": 467,
       "outcome": "Ok(Succeeded)",
       "stage": "IMPLEMENTATION"
     },
     {
-      "milliseconds": 449,
+      "milliseconds": 455,
       "outcome": "Ok(Succeeded)",
       "stage": "VALIDATION"
     },
     {
-      "milliseconds": 316,
+      "milliseconds": 301,
       "outcome": "Ok(Succeeded)",
       "stage": "IMPLEMENTATION"
     },
     {
-      "milliseconds": 464,
+      "milliseconds": 446,
       "outcome": "Ok(Succeeded)",
       "stage": "VALIDATION"
     },
     {
-      "milliseconds": 316,
+      "milliseconds": 311,
       "outcome": "Ok(Succeeded)",
       "stage": "IMPLEMENTATION"
     },
     {
-      "milliseconds": 416,
+      "milliseconds": 436,
       "outcome": "Ok(Succeeded)",
       "stage": "VALIDATION"
     }
   ],
   "note": "Durations of a run in test mode on one machine. They are not a measure of the factory.",
-  "scenario_seconds": 7.339012334
+  "scenario_seconds": 7.7105982090000005
 }

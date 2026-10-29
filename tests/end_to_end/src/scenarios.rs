@@ -131,7 +131,7 @@ pub const SCENARIOS: [Scenario; 13] = [
     Scenario {
         id: "E6",
         title: "A requester who is not on the allowlist is rejected",
-        shows: "Admission rejects the request and the reply does not say which test failed.",
+        shows: "A label from someone who may not ask makes no job, leaves one audit record of the rejection, and gets one plain reply that names no one.",
         adapters: Adapters::TestMode,
         issue: Some("unauthorized-requester"),
         variant: None,

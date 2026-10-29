@@ -451,13 +451,47 @@ mod tests {
         };
         let found = problems(&host);
         let joined = found.join("\n");
-        assert!(joined.contains("policies/model_routing.yaml"), "{joined}");
+        // The routing policy exists in the repository now, so it is not named as missing.
+        assert!(!joined.contains("policies/model_routing.yaml"), "{joined}");
         assert!(joined.contains("CODEOWNERS"), "{joined}");
         assert!(joined.contains("Docker is not installed"), "{joined}");
         // A variable that is not set is the business of `missing_needs`, not of this module.
         assert!(!joined.contains("KEY_FILE"), "{joined}");
         assert!(!joined.contains("SPEND_LIMIT"), "{joined}");
         assert!(!joined.contains("REQUESTER_ALLOWLIST"), "{joined}");
+    }
+
+    #[test]
+    fn a_checkout_without_the_routing_policy_is_named_and_one_with_it_is_not() {
+        let env = env_of(&[]);
+        let docker = docker_with(DockerAnswer::NotInstalled);
+        let empty = std::env::temp_dir().join(format!("e2e-no-routing-{}", std::process::id()));
+        std::fs::create_dir_all(&empty).expect("dir");
+        let missing = Host {
+            root: &empty,
+            env: &env,
+            docker: &docker,
+            git: &git_nothing,
+        };
+        let mut found = Vec::new();
+        routing_policy(&missing, &mut found);
+        assert_eq!(found.len(), 1, "{found:?}");
+        assert!(
+            found[0].contains("policies/model_routing.yaml"),
+            "{found:?}"
+        );
+        let _ = std::fs::remove_dir_all(&empty);
+
+        let real_root = root();
+        let present = Host {
+            root: &real_root,
+            env: &env,
+            docker: &docker,
+            git: &git_nothing,
+        };
+        let mut found = Vec::new();
+        routing_policy(&present, &mut found);
+        assert!(found.is_empty(), "{found:?}");
     }
 
     #[test]

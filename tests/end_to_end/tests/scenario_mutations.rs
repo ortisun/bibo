@@ -223,12 +223,67 @@ fn e4_checks_fail_on_corrupted_evidence() {
                 },
             },
             M {
-                name: "the denial is not in the audit stream",
+                name: "the denials are not in the audit stream",
                 check: "E4.agent-denials",
-                expect: "denied tool calls",
+                expect: "holds 0 denied tool calls",
                 apply: |ev| {
                     ev.audit
                         .retain(|r| !r.action.starts_with("tool_call_denied"))
+                },
+            },
+            M {
+                name: "fewer denials are in the audit stream than the runtime reported",
+                check: "E4.agent-denials",
+                expect: "holds 3 denied tool calls",
+                apply: |ev| {
+                    let mut kept = 0;
+                    ev.audit.retain(|r| {
+                        r.action != "tool_call_denied.denied" || {
+                            kept += 1;
+                            kept <= 3
+                        }
+                    });
+                },
+            },
+            M {
+                name: "the agent attempted nothing",
+                check: "E4.agent-denials",
+                expect: "no agent attempted anything",
+                apply: |ev| {
+                    ev.facts.insert("agent_attempts".into(), json!(0));
+                },
+            },
+            M {
+                name: "the runtime reported fewer refusals than there were attempts",
+                check: "E4.agent-denials",
+                expect: "reported 2 refused tool calls for 4 attempts",
+                apply: |ev| {
+                    ev.facts.insert("agent_denials_reported".into(), json!(2));
+                },
+            },
+            M {
+                name: "no attempt of the agent reached the network",
+                check: "E4.agent-denials",
+                expect: "no attempt by the agent reached the network",
+                apply: |ev| {
+                    ev.hostile
+                        .as_mut()
+                        .expect("h")
+                        .attempts
+                        .retain(|a| !a.action.contains("network"));
+                },
+            },
+            M {
+                name: "an attempt of the agent was not denied",
+                check: "E4.no-effect",
+                expect: "was not denied",
+                apply: |ev| {
+                    let attempts = &mut ev.hostile.as_mut().expect("h").attempts;
+                    let at = attempts
+                        .iter()
+                        .position(|a| a.action.starts_with("the builder"))
+                        .expect("an attempt of the builder");
+                    attempts[at].outcome = "performed".into();
                 },
             },
             M {
@@ -322,16 +377,105 @@ fn e6_checks_fail_on_corrupted_evidence() {
         "E6",
         &[
             M {
-                name: "the job was admitted",
+                name: "the unauthorized label made a job",
                 check: "E6.rejected",
-                expect: "not REJECTED",
-                apply: |ev| ev.job.status = "ACTIVE".into(),
+                expect: "a job exists",
+                apply: |ev| {
+                    ev.job.id = "a-job".into();
+                    ev.job.status = "REJECTED".into();
+                },
+            },
+            M {
+                name: "the unauthorized label made a job that runs",
+                check: "E6.rejected",
+                expect: "a job exists",
+                apply: |ev| {
+                    ev.job.id = "a-job".into();
+                    ev.job.status = "ACTIVE".into();
+                },
             },
             M {
                 name: "a stage started",
                 check: "E6.rejected",
                 expect: "stage runs started",
                 apply: |ev| ev.stage_runs.push(started_run("INTAKE")),
+            },
+            M {
+                name: "the rejection left no audit record",
+                check: "E6.rejected",
+                expect: "0 intake.rejected records",
+                apply: |ev| ev.audit.clear(),
+            },
+            M {
+                name: "the rejection was audited twice",
+                check: "E6.rejected",
+                expect: "2 intake.rejected records",
+                apply: |ev| {
+                    let again = ev.audit[0].clone();
+                    ev.audit.push(again);
+                },
+            },
+            M {
+                name: "the reason code is not the fixed one",
+                check: "E6.rejected",
+                expect: "fixed code unauthorized_actor",
+                apply: |ev| ev.audit[0].detail = "denied".into(),
+            },
+            M {
+                name: "the record names another sender",
+                check: "E6.rejected",
+                expect: "names the sender",
+                apply: |ev| {
+                    ev.audit[0].subject = ev.audit[0].subject.replace("sender=1002", "sender=7")
+                },
+            },
+            M {
+                name: "the record has no sender",
+                check: "E6.rejected",
+                expect: "names the sender",
+                apply: |ev| {
+                    ev.audit[0].subject = ev.audit[0].subject.replace("sender=1002", "sender=none")
+                },
+            },
+            M {
+                name: "the record names another delivery",
+                check: "E6.rejected",
+                expect: "names the delivery",
+                apply: |ev| {
+                    ev.audit[0].subject = ev.audit[0].subject.replace(
+                        "0190a3b2-7c4d-4e5f-8a6b-0000000000e6",
+                        "0190a3b2-7c4d-4e5f-8a6b-000000000999",
+                    );
+                },
+            },
+            M {
+                name: "the record has no allowlist version",
+                check: "E6.rejected",
+                expect: "version of the allowlist",
+                apply: |ev| {
+                    let subject = ev.audit[0].subject.clone();
+                    let kept: Vec<&str> = subject
+                        .split(' ')
+                        .filter(|word| !word.starts_with("allowlist="))
+                        .collect();
+                    ev.audit[0].subject = kept.join(" ");
+                },
+            },
+            M {
+                name: "the record says the reply was not sent",
+                check: "E6.rejected",
+                expect: "must say posted",
+                apply: |ev| {
+                    ev.audit[0].subject = ev.audit[0]
+                        .subject
+                        .replace("reply=posted", "reply=not_sent")
+                },
+            },
+            M {
+                name: "the record holds the login the payload carried",
+                check: "E6.rejected",
+                expect: "holds the login",
+                apply: |ev| ev.audit[0].subject.push_str(" login=stranger-carla"),
             },
             M {
                 name: "the token could write code",
@@ -344,16 +488,82 @@ fn e6_checks_fail_on_corrupted_evidence() {
                 },
             },
             M {
+                name: "the token could write pull requests",
+                check: "E6.rejected",
+                expect: "which a reply does not need",
+                apply: |ev| {
+                    ev.github.tokens[0]
+                        .permissions
+                        .insert("pull_requests".into(), "write".into());
+                },
+            },
+            M {
+                name: "the token spans two repositories",
+                check: "E6.rejected",
+                expect: "narrowed to 2 repositories",
+                apply: |ev| {
+                    ev.github.tokens[0]
+                        .repositories
+                        .push("example-org/other".into())
+                },
+            },
+            M {
+                name: "the reply was sent with no token",
+                check: "E6.rejected",
+                expect: "0 GitHub tokens",
+                apply: |ev| ev.github.tokens.clear(),
+            },
+            M {
                 name: "the reply reveals the allowlist",
                 check: "E6.rejected",
-                expect: "reveals which test failed",
-                apply: |ev| ev.github.comments = vec!["You are not on the allowlist.".into()],
+                expect: "reveals 'allowlist'",
+                apply: |ev| {
+                    ev.github.comments = vec![
+                        "You are not on the list of people who may ask for this. The allowlist has four people.".into(),
+                    ];
+                },
+            },
+            M {
+                name: "the reply names the sender by number",
+                check: "E6.rejected",
+                expect: "reveals '1002'",
+                apply: |ev| {
+                    ev.github.comments = vec![
+                        "Account 1002 is not on the list of people who may ask for this.".into(),
+                    ];
+                },
+            },
+            M {
+                name: "the reply repeats the text of the issue",
+                check: "E6.rejected",
+                expect: "reveals '--json'",
+                apply: |ev| {
+                    ev.github.comments = vec![
+                        "You are not on the list of people who may ask for this: a --json flag."
+                            .into(),
+                    ];
+                },
+            },
+            M {
+                name: "the reply does not say why",
+                check: "E6.rejected",
+                expect: "does not say",
+                apply: |ev| ev.github.comments = vec!["Thanks for the request.".into()],
             },
             M {
                 name: "two replies",
                 check: "E6.rejected",
                 expect: "posted 2 comments",
-                apply: |ev| ev.github.comments.push("again".into()),
+                apply: |ev| {
+                    let again = ev.github.comments[0].clone();
+                    ev.github.comments.push(again);
+                },
+            },
+            M {
+                name: "no reply",
+                check: "E6.rejected",
+                expect: "posted 0 comments",
+                apply: |ev| ev.github.comments.clear(),
             },
             M {
                 name: "money was spent",
@@ -379,12 +589,6 @@ fn e6_checks_fail_on_corrupted_evidence() {
                             body: "b".into(),
                         });
                 },
-            },
-            M {
-                name: "no denial is audited",
-                check: "E6.rejected",
-                expect: "denial records",
-                apply: |ev| ev.audit.clear(),
             },
         ],
     );
