@@ -55,15 +55,17 @@ NEEDS = ("docker", "live_provider")
 BLOCK_KINDS = ("docker", "live_provider", "human")
 CONTROL_KINDS = ("mutation", "break_test", "defect")
 ROW_KEYS = {"id", "status", "tests", "control_off", "blocked", "parts_blocked", "findings", "note"}
+OUTSIDE_EXTRA = {"owner", "priority"}
 FINDING_KEYS = {"id", "owner", "title", "detail", "smallest_fix", "severity"}
-TEST_KEYS = {"name", "file", "needs"}
+TEST_KEYS = {"name", "file", "needs", "ran"}
+RAN_KEYS = {"on", "result", "with"}
 CONTROL_KEYS = {
     "mutation": {"kind", "script", "name", "catches"},
     "break_test": {"kind", "file", "name", "catches"},
     "defect": {"kind", "file", "symbol", "catches"},
 }
 RUN_KEYS = {"script", "name", "date", "result", "failed"}
-TOP_KEYS = {"schema_version", "catalog", "work_packages", "recorded", "findings", "audit_events", "mutation_runs", "rows"}
+TOP_KEYS = {"schema_version", "catalog", "work_packages", "recorded", "findings", "audit_events", "mutation_runs", "rows", "rows_outside_p0"}
 POLICY = ROOT / "policies/security.yaml"
 PRODUCTIONS = ("engine", "handler", "api", "differently_named", "other_stream", "none")
 EVENT_KEYS = {"type", "owner", "production", "source", "token", "note"}
@@ -177,12 +179,27 @@ def validate(doc):
             errors.append(f"finding {f['id']}: owner {f['owner']} is not a work package")
         if f["severity"] not in ("high", "medium", "low"):
             errors.append(f"finding {f['id']}: severity must be high, medium or low")
-    for row in rows:
+    outside = doc.get("rows_outside_p0", [])
+    for row in outside:
+        rid = row.get("id", "?")
+        owner = row.get("owner")
+        if rid in seen or rid in p0:
+            errors.append(f"{rid}: a row outside the P0 list must not also be a P0 row")
+        entry = catalog.get(rid)
+        if entry is None:
+            errors.append(f"{rid}: a row outside the P0 list must be a test of the catalog")
+        elif entry["priority"] == "P0":
+            errors.append(f"{rid}: is a P0 test of the catalog; it belongs in rows")
+        if not isinstance(owner, dict) or set(owner) != {"wp", "crate"} or owner["wp"] not in wps:
+            errors.append(f"{rid}: owner needs wp (a work package) and crate")
+            continue
+        errors += validate_row(rid, row, {rid: {"wp": owner["wp"], "crate": owner["crate"]}}, wps, naming=False)
+    for row in rows + outside:
         for fid in row.get("findings", []):
             if fid not in finding_ids:
                 errors.append(f"{row.get('id', '?')}: names finding {fid}, which is not listed")
     for fid in sorted(finding_ids):
-        if not any(fid in row.get("findings", []) for row in rows):
+        if not any(fid in row.get("findings", []) for row in rows + outside):
             errors.append(f"finding {fid} is not reported by any row")
     for run in runs:
         if set(run) != RUN_KEYS:
@@ -266,9 +283,15 @@ def validate_audit_events(events, wps):
     return errors
 
 
-def validate_row(rid, row, owners, wps):
+def ran_and_passed(test):
+    """True when the test needs Docker or a provider and was run, and passed, on the machine of the review."""
+    ran = test.get("ran")
+    return isinstance(ran, dict) and ran.get("result") == "PASSED"
+
+
+def validate_row(rid, row, owners, wps, naming=True):
     errors = []
-    unknown = set(row) - ROW_KEYS
+    unknown = set(row) - ROW_KEYS - (OUTSIDE_EXTRA if not naming else set())
     if unknown:
         errors.append(f"{rid}: unknown keys {sorted(unknown)}")
     status = row.get("status")
@@ -291,8 +314,14 @@ def validate_row(rid, row, owners, wps):
         needs = t.get("needs", [])
         if any(n not in NEEDS for n in needs):
             errors.append(f"{rid}: {t['name']}: needs must be a subset of {list(NEEDS)}")
-        if not t["name"].startswith(prefix):
+        if naming and not t["name"].startswith(prefix):
             errors.append(f"{rid}: {t['name']} does not start with {prefix} (the naming rule of the catalog)")
+        if "ran" in t:
+            ran = t["ran"]
+            if not needs:
+                errors.append(f"{rid}: {t['name']}: ran is for a test that needs Docker or a live provider")
+            if not isinstance(ran, dict) or set(ran) != RAN_KEYS or ran.get("result") not in ("PASSED", "FAILED") or not all(str(ran.get(k, "")).strip() for k in RAN_KEYS):
+                errors.append(f"{rid}: {t['name']}: ran needs on, result (PASSED or FAILED) and with")
         source = read_text(t["file"])
         if source is None:
             errors.append(f"{rid}: {t['name']}: file {t['file']} does not exist")
@@ -301,7 +330,7 @@ def validate_row(rid, row, owners, wps):
         if t["name"] in names:
             errors.append(f"{rid}: {t['name']} is listed twice")
         names.add(t["name"])
-        if not needs:
+        if not needs or ran_and_passed(t):
             runnable.add(t["name"])
     caught_runnable = set()
     for c in control:
@@ -313,9 +342,9 @@ def validate_row(rid, row, owners, wps):
     else:
         if not tests:
             errors.append(f"{rid}: status {status} but no test is listed")
-        if not any(t["name"].startswith(prefix) for t in tests):
+        if naming and not any(t["name"].startswith(prefix) for t in tests):
             errors.append(f"{rid}: no listed test follows the naming rule {prefix}")
-    all_blocked = bool(tests) and all(t.get("needs") for t in tests)
+    all_blocked = bool(tests) and all(t.get("needs") and not ran_and_passed(t) for t in tests)
     if status == "proven":
         if not control:
             errors.append(f"{rid}: status proven but no control-off variant is named")
@@ -329,6 +358,8 @@ def validate_row(rid, row, owners, wps):
         if all_blocked:
             errors.append(f"{rid}: every test needs Docker or a live provider; the row is blocked")
     if status == "blocked":
+        if any(ran_and_passed(t) for t in tests):
+            errors.append(f"{rid}: status blocked, but a test of the row ran and passed on the machine of the review")
         blocked = row.get("blocked")
         if not isinstance(blocked, dict) or set(blocked) != {"kind", "reason"} or blocked.get("kind") not in BLOCK_KINDS or not str(blocked.get("reason", "")).strip():
             errors.append(f"{rid}: status blocked needs blocked = {{kind: one of {list(BLOCK_KINDS)}, reason: text}}")
@@ -387,6 +418,18 @@ def validate_control(rid, c, tests, names):
     return errors
 
 
+def ran_text(test):
+    """The marker of a test that needs Docker or a live provider, with what the review saw."""
+    needs = test.get("needs", [])
+    if not needs:
+        return ""
+    label = ", ".join("Docker" if n == "docker" else "live provider" for n in needs)
+    ran = test.get("ran")
+    if isinstance(ran, dict):
+        return f" [{label}; ran {ran['on']}: {ran['result'].lower()}]"
+    return f" [{label}]"
+
+
 def short(name, limit=88):
     return name if len(name) <= limit else name[: limit - 1] + "…"
 
@@ -411,7 +454,7 @@ def render(doc, catalog, owners):
         o = owners[r["id"]]
         scope = " (partial)" if o.get("scope") == "partial" else ""
         tests = r.get("tests", [])
-        shown = [f"`{short(t['name'])}`" + (" [Docker]" if "docker" in t.get("needs", []) else "") + (" [live provider]" if "live_provider" in t.get("needs", []) else "") for t in tests[:3]]
+        shown = [f"`{short(t['name'])}`" + ran_text(t) for t in tests[:3]]
         if len(tests) > 3:
             shown.append(f"and {len(tests) - 3} more")
         control = []
@@ -451,6 +494,33 @@ def render(doc, catalog, owners):
             if status == "blocked":
                 reason = f" {r['blocked']['reason']}"
             w(f"- **{r['id']}**{reason}{(' ' + r['note']) if r.get('note') else ''}")
+        w("")
+    outside = doc.get("rows_outside_p0", [])
+    if outside:
+        w("### Rows outside the P0 list")
+        w("")
+        w("These tests are in the catalog with a priority below P0, so the count above does not include them. They are registered the same way (tests, a control-off variant, a status), and the naming rule does not apply to a test that was written before its row. They move to the P0 list when `negative_tests.entries` of the work packages names an owner for them and the catalog marks them P0.")
+        w("")
+        w("| Test | Title | Owner (work package, crate) | Tests in the repository | Control-off variant | Status |")
+        w("|---|---|---|---|---|---|")
+        for r in sorted(outside, key=lambda r: r["id"]):
+            shown = [f"`{short(t['name'])}`" + ran_text(t) for t in r.get("tests", [])[:4]]
+            if len(r.get("tests", [])) > 4:
+                shown.append(f"and {len(r['tests']) - 4} more")
+            control = []
+            for c in r.get("control_off", [])[:3]:
+                label = c.get("name") or c.get("symbol")
+                ran = ""
+                if c["kind"] == "mutation":
+                    run = runs.get((c["script"], c["name"]))
+                    ran = f", {run['result'].lower()} {run['date']}" if run else ", not run in this review"
+                control.append(f"{c['kind'].replace('_', ' ')} `{short(label, 60)}`{ran}")
+            title = catalog[r["id"]]["title"].replace("|", "/")
+            owner = r["owner"]
+            w(f"| {r['id']} | {title} | {owner['wp']}, {owner['crate']} | {'<br>'.join(shown) or 'none'} | {'<br>'.join(control) or 'none'} | {STATUS_TEXT[r['status']]} |")
+            if r.get("note"):
+                w("")
+                w(f"{r['id']}: {r['note']}")
         w("")
     parts = [(r["id"], p) for r in rows for p in r.get("parts_blocked", [])]
     w("### Parts that are BLOCKED inside a row")
@@ -559,7 +629,10 @@ def self_test(doc):
         target["control_off"][0] = dict(target["control_off"][0], catches=["negative_nt_not_a_test_of_this_row"])
 
     def blocked_without_a_reason(d):
-        next(r for r in d["rows"] if r["status"] == "blocked")["blocked"] = {"kind": "docker", "reason": " "}
+        # No row has to be blocked (a machine with a daemon blocks none), so the break makes one.
+        target = next(r for r in d["rows"] if r["status"] == "blocked") if any(r["status"] == "blocked" for r in d["rows"]) else d["rows"][0]
+        target["status"] = "blocked"
+        target["blocked"] = {"kind": "docker", "reason": " "}
 
     def drop_an_audit_event_type(d):
         d["audit_events"] = d["audit_events"][:-1]
