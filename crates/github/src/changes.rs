@@ -391,7 +391,10 @@ impl ChangeHost for GithubChangeHost {
         let marker = marker_for(idempotency_key);
         let path = format!("{}/issues/{number}/comments", repo_path(&scope.repo));
         let bot = self.client.minter().app_identity().await?.bot_login;
-        let existing = self.client.get_pages(scope, &path).await?;
+        let existing = self
+            .client
+            .get_pages_as(scope, TokenClass::Comment, &path)
+            .await?;
         // Only the App's own comment counts: a marker pasted by someone else must not stop the
         // factory from reporting.
         let found = existing.items.iter().find(|comment| {
@@ -411,7 +414,7 @@ impl ChangeHost for GithubChangeHost {
             .client
             .call(
                 scope,
-                TokenClass::Stage,
+                TokenClass::Comment,
                 Method::Post,
                 &path,
                 Some(&payload),

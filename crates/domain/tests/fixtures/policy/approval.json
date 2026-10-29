@@ -347,6 +347,19 @@
     },
     {
       "approver_roles": [
+        "operator"
+      ],
+      "id": "unblock_blocked_stage_run",
+      "min_level": "L1",
+      "requires": "human",
+      "threats": [
+        "T-13",
+        "T-23"
+      ],
+      "when": "a person who holds the operator designation lets a BLOCKED stage run go again once the cause is gone: the environment is repaired and the capability re-probe passes, or a decision on the dependency or on the build code it waited for was recorded after the attempt that blocked it (state machine transition S17, guard G_BLOCK_CLEARED_RERUN); the stage runs again and its gates judge the result, so this passes no gate and is not an override"
+    },
+    {
+      "approver_roles": [
         "approver"
       ],
       "id": "acknowledge_documentation_warning",
@@ -375,6 +388,7 @@
     "change_authority_allowlist",
     "accept_subscription_login_exception",
     "acknowledge_documentation_warning",
+    "unblock_blocked_stage_run",
     "merge_to_default_branch_unless_L3_explicitly_enabled",
     "enable_auto_merge_for_a_repository",
     "any_deployment_or_release_publication",
@@ -633,8 +647,11 @@
       "resume",
       "rework",
       "cancel",
+      "unblock",
       "approve-dependency",
-      "approve-build-code"
+      "approve-build-code",
+      "approve-project-build-code",
+      "ack-translation-warning"
     ]
   },
   "intake": {

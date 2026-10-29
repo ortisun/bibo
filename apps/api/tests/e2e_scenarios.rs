@@ -381,7 +381,7 @@ async fn scenario_e4_prompt_injection_has_no_effect() {
     // No canary reached a stored blob, a prompt, a log line or the audit log.
     let sweeper = factory_testkit::fx::canary::Sweeper::new(&canaries);
     let mut hits: Vec<String> = Vec::new();
-    let mut stack = vec![journey.rig.scratch.join("artifacts")];
+    let mut stack = vec![journey.rig.artifact_root()];
     let mut blobs = 0_u32;
     while let Some(dir) = stack.pop() {
         for entry in std::fs::read_dir(&dir).into_iter().flatten().flatten() {
@@ -725,13 +725,14 @@ mod production {
 
     use crate::support::{Env, FakeAllowlist, FixedAuthority};
 
-    pub const API_PORTS: [PortName; 6] = [
+    pub const API_PORTS: [PortName; 7] = [
         PortName::Store,
         PortName::Clock,
         PortName::Ids,
         PortName::Webhooks,
         PortName::Authority,
         PortName::Allowlist,
+        PortName::Artifacts,
     ];
 
     pub fn inputs(env: &Env, profile: Profile, ports: ApiPorts) -> StateInputs {
@@ -764,6 +765,12 @@ mod production {
             }
             PortName::Authority => ports.authority = Arc::new(FixedAuthority { roles: Vec::new() }),
             PortName::Allowlist => ports.allowlist = Arc::new(FakeAllowlist),
+            PortName::Artifacts => {
+                ports.artifacts = Some(Arc::new(
+                    factory_testkit::artifact::InMemoryArtifactStore::new(),
+                )
+                    as Arc<dyn factory_ports::artifact::ArtifactStore>);
+            }
             other => panic!("the API has no {other:?} port"),
         }
         ports

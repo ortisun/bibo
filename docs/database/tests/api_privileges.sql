@@ -47,6 +47,9 @@ INSERT INTO expected_api_grants VALUES
   -- Read: who is calling, which repository, what the job did so far.
   ('tenants', 'SELECT'), ('repositories', 'SELECT'), ('principals', 'SELECT'),
   ('stage_runs', 'SELECT'), ('outbox', 'SELECT'),
+  -- Read, since migration 2026-10-29-002300: the evidence a person reads before a decision. The index of the
+  -- stored documents, the links from a stage run to them, and the ledger entries that cite the gate reports.
+  ('artifacts', 'SELECT'), ('stage_run_artifacts', 'SELECT'), ('ledger_entries', 'SELECT'),
   -- Read and write: the four tables the API writes.
   ('jobs', 'SELECT'), ('jobs', 'INSERT'),
   ('original_requests', 'SELECT'), ('original_requests', 'INSERT'),
@@ -95,11 +98,10 @@ BEGIN
   PERFORM dbtest.expect_eq('factory_api_app cannot INSERT into any of the 13 tables the review found', coalesce(extra, ''), '');
 
   SELECT string_agg(t, ', ' ORDER BY t) INTO extra
-    FROM unnest(ARRAY['api_tokens', 'active_api_tokens', 'approvals', 'ledger_entries', 'ledger_current_claims',
-                      'ledger_assurance_levels', 'inbox', 'attempts', 'task_nodes', 'task_node_dependencies', 'artifacts',
-                      'stage_run_artifacts']) t
+    FROM unnest(ARRAY['api_tokens', 'active_api_tokens', 'approvals', 'ledger_current_claims',
+                      'ledger_assurance_levels', 'inbox', 'attempts', 'task_nodes', 'task_node_dependencies']) t
    WHERE has_table_privilege('factory_api_app', t, 'SELECT');
-  PERFORM dbtest.expect_eq('factory_api_app cannot read the token, approval, ledger, inbox or work tables', coalesce(extra, ''), '');
+  PERFORM dbtest.expect_eq('factory_api_app cannot read the token, approval, claim, inbox or work tables', coalesce(extra, ''), '');
 END
 $$;
 
@@ -215,7 +217,7 @@ BEGIN
         transition_id, correlation_id, occurred_at, producer, payload)
         VALUES (%L, %L, 'job.admitted', %L, 'job', %L, 2, 'J01', %L, now(), 'workflow.engine', '{}')$q$,
         dbtest.u(1), dbtest.u(1992), dbtest.u(1101), dbtest.u(1101), dbtest.u(1501)), 'factory_api_app', 1) LIKE 'ERR:42501:permission denied for table outbox');
-  FOR t IN SELECT x AS tbl FROM unnest(ARRAY['api_tokens', 'approvals', 'ledger_entries', 'inbox', 'attempts', 'task_nodes']) x LOOP
+  FOR t IN SELECT x AS tbl FROM unnest(ARRAY['api_tokens', 'approvals', 'inbox', 'attempts', 'task_nodes']) x LOOP
     PERFORM dbtest.expect_true('the group cannot read ' || t.tbl,
       dbtest.run_as('SELECT 1 FROM ' || t.tbl, 'factory_api_app', 1) LIKE 'ERR:42501:permission denied for table ' || t.tbl);
   END LOOP;
@@ -228,9 +230,41 @@ BEGIN
 END
 $$;
 
+-- The evidence a person reads (migration 2026-10-29-002300): the three tables are read through row-level
+-- security like the others, and are not written. Two tenants, as the owner.
+SELECT dbtest.mk_tenant(3), dbtest.mk_tenant(4);
+
+DO $$
+DECLARE
+  sha text := dbtest.sha('a document');
+BEGIN
+  INSERT INTO artifacts (tenant_id, content_sha256, size_bytes, media_type, backend)
+    VALUES (dbtest.u(3), sha, 10, 'text/plain', 'local-fs'), (dbtest.u(4), sha, 10, 'text/plain', 'local-fs');
+  PERFORM dbtest.expect_eq('the group reads the artifact index of the tenant it named',
+    dbtest.run_as('SELECT 1 FROM artifacts', 'factory_api_app', 3), 'rows=1');
+  PERFORM dbtest.expect_eq('the group sees no artifact index row of any tenant when none is named',
+    dbtest.run_as('SELECT 1 FROM artifacts', 'factory_api_app', 0), 'rows=0');
+  PERFORM dbtest.expect_eq('the group reads no stage run link of another tenant',
+    dbtest.run_as('SELECT 1 FROM stage_run_artifacts', 'factory_api_app', 3), 'rows=0');
+  PERFORM dbtest.expect_eq('the group sees no ledger entry when no tenant is named',
+    dbtest.run_as('SELECT 1 FROM ledger_entries', 'factory_api_app', 0), 'rows=0');
+  PERFORM dbtest.expect_true('the group cannot insert an artifact index row',
+    dbtest.run_as(format($q$INSERT INTO artifacts (tenant_id, content_sha256, size_bytes, media_type, backend) VALUES (%L, %L, 1, 'text/plain', 'local-fs')$q$,
+        dbtest.u(3), dbtest.sha('another')), 'factory_api_app', 3) LIKE 'ERR:42501:permission denied for table artifacts');
+  PERFORM dbtest.expect_true('the group cannot update an artifact index row',
+    dbtest.run_as('UPDATE artifacts SET size_bytes = 1', 'factory_api_app', 3) LIKE 'ERR:42501:permission denied for table artifacts');
+  PERFORM dbtest.expect_true('the group cannot delete a ledger entry',
+    dbtest.run_as('DELETE FROM ledger_entries', 'factory_api_app', 3) LIKE 'ERR:42501:permission denied for table ledger_entries');
+  PERFORM dbtest.expect_true('the group cannot insert a ledger entry',
+    dbtest.run_as(format($q$INSERT INTO ledger_entries (tenant_id, job_id, sequence) VALUES (%L, %L, 1)$q$,
+        dbtest.u(3), dbtest.u(1101)), 'factory_api_app', 3) LIKE 'ERR:42501:permission denied for table ledger_entries');
+END
+$$;
+
 -- ---------------------------------------------------------------------------------------------
 -- 6. What the group may write to the audit log (RR-8 and RR-21 of
---    docs/reviews/authority-api-supply-chain-security-rereview.md; migration 2026-10-29-002100).
+--    docs/reviews/authority-api-supply-chain-security-rereview.md; migrations 2026-10-29-002100 and
+--    2026-10-29-002200, which adds decision.stage_requested).
 --
 --    The worker reads the audit log to find the requests of people, and to find the records that end a
 --    request. The API login may INSERT into the log (section 2), and a row is a row: until the trigger
@@ -248,8 +282,8 @@ $$;
 DO $$
 DECLARE
   allowed text[] := ARRAY[
-    'decision.requested', 'decision.dependency_requested', 'decision.denied', 'decision.denied_summary',
-    'decision.denied_suppressed', 'job.submitted', 'job.received_from_webhook', 'webhook.accepted',
+    'decision.requested', 'decision.dependency_requested', 'decision.stage_requested', 'decision.denied',
+    'decision.denied_summary', 'decision.denied_suppressed', 'job.submitted', 'job.received_from_webhook', 'webhook.accepted',
     'webhook.duplicate_delivery', 'webhook.rejected', 'webhook.unbound', 'webhook.audit_dropped',
     'webhook_accepted_or_rejected.granted', 'webhook_accepted_or_rejected.denied'];
   refused text[] := ARRAY[
@@ -260,7 +294,7 @@ DECLARE
     -- Near misses: the list is exact, not a prefix, a pattern or a case-insensitive match.
     'decision.requested2', 'decision.request', 'decision', 'job.submitted.extra', 'webhook.accepted_by_worker',
     'webhook_accepted_or_rejected', 'webhook_accepted_or_rejected.noted',
-    'decision.dependency_requested_', 'x'];
+    'decision.dependency_requested_', 'decision.stage_requested_', 'decision.stage_request', 'x'];
   a text;
   msg text;
 BEGIN

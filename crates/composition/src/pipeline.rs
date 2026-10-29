@@ -874,6 +874,22 @@ pub fn assemble_pipeline(inputs: PipelineInputs) -> Result<Pipeline, PipelineErr
         max_age: std::time::Duration::from_secs(crate::pipeline::APPROVAL_WINDOW_HOURS * 3600),
         keys: Arc::clone(&decision_keys),
     }));
+    let stage_decisions = Arc::new(crate::stage_decisions::StageDecisions::new(
+        crate::stage_decisions::StageDecisionsDeps {
+            engine: Arc::clone(&engine),
+            store: Arc::clone(&store),
+            artifacts: Arc::clone(&artifacts),
+            tenants: tenants.clone(),
+            policy: Arc::clone(&policies.engine),
+            policy_hash: policies.hash.clone(),
+            sources: approval_sources.clone(),
+            reprobe: Arc::new(crate::stage_decisions::NoReprobe),
+            redactor: Arc::clone(&redactor),
+            clock: Arc::clone(&clock),
+            max_age: std::time::Duration::from_secs(crate::pipeline::APPROVAL_WINDOW_HOURS * 3600),
+            keys: Arc::clone(&decision_keys),
+        },
+    ));
     // The reply to a label from someone who may not ask goes through the change host with the
     // narrow token of the approval stage, from this process: the API holds no credential.
     let rejections = Arc::new(IntakeRejections::new(IntakeRejectionsDeps {
@@ -908,6 +924,8 @@ pub fn assemble_pipeline(inputs: PipelineInputs) -> Result<Pipeline, PipelineErr
         })
         .with_specification(spec_drafts.clone())
         .with_dependencies(dependency_decisions)
+        .with_stage_decisions(stage_decisions)
+        .with_recorded_decisions(Arc::clone(&dependency_approvals))
         .with_rejections(rejections),
     );
     let check_names = [

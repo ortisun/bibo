@@ -85,7 +85,9 @@ use factory_ports::store::{
 };
 use factory_workflow::commands::{Actor, Decision as EngineDecision, JobCommand, Subject};
 use factory_workflow::engine::{Engine, EngineError};
+use factory_workflow::gates::supply_chain::approval::{DecisionScope, RecordedApprovals};
 use factory_workflow::handlers::RunIdentity;
+use factory_workflow::stages::approval::warnings::all_decided;
 use factory_workflow::stages::approval::{ApprovalCommand, ApprovalService, Sender};
 use factory_workflow::stages::approval::{
     ApprovalSources, Outcome, ServiceError, Verb, VerbParse, parse_verb,
@@ -102,6 +104,7 @@ use crate::dependency_decisions::DependencyDecisions;
 use crate::hooks::BeforeClaim;
 use crate::intake_rejections::IntakeRejections;
 use crate::seams::{FileAllowlist, designation};
+use crate::stage_decisions::StageDecisions;
 use crate::telemetry::{job_span_of, job_stretch};
 
 /// The audit action of a request for a decision (written by the API).
@@ -292,13 +295,15 @@ pub enum Reason {
     NotAwaited,
     /// A decision on a dependency matches more than one package the stage run waits for.
     Ambiguous,
+    /// The block of a stage run has not been cleared, so the stage run was not let go again.
+    NotCleared,
     /// Any other refusal of the approval service.
     Refused,
 }
 
 impl Reason {
     /// Every reason, so that a sentence can be turned back into its code.
-    pub const ALL: [Reason; 24] = [
+    pub const ALL: [Reason; 25] = [
         Self::GaveUp,
         Self::NoJob,
         Self::Malformed,
@@ -322,6 +327,7 @@ impl Reason {
         Self::NotSigned,
         Self::NotAwaited,
         Self::Ambiguous,
+        Self::NotCleared,
         Self::Refused,
     ];
 
@@ -352,9 +358,14 @@ impl Reason {
             Self::GatesNotClear => "A check is not clear, so the work cannot be approved.",
             Self::AlreadyDecided => "This person already took this decision for this version.",
             Self::NotSigned => "The record was not written by the service that takes decisions.",
-            Self::NotAwaited => "The stage run does not wait for a decision on that package.",
+            Self::NotAwaited => {
+                "The stage run does not wait for a decision on that package or file."
+            }
             Self::Ambiguous => {
                 "More than one package matches; add the start of the checksum to say which."
+            }
+            Self::NotCleared => {
+                "The block has not been cleared, so the stage run was not let go again."
             }
             Self::Refused => "The decision was refused.",
         }
@@ -387,6 +398,7 @@ impl Reason {
             Self::NotSigned => "not_signed",
             Self::NotAwaited => "not_awaited",
             Self::Ambiguous => "ambiguous_package",
+            Self::NotCleared => "not_cleared",
             Self::Refused => "refused",
         }
     }
@@ -919,6 +931,8 @@ pub struct ClaimWork {
     per_pass: usize,
     drafts: Option<Arc<dyn SpecDrafts>>,
     dependencies: Option<Arc<DependencyDecisions>>,
+    stages: Option<Arc<StageDecisions>>,
+    recorded: Option<Arc<dyn RecordedApprovals>>,
     rejections: Option<Arc<IntakeRejections>>,
     keys: Arc<DecisionKeys>,
     scans: Mutex<BTreeMap<TenantId, Scan>>,
@@ -972,6 +986,8 @@ impl ClaimWork {
             per_pass: deps.per_pass.max(1),
             drafts: None,
             dependencies: None,
+            stages: None,
+            recorded: None,
             rejections: None,
             keys: deps.keys,
             scans: Mutex::new(BTreeMap::new()),
@@ -998,6 +1014,24 @@ impl ClaimWork {
         self
     }
 
+    /// Lets a person act on a stage run: let a blocked one go again (`unblock`). The step reads
+    /// its own requests, which carry their own audit action, and calls the engine. Without it
+    /// those requests are left alone.
+    #[must_use]
+    pub fn with_stage_decisions(mut self, stages: Arc<StageDecisions>) -> Self {
+        self.stages = Some(stages);
+        self
+    }
+
+    /// Lets an approval count the decisions about translation warnings that the person recorded
+    /// (`ack-translation-warning`). They are read from the ledger, through this source. Without it
+    /// an approval of a request that has an open warning is refused, as it was before.
+    #[must_use]
+    pub fn with_recorded_decisions(mut self, recorded: Arc<dyn RecordedApprovals>) -> Self {
+        self.recorded = Some(recorded);
+        self
+    }
+
     /// Lets the worker answer a label from someone who may not ask (FR-002). The step reads the
     /// signed requests the API leaves for such labels, posts the one fixed reply through the
     /// change host, and records the rejection. Without it those requests are left alone.
@@ -1013,6 +1047,9 @@ impl ClaimWork {
         self.apply_decisions(tenant).await;
         if let Some(dependencies) = &self.dependencies {
             dependencies.pass(tenant).await;
+        }
+        if let Some(stages) = &self.stages {
+            stages.pass(tenant).await;
         }
         if let Some(rejections) = &self.rejections {
             rejections.pass(tenant).await;
@@ -1443,11 +1480,20 @@ impl ClaimWork {
             None
         };
         // The engine's guard for an approval wants every open translation warning to have a
-        // decision of this person. With none open there is nothing undecided. No path of the API
-        // records a decision about a warning yet, so with one open the approval is refused.
-        let warnings_decided = request
-            .as_ref()
-            .is_some_and(|found| found.open_translation_warnings == 0);
+        // decision of this person. With none open there is nothing undecided; with some open, the
+        // decisions the person recorded (`ack-translation-warning`) are read back from the ledger.
+        let warnings_decided = match &request {
+            Some(found) => {
+                warnings_decided(
+                    self.recorded.as_deref(),
+                    (tenant, fields.job, stage_run),
+                    sender.id,
+                    found,
+                )
+                .await
+            }
+            None => false,
+        };
         let command = match parsed.into_command(
             CommandContext {
                 id: command,
@@ -1739,6 +1785,31 @@ fn requested_from(
     })
 }
 
+/// True when the person has decided on every open translation warning of the approval request:
+/// with none open there is nothing to decide, and with some open the decisions recorded in the
+/// ledger for this request and this person must cover them all. A source that cannot give any
+/// answers "not decided", which is the safe side.
+async fn warnings_decided(
+    recorded: Option<&dyn RecordedApprovals>,
+    (tenant, job, stage_run): (TenantId, JobId, StageRunId),
+    person: u64,
+    request: &factory_workflow::stages::approval::ApprovalRequest,
+) -> bool {
+    if request.open_translation_warnings == 0 {
+        return true;
+    }
+    let Some(recorded) = recorded else {
+        return false;
+    };
+    let decisions = recorded.warning_decisions_for_job(tenant, job).await;
+    all_decided(
+        &decisions,
+        person,
+        (&DecisionScope { tenant, job }, stage_run, &request.manifest),
+        request.open_translation_warnings,
+    )
+}
+
 /// The reason for a refusal of the approval service. Authority is never explained.
 fn refusal_reason(code: &str) -> Reason {
     match code {
@@ -1760,6 +1831,109 @@ fn refusal_reason(code: &str) -> Reason {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The decisions about translation warnings a test source holds.
+    struct Warnings(Vec<factory_workflow::stages::approval::warnings::WarningDecision>);
+
+    #[async_trait]
+    impl RecordedApprovals for Warnings {
+        fn fidelity(&self) -> factory_domain::vocabulary::Fidelity {
+            factory_domain::vocabulary::Fidelity::Fake
+        }
+
+        async fn for_job(
+            &self,
+            _: TenantId,
+            _: JobId,
+        ) -> Vec<factory_workflow::gates::supply_chain::approval::DependencyApproval> {
+            Vec::new()
+        }
+
+        async fn warning_decisions_for_job(
+            &self,
+            _: TenantId,
+            _: JobId,
+        ) -> Vec<factory_workflow::stages::approval::warnings::WarningDecision> {
+            self.0.clone()
+        }
+    }
+
+    fn request(open: u32) -> factory_workflow::stages::approval::ApprovalRequest {
+        let sha = |text: &str| Sha256Digest::of(text.as_bytes());
+        factory_workflow::stages::approval::ApprovalRequest {
+            repository: "acme/widgets".to_owned(),
+            pull_request: 7,
+            head_branch: "factory/x".to_owned(),
+            base_branch: "main".to_owned(),
+            pr_head: GitSha::parse(&"a".repeat(40)).expect("a sha"),
+            tree: GitSha::parse(&"b".repeat(40)).expect("a sha"),
+            base: GitSha::parse(&"c".repeat(40)).expect("a sha"),
+            manifest: sha("manifest"),
+            spec_version: 1,
+            gates_clear: true,
+            open_translation_warnings: open,
+            tier: factory_domain::vocabulary::RiskTier::Low,
+            protected_path_change: false,
+            sensitive_file_change: false,
+            new_dependency: false,
+            requester: 1,
+            evidence_binding: factory_workflow::stages::validation::Binding {
+                implementation_result: sha("result"),
+                base_commit: GitSha::parse(&"c".repeat(40)).expect("a sha"),
+                head_commit: GitSha::parse(&"a".repeat(40)).expect("a sha"),
+                policy_hash: sha("policy"),
+                image_digest: sha("image"),
+                definition_hash: sha("definitions"),
+            },
+            created_at: Timestamp::parse("2026-10-29T10:00:00Z").expect("a time"),
+        }
+    }
+
+    fn decision_by(
+        person: u64,
+        warning: u32,
+        (tenant, job, run): (TenantId, JobId, StageRunId),
+    ) -> factory_workflow::stages::approval::warnings::WarningDecision {
+        factory_workflow::stages::approval::warnings::WarningDecision {
+            stage_run: run,
+            manifest: request(2).manifest,
+            warning,
+            approver: factory_domain::policy::decision::GithubUserId::new(person).expect("an id"),
+            designation: Designation::Approver,
+            allowlist_version: "sha256:aa".to_owned(),
+            policy_hash: Sha256Digest::of(b"policy"),
+            scope: factory_workflow::gates::supply_chain::approval::DecisionScope { tenant, job },
+            reason: "The translation says what the original says.".to_owned(),
+            decided_at: Timestamp::parse("2026-10-29T12:00:00Z").expect("a time"),
+        }
+    }
+
+    #[tokio::test]
+    async fn an_approval_with_open_warnings_needs_this_persons_decisions_on_all_of_them() {
+        let here = (
+            TenantId::from_uuid(uuid::Uuid::from_u128(1)),
+            JobId::from_uuid(uuid::Uuid::from_u128(2)),
+            StageRunId::from_uuid(uuid::Uuid::from_u128(3)),
+        );
+        // None open: nothing to decide, with or without a source of decisions.
+        assert!(warnings_decided(None, here, 7, &request(0)).await);
+        // Two open and no source: the approval is refused, as before the verb existed.
+        assert!(!warnings_decided(None, here, 7, &request(2)).await);
+        // Two open and no decision.
+        let empty = Warnings(Vec::new());
+        assert!(!warnings_decided(Some(&empty), here, 7, &request(2)).await);
+        // One of two.
+        let one = Warnings(vec![decision_by(7, 1, here)]);
+        assert!(!warnings_decided(Some(&one), here, 7, &request(2)).await);
+        // Both, by this person.
+        let both = Warnings(vec![decision_by(7, 1, here), decision_by(7, 2, here)]);
+        assert!(warnings_decided(Some(&both), here, 7, &request(2)).await);
+        // Both, by another person: they do not count for this one's approval.
+        assert!(!warnings_decided(Some(&both), here, 8, &request(2)).await);
+        // Both, for another stage run.
+        let other_run = StageRunId::from_uuid(uuid::Uuid::from_u128(4));
+        assert!(!warnings_decided(Some(&both), (here.0, here.1, other_run), 7, &request(2)).await);
+    }
 
     #[test]
     fn a_subject_reads_back_as_it_was_written() {

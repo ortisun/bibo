@@ -37,6 +37,8 @@ use crate::gates::command::{
 };
 use crate::gates::framework::GateDecision;
 use crate::gates::scope::acceptance::Requirement;
+use crate::gates::scope::own_build_code::EVIDENCE_KEY;
+use crate::gates::supply_chain::approval::DecisionScope;
 use crate::handlers::{
     ContractContext, GateContext, OutputDocument, StageContext, StageError, StageHandler,
     StageOutput,
@@ -283,7 +285,23 @@ impl StageHandler for ValidationHandler {
             cancel,
         )
         .await?;
-        let host = host::evaluate(cfg, &gathered);
+        let recorded = cfg
+            .supply_chain
+            .approvals
+            .build_code_for_job(scope.tenant_id(), subject.job)
+            .await;
+        let host = host::evaluate(
+            cfg,
+            &gathered,
+            &host::BuildCodeDecisions {
+                approvals: &recorded,
+                scope: DecisionScope {
+                    tenant: scope.tenant_id(),
+                    job: subject.job,
+                },
+                policy_hash: &binding.policy_hash,
+            },
+        );
         let spec = read_specification(ports.artifacts, &scope, contract).await;
 
         // Commands run only on a change that every host-side rule let through.
@@ -376,7 +394,13 @@ impl StageHandler for ValidationHandler {
             report.outcome == GateOutcome::Failed
                 && NONWAIVABLE.contains(&report.metadata.gate_id.as_str())
         });
-        evidence_output(&binding, violation, &all, dependencies.evidence)
+        evidence_output(
+            &binding,
+            violation,
+            &all,
+            dependencies.evidence,
+            host.build_code_listing,
+        )
     }
 
     async fn evaluate(&self, ctx: &GateContext<'_>) -> Result<GateDecision, StageError> {
@@ -552,6 +576,7 @@ fn evidence_output(
     violation: bool,
     reports: &[GateReport],
     dependency_decisions: Option<Value>,
+    project_build_code: Option<Value>,
 ) -> Result<StageOutput, StageError> {
     let mut document = evidence_document(binding, violation, reports)?;
     // What the dependency review decided and who decided it: the exact subjects (name, version,
@@ -559,6 +584,11 @@ fn evidence_output(
     // evidence the engine reads; this is the record a person reads.
     if let (Some(extra), Some(object)) = (dependency_decisions, document.as_object_mut()) {
         object.insert("dependency_review".to_owned(), extra);
+    }
+    // The build code of the project's own that waits for a security approver, or was decided on,
+    // with the hash of each file: the exact subject a decision is bound to.
+    if let (Some(extra), Some(object)) = (project_build_code, document.as_object_mut()) {
+        object.insert(EVIDENCE_KEY.to_owned(), extra);
     }
     Ok(StageOutput {
         documents: vec![OutputDocument {

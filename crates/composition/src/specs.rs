@@ -44,7 +44,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::reading::Reader;
 
-const DRAFT_ROLE_PREFIX: &str = "spec-draft-";
+/// The start of the role under which a stage run links the draft it kept: `spec-draft-<n>`.
+pub const DRAFT_ROLE_PREFIX: &str = "spec-draft-";
 
 /// The words of the sentence the engine writes into the ledger when a person approves. The entry
 /// has no field for the outcome, so the sentence is read.

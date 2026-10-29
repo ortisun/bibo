@@ -23,6 +23,7 @@
 mod admission;
 mod agent_span;
 mod attempt;
+mod build_code;
 mod cancel;
 mod changes;
 pub mod config;
@@ -43,6 +44,7 @@ pub(crate) mod record;
 mod replace;
 pub(crate) mod timeline;
 mod view;
+mod warning;
 
 use std::sync::Arc;
 

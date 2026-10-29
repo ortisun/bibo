@@ -12,6 +12,8 @@
 //! | output | `<name>.a<n>` | The deliverable `name` that attempt number `n` produced. A stage run can reach its gate more than once (a person answers a gate and a second attempt succeeds), and a link is never replaced, so each attempt keeps its own. The outputs of the stage run are those of the highest `n`. |
 //! | input | `dependency-decision-<k>-<command>` | A person's decision on a dependency (`add_new_direct_dependency`) or on its build code (`approve_build_code`), recorded while the stage run was blocked. `k` is how many attempts the stage run had then, and `<command>` is the id of the command without hyphens, so a command that arrives twice names the same role. The decision counts for a rerun when `k` is the number of attempts the stage run has now: a decision recorded before an earlier block does not clear a later one. |
 //!
+//! | input | `warning-decision-<command>` | An approver's decision about a translation warning of the approval request. A command that arrives twice names the same role. The approval reads the decisions from the ledger, not from the role. |
+//!
 //! A role that does not follow these forms was not written by the engine, and the readers skip it.
 
 use factory_domain::ids::CausationId;
@@ -21,6 +23,7 @@ use super::error::EngineError;
 
 const ANSWER_PREFIX: &str = "human-answer-";
 const DECISION_PREFIX: &str = "dependency-decision-";
+const WARNING_PREFIX: &str = "warning-decision-";
 const ATTEMPT_MARK: &str = ".a";
 
 /// The role of a decision on a dependency recorded after `attempts_before` attempts, by the
@@ -47,6 +50,19 @@ pub(crate) fn decision_attempts_before(role: &str) -> Option<u32> {
     (all_digits(digits) && hex)
         .then(|| digits.parse().ok())
         .flatten()
+}
+
+/// The role of a decision about a translation warning, recorded by the command `command`. It does
+/// not carry the attempts: the stage run waits for a person and runs no attempt meanwhile, and
+/// `UnblockRerun` does not read it.
+///
+/// # Errors
+/// [`EngineError::Invalid`] if the role is not a slug (it always is).
+pub(crate) fn warning_role(command: CausationId) -> Result<Slug, EngineError> {
+    Ok(Slug::parse(&format!(
+        "{WARNING_PREFIX}{}",
+        command.as_uuid().simple()
+    ))?)
 }
 
 /// The role of an answer given after `attempts_before` attempts.

@@ -56,6 +56,7 @@ use factory_composition::decisions::DecisionFields;
 use factory_composition::dependency_decisions::{
     DependencyFields, REQUESTED as DEPENDENCY_REQUESTED,
 };
+use factory_composition::stage_decisions::StageVerb;
 use factory_domain::ids::{AuditEventId, CorrelationId, JobId, StageRunId};
 use factory_domain::vocabulary::HumanRole;
 use factory_ports::store::{
@@ -84,24 +85,30 @@ use crate::tokens;
 /// The body of `POST /v1/jobs/{job_id}/decisions`.
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct DecisionBody {
-    verb: String,
+pub(crate) struct DecisionBody {
+    pub(crate) verb: String,
     #[serde(default)]
-    stage_run_id: Option<String>,
+    pub(crate) stage_run_id: Option<String>,
     #[serde(default)]
-    head: Option<String>,
+    pub(crate) head: Option<String>,
     #[serde(default)]
-    evidence: Option<String>,
+    pub(crate) evidence: Option<String>,
     #[serde(default)]
-    target: Option<String>,
+    pub(crate) target: Option<String>,
     #[serde(default)]
-    reason: Option<String>,
+    pub(crate) reason: Option<String>,
     #[serde(default)]
-    package: Option<String>,
+    pub(crate) package: Option<String>,
     #[serde(default)]
-    version: Option<String>,
+    pub(crate) version: Option<String>,
     #[serde(default)]
-    checksum: Option<String>,
+    pub(crate) checksum: Option<String>,
+    #[serde(default)]
+    pub(crate) path: Option<String>,
+    #[serde(default)]
+    pub(crate) digest: Option<String>,
+    #[serde(default)]
+    pub(crate) warning: Option<u32>,
 }
 
 /// The longest slice of a reason the audit record keeps, in bytes.
@@ -123,7 +130,7 @@ fn required_roles(state: &ApiState, verb: Verb) -> Vec<HumanRole> {
 }
 
 /// The designations the policy's action table names for an action.
-fn roles_of_action(state: &ApiState, action: &str) -> Vec<HumanRole> {
+pub(crate) fn roles_of_action(state: &ApiState, action: &str) -> Vec<HumanRole> {
     state
         .policies
         .approval
@@ -144,7 +151,7 @@ fn roles_of_action(state: &ApiState, action: &str) -> Vec<HumanRole> {
 /// give the same id, so a retried request is the same record, and two people who send the same key
 /// for the same job write two records, not one record that the second of them is told is theirs
 /// (API-2).
-fn derived_id(tenant: &str, principal: &str, job: &str, key: &str) -> uuid::Uuid {
+pub(crate) fn derived_id(tenant: &str, principal: &str, job: &str, key: &str) -> uuid::Uuid {
     let digest = factory_domain::values::Sha256Digest::of(
         format!("decision\n{tenant}\n{principal}\n{job}\n{key}").as_bytes(),
     );
@@ -154,7 +161,7 @@ fn derived_id(tenant: &str, principal: &str, job: &str, key: &str) -> uuid::Uuid
     uuid::Builder::from_random_bytes(bytes).into_uuid()
 }
 
-fn kept(reason: &str) -> &str {
+pub(crate) fn kept(reason: &str) -> &str {
     if reason.len() <= REASON_KEPT {
         return reason;
     }
@@ -179,13 +186,20 @@ pub async fn decide(
     if let Some(kind) = dependency_kind(&parsed.verb) {
         return decide_dependency(state, caller, job_id, &key, &parsed, kind).await;
     }
-    // The words of a package mean nothing to the other verbs, and are not ignored.
-    for (field, value) in [
-        ("package", &parsed.package),
-        ("version", &parsed.version),
-        ("checksum", &parsed.checksum),
+    if let Some(verb) = StageVerb::parse(&parsed.verb) {
+        return crate::stage_decisions::decide(state, caller, job_id, &key, &parsed, verb).await;
+    }
+    // The words of a package, a file or a warning mean nothing to the other verbs, and are not
+    // ignored.
+    for (field, present) in [
+        ("package", parsed.package.is_some()),
+        ("version", parsed.version.is_some()),
+        ("checksum", parsed.checksum.is_some()),
+        ("path", parsed.path.is_some()),
+        ("digest", parsed.digest.is_some()),
+        ("warning", parsed.warning.is_some()),
     ] {
-        if value.is_some() {
+        if present {
             return Err(ApiError::BadRequest(field));
         }
     }
@@ -383,12 +397,15 @@ async fn decide_dependency(
     kind: ApprovalKind,
 ) -> Answer {
     // Words that mean nothing to this verb are refused, not ignored.
-    for (field, value) in [
-        ("head", &parsed.head),
-        ("evidence", &parsed.evidence),
-        ("target", &parsed.target),
+    for (field, present) in [
+        ("head", parsed.head.is_some()),
+        ("evidence", parsed.evidence.is_some()),
+        ("target", parsed.target.is_some()),
+        ("path", parsed.path.is_some()),
+        ("digest", parsed.digest.is_some()),
+        ("warning", parsed.warning.is_some()),
     ] {
-        if value.is_some() {
+        if present {
             return Err(ApiError::BadRequest(field));
         }
     }
@@ -583,7 +600,7 @@ const fn verb_of(kind: ApprovalKind) -> &'static str {
 const REPLAY_PAGES: u32 = 20;
 
 /// A `decision.requested` record this service wrote earlier.
-struct Earlier(factory_ports::store::AuditRecord);
+pub(crate) struct Earlier(pub(crate) factory_ports::store::AuditRecord);
 
 impl Earlier {
     /// True when the record is the same request: the same person, the same words, the same reason.
@@ -630,7 +647,7 @@ impl Earlier {
 }
 
 /// The record of this id, if the job's audit log holds it.
-async fn recorded_request(
+pub(crate) async fn recorded_request(
     tx: &mut dyn Tx,
     job: JobId,
     id: AuditEventId,
@@ -661,7 +678,7 @@ async fn recorded_request(
 /// or not, could grow the tenant's hash-chained audit log by thousands of rows an hour, and the
 /// chain serialises its writers. A person now has a few rows a minute, then one row that says the
 /// rest are counted, and the count is written when the next minute opens.
-async fn refuse(
+pub(crate) async fn refuse(
     state: &ApiState,
     caller: &Caller,
     mut tx: Box<dyn Tx>,

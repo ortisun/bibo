@@ -38,7 +38,7 @@ The constitution of this repository, `.specify/memory/constitution.md`, carries 
 - **Budget.** `stages.budget.max_cost_usd` defaults to 10.0 dollars for each stage run, and a job has up to 13 stage runs, more after rework. That is far above a small smoke budget. Lower it, and rely on the provider-side limit as the hard stop. The broker refuses a model that has no entry in `broker.prices`.
 - **Autonomy level.** The default level is `L1`: the factory makes branches and draft pull requests, and a person decides every promotion. Do not raise it. Raising a level needs an `org_admin`.
 - **Tenants.** `worker.tenants` is empty by default. An empty list means the worker admits no received job.
-- **Profile.** Run `production`. It refuses a fake for any port. The scenario E9 shows that refusal for the API's six ports and the worker's ports, in test mode.
+- **Profile.** Run `production`. It refuses a fake for any port. The scenario E9 shows that refusal for the API's ports (six, and a seventh when it has an artifact root) and the worker's ports, in test mode.
 - **First job.** Run it at `L1` with a person reading the audit log. Check that every `decision.applied` and `decision.rejected` row was written by the worker's decision step and carries the allowlist hash. This is condition 9 of the re-review.
 
 ## What the reviews found
@@ -75,7 +75,7 @@ The reviewers found no way to approve, merge or mark a pull request ready withou
 ### What is open, and why
 
 - **Open findings.** The [findings of the end-to-end run](../reports/slice-1-findings.md) list SF-01 to SF-08. SF-01 is High: an unauthorized label leaves no audit record of the rejection and no explanation on the issue. A live run would show the same behaviour. Settle it first.
-- **Hypotheses.** RR-13, RR-23, RR-25, RR-28 and the hypotheses H-1 to H-8 of the supply chain and authority reviews were not confirmed or refuted.
+- **Hypotheses.** RR-13, RR-23, RR-28 and the hypotheses H-1 to H-8 of the supply chain and authority reviews were not confirmed or refuted.
 - **Not verified at all.** A real GitHub delivery, a deployment behind a proxy, the container images of the services, load above the rate limits, and everything that needs a real model.
 - **Shared symmetric key.** A compromised worker can forge a decision request, because it holds the key that verifies. An asymmetric signature would remove that and add a dependency.
 

@@ -92,6 +92,21 @@ impl PermissionSet {
         ])
     }
 
+    /// The credential handed to a comment: the right to write issues (a comment on a pull request
+    /// is an issue comment) and the metadata, nothing else (SF-14). A stage that holds a wider set
+    /// gives this one up for its comments. A stage that does not hold `issues: write` is not given
+    /// it: it keeps its own permissions for the call, and the code host refuses the comment.
+    #[must_use]
+    pub fn comment() -> Self {
+        Self::of(&[("metadata", Level::Read), ("issues", Level::Write)])
+    }
+
+    /// True when the set holds the permission `name` at the level `level` or above.
+    #[must_use]
+    pub fn holds(&self, name: &str, level: Level) -> bool {
+        self.0.get(name).is_some_and(|held| *held >= level)
+    }
+
     /// The permissions of the token for a stage.
     #[must_use]
     pub fn for_stage(stage: StageKind) -> Self {
@@ -280,6 +295,28 @@ mod tests {
     }
 
     #[test]
+    fn a_comment_holds_the_right_to_write_issues_and_the_metadata_and_nothing_else() {
+        let set = PermissionSet::comment();
+        assert_eq!(
+            set.entries(),
+            [("issues", Level::Write), ("metadata", Level::Read)]
+        );
+        // It is narrower than what either stage that comments holds, and is held by both.
+        for stage in [StageKind::Approval, StageKind::Delivery] {
+            let own = PermissionSet::for_stage(stage);
+            assert!(own.holds("issues", Level::Write), "{stage:?}");
+            assert!(
+                set.entries()
+                    .iter()
+                    .all(|(name, level)| own.holds(name, *level)),
+                "{stage:?}"
+            );
+        }
+        // A stage that does not hold the right does not get it for a comment.
+        assert!(!PermissionSet::read_stage().holds("issues", Level::Write));
+    }
+
+    #[test]
     fn only_the_delivery_stage_can_write() {
         for stage in [
             StageKind::Intake,
@@ -313,6 +350,7 @@ mod tests {
             PermissionSet::read_stage(),
             PermissionSet::delivery_stage(),
             PermissionSet::approval_stage(),
+            PermissionSet::comment(),
             PermissionSet::fetch(),
             PermissionSet::push(),
         ] {

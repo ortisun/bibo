@@ -40,6 +40,8 @@ use factory_domain::vocabulary::{Fidelity, RiskTier};
 use serde_json::{Value, json};
 
 use super::model::normalize;
+use crate::gates::scope::own_build_code::ProjectBuildCodeApproval;
+use crate::stages::approval::warnings::WarningDecision;
 
 /// The action row of `approval.yaml` for a new direct dependency.
 pub const ACTION: &str = "add_new_direct_dependency";
@@ -301,6 +303,28 @@ pub trait RecordedApprovals: Send + Sync {
 
     /// Every decision recorded for `job` of `tenant`.
     async fn for_job(&self, tenant: TenantId, job: JobId) -> Vec<DependencyApproval>;
+
+    /// Every decision on the project's own build code recorded for `job` of `tenant`
+    /// ([`ProjectBuildCodeApproval`]). A source that keeps none answers with none, and the gate
+    /// `build` then asks the person: the safe side.
+    async fn build_code_for_job(
+        &self,
+        _tenant: TenantId,
+        _job: JobId,
+    ) -> Vec<ProjectBuildCodeApproval> {
+        Vec::new()
+    }
+
+    /// Every decision about a translation warning recorded for `job` of `tenant`
+    /// ([`WarningDecision`]). A source that keeps none answers with none, and an approval of a
+    /// request that has an open warning is then refused: the safe side.
+    async fn warning_decisions_for_job(
+        &self,
+        _tenant: TenantId,
+        _job: JobId,
+    ) -> Vec<WarningDecision> {
+        Vec::new()
+    }
 }
 
 /// A fixed list of decisions, for a source that was filled before the run and for tests.
@@ -370,10 +394,41 @@ pub fn authorize(request: &Request<'_>, needed: Designation) -> ActionVerdict {
     )
 }
 
+/// The action row of `approval.yaml` for letting a blocked stage run go again.
+pub const UNBLOCK_ACTION: &str = "unblock_blocked_stage_run";
+
+/// The action row of `approval.yaml` for a decision about an open warning of the documentation
+/// reviewer's rule `translation-unfaithful`.
+pub const WARNING_ACTION: &str = "acknowledge_documentation_warning";
+
+/// Asks the policy engine whether `request.actor` may let a blocked stage run go again. The row
+/// `unblock_blocked_stage_run` names the operator. The change is not marked as adding a
+/// dependency: the operator re-runs a stage, and the gates still judge what comes out of it.
+#[must_use]
+pub fn authorize_unblock(request: &Request<'_>) -> ActionVerdict {
+    ask_for(request, UNBLOCK_ACTION, None, false)
+}
+
+/// Asks the policy engine whether `request.actor` may decide on a translation warning. The row
+/// `acknowledge_documentation_warning` names the approver.
+#[must_use]
+pub fn authorize_warning(request: &Request<'_>) -> ActionVerdict {
+    ask_for(request, WARNING_ACTION, None, false)
+}
+
 fn ask(
     request: &Request<'_>,
     action: &str,
     require_designation: Option<Designation>,
+) -> ActionVerdict {
+    ask_for(request, action, require_designation, true)
+}
+
+fn ask_for(
+    request: &Request<'_>,
+    action: &str,
+    require_designation: Option<Designation>,
+    new_dependency: bool,
 ) -> ActionVerdict {
     request.policy.authorize_action(&ActionContext {
         action,
@@ -388,7 +443,7 @@ fn ask(
             risk_tier: request.risk_tier,
             protected_path_change: request.protected_path_change,
             sensitive_file_change: request.sensitive_file_change,
-            new_dependency: true,
+            new_dependency,
         },
         require_designation,
         step_up_done: false,

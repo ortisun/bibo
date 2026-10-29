@@ -11,4 +11,7 @@ mod dependency;
 
 pub use authority::{Authority, AuthorityError};
 pub use decision::{Actor, Decision, JobCommand, OverrideFacts, Subject};
-pub use dependency::{DependencyDecisionRecorded, RecordDependencyDecision};
+pub use dependency::{
+    DependencyDecisionRecorded, ProjectBuildCodeRecorded, RecordDependencyDecision,
+    RecordProjectBuildCodeDecision, RecordWarningDecision, WarningDecisionRecorded,
+};

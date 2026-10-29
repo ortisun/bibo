@@ -32,7 +32,7 @@ use serde_json::{Value, json};
 
 use crate::core::{HttpCore, error_for};
 use crate::jwt::{AppJwt, JwtSigner};
-use crate::permissions::{AppAudit, AppPolicy, PermissionSet, audit_app, may_write};
+use crate::permissions::{AppAudit, AppPolicy, Level, PermissionSet, audit_app, may_write};
 use crate::wire::{Method, WireRequest};
 
 /// How many ended jobs are remembered. A job id is never reused, so an older one that falls out
@@ -44,6 +44,9 @@ const ENDED_JOBS_REMEMBERED: usize = 100_000;
 pub(crate) enum TokenClass {
     /// The permissions of the stage in the scope.
     Stage,
+    /// The right to write issues and the metadata, for a comment (SF-14), for a stage that holds
+    /// `issues: write`. Any other stage keeps its own permissions for the call.
+    Comment,
     /// A read-only credential for a fetch.
     Fetch,
     /// A write credential for a push.
@@ -204,6 +207,17 @@ impl TokenMinter {
     fn permissions_for(scope: &GitScope, class: TokenClass) -> Result<PermissionSet, GitHostError> {
         match class {
             TokenClass::Stage => Ok(PermissionSet::for_stage(scope.stage)),
+            // A stage that holds the right to write issues comments with that right and the
+            // metadata only. A stage that does not hold it keeps its own token for the call, so
+            // that the code host refuses the comment as before.
+            TokenClass::Comment => {
+                let own = PermissionSet::for_stage(scope.stage);
+                Ok(if own.holds("issues", Level::Write) {
+                    PermissionSet::comment()
+                } else {
+                    own
+                })
+            }
             TokenClass::Fetch => Ok(PermissionSet::fetch()),
             TokenClass::Push if may_write(scope.stage) => Ok(PermissionSet::push()),
             // The write credential is never minted for a stage that may not write.

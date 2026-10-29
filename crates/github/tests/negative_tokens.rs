@@ -260,6 +260,33 @@ async fn negative_nt_authz_07_every_stage_gets_exactly_its_permissions_and_only_
     }
 }
 
+/// SF-14. A comment needs the right to write issues (a comment on a pull request is an issue
+/// comment) and the metadata, and no other right. The token of the approval stage also reads the
+/// contents and the pull requests, and the token of the delivery stage writes the repository: a
+/// comment, and the unauthorized-sender reply among them, does not carry those.
+#[tokio::test]
+async fn sf_14_a_comment_is_posted_with_the_right_to_write_issues_and_the_metadata_only() {
+    for stage in [StageKind::Approval, StageKind::Delivery] {
+        let world = World::new();
+        let host = world.adapter.change_host();
+        let issue = issue(&world);
+        let scope = at(stage, 1);
+        host.post_comment(&scope, &CommentTarget::Issue(issue), "Hello.", "k")
+            .await
+            .unwrap_or_else(|error| panic!("{stage:?}: {error:?}"));
+        let mints = world.fake.mints();
+        assert!(!mints.is_empty(), "{stage:?}");
+        // Every token the comment needed, the search for its marker included.
+        for minted in &mints {
+            assert_eq!(
+                minted.requested_permissions,
+                Some(as_map(&[("issues", "write"), ("metadata", "read")])),
+                "{stage:?}: {minted:?}"
+            );
+        }
+    }
+}
+
 #[tokio::test]
 async fn negative_nt_authz_07_a_read_only_token_cannot_comment_or_open_a_pull_request() {
     let world = World::new();

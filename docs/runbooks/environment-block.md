@@ -48,11 +48,22 @@ Repair the cause on the worker host. Do not edit the policy to make the block go
 
 The state machine allows these ways out of a blocked stage run:
 
-- The block clears. A passed capability re-probe, or a dependency that is now available, returns the stage run to `READY` (transition `S17`, by an operator).
+- The block clears. A passed capability re-probe, or a decision that the stage run waited for, returns the stage run to `READY` (transition `S17`, by an operator, with `unblock`).
 - A person sends the work back: `factory-cli rework` with the stage run and `target=STAGE` (transition `S15`).
 - A person cancels the job: `factory-cli cancel` (transition `S19`).
 
-The command line has no `unblock` verb today. The worker README lists no override verb either: the override transition `S18` exists in the state machine, and the security re-review says to wire none until finding RR-18 is closed.
+The `unblock` verb is the operator's way to let a blocked stage run go again (transition `S17`). It names the stage run and a reason, and nothing else: the engine reads for itself whether the block is cleared, and the operator cannot assert it. Two of the three ways the guard `G_BLOCK_CLEARED_RERUN` can hold are open to it:
+
+- A person recorded a decision for what the stage run waited for after the attempt that blocked it (`approve-dependency`, `approve-build-code` or `approve-project-build-code`). The engine reads that from what it stored.
+- A capability re-probe of the environment passes. **The worker has no capability probe adapter yet** (`BLOCKED: CapabilityProbes`), so this alternative never holds today and `unblock` is refused with the code `not_cleared` for an environment block. Use `rework` below, or `cancel`.
+
+The override transition `S18` exists in the state machine, and the security re-review says to wire none until finding RR-18 is closed. No verb overrides a block.
+
+```bash no-run reason="needs a running API, a token and a blocked job"
+factory-cli unblock --api "$FACTORY_API_URL" --token-file operator.token JOB STAGE_RUN The decision on the package is recorded; run the stage again.
+```
+
+For an environment block that was repaired, send the stage back with `rework`:
 
 ```bash no-run reason="needs a running API, a token and a blocked job"
 factory-cli rework --api "$FACTORY_API_URL" --token-file approver.token JOB STAGE_RUN target=VALIDATION The Docker daemon is back; run the stage again.

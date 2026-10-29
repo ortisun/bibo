@@ -13,7 +13,7 @@ You need a new key because the old one may have leaked, because a person who cou
 - You can change the configuration and restart the API and the worker. Both read the key files when they start.
 - You know the approval window: 72 hours. A request older than that is rejected, so the old key must stay valid for no longer.
 - The key must be random: at least 32 bytes, written as 64 hexadecimal digits. A key of one repeated byte or one short repeated word is not a key.
-- In the production profile every directory above the key file must be closed to group and others (a sticky directory is allowed). The file belongs to the owner of its directory, or the directory belongs to root. The file mode is `0600` or `0400`.
+- In the production profile every directory above the key file must be closed to group and others (a sticky directory is allowed). The file belongs to the owner of its directory, or the directory belongs to root, **and to the user the process runs as** (RR-25): a key that another user owns is refused, whatever its mode says, because that user can replace it. The process finds its own user by making a file in the temporary directory and reading the owner of it, which is an approximation: on a file system that maps owners (a network mount that squashes root) the answer is the mapped owner. A process that can write no file in the temporary directory or in its working directory is refused, because a user that could not be found was not checked. The file mode is `0600` or `0400`.
 
 ## Steps
 

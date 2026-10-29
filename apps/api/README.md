@@ -9,7 +9,9 @@ and connects to PostgreSQL as the **API login only** ([ADR 0012](../../docs/adr/
 a member of `factory_api_app` and `factory_resolver` and not of `factory_app`, with no system pool. It cannot find
 work across tenants, it cannot do what the engine login does, and it can write only the four tables the API writes
 (`jobs`, `original_requests`, `audit_events`, `webhook_deliveries`): it cannot insert a token, a principal, an
-approval, a ledger entry or an outbox row (finding API-3). `tests/database_logins.rs` shows both directions.
+approval, a ledger entry or an outbox row (finding API-3). It reads three more tables since the endpoints that serve
+evidence exist (migration `2026-10-29-002300`): the index of the stored documents, the links from a stage run to them and
+the ledger entries. Those grants are SELECT and nothing else, under row-level security. `tests/database_logins.rs` shows both directions.
 
 The package is a library (`src/lib.rs`, crate `factory_api`) and a thin binary (`src/main.rs`).
 
@@ -23,8 +25,9 @@ Exit codes: `0` a clean stop (SIGTERM or SIGINT; open requests get `limits.drain
 check failed or the listener could not bind, `2` the configuration was refused. Start-up runs, in order: the
 policy from the protected checkout (hashed), the redactor built from it and the registry of secret values the
 process holds, telemetry with that redactor in front of every log line, the webhook verifier from its secret
-files, the database pool (role and schema checked by the store), the profile's rule over each of the API's six
-ports, and the kinds of secret the policy requires. The production profile refuses a fake for each of the six
+files, the database pool (role and schema checked by the store), the artifact store when the configuration names an
+artifact root, the profile's rule over each of the API's ports (six, and a seventh when there is an artifact root),
+and the kinds of secret the policy requires. The production profile refuses a fake for each of them
 (`tests/profile.rs`, `production_profile_refuses_fakes`).
 
 ## Endpoints
@@ -42,7 +45,10 @@ The contract is [`openapi.json`](openapi.json), written first and served on `GET
 | `GET /v1/jobs` | bearer token | any designation | read |
 | `GET /v1/jobs/{job_id}` | bearer token | any designation | read |
 | `GET /v1/jobs/{job_id}/timeline` | bearer token | any designation | read |
-| `POST /v1/jobs/{job_id}/decisions` | bearer token | `approver` for approve, reject and rework; `operator` for pause, resume and cancel; `approver` for `approve-dependency` and a security approver for `approve-build-code` (read from the `actions` table of `policies/approval.yaml`). The two dependency verbs take `package`, `version`, an optional `checksum` prefix and a `reason` of 10 to 500 characters, are read by the same reader as the other channels, and are recorded as `decision.dependency_requested` with their own signed word | `Idempotency-Key` required: the record id is derived from the tenant, the job and the key |
+| `GET /v1/jobs/{job_id}/specification-draft` | bearer token | any designation | read: the commit of the draft, the head of the ledger and the approval window (`reads.rs`) |
+| `GET /v1/jobs/{job_id}/gate-reports` | bearer token | any designation | read: the gate reports of the ledger of the job |
+| `GET /v1/jobs/{job_id}/artifacts/{sha256}` | bearer token | any designation | read: one stored document, as an attachment, at most 4 MiB, under a content type the API fixes |
+| `POST /v1/jobs/{job_id}/decisions` | bearer token | `approver` for approve, reject and rework; `operator` for pause, resume, cancel and `unblock`; `approver` for `approve-dependency` and a security approver for `approve-build-code` and `approve-project-build-code` (read from the `actions` table of `policies/approval.yaml`). The two dependency verbs take `package`, `version`, an optional `checksum` prefix and a `reason` of 10 to 500 characters, are read by the same reader as the other channels, and are recorded as `decision.dependency_requested` with their own signed word | `Idempotency-Key` required: the record id is derived from the tenant, the job and the key |
 | `POST /v1/webhooks/github` | HMAC-SHA256 of the raw body | none (GitHub) | the delivery id, the body hash and the event on the same subject revision, in the store |
 
 There is no route that merges or deploys, and a test keeps the words out of the table (ST-05).
@@ -50,6 +56,62 @@ There is no route that merges or deploys, and a test keeps the words out of the 
 `/readyz` answers `503` when any check fails or could not run. A database that is behind the code is a failed
 check, not a passed one (`readiness_checks_schema_version`). Its body names the checks and their status and
 nothing else.
+
+### Letting a blocked stage run go again
+
+`unblock` (`apps/api/src/stage_decisions.rs`) is the operator's verb for transition `S17`. It takes `stage_run_id` and a
+`reason` of 10 to 500 characters, and nothing else: a word that means nothing to it is a `400` naming the field. The
+request is recorded as the audit action `decision.stage_requested`, under an id derived from the tenant, the caller, the
+job and the `Idempotency-Key`, signed with the key that signs the other requests under a context line of its own. The
+action is on the list of the database trigger (migration `2026-10-29-002200_api_stage_decision_action`). The worker's step
+(`factory_composition::stage_decisions`) asks the policy engine for the row `unblock_blocked_stage_run`, then calls
+`Engine::decide` with `UnblockRerun`. The verb asserts no fact. The engine reads from what it stored whether a decision was
+recorded after the attempt that blocked the run, and the worker has no capability probe adapter, so the re-probe never
+passes today. A request for a run that is not blocked ends with the marker code `wrong_state`; one the engine does not
+clear ends with `not_cleared`.
+
+### What a person reads before they decide
+
+Three read endpoints (`apps/api/src/reads.rs`) give a person the evidence an approval rests on. They need the artifact
+root (`artifacts.root`) and the three reads of migration `2026-10-29-002300`.
+
+* `specification-draft` gives the commit that holds the draft and the head of the ledger, which are what `head=` and
+  `evidence=` of an `approve` must say, and whether the stage run waits for a person. The commit is read through the
+  seam the worker's hook reads (`StoreSpecDrafts`), so it is the value the hook compares with.
+* `gate-reports` lists the reports the engine cited in the ledger, with the gate, the outcome, the block code and the
+  hash. A report the store cannot read is listed as such, with its hash.
+* `artifacts/{sha256}` downloads one document. It is served as an attachment under `text/plain; charset=utf-8` when
+  the stages stored it as text or JSON, and under `application/octet-stream` otherwise, with `nosniff`, whatever type the
+  document claims. The document must be in the tenant's index (the database's row-level rule, applied again by the
+  artifact store) and must belong to the job in the path: the index says its stage run is the job's, or a stage run of
+  the job is linked to it (the application's scope). `tests/artifact_download.rs` shows each layer on its own and
+  the tenant-crossing break caught.
+
+The text of a document is untrusted. The command line prints it through the sanitizer (`factory-cli artifact`).
+
+### Translation warnings
+
+The approval request counts the open warnings of the documentation reviewer's rule `translation-unfaithful`
+(`open_translation_warnings`), and an approval is refused while one has no decision of the person who approves
+(`G_APPROVER_AUTHORIZED`, ADR 0009 item 17). `ack-translation-warning` takes the approval `stage_run_id`, the `warning`
+(its number, from 1, in the order the gate reports list them) and a `reason`, and needs the approver designation. The
+worker applies it through `Engine::record_warning_decision`, which reads the warnings and the manifest of the request from
+what the stage run stored, refuses a number the request does not count, and writes one ledger entry for each decision.
+The `approve` that follows reads those entries back for the person who approves, for that request and that stage run
+(`stages::approval::warnings::all_decided`); a decision of another person, of an earlier request (another manifest) or of
+a person who left the allowlist counts for nothing.
+
+### The project's own build code
+
+A change that adds a `build.rs`, a procedural macro or build dependencies to the project itself blocks the gate `build`
+with the code `policy_unresolvable`, before any command builds it (`gates::scope::build_code`). The evidence of the
+blocked validation stage run lists each such file with the SHA-256 of its content (`project_build_code.awaiting`).
+`approve-project-build-code` takes `path`, `digest` (the start of that hash) and a `reason`. The worker selects the one
+awaited file the two words name, asks the policy engine for the action `approve_build_code` (a security approver, never
+the requester), and calls `Engine::record_project_build_code_decision`. The decision is stored in the ledger bound to the
+path and the hash. The gate passes only for a file with a decision on exactly that content, taken for this tenant, this
+job and this policy bundle by a person who still holds the designation: a script that is edited afterwards waits for a
+new decision. `build-code-policy-unresolvable` is on `gate_integrity.non_overridable_blocks`, so no override replaces it.
 
 ### What a decision does, and does not
 

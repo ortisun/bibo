@@ -9,6 +9,7 @@ use factory_composition::commands::{
     APPROVE_BUILD_CODE, APPROVE_DEPENDENCY, ParsedLine, parse_cli, parse_dependency_command,
 };
 use factory_composition::profile::Profile;
+use factory_composition::stage_decisions::{StageFields, StageVerb};
 use factory_composition::system::RandomIds;
 use factory_ports::clock::IdGenerator;
 use serde_json::{Value, json};
@@ -22,12 +23,17 @@ usage: factory-cli <command> [options]
 
   health   --api URL
   submit   --api URL --token-file FILE --repository ID --text-file FILE --source-ref OWNER/NAME#N [--key K]
-  status   --api URL --token-file FILE JOB
+  status   --api URL --token-file FILE [--gates] JOB
+  show-draft  --api URL --token-file FILE [--stage-run ID] JOB
+  artifact --api URL --token-file FILE JOB SHA256
   timeline --api URL --token-file FILE JOB
   approve  --api URL --token-file FILE [--key K] JOB STAGE_RUN head=H evidence=sha256:D [reason...]
   reject   --api URL --token-file FILE [--key K] JOB STAGE_RUN reason...
   rework   --api URL --token-file FILE [--key K] JOB STAGE_RUN target=STAGE reason...
   pause | resume | cancel  --api URL --token-file FILE [--key K] JOB reason...
+  unblock  --api URL --token-file FILE [--key K] JOB STAGE_RUN reason...
+  ack-translation-warning  --api URL --token-file FILE [--key K] JOB STAGE_RUN WARNING reason...
+  approve-project-build-code  --api URL --token-file FILE [--key K] [--stage-run ID] JOB PATH SHA256 reason...
   approve-dependency  --api URL --token-file FILE [--key K] [--stage-run ID] JOB NAME VERSION [CHECKSUM] reason...
   approve-build-code  --api URL --token-file FILE [--key K] [--stage-run ID] JOB NAME VERSION [CHECKSUM] reason...
   probe    --protected-checkout DIR [--images-catalog FILE] [--profile production|local|test]
@@ -299,6 +305,104 @@ fn read_job(
     finish(client.get(&path), ctx, show)
 }
 
+/// `status`, and with `--gates` the gate reports of the job after it.
+fn status(args: &[String], env: &dyn Fn(&str) -> Option<String>, ctx: &mut Context<'_>) -> Exit {
+    let with_gates = args.iter().any(|word| word == "--gates");
+    let rest: Vec<String> = args
+        .iter()
+        .filter(|word| *word != "--gates")
+        .cloned()
+        .collect();
+    let exit = read_job(&rest, env, ctx, "", render::job);
+    if !with_gates || exit != Exit::Ok {
+        return exit;
+    }
+    read_job(&rest, env, ctx, "/gate-reports", render::gate_reports)
+}
+
+/// `show-draft`: the specification draft a person is asked to approve.
+fn show_draft(
+    args: &[String],
+    env: &dyn Fn(&str) -> Option<String>,
+    ctx: &mut Context<'_>,
+) -> Exit {
+    let parsed = match split(args, &["api", "token-file", "stage-run"]) {
+        Ok(parsed) if parsed.positional.len() == 1 && is_uuid(&parsed.positional[0]) => parsed,
+        Ok(_) => {
+            ctx.complain("show-draft takes one job id (a UUID)");
+            return Exit::Failed;
+        }
+        Err(why) => {
+            ctx.complain(&why);
+            return Exit::Failed;
+        }
+    };
+    let mut path = format!("/v1/jobs/{}/specification-draft", parsed.positional[0]);
+    if let Some(stage_run) = parsed.options.get("stage-run") {
+        if !is_uuid(stage_run) {
+            ctx.complain("--stage-run is a stage run id (a UUID)");
+            return Exit::Failed;
+        }
+        path.push_str(&format!("?stage_run_id={stage_run}"));
+    }
+    let client = match client(&parsed.options, env, true, ctx) {
+        Ok(client) => client,
+        Err(exit) => return exit,
+    };
+    finish(client.get(&path), ctx, render::draft)
+}
+
+/// `artifact`: prints one stored document of a job. The text is untrusted, so it passes the same
+/// sanitizer as everything the command prints; a document that is not text is not printed.
+fn artifact(args: &[String], env: &dyn Fn(&str) -> Option<String>, ctx: &mut Context<'_>) -> Exit {
+    let parsed = match split(args, &["api", "token-file"]) {
+        Ok(parsed) if parsed.positional.len() == 2 && is_uuid(&parsed.positional[0]) => parsed,
+        Ok(_) => {
+            ctx.complain("artifact takes a job id (a UUID) and the SHA-256 of the document");
+            return Exit::Failed;
+        }
+        Err(why) => {
+            ctx.complain(&why);
+            return Exit::Failed;
+        }
+    };
+    let hash = parsed.positional[1]
+        .strip_prefix("sha256:")
+        .unwrap_or(&parsed.positional[1]);
+    if hash.len() != 64 || !hash.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f')) {
+        ctx.complain("the hash is 64 lower case hexadecimal digits");
+        return Exit::Failed;
+    }
+    let client = match client(&parsed.options, env, true, ctx) {
+        Ok(client) => client,
+        Err(exit) => return exit,
+    };
+    let path = format!("/v1/jobs/{}/artifacts/{hash}", parsed.positional[0]);
+    match client.get_document(&path) {
+        Err(unreachable) => {
+            ctx.complain(&format!("{unreachable}."));
+            Exit::Unreachable
+        }
+        Ok(document) if document.status == 200 => {
+            if document.content_type.starts_with("text/plain") {
+                ctx.say(&String::from_utf8_lossy(&document.bytes));
+                Exit::Ok
+            } else {
+                ctx.complain(&format!(
+                    "the document is {} bytes of data that is not text; it is not printed",
+                    document.bytes.len()
+                ));
+                Exit::Failed
+            }
+        }
+        Ok(document) => {
+            let body = serde_json::from_slice(&document.bytes).unwrap_or(Value::Null);
+            ctx.complain(&render::refusal(document.status, &body));
+            Exit::of_status(document.status)
+        }
+    }
+}
+
 fn decide(
     verb: &str,
     args: &[String],
@@ -365,6 +469,174 @@ fn decide(
     let shown = key.clone();
     let path = format!("/v1/jobs/{}/decisions", words[0]);
     finish(client.post(&path, &key, &body), ctx, move |body| {
+        render::decided(body, &shown)
+    })
+}
+
+/// The shortest reason a decision about a stage run carries, in characters (the API's own bound).
+const MIN_REASON_CHARS: usize = 10;
+
+/// `unblock`: the operator lets a blocked stage run go again. It sends the stage run and the
+/// reason and no fact: the engine reads for itself whether the block is gone.
+fn unblock(args: &[String], env: &dyn Fn(&str) -> Option<String>, ctx: &mut Context<'_>) -> Exit {
+    let parsed = match split(args, &["api", "token-file", "key"]) {
+        Ok(parsed) => parsed,
+        Err(why) => {
+            ctx.complain(&why);
+            return Exit::Failed;
+        }
+    };
+    let words = &parsed.positional;
+    if words.len() < 3 || !is_uuid(&words[0]) || !is_uuid(&words[1]) {
+        ctx.complain(
+            "unblock takes a job id and a stage run id (both UUIDs), then the reason it can go again",
+        );
+        return Exit::Failed;
+    }
+    let reason = words[2..].join(" ");
+    // What the API would refuse for a missing reason is refused here first, before a request.
+    if reason.chars().count() < MIN_REASON_CHARS {
+        ctx.complain("unblock needs a reason of at least 10 characters");
+        return Exit::Failed;
+    }
+    let body = json!({"verb": "unblock", "stage_run_id": words[1], "reason": reason});
+    let client = match client(&parsed.options, env, true, ctx) {
+        Ok(client) => client,
+        Err(exit) => return exit,
+    };
+    let key = idempotency_key(&parsed.options);
+    let shown = key.clone();
+    let path = format!("/v1/jobs/{}/decisions", words[0]);
+    finish(client.post(&path, &key, &body), ctx, move |body| {
+        render::decided(body, &shown)
+    })
+}
+
+/// `ack-translation-warning`: an approver decides about one open translation warning of the
+/// approval request, so that their approval of the pull request can count it. The warning is the
+/// number the gate reports list, from 1.
+fn ack_translation_warning(
+    args: &[String],
+    env: &dyn Fn(&str) -> Option<String>,
+    ctx: &mut Context<'_>,
+) -> Exit {
+    let parsed = match split(args, &["api", "token-file", "key"]) {
+        Ok(parsed) => parsed,
+        Err(why) => {
+            ctx.complain(&why);
+            return Exit::Failed;
+        }
+    };
+    let words = &parsed.positional;
+    let number = words
+        .get(2)
+        .and_then(|word| word.parse::<u32>().ok())
+        .filter(|number| (1..=factory_composition::stage_decisions::MAX_WARNING).contains(number));
+    let (Some(number), true) = (
+        number,
+        words.len() >= 4 && is_uuid(&words[0]) && is_uuid(&words[1]),
+    ) else {
+        ctx.complain(
+            "this decision takes a job id and the approval stage run id (both UUIDs), the number of the warning from 1, and then the reason",
+        );
+        return Exit::Failed;
+    };
+    let reason = words[3..].join(" ");
+    if reason.chars().count() < MIN_REASON_CHARS {
+        ctx.complain("a decision about a warning needs a reason of at least 10 characters");
+        return Exit::Failed;
+    }
+    let body = json!({
+        "verb": StageVerb::AckTranslationWarning.as_str(),
+        "stage_run_id": words[1],
+        "warning": number,
+        "reason": reason,
+    });
+    let client = match client(&parsed.options, env, true, ctx) {
+        Ok(client) => client,
+        Err(exit) => return exit,
+    };
+    let key = idempotency_key(&parsed.options);
+    let shown = key.clone();
+    let url = format!("/v1/jobs/{}/decisions", words[0]);
+    finish(client.post(&url, &key, &body), ctx, move |body| {
+        render::decided(body, &shown)
+    })
+}
+
+/// `approve-project-build-code`: a security approver accepts one file of the project's own new
+/// build code, with the content they read. The file is a path of the repository and the content is
+/// named by the start of its SHA-256 (12 to 64 lower case hex digits, with or without `sha256:`),
+/// as the evidence of the blocked stage run shows them (`status --gates` is not needed: the
+/// evidence of the stage run lists both).
+fn approve_project_build_code(
+    args: &[String],
+    env: &dyn Fn(&str) -> Option<String>,
+    ctx: &mut Context<'_>,
+) -> Exit {
+    let parsed = match split(args, &["api", "token-file", "key", "stage-run"]) {
+        Ok(parsed) => parsed,
+        Err(why) => {
+            ctx.complain(&why);
+            return Exit::Failed;
+        }
+    };
+    let words = &parsed.positional;
+    if words.len() < 4 || !is_uuid(&words[0]) {
+        ctx.complain(
+            "this decision takes a job id (a UUID), the path of the file, the start of the SHA-256 of its content, and then the reason",
+        );
+        return Exit::Failed;
+    }
+    let stage_run = parsed.options.get("stage-run");
+    if stage_run.is_some_and(|stage_run| !is_uuid(stage_run)) {
+        ctx.complain("--stage-run is a stage run id (a UUID)");
+        return Exit::Failed;
+    }
+    let path = words[1].clone();
+    let digest = words[2]
+        .strip_prefix("sha256:")
+        .unwrap_or(&words[2])
+        .to_owned();
+    // The words are checked with the grammar the API and the worker use, before a request.
+    let Ok(job) = factory_domain::ids::JobId::parse(&words[0]) else {
+        ctx.complain("the job id is not one");
+        return Exit::Failed;
+    };
+    let probe = StageFields {
+        verb: StageVerb::ApproveProjectBuildCode,
+        job,
+        stage_run: None,
+        path: Some(path.clone()),
+        digest: Some(digest.clone()),
+        index: None,
+    };
+    if !probe.is_well_formed() {
+        ctx.complain("the path is a path inside the repository, and the hash is 12 to 64 lower case hexadecimal digits");
+        return Exit::Failed;
+    }
+    let reason = words[3..].join(" ");
+    if reason.chars().count() < MIN_REASON_CHARS {
+        ctx.complain("a decision on build code needs a reason of at least 10 characters");
+        return Exit::Failed;
+    }
+    let mut body = json!({
+        "verb": StageVerb::ApproveProjectBuildCode.as_str(),
+        "path": path,
+        "digest": digest,
+        "reason": reason,
+    });
+    if let Some(stage_run) = stage_run {
+        body["stage_run_id"] = json!(stage_run);
+    }
+    let client = match client(&parsed.options, env, true, ctx) {
+        Ok(client) => client,
+        Err(exit) => return exit,
+    };
+    let key = idempotency_key(&parsed.options);
+    let shown = key.clone();
+    let url = format!("/v1/jobs/{}/decisions", words[0]);
+    finish(client.post(&url, &key, &body), ctx, move |body| {
         render::decided(body, &shown)
     })
 }
@@ -495,11 +767,16 @@ pub fn run(
     match command.as_str() {
         "health" => health(rest, env, &mut ctx),
         "submit" => submit(rest, env, &mut ctx),
-        "status" => read_job(rest, env, &mut ctx, "", render::job),
+        "status" => status(rest, env, &mut ctx),
+        "show-draft" => show_draft(rest, env, &mut ctx),
+        "artifact" => artifact(rest, env, &mut ctx),
         "timeline" => read_job(rest, env, &mut ctx, "/timeline", render::timeline),
         verb @ ("approve" | "reject" | "rework" | "pause" | "resume" | "cancel") => {
             decide(verb, rest, env, &mut ctx)
         }
+        "unblock" => unblock(rest, env, &mut ctx),
+        "approve-project-build-code" => approve_project_build_code(rest, env, &mut ctx),
+        "ack-translation-warning" => ack_translation_warning(rest, env, &mut ctx),
         verb @ (APPROVE_DEPENDENCY | APPROVE_BUILD_CODE) => {
             decide_dependency(verb, rest, env, &mut ctx)
         }

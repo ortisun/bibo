@@ -25,7 +25,9 @@ The address of the API is the `--api` option or the `FACTORY_API_URL` environmen
 |---|---|---|---|
 | `factory-cli health` | `--api` | none | Asks `GET /healthz`, then `GET /readyz`. Prints whether the API is running and ready. |
 | `factory-cli submit` | `--api`, `--token-file`, `--repository`, `--text-file`, `--source-ref`, `--key` | none | Submits a request as a job in the state `RECEIVED`. `--repository` is the repository identifier, `--text-file` holds the request text, and `--source-ref` is `OWNER/NAME#N`. |
-| `factory-cli status` | `--api`, `--token-file` | `JOB` | Shows the status of a job and its stage runs. |
+| `factory-cli status` | `--api`, `--token-file`, `--gates` | `JOB` | Shows the status of a job and its stage runs. With `--gates`, it then lists the gate reports of the job: the stage, the gate, the outcome, the block code and the hash of each report. |
+| `factory-cli show-draft` | `--api`, `--token-file`, `--stage-run` | `JOB` | Shows the specification draft a person is asked to approve: the commit that holds it, the head of the ledger, the draft document and the values to give as `head=` and `evidence=`. |
+| `factory-cli artifact` | `--api`, `--token-file` | `JOB SHA256` | Prints one stored document of a job, for example a gate report, through the same sanitizer as every other output. A document that is not text is not printed. |
 | `factory-cli timeline` | `--api`, `--token-file` | `JOB` | Shows the state changes of a job and its audit records, in time order. |
 | `factory-cli approve` | `--api`, `--token-file`, `--key` | `JOB STAGE_RUN head=H evidence=sha256:D [reason...]` | Records an approval. |
 | `factory-cli reject` | `--api`, `--token-file`, `--key` | `JOB STAGE_RUN reason...` | Records a rejection. |
@@ -33,6 +35,9 @@ The address of the API is the `--api` option or the `FACTORY_API_URL` environmen
 | `factory-cli pause` | `--api`, `--token-file`, `--key` | `JOB reason...` | Pauses a job. |
 | `factory-cli resume` | `--api`, `--token-file`, `--key` | `JOB reason...` | Resumes a paused job. |
 | `factory-cli cancel` | `--api`, `--token-file`, `--key` | `JOB reason...` | Cancels a job. |
+| `factory-cli unblock` | `--api`, `--token-file`, `--key` | `JOB STAGE_RUN reason...` | Lets a `BLOCKED` stage run go again once the cause is gone. |
+| `factory-cli ack-translation-warning` | `--api`, `--token-file`, `--key` | `JOB STAGE_RUN WARNING reason...` | Records an approver's decision about one open translation warning of the approval request. `WARNING` is its number, from 1. |
+| `factory-cli approve-project-build-code` | `--api`, `--token-file`, `--key`, `--stage-run` | `JOB PATH SHA256 reason...` | Approves one file of build code that the change itself adds, with the exact content the person read. |
 | `factory-cli approve-dependency` | `--api`, `--token-file`, `--key`, `--stage-run` | `JOB NAME VERSION [CHECKSUM] reason...` | Approves one new direct dependency that the validation stage is waiting on. |
 | `factory-cli approve-build-code` | `--api`, `--token-file`, `--key`, `--stage-run` | `JOB NAME VERSION [CHECKSUM] reason...` | Approves the build script or procedural macro of one package that the validation stage is waiting on. |
 | `factory-cli probe` | `--protected-checkout`, `--images-catalog`, `--profile` | none | Runs the start-up checks that need no credential and lists what cannot be checked. |
@@ -49,7 +54,8 @@ The address of the API is the `--api` option or the `FACTORY_API_URL` environmen
 | `--repository` | The identifier of a repository registered for the caller's tenant. A UUID. |
 | `--text-file` | A file with the request text. The command reads at most 200 KiB. |
 | `--source-ref` | The issue the job is for, written `OWNER/NAME#N`. The repository must be the one that `--repository` names. |
-| `--stage-run` | The stage run of a dependency decision. Without it the decision is for the blocked validation stage run of the job. |
+| `--stage-run` | The stage run of a dependency or build code decision, or of `show-draft`. Without it a decision is for the blocked validation stage run of the job, and `show-draft` takes the newest specification stage run. |
+| `--gates` | With `status`: also list the gate reports of the job. |
 | `--protected-checkout` | The checkout of the protected configuration branch, for `probe`. |
 | `--images-catalog` | The sandbox image catalog, for `probe`. Without it `probe` reports the catalog as BLOCKED. |
 | `--profile` | `production`, `local` or `test`, for `probe`. |
@@ -76,8 +82,11 @@ The `key=value` words come first. The first word that is not a known `key=value`
 | `pause` | `operator` | a reason | Pauses the job. |
 | `resume` | `operator` | a reason | Resumes the job. |
 | `cancel` | `operator` | a reason | Cancels the job. |
+| `unblock` | `operator` | `stage_run_id`, a reason of 10 to 500 characters | Lets a `BLOCKED` stage run go again (transition S17) when the engine finds the block cleared: a decision for what the run waited for was recorded after the attempt that blocked it, or a capability re-probe passes. It passes no gate and is not an override. |
 | `approve-dependency` | `approver` | package, version, a reason of 10 to 500 characters | Lets one new direct dependency pass the supply chain gate. |
 | `approve-build-code` | `security_approver` | package, version, a reason of 10 to 500 characters | Lets the build code of one package run. |
+| `ack-translation-warning` | `approver` | `stage_run_id` (the approval stage run), `warning` (from 1), a reason of 10 to 500 characters | Decides about one open warning of the documentation reviewer's rule `translation-unfaithful`. The approval of the pull request counts only the decisions of the person who approves, for the request they saw. |
+| `approve-project-build-code` | `security_approver` | `path`, `digest` (12 to 64 lower case hex digits of the SHA-256 of the file), a reason of 10 to 500 characters | Lets one file of build code that the change adds run, bound to its path and to the hash of its content. A script that is edited afterwards needs a new decision. |
 
 The role is a designation on the protected allowlist. A GitHub role never grants one. The API records the decision and answers `202` with `"applied": false`. The worker applies it once, and the job timeline then shows `decision.applied` or `decision.rejected`.
 
@@ -162,10 +171,13 @@ The contract is [`apps/api/openapi.json`](../../apps/api/openapi.json). The serv
 | `GET /v1/jobs` | bearer token | any designation | The jobs of the caller's tenant, newest first. |
 | `GET /v1/jobs/{job_id}` | bearer token | any designation | The status of a job and of its stage runs. |
 | `GET /v1/jobs/{job_id}/timeline` | bearer token | any designation | The state changes and audit records of a job, in time order. |
+| `GET /v1/jobs/{job_id}/specification-draft` | bearer token | any designation | The draft a person is asked to approve: the commit that holds it, the head of the ledger, the hash of the draft document and the facts of the approval window. Optional query `stage_run_id`. 503 without an artifact root in the configuration. |
+| `GET /v1/jobs/{job_id}/gate-reports` | bearer token | any designation | The gate reports the engine wrote into the ledger of the job, at most 200: the stage, the gate, the outcome, the block code and the hash of each. 503 without an artifact root in the configuration. |
+| `GET /v1/jobs/{job_id}/artifacts/{sha256}` | bearer token | any designation | One stored document of the job, as an attachment of at most 4 MiB under `text/plain; charset=utf-8` or `application/octet-stream`, with `X-Content-Type-Options: nosniff`. 404 for a hash that is not one of the job's documents, and for another tenant's. 413 over the cap. |
 | `POST /v1/jobs/{job_id}/decisions` | bearer token | by verb | Records a decision of a person. Needs an `Idempotency-Key` header. |
 | `POST /v1/webhooks/github` | HMAC-SHA256 of the raw body | none | A GitHub delivery. Verified on the raw body before anything is parsed. |
 
-The fields of a decision request are `verb`, `stage_run_id`, `head`, `evidence`, `target`, `reason`, `package`, `version` and `checksum`. The OpenAPI document says which verb needs which field.
+The fields of a decision request are `verb`, `stage_run_id`, `head`, `evidence`, `target`, `reason`, `package`, `version`, `checksum`, `path`, `digest` and `warning`. The OpenAPI document says which verb needs which field.
 
 ### Statuses
 
@@ -176,7 +188,7 @@ The fields of a decision request are `verb`, `stage_run_id`, `head`, `evidence`,
 | 401 | No usable credential. One answer, with the same bytes, for every reason. |
 | 403 | Known, and not permitted. The answer gives no reason. |
 | 404 | No such route or object. Another tenant's object has this answer too. |
-| 408, 413, 415 | The body was too slow, too large, or not `application/json`. |
+| 408, 413, 415 | The body was too slow, too large, or not `application/json`; or, for a download, the document is larger than 4 MiB. |
 | 409 | The request conflicts with a recorded one. |
 | 429 | A rate limit is exceeded. A `Retry-After` header comes with it. |
 | 503 | The service cannot answer now. |

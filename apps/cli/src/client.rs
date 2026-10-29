@@ -45,7 +45,18 @@ impl std::fmt::Display for ClientError {
     }
 }
 
-/// What the API answered.
+/// A document the API sent: the status, the content type and the bytes.
+#[derive(Debug, Clone)]
+pub struct Document {
+    /// The HTTP status.
+    pub status: u16,
+    /// The content type the server sent, as it sent it.
+    pub content_type: String,
+    /// The bytes of the answer, at most [`MAX_ANSWER_BYTES`].
+    pub bytes: Vec<u8>,
+}
+
+/// What the API answered, when the answer is JSON.
 #[derive(Debug, Clone)]
 pub struct Answer {
     /// The HTTP status.
@@ -184,6 +195,19 @@ impl ApiClient {
         self.send(http::Method::GET, path, None, None)
     }
 
+    /// `GET path`, keeping the bytes and the content type of the answer, for a document.
+    ///
+    /// # Errors
+    /// [`Unreachable`] when there is no answer.
+    pub fn get_document(&self, path: &str) -> Result<Document, Unreachable> {
+        let (status, content_type, bytes) = self.send_raw(http::Method::GET, path, None, None)?;
+        Ok(Document {
+            status,
+            content_type,
+            bytes,
+        })
+    }
+
     /// `POST path` with a JSON body and an idempotency key.
     ///
     /// # Errors
@@ -200,6 +224,20 @@ impl ApiClient {
         key: Option<&str>,
         body: Option<Vec<u8>>,
     ) -> Result<Answer, Unreachable> {
+        let (status, _, bytes) = self.send_raw(method, path, key, body)?;
+        Ok(Answer {
+            status,
+            body: serde_json::from_slice(&bytes).unwrap_or(Value::Null),
+        })
+    }
+
+    fn send_raw(
+        &self,
+        method: http::Method,
+        path: &str,
+        key: Option<&str>,
+        body: Option<Vec<u8>>,
+    ) -> Result<(u16, String, Vec<u8>), Unreachable> {
         let mut builder = http::Request::builder()
             .method(method)
             .uri(self.base.url(path))
@@ -227,16 +265,19 @@ impl ApiClient {
             _ => Unreachable::Protocol,
         })?;
         let status = response.status().as_u16();
+        let content_type = response
+            .headers()
+            .get("content-type")
+            .and_then(|value| value.to_str().ok())
+            .unwrap_or("")
+            .to_owned();
         let bytes = response
             .body_mut()
             .with_config()
             .limit(MAX_ANSWER_BYTES)
             .read_to_vec()
             .map_err(|_| Unreachable::Protocol)?;
-        Ok(Answer {
-            status,
-            body: serde_json::from_slice(&bytes).unwrap_or(Value::Null),
-        })
+        Ok((status, content_type, bytes))
     }
 }
 

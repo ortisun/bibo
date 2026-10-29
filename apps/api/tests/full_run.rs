@@ -551,7 +551,7 @@ async fn a_labelled_issue_goes_through_every_real_stage_and_two_approvals_comple
         let sweeper = factory_testkit::fx::canary::Sweeper::new(&canaries);
         let mut hits = Vec::new();
         let mut blobs = 0;
-        let mut stack = vec![rig.scratch.join("artifacts")];
+        let mut stack = vec![rig.artifact_root()];
         while let Some(dir) = stack.pop() {
             for entry in std::fs::read_dir(&dir).into_iter().flatten().flatten() {
                 let path = entry.path();
@@ -1006,7 +1006,7 @@ async fn break_a_canary_secret_in_the_builders_output_is_stopped_and_never_store
     // No stored blob, audit record, prompt or log line holds the canary in any spelling.
     let sweeper = factory_testkit::fx::canary::Sweeper::new(&canaries);
     let mut hits = Vec::new();
-    let mut stack = vec![journey.rig.scratch.join("artifacts")];
+    let mut stack = vec![journey.rig.artifact_root()];
     while let Some(dir) = stack.pop() {
         for entry in std::fs::read_dir(&dir).into_iter().flatten().flatten() {
             let path = entry.path();

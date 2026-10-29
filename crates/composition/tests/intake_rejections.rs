@@ -535,6 +535,53 @@ async fn the_reply_uses_a_token_for_one_repository_that_can_write_issues_and_not
     );
 }
 
+/// SF-16. A person who is not on the list removes the label and puts it back, again and again. Each
+/// toggle is a delivery of its own, so each used to get its own reply. One reply for a sender in a
+/// window is enough to tell them; the rest are recorded and not answered.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_unauthorized_sender_who_toggles_the_label_gets_one_reply_in_the_window() {
+    let rig = Rig::new().await;
+    let host = Hosting::new();
+    let hook = rig.hook_over(host.clone());
+    let first = "0190a3b2-7c4d-4e5f-8a6b-0000000000e6";
+    // Three toggles of the same sender, then one of another sender.
+    for delivery in [
+        first,
+        "0190a3b2-7c4d-4e5f-8a6b-0000000000e7",
+        "0190a3b2-7c4d-4e5f-8a6b-0000000000e8",
+    ] {
+        rig.request(&rig.fields(delivery, Some(1))).await;
+    }
+    rig.request(&rig.fields("0190a3b2-7c4d-4e5f-8a6b-0000000000e9", Some(2)))
+        .await;
+    hook.pass(rig.tenant).await;
+    // One reply for the first sender and one for the second.
+    assert_eq!(host.comments().len(), 2, "{:?}", host.comments());
+    // Every rejection is recorded, and says whether it was answered.
+    let records = rig.records(REJECTED).await;
+    assert_eq!(records.len(), 4);
+    let word = |record: &AuditRecord| {
+        record
+            .event
+            .subject
+            .split(' ')
+            .find_map(|word| word.strip_prefix("reply="))
+            .unwrap_or_default()
+            .to_owned()
+    };
+    let mut replies: Vec<String> = records.iter().map(word).collect();
+    replies.sort_unstable();
+    assert_eq!(replies, ["posted", "posted", "suppressed", "suppressed"]);
+    // A worker that starts later reads the log from the beginning, finds the replies that were
+    // posted and answers none of them again, nor the toggles of the same sender that follow.
+    let later = rig.hook_over(host.clone());
+    rig.request(&rig.fields("0190a3b2-7c4d-4e5f-8a6b-0000000000ea", Some(1)))
+        .await;
+    later.pass(rig.tenant).await;
+    assert_eq!(host.comments().len(), 2, "a restart is not a new window");
+    assert_eq!(rig.records(REJECTED).await.len(), 5);
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn a_request_of_another_tenant_is_not_answered_by_this_one() {
     let rig = Rig::new().await;

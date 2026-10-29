@@ -68,6 +68,7 @@ use crate::decisions::DecisionFields;
 use crate::dependency_decisions::DependencyFields;
 use crate::intake_rejections::RejectionFields;
 use crate::profile::Profile;
+use crate::stage_decisions::StageFields;
 use crate::startup::StartupFailure;
 
 /// The shortest key accepted, in bytes of key material: a key written as hex digits counts for the
@@ -92,6 +93,10 @@ const CONTEXT: &str = "factory-decision-request/1";
 /// so a word made for one kind of request is never the word of the other, even if the rest of the
 /// text could be made to look alike.
 const DEPENDENCY_CONTEXT: &str = "factory-dependency-decision-request/1";
+/// The context line of a request about a stage run: letting a blocked one go again, a decision on
+/// the project's own build code, a decision on a translation warning. A word made for one kind of
+/// request is never the word of another.
+const STAGE_CONTEXT: &str = "factory-stage-decision-request/1";
 
 /// The first line of what is signed for the marker of a decision. It differs from [`CONTEXT`] and
 /// [`DEPENDENCY_CONTEXT`], so a word made for a request is never the word of a marker.
@@ -267,6 +272,34 @@ impl DependencySigning<'_> {
     fn message(&self) -> String {
         format!(
             "{DEPENDENCY_CONTEXT}\ntenant={}\nactor={}\nevent={}\nat={}\n{}",
+            self.tenant.as_text(),
+            self.actor.as_text(),
+            self.event.as_uuid().hyphenated(),
+            self.requested_at,
+            self.fields.subject(),
+        )
+    }
+}
+
+/// What a signature of a request about a stage run covers besides the words of the subject.
+#[derive(Debug, Clone, Copy)]
+pub struct StageSigning<'a> {
+    /// The tenant the record belongs to.
+    pub tenant: TenantId,
+    /// The principal the record names as its actor.
+    pub actor: PrincipalId,
+    /// The id of the audit record.
+    pub event: AuditEventId,
+    /// The time of the request, as the text written in the subject.
+    pub requested_at: &'a str,
+    /// The words of the subject.
+    pub fields: &'a StageFields,
+}
+
+impl StageSigning<'_> {
+    fn message(&self) -> String {
+        format!(
+            "{STAGE_CONTEXT}\ntenant={}\nactor={}\nevent={}\nat={}\n{}",
             self.tenant.as_text(),
             self.actor.as_text(),
             self.event.as_uuid().hyphenated(),
@@ -588,6 +621,37 @@ impl DecisionKeys {
         )
     }
 
+    /// The word for a request about a stage run, made with the current key.
+    ///
+    /// # Panics
+    /// Never: an HMAC accepts a key of any length.
+    #[must_use]
+    pub fn sign_stage(&self, signing: &StageSigning<'_>) -> String {
+        let word = self
+            .current
+            .word(signing.message().as_bytes())
+            .expect("an HMAC key can have any length");
+        hex(&word)
+    }
+
+    /// True when `word` is the word of this request about a stage run under the current key or
+    /// the previous one, compared as [`verify`](Self::verify) does.
+    #[must_use]
+    pub fn verify_stage(&self, signing: &StageSigning<'_>, word: &str) -> bool {
+        self.verify_message(&signing.message(), word)
+    }
+
+    /// The subject of a signed request about a stage run: the words, the time, the word.
+    #[must_use]
+    pub fn signed_stage_subject(&self, signing: &StageSigning<'_>) -> String {
+        format!(
+            "{} at={} mac={}",
+            signing.fields.subject(),
+            signing.requested_at,
+            self.sign_stage(signing)
+        )
+    }
+
     /// The subject of a signed request: the six words, the time, the word.
     #[must_use]
     pub fn signed_subject(&self, signing: &Signing<'_>) -> String {
@@ -724,12 +788,52 @@ fn previous_key_in_force(
     Ok(true)
 }
 
+/// The user the process runs as, found without a call into the operating system that this crate
+/// does not make (the workspace forbids `unsafe`, and `rustix`, which would give the effective
+/// user directly, is not among the dependencies the architecture rules allow this crate).
+///
+/// **An approximation, and what it rests on.** A file a process creates belongs to the process's
+/// effective user, on the file systems a key lives on. The function creates one, with the mode
+/// `0600`, in the temporary directory (or, when that cannot be written, in the working directory),
+/// reads its owner and removes it. `None` when neither place takes a file: the caller refuses,
+/// because a user that cannot be found is not one that was checked. It is not exact on a file
+/// system that maps owners (a network mount with root squashing, say): there the answer is the
+/// mapped owner, and a key on such a mount deserves a person's eye anyway.
+fn process_user() -> Option<u32> {
+    use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |since| since.as_nanos());
+    let name = format!(".factory-user-{}-{nanos:x}", std::process::id());
+    [std::env::temp_dir()]
+        .into_iter()
+        .chain(std::env::current_dir())
+        .find_map(|directory| {
+            let probe = directory.join(&name);
+            let made = std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .mode(0o600)
+                .open(&probe)
+                .and_then(|file| file.metadata());
+            let _ = std::fs::remove_file(&probe);
+            made.ok().map(|meta| meta.uid())
+        })
+}
+
+/// True when a key file owned by `file_owner` is the process's own: the owner is the user the
+/// process runs as. A file of someone else is refused whatever its mode says, because the other
+/// user can change it, and so can root. A user that could not be found refuses.
+fn owned_by_the_process(file_owner: u32, process: Option<u32>) -> bool {
+    process == Some(file_owner)
+}
+
 /// The place of a key file, in the production profile (RR-25). The file is looked at as the
 /// operating system resolves it, and every directory above it must not be writable by group or
-/// others unless it is sticky (a writer there can replace the file), and the file belongs to the owner of its directory,
-/// or the directory to root. Whether the owner is the user the process runs as cannot be asked
-/// without a call into the operating system that this crate does not make; the mode of the file
-/// (nothing for group or others) and its being readable make it the process's own or root's.
+/// others unless it is sticky (a writer there can replace the file), and the file belongs to the
+/// owner of its directory, or the directory to root, **and to the user the process runs as**
+/// ([`process_user`], an approximation that the function names). A key that another user owns
+/// can be replaced by that user whatever its mode says.
 fn check_key_location(path: &Path) -> Result<(), KeyError> {
     use std::os::unix::fs::{MetadataExt, PermissionsExt};
     let shown = path.display().to_string();
@@ -760,6 +864,11 @@ fn check_key_location(path: &Path) -> Result<(), KeyError> {
                 "owned by another user than the directory it is in",
             ));
         }
+    }
+    if !owned_by_the_process(file.uid(), process_user()) {
+        return Err(unsafe_place(
+            "owned by another user than the one the process runs as",
+        ));
     }
     Ok(())
 }
@@ -903,6 +1012,38 @@ pub fn read_dependency_subject(subject: &str) -> Option<DependencySubject> {
         });
     }
     DependencyFields::parse_canonical(subject).map(DependencySubject::Unsigned)
+}
+
+/// What the subject of a `decision.stage_requested` row holds.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum StageSubject {
+    /// The words, `at=` and `mac=`.
+    Signed {
+        /// The words.
+        fields: StageFields,
+        /// The time the API wrote.
+        requested_at: String,
+        /// The word, as written. It is not known to be well formed.
+        word: String,
+    },
+    /// The words alone: a row nobody signed.
+    Unsigned(StageFields),
+}
+
+/// Reads the subject of a request about a stage run back. `None` when it is neither the signed nor
+/// the unsigned canonical text.
+#[must_use]
+pub fn read_stage_subject(subject: &str) -> Option<StageSubject> {
+    if let Some((body, at, word)) = split_signed(subject)
+        && let Some(fields) = StageFields::parse_canonical(body)
+    {
+        return Some(StageSubject::Signed {
+            fields,
+            requested_at: at.to_owned(),
+            word: word.to_owned(),
+        });
+    }
+    StageFields::parse_canonical(subject).map(StageSubject::Unsigned)
 }
 
 /// What the subject of a request to answer a rejected label holds, split but not believed.
@@ -1350,6 +1491,48 @@ mod tests {
         let alone = DecisionKeys::load(Profile::Local, None, &redactor()).expect("generated");
         assert!(!alone.verify(&parts.signing(), &word));
         std::fs::remove_dir_all(&dir).expect("cleanup");
+    }
+
+    #[test]
+    fn a_key_file_must_belong_to_the_user_the_process_runs_as() {
+        // The rule: only the same user passes, and a user that could not be found refuses.
+        assert!(owned_by_the_process(1000, Some(1000)));
+        assert!(!owned_by_the_process(1000, Some(1001)));
+        assert!(
+            !owned_by_the_process(0, Some(1000)),
+            "root's file is not mine"
+        );
+        assert!(
+            !owned_by_the_process(1000, Some(0)),
+            "root does not read another's key"
+        );
+        assert!(!owned_by_the_process(1000, None));
+        // The probe finds the owner of a file this process makes, which is the owner of the files
+        // this process makes: its own. The test makes one and compares.
+        use std::os::unix::fs::MetadataExt;
+        let probe = scratch("owner-probe");
+        std::fs::create_dir_all(&probe).expect("a directory");
+        let made = probe.join("file");
+        std::fs::write(&made, b"x").expect("a file");
+        let owner = std::fs::metadata(&made).expect("metadata").uid();
+        assert_eq!(process_user(), Some(owner));
+        let _ = std::fs::remove_dir_all(&probe);
+    }
+
+    #[test]
+    fn in_production_a_key_file_of_this_user_in_a_closed_directory_is_accepted() {
+        // The control of the rule above: a key the process owns passes the whole location check.
+        let directory = scratch("owner-accepted");
+        std::fs::create_dir_all(&directory).expect("a directory");
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&directory, std::fs::Permissions::from_mode(0o700))
+                .expect("a closed directory");
+        }
+        let file = directory.join("key");
+        write_key(&file, &strong(7), 0o600);
+        assert!(check_key_location(&file).is_ok());
+        let _ = std::fs::remove_dir_all(&directory);
     }
 
     #[test]

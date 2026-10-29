@@ -224,10 +224,20 @@ impl Client {
             .await
     }
 
-    /// Reads a listing page by page, up to the cap.
+    /// Reads a listing page by page, up to the cap, with the stage token.
     pub(crate) async fn get_pages(
         &self,
         scope: &GitScope,
+        target: &str,
+    ) -> Result<Pages, GitHostError> {
+        self.get_pages_as(scope, TokenClass::Stage, target).await
+    }
+
+    /// Reads a listing page by page, up to the cap, with the credential of `class`.
+    pub(crate) async fn get_pages_as(
+        &self,
+        scope: &GitScope,
+        class: TokenClass,
         target: &str,
     ) -> Result<Pages, GitHostError> {
         let separator = if target.contains('?') { '&' } else { '?' };
@@ -235,7 +245,7 @@ impl Client {
         let mut items = Vec::new();
         for _ in 0..self.pages.max_pages {
             let reply = self
-                .call(scope, TokenClass::Stage, Method::Get, &next, None, false)
+                .call(scope, class, Method::Get, &next, None, false)
                 .await?;
             let link = reply.header("link").and_then(next_link).map(str::to_owned);
             match reply.json {

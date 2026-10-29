@@ -120,20 +120,51 @@ impl From<factory_ports::store::StoreError> for ApiError {
     }
 }
 
-/// A success: a status and a JSON value.
+/// A document for download: bytes of a stored artifact under a content type the API fixes.
+///
+/// The bytes are untrusted text or data. They are never served as a page: the type is one of two
+/// the API chooses (`text/plain; charset=utf-8` or `application/octet-stream`), the response says
+/// `nosniff`, and it is an attachment.
+#[derive(Debug, Clone)]
+pub struct Download {
+    /// The bytes, as stored.
+    pub bytes: Vec<u8>,
+    /// The content type: one of the two the API serves.
+    pub content_type: &'static str,
+    /// The name the file is saved under: letters, digits and a dot, made by the API.
+    pub file_name: String,
+}
+
+/// A success: a status and a JSON value, or a document for download.
 #[derive(Debug, Clone)]
 pub struct Reply {
     /// The status.
     pub status: StatusCode,
     /// The body.
     pub body: Value,
+    /// When set, the answer is this document and `body` is not sent.
+    pub download: Option<Download>,
 }
 
 impl Reply {
     /// A reply with a status and a body.
     #[must_use]
     pub const fn new(status: StatusCode, body: Value) -> Self {
-        Self { status, body }
+        Self {
+            status,
+            body,
+            download: None,
+        }
+    }
+
+    /// 200 with a document to save.
+    #[must_use]
+    pub const fn download(document: Download) -> Self {
+        Self {
+            status: StatusCode::OK,
+            body: Value::Null,
+            download: Some(document),
+        }
     }
 
     /// 200.
@@ -160,19 +191,28 @@ const SECURITY_HEADERS: [(&str, &str); 4] = [
 /// response, so an error looks the same as a success from the outside.
 #[must_use]
 pub fn render(answer: Answer, correlation: &str) -> Response {
-    let (status, body, error) = match answer {
-        Ok(reply) => (reply.status, reply.body, None),
-        Err(error) => (error.status(), error.body(), Some(error)),
+    let (status, body, error, download) = match answer {
+        Ok(reply) => (reply.status, reply.body, None, reply.download),
+        Err(error) => (error.status(), error.body(), Some(error), None),
     };
     // A `Value` always serializes.
-    let bytes = serde_json::to_vec(&body).unwrap_or_else(|_| b"{}".to_vec());
+    let (bytes, content_type) = match &download {
+        Some(document) => (document.bytes.clone(), document.content_type),
+        None => (
+            serde_json::to_vec(&body).unwrap_or_else(|_| b"{}".to_vec()),
+            "application/json",
+        ),
+    };
     let mut response = Response::new(Body::from(bytes));
     *response.status_mut() = status;
     let headers = response.headers_mut();
-    headers.insert(
-        header::CONTENT_TYPE,
-        HeaderValue::from_static("application/json"),
-    );
+    headers.insert(header::CONTENT_TYPE, HeaderValue::from_static(content_type));
+    if let Some(document) = &download
+        && let Ok(value) =
+            HeaderValue::from_str(&format!("attachment; filename=\"{}\"", document.file_name))
+    {
+        headers.insert(header::CONTENT_DISPOSITION, value);
+    }
     for (name, value) in SECURITY_HEADERS {
         headers.insert(
             HeaderName::from_static(name),
