@@ -21,7 +21,7 @@ scripts/local-up.sh --bare           # PostgreSQL and the artifact volume only, 
 scripts/local-up.sh --factory        # also api and worker, once you have built their images (see the contract below)
 ```
 
-It needs Docker with Compose 2.24 or newer, `psql` 16 or newer, and the Diesel CLI 2.3.11 (`cargo install diesel_cli --version 2.3.11 --locked --no-default-features --features postgres`). A missing tool ends the script with exit code 3 and the word `BLOCKED`. Nothing is verified then, and a caller must not read it as success. The migrations are applied from the host by the Diesel CLI, as the owner role, never by the application (ADR 0007).
+It needs Docker with Compose 2.24 or newer, `psql` 16 or newer, and the Diesel CLI 2.3.11 (`cargo install diesel_cli --version 2.3.11 --locked --no-default-features --features postgres`). A missing tool ends the script with exit code 3 and the word `BLOCKED`. Nothing is verified then, and a caller must not read it as success. The migrations are applied from the host by the Diesel CLI, as the owner role, never by the application (architecture decision record (ADR) 0007).
 
 This stack is separate from `scripts/dev-up.sh`. That script runs PostgreSQL alone, as the Compose project `factory-dev`. This one is the project `factory-local`, with its own volumes and its own port, so the two never touch each other's data. The two files are `infra/compose/docker-compose.yml` with `postgres.yml` (the old one) and `infra/compose/local.yml` (this one).
 
@@ -39,7 +39,7 @@ This stack is separate from `scripts/dev-up.sh`. That script runs PostgreSQL alo
 
 **What is not here, on purpose.**
 
-- NATS. ADR 0004 says Slice 1 has no relay and no NATS dependency. The outbox rows are written, and nothing reads them yet.
+- The message stream (NATS). ADR 0004 says Slice 1 has no relay and no NATS dependency. The outbox rows are written, and nothing reads them yet.
 - The egress sidecar. It is not a Compose service: the worker's supervisor starts one per job, on that job's own `--internal` network (`docs/security/sandbox-policy.md` section 5). Its image, `factory-sandbox/egress-sidecar`, is in `images.json`.
 - An object store. ADR 0008 puts the Slice 1 artifacts on the local file system.
 - A Docker socket for the worker. See the note under the contract.
@@ -58,7 +58,7 @@ A real sandbox sits on its own per-job internal network next to its sidecar, cre
 
 ## Ports
 
-Every published port is bound to `127.0.0.1`. The smoke script reads `docker inspect` of every container to check it, and also connects to this machine's own LAN address on the database port, which was refused.
+Every published port is bound to `127.0.0.1`. The smoke script reads `docker inspect` of every container to check it, and also connects to this machine's own local area network (LAN) address on the database port, which was refused.
 
 | Port | Service | Variable |
 |---|---|---|
@@ -141,7 +141,7 @@ Compose reads these files from `FACTORY_SECRETS_DIR` (default `infra/compose/sec
 
 The folder is ignored by Git (`infra/compose/secrets/.gitignore`). No password, token or key is in any committed file, and no secret-looking environment variable holds a value. (The repository's secret detector, `scripts/ci.sh --self-test-no-secrets`, flags any Compose key with `PASSWORD` in its name that has a value not starting with `${`, even when the value is a file path. So the one such key left, `POSTGRES_PASSWORD_FILE`, is written `${FACTORY_RUN_SECRETS_DIR:-/run/secrets}/pg_superuser_password`. The detector cannot tell a path from a password; letting it skip names that end in `_FILE` would be its owner's change, `s0-ci-pipeline`, and was not made here.) `scripts/smoke.sh --static` checks that no secret-looking variable holds a value. `scripts/ci.sh --only secret-scan` checks the rest.
 
-The three login passwords are set by `scripts/local-up.sh` and `scripts/restore.sh` through `psql` standard input: they are on no command line and in no environment variable. They do appear in the text of the `CREATE ROLE` and `ALTER ROLE` statement while it runs (`pg_stat_activity`), and the server writes statements to its log only when `log_statement` says so (the image default is `none`) or when the statement fails. The database keeps only the SCRAM hash.
+The three login passwords are set by `scripts/local-up.sh` and `scripts/restore.sh` through `psql` standard input: they are on no command line and in no environment variable. They do appear in the text of the `CREATE ROLE` and `ALTER ROLE` statement while it runs (`pg_stat_activity`), and the server writes statements to its log only when `log_statement` says so (the image default is `none`) or when the statement fails. The database keeps only the salted challenge response (SCRAM) hash.
 
 The database stores the superuser password inside its volume when it first creates the cluster. A new secrets folder does not change it. `scripts/local-up.sh` checks that the secret still opens the database and stops with an explanation when it does not.
 

@@ -32,6 +32,10 @@ docker compose -f infra/compose/docker-compose.yml up -d --wait
 | `docker-compose.yml` | Names the project (`factory-dev`) and includes each service file. |
 | `postgres.yml` | The PostgreSQL service: pinned image, health check, named volume, hardening. |
 | `../../.env.example` | The settings Compose reads, with no secret in it. Copy to `.env`, or let `scripts/dev-up.sh` do it. |
+| `local.yml` | The full local stack (project `factory-local`, started by `scripts/local-up.sh`): PostgreSQL 18, the artifact volume and the `api` and `worker` services, whose images nobody builds yet. |
+| `config/` | The configuration files of the `api` and the `worker` in that stack. The programs' own tests parse them. |
+| `secrets/` | The secret files of that stack, made by `scripts/local-up.sh` and ignored by version control: the database passwords and URLs, the decision signing key and the webhook secret. A backup does not hold them. |
+| `allowlist/` | Where a person puts `allowlist.yaml` for that stack. Ignored by version control. |
 
 ## Security choices
 

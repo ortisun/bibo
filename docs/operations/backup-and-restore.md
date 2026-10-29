@@ -3,7 +3,7 @@
 - Status: written for the work package `s1-local-deployment`. Every command and result below was run on 2026-10-28 on a macOS laptop with Docker Desktop 29.9.2, PostgreSQL 18.6 in Docker, `psql` 18.6 and Diesel 2.3.11. The results are in the last section.
 - Form: how-to guide and reference.
 - Goal: take a backup of the factory database and the artifact directory, restore it into a new stack, and know, from a script that exits non-zero on any difference, that the restore is the same system.
-- Source: ADR 0007 and 0012 (roles, row-level security), ADR 0008 (artifact layout, the ledger, "backups of the artifact directory are an `sre` item for Slice 1"), `docs/database/ledger-and-audit.md`, `docs/database/for-the-storage-crate.md`.
+- Source: architecture decision records (ADR) 0007 and 0012 (roles, row-level security), ADR 0008 (artifact layout, the ledger, "backups of the artifact directory are an `sre` item for Slice 1"), `docs/database/ledger-and-audit.md`, `docs/database/for-the-storage-crate.md`.
 
 ## Back up
 
@@ -78,7 +78,7 @@ scripts/local-up.sh                     # optional: confirms the schema is curre
 | `fingerprint-tables`, `-columns`, `-functions`, `-schemas`, `-default_acl`, `-policies`, `-triggers`, `-constraints`, `-indexes` | Grants, owners, row-level security flags and policies, and the definitions are the same. A failure names the kind. |
 | `tables-exist`, `row-counts`, `content-hash` | Every table has the same number of rows and the same SHA-256 over all its rows. |
 | `ledger-heads`, `audit-heads` | The head of every chain equals the one recorded. A chain that lost its tail still verifies on its own (`docs/database/ledger-and-audit.md`), so the head is what notices. |
-| `ledger-verify-chain-in-database`, `audit-verify-chain-in-database` | The database's own verifier functions return NULL for every chain. |
+| `ledger-verify-chain-in-database`, `audit-verify-chain-in-database` | The database's own verifier functions return NULL (no bad link) for every chain. |
 | `ledger-chain-rebuilt-outside-postgresql`, `ledger-heads-equal-manifest` | The ledger chain rebuilt in Python from an export of the rows (`SHA-256(prev_entry_hash + "\n" + canonical_json)`), which does not trust the function that lives in the database being checked. |
 | `audit-chain-rebuilt-outside-postgresql` | The audit chain of every tenant checked by `docs/database/tools/verify_audit_chain.py`. |
 | `login-factory_worker`, `login-factory_api`, `login-factory_engine` | Each logs in over TCP with its restored password and passes the start-up check `role_readiness.sql` with the expected answer. |
