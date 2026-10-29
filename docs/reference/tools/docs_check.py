@@ -1086,7 +1086,11 @@ def check_quickstart(root: Path) -> Outcome:
                 continue
             missing = [t for t in block.attrs.get("expect", []) if t not in ran.output]
             want = int(block.attrs.get("exit", ["0"])[0])
-            if ran.code != want or missing:
+            if ran.code == 3 and want != 3:
+                tail = " | ".join(ran.output.strip().splitlines()[-2:])
+                lines.append(f"BLOCKED  {title}: the step ended with exit code 3, which means BLOCKED: {tail}")
+                stopped = True
+            elif ran.code != want or missing:
                 reason = f"exit code {ran.code}, expected {want}" if ran.code != want else f"the output lacks {missing[0]!r}"
                 tail = " | ".join(ran.output.strip().splitlines()[-3:])
                 lines.append(f"FAILED   {title}: {reason}: {tail}")
@@ -1271,6 +1275,25 @@ def self_test(root: Path) -> Outcome:
             page = write(scratch / "docs/walkthroughs/w.md", edit(GOOD_WALKTHROUGH))
             cases.append(Case(label, check_walkthrough(scratch, [page]), want))
 
+        # The quickstart: steps that pass, fail, differ from the page, or end BLOCKED.
+        quick_cases: list[tuple[str, str, str]] = [
+            ("a quickstart whose steps pass", '```bash quickstart step=a expect="ok"\necho ok\n```\n', PASSED),
+            ("a quickstart step that fails", "```bash quickstart step=a\nfalse\n```\n", FAILED),
+            ("a quickstart step that prints something else than the page says", '```bash quickstart step=a expect="nope"\necho ok\n```\n', FAILED),
+            ("a quickstart step that ends with exit code 3", "```bash quickstart step=a\nexit 3\n```\n", BLOCKED),
+        ]
+        for label, body, want in quick_cases:
+            repo = work / "quick"
+            shutil.rmtree(repo, ignore_errors=True)
+            write(repo / "docs/guides/quickstart.md", "# Quickstart\n\n" + body)
+            for command in (
+                ["git", "init", "-q"],
+                ["git", "add", "."],
+                ["git", "-c", "user.name=t", "-c", "user.email=t@example.test", "-c", "commit.gpgsign=false", "commit", "-q", "-m", "x"],
+            ):
+                run(command, repo, timeout=60)
+            cases.append(Case(label, check_quickstart(repo), want))
+
         # Readability: a clean page and a page with filler and a very long sentence.
         clean = write(work / "read/clean.md", "# Clean page\n\nThis page is short. It says one thing.\n")
         cases.append(Case("a readable page", check_readability(root, [clean]), PASSED))
@@ -1285,11 +1308,12 @@ def self_test(root: Path) -> Outcome:
     cannot = False
     for case in cases:
         got = case.outcome.status
-        if got == BLOCKED:
+        if got == case.expect:
+            shown = "passed as it should" if got == PASSED else "reported BLOCKED and not PASSED" if got == BLOCKED else "caught"
+            lines.append(f"ok       {case.name}: {shown}")
+        elif got == BLOCKED:
             cannot = True
             lines.append(f"BLOCKED  {case.name}: {case.outcome.lines[0] if case.outcome.lines else ''}")
-        elif got == case.expect:
-            lines.append(f"ok       {case.name}: {'passed as it should' if case.expect == PASSED else 'caught'}")
         else:
             wrong = True
             lines.append(f"WRONG    {case.name}: expected {case.expect}, got {got}: {' '.join(case.outcome.lines)[:200]}")

@@ -93,7 +93,7 @@ Any path that starts with `fixtures/recordings/` in the text must exist. After a
 
 It clones the repository into a scratch directory at the commit of the current checkout, checks out that commit, and runs each block marked `quickstart` in order, with the clone as the working directory. The build directory is inside the clone unless `DOCS_CHECK_TARGET_DIR` names another. Uncommitted changes are not in the clone, so commit before you run it.
 
-A block that needs Docker or PostgreSQL is BLOCKED when the program is missing or does not answer. If no block failed and one is BLOCKED, the check is BLOCKED. On the machine used to write this page, the Docker daemon did not answer and the check ended BLOCKED with every other step passed.
+A block that needs Docker or PostgreSQL is BLOCKED when the program is missing or does not answer. A block that ends with exit code 3 is BLOCKED too, because the scripts of this repository use that code for BLOCKED, unless the block says `exit=3`. If no block failed and one is BLOCKED, the check is BLOCKED. On the machine used to write this page, the Docker daemon did not answer and the check ended BLOCKED with every other step passed.
 
 ## In CI
 

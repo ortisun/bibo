@@ -18,7 +18,7 @@ Read this before you trust anything else in this repository.
 
 **What "test mode" means.** The agents are a script, the sandbox and the GitHub host are labelled fakes, and no model is called. Every recording and report says so. The [walkthrough](docs/walkthroughs/test-mode-run.md) follows one such run.
 
-**Not proven.** The factory has never run against a real model, a real GitHub App or a protected repository. The acceptance scenarios that need them, E1 and E2, are BLOCKED, and BLOCKED is never a pass. The worker program starts, runs its checks, prints one `BLOCKED:` line for each adapter that does not exist yet, and exits with code 3. It claims no job. The agent image has not been rebuilt for the latest hardening. Tests that need Docker could not run on the machine used to write these documents, because the Docker daemon did not answer.
+**Not proven.** The factory has never run against a real model, a real GitHub App or a protected repository. The acceptance scenarios that need them, E1 and E2, are BLOCKED, and BLOCKED is never a pass. The worker program starts, runs its checks, prints one `BLOCKED:` line for each adapter or input that does not exist yet, and exits with code 3. It claims no job. The agent image has not been rebuilt for the latest hardening. Tests that need Docker could not run on the machine used to write these documents, because the Docker daemon did not answer.
 
 The [acceptance report](docs/reports/slice-1-acceptance.md) and the [findings](docs/reports/slice-1-findings.md) hold the full numbers, including the scenarios that failed. The [production guide](docs/guides/production.md) lists what a person must supply before a live run.
 

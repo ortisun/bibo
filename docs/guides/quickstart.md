@@ -95,7 +95,7 @@ The file holds ten tests: the whole run, a repeat that must agree with it, and e
 cargo nextest run --locked -p factory-worker --test prepare
 ```
 
-One of these tests starts the real `factory-worker` binary against a private database. It checks that the binary passes its start-up checks, prints one `BLOCKED:` line for each adapter that does not exist yet and exits with code 3. A worker that claims no job is the honest state of the code today.
+One of these tests starts the real `factory-worker` binary against a private database. It checks that the binary passes its start-up checks, prints one `BLOCKED:` line for each adapter or input that does not exist yet and exits with code 3. A worker that claims no job is the honest state of the code today.
 
 ### 9. Judge a recorded end-to-end scenario
 
