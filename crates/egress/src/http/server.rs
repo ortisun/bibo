@@ -30,11 +30,12 @@ use std::time::Duration;
 
 use factory_domain::ids::JobId;
 use factory_domain::redaction::Redactor;
+use factory_ports::agent::AnswerEnd;
 use serde_json::{Map, Value, json};
 
 use super::scrub::StreamScrubber;
 use super::secret::ProviderKey;
-use super::usage::{StreamUsage, counts_from_json};
+use super::usage::{StreamUsage, answer_end_from_json, counts_from_json};
 use super::wire::{self, RequestHead};
 use crate::broker::shape::{self, Violation, Wire, headers};
 use crate::broker::{BrokerCore, Outcome, Permit, Provider, Refusal, RequestFacts};
@@ -520,6 +521,12 @@ fn serve_model_request(
         Ok(permit) => permit,
         Err(refusal) => return respond_refusal(stream, refusal),
     };
+    // A model request is a turn of the conversation, and its answer is recorded as one
+    // (`TurnAttestation`). A count-tokens call is not.
+    let permit = match route {
+        Route::Model => permit.for_turn(),
+        Route::CountTokens => permit,
+    };
     let forwarded = match route {
         Route::Model => {
             let changed = clamp_output_tokens(provider, &mut object, permit.max_output_tokens());
@@ -699,8 +706,8 @@ fn forward(
         .starts_with("text/event-stream");
     if (200..300).contains(&status) && is_stream {
         let reader = response.body_mut().with_config().limit(u64::MAX).reader();
-        let outcome = relay_stream(stream, provider, status, &header_refs, reader, upstream);
-        permit.settle(outcome);
+        let (outcome, end) = relay_stream(stream, provider, status, &header_refs, reader, upstream);
+        permit.settle_with_end(outcome, end);
         return;
     }
     // Everything else is held, up to a bound, so that it can be scrubbed whole and read for usage.
@@ -719,12 +726,17 @@ fn forward(
     } else {
         Outcome::NoCharge
     };
+    // Only a successful answer whose usage could be read has an end the broker will attest.
+    let end = match outcome {
+        Outcome::Counted(_) => answer_end_from_json(provider, &raw),
+        Outcome::NoCharge | Outcome::Unreadable => AnswerEnd::Failed,
+    };
     let clean = shared
         .redactor
         .redact(&raw)
         .map(|r| r.output.into_owned())
         .unwrap_or_default();
-    permit.settle(outcome);
+    permit.settle_with_end(outcome, end);
     let _ = wire::write_response(stream, status, &header_refs, &clean);
 }
 
@@ -774,11 +786,11 @@ fn relay_stream(
     headers: &[(&str, &str)],
     mut upstream_body: impl Read,
     upstream: &Upstream,
-) -> Outcome {
+) -> (Outcome, AnswerEnd) {
     let mut head_headers: Vec<(&str, &str)> = headers.to_vec();
     head_headers.push(("Cache-Control", "no-cache"));
     if wire::write_chunked_head(client, status, &head_headers).is_err() {
-        return Outcome::Unreadable;
+        return (Outcome::Unreadable, AnswerEnd::Failed);
     }
     let mut usage = StreamUsage::new(provider);
     let mut scrubber = StreamScrubber::new([upstream.key.expose()]);
@@ -807,7 +819,10 @@ fn relay_stream(
     }
     // Usage that was seen in full is charged whatever happened to the client; a stream that was
     // cut before its report is charged the worst case.
-    usage.finish().map_or(Outcome::Unreadable, Outcome::Counted)
+    match usage.finish_with_end() {
+        (Some(counts), end) => (Outcome::Counted(counts), end),
+        (None, _) => (Outcome::Unreadable, AnswerEnd::Failed),
+    }
 }
 
 // ---- answers the broker makes itself -----------------------------------------------------------

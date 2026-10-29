@@ -40,9 +40,22 @@ impl Recorded {
     }
 }
 
+/// How the fake's model answer ends (what the broker records for `TurnAttestation`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Ending {
+    /// The model finished its turn: `end_turn`, `completed`.
+    EndTurn,
+    /// The model asked for a tool: `tool_use`, a `function_call` item.
+    ToolUse,
+    /// The model ran into its output limit: `max_tokens`, `incomplete`.
+    MaxTokens,
+}
+
 /// How the fake answers.
 #[derive(Debug, Clone)]
 pub struct Script {
+    /// How the answer ends.
+    pub ending: Ending,
     /// Anthropic usage: input, cache write, cache read, output.
     pub anthropic: (u64, u64, u64, u64),
     /// OpenAI usage: input (cached tokens included), cached, output.
@@ -66,6 +79,7 @@ pub struct Script {
 impl Default for Script {
     fn default() -> Self {
         Self {
+            ending: Ending::EndTurn,
             anthropic: (1234, 7, 89, 56),
             openai: (1234, 89, 56),
             event_delay: Duration::ZERO,
@@ -233,6 +247,20 @@ fn handle(mut stream: TcpStream, requests: &Mutex<Vec<Recorded>>, script: &Mutex
     }
 
     let anthropic = request.path.starts_with("/v1/messages");
+    let stop = match script.ending {
+        Ending::EndTurn => "end_turn",
+        Ending::ToolUse => "tool_use",
+        Ending::MaxTokens => "max_tokens",
+    };
+    let (status, event_name, output) = match script.ending {
+        Ending::EndTurn => ("completed", "response.completed", "[]"),
+        Ending::ToolUse => (
+            "completed",
+            "response.completed",
+            "[{\"type\":\"function_call\",\"name\":\"shell\",\"arguments\":\"{}\"}]",
+        ),
+        Ending::MaxTokens => ("incomplete", "response.incomplete", "[]"),
+    };
     let (a_in, a_cw, a_cr, a_out) = script.anthropic;
     let (o_in, o_cached, o_out) = script.openai;
 
@@ -251,11 +279,11 @@ fn handle(mut stream: TcpStream, requests: &Mutex<Vec<Recorded>>, script: &Mutex
     if !wants_stream {
         let body = if anthropic {
             format!(
-                "{{\"type\":\"message\",\"content\":[{{\"type\":\"text\",\"text\":\"{text}\"}}],\"usage\":{{\"input_tokens\":{a_in},\"cache_creation_input_tokens\":{a_cw},\"cache_read_input_tokens\":{a_cr},\"output_tokens\":{a_out}}}}}"
+                "{{\"type\":\"message\",\"stop_reason\":\"{stop}\",\"content\":[{{\"type\":\"text\",\"text\":\"{text}\"}}],\"usage\":{{\"input_tokens\":{a_in},\"cache_creation_input_tokens\":{a_cw},\"cache_read_input_tokens\":{a_cr},\"output_tokens\":{a_out}}}}}"
             )
         } else {
             format!(
-                "{{\"output_text\":\"{text}\",\"usage\":{{\"input_tokens\":{o_in},\"input_tokens_details\":{{\"cached_tokens\":{o_cached}}},\"output_tokens\":{o_out}}}}}"
+                "{{\"status\":\"{status}\",\"output\":{output},\"output_text\":\"{text}\",\"usage\":{{\"input_tokens\":{o_in},\"input_tokens_details\":{{\"cached_tokens\":{o_cached}}},\"output_tokens\":{o_out}}}}}"
             )
         };
         let _ = stream.write_all(
@@ -277,7 +305,7 @@ fn handle(mut stream: TcpStream, requests: &Mutex<Vec<Recorded>>, script: &Mutex
                 "event: content_block_delta\ndata: {{\"type\":\"content_block_delta\",\"delta\":{{\"type\":\"text_delta\",\"text\":\"{text}\"}}}}\n\n"
             ),
             format!(
-                "event: message_delta\ndata: {{\"type\":\"message_delta\",\"delta\":{{\"stop_reason\":\"end_turn\"}},\"usage\":{{\"output_tokens\":{a_out}}}}}\n\n"
+                "event: message_delta\ndata: {{\"type\":\"message_delta\",\"delta\":{{\"stop_reason\":\"{stop}\"}},\"usage\":{{\"output_tokens\":{a_out}}}}}\n\n"
             ),
             "event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n".to_owned(),
         ]
@@ -289,7 +317,7 @@ fn handle(mut stream: TcpStream, requests: &Mutex<Vec<Recorded>>, script: &Mutex
                 "event: response.output_text.delta\ndata: {{\"type\":\"response.output_text.delta\",\"delta\":\"{text}\"}}\n\n"
             ),
             format!(
-                "event: response.completed\ndata: {{\"type\":\"response.completed\",\"response\":{{\"usage\":{{\"input_tokens\":{o_in},\"input_tokens_details\":{{\"cached_tokens\":{o_cached}}},\"output_tokens\":{o_out}}}}}}}\n\n"
+                "event: {event_name}\ndata: {{\"type\":\"{event_name}\",\"response\":{{\"status\":\"{status}\",\"output\":{output},\"usage\":{{\"input_tokens\":{o_in},\"input_tokens_details\":{{\"cached_tokens\":{o_cached}}},\"output_tokens\":{o_out}}}}}}}\n\n"
             ),
         ]
     };

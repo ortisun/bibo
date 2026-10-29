@@ -6,7 +6,7 @@
 mod fake_provider;
 
 #[allow(unused_imports)]
-pub use fake_provider::{FakeProvider, Recorded, Script};
+pub use fake_provider::{Ending, FakeProvider, Recorded, Script};
 
 use std::net::SocketAddr;
 use std::sync::Arc;

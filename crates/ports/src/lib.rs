@@ -16,7 +16,7 @@
 //! | [`artifact`] | `ArtifactStore` |
 //! | [`sandbox`] | `SandboxProvider`, `SandboxSession`, and the pure `SandboxSpec::validate` and `PostureReport::differences` |
 //! | [`workspace`] | `WorkspaceProvider`, `JobRepo`, `Workspace` |
-//! | [`agent`] | `AgentRuntime`, `ModelRouter`, `ModelBroker`, and the metering seam `MeteringOps` |
+//! | [`agent`] | `AgentRuntime`, `ModelRouter`, `ModelBroker`, the metering seam `MeteringOps`, and the broker's record of a job's turns, `TurnAttestation` |
 //! | [`registry`] | `AgentRegistry`, `OutputValidator` |
 //! | [`spec`] | `SpecificationProvider` |
 //! | [`githost`] | `IssueSource`, `ChangeHost`, `WebhookVerifier` |

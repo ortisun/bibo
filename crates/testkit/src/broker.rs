@@ -14,8 +14,9 @@ use factory_domain::ids::JobId;
 use factory_domain::values::Timestamp;
 use factory_domain::vocabulary::Fidelity;
 use factory_ports::agent::{
-    BrokerError, CostMicroUsd, InvalidTokenRequest, IssuedJobToken, JobTokenId, JobTokenRequest,
-    JobTokenSecret, MeteringOps, ModelBroker, TokenState, TokenUsage, Usage,
+    AnswerEnd, BrokerError, CostMicroUsd, InvalidTokenRequest, IssuedJobToken, JobTokenId,
+    JobTokenRequest, JobTokenSecret, MeteringOps, ModelBroker, TokenState, TokenUsage,
+    TurnAttestation, TurnSummary, Usage,
 };
 use factory_ports::clock::{Clock, IdGenerator, timestamp_after};
 
@@ -100,6 +101,9 @@ struct Record {
     usage: Usage,
     revoked: bool,
     expires_at: Timestamp,
+    /// Answers the fake provider finished, and how the latest one ended (`TurnAttestation`).
+    answers: u64,
+    last_answer: Option<AnswerEnd>,
 }
 
 /// An in-memory broker. Reports fidelity `fake`.
@@ -155,6 +159,13 @@ impl FakeModelBroker {
     /// forwarded while the token is active. A request that takes the total to the ceiling is
     /// forwarded too (its cost was unknown in advance) and then revokes the token.
     pub fn meter(&self, token: &JobTokenId, usage: Usage) -> Spend {
+        self.meter_answer(token, usage, AnswerEnd::EndTurn)
+    }
+
+    /// Like [`meter`](Self::meter), for a request whose answer ended as `end`. The fake provider of
+    /// the journeys ends every turn (`meter` uses `EndTurn`); a test of the runtime adapters scripts
+    /// a tool-use turn, a cut answer or a failure here.
+    pub fn meter_answer(&self, token: &JobTokenId, usage: Usage, end: AnswerEnd) -> Spend {
         let mut tokens = self.tokens.lock().expect("the lock is never poisoned");
         let Some(record) = tokens.get_mut(token) else {
             return Spend::Refused;
@@ -177,6 +188,10 @@ impl FakeModelBroker {
         if !self.has(BrokerDefect::DropsUsage) {
             record.usage = record.usage.saturating_add(usage);
         }
+        record.answers = record
+            .answers
+            .saturating_add(u64::from(end != AnswerEnd::Failed));
+        record.last_answer = Some(end);
         if record.usage.cost >= record.request.cost_ceiling
             && !self.has(BrokerDefect::NeverRevokesAtCeiling)
         {
@@ -218,6 +233,8 @@ impl ModelBroker for FakeModelBroker {
                     usage: Usage::default(),
                     revoked: self.has(BrokerDefect::IssuesRevokedToken),
                     expires_at,
+                    answers: 0,
+                    last_answer: None,
                 },
             );
         Ok(IssuedJobToken {
@@ -277,6 +294,24 @@ impl ModelBroker for FakeModelBroker {
             usage,
             ceiling: record.request.cost_ceiling,
             state: self.state_of(record),
+        })
+    }
+}
+
+#[async_trait]
+impl TurnAttestation for FakeModelBroker {
+    fn fidelity(&self) -> Fidelity {
+        Fidelity::Fake
+    }
+
+    async fn turn_summary(&self, token: &JobTokenId) -> Result<TurnSummary, BrokerError> {
+        let tokens = self.tokens.lock().expect("the lock is never poisoned");
+        let record = tokens.get(token).ok_or(BrokerError::UnknownToken)?;
+        Ok(TurnSummary {
+            usage: record.usage,
+            answers: record.answers,
+            last_answer: record.last_answer,
+            in_flight: 0,
         })
     }
 }

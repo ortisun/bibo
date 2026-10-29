@@ -36,8 +36,9 @@ use factory_domain::ids::{JobId, TenantId};
 use factory_domain::values::Timestamp;
 use factory_domain::vocabulary::{Fidelity, StageKind};
 use factory_ports::agent::{
-    BrokerError, CostMicroUsd, InvalidTokenRequest, IssuedJobToken, JobTokenId, JobTokenRequest,
-    JobTokenSecret, MeteringOps, ModelBroker, ModelSelection, TokenState, TokenUsage, Usage,
+    AnswerEnd, BrokerError, CostMicroUsd, InvalidTokenRequest, IssuedJobToken, JobTokenId,
+    JobTokenRequest, JobTokenSecret, MeteringOps, ModelBroker, ModelSelection, TokenState,
+    TokenUsage, TurnAttestation, TurnSummary, Usage,
 };
 use factory_ports::clock::{Clock, IdGenerator, duration_between, timestamp_after};
 
@@ -173,6 +174,10 @@ struct Record {
     hundred: bool,
     in_flight: u32,
     admissions: VecDeque<Timestamp>,
+    /// Model answers read to their end, and how the most recently settled one ended. They are the
+    /// broker's own record of the turns of the token (`TurnAttestation`).
+    answers: u64,
+    last_answer: Option<AnswerEnd>,
 }
 
 impl Record {
@@ -311,6 +316,8 @@ impl BrokerCore {
                     hundred: false,
                     in_flight: 0,
                     admissions: VecDeque::new(),
+                    answers: 0,
+                    last_answer: None,
                 },
             );
             state.ledgers.entry(req.job).or_default().push(LedgerEntry {
@@ -373,6 +380,23 @@ impl BrokerCore {
             usage: record.usage,
             ceiling: record.ceiling,
             state: record.state(&now),
+        })
+    }
+
+    /// What the broker saw of the turns of a token: the usage it metered, how many answers it read to
+    /// their end, how the latest one ended, and how many requests are still open. See
+    /// [`TurnAttestation`].
+    ///
+    /// # Errors
+    /// [`BrokerError::UnknownToken`] when the broker never issued it.
+    pub fn turn_summary_of(&self, token: &JobTokenId) -> Result<TurnSummary, BrokerError> {
+        let state = self.lock();
+        let record = state.tokens.get(token).ok_or(BrokerError::UnknownToken)?;
+        Ok(TurnSummary {
+            usage: record.usage,
+            answers: record.answers,
+            last_answer: record.last_answer,
+            in_flight: record.in_flight,
         })
     }
 
@@ -509,6 +533,7 @@ impl BrokerCore {
                     provider: facts.provider,
                     model: facts.model.to_owned(),
                     settled: false,
+                    turn: false,
                 })
             }
             Err((token, reason)) => {
@@ -664,6 +689,7 @@ impl BrokerCore {
         provider: Provider,
         model: &str,
         outcome: Outcome,
+        end: Option<AnswerEnd>,
     ) -> Usage {
         let now = self.clock.now();
         let mut events = Vec::new();
@@ -692,6 +718,14 @@ impl BrokerCore {
                 Outcome::Unreadable => (self.worst_case(provider, model, ceiling), false),
             };
             apply_usage(&mut state, &token, added, &self.caps, now, &mut events);
+            if let (Some(end), Some(record)) = (end, state.tokens.get_mut(&token)) {
+                // Only a model request that was forwarded settles with an end; a count-tokens
+                // call or a refused request leaves the record of the turns alone.
+                record.last_answer = Some(end);
+                if end != AnswerEnd::Failed {
+                    record.answers = record.answers.saturating_add(1);
+                }
+            }
             if let Some(ledger) = state.ledgers.get_mut(&job) {
                 ledger.push(LedgerEntry {
                     at: now,
@@ -869,6 +903,9 @@ pub struct Permit {
     provider: Provider,
     model: String,
     settled: bool,
+    /// True for a model request (a turn of the conversation). Its settlement records how the
+    /// answer ended; a permit for another route (count tokens) records nothing about the turns.
+    turn: bool,
 }
 
 impl Permit {
@@ -902,19 +939,40 @@ impl Permit {
         self.core.caps.per_request.max_output_tokens
     }
 
+    /// Marks the request as a turn of the model conversation, so that its settlement is recorded
+    /// as an answer of the token ([`TurnAttestation`]). The listener does this for the model
+    /// routes. A turn settled without an end counts as `Failed`.
+    #[must_use]
+    pub fn for_turn(mut self) -> Self {
+        self.turn = true;
+        self
+    }
+
     /// Records what the request used and releases the in-flight slot. Returns what was added.
-    pub fn settle(mut self, outcome: Outcome) -> Usage {
+    pub fn settle(self, outcome: Outcome) -> Usage {
+        self.settle_with_end(outcome, AnswerEnd::Failed)
+    }
+
+    /// Like [`settle`](Self::settle), and for a turn records how the answer ended.
+    pub fn settle_with_end(mut self, outcome: Outcome, end: AnswerEnd) -> Usage {
         self.settled = true;
+        let end = self.turn.then_some(end);
         self.core
-            .settle(self.token, self.provider, &self.model, outcome)
+            .settle(self.token, self.provider, &self.model, outcome, end)
     }
 }
 
 impl Drop for Permit {
     fn drop(&mut self) {
         if !self.settled {
-            self.core
-                .settle(self.token, self.provider, &self.model, Outcome::Unreadable);
+            let end = self.turn.then_some(AnswerEnd::Failed);
+            self.core.settle(
+                self.token,
+                self.provider,
+                &self.model,
+                Outcome::Unreadable,
+                end,
+            );
         }
     }
 }
@@ -983,6 +1041,24 @@ impl ModelBroker for BrokerCore {
         Self: 'async_trait,
     {
         Box::pin(async move { self.token_usage(token) })
+    }
+}
+
+impl TurnAttestation for BrokerCore {
+    fn fidelity(&self) -> Fidelity {
+        Fidelity::Real
+    }
+
+    fn turn_summary<'life0, 'life1, 'async_trait>(
+        &'life0 self,
+        token: &'life1 JobTokenId,
+    ) -> BoxFuture<'async_trait, Result<TurnSummary, BrokerError>>
+    where
+        'life0: 'async_trait,
+        'life1: 'async_trait,
+        Self: 'async_trait,
+    {
+        Box::pin(async move { self.turn_summary_of(token) })
     }
 }
 
