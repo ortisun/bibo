@@ -230,11 +230,14 @@ pub async fn receive(state: &ApiState, headers: &HeaderMap, body: &[u8]) -> Answ
         }
         if let (true, Some(requester)) = (registered.value.enabled, authorized) {
             let job_id = JobId::from_uuid(ids.new_uuid());
+            // The record of the job is written under the job's own correlation id, as every record
+            // of a job is, so that one search finds all of them.
+            let correlation = CorrelationId::from_uuid(ids.new_uuid());
             let pipeline_scope =
                 PipelineScope::new(SLICE_ONE_SCOPE.to_vec()).map_err(|_| ApiError::Unavailable)?;
             tx.insert_job(NewJob {
                 id: job_id,
-                correlation_id: CorrelationId::from_uuid(ids.new_uuid()),
+                correlation_id: correlation,
                 repository: bound.repository,
                 requester,
                 execution_mode: state.profile.execution_mode(),
@@ -252,7 +255,7 @@ pub async fn receive(state: &ApiState, headers: &HeaderMap, body: &[u8]) -> Answ
                 &format!("issue {}#{}", registered.value.full_name, issue.number),
                 "job.received_from_webhook",
                 "A job was received from a labeled issue.",
-                Some(job_id),
+                Some((job_id, correlation)),
             )
             .await?;
         }
@@ -345,10 +348,12 @@ async fn audit(
     subject: &str,
     action: &str,
     reason: &str,
-    job: Option<JobId>,
+    job: Option<(JobId, CorrelationId)>,
 ) -> Result<AuditEventId, ApiError> {
     let ids = &state.ports.ids;
     let id = AuditEventId::from_uuid(ids.new_uuid());
+    // A record of a job has the job's correlation id. A record of no job has one of its own.
+    let correlation_id = job.map_or_else(|| CorrelationId::from_uuid(ids.new_uuid()), |(_, c)| c);
     tx.record_audit(NewAuditEvent {
         id,
         actor: AuditActor::Anonymous(
@@ -359,9 +364,9 @@ async fn audit(
         decision: AuditDecision::Record,
         reason: reason.to_owned(),
         policy_hash: state.policy_hash(),
-        job,
+        job: job.map(|(job, _)| job),
         stage_run: None,
-        correlation_id: CorrelationId::from_uuid(ids.new_uuid()),
+        correlation_id,
     })
     .await?;
     Ok(id)

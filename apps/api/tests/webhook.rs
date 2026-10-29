@@ -362,6 +362,34 @@ async fn a_label_from_an_allowlisted_requester_makes_a_job_and_nothing_else_does
     env.stop().await;
 }
 
+/// SF-02 (the other half). The audit record of a job made from a webhook carries the correlation
+/// id of the job, so that one search finds the record, the events and the log lines of the job.
+/// It carried an id of its own.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_audit_record_of_a_job_made_from_a_webhook_carries_the_correlation_id_of_the_job() {
+    let env = Env::start().await;
+    let reply = env
+        .send(env.delivery(
+            "issues",
+            &delivery_id(60),
+            &payload(&env.a, "factory", env.a.requester.github_id, 41),
+        ))
+        .await;
+    assert_eq!(reply.status, 202);
+    let job_correlation = env
+        .db
+        .text("SELECT correlation_id::text FROM jobs")
+        .await
+        .expect("a job");
+    let record_correlation = env
+        .db
+        .text("SELECT correlation_id::text FROM audit_events WHERE action = 'job.received_from_webhook'")
+        .await
+        .expect("a record");
+    assert_eq!(record_correlation, job_correlation);
+    env.stop().await;
+}
+
 /// The requests the API left for the worker to answer: the audit records with the action
 /// `webhook_accepted_or_rejected.denied`, read by the worker login.
 async fn rejection_requests(env: &Env) -> Vec<factory_ports::store::AuditRecord> {
