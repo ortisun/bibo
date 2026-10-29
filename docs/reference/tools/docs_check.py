@@ -684,9 +684,10 @@ def parse_structs(source: str) -> dict[str, list[FieldInfo]]:
                 pending.append(line)
                 continue
             opened = re.match(r"^pub struct (\w+)\s*\{$", line)
-            if opened and any("Deserialize" in p for p in pending):
-                current = opened.group(1)
-                structs[current] = []
+            name = opened.group(1) if opened else None
+            if name is not None and any("Deserialize" in p for p in pending):
+                current = name
+                structs[name] = []
                 serde = []
             if not line.startswith("///"):
                 pending = []
