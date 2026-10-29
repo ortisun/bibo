@@ -157,6 +157,35 @@ async fn a_change_that_touches_no_dependency_file_passes_and_costs_nothing() {
     assert!(ran.evidence.get("dependency_review").is_none());
 }
 
+/// RR-16. Source inside a directory of vendored crates is built and run, and no manifest shows a
+/// change of it. The dependency gates run for such a change, the review is BLOCKED, and nothing is
+/// fetched: there is no package for a person to decide on, so the change goes to a security review
+/// outside the factory or the builder drops it.
+#[tokio::test]
+async fn a_change_inside_a_vendored_directory_blocks_the_review_and_runs_no_scan() {
+    for path in [
+        "vendor/serde/src/lib.rs",
+        "vendor/serde/.cargo-checksum.json",
+        "third_party/foo/src/lib.rs",
+    ] {
+        let (w, base, head) = project(&[(path, Some("pub fn edited() {}\n"))]).await;
+        let ran = w.run(&base, &head).await;
+        assert_eq!(
+            ran.outcome(gate::REVIEW),
+            GateOutcome::Blocked,
+            "{path} did not block the review"
+        );
+        let reason = ran
+            .report(gate::REVIEW)
+            .blocked_reason
+            .as_ref()
+            .expect("a reason");
+        assert_eq!(reason.code, BlockedCode::PolicyUnresolvable, "{path}");
+        assert_eq!(w.cargo.ran("fetch"), 0, "{path}");
+        assert_eq!(w.cargo.ran("audit"), 0, "{path}");
+    }
+}
+
 #[tokio::test]
 async fn a_manifest_edit_that_adds_no_dependency_passes_without_a_container() {
     let toml = manifest("\n# a note for the reader\n");

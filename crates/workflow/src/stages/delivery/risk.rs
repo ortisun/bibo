@@ -28,10 +28,16 @@ use factory_domain::vocabulary::RiskTier;
 use factory_ports::workspace::{ChangeKind, ChangedPath};
 use serde_json::{Value, json};
 
+use crate::gates::scope::hardening::{self, PatchSignals};
 use crate::stages::architecture::risk::{either, is_documentation, module_of};
 
 /// A change that touches more files than this is not a small change, whatever its paths are.
 pub const LARGE_CHANGE_FILES: usize = 25;
+
+/// A change that touches more files than this cannot be read by a person in a review. It is counted
+/// as one that touches a sensitive file, which makes it high (RR-16): a list that long is also the
+/// shape of a list that was cut.
+pub const HUGE_CHANGE_FILES: usize = 500;
 
 /// The sensitive group whose checks include the one for a new dependency.
 const DEPENDENCY_CHECK: &str = "new_dependency";
@@ -56,6 +62,7 @@ fn is_test_file(path: &str) -> bool {
 #[must_use]
 pub fn from_diff(policy: &PolicyEngine, changes: &[ChangedPath]) -> RiskFacts {
     let mut facts = RiskFacts::default();
+    let mut hardened = false;
     for change in changes {
         let path = change.path.as_str();
         match policy.paths.check(
@@ -67,10 +74,9 @@ pub fn from_diff(policy: &PolicyEngine, changes: &[ChangedPath]) -> RiskFacts {
         ) {
             PathVerdict::Denied(_) => facts.protected_path_change = true,
             PathVerdict::Allowed(allowance) => {
-                if allowance.sensitive.is_empty() {
-                    continue;
+                if !allowance.sensitive.is_empty() {
+                    facts.sensitive_file_change = true;
                 }
-                facts.sensitive_file_change = true;
                 for hit in &allowance.sensitive {
                     if hit.checks.iter().any(|check| check == DEPENDENCY_CHECK) {
                         facts.new_dependency = true;
@@ -81,14 +87,32 @@ pub fn from_diff(policy: &PolicyEngine, changes: &[ChangedPath]) -> RiskFacts {
                 }
             }
         }
+        // What the policy's globs do not name: vendored code, the dependency files of other places
+        // and ecosystems, and the files that run on a reviewer's machine (RR-14, RR-15, RR-16).
+        if let Some(kind) = hardening::classify(path) {
+            hardened = true;
+            facts.sensitive_file_change = true;
+            match kind {
+                hardening::Kind::Vendored | hardening::Kind::DependencyFile => {
+                    facts.new_dependency = true;
+                }
+                hardening::Kind::Infrastructure => facts.infra_change = true,
+                hardening::Kind::RunsOnReviewer => {}
+            }
+        }
     }
     let paths: Vec<&str> = changes.iter().map(|change| change.path.as_str()).collect();
+    if paths.len() > HUGE_CHANGE_FILES {
+        facts.sensitive_file_change = true;
+        hardened = true;
+    }
     let mut modules: Vec<String> = paths.iter().filter_map(|path| module_of(path)).collect();
     modules.sort();
     modules.dedup();
     let large = paths.len() > LARGE_CHANGE_FILES;
     facts.multi_module_change = modules.len() > 1 || large;
-    facts.docs_only = !paths.is_empty() && paths.iter().all(|path| is_documentation(path));
+    facts.docs_only =
+        !paths.is_empty() && !hardened && paths.iter().all(|path| is_documentation(path));
     facts.tests_only_new_files = !changes.is_empty()
         && changes
             .iter()
@@ -171,7 +195,36 @@ pub fn assess(
     claim: Option<RiskTier>,
     changes: &[ChangedPath],
 ) -> ChangeRisk {
-    let diff = from_diff(policy, changes);
+    assess_with_patch(policy, known, claim, changes, &PatchSignals::default())
+}
+
+/// What the headers of the patch add to the facts of the paths: a submodule bump is a dependency
+/// change, and a symbolic link, a change of mode, a binary file and a patch whose headers could not
+/// be read are not ordinary changes (RR-16). None of them lowers anything.
+fn apply_signals(facts: &mut RiskFacts, signals: &PatchSignals) {
+    if signals.is_ordinary() {
+        return;
+    }
+    if signals.submodule {
+        facts.new_dependency = true;
+    }
+    facts.sensitive_file_change = true;
+    facts.docs_only = false;
+    facts.tests_only_new_files = false;
+    facts.single_module_change_without_sensitive_or_protected_paths = false;
+}
+
+/// [`assess`], with what the headers of the exported patch show ([`PatchSignals::of`]).
+#[must_use]
+pub fn assess_with_patch(
+    policy: &PolicyEngine,
+    known: &RiskFacts,
+    claim: Option<RiskTier>,
+    changes: &[ChangedPath],
+    signals: &PatchSignals,
+) -> ChangeRisk {
+    let mut diff = from_diff(policy, changes);
+    apply_signals(&mut diff, signals);
     let before = policy.risk.assess(known, claim);
     let after = policy.risk.assess(&diff, None);
     let mut assessment = if after.tier > before.tier {
