@@ -194,6 +194,56 @@ async fn a_complete_loopback_configuration_serves_the_broker_runs_the_loop_and_s
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn a_protected_checkout_without_the_routing_policy_stops_the_worker_before_anything_else() {
+    // Break: policies/model_routing.yaml is missing from the protected checkout. The worker does
+    // not start with a default, because there would be no model to route to and no price.
+    let scratch = repository_root_for_test().join("target/composed-start-no-routing");
+    let policies = scratch.join("policies");
+    std::fs::create_dir_all(&policies).expect("a scratch checkout");
+    for name in ["security.yaml", "approval.yaml"] {
+        std::fs::copy(
+            repository_root_for_test().join("policies").join(name),
+            policies.join(name),
+        )
+        .expect("copy");
+    }
+    let root_text = repository_root_for_test().display().to_string();
+    let scratch_text = scratch.display().to_string();
+    let mut running = start(|text| {
+        text.replace(
+            &format!("protected_checkout: {root_text}"),
+            &format!("protected_checkout: {scratch_text}"),
+        )
+    })
+    .await;
+    tokio::task::block_in_place(|| {
+        let deadline = Instant::now() + Duration::from_secs(60);
+        let status = loop {
+            if let Some(status) = running.child.try_wait().expect("status") {
+                break status;
+            }
+            assert!(Instant::now() < deadline, "the worker did not stop");
+            std::thread::sleep(Duration::from_millis(100));
+        };
+        let stderr = running.stderr_so_far();
+        assert_eq!(status.code(), Some(1), "{stderr}");
+        assert!(stderr.contains("model_routing.yaml"), "{stderr}");
+        assert!(
+            TcpStream::connect(("127.0.0.1", running.port)).is_err(),
+            "the broker listened"
+        );
+    });
+    let _ = std::fs::remove_dir_all(scratch);
+}
+
+fn repository_root_for_test() -> std::path::PathBuf {
+    std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../..")
+        .canonicalize()
+        .expect("the repository root")
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn removing_one_key_makes_the_worker_stop_with_code_three_and_name_that_key() {
     // Break: a configuration with one missing key. The line names it, and the worker never claims.
     let mut running = start(|text| {

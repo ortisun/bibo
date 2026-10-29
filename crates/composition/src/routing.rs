@@ -12,15 +12,22 @@
 //! * [`token_request`] builds the request for a job token: the models of the stage's routes, and
 //!   the ceiling of the stage run. [`broker_caps`] gives the broker the per-request caps.
 //!
+//! # How the running system uses it
+//!
+//! * `prepare` loads the file with the other policies; `PolicyBroker` (`crate::policy_broker`) applies
+//!   [`token_request`]'s rules to the request the engine builds; `broker_host::start` gives the broker
+//!   [`price_table_with`] and [`broker_caps`]; the router offers only the models
+//!   [`enabled_models`] returns.
+//!
 //! # What the policy does not yet drive
 //!
 //! * The broker applies one set of per-request caps to every token, so [`broker_caps`] takes the
 //!   largest cap of any role. A cap for each role needs a field on the job token request, which is
-//!   a change of the port.
-//! * The router does not know the model the author of the work used, so it cannot choose a
-//!   reviewer of another family by itself. The reviewing stages list the model of the other family
-//!   first, and `ModelRoutingPolicy::independent` answers the question for a caller that knows the
-//!   author. Passing the author to the router needs a field on `RoutingNeed`, a change of the port.
+//!   a change of the port (`docs/architecture/ports-v1.1.md`, section 16.1).
+//! * The router does not know the model the author of the work used, so the engine cannot ask it for
+//!   a reviewer of another family. [`PolicyModelRouter::route_after_author`] answers the question
+//!   for a caller that knows the author; passing the author through `RoutingNeed` is the same
+//!   proposal.
 
 use std::collections::BTreeSet;
 use std::sync::Arc;
