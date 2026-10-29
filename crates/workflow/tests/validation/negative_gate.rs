@@ -640,11 +640,20 @@ fn negative_nt_gate_04_every_path_trick_is_refused_with_its_group_and_the_contro
 
 #[tokio::test]
 async fn negative_nt_gate_04_the_tricks_that_a_repository_can_hold_fail_the_whole_stage() {
-    for path in [
-        ".GitHub/Workflows/ci.yml",
+    // A zero width character in the name of a protected directory cannot be a path at all: since
+    // SBX-2 (`paths::hides_text`) `RepoPath` refuses it, so it never reaches a gate, and the
+    // fixture below could not build it. The trick that is left is the ones the type allows.
+    for hidden in [
         ".git\u{200b}hub/workflows/ci.yml",
-        ".github./workflows/ci.yml",
+        ".github/workflows/ci\u{202e}.yml",
     ] {
+        assert_eq!(
+            factory_ports::paths::RepoPath::new(hidden),
+            Err(factory_ports::paths::NameError::HiddenCharacter),
+            "{hidden:?}"
+        );
+    }
+    for path in [".GitHub/Workflows/ci.yml", ".github./workflows/ci.yml"] {
         let (w, ran) = run_change(&[(path, Some("x\n"))], head_run()).await;
         assert_eq!(
             ran.outcome("protected-paths-unchanged"),
