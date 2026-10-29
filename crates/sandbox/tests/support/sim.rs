@@ -27,6 +27,7 @@ struct State {
     daemon_down: bool,
     image_missing: bool,
     sidecar_start_fails: bool,
+    du_fails: bool,
     status_text: Option<String>,
     token_content: Option<Vec<u8>>,
     inspect_before_start: Vec<String>,
@@ -58,6 +59,12 @@ impl Sim {
     /// container, `sandbox` or `sidecar`.
     pub fn mutate(&self, f: impl Fn(&mut Value, &str) + Send + Sync + 'static) {
         *self.mutation.lock().expect("lock") = Some(Box::new(f));
+    }
+
+    /// Makes every `du` that the watchdog runs inside a container fail the way a `docker exec`
+    /// does when the container has no free process slot (finding SBX-3).
+    pub fn du_cannot_start(&self) {
+        self.state.lock().expect("lock").du_fails = true;
     }
 
     pub fn daemon_down(&self) {
@@ -417,6 +424,10 @@ impl ProcessRunner for Sim {
                             truncated: false,
                         })
                     }
+                    ["du", ..] if state.du_fails => fail(
+                        "OCI runtime exec failed: exec failed: unable to start container process: \
+                         error executing setns process: exit status 1: resource temporarily unavailable",
+                    ),
                     ["du", ..] => ok("1\t/workspace\n1\t/out\n"),
                     _ => ok(""),
                 }

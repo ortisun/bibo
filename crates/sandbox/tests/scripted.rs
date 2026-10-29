@@ -997,3 +997,59 @@ fn a_spec_that_names_a_network_for_the_wrong_profile_is_refused_before_any_call(
         "the policy check runs before any docker call"
     );
 }
+
+// ---- SBX-3: a disk that cannot be measured is not a disk under its cap -------------------------
+
+fn true_command() -> factory_ports::sandbox::ExecRequest {
+    factory_ports::sandbox::ExecRequest {
+        argv: factory_ports::sandbox::ExecArgv::new(vec!["true".to_owned()]).expect("argv"),
+        cwd: None,
+        stdin: None,
+        timeout: Duration::from_secs(5),
+        max_output_bytes: 1024,
+    }
+}
+
+/// SBX-3. A process that holds the process table full makes every `docker exec` fail, the
+/// watchdog's `du` included. The watchdog used to skip a failed measurement for ever, so the disk
+/// cap went unenforced while the table was held. Now three failed polls in a row, in a container
+/// that is still running, kill it and end the attempt as a resource failure. The control is the
+/// same sandbox with a `du` that works: it is not touched.
+#[tokio::test]
+async fn sbx_3_a_disk_that_keeps_failing_to_be_measured_ends_the_attempt_as_a_resource_failure() {
+    let rig = new_rig();
+    let (spec, _host) = make_spec(SandboxProfile::Verify);
+    let mut session = create(&rig, spec).await.expect("a sandbox");
+    rig.sim.du_cannot_start();
+    // The watchdog polls every 500 ms in this rig: the third failure comes after about 1.5 s.
+    tokio::time::sleep(Duration::from_millis(3000)).await;
+    let ended = session.exec(true_command(), &FakeCancel::new()).await;
+    assert_eq!(
+        ended.err(),
+        Some(SandboxError::ResourceExceeded(
+            factory_ports::sandbox::Resource::Disk
+        ))
+    );
+    assert!(
+        rig.sim.verbs().iter().any(|verb| verb == "kill"),
+        "the container must have been killed: {:?}",
+        rig.sim.verbs()
+    );
+    let _ = session.stop_and_remove(TeardownReason::Failed).await;
+}
+
+#[tokio::test]
+async fn sbx_3_control_a_disk_that_is_measured_leaves_the_sandbox_alone() {
+    let rig = new_rig();
+    let (spec, _host) = make_spec(SandboxProfile::Verify);
+    let mut session = create(&rig, spec).await.expect("a sandbox");
+    tokio::time::sleep(Duration::from_millis(3000)).await;
+    let ran = session.exec(true_command(), &FakeCancel::new()).await;
+    assert!(ran.is_ok(), "{ran:?}");
+    assert!(
+        !rig.sim.verbs().iter().any(|verb| verb == "kill"),
+        "{:?}",
+        rig.sim.verbs()
+    );
+    let _ = session.stop_and_remove(TeardownReason::Completed).await;
+}
