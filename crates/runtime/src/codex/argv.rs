@@ -13,6 +13,11 @@
 //! * `-c project_doc_max_bytes=0`: Codex loads `AGENTS.md` by default, and `--ignore-user-config`
 //!   and `--ignore-rules` do not stop it.
 //! * `-c skills.bundled.enabled=false`: the tool's own skills are not the factory's to offer.
+//! * `-c web_search="disabled"`: Codex 0.163.0 puts `{"type": "web_search", "external_web_access":
+//!   true}` in the tool list of every request by default, a search the **provider** runs from its
+//!   own network. The broker refuses a request that names a provider-side tool (finding EGR-1 of
+//!   the isolation core review, `crates/egress/src/broker/shape`), so without this setting every
+//!   Codex run would be refused; with it the tool list holds only tools Codex runs itself.
 //! * An explicit model with `-m`: the default is the most expensive one.
 //! * The prompt is read from standard input (`-`).
 //!
@@ -120,6 +125,7 @@ pub const ALLOWED_FLAGS: &[&str] = &[
 pub const ALLOWED_CONFIG_KEYS: &[&str] = &[
     "project_doc_max_bytes",
     "skills.bundled.enabled",
+    "web_search",
     "analytics.enabled",
     "feedback.enabled",
     "check_for_update_on_startup",
@@ -236,6 +242,7 @@ pub fn build(plan: &Plan<'_>, target: &VerifiedTarget) -> Result<Vec<String>, Ar
     for setting in [
         "project_doc_max_bytes=0",
         "skills.bundled.enabled=false",
+        "web_search=\"disabled\"",
         "analytics.enabled=false",
         "feedback.enabled=false",
         "check_for_update_on_startup=false",

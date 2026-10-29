@@ -242,6 +242,9 @@ fn argument_safety_codex_writes_the_spike_flag_set() {
         "-c analytics.enabled=false",
         "-c project_doc_max_bytes=0",
         "-c skills.bundled.enabled=false",
+        // The provider must not run a web search for the tool (EGR-1): the broker refuses a
+        // request that names a provider-side tool, and Codex names one by default.
+        "-c web_search=\"disabled\"",
         "-c model_provider=\"broker\"",
         "base_url=\"http://egress:8080/v1\"",
         "supports_websockets=false",

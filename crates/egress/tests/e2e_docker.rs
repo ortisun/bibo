@@ -572,6 +572,8 @@ impl Lab {
                 "--disable",
                 "plugin_sharing",
                 "-c",
+                "web_search=\"disabled\"",
+                "-c",
                 "analytics.enabled=false",
                 "-c",
                 "feedback.enabled=false",
