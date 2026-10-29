@@ -1,6 +1,6 @@
 # The egress sidecar image
 
-`factory-sandbox/egress-sidecar` holds one program, `factory-egress-sidecar`, the per-job relay described in `docs/security/sandbox-policy.md` section 5.2. **That program does not exist yet.** Work package `s1-egress-and-broker` writes it (`apps/egress-sidecar`). This image is built so that program can be dropped in. It never contains a stand-in.
+`factory-sandbox/egress-sidecar` holds one program, `factory-egress-sidecar`, the per-job relay described in `docs/security/sandbox-policy.md` section 5.2. The program exists: work package `s1-egress-and-broker` wrote it (`apps/egress-sidecar`, whose README is the contract the supervisor builds against). This image does not build it; the compiled Linux program is dropped in with `build.sh --binary`. The image never contains a stand-in.
 
 ## Two states
 
@@ -9,7 +9,7 @@
 | `awaiting-binary` | The base, the user and the entrypoint. No program. Starting it fails with "no such file or directory". | Refuse to use it. A job that needs a sidecar is BLOCKED. |
 | `ready` | The base and exactly one program at `/usr/local/bin/factory-egress-sidecar`. `binary_sha256` in `images.json` is its SHA-256. | Use it, by digest. |
 
-Today the entry is `awaiting-binary`. `test.sh` (rule `SIDECAR-STATE`) checks that a skeleton really has no program and really fails to start, and that a `ready` image holds the program whose hash `images.json` records.
+Today the `linux/arm64` entry is `ready` and records the SHA-256 of the program it holds. `test.sh` (rule `SIDECAR-STATE`) checks that a skeleton really has no program and really fails to start, and that a `ready` image holds the program whose hash `images.json` records.
 
 ## Supplying the program
 
@@ -23,9 +23,9 @@ The script refuses the file unless its SHA-256 equals `--sha256` (the person who
 
 `gcr.io/distroless/cc-debian13:nonroot`, pinned by digest. It has glibc, libgcc, libstdc++ and CA certificates, and no shell, no package manager and no setuid file. The image sets `USER 10003:10003` and `ENTRYPOINT ["/usr/local/bin/factory-egress-sidecar"]`. Its environment is `PATH` and `SSL_CERT_FILE`, both from the base.
 
-## What the program must be (proposal for `s1-egress-and-broker`)
+## What the program must be (the proposal that `apps/egress-sidecar` answers)
 
-This is what the image guarantees and what it expects back. The egress package owns the program and may amend it.
+This is what the image guarantees and what it expects back. The egress package owns the program and may amend it. `apps/egress-sidecar/README.md` says what the program does today.
 
 - **Runs as 10003:10003 on a read-only root with no capabilities.** It may write only to a tmpfs the supervisor mounts. It must not need a writable root, a shell, a home directory or any file the image does not contain.
 - **Takes its configuration from the supervisor**, as a file mounted read-only or as arguments, never from the sandbox. The image holds no configuration.

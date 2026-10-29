@@ -6,9 +6,9 @@ The container images that the sandbox supervisor runs (work package `s1-sandbox-
 |---|---|---|---|
 | `factory-sandbox/agent` | `agent/` | the `agent` profile | Rust 1.98.0 toolchain, `claude` 2.1.311, `codex` 0.163.0, `bash` |
 | `factory-sandbox/verify` | `verify/` | the `verify` and `fetch_deps` profiles | Rust 1.98.0 toolchain, no shell |
-| `factory-sandbox/egress-sidecar` | `egress-sidecar/` | the per-job relay | one program, `factory-egress-sidecar`, which does not exist yet |
+| `factory-sandbox/egress-sidecar` | `egress-sidecar/` | the per-job relay | one program, `factory-egress-sidecar`, built from `apps/egress-sidecar` and supplied to `egress-sidecar/build.sh` with its checksum |
 
-Sizes reported by Docker 29.9.2 on `linux/arm64`: agent about 1.9 GiB, verify about 1.0 GiB, sidecar skeleton about 51 MiB. The two toolchain images do not share a layer, because each is copied into an empty image in one layer. The two agent tools are about 290 MB (`claude`) and 330 MB (`codex` files, of which 67 MB is `codex-code-mode-host`).
+Sizes reported by Docker 29.9.2 on `linux/arm64`: agent about 1.9 GiB, verify about 1.0 GiB, sidecar about 51 MiB when it was a skeleton with no program in it (the size with the program was not measured). The two toolchain images do not share a layer, because each is copied into an empty image in one layer. The two agent tools are about 290 MB (`claude`) and 330 MB (`codex` files, of which 67 MB is `codex-code-mode-host`).
 
 None of them has a git binary, a package manager, a network client or a setuid file, and none holds a credential. Each runs as a numeric non-root user. `docs/security/sandbox-policy.md` says why.
 
@@ -22,7 +22,7 @@ infra/sandbox-images/build.sh --check-reproducible  # build again with --no-cach
 
 The build needs Docker 24 or newer with BuildKit (it uses `ADD --checksum`) and the network. It writes the digests to `images.json`. `digests.json` is a link to the same file. The build reads and mounts no host credential. It downloads public files only, and each one must match its pinned checksum, or the build stops.
 
-The egress sidecar builds as a skeleton until its program exists. To put the program in, see `egress-sidecar/README.md`.
+The program of the egress sidecar exists (`apps/egress-sidecar`; its options are in `docs/reference/commands.md`). The image still builds as a skeleton unless `egress-sidecar/build.sh` is given the compiled Linux program and its checksum, because the image never builds the program itself; see `egress-sidecar/README.md`. In `images.json` the `linux/arm64` entry of the sidecar is `ready` and records the checksum of the program it holds.
 
 ## Test
 
