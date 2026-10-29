@@ -102,12 +102,13 @@ fn a_missing_spec_kit_installation_or_image_catalog_is_an_error_and_not_a_fallba
 
 #[test]
 fn production_fetches_over_https_only() {
-    // The production profile also needs a provider and the GitHub App; give it both so that the
-    // remote is the only thing wrong.
+    // The production profile also needs a provider, the GitHub App, the key that signs decision
+    // requests and the commit of the gate definitions; give it all of them so that the remote is
+    // the only thing wrong.
     let extra = "  remote: { directory: /var/lib/factory/mirror }\n";
     let text = config_text("production", extra).replace(
         "broker:\n  listen: '127.0.0.1:0'\n",
-        "broker:\n  listen: '127.0.0.1:0'\n  upstreams:\n    - { provider: anthropic, base_url: 'https://api.anthropic.com', key_file: /run/secrets/anthropic }\ngithub: { app_id: 1, key_file: /run/secrets/github_app_key }\n",
+        "broker:\n  listen: '127.0.0.1:0'\n  upstreams:\n    - { provider: anthropic, base_url: 'https://api.anthropic.com', key_file: /run/secrets/anthropic }\ngithub: { app_id: 1, key_file: /run/secrets/github_app_key }\ndecisions: { key_file: /run/secrets/decision_signing_key }\nstages: { definition_commit: 1405df66cbe219b0bf6355bc3d60361a8376b6b4 }\n",
     );
     let refused = FactoryConfig::from_yaml(&text).expect_err("a local directory is not https");
     assert!(
