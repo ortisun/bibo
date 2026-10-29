@@ -571,16 +571,23 @@ smallest change.
 34. **The README's title of the fixture, `word-count`, fails the readability gate's title rule ("no ordinary word").**
     Any change that touches it must retitle it. The playbook retitles it "Word count". *Owner `readability` rules:*
     treat a compound of ordinary words as words, or the fixture's README should change.
-35. **`DeliverySources::tree_of` and `current_values` are answered** (`JobRepo::tree_of`, pending architect confirmation;
-    `validation::current_values`), but only where the handlers are registered with
-    `StoreDeliverySources::with_repository`, and no worker assembly registers them yet; `blocked_seams` says so.
+35. **Fixed (AUT-13): `DeliverySources::tree_of` and `current_values` are answered** (`JobRepo::tree_of`, pending
+    architect confirmation; `validation::current_values`) where the handlers are registered with
+    `StoreDeliverySources::with_repository`, and `composition::pipeline::assemble_pipeline` does that. A binary that
+    does not assemble the pipeline, such as the operator CLI, still gets a closed answer, and `blocked_seams` says so.
 36. **The production source of the administrator's statement that the App is on no bypass list does not exist.**
     `NoAttestations` fails closed, so a deployment that passes nothing caps every repository at L0. *Owner `architect`
     and `security`.*
-37. **The factory has no function that builds the registry of handlers.** The full run builds all thirteen in
-    `apps/api/tests/full/mod.rs`; the worker binary still stops at BLOCKED before it would. *Owner `composition`:* move
-    that construction into the library once the configuration for the stage settings (budgets, word lists, limits,
-    the commit of the gate definitions) has a home. The numbers in the rig are the ones the stage tests use.
+37. **Fixed (AUT-13): the registry of handlers is built by `composition::pipeline::assemble_pipeline`.** It builds all
+    thirteen handlers, the engine, the approval service, the hook, the protection preflight and the drift channel from
+    the configuration (`stages:`, `StageSettings`, with the numbers the stage tests use as defaults and the commit of
+    the gate definitions required in production), checks every port against the profile (production refuses every
+    stand-in; local lets the model and GitHub side stand in) and names any stage of the engine's scope that has no
+    handler. The rig of the full run calls it, so all ten journeys of `apps/api/tests/full_run.rs` run through the
+    function the worker calls (`factory_worker::pipeline::assemble_loop`). *What is still not given:* the four BLOCKED
+    ports (runtime, router, issue source, change host), the three seams of the dependency gates that no adapter
+    implements (`RecordedApprovals`, `RegistryMetadata`, `AdvisoryDatabase`), and the capability probes, which `main`
+    lists with `BLOCKED:` lines and exit code 3 until `factory_worker::pipeline::external_ports` returns them.
 38. **The reviewer of the code is checked for independence only by what it may do** (`verify_read_only_tools`), not by
     its agent id or role. Configuring the builder as reviewer is caught; configuring a second agent of the same role is
     not. *Owner `workflow`.*

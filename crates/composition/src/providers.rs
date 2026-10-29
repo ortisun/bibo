@@ -105,6 +105,7 @@ pub struct ProviderInputs<'a> {
 }
 
 /// The providers.
+#[derive(Clone)]
 pub struct Providers {
     /// The process runner the others use.
     pub process: Arc<dyn ProcessRunner>,
