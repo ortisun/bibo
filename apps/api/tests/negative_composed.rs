@@ -65,6 +65,24 @@ fn env_file(canaries: &CanarySet) -> String {
     text
 }
 
+/// The values a deployment registers with the redactor at start-up (`FactorySecrets`): the webhook
+/// secret, database credentials and the key that signs decisions. A pattern cannot find them,
+/// because they have no shape; the registry can, in every encoding the policy names.
+fn registered_by_the_deployment(canaries: &CanarySet) -> Vec<(&'static str, String)> {
+    [
+        ("webhook_secret", "webhook_secret"),
+        ("database_password", "database_credentials"),
+        ("decision_signing_key", "decision_signing_key"),
+    ]
+    .into_iter()
+    .filter_map(|(canary, label)| {
+        canaries
+            .by_label(canary)
+            .map(|c| (label, c.value().to_owned()))
+    })
+    .collect()
+}
+
 /// The files of the repository that a careless owner left secrets in.
 fn planted_files(canaries: &CanarySet) -> Vec<(String, String)> {
     let one_line = |label: &str| {
@@ -86,8 +104,23 @@ fn planted_files(canaries: &CanarySet) -> Vec<(String, String)> {
     ]
 }
 
-/// The issue as a careless requester wrote it: a canary in the title and every one-line canary in
-/// the text.
+/// The environment a careless requester pastes into an issue: what the requester could hold. The
+/// holdout string (test data held back from the builder) and a second tenant's string are nothing a
+/// requester has, so they are not in the issue; the sweep looks for them in every sink all the same.
+fn requesters_environment(canaries: &CanarySet) -> String {
+    let mut text = canaries
+        .iter()
+        .filter(|c| !c.value().contains('\n'))
+        .filter(|c| !matches!(c.label(), "holdout_string" | "second_tenant_string"))
+        .map(|c| format!("{}={}", c.label(), c.value()))
+        .collect::<Vec<_>>()
+        .join("\n");
+    text.push('\n');
+    text
+}
+
+/// The issue as a careless requester wrote it: a canary in the title and every one-line canary the
+/// requester could hold in the text.
 fn planted_issue(canaries: &CanarySet) -> Filed {
     let title_secret = canaries
         .by_label("api_token")
@@ -97,7 +130,7 @@ fn planted_issue(canaries: &CanarySet) -> Filed {
         title: format!("Add a --json flag (my key is {title_secret})"),
         body: format!(
             "Please add a --json flag to the word count tool so other programs can read the counts.\n\nFor reference, my environment:\n{}",
-            env_file(canaries)
+            requesters_environment(canaries)
         ),
     }
 }
@@ -544,6 +577,7 @@ async fn planted_job(canaries: &CanarySet, planted: Planted) -> Journey {
     let journey = begin(
         Options {
             extra_files: planted_files(canaries),
+            registered_secrets: registered_by_the_deployment(canaries),
             ..Options::default()
         },
         planted.in_the_issue.then(|| planted_issue(canaries)),

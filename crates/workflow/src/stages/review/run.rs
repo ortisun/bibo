@@ -37,6 +37,7 @@ use super::evidence::Evidence;
 use super::findings::{EngineFields, Reviewer, wrap};
 use super::handler::{RECORD, ReviewHandler, VERDICT};
 use super::locate::PatchIndex;
+use crate::audit::{AuditAction, AuditDecision, AuditKind};
 use crate::handlers::{NamedArtifact, StageContext, StageError, StageOutput};
 use crate::prompts::{Assembler, ContentClass, IndependentRequest, Input, Limits, Scope, Source};
 use crate::stages::implementation::input::{
@@ -374,10 +375,37 @@ async fn review_in(
         return Err(StageError::Cancelled);
     }
 
-    // 5. The answer, checked twice and wrapped.
+    // 5. The answer, redacted, then checked twice and wrapped. The reviewer's free text (its title,
+    // summary and the words of each finding) is written by a model that was shown the change, and
+    // it goes into the verdict artifact and from there into later prompts and the pull request
+    // description, so a secret in it is replaced before anything is stored (finding F-7 of the
+    // cross-cutting security tests). The marker has no quote or backslash, so the JSON stays valid.
+    // A reply the redactor cannot judge is not kept.
+    let output_text = match std::str::from_utf8(output.as_bytes()) {
+        Ok(text) => text,
+        Err(_) => return Err(StageError::InvalidOutput),
+    };
+    let redacted_output = match handler.redactor.redact_str(output_text) {
+        Ok(redacted) => {
+            if redacted.report.replacements() > 0 {
+                ctx.note_audit(AuditAction::new(
+                    AuditKind::SecretRedactedOrBlocked,
+                    AuditDecision::Noted,
+                ));
+            }
+            redacted.output.into_owned()
+        }
+        Err(_) => {
+            ctx.note_audit(AuditAction::new(
+                AuditKind::SecretRedactedOrBlocked,
+                AuditDecision::Denied,
+            ));
+            return Err(StageError::InvalidOutput);
+        }
+    };
     let validated = handler
         .schemas
-        .check(&manifest.outputs_schema, output.as_bytes())
+        .check(&manifest.outputs_schema, redacted_output.as_bytes())
         .map_err(|_| StageError::InvalidOutput)?;
     let fields = EngineFields {
         review: ReviewId::from_uuid(ports.ids.new_uuid()),

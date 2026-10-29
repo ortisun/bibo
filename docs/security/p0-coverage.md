@@ -241,10 +241,7 @@ A row can be proven for the parts that run and still hold a part that cannot run
 
 ### Open findings that a P0 test reports
 
-A finding is a defect that a P0 test found. The test is red until the defect is fixed, and it is not weakened. Each has an owner and the smallest fix.
-
-- **F-6** (high, owner s1-stage-intake-and-repository, reported by NT-SEC-01): The text of the issue is stored as written, with every secret in it. A requester who pastes a secret into the issue (a token, a key, a connection string) has it written to the content-addressed store in the artifact original-request of the intake stage and to the column original_requests.request_text, unchanged. The policy says an artifact that matches a secret is blocked (secrets.sinks.artifacts) and that the API redacts (secrets.sinks.dashboard_and_api). The composed run shows 20 of 22 canary classes in that artifact. The redactor catches them when they sit in a change, a report of the builder or a text bound for the code host. Smallest fix: run the redactor over the text of the request before the artifact and the column are written, keep the sha256 of the original text for the edit check of NT-AUTHZ-05 and never the text, and stop the stage run with the code secret-found when the redactor finds a match (as the implementation stage does for a change), or decide in a recorded ADR that the original is kept and who may read it.
-- **F-7** (medium, owner s1-stage-implementation-and-review, reported by NT-SEC-01): The summary of the reviewer report is stored unredacted. A secret in the summary field of the reviewer report reaches the artifact review-verdict of the review stage and the raw output artifact that no stage run links, unchanged. The implementation stage runs the redactor over what the builder reports about itself (the fix of the first review); the review stage does not do the same for the reviewer. Smallest fix: run the redactor over the free-text fields of the reviewer report (summary and the message of each finding) before the verdict is stored, with the same helper the implementation stage uses, and note secret_redacted_or_blocked when it replaces something.
+None.
 
 ### Audit event types and their owners (NT-AUD-03)
 

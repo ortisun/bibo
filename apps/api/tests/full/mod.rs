@@ -327,6 +327,10 @@ pub struct Options {
     /// What the registry says about a package, when a journey needs it to say something. A
     /// stand-in, as ever: the default describes no package.
     pub registry: Option<Arc<dyn factory_workflow::gates::supply_chain::facts::RegistryMetadata>>,
+    /// Secret values the deployment would have registered with the redactor (`FactorySecrets`:
+    /// the webhook secret, database passwords, the decision signing key), as `(label, value)`.
+    /// The canary run uses it, because the rig's secrets are made when the test starts.
+    pub registered_secrets: Vec<(&'static str, String)>,
 }
 
 fn nonzero(text: &str) -> GitSha {
@@ -343,6 +347,11 @@ impl Rig {
             factory_composition::redaction::redactor_from_policy(&policies.security)
                 .expect("redactor"),
         );
+        for (label, value) in &options.registered_secrets {
+            redactor
+                .register(label, value)
+                .expect("a secret value registers");
+        }
         // Not under the system temporary directory: see the worker README, mismatch 2.
         let scratch = root()
             .join("target/full-run")

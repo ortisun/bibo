@@ -3,24 +3,7 @@
  "catalog": "docs/security/negative-test-catalog.md",
  "work_packages": "docs/architecture/work-packages.json",
  "recorded": "2026-10-29",
- "findings": [
-  {
-   "id": "F-6",
-   "owner": "s1-stage-intake-and-repository",
-   "severity": "high",
-   "title": "The text of the issue is stored as written, with every secret in it.",
-   "detail": "A requester who pastes a secret into the issue (a token, a key, a connection string) has it written to the content-addressed store in the artifact original-request of the intake stage and to the column original_requests.request_text, unchanged. The policy says an artifact that matches a secret is blocked (secrets.sinks.artifacts) and that the API redacts (secrets.sinks.dashboard_and_api). The composed run shows 20 of 22 canary classes in that artifact. The redactor catches them when they sit in a change, a report of the builder or a text bound for the code host.",
-   "smallest_fix": "run the redactor over the text of the request before the artifact and the column are written, keep the sha256 of the original text for the edit check of NT-AUTHZ-05 and never the text, and stop the stage run with the code secret-found when the redactor finds a match (as the implementation stage does for a change), or decide in a recorded ADR that the original is kept and who may read it."
-  },
-  {
-   "id": "F-7",
-   "owner": "s1-stage-implementation-and-review",
-   "severity": "medium",
-   "title": "The summary of the reviewer report is stored unredacted.",
-   "detail": "A secret in the summary field of the reviewer report reaches the artifact review-verdict of the review stage and the raw output artifact that no stage run links, unchanged. The implementation stage runs the redactor over what the builder reports about itself (the fix of the first review); the review stage does not do the same for the reviewer.",
-   "smallest_fix": "run the redactor over the free-text fields of the reviewer report (summary and the message of each finding) before the verdict is stored, with the same helper the implementation stage uses, and note secret_redacted_or_blocked when it replaces something."
-  }
- ],
+ "findings": [],
  "audit_events": [
   {
    "type": "webhook_accepted_or_rejected",
@@ -2757,11 +2740,7 @@
      ]
     }
    ],
-   "note": "Covered: a canary of 21 classes planted in the repository, the request, the environment the model reads and the output of commands, and four ways for the model to leak it, swept in the audit log, the outbox, the ledger, every stored artifact, the prompts and the log lines (the workflow target); and the composed run through the real API, engine and stage handlers on PostgreSQL, with a canary of every class in the text of the issue, the repository files, the reports of the builder and the reviewer and the requests the API refuses, swept in the answers of the API, the error bodies, the pull request description and comments of the code host, the audit log, the outbox, the ledger, a dump of every table, the artifacts, the prompts, the log lines and the recording. Red today: the composed test with the issue text and the reviewer report (findings F-6 and F-7); the composed test without them passes. Not covered: the standard output of a command in the composed run, because the fake sandbox stores it without the redaction the real adapter applies (that adapter is tested in the sandbox crate); NATS messages and memory stores, which do not exist (Slice 2 and Slice 4).",
-   "findings": [
-    "F-6",
-    "F-7"
-   ]
+   "note": "Covered: a canary of 21 classes planted in the repository, the request, the environment the model reads and the output of commands, and four ways for the model to leak it, swept in the audit log, the outbox, the ledger, every stored artifact, the prompts and the log lines (the workflow target); and the composed run through the real API, engine and stage handlers on PostgreSQL, with a canary of every class in the text of the issue, the repository files, the reports of the builder and the reviewer and the requests the API refuses, swept in the answers of the API, the error bodies, the pull request description and comments of the code host, the audit log, the outbox, the ledger, a dump of every table, the artifacts, the prompts, the log lines and the recording. Red today: the composed test with the issue text and the reviewer report (findings F-6 and F-7); the composed test without them passes. Not covered: the standard output of a command in the composed run, because the fake sandbox stores it without the redaction the real adapter applies (that adapter is tested in the sandbox crate); NATS messages and memory stores, which do not exist (Slice 2 and Slice 4)."
   },
   {
    "id": "NT-SEC-02",

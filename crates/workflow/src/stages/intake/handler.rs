@@ -363,7 +363,18 @@ impl StageHandler for IntakeHandler {
             Ok(snapshot) => snapshot,
             Err(SeamError::NotFound) => {
                 match self.first_request(&identity, ports.clock.now()).await {
-                    Ok(snapshot) => snapshot,
+                    Ok((snapshot, replaced)) => {
+                        // The text a person pasted into the issue may hold a secret (finding F-6
+                        // of the cross-cutting security tests). It was replaced before it was
+                        // stored, and the replacement is on the record.
+                        if replaced > 0 {
+                            ctx.note_audit(AuditAction::new(
+                                AuditKind::SecretRedactedOrBlocked,
+                                AuditDecision::Noted,
+                            ));
+                        }
+                        snapshot
+                    }
                     Err(StageError::PolicyDenied) => {
                         ctx.note_audit(AuditAction::new(
                             AuditKind::AuthorizationDecision,
@@ -833,7 +844,7 @@ impl IntakeHandler {
         &self,
         identity: &crate::handlers::RunIdentity,
         now: Timestamp,
-    ) -> Result<RequestSnapshot, StageError> {
+    ) -> Result<(RequestSnapshot, u64), StageError> {
         let issue = self
             .requests
             .awaiting(identity.job)
@@ -863,7 +874,23 @@ impl IntakeHandler {
         if text.trim().is_empty() {
             return Err(StageError::Tool);
         }
-        self.requests
+        // A secret in the issue text never reaches the store: not the column of the request, not
+        // the artifact that keeps the original apart. What is kept is the text with each secret
+        // replaced, and its hash is of that text (a hash of the original would let anyone who can
+        // guess the rest of the sentence check a guess at the secret). A text the redactor cannot
+        // judge is not kept at all.
+        let (text, replaced) = {
+            let redacted = self
+                .redactor
+                .redact_str(&text)
+                .map_err(|_| StageError::Internal)?;
+            (
+                redacted.output.clone().into_owned(),
+                redacted.report.replacements(),
+            )
+        };
+        let snapshot = self
+            .requests
             .record_first(
                 identity.tenant,
                 identity.job,
@@ -874,7 +901,8 @@ impl IntakeHandler {
                 },
             )
             .await
-            .map_err(seam)
+            .map_err(seam)?;
+        Ok((snapshot, replaced))
     }
 
     /// The text the classifier reads: the original, and the answers people gave to the question
