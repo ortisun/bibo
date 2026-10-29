@@ -41,6 +41,18 @@
 //! other repositories all get the same reply, word for word ([`REPLY`]), and the same record apart
 //! from the numeric id. The reply names no one and holds no text of the issue.
 //!
+//! # How often a sender is answered (SF-16)
+//!
+//! A sender who removes the label and puts it back sends a delivery for each toggle, and each is a
+//! request with its own key. One reply tells them what they need to know, so the step answers a
+//! sender at most once in [`REPLY_WINDOW`], counted from the time the database wrote the request
+//! that was answered. The others are recorded all the same, with `reply=suppressed`, and no
+//! comment is posted. The bound is read from the log: the rejection records that say
+//! `reply=posted` rebuild it, so a worker that starts later, or two workers, keep the same
+//! window. A sender is the numeric id the delivery carried, and deliveries with none share a
+//! bucket. The window is for the sender in the tenant and not for an issue or a repository, so a
+//! sender who labels many issues is answered once.
+//!
 //! # The token
 //!
 //! The reply is a comment on an issue, which needs `issues: write`. The stage that holds the
@@ -54,7 +66,7 @@ use std::sync::{Arc, Mutex, PoisonError};
 
 use factory_domain::ids::{AuditEventId, CorrelationId, JobId, RepositoryId, TenantId};
 use factory_domain::scope::TenantScope;
-use factory_domain::values::{Sha256Digest, Slug};
+use factory_domain::values::{Sha256Digest, Slug, Timestamp};
 use factory_domain::vocabulary::StageKind;
 use factory_ports::githost::{ChangeHost, CommentTarget, GitHostError, GitScope, IssueRef};
 use factory_ports::paths::RepoRef;
@@ -80,6 +92,9 @@ pub const REASON_CODE: &str = "unauthorized_actor";
 /// The reply, the same for everyone. It says that the work did not start and why in the one way
 /// the specification allows, and it names nobody and holds no text of the issue.
 pub const REPLY: &str = "The factory did not start work on this issue. You are not on the list of people who may ask for this. If you think this is a mistake, ask the person who manages the factory for this repository.";
+
+/// How long a sender who may not ask is answered once for (SF-16).
+pub const REPLY_WINDOW: std::time::Duration = std::time::Duration::from_secs(10 * 60);
 
 /// How many requests one pass answers for one tenant.
 const PER_PASS: usize = 10;
@@ -168,6 +183,8 @@ struct Pending {
     id: AuditEventId,
     correlation: CorrelationId,
     fields: RejectionFields,
+    /// When the database wrote the request.
+    at: Timestamp,
     failures: u32,
 }
 
@@ -175,6 +192,35 @@ struct Pending {
 struct Scan {
     cursor: u64,
     pending: BTreeMap<u64, Pending>,
+    /// When the last reply to each sender was posted, from the log: the sender's numeric id, or
+    /// `None` for a delivery that carried none.
+    replied: BTreeMap<Option<u64>, Timestamp>,
+}
+
+/// True when a request is inside the window of a reply that was posted to the same sender: it is
+/// recorded and not answered.
+fn within_window(last_reply: Option<Timestamp>, request_at: Timestamp) -> bool {
+    last_reply
+        .and_then(|at| at.checked_add(REPLY_WINDOW))
+        .is_some_and(|end| request_at < end)
+}
+
+/// The sender and the time of a rejection record that says the reply was posted, or `None` for a
+/// record that says anything else.
+fn posted_reply(record: &AuditRecord) -> Option<(Option<u64>, Timestamp)> {
+    if !matches!(record.event.actor, AuditActor::System(_)) {
+        return None;
+    }
+    let mut sender = None;
+    let mut posted = false;
+    for word in record.event.subject.split(' ') {
+        if let Some(id) = word.strip_prefix("sender=") {
+            sender = Some(id.parse::<u64>().ok());
+        } else if word == "reply=posted" {
+            posted = true;
+        }
+    }
+    posted.then_some((sender?, record.created_at))
 }
 
 /// What became of the reply.
@@ -183,6 +229,8 @@ enum Reply {
     Posted,
     /// The reply cannot be sent and will not be: the host refused, or the repository is not here.
     NotSent,
+    /// The sender was answered a moment ago, and one reply in the window is enough (SF-16).
+    Suppressed,
     /// The host could not be reached or asked for time. Try again next pass.
     Later,
 }
@@ -279,6 +327,10 @@ impl IntakeRejections {
                             if let Some(id) = ended_request(&record) {
                                 scan.pending.retain(|_, pending| pending.id != id);
                             }
+                            if let Some((sender, at)) = posted_reply(&record) {
+                                let last = scan.replied.entry(sender).or_insert(at);
+                                *last = (*last).max(at);
+                            }
                         }
                         _ => {}
                     }
@@ -314,6 +366,7 @@ impl IntakeRejections {
             id: record.event.id,
             correlation: record.event.correlation_id,
             fields: subject.fields,
+            at: record.created_at,
             failures: 0,
         })
     }
@@ -321,7 +374,21 @@ impl IntakeRejections {
     // ---- answering ------------------------------------------------------------------------
 
     async fn settle(&self, tenant: TenantId, request: Pending) {
-        let (reply, repository) = self.reply(tenant, &request).await;
+        // One reply for a sender in the window. The check and the note of the reply that follows
+        // are both under the lock of the scan, so two requests of one pass cannot both pass.
+        let sender = request.fields.sender;
+        let suppressed = {
+            let scans = self.scans.lock().unwrap_or_else(PoisonError::into_inner);
+            let last = scans
+                .get(&tenant)
+                .and_then(|scan| scan.replied.get(&sender).copied());
+            within_window(last, request.at)
+        };
+        let (reply, repository) = if suppressed {
+            (Reply::Suppressed, None)
+        } else {
+            self.reply(tenant, &request).await
+        };
         let reply = match reply {
             Reply::Later if request.failures + 1 >= MAX_TRIES => Reply::NotSent,
             Reply::Later => {
@@ -342,6 +409,12 @@ impl IntakeRejections {
             .record(tenant, &request, repository.as_ref(), reply)
             .await
         {
+            if reply == Reply::Posted {
+                self.with_scan(tenant, |scan| {
+                    let last = scan.replied.entry(sender).or_insert(request.at);
+                    *last = (*last).max(request.at);
+                });
+            }
             tracing::info!(
                 code = REASON_CODE,
                 replied = reply == Reply::Posted,
@@ -436,10 +509,10 @@ impl IntakeRejections {
                 .map_or_else(|| "none".to_owned(), |id| id.to_string()),
             fields.delivery,
             fields.allowlist,
-            if reply == Reply::Posted {
-                "posted"
-            } else {
-                "not_sent"
+            match reply {
+                Reply::Posted => "posted",
+                Reply::Suppressed => "suppressed",
+                Reply::NotSent | Reply::Later => "not_sent",
             },
         );
         let event = NewAuditEvent {
@@ -541,6 +614,68 @@ mod tests {
             "a".repeat(64)
         );
         assert!(signed.len() <= 500, "{}", signed.len());
+    }
+
+    #[test]
+    fn a_request_inside_the_window_of_a_posted_reply_is_not_answered() {
+        let t = |text: &str| Timestamp::parse(text).expect("a time");
+        let replied = t("2026-10-29T10:00:00Z");
+        // Nothing posted before: answer.
+        assert!(!within_window(None, t("2026-10-29T10:00:00Z")));
+        // Inside the window.
+        assert!(within_window(Some(replied), t("2026-10-29T10:00:01Z")));
+        assert!(within_window(Some(replied), t("2026-10-29T10:09:59Z")));
+        // At the end of the window and after it: answer again.
+        assert!(!within_window(Some(replied), t("2026-10-29T10:10:00Z")));
+        assert!(!within_window(Some(replied), t("2026-10-29T11:00:00Z")));
+    }
+
+    #[test]
+    fn only_a_rejection_that_says_posted_opens_a_window_and_it_names_its_sender() {
+        let record = |subject: &str, actor: AuditActor| AuditRecord {
+            sequence: 1,
+            event: NewAuditEvent {
+                id: AuditEventId::from_uuid(uuid::Uuid::from_u128(1)),
+                actor,
+                action: AuditAction::new(REJECTED).expect("an action"),
+                subject: subject.to_owned(),
+                decision: AuditDecision::Deny,
+                reason: "unauthorized_actor: the sender is not an authorized requester.".to_owned(),
+                policy_hash: Sha256Digest::of(b"policy"),
+                job: None,
+                stage_run: None,
+                correlation_id: CorrelationId::from_uuid(uuid::Uuid::from_u128(2)),
+            },
+            created_at: Timestamp::parse("2026-10-29T10:00:00Z").expect("a time"),
+            hash: Sha256Digest::of(b"hash"),
+        };
+        let system = || AuditActor::System(Slug::parse("worker.intake").expect("a slug"));
+        let posted = record(
+            "request=x issue=a/b#1 sender=42 delivery=d allowlist=a reply=posted",
+            system(),
+        );
+        assert_eq!(
+            posted_reply(&posted).map(|(sender, _)| sender),
+            Some(Some(42))
+        );
+        let none = record(
+            "request=x issue=a/b#1 sender=none delivery=d allowlist=a reply=posted",
+            system(),
+        );
+        assert_eq!(posted_reply(&none).map(|(sender, _)| sender), Some(None));
+        for not_a_window in ["reply=suppressed", "reply=not_sent"] {
+            let other = record(
+                &format!("request=x issue=a/b#1 sender=42 delivery=d allowlist=a {not_a_window}"),
+                system(),
+            );
+            assert_eq!(posted_reply(&other), None, "{not_a_window}");
+        }
+        // A row that did not come from the worker opens nothing.
+        let forged = record(
+            "request=x issue=a/b#1 sender=42 delivery=d allowlist=a reply=posted",
+            AuditActor::Anonymous(Slug::parse("webhook").expect("a slug")),
+        );
+        assert_eq!(posted_reply(&forged), None);
     }
 
     #[test]

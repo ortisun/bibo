@@ -80,7 +80,7 @@ These are not defects of the factory. They are things a run in test mode cannot 
 - **Owner.** `software_architect` (the port).
 - **Severity.** Low.
 - **Smallest fix.** Add the count to the report in the next revision of the ports.
-- **Status: open, and the adapter can provide it.** A GitHub ruleset of the type `pull_request` carries `required_approving_review_count`, and `protection_from_rules` in `crates/github/src/protection.rs` reads the neighbouring fields of that rule and skips this one. The count cannot be reported until `ProtectionReport` in `crates/ports` has a field for it, and the port is not this work package's to change. A10 still reads one approval, written by the rig and said so in `mode.json`.
+- **Status: open, and the adapter can provide it. Checked again for this work package: it cannot be closed without a change of the port.** A GitHub ruleset of the type `pull_request` carries `required_approving_review_count`, and `protection_from_rules` in `crates/github/src/protection.rs` reads the neighbouring fields of that rule and skips this one. The count cannot be reported until `ProtectionReport` in `crates/ports` has a field for it, and the port is not this work package's to change. A10 still reads one approval, written by the rig and said so in `mode.json`.
 
 ### SF-08: the commits on the head branch are taken from the stage results
 
@@ -117,6 +117,7 @@ These entries were found while fixing the first ones. They have the same fields 
 - **Owner.** `github` (the token class) with the `software_architect`.
 - **Severity.** Low. The extra rights are read rights on the one repository.
 - **Smallest change.** A token class for a comment, with the two rights above, used by `post_comment` when the scope has no job, or a permission set that `GitScope` can ask for by name. The check `E6.rejected` accepts any read right and `issues: write`; it would be tightened with the change.
+- **Status: fixed in the adapter.** `crates/github` has a token class for a comment (`TokenClass::Comment`, `PermissionSet::comment()`): `issues: write` and `metadata: read`. `post_comment`, and the search for its marker, use it for every stage that holds `issues: write` (the approval and the delivery stage); a stage that does not hold it keeps its own token, so the code host refuses the comment as before. The test is `sf_14_a_comment_is_posted_with_the_right_to_write_issues_and_the_metadata_only` against the fake code host, red when the comment goes back to the token of the stage. The scenario check `E6.rejected` runs on the testkit's fake host, which mints one token for a stage and has no token class, so it cannot show the narrowing and is not tightened.
 
 ### SF-15: the check of E6 was rewritten, and a reviewer should read the change
 
@@ -133,6 +134,7 @@ These entries were found while fixing the first ones. They have the same fields 
 - **Owner.** `api`, with the `software_architect`.
 - **Severity.** Low.
 - **Smallest change.** Decide whether one reply for each issue and sender is wanted, and if so, key the reply by the issue and the sender and not by the delivery.
+- **Status: fixed in the worker's step.** A sender is answered at most once in ten minutes (`REPLY_WINDOW`), for the sender in the tenant and not for an issue, counted from the time the database wrote the request that was answered. The other toggles are recorded with `reply=suppressed` and post no comment. The bound is rebuilt from the rejection records that say `reply=posted`, so a restart or a second worker keeps the window. The test is `an_unauthorized_sender_who_toggles_the_label_gets_one_reply_in_the_window`, red with four replies before.
 
 ### SF-17: two parts of the routing policy have nothing to bind them to yet
 
