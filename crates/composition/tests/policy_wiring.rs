@@ -95,7 +95,9 @@ fn engine_request(stage: StageKind, model: ModelSelection, ceiling: u64) -> JobT
 #[test]
 fn a_missing_routing_policy_stops_the_start() {
     // Break: the protected checkout has no policies/model_routing.yaml.
-    let scratch = root().join("target/policy-wiring").join(format!("missing-{}", std::process::id()));
+    let scratch = root()
+        .join("target/policy-wiring")
+        .join(format!("missing-{}", std::process::id()));
     let policies_dir = scratch.join("policies");
     std::fs::create_dir_all(&policies_dir).expect("scratch");
     for name in ["security.yaml", "approval.yaml"] {
@@ -112,7 +114,10 @@ fn the_production_profile_refuses_a_routing_policy_that_still_waits_for_the_owne
     let routing = loaded();
     assert!(!routing.policy.unconfirmed().is_empty());
     let refusal = confirm_routing(Profile::Production, &routing).unwrap_err();
-    assert!(refusal.to_string().contains("waits for the project owner"), "{refusal}");
+    assert!(
+        refusal.to_string().contains("waits for the project owner"),
+        "{refusal}"
+    );
     // The other profiles start and say so in the log.
     for profile in [Profile::Local, Profile::Test] {
         assert!(confirm_routing(profile, &routing).is_ok());
@@ -207,9 +212,17 @@ async fn the_ceiling_of_the_job_leaves_each_new_token_only_what_remains() {
     let routing = loaded();
     let core = core(&routing.policy);
     let job_max = routing.policy.job.max_micro_usd;
-    let stage_max = routing.policy.stage_ceiling("IMPLEMENTATION").expect("ceiling").max_micro_usd;
+    let stage_max = routing
+        .policy
+        .stage_ceiling("IMPLEMENTATION")
+        .expect("ceiling")
+        .max_micro_usd;
     let near = |spent: u64| {
-        PolicyBroker::new(core.clone(), Arc::clone(&routing.policy), Arc::new(Spent(spent)))
+        PolicyBroker::new(
+            core.clone(),
+            Arc::clone(&routing.policy),
+            Arc::new(Spent(spent)),
+        )
     };
     let request = || {
         engine_request(
@@ -220,10 +233,19 @@ async fn the_ceiling_of_the_job_leaves_each_new_token_only_what_remains() {
     };
     // Plenty left: the stage ceiling applies.
     let first = near(0).issue(request()).await.expect("a token");
-    assert_eq!(core.token_usage(&first.id).expect("usage").ceiling.0, stage_max);
+    assert_eq!(
+        core.token_usage(&first.id).expect("usage").ceiling.0,
+        stage_max
+    );
     // Less left than the stage may spend: the remainder applies.
-    let second = near(job_max - 40_000).issue(request()).await.expect("a token");
-    assert_eq!(core.token_usage(&second.id).expect("usage").ceiling.0, 40_000);
+    let second = near(job_max - 40_000)
+        .issue(request())
+        .await
+        .expect("a token");
+    assert_eq!(
+        core.token_usage(&second.id).expect("usage").ceiling.0,
+        40_000
+    );
     // Nothing left: no token.
     let refusal = near(job_max).issue(request()).await.unwrap_err();
     assert_eq!(
@@ -266,7 +288,11 @@ async fn the_spend_of_a_job_is_read_from_the_brokers_own_ledger() {
         ttl: Duration::from_secs(900),
     };
     let issued = broker.issue(next).await.expect("a token");
-    let review = routing.policy.stage_ceiling("REVIEW").expect("ceiling").max_micro_usd;
+    let review = routing
+        .policy
+        .stage_ceiling("REVIEW")
+        .expect("ceiling")
+        .max_micro_usd;
     let left = routing.policy.job.max_micro_usd - 2_000_000;
     assert_eq!(
         core.token_usage(&issued.id).expect("usage").ceiling.0,
@@ -279,7 +305,8 @@ async fn the_spend_of_a_job_is_read_from_the_brokers_own_ledger() {
 fn price(provider: &str, model: &str, bump: i64) -> PriceConfig {
     let policy = loaded().policy;
     let base = policy.price(model).expect("a model of the policy").clone();
-    let shift = |value: u64| u64::try_from(i64::try_from(value).expect("fits") + bump).expect("positive");
+    let shift =
+        |value: u64| u64::try_from(i64::try_from(value).expect("fits") + bump).expect("positive");
     PriceConfig {
         provider: provider.to_owned(),
         model: model.to_owned(),
@@ -329,14 +356,17 @@ fn upstream(provider: &str, models: &[&str]) -> UpstreamConfig {
 #[test]
 fn a_provider_enables_its_own_models_or_the_ones_it_lists_and_nothing_else() {
     let policy = loaded().policy;
-    let all = enabled_models(&policy, &[upstream("anthropic", &[]), upstream("openai", &[])])
-        .expect("both");
+    let all = enabled_models(
+        &policy,
+        &[upstream("anthropic", &[]), upstream("openai", &[])],
+    )
+    .expect("both");
     assert_eq!(
         all,
         BTreeSet::from(["claude-sonnet-5-5", "claude-opus-5-5", "gpt-6.1-sol"].map(String::from))
     );
-    let one = enabled_models(&policy, &[upstream("anthropic", &["claude-sonnet-5-5"])])
-        .expect("one");
+    let one =
+        enabled_models(&policy, &[upstream("anthropic", &["claude-sonnet-5-5"])]).expect("one");
     assert_eq!(one, BTreeSet::from(["claude-sonnet-5-5".to_owned()]));
     // A model the policy lists for the other provider.
     assert!(matches!(
@@ -416,7 +446,8 @@ fn the_reviewer_of_the_family_of_the_builder_is_refused_by_the_router() {
     let mut excluded = need(StageKind::Review);
     excluded.exclude = vec![RuntimeId::new("codex-cli").expect("runtime")];
     assert_eq!(
-        both.route_after_author(&excluded, &builder_used).unwrap_err(),
+        both.route_after_author(&excluded, &builder_used)
+            .unwrap_err(),
         AuthorRoutingError::Routing(RoutingError::AllExcluded)
     );
     // The plain route, which does not know the author, would have taken the builder's family:
@@ -428,7 +459,10 @@ fn the_reviewer_of_the_family_of_the_builder_is_refused_by_the_router() {
     // stage to a person.
     let only_claude = PolicyModelRouter::new(Arc::clone(&policy))
         .expect("router")
-        .with_enabled(BTreeSet::from(["claude-sonnet-5-5".to_owned(), "claude-opus-5-5".to_owned()]));
+        .with_enabled(BTreeSet::from([
+            "claude-sonnet-5-5".to_owned(),
+            "claude-opus-5-5".to_owned(),
+        ]));
     assert_eq!(
         only_claude
             .route_after_author(&need(StageKind::Review), &builder_used)

@@ -127,3 +127,120 @@ impl AgentRuntime for TenantRuntimes {
         }
     }
 }
+
+// ---------------------------------------------------------------------------------------------
+// One runtime for every tool
+// ---------------------------------------------------------------------------------------------
+
+/// The runtimes of a deployment behind the one `AgentRuntime` the engine holds.
+///
+/// The engine has a single runtime port, and the router may choose between two tools (the Claude
+/// Code tool and the Codex tool). The set dispatches a run by the runtime the router chose, which
+/// the request carries in `model.runtime`.
+///
+/// A probe does not say which tool it is for: the session is the only argument. The set therefore
+/// probes **every** member in that session and reports only what **all** of them support, so a stage
+/// that requires a capability finds it whichever tool the router picks. A member that fails its
+/// probe fails the probe of the set; the cause is not hidden.
+pub struct RuntimeSet {
+    id: RuntimeId,
+    members: std::collections::BTreeMap<RuntimeId, Arc<dyn AgentRuntime>>,
+}
+
+impl RuntimeSet {
+    /// A set of the given runtimes, or `None` for none. The set is named after its members.
+    #[must_use]
+    pub fn new(members: Vec<Arc<dyn AgentRuntime>>) -> Option<Self> {
+        if members.is_empty() {
+            return None;
+        }
+        let map: std::collections::BTreeMap<RuntimeId, Arc<dyn AgentRuntime>> = members
+            .into_iter()
+            .map(|runtime| (runtime.id().clone(), runtime))
+            .collect();
+        let name = map
+            .keys()
+            .map(RuntimeId::as_str)
+            .collect::<Vec<_>>()
+            .join("-and-");
+        let id = RuntimeId::new(&name).ok()?;
+        Some(Self { id, members: map })
+    }
+
+    /// The runtimes in the set.
+    #[must_use]
+    pub fn ids(&self) -> Vec<RuntimeId> {
+        self.members.keys().cloned().collect()
+    }
+}
+
+fn only_what_both_support(a: RuntimeCapabilities, b: &RuntimeCapabilities) -> RuntimeCapabilities {
+    RuntimeCapabilities {
+        runtime_version: format!("{}+{}", a.runtime_version, b.runtime_version),
+        observations: a
+            .observations
+            .into_iter()
+            .map(|mut observation| {
+                observation.supported = observation.supported && b.supports(observation.capability);
+                observation
+            })
+            .collect(),
+    }
+}
+
+#[async_trait]
+impl AgentRuntime for RuntimeSet {
+    fn id(&self) -> &RuntimeId {
+        &self.id
+    }
+
+    fn fidelity(&self) -> Fidelity {
+        if self
+            .members
+            .values()
+            .all(|member| member.fidelity() == Fidelity::Real)
+        {
+            Fidelity::Real
+        } else {
+            Fidelity::Fake
+        }
+    }
+
+    async fn probe(
+        &self,
+        session: &mut dyn SandboxSession,
+    ) -> Result<RuntimeCapabilities, ProbeError> {
+        let mut merged: Option<RuntimeCapabilities> = None;
+        for member in self.members.values() {
+            let found = member.probe(session).await?;
+            merged = Some(match merged {
+                None => found,
+                Some(held) => only_what_both_support(held, &found),
+            });
+        }
+        merged.ok_or(ProbeError::ProbeFailed(
+            factory_ports::agent::ProbeStep::Version,
+        ))
+    }
+
+    async fn run(
+        &self,
+        session: &mut dyn SandboxSession,
+        req: AgentRunRequest,
+        cancel: &dyn CancelSignal,
+    ) -> AgentRunReport {
+        match self.members.get(&req.model.runtime) {
+            Some(member) => member.run(session, req, cancel).await,
+            // The router chose a runtime this deployment does not have: fail closed, as an
+            // unknown tenant does.
+            None => AgentRunReport {
+                outcome: Err(AgentRunError::AuthenticationRequired),
+                transcript: None,
+                usage: Usage::default(),
+                runtime_version: None,
+                exit: None,
+                permission_denials: Vec::new(),
+            },
+        }
+    }
+}

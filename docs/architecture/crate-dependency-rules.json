@@ -350,9 +350,11 @@
         "uuid[std]",
         "hmac",
         "sha2",
-        "subtle"
+        "subtle",
+        "ureq[rustls]"
       ],
       "external_allow_notes": {
+        "ureq": "The package registry client (crates_io): the dependency gate asks the crates.io API about a package that a change adds. Blocking HTTP client with rustls only, run under spawn_blocking, redirects and proxies off, the address from the configuration. The same crate, version and features as the github and egress adapters (same decision record as the GitHub adapter), so the resolved dependency tree gains nothing.",
         "hmac": "R-1 and AUT-12: the hook only applies decision records the API signed; same crates and versions as factory-github.",
         "sha2": "R-1 and AUT-12: the hook only applies decision records the API signed; same crates and versions as factory-github.",
         "subtle": "R-1 and AUT-12: the hook only applies decision records the API signed; same crates and versions as factory-github.",

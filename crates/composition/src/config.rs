@@ -1033,13 +1033,12 @@ impl FactoryConfig {
                     problem: "must be anthropic or openai",
                 });
             }
-            endpoint_problem(self.profile, &upstream.base_url)
-                .map_or(Ok(()), |problem| {
-                    Err(ConfigError::OutOfRange {
-                        field: "broker.upstreams[].base_url",
-                        problem,
-                    })
-                })?;
+            endpoint_problem(self.profile, &upstream.base_url).map_or(Ok(()), |problem| {
+                Err(ConfigError::OutOfRange {
+                    field: "broker.upstreams[].base_url",
+                    problem,
+                })
+            })?;
         }
         if let Some(github) = &self.github {
             endpoint_problem(self.profile, &github.api_base_url).map_or(Ok(()), |problem| {
@@ -1049,12 +1048,13 @@ impl FactoryConfig {
                 })
             })?;
             for installation in &github.installations {
-                installation.tenant.parse::<uuid::Uuid>().map_err(|_| {
-                    ConfigError::OutOfRange {
+                installation
+                    .tenant
+                    .parse::<uuid::Uuid>()
+                    .map_err(|_| ConfigError::OutOfRange {
                         field: "github.installations[].tenant",
                         problem: "must be a UUID",
-                    }
-                })?;
+                    })?;
                 if !is_repository_name(&installation.repository) {
                     return Err(ConfigError::OutOfRange {
                         field: "github.installations[].repository",
@@ -1185,16 +1185,9 @@ impl FactoryConfig {
         }
         if let Some(registry) = &self.registry {
             let host = host_of(&registry.base_url);
-            let listed = policy
-                .egress
-                .profiles
-                .fetch_deps
-                .allow
-                .iter()
-                .any(|entry| {
-                    entry.ecosystem.as_deref() == Some("cargo")
-                        && Some(entry.host.as_str()) == host
-                });
+            let listed = policy.egress.profiles.fetch_deps.allow.iter().any(|entry| {
+                entry.ecosystem.as_deref() == Some("cargo") && Some(entry.host.as_str()) == host
+            });
             if !listed {
                 return Err(not_listed("registry.base_url"));
             }
@@ -1489,7 +1482,10 @@ mod tests {
     const LOOPBACK_WORLD: &str = "github:\n  app_id: 7\n  key_file: /run/secrets/app\n  api_base_url: http://127.0.0.1:9\n  installations:\n    - { tenant: 2f0c7f64-0d1c-4c5e-9f0a-1b2c3d4e5f60, repository: example-org/fixture, installation_id: 1 }\n  bypass_attestations:\n    - { tenant: 2f0c7f64-0d1c-4c5e-9f0a-1b2c3d4e5f60, repository: example-org/fixture, principal: 9d1f2b1c-3c71-4d51-9a6d-0c3b6a5f7a10, recorded_at: '2026-10-28T09:00:00Z' }\nregistry: { base_url: 'http://127.0.0.1:9', user_agent: factory-test }\nadvisory_database: { date_file: /srv/db/date }\nruntimes:\n  claude_code: { versions: ['2.1.311'] }\n  declare_capabilities: true\n";
 
     fn with_world(profile: &str, world: &str) -> String {
-        format!("{}{world}", minimal(profile, "factory_worker", "factory_engine"))
+        format!(
+            "{}{world}",
+            minimal(profile, "factory_worker", "factory_engine")
+        )
     }
 
     #[test]
@@ -1586,7 +1582,8 @@ mod tests {
 
     #[test]
     fn plain_http_is_for_the_loopback_interface_only_even_outside_production() {
-        let elsewhere = with_world("local", LOOPBACK_WORLD).replace("http://127.0.0.1:9'", "http://example.org'");
+        let elsewhere = with_world("local", LOOPBACK_WORLD)
+            .replace("http://127.0.0.1:9'", "http://example.org'");
         assert!(matches!(
             FactoryConfig::from_yaml(&elsewhere),
             Err(ConfigError::OutOfRange {
@@ -1594,7 +1591,13 @@ mod tests {
                 ..
             })
         ));
-        for bad in ["ftp://x", "https://user:x@host", "https://h/p?q=1", "https://h h", "host"] {
+        for bad in [
+            "ftp://x",
+            "https://user:x@host",
+            "https://h/p?q=1",
+            "https://h h",
+            "host",
+        ] {
             assert!(endpoint_problem(Profile::Local, bad).is_some(), "{bad}");
         }
         assert!(endpoint_problem(Profile::Local, "http://[::1]:80").is_none());
@@ -1604,11 +1607,31 @@ mod tests {
     #[test]
     fn an_installation_or_a_statement_with_a_bad_identifier_is_refused() {
         for (from, to, field) in [
-            ("tenant: 2f0c7f64-0d1c-4c5e-9f0a-1b2c3d4e5f60, repository: example-org/fixture, installation_id: 1", "tenant: nope, repository: example-org/fixture, installation_id: 1", "github.installations[].tenant"),
-            ("repository: example-org/fixture, installation_id: 1", "repository: fixture, installation_id: 1", "github.installations[].repository"),
-            ("installation_id: 1", "installation_id: 0", "github.installations[].installation_id"),
-            ("principal: 9d1f2b1c-3c71-4d51-9a6d-0c3b6a5f7a10", "principal: root", "github.bypass_attestations[].principal"),
-            ("recorded_at: '2026-10-28T09:00:00Z'", "recorded_at: yesterday", "github.bypass_attestations[].recorded_at"),
+            (
+                "tenant: 2f0c7f64-0d1c-4c5e-9f0a-1b2c3d4e5f60, repository: example-org/fixture, installation_id: 1",
+                "tenant: nope, repository: example-org/fixture, installation_id: 1",
+                "github.installations[].tenant",
+            ),
+            (
+                "repository: example-org/fixture, installation_id: 1",
+                "repository: fixture, installation_id: 1",
+                "github.installations[].repository",
+            ),
+            (
+                "installation_id: 1",
+                "installation_id: 0",
+                "github.installations[].installation_id",
+            ),
+            (
+                "principal: 9d1f2b1c-3c71-4d51-9a6d-0c3b6a5f7a10",
+                "principal: root",
+                "github.bypass_attestations[].principal",
+            ),
+            (
+                "recorded_at: '2026-10-28T09:00:00Z'",
+                "recorded_at: yesterday",
+                "github.bypass_attestations[].recorded_at",
+            ),
         ] {
             let text = with_world("local", &LOOPBACK_WORLD.replacen(from, to, 1));
             match FactoryConfig::from_yaml(&text) {
@@ -1630,8 +1653,13 @@ mod tests {
         let other = production_file("github:\n  app_id: 7\n  key_file: /run/secrets/app\n")
             .replace("https://api.anthropic.com", "https://models.example.org");
         assert!(matches!(
-            FactoryConfig::from_yaml(&other).expect("loads").check_endpoints(&policy),
-            Err(ConfigError::OutOfRange { field: "broker.upstreams[].base_url", .. })
+            FactoryConfig::from_yaml(&other)
+                .expect("loads")
+                .check_endpoints(&policy),
+            Err(ConfigError::OutOfRange {
+                field: "broker.upstreams[].base_url",
+                ..
+            })
         ));
         // The registry API of crates.io is not among the cargo hosts the stock policy lists, so
         // production refuses it until a person adds the host.
@@ -1639,18 +1667,33 @@ mod tests {
             "github:\n  app_id: 7\n  key_file: /run/secrets/app\nregistry: { base_url: 'https://crates.io', user_agent: factory }\n",
         );
         assert!(matches!(
-            FactoryConfig::from_yaml(&registry).expect("loads").check_endpoints(&policy),
-            Err(ConfigError::OutOfRange { field: "registry.base_url", .. })
+            FactoryConfig::from_yaml(&registry)
+                .expect("loads")
+                .check_endpoints(&policy),
+            Err(ConfigError::OutOfRange {
+                field: "registry.base_url",
+                ..
+            })
         ));
         let index = registry.replace("https://crates.io", "https://index.crates.io");
-        assert!(FactoryConfig::from_yaml(&index).expect("loads").check_endpoints(&policy).is_ok());
+        assert!(
+            FactoryConfig::from_yaml(&index)
+                .expect("loads")
+                .check_endpoints(&policy)
+                .is_ok()
+        );
         // GitHub: only api.github.com in production.
         let ghe = production_file(
             "github:\n  app_id: 7\n  key_file: /run/secrets/app\n  api_base_url: https://ghe.example.org/api/v3\n",
         );
         assert!(matches!(
-            FactoryConfig::from_yaml(&ghe).expect("loads").check_endpoints(&policy),
-            Err(ConfigError::OutOfRange { field: "github.api_base_url", .. })
+            FactoryConfig::from_yaml(&ghe)
+                .expect("loads")
+                .check_endpoints(&policy),
+            Err(ConfigError::OutOfRange {
+                field: "github.api_base_url",
+                ..
+            })
         ));
         // The other profiles are not held to the list.
         let local = FactoryConfig::from_yaml(&with_world("local", LOOPBACK_WORLD)).expect("loads");

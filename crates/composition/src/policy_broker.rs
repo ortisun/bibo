@@ -85,9 +85,9 @@ impl PolicyBroker {
         // A model is allowed as the policy pairs it with its runtime: the name alone is not enough.
         let allowed = self.policy.allowed_models(stage);
         req.allowed_models.retain(|held| {
-            allowed
-                .iter()
-                .any(|model| model.id == held.model.as_str() && model.runtime == held.runtime.as_str())
+            allowed.iter().any(|model| {
+                model.id == held.model.as_str() && model.runtime == held.runtime.as_str()
+            })
         });
         if req.allowed_models.is_empty() {
             return Err(BrokerError::InvalidRequest(InvalidTokenRequest::NoModels));
@@ -108,7 +108,9 @@ impl PolicyBroker {
                 .min(left_for_the_job),
         );
         if req.cost_ceiling == CostMicroUsd(0) {
-            return Err(BrokerError::InvalidRequest(InvalidTokenRequest::ZeroCeiling));
+            return Err(BrokerError::InvalidRequest(
+                InvalidTokenRequest::ZeroCeiling,
+            ));
         }
         Ok(req)
     }

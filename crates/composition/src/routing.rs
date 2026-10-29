@@ -77,7 +77,9 @@ pub enum RoutingBuildError {
         model: String,
     },
     /// The configuration prices a model the policy does not list for that provider.
-    #[error("broker.prices names the model {0}, which the routing policy does not list for that provider")]
+    #[error(
+        "broker.prices names the model {0}, which the routing policy does not list for that provider"
+    )]
     PriceForUnknownModel(String),
     /// The configuration lowers a price of the policy.
     #[error(
@@ -226,7 +228,9 @@ pub fn enabled_models(
     let mut enabled = BTreeSet::new();
     for upstream in upstreams {
         if !matches!(upstream.provider.as_str(), "anthropic" | "openai") {
-            return Err(RoutingBuildError::UnknownProvider(upstream.provider.clone()));
+            return Err(RoutingBuildError::UnknownProvider(
+                upstream.provider.clone(),
+            ));
         }
         for name in &upstream.models {
             let listed = policy
@@ -373,9 +377,10 @@ impl PolicyModelRouter {
             return Ok(self.route_filtered(need, |_| true)?);
         }
         let independent = |model: &Model| {
-            rules
-                .iter()
-                .all(|rule| self.policy.independent(rule, author.model.as_str(), &model.id))
+            rules.iter().all(|rule| {
+                self.policy
+                    .independent(rule, author.model.as_str(), &model.id)
+            })
         };
         // Candidates the deployment serves exist, and not one is independent of the author: the
         // policy sends the stage to a person, which is not the same as a runtime being excluded.
