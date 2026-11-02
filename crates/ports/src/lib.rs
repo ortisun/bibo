@@ -2,7 +2,8 @@
 //! the store, the sandbox, the agent runtime, the change host, the clock and others. Ring 1: it
 //! depends on `factory-domain` only and makes no I/O call (rule DEP-05).
 //!
-//! This is **version 1.1** of the ports (ADR 0014, `docs/architecture/ports-v1.1.md`). Every
+//! This is **version 1.2** of the ports (ADR 0014 and `docs/architecture/ports-v1.1.md` for v1.1, ADR 0017 and
+//! `docs/architecture/ports-v1.2.md` for the status writer added in v1.2). Every
 //! adapter is built against it, and every adapter must pass the same shared contract suite as its
 //! in-memory fake (`factory-testkit`, module `contracts`). A port changes only by a reviewed pull
 //! request that updates the trait, the fake and the contract suite together.
@@ -20,6 +21,7 @@
 //! | [`registry`] | `AgentRegistry`, `OutputValidator` |
 //! | [`spec`] | `SpecificationProvider` |
 //! | [`githost`] | `IssueSource`, `ChangeHost`, `WebhookVerifier` |
+//! | [`issue_status`] | `IssueStatusWriter`: one `factory: <state>` label and one status comment on the issue a job came from (v1.2) |
 //! | [`process`] | `ProcessRunner` |
 //! | [`paths`] | Checked names shared by the ports: `RepoPath`, `RepoGlob`, `BranchName`, `RepoRef`, and the policy's `PathRules` |
 //!
@@ -63,6 +65,7 @@ pub mod agent;
 pub mod artifact;
 pub mod clock;
 pub mod githost;
+pub mod issue_status;
 pub mod paths;
 pub mod process;
 pub mod registry;

@@ -82,12 +82,20 @@ Each issue carries at most one `design:` label and at most one `factory:` label.
 
 Moves that are allowed in the design track: `proposed` to `in progress`, `in progress` to `in review`, `in review` to `in progress` (changes were asked for) or to `approved`, and `approved` to `in progress` (the design was reopened). A design starts as `proposed` or `in progress`. Anything else is removed, with a comment that says why. You may remove a `design:` label to leave the track.
 
-**Today the factory does not write the `factory:` labels.** The labels exist and the Action protects them, but the engine does not set them yet (ADR 0016, "What is not built"). The same holds for the design gate: the factory does not yet refuse an issue that is on the design track and not approved, so a requester has to hold that line. The Action posts a comment when the `factory` label lands on such an issue.
+**What the factory writes today.** The factory writes the `factory:` label itself. When a job changes state, the worker puts the one label for that state on the issue and takes any other `factory:` label off it. It also keeps one status comment up to date, and edits that comment in place. It uses a token of its own that can write issues in that one repository and nothing else. A failed write never stops or fails a job. If GitHub is slow or refuses, the worker tries again later, records the failure, and the job goes on.
+
+Three things are worth knowing.
+
+- A job that started from the `factory` label gets its first status when the factory has read the issue, so it may never show `factory: queued`.
+- An issue that the factory refused at the start gets no status label. The reply that explains the refusal is still posted.
+- An operator can switch the writing off with the key `github.write_issue_status`. Nothing else changes when it is off.
+
+**Tested against fakes only.** The writing is built and tested against a fake GitHub server. Nobody has run it against the real GitHub, so treat the first runs as a trial and check the labels yourself. The design gate is also not built: the factory does not yet refuse an issue that is on the design track and not approved, so a requester has to hold that line. The Action posts a comment when the `factory` label lands on such an issue.
 
 ## Rules that keep this safe
 
 - The `factory` label is never applied by a form, an Action or an agent. A person on the requester list applies it, and the factory checks that person by numeric user ID. A label alone never authorizes work.
-- Only the factory sets a `factory:` label. If you set one by hand, the Action removes it.
+- Only the factory sets a `factory:` label. If you set one by hand, the Action removes it. The factory itself never writes the `factory` label or a `design:` label.
 - Issue text and repository text are data. The Elephant can be steered by what it reads, so read the design before you merge it, and keep the GitHub token limited to this one repository.
 - The design lives in the repository, in a pull request that a person approved. The factory never merges it for you.
 

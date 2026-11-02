@@ -19,6 +19,7 @@ use crate::core::{BackoffPolicy, HttpCore, Sleeper};
 use crate::issues::GithubIssueSource;
 use crate::jwt::JwtSigner;
 use crate::permissions::{AppAudit, AppPolicy};
+use crate::status::GithubIssueStatus;
 use crate::text::{Outbound, OutboundPolicy};
 use crate::token::{InstallationDirectory, MinterSettings, TokenMinter};
 use crate::wire::{ApiBase, Transport};
@@ -84,6 +85,7 @@ pub struct GithubAdapter {
     client: Arc<Client>,
     outbound: Arc<Outbound>,
     clock: Arc<dyn Clock>,
+    sleeper: Arc<dyn Sleeper>,
     app_id: AppId,
 }
 
@@ -101,7 +103,7 @@ impl GithubAdapter {
     pub fn new(config: GithubConfig, parts: GithubParts) -> Self {
         let core = Arc::new(HttpCore::new(
             parts.transport,
-            parts.sleeper,
+            Arc::clone(&parts.sleeper),
             Arc::clone(&parts.clock),
             config.backoff,
         ));
@@ -122,6 +124,7 @@ impl GithubAdapter {
             client,
             outbound: Arc::new(Outbound::new(parts.redactor, config.outbound)),
             clock: parts.clock,
+            sleeper: parts.sleeper,
             app_id: config.app_id,
         }
     }
@@ -139,6 +142,18 @@ impl GithubAdapter {
             Arc::clone(&self.client),
             Arc::clone(&self.outbound),
             self.app_id,
+        )
+    }
+
+    /// The status writer: one `factory: <state>` label and one status comment on an issue, with a
+    /// token of its own that holds `issues: write` for one repository and nothing else.
+    #[must_use]
+    pub fn issue_status_writer(&self) -> GithubIssueStatus {
+        GithubIssueStatus::new(
+            Arc::clone(&self.client),
+            Arc::clone(&self.outbound),
+            Arc::clone(&self.sleeper),
+            Arc::clone(&self.clock),
         )
     }
 

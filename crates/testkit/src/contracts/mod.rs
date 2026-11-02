@@ -36,6 +36,7 @@ pub mod agent;
 pub mod artifact;
 pub mod broker;
 pub mod githost;
+pub mod issue_status;
 pub mod process;
 pub mod register;
 pub mod registry;

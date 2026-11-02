@@ -369,6 +369,15 @@ pub struct GithubConfig {
     /// The administrators' statements about the bypass list.
     #[serde(default)]
     pub bypass_attestations: Vec<AttestationConfig>,
+    /// Writes the state of each job on its issue: one `factory: <state>` label and one status
+    /// comment (ADR 0017). False stops the worker from writing on issues. Nothing else changes: the
+    /// labels and the comment are observability and no job depends on them.
+    #[serde(default = "default_true")]
+    pub write_issue_status: bool,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 fn default_github_api() -> String {
@@ -1496,6 +1505,25 @@ mod tests {
         assert_eq!(github.bypass_attestations.len(), 1);
         assert_eq!(config.registry.expect("registry").timeout_seconds, 10);
         assert!(config.runtimes.declare_capabilities);
+    }
+
+    #[test]
+    fn writing_the_status_on_issues_is_on_unless_the_file_turns_it_off() {
+        let on = FactoryConfig::from_yaml(&with_world("local", LOOPBACK_WORLD)).expect("loads");
+        assert!(on.github.expect("github").write_issue_status);
+        let off_world = LOOPBACK_WORLD.replace(
+            "  api_base_url: http://127.0.0.1:9\n",
+            "  api_base_url: http://127.0.0.1:9\n  write_issue_status: false\n",
+        );
+        assert_ne!(off_world, LOOPBACK_WORLD, "the edit applied");
+        let off = FactoryConfig::from_yaml(&with_world("local", &off_world)).expect("loads");
+        assert!(!off.github.expect("github").write_issue_status);
+        // Not a switch for anything else: a misspelling is refused like any unknown key.
+        let typo = LOOPBACK_WORLD.replace(
+            "  api_base_url: http://127.0.0.1:9\n",
+            "  api_base_url: http://127.0.0.1:9\n  write_issue_statuses: false\n",
+        );
+        assert!(FactoryConfig::from_yaml(&with_world("local", &typo)).is_err());
     }
 
     #[test]

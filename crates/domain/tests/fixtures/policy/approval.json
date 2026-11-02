@@ -138,10 +138,21 @@
       ]
     },
     {
+      "id": "write_status_label",
+      "min_level": "L0",
+      "requires": "none",
+      "threats": [
+        "T-42",
+        "T-43",
+        "T-44"
+      ],
+      "when": "only a label of the factory namespace (prefix `factory: `) that policies/issue-workflow.yaml maps to a job state; never the trigger label, never a `design:` label, never a label of any other kind; written with a token narrowed to issues: write for one repository, and the status comment goes by post_comment; the labels show state and decide nothing; pending confirmation by the architect (ADR 0017)"
+    },
+    {
       "id": "close_or_label_issue",
       "min_level": "L1",
       "requires": "none",
-      "when": "limited to labels in the factory namespace"
+      "when": "closing an issue, or a label of the factory namespace that is not a status label (there is none today); the status label has its own row, write_status_label, and the trigger label and the `design:` labels are never written by the factory; pending confirmation by the architect (ADR 0017)"
     },
     {
       "approver_roles": [

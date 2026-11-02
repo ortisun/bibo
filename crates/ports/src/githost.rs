@@ -424,6 +424,10 @@ pub enum Rejection {
     TextBounds,
     /// The host refused for a reason the adapter could not classify.
     Other,
+    /// The label is not a status label of the `factory: ` namespace. Added in ports v1.2
+    /// ([`IssueStatusWriter`](crate::issue_status::IssueStatusWriter)); the adapter refuses it
+    /// before it sends anything.
+    LabelNotAllowed,
 }
 
 /// Why a code host call failed. The set is closed. `Rejected` names the reason.

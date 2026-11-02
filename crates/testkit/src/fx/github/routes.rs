@@ -87,6 +87,11 @@ pub(crate) enum Route {
     IssueComments,
     IssueEvents,
     CreateComment,
+    IssueLabels,
+    LabelsAdd,
+    LabelRemove,
+    CommentUpdate,
+    CommentDelete,
     Collaborator,
     Branch,
     BranchProtection,
@@ -119,6 +124,11 @@ impl Route {
             Route::IssueComments => "GET /repos/{owner}/{repo}/issues/{number}/comments",
             Route::IssueEvents => "GET /repos/{owner}/{repo}/issues/{number}/events",
             Route::CreateComment => "POST /repos/{owner}/{repo}/issues/{number}/comments",
+            Route::IssueLabels => "GET /repos/{owner}/{repo}/issues/{number}/labels",
+            Route::LabelsAdd => "POST /repos/{owner}/{repo}/issues/{number}/labels",
+            Route::LabelRemove => "DELETE /repos/{owner}/{repo}/issues/{number}/labels/{name}",
+            Route::CommentUpdate => "PATCH /repos/{owner}/{repo}/issues/comments/{id}",
+            Route::CommentDelete => "DELETE /repos/{owner}/{repo}/issues/comments/{id}",
             Route::Collaborator => "GET /repos/{owner}/{repo}/collaborators/{username}/permission",
             Route::Branch => "GET /repos/{owner}/{repo}/branches/{branch}",
             Route::BranchProtection => "GET /repos/{owner}/{repo}/branches/{branch}/protection",
@@ -164,6 +174,17 @@ pub(crate) fn match_route(method: &str, path: &str) -> Option<(Route, Vec<String
         ("GET", ["repos", o, r, "issues", n, "events"]) => (Route::IssueEvents, params(&[o, r, n])),
         ("POST", ["repos", o, r, "issues", n, "comments"]) => {
             (Route::CreateComment, params(&[o, r, n]))
+        }
+        ("GET", ["repos", o, r, "issues", n, "labels"]) => (Route::IssueLabels, params(&[o, r, n])),
+        ("POST", ["repos", o, r, "issues", n, "labels"]) => (Route::LabelsAdd, params(&[o, r, n])),
+        ("DELETE", ["repos", o, r, "issues", n, "labels", name]) => {
+            (Route::LabelRemove, params(&[o, r, n, name]))
+        }
+        ("PATCH", ["repos", o, r, "issues", "comments", id]) => {
+            (Route::CommentUpdate, params(&[o, r, id]))
+        }
+        ("DELETE", ["repos", o, r, "issues", "comments", id]) => {
+            (Route::CommentDelete, params(&[o, r, id]))
         }
         ("GET", ["repos", o, r, "collaborators", u, "permission"]) => {
             (Route::Collaborator, params(&[o, r, u]))
@@ -696,6 +717,16 @@ pub(crate) fn issue_json(state: &State, repo: &Repo, issue: &Issue) -> Value {
     value
 }
 
+fn labels_json(labels: &[String]) -> Value {
+    Value::Array(
+        labels
+            .iter()
+            .enumerate()
+            .map(|(i, name)| json!({"id": i + 1, "name": name, "color": "ededed"}))
+            .collect(),
+    )
+}
+
 fn comment_json(state: &State, repo: &Repo, issue: &Issue, comment: &Comment) -> Value {
     let author = state.users.get(&comment.author);
     json!({
@@ -866,6 +897,149 @@ fn dispatch_repo(
                 201,
                 &comment_json(state, repo, &issue, &comment),
             ))
+        }
+        Route::IssueLabels => {
+            require(token, "issues", "read")?;
+            let issue = state.repos[&full]
+                .issues
+                .get(&parse_number(&params[2])?)
+                .ok_or_else(not_found)?;
+            Ok(HttpResponse::json(200, &labels_json(&issue.labels)))
+        }
+        Route::LabelsAdd => {
+            require(token, "issues", "write")?;
+            let number = parse_number(&params[2])?;
+            let body = body_json(request)?;
+            let wanted: Vec<String> = body["labels"]
+                .as_array()
+                .ok_or_else(|| {
+                    ApiError::validation(
+                        "Label",
+                        "labels",
+                        "invalid",
+                        Some("labels must be a list"),
+                    )
+                })?
+                .iter()
+                .filter_map(|l| l.as_str().or_else(|| l["name"].as_str()).map(str::to_owned))
+                .collect();
+            if wanted.is_empty() {
+                return Err(ApiError::validation(
+                    "Label",
+                    "labels",
+                    "missing_field",
+                    None,
+                ));
+            }
+            let actor = state.app.bot_login();
+            let ids: Vec<u64> = wanted.iter().map(|_| state.new_id()).collect();
+            let issue = state
+                .repos
+                .get_mut(&full)
+                .and_then(|r| r.issues.get_mut(&number))
+                .ok_or_else(not_found)?;
+            for (label, id) in wanted.into_iter().zip(ids) {
+                // Label names are unique without regard to case, as on GitHub.
+                if !issue.labels.iter().any(|l| l.eq_ignore_ascii_case(&label)) {
+                    issue.events.push(super::IssueEvent {
+                        id,
+                        event: "labeled".to_owned(),
+                        actor: actor.clone(),
+                        label: Some(label.clone()),
+                        created_at: now,
+                    });
+                    issue.labels.push(label);
+                }
+            }
+            issue.updated_at = now;
+            Ok(HttpResponse::json(200, &labels_json(&issue.labels)))
+        }
+        Route::LabelRemove => {
+            require(token, "issues", "write")?;
+            let number = parse_number(&params[2])?;
+            let actor = state.app.bot_login();
+            let id = state.new_id();
+            let issue = state
+                .repos
+                .get_mut(&full)
+                .and_then(|r| r.issues.get_mut(&number))
+                .ok_or_else(not_found)?;
+            let Some(position) = issue
+                .labels
+                .iter()
+                .position(|l| l.eq_ignore_ascii_case(&params[3]))
+            else {
+                return Err(ApiError::new(404, "Label does not exist"));
+            };
+            let label = issue.labels.remove(position);
+            issue.events.push(super::IssueEvent {
+                id,
+                event: "unlabeled".to_owned(),
+                actor,
+                label: Some(label),
+                created_at: now,
+            });
+            issue.updated_at = now;
+            Ok(HttpResponse::json(200, &labels_json(&issue.labels)))
+        }
+        Route::CommentUpdate => {
+            require(token, "issues", "write")?;
+            let comment_id = parse_number(&params[2])?;
+            let text = body_json(request)?["body"]
+                .as_str()
+                .unwrap_or_default()
+                .to_owned();
+            if text.is_empty() {
+                return Err(ApiError::validation(
+                    "IssueComment",
+                    "body",
+                    "missing_field",
+                    None,
+                ));
+            }
+            if text.chars().count() > 65_536 {
+                return Err(ApiError::validation(
+                    "IssueComment",
+                    "body",
+                    "custom",
+                    Some("body is too long (maximum is 65536 characters)"),
+                ));
+            }
+            let repo = state.repos.get_mut(&full).expect("checked above");
+            let number = repo
+                .issues
+                .iter()
+                .find(|(_, issue)| issue.comments.iter().any(|c| c.id == comment_id))
+                .map(|(number, _)| *number)
+                .ok_or_else(not_found)?;
+            let issue = repo.issues.get_mut(&number).expect("just found");
+            let comment = issue
+                .comments
+                .iter_mut()
+                .find(|c| c.id == comment_id)
+                .expect("just found");
+            comment.body = text;
+            let comment = comment.clone();
+            issue.updated_at = now;
+            let issue = issue.clone();
+            let repo = &state.repos[&full];
+            Ok(HttpResponse::json(
+                200,
+                &comment_json(state, repo, &issue, &comment),
+            ))
+        }
+        Route::CommentDelete => {
+            require(token, "issues", "write")?;
+            let comment_id = parse_number(&params[2])?;
+            let repo = state.repos.get_mut(&full).expect("checked above");
+            for issue in repo.issues.values_mut() {
+                if let Some(position) = issue.comments.iter().position(|c| c.id == comment_id) {
+                    issue.comments.remove(position);
+                    issue.updated_at = now;
+                    return Ok(HttpResponse::empty(204));
+                }
+            }
+            Err(not_found())
         }
         Route::Collaborator => {
             require(token, "metadata", "read")?;

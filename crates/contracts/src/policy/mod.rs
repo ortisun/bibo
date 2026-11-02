@@ -1,5 +1,6 @@
-//! The two policy files, `policies/security.yaml` and `policies/approval.yaml`, loaded into typed
-//! values.
+//! The policy files, `policies/security.yaml`, `policies/approval.yaml` and
+//! `policies/issue-workflow.yaml` (and `policies/model_routing.yaml`, in [`routing`]), loaded into
+//! typed values.
 //!
 //! # What loading guarantees
 //!
@@ -23,8 +24,9 @@
 //! A policy is read only through a [`ProtectedPolicySource`], which stands for a checkout of the
 //! protected default branch of the factory configuration source. The loader:
 //!
-//! * reads the two fixed file names `policies/security.yaml` and `policies/approval.yaml` under
-//!   that checkout, and no other path;
+//! * reads only the fixed file names (`policies/security.yaml`, `policies/approval.yaml`,
+//!   `policies/model_routing.yaml` and `policies/issue-workflow.yaml`) under that checkout, and no
+//!   other path;
 //! * never reads an environment variable. A test scans this crate's source for any use of the
 //!   process environment;
 //! * refuses a checkout that lies inside a directory the caller names as untrusted, such as a job
@@ -57,11 +59,14 @@
 //! taken the same way with [`PolicyHash::of`].
 
 pub mod check;
+pub mod issue_workflow;
 pub mod routing;
 
 // The typed documents live in `factory-domain` so that the policy evaluators, which are ring 0, can
 // name them. They are re-exported here under the paths this crate has always had.
-pub use factory_domain::policy::{approval, common, routing as routing_policy, security};
+pub use factory_domain::policy::{
+    approval, common, issue_workflow as issue_workflow_policy, routing as routing_policy, security,
+};
 
 use std::fmt;
 use std::fs::{self, File};
@@ -74,7 +79,9 @@ use serde::de::DeserializeOwned;
 
 pub use approval::ApprovalPolicy;
 pub use common::{ConfigSource, GlobText, PolicyStatus, RegexText, ThreatId};
+pub use factory_domain::policy::issue_workflow::IssueWorkflowPolicy;
 pub use factory_domain::policy::routing::ModelRoutingPolicy;
+pub use issue_workflow::ISSUE_WORKFLOW_FILE;
 pub use routing::MODEL_ROUTING_FILE;
 pub use security::SecurityPolicy;
 

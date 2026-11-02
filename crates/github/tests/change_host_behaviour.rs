@@ -178,9 +178,30 @@ fn the_source_has_no_merge_no_ready_call_no_workflow_write_and_one_delete() {
         }
     }
     deletes.sort();
-    // The method exists in the wire module and in the transport's mapping, and is used once, to
-    // revoke an installation token.
-    assert_eq!(deletes, vec!["token.rs", "ureq_transport.rs", "wire.rs"]);
+    // The method exists in the wire module and in the transport's mapping. It is used to revoke an
+    // installation token (`token.rs`) and, since ports v1.2, by the status writer (`status.rs`)
+    // for two things only: taking a `factory: ` label off an issue and deleting the duplicate of
+    // the status comment. The name of this test says "one delete" because that was true when it
+    // was written; it is kept so that the records that cite it stay valid.
+    assert_eq!(
+        deletes,
+        vec!["status.rs", "token.rs", "ureq_transport.rs", "wire.rs"]
+    );
+    let status = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/status.rs"),
+    )
+    .unwrap();
+    let uses = status
+        .lines()
+        .filter(|l| !l.trim_start().starts_with("//") && l.contains("Method::Delete"))
+        .count();
+    assert_eq!(uses, 2, "a label and a duplicate comment, nothing else");
+    for forbidden in ["/refs", "/branches", "/pulls", "/contents"] {
+        assert!(
+            !status.contains(forbidden),
+            "the status writer touches no {forbidden}"
+        );
+    }
 }
 
 #[tokio::test]

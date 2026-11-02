@@ -96,6 +96,14 @@ every claim. A worker adds two:
    admits the `RECEIVED` jobs of the tenants the worker serves and applies the decisions that people asked
    for. The API records both and does neither.
 
+A third hook is optional: `issue_status::IssueStatusReporter`
+([`crates/composition/src/issue_status.rs`](../../crates/composition/src/issue_status.rs), ADR 0017). It writes the
+state of each job on its issue: one `factory: <state>` label and one status comment. It reads the job rows
+before each claim, a few read-only queries, and starts a task of its own that makes the writes, one at a time, so a
+slow or failing GitHub never delays a claim and never changes a job. The key `github.write_issue_status` turns it
+off, and `policies/issue-workflow.yaml` in the protected checkout is its policy. It is tested against fakes only
+(`crates/composition/tests/issue_status.rs`); no worker was started against a real GitHub App.
+
 For decisions: the API writes the audit record `decision.requested`, ending with a keyed word
 (`mac=`) that only the API can make; `ClaimWork` recomputes the word with each key it holds
 (`decisions.key_file` and, in a rotation, `decisions.previous_key_file`) and compares in constant time before

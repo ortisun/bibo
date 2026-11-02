@@ -101,6 +101,17 @@ impl PermissionSet {
         Self::of(&[("metadata", Level::Read), ("issues", Level::Write)])
     }
 
+    /// The credential of the status writer (ports v1.2, ADR 0017): `issues: write` and the
+    /// `metadata: read` that every installation token carries, for one repository, and nothing
+    /// else. It is minted for this purpose and independent of any stage: an intake or analysis
+    /// token stays at `issues: read`, and the delivery token is not borrowed. Equal in content to
+    /// [`comment`](Self::comment) today; a separate name, so that the purpose is stated and a
+    /// change to one cannot widen the other.
+    #[must_use]
+    pub fn issue_status() -> Self {
+        Self::of(&[("metadata", Level::Read), ("issues", Level::Write)])
+    }
+
     /// True when the set holds the permission `name` at the level `level` or above.
     #[must_use]
     pub fn holds(&self, name: &str, level: Level) -> bool {

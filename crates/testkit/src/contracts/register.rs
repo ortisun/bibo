@@ -103,6 +103,15 @@ pub fn all() -> Vec<SuiteEntry> {
             waivers: super::githost::ISSUE_SOURCE_WAIVERS,
         },
         SuiteEntry {
+            suite: "issue status writer",
+            checks: super::issue_status::issue_status_checks()
+                .iter()
+                .map(|c| c.name)
+                .collect(),
+            defects: defects(crate::issue_status::ISSUE_STATUS_DEFECTS),
+            waivers: super::issue_status::WAIVERS,
+        },
+        SuiteEntry {
             suite: "webhook verifier",
             checks: super::webhook::checks().iter().map(|c| c.name).collect(),
             defects: defects(crate::webhook::DEFECTS),

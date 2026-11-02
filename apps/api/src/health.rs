@@ -31,6 +31,7 @@ pub async fn ready(state: &ApiState) -> Answer {
                 "name": check.name,
                 "status": match check.status {
                     CheckStatus::Pass => "pass",
+                    CheckStatus::Degraded => "degraded",
                     CheckStatus::Fail => "fail",
                     CheckStatus::Blocked => "blocked",
                 },
