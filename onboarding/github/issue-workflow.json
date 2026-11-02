@@ -140,6 +140,6 @@
   ],
   "schema": "factory-issue-workflow/1",
   "source": "policies/issue-workflow.yaml",
-  "source_sha256": "815ee8252ba265744798f302f818f7b31ba5e4c4ff887c3313b63a4bf4a40b5c",
+  "source_sha256": "2855722e62ff3af6fc63b47f1d1fdea576627c2e3101779b9c2b2069f82b0ad6",
   "trigger": "factory"
 }

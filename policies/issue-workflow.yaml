@@ -1,12 +1,14 @@
 # =============================================================================
 # policies/issue-workflow.yaml  -  the GitHub issue workflow
 # =============================================================================
-# STATUS: DESIGNED. Only scripts read this file today: `scripts/lib/issue_workflow.py`
-# checks it and renders `onboarding/github/issue-workflow.json`, and `scripts/install.sh`
-# creates the labels from that rendering. The engine does not read it yet. ADR 0016
-# lists the engine work that remains (writing job state to the issue, and refusing a
-# design-track issue that is not approved). The flag `policy.status` below is a label
-# that no code reads or switches on.
+# STATUS: DESIGNED, pending confirmation by the architect. Two kinds of reader use this
+# file. The scripts: `scripts/lib/issue_workflow.py` checks it and renders
+# `onboarding/github/issue-workflow.json`, and `scripts/install.sh` creates the labels from
+# that rendering. And the worker: it loads the file with the strict policy loader
+# (`PolicyLoader::load_issue_workflow`) and writes one `factory: <state>` label and one
+# status comment for each job (ADR 0017). The engine does not yet read the design track:
+# refusing a design-track issue that is not approved is still listed in ADR 0016 as not
+# built. The value `policy.status` below is a label that no code switches on.
 #
 # What this file decides
 #   * Which labels an issue carries as it moves from an idea to a delivered pull request.
@@ -34,7 +36,7 @@ schema_version: 1
 
 policy:
   id: issue-workflow
-  status: DESIGNED
+  status: designed
 
 # The label whose application by an authorized person starts a job. It must equal
 # `intake.trigger_label` in policies/approval.yaml and `github.factory_label` in the
