@@ -57,6 +57,9 @@ pub enum ApiError {
     /// The service cannot answer now: the database is unreachable or the work took too long.
     #[error("unavailable")]
     Unavailable,
+    /// A repository cannot be enabled until a person has attested its project map.
+    #[error("the project map has not been attested")]
+    ProjectMapNotAttested,
 }
 
 impl ApiError {
@@ -75,6 +78,7 @@ impl ApiError {
             Self::RequestTimeout => StatusCode::REQUEST_TIMEOUT,
             Self::RateLimited => StatusCode::TOO_MANY_REQUESTS,
             Self::Unavailable => StatusCode::SERVICE_UNAVAILABLE,
+            Self::ProjectMapNotAttested => StatusCode::CONFLICT,
         }
     }
 
@@ -93,6 +97,7 @@ impl ApiError {
             Self::RequestTimeout => "request_timeout",
             Self::RateLimited => "rate_limited",
             Self::Unavailable => "unavailable",
+            Self::ProjectMapNotAttested => "project_map_not_attested",
         }
     }
 

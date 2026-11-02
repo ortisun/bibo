@@ -292,7 +292,8 @@ def parse_cli_help(text: str) -> dict[str, set[str]]:
         if not found:
             continue
         for verb in found.group(1).split(" | "):
-            verbs[verb] = set(FLAG.findall(found.group(2)))
+            # A verb with subcommands has one help line for each, and its options are all of them.
+            verbs.setdefault(verb, set()).update(FLAG.findall(found.group(2)))
     for word in ("help", "--help", "-h"):
         verbs[word] = set()
     return verbs

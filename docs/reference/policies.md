@@ -68,6 +68,8 @@ Three rules hold for every policy file.
 | `commands` | The one command set for the dashboard, the command line and GitHub comments. |
 | `intake` | Who may start a job. |
 
+Four rows of `actions` cover the path of a repository: `register_repository` and `confirm_project_map` and `disable_repository` need the `operator` designation, and `enable_repository` needs the `approver`. Confirming a project map is an attestation by a person and not a check: the engine holds no GitHub credential and does not read the repository. These four rows are a default that is pending confirmation by the architect. See the architecture decision record (ADR) [0016](../adr/0016-design-phase-onboarding-and-issue-workflow.md).
+
 Auto-merge and deployment are off. In Slice 1 the factory has no merge method. A person merges outside it.
 
 ## Where to read more
