@@ -231,6 +231,9 @@ diesel::table! {
         updated_at -> Timestamptz,
         bypass_attested_by_principal_id -> Nullable<Uuid>,
         bypass_attested_at -> Nullable<Timestamptz>,
+        project_map_commit -> Nullable<Text>,
+        project_map_attested_by_principal_id -> Nullable<Uuid>,
+        project_map_attested_at -> Nullable<Timestamptz>,
     }
 }
 

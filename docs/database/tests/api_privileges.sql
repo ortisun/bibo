@@ -8,7 +8,9 @@
 --
 -- The expected list is written out here on purpose: a change to a grant must change this file, and that
 -- shows up in review. The API writes four tables (jobs, original_requests, audit_events,
--- webhook_deliveries) and reads a few more; it updates nothing and deletes nothing.
+-- webhook_deliveries) and reads a few more; it deletes nothing. Since migration 2026-11-02-002400 it also
+-- registers repositories and changes four columns of them (the project map and the enabled flag), by column
+-- grants that this file lists on their own.
 
 -- ---------------------------------------------------------------------------------------------
 -- 1. The role itself.
@@ -37,7 +39,8 @@ END
 $$;
 
 -- ---------------------------------------------------------------------------------------------
--- 2. Table-level grants equal the list, both ways. No column-level grant exists at all.
+-- 2. Table-level grants equal the list, both ways. The only column-level grants are the ones of `repositories`
+--    (migration 2026-11-02-002400), listed after this table.
 
 CREATE TEMP TABLE expected_api_grants (tbl text, privilege text);
 INSERT INTO expected_api_grants VALUES
@@ -55,6 +58,19 @@ INSERT INTO expected_api_grants VALUES
   ('original_requests', 'SELECT'), ('original_requests', 'INSERT'),
   ('audit_events', 'SELECT'), ('audit_events', 'INSERT'),
   ('webhook_deliveries', 'SELECT'), ('webhook_deliveries', 'INSERT');
+
+-- Since migration 2026-11-02-002400. A repository is registered with six columns and nothing else, so it always
+-- starts disabled, at level L0, with no protection result and no bypass attestation. After that the API changes
+-- the enabled flag and the project map (the commit and the person who attested it; the database stamps the time),
+-- and the version, which every update of an aggregate raises by one. It cannot change the name, the installation,
+-- the default branch, the autonomy ceiling, the protection result or the bypass attestation.
+CREATE TEMP TABLE expected_api_column_grants (tbl text, col text, privilege text);
+INSERT INTO expected_api_column_grants VALUES
+  ('repositories', 'tenant_id', 'INSERT'), ('repositories', 'id', 'INSERT'),
+  ('repositories', 'github_installation_id', 'INSERT'), ('repositories', 'github_repository_id', 'INSERT'),
+  ('repositories', 'full_name', 'INSERT'), ('repositories', 'default_branch', 'INSERT'),
+  ('repositories', 'enabled', 'UPDATE'), ('repositories', 'project_map_commit', 'UPDATE'),
+  ('repositories', 'project_map_attested_by_principal_id', 'UPDATE'), ('repositories', 'version', 'UPDATE');
 
 DO $$
 DECLARE
@@ -78,24 +94,43 @@ BEGIN
     FROM pg_attribute att
     JOIN pg_class c ON c.oid = att.attrelid AND c.relnamespace = 'public'::regnamespace, aclexplode(att.attacl) a
    WHERE a.grantee = 'factory_api_app'::regrole;
-  PERFORM dbtest.expect_eq('factory_api_app holds no column privilege at all (it updates nothing)', coalesce(extra, ''), '');
+  PERFORM dbtest.expect_eq('factory_api_app holds no column privilege outside the expected list (repositories only)',
+    coalesce((SELECT string_agg(g, ', ' ORDER BY g) FROM (
+      SELECT c.relname || '.' || att.attname || ':' || a.privilege_type AS g
+        FROM pg_attribute att
+        JOIN pg_class c ON c.oid = att.attrelid AND c.relnamespace = 'public'::regnamespace, aclexplode(att.attacl) a
+       WHERE a.grantee = 'factory_api_app'::regrole
+         AND NOT EXISTS (SELECT 1 FROM expected_api_column_grants e
+                          WHERE e.tbl = c.relname AND e.col = att.attname AND e.privilege = a.privilege_type)) x), ''), '');
+  PERFORM dbtest.expect_eq('factory_api_app holds every column privilege on the expected list',
+    coalesce((SELECT string_agg(e.tbl || '.' || e.col || ':' || e.privilege, ', ' ORDER BY e.tbl, e.col, e.privilege)
+                FROM expected_api_column_grants e
+               WHERE NOT EXISTS (SELECT 1 FROM pg_attribute att
+                                  JOIN pg_class c ON c.oid = att.attrelid AND c.relnamespace = 'public'::regnamespace, aclexplode(att.attacl) a
+                                 WHERE c.relname = e.tbl AND att.attname = e.col AND a.grantee = 'factory_api_app'::regrole
+                                   AND a.privilege_type = e.privilege)), ''), '');
 
   SELECT string_agg(c.relname, ', ' ORDER BY c.relname) INTO extra
     FROM pg_class c
    WHERE c.relnamespace = 'public'::regnamespace AND c.relkind IN ('r', 'v', 'p', 'S')
+     AND c.relname <> 'repositories'
      AND (has_any_column_privilege('factory_api_app', c.oid, 'UPDATE')
           OR has_table_privilege('factory_api_app', c.oid, 'DELETE')
           OR has_table_privilege('factory_api_app', c.oid, 'TRUNCATE')
           OR has_table_privilege('factory_api_app', c.oid, 'REFERENCES')
           OR has_table_privilege('factory_api_app', c.oid, 'TRIGGER'));
-  PERFORM dbtest.expect_eq('factory_api_app can neither UPDATE, DELETE, TRUNCATE, REFERENCE nor TRIGGER anything', coalesce(extra, ''), '');
+  PERFORM dbtest.expect_eq('factory_api_app can neither UPDATE, DELETE, TRUNCATE, REFERENCE nor TRIGGER anything but the columns of repositories', coalesce(extra, ''), '');
+  PERFORM dbtest.expect_eq('factory_api_app cannot DELETE, TRUNCATE, REFERENCE or TRIGGER on repositories either',
+    (has_table_privilege('factory_api_app', 'repositories', 'DELETE') OR has_table_privilege('factory_api_app', 'repositories', 'TRUNCATE')
+     OR has_table_privilege('factory_api_app', 'repositories', 'REFERENCES') OR has_table_privilege('factory_api_app', 'repositories', 'TRIGGER')), false);
 
-  -- The thirteen tables the review listed, one by one, so the failure names the table.
+  -- The tables the review listed, one by one, so the failure names the table. `repositories` was the thirteenth;
+  -- it now has column grants, and its table-level INSERT is still refused (the six columns are the only way in).
   SELECT string_agg(t, ', ' ORDER BY t) INTO extra
     FROM unnest(ARRAY['api_tokens', 'principals', 'approvals', 'ledger_entries', 'outbox', 'inbox', 'stage_runs', 'attempts',
                       'task_nodes', 'task_node_dependencies', 'artifacts', 'stage_run_artifacts', 'repositories']) t
    WHERE has_table_privilege('factory_api_app', t, 'INSERT');
-  PERFORM dbtest.expect_eq('factory_api_app cannot INSERT into any of the 13 tables the review found', coalesce(extra, ''), '');
+  PERFORM dbtest.expect_eq('factory_api_app holds no table-level INSERT on any of the 13 tables the review found', coalesce(extra, ''), '');
 
   SELECT string_agg(t, ', ' ORDER BY t) INTO extra
     FROM unnest(ARRAY['api_tokens', 'active_api_tokens', 'approvals', 'ledger_current_claims',
@@ -151,6 +186,15 @@ BEGIN
      AND has_table_privilege('api_privileges_login', c.oid, p.priv)
      AND NOT (p.priv = 'INSERT' AND c.relname IN ('jobs', 'original_requests', 'audit_events', 'webhook_deliveries'));
   PERFORM dbtest.expect_eq('the API login may write the four tables of the API and nothing else', coalesce(extra, ''), '');
+  PERFORM dbtest.expect_true('the API login may write columns of repositories, and only by column grants',
+    has_column_privilege('api_privileges_login', 'repositories', 'enabled', 'UPDATE')
+    AND has_column_privilege('api_privileges_login', 'repositories', 'project_map_commit', 'UPDATE')
+    AND NOT has_column_privilege('api_privileges_login', 'repositories', 'autonomy_ceiling', 'UPDATE')
+    AND NOT has_column_privilege('api_privileges_login', 'repositories', 'protection_preflight_passed', 'UPDATE')
+    AND NOT has_column_privilege('api_privileges_login', 'repositories', 'default_branch', 'UPDATE')
+    AND NOT has_column_privilege('api_privileges_login', 'repositories', 'bypass_attested_by_principal_id', 'UPDATE')
+    AND NOT has_column_privilege('api_privileges_login', 'repositories', 'autonomy_ceiling', 'INSERT')
+    AND NOT has_column_privilege('api_privileges_login', 'repositories', 'enabled', 'INSERT'));
   PERFORM dbtest.expect_true('the API login is not a member of factory_app, factory_system or factory_lookup',
     NOT pg_has_role('api_privileges_login', 'factory_app', 'MEMBER')
     AND NOT pg_has_role('api_privileges_login', 'factory_system', 'MEMBER')
@@ -285,7 +329,9 @@ DECLARE
     'decision.requested', 'decision.dependency_requested', 'decision.stage_requested', 'decision.denied',
     'decision.denied_summary', 'decision.denied_suppressed', 'job.submitted', 'job.received_from_webhook', 'webhook.accepted',
     'webhook.duplicate_delivery', 'webhook.rejected', 'webhook.unbound', 'webhook.audit_dropped',
-    'webhook_accepted_or_rejected.granted', 'webhook_accepted_or_rejected.denied'];
+    'webhook_accepted_or_rejected.granted', 'webhook_accepted_or_rejected.denied',
+    -- Since migration 2026-11-02-002400: what the API writes when a person changes a repository.
+    'repository.registered', 'repository.map_attested', 'repository.enabled', 'repository.disabled'];
   refused text[] := ARRAY[
     -- What the worker writes: a marker that ends a request, and the record that a marker was ignored.
     'decision.applied', 'decision.rejected', 'decision.marker_ignored',
@@ -294,7 +340,8 @@ DECLARE
     -- Near misses: the list is exact, not a prefix, a pattern or a case-insensitive match.
     'decision.requested2', 'decision.request', 'decision', 'job.submitted.extra', 'webhook.accepted_by_worker',
     'webhook_accepted_or_rejected', 'webhook_accepted_or_rejected.noted',
-    'decision.dependency_requested_', 'decision.stage_requested_', 'decision.stage_request', 'x'];
+    'decision.dependency_requested_', 'decision.stage_requested_', 'decision.stage_request', 'x',
+    'repository', 'repository.register', 'repository.enable', 'repository.registered_by_worker', 'repository.map_attested.extra'];
   a text;
   msg text;
 BEGIN

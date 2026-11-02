@@ -28,6 +28,7 @@ use factory_ports::store::{Audience, AuditFilter, AuditRecord, LeaseEpoch, Store
 use factory_storage::pg::PgStore;
 use factory_testkit::contracts::store::{StoreSubject, checks};
 use factory_testkit::contracts::{Report, SKIPPED_PREFIX};
+use factory_testkit::fixtures::SeededRepository;
 use support::{SplitStore, TestDb, api_config_for, config_for, server};
 use tokio::sync::Semaphore;
 use tokio::task::JoinSet;
@@ -144,14 +145,18 @@ impl StoreSubject for PgSubject {
         let n = self.next();
         let id = Uuid::from_u128(tenant.as_uuid().as_u128() ^ (u128::from(n) << 96) ^ 0x5eed);
         self.db
-            .run(&format!(
-                "INSERT INTO repositories (tenant_id, id, github_installation_id, github_repository_id, \
-                        full_name, default_branch) \
-                 VALUES ('{}', '{id}', {}, {}, 'org/repo-{n}', 'main')",
-                tenant.as_uuid(),
-                1000 + n,
-                2000 + n
-            ))
+            .run(
+                &SeededRepository {
+                    tenant: &tenant.as_uuid().to_string(),
+                    id: &id.to_string(),
+                    installation: 1000 + n,
+                    github_repository: 2000 + n,
+                    full_name: &format!("org/repo-{n}"),
+                    default_branch: "main",
+                    autonomy_ceiling: "L0",
+                }
+                .sql(),
+            )
             .await;
         RepositoryId::from_uuid(id)
     }

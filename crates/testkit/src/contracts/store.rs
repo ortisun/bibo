@@ -154,6 +154,14 @@ pub fn checks() -> Vec<StoreCheck> {
         an_approval_counts_only_for_its_head_and_until_it_expires,
         a_lookup_miss_is_none_for_every_reason,
         database_time_follows_the_subjects_clock,
+        a_repository_is_registered_disabled_at_l0_with_no_map,
+        a_repository_registration_is_idempotent_by_id_and_content,
+        a_github_repository_is_registered_once,
+        a_repository_with_no_project_map_cannot_be_enabled,
+        only_an_active_person_of_the_tenant_can_attest_a_project_map,
+        a_repository_change_needs_the_version_it_read,
+        another_tenant_cannot_see_or_change_a_repository,
+        an_audit_record_is_found_by_its_id_in_its_own_tenant_only,
     ]
 }
 
@@ -3146,6 +3154,373 @@ async fn a_lookup_miss_is_none_for_every_reason(subject: &dyn StoreSubject) -> R
     ensure!(
         disabled.is_none(),
         "a disabled repository is none, the same as every other miss"
+    );
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------------------------
+// Registering a repository and attesting its project map (ADR 0016)
+// ---------------------------------------------------------------------------------------------
+
+fn new_repository(w: &World<'_>, n: u64) -> NewRepository {
+    NewRepository {
+        id: RepositoryId::from_uuid(w.ids.job().as_uuid()),
+        installation: InstallationId(7000 + n),
+        github_repository_id: GithubRepositoryId(8000 + n),
+        full_name: format!("org/registered-{n}"),
+        default_branch: "main".to_owned(),
+    }
+}
+
+fn a_commit() -> ProjectMapCommit {
+    ProjectMapCommit::new("0123456789abcdef0123456789abcdef01234567").expect("a commit")
+}
+
+async fn a_repository_is_registered_disabled_at_l0_with_no_map(
+    subject: &dyn StoreSubject,
+) -> Result<(), String> {
+    let w = World::new(subject).await;
+    let new = new_repository(&w, 1);
+    let mut tx = w.tx(w.a).await?;
+    let made = tx.register_repository(new.clone()).await.ctx("register")?;
+    ensure!(made.created, "the first registration creates");
+    tx.commit().await.ctx("commit")?;
+
+    let mut tx = w.tx(w.a).await?;
+    let read = tx.get_repository(new.id).await.ctx("read it back")?;
+    let row = read.value;
+    ensure!(!row.enabled, "a registered repository starts disabled");
+    ensure!(
+        !row.protection_preflight_passed,
+        "it starts with no protection result"
+    );
+    ensure_eq!(
+        row.autonomy_ceiling,
+        AutonomyLevel::L0,
+        "it starts at level L0"
+    );
+    ensure!(row.project_map.is_none(), "it starts with no project map");
+    ensure_eq!(
+        read.version,
+        Version::FIRST,
+        "it starts at the first version"
+    );
+    ensure_eq!(row.full_name, new.full_name, "the name is kept");
+    ensure_eq!(row.tenant_id, w.a, "the tenant is the caller's");
+    ensure_eq!(
+        row.installation,
+        new.installation,
+        "the installation is kept"
+    );
+    Ok(())
+}
+
+async fn a_repository_registration_is_idempotent_by_id_and_content(
+    subject: &dyn StoreSubject,
+) -> Result<(), String> {
+    let w = World::new(subject).await;
+    let new = new_repository(&w, 2);
+    let mut tx = w.tx(w.a).await?;
+    let first = tx.register_repository(new.clone()).await.ctx("register")?;
+    ensure!(first.created, "the first registration creates");
+    tx.commit().await.ctx("commit")?;
+
+    let mut tx = w.tx(w.a).await?;
+    let again = tx.register_repository(new.clone()).await.ctx("a replay")?;
+    ensure!(!again.created, "a replay creates nothing");
+    ensure_eq!(again.row, first.row, "and returns the first row");
+    let other = NewRepository {
+        full_name: "org/another-name".to_owned(),
+        ..new
+    };
+    ensure_err!(
+        tx.register_repository(other).await,
+        StoreError::Constraint(ConstraintRule::IdReusedWithDifferentContent),
+        "the same id with other content"
+    );
+    Ok(())
+}
+
+async fn a_github_repository_is_registered_once(subject: &dyn StoreSubject) -> Result<(), String> {
+    let w = World::new(subject).await;
+    let first = new_repository(&w, 3);
+    let mut tx = w.tx(w.a).await?;
+    tx.register_repository(first.clone())
+        .await
+        .ctx("register")?;
+    tx.commit().await.ctx("commit")?;
+
+    // The same GitHub repository under another id, in the same tenant and in another. The answer
+    // is "not found" for both (NT-TEN-05): the caller cannot tell which tenant holds it.
+    let again = NewRepository {
+        id: RepositoryId::from_uuid(w.ids.job().as_uuid()),
+        ..first.clone()
+    };
+    let mut tx = w.tx(w.a).await?;
+    ensure_err!(
+        tx.register_repository(again.clone()).await,
+        StoreError::NotFound,
+        "the same tenant registers the GitHub repository twice"
+    );
+    drop(tx);
+    let mut tx = w.tx(w.b).await?;
+    ensure_err!(
+        tx.register_repository(again).await,
+        StoreError::NotFound,
+        "another tenant registers the same GitHub repository"
+    );
+    drop(tx);
+
+    // The sibling: a different GitHub repository is registered without trouble.
+    let mut tx = w.tx(w.b).await?;
+    let other = tx
+        .register_repository(new_repository(&w, 4))
+        .await
+        .ctx("a different GitHub repository")?;
+    ensure!(other.created, "it is registered");
+    Ok(())
+}
+
+async fn a_repository_with_no_project_map_cannot_be_enabled(
+    subject: &dyn StoreSubject,
+) -> Result<(), String> {
+    let w = World::new(subject).await;
+    let new = new_repository(&w, 5);
+    let person = w.principal(w.a).await?;
+    let mut tx = w.tx(w.a).await?;
+    let version = tx
+        .register_repository(new.clone())
+        .await
+        .ctx("register")?
+        .row
+        .version;
+    tx.commit().await.ctx("commit")?;
+
+    let mut tx = w.tx(w.a).await?;
+    ensure_err!(
+        tx.set_repository_enabled(new.id, version, true).await,
+        StoreError::Constraint(ConstraintRule::ProjectMapRule),
+        "enabling with no project map"
+    );
+    let unchanged = tx.get_repository(new.id).await.ctx("read")?;
+    ensure!(!unchanged.value.enabled, "the repository stays disabled");
+    ensure_eq!(unchanged.version, version, "and its version did not move");
+    // The webhook binding does not find a repository that was never enabled.
+    ensure!(
+        subject
+            .store()
+            .resolve_installation(new.installation, new.github_repository_id)
+            .await
+            .ctx("resolve")?
+            .is_none(),
+        "a registered repository is not found by its installation"
+    );
+
+    // The sibling: with a map attested, the same call works, and the repository is then found.
+    let attested = tx
+        .attest_project_map(new.id, version, a_commit(), person)
+        .await
+        .ctx("attest")?;
+    let enabled = tx
+        .set_repository_enabled(new.id, attested, true)
+        .await
+        .ctx("enable")?;
+    tx.commit().await.ctx("commit the enabled repository")?;
+    let found = subject
+        .store()
+        .resolve_installation(new.installation, new.github_repository_id)
+        .await
+        .ctx("resolve")?;
+    ensure_eq!(
+        found.map(|who| who.repository),
+        Some(new.id),
+        "an enabled repository with a map is found by its installation"
+    );
+
+    // Switching it off again stops the binding, and needs no map to be removed.
+    let mut tx = w.tx(w.a).await?;
+    tx.set_repository_enabled(new.id, enabled, false)
+        .await
+        .ctx("disable")?;
+    tx.commit().await.ctx("commit the disabled repository")?;
+    ensure!(
+        subject
+            .store()
+            .resolve_installation(new.installation, new.github_repository_id)
+            .await
+            .ctx("resolve again")?
+            .is_none(),
+        "a disabled repository is not found by its installation"
+    );
+    Ok(())
+}
+
+async fn only_an_active_person_of_the_tenant_can_attest_a_project_map(
+    subject: &dyn StoreSubject,
+) -> Result<(), String> {
+    let w = World::new(subject).await;
+    let new = new_repository(&w, 6);
+    let person = w.principal(w.a).await?;
+    let stranger = w.principal(w.b).await?;
+    let service = w.ids.principal();
+    let mut tx = w.tx(w.a).await?;
+    let version = tx
+        .register_repository(new.clone())
+        .await
+        .ctx("register")?
+        .row
+        .version;
+    tx.insert_principal(NewPrincipal {
+        id: service,
+        kind: PrincipalKind::Service,
+        login: None,
+    })
+    .await
+    .ctx("insert a service")?;
+    tx.commit().await.ctx("commit")?;
+
+    let mut tx = w.tx(w.a).await?;
+    ensure_err!(
+        tx.attest_project_map(new.id, version, a_commit(), service)
+            .await,
+        StoreError::Constraint(ConstraintRule::ProjectMapRule),
+        "a service principal attests"
+    );
+    ensure_err!(
+        tx.attest_project_map(new.id, version, a_commit(), stranger)
+            .await,
+        StoreError::Constraint(ConstraintRule::ProjectMapRule),
+        "a person of another tenant attests"
+    );
+    ensure!(
+        tx.get_repository(new.id)
+            .await
+            .ctx("read")?
+            .value
+            .project_map
+            .is_none(),
+        "no refusal left a map behind"
+    );
+
+    // The sibling: an active person of the tenant attests, and the record names them and the commit.
+    let next = tx
+        .attest_project_map(new.id, version, a_commit(), person)
+        .await
+        .ctx("attest")?;
+    let read = tx.get_repository(new.id).await.ctx("read it back")?;
+    ensure_eq!(read.version, next, "the version moved once");
+    let map = read.value.project_map.ok_or("the map is recorded")?;
+    ensure_eq!(map.commit, a_commit(), "the commit is the one attested");
+    ensure_eq!(map.attested_by, person, "the attestor is the person");
+    Ok(())
+}
+
+async fn a_repository_change_needs_the_version_it_read(
+    subject: &dyn StoreSubject,
+) -> Result<(), String> {
+    let w = World::new(subject).await;
+    let new = new_repository(&w, 7);
+    let person = w.principal(w.a).await?;
+    let mut tx = w.tx(w.a).await?;
+    let first = tx
+        .register_repository(new.clone())
+        .await
+        .ctx("register")?
+        .row
+        .version;
+    let second = tx
+        .attest_project_map(new.id, first, a_commit(), person)
+        .await
+        .ctx("attest")?;
+    ensure!(second != first, "the attestation moved the version");
+    ensure_err!(
+        tx.attest_project_map(new.id, first, a_commit(), person)
+            .await,
+        StoreError::Conflict,
+        "an attestation from a stale version"
+    );
+    ensure_err!(
+        tx.set_repository_enabled(new.id, first, true).await,
+        StoreError::Conflict,
+        "enabling from a stale version"
+    );
+    let enabled = tx
+        .set_repository_enabled(new.id, second, true)
+        .await
+        .ctx("enable from the current version")?;
+    ensure!(enabled != second, "enabling moved the version again");
+    Ok(())
+}
+
+async fn another_tenant_cannot_see_or_change_a_repository(
+    subject: &dyn StoreSubject,
+) -> Result<(), String> {
+    let w = World::new(subject).await;
+    let new = new_repository(&w, 8);
+    let person = w.principal(w.a).await?;
+    let outsider = w.principal(w.b).await?;
+    let mut tx = w.tx(w.a).await?;
+    let version = tx
+        .register_repository(new.clone())
+        .await
+        .ctx("register")?
+        .row
+        .version;
+    tx.commit().await.ctx("commit")?;
+
+    let mut other = w.tx(w.b).await?;
+    ensure_err!(
+        other.get_repository(new.id).await,
+        StoreError::NotFound,
+        "reading another tenant's repository"
+    );
+    ensure_err!(
+        other
+            .attest_project_map(new.id, version, a_commit(), outsider)
+            .await,
+        StoreError::NotFound,
+        "attesting another tenant's repository"
+    );
+    ensure_err!(
+        other.set_repository_enabled(new.id, version, false).await,
+        StoreError::NotFound,
+        "switching another tenant's repository"
+    );
+    drop(other);
+
+    // The sibling: the owner reads and changes it.
+    let mut mine = w.tx(w.a).await?;
+    mine.attest_project_map(new.id, version, a_commit(), person)
+        .await
+        .ctx("the owner attests")?;
+    Ok(())
+}
+
+async fn an_audit_record_is_found_by_its_id_in_its_own_tenant_only(
+    subject: &dyn StoreSubject,
+) -> Result<(), String> {
+    let w = World::new(subject).await;
+    let event = audit_event(&w, None, "repository.registered");
+    let mut tx = w.tx(w.a).await?;
+    let stored = tx.record_audit(event.clone()).await.ctx("record")?;
+    tx.commit().await.ctx("commit")?;
+
+    let mut mine = w.tx(w.a).await?;
+    let found = mine.find_audit(event.id).await.ctx("find")?;
+    ensure_eq!(found, Some(stored), "the record is found by its id");
+    let unknown = factory_domain::ids::AuditEventId::from_uuid(w.ids.job().as_uuid());
+    ensure!(
+        mine.find_audit(unknown)
+            .await
+            .ctx("find unknown")?
+            .is_none(),
+        "an unknown id finds nothing"
+    );
+    drop(mine);
+    let mut other = w.tx(w.b).await?;
+    ensure!(
+        other.find_audit(event.id).await.ctx("find")?.is_none(),
+        "another tenant finds nothing"
     );
     Ok(())
 }

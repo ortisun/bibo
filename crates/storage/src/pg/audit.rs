@@ -204,6 +204,24 @@ async fn record(
     }
 }
 
+async fn find(
+    connection: &mut AsyncPgConnection,
+    tenant: TenantId,
+    id: AuditEventId,
+) -> Result<Option<AuditRecord>, StoreError> {
+    sql_query(format!(
+        "SELECT {COLUMNS} FROM audit_events WHERE tenant_id = $1 AND event_id = $2"
+    ))
+    .bind::<SqlUuid, _>(tenant.as_uuid())
+    .bind::<SqlUuid, _>(id.as_uuid())
+    .get_result::<AuditRow>(connection)
+    .await
+    .optional()
+    .map_err(|error| database("find_audit", &error))?
+    .map(record_from_row)
+    .transpose()
+}
+
 async fn read(
     connection: &mut AsyncPgConnection,
     tenant: TenantId,
@@ -241,6 +259,10 @@ async fn read(
 impl AuditOps for PgTx {
     async fn record_audit(&mut self, event: NewAuditEvent) -> Result<AuditRecord, StoreError> {
         call!(self, connection, tenant => record(connection, tenant, event))
+    }
+
+    async fn find_audit(&mut self, id: AuditEventId) -> Result<Option<AuditRecord>, StoreError> {
+        call!(self, connection, tenant => find(connection, tenant, id))
     }
 
     async fn read_audit(
