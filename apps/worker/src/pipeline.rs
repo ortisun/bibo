@@ -23,20 +23,23 @@ use factory_composition::external::{
     probe_at_startup, runtimes_for_tenant,
 };
 use factory_composition::hooks::BeforeClaim;
+use factory_composition::issue_status::{IssueStatusDeps, IssueStatusReporter};
 use factory_composition::pipeline::{
     ExternalPorts, Pipeline, PipelineError, PipelineInputs, Tuning, assemble_pipeline,
 };
 use factory_composition::policy_broker::{JobSpend, PolicyBroker};
+use factory_composition::profile::PortName;
 use factory_composition::redaction::RegisteringBroker;
 use factory_composition::routing::{enabled_models, first_selection};
 use factory_composition::sandbox_specs::PolicySpecs;
 use factory_composition::seams::FileAllowlist;
 use factory_composition::spec_skills::bundle_for_writer;
-use factory_composition::startup::StartupFailure;
+use factory_composition::startup::{StartupFailure, load_issue_workflow};
 use factory_composition::system::{RandomIds, Shutdown, SystemClock, TokioTicker};
 use factory_composition::token_sweep::RevokeEndedJobs;
 use factory_domain::vocabulary::StageKind;
 use factory_ports::agent::ModelBroker;
+use factory_ports::issue_status::IssueStatusWriter;
 use factory_ports::store::{Store, WorkerId};
 use factory_sandbox::container::images::ImageCatalog;
 
@@ -213,6 +216,53 @@ pub fn token_sweep(
         tenants,
         Arc::clone(&booted.jobs),
     )))
+}
+
+/// The step before each claim that writes the state of each job on its issue: one
+/// `factory: <state>` label and one status comment (ADR 0017). `None` when the configuration turns
+/// it off (`github.write_issue_status: false`) or has no `github` table.
+///
+/// The labels come from `policies/issue-workflow.yaml` in the protected checkout, and the step
+/// writes through the status writer of the GitHub adapter, which holds a token of its own. What
+/// the step does when GitHub fails is in [`factory_composition::issue_status`]: nothing happens to
+/// a job.
+///
+/// # Errors
+/// [`StartupFailure`] when the issue workflow policy cannot be loaded, the identifiers cannot be
+/// made, or the profile refuses the writer.
+pub fn issue_status(
+    booted: &Booted,
+    config: &FactoryConfig,
+    world: &ExternalWorld,
+) -> Result<Option<Arc<dyn BeforeClaim>>, StartupFailure> {
+    if !config.github.as_ref().is_some_and(|g| g.write_issue_status) {
+        return Ok(None);
+    }
+    let tenants = config
+        .worker
+        .served_tenants()
+        .map_err(|error| StartupFailure::Other(error.to_string()))?;
+    let workspace = [config.sandbox.workspace_root.as_path()];
+    let loaded = load_issue_workflow(&config.protected_checkout, &workspace)?;
+    let writer: Arc<dyn IssueStatusWriter> = Arc::new(world.github.issue_status_writer());
+    config
+        .profile
+        .admit(PortName::Changes, writer.fidelity())
+        .map_err(|refused| StartupFailure::Other(refused.to_string()))?;
+    let ids = RandomIds::new().map_err(|error| StartupFailure::Other(error.to_string()))?;
+    let store: Arc<dyn Store> = booted.prepared.store.clone();
+    Ok(Some(Arc::new(IssueStatusReporter::new(IssueStatusDeps {
+        store,
+        writer,
+        host: Arc::clone(&world.ports.changes),
+        labels: loaded.labels,
+        clock: Arc::new(SystemClock),
+        ids: Arc::new(ids),
+        jobs: Arc::clone(&booted.jobs),
+        tenants,
+        policy_hash: booted.prepared.policies.hash.clone(),
+        redactor: Arc::clone(&booted.prepared.redactor),
+    }))))
 }
 
 /// Assembles the pipeline from what the worker holds and the ports it was given, and puts it in a

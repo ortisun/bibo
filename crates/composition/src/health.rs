@@ -44,6 +44,10 @@ pub enum CheckStatus {
     Pass,
     /// It does not hold.
     Fail,
+    /// It works with a limit, and the process is still ready. For what is only observability,
+    /// such as the status written on an issue: a problem there is shown and never makes the
+    /// process unready.
+    Degraded,
     /// It could not run. Not a pass.
     Blocked,
 }
@@ -76,6 +80,16 @@ impl CheckResult {
         Self {
             name: name.to_owned(),
             status: CheckStatus::Fail,
+            detail: detail.to_owned(),
+        }
+    }
+
+    /// A check that holds with a limit. It does not stop the process being ready.
+    #[must_use]
+    pub fn degraded(name: &str, detail: &str) -> Self {
+        Self {
+            name: name.to_owned(),
+            status: CheckStatus::Degraded,
             detail: detail.to_owned(),
         }
     }
@@ -127,7 +141,9 @@ impl HealthReport {
     ) -> Self {
         let ready = live
             && !checks.is_empty()
-            && checks.iter().all(|check| check.status == CheckStatus::Pass);
+            && checks
+                .iter()
+                .all(|check| matches!(check.status, CheckStatus::Pass | CheckStatus::Degraded));
         Self {
             profile: profile.name().to_owned(),
             live,
@@ -200,6 +216,24 @@ mod tests {
             assert!(!report.ready);
             assert!(report.live);
         }
+    }
+
+    #[test]
+    fn a_degraded_check_is_shown_and_does_not_stop_the_process_being_ready() {
+        let ports = [(PortName::Store, Fidelity::Real)];
+        let checks = vec![
+            CheckResult::pass("a", "ok"),
+            CheckResult::degraded("issue status", "one update is retrying"),
+        ];
+        let report = HealthReport::from_checks(Profile::Test, true, checks, &ports);
+        assert!(report.ready);
+        assert!(report.to_json().contains("\"status\":\"degraded\""));
+        // The control: a failed or blocked check next to it still stops it.
+        let checks = vec![
+            CheckResult::degraded("issue status", "one update is retrying"),
+            CheckResult::fail("b", "no"),
+        ];
+        assert!(!HealthReport::from_checks(Profile::Test, true, checks, &ports).ready);
     }
 
     #[test]

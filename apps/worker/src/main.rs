@@ -16,7 +16,7 @@ use std::sync::Arc;
 use factory_composition::config::FactoryConfig;
 use factory_composition::system::{Shutdown, raise_on_termination};
 use factory_worker::boot::boot;
-use factory_worker::pipeline::{assemble_loop, external_ports, token_sweep};
+use factory_worker::pipeline::{assemble_loop, external_ports, issue_status, token_sweep};
 use factory_worker::run::exit_code;
 
 fn main() -> ExitCode {
@@ -63,7 +63,17 @@ fn main() -> ExitCode {
         };
         let shutdown = Shutdown::new();
         tokio::spawn(raise_on_termination(shutdown.clone()));
-        let sweep = token_sweep(&booted, &config, &world).into_iter().collect();
+        let mut sweep: Vec<_> = token_sweep(&booted, &config, &world).into_iter().collect();
+        // After the sweep, so that the sweep runs first; the step writes on issues from a task of
+        // its own and never holds up a claim.
+        match issue_status(&booted, &config, &world) {
+            Ok(step) => sweep.extend(step),
+            Err(error) => {
+                eprintln!("factory-worker: the issue status step cannot be built: {error}");
+                booted.broker.shutdown();
+                return ExitCode::from(1);
+            }
+        }
         let (worker_loop, _pipeline) =
             match assemble_loop(&booted, &config, world.ports, sweep, shutdown) {
                 Ok(assembled) => assembled,

@@ -24,8 +24,9 @@
 //! A policy is read only through a [`ProtectedPolicySource`], which stands for a checkout of the
 //! protected default branch of the factory configuration source. The loader:
 //!
-//! * reads the two fixed file names `policies/security.yaml` and `policies/approval.yaml` under
-//!   that checkout, and no other path;
+//! * reads only the fixed file names (`policies/security.yaml`, `policies/approval.yaml`,
+//!   `policies/model_routing.yaml` and `policies/issue-workflow.yaml`) under that checkout, and no
+//!   other path;
 //! * never reads an environment variable. A test scans this crate's source for any use of the
 //!   process environment;
 //! * refuses a checkout that lies inside a directory the caller names as untrusted, such as a job

@@ -19,6 +19,7 @@ use std::sync::Arc;
 use factory_contracts::policy::{PolicyError, PolicyLoader, ProtectedPolicySource};
 use factory_domain::policy::PolicyEngine;
 use factory_domain::policy::approval::ApprovalPolicy;
+use factory_domain::policy::issue_workflow::{IssueWorkflowPolicy, StatusLabels};
 use factory_domain::policy::routing::ModelRoutingPolicy;
 use factory_domain::policy::security::SecurityPolicy;
 use factory_domain::values::Sha256Digest;
@@ -99,6 +100,42 @@ pub fn load_policy(
         engine: Arc::new(engine),
         hash,
         source: source.root().to_path_buf(),
+    })
+}
+
+/// The issue workflow policy as loaded: the label of each job state, checked.
+#[derive(Debug, Clone)]
+pub struct LoadedIssueWorkflow {
+    /// The whole policy.
+    pub policy: Arc<IssueWorkflowPolicy>,
+    /// The `factory: <state>` label of each job state. The only source of a status label.
+    pub labels: Arc<StatusLabels>,
+    /// The hash of the file, as the loader reports it.
+    pub hash: String,
+}
+
+/// Loads `policies/issue-workflow.yaml` from the protected checkout. A missing, unsafe or broken
+/// file stops the start of a worker that writes the status of jobs on issues: a worker with no
+/// label for a job state would have nothing safe to write.
+///
+/// # Errors
+/// [`StartupFailure::Policy`].
+pub fn load_issue_workflow(
+    checkout: &Path,
+    untrusted_roots: &[&Path],
+) -> Result<LoadedIssueWorkflow, StartupFailure> {
+    let source = ProtectedPolicySource::protected_default_branch(checkout, untrusted_roots)?;
+    let loaded = PolicyLoader::load_issue_workflow(&source)?;
+    let labels = loaded.document.status_labels().map_err(|problems| {
+        StartupFailure::Policy(problems.first().map_or_else(
+            || "the issue workflow policy is unsound".to_owned(),
+            |p| format!("{}: {}", p.path, p.message),
+        ))
+    })?;
+    Ok(LoadedIssueWorkflow {
+        policy: Arc::new(loaded.document),
+        labels: Arc::new(labels),
+        hash: loaded.hash.as_str().to_owned(),
     })
 }
 

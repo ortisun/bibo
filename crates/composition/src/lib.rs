@@ -31,6 +31,7 @@
 //! | [`seams`], [`authority`], [`sandbox_specs`] | The seams the stages declare |
 //! | [`indexing`] | Indexes the artifacts a sandbox writes, for the tenant, when they are written |
 //! | [`ledger`] | The task ledger of the implementation stage, over the store, fenced by attempt and epoch |
+//! | [`issue_status`] | The state of a job written on its issue: one `factory: <state>` label and one status comment, outside the engine's transaction, with retries, an audit trail and a health line (ADR 0017) |
 //! | [`hooks`] | The work a binary's loop does before it claims |
 //! | [`pipeline`] | The whole pipeline from the configuration: the thirteen handlers, the engine, the approval service, the hook and the preflight, with the profile's check of every port (AUT-13) |
 //! | [`preflight`] | The protection preflight recorder: a step before each claim that reads the protection of the default branch, judges it against the policy and records the result |
@@ -62,6 +63,7 @@ pub mod health;
 pub mod hooks;
 pub mod indexing;
 pub mod intake_rejections;
+pub mod issue_status;
 pub mod ledger;
 pub mod pipeline;
 pub mod policy_broker;

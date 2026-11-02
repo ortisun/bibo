@@ -274,6 +274,21 @@ const REVIEWED: &[(&str, &str, &str)] = &[
         "a boolean: whether the one reply was posted",
     ),
     (
+        "crates/composition/src/issue_status.rs",
+        "code",
+        "the code of a failed try to write a job's state on its issue, `FailureCode::word`: one of seven static strings, never a message from GitHub",
+    ),
+    (
+        "crates/composition/src/issue_status.rs",
+        "gave_up",
+        "a boolean: whether the step gave up on this version of the job",
+    ),
+    (
+        "crates/composition/src/issue_status.rs",
+        "tries",
+        "a count: how many tries this version of the job has had",
+    ),
+    (
         "crates/composition/src/startup.rs",
         "unconfirmed",
         "a count: how many things in the routing policy still wait for the project owner",
