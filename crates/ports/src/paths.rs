@@ -530,6 +530,15 @@ impl RepoRef {
     pub fn name(&self) -> &str {
         &self.name
     }
+
+    /// True when both name the same repository. GitHub owner and repository names are not case
+    /// sensitive, so `Octo/Hello` and `octo/hello` are one repository. The derived equality of
+    /// this type is exact and keeps the case that was registered, for display; every place that
+    /// asks whether two names are the same repository uses this one (finding STS-8).
+    #[must_use]
+    pub fn same_repository(&self, other: &Self) -> bool {
+        self.owner.eq_ignore_ascii_case(&other.owner) && self.name.eq_ignore_ascii_case(&other.name)
+    }
 }
 
 impl fmt::Display for RepoRef {
@@ -553,6 +562,26 @@ pub struct Finding {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn two_spellings_of_one_repository_are_the_same_repository_and_keep_their_case() {
+        let registered = RepoRef::parse("octo/Hello-World").unwrap();
+        let shouted = RepoRef::parse("OCTO/hello-world").unwrap();
+        assert!(registered.same_repository(&shouted));
+        assert!(shouted.same_repository(&registered));
+        assert_ne!(registered, shouted, "the exact equality keeps the case");
+        assert_eq!(
+            registered.to_string(),
+            "octo/Hello-World",
+            "and so does the display"
+        );
+        for other in ["octo/Hello", "octo2/Hello-World", "oct/oHello-World"] {
+            assert!(
+                !registered.same_repository(&RepoRef::parse(other).unwrap()),
+                "{other}"
+            );
+        }
+    }
 
     #[test]
     fn ordinary_relative_paths_are_accepted() {

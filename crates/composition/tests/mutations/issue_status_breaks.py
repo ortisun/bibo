@@ -29,12 +29,12 @@ BREAKS = [
         "write for a repository that is switched off (both checks removed)",
         [
             ("        if !self.still_allowed(item).await? {", "        if false {"),
-            ("        if !repository.enabled\n            || !issue", "        if false\n            || !issue"),
+            ("        if !repository.enabled || !named.repo.same_repository(&repo) {", "        if !named.repo.same_repository(&repo) {"),
         ],
     ),
     (
         "write on an issue of another repository than the job's",
-        [("            || !issue\n                .repo\n                .to_string()\n                .eq_ignore_ascii_case(&repo.to_string())", "            || false")],
+        [("        if !repository.enabled || !named.repo.same_repository(&repo) {", "        if !repository.enabled {")],
     ),
     (
         "rewrite the history of jobs that ended long ago",
@@ -46,7 +46,7 @@ BREAKS = [
     ),
     (
         "no bound on the updates of a minute",
-        [("        if state.recent_updates.len() >= MAX_UPDATES_PER_MINUTE {", "        if false {")],
+        [("        if in_the_last_minute >= MAX_UPDATES_PER_MINUTE\n", "        if false && in_the_last_minute >= MAX_UPDATES_PER_MINUTE\n")],
     ),
     (
         "never give up on a version",
@@ -54,15 +54,48 @@ BREAKS = [
     ),
     (
         "do not shield the session of a round from the sweep of ended jobs",
-        [("        self.deps.jobs.enter(session, item.tenant);", "")],
+        [("        jobs.enter(session, tenant);", "")],
     ),
     (
         "do not end the credential of a round",
-        [("        let _ = self.deps.host.revoke_job_tokens(session).await;", "")],
+        [("        let _ = self.host.revoke_job_tokens(self.session).await;\n        self.jobs.leave(self.session);\n    }\n}\n\nimpl Drop", "        self.jobs.leave(self.session);\n    }\n}\n\nimpl Drop")],
     ),
     (
         "do not record a success in the audit log",
         [("                self.record(&item, WRITTEN, AuditDecision::Record, 0, None)", "                std::future::ready(())")],
+    ),
+    # The review fixes (docs/reviews/engine-registration-and-status-security-review.md).
+    (
+        "STS-1: write for a job whose intake stage has not passed",
+        [("        if !intake_accepted(runs.iter().map(|r| (r.value.kind, r.value.status))) {", "        if false {")],
+    ),
+    (
+        "STS-2: ignore the wait that GitHub asked for",
+        [("                let wait = next_wait(item.failures, failure.retry_after);", "                let wait = next_wait(item.failures, None);")],
+    ),
+    (
+        "STS-2: no bound on the updates of an hour",
+        [("            || state.recent_updates.len() >= MAX_UPDATES_PER_HOUR", "            || false")],
+    ),
+    (
+        "STS-3: do not write the end state a second time",
+        [("                    if item.status.is_terminal() {\n                        // The end state stays for good", "                    if false {\n                        // The end state stays for good")],
+    ),
+    (
+        "STS-4: a round that panics or is dropped keeps its session in the shield and its credential",
+        [("        if self.finished {\n            return;\n        }\n        let (jobs, host, session)", "        if true {\n            return;\n        }\n        let (jobs, host, session)")],
+    ),
+    (
+        "STS-6: write without asking the row write_status_label of the approval policy",
+        [("        if !self.deps.permission.allows(job.value.autonomy_level) {", "        if false {")],
+    ),
+    (
+        "STS-7: the off step does not record that it is off",
+        [("                self.record_for(tenant).await;", "                ();")],
+    ),
+    (
+        "STS-8: address the issue with the case of the request, not the registered name",
+        [("        let issue = IssueRef {\n            repo: repo.clone(),\n            number: named.number,\n        };", "        let issue = named.clone();")],
     ),
 ]
 

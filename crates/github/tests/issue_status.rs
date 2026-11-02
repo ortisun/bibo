@@ -670,6 +670,43 @@ async fn a_tenant_that_is_not_bound_to_the_repository_reaches_nothing() {
 }
 
 #[tokio::test]
+async fn an_issue_named_in_other_letters_is_the_same_repository_and_another_repository_is_not() {
+    // GitHub names are not case sensitive (finding STS-8). The scope names the repository as it
+    // was registered and the issue as the request spelled it.
+    let world = World::new();
+    let writer = world.adapter.issue_status_writer();
+    let number = seeded(&world, &[]);
+    let shouted = IssueRef {
+        repo: RepoRef::parse(&FIXTURE.to_uppercase()).unwrap(),
+        number,
+    };
+    assert_ne!(
+        shouted.repo,
+        RepoRef::parse(FIXTURE).unwrap(),
+        "the spelling differs"
+    );
+    writer
+        .set_status_label(&status_scope(1), &shouted, &label(JobStatus::Active))
+        .await
+        .expect("the same repository in capitals");
+    assert_eq!(
+        world.fake.labels_of(FIXTURE, number),
+        vec!["factory: working".to_owned()]
+    );
+    // The control: a repository that is not the scope's is still refused, whatever its case.
+    let other = IssueRef {
+        repo: RepoRef::parse("someone-else/other-repo").unwrap(),
+        number,
+    };
+    assert_eq!(
+        writer
+            .set_status_label(&status_scope(2), &other, &label(JobStatus::Completed))
+            .await,
+        Err(GitHostError::NotFound)
+    );
+}
+
+#[tokio::test]
 async fn the_writer_reports_that_it_is_real_and_the_fake_world_is_the_fake_server() {
     let world = World::new();
     assert_eq!(

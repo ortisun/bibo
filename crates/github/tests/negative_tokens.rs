@@ -634,6 +634,25 @@ async fn negative_nt_sec_10_a_running_job_keeps_its_tokens_through_the_sweep() {
 }
 
 #[tokio::test]
+async fn negative_nt_sec_10_a_round_that_began_while_the_sweep_looked_keeps_its_token() {
+    // The caller read the open jobs before the round began, so job 1 is not in `open`. By the
+    // time the sweep asks what is running, after it has listed the live tokens, the round is noted
+    // as running: a round notes itself before it mints (finding STS-4).
+    let world = World::new();
+    let issue = issue(&world);
+    mint_two_tokens(&world, 1, &issue).await;
+    let open: HashSet<JobId> = HashSet::new();
+    let running_now = || [job(1)].into_iter().collect::<HashSet<JobId>>();
+    assert_eq!(
+        world.adapter.sweep_orphans_after(&open, &running_now).await,
+        0
+    );
+    assert!(world.fake.revocations().is_empty());
+    // The control: with the set read before, as the sweep used to do, the same tokens go.
+    assert_eq!(world.adapter.sweep_orphans(&open).await, 2);
+}
+
+#[tokio::test]
 async fn negative_nt_sec_10_a_revocation_that_fails_is_kept_and_retried() {
     let world = World::new();
     let host = world.adapter.change_host();

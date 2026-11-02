@@ -189,4 +189,15 @@ impl GithubAdapter {
     pub async fn sweep_orphans(&self, running: &HashSet<JobId>) -> usize {
         self.client.minter().sweep(running).await
     }
+
+    /// The cleanup sweep for a caller whose set of running work changes while it looks: `open` is
+    /// what it has read, and `running_now` is asked after the live tokens are listed, so that a
+    /// job that began meanwhile is spared (finding STS-4). Returns how many tokens were revoked.
+    pub async fn sweep_orphans_after(
+        &self,
+        open: &HashSet<JobId>,
+        running_now: &dyn Fn() -> HashSet<JobId>,
+    ) -> usize {
+        self.client.minter().sweep_after(open, running_now).await
+    }
 }

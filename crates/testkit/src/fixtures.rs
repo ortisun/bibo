@@ -586,6 +586,14 @@ pub fn cleared(guard: Guard) -> GuardCleared {
                 is_job_requester: true,
             })
         }
+        // The requester is not on the allowlist, so the job is refused at admission.
+        Guard::AdmissionDenied => GuardFacts::Admission(AdmissionFacts {
+            requester_on_allowlist: false,
+            tenant_within_job_quota: true,
+            repository_registered_and_enabled: true,
+            policy_allows_request_class: true,
+            protection_preflight_passed: true,
+        }),
         other => panic!("fixtures::cleared has no facts for {other}; add them"),
     };
     evaluate(guard, &facts)

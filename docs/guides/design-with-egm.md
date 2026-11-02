@@ -69,7 +69,7 @@ Each issue carries at most one `design:` label and at most one `factory:` label.
 | `design: in review` | A person | The design is in review: fresh reviewers and a design pull request. |
 | `design: approved` | A person | The design pull request was merged, and the issue names the document. |
 | `factory` | A named requester | Ask the factory to work on this issue. Only a named requester can apply it. |
-| `factory: queued` | The factory | The request was accepted and has not started. |
+| `factory: queued` | The factory | The request was accepted and has not started. The factory writes no status before the issue is accepted, so today it does not write this one. |
 | `factory: working` | The factory | The factory is working on this issue. |
 | `factory: waiting for a person` | The factory | The factory needs a person to answer or decide. |
 | `factory: paused` | The factory | An operator paused the work. |
@@ -84,11 +84,13 @@ Moves that are allowed in the design track: `proposed` to `in progress`, `in pro
 
 **What the factory writes today.** The factory writes the `factory:` label itself. When a job changes state, the worker puts the one label for that state on the issue and takes any other `factory:` label off it. It also keeps one status comment up to date, and edits that comment in place. It uses a token of its own that can write issues in that one repository and nothing else. A failed write never stops or fails a job. If GitHub is slow or refuses, the worker tries again later, records the failure, and the job goes on.
 
-Three things are worth knowing.
+Five things are worth knowing.
 
-- A job that started from the `factory` label gets its first status when the factory has read the issue, so it may never show `factory: queued`.
+- A job gets a status only after the factory has accepted the issue. That is when the intake stage has passed, because intake is where the label and the person who applied it are checked against GitHub. A job submitted through the API for an issue that nobody labelled gets nothing, whatever the issue number is.
+- A job therefore starts at `factory: working` and never shows `factory: queued`.
 - An issue that the factory refused at the start gets no status label. The reply that explains the refusal is still posted.
-- An operator can switch the writing off with the key `github.write_issue_status`. Nothing else changes when it is off.
+- An operator can switch the writing off with the key `github.write_issue_status`. Nothing else changes when it is off. The worker also writes nothing, starts anyway, and reports a degraded health line when `policies/issue-workflow.yaml` is missing or broken, or when the row `write_status_label` of the approval policy no longer lets it write.
+- The worker makes at most six updates a minute and 120 an hour. When GitHub asks it to wait, it waits at least that long before the next try. It writes the end state of a job a second time after two minutes, to put it right if a second worker's older write landed late.
 
 **Tested against fakes only.** The writing is built and tested against a fake GitHub server. Nobody has run it against the real GitHub, so treat the first runs as a trial and check the labels yourself. The design gate is also not built: the factory does not yet refuse an issue that is on the design track and not approved, so a requester has to hold that line. The Action posts a comment when the `factory` label lands on such an issue.
 

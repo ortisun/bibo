@@ -1,6 +1,8 @@
 """Deliberate breaks of the GitHub adapter, each of which a test must catch.
 
-    python3 -I crates/github/tests/mutations/run_mutations.py
+    python3 -I crates/github/tests/mutations/run_mutations.py [WORD]
+
+With a word, only the breaks whose name contains it are run.
 
 For each break the script changes one place in the source (the old text must occur exactly once),
 runs the tests named for it with `cargo nextest`, and puts the file back. A break is CAUGHT when
@@ -143,6 +145,16 @@ BREAKS = [
         ["negative_nt_stat_03"],
     ),
     (
+        "status writer: compare the repository with its case (finding STS-8)",
+        [("status.rs", "        if !scope.repo.same_repository(&issue.repo) {", "        if scope.repo != issue.repo {")],
+        ["an_issue_named_in_other_letters_is_the_same_repository"],
+    ),
+    (
+        "sweep: spare only the jobs read before the tokens were listed (finding STS-4)",
+        [("token.rs", "        let running = running_now();", "        let running: HashSet<JobId> = {\n            let _ = running_now();\n            HashSet::new()\n        };")],
+        ["negative_nt_sec_10_a_round_that_began_while_the_sweep_looked_keeps_its_token"],
+    ),
+    (
         "follow a next link to any host",
         [("client.rs", "            match self.base.target_of(&link) {", "            match Some(link.clone()) {")],
         ["a_link_to_another_host_is_never_followed"],
@@ -158,7 +170,11 @@ def run(filters):
 
 def main():
     outcomes = []
+    # An optional word on the command line runs only the breaks whose name contains it.
+    only = sys.argv[1] if len(sys.argv) > 1 else ""
     for name, edits, filters in BREAKS:
+        if only not in name:
+            continue
         originals = {}
         try:
             for file, old, new in edits:

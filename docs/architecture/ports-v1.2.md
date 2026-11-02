@@ -20,7 +20,7 @@
 | `CheckStatus::Degraded` | `crates/composition/src/health.rs`, `apps/api/src/health.rs` | A health status that does not stop readiness. |
 | `github.write_issue_status` | `crates/composition/src/config.rs` | The switch. |
 | `write_status_label`, a narrower `close_or_label_issue` | `policies/approval.yaml`, `crates/domain/tests/fixtures/policy/approval.json` | Policy rows, pending confirmation. |
-| A rule for `StatusLabel::forged_for_negative_tests` | `docs/architecture/crate-dependency-rules.json` (`source_scans.st_13`) | Only `testkit` may call it. |
+| A rule for `StatusLabel::forged_for_negative_tests`, and the feature `forge-status-labels` | `docs/architecture/crate-dependency-rules.json` (`source_scans.st_13`, with `any_use`), `crates/domain/Cargo.toml`, `crates/testkit/Cargo.toml` | Only `testkit` may mention it, a call or a pointer. A production build does not contain it. |
 
 ## 2. The port
 
@@ -101,8 +101,9 @@ pub struct StatusLabel { /* private: name, job state */ }   // no Deserialize, n
 impl StatusLabel {
     pub fn as_str(&self) -> &str;
     pub fn job_state(&self) -> JobStatus;
+    #[cfg(any(test, feature = "forge-status-labels"))]          // only testkit enables the feature
     #[doc(hidden)]
-    pub fn forged_for_negative_tests(name: &str) -> Self;       // ST-13: testkit only
+    pub fn forged_for_negative_tests(name: &str) -> Self;       // ST-13: testkit only, any mention
 }
 
 pub fn check_status_label_name(name: &str) -> Result<(), BadStatusLabel>;
@@ -136,7 +137,7 @@ The credential is `PermissionSet::issue_status()`: `issues: write` and `metadata
 
 ## 5. The worker step
 
-`IssueStatusReporter` is a `BeforeClaim` hook. It reads job rows, queues one update for each job at its newest version, and starts a task that delivers the updates one at a time. The constants are in `crates/composition/src/issue_status.rs`:
+`IssueStatusReporter` is a `BeforeClaim` hook. It reads job rows, queues one update for each job at its newest version, and starts a task that delivers the updates one at a time. **It queues a job only when the factory has accepted the job on an issue:** the original request names an issue of the job's repository, the repository is enabled, the approval row `write_status_label` allows the job's level, and the intake stage run has passed (`intake_accepted`). `StatusStep::build` loads the policies and gives either this hook or `IssueStatusOff`, which writes nothing, reports degraded and records `issue_status.disabled`. The constants are in `crates/composition/src/issue_status.rs`:
 
 | Constant | Value | Meaning |
 |---|---|---|
@@ -144,10 +145,13 @@ The credential is `PermissionSet::issue_status()`: `issues: write` and `metadata
 | `FIRST_BACKOFF` | 30 s | The wait before the second try. It doubles. |
 | `LONGEST_BACKOFF` | 20 min | The ceiling of the wait. |
 | `MAX_UPDATES_PER_MINUTE` | 6 | Updates across all tenants of the worker. |
+| `MAX_UPDATES_PER_HOUR` | 120 | The same, over an hour. About a fifth of a common hourly budget of an installation. |
+| `RECHECK_AFTER` | 2 min | When the end state of a job is written a second time, to put right a late older write. |
+| `LONGEST_RETRY_AFTER` | 1 h | The longest `Retry-After` that moves the next try. The next try is not before the larger of that wait and the back-off. |
 | `ENROL_WINDOW` | 15 min | How long after its end a job the worker never wrote for is still written. |
 | `MUTATION_PAUSE` (adapter) | 1 s | The gap between two requests that change something. |
 
-Audit actions: `issue_status.written` (a success; the subject is `job <id> version <n> state <STATE>`) and `issue_status.failed` (a failed try, with a fixed code). Failure codes: `unavailable`, `rate_limited`, `forbidden`, `not_found`, `refused`, `interrupted`, `not_allowed`. The text of a comment is fixed by the function `status_text`; no model output and no text of the issue is in it.
+Audit actions: `issue_status.written` (a success; the subject is `job <id> version <n> state <STATE>`), `issue_status.failed` (a failed try, with a fixed code) and `issue_status.disabled` (the step is off because its policy cannot be used; one record for each tenant). The policy hash on the records binds `policies/issue-workflow.yaml` to the security and approval policies. A status is written only after the job's intake stage has passed. Failure codes: `unavailable`, `rate_limited`, `forbidden`, `not_found`, `refused`, `interrupted`, `not_allowed`. The text of a comment is fixed by the function `status_text`; no model output and no text of the issue is in it.
 
 ## 6. The fake and the contract suite
 
@@ -155,7 +159,7 @@ Audit actions: `issue_status.written` (a success; the subject is `job <id> versi
 
 ## 7. Architecture checks
 
-`StatusLabel::forged_for_negative_tests` has an ST-13 rule that names `testkit` as the only crate that may call it. The source scan in `change_host_behaviour.rs` now names `status.rs` as a user of `Method::Delete` and counts its two uses. The telemetry allowlist test lists the three log fields of the step (`code`, `tries`, `gave_up`) with the reason each is safe.
+`StatusLabel::forged_for_negative_tests` exists only under the feature `forge-status-labels`, which only `testkit` enables, and has an ST-13 rule with `any_use` that names `testkit` as the only crate that may mention it: a call and a function pointer alike. The source scan in `change_host_behaviour.rs` now names `status.rs` as a user of `Method::Delete` and counts its two uses. The telemetry allowlist test lists the three log fields of the step (`code`, `tries`, `gave_up`) with the reason each is safe.
 
 ## 8. What is not verified
 

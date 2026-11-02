@@ -256,6 +256,37 @@ impl FakeIssueStatusWriter {
             });
     }
 
+    /// Lands an older update on the issue **as a second worker's late write would**: GitHub has no
+    /// conditional edit, so a write that listed the comments before a newer one was made can edit
+    /// after it. This bypasses the rule that a newer stamp is never overwritten, on purpose, and
+    /// only for a test of the step's second look at an end state (finding STS-3). It replaces the
+    /// App's comment (or makes one) and puts `label` in place of every status label.
+    pub fn land_a_late_write(&self, issue: &IssueRef, comment: &StatusComment, label: &str) {
+        let full = format!("{}\n\n{}", comment.body(), comment.stamp().marker());
+        let mut state = self.lock();
+        state.next_comment += 1;
+        let fresh = state.next_comment;
+        let entry = state
+            .issues
+            .entry((issue.repo.clone(), issue.number))
+            .or_default();
+        match entry
+            .comments
+            .iter_mut()
+            .filter(|c| c.by_the_app)
+            .min_by_key(|c| c.id)
+        {
+            Some(found) => found.body = full,
+            None => entry.comments.push(FakeComment {
+                id: fresh,
+                by_the_app: true,
+                body: full,
+            }),
+        }
+        entry.labels.retain(|l| !is_status_label(l));
+        entry.labels.push(label.to_owned());
+    }
+
     /// The text of the comments the factory's own account wrote on the issue.
     #[must_use]
     pub fn app_comments(&self, issue: &IssueRef) -> Vec<String> {
@@ -301,7 +332,7 @@ impl FakeIssueStatusWriter {
     }
 
     fn check_scope(&self, scope: &StatusScope, issue: &IssueRef) -> Result<(), GitHostError> {
-        if scope.repo == issue.repo || self.is(IssueStatusDefect::IgnoresTheScope) {
+        if scope.repo.same_repository(&issue.repo) || self.is(IssueStatusDefect::IgnoresTheScope) {
             Ok(())
         } else {
             Err(GitHostError::NotFound)

@@ -521,18 +521,36 @@ impl TokenMinter {
     /// The cleanup sweep: revokes the tokens of every job that is not in `running`, including
     /// tokens whose earlier revocation failed. Returns how many tokens were revoked.
     pub(crate) async fn sweep(&self, running: &HashSet<JobId>) -> usize {
-        let orphans: Vec<JobId> = {
+        self.sweep_after(running, &HashSet::new).await
+    }
+
+    /// The cleanup sweep for a caller whose set of running work changes while it looks. `open` is
+    /// the set it has already read, and `running_now` is asked **after** the tokens that exist
+    /// have been listed. A token is minted after its job is noted as running, so a job that has a
+    /// token in the list is already in the answer, and the sweep cannot revoke the token of a
+    /// round that began after the caller read `open` (finding STS-4).
+    pub(crate) async fn sweep_after(
+        &self,
+        open: &HashSet<JobId>,
+        running_now: &dyn Fn() -> HashSet<JobId>,
+    ) -> usize {
+        let listed: Vec<JobId> = {
             let state = self.state();
             state
                 .live
                 .keys()
                 .chain(state.leftovers.iter().map(|(job, _)| job))
-                .filter(|job| !running.contains(job))
+                .filter(|job| !open.contains(job))
                 .copied()
                 .collect::<HashSet<_>>()
                 .into_iter()
                 .collect()
         };
+        let running = running_now();
+        let orphans: Vec<JobId> = listed
+            .into_iter()
+            .filter(|job| !running.contains(job))
+            .collect();
         let mut revoked = 0;
         for job in orphans {
             let before = self.live_count(job);
