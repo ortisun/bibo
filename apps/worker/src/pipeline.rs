@@ -23,7 +23,7 @@ use factory_composition::external::{
     probe_at_startup, runtimes_for_tenant,
 };
 use factory_composition::hooks::BeforeClaim;
-use factory_composition::issue_status::{IssueStatusDeps, IssueStatusReporter};
+use factory_composition::issue_status::{StatusStep, StatusStepInputs};
 use factory_composition::pipeline::{
     ExternalPorts, Pipeline, PipelineError, PipelineInputs, Tuning, assemble_pipeline,
 };
@@ -34,7 +34,7 @@ use factory_composition::routing::{enabled_models, first_selection};
 use factory_composition::sandbox_specs::PolicySpecs;
 use factory_composition::seams::FileAllowlist;
 use factory_composition::spec_skills::bundle_for_writer;
-use factory_composition::startup::{StartupFailure, load_issue_workflow};
+use factory_composition::startup::StartupFailure;
 use factory_composition::system::{RandomIds, Shutdown, SystemClock, TokioTicker};
 use factory_composition::token_sweep::RevokeEndedJobs;
 use factory_domain::vocabulary::StageKind;
@@ -227,14 +227,20 @@ pub fn token_sweep(
 /// the step does when GitHub fails is in [`factory_composition::issue_status`]: nothing happens to
 /// a job.
 ///
+/// **A policy that cannot be used does not stop the worker.** If `policies/issue-workflow.yaml` is
+/// missing or broken, or the approval policy does not allow the write, the step is built in its
+/// off state: it writes nothing on any issue, reports itself as degraded with the reason and
+/// records the fact in the audit log (finding STS-7). The status is observability, and ADR 0017
+/// says a job never waits for, fails on or rolls back because of a label.
+///
 /// # Errors
-/// [`StartupFailure`] when the issue workflow policy cannot be loaded, the identifiers cannot be
-/// made, or the profile refuses the writer.
+/// [`StartupFailure`] when the tenants or the identifiers cannot be made, or the profile refuses
+/// the writer. These are faults of the configuration, not of a policy file.
 pub fn issue_status(
     booted: &Booted,
     config: &FactoryConfig,
     world: &ExternalWorld,
-) -> Result<Option<Arc<dyn BeforeClaim>>, StartupFailure> {
+) -> Result<Option<StatusStep>, StartupFailure> {
     if !config.github.as_ref().is_some_and(|g| g.write_issue_status) {
         return Ok(None);
     }
@@ -242,8 +248,6 @@ pub fn issue_status(
         .worker
         .served_tenants()
         .map_err(|error| StartupFailure::Other(error.to_string()))?;
-    let workspace = [config.sandbox.workspace_root.as_path()];
-    let loaded = load_issue_workflow(&config.protected_checkout, &workspace)?;
     let writer: Arc<dyn IssueStatusWriter> = Arc::new(world.github.issue_status_writer());
     config
         .profile
@@ -251,18 +255,20 @@ pub fn issue_status(
         .map_err(|refused| StartupFailure::Other(refused.to_string()))?;
     let ids = RandomIds::new().map_err(|error| StartupFailure::Other(error.to_string()))?;
     let store: Arc<dyn Store> = booted.prepared.store.clone();
-    Ok(Some(Arc::new(IssueStatusReporter::new(IssueStatusDeps {
+    Ok(Some(StatusStep::build(StatusStepInputs {
         store,
         writer,
         host: Arc::clone(&world.ports.changes),
-        labels: loaded.labels,
         clock: Arc::new(SystemClock),
         ids: Arc::new(ids),
         jobs: Arc::clone(&booted.jobs),
         tenants,
-        policy_hash: booted.prepared.policies.hash.clone(),
         redactor: Arc::clone(&booted.prepared.redactor),
-    }))))
+        approval: Arc::clone(&booted.prepared.policies.approval),
+        base_policy_hash: booted.prepared.policies.hash.clone(),
+        checkout: config.protected_checkout.clone(),
+        untrusted_roots: vec![config.sandbox.workspace_root.clone()],
+    })))
 }
 
 /// Assembles the pipeline from what the worker holds and the ports it was given, and puts it in a

@@ -603,7 +603,9 @@ fn constructors_only_where_allowed(
                 .any(|c| ends_with(c, &wanted));
             let syntax = &source.syntax;
             let constructs = if is_call {
-                syntax.is_punct(used.next, "(")
+                // A rule with `any_use` is broken by the path alone, so that a pointer to the
+                // function (`.map(Type::function)`) cannot get past a check for `(`.
+                rule.any_use || syntax.is_punct(used.next, "(")
             } else {
                 // A struct literal. The name after `struct`, `impl`, `for` and similar words, or
                 // after `->`, is a declaration or a return type, not a literal.
@@ -636,8 +638,9 @@ fn constructors_only_where_allowed(
                     "ST-13",
                     source.location(used.at),
                     format!(
-                        "{} constructs {}; only {} may",
+                        "{} {} {}; only {} may",
                         krate.name,
+                        if rule.any_use { "uses" } else { "constructs" },
                         rule.name,
                         rule.allowed_crates.join(", ")
                     ),

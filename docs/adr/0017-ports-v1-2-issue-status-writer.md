@@ -1,6 +1,6 @@
 # 0017: Ports v1.2: write the state of a job on its issue through a port of its own, with a label type that only the policy can make
 
-- Status: Proposed. Built and tested against fakes. **Pending confirmation by the architect**, and an independent security review of the new port and adapter is still to be done. Nothing here has run against the real GitHub.
+- Status: Proposed. Built and tested against fakes. **Pending confirmation by the architect.** An independent security review was done (see [the review](../reviews/engine-registration-and-status-security-review.md), part B) and its findings are handled in the revision note at the end. Nothing here has run against the real GitHub.
 - Date: 2026-11-02
 - Deciders: the engineer wrote the design and the code. The product owner asked for the feature in [ADR 0016](0016-design-phase-onboarding-and-issue-workflow.md) ("What is not built", item 3). The architect decides whether to accept it.
 - Related: [ADR 0004](0004-event-model.md), [ADR 0009](0009-operating-defaults-pending-confirmation.md), [ADR 0014](0014-ports-v1-1-claim-protocol-and-port-revision.md), [ADR 0016](0016-design-phase-onboarding-and-issue-workflow.md), [ports v1.2](../architecture/ports-v1.2.md) (the signatures and the change tables), [the issue workflow policy](../../policies/issue-workflow.yaml), [secrets and credentials](../security/secrets-and-credentials.md), [the threat model](../security/threat-model.md) (T-42 to T-44)
@@ -55,7 +55,7 @@ It has two operations: set the status label (add the one, take every other `fact
 
 The adapter checks again. `check_status_label_name` is one pure function used when the labels are built and by every adapter before a request: the name must start with `factory: `, have a name after it, be at most 50 printable ASCII characters and have no space at either edge. A value that got past the type is `Rejected(LabelNotAllowed)`, and no request is made, not even the one for a token. The adapter takes off only labels that start with `factory: `, in either letter case, because a look-alike in capitals is still in the namespace that the factory owns.
 
-One function, `StatusLabel::forged_for_negative_tests`, skips the policy so that the adapter's own refusal can be shown to work. It is `#[doc(hidden)]`, and the architecture check ST-13 names the one crate (`testkit`) that may call it. That is a convention enforced by a scan, which is the same strength as the other constructors in that list.
+One function, `StatusLabel::forged_for_negative_tests`, skips the policy so that the adapter's own refusal can be shown to work. **It does not exist in a production build** (review finding STS-5). It is compiled only for the unit tests of `factory-domain` and when the cargo feature `forge-status-labels` is on, and only `testkit` turns that feature on; `testkit` is a dev-dependency of every crate that uses it. A call from production code does not compile. The architecture check ST-13 is a second barrier: it names the one crate (`testkit`) that may mention the function, and it flags any mention of the path, a call or a pointer to the function alike, because `.map(StatusLabel::forged_for_negative_tests)` has no `(` after the path.
 
 ### 3. A token of its own: `issues: write` for one repository
 
@@ -63,28 +63,43 @@ One function, `StatusLabel::forged_for_negative_tests`, skips the policy so that
 
 A job's tokens end with the job, and the last state (`done`, `failed`) is written after that. So each round of writes uses a **fresh session identifier** as the key of its credential, ends the credential when the round is over, and notes the identifier in the set of jobs the process is working on, so that the sweep of ended jobs leaves it alone while it runs.
 
+Two details came from the review (finding STS-4). The sweep asks which jobs the process is working on **after** it has listed the live tokens, not before it asked the database, so that a round that began meanwhile is spared (a token is minted after its session is noted, so a token in the list has its session in the answer). And a round is a guard: if the task panics or is dropped, the guard lifts the shield and ends the credential from a task of its own, so that neither stays for the life of the process.
+
 ### 4. The comment is found by a marker and ordered by a stamp
 
-The marker is `<!-- factory-status job=<id> started=<time> version=<n> -->`, added after the text is cleaned (the cleaning removes HTML comments). It is found only among comments written by the App's own account. A marker pasted by a person is not one. The stamp orders by the job's start time, then its version, then its id, so a later job on the same issue replaces the comment of an earlier one, and within a job a higher version replaces a lower one. A comment that shows a newer stamp is never overwritten (`Superseded`), and the worker then skips the label too, so the comment is the fence for the pair. If two writers create the comment at once, both look again, the lowest id stays and the others delete theirs. A listing that was cut short by the page cap with no comment found is an error, not a reason to post a second comment.
+The marker is `<!-- factory-status job=<id> started=<time> version=<n> -->`, added after the text is cleaned (the cleaning removes HTML comments). It is found only among comments written by the App's own account. A marker pasted by a person is not one. The stamp orders by the job's start time, then its version, then its id, so a later job on the same issue replaces the comment of an earlier one, and within a job a higher version replaces a lower one. A comment that shows a newer stamp is never overwritten (`Superseded`), and the worker then skips the label too, so the comment is the fence for the pair. GitHub has no conditional edit, so a second worker's older write can still land after a newer one (review finding STS-3). For that reason the end state of a job is written a second time after two minutes. The second write is idempotent, never overwrites a newer stamp, is not recorded and is not retried. If two writers create the comment at once, both look again, the lowest id stays and the others delete theirs. A listing that was cut short by the page cap with no comment found is an error, not a reason to post a second comment.
 
 ### 5. The worker finds changes by reading job rows, and writes from a task of its own
 
 The step `IssueStatusReporter` runs before each claim. It reads the open jobs and the newest hundred (a few read-only queries) and compares the version of each job with the version it has written. That is level-triggered: a missed signal, a restart or a second worker cannot lose a change. A job that leaves the lists is read by id. The outbox is not used as the read model, which ADR 0014 says it is not. The signed request that ADR 0016 suggested is not used either: that pattern protects the worker from an audit row written by a database login that the API holds, and here the source is the engine's own job rows, written by the worker role.
 
-The writes run in a task that the hook starts and does not wait for, one update at a time, so a slow or failing GitHub never delays a claim. A success is an audit record `issue_status.written` (the API's login cannot write that action), which also tells a restarted worker which jobs it was writing for. A failed try is `issue_status.failed` with a fixed code and no text from GitHub. Retries wait 30 seconds and double, up to six tries, and a refusal that a retry cannot cure (forbidden, refused text, not found) is not retried. The next version of the job starts again.
+The writes run in a task that the hook starts and does not wait for, one update at a time, so a slow or failing GitHub never delays a claim. A success is an audit record `issue_status.written` (the API's login cannot write that action), which also tells a restarted worker which jobs it was writing for. A failed try is `issue_status.failed` with a fixed code and no text from GitHub. Retries wait 30 seconds and double, up to six tries, and a refusal that a retry cannot cure (forbidden, refused text, not found) is not retried. When GitHub asked the adapter to wait and the wait was too long to sleep through, the adapter reports it and the next try is not before the larger of that wait and the back-off (review finding STS-2). The next version of the job starts again.
 
-It writes only for a job whose stored original request names an issue in the job's own repository, and only while that repository is registered and enabled (checked when the job is read and again before the write). A job a webhook made has no original request until intake has fetched the issue, so it gets its first status then, and it may never show `queued`. A job that was already over when the worker first looked, and that it never wrote for, is left alone unless it ended in the last fifteen minutes.
+**Which jobs get a status.** The step writes for a job only when the factory has accepted the job on an issue. Exactly this, and nothing less (review finding STS-1):
+
+1. The job's stored original request names an issue in the job's own repository. The repository names are compared without regard to case, as GitHub does, and the issue is addressed with the name as registered.
+2. **The intake stage run of the job has passed.** A run that passed and was replaced afterwards counts. Intake is where the label, the person who applied it and the five-second rule are checked against GitHub (AUT-11). Before it passes, the factory has accepted nothing.
+3. The repository is registered and enabled. This is checked when the job is read and again before the write.
+4. The row `write_status_label` of the approval policy allows the job's autonomy level (see section 6).
+
+The rule covers every job, whoever made it: a job from a webhook, from `POST /v1/jobs`, or from a row that a holder of the API database login inserted. A job that intake refuses, that is refused at admission, or that ends before intake passed gets no status at all, not even its last state. A job in `RECEIVED` has not been through intake, so **the label `factory: queued` exists in the policy (one label for each job state) and the step never writes it**; the first status a job shows is `factory: working`.
+
+*What the first version of this record said, and why it was wrong.* It said the worker writes "only for a job whose stored original request names an issue", and that this kept an issue safe from a forged job row. That holds for a job a webhook made, whose request exists only after intake has fetched the issue. It does not hold for a job made through `POST /v1/jobs`: that request is stored at submission with the caller's `source_ref`, so the step wrote `queued` on any issue number of a registered repository, and `rejected` when intake refused the job. A later job on the same issue also replaced the comment of an earlier one. The check for the stage run closes this.
+
+A job that was already over when the worker first looked, and that it never wrote for, is left alone unless it ended in the last fifteen minutes.
 
 ### 6. Policy, configuration and health
 
 - `PolicyLoader::load_issue_workflow` loads `policies/issue-workflow.yaml` with the strict contract. Its `policy.status` now reads `designed` in lower case, as the typed contract of the other policies requires; the old upper case value was never read by anything. The rendered `onboarding/github/issue-workflow.json` was rendered again because its source hash changed.
-- `policies/approval.yaml` has a new row, `write_status_label`, at L0, and `close_or_label_issue` is narrowed. Both say "pending confirmation by the architect".
+- `policies/approval.yaml` has a new row, `write_status_label`, at L0, and `close_or_label_issue` is narrowed. Both say "pending confirmation by the architect". **The worker reads `write_status_label`** (review finding STS-6): the row must exist, say `requires: none`, and name a lowest level at or below the job's. If an architect changes it to need a person, the step does not write. `close_or_label_issue` is read by no code; the factory never closes an issue, and the row is documentation until a consumer exists.
+- The records of the step carry a policy hash that binds `policies/issue-workflow.yaml` to the security and approval policies, so that a record says which label map was in force.
+- **A policy that cannot be used does not stop the worker** (review finding STS-7). If `policies/issue-workflow.yaml` is missing or broken, its trigger label is not the `intake.trigger_label` of the approval policy, or the approval row does not allow the write, the worker starts, writes nothing on any issue, reports a degraded health line with the reason, and records `issue_status.disabled` once for each tenant it serves. The write fails closed; the process does not.
 - The key `github.write_issue_status` (default true) turns the writing off.
 - The health report has a new status, `degraded`, for what is only observability. A problem with the status writing shows as degraded and never makes the process unready.
 
 ### 7. Paced and bounded
 
-The adapter leaves one second between two requests that change something (through the `Sleeper` seam, so a test records the waits) and keeps the rate-limit back-off of the other calls. The worker makes at most six updates a minute, one at a time, with one update for each job at its newest version.
+The adapter leaves one second between two requests that change something (through the `Sleeper` seam, so a test records the waits) and keeps the rate-limit back-off of the other calls. The worker makes at most six updates a minute and 120 an hour, one at a time, with one update for each job at its newest version. One update is about eight requests, so 120 an hour is a fifth of the 5,000 an hour that an installation commonly has, and the stage tokens share it. A pause when `x-ratelimit-remaining` is low is **not built**: it needs a view of the installation's budget that the status writer and the stage clients share, which is a decision for the architect (review finding STS-2, DEFERRED in part).
 
 ## Considered options
 
@@ -127,7 +142,7 @@ The adapter leaves one second between two requests that change something (throug
 - A new port, a new token class, a new adapter, a fake, a contract suite, three policy and configuration changes, and a new health status. Every adapter of GitHub now carries the pacing.
 - **All of it is verified against fakes.** The fake GitHub server of the test kit gained five routes (list, add and remove a label; edit and delete a comment). They were written from the reference pages, not from recorded answers.
 - Each update costs a few requests: a list of comments, an edit or a create, a list of labels, an add and a remove. A job that changes state ten times writes ten times, six a minute at most.
-- The status of a job is not written until the factory has recorded its issue, so a webhook job may skip `queued`, and an issue the factory refused at the start gets no label (the reply that explains the refusal is still posted).
+- The status of a job is not written until the intake stage has passed, so no job shows `queued`, and an issue the factory refused at the start gets no label (the reply that explains the refusal is still posted).
 - The step reads up to 1,100 job rows for each tenant on every claim and, for a job it meets for the first time, its audit records (up to ten pages).
 - `Method::Delete` is now used in two more places. The source scan in `change_host_behaviour.rs` names them.
 
@@ -150,5 +165,19 @@ Run on 2026-11-02 against the commit that carries this record. Counts are in the
 3. **The two policy rows are pending confirmation by the architect.** `write_status_label` at L0 and the narrowing of `close_or_label_issue`.
 4. **`metadata: read` in the status token.** Alternative: ask for `issues: write` alone and learn from the first real run whether GitHub accepts it and whether the minter's check would refuse the answer.
 5. **The numbers of the pacing**: one second between changes (from the reference), six updates a minute, six tries, 30 seconds doubling to 20 minutes, a fifteen minute window for a job that ended before the worker looked. They are guesses until a real run.
-6. **No status for a job without an original request.** Alternative: write `queued` as soon as a webhook job exists, which would let anyone who can forge a job row write on an issue of a registered repository.
+6. **No status before intake has accepted the issue.** The first version of this record said "no status for a job without an original request", and that writing earlier "would let anyone who can forge a job row write on an issue of a registered repository". That was more than the code did: a job made through `POST /v1/jobs` has its request from the start. The rule is now that the intake stage run has passed (section 5), which also holds against a job row that someone forged, because only the engine makes and passes a stage run. Alternative: write `queued` as soon as a job exists. That would let a requester aim the App at any issue number of a registered repository, and the cost of the rule is that no job ever shows `queued`.
 7. **A trial on a real repository** with a real App, before anyone relies on the labels.
+
+## Revision note (review of registration and status write-back)
+
+Written on 2026-11-02, after the independent security review in [the review](../reviews/engine-registration-and-status-security-review.md) (part B: no blocker, no major finding, eight minor ones and two notes). The status of this record does not change. What changed:
+
+- **STS-1.** A status is written only after the intake stage has passed. Section 5 and decision 6 above are corrected.
+- **STS-2.** The `Retry-After` of GitHub moves the next try to the larger of the wait and the back-off. An hourly bound of 120 updates is added. The pause on a low `x-ratelimit-remaining` is not built (see section 7).
+- **STS-3.** The end state of a job is written a second time after two minutes. A lost update in the middle of a job is repaired by its next change.
+- **STS-4.** The sweep asks which jobs are running after it lists the tokens, and a round is a guard that ends its credential when the task panics or is dropped.
+- **STS-5.** `forged_for_negative_tests` is compiled only under a feature that only the test kit enables, and ST-13 flags a pointer to it as well as a call.
+- **STS-6.** The policy hash on the records binds the issue workflow policy. The worker reads `write_status_label`.
+- **STS-7.** A policy that cannot be used turns the step off and degraded. The worker starts.
+- **STS-8.** The repository is compared without regard to case in one function, `RepoRef::same_repository`, used by the step, the adapter, the fake and the API.
+- **Not changed.** STS-9 and STS-10 are notes. The fake still stands in for GitHub; everything in "Not verified" below is still not verified.

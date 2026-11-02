@@ -82,11 +82,17 @@ Two rows concern labels on an issue. Both are marked as pending confirmation by 
 
 A repository without branch-protection rules runs at `L0`, which is why the status label has a row of its own at that level.
 
+**The worker reads `write_status_label`.** The step that writes the status checks the row before it writes. The row must exist and say `requires: none`, and a job is written for only when its autonomy level is at or above the row's lowest level. If an architect changes the row to need a person, or removes it, the worker starts anyway, writes nothing on any issue, and reports a degraded health line.
+
+**No code reads `close_or_label_issue`.** The factory never closes an issue and writes no other label of its namespace. The row is documentation until a consumer exists. Changing it stops nothing.
+
+The records of the step carry a hash that binds `policies/issue-workflow.yaml` to the security and approval policies, so a record says which label map was in force.
+
 ## What `policies/issue-workflow.yaml` controls
 
 The file lists the fifteen labels of the issue workflow: the trigger label `factory`, four `design:` labels that people write, and ten `factory:` labels that the factory writes. It also holds the legal moves between design states.
 
-The worker reads the file at start-up with the same strict loader as the other policies. A file that misses a job state, names a state the engine does not have, puts the trigger label in a namespace or breaks the label length limits is refused, and the worker that writes issue status does not start.
+The worker reads the file at start-up with the same strict loader as the other policies. A file that misses a job state, names a state the engine does not have, puts the trigger label in a namespace or breaks the label length limits is refused, and the worker starts without writing issue status. It reports a degraded health line, records the fact in the audit log, and writes nothing on any issue until a worker starts with a sound file. The trigger label of the file must also be the `intake.trigger_label` of the approval policy, or the step stays off.
 
 | Section | What it controls |
 |---|---|

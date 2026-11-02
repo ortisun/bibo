@@ -872,6 +872,44 @@ mod static_checks {
         }
 
         #[test]
+        fn forging_a_status_label_outside_the_test_kit_fails_for_a_call_and_for_a_pointer() {
+            // Finding STS-5. The rule used to look for a `(` after the path, and
+            // `.map(StatusLabel::forged_for_negative_tests)` has none.
+            for code in [
+                // A call.
+                "pub fn f() { let _ = StatusLabel::forged_for_negative_tests(\"factory\"); }\n",
+                // A pointer handed to an iterator, which has no `(` after the path.
+                "pub fn f(n: Vec<&str>) { let _: Vec<_> = n.into_iter().map(StatusLabel::forged_for_negative_tests).collect(); }\n",
+                // A pointer kept in a variable.
+                "pub fn f() { let make = StatusLabel::forged_for_negative_tests; let _ = make; }\n",
+                // A call through a full path.
+                "pub fn f() { let _ = factory_domain::policy::issue_workflow::StatusLabel::forged_for_negative_tests(\"x\"); }\n",
+            ] {
+                for member in ["composition", "worker", "api"] {
+                    let file = if member == "worker" {
+                        "src/main.rs"
+                    } else {
+                        "src/lib.rs"
+                    };
+                    run_with_source(member, file, code).assert_violation_mentions(
+                        "ST-13",
+                        &format!("{member} uses StatusLabel::forged_for_negative_tests"),
+                    );
+                }
+            }
+        }
+
+        #[test]
+        fn the_test_kit_may_forge_a_status_label_and_the_other_rules_still_need_a_call() {
+            let code =
+                "pub fn f() { let _ = StatusLabel::forged_for_negative_tests(\"factory\"); }\n";
+            run_with_source("testkit", "src/lib.rs", code).assert_no_violation("ST-13");
+            // A rule without `any_use` is not broken by a path that is not called.
+            let mention = "pub fn f() { let _ = TenantScope::new; }\n";
+            run_with_source("sandbox", "src/lib.rs", mention).assert_no_violation("ST-13");
+        }
+
+        #[test]
         fn the_type_declaration_and_its_impl_are_not_constructions() {
             let code = "pub struct ResolvedRepository { pub id: u8 }\nimpl ResolvedRepository { pub fn id(&self) -> u8 { self.id } }\nimpl Clone for ResolvedRepository { fn clone(&self) -> ResolvedRepository { todo() } }\n";
             run_with_source("ports", "src/lib.rs", code).assert_no_violation("ST-13");

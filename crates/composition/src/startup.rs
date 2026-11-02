@@ -139,6 +139,72 @@ pub fn load_issue_workflow(
     })
 }
 
+/// What the issue status step needs from the policies, checked as a whole.
+#[derive(Debug, Clone)]
+pub struct LoadedStatusPolicy {
+    /// The `factory: <state>` label of each job state. The only source of a status label.
+    pub labels: Arc<StatusLabels>,
+    /// What the approval policy says about writing a status label (`write_status_label`).
+    pub permission: crate::issue_status::StatusPermission,
+    /// The hash written on every record of the step: the hash of the security and approval
+    /// policies with the hash of `policies/issue-workflow.yaml` bound in (finding STS-6), so that a
+    /// record says which label map was in force.
+    pub policy_hash: Sha256Digest,
+}
+
+/// Why the status step cannot use the policies: a plain sentence for the log, the health report
+/// and the audit record. It never holds the text of a file.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StatusPolicyRefused(pub String);
+
+impl std::fmt::Display for StatusPolicyRefused {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+/// Binds the hash of the issue workflow policy into the hash of the policies in force. The other
+/// policies are bound the same way in [`load_policy`].
+#[must_use]
+pub fn bind_issue_workflow_hash(base: &Sha256Digest, workflow_hash: &str) -> Sha256Digest {
+    Sha256Digest::of(format!("{}\n{workflow_hash}", base.as_str()).as_bytes())
+}
+
+/// Loads and checks everything the status step needs. A policy that is missing, unsound, or
+/// contradicted by the approval policy gives a refusal, and the worker then starts the step in its
+/// **off** state: it writes nothing, it says so, and it does not stop (finding STS-7). The labels
+/// show state and decide nothing, so a fault here never costs a job.
+///
+/// # Errors
+/// [`StatusPolicyRefused`] when `policies/issue-workflow.yaml` cannot be loaded, when its trigger
+/// label is not the one the engine acts on (`intake.trigger_label` of the approval policy), or
+/// when the approval policy does not let the step write a status label.
+pub fn load_status_policy(
+    checkout: &Path,
+    untrusted_roots: &[&Path],
+    approval: &ApprovalPolicy,
+    base_hash: &Sha256Digest,
+) -> Result<LoadedStatusPolicy, StatusPolicyRefused> {
+    let loaded = load_issue_workflow(checkout, untrusted_roots).map_err(|error| {
+        StatusPolicyRefused(format!(
+            "policies/issue-workflow.yaml cannot be used: {error}"
+        ))
+    })?;
+    if loaded.policy.trigger.label != approval.intake.trigger_label {
+        return Err(StatusPolicyRefused(
+            "the trigger label of policies/issue-workflow.yaml is not the one of intake.trigger_label in policies/approval.yaml"
+                .to_owned(),
+        ));
+    }
+    let permission = crate::issue_status::StatusPermission::from_policy(approval)
+        .map_err(|why| StatusPolicyRefused(why.to_owned()))?;
+    Ok(LoadedStatusPolicy {
+        labels: loaded.labels,
+        permission,
+        policy_hash: bind_issue_workflow_hash(base_hash, &loaded.hash),
+    })
+}
+
 /// The routing policy as loaded.
 #[derive(Debug, Clone)]
 pub struct LoadedRouting {

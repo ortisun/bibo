@@ -160,10 +160,29 @@ pub enum StoreDefect {
     AllowsDuplicateGithubRepository,
     /// A repository that is switched off is still found by its installation.
     ResolvesDisabledRepository,
+    /// Attesting another map commit, or attesting as another person, leaves an enabled
+    /// repository enabled (finding REG-1).
+    KeepsEnabledOnReattest,
+    /// An enable that names another commit than the one attested now is accepted.
+    IgnoresEnableCommit,
+    /// Switching a repository off leaves the record of what it was enabled for.
+    KeepsEnableRecord,
 }
 
 /// Each defect and the checks of `contracts::store` that must fail when the fake has it.
 pub const DEFECTS: &[(StoreDefect, &[&str])] = &[
+    (
+        StoreDefect::KeepsEnabledOnReattest,
+        &["an_attestation_of_another_map_switches_an_enabled_repository_off"],
+    ),
+    (
+        StoreDefect::IgnoresEnableCommit,
+        &["enabling_names_the_commit_attested_now"],
+    ),
+    (
+        StoreDefect::KeepsEnableRecord,
+        &["the_record_of_the_enabling_is_set_on_enable_and_emptied_on_disable"],
+    ),
     (
         StoreDefect::ResolvesDisabledRepository,
         &["a_repository_with_no_project_map_cannot_be_enabled"],
@@ -562,6 +581,12 @@ impl InMemoryStore {
                 ))
                 .expect("a valid principal id"),
                 attested_at: Timestamp::parse("2026-10-27T10:00:00Z").expect("a valid time"),
+            }),
+            enabled_for: Some(EnabledFor {
+                commit: ProjectMapCommit::new(&"a".repeat(ProjectMapCommit::LENGTH))
+                    .expect("a valid commit"),
+                enabled_by: None,
+                enabled_at: Timestamp::parse("2026-10-27T10:00:00Z").expect("a valid time"),
             }),
         };
         g.committed.repositories.insert(
@@ -1663,12 +1688,23 @@ impl RepositoryOps for InMemoryTx {
             if !active_person && !self.has(StoreDefect::AcceptsAnyAttestor) {
                 return Err(StoreError::Constraint(ConstraintRule::ProjectMapRule));
             }
+            // Another commit, or another person, is another attestation. A repository that is
+            // enabled was enabled for the old one, so it is switched off (finding REG-1).
+            let moved = row
+                .value
+                .project_map
+                .as_ref()
+                .is_none_or(|map| map.commit != commit || map.attested_by != attested_by);
             let mut next = row;
             next.value.project_map = Some(ProjectMapAttestation {
                 commit,
                 attested_by,
                 attested_at: self.now(),
             });
+            if moved && !self.has(StoreDefect::KeepsEnabledOnReattest) {
+                next.value.enabled = false;
+                next.value.enabled_for = None;
+            }
             next.version = bump(next.version)?;
             let version = next.version;
             self.work.repositories.insert(id, next);
@@ -1676,11 +1712,12 @@ impl RepositoryOps for InMemoryTx {
         })
     }
 
-    async fn set_repository_enabled(
+    async fn enable_repository(
         &mut self,
         id: RepositoryId,
         expected: Version,
-        enabled: bool,
+        commit: ProjectMapCommit,
+        enabled_by: PrincipalId,
     ) -> Result<Version, StoreError> {
         call!(self, {
             let row = self
@@ -1691,14 +1728,58 @@ impl RepositoryOps for InMemoryTx {
                 .cloned()
                 .ok_or(StoreError::NotFound)?;
             self.check_version(row.version, expected)?;
-            if enabled
-                && row.value.project_map.is_none()
-                && !self.has(StoreDefect::EnablesWithoutMap)
-            {
+            match &row.value.project_map {
+                None if !self.has(StoreDefect::EnablesWithoutMap) => {
+                    return Err(StoreError::Constraint(ConstraintRule::ProjectMapRule));
+                }
+                Some(map)
+                    if map.commit != commit && !self.has(StoreDefect::IgnoresEnableCommit) =>
+                {
+                    return Err(StoreError::Constraint(ConstraintRule::ProjectMapChanged));
+                }
+                _ => {}
+            }
+            let active_person = self.work.principals.get(&enabled_by).is_some_and(|p| {
+                p.tenant_id == self.tenant
+                    && p.disabled_at.is_none()
+                    && matches!(p.kind, PrincipalKind::Human { .. })
+            });
+            if !active_person && !self.has(StoreDefect::AcceptsAnyAttestor) {
                 return Err(StoreError::Constraint(ConstraintRule::ProjectMapRule));
             }
             let mut next = row;
-            next.value.enabled = enabled;
+            next.value.enabled = true;
+            next.value.enabled_for = Some(EnabledFor {
+                commit,
+                enabled_by: Some(enabled_by),
+                enabled_at: self.now(),
+            });
+            next.version = bump(next.version)?;
+            let version = next.version;
+            self.work.repositories.insert(id, next);
+            Ok(version)
+        })
+    }
+
+    async fn disable_repository(
+        &mut self,
+        id: RepositoryId,
+        expected: Version,
+    ) -> Result<Version, StoreError> {
+        call!(self, {
+            let row = self
+                .work
+                .repositories
+                .get(&id)
+                .filter(|r| self.sees(r.value.tenant_id))
+                .cloned()
+                .ok_or(StoreError::NotFound)?;
+            self.check_version(row.version, expected)?;
+            let mut next = row;
+            next.value.enabled = false;
+            if !self.has(StoreDefect::KeepsEnableRecord) {
+                next.value.enabled_for = None;
+            }
             next.version = bump(next.version)?;
             let version = next.version;
             self.work.repositories.insert(id, next);
@@ -1728,6 +1809,7 @@ impl InMemoryTx {
                     factory_domain::vocabulary::AutonomyLevel::L0
                 },
                 project_map: None,
+                enabled_for: None,
             },
             version: Version::FIRST,
         };

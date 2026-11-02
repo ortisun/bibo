@@ -60,6 +60,10 @@ pub enum ApiError {
     /// A repository cannot be enabled until a person has attested its project map.
     #[error("the project map has not been attested")]
     ProjectMapNotAttested,
+    /// An enable named another map commit than the one attested now: the approver did not see the
+    /// map on file.
+    #[error("the project map was attested again")]
+    ProjectMapChanged,
 }
 
 impl ApiError {
@@ -78,7 +82,7 @@ impl ApiError {
             Self::RequestTimeout => StatusCode::REQUEST_TIMEOUT,
             Self::RateLimited => StatusCode::TOO_MANY_REQUESTS,
             Self::Unavailable => StatusCode::SERVICE_UNAVAILABLE,
-            Self::ProjectMapNotAttested => StatusCode::CONFLICT,
+            Self::ProjectMapNotAttested | Self::ProjectMapChanged => StatusCode::CONFLICT,
         }
     }
 
@@ -98,6 +102,7 @@ impl ApiError {
             Self::RateLimited => "rate_limited",
             Self::Unavailable => "unavailable",
             Self::ProjectMapNotAttested => "project_map_not_attested",
+            Self::ProjectMapChanged => "project_map_changed",
         }
     }
 

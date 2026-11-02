@@ -14,6 +14,7 @@ use std::process::ExitCode;
 use std::sync::Arc;
 
 use factory_composition::config::FactoryConfig;
+use factory_composition::issue_status::StatusStep;
 use factory_composition::system::{Shutdown, raise_on_termination};
 use factory_worker::boot::boot;
 use factory_worker::pipeline::{assemble_loop, external_ports, issue_status, token_sweep};
@@ -67,7 +68,15 @@ fn main() -> ExitCode {
         // After the sweep, so that the sweep runs first; the step writes on issues from a task of
         // its own and never holds up a claim.
         match issue_status(&booted, &config, &world) {
-            Ok(step) => sweep.extend(step),
+            Ok(step) => {
+                // A step whose policy cannot be used writes nothing and says so; the worker goes on.
+                if step.as_ref().is_some_and(StatusStep::is_off) {
+                    eprintln!(
+                        "factory-worker: DEGRADED: the issue status step is off and writes nothing on any issue; jobs are not affected"
+                    );
+                }
+                sweep.extend(step.map(|step| step.hook()));
+            }
             Err(error) => {
                 eprintln!("factory-worker: the issue status step cannot be built: {error}");
                 booted.broker.shutdown();

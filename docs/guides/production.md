@@ -41,6 +41,20 @@ The constitution of this repository, `.specify/memory/constitution.md`, carries 
 - **Profile.** Run `production`. It refuses a fake for any port. The scenario E9 shows that refusal for the API's ports (six, and a seventh when it has an artifact root) and the worker's ports, in test mode.
 - **First job.** Run it at `L1` with a person reading the audit log. Check that every `decision.applied` and `decision.rejected` row was written by the worker's decision step and carries the allowlist hash. This is condition 9 of the re-review.
 
+## Before a second tenant
+
+One tenant is the only shape this guide supports. Registration trusts what an operator types: the installation number, GitHub's repository id, the name and the branch. Nothing looks at GitHub. With one tenant that is a risk of mistakes. With two it is a way to take another tenant's repository or to bind its webhooks.
+
+These five things are hard preconditions for a second tenant. Do not onboard one before all five exist.
+
+1. **Check the registration against GitHub.** The engine asks GitHub, with an installation token, that the repository id exists, that the installation lists it, and what its full name and default branch are. It stores GitHub's values and not the typed ones.
+2. **Bind each installation to its tenant at install time.** The person who installs the App makes the binding, and the platform writes it. An operator does not type it.
+3. **Key the repository on the pair.** Today the key is the GitHub repository id alone, so one wrong registration blocks the real owner for good. The key must be the installation and the repository id together.
+4. **Add a way to unregister and to transfer.** Today nothing removes or corrects a registration, and only a database administrator can free an id. The path needs a designation of the platform.
+5. **Stop the answer from revealing whether an id exists.** A `409` on `repository register` tells an operator of any tenant that the GitHub repository is registered somewhere. The answer must be the same for an id that is free and one that is taken.
+
+The credential for a repository comes from `github.installations` in the protected configuration, not from the registered row. A second source of truth is a risk until the verified binding replaces the static list or is checked against it.
+
 ## What the reviews found
 
 Four independent security reviews, two re-reviews, a database review and an architecture review exist. Reviewers did not fix what they reviewed. The table gives each verdict as the reviewer wrote it, and the later re-review where there is one.
@@ -78,6 +92,7 @@ The reviewers found no way to approve, merge or mark a pull request ready withou
 - **Hypotheses.** RR-13, RR-23, RR-28 and the hypotheses H-1 to H-8 of the supply chain and authority reviews were not confirmed or refuted.
 - **Not verified at all.** A real GitHub delivery, a deployment behind a proxy, the container images of the services, load above the rate limits, and everything that needs a real model.
 - **Shared symmetric key.** A compromised worker can forge a decision request, because it holds the key that verifies. An asymmetric signature would remove that and add a dependency.
+- **The API database login can change repositories.** Whoever holds its credentials can register, attest and enable repositories and write the matching audit records, with no signed request (finding REG-2 of the [registration review](../reviews/engine-registration-and-status-security-review.md)). Keep that credential in the builders' hands until the product owner decides between a signed request, a function owned by another role and acceptance.
 
 ## Other guidance
 

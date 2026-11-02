@@ -315,8 +315,8 @@
       "post": {
         "operationId": "enableRepository",
         "tags": ["repositories"],
-        "summary": "Lets the repository take tickets. It needs a project map that a person attested.",
-        "description": "Needs the designation that the action enable_repository names (the approver). A repository with no attested project map is refused with 409 and the code project_map_not_attested; the database refuses the same change for every role. A repeat of the same Idempotency-Key with the same request changes nothing.",
+        "summary": "Lets the repository take tickets, for the project map commit the approver names. It needs a project map that a person attested.",
+        "description": "Needs the designation that the action enable_repository names (the approver). The body names the map commit the approver read. A repository with no attested project map is refused with 409 and the code project_map_not_attested. A commit that is not the one attested now is refused with 409 and the code project_map_changed: the map was attested again since the approver looked, and the approver reads the new one. The database refuses the same changes for every role. A repeat of the same Idempotency-Key with the same request changes nothing.",
         "security": [{ "bearerToken": [] }],
         "parameters": [
           { "$ref": "#/components/parameters/RepositoryId" },
@@ -324,7 +324,7 @@
         ],
         "requestBody": {
           "required": true,
-          "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ChangeRepository" } } }
+          "content": { "application/json": { "schema": { "$ref": "#/components/schemas/EnableRepository" } } }
         },
         "responses": {
           "200": { "description": "The repository, enabled.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/RepositoryChanged" } } } },
@@ -440,7 +440,7 @@
         "required": ["error"],
         "additionalProperties": false,
         "properties": {
-          "error": { "type": "string", "enum": ["bad_request", "unauthorized", "forbidden", "not_found", "method_not_allowed", "conflict", "payload_too_large", "unsupported_media_type", "request_timeout", "rate_limited", "unavailable", "project_map_not_attested"] }
+          "error": { "type": "string", "enum": ["bad_request", "unauthorized", "forbidden", "not_found", "method_not_allowed", "conflict", "payload_too_large", "unsupported_media_type", "request_timeout", "rate_limited", "unavailable", "project_map_not_attested", "project_map_changed"] }
         }
       },
       "FieldError": {
@@ -685,6 +685,24 @@
           "reason": { "type": "string", "minLength": 10, "maxLength": 500 }
         }
       },
+      "EnableRepository": {
+        "type": "object",
+        "required": ["commit"],
+        "additionalProperties": false,
+        "properties": {
+          "commit": { "type": "string", "pattern": "^[0-9a-f]{40}$", "description": "The project map commit the approver read. It must be the commit attested now, or the answer is 409 with the code project_map_changed." },
+          "reason": { "type": "string", "minLength": 10, "maxLength": 500 }
+        }
+      },
+      "EnabledFor": {
+        "type": "object",
+        "required": ["commit", "enabled_by", "enabled_at"],
+        "properties": {
+          "commit": { "type": "string", "pattern": "^[0-9a-f]{40}$", "description": "The project map commit the repository was enabled for. While the repository is enabled it equals the attested commit." },
+          "enabled_by": { "type": "string", "format": "uuid", "nullable": true, "description": "The principal of the person who enabled it. Empty only for a row that a privileged writer enabled without saying who." },
+          "enabled_at": { "type": "string", "description": "The time the database recorded the enabling." }
+        }
+      },
       "ProjectMapAttestation": {
         "type": "object",
         "required": ["commit", "attested_by", "attested_at", "verified_by_engine"],
@@ -697,7 +715,7 @@
       },
       "Repository": {
         "type": "object",
-        "required": ["repository_id", "full_name", "default_branch", "github_installation_id", "github_repository_id", "enabled", "protection_preflight_passed", "autonomy_ceiling", "version", "project_map"],
+        "required": ["repository_id", "full_name", "default_branch", "github_installation_id", "github_repository_id", "enabled", "enabled_for", "protection_preflight_passed", "autonomy_ceiling", "version", "project_map"],
         "properties": {
           "repository_id": { "type": "string", "format": "uuid" },
           "full_name": { "type": "string" },
@@ -705,6 +723,7 @@
           "github_installation_id": { "type": "integer" },
           "github_repository_id": { "type": "integer" },
           "enabled": { "type": "boolean" },
+          "enabled_for": { "nullable": true, "allOf": [{ "$ref": "#/components/schemas/EnabledFor" }], "description": "What the repository was enabled for. Present exactly while enabled is true. Attesting another project map commit, or the same commit by another person, switches an enabled repository off." },
           "protection_preflight_passed": { "type": "boolean" },
           "autonomy_ceiling": { "type": "string", "enum": ["L0", "L1", "L2", "L3"] },
           "version": { "type": "integer", "minimum": 1 },

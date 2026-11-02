@@ -13,6 +13,7 @@ use factory_domain::ids::{AuditEventId, CorrelationId, JobId, PrincipalId, Repos
 use factory_domain::scope::TenantScope;
 use factory_domain::values::Sha256Digest;
 use factory_domain::vocabulary::{HumanRole, StageKind};
+use factory_ports::paths::RepoRef;
 use factory_ports::store::{
     AuditAction, AuditActor, AuditDecision, AuditFilter, ConstraintRule, IdempotencyKey, JobFilter,
     JobOrigin, NewAuditEvent, NewJob, NewOriginalRequest, OutboxSeq, PageCursor, PipelineScope,
@@ -185,11 +186,10 @@ pub async fn submit(
     // The issue belongs to the repository the job is for. The worker fetches it with a token for
     // that repository, so a pointer to another one would ask the code host for something the job
     // has no right to.
-    if !issue
-        .repo
-        .to_string()
-        .eq_ignore_ascii_case(&registered.value.full_name)
-    {
+    // The same comparison as the status step and the GitHub adapter: names are not case sensitive.
+    let same_repository = RepoRef::parse(&registered.value.full_name)
+        .is_ok_and(|registered| issue.repo.same_repository(&registered));
+    if !same_repository {
         return Err(ApiError::BadRequest("source_ref"));
     }
     let pipeline_scope =

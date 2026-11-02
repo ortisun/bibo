@@ -135,7 +135,7 @@ The two root paths that the Docker daemon mounts, `sandbox.token_root` and `sand
 | `github.bypass_attestations[].repository` | text | yes | no default | The repository, as `owner/name`. |
 | `github.bypass_attestations[].principal` | text | yes | no default | The administrator who made the statement, as the UUID of their principal. |
 | `github.bypass_attestations[].recorded_at` | text | yes | no default | When the statement was recorded, as a UTC time such as `2026-10-28T09:00:00Z`. |
-| `github.write_issue_status` | true or false | no | true | Writes the state of each job on its issue: one `factory: <state>` label and one status comment. Set it to false to stop the worker writing on issues. Nothing else changes, because no job depends on the labels. The worker also needs `policies/issue-workflow.yaml` in the protected checkout when this is true. |
+| `github.write_issue_status` | true or false | no | true | Writes the state of each job on its issue: one `factory: <state>` label and one status comment. Set it to false to stop the worker writing on issues. Nothing else changes, because no job depends on the labels. The worker also needs `policies/issue-workflow.yaml` in the protected checkout when this is true. Without it, or with a broken one, the worker still starts: it writes nothing on any issue and reports a degraded health line with the reason. |
 
 ### registry
 

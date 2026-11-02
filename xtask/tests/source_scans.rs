@@ -237,6 +237,27 @@ mod source_scans_come_from_the_rules_file {
     }
 
     #[test]
+    fn a_function_that_must_not_be_reachable_is_found_by_any_mention_and_the_control_is_the_old_rule()
+     {
+        // Finding STS-5. A pointer to the function has no `(` after the path.
+        let code = "pub fn f(n: Vec<&str>) { let _: Vec<_> = n.into_iter().map(StatusLabel::forged_for_negative_tests).collect(); }\n";
+        let mut fx = Fixture::baseline("scans-any-use");
+        fx.source("composition", "src/lib.rs", code);
+        fx.run().assert_violation("ST-13");
+        // The control: with `any_use` off, as the rule was, the pointer gets past the scan.
+        let rules = fx.rules_mut()["source_scans"]["st_13"]
+            .as_array_mut()
+            .expect("a list");
+        let entry = rules
+            .iter_mut()
+            .find(|rule| rule["name"] == "StatusLabel::forged_for_negative_tests")
+            .expect("the rule for the forging function");
+        assert_eq!(entry["any_use"], json!(true));
+        entry["any_use"] = json!(false);
+        fx.run().assert_passes();
+    }
+
+    #[test]
     fn the_crate_that_may_not_mention_a_name_comes_from_the_file() {
         let code = "pub struct MeteringOps;\n";
         let mut fx = Fixture::baseline("scans-st14");

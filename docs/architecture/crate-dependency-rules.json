@@ -777,6 +777,7 @@
       },
       {
         "name": "StatusLabel::forged_for_negative_tests",
+        "any_use": true,
         "allowed_crates": [
           "testkit"
         ]

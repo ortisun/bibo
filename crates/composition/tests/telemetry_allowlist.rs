@@ -280,6 +280,11 @@ const REVIEWED: &[(&str, &str, &str)] = &[
     ),
     (
         "crates/composition/src/issue_status.rs",
+        "reason",
+        "why the status step is off: a sentence the code wrote about a policy file or an approval row, which may carry the loader's message about the file (a path and a rule, from the protected checkout), cut at 300 characters and stripped of control characters; no issue text, no model output and no secret",
+    ),
+    (
+        "crates/composition/src/issue_status.rs",
         "gave_up",
         "a boolean: whether the step gave up on this version of the job",
     ),

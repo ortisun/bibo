@@ -62,7 +62,8 @@ INSERT INTO expected_api_grants VALUES
 -- Since migration 2026-11-02-002400. A repository is registered with six columns and nothing else, so it always
 -- starts disabled, at level L0, with no protection result and no bypass attestation. After that the API changes
 -- the enabled flag and the project map (the commit and the person who attested it; the database stamps the time),
--- and the version, which every update of an aggregate raises by one. It cannot change the name, the installation,
+-- the record of what was enabled (since migration 2026-11-02-002500: the commit the enabler meant and the person who
+-- enabled it; the database stamps that time as well), and the version, which every update of an aggregate raises by one. It cannot change the name, the installation,
 -- the default branch, the autonomy ceiling, the protection result or the bypass attestation.
 CREATE TEMP TABLE expected_api_column_grants (tbl text, col text, privilege text);
 INSERT INTO expected_api_column_grants VALUES
@@ -70,7 +71,8 @@ INSERT INTO expected_api_column_grants VALUES
   ('repositories', 'github_installation_id', 'INSERT'), ('repositories', 'github_repository_id', 'INSERT'),
   ('repositories', 'full_name', 'INSERT'), ('repositories', 'default_branch', 'INSERT'),
   ('repositories', 'enabled', 'UPDATE'), ('repositories', 'project_map_commit', 'UPDATE'),
-  ('repositories', 'project_map_attested_by_principal_id', 'UPDATE'), ('repositories', 'version', 'UPDATE');
+  ('repositories', 'project_map_attested_by_principal_id', 'UPDATE'), ('repositories', 'version', 'UPDATE'),
+  ('repositories', 'enabled_project_map_commit', 'UPDATE'), ('repositories', 'enabled_by_principal_id', 'UPDATE');
 
 DO $$
 DECLARE

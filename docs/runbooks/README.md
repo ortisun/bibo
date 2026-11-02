@@ -15,6 +15,7 @@
 | `no PostgreSQL server`, a full shared-memory table, or a Docker problem when you run the tests or the local stack | [Leaked test clusters and Docker problems](leaked-test-clusters.md) |
 | A reason to replace the key that signs decision requests | [Rotate the decision signing key](rotate-the-decision-key.md) |
 | A token, a key or a secret that may have been exposed | [A secret may have leaked](suspected-leaked-token.md) |
+| A need to stop the factory from working on one repository, in an incident | [Stop the work on a repository](stop-work-on-a-repository.md) |
 
 ## Conventions
 

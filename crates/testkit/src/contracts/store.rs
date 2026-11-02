@@ -158,6 +158,9 @@ pub fn checks() -> Vec<StoreCheck> {
         a_repository_registration_is_idempotent_by_id_and_content,
         a_github_repository_is_registered_once,
         a_repository_with_no_project_map_cannot_be_enabled,
+        an_attestation_of_another_map_switches_an_enabled_repository_off,
+        enabling_names_the_commit_attested_now,
+        the_record_of_the_enabling_is_set_on_enable_and_emptied_on_disable,
         only_an_active_person_of_the_tenant_can_attest_a_project_map,
         a_repository_change_needs_the_version_it_read,
         another_tenant_cannot_see_or_change_a_repository,
@@ -3298,7 +3301,8 @@ async fn a_repository_with_no_project_map_cannot_be_enabled(
 
     let mut tx = w.tx(w.a).await?;
     ensure_err!(
-        tx.set_repository_enabled(new.id, version, true).await,
+        tx.enable_repository(new.id, version, a_commit(), person)
+            .await,
         StoreError::Constraint(ConstraintRule::ProjectMapRule),
         "enabling with no project map"
     );
@@ -3322,7 +3326,7 @@ async fn a_repository_with_no_project_map_cannot_be_enabled(
         .await
         .ctx("attest")?;
     let enabled = tx
-        .set_repository_enabled(new.id, attested, true)
+        .enable_repository(new.id, attested, a_commit(), person)
         .await
         .ctx("enable")?;
     tx.commit().await.ctx("commit the enabled repository")?;
@@ -3339,7 +3343,7 @@ async fn a_repository_with_no_project_map_cannot_be_enabled(
 
     // Switching it off again stops the binding, and needs no map to be removed.
     let mut tx = w.tx(w.a).await?;
-    tx.set_repository_enabled(new.id, enabled, false)
+    tx.disable_repository(new.id, enabled)
         .await
         .ctx("disable")?;
     tx.commit().await.ctx("commit the disabled repository")?;
@@ -3351,6 +3355,264 @@ async fn a_repository_with_no_project_map_cannot_be_enabled(
             .ctx("resolve again")?
             .is_none(),
         "a disabled repository is not found by its installation"
+    );
+    Ok(())
+}
+
+fn another_commit() -> ProjectMapCommit {
+    ProjectMapCommit::new("fedcba9876543210fedcba9876543210fedcba98").expect("a commit")
+}
+
+fn a_third_commit() -> ProjectMapCommit {
+    ProjectMapCommit::new("00112233445566778899aabbccddeeff00112233").expect("a commit")
+}
+
+/// Registers repository `n`, has `person` attest `a_commit()` and enable it for that commit, and
+/// commits. Returns the id and the version after the enabling.
+async fn an_enabled_repository(
+    w: &World<'_>,
+    n: u64,
+    person: PrincipalId,
+) -> Result<(NewRepository, Version), String> {
+    let new = new_repository(w, n);
+    let mut tx = w.tx(w.a).await?;
+    let registered = tx
+        .register_repository(new.clone())
+        .await
+        .ctx("register")?
+        .row
+        .version;
+    let attested = tx
+        .attest_project_map(new.id, registered, a_commit(), person)
+        .await
+        .ctx("attest")?;
+    let enabled = tx
+        .enable_repository(new.id, attested, a_commit(), person)
+        .await
+        .ctx("enable")?;
+    tx.commit().await.ctx("commit")?;
+    Ok((new, enabled))
+}
+
+/// True when the webhook binding finds the repository by its installation.
+async fn is_resolved(subject: &dyn StoreSubject, new: &NewRepository) -> Result<bool, String> {
+    Ok(subject
+        .store()
+        .resolve_installation(new.installation, new.github_repository_id)
+        .await
+        .ctx("resolve")?
+        .is_some())
+}
+
+async fn an_attestation_of_another_map_switches_an_enabled_repository_off(
+    subject: &dyn StoreSubject,
+) -> Result<(), String> {
+    let w = World::new(subject).await;
+    let person = w.principal(w.a).await?;
+    let colleague = w.principal(w.a).await?;
+    let (new, enabled) = an_enabled_repository(&w, 9, person).await?;
+    ensure!(
+        is_resolved(subject, &new).await?,
+        "the enabled repository is found by its installation"
+    );
+
+    // The sibling that shows the rule is about change: the same commit by the same person
+    // changes nothing about the flag.
+    let mut tx = w.tx(w.a).await?;
+    let same = tx
+        .attest_project_map(new.id, enabled, a_commit(), person)
+        .await
+        .ctx("attest the same map again")?;
+    let read = tx.get_repository(new.id).await.ctx("read")?;
+    ensure!(
+        read.value.enabled && read.value.enabled_for.is_some(),
+        "the same map by the same person leaves the repository enabled"
+    );
+    tx.commit().await.ctx("commit")?;
+
+    // Another commit: the repository is switched off by the same change, and the record goes.
+    let mut tx = w.tx(w.a).await?;
+    let moved = tx
+        .attest_project_map(new.id, same, another_commit(), person)
+        .await
+        .ctx("attest another commit")?;
+    let read = tx.get_repository(new.id).await.ctx("read")?;
+    ensure!(
+        !read.value.enabled,
+        "a repository stays enabled over a map nobody enabled it for"
+    );
+    ensure!(
+        read.value.enabled_for.is_none(),
+        "the record of the enabling went with it"
+    );
+    ensure_eq!(
+        read.value.project_map.map(|map| map.commit),
+        Some(another_commit()),
+        "the new attestation is recorded"
+    );
+    ensure_eq!(read.version, moved, "the version moved once");
+    tx.commit().await.ctx("commit")?;
+    ensure!(
+        !is_resolved(subject, &new).await?,
+        "the webhook binding stops with it"
+    );
+
+    // Enabling again names the new commit. Then another person attesting the same commit is
+    // another attestation too.
+    let mut tx = w.tx(w.a).await?;
+    let again = tx
+        .enable_repository(new.id, moved, another_commit(), person)
+        .await
+        .ctx("enable for the new commit")?;
+    let by_colleague = tx
+        .attest_project_map(new.id, again, another_commit(), colleague)
+        .await
+        .ctx("a colleague attests the same commit")?;
+    let read = tx.get_repository(new.id).await.ctx("read")?;
+    ensure!(
+        !read.value.enabled,
+        "another person attesting the same commit switches the repository off"
+    );
+    ensure_eq!(read.version, by_colleague, "the version moved once");
+    Ok(())
+}
+
+async fn enabling_names_the_commit_attested_now(subject: &dyn StoreSubject) -> Result<(), String> {
+    let w = World::new(subject).await;
+    let person = w.principal(w.a).await?;
+    let stranger = w.principal(w.b).await?;
+    let service = w.ids.principal();
+    let (new, enabled) = an_enabled_repository(&w, 10, person).await?;
+
+    // Switch it off. Enabling again for the commit that is still on file is allowed: the approver
+    // names the map they looked at.
+    let mut tx = w.tx(w.a).await?;
+    let off = tx
+        .disable_repository(new.id, enabled)
+        .await
+        .ctx("disable")?;
+    let on = tx
+        .enable_repository(new.id, off, a_commit(), person)
+        .await
+        .ctx("enable again for the commit on file")?;
+    let off = tx
+        .disable_repository(new.id, on)
+        .await
+        .ctx("disable again")?;
+
+    // Another commit is attested while it is off. Three names for the commit, and only one of
+    // them is the one on file.
+    let current = tx
+        .attest_project_map(new.id, off, another_commit(), person)
+        .await
+        .ctx("attest another commit")?;
+    ensure_err!(
+        tx.enable_repository(new.id, current, a_commit(), person)
+            .await,
+        StoreError::Constraint(ConstraintRule::ProjectMapChanged),
+        "enabling for the old commit"
+    );
+    ensure_err!(
+        tx.enable_repository(new.id, current, a_third_commit(), person)
+            .await,
+        StoreError::Constraint(ConstraintRule::ProjectMapChanged),
+        "enabling for a commit that was never attested"
+    );
+    let unchanged = tx.get_repository(new.id).await.ctx("read")?;
+    ensure!(!unchanged.value.enabled, "a refusal leaves it disabled");
+    ensure_eq!(unchanged.version, current, "and its version did not move");
+
+    // The enabler is an active person of the tenant, as the attestor is.
+    tx.insert_principal(NewPrincipal {
+        id: service,
+        kind: PrincipalKind::Service,
+        login: None,
+    })
+    .await
+    .ctx("insert a service")?;
+    ensure_err!(
+        tx.enable_repository(new.id, current, another_commit(), service)
+            .await,
+        StoreError::Constraint(ConstraintRule::ProjectMapRule),
+        "a service principal enables"
+    );
+    ensure_err!(
+        tx.enable_repository(new.id, current, another_commit(), stranger)
+            .await,
+        StoreError::Constraint(ConstraintRule::ProjectMapRule),
+        "a person of another tenant enables"
+    );
+
+    // The sibling: the commit on file, by an active person, is accepted.
+    tx.enable_repository(new.id, current, another_commit(), person)
+        .await
+        .ctx("enable for the commit on file")?;
+    let read = tx.get_repository(new.id).await.ctx("read it back")?;
+    ensure!(read.value.enabled, "it is enabled");
+    ensure_eq!(
+        read.value.enabled_for.map(|record| record.commit),
+        Some(another_commit()),
+        "for the commit on file"
+    );
+    Ok(())
+}
+
+async fn the_record_of_the_enabling_is_set_on_enable_and_emptied_on_disable(
+    subject: &dyn StoreSubject,
+) -> Result<(), String> {
+    let w = World::new(subject).await;
+    let person = w.principal(w.a).await?;
+    let new = new_repository(&w, 11);
+    let mut tx = w.tx(w.a).await?;
+    let registered = tx
+        .register_repository(new.clone())
+        .await
+        .ctx("register")?
+        .row
+        .version;
+    ensure!(
+        tx.get_repository(new.id)
+            .await
+            .ctx("read")?
+            .value
+            .enabled_for
+            .is_none(),
+        "a registered repository was enabled for nothing"
+    );
+    let attested = tx
+        .attest_project_map(new.id, registered, a_commit(), person)
+        .await
+        .ctx("attest")?;
+    ensure!(
+        tx.get_repository(new.id)
+            .await
+            .ctx("read")?
+            .value
+            .enabled_for
+            .is_none(),
+        "an attested repository was enabled for nothing"
+    );
+    let enabled = tx
+        .enable_repository(new.id, attested, a_commit(), person)
+        .await
+        .ctx("enable")?;
+    let read = tx.get_repository(new.id).await.ctx("read it back")?;
+    let record = read.value.enabled_for.ok_or("the enabling is recorded")?;
+    ensure_eq!(record.commit, a_commit(), "the commit the approver named");
+    ensure_eq!(record.enabled_by, Some(person), "the person who enabled it");
+
+    tx.disable_repository(new.id, enabled)
+        .await
+        .ctx("disable")?;
+    let read = tx.get_repository(new.id).await.ctx("read after disable")?;
+    ensure!(!read.value.enabled, "it is disabled");
+    ensure!(
+        read.value.enabled_for.is_none(),
+        "switching it off empties the record, and a later reader cannot take it for a live one"
+    );
+    ensure!(
+        read.value.project_map.is_some(),
+        "the attestation stays when the repository is switched off"
     );
     Ok(())
 }
@@ -3440,12 +3702,18 @@ async fn a_repository_change_needs_the_version_it_read(
         "an attestation from a stale version"
     );
     ensure_err!(
-        tx.set_repository_enabled(new.id, first, true).await,
+        tx.enable_repository(new.id, first, a_commit(), person)
+            .await,
         StoreError::Conflict,
         "enabling from a stale version"
     );
+    ensure_err!(
+        tx.disable_repository(new.id, first).await,
+        StoreError::Conflict,
+        "disabling from a stale version"
+    );
     let enabled = tx
-        .set_repository_enabled(new.id, second, true)
+        .enable_repository(new.id, second, a_commit(), person)
         .await
         .ctx("enable from the current version")?;
     ensure!(enabled != second, "enabling moved the version again");
@@ -3482,9 +3750,16 @@ async fn another_tenant_cannot_see_or_change_a_repository(
         "attesting another tenant's repository"
     );
     ensure_err!(
-        other.set_repository_enabled(new.id, version, false).await,
+        other.disable_repository(new.id, version).await,
         StoreError::NotFound,
-        "switching another tenant's repository"
+        "switching another tenant's repository off"
+    );
+    ensure_err!(
+        other
+            .enable_repository(new.id, version, a_commit(), outsider)
+            .await,
+        StoreError::NotFound,
+        "switching another tenant's repository on"
     );
     drop(other);
 

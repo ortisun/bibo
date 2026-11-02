@@ -13,7 +13,9 @@ workspace = true
 # the `testkit` allow list in docs/architecture/crate-dependency-rules.json. Versions are the
 # releases checked with `cargo info` on 2026-10-27.
 [dependencies]
-factory-domain.workspace = true
+# The feature adds `StatusLabel::forged_for_negative_tests`, which the negative tests of the status
+# writer need and which production code must not be able to call. See crates/domain/Cargo.toml.
+factory-domain = { workspace = true, features = ["forge-status-labels"] }
 factory-ports.workspace = true
 # Implements the port traits, which are declared with `#[async_trait]`. Maintained by dtolnay.
 async-trait = "0.1.92"

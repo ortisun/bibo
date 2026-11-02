@@ -8,7 +8,11 @@
 //! * another tenant cannot see or change the repository;
 //! * enabling without a project map is refused by the database itself, not only by the code;
 //! * a replayed idempotency key repeats nothing, and the same key with another request is a
-//!   conflict;
+//!   conflict, whichever part of the request is different (REG-5);
+//! * a repository that is enabled does not stay enabled over another map, and an enable names the
+//!   commit the approver read (REG-1), with a control that removes the table's rule and shows the
+//!   old behaviour;
+//! * an allowlist entry narrowed to other repositories cannot read this repository either (REG-4);
 //! * the audit chain stays valid, and its text says that the map is a person's statement;
 //! * a malformed commit, reason or body is refused, and a registration cannot carry the flags.
 //!
@@ -80,13 +84,35 @@ async fn attest(env: &Env, id: &str, key: &str) -> Reply {
     .await
 }
 
-async fn enable(env: &Env, id: &str, key: &str) -> Reply {
+/// The approver enables the repository for the commit they name.
+async fn enable_for(env: &Env, id: &str, key: &str, commit: &str) -> Reply {
     post(
         env,
         &env.a.approver,
         &format!("/v1/repositories/{id}/enable"),
         key,
-        &json!({}),
+        &json!({"commit": commit}),
+    )
+    .await
+}
+
+/// The approver reads the commit on file, as `repository show` prints it, and names it. A
+/// repository with no map gets a commit that was never attested.
+async fn enable(env: &Env, id: &str, key: &str) -> Reply {
+    let on_file = flag(env, id, "project_map_commit")
+        .await
+        .unwrap_or_else(|| COMMIT.to_owned());
+    enable_for(env, id, key, &on_file).await
+}
+
+/// The operator attests `commit`.
+async fn attest_commit(env: &Env, id: &str, key: &str, commit: &str) -> Reply {
+    post(
+        env,
+        &env.a.operator,
+        &format!("/v1/repositories/{id}/project-map"),
+        key,
+        &json!({"commit": commit, "reason": REASON}),
     )
     .await
 }
@@ -239,6 +265,15 @@ async fn a_repository_goes_from_registered_to_taking_tickets_and_back() {
     assert_eq!(enabled.status, 200, "{}", enabled.text());
     assert_eq!(enabled.json()["repository"]["enabled"], true);
     assert_eq!(enabled.json()["repository"]["version"], 3);
+    // The record says which map it was enabled for and by whom. The database stamped the time.
+    let record = &enabled.json()["repository"]["enabled_for"];
+    assert_eq!(record["commit"], COMMIT);
+    assert_eq!(record["enabled_by"], a.approver.principal.as_text());
+    assert!(
+        record["enabled_at"]
+            .as_str()
+            .is_some_and(|at| at.ends_with('Z'))
+    );
     let label = env
         .send(env.delivery(
             "issues",
@@ -271,6 +306,11 @@ async fn a_repository_goes_from_registered_to_taking_tickets_and_back() {
         off.json()["repository"]["project_map"]["commit"],
         COMMIT,
         "the map stays when the repository is switched off"
+    );
+    assert_eq!(
+        off.json()["repository"]["enabled_for"],
+        Value::Null,
+        "the record of the enabling goes when the repository is switched off"
     );
     let dropped = env
         .send(env.delivery(
@@ -403,7 +443,7 @@ async fn each_role_is_refused_and_accepted_for_each_action() {
             person,
             &format!("/v1/repositories/{id}/enable"),
             "enable-x",
-            &json!({}),
+            &json!({"commit": COMMIT}),
         )
         .await;
         assert_eq!(reply.status, 403, "{name}: {}", reply.text());
@@ -504,9 +544,15 @@ async fn an_operator_narrowed_to_other_repositories_cannot_register_or_change_th
             .await,
         0
     );
+    // REG-4: reading it is narrowed too. It looks like a repository that is not there.
+    let read = get(&env, &a.operator, &format!("/v1/repositories/{id}")).await;
+    assert_eq!(read.status, 404, "{}", read.text());
+    assert_eq!(read.json(), json!({"error": "not_found"}));
 
     // The sibling: narrowed to the repository, the same calls work (the name is not case sensitive).
     std::fs::write(&path, narrowed("\"org/new-1\", \"ORG/NEW-2\"")).expect("narrowed here");
+    let read = get(&env, &a.operator, &format!("/v1/repositories/{id}")).await;
+    assert_eq!(read.status, 200, "{}", read.text());
     assert_eq!(attest(&env, &id, "attest-n2").await.status, 200);
     let register_here = post(
         &env,
@@ -537,7 +583,7 @@ async fn another_tenant_cannot_see_or_change_the_repository() {
     assert_eq!(foreign.body, missing.body, "the same bytes");
     for (what, person, path, body) in [
         ("attest", &b.operator, "project-map", attestation()),
-        ("enable", &b.approver, "enable", json!({})),
+        ("enable", &b.approver, "enable", json!({"commit": COMMIT})),
         ("disable", &b.operator, "disable", json!({})),
     ] {
         let reply = post(
@@ -752,6 +798,44 @@ async fn a_replayed_idempotency_key_repeats_nothing() {
             .await,
         0
     );
+    // REG-5: the same key and the same name with another installation, another GitHub repository
+    // id or another default branch is another request. Each of them used to be answered as a
+    // repeat, with the first row.
+    for (what, field, value) in [
+        ("another installation", "installation_id", json!(9999)),
+        (
+            "another GitHub repository id",
+            "github_repository_id",
+            json!(9998),
+        ),
+        ("another default branch", "default_branch", json!("develop")),
+    ] {
+        let mut body = registration(1);
+        body[field] = value;
+        let other = post(&env, &a.operator, "/v1/repositories", "r-1", &body).await;
+        assert_eq!(other.status, 409, "{what}: {}", other.text());
+    }
+    assert_eq!(
+        env.db
+            .text(&format!(
+                "SELECT github_installation_id || ',' || github_repository_id || ',' || default_branch FROM repositories WHERE id = '{id}'"
+            ))
+            .await
+            .as_deref(),
+        Some("7001,8001,main"),
+        "no replay changed the first registration"
+    );
+    // The sibling: the very same request is still a repeat.
+    let same = post(
+        &env,
+        &a.operator,
+        "/v1/repositories",
+        "r-1",
+        &registration(1),
+    )
+    .await;
+    assert_eq!(same.status, 200, "{}", same.text());
+    assert_eq!(same.json()["changed"], false);
 
     // Attest twice with one key: one version step, one record.
     let first = attest(&env, &id, "a-1").await;
@@ -800,11 +884,24 @@ async fn a_replayed_idempotency_key_repeats_nothing() {
         "replaying the first key did not put the first commit back"
     );
 
-    // Enable and disable: a key replayed after the opposite change does not undo it.
+    // Enable and disable: a key replayed after the opposite change does not undo it. The same key
+    // with another commit is another request.
     assert_eq!(enable(&env, &id, "e-1").await.status, 200);
     let repeat = enable(&env, &id, "e-1").await;
     assert_eq!(repeat.status, 200);
     assert_eq!(repeat.json()["changed"], false);
+    let other_commit = enable_for(&env, &id, "e-1", COMMIT).await;
+    assert_eq!(
+        other_commit.status,
+        409,
+        "the same key with another commit: {}",
+        other_commit.text()
+    );
+    assert_eq!(
+        other_commit.json(),
+        json!({"error": "project_map_changed"}),
+        "COMMIT is not the map on file any more"
+    );
     assert_eq!(disable(&env, &id, "d-1").await.status, 200);
     let replay = enable(&env, &id, "e-1").await;
     assert_eq!(replay.status, 200);
@@ -875,6 +972,259 @@ async fn a_replayed_idempotency_key_repeats_nothing() {
         audit_actions(&env).await,
         "repository.registered,repository.map_attested,repository.map_attested,repository.enabled,repository.disabled,repository.disabled"
     );
+    env.stop().await;
+}
+
+// ---- a map that moves switches the repository off (REG-1) ----------------------------------------
+
+/// The state the REG-1 tests start from: enabled for `COMMIT` by the approver, one job made by a
+/// label so that the webhook is seen to work, and the audit log up to there.
+async fn enabled_for_the_first_map(env: &Env) -> String {
+    let id = enabled_repository(env, 1).await;
+    let label = env
+        .send(env.delivery(
+            "issues",
+            &delivery_id(1),
+            &label_payload(1, env.a.requester.github_id, 11),
+        ))
+        .await;
+    assert_eq!(label.status, 202);
+    assert_eq!(
+        jobs_of(env, &id).await,
+        1,
+        "the enabled repository takes the label"
+    );
+    id
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn attesting_another_map_switches_an_enabled_repository_off_and_it_must_be_enabled_again_by_name()
+ {
+    let env = Env::start().await;
+    let a = &env.a;
+    let id = enabled_for_the_first_map(&env).await;
+
+    // The sibling that shows the rule is about change: the same map again, by the same person,
+    // leaves it enabled and writes no record of a switch-off.
+    let same = attest_commit(&env, &id, "attest-same", COMMIT).await;
+    assert_eq!(same.status, 200, "{}", same.text());
+    assert_eq!(same.json()["repository"]["enabled"], true);
+    assert_eq!(flag(&env, &id, "enabled").await.as_deref(), Some("true"));
+    assert!(
+        !audit_actions(&env).await.contains("repository.disabled"),
+        "{}",
+        audit_actions(&env).await
+    );
+
+    // Another commit: the repository is switched off by the same change, in the answer, in the
+    // table, in the audit log and at the webhook.
+    let moved = attest_commit(&env, &id, "attest-other", OTHER_COMMIT).await;
+    assert_eq!(moved.status, 200, "{}", moved.text());
+    let repository = &moved.json()["repository"];
+    assert_eq!(repository["enabled"], false);
+    assert_eq!(repository["enabled_for"], Value::Null);
+    assert_eq!(repository["project_map"]["commit"], OTHER_COMMIT);
+    assert_eq!(flag(&env, &id, "enabled").await.as_deref(), Some("false"));
+    assert_eq!(
+        flag(&env, &id, "enabled_project_map_commit").await,
+        None,
+        "the record of the enabling is empty"
+    );
+    let actions = audit_actions(&env).await;
+    assert!(
+        actions.ends_with("repository.map_attested,repository.map_attested,repository.disabled"),
+        "{actions}"
+    );
+    let disabled = env
+        .db
+        .text("SELECT reason || ' / ' || actor_id FROM audit_events WHERE action = 'repository.disabled'")
+        .await
+        .expect("the record of the switch-off");
+    assert!(
+        disabled.contains("the map was attested again; enable it again"),
+        "{disabled}"
+    );
+    assert!(
+        disabled.contains(&a.operator.principal.as_uuid().to_string()),
+        "the person who attested is the actor: {disabled}"
+    );
+    assert!(chain_is_sound(&env).await);
+    let dropped = env
+        .send(env.delivery(
+            "issues",
+            &delivery_id(2),
+            &label_payload(1, a.requester.github_id, 12),
+        ))
+        .await;
+    assert_eq!(dropped.status, 202);
+    assert_eq!(
+        jobs_of(&env, &id).await,
+        1,
+        "the label is dropped: the repository is off"
+    );
+
+    // Enabling names the commit. The old one, a wrong one and one that was never attested are
+    // refused with a typed answer and change nothing. The commit on file works.
+    for (what, key, commit) in [
+        ("the old commit", "enable-old-1", COMMIT),
+        (
+            "a commit that was never attested",
+            "enable-never-1",
+            "00112233445566778899aabbccddeeff00112233",
+        ),
+    ] {
+        let refused = enable_for(&env, &id, key, commit).await;
+        assert_eq!(refused.status, 409, "{what}: {}", refused.text());
+        assert_eq!(
+            refused.json(),
+            json!({"error": "project_map_changed"}),
+            "{what}"
+        );
+        assert_eq!(
+            flag(&env, &id, "enabled").await.as_deref(),
+            Some("false"),
+            "{what}"
+        );
+    }
+    let bad = post(
+        &env,
+        &a.approver,
+        &format!("/v1/repositories/{id}/enable"),
+        "enable-bad",
+        &json!({"commit": "main"}),
+    )
+    .await;
+    assert_eq!(bad.status, 400, "{}", bad.text());
+    assert_eq!(
+        bad.json(),
+        json!({"error": "bad_request", "field": "commit"})
+    );
+    let none = post(
+        &env,
+        &a.approver,
+        &format!("/v1/repositories/{id}/enable"),
+        "enable-none",
+        &json!({}),
+    )
+    .await;
+    assert_eq!(
+        none.status,
+        400,
+        "an enable that names no commit: {}",
+        none.text()
+    );
+    let on = enable_for(&env, &id, "enable-new", OTHER_COMMIT).await;
+    assert_eq!(on.status, 200, "{}", on.text());
+    assert_eq!(
+        on.json()["repository"]["enabled_for"]["commit"],
+        OTHER_COMMIT
+    );
+    assert_eq!(
+        on.json()["repository"]["enabled_for"]["enabled_by"],
+        a.approver.principal.as_text()
+    );
+    let label = env
+        .send(env.delivery(
+            "issues",
+            &delivery_id(3),
+            &label_payload(1, a.requester.github_id, 13),
+        ))
+        .await;
+    assert_eq!(label.status, 202);
+    assert_eq!(
+        jobs_of(&env, &id).await,
+        2,
+        "enabled for the new map, it takes the label again"
+    );
+
+    // Disable, then enable with the commit that was on file before: refused. The right one: fine.
+    assert_eq!(disable(&env, &id, "disable-1").await.status, 200);
+    let old = enable_for(&env, &id, "enable-old", COMMIT).await;
+    assert_eq!(old.status, 409, "{}", old.text());
+    assert_eq!(
+        enable_for(&env, &id, "enable-right", OTHER_COMMIT)
+            .await
+            .status,
+        200
+    );
+
+    // The enable that was answered before the map moved is not repeated as if it still held.
+    assert_eq!(
+        attest_commit(&env, &id, "attest-third", COMMIT)
+            .await
+            .status,
+        200
+    );
+    let stale = enable_for(&env, &id, "enable-right", OTHER_COMMIT).await;
+    assert_eq!(
+        stale.status,
+        409,
+        "a retry of an enable for a map that is not on file: {}",
+        stale.text()
+    );
+    assert_eq!(flag(&env, &id, "enabled").await.as_deref(), Some("false"));
+    env.stop().await;
+}
+
+/// The control of the test above. The rule is in the table, and with the trigger and the check
+/// removed the API does what it did before: the repository stays enabled over a map that nobody
+/// enabled it for, and no record of a switch-off is written. This shows that the test above fails
+/// without the table's rule, and that the table, not the handler, is what holds it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn control_without_the_table_rule_an_enabled_repository_stays_enabled_over_another_map() {
+    let env = Env::start().await;
+    let id = enabled_for_the_first_map(&env).await;
+    let mut admin = env.db.admin().await;
+    admin
+        .batch_execute(
+            "DROP TRIGGER repositories_project_map_guard ON repositories; \
+             ALTER TABLE repositories DROP CONSTRAINT repositories_enabled_project_map_commit_matches",
+        )
+        .await
+        .expect("the rule is removed");
+
+    let moved = attest_commit(&env, &id, "attest-other", OTHER_COMMIT).await;
+    assert_eq!(moved.status, 200, "{}", moved.text());
+    assert_eq!(
+        moved.json()["repository"]["enabled"],
+        true,
+        "without the rule the repository stays enabled"
+    );
+    assert_eq!(
+        flag(&env, &id, "project_map_commit").await.as_deref(),
+        Some(OTHER_COMMIT)
+    );
+    assert_eq!(
+        flag(&env, &id, "enabled_project_map_commit")
+            .await
+            .as_deref(),
+        Some(COMMIT),
+        "it is enabled for a map other than the one on file"
+    );
+    assert!(!audit_actions(&env).await.contains("repository.disabled"));
+    env.stop().await;
+}
+
+/// The table holds the rule for a writer that is not the API: the login of the API, in raw SQL,
+/// changes the commit of an enabled repository and the row comes back disabled.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_raw_write_of_another_map_switches_an_enabled_repository_off_for_the_api_login_too() {
+    let env = Env::start().await;
+    let id = enabled_for_the_first_map(&env).await;
+    let tenant = env.a.id.as_uuid();
+    let logins = env.db.server.logins().await;
+    let mut api = env.db.connect_as(&logins.api).await;
+    api.batch_execute(&format!(
+        "BEGIN; SELECT set_config('factory.tenant_id', '{tenant}', true); \
+         UPDATE repositories SET project_map_commit = '{OTHER_COMMIT}', \
+             project_map_attested_by_principal_id = '{}', version = version + 1 WHERE id = '{id}'; COMMIT;",
+        env.a.operator.principal.as_uuid()
+    ))
+    .await
+    .expect("the API login may attest a map");
+    assert_eq!(flag(&env, &id, "enabled").await.as_deref(), Some("false"));
+    assert_eq!(flag(&env, &id, "enabled_project_map_commit").await, None);
+    assert_eq!(flag(&env, &id, "enabled_by_principal_id").await, None);
     env.stop().await;
 }
 

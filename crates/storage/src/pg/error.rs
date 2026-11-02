@@ -242,7 +242,14 @@ fn check(name: Option<&str>) -> StoreError {
         "repositories_enabled_needs_project_map"
         | "repositories_project_map_commit_check"
         | "repositories_project_map_attestation_complete"
-        | "repositories_map_attestor_is_an_active_human" => rule(ConstraintRule::ProjectMapRule),
+        | "repositories_map_attestor_is_an_active_human"
+        | "repositories_enabler_is_an_active_human"
+        | "repositories_enabled_record_is_complete" => rule(ConstraintRule::ProjectMapRule),
+        // The table's second guard behind the trigger and the statement: an enabled repository
+        // whose record names another commit than the one attested now.
+        "repositories_enabled_project_map_commit_matches" => {
+            rule(ConstraintRule::ProjectMapChanged)
+        }
         other if other.ends_with("_check") && TEXT_COLUMNS.iter().any(|c| other.contains(c)) => {
             rule(ConstraintRule::TextBounds)
         }

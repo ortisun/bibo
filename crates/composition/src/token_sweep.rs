@@ -62,14 +62,15 @@ impl RevokeEndedJobs {
         }
     }
 
-    /// The jobs that are open, or `None` when that cannot be known.
+    /// The jobs the database says are open, or `None` when that cannot be known. The jobs this
+    /// process is working on are not in it; the sweep asks for them last.
     async fn open_jobs(&self) -> Option<HashSet<JobId>> {
         let open: Vec<JobStatus> = JobStatus::ALL
             .iter()
             .copied()
             .filter(|status| !status.is_terminal())
             .collect();
-        let mut found = self.jobs.running();
+        let mut found = HashSet::new();
         for tenant in &self.tenants {
             let mut tx = self.store.begin(TenantScope::new(*tenant)).await.ok()?;
             let mut cursor = None;
@@ -115,7 +116,13 @@ impl BeforeClaim for RevokeEndedJobs {
             );
             return;
         };
-        let revoked = self.adapter.sweep_orphans(&open).await;
+        // The jobs this process is working on are read when the tokens have been listed, not
+        // before the database was asked: a round of the status step that began meanwhile is spared.
+        let jobs = Arc::clone(&self.jobs);
+        let revoked = self
+            .adapter
+            .sweep_orphans_after(&open, &move || jobs.running())
+            .await;
         if revoked > 0 {
             tracing::info!(revoked, "installation tokens of ended jobs were revoked");
         }

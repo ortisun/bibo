@@ -25,17 +25,40 @@
 //!   recorded in the audit log as `issue_status.written`, so a restarted worker knows which jobs
 //!   it has been writing for and where it stopped.
 //! * **Retries with a back-off, then it gives up for that version.** A transient failure waits
-//!   30 seconds, then doubles, up to [`MAX_TRIES`] tries. Every failed try is recorded as
+//!   30 seconds, then doubles, up to [`MAX_TRIES`] tries. When GitHub asked the adapter to wait
+//!   (`Retry-After`) and the wait was too long to sleep through, the next try is not before the
+//!   larger of that wait and the back-off (finding STS-2). Every failed try is recorded as
 //!   `issue_status.failed` with a fixed code, and shows in [`IssueStatusReporter::health`]. The
 //!   next version of the job starts again.
+//! * **The end state is written once more** (finding STS-3). The comment and the label are written
+//!   by list and then edit, and GitHub has no conditional edit, so a second worker's older write can
+//!   land after a newer one and leave a wrong end state that nothing would repair. After the end
+//!   state of a job is written, the same update is made again after [`RECHECK_AFTER`]. It is
+//!   idempotent and never overwrites a newer stamp. A recheck is not recorded, is not retried, and
+//!   counts against the bounds like any update.
 //!
 //! # What it writes on, and what it never touches
 //!
+//! * **Only after intake accepted the issue** (finding STS-1). A job gets a status only when its
+//!   stored original request names an issue in the job's own repository **and** its intake stage
+//!   run has passed (a run that passed and was later replaced counts). Intake is where the label,
+//!   the person who applied it and the five-second rule are checked against GitHub (AUT-11), so
+//!   before it passes the factory has not accepted anything. The rule covers every job, whoever
+//!   made it. A job made through `POST /v1/jobs` has its request from the moment it exists, and
+//!   used to be written on before intake looked at the issue; a requester could aim the App at
+//!   any issue number of a registered repository. A job a webhook made has no request until intake
+//!   stored it. A job that intake refuses, or that ends before intake passed, gets nothing, not
+//!   even its last state. The job state `RECEIVED` therefore never reaches an issue: a job that is
+//!   waiting for admission has not been through intake, so the label `factory: queued` exists in
+//!   the policy (one label for each state) and this step never writes it.
 //! * Only for a repository that is registered and **enabled** (checked when the job is read and
 //!   again just before the write), and only on the issue that the job's stored original request
-//!   names, in the repository of the job. A job that has no original request yet (a job a webhook
-//!   made, before intake has fetched and recorded the issue) has no issue the factory has accepted
-//!   and gets no status.
+//!   names, in the repository of the job. The repository is compared without regard to case, as
+//!   GitHub does, and the issue is addressed with the name as registered (finding STS-8).
+//! * Only when the approval policy lets it: the row `write_status_label` must exist, need no person
+//!   (`requires: none`) and allow the job's autonomy level (finding STS-6). If the row is missing or
+//!   changed to need a person, the step does not write at all and says so
+//!   ([`StatusPermission`], [`IssueStatusOff`]).
 //! * A job that was already over when this worker first looked, and that it never wrote for, is
 //!   left alone unless it ended within [`ENROL_WINDOW`]: turning the feature on does not rewrite
 //!   the history of the repository.
@@ -46,9 +69,11 @@
 //! # Write amplification
 //!
 //! GitHub asks an integration to make changes serially, one second apart (see the adapter). This
-//! step makes at most [`MAX_UPDATES_PER_MINUTE`] updates a minute, one at a time, and one update
-//! is a few requests. A flood of state changes therefore turns into a bounded trickle, newest
-//! version first for each job.
+//! step makes at most [`MAX_UPDATES_PER_MINUTE`] updates a minute and [`MAX_UPDATES_PER_HOUR`] an
+//! hour, one at a time, and one update is a few requests (about eight, with the credential).
+//! The hourly bound keeps the step to a fraction of an installation's hourly budget that it
+//! shares with the stage tokens. A flood of state changes therefore turns into a bounded trickle,
+//! newest version first for each job. These numbers are guesses until a real run.
 
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -57,12 +82,13 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use factory_domain::ids::{AuditEventId, CorrelationId, JobId, RepositoryId, TenantId};
+use factory_domain::policy::approval::{ApprovalPolicy, Requirement};
 use factory_domain::policy::issue_workflow::StatusLabels;
 use factory_domain::redaction::Redactor;
 use factory_domain::scope::TenantScope;
 use factory_domain::state::{JobStatus, StageRunStatus, Status as _};
 use factory_domain::values::{AggregateVersion, Sha256Digest, Slug, Timestamp};
-use factory_domain::vocabulary::StageKind;
+use factory_domain::vocabulary::{AutonomyLevel, StageKind};
 use factory_github::percent_encode_component;
 use factory_ports::clock::{Clock, IdGenerator};
 use factory_ports::githost::{ChangeHost, GitHostError, IssueRef};
@@ -102,6 +128,18 @@ pub const LONGEST_BACKOFF: Duration = Duration::from_secs(20 * 60);
 
 /// The most updates made in one minute, across all tenants of this worker.
 pub const MAX_UPDATES_PER_MINUTE: usize = 6;
+
+/// The most updates made in one hour, across all tenants of this worker. One update is about eight
+/// requests, so this is about a fifth of the 5,000 requests an hour that an installation commonly
+/// has, and the stage tokens use the same budget. A guess until a real run.
+pub const MAX_UPDATES_PER_HOUR: usize = 120;
+
+/// How long after the end state of a job was written the step writes it once more (finding STS-3).
+pub const RECHECK_AFTER: Duration = Duration::from_secs(120);
+
+/// The longest wait that a `Retry-After` from GitHub can add to the next try. The adapter already
+/// caps what it reports at one hour; this keeps the step to the same bound whatever the adapter says.
+pub const LONGEST_RETRY_AFTER: Duration = Duration::from_secs(3600);
 
 /// How long after the end of a job this worker still writes its last state when it has never
 /// written for the job before.
@@ -180,6 +218,37 @@ impl FailureCode {
             GitHostError::UnsafeText
             | GitHostError::BranchNotAllowed
             | GitHostError::Rejected(_) => Self::Refused,
+        }
+    }
+}
+
+/// A failed try: the code that the audit log and the health report show, and the wait that GitHub
+/// asked for, when it asked for one. The wait is not shown or recorded as text; it only moves the
+/// time of the next try.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Failure {
+    code: FailureCode,
+    retry_after: Option<Duration>,
+}
+
+impl Failure {
+    fn of(error: &GitHostError) -> Self {
+        let retry_after = match error {
+            GitHostError::RateLimited { retry_after } => *retry_after,
+            _ => None,
+        };
+        Self {
+            code: FailureCode::of(error),
+            retry_after,
+        }
+    }
+}
+
+impl From<FailureCode> for Failure {
+    fn from(code: FailureCode) -> Self {
+        Self {
+            code,
+            retry_after: None,
         }
     }
 }
@@ -298,8 +367,11 @@ pub struct IssueStatusDeps {
     pub jobs: Arc<ActiveJobs>,
     /// The tenants this worker serves.
     pub tenants: Vec<TenantId>,
-    /// The hash of the policy in force, written on the records.
+    /// The hash of the policies in force, written on the records: the security and approval
+    /// policies and `policies/issue-workflow.yaml` together (finding STS-6).
     pub policy_hash: Sha256Digest,
+    /// What the approval policy says about writing a status label.
+    pub permission: StatusPermission,
     /// The one redactor of the process. A comment with a secret in it is not written.
     pub redactor: Arc<Redactor>,
 }
@@ -318,6 +390,8 @@ struct Pending {
     stage: Option<StageKind>,
     failures: u32,
     not_before: Option<Timestamp>,
+    /// True for the second write of an end state (finding STS-3).
+    recheck: bool,
 }
 
 #[derive(Default)]
@@ -332,7 +406,7 @@ struct State {
     /// that meets the same version counts it as settled, so a failed try is not queued again at
     /// once, with no back-off.
     in_flight: HashMap<JobId, i64>,
-    /// When the last updates were made, for the rate bound.
+    /// When the updates of the last hour were made, for the rate bounds.
     recent_updates: VecDeque<Timestamp>,
     health: StatusHealth,
 }
@@ -451,6 +525,14 @@ fn derived_id(kind: &str, job: JobId, version: AggregateVersion, attempt: u32) -
 fn backoff(failures: u32) -> Duration {
     let doubled = FIRST_BACKOFF.saturating_mul(2_u32.saturating_pow(failures.saturating_sub(1)));
     doubled.min(LONGEST_BACKOFF)
+}
+
+/// The wait before the next try: the larger of the step's own back-off and the wait that GitHub
+/// asked for (finding STS-2). A `Retry-After` shorter than the back-off changes nothing; a longer
+/// one is obeyed, up to [`LONGEST_RETRY_AFTER`].
+#[must_use]
+pub fn next_wait(failures: u32, retry_after: Option<Duration>) -> Duration {
+    backoff(failures).max(retry_after.map_or(Duration::ZERO, |wait| wait.min(LONGEST_RETRY_AFTER)))
 }
 
 impl Inner {
@@ -639,6 +721,7 @@ impl Inner {
             stage: target.stage,
             failures: 0,
             not_before: None,
+            recheck: false,
         };
         let mut state = self.state();
         if state.pending.len() < PENDING_CAP || state.pending.contains_key(&id) {
@@ -673,11 +756,15 @@ impl Inner {
         Some(newest)
     }
 
-    /// The issue a job's status goes on, when the factory has accepted it for the job: the job's
-    /// stored original request names it, it is in the job's own repository, and the repository is
-    /// registered and enabled. `None` for anything less; `None` of the outer option when the store
-    /// cannot answer.
+    /// The issue a job's status goes on, when the factory has accepted it for the job: the approval
+    /// policy lets the step write at the job's level, the job's stored original request names an
+    /// issue in the job's own repository, the repository is registered and enabled, and the
+    /// intake stage run has passed. `None` for anything less; `None` of the outer option when the
+    /// store cannot answer.
     async fn resolve(&self, tx: &mut dyn Tx, job: &Versioned<Job>) -> Option<Option<Target>> {
+        if !self.deps.permission.allows(job.value.autonomy_level) {
+            return Some(None);
+        }
         let request = match tx.get_original_request(job.value.id, None).await {
             Ok(request) => request,
             Err(StoreError::NotFound) => return Some(None),
@@ -688,24 +775,31 @@ impl Inner {
             Err(StoreError::NotFound) => return Some(None),
             Err(_) => return None,
         };
-        let Some(issue) = request.source_ref.as_deref().and_then(issue_of) else {
+        let Some(named) = request.source_ref.as_deref().and_then(issue_of) else {
             return Some(None);
         };
         let Ok(repo) = RepoRef::parse(&repository.full_name) else {
             return Some(None);
         };
-        if !repository.enabled
-            || !issue
-                .repo
-                .to_string()
-                .eq_ignore_ascii_case(&repo.to_string())
-        {
+        // GitHub names are not case sensitive, so the comparison is not either. The issue is then
+        // addressed with the name as registered, which is the one the credential is minted for
+        // and the one that is shown (finding STS-8).
+        if !repository.enabled || !named.repo.same_repository(&repo) {
             return Some(None);
         }
-        let stage = match tx.list_stage_runs(job.value.id).await {
-            Ok(runs) => current_stage(runs.iter().map(|r| (r.value.kind, r.value.status))),
+        let issue = IssueRef {
+            repo: repo.clone(),
+            number: named.number,
+        };
+        let runs = match tx.list_stage_runs(job.value.id).await {
+            Ok(runs) => runs,
             Err(_) => return None,
         };
+        // The factory has accepted the issue when the intake stage has passed (finding STS-1).
+        if !intake_accepted(runs.iter().map(|r| (r.value.kind, r.value.status))) {
+            return Some(None);
+        }
+        let stage = current_stage(runs.iter().map(|r| (r.value.kind, r.value.status)));
         Some(Some(Target { repo, issue, stage }))
     }
 
@@ -726,7 +820,7 @@ impl Inner {
         let mut state = self.state();
         while let Some(front) = state.recent_updates.front() {
             if front
-                .checked_add(Duration::from_secs(60))
+                .checked_add(Duration::from_secs(3600))
                 .is_some_and(|end| end <= now)
             {
                 state.recent_updates.pop_front();
@@ -734,7 +828,17 @@ impl Inner {
                 break;
             }
         }
-        if state.recent_updates.len() >= MAX_UPDATES_PER_MINUTE {
+        let in_the_last_minute = state
+            .recent_updates
+            .iter()
+            .filter(|at| {
+                at.checked_add(Duration::from_secs(60))
+                    .is_none_or(|end| end > now)
+            })
+            .count();
+        if in_the_last_minute >= MAX_UPDATES_PER_MINUTE
+            || state.recent_updates.len() >= MAX_UPDATES_PER_HOUR
+        {
             return None;
         }
         let id = state
@@ -752,21 +856,42 @@ impl Inner {
         let outcome = self.write(&item).await;
         let job = item.job;
         match outcome {
+            // The second write of an end state is a check. It records nothing, and a failure of it
+            // is logged and dropped: the first write is on record, and the next change of the job
+            // writes again.
+            Ok(()) if item.recheck => {}
+            Err(failure) if item.recheck => {
+                tracing::warn!(
+                    code = failure.code.word(),
+                    "the end state of a job could not be checked on its issue; the job is not affected"
+                );
+            }
             Ok(()) => {
                 {
                     let mut state = self.state();
                     state.seen.insert(item.job, item.version.get());
                     state.health.written += 1;
+                    if item.status.is_terminal() {
+                        // The end state stays for good, and a late write of an older version
+                        // would leave it wrong with nothing to repair it (STS-3). A newer entry
+                        // for the job, if a scan queued one, is kept.
+                        let mut again = item.clone();
+                        again.recheck = true;
+                        again.failures = 0;
+                        again.not_before = self.deps.clock.now().checked_add(RECHECK_AFTER);
+                        state.pending.entry(item.job).or_insert(again);
+                    }
                 }
                 self.record(&item, WRITTEN, AuditDecision::Record, 0, None)
                     .await;
             }
-            Err(code) => self.failed(item, code).await,
+            Err(failure) => self.failed(item, failure).await,
         }
         self.state().in_flight.remove(&job);
     }
 
-    async fn failed(&self, mut item: Pending, code: FailureCode) {
+    async fn failed(&self, mut item: Pending, failure: Failure) {
+        let code = failure.code;
         item.failures += 1;
         let give_up = !code.can_be_retried() || item.failures >= MAX_TRIES;
         let now = self.deps.clock.now();
@@ -778,7 +903,8 @@ impl Inner {
                 // Settled for this version: the next version of the job starts again.
                 state.seen.insert(item.job, item.version.get());
             } else {
-                let wait = backoff(item.failures);
+                // The larger of the back-off and the wait GitHub asked for (STS-2).
+                let wait = next_wait(item.failures, failure.retry_after);
                 item.not_before = now.checked_add(wait);
                 // A newer version that a scan queued meanwhile replaces this one.
                 state
@@ -804,10 +930,10 @@ impl Inner {
     }
 
     /// One update: the comment first (it carries the stamp that settles a race), then the label.
-    async fn write(&self, item: &Pending) -> Result<(), FailureCode> {
+    async fn write(&self, item: &Pending) -> Result<(), Failure> {
         // The repository must still be enabled and the issue must still be the job's.
         if !self.still_allowed(item).await? {
-            return Err(FailureCode::NotAllowed);
+            return Err(FailureCode::NotAllowed.into());
         }
         let link = (item.status == JobStatus::Completed)
             .then(|| pull_request_link(&item.repo, item.job))
@@ -819,7 +945,7 @@ impl Inner {
             .contains_secret(text.as_bytes())
             .unwrap_or(true)
         {
-            return Err(FailureCode::Refused);
+            return Err(FailureCode::Refused.into());
         }
         let stamp = StatusStamp {
             started: item.started,
@@ -830,9 +956,15 @@ impl Inner {
         let label = self.deps.labels.label_for(item.status);
 
         // A fresh identifier for the credential of this round. The sweep of ended jobs spares it
-        // while the round runs, and the credential is ended when the round is over.
+        // while the round runs, and the credential is ended when the round is over. The round
+        // ends the credential also when the task panics or is dropped (STS-4).
         let session = JobId::from_uuid(self.deps.ids.new_uuid());
-        self.deps.jobs.enter(session, item.tenant);
+        let round = Round::start(
+            Arc::clone(&self.deps.jobs),
+            Arc::clone(&self.deps.host),
+            session,
+            item.tenant,
+        );
         let scope = StatusScope {
             tenant: item.tenant,
             session,
@@ -844,7 +976,7 @@ impl Inner {
                 .writer
                 .upsert_status_comment(&scope, &item.issue, &comment)
                 .await
-                .map_err(|e| FailureCode::of(&e))?;
+                .map_err(|e| Failure::of(&e))?;
             if matches!(written, CommentWrite::Superseded(_)) {
                 // A newer update owns the issue. Its label is its own to write.
                 return Ok(());
@@ -854,27 +986,26 @@ impl Inner {
                 .set_status_label(&scope, &item.issue, label)
                 .await
                 .map(|_| ())
-                .map_err(|e| FailureCode::of(&e))
+                .map_err(|e| Failure::of(&e))
         }
         .await;
-        let _ = self.deps.host.revoke_job_tokens(session).await;
-        self.deps.jobs.leave(session);
+        round.finish().await;
         done
     }
 
-    async fn still_allowed(&self, item: &Pending) -> Result<bool, FailureCode> {
+    async fn still_allowed(&self, item: &Pending) -> Result<bool, Failure> {
         let mut tx = self
             .deps
             .store
             .begin(TenantScope::new(item.tenant))
             .await
-            .map_err(|_| FailureCode::Unavailable)?;
+            .map_err(|_| Failure::from(FailureCode::Unavailable))?;
         let found = tx.get_repository(item.repository).await;
         let _ = tx.rollback().await;
         match found {
             Ok(repository) => Ok(repository.value.enabled),
             Err(StoreError::NotFound) => Ok(false),
-            Err(_) => Err(FailureCode::Unavailable),
+            Err(_) => Err(FailureCode::Unavailable.into()),
         }
     }
 
@@ -942,6 +1073,331 @@ struct Target {
     stage: Option<StageKind>,
 }
 
+/// One round of writes: the session that keys the credential, noted in the set of jobs the
+/// process is working on so that the sweep of ended jobs spares it, and ended when the round is
+/// over. If the task panics or is dropped while the round runs (a shutdown, an abort), `finish`
+/// is never reached; dropping the round then lifts the shield and ends the credential from a
+/// task of its own, so that neither stays for the life of the process (finding STS-4).
+struct Round {
+    jobs: Arc<ActiveJobs>,
+    host: Arc<dyn ChangeHost>,
+    session: JobId,
+    finished: bool,
+}
+
+impl Round {
+    fn start(
+        jobs: Arc<ActiveJobs>,
+        host: Arc<dyn ChangeHost>,
+        session: JobId,
+        tenant: TenantId,
+    ) -> Self {
+        jobs.enter(session, tenant);
+        Self {
+            jobs,
+            host,
+            session,
+            finished: false,
+        }
+    }
+
+    /// Ends the credential of the round, then lifts the shield.
+    async fn finish(mut self) {
+        self.finished = true;
+        let _ = self.host.revoke_job_tokens(self.session).await;
+        self.jobs.leave(self.session);
+    }
+}
+
+impl Drop for Round {
+    fn drop(&mut self) {
+        if self.finished {
+            return;
+        }
+        let (jobs, host, session) = (Arc::clone(&self.jobs), Arc::clone(&self.host), self.session);
+        match tokio::runtime::Handle::try_current() {
+            // The shield stays while the credential is ended, so that the sweep does not race it.
+            Ok(runtime) => {
+                runtime.spawn(async move {
+                    let _ = host.revoke_job_tokens(session).await;
+                    jobs.leave(session);
+                });
+            }
+            // No runtime: the process is going away. The shield is lifted, and the sweep or the
+            // hour that GitHub gives the token ends it.
+            Err(_) => jobs.leave(session),
+        }
+    }
+}
+
+/// What the approval policy says about writing a status label (finding STS-6): the row
+/// `write_status_label` of the action table. It must exist and need no person
+/// (`requires: none`), and it names the lowest autonomy level at which the step may write. The
+/// row used to be read by no code, so an architect who changed it to need a person would have
+/// stopped nothing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StatusPermission {
+    min_level: AutonomyLevel,
+}
+
+impl StatusPermission {
+    /// The action of the policy table that this step needs.
+    pub const ACTION: &'static str = "write_status_label";
+
+    /// A permission from the lowest level, for a test or a tool that has no policy.
+    #[must_use]
+    pub const fn from_level(min_level: AutonomyLevel) -> Self {
+        Self { min_level }
+    }
+
+    /// Reads the row from the approval policy.
+    ///
+    /// # Errors
+    /// A fixed sentence when the row is missing, needs a person or a policy decision (or depends
+    /// on the level), or names a level that does not exist.
+    pub fn from_policy(policy: &ApprovalPolicy) -> Result<Self, &'static str> {
+        let Some(row) = policy.actions.iter().find(|row| row.id == Self::ACTION) else {
+            return Err("the approval policy has no write_status_label row");
+        };
+        if row.requires != Some(Requirement::None) || row.requires_by_level.is_some() {
+            return Err(
+                "write_status_label needs a person or a policy decision in the approval policy",
+            );
+        }
+        match AutonomyLevel::parse(&row.min_level) {
+            Ok(min_level) => Ok(Self { min_level }),
+            Err(_) => Err("write_status_label names an autonomy level that does not exist"),
+        }
+    }
+
+    /// True when the step may write for a job at `level`.
+    #[must_use]
+    pub fn allows(&self, level: AutonomyLevel) -> bool {
+        let rank = |l: AutonomyLevel| AutonomyLevel::ALL.iter().position(|x| *x == l);
+        rank(level) >= rank(self.min_level)
+    }
+}
+
+/// The step when the policy it needs cannot be used (finding STS-7): the file
+/// `policies/issue-workflow.yaml` is missing or broken, its trigger label differs from the one the
+/// engine acts on, or the approval policy does not allow the write. It writes **nothing** on any
+/// issue, which is the safe side for the labels, and it does not stop the worker, because the
+/// status is observability and no job may wait for it. It reports itself as degraded with the
+/// reason, and records the fact once for each tenant it serves in the audit log
+/// (`issue_status.disabled`). A new worker with a sound policy replaces it.
+pub struct IssueStatusOff {
+    store: Arc<dyn Store>,
+    tenants: Vec<TenantId>,
+    policy_hash: Sha256Digest,
+    reason: String,
+    recorded: Mutex<HashSet<TenantId>>,
+}
+
+/// The audit action of a step that is off because its policy cannot be used.
+pub const DISABLED: &str = "issue_status.disabled";
+
+/// The longest reason kept, in characters.
+const REASON_CHARS: usize = 300;
+
+impl IssueStatusOff {
+    /// A step that writes nothing. `reason` is a plain sentence about the policy. It is cut and
+    /// stripped of anything but printable characters.
+    #[must_use]
+    pub fn new(
+        store: Arc<dyn Store>,
+        tenants: Vec<TenantId>,
+        policy_hash: Sha256Digest,
+        reason: &str,
+    ) -> Self {
+        let reason: String = reason
+            .chars()
+            .map(|c| if c.is_control() { ' ' } else { c })
+            .take(REASON_CHARS)
+            .collect();
+        tracing::error!(
+            reason = %reason,
+            "the issue status step is off: nothing is written on any issue; jobs are not affected"
+        );
+        Self {
+            store,
+            tenants,
+            policy_hash,
+            reason,
+            recorded: Mutex::new(HashSet::new()),
+        }
+    }
+
+    /// The reason the step is off.
+    #[must_use]
+    pub fn reason(&self) -> &str {
+        &self.reason
+    }
+
+    /// The line for the health report: always degraded, with the reason.
+    #[must_use]
+    pub fn health_check(&self) -> CheckResult {
+        CheckResult::degraded(
+            "issue status",
+            &format!("off, nothing is written on any issue: {}", self.reason),
+        )
+    }
+
+    fn recorded(&self) -> MutexGuard<'_, HashSet<TenantId>> {
+        self.recorded.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    async fn record_for(&self, tenant: TenantId) {
+        let (Ok(actor), Ok(action)) = (Slug::parse(ACTOR), AuditAction::new(DISABLED)) else {
+            return;
+        };
+        let digest = Sha256Digest::of(format!("{DISABLED}\n{tenant}\n{}", self.reason).as_bytes());
+        let number = u128::from_str_radix(&digest.hex()[..32], 16).unwrap_or(0);
+        let id = uuid::Builder::from_random_bytes(number.to_be_bytes()).into_uuid();
+        let event = NewAuditEvent {
+            id: AuditEventId::from_uuid(id),
+            actor: AuditActor::System(actor),
+            action,
+            subject: "issue status step".to_owned(),
+            decision: AuditDecision::Deny,
+            reason: format!(
+                "The issue status step is off and writes nothing on any issue: {}",
+                self.reason
+            ),
+            policy_hash: self.policy_hash.clone(),
+            job: None,
+            stage_run: None,
+            correlation_id: CorrelationId::from_uuid(id),
+        };
+        let Ok(mut tx) = self.store.begin(TenantScope::new(tenant)).await else {
+            return;
+        };
+        let written = match tx.record_audit(event).await {
+            Ok(_) | Err(StoreError::Constraint(_)) => tx.commit().await.is_ok(),
+            Err(_) => {
+                let _ = tx.rollback().await;
+                false
+            }
+        };
+        if written {
+            self.recorded().insert(tenant);
+        }
+    }
+}
+
+/// What the worker supplies to build the step. The policies are loaded here, so that a test can
+/// build the step from a checkout that has no policy file.
+pub struct StatusStepInputs {
+    /// The store, on the worker's tenant pool.
+    pub store: Arc<dyn Store>,
+    /// Writes the label and the comment.
+    pub writer: Arc<dyn IssueStatusWriter>,
+    /// Ends the credential of a round of writes.
+    pub host: Arc<dyn ChangeHost>,
+    /// Time.
+    pub clock: Arc<dyn Clock>,
+    /// Identifiers for the rounds of writes.
+    pub ids: Arc<dyn IdGenerator>,
+    /// Jobs the process is working on.
+    pub jobs: Arc<ActiveJobs>,
+    /// The tenants this worker serves.
+    pub tenants: Vec<TenantId>,
+    /// The one redactor of the process.
+    pub redactor: Arc<Redactor>,
+    /// The approval policy, for the row `write_status_label` and the trigger label.
+    pub approval: Arc<ApprovalPolicy>,
+    /// The hash of the security and approval policies.
+    pub base_policy_hash: Sha256Digest,
+    /// The protected checkout that holds `policies/issue-workflow.yaml`.
+    pub checkout: std::path::PathBuf,
+    /// Where job workspaces live; a checkout inside one is refused.
+    pub untrusted_roots: Vec<std::path::PathBuf>,
+}
+
+/// The step the worker runs before each claim: the one that writes, or, when its policy cannot be
+/// used, the one that writes nothing and says why (finding STS-7). Either way the worker starts.
+pub enum StatusStep {
+    /// The policies are sound; the step writes the state of jobs on their issues.
+    Writing(Arc<IssueStatusReporter>),
+    /// The policies cannot be used; the step writes nothing and reports itself as degraded.
+    Off(Arc<IssueStatusOff>),
+}
+
+impl StatusStep {
+    /// Loads the policies and builds the step. It does not fail: a policy that cannot be used
+    /// gives the off step, and the reason is in the log, in the health line and in the audit log.
+    #[must_use]
+    pub fn build(inputs: StatusStepInputs) -> Self {
+        let roots: Vec<&std::path::Path> = inputs
+            .untrusted_roots
+            .iter()
+            .map(std::path::PathBuf::as_path)
+            .collect();
+        match crate::startup::load_status_policy(
+            &inputs.checkout,
+            &roots,
+            &inputs.approval,
+            &inputs.base_policy_hash,
+        ) {
+            Ok(policy) => Self::Writing(Arc::new(IssueStatusReporter::new(IssueStatusDeps {
+                store: inputs.store,
+                writer: inputs.writer,
+                host: inputs.host,
+                labels: policy.labels,
+                clock: inputs.clock,
+                ids: inputs.ids,
+                jobs: inputs.jobs,
+                tenants: inputs.tenants,
+                policy_hash: policy.policy_hash,
+                permission: policy.permission,
+                redactor: inputs.redactor,
+            }))),
+            Err(refused) => Self::Off(Arc::new(IssueStatusOff::new(
+                inputs.store,
+                inputs.tenants,
+                inputs.base_policy_hash,
+                &refused.0,
+            ))),
+        }
+    }
+
+    /// The hook for the worker loop.
+    #[must_use]
+    pub fn hook(&self) -> Arc<dyn BeforeClaim> {
+        match self {
+            Self::Writing(step) => Arc::clone(step) as Arc<dyn BeforeClaim>,
+            Self::Off(step) => Arc::clone(step) as Arc<dyn BeforeClaim>,
+        }
+    }
+
+    /// The line for the health report.
+    #[must_use]
+    pub fn health_check(&self) -> CheckResult {
+        match self {
+            Self::Writing(step) => step.health_check(),
+            Self::Off(step) => step.health_check(),
+        }
+    }
+
+    /// True when the step writes nothing because its policy cannot be used.
+    #[must_use]
+    pub const fn is_off(&self) -> bool {
+        matches!(self, Self::Off(_))
+    }
+}
+
+#[async_trait(?Send)]
+impl BeforeClaim for IssueStatusOff {
+    /// Records the fact for each tenant that has no record yet from this process. A failure to
+    /// record it is tried again at the next claim.
+    async fn before_claim(&self) {
+        for tenant in self.tenants.clone() {
+            if !self.recorded().contains(&tenant) {
+                self.record_for(tenant).await;
+            }
+        }
+    }
+}
+
 /// The version in the subject of a `issue_status.written` record, in the words
 /// `job <id> version <n> state <STATE>`.
 fn written_version(subject: &str) -> Option<i64> {
@@ -950,6 +1406,18 @@ fn written_version(subject: &str) -> Option<i64> {
     words.next()?;
     (words.next()? == "version").then_some(())?;
     words.next()?.parse().ok()
+}
+
+/// True when the intake stage has accepted the job's issue: a run of the intake stage passed. A
+/// run that passed and was replaced since counts, because the issue was accepted then. This is the
+/// whole of the rule of finding STS-1.
+#[must_use]
+pub fn intake_accepted(runs: impl Iterator<Item = (StageKind, StageRunStatus)>) -> bool {
+    let mut runs = runs;
+    runs.any(|(kind, status)| {
+        kind == StageKind::Intake
+            && matches!(status, StageRunStatus::Passed | StageRunStatus::Superseded)
+    })
 }
 
 /// The stage a job is in: the furthest stage of the pipeline that has a run in motion, or none.

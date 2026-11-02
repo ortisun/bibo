@@ -139,7 +139,8 @@ impl GithubIssueStatus {
     /// (`TokenClass::IssueStatus` ignores it); the delivery stage is not named so that nothing can
     /// read it as a grant.
     fn git_scope(scope: &StatusScope, issue: &IssueRef) -> Result<GitScope, GitHostError> {
-        if scope.repo != issue.repo {
+        // Names on GitHub are not case sensitive; the comparison is not either (STS-8).
+        if !scope.repo.same_repository(&issue.repo) {
             return Err(GitHostError::NotFound);
         }
         Ok(GitScope {
