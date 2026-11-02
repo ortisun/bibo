@@ -6,11 +6,12 @@
 //! headings, each followed by text. The sources are embedded with `include_str!`, so the test does
 //! no file I/O. The checker has tests of its own, so it is known to fail on a bad trait.
 
-const SOURCES: [(&str, &str); 11] = [
+const SOURCES: [(&str, &str); 12] = [
     ("agent.rs", include_str!("../src/agent.rs")),
     ("artifact.rs", include_str!("../src/artifact.rs")),
     ("clock.rs", include_str!("../src/clock.rs")),
     ("githost.rs", include_str!("../src/githost.rs")),
+    ("issue_status.rs", include_str!("../src/issue_status.rs")),
     ("paths.rs", include_str!("../src/paths.rs")),
     ("process.rs", include_str!("../src/process.rs")),
     ("registry.rs", include_str!("../src/registry.rs")),
@@ -23,7 +24,7 @@ const SOURCES: [(&str, &str); 11] = [
 /// The ports of work package `s0-ports-and-testkit`, plus the parts of `Tx`, and what ports v1.1
 /// adds: the read-only system transaction, the job repository, the process runner, the webhook
 /// verifier, the metering seam and the turn attestation (additions after v1.1).
-const EXPECTED_TRAITS: [&str; 38] = [
+const EXPECTED_TRAITS: [&str; 39] = [
     "Clock",
     "IdGenerator",
     "CancelSignal",
@@ -62,6 +63,7 @@ const EXPECTED_TRAITS: [&str; 38] = [
     "SpecificationProvider",
     "IssueSource",
     "ChangeHost",
+    "IssueStatusWriter",
 ];
 
 const HEADINGS: [&str; 5] = [

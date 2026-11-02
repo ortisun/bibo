@@ -68,7 +68,7 @@
         "time",
         "unicode-normalization"
       ],
-      "responsibility": "Outbound traits and their closed error enums: Clock, IdGenerator, CancelSignal, Store with SystemTx and Tx and their parts, ArtifactStore, SandboxProvider, SandboxSession, WorkspaceProvider, Workspace, JobRepo, AgentRuntime, ModelRouter, ModelBroker, AgentRegistry, OutputValidator, SpecificationProvider, IssueSource, ChangeHost, WebhookVerifier and ProcessRunner. Also the pure checks that every adapter and fake must share: the sandbox spec validation and posture comparison, the path rules, and the protection preflight."
+      "responsibility": "Outbound traits and their closed error enums: Clock, IdGenerator, CancelSignal, Store with SystemTx and Tx and their parts, ArtifactStore, SandboxProvider, SandboxSession, WorkspaceProvider, Workspace, JobRepo, AgentRuntime, ModelRouter, ModelBroker, AgentRegistry, OutputValidator, SpecificationProvider, IssueSource, ChangeHost, IssueStatusWriter (v1.2), WebhookVerifier and ProcessRunner. Also the pure checks that every adapter and fake must share: the sandbox spec validation and posture comparison, the path rules, and the protection preflight."
     },
     {
       "name": "workflow",
@@ -231,7 +231,7 @@
         "ring",
         "ureq[rustls]"
       ],
-      "responsibility": "IssueSource and ChangeHost against the GitHub REST API as a GitHub App: signs the App JWT, mints per-job, per-stage installation tokens narrowed to one repository, revokes them, verifies webhook signatures, deduplicates deliveries, checks the repository protection preflight, writes only sanitized text. Merging is not implemented.",
+      "responsibility": "IssueSource, ChangeHost and IssueStatusWriter against the GitHub REST API as a GitHub App: signs the App JWT, mints per-job, per-stage installation tokens narrowed to one repository (and a separate issues-write token for the status label and comment), revokes them, verifies webhook signatures, deduplicates deliveries, checks the repository protection preflight, writes only sanitized text. Merging is not implemented.",
       "external_allow_notes": {
         "ring": "RS256 signing of the App JWT and the TLS crypto provider, so one crypto library does both jobs. Chosen in s1-github-adapter over rsa (RUSTSEC-2023-0071, an unfixed timing side channel that cargo deny rejects), over jsonwebtoken with aws-lc-rs (a second crypto stack) and over the openssl command line (DEP-10 allows only docker and git to be started). Signing sits behind the JwtSigner trait so a signing service can replace it. cargo deny and cargo audit pass with the unchanged deny.toml. A new direct dependency needs a human decision: applied by the lead at integration, pending confirmation by the project owner.",
         "ureq": "Blocking HTTP client with rustls only, behind the transport trait, so tests use plain HTTP over loopback to the fake GitHub server and production uses TLS. Same decision record as ring.",
@@ -772,6 +772,12 @@
         "name": "IngestedChange::new",
         "allowed_crates": [
           "sandbox",
+          "testkit"
+        ]
+      },
+      {
+        "name": "StatusLabel::forged_for_negative_tests",
+        "allowed_crates": [
           "testkit"
         ]
       }
