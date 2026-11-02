@@ -13,6 +13,7 @@ use std::collections::BTreeSet;
 use factory_contracts::policy::{
     ISSUE_WORKFLOW_FILE, PolicyError, PolicyErrorKind, PolicyLoader, ProtectedPolicySource,
 };
+use factory_domain::policy::decision::Designation;
 use factory_domain::policy::issue_workflow::{STATUS_PREFIX, check_status_label_name};
 use factory_domain::state::JobStatus;
 use serde_json::Value;
@@ -337,4 +338,104 @@ fn a_missing_file_is_an_error_and_there_is_no_default() {
     let source = ProtectedPolicySource::protected_default_branch(dir.path(), &[]).unwrap();
     let error = PolicyLoader::load_issue_workflow(&source).expect_err("no file, no policy");
     assert_eq!(error.kind, PolicyErrorKind::Unavailable);
+}
+
+// ---- the design rule of the intake stage (ADR 0016, item 2 of "What is not built") ----------
+
+#[test]
+fn the_real_policy_gives_the_stage_a_rule_that_names_the_approving_label_and_the_designation() {
+    let source = ProtectedPolicySource::protected_default_branch(&repo_root(), &[]).unwrap();
+    let policy = PolicyLoader::load_issue_workflow(&source)
+        .expect("loads")
+        .document;
+    let gate = policy.design_gate().expect("the real policy is sound");
+    assert_eq!(gate.approved_label(), "design: approved");
+    assert_eq!(gate.approved_by(), Designation::Approver);
+    // The label that approves is one the policy defines, so the Action and the installer create it.
+    let labels = rendered()["labels"].clone();
+    assert!(
+        labels
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|l| l["name"] == gate.approved_label() && l["kind"] == "design")
+    );
+}
+
+#[test]
+fn the_designation_that_approves_a_design_is_the_one_the_approval_policy_lists_for_the_action() {
+    // The row `accept_design_approval` of policies/approval.yaml says who approves a design, for a
+    // reader of that table. The engine reads `intake_requirements.design_approved_by`. The two must
+    // not drift apart without a test noticing.
+    let source = ProtectedPolicySource::protected_default_branch(&repo_root(), &[]).unwrap();
+    let policy = PolicyLoader::load_issue_workflow(&source)
+        .expect("loads")
+        .document;
+    let approval = PolicyLoader::load_approval(&source)
+        .expect("loads")
+        .document;
+    let row = approval
+        .actions
+        .iter()
+        .find(|row| row.id == "accept_design_approval")
+        .expect("the approval policy has a row for who approves a design");
+    assert_eq!(
+        row.approver_roles.clone().unwrap_or_default(),
+        vec![policy.intake_requirements.design_approved_by.clone()]
+    );
+}
+
+#[test]
+fn a_policy_without_the_approver_of_designs_or_with_a_wrong_one_is_refused() {
+    // The sibling: the real value loads.
+    load_text(&real()).expect("the real policy loads");
+    // Missing: no default in code (a missing policy is an error, never an empty allow).
+    let text = replace_once(&real(), "  design_approved_by: approver\n", "");
+    assert_eq!(refused(&text).kind, PolicyErrorKind::Type);
+    // Unknown designation.
+    let text = replace_once(
+        &real(),
+        "design_approved_by: approver",
+        "design_approved_by: everyone",
+    );
+    assert!(format!("{}", refused(&text)).contains("not a designation"));
+    // The two designations that must not approve a design.
+    for named in ["requester", "operator"] {
+        let text = replace_once(
+            &real(),
+            "design_approved_by: approver",
+            &format!("design_approved_by: {named}"),
+        );
+        assert!(
+            format!("{}", refused(&text)).contains("requester or operator"),
+            "{named}"
+        );
+    }
+    // Others that may decide a design load, so the refusal above is about those two.
+    for named in ["security_approver", "repo_admin", "org_admin"] {
+        let text = replace_once(
+            &real(),
+            "design_approved_by: approver",
+            &format!("design_approved_by: {named}"),
+        );
+        load_text(&text).unwrap_or_else(|error| panic!("{named}: {error}"));
+    }
+}
+
+#[test]
+fn a_policy_with_a_problem_gives_no_design_rule() {
+    // The rule is built only from a policy that passed every check: nothing is judged by a policy
+    // the engine would not load.
+    let source = ProtectedPolicySource::protected_default_branch(&repo_root(), &[]).unwrap();
+    let mut policy = PolicyLoader::load_issue_workflow(&source)
+        .expect("loads")
+        .document;
+    assert!(policy.design_gate().is_ok());
+    policy.intake_requirements.design_track_requires = "vanished".to_owned();
+    let problems = policy.design_gate().expect_err("an unsound policy");
+    assert!(
+        problems
+            .iter()
+            .any(|p| p.path == "intake_requirements.design_track_requires")
+    );
 }

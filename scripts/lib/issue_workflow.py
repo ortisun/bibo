@@ -68,8 +68,13 @@ _ALLOWED = {
     "design_document": {"issue_body_field", "path_glob"},
     "factory_track": {"states"},
     "factory_state": {"job_state", "name", "color", "description"},
-    "intake_requirements": {"design_track_requires"},
+    "intake_requirements": {"design_track_requires", "design_approved_by"},
 }
+
+# The designations that may be named as the approver of a design (`intake_requirements.design_approved_by`).
+# `requester` and `operator` are left out on purpose: the person who asks for work must not also be the
+# person whose label says the design is approved, and an operator does not decide designs.
+_DESIGN_APPROVER_DESIGNATIONS = {"approver", "security_approver", "repo_admin", "org_admin"}
 
 
 def load_policy(path):
@@ -202,6 +207,10 @@ def check_policy(policy, approval, state_machine):
     _unknown("intake_requirements", policy.get("intake_requirements", {}), errors)
     if required not in design_names:
         errors.append("intake-requirement: design_track_requires %r is not a design state" % (required,))
+    approver = (policy.get("intake_requirements") or {}).get("design_approved_by")
+    if approver not in _DESIGN_APPROVER_DESIGNATIONS:
+        errors.append("design-approver: design_approved_by %r must be one of %s"
+                      % (approver, ", ".join(sorted(_DESIGN_APPROVER_DESIGNATIONS))))
     _unknown("approval_requires", (design or {}).get("approval_requires", {}), errors)
     document = ((design or {}).get("approval_requires") or {}).get("design_document") or {}
     _unknown("design_document", document, errors)

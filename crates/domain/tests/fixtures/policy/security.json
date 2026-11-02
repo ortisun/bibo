@@ -1139,6 +1139,12 @@
         "gate": "build",
         "id": "build-code-policy-unresolvable",
         "reason": "waits for a security approver's decision on new build code"
+      },
+      {
+        "code": "design_not_approved",
+        "gate": "intake-design-approved",
+        "id": "intake-design-approved-design-not-approved",
+        "reason": "waits for a person with the approver designation to apply the label of the approved design; an override would start work with no such label on the issue"
       }
     ],
     "nonwaivable_gates": [

@@ -1,14 +1,16 @@
 # =============================================================================
 # policies/issue-workflow.yaml  -  the GitHub issue workflow
 # =============================================================================
-# STATUS: DESIGNED, pending confirmation by the architect. Two kinds of reader use this
+# STATUS: DESIGNED, pending confirmation by the architect. Three kinds of reader use this
 # file. The scripts: `scripts/lib/issue_workflow.py` checks it and renders
 # `onboarding/github/issue-workflow.json`, and `scripts/install.sh` creates the labels from
-# that rendering. And the worker: it loads the file with the strict policy loader
+# that rendering. The worker: it loads the file with the strict policy loader
 # (`PolicyLoader::load_issue_workflow`) and writes one `factory: <state>` label and one
-# status comment for each job (ADR 0017). The engine does not yet read the design track:
-# refusing a design-track issue that is not approved is still listed in ADR 0016 as not
-# built. The value `policy.status` below is a label that no code switches on.
+# status comment for each job (ADR 0017). And the intake stage of the engine: it loads the file
+# again for every attempt and refuses an issue on the design track whose design is not approved
+# (section `intake_requirements`, ADR 0016). If the file cannot be loaded, intake refuses every
+# issue and says why; the label writing alone degrades and the jobs go on. The value
+# `policy.status` below is a label that no code switches on.
 #
 # What this file decides
 #   * Which labels an issue carries as it moves from an idea to a delivered pull request.
@@ -108,10 +110,18 @@ factory_track:
     - { job_state: REJECTED,          name: rejected,             color: "e99695", description: "An approver rejected the result." }
 
 # -----------------------------------------------------------------------------
-# What the engine must check when the trigger label is applied. NOT ENFORCED YET.
-# Until the engine reads this section, the Action only comments (see ADR 0016).
+# What the engine checks when the trigger label is applied. ENFORCED by the intake stage
+# (ADR 0016). The labels are read from GitHub again at intake; the webhook payload is not used.
 # -----------------------------------------------------------------------------
 intake_requirements:
-  # An issue that carries any `design:` label is on the design track. It needs
-  # `design: approved` before a job may start.
+  # An issue that carries any label whose name starts with `design:` (any letter case, with or
+  # without the space after the colon) is on the design track. It needs the label of this state,
+  # `design: approved`, and no other design label, before a job may start. An issue with no such
+  # label is a small, clear change and is not touched by this rule.
   design_track_requires: approved
+  # The factory designation that the person who applied the `design: approved` label must hold on
+  # the protected allowlist (policies/approval.yaml, `roles`). It is matched by numeric GitHub user
+  # id and never by a GitHub role, and an entry narrowed to other repositories does not count. It
+  # cannot be `requester` or `operator`. PENDING CONFIRMATION BY THE ARCHITECT: `approver` is the
+  # engineer's default (ADR 0016), as the defaults of ADR 0009 and ADR 0014 are.
+  design_approved_by: approver
