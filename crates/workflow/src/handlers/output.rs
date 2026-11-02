@@ -148,6 +148,9 @@ const fn environment_of(code: BlockedCode) -> EnvironmentCause {
         | BlockedCode::DependencyUnavailable
         | BlockedCode::EnvironmentUnsupported => EnvironmentCause::ToolMissing,
         BlockedCode::PolicyUnresolvable => EnvironmentCause::PolicyUnloadable,
+        // A design that is not approved is a finding of the intake gate, never an error a stage
+        // returns. If one did return it, the safe reading is a policy that stops the run.
+        BlockedCode::DesignNotApproved => EnvironmentCause::PolicyViolation,
     }
 }
 

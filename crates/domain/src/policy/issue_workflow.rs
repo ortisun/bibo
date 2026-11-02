@@ -34,6 +34,7 @@ use std::collections::BTreeSet;
 use std::fmt;
 
 use super::common::{PolicyStatus, SchemaVersionOne, strict};
+use super::decision::Designation;
 use crate::state::JobStatus;
 
 /// The prefix of every label the factory writes. The factory has this namespace to itself.
@@ -192,10 +193,14 @@ strict! {
 }
 
 strict! {
-    /// What the engine must check when the trigger label is applied.
+    /// What the engine checks when the trigger label is applied.
     pub struct IntakeRequirements {
         /// The design state an issue on the design track needs before a job may start.
         pub design_track_requires: String,
+        /// The designation that the person who applied the label of that state must hold on the
+        /// protected allowlist, such as `approver`. A designation by name, matched by numeric
+        /// GitHub user id; never a GitHub role. Pending confirmation by the architect (ADR 0016).
+        pub design_approved_by: String,
     }
 }
 
@@ -397,6 +402,123 @@ fn glob_is_a_design_document(glob: &str) -> bool {
                     .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-'))))
 }
 
+/// The most design labels the audit record and the reply name.
+const MAX_LABELS_SEEN: usize = 10;
+
+/// The longest label name that is shown, in characters, after the cleaning.
+const MAX_SHOWN_CHARS: usize = 60;
+
+/// A label name as it is safe to show in an audit record: printable ASCII stays, every other
+/// character (a control character, a character outside ASCII) becomes `?`, and a long name is cut.
+/// A hostile name therefore shows that it is odd, and cannot change the line it is written in.
+#[must_use]
+pub fn printable_label(name: &str) -> String {
+    let mut shown: String = name
+        .chars()
+        .take(MAX_SHOWN_CHARS)
+        .map(|c| if (' '..='~').contains(&c) { c } else { '?' })
+        .collect();
+    if name.chars().count() > MAX_SHOWN_CHARS {
+        shown.push_str("...");
+    }
+    shown
+}
+
+/// What the labels on an issue say about its design, before anybody checks who applied one.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DesignLabels {
+    /// No label of the design track. A small, clear change: this rule does not touch it.
+    NotOnTrack,
+    /// The issue is on the design track and its only design label is the approved one. Who applied
+    /// it is still to be checked.
+    ApprovalLabelOnly,
+    /// The issue is on the design track and does not carry the approved label.
+    NotApproved {
+        /// The design labels seen, cleaned for display (see [`printable_label`]).
+        seen: Vec<String>,
+    },
+    /// The approved label is on the issue together with another design label, such as a design
+    /// that was reopened and has not been cleaned up yet. The state is not clear, so it is not
+    /// approved.
+    Ambiguous {
+        /// The design labels seen, cleaned for display.
+        seen: Vec<String>,
+    },
+}
+
+/// The design rule of the intake stage, made from a policy that passed every rule.
+///
+/// It is a pure value: it holds the three facts the rule needs (what makes a label a design label,
+/// which label approves, and which designation must have applied it) and decides nothing about
+/// people. The stage asks the allowlist about the person.
+///
+/// # What counts as a design label
+///
+/// A label is a design label when its name, ignoring leading white space and control characters
+/// and the case of the letters, starts with the prefix of the design namespace up to and including
+/// the colon (`design:`). That is wider than the namespace prefix itself (`design: `, with a
+/// space) on purpose. `design:approved`, `Design: approved` and `design: approved ` are not the
+/// label that approves, and an issue that carries one of them must not slip past the rule by being
+/// "not on the track". They put the issue on the track, where they do not approve it. The
+/// approving label is recognised by an exact, byte for byte, comparison.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DesignGate {
+    track_key: String,
+    approved_label: String,
+    approved_by: Designation,
+}
+
+impl DesignGate {
+    /// The exact name of the label that approves a design, such as `design: approved`.
+    #[must_use]
+    pub fn approved_label(&self) -> &str {
+        &self.approved_label
+    }
+
+    /// The designation that the person who applied the approving label must hold.
+    #[must_use]
+    pub const fn approved_by(&self) -> Designation {
+        self.approved_by
+    }
+
+    /// True when the name is a design label in the wide sense described on the type.
+    #[must_use]
+    pub fn is_design_label(&self, name: &str) -> bool {
+        let trimmed = name.trim_start_matches(|c: char| c.is_whitespace() || c.is_control());
+        trimmed
+            .get(..self.track_key.len())
+            .is_some_and(|head| head.eq_ignore_ascii_case(&self.track_key))
+    }
+
+    /// Reads the labels on an issue, as the code host returned them now.
+    #[must_use]
+    pub fn classify(&self, labels: &[String]) -> DesignLabels {
+        let design: Vec<&String> = labels
+            .iter()
+            .filter(|name| self.is_design_label(name))
+            .collect();
+        if design.is_empty() {
+            return DesignLabels::NotOnTrack;
+        }
+        let approved = design
+            .iter()
+            .any(|name| name.as_str() == self.approved_label);
+        let others = design
+            .iter()
+            .any(|name| name.as_str() != self.approved_label);
+        let seen: Vec<String> = design
+            .iter()
+            .take(MAX_LABELS_SEEN)
+            .map(|name| printable_label(name))
+            .collect();
+        match (approved, others) {
+            (true, false) => DesignLabels::ApprovalLabelOnly,
+            (true, true) => DesignLabels::Ambiguous { seen },
+            (false, _) => DesignLabels::NotApproved { seen },
+        }
+    }
+}
+
 impl IssueWorkflowPolicy {
     /// Every rule the file breaks, or an empty list when it is sound. Pure. These are the rules of
     /// `scripts/lib/issue_workflow.py check` that concern the file alone, plus the two that tie it
@@ -560,6 +682,22 @@ impl IssueWorkflowPolicy {
                 "this is not a design state",
             ));
         }
+        match Designation::parse(&self.intake_requirements.design_approved_by) {
+            None => found.push(problem(
+                "intake_requirements.design_approved_by",
+                ProblemKind::Unknown,
+                format!(
+                    "{:?} is not a designation of the allowlist",
+                    self.intake_requirements.design_approved_by
+                ),
+            )),
+            Some(Designation::Requester | Designation::Operator) => found.push(problem(
+                "intake_requirements.design_approved_by",
+                ProblemKind::Constraint,
+                "the person whose label says a design is approved cannot be held to the requester or operator designation; the person who asks for work must not approve the design",
+            )),
+            Some(_) => {}
+        }
         let document = &design.approval_requires.design_document;
         if !glob_is_a_design_document(&document.path_glob) {
             found.push(problem(
@@ -624,6 +762,35 @@ impl IssueWorkflowPolicy {
             }
         }
         found
+    }
+
+    /// The design rule of the intake stage, when the policy passes every rule.
+    ///
+    /// # Errors
+    /// Every [`Problem`] of the policy. No rule exists after an error: a policy that cannot be
+    /// judged gives the stage nothing to judge by, and the stage then refuses.
+    pub fn design_gate(&self) -> Result<DesignGate, Vec<Problem>> {
+        let found = self.problems();
+        if !found.is_empty() {
+            return Err(found);
+        }
+        let approved_by = Designation::parse(&self.intake_requirements.design_approved_by)
+            .ok_or_else(|| {
+                vec![problem(
+                    "intake_requirements.design_approved_by",
+                    ProblemKind::Unknown,
+                    "this is not a designation of the allowlist",
+                )]
+            })?;
+        let key = self.namespaces.design.prefix.trim().to_ascii_lowercase();
+        Ok(DesignGate {
+            track_key: key,
+            approved_label: format!(
+                "{}{}",
+                self.namespaces.design.prefix, self.intake_requirements.design_track_requires
+            ),
+            approved_by,
+        })
     }
 
     /// The status labels, when the policy passes every rule.
@@ -707,6 +874,108 @@ mod tests {
             check_status_label_name(&format!("{long}x")),
             Err(BadStatusLabel::TooLong)
         );
+    }
+
+    fn rule() -> DesignGate {
+        DesignGate {
+            track_key: "design:".to_owned(),
+            approved_label: "design: approved".to_owned(),
+            approved_by: Designation::Approver,
+        }
+    }
+
+    fn names(list: &[&str]) -> Vec<String> {
+        list.iter().map(|name| (*name).to_owned()).collect()
+    }
+
+    #[test]
+    fn an_issue_with_no_design_label_is_not_on_the_track() {
+        for labels in [
+            &[][..],
+            &["factory"][..],
+            &["bug", "factory", "factory: working"][..],
+            // Words that merely contain or resemble the prefix are not design labels.
+            &["designer", "design-system", "my design: approved", "design"][..],
+        ] {
+            assert_eq!(rule().classify(&names(labels)), DesignLabels::NotOnTrack);
+        }
+    }
+
+    #[test]
+    fn only_the_exact_approving_label_alone_is_the_approval_label() {
+        assert_eq!(
+            rule().classify(&names(&["factory", "design: approved"])),
+            DesignLabels::ApprovalLabelOnly
+        );
+        // Every other state of the track is not approved.
+        for state in ["proposed", "in progress", "in review"] {
+            let label = format!("design: {state}");
+            assert_eq!(
+                rule().classify(&names(&["factory", &label])),
+                DesignLabels::NotApproved {
+                    seen: names(&[&label])
+                }
+            );
+        }
+    }
+
+    #[test]
+    fn a_look_alike_of_the_approving_label_is_on_the_track_and_does_not_approve() {
+        // The sibling of the test above: each of these must NOT be read as approved, and none may
+        // slip past the rule by being read as "not on the track".
+        for hostile in [
+            "design:approved",
+            "Design: approved",
+            "DESIGN: APPROVED",
+            "design: approved ",
+            " design: approved",
+            "\tdesign: approved",
+            "design: Approved",
+            "design: approved\n",
+            "design: approved\u{0}",
+            "design: appro\u{200b}ved",
+            "design: approv\u{0435}d",
+            "design:  approved",
+        ] {
+            match rule().classify(&names(&["factory", hostile])) {
+                DesignLabels::NotApproved { seen } => assert_eq!(seen.len(), 1, "{hostile:?}"),
+                other => panic!("{hostile:?} was read as {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn the_approving_label_beside_another_design_label_is_not_clear_and_is_not_approved() {
+        assert_eq!(
+            rule().classify(&names(&["design: in progress", "design: approved"])),
+            DesignLabels::Ambiguous {
+                seen: names(&["design: in progress", "design: approved"])
+            }
+        );
+        // A look-alike beside the real one is the same: the state is not clear.
+        assert!(matches!(
+            rule().classify(&names(&["design: approved", "Design: approved"])),
+            DesignLabels::Ambiguous { .. }
+        ));
+    }
+
+    #[test]
+    fn what_is_shown_of_a_label_name_is_printable_ascii_and_short() {
+        assert_eq!(printable_label("design: approved"), "design: approved");
+        assert_eq!(printable_label("design:\n approved"), "design:? approved");
+        assert_eq!(printable_label("design: \u{202e}x"), "design: ?x");
+        let long = printable_label(&format!("design: {}", "a".repeat(200)));
+        assert!(long.chars().count() <= MAX_SHOWN_CHARS + 3);
+        assert!(long.ends_with("..."));
+        let seen = match rule().classify(
+            &(0..30)
+                .map(|n| format!("design: x{n}"))
+                .collect::<Vec<String>>(),
+        ) {
+            DesignLabels::NotApproved { seen } => seen,
+            other => panic!("{other:?}"),
+        };
+        assert_eq!(seen.len(), MAX_LABELS_SEEN);
     }
 
     #[test]

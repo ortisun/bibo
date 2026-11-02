@@ -242,6 +242,7 @@ actions:
   - { id: confirm_project_map,            min_level: L0, requires: human,            approver_roles: [operator], when: "a person who holds the operator designation records the commit of the default branch that holds the project map, after reading the map that was merged by pull request; this is an attestation by a person and not a verification: the engine does not read the repository and does not check that the commit exists or that the map is good. Pending confirmation by the architect (ADR 0016)", threats: [T-23] }
   - { id: enable_repository,              min_level: L0, requires: human,            approver_roles: [approver], when: "a person who holds the approver designation lets a registered repository take tickets; refused until a project map commit was attested, and the database refuses the same change for every role. Pending confirmation by the architect (ADR 0016)", threats: [T-23, T-24] }
   - { id: disable_repository,             min_level: L0, requires: human,            approver_roles: [operator], when: "a person who holds the operator designation stops a repository from taking tickets: its webhooks are dropped and no job can be submitted for it; jobs that already exist are not touched. Pending confirmation by the architect (ADR 0016)", threats: [T-23] }
+  - { id: accept_design_approval,         min_level: L0, requires: human,            approver_roles: [approver], when: "the intake stage lets an issue on the design track start work only when the label `design: approved` is on the issue now, no other design label is, and the person who applied it holds the approver designation, matched by numeric user ID and not narrowed away from this repository; the designation is read from intake_requirements.design_approved_by in policies/issue-workflow.yaml and this row must name the same one. Pending confirmation by the architect (ADR 0016)", threats: [T-23, T-01] }
 
 # -----------------------------------------------------------------------------
 # 5. Actions that ALWAYS require a human, at every level, for every repo
@@ -281,6 +282,7 @@ always_human:
   - confirm_project_map
   - enable_repository
   - disable_repository
+  - accept_design_approval
   # Descriptive names. `merge_pr` has a row, and its L3 level is off, so the unconditional
   # statement is made here instead of on the row; `freeze_specification` is a human decision
   # only from risk tier medium up, so the unconditional statement is made here as well.

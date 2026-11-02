@@ -7,11 +7,15 @@
 //!    already holds such a run before any attempt starts; this is the second wall.
 //! 3. Authorize the person who applied the label, by numeric id (`authorize`). A refusal ends the
 //!    stage with `PolicyDenied`. No sandbox is made and no agent runs.
-//! 4. Store the original bytes apart, under their hash.
-//! 5. Assemble the prompt. The issue text goes in as untrusted data and nowhere else.
-//! 6. Run the classifier in a verified sandbox, and read its answer through the schema check and
+//! 4. Judge the design (`design`): read the labels of the issue from the code host now. An issue
+//!    with a design label needs `design: approved`, applied by a person who holds the approver
+//!    designation. A refusal answers the person on the issue, returns the decision `decline` and
+//!    stops before any sandbox is made. A rule that cannot be read blocks the stage run.
+//! 5. Store the original bytes apart, under their hash.
+//! 6. Assemble the prompt. The issue text goes in as untrusted data and nowhere else.
+//! 7. Run the classifier in a verified sandbox, and read its answer through the schema check and
 //!    through `Classification::read`. An answer that fails either is `InvalidOutput`.
-//! 7. Decide the outcome (`decide`) and return the normalized request, the decision and the
+//! 8. Decide the outcome (`decide`) and return the normalized request, the decision and the
 //!    stored original.
 //!
 //! `evaluate` then reads the stored documents back and produces the evidence: whether the original
@@ -25,6 +29,8 @@ use factory_domain::contracts::StageContract;
 use factory_domain::ids::GateReportId;
 use factory_domain::policy::PolicyEngine;
 use factory_domain::policy::RepoKind;
+use factory_domain::policy::authority::Allowlist;
+use factory_domain::policy::issue_workflow::{DesignGate, DesignLabels};
 use factory_domain::redaction::Redactor;
 use factory_domain::scope::TenantScope;
 use factory_domain::values::{GitSha, MediaType, Sha256Digest, Slug, Timestamp};
@@ -36,17 +42,21 @@ use factory_ports::sandbox::TeardownReason;
 use serde_json::Value;
 
 use super::authorize::{Authorization, authorize};
-use super::classify::{Classification, IntakeRules, ReadProblem, decide};
+use super::classify::{Classification, DeclineReason, IntakeRules, Outcome, ReadProblem, decide};
 use super::common::{
     ContractBudget, ContractCriterion, ContractDeliverable, ContractInput, ContractSpec, Executor,
     GateDefinition, GateFacts, GateSubject, gate_report, stage_contract,
+};
+use super::design::{
+    self, ARTIFACT as DESIGN_ARTIFACT, DesignDecision, GATE as DESIGN_GATE, Judging, Reply,
+    ReplyStatus,
 };
 use super::normalize::{
     ClassifierRef, OriginalRef, decision_document, description_from, normalized_request, title_from,
 };
 use super::seams::{
-    AgentOutputCheck, AgentSandboxSpecs, AllowlistSource, CapabilityProbes, FetchedRequest,
-    RequestSnapshot, RequestSource, SeamError,
+    AgentOutputCheck, AgentSandboxSpecs, AllowlistSource, CapabilityProbes, DesignGatePolicy,
+    FetchedRequest, RefusalReplies, ReplyError, RequestSnapshot, RequestSource, SeamError,
 };
 use crate::audit::{AuditAction, AuditDecision, AuditKind};
 use crate::gates::framework::GateDecision;
@@ -98,6 +108,8 @@ pub struct IntakeHandler {
     requests: Arc<dyn RequestSource>,
     issues: Arc<dyn IssueSource>,
     allowlists: Arc<dyn AllowlistSource>,
+    design: Arc<dyn DesignGatePolicy>,
+    replies: Arc<dyn RefusalReplies>,
     policy: Arc<PolicyEngine>,
     redactor: Arc<Redactor>,
     schemas: Arc<dyn AgentOutputCheck>,
@@ -114,6 +126,10 @@ pub struct IntakeDeps {
     pub issues: Arc<dyn IssueSource>,
     /// The named allowlist.
     pub allowlists: Arc<dyn AllowlistSource>,
+    /// The design rule of the issue workflow policy, read now.
+    pub design: Arc<dyn DesignGatePolicy>,
+    /// Answers a person on the issue when the stage refuses it.
+    pub replies: Arc<dyn RefusalReplies>,
     /// The policy evaluators.
     pub policy: Arc<PolicyEngine>,
     /// The redactor of the job.
@@ -135,6 +151,8 @@ impl IntakeHandler {
             requests: deps.requests,
             issues: deps.issues,
             allowlists: deps.allowlists,
+            design: deps.design,
+            replies: deps.replies,
             policy: deps.policy,
             redactor: deps.redactor,
             schemas: deps.schemas,
@@ -151,7 +169,7 @@ impl IntakeHandler {
         identity: &crate::handlers::RunIdentity,
         issue: &IssueRef,
         now: Timestamp,
-    ) -> Result<(Authorization, Option<LabelApplication>), StageError> {
+    ) -> Result<(Authorization, Option<LabelApplication>, Allowlist), StageError> {
         let allowlist = self
             .allowlists
             .current(identity.tenant)
@@ -177,7 +195,7 @@ impl IntakeHandler {
                 .map(|found| (found.actor.id, found.actor.login.as_str())),
             &now,
         );
-        Ok((decision, application))
+        Ok((decision, application, allowlist))
     }
 
     fn scope(&self, ctx_identity: &crate::handlers::RunIdentity, issue: &IssueRef) -> GitScope {
@@ -214,6 +232,8 @@ impl StageHandler for IntakeHandler {
             self.requests.fidelity(),
             self.issues.fidelity(),
             self.allowlists.fidelity(),
+            self.design.fidelity(),
+            self.replies.fidelity(),
             self.schemas.fidelity(),
         ]
         .contains(&Fidelity::Fake)
@@ -323,6 +343,12 @@ impl StageHandler for IntakeHandler {
                     media_type: "text/plain",
                     required: true,
                 },
+                ContractDeliverable {
+                    name: DESIGN_ARTIFACT,
+                    description: "What the design gate found on the issue: no design label, an approved design and who approved it, or the reason the design is not approved.",
+                    media_type: "application/json",
+                    required: true,
+                },
             ],
             criteria: vec![
                 ContractCriterion {
@@ -336,12 +362,17 @@ impl StageHandler for IntakeHandler {
                     gate: OUTCOME_GATE,
                 },
                 ContractCriterion {
+                    id: "design-approved-or-not-needed",
+                    description: "An issue with a design label has the approved design label, applied by a person who holds the approver designation; an issue with none is not held back.",
+                    gate: DESIGN_GATE,
+                },
+                ContractCriterion {
                     id: "plain-english",
                     description: "The title and the description pass the readability gate.",
                     gate: READABILITY_GATE,
                 },
             ],
-            gates: vec![ORIGINAL_GATE, OUTCOME_GATE, READABILITY_GATE],
+            gates: vec![ORIGINAL_GATE, OUTCOME_GATE, DESIGN_GATE, READABILITY_GATE],
             budget: ContractBudget {
                 wall_time_seconds: 300,
                 max_tokens: 20_000,
@@ -403,7 +434,7 @@ impl StageHandler for IntakeHandler {
 
         // 3. Who asked, by numeric id.
         let now = ports.clock.now();
-        let (decision, application) = self
+        let (decision, application, allowlist) = self
             .authorize_label(&identity, &snapshot.issue, now)
             .await?;
         let labelled_by = application.as_ref().map(|found| &found.actor);
@@ -419,7 +450,42 @@ impl StageHandler for IntakeHandler {
             AuditDecision::Granted,
         ));
 
-        // 4. The original, stored apart under its hash.
+        // 4. The design gate. The labels are read from the code host now, and the person who
+        // applied the approved label is matched on the allowlist by numeric id. A rule that cannot
+        // be read blocks the run: the stage never guesses and never falls back to a default.
+        let issue_text = format!(
+            "{}/{}#{}",
+            snapshot.issue.repo.owner(),
+            snapshot.issue.repo.name(),
+            snapshot.issue.number
+        );
+        let (design_rule, design_decision) = match self
+            .judge_design(&identity, &snapshot.issue, &allowlist, now)
+            .await
+        {
+            Ok(judged) => judged,
+            Err(DesignStop::Unjudgeable) => {
+                let status = self
+                    .reply(&identity, &snapshot.issue, Reply::CannotCheck, "")
+                    .await
+                    .ok();
+                ctx.note_audit_because(
+                    AuditAction::new(AuditKind::AuthorizationDecision, AuditDecision::Denied),
+                    design::unjudgeable_reason(&issue_text, status),
+                );
+                // The audit record above names the issue; a log field would be text of outside
+                // origin, so the line says only what happened.
+                tracing::error!(
+                    "intake refuses the issue: the issue workflow policy cannot be used, so the design gate cannot judge"
+                );
+                return Err(StageError::Environment(
+                    factory_domain::machines::guards::EnvironmentCause::PolicyUnloadable,
+                ));
+            }
+            Err(DesignStop::Stage(error)) => return Err(error),
+        };
+
+        // 5. The original, stored apart under its hash.
         let original = ports
             .artifacts
             .put(
@@ -432,7 +498,52 @@ impl StageHandler for IntakeHandler {
             return Err(StageError::Internal);
         }
 
-        // 5. The prompt. The issue text is untrusted data.
+        // A refused design ends the stage here: the person is answered, no sandbox is made and no
+        // classifier runs. The decision is `decline`, and the gate reports BLOCKED.
+        let mut design_status = None;
+        if let DesignDecision::Refused { reason, .. } = &design_decision {
+            design_status = Some(
+                self.reply(
+                    &identity,
+                    &snapshot.issue,
+                    reason.reply(),
+                    design_rule.approved_label(),
+                )
+                .await?,
+            );
+        }
+        if !matches!(design_decision, DesignDecision::NotOnTrack) {
+            ctx.note_audit_because(
+                AuditAction::new(
+                    AuditKind::AuthorizationDecision,
+                    if design_decision.allows_work() {
+                        AuditDecision::Granted
+                    } else {
+                        AuditDecision::Denied
+                    },
+                ),
+                design::audit_reason(&design_decision, &issue_text, design_status),
+            );
+        }
+        let design_document = design::document(
+            &design_decision,
+            design_rule.approved_label(),
+            design_status,
+        );
+        if !design_decision.allows_work() {
+            // No sandbox was made and no agent ran, so there is no posture to verify. The engine
+            // wants the readiness of a stage whose contract places it in a sandbox before it lets
+            // the attempt finish, and it gives the same answer for a stage that needs none (the
+            // engine's own preconditions are then the whole of the guard).
+            ctx.report_sandbox_ready(SandboxReady {
+                posture_verified: true,
+                tool_grants_recorded: true,
+                probe_satisfies_stage: true,
+            });
+            return Self::refused_output(&ports, &snapshot, original, design_document).await;
+        }
+
+        // 6. The prompt. The issue text is untrusted data.
         let manifest = ports
             .registry
             .manifest(&self.config.agent, &VersionReq::Any)
@@ -463,7 +574,7 @@ impl StageHandler for IntakeHandler {
             ))
             .map_err(|_| StageError::Internal)?;
 
-        // 6. The classifier, in a verified sandbox.
+        // 7. The classifier, in a verified sandbox.
         let token = ctx.job_token.ok_or(StageError::Internal)?;
         let need = RoutingNeed {
             stage: StageKind::Intake,
@@ -546,7 +657,7 @@ impl StageHandler for IntakeHandler {
         let outcome = decide(&classification, &self.config.rules)
             .map_err(|_: ReadProblem| StageError::InvalidOutput)?;
 
-        // 7. The documents.
+        // 8. The documents.
         let title = title_from(&classification.summary);
         let description = description_from(&classification);
         let mut normalized = normalized_request(
@@ -591,13 +702,14 @@ impl StageHandler for IntakeHandler {
         // declared artifact for the tenant before the gate runs, so `evaluate` can read it back;
         // a document that the engine stores itself is indexed only after the gate.
         let json_type = MediaType::parse("application/json").map_err(|_| StageError::Internal)?;
-        let mut stored = Vec::with_capacity(3);
+        let mut stored = Vec::with_capacity(4);
         for (name, value) in [
             ("normalized-request", normalized),
             (
                 "intake-decision",
                 decision_document(&outcome, &snapshot.sha256),
             ),
+            (DESIGN_ARTIFACT, design_document),
         ] {
             let bytes = serde_json::to_vec(&value).map_err(|_| StageError::Internal)?;
             let artifact = ports
@@ -630,10 +742,11 @@ impl StageHandler for IntakeHandler {
                 .iter()
                 .find(|output| output.name.as_str() == name)
         };
-        let (Some(normalized), Some(decision), Some(original)) = (
+        let (Some(normalized), Some(decision), Some(original), Some(design_stored)) = (
             read("normalized-request"),
             read("intake-decision"),
             read("original-request"),
+            read(DESIGN_ARTIFACT),
         ) else {
             return Err(StageError::InvalidOutput);
         };
@@ -645,6 +758,9 @@ impl StageHandler for IntakeHandler {
         let normalized_bytes = fetch(normalized).await.map_err(|_| StageError::Tool)?;
         let decision_bytes = fetch(decision).await.map_err(|_| StageError::Tool)?;
         let original_bytes = fetch(original).await.map_err(|_| StageError::Tool)?;
+        let design_bytes = fetch(design_stored).await.map_err(|_| StageError::Tool)?;
+        let design_document: Value =
+            serde_json::from_slice(&design_bytes).map_err(|_| StageError::InvalidOutput)?;
         let normalized: Value =
             serde_json::from_slice(&normalized_bytes).map_err(|_| StageError::InvalidOutput)?;
         let decision: Value =
@@ -765,7 +881,11 @@ impl StageHandler for IntakeHandler {
                 failures: if stops {
                     vec![(
                         word.clone(),
-                        "The request does not go on without an operator.".to_owned(),
+                        if design::is_refused(&design_document) {
+                            "The request does not go on until the design is approved.".to_owned()
+                        } else {
+                            "The request does not go on without an operator.".to_owned()
+                        },
                     )]
                 } else {
                     Vec::new()
@@ -777,6 +897,13 @@ impl StageHandler for IntakeHandler {
                 tools: vec![("factory-intake".to_owned(), "1.0.0".to_owned())],
                 evidence: vec![format!("decision={word}")],
             },
+        )?;
+
+        // Gate: the design. A design that is not approved is reported as BLOCKED with a code of
+        // its own, and the run is blocked as a policy violation (the outcome above is `decline`).
+        let design_report = gate_report(
+            &subject(ctx),
+            &design::gate_facts(&design_document, &self.config.definition_commit)?,
         )?;
 
         // Gate: plain English.
@@ -803,7 +930,7 @@ impl StageHandler for IntakeHandler {
             .map_err(|_| StageError::Internal)?;
 
         Ok(GateDecision {
-            reports: vec![original_report, outcome_report, readability],
+            reports: vec![original_report, outcome_report, design_report, readability],
             review: None,
             human_gate: word == "clarify",
             policy_violation: stops,
@@ -826,7 +953,138 @@ fn slug(name: &str) -> Result<Slug, StageError> {
     Slug::parse(name).map_err(|_| StageError::Internal)
 }
 
+/// Why the design gate could not give a decision.
+enum DesignStop {
+    /// The rule cannot be read. The stage refuses the issue and blocks the run.
+    Unjudgeable,
+    /// A read failed or the answer cannot be trusted. The attempt fails and may be tried again.
+    Stage(StageError),
+}
+
 impl IntakeHandler {
+    /// Judges the design of the issue. The labels come from a live fetch of the issue and the
+    /// applier of the approved label from the timeline of the issue: nothing the webhook carried
+    /// is used. A read that fails, or an issue other than the one asked for, fails the attempt
+    /// (never a pass).
+    async fn judge_design(
+        &self,
+        identity: &crate::handlers::RunIdentity,
+        issue: &IssueRef,
+        allowlist: &Allowlist,
+        now: Timestamp,
+    ) -> Result<(DesignGate, DesignDecision), DesignStop> {
+        let rule = self
+            .design
+            .current()
+            .await
+            .map_err(|_| DesignStop::Unjudgeable)?;
+        let scope = self.scope(identity, issue);
+        let fetched = self
+            .issues
+            .fetch_issue(&scope, issue)
+            .await
+            .map_err(|_| DesignStop::Stage(StageError::Tool))?;
+        if fetched.reference != *issue {
+            return Err(DesignStop::Stage(StageError::Tool));
+        }
+        let labels = rule.classify(&fetched.labels);
+        let applied = if labels == DesignLabels::ApprovalLabelOnly {
+            self.issues
+                .label_application(&scope, issue, rule.approved_label())
+                .await
+                .map_err(|_| DesignStop::Stage(StageError::Tool))?
+        } else {
+            None
+        };
+        let repository = format!("{}/{}", issue.repo.owner(), issue.repo.name());
+        let decision = design::judge(
+            &Judging {
+                gate: &rule,
+                authority: &self.policy.authority,
+                allowlist,
+                tenant: identity.tenant,
+                repository: &repository,
+                now: &now,
+            },
+            labels,
+            applied
+                .as_ref()
+                .map(|found| (found.actor.id, found.actor.login.as_str())),
+        );
+        Ok((rule, decision))
+    }
+
+    /// Answers the person on the issue, once for each stage run. A reply that cannot be delivered
+    /// now fails the attempt, so that it is tried again; one that cannot be delivered at all is
+    /// noted and does not change the refusal.
+    async fn reply(
+        &self,
+        identity: &crate::handlers::RunIdentity,
+        issue: &IssueRef,
+        reply: Reply,
+        approved_label: &str,
+    ) -> Result<ReplyStatus, StageError> {
+        let key = format!("design-gate-{}", identity.stage_run);
+        let text = reply.text(&self.config.label, approved_label);
+        match self.replies.post(identity.tenant, issue, &key, &text).await {
+            Ok(()) => Ok(ReplyStatus::Posted),
+            Err(ReplyError::NotSent) => Ok(ReplyStatus::NotSent),
+            Err(ReplyError::Later) => Err(StageError::Tool),
+        }
+    }
+
+    /// The output of a stage that refused the issue: the decision `decline`, a normalized request
+    /// of fixed sentences (no classifier ran), the original and the design document.
+    async fn refused_output(
+        ports: &crate::handlers::StagePorts<'_>,
+        snapshot: &RequestSnapshot,
+        original: factory_domain::contracts::ArtifactRef,
+        design_document: Value,
+    ) -> Result<StageOutput, StageError> {
+        let json_type = MediaType::parse("application/json").map_err(|_| StageError::Internal)?;
+        let normalized = serde_json::json!({
+            "schema_version": 1,
+            "title": design::REFUSED_TITLE,
+            "description": design::REFUSED_DESCRIPTION,
+            "refused": design::REPORT_BLOCK_CODE,
+            "original": {
+                "revision": snapshot.revision,
+                "sha256": snapshot.sha256,
+                "artifact_sha256": original.sha256,
+            },
+        });
+        let outcome = Outcome::Decline(DeclineReason::DesignNotApproved);
+        let mut stored = Vec::with_capacity(4);
+        for (name, value) in [
+            ("normalized-request", normalized),
+            (
+                "intake-decision",
+                decision_document(&outcome, &snapshot.sha256),
+            ),
+            (DESIGN_ARTIFACT, design_document),
+        ] {
+            let bytes = serde_json::to_vec(&value).map_err(|_| StageError::Internal)?;
+            let artifact = ports
+                .artifacts
+                .put(bytes, json_type.clone())
+                .await
+                .map_err(|_| StageError::Tool)?;
+            stored.push(NamedArtifact {
+                name: slug(name)?,
+                artifact,
+            });
+        }
+        stored.push(NamedArtifact {
+            name: slug("original-request")?,
+            artifact: original,
+        });
+        Ok(StageOutput {
+            documents: Vec::new(),
+            artifacts: stored,
+            ..StageOutput::default()
+        })
+    }
+
     /// Fetches the issue of a job that a webhook created and stores its text as revision 1.
     ///
     /// The webhook payload is a hint and carries no text, and the API holds no credential for the
@@ -860,7 +1118,7 @@ impl IntakeHandler {
         if fetched.reference != issue {
             return Err(StageError::Tool);
         }
-        let (decision, application) = self.authorize_label(identity, &issue, now).await?;
+        let (decision, application, _) = self.authorize_label(identity, &issue, now).await?;
         if !decision.is_authorized() {
             return Err(StageError::PolicyDenied);
         }

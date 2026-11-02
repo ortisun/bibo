@@ -58,6 +58,9 @@ string_enum! {
         PolicyUnresolvable = "policy_unresolvable",
         /// The environment is not supported.
         EnvironmentUnsupported = "environment_unsupported",
+        /// The issue is on the design track and its design is not approved by a person the
+        /// allowlist knows as an approver. The intake stage's design gate reports it (ADR 0016).
+        DesignNotApproved = "design_not_approved",
     }
 }
 

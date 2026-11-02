@@ -137,7 +137,7 @@
       "additionalProperties": false,
       "required": ["code", "missing"],
       "properties": {
-        "code": { "enum": ["tool_unavailable", "tool_probe_failed", "dependency_unavailable", "policy_unresolvable", "environment_unsupported"] },
+        "code": { "enum": ["tool_unavailable", "tool_probe_failed", "dependency_unavailable", "policy_unresolvable", "environment_unsupported", "design_not_approved"] },
         "missing": { "type": "array", "minItems": 1, "items": { "type": "string", "minLength": 1 }, "description": "The tools, services or capabilities that were absent." }
       }
     },

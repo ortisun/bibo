@@ -312,6 +312,21 @@ async fn smoke_body(options: Options) -> factory_workflow::engine::JobView {
         repo: repo.clone(),
         number: 12,
     };
+    // The design gate reads the issue and its labels from the host at intake: this one has the
+    // factory label and no design label, so the design rule does not touch it.
+    let now = factory_domain::values::Timestamp::parse("2026-10-28T10:00:00Z").expect("a time");
+    issues.put_issue(factory_ports::githost::Issue {
+        reference: issue.clone(),
+        title: "Add a --json flag".to_owned(),
+        body: "Please add a --json flag to the word count tool.".to_owned(),
+        author: GithubActor {
+            id: REQUESTER,
+            login: ActorLogin::new("requester-one").expect("a login"),
+        },
+        labels: vec![LABEL.to_owned()],
+        updated_at: now,
+        fetched_at: now,
+    });
     issues
         .seed_label(
             &issue,
@@ -409,6 +424,13 @@ async fn smoke_body(options: Options) -> factory_workflow::engine::JobView {
                 requests: requests.clone(),
                 issues: issues.clone(),
                 allowlists: allowlist.clone(),
+                design: Arc::new(factory_composition::design_gate::FileDesignGatePolicy::new(
+                    root.clone(),
+                )),
+                replies: Arc::new(factory_composition::design_gate::IssueRefusalReplies::new(
+                    Arc::new(FakeChangeHost::sharing(remote.clone())),
+                    Arc::new(RandomIds::new().expect("random")),
+                )),
                 policy: Arc::clone(&policies.engine),
                 redactor: Arc::clone(&redactor),
                 schemas: checker.clone(),

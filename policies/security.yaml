@@ -1216,6 +1216,16 @@ gate_integrity:
       gate: build
       code: policy_unresolvable
       reason: "waits for a security approver's decision on new build code"
+    # An issue on the design track whose design is not approved. Intake reports the gate
+    # `intake-design-approved` as BLOCKED with this code. The design is approved by a person who
+    # holds the designation named in policies/issue-workflow.yaml (`design_approved_by`) applying
+    # the label `design: approved`, which GitHub shows on the issue for everyone. An override would
+    # pass the stage with no such label and leave only an audit record, so the label is the one
+    # way through: the person applies it and the requester applies the factory label again.
+    - id: intake-design-approved-design-not-approved
+      gate: intake-design-approved
+      code: design_not_approved
+      reason: "waits for a person with the approver designation to apply the label of the approved design; an override would start work with no such label on the issue"
   evidence_binding: [head_sha, tree_hash, gate_definition_hash, policy_hash, image_digest, base_sha]
   # Each item maps to a row of the invalidation table in docs/architecture/state-machine.md
   # (section Invalidation, "How each item of gate_integrity.invalidated_by maps to a row"),

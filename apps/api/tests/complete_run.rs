@@ -441,6 +441,13 @@ async fn worker(env: &Env, markers: Option<Arc<dyn DecisionMarkers>>) -> Worker 
                 requests: requests.clone(),
                 issues: issues.clone(),
                 allowlists: allowlist.clone(),
+                design: Arc::new(factory_composition::design_gate::FileDesignGatePolicy::new(
+                    root(),
+                )),
+                replies: Arc::new(factory_composition::design_gate::IssueRefusalReplies::new(
+                    host.clone(),
+                    Arc::new(RandomIds::new().expect("random")),
+                )),
                 policy: Arc::clone(&policies.engine),
                 redactor: Arc::clone(&redactor),
                 schemas: checker,

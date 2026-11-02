@@ -29,9 +29,12 @@ use crate::deliver::{Delivery, validation_handler};
 pub const PENDING: [(StageKind, &str); 1] =
     [(StageKind::DomainDiscovery, documenting::DOMAIN_PROFILE)];
 
+/// The document of the design gate of intake (`factory_workflow::stages::intake::design::ARTIFACT`).
+const DESIGN_GATE_DOCUMENT: &str = factory_workflow::stages::intake::design::ARTIFACT;
+
 /// Deliverables that are stored and never read by a stage of this crate. Each is a record for a
 /// person or for the audit, or is read outside this crate.
-pub const TERMINAL: [(StageKind, &str, &str); 11] = [
+pub const TERMINAL: [(StageKind, &str, &str); 12] = [
     (
         StageKind::Specification,
         "specification-evidence",
@@ -46,6 +49,11 @@ pub const TERMINAL: [(StageKind, &str, &str); 11] = [
         StageKind::Intake,
         "original-request",
         "kept as the text the requester wrote",
+    ),
+    (
+        StageKind::Intake,
+        DESIGN_GATE_DOCUMENT,
+        "the gate of the stage reads it back, and the person reads what the design gate found",
     ),
     (
         StageKind::RepositoryIntelligence,

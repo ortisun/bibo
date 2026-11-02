@@ -16,7 +16,8 @@ use std::sync::Mutex;
 
 use async_trait::async_trait;
 use factory_domain::policy::issue_workflow::{
-    IssueWorkflowPolicy, STATUS_PREFIX, StatusLabel, StatusLabels, check_status_label_name,
+    DesignGate, IssueWorkflowPolicy, STATUS_PREFIX, StatusLabel, StatusLabels,
+    check_status_label_name,
 };
 use factory_domain::vocabulary::Fidelity;
 use factory_ports::githost::{CommentRef, CommentTarget, GitHostError, IssueRef, Rejection};
@@ -31,14 +32,16 @@ use crate::githost::looks_like_a_secret;
 
 const RENDERED_POLICY: &str = include_str!("../../../onboarding/github/issue-workflow.json");
 
-/// The status labels of the policy, built from the rendered policy file with the same validation
-/// as the real one. Every call returns an equal value.
+/// The whole issue workflow policy, built from the rendered policy file
+/// `onboarding/github/issue-workflow.json`: the same labels, the same design states and moves,
+/// the same job-state map. Colors and descriptions are stand-ins, and the designation that approves
+/// a design is the engineer's default, `approver`.
 ///
 /// # Panics
-/// When `onboarding/github/issue-workflow.json` is not a sound rendering. A test that reaches it
-/// is testing against a broken repository.
+/// When the rendering is not a sound policy. A test that reaches it is testing against a broken
+/// repository.
 #[must_use]
-pub fn status_labels() -> StatusLabels {
+pub fn issue_workflow_policy() -> IssueWorkflowPolicy {
     let rendered: Value = serde_json::from_str(RENDERED_POLICY).expect("the rendered policy");
     let factory: Vec<Value> = rendered["factory"]["job_states"]
         .as_object()
@@ -52,30 +55,75 @@ pub fn status_labels() -> StatusLabels {
             json!({"job_state": state, "name": name, "color": "ededed", "description": "A state."})
         })
         .collect();
-    let policy: IssueWorkflowPolicy = serde_json::from_value(json!({
+    let design_prefix = rendered["design"]["prefix"].as_str().expect("a prefix");
+    let design: Vec<Value> = rendered["labels"]
+        .as_array()
+        .expect("labels")
+        .iter()
+        .filter(|label| label["kind"] == "design")
+        .map(|label| {
+            let name = label["name"]
+                .as_str()
+                .and_then(|l| l.strip_prefix(design_prefix))
+                .expect("a design label");
+            json!({"name": name, "color": "c5def5", "description": "A design state."})
+        })
+        .collect();
+    let moves: Vec<Value> = rendered["design"]["transitions"]
+        .as_array()
+        .expect("moves")
+        .iter()
+        .map(|pair| json!({"from": pair[0], "to": pair[1]}))
+        .collect();
+    serde_json::from_value(json!({
         "schema_version": 1,
         "policy": {"id": "issue-workflow", "status": "designed"},
-        "trigger": {"label": "factory", "color": "1d76db", "description": "The trigger."},
+        "trigger": {"label": rendered["trigger"], "color": "1d76db", "description": "The trigger."},
         "namespaces": {
             "design": {"prefix": "design: ", "written_by": "people"},
             "factory": {"prefix": "factory: ", "written_by": "factory"},
         },
         "design_track": {
-            "start_states": ["proposed"],
-            "states": [{"name": "proposed", "color": "c5def5", "description": "Proposed."}],
-            "transitions": [],
+            "start_states": rendered["design"]["start_states"],
+            "states": design,
+            "transitions": moves,
             "approval_requires": {"design_document": {
-                "issue_body_field": "Design document",
-                "path_glob": "docs/designs/*.md",
+                "issue_body_field": rendered["design"]["document_field"],
+                "path_glob": rendered["design"]["document_glob"],
             }},
         },
         "factory_track": {"states": factory},
-        "intake_requirements": {"design_track_requires": "proposed"},
+        "intake_requirements": {
+            "design_track_requires": rendered["design"]["approved"],
+            "design_approved_by": "approver",
+        },
     }))
-    .expect("a policy of the right shape");
-    policy
+    .expect("a policy of the right shape")
+}
+
+/// The status labels of the policy, built from the rendered policy file with the same validation
+/// as the real one. Every call returns an equal value.
+///
+/// # Panics
+/// When `onboarding/github/issue-workflow.json` is not a sound rendering. A test that reaches it
+/// is testing against a broken repository.
+#[must_use]
+pub fn status_labels() -> StatusLabels {
+    issue_workflow_policy()
         .status_labels()
         .expect("the rendered policy has a label for every job state")
+}
+
+/// The design rule of the policy (`design: approved`, applied by an `approver`), built from the
+/// rendered policy file with the same validation as the real one.
+///
+/// # Panics
+/// When the rendering is not a sound policy.
+#[must_use]
+pub fn design_gate() -> DesignGate {
+    issue_workflow_policy()
+        .design_gate()
+        .expect("the rendered policy is sound")
 }
 
 /// A deliberate fault, for proving that the contract suite can fail.

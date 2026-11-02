@@ -45,7 +45,7 @@ The worker reads `FACTORY_CONFIG`. In the column "Required", `yes` means the fil
 | Key | Type | Required | Default | Notes |
 |---|---|---|---|---|
 | `profile` | profile | yes | no default | `production`, `local` or `test`. |
-| `protected_checkout` | path | yes | no default | A checkout of the protected configuration branch. It holds `policies/`, `allowlist/allowlist.yaml` and `.specify/`. It must lie outside every job workspace. |
+| `protected_checkout` | path | yes | no default | A checkout of the protected configuration branch. It holds `policies/`, `allowlist/allowlist.yaml` and `.specify/`. It must lie outside every job workspace. The intake stage reads `policies/issue-workflow.yaml` from it for every attempt, and refuses every issue while that file cannot be used. |
 | `definitions_root` | path | yes | no default | A checkout that holds `agents/`, `profiles/` and the schemas. Often the same directory as `protected_checkout`. |
 | `database` | table | yes | no default | The two connection pools. |
 | `artifacts` | table | yes | no default | Where artifacts are kept. |

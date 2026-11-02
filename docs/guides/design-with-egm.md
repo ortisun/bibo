@@ -1,6 +1,6 @@
 # Design a new solution before the factory builds it
 
-- Status: written on 2026-11-02 from the Elephant-Goldfish Model (EGM) plugin version 0.1.0 (its skills and its Claude Code guide), the architecture decision record (ADR) [0016](../adr/0016-design-phase-onboarding-and-issue-workflow.md) and `policies/issue-workflow.yaml`. Nobody has yet taken an issue through the whole path on GitHub.
+- Status: written on 2026-11-02 from the Elephant-Goldfish Model (EGM) plugin version 0.1.0 (its skills and its Claude Code guide), the architecture decision record (ADR) [0016](../adr/0016-design-phase-onboarding-and-issue-workflow.md) and `policies/issue-workflow.yaml`. Nobody has yet taken an issue through the whole path on GitHub. The design gate at intake is built and tested against fakes only.
 - Form: how-to, with a reference table of the labels.
 - Goal: say which path an issue takes, how a design is made and approved, and what each label means.
 
@@ -54,9 +54,9 @@ If you are not sure, use *new solution*. A design that turns out to be short cos
    Design document: docs/designs/webhook-delivery.md
    ```
 
-   Then change the label to `design: approved`. The Action removes the label if the issue names no such file on the default branch. It checks that the path has no symbolic link in it, and that the file exists. It does not check that the file belongs to this issue. The approval is the merge of the design pull request, so the owner of the repository should require reviewed pull requests on the default branch. Without that rule a merge is not an approval.
+   Then ask a person who holds the approver designation for this repository to change the label to `design: approved`. The factory accepts the label only when such a person applied it ([what the factory refuses](#what-the-factory-refuses)). The Action removes the label if the issue names no such file on the default branch. It checks that the path has no symbolic link in it, and that the file exists. It does not check that the file belongs to this issue. The approval is the merge of the design pull request, so the owner of the repository should require reviewed pull requests on the default branch. Without that rule a merge is not an approval.
 
-7. **Ask the factory.** A named requester applies `factory`. The factory reads the issue, and the design is in the repository for every stage to read.
+7. **Ask the factory.** A named requester applies `factory`. The factory reads the issue and its labels from GitHub again. If the issue is on the design track, it goes on only when the design is approved. The design is in the repository for every stage to read.
 
 ## The labels
 
@@ -67,7 +67,7 @@ Each issue is meant to carry at most one `design:` label and at most one `factor
 | `design: proposed` | The form | A new solution was proposed. Nobody has worked out the design yet. |
 | `design: in progress` | A person | A person and EGM are working out requirements and trade-offs. |
 | `design: in review` | A person | The design is in review: fresh reviewers and a design pull request. |
-| `design: approved` | A person | The design pull request was merged, and the issue names the document. |
+| `design: approved` | A person who holds the approver designation | The design pull request was merged, and the issue names the document. The factory accepts this label only from an approver. |
 | `factory` | A named requester | Ask the factory to work on this issue. Only a named requester can apply it. |
 | `factory: queued` | The factory | The request was accepted and has not started. The factory writes no status before the issue is accepted, so today it does not write this one. |
 | `factory: working` | The factory | The factory is working on this issue. |
@@ -92,11 +92,33 @@ Five things are worth knowing.
 - An operator can switch the writing off with the key `github.write_issue_status`. Nothing else changes when it is off. The worker also writes nothing, starts anyway, and reports a degraded health line when `policies/issue-workflow.yaml` is missing or broken, or when the row `write_status_label` of the approval policy no longer lets it write.
 - The worker makes at most six updates a minute and 120 an hour. When GitHub asks it to wait, it waits at least that long before the next try. It writes the end state of a job a second time after two minutes, to put it right if a second worker's older write landed late.
 
-**Tested against fakes only.** The writing is built and tested against a fake GitHub server. Nobody has run it against the real GitHub, so treat the first runs as a trial and check the labels yourself. The design gate is also not built: the factory does not yet refuse an issue that is on the design track and not approved, so a requester has to hold that line. The Action posts a comment when the `factory` label lands on such an issue.
+**Tested against fakes only.** The writing is built and tested against a fake GitHub server. Nobody has run it against the real GitHub, so treat the first runs as a trial and check the labels yourself. The design gate is built the same way and has the same limit. It ran against fakes of GitHub and of the allowlist, never against the real GitHub.
+
+## What the factory refuses
+
+When a requester applies `factory`, the intake stage reads the issue and its labels from GitHub again. It does not use the labels that the webhook carried, so a label removed or added after the webhook changes the result. Then it applies these rules.
+
+| The issue has | The factory |
+|---|---|
+| No label that starts with `design:` | Goes on. This is the path for a small, clear change. |
+| `design: approved` as its only design label, applied by a person who holds the approver designation | Goes on. |
+| A design label and no `design: approved` | Refuses. The design is not approved yet. |
+| `design: approved` together with another design label | Refuses. The state of the design is not clear. Remove the label that is out of date. |
+| `design: approved`, applied by someone who does not hold the approver designation | Refuses. Ask an approver to apply the label. |
+
+Four details matter.
+
+- **Who counts as an approver.** A person holds the designation by being named on the factory's allowlist, by numeric GitHub user ID. An entry that is narrowed to other repositories does not count here. A GitHub role such as admin or triage grants nothing. The key `intake_requirements.design_approved_by` in `policies/issue-workflow.yaml` names the designation. Its value, `approver`, is the engineer's default and is pending confirmation by the architect.
+- **What counts as a design label.** Any label whose name starts with `design:`, in any letter case, with or without the space after the colon. So `design:approved` and `Design: approved` are design labels, and neither one approves anything. The label that approves is spelled exactly `design: approved`.
+- **What the requester sees.** One comment on the issue. It says that the design is not approved yet, or that the approval came from someone the factory does not accept approvals from, and it says what to do. The job shows as blocked and no agent reads the issue. Nobody can override the refusal. The label on the issue is the one way through. After an approver has applied it, remove the `factory` label and apply it again.
+- **When the factory cannot judge.** If it cannot read `policies/issue-workflow.yaml`, it refuses every issue, with or without a design label, and says in a comment that it could not check. It does not guess and it has no default. The worker prints `NOT READY: design gate` when it starts, and each refusal is logged and audited. Repair the file and the next attempt works, with no restart.
+
+The Action still posts a comment when `factory` lands on an issue whose design is not approved. That comment is now an early warning. The engine is the control, and it holds even if the Action is off, late or skipped.
 
 ## Rules that keep this safe
 
 - The `factory` label is never applied by a form, an Action or an agent. A person on the requester list applies it, and the factory checks that person by numeric user ID. A label alone never authorizes work.
+- The label `design: approved` is a decision of a person, and the factory checks which person. GitHub lets anyone with triage rights apply it, and the Action only checks that a design document exists. The factory accepts the label only from a person who holds the approver designation.
 - Only the factory sets a `factory:` label. If you set one by hand, the Action removes it at the next label change on that issue. To tell who set a label, it reads the issue events, and it trusts only the App whose login is in the repository variable `FACTORY_BOT_LOGIN`. Until that variable is set, it removes every `factory:` label, the factory's own included. The factory itself never writes the `factory` label or a `design:` label.
 - Issue text and repository text are data. The Elephant can be steered by what it reads, so read the design before you merge it, and keep the GitHub token limited to this one repository.
 - The design lives in the repository, in a pull request that a person approved. The factory never merges it for you.

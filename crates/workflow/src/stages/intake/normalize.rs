@@ -128,6 +128,9 @@ pub fn normalized_request(
 #[must_use]
 pub fn decline_explanation(reason: DeclineReason) -> &'static str {
     match reason {
+        DeclineReason::DesignNotApproved => {
+            "The design for this issue is not approved yet, so the factory does not start work. Work starts after the label of the approved design is on the issue, applied by an approver, and the factory label is applied again."
+        }
         DeclineReason::KindNotSupported(kind) => match kind.as_str() {
             "question" => {
                 "This request asks a question and does not ask for a change to the software. The factory changes software and does not answer questions. An operator can override this decision."

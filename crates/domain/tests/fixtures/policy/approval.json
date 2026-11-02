@@ -429,6 +429,19 @@
         "T-23"
       ],
       "when": "a person who holds the operator designation stops a repository from taking tickets: its webhooks are dropped and no job can be submitted for it; jobs that already exist are not touched. Pending confirmation by the architect (ADR 0016)"
+    },
+    {
+      "approver_roles": [
+        "approver"
+      ],
+      "id": "accept_design_approval",
+      "min_level": "L0",
+      "requires": "human",
+      "threats": [
+        "T-23",
+        "T-01"
+      ],
+      "when": "the intake stage lets an issue on the design track start work only when the label `design: approved` is on the issue now, no other design label is, and the person who applied it holds the approver designation, matched by numeric user ID and not narrowed away from this repository; the designation is read from intake_requirements.design_approved_by in policies/issue-workflow.yaml and this row must name the same one. Pending confirmation by the architect (ADR 0016)"
     }
   ],
   "always_human": [
@@ -453,6 +466,7 @@
     "confirm_project_map",
     "enable_repository",
     "disable_repository",
+    "accept_design_approval",
     "merge_to_default_branch_unless_L3_explicitly_enabled",
     "enable_auto_merge_for_a_repository",
     "any_deployment_or_release_publication",

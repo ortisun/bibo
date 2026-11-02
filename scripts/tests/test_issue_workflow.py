@@ -123,6 +123,18 @@ class PolicyCheck(unittest.TestCase):
         def requirement_unknown(p):
             p["intake_requirements"]["design_track_requires"] = "vanished"
 
+        def approver_missing(p):
+            del p["intake_requirements"]["design_approved_by"]
+
+        def approver_unknown(p):
+            p["intake_requirements"]["design_approved_by"] = "everyone"
+
+        def approver_is_the_requester(p):
+            p["intake_requirements"]["design_approved_by"] = "requester"
+
+        def approver_is_the_operator(p):
+            p["intake_requirements"]["design_approved_by"] = "operator"
+
         def prefix_changed(p):
             p["namespaces"]["factory"]["prefix"] = "bot: "
 
@@ -138,6 +150,8 @@ class PolicyCheck(unittest.TestCase):
             (job_state_missing, "BLOCKED has no factory label"), (job_state_invented, "DREAMING is not a job state"),
             (job_state_twice, "mapped twice"), (glob_escapes, "path-glob"),
             (requirement_unknown, "intake-requirement"), (prefix_changed, "namespaces"), (writer_changed, "namespaces"),
+            (approver_missing, "design-approver"), (approver_unknown, "design-approver"),
+            (approver_is_the_requester, "design-approver"), (approver_is_the_operator, "design-approver"),
         ]
         for damage, expected in cases:
             with self.subTest(damage=damage.__name__):
@@ -145,6 +159,22 @@ class PolicyCheck(unittest.TestCase):
                 damage(policy)
                 found = problems(policy)
                 self.assertTrue(any(expected in line for line in found), (expected, found))
+
+    def test_the_approver_of_a_design_is_a_designation_that_may_decide_it(self):
+        # The real value is accepted, and so is each other designation that may decide a design;
+        # the two that may not (the person who asks for work, and the operator) are the sibling
+        # that proves the check can fail.
+        self.assertEqual(real_policy()["intake_requirements"]["design_approved_by"], "approver")
+        for allowed in ("approver", "security_approver", "repo_admin", "org_admin"):
+            with self.subTest(allowed=allowed):
+                policy = copy.deepcopy(real_policy())
+                policy["intake_requirements"]["design_approved_by"] = allowed
+                self.assertEqual(problems(policy), [])
+        for refused in ("requester", "operator", "", None, "Approver", "approver "):
+            with self.subTest(refused=refused):
+                policy = copy.deepcopy(real_policy())
+                policy["intake_requirements"]["design_approved_by"] = refused
+                self.assertTrue(any("design-approver" in line for line in problems(policy)), refused)
 
     def test_a_new_engine_job_state_without_a_label_is_caught(self):
         machine = copy.deepcopy(real_machine())

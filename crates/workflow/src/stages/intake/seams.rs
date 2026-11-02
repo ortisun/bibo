@@ -10,6 +10,7 @@ use async_trait::async_trait;
 use factory_domain::contracts::{SchemaRef, Violation};
 use factory_domain::ids::{AttemptId, JobId, TenantId};
 use factory_domain::policy::authority::Allowlist;
+use factory_domain::policy::issue_workflow::DesignGate;
 use factory_domain::values::Sha256Digest;
 use factory_domain::vocabulary::Fidelity;
 use factory_ports::agent::{JobTokenRef, ProbedCapabilities};
@@ -128,6 +129,58 @@ pub trait AllowlistSource: Send + Sync {
 
     /// The allowlist for the tenant.
     async fn current(&self, tenant: TenantId) -> Result<Allowlist, SeamError>;
+}
+
+/// The design rule of `policies/issue-workflow.yaml`, as it is now. Nothing is cached: the file is
+/// read for every attempt, so a policy that is repaired takes effect on the next attempt and one
+/// that is broken stops the next one.
+///
+/// This is a CONTROL and not observability. When the rule cannot be read, the stage does not guess
+/// and does not fall back to a default: it refuses the issue (see the `design` module).
+#[async_trait]
+pub trait DesignGatePolicy: Send + Sync {
+    /// Says whether this reads the real protected configuration (`real`) or a fixed rule.
+    fn fidelity(&self) -> Fidelity;
+
+    /// The rule. [`SeamError::Unavailable`] when the file is missing, unsafe, breaks the strict
+    /// contract or breaks one of its rules; the reason is the source's to log, the stage needs no
+    /// more than that it cannot judge.
+    async fn current(&self) -> Result<DesignGate, SeamError>;
+}
+
+/// Why a reply was not delivered. The set is closed and carries no text.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub enum ReplyError {
+    /// The host could not be reached or asked to wait. Trying again later may work.
+    #[error("the reply could not be delivered now")]
+    Later,
+    /// The host refused, or the issue is gone. Trying again will not help.
+    #[error("the reply cannot be delivered")]
+    NotSent,
+}
+
+/// Answers a person on the issue when the stage refuses it, with a comment.
+///
+/// The stage holds a token that reads issues and nothing more, so the comment is posted by the
+/// composition root, with a token narrowed to the one repository and to `issues: write`, the way
+/// the worker answers a label from someone who may not ask (`IntakeRejections`). Nothing travels
+/// through the audit log: the stage runs inside the worker, so no untrusted channel stands between
+/// the decision and the reply.
+#[async_trait]
+pub trait RefusalReplies: Send + Sync {
+    /// Says whether this posts to the real code host (`real`) or records what it was given.
+    fn fidelity(&self) -> Fidelity;
+
+    /// Posts `text` as a comment on `issue`, once for `key`: a second call with the same key
+    /// leaves one comment. The text is plain English written by the stage, never text of the
+    /// issue.
+    async fn post(
+        &self,
+        tenant: TenantId,
+        issue: &IssueRef,
+        key: &str,
+        text: &str,
+    ) -> Result<(), ReplyError>;
 }
 
 /// Checks the bytes an agent returned against that agent's own output schema. The composition root
