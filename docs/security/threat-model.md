@@ -262,6 +262,9 @@ Rating follows the matrix in section 4. Residual is the proposed risk after the 
 | T-39 | Edit of the authorising issue between the label and the snapshot (time of check to time of use) | TB2 | L | M | Low | Medium |
 | T-40 | Edits to code and manifests that no dependency gate reads (vendored code, other ecosystems, files that run on open) | TB7, TB11 | M | H | High | Medium |
 | T-41 | Weak, mis-owned or long-lived signing and API key files | TB9, TB12 | L | H | Medium | Low |
+| T-42 | A forged or misdirected status label (the factory writes a label outside its namespace, or someone forges one inside it) | TB2, TB8 | M | M | Medium | Low |
+| T-43 | Injection through the status comment (a marker pasted by a person, text of the issue or of a model carried into the comment) | TB2, TB8 | M | M | Medium | Low |
+| T-44 | Write amplification against GitHub's secondary rate limits (a flood of state changes or of forged jobs makes the factory write on issues without end) | TB8 | M | M | Medium | Low |
 
 ## 7. Threat details
 
@@ -554,6 +557,27 @@ Each entry lists the concrete attacker action, the controls that address it, the
 * Residual (Low): the weak key (RR-5) is fixed: `rr_5_a_key_with_no_entropy_is_refused` passes. The owner of the file and of the directories above it (RR-25) and the life of the previous key are not enforced, and the rotation window is documented and not bounded. RR-25 is a hypothesis.
 * Proven by: the `signing` tests of the composition re-review. No catalog test covers it, because the catalog has no key-file row. That is a gap of the catalog and is listed in section 11.4.
 
+### T-42 A forged or misdirected status label
+
+* Attack: the factory now writes labels, so a defect or a hostile input could make it write the wrong one. Writing the trigger label `factory` would start a job without a person (a label alone must never authorize work). Writing or removing a `design:` label would move an issue through the design track that only people may move. A person, or a model that steered a person, could also set a `factory:` label by hand to make an issue look done.
+* Mitigations: the label argument of `IssueStatusWriter` is a `StatusLabel`, a type that only the validated policy can make and that cannot hold the trigger label, a `design:` label or any label outside the `factory: ` prefix. The adapter checks the name again before it sends anything (`Rejected(LabelNotAllowed)`, no request, no token), and takes off only labels that start with `factory: `. A policy that breaks the rules does not load (missing or invented job states, the trigger label in a namespace, label length limits). The Action of `onboarding/` reverts any `factory:` label that the App did not write. The approval policy has a row for it, `write_status_label`, at L0, and the broader row `close_or_label_issue` no longer covers the status label.
+* Residual (Low): the type is a barrier inside the Rust code. It cannot stop a person who holds triage rights from setting a `factory:` label between two writes, and the Action's revert depends on the repository variable `FACTORY_BOT_LOGIN`. The label shows state and decides nothing, so the worst effect is a wrong picture until the next write. The helper `StatusLabel::forged_for_negative_tests` exists for tests, and ST-13 names the only crate that may call it. Against the real GitHub nothing here has run.
+* Proven by: NT-STAT-01. The adapter tests carry control-off variants in `crates/github/tests/mutations/run_mutations.py`: skip the check in the adapter, take off every label, ask for a wider token.
+
+### T-43 Injection through the status comment
+
+* Attack: a person pastes the hidden marker of a status comment, with a stamp far in the future, so that the factory edits their text or stops updating its own; a person fills the thread so that the factory's comment is not found and a second is made; text of the issue, of a model or of a stage report is carried into the comment (a token, an image that GitHub would fetch, an active mention).
+* Mitigations: the comment is built from a closed template (the state, the stage and one link to `github.com`), with no model output and no text of the issue in it. The adapter finds the status comment only among the comments written by the App's own account, so a pasted marker is not one. The text passes the secret check and the output hygiene rules before it is sent, and the marker is added after the cleaning. A listing that is cut short, with no comment found, is an error and not a reason to post a second comment. Two racing writers converge on the lowest-numbered comment and delete their duplicates.
+* Residual (Low): the lookup relies on the login `<slug>[bot]` of the App on every comment of the list (read from the REST reference, not from a real answer). A person with the rights to edit comments on the repository can still change the factory's comment by hand; the next update overwrites it.
+* Proven by: NT-STAT-03 and NT-STAT-06.
+
+### T-44 Write amplification against GitHub's secondary rate limits
+
+* Attack: a flood of state changes, or of forged jobs that point at issues, makes the worker write labels and comments without end. GitHub's secondary limits then slow the App's other writes, such as the reply to a refused label and the draft pull request, and an integration that keeps writing while it is limited can be banned.
+* Mitigations: the worker writes serially, from one task at a time, at most six updates a minute across all tenants, and one update per job at its newest version. The adapter leaves at least one second between two requests that change something and honors `Retry-After`. A job gets at most six tries with a growing wait, then the step gives up on that version. A job that has no original request, or a repository that is not enabled, gets nothing. A job that was already over when the worker first looked is left alone. The GitHub page read for the pacing gives no numbers; the bound of six a minute is a conservative guess.
+* Residual (Low): the real limits are unverified. A person who may submit jobs through the API can still make the worker write on the issues of the repositories they may use, one update at a time.
+* Proven by: NT-STAT-04 and NT-STAT-05.
+
 ## 8. Cross-cutting residual risks
 
 1. **Plausible but wrong code inside the allowed scope** (T-01, T-02, T-03, T-12). No sandbox or policy stops a compromised builder from writing a subtle bug in a file it owns. Defense is layered detection: tests, hidden holdouts, independent reviewers, mutation testing where cost-effective, and human approval of a draft pull request. Treat every factory pull request as untrusted input from a stranger.
@@ -649,6 +673,9 @@ Written on 2026-10-29 by the `s1-security-review-and-tests` work package. An ind
 | T-39 Edit of the authorising issue between the label and the snapshot (time of check to time of use) | Open | NT-AUTHZ-05 | none | none | RR-23 is a hypothesis. |
 | T-40 Edits to code and manifests that no dependency gate reads (vendored code, other ecosystems, files that run on open) | Mitigated | NT-SUP-03 | none | NT-GATE-09 | RR-14, RR-15 and RR-16 of the authority re-review are fixed (tests pass). A kind of file that no row names is the same gap. |
 | T-41 Weak, mis-owned or long-lived signing and API key files | Mitigated in part | none | none | none | RR-5 fixed. RR-25 is a hypothesis. The catalog row NT-KEY-01 covers key files (F-5, closed), at priority P1 until the work package source names an owner for it. |
+| T-42 A forged or misdirected status label | Mitigated in part | none | none | NT-STAT-01 | The tests are written and pass against the fake GitHub server of the test kit and the in-memory fake. They have not run against the real GitHub. The row is P1: the status writer is not part of the Slice 1 acceptance. No independent review yet. |
+| T-43 Injection through the status comment | Mitigated in part | none | none | NT-STAT-03, NT-STAT-06 | As T-42. How GitHub renders the cleaned text is unverified (the same as T-18). |
+| T-44 Write amplification against GitHub's secondary rate limits | Mitigated in part | none | none | NT-STAT-04, NT-STAT-05 | As T-42. The numbers of the real limits are unverified. |
 
 ### 11.3 Findings of the reviews
 

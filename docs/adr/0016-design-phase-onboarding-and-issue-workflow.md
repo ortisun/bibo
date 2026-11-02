@@ -114,3 +114,17 @@ These are the engine changes the decision needs. None is started. Each changes t
 4. **Configuration.** `FACTORY_BOT_LOGIN` for the Action, taken from the App's slug.
 
 Open question for the architect: should a board (GitHub Projects) mirror the labels? It reads well and needs a permission the App does not have.
+
+## Revision note (ADR 0017)
+
+Written on 2026-11-02. Item 3 of "What is not built", writing the state (ports v1.2), is built. The decision is in [ADR 0017](0017-ports-v1-2-issue-status-writer.md) and the signatures are in [ports v1.2](../architecture/ports-v1.2.md). The rest of this record is unchanged.
+
+What exists now, as evidence:
+
+- **The port, the label type, the fake and the adapter.** `IssueStatusWriter` has two operations, set the one `factory: <state>` label and keep one status comment. The label argument is a type that only `policies/issue-workflow.yaml` can make. The adapter has its own token, `issues: write` for one repository, and the stage tokens did not change. The mapping from job state to label is read by the engine with the strict policy loader, and a test compares it with `onboarding/github/issue-workflow.json`.
+- **The worker step.** After a job changes state, the worker writes the label and the comment outside the engine's transaction, with retries, an audit trail and a health line. Failing or stalling GitHub does not change a job. This is tested.
+- **The signed request was not reused.** This record suggested leaving a signed request for the worker, as the API does for a rejected requester. The state changes are made by the worker itself, so the step reads the job rows. ADR 0017 explains why.
+- **Not verified.** All of this is tested against fakes only: an in-memory fake and the fake GitHub server of the test kit. Nothing ran against the real GitHub, the worker was not started against a database and an App, and the independent security review that this record asks for any port change has not happened.
+- **A side effect on the policy file.** The strict loader reads `policy.status` as a closed set, so the file now says `designed` in lower case, and its header says that the worker reads it. The rendered JSON was made again because its source hash changed.
+
+Items 1, 2 and 4 of "What is not built" are still not built, and the question about a board is still open.

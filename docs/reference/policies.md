@@ -1,6 +1,6 @@
 # Policy reference
 
-- Status: written from the policy files and the code that loads them on 2026-10-29. The two policy files still carry `status: designed` and a header that says no code reads them. That header is out of date: the worker, the API and the operator command line load and hash both files at start-up. The `designed` value is the policy's own claim, and nobody has flipped it to `enforced`.
+- Status: written from the policy files and the code that loads them on 2026-10-29, and extended on 2026-11-02 with the issue workflow policy. The two policy files still carry `status: designed` and a header that says no code reads them. That header is out of date: the worker, the API and the operator command line load and hash both files at start-up. The `designed` value is the policy's own claim, and nobody has flipped it to `enforced`.
 - Form: reference.
 - Goal: say what each policy and configuration file controls, who may change it, and where the real file is.
 
@@ -20,6 +20,7 @@ Three rules hold for every policy file.
 |---|---|---|
 | [`policies/security.yaml`](../../policies/security.yaml) | The default-deny security policy. See the table below. | A pull request on the protected branch, reviewed by a code owner. |
 | [`policies/approval.yaml`](../../policies/approval.yaml) | Autonomy levels, who holds which designation, which actions need a person, and what an approval is bound to. | The same. Raising an autonomy level is an action that only an `org_admin` may approve. |
+| [`policies/issue-workflow.yaml`](../../policies/issue-workflow.yaml) | The labels an issue carries, who writes each, and which `factory:` label shows which job state. See the section below. | The same. The rendered copy `onboarding/github/issue-workflow.json` is made from it, and a stale copy fails the build. |
 | `policies/model_routing.yaml` | Which model serves which stage. **The file does not exist.** Without it the model router is BLOCKED and the worker cannot run a live stage. | A person writes it. See the [production guide](../guides/production.md). |
 | `allowlist/allowlist.yaml` in the protected checkout | Who holds which designation, by numeric GitHub user identifier. It is read on every decision. This repository holds no copy. | An `org_admin`. Widening `security_approver` or `org_admin` needs two distinct `org_admin` people. |
 | [`.github/CODEOWNERS`](../../.github/CODEOWNERS) | Who must review a change to a protected path. | A code owner. Today there is one owner, so GitHub cannot count a second review. |
@@ -69,6 +70,31 @@ Three rules hold for every policy file.
 | `intake` | Who may start a job. |
 
 Auto-merge and deployment are off. In Slice 1 the factory has no merge method. A person merges outside it.
+
+Two rows concern labels on an issue. Both are marked as pending confirmation by the architect, in the architecture decision record (ADR) [0017](../adr/0017-ports-v1-2-issue-status-writer.md).
+
+| Action | Lowest level | What it allows |
+|---|---|---|
+| `write_status_label` | `L0` | The one `factory: <state>` label that shows the state of a job. Never the trigger label, never a `design:` label, never a label of any other kind. |
+| `close_or_label_issue` | `L1` | Closing an issue, and a label of the factory namespace that is not a status label. There is no such label today. |
+
+A repository without branch-protection rules runs at `L0`, which is why the status label has a row of its own at that level.
+
+## What `policies/issue-workflow.yaml` controls
+
+The file lists the fifteen labels of the issue workflow: the trigger label `factory`, four `design:` labels that people write, and ten `factory:` labels that the factory writes. It also holds the legal moves between design states.
+
+The worker reads the file at start-up with the same strict loader as the other policies. A file that misses a job state, names a state the engine does not have, puts the trigger label in a namespace or breaks the label length limits is refused, and the worker that writes issue status does not start.
+
+| Section | What it controls |
+|---|---|
+| `namespaces` | The two prefixes, `design: ` and `factory: `, and who writes each. |
+| `trigger` | The label that asks the factory to work. No automation applies it. |
+| `design_track` | The design states, the legal moves and what approval of a design needs. |
+| `factory_track` | One label for each job state of the engine. The status label of a job comes only from here. |
+| `intake_requirements` | The design state an issue needs before a job may start. The engine does not enforce it yet. |
+
+The Python tool `scripts/lib/issue_workflow.py` checks the same file and renders the JSON that the installer and the GitHub Action read. A test compares what the worker reads with that JSON, so the two cannot disagree about a label.
 
 ## Where to read more
 
