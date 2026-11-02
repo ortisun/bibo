@@ -62,17 +62,61 @@ def load(name, default):
     try:
         with open(path(name), encoding="utf-8") as h: return json.load(h)
     except FileNotFoundError: return default
+def save(name, value):
+    with open(path(name), "w", encoding="utf-8") as h: json.dump(value, h)
 args = sys.argv[1:]
 with open(path("calls.log"), "a", encoding="utf-8") as log: log.write("gh " + " ".join(args) + "\n")
+fail = os.environ.get("FAKE_FAIL", "")
+def flag(name):
+    return args[args.index(name) + 1] if name in args else ""
 if args[:2] == ["label", "list"]:
-    if os.environ.get("FAKE_FAIL") == "gh_list": sys.exit(1)
+    if fail == "gh_list": sys.exit(1)
     print(json.dumps(load("labels.json", [])))
 elif args[:2] == ["label", "create"]:
     name = args[2]
     opts = dict(zip(args[3::2], args[4::2]))
     labels = [l for l in load("labels.json", []) if l["name"].lower() != name.lower()]
     labels.append({"name": name, "color": opts["--color"], "description": opts["--description"]})
-    with open(path("labels.json"), "w", encoding="utf-8") as h: json.dump(labels, h)
+    save("labels.json", labels)
+elif args[:2] == ["api", "graphql"]:
+    query = next(a for a in args if a.startswith("query="))
+    if fail == "graphql": sys.exit(1)
+    if "repositoryOwner" in query:
+        kinds = load("owner_types.json", {})
+        login = next(a[2:] for a in args if a.startswith("o="))
+        print(json.dumps({"data": {"repositoryOwner": {"__typename": kinds.get(login, "Organization")}}}))
+    elif "projectsV2" in query:
+        nodes = [{"number": p["number"], "title": p["title"], "closed": p.get("closed", False),
+                  "owner": {"__typename": "Organization", "login": p["owner"]}} for p in load("linked.json", [])]
+        print(json.dumps({"data": {"repository": {"projectsV2": {"nodes": nodes}}}}))
+    else:
+        sys.exit(64)
+elif args[:2] == ["api", "user"]:
+    print(json.dumps({"login": "me-user"}))
+elif args[:2] == ["project", "field-list"]:
+    if fail == "project_read": sys.exit(1)
+    fields = load("fields_%s_%s.json" % (flag("--owner"), args[2]), None)
+    if fields is None: sys.exit(1)
+    print(json.dumps(fields))
+elif args[:2] == ["project", "create"]:
+    if fail == "project_create": sys.exit(1)
+    save("fields_%s_9.json" % flag("--owner"), {"fields": [{"name": "Title", "type": "ProjectV2Field"},
+        {"name": "Status", "type": "ProjectV2SingleSelectField", "options": [{"id": "a", "name": "Todo"}, {"id": "b", "name": "In Progress"}, {"id": "c", "name": "Done"}]}], "totalCount": 2})
+    print(json.dumps({"number": 9, "title": flag("--title")}))
+elif args[:2] == ["project", "link"]:
+    pass
+elif args[:2] == ["project", "field-create"]:
+    key = "fields_%s_%s.json" % (flag("--owner"), args[2])
+    fields = load(key, {"fields": []})
+    fields["fields"].append({"name": flag("--name"), "type": "ProjectV2SingleSelectField",
+        "options": [{"id": str(i), "name": n} for i, n in enumerate(flag("--single-select-options").split(","))]})
+    save(key, fields)
+    print("{}")
+elif args[:2] == ["secret", "list"]:
+    if fail == "secret_list": sys.exit(1)
+    print(json.dumps([{"name": n} for n in load("secrets.json", [])]))
+elif args[:2] == ["variable", "list"]:
+    print(json.dumps([{"name": n} for n in load("variables.json", [])]))
 else:
     sys.exit(64)
 '''
@@ -248,6 +292,7 @@ class ProjectFiles(Case):
         code, out = self.install()
         self.assertTrue(self.has(out, "ADDED", "workflow-files"), out)
         for relative in (".github/issue-workflow.json", ".github/scripts/issue_workflow.py",
+                         ".github/scripts/project_board.py", ".github/project-board-policy.json",
                          ".github/workflows/issue-workflow.yml", ".github/ISSUE_TEMPLATE/new-solution.yml",
                          ".github/ISSUE_TEMPLATE/change-request.yml", ".github/ISSUE_TEMPLATE/config.yml"):
             self.assertTrue(self.exists(relative), relative)
@@ -378,7 +423,7 @@ class Labels(Case):
         self.put_project({"README.md": "# p\n"})
 
     def labels(self, *extra, **kw):
-        return self.run_install("--checkout", self.project, "--repo", "acme/widgets", "--no-mcp", *extra, **kw)
+        return self.run_install("--checkout", self.project, "--repo", "acme/widgets", "--no-mcp", "--no-board", *extra, **kw)
 
     def created(self):
         return [c for c in self.calls() if c.startswith("gh label create")]
@@ -431,6 +476,204 @@ class Labels(Case):
     def test_no_repo_means_no_github_call(self):
         self.run_install("--checkout", self.project, "--no-mcp")
         self.assertFalse(any(c.startswith("gh ") for c in self.calls()))
+
+    def test_the_labels_step_alone_makes_no_project_call(self):
+        self.labels()
+        self.assertFalse(any(c.startswith("gh project") or "graphql" in c for c in self.calls()))
+
+
+RICH_FIELDS = {"fields": [{"name": "Title", "type": "ProjectV2Field"},
+                          {"name": "Status", "type": "ProjectV2SingleSelectField",
+                           "options": [{"id": str(i), "name": n} for i, n in enumerate(
+                               ["Backlog", "Design", "Design review", "Ready", "In progress", "Blocked", "In review", "Done", "Cancelled"])]}]}
+DEFAULT_FIELDS = {"fields": [{"name": "Status", "type": "ProjectV2SingleSelectField",
+                              "options": [{"id": "a", "name": "Todo"}, {"id": "b", "name": "In Progress"}, {"id": "c", "name": "Done"}]}]}
+MUTATING = ("gh project create", "gh project link", "gh project field-create", "gh project edit", "gh project field-delete",
+            "gh project delete", "gh project item")
+
+
+class Board(Case):
+    def setUp(self):
+        super().setUp()
+        self.egm_installed()
+        self.put_project({"README.md": "# p\n"})
+        self.put_state("linked.json", [{"owner": "acme", "number": 7, "title": "Roadmap"}])
+        self.put_state("fields_acme_7.json", RICH_FIELDS)
+        self.put_state("secrets.json", [])
+        self.put_state("variables.json", [])
+
+    def board(self, *extra, **kw):
+        return self.run_install("--checkout", self.project, "--repo", "acme/widgets", "--no-mcp", *extra, **kw)
+
+    def mutations(self):
+        return [c for c in self.calls() if c.startswith(MUTATING)]
+
+    def config(self):
+        return json.loads(self.read(".github/project-board.json"))
+
+    def test_an_existing_board_is_adapted_to_and_none_of_it_is_changed(self):
+        _, out = self.board()
+        self.assertTrue(self.has(out, "ADDED", "project-board"), out)
+        board = self.config()
+        self.assertEqual(board["project"], {"owner": "acme", "owner_type": "organization", "number": 7})
+        self.assertEqual(board["status_field"], "Status")
+        self.assertEqual(board["options"]["idea"], "Backlog")
+        self.assertEqual(board["options"]["working"], "In progress")
+        self.assertEqual(board["options"]["design_review"], "Design review")
+        self.assertEqual(self.mutations(), [], "an existing board is read, never written")
+
+    def test_the_default_three_column_board_still_gets_every_stage(self):
+        self.put_state("fields_acme_7.json", DEFAULT_FIELDS)
+        _, out = self.board()
+        board = self.config()
+        self.assertTrue(all(board["options"].values()), board)
+        self.assertEqual(board["options"]["idea"], "Todo")
+        self.assertEqual(board["options"]["designing"], "In Progress")
+        self.assertIn("Board: Idea: no option of its own, shown as 'Todo'", out)
+        self.assertEqual(self.mutations(), [])
+
+    def test_a_mapping_that_a_person_edited_is_kept_and_only_checked(self):
+        self.board()
+        edited = self.config()
+        edited["options"]["idea"] = "Ready"
+        self.put_project({".github/project-board.json": json.dumps(edited, indent=2, sort_keys=True) + "\n"})
+        before = (os.stat(os.path.join(self.project, ".github/project-board.json")).st_mtime_ns, self.read(".github/project-board.json"))
+        _, out = self.board()
+        self.assertTrue(self.has(out, "PRESENT", "project-board"), out)
+        after = (os.stat(os.path.join(self.project, ".github/project-board.json")).st_mtime_ns, self.read(".github/project-board.json"))
+        self.assertEqual(before, after)
+        self.assertEqual(self.config()["options"]["idea"], "Ready")
+
+    def test_a_board_that_changed_is_reported_and_the_mapping_is_not_rewritten(self):
+        self.board()
+        text = self.read(".github/project-board.json")
+        fields = json.loads(json.dumps(RICH_FIELDS))
+        fields["fields"][1]["options"] = [o for o in fields["fields"][1]["options"] if o["name"] != "Blocked"]
+        self.put_state("fields_acme_7.json", fields)
+        code, out = self.board()
+        self.assertTrue(self.has(out, "NEEDS", "project-board"), out)
+        self.assertIn("Blocked", out)
+        self.assertEqual(code, 3)
+        self.assertEqual(self.read(".github/project-board.json"), text)
+
+    def test_no_linked_board_asks_for_a_decision_and_changes_nothing(self):
+        self.put_state("linked.json", [])
+        code, out = self.board()
+        self.assertEqual(code, 3, out)
+        self.assertTrue(self.has(out, "NEEDS", "project-board", "no board is linked"), out)
+        self.assertIn("--create-project", out)
+        self.assertFalse(self.exists(".github/project-board.json"))
+        self.assertEqual(self.mutations(), [])
+
+    def test_several_linked_boards_are_listed_and_not_guessed(self):
+        self.put_state("linked.json", [{"owner": "acme", "number": 7, "title": "Roadmap"}, {"owner": "acme", "number": 8, "title": "Bugs"}])
+        _, out = self.board()
+        self.assertIn("2 boards are linked", out)
+        self.assertIn("acme/7  Roadmap", out)
+        self.assertIn("acme/8  Bugs", out)
+        self.assertFalse(self.exists(".github/project-board.json"))
+
+    def test_a_closed_board_is_not_offered(self):
+        self.put_state("linked.json", [{"owner": "acme", "number": 7, "title": "Old", "closed": True}])
+        _, out = self.board()
+        self.assertIn("no board is linked", out)
+
+    def test_project_names_the_board_and_no_listing_is_needed(self):
+        self.put_state("linked.json", [])
+        self.put_state("fields_other_3.json", RICH_FIELDS)
+        self.put_state("owner_types.json", {"other": "User"})
+        self.board("--project", "other/3")
+        self.assertEqual(self.config()["project"], {"owner": "other", "owner_type": "user", "number": 3})
+
+    def test_another_field_can_be_chosen_and_a_missing_one_is_refused(self):
+        fields = json.loads(json.dumps(RICH_FIELDS))
+        fields["fields"].append({"name": "Stage", "type": "ProjectV2SingleSelectField",
+                                 "options": [{"id": "z", "name": "Idea"}, {"id": "y", "name": "Done"}]})
+        self.put_state("fields_acme_7.json", fields)
+        self.board("--board-field", "Stage")
+        self.assertEqual(self.config()["status_field"], "Stage")
+        self.assertEqual(self.config()["options"]["idea"], "Idea")
+        self.setUp()
+        _, out = self.board("--board-field", "Nope")
+        self.assertTrue(self.has(out, "NEEDS", "project-board"), out)
+        self.assertFalse(self.exists(".github/project-board.json"))
+
+    def test_create_project_makes_a_board_with_a_new_field_and_never_touches_status(self):
+        self.put_state("linked.json", [])
+        code, out = self.board("--create-project", "acme")
+        self.assertTrue(self.has(out, "ADDED", "project-board"), out)
+        creates = [c for c in self.calls() if c.startswith("gh project field-create")]
+        self.assertEqual(len(creates), 1)
+        self.assertIn('--name Stage', creates[0])
+        self.assertIn("Idea,Designing,Design review,Ready,Working,Needs a person,In review,Done,Stopped", creates[0])
+        self.assertTrue(any(c.startswith("gh project link 9 --owner acme --repo acme/widgets") for c in self.calls()))
+        board = self.config()
+        self.assertEqual((board["status_field"], board["project"]["number"]), ("Stage", 9))
+        self.assertEqual(board["options"]["design_review"], "Design review")
+        self.assertFalse(any(c.startswith(("gh project edit", "gh project field-delete")) for c in self.calls()))
+
+    def test_check_creates_no_board(self):
+        self.put_state("linked.json", [])
+        code, out = self.board("--check", "--create-project", "acme")
+        self.assertEqual(code, 3, out)
+        self.assertTrue(self.has(out, "WOULD_ADD", "project-board"), out)
+        self.assertEqual(self.mutations(), [])
+        self.assertFalse(self.exists(".github/project-board.json"))
+
+    def test_a_failed_board_creation_is_reported(self):
+        self.put_state("linked.json", [])
+        code, out = self.board("--create-project", "acme", env={"FAKE_FAIL": "project_create"})
+        self.assertTrue(self.has(out, "BLOCKED", "project-board"), out)
+        self.assertEqual(code, 3)
+        self.assertFalse(self.exists(".github/project-board.json"))
+
+    def test_no_board_skips_the_step_and_makes_no_project_call(self):
+        self.board("--no-board")
+        self.assertFalse(any(c.startswith("gh project") or "graphql" in c for c in self.calls()))
+        _, out = self.board("--no-board")
+        self.assertTrue(self.has(out, "SKIPPED", "project-board"), out)
+
+    def test_an_unreadable_board_is_blocked_with_the_scope_to_ask_for(self):
+        code, out = self.board(env={"FAKE_FAIL": "graphql"})
+        self.assertEqual(code, 3, out)
+        self.assertIn("gh auth refresh -s project", out)
+
+    def test_the_credential_is_checked_by_name_and_never_read(self):
+        _, out = self.board()
+        self.assertTrue(self.has(out, "NOTE", "board-credential"), out)
+        self.assertIn("gh secret set", out)
+        self.setUp()
+        self.put_state("secrets.json", ["FACTORY_BOARD_TOKEN"])
+        _, out = self.board()
+        self.assertTrue(self.has(out, "PRESENT", "board-credential"), out)
+        self.setUp()
+        self.put_state("secrets.json", ["FACTORY_BOARD_APP_PRIVATE_KEY"])
+        self.put_state("variables.json", ["FACTORY_BOARD_CLIENT_ID"])
+        _, out = self.board()
+        self.assertTrue(self.has(out, "PRESENT", "board-credential"), out)
+        self.setUp()
+        self.put_state("secrets.json", ["FACTORY_BOARD_APP_PRIVATE_KEY"])
+        _, out = self.board()
+        self.assertTrue(self.has(out, "NOTE", "board-credential"), "the key without the client id is not a credential")
+        self.assertFalse(any(c.startswith(("gh secret set", "gh secret get", "gh variable set")) for c in self.calls()))
+
+    def test_a_missing_credential_does_not_keep_the_install_from_being_ready(self):
+        self.put_project({"src/app.py": "x=1\n", "src/README.md": "# s\n"})
+        code, out = self.board(token=DUMMY_TOKEN)
+        self.assertEqual(code, 0, out)
+        self.assertTrue(out.rstrip().endswith("READY"), out)
+
+    def test_bad_board_arguments_exit_with_2(self):
+        for args in (["--project", "acme"], ["--project", "acme/x"], ["--project", "acme/7/9"], ["--project", "/7"],
+                     ["--project", "ac me/7"], ["--project", "acme/7", "--create-project", "acme"],
+                     ["--project", "acme/7", "--no-board"], ["--create-project", "a;b"], ["--create-project", "-x"],
+                     ["--board-field", "a;b"], ["--board-field", ""]):
+            with self.subTest(args=args):
+                code, out = self.run_install("--checkout", self.project, "--repo", "acme/widgets", *args)
+                self.assertEqual(code, 2, out)
+        code, _ = self.run_install("--checkout", self.project, "--project", "acme/7")
+        self.assertEqual(code, 2, "--project goes with --repo")
+        self.assertEqual(self.mutations(), [])
 
 
 if __name__ == "__main__":

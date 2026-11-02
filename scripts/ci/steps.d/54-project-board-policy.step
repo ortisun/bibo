@@ -1,0 +1,4 @@
+id       = project-board-policy
+title    = The project board policy covers every issue workflow label, reaches every stage, and its JSON rendering is current (scripts/lib/project_board.py check)
+requires = uv python3
+run      = uv run --no-project --with pyyaml==6.0.3 python -I scripts/lib/project_board.py check

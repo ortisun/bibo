@@ -468,7 +468,7 @@ class ShippedFiles(unittest.TestCase):
         workflow = yaml.safe_load(load(self.WORKFLOW))
         self.assertEqual(workflow["permissions"], {"contents": "read", "issues": "write"})
         self.assertEqual(list(workflow[True]), ["issues"], "the key `on` is read as true by YAML 1.1")
-        self.assertEqual(sorted(workflow[True]["issues"]["types"]), ["labeled", "unlabeled"])
+        self.assertEqual(sorted(workflow[True]["issues"]["types"]), ["closed", "labeled", "reopened", "unlabeled"])
         for job in workflow["jobs"].values():
             for step in job["steps"]:
                 if "uses" in step:
@@ -477,6 +477,24 @@ class ShippedFiles(unittest.TestCase):
                     self.assertNotIn("github.event", str(step.get(field, "")),
                                      "event text must reach the script through the event file only")
                 self.assertNotIn("pull_request_target", str(step))
+
+    def test_the_board_credential_reaches_the_board_steps_only(self):
+        workflow = yaml.safe_load(load(self.WORKFLOW))
+        steps = workflow["jobs"]["labels"]["steps"]
+        by_name = {step["name"]: step for step in steps}
+        for name, step in by_name.items():
+            text = str(step)
+            if name in ("Create a short-lived credential for the board", "Move the issue on the board"):
+                continue
+            self.assertNotIn("secrets.", text, name)
+            self.assertNotIn("BOARD_TOKEN", text, name)
+        mint = by_name["Create a short-lived credential for the board"]
+        asked = sorted(key for key in mint["with"] if key.startswith("permission-"))
+        self.assertEqual(asked, ["permission-issues", "permission-organization-projects"])
+        self.assertEqual(mint["with"]["permission-issues"], "read")
+        move = by_name["Move the issue on the board"]
+        self.assertEqual(move["env"]["GH_TOKEN"], "${{ github.token }}", "the issue is read with the repository token")
+        self.assertIn("secrets.FACTORY_BOARD_TOKEN", move["env"]["BOARD_TOKEN"])
 
     def test_the_action_never_names_the_trigger_label(self):
         text = load(self.WORKFLOW).decode()

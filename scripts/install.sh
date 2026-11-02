@@ -12,6 +12,13 @@
 #                                                      that the project has been mapped by EGM's bootstrap.
 #   scripts/install.sh --checkout PATH --repo O/N      Also create the issue-workflow labels in the GitHub repository
 #                                                      O/N with `gh`. This is the one step that changes GitHub.
+#   --project OWNER/NUMBER                             Use this GitHub Projects board. Without it the installer uses
+#                                                      the one board linked to the repository, if there is exactly one.
+#   --board-field NAME                                 The single-select field that holds the stages (default Status).
+#   --create-project OWNER                             Create a board for the repository when it has none. OWNER is an
+#                                                      organization, a user, or @me. It adds a new field called Stage
+#                                                      and links the board to the repository. This changes GitHub.
+#   --no-board                                         Do not set up a board.
 #   --update                                           Replace a project file that differs from the factory's copy.
 #                                                      Without it a differing file is reported as DRIFT and kept.
 #   --no-mcp                                           Skip the GitHub MCP server entry.
@@ -29,11 +36,16 @@
 #   workflow-files The issue forms, the Action that keeps labels consistent, and its two helper files, copied into
 #                  the project's .github/. They are files in the working tree. A person commits them by pull request.
 #   labels         The labels of policies/issue-workflow.yaml, created or corrected with `gh label create --force`.
+#   project-board  A GitHub Projects board that mirrors the labels (ADR 0018). A board that already exists is ADAPTED
+#                  TO: the stages are mapped onto its existing options and written to .github/project-board.json for
+#                  a person to review. No option of an existing field is ever created, renamed or deleted. A mapping
+#                  file that is already there is only checked against the board. The credential for the board is
+#                  checked by name only.
 #   project-map    Whether every directory that holds code has a README.md or EGM.md contract. EGM's bootstrap writes
 #                  them, and it needs a person (it asks before it maps a large tree), so this script only checks.
 #
 # Output: one line per step, "  STATE  step  detail". STATE is PRESENT, ADDED, UPDATED, WOULD_ADD, DRIFT, NEEDS,
-# BLOCKED or SKIPPED. The end lists "Done for you" and "Needs you".
+# NOTE, BLOCKED or SKIPPED. The end lists "Done for you" and "Needs you".
 #
 # Exit codes: 0 ready, 1 a step failed, 2 wrong arguments, 3 not finished: something is BLOCKED or NEEDS a person.
 # (3 is the same code the other scripts use for BLOCKED. An unmapped project is not an error, but it is not ready.)
@@ -55,14 +67,21 @@ CLAUDE_MIN_VERSION="2.1.271"
 MCP_TOKEN_VAR="FACTORY_GITHUB_MCP_TOKEN"
 
 WORKFLOW_TOOL="$SELF_DIR/lib/issue_workflow.py"
+BOARD_TOOL="$SELF_DIR/lib/project_board.py"
+BOARD_POLICY="$ROOT/onboarding/github/project-board-policy.json"
+BOARD_CONFIG_REL=".github/project-board.json"
 MAP_TOOL="$SELF_DIR/lib/project_map.py"
 RENDERED="$ROOT/onboarding/github/issue-workflow.json"
 
 check_only=0
 update=0
 want_mcp=1
+want_board=1
 checkout=""
 repo=""
+project=""
+create_project=""
+board_field="Status"
 
 usage_error() {
   printf 'install.sh: %s (try --help)\n' "$1" >&2
@@ -74,6 +93,22 @@ while [ $# -gt 0 ]; do
     --check) check_only=1 ;;
     --update) update=1 ;;
     --no-mcp) want_mcp=0 ;;
+    --no-board) want_board=0 ;;
+    --project)
+      [ $# -ge 2 ] || usage_error "--project needs OWNER/NUMBER"
+      project=$2
+      shift
+      ;;
+    --create-project)
+      [ $# -ge 2 ] || usage_error "--create-project needs an owner"
+      create_project=$2
+      shift
+      ;;
+    --board-field)
+      [ $# -ge 2 ] || usage_error "--board-field needs a field name"
+      board_field=$2
+      shift
+      ;;
     --checkout)
       [ $# -ge 2 ] || usage_error "--checkout needs a path"
       checkout=$2
@@ -100,6 +135,26 @@ if [ -n "$repo" ]; then
   case "$repo" in */*) ;; *) usage_error "--repo must look like OWNER/NAME" ;; esac
   [ -n "$checkout" ] || usage_error "--repo goes with --checkout, so the labels and the files come from one install"
 fi
+if [ -n "$project" ] || [ -n "$create_project" ]; then
+  [ -n "$repo" ] || usage_error "--project and --create-project go with --repo"
+  [ -n "$project" ] && [ -n "$create_project" ] && usage_error "use --project or --create-project, not both"
+  [ "$want_board" -eq 1 ] || usage_error "--no-board cannot be combined with --project or --create-project"
+fi
+if [ -n "$project" ]; then
+  case "$project" in
+    */*[!0-9]* | */ | /* | */*/* | *[!A-Za-z0-9/-]* | -*) usage_error "--project must look like OWNER/NUMBER" ;;
+  esac
+  case "$project" in [A-Za-z0-9]*/[0-9]*) ;; *) usage_error "--project must look like OWNER/NUMBER" ;; esac
+fi
+if [ -n "$create_project" ]; then
+  case "$create_project" in
+    @me) ;;
+    *[!A-Za-z0-9-]* | -* | "") usage_error "--create-project needs a GitHub login or @me" ;;
+  esac
+fi
+case "$board_field" in
+  "" | *[!A-Za-z0-9\ _.-]*) usage_error "--board-field must be a plain field name" ;;
+esac
 if [ -n "$checkout" ]; then
   [ -d "$checkout" ] || usage_error "--checkout: '$checkout' is not a directory"
   checkout=$(cd "$checkout" && pwd -P)
@@ -108,6 +163,10 @@ fi
 # ---------------------------------------------------------------------------------------------------------------
 # Reporting
 # ---------------------------------------------------------------------------------------------------------------
+# One scratch folder for the whole run, removed when the script ends however it ends.
+WORK_DIR=$(mktemp -d)
+trap 'rm -rf "$WORK_DIR"' EXIT
+
 DONE_LINES=""
 NEED_LINES=""
 NOTE_LINES=""
@@ -372,6 +431,8 @@ step_files() {
   ADDED=0 SAME=0 UPDATED=0 WOULD=0 DRIFTED=0
   copy_one "$RENDERED" ".github/issue-workflow.json"
   copy_one "$WORKFLOW_TOOL" ".github/scripts/issue_workflow.py"
+  copy_one "$BOARD_TOOL" ".github/scripts/project_board.py"
+  copy_one "$BOARD_POLICY" ".github/project-board-policy.json"
   copy_one "$ROOT/onboarding/github/workflows/issue-workflow.yml" ".github/workflows/issue-workflow.yml"
   local template
   for template in "$ROOT"/onboarding/github/ISSUE_TEMPLATE/*.yml; do
@@ -450,6 +511,196 @@ EOF
 }
 
 # ---------------------------------------------------------------------------------------------------------------
+# Step 5b: the GitHub Projects board
+# ---------------------------------------------------------------------------------------------------------------
+# The single quotes below hold GraphQL. The "$o" and "$n" are GraphQL variables, not shell variables (SC2016).
+# shellcheck disable=SC2016
+owner_type_of() { # LOGIN -> organization | user | (nothing)
+  local reply
+  reply=$(gh api graphql -f query='query($o:String!){repositoryOwner(login:$o){__typename}}' -f o="$1" 2>/dev/null) || return 1
+  printf '%s' "$reply" | python3 -I -c '
+import json, sys
+kind = ((json.load(sys.stdin).get("data") or {}).get("repositoryOwner") or {}).get("__typename", "")
+print({"Organization": "organization", "User": "user"}.get(kind, ""))'
+}
+
+# shellcheck disable=SC2016
+linked_projects() { # OWNER NAME -> "login<TAB>number<TAB>title" for each open board linked to the repository
+  local reply
+  reply=$(gh api graphql -f query='query($o:String!,$n:String!){repository(owner:$o,name:$n){projectsV2(first:20){nodes{number title closed owner{__typename ... on Organization{login} ... on User{login}}}}}}' -f o="$1" -f n="$2" 2>/dev/null) || return 1
+  printf '%s' "$reply" | python3 -I -c '
+import json, sys
+nodes = ((((json.load(sys.stdin).get("data") or {}).get("repository") or {}).get("projectsV2") or {}).get("nodes")) or []
+for node in nodes:
+    if node and not node.get("closed"):
+        print("%s\t%s\t%s" % ((node.get("owner") or {}).get("login", ""), node.get("number", ""), str(node.get("title", "")).replace("\t", " ")))'
+}
+
+board_config_field() { # FILE KEY -> a value of project-board.json
+  python3 -I -c '
+import json, sys
+board = json.load(open(sys.argv[1], encoding="utf-8"))
+print({"owner": board["project"]["owner"], "number": board["project"]["number"], "field": board["status_field"]}[sys.argv[2]])' "$1" "$2"
+}
+
+# Says whether the repository has a credential for the board, by NAME only. Values are never read.
+step_board_credential() {
+  local secrets variables
+  if ! secrets=$(gh secret list --repo "$repo" --json name 2>/dev/null) || ! variables=$(gh variable list --repo "$repo" --json name 2>/dev/null); then
+    remember "Could not list the secrets of $repo, so the board credential was not checked. The Action warns in its log if it is missing."
+    return
+  fi
+  if printf '%s\n%s' "$secrets" "$variables" | python3 -I -c '
+import json, sys
+secrets, variables = [json.loads(part) for part in sys.stdin.read().split("\n", 1)]
+secret = {item["name"] for item in secrets}
+variable = {item["name"] for item in variables}
+sys.exit(0 if "FACTORY_BOARD_TOKEN" in secret or ("FACTORY_BOARD_APP_PRIVATE_KEY" in secret and "FACTORY_BOARD_CLIENT_ID" in variable) else 1)'; then
+    report PRESENT board-credential "a credential for the board is set on $repo (checked by name)"
+  else
+    report NOTE board-credential "no credential for the board is set on $repo"
+    remember "The board will not move until it has a credential. For an organization board, create a GitHub App with Projects (organization) read and write and Issues read, install it, then set the variable FACTORY_BOARD_CLIENT_ID and the secret FACTORY_BOARD_APP_PRIVATE_KEY. For a personal board, set the secret FACTORY_BOARD_TOKEN to a personal access token with the project scope. Use 'gh secret set' so the value never goes through a chat or a file. An organization-level secret is not listed here."
+  fi
+}
+
+step_board() {
+  [ -n "$repo" ] || return 0
+  if [ "$want_board" -eq 0 ]; then
+    report SKIPPED project-board "--no-board"
+    return
+  fi
+  if [ "$HAVE_GH" -ne 1 ]; then
+    report SKIPPED project-board "needs the GitHub command line (gh)"
+    return
+  fi
+  local config="$checkout/$BOARD_CONFIG_REL" tmp="$WORK_DIR" owner number
+
+  # 1. A mapping file is already there: a person may have edited it. Check it against the board. Never rewrite it.
+  if [ -f "$config" ]; then
+    owner=$(board_config_field "$config" owner 2>/dev/null) || owner=""
+    number=$(board_config_field "$config" number 2>/dev/null) || number=""
+    if [ -z "$owner" ] || [ -z "$number" ]; then
+      report NEEDS project-board "$BOARD_CONFIG_REL is not valid JSON of the expected shape"
+      needs_you "Fix $BOARD_CONFIG_REL, or delete it and run this script again to make a new one."
+      return
+    fi
+    local field
+    field=$(board_config_field "$config" field)
+    if ! gh project field-list "$number" --owner "$owner" --format json --limit 50 >"$tmp/fields.json" 2>/dev/null; then
+      report BLOCKED project-board "could not read the fields of the board $owner/$number"
+      needs_you "Run 'gh auth refresh -s project' and check that $owner/$number exists. Then run this script again."
+      return
+    fi
+    local problems
+    if problems=$(python3 -I "$BOARD_TOOL" validate --policy-json "$BOARD_POLICY" --board-config "$config" --fields "$tmp/fields.json"); then
+      report PRESENT project-board "$BOARD_CONFIG_REL matches the board $owner/$number, field '$field'"
+    else
+      report NEEDS project-board "$BOARD_CONFIG_REL no longer matches the board $owner/$number"
+      printf '%s\n' "$problems" | sed 's/^/              /'
+      needs_you "The board changed, or the mapping file is wrong. Edit $BOARD_CONFIG_REL so that each stage names an option that exists, or delete it to map again."
+    fi
+    step_board_credential
+    return
+  fi
+
+  # 2. Find the board: given, linked to the repository, or to be created.
+  local created=0 field_name="$board_field"
+  if [ -n "$project" ]; then
+    owner=${project%/*}
+    number=${project#*/}
+  elif [ -n "$create_project" ]; then
+    if [ "$check_only" -eq 1 ]; then
+      report WOULD_ADD project-board "a board would be created for $create_project, linked to $repo, with a new field called Stage"
+      return
+    fi
+    owner=$create_project
+    created=1
+  else
+    local linked count
+    if ! linked=$(linked_projects "${repo%/*}" "${repo#*/}"); then
+      report BLOCKED project-board "could not list the boards linked to $repo"
+      needs_you "Run 'gh auth refresh -s project', then run this script again. Or pass --project OWNER/NUMBER, or --no-board."
+      return
+    fi
+    count=$(printf '%s' "$linked" | grep -c . || true)
+    if [ "$count" -eq 0 ]; then
+      report NEEDS project-board "no board is linked to $repo"
+      needs_you "Decide about the board: pass --project OWNER/NUMBER to use one you have, --create-project OWNER to make one, or --no-board to go without."
+      return
+    fi
+    if [ "$count" -gt 1 ]; then
+      report NEEDS project-board "$count boards are linked to $repo, and the installer will not guess"
+      printf '%s\n' "$linked" | awk -F'\t' '{printf "              %s/%s  %s\n", $1, $2, $3}'
+      needs_you "Pick one with --project OWNER/NUMBER."
+      return
+    fi
+    owner=$(printf '%s' "$linked" | cut -f1)
+    number=$(printf '%s' "$linked" | cut -f2)
+  fi
+
+  # 3. Create the board when asked. Only additive things: a project, a link and a NEW field.
+  if [ "$created" -eq 1 ]; then
+    if [ "$owner" = "@me" ]; then
+      owner=$(gh api user 2>/dev/null | python3 -I -c 'import json,sys; print(json.load(sys.stdin).get("login",""))')
+    fi
+    local titles made
+    titles=$(python3 -I "$BOARD_TOOL" titles --policy-json "$BOARD_POLICY")
+    if ! made=$(gh project create --owner "$owner" --title "${repo#*/} factory board" --format json 2>/dev/null); then
+      report BLOCKED project-board "could not create a board for $owner"
+      needs_you "Run 'gh auth refresh -s project' and check that you may create projects for $owner."
+      return
+    fi
+    number=$(printf '%s' "$made" | python3 -I -c 'import json,sys; print(json.load(sys.stdin).get("number",""))')
+    field_name=$(python3 -I -c 'import json,sys; print(json.load(open(sys.argv[1], encoding="utf-8"))["created_field"])' "$BOARD_POLICY")
+    if [ -z "$number" ] ||
+      ! gh project link "$number" --owner "$owner" --repo "$repo" >/dev/null 2>&1 ||
+      ! gh project field-create "$number" --owner "$owner" --name "$field_name" --data-type SINGLE_SELECT --single-select-options "$titles" --format json >/dev/null 2>&1; then
+      report BLOCKED project-board "the board was created but it could not be linked or given its field"
+      FAILED=1
+      return
+    fi
+    done_for_you "Created the board $owner/$number and linked it to $repo."
+  fi
+
+  # 4. Read the board's field and map the stages onto the options that are there.
+  local kind
+  kind=$(owner_type_of "$owner") || kind=""
+  if [ -z "$kind" ]; then
+    report BLOCKED project-board "could not tell whether $owner is an organization or a user"
+    needs_you "Run 'gh auth status' and check that $owner exists."
+    return
+  fi
+  if ! gh project field-list "$number" --owner "$owner" --format json --limit 50 >"$tmp/fields.json" 2>/dev/null; then
+    report BLOCKED project-board "could not read the fields of the board $owner/$number"
+    needs_you "Run 'gh auth refresh -s project' and check that $owner/$number exists. Then run this script again."
+    return
+  fi
+  local mapped_ok=0
+  if [ "$created" -eq 1 ]; then
+    python3 -I "$BOARD_TOOL" map --policy-json "$BOARD_POLICY" --owner "$owner" --owner-type "$kind" --number "$number" --created \
+      >"$tmp/board.json" 2>"$tmp/notes.txt" && mapped_ok=1
+  else
+    python3 -I "$BOARD_TOOL" map --policy-json "$BOARD_POLICY" --owner "$owner" --owner-type "$kind" --number "$number" \
+      --fields "$tmp/fields.json" --status-field "$field_name" >"$tmp/board.json" 2>"$tmp/notes.txt" && mapped_ok=1
+  fi
+  if [ "$mapped_ok" -ne 1 ]; then
+    report NEEDS project-board "the board $owner/$number has no single-select field named '$field_name'"
+    sed 's/^FAIL /              /' "$tmp/notes.txt"
+    needs_you "Pass --board-field with the name of the field that holds your columns (it must be a single-select field), or use --create-project to make a board with its own field."
+    return
+  fi
+  mkdir -p "$(dirname "$config")"
+  cp "$tmp/board.json" "$config"
+  report ADDED project-board "wrote $BOARD_CONFIG_REL for the board $owner/$number, field '$field_name'. No option of the board was changed."
+  done_for_you "Mapped the stages onto the board $owner/$number in $BOARD_CONFIG_REL."
+  while IFS= read -r note; do
+    [ -n "$note" ] && remember "Board: ${note#NOTE }"
+  done <"$tmp/notes.txt"
+  remember "Review $BOARD_CONFIG_REL in the pull request. A board view is made in the GitHub web page: group a Board layout by '$field_name'."
+  step_board_credential
+}
+
+# ---------------------------------------------------------------------------------------------------------------
 # Step 6: has the project been mapped?
 # ---------------------------------------------------------------------------------------------------------------
 step_map() {
@@ -491,6 +742,7 @@ step_egm
 step_mcp
 step_files
 step_labels
+step_board
 step_map
 step_uncommitted
 
