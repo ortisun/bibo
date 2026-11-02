@@ -1,0 +1,4 @@
+id       = issue-workflow-tests
+title    = The issue workflow rules, the shipped forms and the Action file pass their tests (scripts/tests/test_issue_workflow.py)
+requires = uv python3
+run      = uv run --no-project --with pyyaml==6.0.3 python -I scripts/tests/test_issue_workflow.py

@@ -54,6 +54,8 @@ The API records what people ask for and never runs work. The worker holds the en
 | You want to | Read |
 |---|---|
 | Run a job in test mode on your machine | [Quickstart](docs/guides/quickstart.md) |
+| Prepare an existing project and send it tickets | [Onboarding guide](docs/guides/onboarding.md) |
+| Design a new solution with the Elephant-Goldfish Model (EGM) before the factory builds it | [Design guide](docs/guides/design-with-egm.md) |
 | See what one job looks like from the webhook to the approval | [Walkthrough of a test-mode run](docs/walkthroughs/test-mode-run.md) |
 | Look up a setting, a command or an endpoint | [Configuration](docs/reference/configuration.md), [Commands](docs/reference/commands.md) |
 | Know what each policy file controls | [Policies](docs/reference/policies.md) |

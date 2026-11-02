@@ -1,0 +1,4 @@
+id       = install-tests
+title    = The installer and the project map check pass their tests, with fake claude and gh programs (scripts/tests/test_install.py, test_project_map.py)
+requires = python3 bash git
+run      = scripts/tests/run-install-tests.sh

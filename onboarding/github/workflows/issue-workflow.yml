@@ -1,0 +1,56 @@
+# Keeps the labels of an issue consistent with the factory's issue workflow (ADR 0016).
+#
+# The installer (scripts/install.sh) copies this file, `.github/scripts/issue_workflow.py` and
+# `.github/issue-workflow.json` into a repository. It reacts to a label being added or removed and:
+#   * keeps one `design:` label per issue and refuses a move the workflow does not allow;
+#   * refuses a `design: approved` label unless the issue names a design document on the default branch;
+#   * puts back a `factory:` label that a person removed, and removes one that a person added.
+# It never adds or removes the `factory` label. That label is a person's request and the factory's engine
+# decides whether the person may make it. Nothing here authorizes work.
+name: Issue workflow
+
+on:
+  issues:
+    types: [labeled, unlabeled]
+
+# Issues: write is the one permission the job needs, to change labels and to comment. Contents: read is for
+# the checkout, which finds the design document.
+permissions:
+  contents: read
+  issues: write
+
+# One run per issue at a time, so two quick label changes are handled in order.
+concurrency:
+  group: issue-workflow-${{ github.event.issue.number }}
+  cancel-in-progress: false
+
+jobs:
+  labels:
+    name: Keep the issue labels consistent
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      # An `issues` event runs the workflow file of the default branch, and this checkout is the default branch.
+      # Only the two folders the script reads are fetched.
+      - name: Check out the default branch
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          sparse-checkout: |
+            .github
+            docs/designs
+
+      # Issue text reaches the script only through the event file, never through this command line.
+      # FACTORY_BOT_LOGIN is the login of the factory's GitHub App, for example `my-factory[bot]`. Set it as a
+      # repository variable. With no value, nobody may set a `factory:` label.
+      - name: Apply the issue workflow
+        env:
+          GH_TOKEN: ${{ github.token }}
+          FACTORY_BOT_LOGIN: ${{ vars.FACTORY_BOT_LOGIN }}
+          REPOSITORY: ${{ github.repository }}
+        run: >-
+          python3 .github/scripts/issue_workflow.py apply
+          --event "$GITHUB_EVENT_PATH"
+          --config .github/issue-workflow.json
+          --repo "$REPOSITORY"
+          --docs-root .
