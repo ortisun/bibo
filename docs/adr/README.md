@@ -23,6 +23,7 @@ This directory is `docs/adr/`, as the master prompt's workspace layout (section 
 | [0015](0015-composition-library.md) | The shared composition core is a ring 3 library crate that only binaries may depend on, with no `main`. Not one app linking another, not one binary, not three copies. | Decided by the lead, pending the architect |
 | [0016](0016-design-phase-onboarding-and-issue-workflow.md) | A design phase with EGM runs before the factory, a project is installed and mapped before it takes tickets, and issues are tracked with labels in two namespaces. The engine is not changed yet. | Proposed, pending the architect |
 | [0018](0018-project-board-mirror-that-adapts.md) | The issue labels are mirrored on a GitHub Projects board by an Action in the project, with a credential its owner chooses. An existing board is adapted to by mapping, never changed, and the engine never writes to a board. | Proposed, pending the architect |
+| [0019](0019-claude-code-and-codex-alike.md) | The installer prepares a project for Claude Code, for Codex, or for both, with one set of labels, forms, Action and board. The GitHub entry goes in `.mcp.json` for one and in `.codex/config.toml` for the other. | Proposed, pending the architect |
 
 ## Rules for this directory
 

@@ -57,6 +57,7 @@ The API records what people ask for and never runs work. The worker holds the en
 | Prepare an existing project and send it tickets | [Onboarding guide](docs/guides/onboarding.md) |
 | Design a new solution with the Elephant-Goldfish Model (EGM) before the factory builds it | [Design guide](docs/guides/design-with-egm.md) |
 | Show the issues on a GitHub Projects board, new or already there | [Board guide](docs/guides/project-board.md) |
+| Use Claude Code, Codex or both for the design path | [Claude Code and Codex side by side](docs/guides/claude-and-codex.md) |
 | See what one job looks like from the webhook to the approval | [Walkthrough of a test-mode run](docs/walkthroughs/test-mode-run.md) |
 | Look up a setting, a command or an endpoint | [Configuration](docs/reference/configuration.md), [Commands](docs/reference/commands.md) |
 | Know what each policy file controls | [Policies](docs/reference/policies.md) |

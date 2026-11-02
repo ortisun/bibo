@@ -122,6 +122,41 @@ else:
 '''
 
 
+FAKE_CODEX = r'''#!/usr/bin/env python3
+import json, os, sys
+state = os.environ["FAKE_STATE"]
+def path(name): return os.path.join(state, name)
+def load(name, default):
+    try:
+        with open(path(name), encoding="utf-8") as h: return json.load(h)
+    except FileNotFoundError: return default
+def save(name, value):
+    with open(path(name), "w", encoding="utf-8") as h: json.dump(value, h)
+args = sys.argv[1:]
+with open(path("calls.log"), "a", encoding="utf-8") as log: log.write("codex " + " ".join(args) + "\n")
+fail = os.environ.get("FAKE_FAIL", "")
+if args[:1] == ["--version"]:
+    print("codex-cli " + os.environ.get("FAKE_CODEX_VERSION", "0.166.0"))
+elif args == ["plugin", "add", "--help"]:
+    sys.exit(1 if os.environ.get("FAKE_CODEX_NOPLUGIN") else 0)
+elif args[:2] == ["plugin", "list"]:
+    print(json.dumps(load("codex_plugins.json", {"installed": [], "available": []})))
+elif args[:3] == ["plugin", "marketplace", "list"]:
+    print(json.dumps(load("codex_marketplaces.json", {"marketplaces": []})))
+elif args[:3] == ["plugin", "marketplace", "add"]:
+    if fail == "codex_marketplace_add": sys.exit(1)
+    data = load("codex_marketplaces.json", {"marketplaces": []})
+    data["marketplaces"].append({"name": "egm", "root": "/x", "marketplaceSource": {"sourceType": "git", "source": args[3]}})
+    save("codex_marketplaces.json", data)
+elif args[:2] == ["plugin", "add"]:
+    if fail == "codex_install": sys.exit(1)
+    data = load("codex_plugins.json", {"installed": [], "available": []})
+    data["installed"].append({"pluginId": args[2], "name": "egm", "marketplaceName": "egm", "version": "0.1.0", "installed": True, "enabled": True})
+    save("codex_plugins.json", data)
+else:
+    sys.exit(64)
+'''
+
 def read_bytes(path):
     with open(path, "rb") as handle:
         return handle.read()
@@ -157,6 +192,23 @@ class Case(unittest.TestCase):
         environment.update(env or {})
         done = subprocess.run([BASH, INSTALL, *args], capture_output=True, text=True, env=environment)
         return done.returncode, done.stdout + done.stderr
+
+    def add_codex(self):
+        write_executable(os.path.join(self.bin, "codex"), FAKE_CODEX)
+
+    def remove_claude(self):
+        os.remove(os.path.join(self.bin, "claude"))
+
+    def add_claude(self):
+        write_executable(os.path.join(self.bin, "claude"), FAKE_CLAUDE)
+
+    def remove_codex(self):
+        os.remove(os.path.join(self.bin, "codex"))
+
+    def codex_installed(self, version="0.1.0", enabled=True):
+        self.put_state("codex_plugins.json", {"installed": [{"pluginId": "egm@egm", "name": "egm", "version": version,
+                                                             "enabled": enabled}], "available": []})
+        self.put_state("codex_marketplaces.json", {"marketplaces": [{"name": "egm"}]})
 
     def has(self, out, state, step, detail=""):
         """True when a report line has this state and step (and detail), whatever the column padding."""
@@ -242,12 +294,18 @@ class EgmPlugin(Case):
     def test_a_claude_older_than_the_minimum_blocks_before_any_change(self):
         code, out = self.run_install(env={"FAKE_CLAUDE_VERSION": "2.1.0"})
         self.assertEqual(code, 3, out)
-        self.assertTrue(self.has(out, "BLOCKED", "tools"), out)
+        self.assertTrue(self.has(out, "BLOCKED", "claude"), out)
         self.assertTrue(self.has(out, "SKIPPED", "egm-plugin"), out)
         self.assertEqual([c for c in self.calls() if "install" in c or "add" in c], [])
 
     def test_a_missing_claude_blocks(self):
         code, out = self.run_install(with_claude=False)
+        self.assertEqual(code, 3, out)
+        self.assertIn("no coding agent is installed", out)
+        self.assertTrue(self.has(out, "BLOCKED", "agents"), out)
+        self.setUp()
+        self.remove_claude()
+        code, out = self.run_install("--agent", "claude")
         self.assertEqual(code, 3, out)
         self.assertIn("Claude Code is not installed", out)
 
@@ -674,6 +732,231 @@ class Board(Case):
         code, _ = self.run_install("--checkout", self.project, "--project", "acme/7")
         self.assertEqual(code, 2, "--project goes with --repo")
         self.assertEqual(self.mutations(), [])
+
+
+class Agents(Case):
+    """Which coding agents the installer prepares: Claude Code, Codex, or both."""
+
+    def mutating(self, agent):
+        return [c for c in self.calls() if c.startswith(agent + " plugin") and any(w in c for w in (" add ", " install ", " enable "))
+                and "--help" not in c and "list" not in c]
+
+    def test_codex_alone_is_enough_and_gets_the_plugin_once(self):
+        self.remove_claude()
+        self.add_codex()
+        code, out = self.run_install()
+        self.assertEqual(code, 0, out)
+        self.assertTrue(self.has(out, "SKIPPED", "claude"), out)
+        self.assertTrue(self.has(out, "ADDED", "egm-plugin", "codex: egm@egm 0.1.0"), out)
+        self.assertEqual([c for c in self.calls() if c.startswith("codex plugin") and "marketplace add" in c or " plugin add egm" in c],
+                         ["codex plugin marketplace add google/elephant-goldfish-model", "codex plugin add egm@egm"])
+        self.assertFalse(any(c.startswith("claude ") and "plugin" in c for c in self.calls()), "Claude Code was not touched")
+        self.assertIn("Start a new Codex session", out)
+        before = len(self.calls())
+        code, out = self.run_install()
+        self.assertEqual(code, 0, out)
+        self.assertTrue(self.has(out, "PRESENT", "egm-plugin", "codex:"), out)
+        self.assertEqual([c for c in self.calls()[before:] if " add " in c and "--help" not in c], [],
+                         "the second run changed nothing (the --help line is the capability probe)")
+
+    def test_with_both_installed_both_are_prepared(self):
+        self.add_codex()
+        code, out = self.run_install()
+        self.assertEqual(code, 0, out)
+        self.assertTrue(self.has(out, "ADDED", "egm-plugin", "claude:"), out)
+        self.assertTrue(self.has(out, "ADDED", "egm-plugin", "codex:"), out)
+        self.assertTrue(self.mutating("claude") and self.mutating("codex"))
+
+    def test_agent_claude_leaves_codex_alone_even_when_it_is_installed(self):
+        self.add_codex()
+        code, out = self.run_install("--agent", "claude")
+        self.assertEqual(code, 0, out)
+        self.assertFalse(any(c.startswith("codex") for c in self.calls()), self.calls())
+        self.assertNotIn("codex", out.lower().replace("codex.", ""))
+
+    def test_agent_codex_leaves_claude_alone(self):
+        self.add_codex()
+        code, out = self.run_install("--agent", "codex")
+        self.assertEqual(code, 0, out)
+        self.assertFalse(any(c.startswith("claude") for c in self.calls()), self.calls())
+
+    def test_an_agent_that_was_asked_for_and_is_missing_blocks(self):
+        code, out = self.run_install("--agent", "codex")
+        self.assertEqual(code, 3, out)
+        self.assertTrue(self.has(out, "BLOCKED", "codex"), out)
+        self.assertEqual(self.mutating("claude"), [], "nothing was installed for the other agent")
+        self.setUp()
+        code, out = self.run_install("--agent", "both")
+        self.assertEqual(code, 3, out)
+        self.assertTrue(self.has(out, "BLOCKED", "codex"), out)
+
+    def test_a_codex_without_the_plugin_command_is_blocked_and_not_guessed_at(self):
+        self.add_codex()
+        code, out = self.run_install("--agent", "codex", env={"FAKE_CODEX_NOPLUGIN": "1"})
+        self.assertEqual(code, 3, out)
+        self.assertIn("no 'plugin add' command", out)
+        self.assertEqual(self.mutating("codex"), [])
+
+    def test_a_disabled_codex_plugin_is_left_to_a_person_because_codex_cannot_enable_it(self):
+        self.add_codex()
+        self.codex_installed(enabled=False)
+        code, out = self.run_install("--agent", "codex")
+        self.assertEqual(code, 3, out)
+        self.assertTrue(self.has(out, "NEEDS", "egm-plugin", "codex:"), out)
+        self.assertIn("no command that enables a plugin", out)
+        self.assertEqual(self.mutating("codex"), [])
+
+    def test_another_codex_plugin_version_is_reported_and_kept(self):
+        self.add_codex()
+        self.codex_installed(version="0.9.0")
+        code, out = self.run_install("--agent", "codex")
+        self.assertEqual(code, 0, out)
+        self.assertTrue(self.has(out, "DRIFT", "egm-plugin", "codex:"), out)
+        self.assertEqual(self.mutating("codex"), [])
+
+    def test_a_marketplace_that_codex_already_has_is_not_added_again(self):
+        self.add_codex()
+        self.put_state("codex_marketplaces.json", {"marketplaces": [{"name": "egm"}]})
+        self.run_install("--agent", "codex")
+        self.assertFalse(any("marketplace add" in c for c in self.calls() if c.startswith("codex")))
+        self.assertTrue(any(c == "codex plugin add egm@egm" for c in self.calls()))
+
+    def test_failures_are_reported(self):
+        for failure in ("codex_marketplace_add", "codex_install"):
+            with self.subTest(failure=failure):
+                self.setUp()
+                self.add_codex()
+                code, out = self.run_install("--agent", "codex", env={"FAKE_FAIL": failure})
+                self.assertEqual(code, 1, out)
+                self.assertTrue(self.has(out, "BLOCKED", "egm-plugin", "codex:"), out)
+
+    def test_check_changes_nothing_for_codex(self):
+        self.add_codex()
+        code, out = self.run_install("--check", "--agent", "codex")
+        self.assertEqual(code, 3, out)
+        self.assertTrue(self.has(out, "WOULD_ADD", "egm-plugin", "codex:"), out)
+        self.assertEqual(self.mutating("codex"), [])
+
+    def test_a_wrong_agent_name_is_a_usage_error(self):
+        for value in ("gemini", "", "Claude", "both,codex"):
+            with self.subTest(value=value):
+                self.assertEqual(self.run_install("--agent", value)[0], 2)
+        self.assertEqual(self.run_install("--agent")[0], 2)
+
+
+class CodexProject(Case):
+    """The project files for Codex: the GitHub MCP entry in .codex/config.toml."""
+
+    def setUp(self):
+        super().setUp()
+        self.remove_claude()
+        self.add_codex()
+        self.codex_installed()
+        self.put_project({"README.md": "# p\n"})
+
+    def install(self, *extra, token="dummy-value-that-is-not-a-secret-4242"):
+        return self.run_install("--checkout", self.project, "--no-board", *extra, token=token)
+
+    def test_the_entry_is_added_and_names_the_variable_not_a_token(self):
+        code, out = self.install()
+        self.assertTrue(self.has(out, "ADDED", "github-mcp", "codex: added"), out)
+        text = self.read(".codex/config.toml")
+        self.assertIn('bearer_token_env_var = "FACTORY_GITHUB_MCP_TOKEN"', text)
+        self.assertIn('"X-MCP-Lockdown" = "true"', text)
+        self.assertFalse(self.exists(".mcp.json"), "Claude's file is not written when Claude Code is not prepared")
+        self.assertNotIn("dummy-value", text + out)
+        self.assertIn("only for a project that you trust", out)
+
+    def test_it_parses_as_toml_and_keeps_what_was_there(self):
+        before = '# my settings\nmodel = "o3"\n\n[mcp_servers.docs]\nurl = "https://example.com/mcp"\n'
+        self.put_project({".codex/config.toml": before})
+        self.install()
+        text = self.read(".codex/config.toml")
+        self.assertTrue(text.startswith(before))
+        try:
+            import tomllib
+        except ImportError:
+            return
+        data = tomllib.loads(text)
+        self.assertEqual(sorted(data["mcp_servers"]), ["docs", "github"])
+        self.assertEqual(data["mcp_servers"]["github"]["bearer_token_env_var"], "FACTORY_GITHUB_MCP_TOKEN")
+
+    def test_a_second_run_changes_nothing(self):
+        self.install()
+        path = os.path.join(self.project, ".codex", "config.toml")
+        before = (os.stat(path).st_mtime_ns, read_bytes(path))
+        _, out = self.install()
+        self.assertTrue(self.has(out, "PRESENT", "github-mcp", "codex:"), out)
+        self.assertEqual((os.stat(path).st_mtime_ns, read_bytes(path)), before)
+
+    def test_a_token_in_the_file_is_flagged_without_being_shown_and_kept_until_update(self):
+        leaked = "ghp_" + "C" * 36
+        self.put_project({".codex/config.toml": '[mcp_servers.github]\nurl = "https://api.githubcopilot.com/mcp/"\nexperimental_bearer_token = "%s"\n' % leaked})
+        _, out = self.install()
+        self.assertTrue(self.has(out, "DRIFT", "github-mcp", "codex:"), out)
+        self.assertNotIn(leaked, out)
+        self.assertIn(leaked, self.read(".codex/config.toml"))
+        _, out = self.install("--update")
+        self.assertNotIn(leaked, self.read(".codex/config.toml"))
+        self.assertNotIn(leaked, out)
+        self.assertIn("rotate", out)
+
+    def test_a_different_entry_is_kept_until_update(self):
+        self.put_project({".codex/config.toml": '[mcp_servers.github]\nurl = "https://example.com/mcp"\n'})
+        _, out = self.install()
+        self.assertTrue(self.has(out, "DRIFT", "github-mcp", "codex:"), out)
+        self.assertIn("example.com", self.read(".codex/config.toml"))
+        self.install("--update")
+        self.assertNotIn("example.com", self.read(".codex/config.toml"))
+
+    def test_an_entry_that_runs_a_command_is_never_edited_even_with_update(self):
+        text = '[mcp_servers.github]\ncommand = "npx"\nargs = ["some-server"]\n'
+        self.put_project({".codex/config.toml": text})
+        code, out = self.install("--update")
+        self.assertTrue(self.has(out, "DRIFT", "github-mcp", "codex:"), out)
+        self.assertEqual(self.read(".codex/config.toml"), text)
+        self.assertEqual(code, 3)
+
+    def test_check_and_no_mcp_write_nothing(self):
+        code, out = self.install("--check")
+        self.assertTrue(self.has(out, "WOULD_ADD", "github-mcp", "codex:"), out)
+        self.assertFalse(self.exists(".codex/config.toml"))
+        self.install("--no-mcp")
+        self.assertFalse(self.exists(".codex/config.toml"))
+
+    def test_both_agents_get_their_own_file_and_one_token_request(self):
+        self.setUp()
+        self.add_claude()
+        self.egm_installed()
+        self.put_project({"README.md": "# p\n"})
+        _, out = self.run_install("--checkout", self.project, "--no-board", token=None)
+        self.assertTrue(self.exists(".mcp.json") and self.exists(".codex/config.toml"))
+        self.assertEqual(out.count("NEEDS     github-token"), 1)
+        self.assertIn("before you start Claude Code or Codex", out)
+
+    def test_the_mapping_hint_names_the_command_of_each_agent(self):
+        self.put_project({"src/app.py": "x=1\n"})
+        _, out = self.install()
+        self.assertIn("choose the egm-bootstrap skill from the skill list", out)
+        self.assertNotIn("/egm:egm-bootstrap", out)
+        self.setUp()
+        self.add_claude()
+        self.remove_codex()
+        self.egm_installed()
+        self.put_project({"src/app.py": "x=1\n"})
+        _, out = self.run_install("--checkout", self.project, "--no-board")
+        self.assertIn("/egm:egm-bootstrap", out)
+        self.assertNotIn("choose the egm-bootstrap skill", out)
+
+    def test_an_uncommitted_codex_file_keeps_the_install_not_ready(self):
+        self.put_project({"README.md": "# p\n", "src/app.py": "x=1\n", "src/README.md": "# s\n"})
+        env = {"GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@example.com", "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@example.com"}
+        for command in (["init", "-q"], ["add", "."], ["commit", "-q", "-m", "start"]):
+            subprocess.run(["git", "-C", self.project, *command], check=True, env={**os.environ, **env})
+        code, out = self.install()
+        self.assertEqual(code, 3, out)
+        self.assertTrue(self.has(out, "NEEDS", "uncommitted"), out)
+        self.assertTrue(self.exists(".codex/config.toml"))
 
 
 if __name__ == "__main__":

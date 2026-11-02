@@ -1,12 +1,16 @@
 #!/usr/bin/env bash
-# scripts/install.sh - prepare an existing project to work with the factory (ADR 0016).
+# scripts/install.sh - prepare an existing project to work with the factory, for Claude Code and for Codex (ADRs 0016, 0018, 0019).
 #
 # OBJECTIVE   Put the design tools and the issue workflow in place, so that a project can be mapped and then
 #             receive tickets. It installs; it never starts a job and it never commits or pushes anything.
 # DONE WHEN   Every line it prints is PRESENT or ADDED, it prints "READY", and it exits with code 0.
 #
 #   scripts/install.sh --check                         Show what would change. Change nothing. Safe to run any time.
-#   scripts/install.sh                                 Install the EGM plugin for Claude Code if it is missing.
+#   scripts/install.sh                                 Install the EGM plugin if it is missing, for Claude Code, for
+#                                                      Codex, or for both: every one of them that is installed.
+#   --agent auto|claude|codex|both                     Which coding agent to prepare. The default, auto, takes each of
+#                                                      claude and codex that is on the PATH and stops if there is none.
+#                                                      claude or codex insists on that one. both insists on both.
 #   scripts/install.sh --checkout PATH                 Also prepare the project at PATH: the GitHub MCP server entry
 #                                                      (.mcp.json), the issue workflow files (.github/), and a check
 #                                                      that the project has been mapped by EGM's bootstrap.
@@ -25,14 +29,18 @@
 #   --help                                             Show this text.
 #
 # What each step does
-#   tools          git, python3 and Claude Code (version 2.1.271 or later, for EGM's reviewer isolation).
-#   egm-plugin     The EGM plugin (egm@egm, from github.com/google/elephant-goldfish-model) in Claude Code's user
-#                  scope. Installed only when missing; enabled when it is installed but disabled. Start a new
-#                  Claude Code session afterwards.
-#   github-mcp     An entry for GitHub's MCP server in the project's .mcp.json. The entry holds the name of an
-#                  environment variable, FACTORY_GITHUB_MCP_TOKEN, and never a token. This script does not read
-#                  that variable, only whether it is set. The server is a tool for the person in the design
-#                  session. The factory's engine never uses it and never honors a project's .mcp.json.
+#   tools          git and python3.
+#   claude, codex  The coding agents. Claude Code must be 2.1.271 or later, for EGM's reviewer isolation. Codex must
+#                  have the `plugin` command; the script checks the command, not a version number.
+#   egm-plugin     The EGM plugin (egm@egm, from github.com/google/elephant-goldfish-model) in the user scope of each
+#                  agent. Installed only when missing. Claude Code can enable a disabled plugin; Codex has no command
+#                  for it, so a disabled plugin there is left to a person. Start a new session afterwards.
+#   github-mcp     An entry for GitHub's MCP server: in the project's .mcp.json for Claude Code and in its
+#                  .codex/config.toml for Codex. The entry holds the name of an environment variable,
+#                  FACTORY_GITHUB_MCP_TOKEN, and never a token. This script does not read that variable, only whether
+#                  it is set. The server is a tool for the person in the design session. The factory's engine never
+#                  uses it and never honors a project's .mcp.json or .codex/config.toml. Codex reads its file only
+#                  for a project that the person trusts.
 #   workflow-files The issue forms, the Action that keeps labels consistent, and its two helper files, copied into
 #                  the project's .github/. They are files in the working tree. A person commits them by pull request.
 #   labels         The labels of policies/issue-workflow.yaml, created or corrected with `gh label create --force`.
@@ -67,6 +75,7 @@ CLAUDE_MIN_VERSION="2.1.271"
 MCP_TOKEN_VAR="FACTORY_GITHUB_MCP_TOKEN"
 
 WORKFLOW_TOOL="$SELF_DIR/lib/issue_workflow.py"
+CODEX_CONFIG_TOOL="$SELF_DIR/lib/codex_config.py"
 BOARD_TOOL="$SELF_DIR/lib/project_board.py"
 BOARD_POLICY="$ROOT/onboarding/github/project-board-policy.json"
 BOARD_CONFIG_REL=".github/project-board.json"
@@ -75,6 +84,7 @@ RENDERED="$ROOT/onboarding/github/issue-workflow.json"
 
 check_only=0
 update=0
+agent="auto"
 want_mcp=1
 want_board=1
 checkout=""
@@ -93,6 +103,11 @@ while [ $# -gt 0 ]; do
     --check) check_only=1 ;;
     --update) update=1 ;;
     --no-mcp) want_mcp=0 ;;
+    --agent)
+      [ $# -ge 2 ] || usage_error "--agent needs auto, claude, codex or both"
+      agent=$2
+      shift
+      ;;
     --no-board) want_board=0 ;;
     --project)
       [ $# -ge 2 ] || usage_error "--project needs OWNER/NUMBER"
@@ -128,6 +143,7 @@ while [ $# -gt 0 ]; do
   shift
 done
 
+case "$agent" in auto | claude | codex | both) ;; *) usage_error "--agent must be auto, claude, codex or both" ;; esac
 if [ -n "$repo" ]; then
   case "$repo" in
     */*/* | */ | /* | . | .. | ./* | ../* | */. | */.. | *[!A-Za-z0-9_./-]*) usage_error "--repo must look like OWNER/NAME" ;;
@@ -184,9 +200,12 @@ needs_you() { NEED_LINES="${NEED_LINES}  - $1"$'\n'; }
 remember() { NOTE_LINES="${NOTE_LINES}  - $1"$'\n'; }
 
 # ---------------------------------------------------------------------------------------------------------------
-# Step 1: tools
+# Step 1: tools and coding agents
 # ---------------------------------------------------------------------------------------------------------------
 HAVE_CLAUDE=0
+HAVE_CODEX=0
+FOUND_CLAUDE=0
+FOUND_CODEX=0
 HAVE_GH=0
 
 version_at_least() { # have want
@@ -195,6 +214,69 @@ import sys
 def parts(v):
     return tuple(int(p) for p in v.split(".")[:3])
 sys.exit(0 if parts(sys.argv[1]) >= parts(sys.argv[2]) else 1)' "$1" "$2" 2>/dev/null
+}
+
+wants() { # claude | codex: does --agent ask for it?
+  case "$agent" in
+    both | auto | "$1") return 0 ;;
+  esac
+  return 1
+}
+
+# "Claude Code", "Codex" or "Claude Code or Codex": the agents this run prepares, for the sentences that name them.
+agents_label() {
+  if [ "$HAVE_CLAUDE" -eq 1 ] && [ "$HAVE_CODEX" -eq 1 ]; then
+    printf 'Claude Code or Codex'
+  elif [ "$HAVE_CODEX" -eq 1 ]; then
+    printf 'Codex'
+  else
+    printf 'Claude Code'
+  fi
+}
+
+step_agent_claude() {
+  wants claude || return 0
+  if ! command -v claude >/dev/null 2>&1; then
+    if [ "$agent" = auto ]; then
+      report SKIPPED claude "not installed"
+    else
+      report BLOCKED claude "Claude Code is not installed"
+      needs_you "Install Claude Code (https://claude.com/claude-code) $CLAUDE_MIN_VERSION or later, then run this script again."
+    fi
+    return
+  fi
+  FOUND_CLAUDE=1
+  local have
+  have=$(claude --version 2>/dev/null | awk '{print $1; exit}')
+  if [ -z "$have" ] || ! version_at_least "$have" "$CLAUDE_MIN_VERSION"; then
+    report BLOCKED claude "Claude Code ${have:-of unknown version} is older than $CLAUDE_MIN_VERSION"
+    needs_you "Update Claude Code to $CLAUDE_MIN_VERSION or later. Older versions do not isolate EGM's reviewers."
+    return
+  fi
+  HAVE_CLAUDE=1
+  report PRESENT claude "Claude Code $have"
+}
+
+step_agent_codex() {
+  wants codex || return 0
+  if ! command -v codex >/dev/null 2>&1; then
+    if [ "$agent" = auto ]; then
+      report SKIPPED codex "not installed"
+    else
+      report BLOCKED codex "Codex is not installed"
+      needs_you "Install Codex (https://developers.openai.com/codex) and run this script again."
+    fi
+    return
+  fi
+  FOUND_CODEX=1
+  # Codex is probed for the command this script uses, not for a version number (ADR 0005 does the same for the engine).
+  if ! codex plugin add --help >/dev/null 2>&1; then
+    report BLOCKED codex "this Codex has no 'plugin add' command"
+    needs_you "Update Codex to a version that has 'codex plugin add'."
+    return
+  fi
+  HAVE_CODEX=1
+  report PRESENT codex "Codex $(codex --version 2>/dev/null | awk '{print $NF; exit}')"
 }
 
 step_tools() {
@@ -207,21 +289,14 @@ step_tools() {
     needs_you "Install$missing and run this script again."
     return
   fi
-  if ! command -v claude >/dev/null 2>&1; then
-    report BLOCKED tools "Claude Code is not installed"
-    needs_you "Install Claude Code (https://claude.com/claude-code) $CLAUDE_MIN_VERSION or later, then run this script again."
-    return
-  fi
-  local have
-  have=$(claude --version 2>/dev/null | awk '{print $1; exit}')
-  if [ -z "$have" ] || ! version_at_least "$have" "$CLAUDE_MIN_VERSION"; then
-    report BLOCKED tools "Claude Code ${have:-of unknown version} is older than $CLAUDE_MIN_VERSION"
-    needs_you "Update Claude Code to $CLAUDE_MIN_VERSION or later. Older versions do not isolate EGM's reviewers."
-    return
-  fi
-  HAVE_CLAUDE=1
-  report PRESENT tools "git, python3, claude $have"
+  report PRESENT tools "git, python3"
   if command -v gh >/dev/null 2>&1; then HAVE_GH=1; fi
+  step_agent_claude
+  step_agent_codex
+  if [ "$agent" = auto ] && [ "$FOUND_CLAUDE" -eq 0 ] && [ "$FOUND_CODEX" -eq 0 ]; then
+    report BLOCKED agents "no coding agent is installed: neither claude nor codex is on the PATH"
+    needs_you "Install Claude Code (https://claude.com/claude-code) or Codex (https://developers.openai.com/codex), then run this script again."
+  fi
 }
 
 # ---------------------------------------------------------------------------------------------------------------
@@ -252,9 +327,11 @@ except ValueError:
 sys.exit(0 if any(i.get("name") == sys.argv[1] for i in items) else 1)' "$EGM_MARKETPLACE_NAME"
 }
 
-step_egm() {
+step_egm_claude() {
   if [ "$HAVE_CLAUDE" -ne 1 ]; then
-    report SKIPPED egm-plugin "needs Claude Code"
+    if [ "$FOUND_CLAUDE" -eq 1 ] || [ "$agent" = claude ] || [ "$agent" = both ]; then
+      report SKIPPED egm-plugin "claude: needs Claude Code"
+    fi
     return
   fi
   local state version
@@ -264,40 +341,40 @@ EOF
   case "$state" in
     enabled)
       if [ "$version" = "$EGM_EXPECTED_VERSION" ]; then
-        report PRESENT egm-plugin "$EGM_PLUGIN $version"
+        report PRESENT egm-plugin "claude: $EGM_PLUGIN $version"
       else
-        report DRIFT egm-plugin "$EGM_PLUGIN $version is installed; this script was written against $EGM_EXPECTED_VERSION"
-        remember "Read the EGM release notes for $version before you rely on it. Nothing was changed."
+        report DRIFT egm-plugin "claude: $EGM_PLUGIN $version is installed; this script was written against $EGM_EXPECTED_VERSION"
+        remember "Read the EGM release notes for $version before you rely on it in Claude Code. Nothing was changed."
       fi
       ;;
     disabled)
       if [ "$check_only" -eq 1 ]; then
-        report WOULD_ADD egm-plugin "$EGM_PLUGIN $version is installed but disabled; it would be enabled"
+        report WOULD_ADD egm-plugin "claude: $EGM_PLUGIN $version is installed but disabled; it would be enabled"
         return
       fi
       if claude plugin enable "$EGM_PLUGIN" >/dev/null 2>&1; then
-        report UPDATED egm-plugin "$EGM_PLUGIN $version enabled"
-        done_for_you "Enabled the EGM plugin."
+        report UPDATED egm-plugin "claude: $EGM_PLUGIN $version enabled"
+        done_for_you "Enabled the EGM plugin in Claude Code."
         remember "Start a new Claude Code session so the /egm skills load."
       else
-        report BLOCKED egm-plugin "'claude plugin enable $EGM_PLUGIN' failed"
+        report BLOCKED egm-plugin "claude: 'claude plugin enable $EGM_PLUGIN' failed"
         FAILED=1
       fi
       ;;
     *)
       if [ "$check_only" -eq 1 ]; then
-        report WOULD_ADD egm-plugin "$EGM_PLUGIN would be installed from $EGM_MARKETPLACE_SOURCE"
+        report WOULD_ADD egm-plugin "claude: $EGM_PLUGIN would be installed from $EGM_MARKETPLACE_SOURCE"
         return
       fi
       if ! marketplace_present; then
         if ! claude plugin marketplace add "$EGM_MARKETPLACE_SOURCE" >/dev/null 2>&1; then
-          report BLOCKED egm-plugin "could not add the marketplace $EGM_MARKETPLACE_SOURCE (is the network reachable?)"
+          report BLOCKED egm-plugin "claude: could not add the marketplace $EGM_MARKETPLACE_SOURCE (is the network reachable?)"
           FAILED=1
           return
         fi
       fi
       if ! claude plugin install "$EGM_PLUGIN" >/dev/null 2>&1; then
-        report BLOCKED egm-plugin "'claude plugin install $EGM_PLUGIN' failed"
+        report BLOCKED egm-plugin "claude: 'claude plugin install $EGM_PLUGIN' failed"
         FAILED=1
         return
       fi
@@ -305,15 +382,105 @@ EOF
 $(plugin_status)
 EOF
       if [ "$state" = enabled ]; then
-        report ADDED egm-plugin "$EGM_PLUGIN $version"
-        done_for_you "Installed the EGM plugin ($EGM_PLUGIN $version)."
+        report ADDED egm-plugin "claude: $EGM_PLUGIN $version"
+        done_for_you "Installed the EGM plugin in Claude Code ($EGM_PLUGIN $version)."
         remember "Start a new Claude Code session so the /egm skills load."
       else
-        report BLOCKED egm-plugin "the plugin was installed but is not enabled"
+        report BLOCKED egm-plugin "claude: the plugin was installed but is not enabled"
         FAILED=1
       fi
       ;;
   esac
+}
+
+# Codex lists installed plugins as {"installed": [{"pluginId": "egm@egm", "enabled": true, "version": "0.1.0"}, ...]}.
+codex_plugin_status() { # prints "enabled VERSION", "disabled VERSION" or "absent -"
+  codex plugin list --json 2>/dev/null | python3 -I -c '
+import json, sys
+try:
+    data = json.load(sys.stdin)
+except ValueError:
+    data = {}
+installed = data.get("installed") if isinstance(data, dict) else None
+for plugin in installed or []:
+    if plugin.get("pluginId") == sys.argv[1]:
+        print("enabled" if plugin.get("enabled") else "disabled", plugin.get("version", "?"))
+        break
+else:
+    print("absent -")' "$EGM_PLUGIN"
+}
+
+codex_marketplace_present() {
+  codex plugin marketplace list --json 2>/dev/null | python3 -I -c '
+import json, sys
+try:
+    data = json.load(sys.stdin)
+except ValueError:
+    data = {}
+items = data.get("marketplaces") if isinstance(data, dict) else None
+sys.exit(0 if any(i.get("name") == sys.argv[1] for i in items or []) else 1)' "$EGM_MARKETPLACE_NAME"
+}
+
+step_egm_codex() {
+  if [ "$HAVE_CODEX" -ne 1 ]; then
+    if [ "$FOUND_CODEX" -eq 1 ] || [ "$agent" = codex ] || [ "$agent" = both ]; then
+      report SKIPPED egm-plugin "codex: needs Codex"
+    fi
+    return
+  fi
+  local state version
+  read -r state version <<EOF
+$(codex_plugin_status)
+EOF
+  case "$state" in
+    enabled)
+      if [ "$version" = "$EGM_EXPECTED_VERSION" ]; then
+        report PRESENT egm-plugin "codex: $EGM_PLUGIN $version"
+      else
+        report DRIFT egm-plugin "codex: $EGM_PLUGIN $version is installed; this script was written against $EGM_EXPECTED_VERSION"
+        remember "Read the EGM release notes for $version before you rely on it in Codex. Nothing was changed."
+      fi
+      ;;
+    disabled)
+      # Codex has plugin add, list, remove and marketplace, and no enable. A person turns it on.
+      report NEEDS egm-plugin "codex: $EGM_PLUGIN $version is installed but disabled"
+      needs_you "Turn the EGM plugin on in Codex's plugin settings. The Codex command line has no command that enables a plugin."
+      ;;
+    *)
+      if [ "$check_only" -eq 1 ]; then
+        report WOULD_ADD egm-plugin "codex: $EGM_PLUGIN would be installed from $EGM_MARKETPLACE_SOURCE"
+        return
+      fi
+      if ! codex_marketplace_present; then
+        if ! codex plugin marketplace add "$EGM_MARKETPLACE_SOURCE" >/dev/null 2>&1; then
+          report BLOCKED egm-plugin "codex: could not add the marketplace $EGM_MARKETPLACE_SOURCE (is the network reachable?)"
+          FAILED=1
+          return
+        fi
+      fi
+      if ! codex plugin add "$EGM_PLUGIN" >/dev/null 2>&1; then
+        report BLOCKED egm-plugin "codex: 'codex plugin add $EGM_PLUGIN' failed"
+        FAILED=1
+        return
+      fi
+      read -r state version <<EOF
+$(codex_plugin_status)
+EOF
+      if [ "$state" = enabled ]; then
+        report ADDED egm-plugin "codex: $EGM_PLUGIN $version"
+        done_for_you "Installed the EGM plugin in Codex ($EGM_PLUGIN $version)."
+        remember "Start a new Codex session so the EGM skills load."
+      else
+        report BLOCKED egm-plugin "codex: the plugin was installed but is not enabled"
+        FAILED=1
+      fi
+      ;;
+  esac
+}
+
+step_egm() {
+  step_egm_claude
+  step_egm_codex
 }
 
 # ---------------------------------------------------------------------------------------------------------------
@@ -360,44 +527,104 @@ else:
         handle.write("\n")' "$1" "$2" "$MCP_TOKEN_VAR"
 }
 
-step_mcp() {
-  if [ -z "$checkout" ] || [ "$want_mcp" -eq 0 ]; then
-    return
-  fi
+step_mcp_claude() {
   local file="$checkout/.mcp.json" state
   state=$(mcp_entry "$file" inspect)
   case "$state" in
-    same) report PRESENT github-mcp ".mcp.json names \${$MCP_TOKEN_VAR}" ;;
+    same) report PRESENT github-mcp "claude: .mcp.json names \${$MCP_TOKEN_VAR}" ;;
     credential)
-      report DRIFT github-mcp "the github entry in .mcp.json has a header with no \${VARIABLE} in it, which may be a token (value not shown)"
+      report DRIFT github-mcp "claude: the github entry in .mcp.json has a header with no \${VARIABLE} in it, which may be a token (value not shown)"
       needs_you "Remove the token from .mcp.json and rotate it. A token in a committed file is public to everyone with access. Then run this script with --update."
       if [ "$update" -eq 1 ] && [ "$check_only" -eq 0 ]; then
         mcp_entry "$file" write
-        report UPDATED github-mcp "replaced by an entry that names \${$MCP_TOKEN_VAR}"
+        report UPDATED github-mcp "claude: replaced by an entry that names \${$MCP_TOKEN_VAR}"
       fi
       ;;
     different)
       if [ "$update" -eq 1 ] && [ "$check_only" -eq 0 ]; then
         mcp_entry "$file" write
-        report UPDATED github-mcp "the github entry in .mcp.json was replaced"
+        report UPDATED github-mcp "claude: the github entry in .mcp.json was replaced"
         done_for_you "Updated the github entry in .mcp.json."
       else
-        report DRIFT github-mcp "the github entry in .mcp.json differs from the factory's; kept (use --update to replace)"
+        report DRIFT github-mcp "claude: the github entry in .mcp.json differs from the factory's; kept (use --update to replace)"
       fi
       ;;
     *)
       if [ "$check_only" -eq 1 ]; then
-        report WOULD_ADD github-mcp "a github entry would be added to .mcp.json"
+        report WOULD_ADD github-mcp "claude: a github entry would be added to .mcp.json"
       else
         mcp_entry "$file" write
-        report ADDED github-mcp "added a github entry to .mcp.json"
+        report ADDED github-mcp "claude: added a github entry to .mcp.json"
         done_for_you "Added GitHub's MCP server to .mcp.json."
       fi
       ;;
   esac
+}
+
+# The same entry for Codex, in .codex/config.toml. scripts/lib/codex_config.py edits the one table and refuses forms
+# it does not understand. Codex loads the file only for a project that the person trusts.
+step_mcp_codex() {
+  local file="$checkout/.codex/config.toml" state
+  state=$(python3 -I "$CODEX_CONFIG_TOOL" inspect "$file" "$MCP_TOKEN_VAR")
+  case "$state" in
+    same) report PRESENT github-mcp "codex: .codex/config.toml names \${$MCP_TOKEN_VAR}" ;;
+    credential)
+      report DRIFT github-mcp "codex: the github entry in .codex/config.toml holds what may be a token (value not shown)"
+      needs_you "Remove the token from .codex/config.toml and rotate it. A token in a committed file is public to everyone with access. Then run this script with --update."
+      if [ "$update" -eq 1 ] && [ "$check_only" -eq 0 ]; then
+        if python3 -I "$CODEX_CONFIG_TOOL" write "$file" "$MCP_TOKEN_VAR" --replace; then
+          report UPDATED github-mcp "codex: replaced by an entry that names \${$MCP_TOKEN_VAR}"
+        else
+          report BLOCKED github-mcp "codex: the entry could not be replaced safely"
+          FAILED=1
+        fi
+      fi
+      ;;
+    unsafe)
+      report DRIFT github-mcp "codex: .codex/config.toml has a github entry that this script will not edit (it runs a command, or is written in a form it does not understand)"
+      needs_you "Edit the github entry in .codex/config.toml by hand so that it is the table [mcp_servers.github] with url, bearer_token_env_var and http_headers only. See docs/guides/claude-and-codex.md."
+      ;;
+    different)
+      if [ "$update" -eq 1 ] && [ "$check_only" -eq 0 ]; then
+        if python3 -I "$CODEX_CONFIG_TOOL" write "$file" "$MCP_TOKEN_VAR" --replace; then
+          report UPDATED github-mcp "codex: the github entry in .codex/config.toml was replaced"
+          done_for_you "Updated the github entry in .codex/config.toml."
+        else
+          report BLOCKED github-mcp "codex: the entry could not be replaced safely"
+          FAILED=1
+        fi
+      else
+        report DRIFT github-mcp "codex: the github entry in .codex/config.toml differs from the factory's; kept (use --update to replace)"
+      fi
+      ;;
+    *)
+      if [ "$check_only" -eq 1 ]; then
+        report WOULD_ADD github-mcp "codex: a github entry would be added to .codex/config.toml"
+      elif python3 -I "$CODEX_CONFIG_TOOL" write "$file" "$MCP_TOKEN_VAR"; then
+        report ADDED github-mcp "codex: added a github entry to .codex/config.toml"
+        done_for_you "Added GitHub's MCP server to .codex/config.toml."
+      else
+        report BLOCKED github-mcp "codex: .codex/config.toml could not be written safely"
+        FAILED=1
+      fi
+      ;;
+  esac
+  remember "Codex reads .codex/config.toml only for a project that you trust. When Codex asks, trust this project, or the GitHub server will not appear."
+}
+
+step_mcp() {
+  if [ -z "$checkout" ] || [ "$want_mcp" -eq 0 ]; then
+    return
+  fi
+  if [ "$HAVE_CLAUDE" -eq 0 ] && [ "$HAVE_CODEX" -eq 0 ]; then
+    report SKIPPED github-mcp "needs a coding agent"
+    return
+  fi
+  if [ "$HAVE_CLAUDE" -eq 1 ]; then step_mcp_claude; fi
+  if [ "$HAVE_CODEX" -eq 1 ]; then step_mcp_codex; fi
   if [ -z "${!MCP_TOKEN_VAR:-}" ]; then
     report NEEDS github-token "$MCP_TOKEN_VAR is not set (it was not read, only checked)"
-    needs_you "Create a fine-grained GitHub token for this one repository (Issues and Pull requests: read and write; Contents and Metadata: read) and export it as $MCP_TOKEN_VAR before you start Claude Code. Never paste it in a chat or a file."
+    needs_you "Create a fine-grained GitHub token for this one repository (Issues and Pull requests: read and write; Contents and Metadata: read) and export it as $MCP_TOKEN_VAR before you start $(agents_label). Never paste it in a chat or a file."
   fi
 }
 
@@ -703,6 +930,21 @@ step_board() {
 # ---------------------------------------------------------------------------------------------------------------
 # Step 6: has the project been mapped?
 # ---------------------------------------------------------------------------------------------------------------
+# What to type to map the project, for the agents this run prepared. With none prepared, both are named.
+bootstrap_hint() {
+  local claude_hint="In Claude Code, started in $checkout, run /egm:egm-bootstrap with the path ."
+  local codex_hint="In Codex, started in $checkout, choose the egm-bootstrap skill from the skill list (EGM's Codex guide describes it this way) and give it the path ."
+  if [ "$HAVE_CLAUDE" -eq 1 ] && [ "$HAVE_CODEX" -eq 1 ]; then
+    printf '%s Or %s' "$claude_hint" "$codex_hint"
+  elif [ "$HAVE_CODEX" -eq 1 ]; then
+    printf '%s' "$codex_hint"
+  elif [ "$HAVE_CLAUDE" -eq 1 ]; then
+    printf '%s' "$claude_hint"
+  else
+    printf '%s Or %s' "$claude_hint" "$codex_hint"
+  fi
+}
+
 step_map() {
   [ -n "$checkout" ] || return 0
   local out rc=0
@@ -712,7 +954,7 @@ step_map() {
     1)
       report NEEDS project-map "$(printf '%s' "$out" | tail -n 1)"
       printf '%s\n' "$out" | grep '^MISSING' | head -n 8 | sed 's/^/              /'
-      needs_you "Map the project. In Claude Code, started in $checkout, run /egm:egm-bootstrap with the path . (use the file name EGM.md if people already maintain READMEs there). It asks before it maps a large tree. Read what it wrote, then merge it by pull request."
+      needs_you "Map the project. $(bootstrap_hint) It asks before it maps a large tree. Read what it wrote, then merge it by pull request. If people already maintain READMEs there, give it the file name EGM.md so that it does not touch them."
       ;;
     *)
       report BLOCKED project-map "$out"
@@ -726,7 +968,7 @@ step_uncommitted() {
   git -C "$checkout" rev-parse --is-inside-work-tree >/dev/null 2>&1 || return 0
   local changed
   # Only the paths that this script and EGM's bootstrap write. Other work in progress is the person's business.
-  changed=$(git -C "$checkout" status --porcelain -- .github .mcp.json '*README.md' '*EGM.md' 2>/dev/null | wc -l | tr -d ' ')
+  changed=$(git -C "$checkout" status --porcelain -- .github .mcp.json .codex '*README.md' '*EGM.md' 2>/dev/null | wc -l | tr -d ' ')
   if [ "$changed" -gt 0 ]; then
     report NEEDS uncommitted "$changed installed or generated path(s) are not committed"
     needs_you "Review the changes in $checkout and commit them by pull request. The factory does not enable a repository whose map is not on its default branch."
