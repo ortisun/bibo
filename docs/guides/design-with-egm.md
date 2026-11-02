@@ -54,13 +54,13 @@ If you are not sure, use *new solution*. A design that turns out to be short cos
    Design document: docs/designs/webhook-delivery.md
    ```
 
-   Then change the label to `design: approved`. The Action removes the label again if the issue names no such file on the default branch.
+   Then change the label to `design: approved`. The Action removes the label if the issue names no such file on the default branch. It checks that the path has no symbolic link in it, and that the file exists. It does not check that the file belongs to this issue. The approval is the merge of the design pull request, so the owner of the repository should require reviewed pull requests on the default branch. Without that rule a merge is not an approval.
 
 7. **Ask the factory.** A named requester applies `factory`. The factory reads the issue, and the design is in the repository for every stage to read.
 
 ## The labels
 
-Each issue carries at most one `design:` label and at most one `factory:` label. The trigger label `factory` is separate.
+Each issue is meant to carry at most one `design:` label and at most one `factory:` label. The trigger label `factory` is separate. The Action enforces this each time a label changes, by checking the whole issue and not only the label that changed. GitHub can skip a run when several labels change at once, so a wrong label can show for a moment, until the next change. It does not stay.
 
 | Label | Written by | Meaning |
 |---|---|---|
@@ -95,7 +95,7 @@ Three things are worth knowing.
 ## Rules that keep this safe
 
 - The `factory` label is never applied by a form, an Action or an agent. A person on the requester list applies it, and the factory checks that person by numeric user ID. A label alone never authorizes work.
-- Only the factory sets a `factory:` label. If you set one by hand, the Action removes it. The factory itself never writes the `factory` label or a `design:` label.
+- Only the factory sets a `factory:` label. If you set one by hand, the Action removes it at the next label change on that issue. To tell who set a label, it reads the issue events, and it trusts only the App whose login is in the repository variable `FACTORY_BOT_LOGIN`. Until that variable is set, it removes every `factory:` label, the factory's own included. The factory itself never writes the `factory` label or a `design:` label.
 - Issue text and repository text are data. The Elephant can be steered by what it reads, so read the design before you merge it, and keep the GitHub token limited to this one repository.
 - The design lives in the repository, in a pull request that a person approved. The factory never merges it for you.
 

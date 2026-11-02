@@ -21,7 +21,12 @@ Safety rules, each with a test in scripts/tests/test_project_board.py:
     repository token. The credential is never printed.
   * A board that is not set up is not an error: with no config file or no credential `sync` says why and exits 0.
     A board that is set up and wrong (an option that no longer exists) is an error and exits 1.
-  * Only an issue on a track is added to the board. An issue that fits no rule is left alone.
+  * Only an issue on a track is added to the board. A track is a label of the issue workflow: a closed issue with none
+    of them is left alone, so closing an issue does not put it on the board.
+  * Only a person with triage rights on the repository, or the factory's App, can make a card move. The author of an
+    issue in a public repository is neither, so opening or closing an issue does not write to the board.
+  * The board must belong to the repository's owner, or to an owner that the repository lists in FACTORY_BOARD_OWNERS.
+    A change to the config file cannot aim the credential at somebody else's project.
 
 Usage:
   project_board.py check  [--policy P] [--workflow-config W] [--rendered R]
@@ -31,7 +36,7 @@ Usage:
                           (--fields FILE --status-field NAME | --created)
   project_board.py validate --policy-json FILE --board-config FILE [--fields FILE]
   project_board.py sync   --event FILE --policy-json FILE --board-config FILE --repo OWNER/NAME
-                          (environment: GH_TOKEN, BOARD_TOKEN)
+                          (environment: GH_TOKEN, BOARD_TOKEN, FACTORY_BOT_LOGIN, FACTORY_BOARD_OWNERS)
 
 Exit codes: 0 done, 1 a check failed or a GitHub call failed, 2 wrong arguments, 3 BLOCKED (PyYAML missing).
 """
@@ -44,6 +49,7 @@ import os
 import re
 import subprocess
 import sys
+import urllib.parse
 
 SCHEMA_POLICY = "factory-project-board-policy/1"
 SCHEMA_CONFIG = "factory-project-board/1"
@@ -202,11 +208,18 @@ def load_config(path):
 # ---------------------------------------------------------------------------------------------------------------
 
 def stage_for(config, labels, closed):
-    """The stage of an issue, or None when it is on no track. The first rule that fits decides."""
+    """The stage of an issue, or None when it is on no track. The first rule that fits decides.
+
+    A track is a label of the issue workflow. `issue_closed` applies only to an issue that carries one: a closed issue
+    with none of them is on no track, so closing an issue never puts it on the board by itself.
+    """
     labels = set(labels)
+    tracked = {label for rule in config["rules"] for label in rule.get("labels_any", [])}
     for rule in config["rules"]:
-        if rule.get("issue_closed") and closed:
-            return rule["stage"]
+        if rule.get("issue_closed"):
+            if closed and labels & tracked:
+                return rule["stage"]
+            continue
         if labels & set(rule.get("labels_any", [])):
             return rule["stage"]
     return None
@@ -335,10 +348,47 @@ def _graphql(run, token, query, **variables):
     return reply["data"]
 
 
-def sync(config, board, event, repo, token, run=run_gh):
+LOGIN = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})(?:\[bot\])?$")
+TRIAGE_ROLES = {"admin", "maintain", "write", "triage"}
+
+
+def sender_may_move_cards(sender, repo, bot_login, run=run_gh):
+    """True for the factory's App, or for a person whose role on the repository is triage or higher.
+
+    The author of an issue is not that person in a public repository, so a card never moves because of what an outside
+    account opened, closed or labelled. A failed lookup is a no: the answer fails closed.
+    """
+    sender = sender if isinstance(sender, dict) else {}
+    login, kind = sender.get("login"), sender.get("type")
+    if not isinstance(login, str) or not isinstance(kind, str) or not LOGIN.match(login):
+        return False
+    if bot_login and kind == "Bot" and login.lower() == bot_login.lower():
+        return True
+    if kind != "User":
+        return False
+    try:
+        reply = json.loads(run(["api", "repos/%s/collaborators/%s/permission" % (repo, urllib.parse.quote(login, safe=""))]))
+    except (RuntimeError, ValueError):
+        return False
+    return reply.get("role_name") in TRIAGE_ROLES or reply.get("permission") in ("admin", "write")
+
+
+def board_owner_allowed(board, repo, extra_owners=""):
+    """The board's owner must be the repository's owner or one the repository lists. Case does not matter."""
+    allowed = {repo.split("/")[0].lower()}
+    allowed |= {item.strip().lower() for item in str(extra_owners or "").split(",") if OWNER.match(item.strip())}
+    return board["project"]["owner"].lower() in allowed
+
+
+def sync(config, board, event, repo, token, run=run_gh, bot_login="", extra_owners=""):
     """Put one issue in the board option that its labels and state call for. Returns a sentence that says what was done."""
     if not REPO.match(repo) or {".", ".."} & set(repo.split("/")):
         raise ValueError("the repository must look like OWNER/NAME")
+    if not board_owner_allowed(board, repo, extra_owners):
+        raise RuntimeError("the board belongs to %s, who is not the owner of %s and is not listed in FACTORY_BOARD_OWNERS"
+                           % (board["project"]["owner"], repo))
+    if not sender_may_move_cards(event.get("sender"), repo, bot_login, run):
+        return "left alone: whoever caused this event has no triage rights on the repository"
     number = int(event["issue"]["number"])
     issue = json.loads(run(["api", "repos/%s/issues/%d" % (repo, number)]))
     node_id = issue.get("node_id", "")
@@ -468,7 +518,8 @@ def _cmd_sync(args):
         print("::warning::board sync skipped: the board is set up but no credential is configured (BOARD_TOKEN)")
         return 0
     event = _read_json(args.event)
-    print("board sync: %s" % sync(config, board, event, args.repo, token))
+    print("board sync: %s" % sync(config, board, event, args.repo, token, bot_login=os.environ.get("FACTORY_BOT_LOGIN", ""),
+                                  extra_owners=os.environ.get("FACTORY_BOARD_OWNERS", "")))
     return 0
 
 

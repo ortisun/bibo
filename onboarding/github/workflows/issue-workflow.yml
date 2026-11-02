@@ -26,7 +26,9 @@ permissions:
   contents: read
   issues: write
 
-# One run per issue at a time, so two quick label changes are handled in order.
+# One run per issue at a time. GitHub keeps ONE waiting run per issue and cancels an older waiting one, so a run can be
+# skipped. That is safe because every run checks the whole issue and not only the label of its own event: the next run
+# puts right what a skipped run left.
 concurrency:
   group: issue-workflow-${{ github.event.issue.number }}
   cancel-in-progress: false
@@ -80,6 +82,10 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           BOARD_TOKEN: ${{ steps.board-app.outputs.token || secrets.FACTORY_BOARD_TOKEN }}
           REPOSITORY: ${{ github.repository }}
+          # A card moves only when the factory's App, or a person with triage rights, caused the event, and only on a
+          # board of this repository's owner or of an owner listed in FACTORY_BOARD_OWNERS (a comma-separated variable).
+          FACTORY_BOT_LOGIN: ${{ vars.FACTORY_BOT_LOGIN }}
+          FACTORY_BOARD_OWNERS: ${{ vars.FACTORY_BOARD_OWNERS }}
         run: >-
           python3 .github/scripts/project_board.py sync
           --event "$GITHUB_EVENT_PATH"

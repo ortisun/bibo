@@ -62,7 +62,7 @@
   ],
   "schema": "factory-project-board-policy/1",
   "source": "policies/project-board.yaml",
-  "source_sha256": "2390556929e7c77258189dd88b8efebb7329de74658c0d12c92a5c3cd83206ff",
+  "source_sha256": "d4c70174737717a04fa6aa00679a2a80fbb4b518654969a7b84d25571f7a5652",
   "stages": [
     {
       "fallback": [

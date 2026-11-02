@@ -18,7 +18,8 @@
 #   rules        Checked in order. The first rule that fits decides the stage. An issue that fits none is not on a
 #                track, and the Action leaves it alone: it neither adds it to the board nor moves it.
 #   labels_any   The rule fits when the issue carries at least one of these labels.
-#   issue_closed The rule fits when the issue is closed.
+#   issue_closed The rule fits when the issue is closed AND carries at least one label of these rules. A closed issue
+#                with none of them is on no track, so closing an issue never puts it on the board by itself.
 #
 # Hard rules, each checked by `scripts/lib/project_board.py check`
 #   1. Every rule names a stage that exists, and every stage is reached by a rule.

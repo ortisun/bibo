@@ -13,7 +13,7 @@ A card has one of nine stages. The stage comes from the labels of the [issue wor
 | Stage | When the issue has | Meaning |
 |---|---|---|
 | Stopped | `factory: failed`, `factory: cancelled` or `factory: rejected` | The work failed, was cancelled or was rejected. A person decides what next. |
-| Done | the issue is closed | The issue is closed. |
+| Done | the issue is closed and has a label of this workflow | The issue is closed. |
 | Needs a person | `factory: waiting for a person`, `factory: blocked` or `factory: paused` | The factory waits for a person, or something is blocked. |
 | In review | `factory: done` | The factory finished and a draft pull request waits for a person. |
 | Working | `factory: queued`, `factory: working` or `factory: stopping` | The factory has the request. |
@@ -22,7 +22,15 @@ A card has one of nine stages. The stage comes from the labels of the [issue wor
 | Designing | `design: in progress` | A person and the Elephant-Goldfish Model (EGM) are working out the design. |
 | Idea | `design: proposed` | Someone proposed a new solution. |
 
-An issue with none of these labels is on no track, and the board leaves it alone. The `factory` label by itself does not move a card.
+An issue with none of these labels is on no track, and the board leaves it alone. Closing an issue does not put it on a track: a closed issue with none of these labels stays off the board. The `factory` label by itself does not move a card.
+
+## Who can move a card
+
+A card moves only when the factory's App caused the event, or a person with triage rights or higher on the repository did. The App is the account named in the repository variable `FACTORY_BOT_LOGIN`. In a public repository anybody can open an issue, close their own, or pick a form that adds a label. None of that is an event the board listens to. The cost is that an issue opened by an outside person with the new-solution form shows on the board only after a person with triage rights touches it. The check calls GitHub for the role of the person, and if the call fails, the card does not move.
+
+## Whose board
+
+The board must belong to the owner of the repository, or to an owner that the repository lists in the variable `FACTORY_BOARD_OWNERS` (a comma-separated list). Without this rule, whoever could change `.github/project-board.json` could point the credential at any project it can reach. The installer tells you to set the variable when the board belongs to somebody else.
 
 ## If the project already has a board
 
@@ -66,7 +74,9 @@ If the repository has no linked board, or has several, the installer says so and
 | Board owner | Use | Set |
 |---|---|---|
 | An organization (recommended) | A GitHub App with organization Projects read and write, and Issues read, installed on the organization. The Action turns it into a token that lives for one job. | The variable `FACTORY_BOARD_CLIENT_ID` and the secret `FACTORY_BOARD_APP_PRIVATE_KEY` |
-| A person | A personal access token (classic) with the `project` scope. It reaches every project of that person, so prefer an organization board. | The secret `FACTORY_BOARD_TOKEN` |
+| A person | A personal access token (classic) with the `project` scope. GitHub's own example for a project of a person also asks for `repo`, which can write code. Which scope is needed was not verified here, so give it the smaller scope first. It reaches every project of that person, so prefer an organization board. | The secret `FACTORY_BOARD_TOKEN` |
+
+A repository secret can be read by any workflow that can run in the repository, including one pushed on a branch by a collaborator with write access. Keep the credential in an environment that only the default branch may use, and require code owner review for `.github/project-board.json` and `.github/workflows/`. The installer cannot set that up for you.
 
 Set secrets with `gh secret set NAME --repo OWNER/NAME`, which asks for the value on the terminal. Never put the value in a file or a chat. Without a credential the Action prints a warning and the board does not move.
 

@@ -153,3 +153,15 @@ What exists now, as evidence:
 - **A side effect on the policy file.** The strict loader reads `policy.status` as a closed set, so the file now says `designed` in lower case, and its header says that the worker reads it. The rendered JSON was made again because its source hash changed.
 
 Item 1 is built (see the note above). Items 2 and 4 of "What is not built" are still not built. The question about a board is answered by [ADR 0018](0018-project-board-mirror-that-adapts.md).
+
+## Revision note (2026-11-02, independent review PL-1 to PL-21)
+
+The independent review of the process layer ([report](../reviews/process-layer-security-review.md)) found that several promises of this record were stronger than the code. What changed, and what did not:
+
+- **The Action checks the whole issue on every run** (PL-1). GitHub keeps one waiting run per issue and cancels an older waiting one, so a run can be skipped; the statement that quick changes are "handled in order" was false. Now each run keeps one `design:` label (the latest), keeps a `factory:` label only if the App set it last (read from the issue events) and keeps one, and removes `design: approved` without a design document. A wrong label can still show until the next run.
+- **A symbolic link in any part of the design document path means there is no document** (the record said "no symbolic link" but tested only the last part).
+- **Only comments by `github-actions[bot]` silence the design gate comment.**
+- **`--check` changes nothing**, as stated, and the installer does not write through a symbolic link, does not let `bash -x` or a child program see the token, and does not call `git` in a way that runs a command of the checkout.
+- **The design gate is still advisory**, and still depends on the owner requiring reviewed pull requests on the default branch. That rule is now written in the design guide.
+
+Not changed, and not claimed: the Action was never run on GitHub; the events API and the permission API are used as GitHub documents them and not observed here.

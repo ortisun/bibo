@@ -66,7 +66,7 @@ On 2026-11-02. "Verified" means read from the source named. "Unverified" means t
 ## Consequences
 
 **Good.**
-- The engine, its App and its tokens are untouched. A fault in the factory cannot write a board, and a stolen board credential cannot write code or labels.
+- The engine, its App and its tokens are untouched. A fault in the factory cannot write a board. The credential of an organization board, a short-lived App token with two permissions, cannot write code or labels. A classic token for a personal board can, if it has the `repo` scope, which GitHub's own example asks for; this record first claimed otherwise, and the independent review (PL-16) showed that the claim was too broad.
 - A board with few columns still works. A board with many columns gets one column per stage.
 - Everything about the mapping is a reviewed file in the project.
 
@@ -85,3 +85,13 @@ On 2026-11-02. "Verified" means read from the source named. "Unverified" means t
 - A repair command that rebuilds the board from the labels.
 - Pull requests as cards, and removing a card when an issue leaves every track.
 - The engine does not know the board, on purpose.
+
+## Revision note (2026-11-02, independent review PL-1 to PL-21)
+
+The independent review of the process layer ([report](../reviews/process-layer-security-review.md)) found three things in the board step, and the code now does the following.
+
+- **A closed issue is on a track only if it carries a label of the workflow** (PL-2). Before, closing any issue, with no label, made the credential add it to the board as Done. The test that claimed otherwise asserted the opposite and has been corrected.
+- **A card moves only for the factory's App or a person with triage rights** (PL-2). Opening or closing an issue, or picking a form, is not enough.
+- **The board must belong to the repository's owner, or to an owner the repository lists in `FACTORY_BOARD_OWNERS`** (PL-11).
+
+Not changed: a credential is still a repository secret, which any workflow in the repository can read. The guide now tells the owner to use an environment limited to the default branch and code owner review. The installer cannot set either.

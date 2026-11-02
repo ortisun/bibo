@@ -341,16 +341,27 @@ class DesignDocument(unittest.TestCase):
 
 
 class FakeGitHub:
-    def __init__(self, labels, body="", comments=""):
-        self.labels, self.body, self.comments, self.calls = labels, body, comments, []
+    """Answers the issue, its events and its comments. Records every call."""
+
+    def __init__(self, labels, body="", comments=None, events=None, missing=()):
+        self.labels, self.body, self.comments, self.events, self.calls = labels, body, comments or [], events or [], []
+        self.missing = set(missing)
 
     def __call__(self, method, path, fields=None, paginate=False):
         self.calls.append((method, path, dict(fields or {})))
+        if method == "GET" and "/events" in path:
+            return json.dumps(self.events)
         if method == "GET" and path.endswith("/comments"):
-            return self.comments
+            return json.dumps(self.comments)
         if method == "GET":
             return json.dumps({"labels": [{"name": n} for n in self.labels], "body": self.body})
+        if method == "DELETE" and path.rsplit("/", 1)[-1] in self.missing:
+            raise iw.NotFound("gone")
         return ""
+
+
+def labeled(name, login="alice", kind="User"):
+    return {"event": "labeled", "label": {"name": name}, "actor": {"login": login, "type": kind}}
 
 
 def event(action="labeled", label="design: in progress", login="alice", kind="User", payload_labels=()):
@@ -378,7 +389,7 @@ class Apply(unittest.TestCase):
     def test_a_clean_event_makes_no_change(self):
         fake = FakeGitHub(["design: in progress"])
         self.run_apply(fake, event())
-        self.assertEqual([c[0] for c in fake.calls], ["GET"])
+        self.assertEqual([c[0] for c in fake.calls], ["GET", "GET"], "the issue and its events were read; nothing was changed")
 
     def test_the_design_document_is_looked_for_on_disk_and_a_symlink_does_not_count(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -403,9 +414,31 @@ class Apply(unittest.TestCase):
         first = FakeGitHub(["factory", "design: in review"])
         self.run_apply(first, ev)
         self.assertEqual(sum(1 for c in first.calls if c[0] == "POST"), 1)
-        again = FakeGitHub(["factory", "design: in review"], comments="earlier " + iw.GATE_MARKER)
+        mine = [{"user": {"login": "github-actions[bot]"}, "body": "earlier " + iw.GATE_MARKER}]
+        again = FakeGitHub(["factory", "design: in review"], comments=mine)
         self.run_apply(again, ev)
         self.assertEqual(sum(1 for c in again.calls if c[0] == "POST"), 0)
+
+    def test_a_comment_by_somebody_else_cannot_silence_the_gate_comment(self):
+        planted = [{"user": {"login": "mallory"}, "body": iw.GATE_MARKER}]
+        fake = FakeGitHub(["factory", "design: in review"], comments=planted)
+        self.run_apply(fake, event(label="factory"))
+        self.assertEqual(sum(1 for c in fake.calls if c[0] == "POST"), 1)
+
+    def test_a_link_in_any_part_of_the_path_means_there_is_no_design_document(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            elsewhere = os.path.join(tmp, "elsewhere")
+            os.makedirs(elsewhere)
+            with open(os.path.join(elsewhere, "a.md"), "w", encoding="utf-8") as handle:
+                handle.write("# Design\n")
+            root = os.path.join(tmp, "repo")
+            os.makedirs(os.path.join(root, "docs"))
+            os.symlink(elsewhere, os.path.join(root, "docs", "designs"))   # the FOLDER is a link
+            fake = FakeGitHub(["design: in review", "design: approved"], body="Design document: docs/designs/a.md\n",
+                              events=[labeled("design: approved")])
+            self.run_apply(fake, event(label="design: approved"), docs=root)
+            self.assertIn(("DELETE", "repos/acme/widgets/issues/7/labels/design%3A%20approved", {}), fake.calls)
+            self.assertTrue(iw.plain_file(elsewhere, "a.md"), "the control: with no link the same file counts")
 
     def test_a_repository_name_with_extra_characters_is_refused(self):
         for repo in ("acme/widgets; rm -rf /", "acme", "acme/widgets/extra", "acme/wid gets", "../x"):
@@ -493,6 +526,9 @@ class ShippedFiles(unittest.TestCase):
         self.assertEqual(asked, ["permission-issues", "permission-organization-projects"])
         self.assertEqual(mint["with"]["permission-issues"], "read")
         move = by_name["Move the issue on the board"]
+        for name in ("FACTORY_BOT_LOGIN", "FACTORY_BOARD_OWNERS"):
+            self.assertIn("vars.", move["env"][name], "a variable of the repository, not a secret")
+            self.assertNotIn("secrets.", move["env"][name])
         self.assertEqual(move["env"]["GH_TOKEN"], "${{ github.token }}", "the issue is read with the repository token")
         self.assertIn("secrets.FACTORY_BOARD_TOKEN", move["env"]["BOARD_TOKEN"])
 
@@ -501,6 +537,145 @@ class ShippedFiles(unittest.TestCase):
         code_lines = [line for line in text.splitlines() if not line.lstrip().startswith("#")]
         self.assertNotIn("--add-label factory", "\n".join(code_lines))
         self.assertNotIn("labels/factory", "\n".join(code_lines))
+
+
+class Reconcile(unittest.TestCase):
+    """The whole issue is judged on every run, so a run that GitHub dropped cannot leave a bad label (PL-1)."""
+
+    def run_reconcile(self, current, events=(), bot=BOT, doc=False, restored=()):
+        return iw.reconcile(config(), current=set(current), labelers=iw.last_labelers(list(events)), factory_bot_login=bot,
+                            design_doc_exists=doc, restored=restored)
+
+    def removed(self, ops):
+        return sorted(op[1] for op in ops if op[0] == "remove_label")
+
+    def test_a_factory_label_set_by_the_app_stays_and_one_set_by_a_person_goes(self):
+        mine = [labeled("factory: working", BOT, "Bot")]
+        self.assertEqual(self.run_reconcile({"factory: working"}, mine), [])
+        by_hand = [labeled("factory: done", "alice")]
+        self.assertEqual(self.removed(self.run_reconcile({"factory: done"}, by_hand)), ["factory: done"])
+
+    def test_a_factory_label_with_no_event_is_removed_because_nothing_shows_who_set_it(self):
+        self.assertEqual(self.removed(self.run_reconcile({"factory: done"}, [])), ["factory: done"])
+
+    def test_the_login_alone_is_not_enough_the_account_must_be_a_bot_and_one_must_be_configured(self):
+        impostor = [labeled("factory: done", BOT, "User")]
+        self.assertEqual(self.removed(self.run_reconcile({"factory: done"}, impostor)), ["factory: done"])
+        by_app = [labeled("factory: done", BOT, "Bot")]
+        self.assertEqual(self.removed(self.run_reconcile({"factory: done"}, by_app, bot="")), ["factory: done"])
+
+    def test_only_the_latest_factory_label_stays(self):
+        events = [labeled("factory: working", BOT, "Bot"), labeled("factory: done", BOT, "Bot")]
+        ops = self.run_reconcile({"factory: working", "factory: done"}, events)
+        self.assertEqual(self.removed(ops), ["factory: working"])
+
+    def test_only_the_latest_design_label_stays(self):
+        events = [labeled("design: proposed"), labeled("design: in progress"), labeled("design: in review")]
+        ops = self.run_reconcile({"design: proposed", "design: in progress", "design: in review"}, events, doc=True)
+        self.assertEqual(self.removed(ops), ["design: in progress", "design: proposed"])
+
+    def test_approved_stays_only_with_a_design_document(self):
+        events = [labeled("design: approved")]
+        self.assertEqual(self.removed(self.run_reconcile({"design: approved"}, events, doc=False)), ["design: approved"])
+        self.assertEqual(self.run_reconcile({"design: approved"}, events, doc=True), [])
+
+    def test_a_label_the_workflow_does_not_define_goes_and_its_name_is_never_echoed(self):
+        hostile = "design: <img src=x onerror=1>"
+        ops = self.run_reconcile({hostile, "factory: nonsense"}, [labeled(hostile), labeled("factory: nonsense", BOT, "Bot")])
+        self.assertEqual(self.removed(ops), sorted([hostile, "factory: nonsense"]))
+        comment = [op[1] for op in ops if op[0] == "comment"][0]
+        self.assertNotIn("img", comment)
+
+    def test_a_label_that_was_just_put_back_is_not_judged_by_the_old_events(self):
+        self.assertEqual(self.run_reconcile({"factory: working"}, [], restored={"factory: working"}), [])
+
+    def test_the_trigger_label_and_labels_outside_both_groups_are_never_touched(self):
+        every = [label["name"] for label in config()["labels"]]
+        for current in (set(every), {"factory", "bug"}, {"factory", "design: approved", "factory: done"}):
+            for events in ([], [labeled("factory", "alice"), labeled("bug")]):
+                ops = self.run_reconcile(current, events)
+                self.assertNotIn("factory", self.removed(ops))
+                self.assertNotIn("bug", self.removed(ops))
+
+    def test_a_healthy_issue_gets_no_operation_and_no_comment(self):
+        events = [labeled("design: approved"), labeled("factory: working", BOT, "Bot"), labeled("bug")]
+        self.assertEqual(self.run_reconcile({"design: approved", "factory: working", "bug", "factory"}, events, doc=True), [])
+
+
+class DroppedRuns(unittest.TestCase):
+    """GitHub keeps one waiting run per issue. A skipped event must not leave a bad label behind."""
+
+    def apply_for(self, fake, label="bug", login="alice"):
+        return iw.apply_event(config(), event(label=label, login=login), "acme/widgets", ".", BOT, api=fake)
+
+    def test_a_later_unrelated_event_heals_a_label_an_earlier_dropped_run_should_have_removed(self):
+        fake = FakeGitHub(["design: approved", "factory: done", "bug"],
+                          events=[labeled("design: approved"), labeled("factory: done"), labeled("bug")])
+        self.apply_for(fake)
+        deleted = sorted(c[1].rsplit("/", 1)[-1] for c in fake.calls if c[0] == "DELETE")
+        self.assertEqual(deleted, ["design%3A%20approved", "factory%3A%20done"])
+        self.assertEqual(sum(1 for c in fake.calls if c[0] == "POST" and c[1].endswith("/comments")), 1)
+
+    def test_with_the_same_labels_set_by_the_app_and_a_design_document_nothing_changes(self):
+        fake = FakeGitHub(["design: approved", "factory: working", "bug"], body="Design document: docs/designs/a.md\n",
+                          events=[labeled("design: approved"), labeled("factory: working", BOT, "Bot"), labeled("bug")])
+        with tempfile.TemporaryDirectory() as tmp:
+            os.makedirs(os.path.join(tmp, "docs", "designs"))
+            with open(os.path.join(tmp, "docs", "designs", "a.md"), "w", encoding="utf-8") as handle:
+                handle.write("# Design\n")
+            iw.apply_event(config(), event(label="bug"), "acme/widgets", tmp, BOT, api=fake)
+        self.assertEqual([c for c in fake.calls if c[0] in ("DELETE", "POST")], [])
+
+    def test_a_label_that_is_already_gone_is_not_a_failure(self):
+        fake = FakeGitHub(["factory: done"], events=[labeled("factory: done")], missing={"factory%3A%20done"})
+        self.apply_for(fake, label="factory: done")
+        self.assertTrue(any(c[0] == "DELETE" for c in fake.calls))
+
+    def test_a_restored_status_label_is_not_removed_again_in_the_same_run(self):
+        # A person removed the app's label. The event rules put it back. The state check must not undo that.
+        fake = FakeGitHub([], events=[labeled("factory: working", BOT, "Bot"),
+                                      {"event": "unlabeled", "label": {"name": "factory: working"}, "actor": {"login": "alice", "type": "User"}}])
+        ev = event(action="unlabeled", label="factory: working")
+        iw.apply_event(config(), ev, "acme/widgets", ".", BOT, api=fake)
+        self.assertEqual(sum(1 for c in fake.calls if c[0] == "POST" and c[1].endswith("/labels")), 1)
+        self.assertEqual(sum(1 for c in fake.calls if c[0] == "DELETE"), 0)
+
+    def test_the_trigger_label_is_refused_as_a_namespace_member_in_a_tampered_config(self):
+        tampered = config()
+        tampered["factory"]["prefix"] = "fact"
+        with self.assertRaises(ValueError):
+            iw.apply_event(tampered, event(label="bug"), "acme/widgets", ".", BOT, api=FakeGitHub([]))
+
+
+class Pages(unittest.TestCase):
+    def test_the_layouts_of_gh_paginate_are_read(self):
+        self.assertEqual(iw.parse_pages('[{"a":1},{"a":2}]\n[{"a":3}]'), [{"a": 1}, {"a": 2}, {"a": 3}])
+        self.assertEqual(iw.parse_pages('[[{"a":1}],[{"a":2}]]'), [{"a": 1}, {"a": 2}])
+        self.assertEqual(iw.parse_pages(""), [])
+        self.assertEqual(iw.parse_pages("[]"), [])
+
+    def test_a_404_from_gh_is_a_not_found_and_any_other_failure_is_not(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            for number, (stderr, expected) in enumerate((("gh: Not Found (HTTP 404)", iw.NotFound),
+                                                         ("gh: Forbidden (HTTP 403)", RuntimeError))):
+                # One folder per case: the system caches an executable by its file, and a rewritten file runs stale.
+                folder = os.path.join(tmp, "case%d" % number)
+                os.makedirs(folder)
+                fake = os.path.join(folder, "gh")
+                with open(fake, "w", encoding="utf-8") as handle:
+                    handle.write("#!/bin/sh\necho '%s' >&2\nexit 1\n" % stderr)
+                os.chmod(fake, 0o755)
+                old = os.environ["PATH"]
+                os.environ["PATH"] = folder + ":" + old
+                try:
+                    with self.assertRaises(RuntimeError) as caught:
+                        iw.gh_api("DELETE", "repos/a/b/issues/1/labels/x")
+                finally:
+                    os.environ["PATH"] = old
+                self.assertIs(type(caught.exception), expected, stderr)
+
+    def test_a_log_line_cannot_carry_a_control_code_or_a_workflow_command(self):
+        self.assertEqual(iw._clean("a\nb::error::x\x1b[0m"), "a?b::error::x?[0m")
 
 
 class StandardLibraryOnly(unittest.TestCase):

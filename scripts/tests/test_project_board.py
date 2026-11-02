@@ -195,7 +195,8 @@ class Stages(unittest.TestCase):
         self.assertIsNone(self.stage(set()))
         self.assertIsNone(self.stage({"bug", "help wanted"}))
         self.assertIsNone(self.stage({"factory"}), "the request itself does not move a card")
-        self.assertEqual(self.stage(set(), True), "done", "a closed issue is done even with no label")
+        self.assertIsNone(self.stage(set(), True), "closing an issue does not put it on a track")
+        self.assertIsNone(self.stage({"bug"}, True), "nor does closing one that has only other labels")
 
     def test_every_label_of_the_workflow_lands_on_a_stage(self):
         for label in workflow_config()["labels"]:
@@ -346,12 +347,17 @@ class FakeGitHub:
     """Records every call. The issue read and the board calls are answered from the data given."""
 
     def __init__(self, labels=("design: in review",), state="open", node_id: "str | None" = "I_kwDOAbc123", options=RICH,
-                 project_found=True):
+                 project_found=True, role="write", lookup_fails=False):
         self.labels, self.state, self.node_id, self.options, self.project_found = labels, state, node_id, options, project_found
+        self.role, self.lookup_fails = role, lookup_fails
         self.calls = []
 
     def __call__(self, args, token=None):
         self.calls.append((list(args), token))
+        if args[0] == "api" and "/collaborators/" in args[1]:
+            if self.lookup_fails:
+                raise RuntimeError("gh api failed")
+            return json.dumps({"role_name": self.role, "permission": "write" if self.role in ("write", "maintain", "admin") else "read"})
         if args[0] == "api" and args[1].startswith("repos/"):
             return json.dumps({"node_id": self.node_id, "state": self.state, "labels": [{"name": n} for n in self.labels]})
         query = next(a for a in args if a.startswith("query="))
@@ -369,7 +375,7 @@ class FakeGitHub:
         return [(a, t) for a, t in self.calls if a[:2] == ["api", "graphql"]]
 
 
-EVENT = {"action": "labeled", "issue": {"number": 12}}
+EVENT = {"action": "labeled", "issue": {"number": 12}, "sender": {"login": "alice", "type": "User"}}
 
 
 class Sync(unittest.TestCase):
@@ -445,6 +451,8 @@ class Sync(unittest.TestCase):
 
     def test_a_refusal_from_github_is_an_error_with_a_short_message(self):
         def refusing(args, _token=None):
+            if args[0] == "api" and "/collaborators/" in args[1]:
+                return json.dumps({"role_name": "write"})
             if args[0] == "api" and args[1].startswith("repos/"):
                 return json.dumps({"node_id": "I_x", "state": "open", "labels": [{"name": "design: proposed"}]})
             return json.dumps({"errors": [{"message": "Resource not accessible by integration " + "x" * 500}]})
@@ -465,13 +473,109 @@ class Sync(unittest.TestCase):
                     self.run_sync(FakeGitHub(), repo=repo)
 
 
+class WhoMayMoveACard(unittest.TestCase):
+    """An outside account must not write to the organisation's board by opening, closing or labelling an issue (PL-2)."""
+
+    def run_sync(self, fake, sender, bot="", owners="", board=None, repo="acme/widgets", event_labels=None):
+        event = dict(EVENT, sender=sender)
+        return pb.sync(config(), board or valid_board(), event, repo, DUMMY_TOKEN, run=fake, bot_login=bot, extra_owners=owners)
+
+    def test_triage_or_higher_may_and_read_or_none_may_not(self):
+        for role, may in (("admin", True), ("maintain", True), ("write", True), ("triage", True), ("read", False), ("none", False)):
+            with self.subTest(role=role):
+                fake = FakeGitHub(role=role)
+                self.run_sync(fake, {"login": "alice", "type": "User"})
+                self.assertEqual(bool(fake.graphql_calls()), may)
+
+    def test_an_issue_author_with_no_rights_closing_their_own_issue_writes_nothing(self):
+        fake = FakeGitHub(labels=(), state="closed", role="read")
+        result = self.run_sync(fake, {"login": "stranger", "type": "User"})
+        self.assertIn("no triage rights", result)
+        self.assertEqual(fake.graphql_calls(), [])
+
+    def test_the_same_closed_issue_with_no_label_writes_nothing_even_for_a_maintainer(self):
+        fake = FakeGitHub(labels=(), state="closed", role="admin")
+        self.assertIn("no track", self.run_sync(fake, {"login": "maintainer", "type": "User"}))
+        self.assertEqual(fake.graphql_calls(), [])
+
+    def test_the_factorys_app_may_without_a_lookup_and_nobody_else_may_pose_as_it(self):
+        fake = FakeGitHub(role="read")
+        self.run_sync(fake, {"login": "my-factory[bot]", "type": "Bot"}, bot="my-factory[bot]")
+        self.assertTrue(fake.graphql_calls())
+        self.assertFalse(any("/collaborators/" in a[1] for a, _ in fake.calls), "the App needs no lookup")
+        for sender, bot in (({"login": "my-factory[bot]", "type": "User"}, "my-factory[bot]"),
+                            ({"login": "other[bot]", "type": "Bot"}, "my-factory[bot]"),
+                            ({"login": "my-factory[bot]", "type": "Bot"}, "")):
+            with self.subTest(sender=sender, bot=bot):
+                fake = FakeGitHub(role="read")
+                self.run_sync(fake, sender, bot=bot)
+                self.assertEqual(fake.graphql_calls(), [])
+
+    def test_a_failed_lookup_is_a_no(self):
+        fake = FakeGitHub(lookup_fails=True)
+        self.assertIn("no triage rights", self.run_sync(fake, {"login": "alice", "type": "User"}))
+        self.assertEqual(fake.graphql_calls(), [])
+
+    def test_a_login_that_is_not_a_login_is_refused_before_any_call(self):
+        for login in ("", "../x", "a b", "a/b", "x" * 60, "a;b", None):
+            with self.subTest(login=login):
+                fake = FakeGitHub()
+                self.run_sync(fake, {"login": login, "type": "User"})
+                self.assertEqual(fake.calls, [])
+
+    def test_a_missing_sender_is_a_no(self):
+        fake = FakeGitHub()
+        result = pb.sync(config(), valid_board(), {"action": "labeled", "issue": {"number": 12}}, "acme/widgets", DUMMY_TOKEN, run=fake)
+        self.assertIn("no triage rights", result)
+        self.assertEqual(fake.graphql_calls(), [])
+
+
+class WhoseBoard(unittest.TestCase):
+    """The credential cannot be aimed at somebody else's project by editing the config file (PL-11)."""
+
+    def board_of(self, owner):
+        board = copy.deepcopy(valid_board())
+        board["project"]["owner"] = owner
+        return board
+
+    def run_sync(self, owner, repo="acme/widgets", extra=""):
+        fake = FakeGitHub()
+        result = pb.sync(config(), self.board_of(owner), EVENT, repo, DUMMY_TOKEN, run=fake, extra_owners=extra)
+        return result, fake
+
+    def test_the_repositorys_own_owner_is_allowed_whatever_the_case(self):
+        for owner in ("acme", "ACME", "Acme"):
+            with self.subTest(owner=owner):
+                _, fake = self.run_sync(owner)
+                self.assertTrue(fake.graphql_calls())
+
+    def test_another_owner_is_refused_before_any_call_unless_the_repository_lists_it(self):
+        with self.assertRaises(RuntimeError) as caught:
+            self.run_sync("victim-org")
+        self.assertIn("FACTORY_BOARD_OWNERS", str(caught.exception))
+        _, fake = self.run_sync("victim-org", extra="other-org, victim-org")
+        self.assertTrue(fake.graphql_calls())
+
+    def test_junk_in_the_list_is_ignored_and_does_not_widen_it(self):
+        with self.assertRaises(RuntimeError):
+            self.run_sync("victim-org", extra="victim-org/../x, ;, victim org")
+
+    def test_nothing_is_called_when_the_owner_is_refused(self):
+        fake = FakeGitHub()
+        with self.assertRaises(RuntimeError):
+            pb.sync(config(), self.board_of("victim-org"), EVENT, "acme/widgets", DUMMY_TOKEN, run=fake)
+        self.assertEqual(fake.calls, [])
+
+
 FAKE_GH = r'''#!/usr/bin/env python3
 import json, os, sys
 state = os.environ["FAKE_STATE"]
 args = sys.argv[1:]
 with open(os.path.join(state, "calls.log"), "a", encoding="utf-8") as log:
     log.write(json.dumps({"args": args, "token": os.environ.get("GH_TOKEN", "")}) + "\n")
-if args[0] == "api" and args[1].startswith("repos/"):
+if args[0] == "api" and "/collaborators/" in args[1]:
+    print(json.dumps({"role_name": os.environ.get("FAKE_ROLE", "write")}))
+elif args[0] == "api" and args[1].startswith("repos/"):
     print(json.dumps({"node_id": "I_abc", "state": "open", "labels": [{"name": "design: proposed"}]}))
 elif "projectV2(number" in " ".join(args):
     node = {"projectV2": {"id": "P", "fields": {"nodes": [{"id": "F", "name": "Status", "options": [{"id": "1", "name": "Backlog"}]}]}}}

@@ -46,7 +46,8 @@ class Inspect(unittest.TestCase):
             ("# my notes\n" + BLOCK + "\n[other]\nx = 1\n", "same"),
             (BLOCK.replace("repos,issues", "repos"), "different"),
             (BLOCK.replace("X-MCP-Lockdown\" = \"true", "X-MCP-Lockdown\" = \"false"), "different"),
-            (BLOCK.replace("api.githubcopilot.com", "example.com"), "different"),
+            (BLOCK.replace("api.githubcopilot.com", "example.com"), "redirected"),
+            (BLOCK.replace("api.githubcopilot.com", "example.com").replace(VAR, "SOME_OTHER_VARIABLE"), "different"),
             (BLOCK.replace(VAR, "SOME_OTHER_VARIABLE"), "different"),
             (BLOCK + "extra = 1\n", "different"),
             ("[mcp_servers.github]\n", "different"),
@@ -115,6 +116,15 @@ class Write(unittest.TestCase):
         if tomllib:
             self.assertEqual(parse(fixed)["other"], {"keep": True})
 
+    def test_a_redirected_entry_is_kept_until_replace_and_then_becomes_the_factorys(self):
+        redirected = BLOCK.replace("api.githubcopilot.com", "attacker.example")
+        self.assertEqual(cc.inspect_text(redirected, VAR), "redirected")
+        with self.assertRaises(ValueError):
+            cc.write_text(redirected, VAR)
+        fixed = cc.write_text(redirected, VAR, replace=True)
+        self.assertNotIn("attacker", fixed)
+        self.assertEqual(cc.inspect_text(fixed, VAR), "same")
+
     def test_a_credential_is_replaced_only_on_request_and_leaves_no_trace(self):
         leaked = BLOCK.replace('bearer_token_env_var = "%s"' % VAR, 'experimental_bearer_token = "%s"' % LEAKED)
         with self.assertRaises(ValueError) as caught:
@@ -136,6 +146,152 @@ class Write(unittest.TestCase):
             with self.subTest(name=name):
                 with self.assertRaises(ValueError):
                     cc.write_text("", name)
+
+
+class Hostile(unittest.TestCase):
+    """The inputs the independent review used against the first version (PL-7, PL-8, PL-9)."""
+
+    def test_long_lines_are_unsafe_at_once_and_never_hold_the_installer(self):
+        import time
+        for text in ("[" + " " * 100_000 + "x\n", 'url = "x"' + " " * 100_000 + "y\n", BLOCK + "# " + "a" * 5000 + "\n",
+                     "[mcp_servers.github]\n" + "k" * 5000 + " = 1\n"):
+            with self.subTest(size=len(text)):
+                started = time.monotonic()
+                self.assertEqual(cc.inspect_text(text, VAR), "unsafe")
+                with self.assertRaises(ValueError):
+                    cc.write_text(text, VAR, replace=True)
+                self.assertLess(time.monotonic() - started, 1.0)
+
+    def test_many_spaces_inside_the_limit_are_still_fast(self):
+        import time
+        started = time.monotonic()
+        text = "[" + " " * 3000 + "x" + " " * 500 + "]\n" + BLOCK
+        cc.inspect_text(text, VAR)
+        cc.write_text("[a]\n" + "k = 1" + " " * 3000 + "\n", VAR)
+        self.assertLess(time.monotonic() - started, 1.0)
+
+    def test_replace_keeps_the_comments_that_belong_to_the_next_table(self):
+        before = ('[mcp_servers.github]\nurl = "https://example.com/mcp"\n\n# --- Linear: do not touch, see wiki ---\n\n'
+                  '[mcp_servers.linear]\nurl = "https://linear.example/mcp"\n')
+        after = cc.write_text(before, VAR, replace=True)
+        self.assertIn("# --- Linear: do not touch, see wiki ---\n\n[mcp_servers.linear]\nurl = \"https://linear.example/mcp\"\n", after)
+        self.assertEqual(cc.inspect_text(after, VAR), "same")
+
+    def test_replace_keeps_a_next_table_whose_name_has_a_bracket_in_a_quote(self):
+        before = ('[mcp_servers.github]\nurl = "https://example.com/mcp"\n[projects."/Users/me/code/app[1]"]\n'
+                  'trust_level = "trusted"\n')
+        after = cc.write_text(before, VAR, replace=True)
+        self.assertIn('[projects."/Users/me/code/app[1]"]\ntrust_level = "trusted"\n', after)
+        if tomllib:
+            self.assertEqual(parse(after)["projects"]["/Users/me/code/app[1]"]["trust_level"], "trusted")
+
+    def test_a_next_table_with_a_header_nobody_understands_still_ends_the_github_table(self):
+        before = '[mcp_servers.github]\nurl = "https://example.com/mcp"\n[ "weird ] name" ]\nkeep = 1\n'
+        after = cc.write_text(before, VAR, replace=True)
+        self.assertIn('[ "weird ] name" ]\nkeep = 1\n', after)
+
+    def test_an_escaped_spelling_of_github_is_unsafe_and_is_never_edited(self):
+        for text in ('[mcp_servers."gith\\u0075b"]\ncommand = "evil"\n', '[mcp_servers."git\\x68ub"]\nurl = "x"\n',
+                     '[mcp_servers."github"]\nurl = "x"\n', "[mcp_servers.'github']\nurl = 'x'\n", "[[mcp_servers.github]]\nurl = \"x\"\n"):
+            with self.subTest(text=text[:40]):
+                self.assertEqual(cc.inspect_text(text, VAR), "unsafe")
+                with self.assertRaises(ValueError):
+                    cc.write_text(text, VAR, replace=True)
+
+    def test_a_quoted_name_for_another_server_is_not_in_the_way(self):
+        text = '[mcp_servers."my docs"]\nurl = "https://example.com/mcp"\n'
+        self.assertEqual(cc.inspect_text(text, VAR), "absent")
+        self.assertTrue(cc.write_text(text, VAR).startswith(text))
+
+    def test_a_table_that_runs_a_command_is_unsafe_even_when_it_also_holds_a_token(self):
+        text = '[mcp_servers.github]\ncommand = "docker"\nargs = ["run"]\nenv = { X = "%s" }\n' % LEAKED
+        self.assertEqual(cc.inspect_text(text, VAR), "unsafe")
+        with self.assertRaises(ValueError):
+            cc.write_text(text, VAR, replace=True)
+
+    def test_without_tomllib_the_result_is_still_checked_by_structure(self):
+        with self.assertRaises(ValueError):
+            cc._check_result(BLOCK + "\n" + BLOCK, VAR)
+        with self.assertRaises(ValueError):
+            cc._check_result("[a]\nb = 1\n", VAR)
+        cc._check_result(BLOCK, VAR)
+
+    def test_the_check_by_structure_does_not_depend_on_the_toml_reader(self):
+        # Hide the real reader: the structural check must still refuse the duplicate that a reader would have caught.
+        saved = sys.modules.get("tomllib", None)
+        sys.modules["tomllib"] = None  # type: ignore[assignment]  # an import of it now fails, as on Python 3.9
+        try:
+            with self.assertRaises(ValueError):
+                cc._check_result(BLOCK + "\n" + BLOCK, VAR)
+            cc._check_result(BLOCK, VAR)
+        finally:
+            if saved is not None:
+                sys.modules["tomllib"] = saved
+            else:
+                sys.modules.pop("tomllib", None)
+
+
+class OnDisk(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.addCleanup(lambda: __import__("shutil").rmtree(self.tmp, ignore_errors=True))
+
+    def run_tool(self, *args):
+        return subprocess.run([sys.executable, "-I", TOOL, *args], capture_output=True, text=True)
+
+    def test_the_mode_of_the_file_is_kept(self):
+        folder = os.path.join(self.tmp, ".codex")
+        os.makedirs(folder)
+        path = os.path.join(folder, "config.toml")
+        with open(path, "w", encoding="utf-8") as handle:
+            handle.write("[a]\nb = 1\n")
+        os.chmod(path, 0o664)
+        self.assertEqual(self.run_tool("write", path, VAR).returncode, 0)
+        self.assertEqual(oct(os.stat(path).st_mode & 0o777), oct(0o664))
+
+    def test_a_new_file_is_readable_by_the_person_and_their_group(self):
+        path = os.path.join(self.tmp, ".codex", "config.toml")
+        self.run_tool("write", path, VAR)
+        self.assertEqual(oct(os.stat(path).st_mode & 0o777), oct(0o644))
+
+    def test_no_temporary_file_is_left_after_a_refusal_or_a_success(self):
+        folder = os.path.join(self.tmp, ".codex")
+        os.makedirs(folder)
+        path = os.path.join(folder, "config.toml")
+        with open(path, "w", encoding="utf-8") as handle:
+            handle.write(BLOCK + 'command = "npx"\n')
+        self.assertEqual(self.run_tool("write", path, VAR, "--replace").returncode, 1)
+        self.assertEqual(os.listdir(folder), ["config.toml"])
+        os.remove(path)
+        self.assertEqual(self.run_tool("write", path, VAR).returncode, 0)
+        self.assertEqual(os.listdir(folder), ["config.toml"])
+
+    def test_it_will_not_write_through_a_link_to_a_file_or_to_a_folder(self):
+        victim = os.path.join(self.tmp, "victim")
+        os.makedirs(victim)
+        outside_file = os.path.join(victim, "real.toml")
+        with open(outside_file, "w", encoding="utf-8") as handle:
+            handle.write("[tui]\ntheme = 1\n")
+        folder = os.path.join(self.tmp, "project", ".codex")
+        os.makedirs(folder)
+        link = os.path.join(folder, "config.toml")
+        os.symlink(outside_file, link)
+        self.assertEqual(self.run_tool("write", link, VAR).returncode, 1)
+        with open(outside_file, encoding="utf-8") as handle:
+            self.assertEqual(handle.read(), "[tui]\ntheme = 1\n")
+        linked_folder = os.path.join(self.tmp, "project2", ".codex")
+        os.makedirs(os.path.dirname(linked_folder))
+        os.symlink(victim, linked_folder)
+        self.assertEqual(self.run_tool("write", os.path.join(linked_folder, "config.toml"), VAR).returncode, 1)
+        self.assertEqual(sorted(os.listdir(victim)), ["real.toml"])
+
+    def test_a_dangling_link_is_refused_too(self):
+        folder = os.path.join(self.tmp, ".codex")
+        os.makedirs(folder)
+        link = os.path.join(folder, "config.toml")
+        os.symlink(os.path.join(self.tmp, "nowhere", "config.toml"), link)
+        self.assertEqual(self.run_tool("write", link, VAR).returncode, 1)
+        self.assertFalse(os.path.exists(os.path.join(self.tmp, "nowhere")))
 
 
 class CommandLine(unittest.TestCase):

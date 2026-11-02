@@ -376,6 +376,10 @@ def decide(config, *, action, label, sender_login, sender_type, current, factory
 # GitHub: the only part that talks to the network
 # ---------------------------------------------------------------------------------------------
 
+class NotFound(RuntimeError):
+    """GitHub answered 404. Taking away a label that is already gone is not a failure."""
+
+
 def gh_api(method, path, fields=None, paginate=False):
     """Run one `gh api` call. The arguments are a list, never a shell string, and the path is built by the caller."""
     command = ["gh", "api", "-X", method, path]
@@ -385,24 +389,116 @@ def gh_api(method, path, fields=None, paginate=False):
         command += ["-f", "%s=%s" % (key, value)]
     done = subprocess.run(command, capture_output=True, text=True, check=False)
     if done.returncode != 0:
-        raise RuntimeError("gh api %s %s failed with exit code %d" % (method, path, done.returncode))
+        error = NotFound if "HTTP 404" in (done.stderr or "") else RuntimeError
+        raise error("gh api %s %s failed with exit code %d" % (method, path, done.returncode))
     return done.stdout
 
 
+def parse_pages(text):
+    """The JSON arrays that `gh api --paginate` prints one after the other, as one list. Tolerant of both layouts."""
+    decoder, index, items = json.JSONDecoder(), 0, []
+    text = text or ""
+    while index < len(text):
+        while index < len(text) and text[index].isspace():
+            index += 1
+        if index >= len(text):
+            break
+        value, index = decoder.raw_decode(text, index)
+        for item in value if isinstance(value, list) else [value]:
+            items.extend(item if isinstance(item, list) else [item])
+    return items
+
+
+def last_labelers(events):
+    """For each label now on the issue: who applied it last, and when (the position in the list). From the issue events."""
+    latest = {}
+    for position, event in enumerate(events):
+        label = event.get("label") if isinstance(event.get("label"), dict) else None
+        if not label or not isinstance(label.get("name"), str):
+            continue
+        if event.get("event") == "labeled":
+            actor = event.get("actor") if isinstance(event.get("actor"), dict) else {}
+            latest[label["name"]] = (str(actor.get("login", "")), str(actor.get("type", "")), position)
+        elif event.get("event") == "unlabeled":
+            latest.pop(label["name"], None)
+    return latest
+
+
+def reconcile(config, *, current, labelers, factory_bot_login, design_doc_exists, restored=()):
+    """Operations that make the WHOLE issue consistent, whatever events were seen or dropped.
+
+    A run of the Action judges the label of its own event. GitHub keeps one waiting run per issue and drops the older
+    waiting ones, so a run can be skipped, and a skipped label would stay. Every run therefore also checks the state:
+      * a `factory: ` label stays only if the factory's App was the last to apply it, and only one stays;
+      * one `design: ` label stays (the most recently applied), and `approved` stays only with a design document;
+      * a label of either namespace that the policy does not define goes.
+    `restored` names the labels that this same run has just put back for the factory; they are not judged by who applied
+    them, because the events were read before. The trigger label is never touched.
+    Returns ("remove_label", name) operations, and one ("comment", text) when it removed anything.
+    """
+    design_names, factory_names = _names(config, "design"), _names(config, "factory")
+    design_prefix, factory_prefix = config["design"]["prefix"], config["factory"]["prefix"]
+    approved = design_prefix + config["design"]["approved"]
+    bot = (factory_bot_login or "").lower()
+    current = set(current) - {config["trigger"]}
+    restored = set(restored)
+
+    def position(name):
+        return labelers.get(name, ("", "", -1))[2]
+
+    removed = set()
+    for name in sorted(current):
+        if name.startswith(factory_prefix):
+            login, kind, _ = labelers.get(name, ("", "", -1))
+            by_the_factory = bool(bot) and kind == "Bot" and login.lower() == bot
+            if name not in factory_names or not (by_the_factory or name in restored):
+                removed.add(name)
+        elif name.startswith(design_prefix) and name not in design_names:
+            removed.add(name)
+    for names in (factory_names, design_names):
+        kept = sorted((current & names) - removed, key=lambda n: (position(n), n))
+        removed.update(kept[:-1])
+    if approved in current and approved not in removed and not design_doc_exists:
+        removed.add(approved)
+    if not removed:
+        return []
+    named = sorted(removed & (design_names | factory_names))
+    text = ("Some labels did not follow the issue workflow and were put right: %s." % ", ".join("`%s`" % n for n in named)
+            if named else "A label of the `design:` or `factory:` group that the workflow does not define was removed.")
+    return [("remove_label", name) for name in sorted(removed)] + [("comment", text)]
+
+
+def _remove(api, base, name):
+    try:
+        api("DELETE", "%s/labels/%s" % (base, urllib.parse.quote(name, safe="")))
+    except NotFound:
+        pass  # already gone, for example because the factory moved the status in the same moment
+
+
+def plain_file(root, relative):
+    """True when root/relative is a regular file and no part of the path below root is a symbolic link."""
+    current = root
+    for part in relative.split("/"):
+        current = os.path.join(current, part)
+        if os.path.islink(current):
+            return False
+    return os.path.isfile(current)
+
+
 def apply_event(config, event, repo, docs_root, bot_login, api=gh_api):
-    """Read the issue again, decide, and carry the operations out. `api` is replaceable for tests."""
+    """Read the issue again, decide, reconcile the whole issue, and carry the operations out. `api` is replaceable."""
     if not re.match(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$", repo) or {".", ".."} & set(repo.split("/")):
         raise ValueError("the repository must look like OWNER/NAME")
+    # The copied configuration is trusted at run time, so refuse one that makes a namespace swallow the trigger.
+    if not config["trigger"] or config["trigger"].startswith((config["design"]["prefix"], config["factory"]["prefix"])):
+        raise ValueError("the trigger label must be outside both namespaces")
     number = int(event["issue"]["number"])
     base = "repos/%s/issues/%d" % (repo, number)
     issue = json.loads(api("GET", base))
     current = {item["name"] for item in issue.get("labels", [])}
     body = issue.get("body") or ""
     path = design_document_path(config, body)
-    exists = False
-    if path:
-        full = os.path.join(docs_root, path)
-        exists = os.path.isfile(full) and not os.path.islink(full)
+    exists = bool(path) and plain_file(docs_root, path)
     ops = decide(
         config,
         action=event["action"],
@@ -413,16 +509,31 @@ def apply_event(config, event, repo, docs_root, bot_login, api=gh_api):
         factory_bot_login=bot_login or "",
         design_doc_exists=exists,
     )
+    # What the event-driven rules already took away or put back, so that the state check judges the result.
+    after = set(current)
     for op in ops:
         if op[0] == "remove_label":
-            api("DELETE", "%s/labels/%s" % (base, urllib.parse.quote(op[1], safe="")))
+            after.discard(op[1])
+        elif op[0] == "add_label":
+            after.add(op[1])
+    labelers = last_labelers(parse_pages(api("GET", base + "/events?per_page=100", paginate=True)))
+    already = {op[1] for op in ops if op[0] == "remove_label"}
+    ops = ops + [op for op in reconcile(config, current=after, labelers=labelers, factory_bot_login=bot_login or "",
+                                        design_doc_exists=exists,
+                                        restored={o[1] for o in ops if o[0] == "add_label"})
+                 if op[0] == "comment" or op[1] not in already]
+    for op in ops:
+        if op[0] == "remove_label":
+            _remove(api, base, op[1])
         elif op[0] == "add_label":
             api("POST", base + "/labels", {"labels[]": op[1]})
         elif op[0] == "comment":
             text = op[1]
             if GATE_MARKER in text:
-                existing = api("GET", base + "/comments", paginate=True)
-                if GATE_MARKER in existing:
+                # Only the Action's own comments count. Anyone can paste the marker into a comment.
+                mine = [c for c in parse_pages(api("GET", base + "/comments", paginate=True))
+                        if isinstance(c, dict) and (c.get("user") or {}).get("login") == "github-actions[bot]"]
+                if any(GATE_MARKER in str(c.get("body", "")) for c in mine):
                     continue
             api("POST", base + "/comments", {"body": text})
     return ops
@@ -479,6 +590,11 @@ def _cmd_labels(args):
     return 0
 
 
+def _clean(text):
+    """A string for the log: printable ASCII only, so a label name cannot write a workflow command or a control code."""
+    return re.sub(r"[^\x20-\x7e]", "?", str(text))
+
+
 def _cmd_apply(args):
     with open(args.event, encoding="utf-8") as handle:
         event = json.load(handle)
@@ -487,7 +603,7 @@ def _cmd_apply(args):
         return 0
     ops = apply_event(load_config(args.config), event, args.repo, args.docs_root, os.environ.get("FACTORY_BOT_LOGIN", ""))
     for op in ops:
-        print("%s %s" % (op[0], op[1].splitlines()[0] if op[0] == "comment" else op[1]))
+        print("%s %s" % (op[0], _clean(op[1].splitlines()[0] if op[0] == "comment" else op[1])))
     return 0
 
 

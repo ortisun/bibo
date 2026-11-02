@@ -5,7 +5,8 @@
 #             receive tickets. It installs; it never starts a job and it never commits or pushes anything.
 # DONE WHEN   Every line it prints is PRESENT or ADDED, it prints "READY", and it exits with code 0.
 #
-#   scripts/install.sh --check                         Show what would change. Change nothing. Safe to run any time.
+#   scripts/install.sh --check                         Show what would change. Change nothing: no file in the project,
+#                                                      nothing on GitHub, no plugin. Safe to run any time.
 #   scripts/install.sh                                 Install the EGM plugin if it is missing, for Claude Code, for
 #                                                      Codex, or for both: every one of them that is installed.
 #   --agent auto|claude|codex|both                     Which coding agent to prepare. The default, auto, takes each of
@@ -15,7 +16,8 @@
 #                                                      (.mcp.json), the issue workflow files (.github/), and a check
 #                                                      that the project has been mapped by EGM's bootstrap.
 #   scripts/install.sh --checkout PATH --repo O/N      Also create the issue-workflow labels in the GitHub repository
-#                                                      O/N with `gh`. This is the one step that changes GitHub.
+#                                                      O/N with `gh`. This and --create-project are the steps that
+#                                                      change GitHub.
 #   --project OWNER/NUMBER                             Use this GitHub Projects board. Without it the installer uses
 #                                                      the one board linked to the repository, if there is exactly one.
 #   --board-field NAME                                 The single-select field that holds the stages (default Status).
@@ -73,6 +75,14 @@ EGM_PLUGIN="egm@egm"
 EGM_EXPECTED_VERSION="0.1.0"
 CLAUDE_MIN_VERSION="2.1.271"
 MCP_TOKEN_VAR="FACTORY_GITHUB_MCP_TOKEN"
+
+# This script and the programs it starts never need the token. Tracing is switched off first, so that `bash -x` cannot
+# print it; the test below expands to "x" and not to the value; and the variable is dropped, so that claude, codex, gh,
+# git and python3 do not inherit it (a plugin install runs third-party code).
+{ set +x; } 2>/dev/null
+TOKEN_IS_SET=0
+if [ -n "${!MCP_TOKEN_VAR:+x}" ]; then TOKEN_IS_SET=1; fi
+unset "$MCP_TOKEN_VAR"
 
 WORKFLOW_TOOL="$SELF_DIR/lib/issue_workflow.py"
 CODEX_CONFIG_TOOL="$SELF_DIR/lib/codex_config.py"
@@ -189,15 +199,73 @@ NOTE_LINES=""
 FAILED=0
 PENDING=0
 
+# Text that came from a checkout, a plugin or a board is data. Control characters (escape sequences, a bell, a carriage
+# return) are removed before it reaches the terminal.
+clean() { printf '%s' "$1" | LC_ALL=C tr -d '\000-\037\177'; }
+
 report() { # STATE STEP DETAIL
-  printf '  %-9s %-15s %s\n' "$1" "$2" "$3"
+  printf '  %-9s %-15s %s\n' "$1" "$2" "$(clean "$3")"
   if [ "$1" = WOULD_ADD ]; then PENDING=1; fi
 }
-done_for_you() { DONE_LINES="${DONE_LINES}  - $1"$'\n'; }
+done_for_you() { DONE_LINES="${DONE_LINES}  - $(clean "$1")"$'\n'; }
 # Something only a person can do. The install is not ready until it is done.
-needs_you() { NEED_LINES="${NEED_LINES}  - $1"$'\n'; }
+needs_you() { NEED_LINES="${NEED_LINES}  - $(clean "$1")"$'\n'; }
 # Something to know. It does not stop the install from being ready.
-remember() { NOTE_LINES="${NOTE_LINES}  - $1"$'\n'; }
+remember() { NOTE_LINES="${NOTE_LINES}  - $(clean "$1")"$'\n'; }
+
+# Lines of untrusted text, indented under the line above them, with control characters removed.
+indent_clean() {
+  local line
+  while IFS= read -r line; do printf '              %s\n' "$(clean "$line")"; done
+}
+
+lower() { printf '%s' "$1" | LC_ALL=C tr '[:upper:]' '[:lower:]'; }
+
+# ---- writing into a checkout we do not trust (PL-4, PL-15) ---------------------------------------------------------
+# True when the path (relative to the checkout) is, or goes through, a symbolic link. A link that points nowhere counts.
+# The installer will not write through one: the target could be a file of the person's that lives somewhere else.
+path_has_link() {
+  local rel=$1 current="$checkout" part
+  local IFS=/
+  for part in $rel; do
+    [ -n "$part" ] || continue
+    current="$current/$part"
+    if [ -L "$current" ]; then return 0; fi
+    [ -e "$current" ] || return 1
+  done
+  return 1
+}
+
+# Reports BLOCKED and returns 1 when the path may not be written. $1 is the step, $2 the relative path.
+refuse_link() {
+  if path_has_link "$2"; then
+    report BLOCKED "$1" "$2 is, or goes through, a symbolic link; it was not written"
+    needs_you "Replace the symbolic link at $2 with a real file or folder, or remove it, and run this script again. The installer does not write through a link, because its target may be a file of yours that lives somewhere else."
+    return 0
+  fi
+  return 1
+}
+
+# Copy a file so that a failure cannot leave half a file, keeping the mode of a file that is replaced.
+atomic_copy() { # SOURCE DESTINATION
+  python3 -I -c '
+import os, shutil, sys, tempfile
+src, dst = sys.argv[1], sys.argv[2]
+folder = os.path.dirname(dst)
+os.makedirs(folder, exist_ok=True)
+descriptor, temporary = tempfile.mkstemp(dir=folder, prefix=".install.")
+try:
+    with os.fdopen(descriptor, "wb") as out, open(src, "rb") as source:
+        shutil.copyfileobj(source, out)
+    if os.path.exists(dst):
+        shutil.copymode(dst, temporary)
+    else:
+        os.chmod(temporary, 0o644)
+    os.replace(temporary, dst)
+finally:
+    if os.path.exists(temporary):
+        os.remove(temporary)' "$1" "$2"
+}
 
 # ---------------------------------------------------------------------------------------------------------------
 # Step 1: tools and coding agents
@@ -381,10 +449,14 @@ EOF
       read -r state version <<EOF
 $(plugin_status)
 EOF
-      if [ "$state" = enabled ]; then
+      if [ "$state" = enabled ] && [ "$version" = "$EGM_EXPECTED_VERSION" ]; then
         report ADDED egm-plugin "claude: $EGM_PLUGIN $version"
         done_for_you "Installed the EGM plugin in Claude Code ($EGM_PLUGIN $version)."
         remember "Start a new Claude Code session so the /egm skills load."
+      elif [ "$state" = enabled ]; then
+        report DRIFT egm-plugin "claude: installed $EGM_PLUGIN $version, but this script was written against $EGM_EXPECTED_VERSION"
+        done_for_you "Installed the EGM plugin in Claude Code ($EGM_PLUGIN $version)."
+        remember "The marketplace gave EGM $version and not $EGM_EXPECTED_VERSION. Read its release notes before you rely on it in Claude Code, and start a new session."
       else
         report BLOCKED egm-plugin "claude: the plugin was installed but is not enabled"
         FAILED=1
@@ -466,10 +538,14 @@ EOF
       read -r state version <<EOF
 $(codex_plugin_status)
 EOF
-      if [ "$state" = enabled ]; then
+      if [ "$state" = enabled ] && [ "$version" = "$EGM_EXPECTED_VERSION" ]; then
         report ADDED egm-plugin "codex: $EGM_PLUGIN $version"
         done_for_you "Installed the EGM plugin in Codex ($EGM_PLUGIN $version)."
         remember "Start a new Codex session so the EGM skills load."
+      elif [ "$state" = enabled ]; then
+        report DRIFT egm-plugin "codex: installed $EGM_PLUGIN $version, but this script was written against $EGM_EXPECTED_VERSION"
+        done_for_you "Installed the EGM plugin in Codex ($EGM_PLUGIN $version)."
+        remember "The marketplace gave EGM $version and not $EGM_EXPECTED_VERSION. Read its release notes before you rely on it in Codex, and start a new session."
       else
         report BLOCKED egm-plugin "codex: the plugin was installed but is not enabled"
         FAILED=1
@@ -486,14 +562,18 @@ step_egm() {
 # ---------------------------------------------------------------------------------------------------------------
 # Step 3: GitHub's MCP server entry in the project's .mcp.json
 # ---------------------------------------------------------------------------------------------------------------
-# prints one of: absent | same | different | credential (a header that has no ${...} in it), and with "write"
-# as the second argument it merges the entry in. The token is never read: the entry names a variable.
+# prints one of: absent | same | different | redirected | credential | invalid, and with "write" as the second argument
+# it merges the entry in. The token is never read: the entry names a variable.
+#   credential  an authorization-like header with no ${...} in it, or a value anywhere in the entry shaped like a GitHub token
+#   redirected  the entry names the token variable but its address is not GitHub's, so the token would go elsewhere
+#   invalid     the file is not strict JSON (a comment, for example); nothing is changed
+# The write keeps the order and the characters of the rest of the file, keeps its mode, and replaces it in one step.
 # The single quotes hold Python. The "${" inside is literal text for .mcp.json, which Claude Code expands later,
 # so the shell must not expand it (SC2016 is expected here).
 # shellcheck disable=SC2016
 mcp_entry() { # PATH MODE(inspect|write)
   python3 -I -c '
-import json, os, sys
+import json, os, re, shutil, sys, tempfile
 path, mode, var = sys.argv[1], sys.argv[2], sys.argv[3]
 entry = {
     "type": "http",
@@ -504,56 +584,103 @@ entry = {
         "X-MCP-Lockdown": "true",
     },
 }
+token_shape = re.compile(r"gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}")
 try:
     with open(path, encoding="utf-8") as handle:
         document = json.load(handle)
 except FileNotFoundError:
     document = {}
-servers = document.setdefault("mcpServers", {})
+except (ValueError, OSError):
+    document = None
+servers = document.get("mcpServers", {}) if isinstance(document, dict) else None
+if not isinstance(servers, dict):
+    print("invalid")
+    sys.exit(0 if mode == "inspect" else 3)
 current = servers.get("github")
 if mode == "inspect":
     if current is None:
         print("absent")
     elif current == entry:
         print("same")
-    elif any("${" not in str(v) for v in (current.get("headers") or {}).values()):
-        print("credential")
     else:
-        print("different")
-else:
-    servers["github"] = entry
-    with open(path, "w", encoding="utf-8") as handle:
-        json.dump(document, handle, indent=2, sort_keys=True)
-        handle.write("\n")' "$1" "$2" "$MCP_TOKEN_VAR"
+        text = json.dumps(current)
+        headers = current.get("headers") if isinstance(current, dict) else None
+        # Only a header that carries a secret by its name counts. X-MCP-Toolsets is not a credential.
+        secret_name = re.compile(r"auth|token|key|secret|password|cookie", re.IGNORECASE)
+        literal = isinstance(headers, dict) and any(secret_name.search(str(k)) and "${" not in str(v) for k, v in headers.items())
+        if token_shape.search(text) or literal:
+            print("credential")
+        elif var in text and (not isinstance(current, dict) or current.get("url") != entry["url"]):
+            print("redirected")
+        else:
+            print("different")
+    sys.exit(0)
+if os.path.islink(path) or os.path.islink(os.path.dirname(os.path.abspath(path))):
+    sys.exit(4)
+document = document if isinstance(document, dict) else {}
+document.setdefault("mcpServers", {})["github"] = entry
+folder = os.path.dirname(os.path.abspath(path))
+descriptor, temporary = tempfile.mkstemp(dir=folder, prefix=".mcp.json.")
+try:
+    with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+        json.dump(document, handle, indent=2, ensure_ascii=False)
+        handle.write("\n")
+    if os.path.exists(path):
+        shutil.copymode(path, temporary)
+    else:
+        os.chmod(temporary, 0o644)
+    os.replace(temporary, path)
+finally:
+    if os.path.exists(temporary):
+        os.remove(temporary)' "$1" "$2" "$MCP_TOKEN_VAR"
+}
+
+write_claude_entry() { # the state it replaces, for the words of the report
+  if mcp_entry "$checkout/.mcp.json" write; then return 0; fi
+  report BLOCKED github-mcp "claude: .mcp.json could not be written"
+  FAILED=1
+  return 1
 }
 
 step_mcp_claude() {
   local file="$checkout/.mcp.json" state
-  state=$(mcp_entry "$file" inspect)
+  if refuse_link github-mcp ".mcp.json"; then return; fi
+  state=$(mcp_entry "$file" inspect) || state=invalid
   case "$state" in
     same) report PRESENT github-mcp "claude: .mcp.json names \${$MCP_TOKEN_VAR}" ;;
+    invalid)
+      report BLOCKED github-mcp "claude: .mcp.json is not plain JSON (a comment, perhaps); it was not changed"
+      needs_you "Make .mcp.json plain JSON by hand, then run this script again."
+      ;;
     credential)
-      report DRIFT github-mcp "claude: the github entry in .mcp.json has a header with no \${VARIABLE} in it, which may be a token (value not shown)"
+      report DRIFT github-mcp "claude: the github entry in .mcp.json holds what may be a token (value not shown)"
       needs_you "Remove the token from .mcp.json and rotate it. A token in a committed file is public to everyone with access. Then run this script with --update."
-      if [ "$update" -eq 1 ] && [ "$check_only" -eq 0 ]; then
-        mcp_entry "$file" write
+      if [ "$update" -eq 1 ] && [ "$check_only" -eq 0 ] && write_claude_entry; then
         report UPDATED github-mcp "claude: replaced by an entry that names \${$MCP_TOKEN_VAR}"
+      fi
+      ;;
+    redirected)
+      report DRIFT github-mcp "claude: the github entry in .mcp.json names \${$MCP_TOKEN_VAR} but its address is not GitHub's; kept"
+      needs_you "Read the github entry in .mcp.json. It would send your token to an address that is not GitHub's. If you did not write it, remove it. Then run this script with --update."
+      if [ "$update" -eq 1 ] && [ "$check_only" -eq 0 ] && write_claude_entry; then
+        report UPDATED github-mcp "claude: replaced by the factory's entry"
       fi
       ;;
     different)
       if [ "$update" -eq 1 ] && [ "$check_only" -eq 0 ]; then
-        mcp_entry "$file" write
-        report UPDATED github-mcp "claude: the github entry in .mcp.json was replaced"
-        done_for_you "Updated the github entry in .mcp.json."
+        if write_claude_entry; then
+          report UPDATED github-mcp "claude: the github entry in .mcp.json was replaced"
+          done_for_you "Updated the github entry in .mcp.json."
+        fi
       else
         report DRIFT github-mcp "claude: the github entry in .mcp.json differs from the factory's; kept (use --update to replace)"
+        needs_you "Compare the github entry in .mcp.json with the factory's, then run with --update if you want it replaced. Until you do, the install is not ready."
       fi
       ;;
     *)
       if [ "$check_only" -eq 1 ]; then
         report WOULD_ADD github-mcp "claude: a github entry would be added to .mcp.json"
-      else
-        mcp_entry "$file" write
+      elif write_claude_entry; then
         report ADDED github-mcp "claude: added a github entry to .mcp.json"
         done_for_you "Added GitHub's MCP server to .mcp.json."
       fi
@@ -563,49 +690,54 @@ step_mcp_claude() {
 
 # The same entry for Codex, in .codex/config.toml. scripts/lib/codex_config.py edits the one table and refuses forms
 # it does not understand. Codex loads the file only for a project that the person trusts.
+write_codex_entry() { # [--replace]
+  if python3 -I "$CODEX_CONFIG_TOOL" write "$checkout/.codex/config.toml" "$MCP_TOKEN_VAR" "$@"; then return 0; fi
+  report BLOCKED github-mcp "codex: .codex/config.toml could not be written safely"
+  FAILED=1
+  return 1
+}
+
 step_mcp_codex() {
   local file="$checkout/.codex/config.toml" state
+  if refuse_link github-mcp ".codex/config.toml"; then return; fi
   state=$(python3 -I "$CODEX_CONFIG_TOOL" inspect "$file" "$MCP_TOKEN_VAR")
   case "$state" in
     same) report PRESENT github-mcp "codex: .codex/config.toml names \${$MCP_TOKEN_VAR}" ;;
     credential)
       report DRIFT github-mcp "codex: the github entry in .codex/config.toml holds what may be a token (value not shown)"
       needs_you "Remove the token from .codex/config.toml and rotate it. A token in a committed file is public to everyone with access. Then run this script with --update."
-      if [ "$update" -eq 1 ] && [ "$check_only" -eq 0 ]; then
-        if python3 -I "$CODEX_CONFIG_TOOL" write "$file" "$MCP_TOKEN_VAR" --replace; then
-          report UPDATED github-mcp "codex: replaced by an entry that names \${$MCP_TOKEN_VAR}"
-        else
-          report BLOCKED github-mcp "codex: the entry could not be replaced safely"
-          FAILED=1
-        fi
+      if [ "$update" -eq 1 ] && [ "$check_only" -eq 0 ] && write_codex_entry --replace; then
+        report UPDATED github-mcp "codex: replaced by an entry that names \${$MCP_TOKEN_VAR}"
+      fi
+      ;;
+    redirected)
+      report DRIFT github-mcp "codex: the github entry in .codex/config.toml names \${$MCP_TOKEN_VAR} but its address is not GitHub's; kept"
+      needs_you "Read the github entry in .codex/config.toml. It would send your token to an address that is not GitHub's. If you did not write it, remove it. Then run this script with --update."
+      if [ "$update" -eq 1 ] && [ "$check_only" -eq 0 ] && write_codex_entry --replace; then
+        report UPDATED github-mcp "codex: replaced by the factory's entry"
       fi
       ;;
     unsafe)
       report DRIFT github-mcp "codex: .codex/config.toml has a github entry that this script will not edit (it runs a command, or is written in a form it does not understand)"
-      needs_you "Edit the github entry in .codex/config.toml by hand so that it is the table [mcp_servers.github] with url, bearer_token_env_var and http_headers only. See docs/guides/claude-and-codex.md."
+      needs_you "Edit the github entry in .codex/config.toml by hand so that it is the table [mcp_servers.github] with url, bearer_token_env_var and http_headers only. If it holds a token, rotate it. See docs/guides/claude-and-codex.md."
       ;;
     different)
       if [ "$update" -eq 1 ] && [ "$check_only" -eq 0 ]; then
-        if python3 -I "$CODEX_CONFIG_TOOL" write "$file" "$MCP_TOKEN_VAR" --replace; then
+        if write_codex_entry --replace; then
           report UPDATED github-mcp "codex: the github entry in .codex/config.toml was replaced"
           done_for_you "Updated the github entry in .codex/config.toml."
-        else
-          report BLOCKED github-mcp "codex: the entry could not be replaced safely"
-          FAILED=1
         fi
       else
         report DRIFT github-mcp "codex: the github entry in .codex/config.toml differs from the factory's; kept (use --update to replace)"
+        needs_you "Compare the github entry in .codex/config.toml with the factory's, then run with --update if you want it replaced. Until you do, the install is not ready."
       fi
       ;;
     *)
       if [ "$check_only" -eq 1 ]; then
         report WOULD_ADD github-mcp "codex: a github entry would be added to .codex/config.toml"
-      elif python3 -I "$CODEX_CONFIG_TOOL" write "$file" "$MCP_TOKEN_VAR"; then
+      elif write_codex_entry; then
         report ADDED github-mcp "codex: added a github entry to .codex/config.toml"
         done_for_you "Added GitHub's MCP server to .codex/config.toml."
-      else
-        report BLOCKED github-mcp "codex: .codex/config.toml could not be written safely"
-        FAILED=1
       fi
       ;;
   esac
@@ -622,7 +754,7 @@ step_mcp() {
   fi
   if [ "$HAVE_CLAUDE" -eq 1 ]; then step_mcp_claude; fi
   if [ "$HAVE_CODEX" -eq 1 ]; then step_mcp_codex; fi
-  if [ -z "${!MCP_TOKEN_VAR:-}" ]; then
+  if [ "$TOKEN_IS_SET" -eq 0 ]; then
     report NEEDS github-token "$MCP_TOKEN_VAR is not set (it was not read, only checked)"
     needs_you "Create a fine-grained GitHub token for this one repository (Issues and Pull requests: read and write; Contents and Metadata: read) and export it as $MCP_TOKEN_VAR before you start $(agents_label). Never paste it in a chat or a file."
   fi
@@ -634,18 +766,20 @@ step_mcp() {
 copy_one() { # SOURCE DESTINATION(relative to the checkout)
   local src=$1 rel=$2 dst
   dst="$checkout/$rel"
-  if [ ! -e "$dst" ]; then
+  if path_has_link "$rel"; then
+    report BLOCKED workflow-files "$rel is, or goes through, a symbolic link; it was not written"
+    LINKED=$((LINKED + 1))
+  elif [ ! -e "$dst" ]; then
     if [ "$check_only" -eq 1 ]; then
       WOULD=$((WOULD + 1))
     else
-      mkdir -p "$(dirname "$dst")"
-      cp "$src" "$dst"
+      atomic_copy "$src" "$dst"
       ADDED=$((ADDED + 1))
     fi
   elif cmp -s "$src" "$dst"; then
     SAME=$((SAME + 1))
   elif [ "$update" -eq 1 ] && [ "$check_only" -eq 0 ]; then
-    cp "$src" "$dst"
+    atomic_copy "$src" "$dst"
     UPDATED=$((UPDATED + 1))
   else
     report DRIFT workflow-files "$rel differs from the factory's copy; kept (use --update to replace)"
@@ -655,7 +789,9 @@ copy_one() { # SOURCE DESTINATION(relative to the checkout)
 
 step_files() {
   [ -n "$checkout" ] || return 0
-  ADDED=0 SAME=0 UPDATED=0 WOULD=0 DRIFTED=0
+  # A link at .github would send every file somewhere else. Say it once and stop.
+  if refuse_link workflow-files ".github"; then return 0; fi
+  ADDED=0 SAME=0 UPDATED=0 WOULD=0 DRIFTED=0 LINKED=0
   copy_one "$RENDERED" ".github/issue-workflow.json"
   copy_one "$WORKFLOW_TOOL" ".github/scripts/issue_workflow.py"
   copy_one "$BOARD_TOOL" ".github/scripts/project_board.py"
@@ -674,11 +810,14 @@ step_files() {
   elif [ "$UPDATED" -gt 0 ]; then
     report UPDATED workflow-files "$detail"
     done_for_you "Updated the issue workflow files in .github/ ($UPDATED updated)."
-  elif [ "$DRIFTED" -eq 0 ]; then
+  elif [ "$DRIFTED" -eq 0 ] && [ "$LINKED" -eq 0 ]; then
     report PRESENT workflow-files "$detail"
   fi
   if [ "$DRIFTED" -gt 0 ]; then
     needs_you "Compare the DRIFT files above with the factory's copies, then run with --update if you want them replaced."
+  fi
+  if [ "$LINKED" -gt 0 ]; then
+    needs_you "Replace the symbolic links named above with real files or folders, or remove them, and run this script again. The installer does not write through a link."
   fi
 }
 
@@ -771,6 +910,23 @@ print({"owner": board["project"]["owner"], "number": board["project"]["number"],
 }
 
 # Says whether the repository has a credential for the board, by NAME only. Values are never read.
+# The Action reverts a `factory:` label unless the App named in FACTORY_BOT_LOGIN set it (PL-21). Without the variable it
+# would revert the factory's own status labels, and say so in a comment each time. Names only; a value is never read.
+step_bot_variable() {
+  [ -n "$repo" ] && [ "$HAVE_GH" -eq 1 ] || return 0
+  local listing
+  listing=$(gh variable list --repo "$repo" --json name 2>/dev/null) || return 0
+  if ! printf '%s' "$listing" | python3 -I -c '
+import json, sys
+try:
+    names = {item.get("name") for item in json.load(sys.stdin)}
+except ValueError:
+    names = set()
+sys.exit(0 if "FACTORY_BOT_LOGIN" in names else 1)'; then
+    remember "The repository variable FACTORY_BOT_LOGIN is not set on $repo. Set it to the login of the factory's GitHub App (for example my-factory[bot]) before the factory runs there, or the Action will remove the factory's own status labels."
+  fi
+}
+
 step_board_credential() {
   local secrets variables
   if ! secrets=$(gh secret list --repo "$repo" --json name 2>/dev/null) || ! variables=$(gh variable list --repo "$repo" --json name 2>/dev/null); then
@@ -801,16 +957,21 @@ step_board() {
     return
   fi
   local config="$checkout/$BOARD_CONFIG_REL" tmp="$WORK_DIR" owner number
+  if refuse_link project-board "$BOARD_CONFIG_REL"; then return; fi
 
   # 1. A mapping file is already there: a person may have edited it. Check it against the board. Never rewrite it.
+  # Its values go to `gh` and to the terminal, so they are validated first; a file from a hostile checkout is data.
   if [ -f "$config" ]; then
-    owner=$(board_config_field "$config" owner 2>/dev/null) || owner=""
-    number=$(board_config_field "$config" number 2>/dev/null) || number=""
-    if [ -z "$owner" ] || [ -z "$number" ]; then
-      report NEEDS project-board "$BOARD_CONFIG_REL is not valid JSON of the expected shape"
+    local shape
+    if ! shape=$(python3 -I "$BOARD_TOOL" validate --policy-json "$BOARD_POLICY" --board-config "$config" 2>&1); then
+      report NEEDS project-board "$BOARD_CONFIG_REL is not valid"
+      printf '%s\n' "$shape" | head -n 6 | indent_clean
       needs_you "Fix $BOARD_CONFIG_REL, or delete it and run this script again to make a new one."
       return
     fi
+    owner=$(board_config_field "$config" owner)
+    number=$(board_config_field "$config" number)
+    note_board_owner "$owner"
     local field
     field=$(board_config_field "$config" field)
     if ! gh project field-list "$number" --owner "$owner" --format json --limit 50 >"$tmp/fields.json" 2>/dev/null; then
@@ -823,7 +984,7 @@ step_board() {
       report PRESENT project-board "$BOARD_CONFIG_REL matches the board $owner/$number, field '$field'"
     else
       report NEEDS project-board "$BOARD_CONFIG_REL no longer matches the board $owner/$number"
-      printf '%s\n' "$problems" | sed 's/^/              /'
+      printf '%s\n' "$problems" | indent_clean
       needs_you "The board changed, or the mapping file is wrong. Edit $BOARD_CONFIG_REL so that each stage names an option that exists, or delete it to map again."
     fi
     step_board_credential
@@ -857,7 +1018,7 @@ step_board() {
     fi
     if [ "$count" -gt 1 ]; then
       report NEEDS project-board "$count boards are linked to $repo, and the installer will not guess"
-      printf '%s\n' "$linked" | awk -F'\t' '{printf "              %s/%s  %s\n", $1, $2, $3}'
+      printf '%s\n' "$linked" | awk -F'\t' '{printf "%s/%s  %s\n", $1, $2, $3}' | indent_clean
       needs_you "Pick one with --project OWNER/NUMBER."
       return
     fi
@@ -868,7 +1029,12 @@ step_board() {
   # 3. Create the board when asked. Only additive things: a project, a link and a NEW field.
   if [ "$created" -eq 1 ]; then
     if [ "$owner" = "@me" ]; then
-      owner=$(gh api user 2>/dev/null | python3 -I -c 'import json,sys; print(json.load(sys.stdin).get("login",""))')
+      owner=$(gh api user 2>/dev/null | python3 -I -c 'import json,sys; print(json.load(sys.stdin).get("login",""))') || owner=""
+      if [ -z "$owner" ]; then
+        report BLOCKED project-board "could not tell who you are on GitHub (gh api user failed)"
+        needs_you "Run 'gh auth status', or give the owner by name instead of @me."
+        return
+      fi
     fi
     local titles made
     titles=$(python3 -I "$BOARD_TOOL" titles --policy-json "$BOARD_POLICY")
@@ -882,7 +1048,8 @@ step_board() {
     if [ -z "$number" ] ||
       ! gh project link "$number" --owner "$owner" --repo "$repo" >/dev/null 2>&1 ||
       ! gh project field-create "$number" --owner "$owner" --name "$field_name" --data-type SINGLE_SELECT --single-select-options "$titles" --format json >/dev/null 2>&1; then
-      report BLOCKED project-board "the board was created but it could not be linked or given its field"
+      report BLOCKED project-board "the board $owner/${number:-?} was created but it could not be linked or given its field"
+      needs_you "A board was created. Do NOT run --create-project again, or you will get a second one. Finish with: gh project link ${number:-NUMBER} --owner $owner --repo $repo ; gh project field-create ${number:-NUMBER} --owner $owner --name '$field_name' --data-type SINGLE_SELECT --single-select-options '$titles' . Then run this script with --project $owner/${number:-NUMBER}."
       FAILED=1
       return
     fi
@@ -912,19 +1079,31 @@ step_board() {
   fi
   if [ "$mapped_ok" -ne 1 ]; then
     report NEEDS project-board "the board $owner/$number has no single-select field named '$field_name'"
-    sed 's/^FAIL /              /' "$tmp/notes.txt"
+    sed 's/^FAIL //' "$tmp/notes.txt" | indent_clean
     needs_you "Pass --board-field with the name of the field that holds your columns (it must be a single-select field), or use --create-project to make a board with its own field."
     return
   fi
-  mkdir -p "$(dirname "$config")"
-  cp "$tmp/board.json" "$config"
-  report ADDED project-board "wrote $BOARD_CONFIG_REL for the board $owner/$number, field '$field_name'. No option of the board was changed."
-  done_for_you "Mapped the stages onto the board $owner/$number in $BOARD_CONFIG_REL."
+  note_board_owner "$owner"
+  if [ "$check_only" -eq 1 ]; then
+    report WOULD_ADD project-board "$BOARD_CONFIG_REL would be written for the board $owner/$number, field '$field_name'"
+  else
+    atomic_copy "$tmp/board.json" "$config"
+    report ADDED project-board "wrote $BOARD_CONFIG_REL for the board $owner/$number, field '$field_name'. No option of the board was changed."
+    done_for_you "Mapped the stages onto the board $owner/$number in $BOARD_CONFIG_REL."
+  fi
   while IFS= read -r note; do
     [ -n "$note" ] && remember "Board: ${note#NOTE }"
   done <"$tmp/notes.txt"
   remember "Review $BOARD_CONFIG_REL in the pull request. A board view is made in the GitHub web page: group a Board layout by '$field_name'."
   step_board_credential
+}
+
+# The Action moves cards only on a board that belongs to the repository's owner, or to an owner the repository lists in
+# the variable FACTORY_BOARD_OWNERS (PL-11). Say so when the board belongs to somebody else.
+note_board_owner() { # OWNER
+  if [ "$(lower "$1")" != "$(lower "${repo%/*}")" ]; then
+    remember "The board belongs to $1, who is not the owner of $repo. Set the repository variable FACTORY_BOARD_OWNERS to $1, or the Action will refuse to move cards. It moves cards only on a board of the repository's owner or of an owner listed there."
+  fi
 }
 
 # ---------------------------------------------------------------------------------------------------------------
@@ -953,7 +1132,7 @@ step_map() {
     0) report PRESENT project-map "$(printf '%s' "$out" | tail -n 1)" ;;
     1)
       report NEEDS project-map "$(printf '%s' "$out" | tail -n 1)"
-      printf '%s\n' "$out" | grep '^MISSING' | head -n 8 | sed 's/^/              /'
+      printf '%s\n' "$out" | grep '^MISSING' | head -n 8 | indent_clean
       needs_you "Map the project. $(bootstrap_hint) It asks before it maps a large tree. Read what it wrote, then merge it by pull request. If people already maintain READMEs there, give it the file name EGM.md so that it does not touch them."
       ;;
     *)
@@ -968,10 +1147,11 @@ step_uncommitted() {
   git -C "$checkout" rev-parse --is-inside-work-tree >/dev/null 2>&1 || return 0
   local changed
   # Only the paths that this script and EGM's bootstrap write. Other work in progress is the person's business.
-  changed=$(git -C "$checkout" status --porcelain -- .github .mcp.json .codex '*README.md' '*EGM.md' 2>/dev/null | wc -l | tr -d ' ')
+  # The checkout is not trusted: its .git/config could name a command (core.fsmonitor) that git would run.
+  changed=$(GIT_OPTIONAL_LOCKS=0 git -c core.fsmonitor=false -c core.hooksPath=/dev/null -C "$checkout" status --porcelain -- .github .mcp.json .codex '*README.md' '*EGM.md' 2>/dev/null | wc -l | tr -d ' ')
   if [ "$changed" -gt 0 ]; then
     report NEEDS uncommitted "$changed installed or generated path(s) are not committed"
-    needs_you "Review the changes in $checkout and commit them by pull request. The factory does not enable a repository whose map is not on its default branch."
+    needs_you "Review the changes in $checkout and merge them by pull request, so that the map is on the default branch before a person attests it. The engine cannot see your repository: it records the commit that you attest and does not check that the commit exists."
   fi
 }
 
@@ -985,6 +1165,7 @@ step_mcp
 step_files
 step_labels
 step_board
+step_bot_variable
 step_map
 step_uncommitted
 

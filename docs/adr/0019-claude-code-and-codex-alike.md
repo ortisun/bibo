@@ -68,3 +68,7 @@ On 2026-11-02. "Verified" means run or read here. "Unverified" means the source 
 - A run of brainstorm, draft and review under Codex.
 - `codex plugin marketplace add` and `codex plugin add` from the installer on a clean machine.
 - A Spec Kit install that records the Codex integration.
+
+## Revision note (2026-11-02, independent review PL-7 to PL-9)
+
+The first version of the editor of `.codex/config.toml` could hold the installer for minutes on a few kilobytes of hostile text, deleted the comments above the next table (and, in one form, a whole table), made the file mode 0600, and had no check after the edit on Python below 3.11. It now reads each line in linear time and refuses a line over 4096 characters, treats any line that starts with `[` as the end of a table, keeps the comments of the next table and the mode of the file, refuses to write through a link, and checks the result by structure on every Python and also with `tomllib` where it exists. An entry that runs a command is "unsafe" even when it also holds a token. An entry that names the token variable but points to another address is "redirected", and the install is not ready until a person deals with it. Each of these has a test.
