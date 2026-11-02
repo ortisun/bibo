@@ -1129,6 +1129,57 @@ impl FakeGithub {
             .unwrap_or_default()
     }
 
+    /// The comments on an issue with the login of each author, in order. The App's own comments
+    /// show the login of its bot account.
+    #[must_use]
+    pub fn comments_by_author(&self, repo: &str, number: u64) -> Vec<(String, String)> {
+        self.lock()
+            .repos
+            .get(repo)
+            .and_then(|r| r.issues.get(&number))
+            .map(|i| {
+                i.comments
+                    .iter()
+                    .map(|c| (c.author.clone(), c.body.clone()))
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// The labels on an issue now, in the order they were added. Empty for an unknown issue.
+    #[must_use]
+    pub fn labels_of(&self, repo: &str, number: u64) -> Vec<String> {
+        self.lock()
+            .repos
+            .get(repo)
+            .and_then(|r| r.issues.get(&number))
+            .map(|i| i.labels.clone())
+            .unwrap_or_default()
+    }
+
+    /// A comment a person wrote on an issue, outside the factory.
+    ///
+    /// # Panics
+    /// Panics when the issue or the author is not known.
+    pub fn add_comment(&self, repo: &str, number: u64, author: &str, body: &str) {
+        let now = self.now();
+        let mut state = self.lock();
+        assert!(state.users.contains_key(author), "unknown user {author}");
+        let id = state.new_id();
+        let issue = state
+            .repos
+            .get_mut(repo)
+            .and_then(|r| r.issues.get_mut(&number))
+            .expect("a known issue");
+        issue.comments.push(Comment {
+            id,
+            author: author.to_owned(),
+            body: body.to_owned(),
+            created_at: now,
+        });
+        issue.updated_at = now;
+    }
+
     /// A pull request as the API shows it.
     #[must_use]
     pub fn pull_json(&self, repo: &str, number: u64) -> Option<Value> {

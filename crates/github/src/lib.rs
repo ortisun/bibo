@@ -2,7 +2,8 @@
 //!
 //! This crate implements [`factory_ports::githost::IssueSource`],
 //! [`factory_ports::githost::ChangeHost`] and [`factory_ports::githost::WebhookVerifier`] for
-//! GitHub, authenticated as a GitHub App (ports-v1.1, ADR 0014). It has no merge call, no call
+//! GitHub, authenticated as a GitHub App (ports-v1.1, ADR 0014). It also implements
+//! [`factory_ports::issue_status::IssueStatusWriter`] (ports v1.2, ADR 0017). It has no merge call, no call
 //! that marks a pull request ready for review, and no call that writes a workflow file.
 //!
 //! # Dependencies (decision of work package `s1-github-adapter`, 2026-10-28)
@@ -38,6 +39,7 @@
 //! | `core`, `client` | Back-off from rate limit headers, conditional reads, pagination with caps. |
 //! | `text` | Secret check and markdown hygiene for everything sent to GitHub. |
 //! | `issues`, `changes`, `protection` | The two ports and the ruleset reader. |
+//! | `status` | The status writer (ports v1.2): one `factory: <state>` label and one status comment, with a token of its own. |
 //! | `webhook` | The webhook verifier and the replay filter. |
 //! | `adapter` | The composition. |
 //!
@@ -58,6 +60,7 @@ mod jwt;
 mod parse;
 mod permissions;
 mod protection;
+mod status;
 mod text;
 mod token;
 mod ureq_transport;
@@ -73,6 +76,7 @@ pub use issues::{GithubIssueSource, NormalizedText, normalize_untrusted_text};
 pub use jwt::{AppJwt, JwtError, JwtSigner, RingRs256Signer};
 pub use permissions::{AppAudit, AppPolicy, Level, PermissionSet, audit_app, may_write};
 pub use protection::protection_from_rules;
+pub use status::{GithubIssueStatus, MUTATION_PAUSE};
 pub use text::OutboundPolicy;
 pub use token::{InstallationDirectory, StaticInstallations};
 pub use ureq_transport::{MAX_RESPONSE_BYTES, REQUEST_TIMEOUT, UreqTransport};

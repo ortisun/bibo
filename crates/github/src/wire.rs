@@ -21,7 +21,8 @@ pub enum Method {
     Post,
     /// Update.
     Patch,
-    /// Remove. Used for the installation token only.
+    /// Remove. Used for the installation token, for a label taken off an issue and for the
+    /// duplicate of a status comment (ports v1.2).
     Delete,
 }
 

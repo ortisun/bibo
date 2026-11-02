@@ -51,6 +51,9 @@ pub(crate) enum TokenClass {
     Fetch,
     /// A write credential for a push.
     Push,
+    /// `issues: write` and nothing else, for the status label and the status comment (ports v1.2).
+    /// It does not depend on the stage in the scope.
+    IssueStatus,
 }
 
 /// Where the factory's tenants' installations are. The adapter does not discover them: a tenant
@@ -218,6 +221,7 @@ impl TokenMinter {
                     own
                 })
             }
+            TokenClass::IssueStatus => Ok(PermissionSet::issue_status()),
             TokenClass::Fetch => Ok(PermissionSet::fetch()),
             TokenClass::Push if may_write(scope.stage) => Ok(PermissionSet::push()),
             // The write credential is never minted for a stage that may not write.

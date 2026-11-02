@@ -4,17 +4,19 @@
 use std::sync::PoisonError;
 
 use async_trait::async_trait;
-use factory_github::{GithubChangeHost, GithubIssueSource};
+use factory_github::{GithubChangeHost, GithubIssueSource, GithubIssueStatus};
 use factory_ports::githost::{
     AppId, ChangeHost, CheckRef, Comment, CommentTarget, GithubActor, Issue, IssueRef, IssueSource,
     ProtectionReport, PullRequestRef,
 };
+use factory_ports::issue_status::IssueStatusWriter;
 use factory_ports::paths::{BranchName, CommitSha, RepoRef};
 use factory_testkit::contracts::githost::{ChangeHostSubject, IssueSourceSubject};
+use factory_testkit::contracts::issue_status::IssueStatusSubject;
 use factory_testkit::fx::http::send_request;
 use serde_json::{Value, json};
 
-use super::harness::{FIXTURE, World};
+use super::harness::{FIXTURE, OTHER, World};
 
 fn full_name(repo: &RepoRef) -> String {
     format!("{}/{}", repo.owner(), repo.name())
@@ -269,5 +271,99 @@ impl IssueSourceSubject for IssueSourceWorld {
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .insert(full_name(repo), Value::Array(rules));
+    }
+}
+
+/// The status writer in the world of the harness. Every issue the contract suite names exists
+/// before a check starts: numbers 1 to 40 of the fixture repository and of the other one.
+pub struct IssueStatusWorld {
+    pub world: World,
+    writer: GithubIssueStatus,
+}
+
+impl IssueStatusWorld {
+    pub fn new() -> Self {
+        Self::from(World::new())
+    }
+}
+
+impl From<World> for IssueStatusWorld {
+    fn from(world: World) -> Self {
+        for repo in [FIXTURE, OTHER] {
+            for number in 1..=40 {
+                world.fake.add_issue(
+                    repo,
+                    &format!("Issue {number}"),
+                    "A request.",
+                    "octocat",
+                    &[],
+                );
+            }
+        }
+        let writer = world.adapter.issue_status_writer();
+        Self { world, writer }
+    }
+}
+
+#[async_trait]
+impl IssueStatusSubject for IssueStatusWorld {
+    fn writer(&self) -> &dyn IssueStatusWriter {
+        &self.writer
+    }
+
+    async fn seed_labels(&self, issue: &IssueRef, labels: &[&str]) {
+        for label in labels {
+            self.world
+                .fake
+                .label_issue(&full_name(&issue.repo), issue.number, label, "octocat");
+        }
+    }
+
+    async fn labels_of(&self, issue: &IssueRef) -> Vec<String> {
+        self.world
+            .fake
+            .labels_of(&full_name(&issue.repo), issue.number)
+    }
+
+    async fn seed_person_comment(&self, issue: &IssueRef, body: &str) {
+        self.world
+            .fake
+            .add_comment(&full_name(&issue.repo), issue.number, "octocat", body);
+    }
+
+    async fn app_comments(&self, issue: &IssueRef) -> Vec<String> {
+        let bot = self.world.fake.app().bot_login();
+        self.world
+            .fake
+            .comments_by_author(&full_name(&issue.repo), issue.number)
+            .into_iter()
+            .filter(|(author, _)| *author == bot)
+            .map(|(_, body)| body)
+            .collect()
+    }
+
+    async fn person_comments(&self, issue: &IssueRef) -> Vec<String> {
+        let bot = self.world.fake.app().bot_login();
+        self.world
+            .fake
+            .comments_by_author(&full_name(&issue.repo), issue.number)
+            .into_iter()
+            .filter(|(author, _)| *author != bot)
+            .map(|(_, body)| body)
+            .collect()
+    }
+
+    async fn permissions_asked(&self) -> Vec<Vec<(String, String)>> {
+        self.world
+            .fake
+            .mints()
+            .into_iter()
+            .map(|mint| {
+                mint.requested_permissions
+                    .unwrap_or_default()
+                    .into_iter()
+                    .collect()
+            })
+            .collect()
     }
 }

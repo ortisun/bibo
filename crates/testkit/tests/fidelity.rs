@@ -11,6 +11,7 @@ use factory_ports::agent::{AgentRuntime, ModelBroker, ModelRouter, TurnAttestati
 use factory_ports::artifact::ArtifactStore;
 use factory_ports::clock::{CancelSignal, Clock, IdGenerator};
 use factory_ports::githost::{ChangeHost, IssueSource, WebhookVerifier};
+use factory_ports::issue_status::IssueStatusWriter;
 use factory_ports::process::ProcessRunner;
 use factory_ports::registry::AgentRegistry;
 use factory_ports::require_permitted;
@@ -22,6 +23,7 @@ use factory_testkit::artifact::InMemoryArtifactStore;
 use factory_testkit::broker::FakeModelBroker;
 use factory_testkit::clock::{FakeCancel, FakeClock, SequentialIdGenerator};
 use factory_testkit::githost::{FakeChangeHost, FakeIssueSource};
+use factory_testkit::issue_status::FakeIssueStatusWriter;
 use factory_testkit::process::ScriptedProcessRunner;
 use factory_testkit::registry::InMemoryAgentRegistry;
 use factory_testkit::router::StaticModelRouter;
@@ -89,6 +91,10 @@ fn every_fake() -> Vec<(&'static str, Fidelity)> {
         ),
         ("ChangeHost", ChangeHost::fidelity(&FakeChangeHost::new())),
         (
+            "IssueStatusWriter",
+            IssueStatusWriter::fidelity(&FakeIssueStatusWriter::new()),
+        ),
+        (
             "WebhookVerifier",
             WebhookVerifier::fidelity(&FakeWebhookVerifier::new()),
         ),
@@ -123,11 +129,12 @@ fn a_production_run_refuses_every_fake_and_a_test_run_accepts_it() {
     }
 }
 
-const PORT_SOURCES: [&str; 10] = [
+const PORT_SOURCES: [&str; 11] = [
     include_str!("../../ports/src/agent.rs"),
     include_str!("../../ports/src/artifact.rs"),
     include_str!("../../ports/src/clock.rs"),
     include_str!("../../ports/src/githost.rs"),
+    include_str!("../../ports/src/issue_status.rs"),
     include_str!("../../ports/src/process.rs"),
     include_str!("../../ports/src/registry.rs"),
     include_str!("../../ports/src/sandbox.rs"),

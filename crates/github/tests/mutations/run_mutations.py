@@ -90,6 +90,59 @@ BREAKS = [
         ["a_marker_pasted_by_someone_else"],
     ),
     (
+        "status writer: skip the namespace check on the label",
+        [("status.rs", "            .map_err(|_| GitHostError::Rejected(Rejection::LabelNotAllowed))?;", "            .unwrap_or(());")],
+        ["negative_nt_stat_01", "passes_the_whole_status_writer_contract"],
+    ),
+    (
+        "status writer: take off every label that is not the new one",
+        [("status.rs", "            if !in_namespace || name.eq_ignore_ascii_case(wanted) {", "            if name.eq_ignore_ascii_case(wanted) {")],
+        ["negative_nt_stat_01", "passes_the_whole_status_writer_contract"],
+    ),
+    (
+        "status writer: ask for the delivery credential",
+        [("token.rs", "            TokenClass::IssueStatus => Ok(PermissionSet::issue_status()),", "            TokenClass::IssueStatus => Ok(PermissionSet::delivery_stage()),")],
+        ["negative_nt_stat_02", "passes_the_whole_status_writer_contract"],
+    ),
+    (
+        "status writer: take a marker from any author for the status comment",
+        [("status.rs", '            .filter(|comment| comment["user"]["login"].as_str() == Some(bot))', "            .filter(|_| bot.len() < 1000)")],
+        ["passes_the_whole_status_writer_contract"],
+    ),
+    (
+        "status writer: overwrite a comment that shows a newer stamp",
+        [("status.rs", "            Some(shown) if shown > stamp => CommentWrite::Superseded(reference(canonical.id)),", "            Some(shown) if shown > stamp && bot.is_empty() => {\n                CommentWrite::Superseded(reference(canonical.id))\n            }")],
+        ["negative_nt_stat_03", "passes_the_whole_status_writer_contract"],
+    ),
+    (
+        "status writer: post without looking for the comment first, and keep the duplicate",
+        [
+            ("status.rs", "        let (mut own, truncated) = self.own_comments(&git, issue.number, &bot).await?;", "        let (mut own, truncated) = (Vec::new(), false);"),
+            ("status.rs", "                Some(first) if first.id != id => {", "                Some(first) if first.id == 0 && first.id != id => {"),
+        ],
+        ["negative_nt_stat_03", "passes_the_whole_status_writer_contract"],
+    ),
+    (
+        "status writer: a label that is already gone is an error",
+        [("status.rs", "                Err(GitHostError::NotFound) => {}\n                Err(other) => return Err(other),\n            }\n        }\n        Ok(LabelOutcome {", "                Err(other) => return Err(other),\n            }\n        }\n        Ok(LabelOutcome {")],
+        ["negative_nt_stat_01"],
+    ),
+    (
+        "status writer: no pause between requests that change something",
+        [("status.rs", "                self.sleeper.sleep(MUTATION_PAUSE - waited).await;", "                let _ = waited;")],
+        ["negative_nt_stat_04"],
+    ),
+    (
+        "status writer: send the comment text without cleaning it",
+        [("status.rs", "        let cleaned = self.outbound.prepare(TextKind::Markdown, comment.body())?;", "        let cleaned = comment.body().to_owned();")],
+        ["negative_nt_stat_06", "passes_the_whole_status_writer_contract"],
+    ),
+    (
+        "status writer: read a comment listing that was cut short as no comment",
+        [("status.rs", "            if truncated {", "            if false && truncated {")],
+        ["negative_nt_stat_03"],
+    ),
+    (
         "follow a next link to any host",
         [("client.rs", "            match self.base.target_of(&link) {", "            match Some(link.clone()) {")],
         ["a_link_to_another_host_is_never_followed"],
