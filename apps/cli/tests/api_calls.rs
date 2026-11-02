@@ -765,3 +765,217 @@ fn ack_translation_warning_names_the_approval_run_and_the_number() {
     }
     assert_eq!(api.requests.lock().expect("lock").len(), 1);
 }
+
+const REPOSITORY: &str = "0190a3b2-7c4d-4e5f-8a6b-1c2d3e4f5a6d";
+const MAP_COMMIT: &str = "0123456789abcdef0123456789abcdef01234567";
+
+const REPOSITORY_BODY: &str = r#"{"repository":{"repository_id":"0190a3b2-7c4d-4e5f-8a6b-1c2d3e4f5a6d","full_name":"org/widgets","default_branch":"main","github_installation_id":7001,"github_repository_id":8001,"enabled":false,"protection_preflight_passed":false,"autonomy_ceiling":"L0","version":1,"project_map":null},"changed":true}"#;
+
+#[test]
+fn repository_register_sends_the_ids_the_name_and_a_key_and_says_what_comes_next() {
+    let api = fake(vec![(201, REPOSITORY_BODY)]);
+    let file = token_file(0o600);
+    let ran = cli(&format!(
+        "repository register --api http://{} --token-file {} --key k-r --installation 7001 --github-repository 8001 --name org/widgets",
+        api.addr,
+        file.display()
+    ));
+    assert_eq!(ran.exit, Exit::Ok, "{}", ran.err);
+    for part in [
+        "The repository is registered.",
+        "org/widgets",
+        "Enabled:            no",
+        "not attested yet. The repository cannot be enabled.",
+        "Idempotency key: k-r",
+    ] {
+        assert!(ran.out.contains(part), "{part} in {}", ran.out);
+    }
+    let sent = api.requests.lock().expect("lock")[0].clone();
+    assert!(sent.starts_with("POST /v1/repositories "), "{sent}");
+    assert!(
+        sent.to_lowercase().contains("idempotency-key: k-r"),
+        "{sent}"
+    );
+    for part in [
+        r#""installation_id":7001"#,
+        r#""github_repository_id":8001"#,
+        r#""full_name":"org/widgets""#,
+        r#""default_branch":"main""#,
+    ] {
+        assert!(sent.contains(part), "{part} in {sent}");
+    }
+    // Nothing that grants anything is sent.
+    for part in ["enabled", "autonomy", "project_map", "commit"] {
+        assert!(!sent.contains(part), "{part} in {sent}");
+    }
+    // What the command refuses stops here, before any request.
+    for line in [
+        "repository register",
+        "repository register --installation 7001 --github-repository 8001",
+        "repository register --installation 0 --github-repository 8001 --name org/widgets",
+        "repository register --installation x --github-repository 8001 --name org/widgets",
+        "repository register --installation 7001 --github-repository -1 --name org/widgets",
+        "repository register --installation 7001 --github-repository 8001 --name org/widgets extra",
+        "repository register --enabled true --installation 7001 --github-repository 8001 --name org/widgets",
+        "repository",
+        "repository delete",
+    ] {
+        let ran = cli(&format!(
+            "{line} --api http://{} --token-file {}",
+            api.addr,
+            file.display()
+        ));
+        assert_eq!(ran.exit, Exit::Failed, "{line}: {}", ran.err);
+    }
+    assert_eq!(api.requests.lock().expect("lock").len(), 1);
+}
+
+#[test]
+fn repository_confirm_map_sends_the_commit_and_the_reason_and_calls_it_a_statement() {
+    let body = REPOSITORY_BODY.replace(
+        r#""project_map":null"#,
+        &format!(
+            r#""project_map":{{"commit":"{MAP_COMMIT}","attested_by":"0190a3b2-7c4d-4e5f-8a6b-1c2d3e4f5a6e","attested_at":"2026-11-02T12:00:00Z","verified_by_engine":false}}"#
+        ),
+    );
+    let body: &'static str = Box::leak(body.into_boxed_str());
+    let api = fake(vec![(200, body)]);
+    let file = token_file(0o600);
+    let ran = cli(&format!(
+        "repository confirm-map --api http://{} --token-file {} --key k-m {REPOSITORY} {MAP_COMMIT} I read the map files in the merged pull request.",
+        api.addr,
+        file.display()
+    ));
+    assert_eq!(ran.exit, Exit::Ok, "{}", ran.err);
+    for part in [
+        "The repository is attested.",
+        MAP_COMMIT,
+        "This is a person's statement; the engine did not read the repository.",
+    ] {
+        assert!(ran.out.contains(part), "{part} in {}", ran.out);
+    }
+    let sent = api.requests.lock().expect("lock")[0].clone();
+    assert!(
+        sent.starts_with(&format!("POST /v1/repositories/{REPOSITORY}/project-map ")),
+        "{sent}"
+    );
+    for part in [
+        &format!(r#""commit":"{MAP_COMMIT}""#),
+        r#""reason":"I read the map files in the merged pull request.""#,
+    ] {
+        assert!(sent.contains(part), "{part} in {sent}");
+    }
+    // What the command refuses stops here, before any request: a commit that is not 40 lowercase
+    // hexadecimal characters, a reason that is short, an id that is not a UUID.
+    let upper = MAP_COMMIT.to_uppercase();
+    let reason = "I read the map files in the merged pull request.";
+    for line in [
+        format!("repository confirm-map {REPOSITORY}"),
+        format!("repository confirm-map {REPOSITORY} {MAP_COMMIT}"),
+        format!("repository confirm-map {REPOSITORY} {MAP_COMMIT} short"),
+        format!("repository confirm-map {REPOSITORY} main {reason}"),
+        format!("repository confirm-map {REPOSITORY} {upper} {reason}"),
+        format!(
+            "repository confirm-map {REPOSITORY} {} {reason}",
+            &MAP_COMMIT[..39]
+        ),
+        format!("repository confirm-map not-a-uuid {MAP_COMMIT} {reason}"),
+    ] {
+        let ran = cli(&format!(
+            "{line} --api http://{} --token-file {}",
+            api.addr,
+            file.display()
+        ));
+        assert_eq!(ran.exit, Exit::Failed, "{line}: {}", ran.err);
+    }
+    assert_eq!(api.requests.lock().expect("lock").len(), 1);
+}
+
+#[test]
+fn repository_enable_disable_and_show_use_their_own_paths() {
+    let enabled = REPOSITORY_BODY.replace(r#""enabled":false"#, r#""enabled":true"#);
+    let enabled: &'static str = Box::leak(enabled.into_boxed_str());
+    let shown = r#"{"repository_id":"0190a3b2-7c4d-4e5f-8a6b-1c2d3e4f5a6d","full_name":"org/widgets","default_branch":"main","github_installation_id":7001,"github_repository_id":8001,"enabled":true,"protection_preflight_passed":false,"autonomy_ceiling":"L0","version":3,"project_map":null}"#;
+    let api = fake(vec![(200, enabled), (200, REPOSITORY_BODY), (200, shown)]);
+    let file = token_file(0o600);
+    let base = format!("--api http://{} --token-file {}", api.addr, file.display());
+    let ran = cli(&format!("repository enable {base} --key k-e {REPOSITORY}"));
+    assert_eq!(ran.exit, Exit::Ok, "{}", ran.err);
+    assert!(
+        ran.out.contains("The repository is enabled."),
+        "{}",
+        ran.out
+    );
+    assert!(ran.out.contains("Enabled:            yes"), "{}", ran.out);
+    let ran = cli(&format!(
+        "repository disable {base} --key k-d {REPOSITORY} Switching it off while the map is rewritten."
+    ));
+    assert_eq!(ran.exit, Exit::Ok, "{}", ran.err);
+    assert!(
+        ran.out.contains("The repository is disabled."),
+        "{}",
+        ran.out
+    );
+    let ran = cli(&format!("repository show {base} {REPOSITORY}"));
+    assert_eq!(ran.exit, Exit::Ok, "{}", ran.err);
+    assert!(ran.out.contains("Version:            3"), "{}", ran.out);
+    let sent = api.requests.lock().expect("lock").clone();
+    assert!(
+        sent[0].starts_with(&format!("POST /v1/repositories/{REPOSITORY}/enable ")),
+        "{}",
+        sent[0]
+    );
+    assert!(
+        sent[0].ends_with("{}"),
+        "an enable with no reason sends an empty object: {}",
+        sent[0]
+    );
+    assert!(
+        sent[1].starts_with(&format!("POST /v1/repositories/{REPOSITORY}/disable ")),
+        "{}",
+        sent[1]
+    );
+    assert!(
+        sent[1].contains(r#""reason":"Switching it off while the map is rewritten.""#),
+        "{}",
+        sent[1]
+    );
+    assert!(
+        sent[2].starts_with(&format!("GET /v1/repositories/{REPOSITORY} ")),
+        "{}",
+        sent[2]
+    );
+    // What the command refuses stops here.
+    for line in [
+        "repository enable".to_owned(),
+        "repository enable not-a-uuid".to_owned(),
+        format!("repository enable {REPOSITORY} short"),
+        format!("repository disable {REPOSITORY} short"),
+        "repository show".to_owned(),
+        format!("repository show {REPOSITORY} extra"),
+        format!("repository show --key k {REPOSITORY}"),
+    ] {
+        let ran = cli(&format!("{line} {base}"));
+        assert_eq!(ran.exit, Exit::Failed, "{line}: {}", ran.err);
+    }
+    assert_eq!(api.requests.lock().expect("lock").len(), 3);
+}
+
+#[test]
+fn enabling_without_a_map_has_a_plain_refusal_and_exit_code_2() {
+    let api = fake(vec![(409, r#"{"error":"project_map_not_attested"}"#)]);
+    let file = token_file(0o600);
+    let ran = cli(&format!(
+        "repository enable --api http://{} --token-file {} {REPOSITORY}",
+        api.addr,
+        file.display()
+    ));
+    assert_eq!(ran.exit, Exit::Refused, "{}", ran.err);
+    assert!(
+        ran.err.contains("no project map that a person attested")
+            && ran.err.contains("confirm-map"),
+        "{}",
+        ran.err
+    );
+    assert!(ran.out.is_empty(), "{}", ran.out);
+}

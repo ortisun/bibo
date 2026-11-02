@@ -42,6 +42,66 @@ use std::num::NonZeroU32;
 
 use crate::clock::SequentialIdGenerator;
 
+/// A repository for a test that runs against a real database, written as SQL for the table owner.
+///
+/// The table refuses a repository that is enabled without a project map, for every role. So a
+/// fixture that wants a repository which takes work has to do what a person does: have somebody
+/// attest the map. [`SeededRepository::sql`] writes that person (a human principal, one for each
+/// tenant, with a GitHub user id no test uses) and the repository, enabled, with a map commit
+/// that names the person. It is the one place the fixtures of the other crates get this from, so
+/// they cannot drift apart. A test of the registration path itself does not use it: it registers
+/// through the API or the store and attests the map there.
+#[derive(Debug, Clone, Copy)]
+pub struct SeededRepository<'a> {
+    /// The tenant, as a hyphenated UUID.
+    pub tenant: &'a str,
+    /// The repository, as a hyphenated UUID.
+    pub id: &'a str,
+    /// The GitHub App installation.
+    pub installation: u64,
+    /// GitHub's numeric repository id.
+    pub github_repository: u64,
+    /// `owner/name`.
+    pub full_name: &'a str,
+    /// The default branch.
+    pub default_branch: &'a str,
+    /// The autonomy ceiling an administrator set: `L0` to `L3`.
+    pub autonomy_ceiling: &'a str,
+}
+
+impl SeededRepository<'_> {
+    /// The GitHub user id of the person who attests the map in a fixture.
+    pub const ATTESTOR_GITHUB_USER: u64 = 4_000_000_001;
+
+    /// The commit a fixture attests.
+    pub const MAP_COMMIT: &'static str = "0123456789abcdef0123456789abcdef01234567";
+
+    /// Two statements: the attesting person (once for each tenant) and the enabled repository.
+    #[must_use]
+    pub fn sql(&self) -> String {
+        let tenant = self.tenant;
+        let attestor = format!("md5('map-attestor-{tenant}')::uuid");
+        format!(
+            "INSERT INTO principals (tenant_id, id, kind, github_user_id, login) \
+               VALUES ('{tenant}', {attestor}, 'human', {user}, 'map-attestor') \
+               ON CONFLICT (tenant_id, id) DO NOTHING; \
+             INSERT INTO repositories (tenant_id, id, github_installation_id, github_repository_id, \
+                    full_name, default_branch, autonomy_ceiling, enabled, project_map_commit, \
+                    project_map_attested_by_principal_id) \
+               VALUES ('{tenant}', '{id}', {installation}, {github}, '{full_name}', '{branch}', \
+                    '{ceiling}', true, '{commit}', {attestor});",
+            user = Self::ATTESTOR_GITHUB_USER,
+            id = self.id,
+            installation = self.installation,
+            github = self.github_repository,
+            full_name = self.full_name,
+            branch = self.default_branch,
+            ceiling = self.autonomy_ceiling,
+            commit = Self::MAP_COMMIT,
+        )
+    }
+}
+
 /// Typed identifiers from a deterministic generator.
 #[derive(Debug, Default)]
 pub struct Ids {

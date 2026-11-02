@@ -72,7 +72,7 @@ pub fn refusal(status: u16, body: &Value) -> String {
             "the token was not accepted (missing, expired, revoked or for another audience)"
         }
         "forbidden" => "you are not permitted to do this",
-        "not_found" => "there is no such job, stage run or route for you",
+        "not_found" => "there is no such job, stage run, repository or route for you",
         "bad_request" => "the request is not valid",
         "conflict" => {
             "this conflicts with a request already recorded; use another key or the same request"
@@ -82,6 +82,9 @@ pub fn refusal(status: u16, body: &Value) -> String {
         "request_timeout" => "the request was too slow",
         "rate_limited" => "too many requests; try again in a minute",
         "unavailable" => "the service cannot answer now; try again later",
+        "project_map_not_attested" => {
+            "the repository has no project map that a person attested; run repository confirm-map first"
+        }
         _ => "the API refused the request",
     };
     match field {
@@ -268,6 +271,72 @@ pub fn submitted(body: &Value, key: &str) -> String {
         },
         text(body, "job_id"),
         text(body, "status"),
+    )
+}
+
+/// The text a person reads about a repository's project map. It says what the record is: a
+/// person's statement, which the engine did not check.
+fn project_map_line(body: &Value) -> String {
+    match body.get("project_map") {
+        Some(map) if map.is_object() => format!(
+            "  Project map:        commit {} attested by {} at {}. This is a person's statement; the engine did not read the repository.\n",
+            text(map, "commit"),
+            text(map, "attested_by"),
+            text(map, "attested_at"),
+        ),
+        _ => {
+            "  Project map:        not attested yet. The repository cannot be enabled.\n".to_owned()
+        }
+    }
+}
+
+/// One repository.
+#[must_use]
+pub fn repository(body: &Value) -> String {
+    let flag = |key: &str| {
+        if body.get(key).and_then(Value::as_bool).unwrap_or(false) {
+            "yes"
+        } else {
+            "no"
+        }
+    };
+    format!(
+        "Repository {}\n  Name:               {}\n  Default branch:     {}\n  GitHub installation {}, GitHub repository id {}\n  Enabled:            {}\n  Autonomy ceiling:   {} (protection preflight passed: {})\n  Version:            {}\n{}",
+        text(body, "repository_id"),
+        text(body, "full_name"),
+        text(body, "default_branch"),
+        body.get("github_installation_id")
+            .and_then(Value::as_u64)
+            .unwrap_or(0),
+        body.get("github_repository_id")
+            .and_then(Value::as_u64)
+            .unwrap_or(0),
+        flag("enabled"),
+        text(body, "autonomy_ceiling"),
+        flag("protection_preflight_passed"),
+        body.get("version").and_then(Value::as_u64).unwrap_or(0),
+        project_map_line(body),
+    )
+}
+
+/// What a change to a repository did, followed by the repository.
+#[must_use]
+pub fn repository_changed(body: &Value, key: &str, done: &str) -> String {
+    let did_change = body
+        .get("changed")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let repository_body = body.get("repository").unwrap_or(&Value::Null);
+    let lead = if did_change {
+        format!("The repository is {done}.")
+    } else {
+        format!(
+            "This key was used before: the repository was {done} then, and nothing changed now."
+        )
+    };
+    format!(
+        "{lead}\n{}Idempotency key: {key} (repeat the command with --key {key} to retry safely).\n",
+        repository(repository_body)
     )
 }
 

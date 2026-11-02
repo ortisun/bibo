@@ -10,6 +10,7 @@
     { "name": "health" },
     { "name": "jobs" },
     { "name": "decisions" },
+    { "name": "repositories" },
     { "name": "webhooks" },
     { "name": "contract" }
   ],
@@ -234,6 +235,142 @@
         }
       }
     },
+    "/v1/repositories": {
+      "post": {
+        "operationId": "registerRepository",
+        "tags": ["repositories"],
+        "summary": "Registers a repository of the caller's tenant. It starts disabled, at autonomy level L0, with no project map.",
+        "description": "Needs the designation that the action register_repository names in policies/approval.yaml (the operator). The engine holds no GitHub credential and does not look at the repository: the installation, the GitHub repository id and the name are what the person says they are. A GitHub repository belongs to one registration in the whole factory, so a second registration of it is a conflict. A repeat of the same Idempotency-Key with the same request finds the first repository with 200; the same key with a different request is a conflict. The change and its audit record are written in one transaction.",
+        "security": [{ "bearerToken": [] }],
+        "parameters": [{ "$ref": "#/components/parameters/IdempotencyKey" }],
+        "requestBody": {
+          "required": true,
+          "content": { "application/json": { "schema": { "$ref": "#/components/schemas/RegisterRepository" } } }
+        },
+        "responses": {
+          "201": { "description": "A new repository, disabled.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/RepositoryChanged" } } } },
+          "200": { "description": "The repository this key registered before.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/RepositoryChanged" } } } },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "408": { "$ref": "#/components/responses/RequestTimeout" },
+          "409": { "$ref": "#/components/responses/Conflict" },
+          "413": { "$ref": "#/components/responses/PayloadTooLarge" },
+          "415": { "$ref": "#/components/responses/UnsupportedMediaType" },
+          "429": { "$ref": "#/components/responses/RateLimited" },
+          "503": { "$ref": "#/components/responses/Unavailable" }
+        }
+      }
+    },
+    "/v1/repositories/{repository_id}": {
+      "get": {
+        "operationId": "getRepository",
+        "tags": ["repositories"],
+        "summary": "One repository of the caller's tenant: whether it is enabled and what a person attested about its project map.",
+        "description": "A repository of another tenant and a repository that does not exist have the same answer. The project map is an attestation by a person. The engine did not read the repository, and the answer says so.",
+        "security": [{ "bearerToken": [] }],
+        "parameters": [{ "$ref": "#/components/parameters/RepositoryId" }],
+        "responses": {
+          "200": { "description": "The repository.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Repository" } } } },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "429": { "$ref": "#/components/responses/RateLimited" },
+          "503": { "$ref": "#/components/responses/Unavailable" }
+        }
+      }
+    },
+    "/v1/repositories/{repository_id}/project-map": {
+      "post": {
+        "operationId": "attestProjectMap",
+        "tags": ["repositories"],
+        "summary": "Records that the caller attests the project map: the commit of the default branch that holds it.",
+        "description": "Needs the designation that the action confirm_project_map names (the operator). This is an ATTESTATION BY A PERSON and not a verification: the engine holds no GitHub credential, does not read the repository and does not check that the commit exists or that the map is good. It records the commit, the person, the reason and the time. A later attestation replaces the earlier one. A repeat of the same Idempotency-Key with the same request changes nothing.",
+        "security": [{ "bearerToken": [] }],
+        "parameters": [
+          { "$ref": "#/components/parameters/RepositoryId" },
+          { "$ref": "#/components/parameters/IdempotencyKey" }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": { "application/json": { "schema": { "$ref": "#/components/schemas/AttestProjectMap" } } }
+        },
+        "responses": {
+          "200": { "description": "The repository with the new attestation.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/RepositoryChanged" } } } },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "408": { "$ref": "#/components/responses/RequestTimeout" },
+          "409": { "$ref": "#/components/responses/Conflict" },
+          "413": { "$ref": "#/components/responses/PayloadTooLarge" },
+          "415": { "$ref": "#/components/responses/UnsupportedMediaType" },
+          "429": { "$ref": "#/components/responses/RateLimited" },
+          "503": { "$ref": "#/components/responses/Unavailable" }
+        }
+      }
+    },
+    "/v1/repositories/{repository_id}/enable": {
+      "post": {
+        "operationId": "enableRepository",
+        "tags": ["repositories"],
+        "summary": "Lets the repository take tickets. It needs a project map that a person attested.",
+        "description": "Needs the designation that the action enable_repository names (the approver). A repository with no attested project map is refused with 409 and the code project_map_not_attested; the database refuses the same change for every role. A repeat of the same Idempotency-Key with the same request changes nothing.",
+        "security": [{ "bearerToken": [] }],
+        "parameters": [
+          { "$ref": "#/components/parameters/RepositoryId" },
+          { "$ref": "#/components/parameters/IdempotencyKey" }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ChangeRepository" } } }
+        },
+        "responses": {
+          "200": { "description": "The repository, enabled.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/RepositoryChanged" } } } },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "408": { "$ref": "#/components/responses/RequestTimeout" },
+          "409": { "$ref": "#/components/responses/Conflict" },
+          "413": { "$ref": "#/components/responses/PayloadTooLarge" },
+          "415": { "$ref": "#/components/responses/UnsupportedMediaType" },
+          "429": { "$ref": "#/components/responses/RateLimited" },
+          "503": { "$ref": "#/components/responses/Unavailable" }
+        }
+      }
+    },
+    "/v1/repositories/{repository_id}/disable": {
+      "post": {
+        "operationId": "disableRepository",
+        "tags": ["repositories"],
+        "summary": "Stops the repository from taking tickets: its webhooks are dropped and no job can be submitted for it.",
+        "description": "Needs the designation that the action disable_repository names (the operator). It works with or without a project map. Jobs that already exist are not touched. A repeat of the same Idempotency-Key with the same request changes nothing.",
+        "security": [{ "bearerToken": [] }],
+        "parameters": [
+          { "$ref": "#/components/parameters/RepositoryId" },
+          { "$ref": "#/components/parameters/IdempotencyKey" }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ChangeRepository" } } }
+        },
+        "responses": {
+          "200": { "description": "The repository, disabled.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/RepositoryChanged" } } } },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "408": { "$ref": "#/components/responses/RequestTimeout" },
+          "409": { "$ref": "#/components/responses/Conflict" },
+          "413": { "$ref": "#/components/responses/PayloadTooLarge" },
+          "415": { "$ref": "#/components/responses/UnsupportedMediaType" },
+          "429": { "$ref": "#/components/responses/RateLimited" },
+          "503": { "$ref": "#/components/responses/Unavailable" }
+        }
+      }
+    },
     "/v1/webhooks/github": {
       "post": {
         "operationId": "receiveGithubWebhook",
@@ -276,6 +413,7 @@
     },
     "parameters": {
       "JobId": { "name": "job_id", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } },
+      "RepositoryId": { "name": "repository_id", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } },
       "IdempotencyKey": {
         "name": "Idempotency-Key",
         "in": "header",
@@ -302,7 +440,7 @@
         "required": ["error"],
         "additionalProperties": false,
         "properties": {
-          "error": { "type": "string", "enum": ["bad_request", "unauthorized", "forbidden", "not_found", "method_not_allowed", "conflict", "payload_too_large", "unsupported_media_type", "request_timeout", "rate_limited", "unavailable"] }
+          "error": { "type": "string", "enum": ["bad_request", "unauthorized", "forbidden", "not_found", "method_not_allowed", "conflict", "payload_too_large", "unsupported_media_type", "request_timeout", "rate_limited", "unavailable", "project_map_not_attested"] }
         }
       },
       "FieldError": {
@@ -518,6 +656,67 @@
           "decision_id": { "type": "string", "format": "uuid" },
           "status": { "type": "string", "enum": ["recorded"] },
           "applied": { "type": "boolean", "description": "False: the engine has not applied it yet." }
+        }
+      },
+      "RegisterRepository": {
+        "type": "object",
+        "required": ["installation_id", "github_repository_id", "full_name", "default_branch"],
+        "additionalProperties": false,
+        "properties": {
+          "installation_id": { "type": "integer", "minimum": 1, "description": "The GitHub App installation that covers the repository." },
+          "github_repository_id": { "type": "integer", "minimum": 1, "description": "GitHub's numeric id of the repository." },
+          "full_name": { "type": "string", "pattern": "^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$", "maxLength": 140, "description": "owner/name." },
+          "default_branch": { "type": "string", "minLength": 1, "maxLength": 255 }
+        }
+      },
+      "AttestProjectMap": {
+        "type": "object",
+        "required": ["commit", "reason"],
+        "additionalProperties": false,
+        "properties": {
+          "commit": { "type": "string", "pattern": "^[0-9a-f]{40}$", "description": "The commit of the default branch that holds the project map. 40 lowercase hexadecimal characters." },
+          "reason": { "type": "string", "minLength": 10, "maxLength": 500, "description": "What the person did to be able to say the map is right: for example, that they read the map files in the merged pull request." }
+        }
+      },
+      "ChangeRepository": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "reason": { "type": "string", "minLength": 10, "maxLength": 500 }
+        }
+      },
+      "ProjectMapAttestation": {
+        "type": "object",
+        "required": ["commit", "attested_by", "attested_at", "verified_by_engine"],
+        "properties": {
+          "commit": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+          "attested_by": { "type": "string", "format": "uuid", "description": "The principal of the person who attested." },
+          "attested_at": { "type": "string", "description": "The time the database recorded the attestation." },
+          "verified_by_engine": { "type": "boolean", "enum": [false], "description": "Always false. The engine holds no GitHub credential and did not read the repository." }
+        }
+      },
+      "Repository": {
+        "type": "object",
+        "required": ["repository_id", "full_name", "default_branch", "github_installation_id", "github_repository_id", "enabled", "protection_preflight_passed", "autonomy_ceiling", "version", "project_map"],
+        "properties": {
+          "repository_id": { "type": "string", "format": "uuid" },
+          "full_name": { "type": "string" },
+          "default_branch": { "type": "string" },
+          "github_installation_id": { "type": "integer" },
+          "github_repository_id": { "type": "integer" },
+          "enabled": { "type": "boolean" },
+          "protection_preflight_passed": { "type": "boolean" },
+          "autonomy_ceiling": { "type": "string", "enum": ["L0", "L1", "L2", "L3"] },
+          "version": { "type": "integer", "minimum": 1 },
+          "project_map": { "nullable": true, "allOf": [{ "$ref": "#/components/schemas/ProjectMapAttestation" }] }
+        }
+      },
+      "RepositoryChanged": {
+        "type": "object",
+        "required": ["repository", "changed"],
+        "properties": {
+          "repository": { "$ref": "#/components/schemas/Repository" },
+          "changed": { "type": "boolean", "description": "False when the Idempotency-Key was used before: the earlier change was made, and this request changed nothing." }
         }
       },
       "WebhookAccepted": {

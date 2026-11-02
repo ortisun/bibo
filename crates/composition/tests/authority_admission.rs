@@ -15,6 +15,7 @@ use factory_composition::startup::load_policy;
 use factory_domain::ids::RepositoryId;
 use factory_domain::state::JobStatus;
 use factory_ports::clock::IdGenerator;
+use factory_testkit::fixtures::SeededRepository;
 use factory_workflow::commands::Authority;
 use factory_workflow::engine::{Admission, Engine};
 use support::pg_world;
@@ -53,11 +54,18 @@ async fn the_facts_about_the_repository_are_read_from_the_repository() {
 
     // A second repository of the same tenant.
     let second = RepositoryId::from_uuid(world.ids.new_uuid());
-    db.run(&format!(
-        "INSERT INTO repositories (tenant_id, id, github_installation_id, github_repository_id, full_name, default_branch) \
-         VALUES ('{tenant_text}', '{}', 1000, 2999, 'org/repo-second', 'main');",
-        second.as_uuid()
-    ))
+    db.run(
+        &SeededRepository {
+            tenant: &tenant_text.to_string(),
+            id: &second.as_uuid().to_string(),
+            installation: 1000,
+            github_repository: 2999,
+            full_name: "org/repo-second",
+            default_branch: "main",
+            autonomy_ceiling: "L0",
+        }
+        .sql(),
+    )
     .await;
 
     // 1. Registered, enabled, no preflight yet: the safe side.
@@ -204,12 +212,18 @@ async fn a_requester_narrowed_to_one_repository_is_not_admitted_on_another() {
     );
     let first = world.repository;
     let second = RepositoryId::from_uuid(world.ids.new_uuid());
-    db.run(&format!(
-        "INSERT INTO repositories (tenant_id, id, github_installation_id, github_repository_id, full_name, default_branch) \
-         VALUES ('{}', '{}', 1000, 2999, 'org/repo-second', 'main');",
-        tenant.as_uuid(),
-        second.as_uuid()
-    ))
+    db.run(
+        &SeededRepository {
+            tenant: &tenant.as_uuid().to_string(),
+            id: &second.as_uuid().to_string(),
+            installation: 1000,
+            github_repository: 2999,
+            full_name: "org/repo-second",
+            default_branch: "main",
+            autonomy_ceiling: "L0",
+        }
+        .sql(),
+    )
     .await;
     let listed = |repository: RepositoryId| {
         let authority = &authority;

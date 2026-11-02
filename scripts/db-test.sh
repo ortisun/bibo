@@ -39,7 +39,7 @@ DIESEL_CONFIG="$ROOT/crates/storage/diesel.toml"
 SCHEMA_RS="$ROOT/crates/storage/src/schema.rs"
 STATE_MACHINE="$ROOT/docs/architecture/state-machine.json"
 
-SUITES="migrations statuses ledger tenancy rls terminal_rows plans audit webhook_delivery lease outbox approvals tokens privileges api_privileges contracts store_model compat"
+SUITES="migrations statuses ledger tenancy rls terminal_rows plans audit webhook_delivery lease outbox approvals tokens privileges api_privileges repository_map contracts store_model compat"
 
 RUN_ID="$$_$(date +%s)"
 WORK=""
@@ -103,6 +103,9 @@ tokens           API tokens are stored hashed, expire, are audience bound and ca
 privileges       the application role has exactly the grants the design lists
 api_privileges   the group of the API login (factory_api_app) holds only what the API uses: it cannot insert a token,
                  a principal, an approval, a ledger or outbox row, and it works only on the tenant it names
+repository_map  a repository cannot be enabled without a project map commit, for any role; the commit is 40 lowercase hex
+                 characters; the attestor is an active human of the tenant and the database stamps the time; the API login
+                 may register a repository and change four columns of it, in its own tenant only
 contracts        the rows can carry the fields the domain-event and evidence-ledger-entry schemas require
 store_model      the tables carry what the Store port of ports v1.1 needs and the rules it states are rules of the data:
                  gate record, attestation, task nodes and graph, ledger head; the recipes of the operations that
@@ -1227,6 +1230,8 @@ suite_tokens() { simple_suite tokens tokens.sql; }
 suite_privileges() { simple_suite privileges privileges.sql; }
 
 suite_api_privileges() { simple_suite api_privileges api_privileges.sql; }
+
+suite_repository_map() { simple_suite repository_map repository_map.sql; }
 
 suite_approvals() { simple_suite approvals approvals.sql; }
 

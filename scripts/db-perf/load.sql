@@ -105,9 +105,13 @@ SELECT id, perf.uid('pri', idx * 10 + 1), 'human', 700000 + idx, 'person' || idx
 INSERT INTO principals (tenant_id, id, kind)
 SELECT id, perf.uid('pri', idx * 10 + 2), 'service' FROM perf.tenant_plan;
 
-INSERT INTO repositories (tenant_id, id, github_installation_id, github_repository_id, full_name, default_branch)
+-- Enabled, with a project map attested by the first person of the tenant. The table refuses an enabled repository
+-- without a map (migration 2026-11-02-002400), and the hot query of the webhook binding looks for enabled ones.
+INSERT INTO repositories (tenant_id, id, github_installation_id, github_repository_id, full_name, default_branch,
+                          enabled, project_map_commit, project_map_attested_by_principal_id)
 SELECT t.id, perf.uid('repo', t.idx * 1000000 + k), 9000 + t.idx, 100000 + t.idx * 100000 + k,
-       'org' || t.idx || '/repo-' || k, 'main'
+       'org' || t.idx || '/repo-' || k, 'main',
+       true, repeat('a', 40), perf.uid('pri', t.idx * 10 + 1)
   FROM perf.tenant_plan t, LATERAL generate_series(1, t.repos) AS k;
 
 -- ---------------------------------------------------------------------------------------------

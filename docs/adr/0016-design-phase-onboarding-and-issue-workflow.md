@@ -114,3 +114,28 @@ These are the engine changes the decision needs. None is started. Each changes t
 4. **Configuration.** `FACTORY_BOT_LOGIN` for the Action, taken from the App's slug.
 
 Open question for the architect: should a board (GitHub Projects) mirror the labels? It reads well and needs a permission the App does not have.
+
+## Revision note (2026-11-02): item 1 of "What is not built" is built
+
+Item 1, registration and the map gate, is built. Items 2, 3 and 4 are not. The status of this record does not change: it is still pending confirmation by the architect, and the roles below are the engineer's default.
+
+**What exists now.**
+- Migration `2026-11-02-002400_repository_project_map`: the columns `project_map_commit`, `project_map_attested_by_principal_id` and `project_map_attested_at` on `repositories`, a `CHECK` that a repository cannot be enabled without a map commit (it holds for every role, the table owner included), `enabled` defaulting to false, and a trigger that stamps the time from the database clock. Repositories that were enabled before it are switched off, because none had a map.
+- Store methods `register_repository`, `attest_project_map`, `set_repository_enabled` and `find_audit`, in the fake and in PostgreSQL, under one contract suite.
+- Five routes under `/v1/repositories` and the command `factory-cli repository register|confirm-map|enable|disable|show`. Each change writes its audit record in the same transaction, and a retried idempotency key repeats nothing.
+- Four rows in the `actions` table of `policies/approval.yaml`: the operator registers, confirms the map and disables, and the approver enables. They are pending confirmation by the architect.
+- Step 8 of the [onboarding guide](../guides/onboarding.md) now gives the commands.
+
+**What the attestation is.** A statement by a person. The engine holds no GitHub credential, so it does not read the repository and cannot check that the commit exists, that it is on the default branch or that the map is good. It records who said so, when, and why. Nothing in the code, the answers or the documents says otherwise.
+
+**Evidence.** All of it on 2026-11-02, on PostgreSQL 18.6 and one laptop, with no live GitHub and no Docker.
+- `scripts/db-test.sh` ran all 20 suites and 1193 checks green, including the new suite `repository_map` (79 checks, with controls that switch each rule off). After the last change to a grant, the 19 suites other than `lease` passed again. `lease` is a timing test and failed while the laptop was heavily loaded; it failed in the same way with the new migration removed.
+- The shared Store contract suite passes against the fake and against PostgreSQL with 8 new checks, and each of 5 new deliberate defects of the fake is caught by the check named for it.
+- `apps/api/tests/repositories.rs` has 8 tests and `apps/cli/tests/api_calls.rs` 4 new ones. Breaking the role check, the narrowing, the replay check or the role of `enable` makes a named test fail. The typed answer for an enable without a map is a second guard behind the store and the table, so removing it alone changes no test.
+- The run of the crates the change touches (2065 tests) passed 2063 and skipped 30. The two failures are not caused by this change: one needs a Docker image that is not on the machine, and the other (`composed_start`, the worker stops on `SIGTERM` after 30 s) fails in the same way on the base commit.
+
+**For the architect.**
+1. Are these the right roles, and should the person who confirms the map differ from the one who enables? Today one person who holds both designations can do the whole path.
+2. The login of the API could write nothing to `repositories` before. It now holds column grants (insert of six columns, update of four). Whoever holds that database credential can enable a repository that has a map commit and write the matching audit row. The migration states this. A narrower design would be a function owned by a separate role, at the cost of more machinery.
+3. Registration trusts the operator. A GitHub repository can be registered once in the whole factory, so a wrong or hostile registration blocks the real owner. With one tenant that is harmless. With several, the installation needs a binding to the tenant that the engine can check.
+4. There is no route that lists repositories. `show` needs the identifier that `register` printed.

@@ -235,6 +235,14 @@ fn check(name: Option<&str>) -> StoreError {
         | "outbox_aggregate_belongs_to_job"
         | "outbox_aggregate_has_reached_version" => rule(ConstraintRule::EventAggregateMismatch),
         "audit_events_stage_run_needs_job" => rule(ConstraintRule::TextBounds),
+        // The project map of a repository: enabled without a commit, a commit that is not 40
+        // lowercase hexadecimal characters, a half-filled attestation, or an attestor who is not an
+        // active human of the tenant. The storage statements check each one first; these are the
+        // backstop of the table.
+        "repositories_enabled_needs_project_map"
+        | "repositories_project_map_commit_check"
+        | "repositories_project_map_attestation_complete"
+        | "repositories_map_attestor_is_an_active_human" => rule(ConstraintRule::ProjectMapRule),
         other if other.ends_with("_check") && TEXT_COLUMNS.iter().any(|c| other.contains(c)) => {
             rule(ConstraintRule::TextBounds)
         }

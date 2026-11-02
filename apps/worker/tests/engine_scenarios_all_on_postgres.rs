@@ -53,6 +53,7 @@ mod support {
     use factory_storage::artifact_fs::LocalFsArtifactStore;
     use factory_storage::pg::{PgStore, PgStoreConfig, PoolSettings, TenantLogin};
     use factory_testkit::clock::FakeClock;
+    use factory_testkit::fixtures::SeededRepository;
     use factory_workflow::engine::EngineConfig;
     use uuid::Uuid;
 
@@ -259,13 +260,21 @@ mod support {
         async fn seed_tenant(&self, tenant: TenantId) -> RepositoryId {
             let id = tenant.as_uuid();
             let repository = Uuid::from_u128(id.as_u128() ^ 0x5eed);
+            let repository_sql = SeededRepository {
+                tenant: &id.to_string(),
+                id: &repository.to_string(),
+                installation: 1000,
+                github_repository: 2000,
+                full_name: "example-org/fixture",
+                default_branch: "main",
+                autonomy_ceiling: "L0",
+            }
+            .sql();
             self.db
                 .run(&format!(
                     "INSERT INTO tenants (id, slug, display_name) \
                      VALUES ('{id}', 'scenario-{}', 'Scenario tenant'); \
-                     INSERT INTO repositories (tenant_id, id, github_installation_id, \
-                            github_repository_id, full_name, default_branch) \
-                     VALUES ('{id}', '{repository}', 1000, 2000, 'example-org/fixture', 'main');",
+                     {repository_sql}",
                     &id.simple().to_string()[..12]
                 ))
                 .await;

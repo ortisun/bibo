@@ -40,6 +40,7 @@ The address of the API is the `--api` option or the `FACTORY_API_URL` environmen
 | `factory-cli approve-project-build-code` | `--api`, `--token-file`, `--key`, `--stage-run` | `JOB PATH SHA256 reason...` | Approves one file of build code that the change itself adds, with the exact content the person read. |
 | `factory-cli approve-dependency` | `--api`, `--token-file`, `--key`, `--stage-run` | `JOB NAME VERSION [CHECKSUM] reason...` | Approves one new direct dependency that the validation stage is waiting on. |
 | `factory-cli approve-build-code` | `--api`, `--token-file`, `--key`, `--stage-run` | `JOB NAME VERSION [CHECKSUM] reason...` | Approves the build script or procedural macro of one package that the validation stage is waiting on. |
+| `factory-cli repository` | `--api`, `--token-file`, `--key`, `--installation`, `--github-repository`, `--name`, `--default-branch` | `register`, `confirm-map`, `enable`, `disable` or `show`, then its own arguments (see below) | Registers a repository, records that a person confirmed its project map, enables it, disables it, or shows it. The subcommands are in the table after the options. |
 | `factory-cli probe` | `--protected-checkout`, `--images-catalog`, `--profile` | none | Runs the start-up checks that need no credential and lists what cannot be checked. |
 
 `factory-cli help`, `factory-cli --help` and `factory-cli -h` print the usage text. With no command the usage goes to standard error and the exit code is 1.
@@ -59,8 +60,26 @@ The address of the API is the `--api` option or the `FACTORY_API_URL` environmen
 | `--protected-checkout` | The checkout of the protected configuration branch, for `probe`. |
 | `--images-catalog` | The sandbox image catalog, for `probe`. Without it `probe` reports the catalog as BLOCKED. |
 | `--profile` | `production`, `local` or `test`, for `probe`. |
+| `--installation` | With `repository register`: the number of the GitHub App installation that covers the repository. A positive whole number. |
+| `--github-repository` | With `repository register`: GitHub's numeric identifier of the repository. A positive whole number. One GitHub repository can be registered once in the whole factory. |
+| `--name` | With `repository register`: the repository's name, written `OWNER/NAME`. |
+| `--default-branch` | With `repository register`: the name of the default branch. Without it, `main`. |
 
 The identifiers `JOB` and `STAGE_RUN` are UUIDs. A word that is not a UUID is not sent.
+
+### The repository subcommands
+
+A repository takes tickets only after a person has registered it, confirmed its project map and enabled it. The [onboarding guide](../guides/onboarding.md) walks through the order. Each subcommand that changes something takes `--key`, and a retry with the same key and the same words repeats nothing.
+
+| Subcommand | Arguments | Who may run it | What it does |
+|---|---|---|---|
+| `register` | `--installation`, `--github-repository`, `--name`, optionally `--default-branch` | `operator` | Registers the repository. It starts disabled, at autonomy level `L0`, with no project map. Prints its identifier. |
+| `confirm-map` | `REPOSITORY COMMIT reason...` | `operator` | Records that the person attests that `COMMIT` (40 lowercase hexadecimal characters) of the default branch holds the project map. The reason has 10 to 500 characters. This is a statement by a person: the engine holds no GitHub credential, does not read the repository and does not check the commit. |
+| `enable` | `REPOSITORY [reason...]` | `approver` | Lets the repository take tickets. Refused with the code `project_map_not_attested` until a map was confirmed. |
+| `disable` | `REPOSITORY [reason...]` | `operator` | Stops the repository from taking tickets. Its webhooks are dropped and no job can be submitted for it. Existing jobs are not touched. |
+| `show` | `REPOSITORY` | any designation | Prints the repository: whether it is enabled, its autonomy ceiling, its version and the attestation of its map. |
+
+The `REPOSITORY` argument is the identifier that `register` printed. A reason on `enable` or `disable` is optional and, when given, has 10 to 500 characters. The role is a designation on the protected allowlist, read from the `actions` table of `policies/approval.yaml`: `register_repository`, `confirm_project_map`, `enable_repository` and `disable_repository`. These four are a default that is pending confirmation by the architect. See the architecture decision record (ADR) [0016](../adr/0016-design-phase-onboarding-and-issue-workflow.md).
 
 ### The words after the identifiers
 
@@ -175,7 +194,14 @@ The contract is [`apps/api/openapi.json`](../../apps/api/openapi.json). The serv
 | `GET /v1/jobs/{job_id}/gate-reports` | bearer token | any designation | The gate reports the engine wrote into the ledger of the job, at most 200: the stage, the gate, the outcome, the block code and the hash of each. 503 without an artifact root in the configuration. |
 | `GET /v1/jobs/{job_id}/artifacts/{sha256}` | bearer token | any designation | One stored document of the job, as an attachment of at most 4 MiB under `text/plain; charset=utf-8` or `application/octet-stream`, with `X-Content-Type-Options: nosniff`. 404 for a hash that is not one of the job's documents, and for another tenant's. 413 over the cap. |
 | `POST /v1/jobs/{job_id}/decisions` | bearer token | by verb | Records a decision of a person. Needs an `Idempotency-Key` header. |
+| `POST /v1/repositories` | bearer token | `operator` | Registers a repository. It starts disabled, at level `L0`, with no project map. Needs an `Idempotency-Key` header. 201 for a new repository, 200 for the one an earlier request with the same key made. 409 when the GitHub repository is already registered. |
+| `GET /v1/repositories/{repository_id}` | bearer token | any designation | One repository of the caller's tenant, with the attestation of its project map. Another tenant's repository has the answer of a missing one. |
+| `POST /v1/repositories/{repository_id}/project-map` | bearer token | `operator` | Records the commit that holds the project map and the reason. An attestation by a person: the engine does not read the repository. Needs an `Idempotency-Key` header. |
+| `POST /v1/repositories/{repository_id}/enable` | bearer token | `approver` | Enables the repository. 409 with the code `project_map_not_attested` until a map was attested. Needs an `Idempotency-Key` header. |
+| `POST /v1/repositories/{repository_id}/disable` | bearer token | `operator` | Disables the repository. Needs an `Idempotency-Key` header. |
 | `POST /v1/webhooks/github` | HMAC-SHA256 of the raw body | none | A GitHub delivery. Verified on the raw body before anything is parsed. |
+
+The change to a repository and its audit record are written in one transaction. A caller without the designation gets 403 with no reason, and the attempt is audited. The four actions are `register_repository`, `confirm_project_map`, `enable_repository` and `disable_repository` in the `actions` table of the approval policy.
 
 The fields of a decision request are `verb`, `stage_run_id`, `head`, `evidence`, `target`, `reason`, `package`, `version`, `checksum`, `path`, `digest` and `warning`. The OpenAPI document says which verb needs which field.
 
@@ -189,7 +215,7 @@ The fields of a decision request are `verb`, `stage_run_id`, `head`, `evidence`,
 | 403 | Known, and not permitted. The answer gives no reason. |
 | 404 | No such route or object. Another tenant's object has this answer too. |
 | 408, 413, 415 | The body was too slow, too large, or not `application/json`; or, for a download, the document is larger than 4 MiB. |
-| 409 | The request conflicts with a recorded one. |
+| 409 | The request conflicts with a recorded one. For a repository it also means that the GitHub repository is already registered, or, with the code `project_map_not_attested`, that a repository cannot be enabled before a person attested its project map. |
 | 429 | A rate limit is exceeded. A `Retry-After` header comes with it. |
 | 503 | The service cannot answer now. |
 

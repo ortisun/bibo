@@ -36,6 +36,11 @@ usage: factory-cli <command> [options]
   approve-project-build-code  --api URL --token-file FILE [--key K] [--stage-run ID] JOB PATH SHA256 reason...
   approve-dependency  --api URL --token-file FILE [--key K] [--stage-run ID] JOB NAME VERSION [CHECKSUM] reason...
   approve-build-code  --api URL --token-file FILE [--key K] [--stage-run ID] JOB NAME VERSION [CHECKSUM] reason...
+  repository register     --api URL --token-file FILE [--key K] --installation ID --github-repository ID --name OWNER/NAME [--default-branch BRANCH]
+  repository confirm-map  --api URL --token-file FILE [--key K] REPOSITORY COMMIT reason...
+  repository enable       --api URL --token-file FILE [--key K] REPOSITORY [reason...]
+  repository disable      --api URL --token-file FILE [--key K] REPOSITORY [reason...]
+  repository show         --api URL --token-file FILE REPOSITORY
   probe    --protected-checkout DIR [--images-catalog FILE] [--profile production|local|test]
 
 The address may also be set in FACTORY_API_URL. The token is read from a file, never from an argument
@@ -752,6 +757,214 @@ fn probe_command(args: &[String], ctx: &mut Context<'_>) -> Exit {
     result.exit
 }
 
+/// `repository`: register a repository, confirm its project map, enable it, disable it, or show it.
+///
+/// Confirming the map is a person's statement. The command says so in what it prints, and it sends
+/// the commit and the reason and nothing else: the engine holds no GitHub credential and does not
+/// read the repository.
+fn repository(
+    args: &[String],
+    env: &dyn Fn(&str) -> Option<String>,
+    ctx: &mut Context<'_>,
+) -> Exit {
+    let Some((subcommand, rest)) = args.split_first() else {
+        ctx.complain("repository needs one of register, confirm-map, enable, disable or show");
+        return Exit::Failed;
+    };
+    match subcommand.as_str() {
+        "register" => repository_register(rest, env, ctx),
+        "confirm-map" => repository_change(rest, env, ctx, RepositoryChange::ConfirmMap),
+        "enable" => repository_change(rest, env, ctx, RepositoryChange::Enable),
+        "disable" => repository_change(rest, env, ctx, RepositoryChange::Disable),
+        "show" => repository_show(rest, env, ctx),
+        other => {
+            ctx.complain(&format!(
+                "{other:?} is not a repository command; use register, confirm-map, enable, disable or show"
+            ));
+            Exit::Failed
+        }
+    }
+}
+
+fn repository_register(
+    args: &[String],
+    env: &dyn Fn(&str) -> Option<String>,
+    ctx: &mut Context<'_>,
+) -> Exit {
+    let allowed = [
+        "api",
+        "token-file",
+        "key",
+        "installation",
+        "github-repository",
+        "name",
+        "default-branch",
+    ];
+    let parsed = match split(args, &allowed) {
+        Ok(parsed) if parsed.positional.is_empty() => parsed,
+        Ok(_) => {
+            ctx.complain("repository register takes options only");
+            return Exit::Failed;
+        }
+        Err(why) => {
+            ctx.complain(&why);
+            return Exit::Failed;
+        }
+    };
+    let number = |option: &str| {
+        parsed
+            .options
+            .get(option)
+            .and_then(|text| text.parse::<u64>().ok())
+            .filter(|number| *number > 0)
+    };
+    let (Some(installation), Some(github_repository), Some(name)) = (
+        number("installation"),
+        number("github-repository"),
+        parsed.options.get("name"),
+    ) else {
+        ctx.complain(
+            "repository register needs --installation (the GitHub App installation id), --github-repository (GitHub's numeric id of the repository) and --name (OWNER/NAME); the two ids are positive whole numbers",
+        );
+        return Exit::Failed;
+    };
+    let branch = parsed
+        .options
+        .get("default-branch")
+        .map_or("main", String::as_str);
+    let body = json!({
+        "installation_id": installation,
+        "github_repository_id": github_repository,
+        "full_name": name,
+        "default_branch": branch,
+    });
+    let client = match client(&parsed.options, env, true, ctx) {
+        Ok(client) => client,
+        Err(exit) => return exit,
+    };
+    let key = idempotency_key(&parsed.options);
+    let shown = key.clone();
+    finish(
+        client.post("/v1/repositories", &key, &body),
+        ctx,
+        move |body| render::repository_changed(body, &shown, "registered"),
+    )
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum RepositoryChange {
+    ConfirmMap,
+    Enable,
+    Disable,
+}
+
+fn repository_change(
+    args: &[String],
+    env: &dyn Fn(&str) -> Option<String>,
+    ctx: &mut Context<'_>,
+    change: RepositoryChange,
+) -> Exit {
+    let parsed = match split(args, &["api", "token-file", "key"]) {
+        Ok(parsed) => parsed,
+        Err(why) => {
+            ctx.complain(&why);
+            return Exit::Failed;
+        }
+    };
+    let words = &parsed.positional;
+    let (path, body, done) = match change {
+        RepositoryChange::ConfirmMap => {
+            let (Some(id), Some(commit)) = (words.first(), words.get(1)) else {
+                ctx.complain(
+                    "repository confirm-map takes the repository id (a UUID), the commit that holds the project map, and then the reason you can say the map is right",
+                );
+                return Exit::Failed;
+            };
+            let reason = words[2..].join(" ");
+            if !is_uuid(id) || !is_commit(commit) {
+                ctx.complain(
+                    "the repository must be a UUID and the commit 40 lowercase hexadecimal characters",
+                );
+                return Exit::Failed;
+            }
+            // What the API would refuse for a short reason is refused here first, before a request.
+            if reason.chars().count() < MIN_REASON_CHARS {
+                ctx.complain("repository confirm-map needs a reason of at least 10 characters: say what you read to be able to attest the map");
+                return Exit::Failed;
+            }
+            (
+                format!("/v1/repositories/{id}/project-map"),
+                json!({"commit": commit, "reason": reason}),
+                "attested",
+            )
+        }
+        RepositoryChange::Enable | RepositoryChange::Disable => {
+            let enable = change == RepositoryChange::Enable;
+            let Some(id) = words.first().filter(|id| is_uuid(id)) else {
+                ctx.complain(
+                    "this command takes the repository id (a UUID), then an optional reason",
+                );
+                return Exit::Failed;
+            };
+            let reason = words[1..].join(" ");
+            let body = if reason.is_empty() {
+                json!({})
+            } else if reason.chars().count() < MIN_REASON_CHARS {
+                ctx.complain("a reason, when given, has at least 10 characters");
+                return Exit::Failed;
+            } else {
+                json!({"reason": reason})
+            };
+            (
+                format!(
+                    "/v1/repositories/{id}/{}",
+                    if enable { "enable" } else { "disable" }
+                ),
+                body,
+                if enable { "enabled" } else { "disabled" },
+            )
+        }
+    };
+    let client = match client(&parsed.options, env, true, ctx) {
+        Ok(client) => client,
+        Err(exit) => return exit,
+    };
+    let key = idempotency_key(&parsed.options);
+    let shown = key.clone();
+    finish(client.post(&path, &key, &body), ctx, move |body| {
+        render::repository_changed(body, &shown, done)
+    })
+}
+
+fn repository_show(
+    args: &[String],
+    env: &dyn Fn(&str) -> Option<String>,
+    ctx: &mut Context<'_>,
+) -> Exit {
+    let parsed = match split(args, &["api", "token-file"]) {
+        Ok(parsed) if parsed.positional.len() == 1 && is_uuid(&parsed.positional[0]) => parsed,
+        Ok(_) => {
+            ctx.complain("repository show takes one repository id (a UUID)");
+            return Exit::Failed;
+        }
+        Err(why) => {
+            ctx.complain(&why);
+            return Exit::Failed;
+        }
+    };
+    let client = match client(&parsed.options, env, true, ctx) {
+        Ok(client) => client,
+        Err(exit) => return exit,
+    };
+    let path = format!("/v1/repositories/{}", parsed.positional[0]);
+    finish(client.get(&path), ctx, render::repository)
+}
+
+/// A commit as the API takes it: 40 lowercase hexadecimal characters.
+fn is_commit(text: &str) -> bool {
+    text.len() == 40 && text.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
+}
+
 /// Runs one command line. `args` excludes the program name.
 pub fn run(
     args: &[String],
@@ -774,6 +987,7 @@ pub fn run(
         verb @ ("approve" | "reject" | "rework" | "pause" | "resume" | "cancel") => {
             decide(verb, rest, env, &mut ctx)
         }
+        "repository" => repository(rest, env, &mut ctx),
         "unblock" => unblock(rest, env, &mut ctx),
         "approve-project-build-code" => approve_project_build_code(rest, env, &mut ctx),
         "ack-translation-warning" => ack_translation_warning(rest, env, &mut ctx),

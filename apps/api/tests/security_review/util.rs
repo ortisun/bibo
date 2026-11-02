@@ -4,6 +4,7 @@
 use std::net::SocketAddr;
 use std::time::Duration;
 
+use factory_testkit::fixtures::SeededRepository;
 use serde_json::{Value, json};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
@@ -152,12 +153,18 @@ pub fn entry_of(tenant: &Tenant, person: &Person, designation: &str) -> String {
 pub async fn second_repository(env: &Env, tenant: &Tenant) -> String {
     let id = new_uuid();
     env.db
-        .run(&format!(
-            "INSERT INTO repositories (tenant_id, id, github_installation_id, github_repository_id, full_name, default_branch, autonomy_ceiling) \
-             VALUES ('{}', '{id}', {}, 6999, 'org/other-repo', 'main', 'L1')",
-            tenant.id.as_uuid(),
-            tenant.installation
-        ))
+        .run(
+            &SeededRepository {
+                tenant: &tenant.id.as_uuid().to_string(),
+                id: &id.to_string(),
+                installation: tenant.installation,
+                github_repository: 6999,
+                full_name: "org/other-repo",
+                default_branch: "main",
+                autonomy_ceiling: "L1",
+            }
+            .sql(),
+        )
         .await;
     id.to_string()
 }

@@ -42,6 +42,7 @@ use factory_ports::clock::{Clock, IdGenerator};
 use factory_ports::githost::WebhookVerifier;
 use factory_ports::store::Store;
 use factory_storage::pg::{DatabaseUrl, PgStore, PgStoreConfig, PoolSettings, TenantLogin};
+use factory_testkit::fixtures::SeededRepository;
 use factory_workflow::commands::Authority;
 use serde_json::Value;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -412,13 +413,20 @@ async fn seed_tenant(db: &TestDb, position: usize, base: u64) -> Tenant {
     let installation = 5000 + position as u64;
     let github_repository = 6000 + position as u64;
     let full_name = format!("org/repo-{position}");
+    let repository_sql = SeededRepository {
+        tenant: &id.as_uuid().to_string(),
+        id: &repository.as_uuid().to_string(),
+        installation,
+        github_repository,
+        full_name: &full_name,
+        default_branch: "main",
+        autonomy_ceiling: "L1",
+    }
+    .sql();
     db.run(&format!(
         "INSERT INTO tenants (id, slug, display_name) VALUES ('{}', '{slug}', 'Tenant {position}'); \
-         INSERT INTO repositories (tenant_id, id, github_installation_id, github_repository_id, full_name, default_branch, autonomy_ceiling) \
-         VALUES ('{}', '{}', {installation}, {github_repository}, '{full_name}', 'main', 'L1');",
+         {repository_sql}",
         id.as_uuid(),
-        id.as_uuid(),
-        repository.as_uuid(),
     ))
     .await;
     Tenant {

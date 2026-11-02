@@ -651,7 +651,14 @@ BEGIN
   PERFORM dbtest.expect_eq('miss: a NULL hash and a NULL audience', dbtest.run_as($q$SELECT * FROM resolve_token(NULL, NULL)$q$, 'factory_resolver'), 'rows=0');
   PERFORM dbtest.expect_eq('miss: a hash of the wrong length', dbtest.run_as($q$SELECT * FROM resolve_token('\x00'::bytea, 'factory-api')$q$, 'factory_resolver'), 'rows=0');
 
-  -- Installation and repository.
+  -- Installation and repository. Since migration 2026-11-02-002400 a repository starts disabled, and it is
+  -- enabled only with a project map, so the two fixtures get one before the lookups are tried.
+  PERFORM dbtest.expect_eq('a registered repository with no project map is not found by its installation',
+    dbtest.run_as('SELECT * FROM resolve_installation(9001, 8001)', 'factory_resolver'), 'rows=0');
+  UPDATE repositories SET project_map_commit = repeat('a', 40), project_map_attested_by_principal_id = dbtest.u(1002),
+                          enabled = true, version = version + 1 WHERE tenant_id = dbtest.u(1);
+  UPDATE repositories SET project_map_commit = repeat('b', 40), project_map_attested_by_principal_id = dbtest.u(2002),
+                          enabled = true, version = version + 1 WHERE tenant_id = dbtest.u(2);
   PERFORM dbtest.expect_eq('resolve_installation returns the tenant and the repository for a registered pair',
     dbtest.run_as(format($q$SELECT 1 FROM resolve_installation(9001, 8001) WHERE tenant_id = %L AND repository_id = %L$q$, dbtest.u(1), dbtest.u(1001)), 'factory_resolver'), 'rows=1');
   PERFORM dbtest.expect_eq('it returns tenant 2 for the pair of tenant 2',

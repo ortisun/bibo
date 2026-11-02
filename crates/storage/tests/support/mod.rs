@@ -28,7 +28,7 @@ use factory_ports::store::{
     SystemScope, SystemTx, Tx, Version, WorkerId,
 };
 use factory_storage::pg::{PgStore, PgStoreConfig, PoolSettings, TenantLogin};
-use factory_testkit::fixtures::{Ids, cleared};
+use factory_testkit::fixtures::{Ids, SeededRepository, cleared};
 use uuid::Uuid;
 
 pub use server::{Login, TestDb, server};
@@ -444,10 +444,19 @@ pub async fn seed_tenant(db: &TestDb, tenant: TenantId, position: usize) {
     let repository = seeded_repository(tenant).as_uuid();
     let installation = i64::try_from(1000 + position).expect("small");
     let github_repository = i64::try_from(2000 + position).expect("small");
+    let repository_sql = SeededRepository {
+        tenant: &id.to_string(),
+        id: &repository.to_string(),
+        installation: u64::try_from(installation).expect("positive"),
+        github_repository: u64::try_from(github_repository).expect("positive"),
+        full_name: &format!("org/repo-{position}"),
+        default_branch: "main",
+        autonomy_ceiling: "L0",
+    }
+    .sql();
     db.run(&format!(
         "INSERT INTO tenants (id, slug, display_name) VALUES ('{id}', '{slug}', 'Tenant {position}'); \
-         INSERT INTO repositories (tenant_id, id, github_installation_id, github_repository_id, full_name, default_branch) \
-         VALUES ('{id}', '{repository}', {installation}, {github_repository}, 'org/repo-{position}', 'main');"
+         {repository_sql}"
     ))
     .await;
 }

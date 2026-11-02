@@ -474,6 +474,21 @@ async fn every_method_refuses_another_tenants_rows() {
         refused.clone(),
         "record_protection_preflight"
     );
+    as_b!(
+        tx => tx.attest_project_map(
+            scene.repository(scene.a),
+            Version::FIRST,
+            factory_ports::store::ProjectMapCommit::new(&"a".repeat(40)).expect("a commit"),
+            principal_a,
+        ),
+        refused.clone(),
+        "attest_project_map"
+    );
+    as_b!(
+        tx => tx.set_repository_enabled(scene.repository(scene.a), Version::FIRST, false),
+        refused.clone(),
+        "set_repository_enabled"
+    );
     as_b!(tx => tx.get_principal(principal_a), refused.clone(), "get_principal");
     as_b!(tx => tx.get_artifact_index(&hash), refused.clone(), "get_artifact_index");
     // Lookups by a number a tenant may not learn.

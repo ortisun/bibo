@@ -21,8 +21,17 @@ factory-cli ack-translation-warning  --api URL --token-file FILE [--key K] JOB S
 factory-cli approve-project-build-code  --api URL --token-file FILE [--key K] [--stage-run ID] JOB PATH SHA256 reason...
 factory-cli approve-dependency  --api URL --token-file FILE [--key K] [--stage-run ID] JOB NAME VERSION [CHECKSUM] reason...
 factory-cli approve-build-code  --api URL --token-file FILE [--key K] [--stage-run ID] JOB NAME VERSION [CHECKSUM] reason...
+factory-cli repository register     --api URL --token-file FILE [--key K] --installation ID --github-repository ID --name OWNER/NAME [--default-branch BRANCH]
+factory-cli repository confirm-map  --api URL --token-file FILE [--key K] REPOSITORY COMMIT reason...
+factory-cli repository enable       --api URL --token-file FILE [--key K] REPOSITORY [reason...]
+factory-cli repository disable      --api URL --token-file FILE [--key K] REPOSITORY [reason...]
+factory-cli repository show         --api URL --token-file FILE REPOSITORY
 factory-cli probe    --protected-checkout DIR [--images-catalog FILE] [--profile production|local|test]
 ```
+
+`repository confirm-map` records a statement by a person: the commit of the default branch that holds the project map. The
+engine holds no GitHub credential and does not read the repository, and the command prints that. A repository cannot be
+enabled until a map was confirmed. The [onboarding guide](../../docs/guides/onboarding.md) gives the order.
 
 The address may also be set in `FACTORY_API_URL`. The words after the ids are the grammar every channel shares
 (`factory_composition::commands`), so `approve` here and `/factory approve` in a pull request comment are read by the

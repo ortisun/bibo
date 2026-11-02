@@ -19,6 +19,13 @@ BEGIN
 END
 $$;
 
+-- One migration changes old rows on purpose: 2026-11-02-002400 switches off every repository that was enabled
+-- before a project map could be attested, because none of them has a map (it raises their version by one, and the
+-- database stamps a new updated_at). These three columns of `repositories` are not compared. upgrade_check.sql
+-- checks the change itself, so the exception is a check and not a gap. Every other column of the table, and
+-- every column of every other table, is still compared byte for byte.
+DELETE FROM dbtest.old_columns WHERE tbl = 'repositories' AND col IN ('enabled', 'version', 'updated_at');
+
 CREATE OR REPLACE FUNCTION dbtest.fingerprint() RETURNS TABLE (tbl text, row_count bigint, row_hash text) LANGUAGE plpgsql AS $$
 DECLARE
   t text;

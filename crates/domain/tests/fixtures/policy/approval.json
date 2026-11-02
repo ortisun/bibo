@@ -369,6 +369,55 @@
         "T-23"
       ],
       "when": "one decision for each open warning of the reviewer rule `translation-unfaithful` in the gate reports of the evidence the approver saw; approval of the stage is refused while one has none (guard G_APPROVER_AUTHORIZED, ADR 0009 item 17)"
+    },
+    {
+      "approver_roles": [
+        "operator"
+      ],
+      "id": "register_repository",
+      "min_level": "L0",
+      "requires": "human",
+      "threats": [
+        "T-24"
+      ],
+      "when": "a person who holds the operator designation registers a repository of the tenant; it starts disabled, at level L0, with no project map; the engine holds no GitHub credential and does not look at the repository, so the installation, the GitHub repository id and the name are what the person says they are. Pending confirmation by the architect (ADR 0016)"
+    },
+    {
+      "approver_roles": [
+        "operator"
+      ],
+      "id": "confirm_project_map",
+      "min_level": "L0",
+      "requires": "human",
+      "threats": [
+        "T-23"
+      ],
+      "when": "a person who holds the operator designation records the commit of the default branch that holds the project map, after reading the map that was merged by pull request; this is an attestation by a person and not a verification: the engine does not read the repository and does not check that the commit exists or that the map is good. Pending confirmation by the architect (ADR 0016)"
+    },
+    {
+      "approver_roles": [
+        "approver"
+      ],
+      "id": "enable_repository",
+      "min_level": "L0",
+      "requires": "human",
+      "threats": [
+        "T-23",
+        "T-24"
+      ],
+      "when": "a person who holds the approver designation lets a registered repository take tickets; refused until a project map commit was attested, and the database refuses the same change for every role. Pending confirmation by the architect (ADR 0016)"
+    },
+    {
+      "approver_roles": [
+        "operator"
+      ],
+      "id": "disable_repository",
+      "min_level": "L0",
+      "requires": "human",
+      "threats": [
+        "T-23"
+      ],
+      "when": "a person who holds the operator designation stops a repository from taking tickets: its webhooks are dropped and no job can be submitted for it; jobs that already exist are not touched. Pending confirmation by the architect (ADR 0016)"
     }
   ],
   "always_human": [
@@ -389,6 +438,10 @@
     "accept_subscription_login_exception",
     "acknowledge_documentation_warning",
     "unblock_blocked_stage_run",
+    "register_repository",
+    "confirm_project_map",
+    "enable_repository",
+    "disable_repository",
     "merge_to_default_branch_unless_L3_explicitly_enabled",
     "enable_auto_merge_for_a_repository",
     "any_deployment_or_release_publication",

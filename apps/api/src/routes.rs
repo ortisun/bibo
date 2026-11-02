@@ -41,7 +41,7 @@ use crate::answers::{Answer, ApiError, CORRELATION_HEADER, Reply, render};
 use crate::auth::{Caller, authenticate};
 use crate::limits::Key;
 use crate::state::ApiState;
-use crate::{decisions, health, jobs, openapi, reads, webhook};
+use crate::{decisions, health, jobs, openapi, reads, repositories, webhook};
 
 /// The TCP peer of a connection, put in the request by the server. Nothing else is ever used as
 /// the source address.
@@ -76,6 +76,16 @@ pub enum Op {
     Artifact,
     /// `POST /v1/jobs/{job_id}/decisions`.
     Decide,
+    /// `POST /v1/repositories`.
+    RegisterRepository,
+    /// `GET /v1/repositories/{repository_id}`.
+    GetRepository,
+    /// `POST /v1/repositories/{repository_id}/project-map`.
+    AttestProjectMap,
+    /// `POST /v1/repositories/{repository_id}/enable`.
+    EnableRepository,
+    /// `POST /v1/repositories/{repository_id}/disable`.
+    DisableRepository,
     /// `POST /v1/webhooks/github`.
     GithubWebhook,
 }
@@ -195,6 +205,46 @@ pub const ROUTES: &[RouteSpec] = &[
         path: "/v1/jobs/{job_id}/decisions",
         op: Op::Decide,
         operation_id: "decideJob",
+        auth: Auth::Token,
+        has_body: true,
+    },
+    RouteSpec {
+        method: "POST",
+        path: "/v1/repositories",
+        op: Op::RegisterRepository,
+        operation_id: "registerRepository",
+        auth: Auth::Token,
+        has_body: true,
+    },
+    RouteSpec {
+        method: "GET",
+        path: "/v1/repositories/{repository_id}",
+        op: Op::GetRepository,
+        operation_id: "getRepository",
+        auth: Auth::Token,
+        has_body: false,
+    },
+    RouteSpec {
+        method: "POST",
+        path: "/v1/repositories/{repository_id}/project-map",
+        op: Op::AttestProjectMap,
+        operation_id: "attestProjectMap",
+        auth: Auth::Token,
+        has_body: true,
+    },
+    RouteSpec {
+        method: "POST",
+        path: "/v1/repositories/{repository_id}/enable",
+        op: Op::EnableRepository,
+        operation_id: "enableRepository",
+        auth: Auth::Token,
+        has_body: true,
+    },
+    RouteSpec {
+        method: "POST",
+        path: "/v1/repositories/{repository_id}/disable",
+        op: Op::DisableRepository,
+        operation_id: "disableRepository",
         auth: Auth::Token,
         has_body: true,
     },
@@ -365,6 +415,19 @@ async fn run(
                 .instrument(job_span(&caller))
                 .await
         }
+        (Op::RegisterRepository, Some(caller)) => {
+            repositories::register(state, &caller, &parts.headers, &bytes).await
+        }
+        (Op::GetRepository, Some(caller)) => repositories::show(state, &caller, job_id).await,
+        (Op::AttestProjectMap, Some(caller)) => {
+            repositories::attest_map(state, &caller, job_id, &parts.headers, &bytes).await
+        }
+        (Op::EnableRepository, Some(caller)) => {
+            repositories::switch(state, &caller, job_id, &parts.headers, &bytes, true).await
+        }
+        (Op::DisableRepository, Some(caller)) => {
+            repositories::switch(state, &caller, job_id, &parts.headers, &bytes, false).await
+        }
         // A token route without a caller cannot happen: authentication ran first.
         (_, None) => Err(ApiError::Unauthorized),
     }
@@ -429,6 +492,10 @@ pub fn declared_statuses(op: Op) -> &'static [StatusCode] {
         | Op::GateReports
         | Op::Artifact => &[StatusCode::OK],
         Op::Decide => &[StatusCode::ACCEPTED],
+        Op::RegisterRepository => &[StatusCode::OK, StatusCode::CREATED],
+        Op::GetRepository | Op::AttestProjectMap | Op::EnableRepository | Op::DisableRepository => {
+            &[StatusCode::OK]
+        }
         Op::GithubWebhook => &[StatusCode::ACCEPTED],
     }
 }

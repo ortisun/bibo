@@ -26,7 +26,8 @@ use std::time::Duration;
 use async_trait::async_trait;
 use factory_domain::contracts::{ArtifactRef, DomainEvent, EvidenceLedgerEntry};
 use factory_domain::ids::{
-    ApprovalId, AttemptId, JobId, PrincipalId, RepositoryId, StageRunId, TaskNodeId, TenantId,
+    ApprovalId, AttemptId, AuditEventId, JobId, PrincipalId, RepositoryId, StageRunId, TaskNodeId,
+    TenantId,
 };
 use factory_domain::ledger::ChainHead;
 use factory_domain::scope::{PlatformScope, ResolvedPrincipal, ResolvedRepository, TenantScope};
@@ -149,10 +150,40 @@ pub enum StoreDefect {
     SkipsCommitMerge,
     /// `database_time` does not move.
     FrozenDatabaseTime,
+    /// `register_repository` makes the repository enabled, at level L1.
+    RegistersEnabled,
+    /// A repository with no project map can be enabled.
+    EnablesWithoutMap,
+    /// A service principal, or a person who is switched off, can attest a project map.
+    AcceptsAnyAttestor,
+    /// A GitHub repository that another registration holds can be registered again.
+    AllowsDuplicateGithubRepository,
+    /// A repository that is switched off is still found by its installation.
+    ResolvesDisabledRepository,
 }
 
 /// Each defect and the checks of `contracts::store` that must fail when the fake has it.
 pub const DEFECTS: &[(StoreDefect, &[&str])] = &[
+    (
+        StoreDefect::ResolvesDisabledRepository,
+        &["a_repository_with_no_project_map_cannot_be_enabled"],
+    ),
+    (
+        StoreDefect::RegistersEnabled,
+        &["a_repository_is_registered_disabled_at_l0_with_no_map"],
+    ),
+    (
+        StoreDefect::EnablesWithoutMap,
+        &["a_repository_with_no_project_map_cannot_be_enabled"],
+    ),
+    (
+        StoreDefect::AcceptsAnyAttestor,
+        &["only_an_active_person_of_the_tenant_can_attest_a_project_map"],
+    ),
+    (
+        StoreDefect::AllowsDuplicateGithubRepository,
+        &["a_github_repository_is_registered_once"],
+    ),
     (
         StoreDefect::ClaimsForInactiveJob,
         &["a_candidate_is_found_only_for_an_active_job"],
@@ -218,11 +249,17 @@ pub const DEFECTS: &[(StoreDefect, &[&str])] = &[
     ),
     (
         StoreDefect::DuplicatesOnReplay,
-        &["an_insert_is_idempotent_by_id_and_content"],
+        &[
+            "an_insert_is_idempotent_by_id_and_content",
+            "a_repository_registration_is_idempotent_by_id_and_content",
+        ],
     ),
     (
         StoreDefect::OverwritesOnReplay,
-        &["the_same_id_with_other_content_is_refused"],
+        &[
+            "the_same_id_with_other_content_is_refused",
+            "a_repository_registration_is_idempotent_by_id_and_content",
+        ],
     ),
     (
         StoreDefect::IgnoresOrigin,
@@ -306,11 +343,16 @@ pub const DEFECTS: &[(StoreDefect, &[&str])] = &[
         &[
             "a_row_of_another_tenant_looks_like_a_missing_row",
             "a_tenant_cannot_read_another_tenants_row_through_any_new_method",
+            "another_tenant_cannot_see_or_change_a_repository",
+            "an_audit_record_is_found_by_its_id_in_its_own_tenant_only",
         ],
     ),
     (
         StoreDefect::SkipsVersionCheck,
-        &["a_stale_version_conflicts_and_changes_nothing"],
+        &[
+            "a_stale_version_conflicts_and_changes_nothing",
+            "a_repository_change_needs_the_version_it_read",
+        ],
     ),
     (
         StoreDefect::LosesLastOutboxRow,
@@ -490,7 +532,10 @@ impl InMemoryStore {
         }
     }
 
-    /// Registers a repository for a tenant, as an administrator would. The port has no insert.
+    /// Registers a repository for a tenant, as an administrator would after the whole path:
+    /// registered, its project map attested and enabled. The port can register and enable one
+    /// itself (`RepositoryOps::register_repository`); this seed is the shortcut for the many tests
+    /// that need a repository that already takes work.
     pub fn seed_repository(&self, tenant: TenantId) -> RepositoryId {
         let mut g = lock(&self.inner);
         let n = u128::try_from(g.committed.repositories.len()).unwrap_or(0) + 1;
@@ -508,6 +553,16 @@ impl InMemoryStore {
             enabled: true,
             protection_preflight_passed: false,
             autonomy_ceiling: factory_domain::vocabulary::AutonomyLevel::L1,
+            project_map: Some(ProjectMapAttestation {
+                commit: ProjectMapCommit::new(&"a".repeat(ProjectMapCommit::LENGTH))
+                    .expect("a valid commit"),
+                attested_by: PrincipalId::parse(&format!(
+                    "00000000-0000-7000-8000-{:012x}",
+                    n + 0xa000
+                ))
+                .expect("a valid principal id"),
+                attested_at: Timestamp::parse("2026-10-27T10:00:00Z").expect("a valid time"),
+            }),
         };
         g.committed.repositories.insert(
             id,
@@ -661,20 +716,21 @@ impl Store for InMemoryStore {
     ) -> Result<Option<ResolvedRepository>, StoreError> {
         let g = lock(&self.inner);
         let found = g
-            .installations
-            .iter()
-            .find(|(i, r, _)| *i == installation && *r == repository)
-            .map(|(_, _, who)| *who);
+            .committed
+            .repositories
+            .values()
+            .find(|row| {
+                row.value.installation == installation
+                    && row.value.github_repository_id == repository
+                    && (row.value.enabled || self.has(StoreDefect::ResolvesDisabledRepository))
+            })
+            .map(|row| ResolvedRepository {
+                tenant: row.value.tenant_id,
+                repository: row.value.id,
+            });
         match found {
-            Some(who)
-                if g.committed
-                    .repositories
-                    .get(&who.repository)
-                    .is_some_and(|row| row.value.enabled) =>
-            {
-                Ok(Some(who))
-            }
-            _ => self.miss(),
+            Some(who) => Ok(Some(who)),
+            None => self.miss(),
         }
     }
 
@@ -1539,6 +1595,147 @@ impl RepositoryOps for InMemoryTx {
             self.work.repositories.insert(id, next);
             Ok(version)
         })
+    }
+
+    async fn register_repository(
+        &mut self,
+        new: NewRepository,
+    ) -> Result<Inserted<Repository>, StoreError> {
+        call!(self, {
+            if let Some(existing) = self.work.repositories.get(&new.id) {
+                if !self.sees(existing.value.tenant_id) {
+                    return Err(StoreError::NotFound);
+                }
+                let same = existing.value.installation == new.installation
+                    && existing.value.github_repository_id == new.github_repository_id
+                    && existing.value.full_name == new.full_name
+                    && existing.value.default_branch == new.default_branch;
+                return if same && !self.has(StoreDefect::DuplicatesOnReplay) {
+                    Ok(Inserted {
+                        row: existing.versioned(),
+                        created: false,
+                    })
+                } else if self.has(StoreDefect::OverwritesOnReplay) && !same {
+                    self.work.repositories.remove(&new.id);
+                    Ok(self.new_repository(new))
+                } else {
+                    Err(StoreError::Constraint(
+                        ConstraintRule::IdReusedWithDifferentContent,
+                    ))
+                };
+            }
+            // One GitHub repository belongs to one registration, in this tenant or in another. The
+            // caller is told "not found" either way (NT-TEN-05).
+            if self
+                .work
+                .repositories
+                .values()
+                .any(|row| row.value.github_repository_id == new.github_repository_id)
+                && !self.has(StoreDefect::AllowsDuplicateGithubRepository)
+            {
+                return Err(StoreError::NotFound);
+            }
+            Ok(self.new_repository(new))
+        })
+    }
+
+    async fn attest_project_map(
+        &mut self,
+        id: RepositoryId,
+        expected: Version,
+        commit: ProjectMapCommit,
+        attested_by: PrincipalId,
+    ) -> Result<Version, StoreError> {
+        call!(self, {
+            let row = self
+                .work
+                .repositories
+                .get(&id)
+                .filter(|r| self.sees(r.value.tenant_id))
+                .cloned()
+                .ok_or(StoreError::NotFound)?;
+            self.check_version(row.version, expected)?;
+            let active_person = self.work.principals.get(&attested_by).is_some_and(|p| {
+                p.tenant_id == self.tenant
+                    && p.disabled_at.is_none()
+                    && matches!(p.kind, PrincipalKind::Human { .. })
+            });
+            if !active_person && !self.has(StoreDefect::AcceptsAnyAttestor) {
+                return Err(StoreError::Constraint(ConstraintRule::ProjectMapRule));
+            }
+            let mut next = row;
+            next.value.project_map = Some(ProjectMapAttestation {
+                commit,
+                attested_by,
+                attested_at: self.now(),
+            });
+            next.version = bump(next.version)?;
+            let version = next.version;
+            self.work.repositories.insert(id, next);
+            Ok(version)
+        })
+    }
+
+    async fn set_repository_enabled(
+        &mut self,
+        id: RepositoryId,
+        expected: Version,
+        enabled: bool,
+    ) -> Result<Version, StoreError> {
+        call!(self, {
+            let row = self
+                .work
+                .repositories
+                .get(&id)
+                .filter(|r| self.sees(r.value.tenant_id))
+                .cloned()
+                .ok_or(StoreError::NotFound)?;
+            self.check_version(row.version, expected)?;
+            if enabled
+                && row.value.project_map.is_none()
+                && !self.has(StoreDefect::EnablesWithoutMap)
+            {
+                return Err(StoreError::Constraint(ConstraintRule::ProjectMapRule));
+            }
+            let mut next = row;
+            next.value.enabled = enabled;
+            next.version = bump(next.version)?;
+            let version = next.version;
+            self.work.repositories.insert(id, next);
+            Ok(version)
+        })
+    }
+}
+
+impl InMemoryTx {
+    /// A new repository, as registration makes it: disabled, at level L0, with no protection
+    /// result and no project map. The defect makes it enabled at level L1.
+    fn new_repository(&mut self, new: NewRepository) -> Inserted<Repository> {
+        let broken = self.has(StoreDefect::RegistersEnabled);
+        let row = Row {
+            value: Repository {
+                id: new.id,
+                tenant_id: self.tenant,
+                installation: new.installation,
+                github_repository_id: new.github_repository_id,
+                full_name: new.full_name,
+                default_branch: new.default_branch,
+                enabled: broken,
+                protection_preflight_passed: false,
+                autonomy_ceiling: if broken {
+                    factory_domain::vocabulary::AutonomyLevel::L1
+                } else {
+                    factory_domain::vocabulary::AutonomyLevel::L0
+                },
+                project_map: None,
+            },
+            version: Version::FIRST,
+        };
+        self.work.repositories.insert(new.id, row.clone());
+        Inserted {
+            row: row.versioned(),
+            created: true,
+        }
     }
 }
 
@@ -2605,6 +2802,20 @@ impl AuditOps for InMemoryTx {
             }
             let now = self.now();
             append_audit(&mut self.work.audit, self.tenant, event, now)
+        })
+    }
+
+    async fn find_audit(&mut self, id: AuditEventId) -> Result<Option<AuditRecord>, StoreError> {
+        call!(self, {
+            let found = self
+                .work
+                .audit
+                .iter()
+                .filter(|(tenant, _)| self.sees(**tenant))
+                .flat_map(|(_, records)| records.iter())
+                .find(|record| record.event.id == id)
+                .cloned();
+            Ok(found)
         })
     }
 

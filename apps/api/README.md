@@ -49,6 +49,11 @@ The contract is [`openapi.json`](openapi.json), written first and served on `GET
 | `GET /v1/jobs/{job_id}/gate-reports` | bearer token | any designation | read: the gate reports of the ledger of the job |
 | `GET /v1/jobs/{job_id}/artifacts/{sha256}` | bearer token | any designation | read: one stored document, as an attachment, at most 4 MiB, under a content type the API fixes |
 | `POST /v1/jobs/{job_id}/decisions` | bearer token | `approver` for approve, reject and rework; `operator` for pause, resume, cancel and `unblock`; `approver` for `approve-dependency` and a security approver for `approve-build-code` and `approve-project-build-code` (read from the `actions` table of `policies/approval.yaml`). The two dependency verbs take `package`, `version`, an optional `checksum` prefix and a `reason` of 10 to 500 characters, are read by the same reader as the other channels, and are recorded as `decision.dependency_requested` with their own signed word | `Idempotency-Key` required: the record id is derived from the tenant, the job and the key |
+| `POST /v1/repositories` | bearer token | `operator` (the action `register_repository`) | `Idempotency-Key` required. Registers a repository of the tenant: disabled, at level `L0`, no project map, whatever the body says (unknown fields are `400`). `201` for a new one, `200` with `"changed": false` for the one the same key made, `409` for a second request under a taken key and for a GitHub repository that is already registered, here or by another tenant (the answer does not say whose) |
+| `GET /v1/repositories/{repository_id}` | bearer token | any designation | read: the repository and the attestation of its project map. Another tenant's repository has the answer of a missing one |
+| `POST /v1/repositories/{repository_id}/project-map` | bearer token | `operator` (`confirm_project_map`) | `Idempotency-Key` required. Takes `commit` (40 lowercase hexadecimal characters) and a `reason` of 10 to 500 characters. An attestation by a person, not a verification (see below) |
+| `POST /v1/repositories/{repository_id}/enable` | bearer token | `approver` (`enable_repository`) | `Idempotency-Key` required. `409` with the code `project_map_not_attested` until a map was attested. An optional `reason` |
+| `POST /v1/repositories/{repository_id}/disable` | bearer token | `operator` (`disable_repository`) | `Idempotency-Key` required. An optional `reason`. Webhooks and job submissions for the repository are dropped from then on |
 | `POST /v1/webhooks/github` | HMAC-SHA256 of the raw body | none (GitHub) | the delivery id, the body hash and the event on the same subject revision, in the store |
 
 There is no route that merges or deploys, and a test keeps the words out of the table (ST-05).
@@ -56,6 +61,34 @@ There is no route that merges or deploys, and a test keeps the words out of the 
 `/readyz` answers `503` when any check fails or could not run. A database that is behind the code is a failed
 check, not a passed one (`readiness_checks_schema_version`). Its body names the checks and their status and
 nothing else.
+
+### Registering a repository and attesting its project map
+
+`repositories.rs` is the front door of the path in [ADR 0016](../../docs/adr/0016-design-phase-onboarding-and-issue-workflow.md):
+register, attest the map, enable, disable. Unlike a decision, a change to a repository is **applied here**, in the
+caller's transaction, together with its audit record (`repository.registered`, `repository.map_attested`,
+`repository.enabled`, `repository.disabled`). There is no signed request for a worker to apply.
+
+**An attestation is not a verification.** The API holds no GitHub credential and cannot read a repository. It records that
+a person said commit `C` of the default branch holds the project map, with the reason they gave and the time from the
+database clock. Every answer carries `"verified_by_engine": false`, and the audit text says the same. If the engine ever
+checks the repository, that is a new check with its own name.
+
+What keeps the path honest:
+
+* The designation each action needs comes from the `actions` table of `policies/approval.yaml`, by the numeric GitHub id,
+  and an entry narrowed to other repositories holds nothing here (API-1). A refusal is `403` with no reason, audited within
+  the bound of API-8, and changes nothing.
+* The database refuses an enabled repository without a map commit for every role (`repositories_enabled_needs_project_map`).
+  The API answers the case first, with a typed code, and the table is the guard behind it.
+* The login of the API holds column grants on `repositories` and nothing wider: it inserts six columns (so a new row is
+  always disabled, at level `L0`, with no protection result) and updates four (the enabled flag, the map commit, its
+  attestor and the version). It cannot set the autonomy ceiling or the protection result. The time of the attestation is
+  stamped by a trigger. The suite `api_privileges` lists the grants both ways, and migration `2026-11-02-002400` has the
+  residual risk: whoever holds the credentials of that login can now enable a repository that has a map commit.
+* The record id is derived from the tenant, the caller, the repository and the `Idempotency-Key`, so a retry finds its
+  record and changes nothing, and the same key with another request is `409`. A registration derives its repository id
+  from the caller and the key.
 
 ### Letting a blocked stage run go again
 
@@ -258,6 +291,7 @@ The tests start the real server on a loopback port and a real PostgreSQL (the st
 |---|---|
 | `tests/http_api.rs` | health and readiness; submit, status, listing, timeline; idempotency; NT-WEB-05; NT-TEN-05 with row-level security alone and the application scope alone shown separately; roles and decisions by numeric id; the grammar; hostile input; one shape for every error; correlation id; body size, slow clients, connection limit; a forged forwarding header |
 | `tests/webhook.rs` | NT-WH-01 to 04, 07, 08, 10 and NT-AUTHZ-08 |
+| `tests/repositories.rs` | the path register, attest, enable, disable and its effect on a webhook and a job; each role refused and accepted; another tenant; enabling without a map refused by the database; replayed keys; malformed input |
 | `tests/openapi_contract.rs` | the document is valid; the router matches it; a drift is caught |
 | `tests/profile.rs` | the production profile refuses a fake for each API port; the local stack's example |
 | `tests/database_logins.rs` | the three-logins rule from the API login and from the engine login |

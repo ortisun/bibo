@@ -10,6 +10,15 @@ BEGIN
   PERFORM dbtest.expect_eq('every old stage run has the default window and no failing set',
     (SELECT count(*) FROM stage_runs WHERE attempts_before_last_answer <> 0 OR failing_set_sha256 IS NOT NULL), 0::bigint);
   PERFORM dbtest.expect_eq('every old repository has no attestation', (SELECT count(*) FROM repositories WHERE bypass_attested_by_principal_id IS NOT NULL OR bypass_attested_at IS NOT NULL), 0::bigint);
+  -- Migration 2026-11-02-002400: a repository that was enabled before the project map existed has no map, so it is
+  -- switched off and its version rose. Nothing else about it changed.
+  PERFORM dbtest.expect_eq('every old repository is switched off and has no project map',
+    (SELECT count(*) FROM repositories WHERE enabled OR project_map_commit IS NOT NULL
+        OR project_map_attested_by_principal_id IS NOT NULL OR project_map_attested_at IS NOT NULL), 0::bigint);
+  PERFORM dbtest.expect_eq('the version of an old repository rose by one when it was switched off',
+    (SELECT min(version) FROM repositories), 2::bigint);
+  PERFORM dbtest.expect_eq('an old repository keeps its name, its installation and its autonomy ceiling',
+    (SELECT count(*) FROM repositories WHERE full_name = 'org1/repo' AND github_installation_id = 9001 AND autonomy_ceiling = 'L0'), 1::bigint);
   PERFORM dbtest.expect_eq('the old ledger chain still verifies against the old head', coalesce(ledger_verify_chain(dbtest.u(1), dbtest.u(1101))::text, 'ok'), 'ok');
   PERFORM dbtest.expect_eq('the old audit chain still verifies', coalesce(audit_verify_chain(dbtest.u(1))::text, 'ok'), 'ok');
   PERFORM dbtest.expect_eq('the old rows are still isolated by row-level security: a tenant 2 session sees none of them',

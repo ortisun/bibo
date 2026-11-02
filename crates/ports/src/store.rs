@@ -360,6 +360,10 @@ pub enum ConstraintRule {
     LeaseEpochExhausted,
     /// The text is longer than the column allows, or empty where text is required.
     TextBounds,
+    /// The project map record of a repository breaks a rule: the repository would be enabled without
+    /// a map commit, the commit is not 40 lowercase hexadecimal characters, the record is only
+    /// partly filled, or the person who attested it is not an active human of the tenant.
+    ProjectMapRule,
 }
 
 /// Why a start was refused although the stage run looked ready.
@@ -649,6 +653,79 @@ pub enum DuplicateOf {
     Semantic,
 }
 
+/// The commit of a repository's default branch that holds its project map: exactly 40 lowercase
+/// hexadecimal characters.
+///
+/// This is a claim that a person made, and the store keeps it as one. The engine holds no GitHub
+/// credential, so nothing here checks that the commit exists, that it is on the default branch or
+/// that the map it holds is any good. The type checks the shape and nothing else.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct ProjectMapCommit(String);
+
+impl ProjectMapCommit {
+    /// The number of characters of a commit.
+    pub const LENGTH: usize = 40;
+
+    /// Checks and wraps a commit.
+    ///
+    /// # Errors
+    /// Returns a [`ValueError`] unless the text is 40 characters, each one of `0` to `9` and `a`
+    /// to `f`. Upper case, spaces, a branch name and a 64-character object id are all refused.
+    pub fn new(text: &str) -> Result<Self, ValueError> {
+        if text.len() == Self::LENGTH
+            && text.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
+        {
+            Ok(Self(text.to_owned()))
+        } else {
+            Err(ValueError::new(
+                "project map commit",
+                text,
+                "use the 40 lowercase hexadecimal characters of a commit",
+            ))
+        }
+    }
+
+    /// The commit.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl fmt::Display for ProjectMapCommit {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+/// What a person said about a repository's project map: the commit that holds it, who said so and
+/// when. It is an attestation, not a verification (see [`ProjectMapCommit`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProjectMapAttestation {
+    /// The commit of the default branch that holds the map.
+    pub commit: ProjectMapCommit,
+    /// The person who attested it: an active human principal of the tenant.
+    pub attested_by: PrincipalId,
+    /// When the database recorded the attestation.
+    pub attested_at: Timestamp,
+}
+
+/// A repository to register. Registering never takes the flags that grant anything: the row starts
+/// disabled, at level `L0`, with no protection result and no project map.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NewRepository {
+    /// The new repository's id.
+    pub id: RepositoryId,
+    /// The GitHub App installation.
+    pub installation: InstallationId,
+    /// GitHub's numeric repository id. One GitHub repository belongs to one tenant only.
+    pub github_repository_id: GithubRepositoryId,
+    /// `owner/name`.
+    pub full_name: String,
+    /// The default branch name.
+    pub default_branch: String,
+}
+
 /// A repository registered for the tenant.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Repository {
@@ -670,6 +747,9 @@ pub struct Repository {
     pub protection_preflight_passed: bool,
     /// The highest autonomy level the repository may run at.
     pub autonomy_ceiling: AutonomyLevel,
+    /// The attestation of the project map. `None` until a person attests it, and a repository
+    /// with `None` is never enabled (the table says so for every role).
+    pub project_map: Option<ProjectMapAttestation>,
 }
 
 /// The fixed knobs of a stage run at creation.
@@ -1752,7 +1832,18 @@ pub trait DeliveryOps {
 /// StoreError::NotFound, StoreError::Conflict (stale version).
 ///
 /// # Idempotency
-/// get_repository is a read. record_protection_preflight is a compare and swap on the version.
+/// get_repository is a read. register_repository is idempotent by id and content, like every insert.
+/// record_protection_preflight, attest_project_map and set_repository_enabled are compare and swap on
+/// the version.
+///
+/// # Rules
+/// * A repository is registered disabled, at level `L0`, with no protection result and no project
+///   map. Registration cannot say otherwise.
+/// * A repository is enabled only with a project map commit. The table refuses the other case for
+///   every role, so `set_repository_enabled(true)` on a repository with no map is
+///   `Constraint(ProjectMapRule)` and changes nothing.
+/// * The project map is an attestation by a person. The store records the commit, the principal
+///   and the database time. It does not look at the repository and cannot.
 ///
 /// # Cancellation and timeouts
 /// If a method future is dropped before it completes, the transaction is poisoned: every later call
@@ -1772,6 +1863,32 @@ pub trait RepositoryOps {
         id: RepositoryId,
         expected: Version,
         passed: bool,
+    ) -> Result<Version, StoreError>;
+    /// Registers a repository for the tenant. Idempotent by id and content: a repeat returns the
+    /// first row with `created: false`. A GitHub repository that another registration already
+    /// holds, in this tenant or in another, is reported as `NotFound` (NT-TEN-05): the caller
+    /// cannot learn which.
+    async fn register_repository(
+        &mut self,
+        new: NewRepository,
+    ) -> Result<Inserted<Repository>, StoreError>;
+    /// Records that a person attested the project map at `commit`. Replaces an earlier attestation.
+    /// `attested_by` must be an active human principal of the tenant, or the call is
+    /// `Constraint(ProjectMapRule)`.
+    async fn attest_project_map(
+        &mut self,
+        id: RepositoryId,
+        expected: Version,
+        commit: ProjectMapCommit,
+        attested_by: PrincipalId,
+    ) -> Result<Version, StoreError>;
+    /// Switches a repository on or off. Enabling needs a project map commit: without one the call is
+    /// `Constraint(ProjectMapRule)` and nothing changes.
+    async fn set_repository_enabled(
+        &mut self,
+        id: RepositoryId,
+        expected: Version,
+        enabled: bool,
     ) -> Result<Version, StoreError>;
 }
 
@@ -2145,6 +2262,9 @@ pub trait OutboxOps {
 pub trait AuditOps {
     /// Appends one record. The store assigns the sequence, time and hash.
     async fn record_audit(&mut self, event: NewAuditEvent) -> Result<AuditRecord, StoreError>;
+    /// The record with this event id, or `None`. An id of another tenant is `None` too. This is how
+    /// a retried request finds the record it wrote the first time.
+    async fn find_audit(&mut self, id: AuditEventId) -> Result<Option<AuditRecord>, StoreError>;
     /// Records in the order they were written, from `after_sequence` (exclusive), at most `limit`.
     async fn read_audit(
         &mut self,

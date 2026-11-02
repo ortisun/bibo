@@ -28,8 +28,9 @@ use factory_domain::vocabulary::{AutonomyLevel, ExecutionMode, StageKind};
 use factory_ports::store::{
     AppliedTransition, ConstraintRule, DeliveryOps, DeliveryOutcome, DuplicateOf, IdempotencyKey,
     Inserted, Job, JobFacts, JobFilter, JobOps, JobOrigin, NewJob, NewOriginalRequest,
-    NewWebhookDelivery, OriginalRequest, Page, PageCursor, PipelineScope, RepositoryOps,
-    RequestOps, RequestSource, StoreError, Version, Versioned,
+    NewRepository, NewWebhookDelivery, OriginalRequest, Page, PageCursor, PipelineScope,
+    ProjectMapAttestation, ProjectMapCommit, RepositoryOps, RequestOps, RequestSource, StoreError,
+    Version, Versioned,
 };
 use factory_ports::store::{GithubRepositoryId, InstallationId, Repository};
 use time::OffsetDateTime;
@@ -786,30 +787,39 @@ struct RepositoryRow {
     effective_ceiling: String,
     #[diesel(sql_type = BigInt)]
     version: i64,
+    #[diesel(sql_type = Nullable<Text>)]
+    project_map_commit: Option<String>,
+    #[diesel(sql_type = Nullable<SqlUuid>)]
+    project_map_attested_by_principal_id: Option<Uuid>,
+    #[diesel(sql_type = Nullable<Timestamptz>)]
+    project_map_attested_at: Option<OffsetDateTime>,
 }
 
-async fn get_repository(
-    connection: &mut AsyncPgConnection,
-    tenant: TenantId,
-    id: RepositoryId,
-) -> Result<Versioned<Repository>, StoreError> {
-    // The ceiling an organization admin set is one fact, the result of the preflight another. The
-    // level the repository may run at is the lower of the two, computed here on every read, so a
-    // later passing preflight gives back what the admin set (ADR 0009).
-    let row = sql_query(
-        "SELECT tenant_id, id, github_installation_id, github_repository_id, full_name, \
-                default_branch, enabled, protection_preflight_passed, \
-                CASE WHEN protection_preflight_passed THEN autonomy_ceiling ELSE 'L0' END \
-                    AS effective_ceiling, version \
-           FROM repositories WHERE tenant_id = $1 AND id = $2",
-    )
-    .bind::<SqlUuid, _>(tenant.as_uuid())
-    .bind::<SqlUuid, _>(id.as_uuid())
-    .get_result::<RepositoryRow>(connection)
-    .await
-    .optional()
-    .map_err(|error| database("get_repository", &error))?
-    .ok_or(StoreError::NotFound)?;
+/// The columns of a repository as the domain reads them. The ceiling an organization admin set is
+/// one fact, the result of the preflight another. The level the repository may run at is the lower
+/// of the two, computed here on every read, so a later passing preflight gives back what the admin
+/// set (ADR 0009).
+const REPOSITORY_COLUMNS: &str = "tenant_id, id, github_installation_id, github_repository_id, \
+    full_name, default_branch, enabled, protection_preflight_passed, \
+    CASE WHEN protection_preflight_passed THEN autonomy_ceiling ELSE 'L0' END AS effective_ceiling, \
+    version, project_map_commit, project_map_attested_by_principal_id, project_map_attested_at";
+
+fn repository_from_row(row: RepositoryRow) -> Result<Versioned<Repository>, StoreError> {
+    // The three columns of the attestation are all set or all empty (a CHECK says so). A row that
+    // breaks it is corrupt, and it is not read as "no map".
+    let project_map = match (
+        row.project_map_commit,
+        row.project_map_attested_by_principal_id,
+        row.project_map_attested_at,
+    ) {
+        (None, None, None) => None,
+        (Some(commit), Some(by), Some(at)) => Some(ProjectMapAttestation {
+            commit: ProjectMapCommit::new(&commit).map_err(|_| corrupt("project map commit"))?,
+            attested_by: PrincipalId::from_uuid(by),
+            attested_at: from_column(at),
+        }),
+        _ => return Err(corrupt("project map attestation")),
+    };
     Ok(Versioned {
         value: Repository {
             id: RepositoryId::from_uuid(row.id),
@@ -828,9 +838,224 @@ async fn get_repository(
             protection_preflight_passed: row.protection_preflight_passed,
             autonomy_ceiling: AutonomyLevel::parse(&row.effective_ceiling)
                 .map_err(|_| corrupt("autonomy ceiling"))?,
+            project_map,
         },
         version: version_from_column(row.version)?,
     })
+}
+
+async fn find_repository(
+    connection: &mut AsyncPgConnection,
+    tenant: TenantId,
+    id: RepositoryId,
+    operation: &'static str,
+) -> Result<Option<Versioned<Repository>>, StoreError> {
+    sql_query(format!(
+        "SELECT {REPOSITORY_COLUMNS} FROM repositories WHERE tenant_id = $1 AND id = $2"
+    ))
+    .bind::<SqlUuid, _>(tenant.as_uuid())
+    .bind::<SqlUuid, _>(id.as_uuid())
+    .get_result::<RepositoryRow>(connection)
+    .await
+    .optional()
+    .map_err(|error| database(operation, &error))?
+    .map(repository_from_row)
+    .transpose()
+}
+
+async fn get_repository(
+    connection: &mut AsyncPgConnection,
+    tenant: TenantId,
+    id: RepositoryId,
+) -> Result<Versioned<Repository>, StoreError> {
+    find_repository(connection, tenant, id, "get_repository")
+        .await?
+        .ok_or(StoreError::NotFound)
+}
+
+/// True when the stored repository is the one the caller offered to register. The flags, the
+/// version and the project map move after the insert and are not compared.
+fn same_registration(stored: &Repository, new: &NewRepository) -> bool {
+    stored.installation == new.installation
+        && stored.github_repository_id == new.github_repository_id
+        && stored.full_name == new.full_name
+        && stored.default_branch == new.default_branch
+}
+
+/// Registers a repository. The row starts disabled, at level L0, with no protection result and no
+/// map, because the statement names six columns and the API's grant allows no more.
+async fn register_repository(
+    connection: &mut AsyncPgConnection,
+    tenant: TenantId,
+    new: NewRepository,
+) -> Result<Inserted<Repository>, StoreError> {
+    let installation = i64::try_from(new.installation.0).map_err(|_| id_reused())?;
+    let hosted = i64::try_from(new.github_repository_id.0).map_err(|_| id_reused())?;
+    // A hosted repository that is taken answers with a unique violation on a global key, which
+    // `database` reports as `NotFound` (NT-TEN-05). That aborts the transaction, so the caller
+    // rolls back; nothing is written.
+    let inserted = sql_query(format!(
+        "INSERT INTO repositories (tenant_id, id, github_installation_id, github_repository_id, \
+                full_name, default_branch) \
+         VALUES ($1, $2, $3, $4, $5, $6) \
+         ON CONFLICT (tenant_id, id) DO NOTHING RETURNING {REPOSITORY_COLUMNS}"
+    ))
+    .bind::<SqlUuid, _>(tenant.as_uuid())
+    .bind::<SqlUuid, _>(new.id.as_uuid())
+    .bind::<BigInt, _>(installation)
+    .bind::<BigInt, _>(hosted)
+    .bind::<Text, _>(new.full_name.as_str())
+    .bind::<Text, _>(new.default_branch.as_str())
+    .get_result::<RepositoryRow>(connection)
+    .await
+    .optional()
+    .map_err(|error| database("register_repository", &error))?;
+    if let Some(row) = inserted {
+        return Ok(Inserted {
+            row: repository_from_row(row)?,
+            created: true,
+        });
+    }
+    // The id exists. The same content is a replay, and anything else is a reuse of the id.
+    let found = find_repository(connection, tenant, new.id, "register_repository")
+        .await?
+        .ok_or_else(id_reused)?;
+    if same_registration(&found.value, &new) {
+        Ok(Inserted {
+            row: found,
+            created: false,
+        })
+    } else {
+        Err(id_reused())
+    }
+}
+
+#[derive(QueryableByName)]
+struct Standing {
+    #[diesel(sql_type = BigInt)]
+    version: i64,
+    #[diesel(sql_type = Bool)]
+    has_map: bool,
+    #[diesel(sql_type = Bool)]
+    attestor_ok: bool,
+}
+
+/// Why an update of a repository changed no row. A row that does not exist is `NotFound`. A row at
+/// another version is `Conflict`. A row at the right version means a rule stopped the change:
+/// enabling without a map, or an attestor who is not an active human of the tenant.
+async fn repository_not_changed(
+    connection: &mut AsyncPgConnection,
+    tenant: TenantId,
+    id: RepositoryId,
+    expected: Version,
+    attestor: Option<PrincipalId>,
+    operation: &'static str,
+) -> Result<StoreError, StoreError> {
+    let standing = sql_query(
+        "SELECT r.version, (r.project_map_commit IS NOT NULL) AS has_map, \
+                EXISTS (SELECT 1 FROM principals p \
+                         WHERE p.tenant_id = r.tenant_id AND p.id = $3 AND p.kind = 'human' \
+                           AND p.disabled_at IS NULL) AS attestor_ok \
+           FROM repositories r WHERE r.tenant_id = $1 AND r.id = $2",
+    )
+    .bind::<SqlUuid, _>(tenant.as_uuid())
+    .bind::<SqlUuid, _>(id.as_uuid())
+    .bind::<Nullable<SqlUuid>, _>(attestor.map(|principal| principal.as_uuid()))
+    .get_result::<Standing>(connection)
+    .await
+    .optional()
+    .map_err(|error| database(operation, &error))?;
+    Ok(match standing {
+        None => StoreError::NotFound,
+        Some(row) if row.version != expected.get() => StoreError::Conflict,
+        Some(row) if attestor.is_some() && !row.attestor_ok => {
+            StoreError::Constraint(ConstraintRule::ProjectMapRule)
+        }
+        Some(row) if attestor.is_none() && !row.has_map => {
+            StoreError::Constraint(ConstraintRule::ProjectMapRule)
+        }
+        // The version is current and the rules hold: a concurrent change slipped in between.
+        Some(_) => StoreError::Conflict,
+    })
+}
+
+async fn attest_project_map(
+    connection: &mut AsyncPgConnection,
+    tenant: TenantId,
+    id: RepositoryId,
+    expected: Version,
+    commit: &ProjectMapCommit,
+    attested_by: PrincipalId,
+) -> Result<Version, StoreError> {
+    // The attestor is checked in the statement, so that a refusal does not abort the transaction.
+    // The trigger checks the same thing again, and so does the CHECK on the shape of the commit.
+    let updated = sql_query(
+        "UPDATE repositories SET project_map_commit = $4, \
+                project_map_attested_by_principal_id = $5, version = version + 1 \
+          WHERE tenant_id = $1 AND id = $2 AND version = $3 \
+            AND EXISTS (SELECT 1 FROM principals p \
+                         WHERE p.tenant_id = $1 AND p.id = $5 AND p.kind = 'human' \
+                           AND p.disabled_at IS NULL) \
+        RETURNING version",
+    )
+    .bind::<SqlUuid, _>(tenant.as_uuid())
+    .bind::<SqlUuid, _>(id.as_uuid())
+    .bind::<BigInt, _>(expected.get())
+    .bind::<Text, _>(commit.as_str())
+    .bind::<SqlUuid, _>(attested_by.as_uuid())
+    .get_result::<NewVersion>(connection)
+    .await
+    .optional()
+    .map_err(|error| database("attest_project_map", &error))?;
+    match updated {
+        Some(row) => version_from_column(row.version),
+        None => Err(repository_not_changed(
+            connection,
+            tenant,
+            id,
+            expected,
+            Some(attested_by),
+            "attest_project_map",
+        )
+        .await?),
+    }
+}
+
+async fn set_repository_enabled(
+    connection: &mut AsyncPgConnection,
+    tenant: TenantId,
+    id: RepositoryId,
+    expected: Version,
+    enabled: bool,
+) -> Result<Version, StoreError> {
+    // Enabling needs a map commit, in the statement as well as in the table, so that a refusal does
+    // not abort the transaction.
+    let updated = sql_query(
+        "UPDATE repositories SET enabled = $4, version = version + 1 \
+          WHERE tenant_id = $1 AND id = $2 AND version = $3 \
+            AND ($4 = false OR project_map_commit IS NOT NULL) \
+        RETURNING version",
+    )
+    .bind::<SqlUuid, _>(tenant.as_uuid())
+    .bind::<SqlUuid, _>(id.as_uuid())
+    .bind::<BigInt, _>(expected.get())
+    .bind::<Bool, _>(enabled)
+    .get_result::<NewVersion>(connection)
+    .await
+    .optional()
+    .map_err(|error| database("set_repository_enabled", &error))?;
+    match updated {
+        Some(row) => version_from_column(row.version),
+        None => Err(repository_not_changed(
+            connection,
+            tenant,
+            id,
+            expected,
+            None,
+            "set_repository_enabled",
+        )
+        .await?),
+    }
 }
 
 async fn record_protection_preflight(
@@ -882,6 +1107,36 @@ impl RepositoryOps for PgTx {
     ) -> Result<Version, StoreError> {
         call!(self, connection, tenant => {
             record_protection_preflight(connection, tenant, id, expected, passed)
+        })
+    }
+
+    async fn register_repository(
+        &mut self,
+        new: NewRepository,
+    ) -> Result<Inserted<Repository>, StoreError> {
+        call!(self, connection, tenant => register_repository(connection, tenant, new))
+    }
+
+    async fn attest_project_map(
+        &mut self,
+        id: RepositoryId,
+        expected: Version,
+        commit: ProjectMapCommit,
+        attested_by: PrincipalId,
+    ) -> Result<Version, StoreError> {
+        call!(self, connection, tenant => {
+            attest_project_map(connection, tenant, id, expected, &commit, attested_by)
+        })
+    }
+
+    async fn set_repository_enabled(
+        &mut self,
+        id: RepositoryId,
+        expected: Version,
+        enabled: bool,
+    ) -> Result<Version, StoreError> {
+        call!(self, connection, tenant => {
+            set_repository_enabled(connection, tenant, id, expected, enabled)
         })
     }
 }
