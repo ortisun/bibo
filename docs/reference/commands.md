@@ -75,11 +75,11 @@ A repository takes tickets only after a person has registered it, confirmed its 
 |---|---|---|---|
 | `register` | `--installation`, `--github-repository`, `--name`, optionally `--default-branch` | `operator` | Registers the repository. It starts disabled, at autonomy level `L0`, with no project map. Prints its identifier. |
 | `confirm-map` | `REPOSITORY COMMIT reason...` | `operator` | Records that the person attests that `COMMIT` (40 lowercase hexadecimal characters) of the default branch holds the project map. The reason has 10 to 500 characters. This is a statement by a person: the engine holds no GitHub credential, does not read the repository and does not check the commit. |
-| `enable` | `REPOSITORY [reason...]` | `approver` | Lets the repository take tickets. Refused with the code `project_map_not_attested` until a map was confirmed. |
-| `disable` | `REPOSITORY [reason...]` | `operator` | Stops the repository from taking tickets. Its webhooks are dropped and no job can be submitted for it. Existing jobs are not touched. |
-| `show` | `REPOSITORY` | any designation | Prints the repository: whether it is enabled, its autonomy ceiling, its version and the attestation of its map. |
+| `enable` | `REPOSITORY COMMIT [reason...]` | `approver` | Lets the repository take tickets, for the map at `COMMIT`, the commit you read. Refused with the code `project_map_not_attested` until a map was confirmed. Refused with the code `project_map_changed` when `COMMIT` is not the commit confirmed now. |
+| `disable` | `REPOSITORY [reason...]` | `operator` | Stops the repository from taking tickets. Its webhooks are dropped and no job can be submitted for it. Existing jobs are not touched: they run on, and their issue keeps its last label. To stop one, cancel it. |
+| `show` | `REPOSITORY` | any designation | Prints the repository: whether it is enabled and for which map commit, its autonomy ceiling, its version and the attestation of its map. |
 
-The `REPOSITORY` argument is the identifier that `register` printed. A reason on `enable` or `disable` is optional and, when given, has 10 to 500 characters. The role is a designation on the protected allowlist, read from the `actions` table of `policies/approval.yaml`: `register_repository`, `confirm_project_map`, `enable_repository` and `disable_repository`. These four are a default that is pending confirmation by the architect. See the architecture decision record (ADR) [0016](../adr/0016-design-phase-onboarding-and-issue-workflow.md).
+The `REPOSITORY` argument is the identifier that `register` printed. Confirming a map again on an enabled repository switches it off, and you enable it again with the new commit. A reason on `enable` or `disable` is optional and, when given, has 10 to 500 characters. The role is a designation on the protected allowlist, read from the `actions` table of `policies/approval.yaml`: `register_repository`, `confirm_project_map`, `enable_repository` and `disable_repository`. These four are a default that is pending confirmation by the architect. See the architecture decision record (ADR) [0016](../adr/0016-design-phase-onboarding-and-issue-workflow.md).
 
 ### The words after the identifiers
 
@@ -195,9 +195,9 @@ The contract is [`apps/api/openapi.json`](../../apps/api/openapi.json). The serv
 | `GET /v1/jobs/{job_id}/artifacts/{sha256}` | bearer token | any designation | One stored document of the job, as an attachment of at most 4 MiB under `text/plain; charset=utf-8` or `application/octet-stream`, with `X-Content-Type-Options: nosniff`. 404 for a hash that is not one of the job's documents, and for another tenant's. 413 over the cap. |
 | `POST /v1/jobs/{job_id}/decisions` | bearer token | by verb | Records a decision of a person. Needs an `Idempotency-Key` header. |
 | `POST /v1/repositories` | bearer token | `operator` | Registers a repository. It starts disabled, at level `L0`, with no project map. Needs an `Idempotency-Key` header. 201 for a new repository, 200 for the one an earlier request with the same key made. 409 when the GitHub repository is already registered. |
-| `GET /v1/repositories/{repository_id}` | bearer token | any designation | One repository of the caller's tenant, with the attestation of its project map. Another tenant's repository has the answer of a missing one. |
+| `GET /v1/repositories/{repository_id}` | bearer token | any designation | One repository of the caller's tenant, with the attestation of its project map and what it was enabled for. Another tenant's repository, and one that the caller's allowlist entry is narrowed away from, have the answer of a missing one. |
 | `POST /v1/repositories/{repository_id}/project-map` | bearer token | `operator` | Records the commit that holds the project map and the reason. An attestation by a person: the engine does not read the repository. Needs an `Idempotency-Key` header. |
-| `POST /v1/repositories/{repository_id}/enable` | bearer token | `approver` | Enables the repository. 409 with the code `project_map_not_attested` until a map was attested. Needs an `Idempotency-Key` header. |
+| `POST /v1/repositories/{repository_id}/enable` | bearer token | `approver` | Enables the repository for the map commit named in the body. 409 with the code `project_map_not_attested` until a map was attested, and with `project_map_changed` when the commit is not the one attested now. Needs an `Idempotency-Key` header. |
 | `POST /v1/repositories/{repository_id}/disable` | bearer token | `operator` | Disables the repository. Needs an `Idempotency-Key` header. |
 | `POST /v1/webhooks/github` | HMAC-SHA256 of the raw body | none | A GitHub delivery. Verified on the raw body before anything is parsed. |
 
@@ -215,7 +215,7 @@ The fields of a decision request are `verb`, `stage_run_id`, `head`, `evidence`,
 | 403 | Known, and not permitted. The answer gives no reason. |
 | 404 | No such route or object. Another tenant's object has this answer too. |
 | 408, 413, 415 | The body was too slow, too large, or not `application/json`; or, for a download, the document is larger than 4 MiB. |
-| 409 | The request conflicts with a recorded one. For a repository it also means that the GitHub repository is already registered, or, with the code `project_map_not_attested`, that a repository cannot be enabled before a person attested its project map. |
+| 409 | The request conflicts with a recorded one. For a repository it also means that the GitHub repository is already registered, or, with the code `project_map_not_attested`, that a repository cannot be enabled before a person attested its project map, or, with the code `project_map_changed`, that the map was attested again since the approver read it. |
 | 429 | A rate limit is exceeded. A `Retry-After` header comes with it. |
 | 503 | The service cannot answer now. |
 

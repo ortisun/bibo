@@ -485,9 +485,19 @@ async fn every_method_refuses_another_tenants_rows() {
         "attest_project_map"
     );
     as_b!(
-        tx => tx.set_repository_enabled(scene.repository(scene.a), Version::FIRST, false),
+        tx => tx.enable_repository(
+            scene.repository(scene.a),
+            Version::FIRST,
+            factory_ports::store::ProjectMapCommit::new(&"a".repeat(40)).expect("a commit"),
+            principal_a,
+        ),
         refused.clone(),
-        "set_repository_enabled"
+        "enable_repository"
+    );
+    as_b!(
+        tx => tx.disable_repository(scene.repository(scene.a), Version::FIRST),
+        refused.clone(),
+        "disable_repository"
     );
     as_b!(tx => tx.get_principal(principal_a), refused.clone(), "get_principal");
     as_b!(tx => tx.get_artifact_index(&hash), refused.clone(), "get_artifact_index");

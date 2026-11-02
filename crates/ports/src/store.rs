@@ -362,8 +362,12 @@ pub enum ConstraintRule {
     TextBounds,
     /// The project map record of a repository breaks a rule: the repository would be enabled without
     /// a map commit, the commit is not 40 lowercase hexadecimal characters, the record is only
-    /// partly filled, or the person who attested it is not an active human of the tenant.
+    /// partly filled, the person who attested it is not an active human of the tenant, or the
+    /// person who enables it is not.
     ProjectMapRule,
+    /// An enable named a map commit other than the one attested now. The approver meant another
+    /// map than the one on file, so nothing changes (finding REG-1).
+    ProjectMapChanged,
 }
 
 /// Why a start was refused although the stage run looked ready.
@@ -710,6 +714,21 @@ pub struct ProjectMapAttestation {
     pub attested_at: Timestamp,
 }
 
+/// What an enabled repository was enabled for: the map commit the approver meant, who enabled it
+/// and when. It exists exactly while the repository is enabled, and it is emptied when the
+/// repository is switched off. A map that is attested again switches the repository off, so an
+/// enabled repository is always enabled for the map on file (finding REG-1).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EnabledFor {
+    /// The map commit the approver named. For an enabled repository it equals the attested commit.
+    pub commit: ProjectMapCommit,
+    /// The person who enabled it. `None` only for a row that a privileged writer enabled without
+    /// saying who; the Store always says.
+    pub enabled_by: Option<PrincipalId>,
+    /// When the database recorded the enabling.
+    pub enabled_at: Timestamp,
+}
+
 /// A repository to register. Registering never takes the flags that grant anything: the row starts
 /// disabled, at level `L0`, with no protection result and no project map.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -750,6 +769,8 @@ pub struct Repository {
     /// The attestation of the project map. `None` until a person attests it, and a repository
     /// with `None` is never enabled (the table says so for every role).
     pub project_map: Option<ProjectMapAttestation>,
+    /// What the repository was enabled for. `Some` exactly while `enabled` is true.
+    pub enabled_for: Option<EnabledFor>,
 }
 
 /// The fixed knobs of a stage run at creation.
@@ -1833,15 +1854,21 @@ pub trait DeliveryOps {
 ///
 /// # Idempotency
 /// get_repository is a read. register_repository is idempotent by id and content, like every insert.
-/// record_protection_preflight, attest_project_map and set_repository_enabled are compare and swap on
-/// the version.
+/// record_protection_preflight, attest_project_map, enable_repository and disable_repository are
+/// compare and swap on the version.
 ///
 /// # Rules
 /// * A repository is registered disabled, at level `L0`, with no protection result and no project
 ///   map. Registration cannot say otherwise.
 /// * A repository is enabled only with a project map commit. The table refuses the other case for
-///   every role, so `set_repository_enabled(true)` on a repository with no map is
+///   every role, so `enable_repository` on a repository with no map is
 ///   `Constraint(ProjectMapRule)` and changes nothing.
+/// * A repository is enabled for the map commit the approver names, and only for the one on file.
+///   `enable_repository` with another commit is `Constraint(ProjectMapChanged)` and changes nothing.
+/// * An enabled repository does not stay enabled over another map. `attest_project_map` with a
+///   different commit or a different person on an enabled repository switches it off in the same
+///   statement (the table does it, for every writer), and the caller enables it again by naming
+///   the new commit (finding REG-1).
 /// * The project map is an attestation by a person. The store records the commit, the principal
 ///   and the database time. It does not look at the repository and cannot.
 ///
@@ -1874,7 +1901,8 @@ pub trait RepositoryOps {
     ) -> Result<Inserted<Repository>, StoreError>;
     /// Records that a person attested the project map at `commit`. Replaces an earlier attestation.
     /// `attested_by` must be an active human principal of the tenant, or the call is
-    /// `Constraint(ProjectMapRule)`.
+    /// `Constraint(ProjectMapRule)`. When the repository is enabled and the commit or the person
+    /// changes, the repository is switched off by the same change.
     async fn attest_project_map(
         &mut self,
         id: RepositoryId,
@@ -1882,13 +1910,23 @@ pub trait RepositoryOps {
         commit: ProjectMapCommit,
         attested_by: PrincipalId,
     ) -> Result<Version, StoreError>;
-    /// Switches a repository on or off. Enabling needs a project map commit: without one the call is
-    /// `Constraint(ProjectMapRule)` and nothing changes.
-    async fn set_repository_enabled(
+    /// Switches a repository on for the map commit `commit`, on the word of `enabled_by`. Without a
+    /// map commit the call is `Constraint(ProjectMapRule)`, and so it is when `enabled_by` is not
+    /// an active human principal of the tenant. When `commit` is not the commit attested now it is
+    /// `Constraint(ProjectMapChanged)`. Nothing changes in either case.
+    async fn enable_repository(
         &mut self,
         id: RepositoryId,
         expected: Version,
-        enabled: bool,
+        commit: ProjectMapCommit,
+        enabled_by: PrincipalId,
+    ) -> Result<Version, StoreError>;
+    /// Switches a repository off and empties the record of what it was enabled for. Switching off
+    /// a repository that is off is allowed and raises the version.
+    async fn disable_repository(
+        &mut self,
+        id: RepositoryId,
+        expected: Version,
     ) -> Result<Version, StoreError>;
 }
 

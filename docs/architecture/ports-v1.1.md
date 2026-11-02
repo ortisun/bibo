@@ -1709,13 +1709,25 @@ pub trait RepositoryOps {
         commit: ProjectMapCommit,
         attested_by: PrincipalId,
     ) -> Result<Version, StoreError>;
-    /// Enables or disables a repository. Enabling needs a project map commit
-    /// (`Constraint(ProjectMapRule)` otherwise).
-    async fn set_repository_enabled(
+    // Changed on 2026-11-02 (review finding REG-1): `set_repository_enabled(id, expected, enabled)`
+    // became the two methods below, and `Repository` gained `enabled_for: Option<EnabledFor>`.
+    // Enabling names the map commit the approver read and the person who enables. Attesting another
+    // commit, or the same commit by another person, switches an enabled repository off.
+    /// Enables a repository for the map commit `commit`. Without a map commit the call is
+    /// `Constraint(ProjectMapRule)`, as it is for an enabler who is not an active human of the
+    /// tenant. A commit that is not the one attested now is `Constraint(ProjectMapChanged)`.
+    async fn enable_repository(
         &mut self,
         id: RepositoryId,
         expected: Version,
-        enabled: bool,
+        commit: ProjectMapCommit,
+        enabled_by: PrincipalId,
+    ) -> Result<Version, StoreError>;
+    /// Disables a repository and empties the record of what it was enabled for.
+    async fn disable_repository(
+        &mut self,
+        id: RepositoryId,
+        expected: Version,
     ) -> Result<Version, StoreError>;
 }
 

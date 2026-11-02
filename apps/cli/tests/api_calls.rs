@@ -893,20 +893,33 @@ fn repository_confirm_map_sends_the_commit_and_the_reason_and_calls_it_a_stateme
 
 #[test]
 fn repository_enable_disable_and_show_use_their_own_paths() {
-    let enabled = REPOSITORY_BODY.replace(r#""enabled":false"#, r#""enabled":true"#);
+    let enabled = REPOSITORY_BODY.replace(
+        r#""enabled":false"#,
+        &format!(
+            r#""enabled":true,"enabled_for":{{"commit":"{MAP_COMMIT}","enabled_by":"0190a3b2-7c4d-4e5f-8a6b-1c2d3e4f5a6e","enabled_at":"2026-11-02T10:00:00Z"}}"#
+        ),
+    );
     let enabled: &'static str = Box::leak(enabled.into_boxed_str());
     let shown = r#"{"repository_id":"0190a3b2-7c4d-4e5f-8a6b-1c2d3e4f5a6d","full_name":"org/widgets","default_branch":"main","github_installation_id":7001,"github_repository_id":8001,"enabled":true,"protection_preflight_passed":false,"autonomy_ceiling":"L0","version":3,"project_map":null}"#;
     let api = fake(vec![(200, enabled), (200, REPOSITORY_BODY), (200, shown)]);
     let file = token_file(0o600);
     let base = format!("--api http://{} --token-file {}", api.addr, file.display());
-    let ran = cli(&format!("repository enable {base} --key k-e {REPOSITORY}"));
+    let ran = cli(&format!(
+        "repository enable {base} --key k-e {REPOSITORY} {MAP_COMMIT}"
+    ));
     assert_eq!(ran.exit, Exit::Ok, "{}", ran.err);
     assert!(
         ran.out.contains("The repository is enabled."),
         "{}",
         ran.out
     );
-    assert!(ran.out.contains("Enabled:            yes"), "{}", ran.out);
+    assert!(
+        ran.out.contains(&format!(
+            "Enabled:            yes, for the map at commit {MAP_COMMIT} (enabled by 0190a3b2-7c4d-4e5f-8a6b-1c2d3e4f5a6e"
+        )),
+        "{}",
+        ran.out
+    );
     let ran = cli(&format!(
         "repository disable {base} --key k-d {REPOSITORY} Switching it off while the map is rewritten."
     ));
@@ -926,8 +939,8 @@ fn repository_enable_disable_and_show_use_their_own_paths() {
         sent[0]
     );
     assert!(
-        sent[0].ends_with("{}"),
-        "an enable with no reason sends an empty object: {}",
+        sent[0].ends_with(&format!(r#"{{"commit":"{MAP_COMMIT}"}}"#)),
+        "an enable names the commit and, with no reason, nothing else: {}",
         sent[0]
     );
     assert!(
@@ -949,7 +962,11 @@ fn repository_enable_disable_and_show_use_their_own_paths() {
     for line in [
         "repository enable".to_owned(),
         "repository enable not-a-uuid".to_owned(),
+        // An enable names the commit that was read: none, a short one, or a branch is refused.
+        format!("repository enable {REPOSITORY}"),
         format!("repository enable {REPOSITORY} short"),
+        format!("repository enable {REPOSITORY} main"),
+        format!("repository enable {REPOSITORY} {MAP_COMMIT} short"),
         format!("repository disable {REPOSITORY} short"),
         "repository show".to_owned(),
         format!("repository show {REPOSITORY} extra"),
@@ -966,7 +983,7 @@ fn enabling_without_a_map_has_a_plain_refusal_and_exit_code_2() {
     let api = fake(vec![(409, r#"{"error":"project_map_not_attested"}"#)]);
     let file = token_file(0o600);
     let ran = cli(&format!(
-        "repository enable --api http://{} --token-file {} {REPOSITORY}",
+        "repository enable --api http://{} --token-file {} {REPOSITORY} {MAP_COMMIT}",
         api.addr,
         file.display()
     ));
@@ -974,6 +991,24 @@ fn enabling_without_a_map_has_a_plain_refusal_and_exit_code_2() {
     assert!(
         ran.err.contains("no project map that a person attested")
             && ran.err.contains("confirm-map"),
+        "{}",
+        ran.err
+    );
+    assert!(ran.out.is_empty(), "{}", ran.out);
+}
+
+#[test]
+fn enabling_a_map_that_moved_has_a_plain_refusal_and_exit_code_2() {
+    let api = fake(vec![(409, r#"{"error":"project_map_changed"}"#)]);
+    let file = token_file(0o600);
+    let ran = cli(&format!(
+        "repository enable --api http://{} --token-file {} {REPOSITORY} {MAP_COMMIT}",
+        api.addr,
+        file.display()
+    ));
+    assert_eq!(ran.exit, Exit::Refused, "{}", ran.err);
+    assert!(
+        ran.err.contains("attested again since you read it") && ran.err.contains("repository show"),
         "{}",
         ran.err
     );

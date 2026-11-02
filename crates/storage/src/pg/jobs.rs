@@ -26,11 +26,11 @@ use factory_domain::ids::{
 use factory_domain::state::{JobStatus, Status};
 use factory_domain::vocabulary::{AutonomyLevel, ExecutionMode, StageKind};
 use factory_ports::store::{
-    AppliedTransition, ConstraintRule, DeliveryOps, DeliveryOutcome, DuplicateOf, IdempotencyKey,
-    Inserted, Job, JobFacts, JobFilter, JobOps, JobOrigin, NewJob, NewOriginalRequest,
-    NewRepository, NewWebhookDelivery, OriginalRequest, Page, PageCursor, PipelineScope,
-    ProjectMapAttestation, ProjectMapCommit, RepositoryOps, RequestOps, RequestSource, StoreError,
-    Version, Versioned,
+    AppliedTransition, ConstraintRule, DeliveryOps, DeliveryOutcome, DuplicateOf, EnabledFor,
+    IdempotencyKey, Inserted, Job, JobFacts, JobFilter, JobOps, JobOrigin, NewJob,
+    NewOriginalRequest, NewRepository, NewWebhookDelivery, OriginalRequest, Page, PageCursor,
+    PipelineScope, ProjectMapAttestation, ProjectMapCommit, RepositoryOps, RequestOps,
+    RequestSource, StoreError, Version, Versioned,
 };
 use factory_ports::store::{GithubRepositoryId, InstallationId, Repository};
 use time::OffsetDateTime;
@@ -793,6 +793,12 @@ struct RepositoryRow {
     project_map_attested_by_principal_id: Option<Uuid>,
     #[diesel(sql_type = Nullable<Timestamptz>)]
     project_map_attested_at: Option<OffsetDateTime>,
+    #[diesel(sql_type = Nullable<Text>)]
+    enabled_project_map_commit: Option<String>,
+    #[diesel(sql_type = Nullable<SqlUuid>)]
+    enabled_by_principal_id: Option<Uuid>,
+    #[diesel(sql_type = Nullable<Timestamptz>)]
+    enabled_at: Option<OffsetDateTime>,
 }
 
 /// The columns of a repository as the domain reads them. The ceiling an organization admin set is
@@ -802,7 +808,8 @@ struct RepositoryRow {
 const REPOSITORY_COLUMNS: &str = "tenant_id, id, github_installation_id, github_repository_id, \
     full_name, default_branch, enabled, protection_preflight_passed, \
     CASE WHEN protection_preflight_passed THEN autonomy_ceiling ELSE 'L0' END AS effective_ceiling, \
-    version, project_map_commit, project_map_attested_by_principal_id, project_map_attested_at";
+    version, project_map_commit, project_map_attested_by_principal_id, project_map_attested_at, \
+    enabled_project_map_commit, enabled_by_principal_id, enabled_at";
 
 fn repository_from_row(row: RepositoryRow) -> Result<Versioned<Repository>, StoreError> {
     // The three columns of the attestation are all set or all empty (a CHECK says so). A row that
@@ -819,6 +826,18 @@ fn repository_from_row(row: RepositoryRow) -> Result<Versioned<Repository>, Stor
             attested_at: from_column(at),
         }),
         _ => return Err(corrupt("project map attestation")),
+    };
+    // The record of the enabling exists exactly while the repository is enabled, and a CHECK says
+    // so. A row that breaks it is corrupt, and it is not read as "enabled for nothing".
+    let enabled_for = match (row.enabled, row.enabled_project_map_commit, row.enabled_at) {
+        (false, None, None) if row.enabled_by_principal_id.is_none() => None,
+        (true, Some(commit), Some(at)) => Some(EnabledFor {
+            commit: ProjectMapCommit::new(&commit)
+                .map_err(|_| corrupt("enabled project map commit"))?,
+            enabled_by: row.enabled_by_principal_id.map(PrincipalId::from_uuid),
+            enabled_at: from_column(at),
+        }),
+        _ => return Err(corrupt("enabled record")),
     };
     Ok(Versioned {
         value: Repository {
@@ -839,6 +858,7 @@ fn repository_from_row(row: RepositoryRow) -> Result<Versioned<Repository>, Stor
             autonomy_ceiling: AutonomyLevel::parse(&row.effective_ceiling)
                 .map_err(|_| corrupt("autonomy ceiling"))?,
             project_map,
+            enabled_for,
         },
         version: version_from_column(row.version)?,
     })
@@ -934,48 +954,77 @@ async fn register_repository(
 struct Standing {
     #[diesel(sql_type = BigInt)]
     version: i64,
+    #[diesel(sql_type = Nullable<Text>)]
+    map_commit: Option<String>,
     #[diesel(sql_type = Bool)]
-    has_map: bool,
-    #[diesel(sql_type = Bool)]
-    attestor_ok: bool,
+    person_ok: bool,
+}
+
+/// What a change of a repository was, for the answer when it changed no row.
+enum RepositoryChange<'a> {
+    /// A person attests the map: the attestor must be an active human of the tenant.
+    Attest(PrincipalId),
+    /// A person enables the repository for the commit they name.
+    Enable {
+        commit: &'a ProjectMapCommit,
+        by: PrincipalId,
+    },
+    /// The repository is switched off.
+    Disable,
+}
+
+impl RepositoryChange<'_> {
+    fn person(&self) -> Option<PrincipalId> {
+        match self {
+            Self::Attest(by) | Self::Enable { by, .. } => Some(*by),
+            Self::Disable => None,
+        }
+    }
 }
 
 /// Why an update of a repository changed no row. A row that does not exist is `NotFound`. A row at
 /// another version is `Conflict`. A row at the right version means a rule stopped the change:
-/// enabling without a map, or an attestor who is not an active human of the tenant.
+/// enabling without a map, enabling for a commit that is not the one attested now, or a person who
+/// is not an active human of the tenant.
 async fn repository_not_changed(
     connection: &mut AsyncPgConnection,
     tenant: TenantId,
     id: RepositoryId,
     expected: Version,
-    attestor: Option<PrincipalId>,
+    change: RepositoryChange<'_>,
     operation: &'static str,
 ) -> Result<StoreError, StoreError> {
     let standing = sql_query(
-        "SELECT r.version, (r.project_map_commit IS NOT NULL) AS has_map, \
+        "SELECT r.version, r.project_map_commit AS map_commit, \
                 EXISTS (SELECT 1 FROM principals p \
                          WHERE p.tenant_id = r.tenant_id AND p.id = $3 AND p.kind = 'human' \
-                           AND p.disabled_at IS NULL) AS attestor_ok \
+                           AND p.disabled_at IS NULL) AS person_ok \
            FROM repositories r WHERE r.tenant_id = $1 AND r.id = $2",
     )
     .bind::<SqlUuid, _>(tenant.as_uuid())
     .bind::<SqlUuid, _>(id.as_uuid())
-    .bind::<Nullable<SqlUuid>, _>(attestor.map(|principal| principal.as_uuid()))
+    .bind::<Nullable<SqlUuid>, _>(change.person().map(|principal| principal.as_uuid()))
     .get_result::<Standing>(connection)
     .await
     .optional()
     .map_err(|error| database(operation, &error))?;
-    Ok(match standing {
-        None => StoreError::NotFound,
-        Some(row) if row.version != expected.get() => StoreError::Conflict,
-        Some(row) if attestor.is_some() && !row.attestor_ok => {
+    Ok(match (standing, &change) {
+        (None, _) => StoreError::NotFound,
+        (Some(row), _) if row.version != expected.get() => StoreError::Conflict,
+        (Some(row), RepositoryChange::Attest(_)) if !row.person_ok => {
             StoreError::Constraint(ConstraintRule::ProjectMapRule)
         }
-        Some(row) if attestor.is_none() && !row.has_map => {
-            StoreError::Constraint(ConstraintRule::ProjectMapRule)
-        }
+        (Some(row), RepositoryChange::Enable { commit, .. }) => match row.map_commit {
+            None => StoreError::Constraint(ConstraintRule::ProjectMapRule),
+            Some(on_file) if on_file != commit.as_str() => {
+                StoreError::Constraint(ConstraintRule::ProjectMapChanged)
+            }
+            Some(_) if !row.person_ok => StoreError::Constraint(ConstraintRule::ProjectMapRule),
+            // The version is current and the rules hold: a concurrent change slipped in between.
+            Some(_) => StoreError::Conflict,
+        },
         // The version is current and the rules hold: a concurrent change slipped in between.
-        Some(_) => StoreError::Conflict,
+        (Some(_), _) => StoreError::Conflict,
     })
 }
 
@@ -1014,36 +1063,41 @@ async fn attest_project_map(
             tenant,
             id,
             expected,
-            Some(attested_by),
+            RepositoryChange::Attest(attested_by),
             "attest_project_map",
         )
         .await?),
     }
 }
 
-async fn set_repository_enabled(
+/// Switches the repository on for `commit`. The statement names the commit and the person, so the
+/// table holds them to the map on file (REG-1) and a refusal does not abort the transaction.
+async fn enable_repository(
     connection: &mut AsyncPgConnection,
     tenant: TenantId,
     id: RepositoryId,
     expected: Version,
-    enabled: bool,
+    commit: &ProjectMapCommit,
+    enabled_by: PrincipalId,
 ) -> Result<Version, StoreError> {
-    // Enabling needs a map commit, in the statement as well as in the table, so that a refusal does
-    // not abort the transaction.
     let updated = sql_query(
-        "UPDATE repositories SET enabled = $4, version = version + 1 \
-          WHERE tenant_id = $1 AND id = $2 AND version = $3 \
-            AND ($4 = false OR project_map_commit IS NOT NULL) \
+        "UPDATE repositories SET enabled = true, enabled_project_map_commit = $4, \
+                enabled_by_principal_id = $5, version = version + 1 \
+          WHERE tenant_id = $1 AND id = $2 AND version = $3 AND project_map_commit = $4 \
+            AND EXISTS (SELECT 1 FROM principals p \
+                         WHERE p.tenant_id = $1 AND p.id = $5 AND p.kind = 'human' \
+                           AND p.disabled_at IS NULL) \
         RETURNING version",
     )
     .bind::<SqlUuid, _>(tenant.as_uuid())
     .bind::<SqlUuid, _>(id.as_uuid())
     .bind::<BigInt, _>(expected.get())
-    .bind::<Bool, _>(enabled)
+    .bind::<Text, _>(commit.as_str())
+    .bind::<SqlUuid, _>(enabled_by.as_uuid())
     .get_result::<NewVersion>(connection)
     .await
     .optional()
-    .map_err(|error| database("set_repository_enabled", &error))?;
+    .map_err(|error| database("enable_repository", &error))?;
     match updated {
         Some(row) => version_from_column(row.version),
         None => Err(repository_not_changed(
@@ -1051,8 +1105,44 @@ async fn set_repository_enabled(
             tenant,
             id,
             expected,
-            None,
-            "set_repository_enabled",
+            RepositoryChange::Enable {
+                commit,
+                by: enabled_by,
+            },
+            "enable_repository",
+        )
+        .await?),
+    }
+}
+
+/// Switches the repository off. The table empties the record of the enabling.
+async fn disable_repository(
+    connection: &mut AsyncPgConnection,
+    tenant: TenantId,
+    id: RepositoryId,
+    expected: Version,
+) -> Result<Version, StoreError> {
+    let updated = sql_query(
+        "UPDATE repositories SET enabled = false, version = version + 1 \
+          WHERE tenant_id = $1 AND id = $2 AND version = $3 \
+        RETURNING version",
+    )
+    .bind::<SqlUuid, _>(tenant.as_uuid())
+    .bind::<SqlUuid, _>(id.as_uuid())
+    .bind::<BigInt, _>(expected.get())
+    .get_result::<NewVersion>(connection)
+    .await
+    .optional()
+    .map_err(|error| database("disable_repository", &error))?;
+    match updated {
+        Some(row) => version_from_column(row.version),
+        None => Err(repository_not_changed(
+            connection,
+            tenant,
+            id,
+            expected,
+            RepositoryChange::Disable,
+            "disable_repository",
         )
         .await?),
     }
@@ -1129,14 +1219,25 @@ impl RepositoryOps for PgTx {
         })
     }
 
-    async fn set_repository_enabled(
+    async fn enable_repository(
         &mut self,
         id: RepositoryId,
         expected: Version,
-        enabled: bool,
+        commit: ProjectMapCommit,
+        enabled_by: PrincipalId,
     ) -> Result<Version, StoreError> {
         call!(self, connection, tenant => {
-            set_repository_enabled(connection, tenant, id, expected, enabled)
+            enable_repository(connection, tenant, id, expected, &commit, enabled_by)
+        })
+    }
+
+    async fn disable_repository(
+        &mut self,
+        id: RepositoryId,
+        expected: Version,
+    ) -> Result<Version, StoreError> {
+        call!(self, connection, tenant => {
+            disable_repository(connection, tenant, id, expected)
         })
     }
 }

@@ -23,7 +23,7 @@ factory-cli approve-dependency  --api URL --token-file FILE [--key K] [--stage-r
 factory-cli approve-build-code  --api URL --token-file FILE [--key K] [--stage-run ID] JOB NAME VERSION [CHECKSUM] reason...
 factory-cli repository register     --api URL --token-file FILE [--key K] --installation ID --github-repository ID --name OWNER/NAME [--default-branch BRANCH]
 factory-cli repository confirm-map  --api URL --token-file FILE [--key K] REPOSITORY COMMIT reason...
-factory-cli repository enable       --api URL --token-file FILE [--key K] REPOSITORY [reason...]
+factory-cli repository enable       --api URL --token-file FILE [--key K] REPOSITORY COMMIT [reason...]
 factory-cli repository disable      --api URL --token-file FILE [--key K] REPOSITORY [reason...]
 factory-cli repository show         --api URL --token-file FILE REPOSITORY
 factory-cli probe    --protected-checkout DIR [--images-catalog FILE] [--profile production|local|test]

@@ -10,11 +10,18 @@
 //!    registration writes.
 //! 2. **Attest the project map** (`POST /v1/repositories/{id}/project-map`). A person says that
 //!    commit `C` of the default branch holds the project map, and why they are able to say so.
-//! 3. **Enable** (`POST /v1/repositories/{id}/enable`). Refused with the code
-//!    `project_map_not_attested` until step 2 happened. The table refuses the same change for every
-//!    role, so this check is a clear answer and not the only guard.
+//! 3. **Enable** (`POST /v1/repositories/{id}/enable`). The body names the map commit the approver
+//!    means, as an approval elsewhere in this system is bound to the head the person saw. Refused
+//!    with the code `project_map_not_attested` until step 2 happened, and with `project_map_changed`
+//!    when the commit named is not the one attested now. The table refuses the same changes for
+//!    every role, so these checks are clear answers and not the only guard.
 //! 4. **Disable** (`POST /v1/repositories/{id}/disable`). A webhook and a job submission for a
 //!    disabled repository are dropped by the code that already reads `repositories.enabled`.
+//!
+//! A repository that is enabled does not stay enabled over another map. Attesting another commit,
+//! or the same commit by another person, switches it off in the same change (the table does it, for
+//! every writer), and this module writes a `repository.disabled` audit record in the same
+//! transaction, so that the record of who did what shows it.
 //!
 //! # An attestation is not a verification
 //!
@@ -93,10 +100,19 @@ struct AttestBody {
     reason: String,
 }
 
-/// The body of `POST /v1/repositories/{id}/enable` and `.../disable`.
+/// The body of `POST /v1/repositories/{id}/disable`.
 #[derive(Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ChangeBody {
+    #[serde(default)]
+    reason: Option<String>,
+}
+
+/// The body of `POST /v1/repositories/{id}/enable`: the map commit the approver means.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct EnableBody {
+    commit: String,
     #[serde(default)]
     reason: Option<String>,
 }
@@ -196,6 +212,13 @@ fn repository_json(row: &Versioned<Repository>) -> Value {
             "verified_by_engine": false,
         })
     });
+    let enabled_for = repository.enabled_for.as_ref().map(|record| {
+        json!({
+            "commit": record.commit.as_str(),
+            "enabled_by": record.enabled_by.map(|by| by.as_text()),
+            "enabled_at": record.enabled_at.as_text(),
+        })
+    });
     json!({
         "repository_id": repository.id.as_text(),
         "full_name": repository.full_name,
@@ -203,6 +226,7 @@ fn repository_json(row: &Versioned<Repository>) -> Value {
         "github_installation_id": repository.installation.0,
         "github_repository_id": repository.github_repository_id.0,
         "enabled": repository.enabled,
+        "enabled_for": enabled_for,
         "protection_preflight_passed": repository.protection_preflight_passed,
         "autonomy_ceiling": repository.autonomy_ceiling.as_str(),
         "version": row.version.get(),
@@ -310,18 +334,42 @@ fn event(
 async fn finish(
     state: &ApiState,
     caller: &Caller,
-    mut tx: Box<dyn Tx>,
+    tx: Box<dyn Tx>,
     audit: NewAuditEvent,
 ) -> Result<(), ApiError> {
+    finish_with(state, caller, tx, audit, None).await
+}
+
+/// The same, with a second record that follows the first in the same transaction: the effect that
+/// the table had on another field of the row.
+async fn finish_with(
+    state: &ApiState,
+    caller: &Caller,
+    mut tx: Box<dyn Tx>,
+    audit: NewAuditEvent,
+    effect: Option<NewAuditEvent>,
+) -> Result<(), ApiError> {
     let id = audit.id;
-    match tx.record_audit(audit).await {
-        Ok(_) => {}
-        Err(StoreError::Constraint(ConstraintRule::IdReusedWithDifferentContent)) => {
-            return Err(ApiError::Conflict);
+    for event in std::iter::once(audit).chain(effect) {
+        match tx.record_audit(event).await {
+            Ok(_) => {}
+            Err(StoreError::Constraint(ConstraintRule::IdReusedWithDifferentContent)) => {
+                return Err(ApiError::Conflict);
+            }
+            Err(other) => return Err(other.into()),
         }
-        Err(other) => return Err(other.into()),
     }
     commit(state, caller.scope(), tx, Witness::Audit(id)).await
+}
+
+/// True when the stored registration is the one the request offers: all four facts, not the name
+/// alone (finding REG-5). The flags, the version and the map move after the insert and are not
+/// compared.
+fn same_request(stored: &Repository, parsed: &RegisterBody) -> bool {
+    stored.installation.0 == parsed.installation_id
+        && stored.github_repository_id.0 == parsed.github_repository_id
+        && stored.full_name == parsed.full_name
+        && stored.default_branch == parsed.default_branch
 }
 
 /// `POST /v1/repositories`.
@@ -372,6 +420,11 @@ pub async fn register(
     if is_replay(&mut *tx, &audit).await? {
         let row = tx.get_repository(id).await?;
         let _ = tx.rollback().await;
+        // The audit record names the repository and its name. The same key with another
+        // installation, GitHub id or branch is another request, and a conflict.
+        if !same_request(&row.value, &parsed) {
+            return Err(ApiError::Conflict);
+        }
         return Ok(changed(&row, false, StatusCode::OK));
     }
     let registered = tx
@@ -409,7 +462,13 @@ pub async fn show(state: &ApiState, caller: &Caller, repository_id: &str) -> Ans
     let mut tx = state.ports.store.begin(caller.scope()).await?;
     let found = tx.get_repository(id).await;
     let _ = tx.rollback().await;
-    Ok(Reply::ok(repository_json(&found?)))
+    let row = found?;
+    // An allowlist entry narrowed to other repositories does not see this one, as it does not see
+    // its jobs (API-1): the answer is the one for a repository that is not there (REG-4).
+    if narrowed_away(state, caller, &row.value.full_name)? {
+        return Err(ApiError::NotFound);
+    }
+    Ok(Reply::ok(repository_json(&row)))
 }
 
 /// `POST /v1/repositories/{repository_id}/project-map`.
@@ -459,11 +518,31 @@ pub async fn attest_map(
         .await
         .map_err(refusal_of_store)?;
     let current = tx.get_repository(id).await?;
-    finish(state, caller, tx, audit).await?;
+    // The table switches an enabled repository off when its map moves. What it did is read from
+    // the row and not worked out again here, and the audit log says so in the same transaction.
+    let switched_off = if row.value.enabled && !current.value.enabled {
+        Some(event(
+            state,
+            caller,
+            &key,
+            "repository.disabled",
+            id,
+            format!("repository {} disabled", id.as_text()),
+            "A person attested the project map again, so the repository is no longer enabled for the map it was enabled for: the map was attested again; enable it again. The engine did not read the repository."
+                .to_owned(),
+        )?)
+    } else {
+        None
+    };
+    finish_with(state, caller, tx, audit, switched_off).await?;
     Ok(changed(&current, true, StatusCode::OK))
 }
 
 /// `POST /v1/repositories/{repository_id}/enable` and `.../disable`.
+///
+/// Enabling names the map commit the approver means. It must be the commit attested now: a map
+/// that was attested again since the approver looked is refused with `project_map_changed`, and
+/// the approver reads the new one and enables it.
 pub async fn switch(
     state: &ApiState,
     caller: &Caller,
@@ -474,8 +553,18 @@ pub async fn switch(
 ) -> Answer {
     let id = parse_id(repository_id, RepositoryId::parse).ok_or(ApiError::NotFound)?;
     let key = idempotency_key(headers)?;
-    let parsed: ChangeBody = decode(body)?;
-    let reason = optional_reason(state, parsed.reason.as_deref())?;
+    let (meant, reason) = if enable {
+        let parsed: EnableBody = decode(body)?;
+        let meant =
+            ProjectMapCommit::new(&parsed.commit).map_err(|_| ApiError::BadRequest("commit"))?;
+        (
+            Some(meant),
+            optional_reason(state, parsed.reason.as_deref())?,
+        )
+    } else {
+        let parsed: ChangeBody = decode(body)?;
+        (None, optional_reason(state, parsed.reason.as_deref())?)
+    };
 
     let (action, name, verb) = if enable {
         (ENABLE, "repository.enabled", "enable")
@@ -485,17 +574,17 @@ pub async fn switch(
     let refused_as = format!("repository.{verb} repository={}", id.as_text());
     let (mut tx, found) = open(state, caller, action, Some(id), None, refused_as).await?;
     let row = found.ok_or(ApiError::NotFound)?;
-    let fixed = if enable {
-        match &row.value.project_map {
-            Some(map) => format!(
-                "A person enabled the repository. It has a project map that a person attested at commit {}. The engine did not verify that map.",
-                map.commit.as_str()
+    let fixed = match &meant {
+        Some(meant) => match &row.value.project_map {
+            Some(map) if map.commit == *meant => format!(
+                "A person enabled the repository for the project map at commit {}, which a person attested. The engine did not verify that map.",
+                meant.as_str()
             ),
-            // The clear answer. The table would refuse this change as well.
+            // The clear answers. The store and the table refuse these changes as well.
+            Some(_) => return Err(ApiError::ProjectMapChanged),
             None => return Err(ApiError::ProjectMapNotAttested),
-        }
-    } else {
-        "A person disabled the repository. Its webhooks are dropped and no job can be submitted for it.".to_owned()
+        },
+        None => "A person disabled the repository. Its webhooks are dropped and no job can be submitted for it. Jobs that exist go on; cancel them one by one to stop them.".to_owned(),
     };
     let audit = event(
         state,
@@ -511,9 +600,14 @@ pub async fn switch(
         let _ = tx.rollback().await;
         return Ok(changed(&current, false, StatusCode::OK));
     }
-    tx.set_repository_enabled(id, row.version, enable)
-        .await
-        .map_err(refusal_of_store)?;
+    match meant {
+        Some(meant) => {
+            tx.enable_repository(id, row.version, meant, caller.principal)
+                .await
+        }
+        None => tx.disable_repository(id, row.version).await,
+    }
+    .map_err(refusal_of_store)?;
     let current = tx.get_repository(id).await?;
     finish(state, caller, tx, audit).await?;
     Ok(changed(&current, true, StatusCode::OK))
@@ -528,6 +622,7 @@ const fn verb_past(enable: bool) -> &'static str {
 fn refusal_of_store(error: StoreError) -> ApiError {
     match error {
         StoreError::Constraint(ConstraintRule::ProjectMapRule) => ApiError::ProjectMapNotAttested,
+        StoreError::Constraint(ConstraintRule::ProjectMapChanged) => ApiError::ProjectMapChanged,
         other => other.into(),
     }
 }

@@ -38,7 +38,7 @@ usage: factory-cli <command> [options]
   approve-build-code  --api URL --token-file FILE [--key K] [--stage-run ID] JOB NAME VERSION [CHECKSUM] reason...
   repository register     --api URL --token-file FILE [--key K] --installation ID --github-repository ID --name OWNER/NAME [--default-branch BRANCH]
   repository confirm-map  --api URL --token-file FILE [--key K] REPOSITORY COMMIT reason...
-  repository enable       --api URL --token-file FILE [--key K] REPOSITORY [reason...]
+  repository enable       --api URL --token-file FILE [--key K] REPOSITORY COMMIT [reason...]
   repository disable      --api URL --token-file FILE [--key K] REPOSITORY [reason...]
   repository show         --api URL --token-file FILE REPOSITORY
   probe    --protected-checkout DIR [--images-catalog FILE] [--profile production|local|test]
@@ -898,8 +898,33 @@ fn repository_change(
                 "attested",
             )
         }
-        RepositoryChange::Enable | RepositoryChange::Disable => {
-            let enable = change == RepositoryChange::Enable;
+        RepositoryChange::Enable => {
+            // The commit the person read. The API refuses it when the map was attested again since,
+            // so an approval is bound to the map the approver saw.
+            let (Some(id), Some(commit)) = (words.first(), words.get(1)) else {
+                ctx.complain(
+                    "repository enable takes the repository id (a UUID), the commit of the project map you read, and then an optional reason",
+                );
+                return Exit::Failed;
+            };
+            if !is_uuid(id) || !is_commit(commit) {
+                ctx.complain(
+                    "the repository must be a UUID and the commit 40 lowercase hexadecimal characters",
+                );
+                return Exit::Failed;
+            }
+            let reason = words[2..].join(" ");
+            let mut body = json!({"commit": commit});
+            if !reason.is_empty() {
+                if reason.chars().count() < MIN_REASON_CHARS {
+                    ctx.complain("a reason, when given, has at least 10 characters");
+                    return Exit::Failed;
+                }
+                body["reason"] = json!(reason);
+            }
+            (format!("/v1/repositories/{id}/enable"), body, "enabled")
+        }
+        RepositoryChange::Disable => {
             let Some(id) = words.first().filter(|id| is_uuid(id)) else {
                 ctx.complain(
                     "this command takes the repository id (a UUID), then an optional reason",
@@ -915,14 +940,7 @@ fn repository_change(
             } else {
                 json!({"reason": reason})
             };
-            (
-                format!(
-                    "/v1/repositories/{id}/{}",
-                    if enable { "enable" } else { "disable" }
-                ),
-                body,
-                if enable { "enabled" } else { "disabled" },
-            )
+            (format!("/v1/repositories/{id}/disable"), body, "disabled")
         }
     };
     let client = match client(&parsed.options, env, true, ctx) {

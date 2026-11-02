@@ -85,6 +85,9 @@ pub fn refusal(status: u16, body: &Value) -> String {
         "project_map_not_attested" => {
             "the repository has no project map that a person attested; run repository confirm-map first"
         }
+        "project_map_changed" => {
+            "the project map was attested again since you read it; read the new commit with repository show and enable the repository for that one"
+        }
         _ => "the API refused the request",
     };
     match field {
@@ -290,6 +293,26 @@ fn project_map_line(body: &Value) -> String {
     }
 }
 
+/// Whether the repository is enabled and, when it is, for which map commit and by whom.
+fn enabled_line(body: &Value) -> String {
+    match body.get("enabled_for") {
+        Some(record) if record.is_object() => format!(
+            "yes, for the map at commit {} (enabled by {} at {})",
+            text(record, "commit"),
+            text(record, "enabled_by"),
+            text(record, "enabled_at"),
+        ),
+        _ if body
+            .get("enabled")
+            .and_then(Value::as_bool)
+            .unwrap_or(false) =>
+        {
+            "yes".to_owned()
+        }
+        _ => "no".to_owned(),
+    }
+}
+
 /// One repository.
 #[must_use]
 pub fn repository(body: &Value) -> String {
@@ -311,7 +334,7 @@ pub fn repository(body: &Value) -> String {
         body.get("github_repository_id")
             .and_then(Value::as_u64)
             .unwrap_or(0),
-        flag("enabled"),
+        enabled_line(body),
         text(body, "autonomy_ceiling"),
         flag("protection_preflight_passed"),
         body.get("version").and_then(Value::as_u64).unwrap_or(0),

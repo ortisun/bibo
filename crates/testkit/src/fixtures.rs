@@ -87,9 +87,9 @@ impl SeededRepository<'_> {
                ON CONFLICT (tenant_id, id) DO NOTHING; \
              INSERT INTO repositories (tenant_id, id, github_installation_id, github_repository_id, \
                     full_name, default_branch, autonomy_ceiling, enabled, project_map_commit, \
-                    project_map_attested_by_principal_id) \
+                    project_map_attested_by_principal_id, enabled_by_principal_id) \
                VALUES ('{tenant}', '{id}', {installation}, {github}, '{full_name}', '{branch}', \
-                    '{ceiling}', true, '{commit}', {attestor});",
+                    '{ceiling}', true, '{commit}', {attestor}, {attestor});",
             user = Self::ATTESTOR_GITHUB_USER,
             id = self.id,
             installation = self.installation,

@@ -71,6 +71,7 @@ INSERT INTO expected_column_grants VALUES
   ('stage_runs', 'gate_report_sha256'), ('stage_runs', 'finished_at'), ('stage_runs', 'superseded_at'), ('stage_runs', 'failing_set_sha256'),
   ('repositories', 'bypass_attested_by_principal_id'), ('repositories', 'bypass_attested_at'),
   ('repositories', 'project_map_commit'), ('repositories', 'project_map_attested_by_principal_id'),
+  ('repositories', 'enabled_project_map_commit'), ('repositories', 'enabled_by_principal_id'),
   ('attempts', 'status'), ('attempts', 'version'), ('attempts', 'lease_owner'), ('attempts', 'lease_expires_at'),
   ('attempts', 'last_heartbeat_at'), ('attempts', 'deadline_at'), ('attempts', 'teardown_deadline_at'),
   ('attempts', 'failure_class'), ('attempts', 'output_sha256'), ('attempts', 'sandbox_id'), ('attempts', 'sandbox_leaked'),

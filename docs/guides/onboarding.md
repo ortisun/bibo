@@ -70,13 +70,17 @@ Never paste the token into a chat or a file. Export it in your shell as `FACTORY
 
    **This is a statement by a person. The factory does not check it.** The engine holds no GitHub credential and does not read your repository, so it cannot tell whether the commit exists, whether it is on the default branch or whether the map is any good. It records who said so, when, and why. Check the map before you say so.
 
-   Third, an approver enables the repository. The command is refused with the code `project_map_not_attested` while no map was confirmed, and the database refuses the same change for every role.
+   Third, an approver enables the repository and names the commit they read. `repository show` prints the commit that was confirmed. The command is refused with the code `project_map_not_attested` while no map was confirmed. It is refused with the code `project_map_changed` when the commit you name is not the one confirmed now. The database refuses the same changes for every role.
 
-   ```bash no-run reason="the identifier is a placeholder for your own repository"
-   factory-cli repository enable --api https://factory.example.org --token-file approver.token REPOSITORY_ID
+   ```bash no-run reason="the identifier and the commit are placeholders for your own repository"
+   factory-cli repository enable --api https://factory.example.org --token-file approver.token REPOSITORY_ID 0123456789abcdef0123456789abcdef01234567
    ```
 
-   `factory-cli repository show REPOSITORY_ID` prints what is recorded, and `factory-cli repository disable REPOSITORY_ID` stops the repository from taking tickets again: its webhooks are dropped and no job can be submitted for it. Jobs that already exist are not touched. The commands that change something take `--key`, the idempotency key, so that a retry repeats nothing. Every change writes an audit record. The [production guide](production.md) lists the other inputs a live run needs.
+   A repository stays enabled only for the map it was enabled for. If an operator confirms another commit later, or the same commit by another person, the repository is switched off by that change. The audit log gets a `repository.disabled` record. An approver then reads the new map and enables the repository again with the new commit.
+
+   **An upgrade switches off the repositories that were enabled.** The database migrations that add the project map and the record of the enabling switch off every repository that was enabled before. They write no audit record, so the log does not say who or what switched them off. After such an upgrade, enable each repository again with this third command.
+
+   `factory-cli repository show REPOSITORY_ID` prints what is recorded, and `factory-cli repository disable REPOSITORY_ID` stops the repository from taking tickets again: its webhooks are dropped and no job can be submitted for it. Jobs that already exist are not touched, and their issues keep their last label. To stop the work in an incident, follow the [runbook](../runbooks/stop-work-on-a-repository.md). The commands that change something take `--key`, the idempotency key, so that a retry repeats nothing. Every change writes an audit record. The [production guide](production.md) lists the other inputs a live run needs.
 
 From this point a named requester can apply the `factory` label. For a new solution, use the [design guide](design-with-egm.md) first.
 
@@ -113,6 +117,8 @@ The exit codes are 0 ready, 1 a step failed, 2 wrong arguments, and 3 not finish
 | `NEEDS project-map` | Some directories that hold code have no contract. The lines below it name them. | Step 4. |
 | `NEEDS uncommitted` | Installed or generated files are not committed. | Step 5. |
 | `factory-cli` says the repository has no project map that a person attested | You ran `repository enable` before `repository confirm-map`. | Step 8, second command. |
+| `factory-cli` says the project map was attested again since you read it | An operator confirmed another commit after you ran `repository show`. | Run `repository show`, read the new map, and enable the repository with the new commit. |
+| A repository that took tickets stopped taking them | An operator confirmed the map again, or an upgrade switched off every enabled repository. | Run `repository show`. The enabled line says no. Enable it again with the commit that was read. |
 | `factory-cli` says the request conflicts with a request already recorded, on `repository register` | That GitHub repository is already registered, by you or by someone else, or you reused a key for another request. | Run `repository show` with the identifier you were given. Use a new `--key` for a new request. |
 | `factory-cli` says you are not permitted | Your allowlist entry does not hold the designation. The operator registers, confirms and disables. The approver enables. An entry narrowed to other repositories holds nothing here. | Ask the owner of the allowlist. |
 
