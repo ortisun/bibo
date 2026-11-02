@@ -142,6 +142,9 @@ pub struct St09 {
 pub struct Constructor {
     /// `TenantScope::new` for a call, `ResolvedPrincipal` for a struct literal.
     pub name: String,
+    /// True when any mention of the path is a use, a call or not: `.map(Type::function)` hands the
+    /// function on without a `(` after the path. For a function that must not be reachable at all.
+    pub any_use: bool,
     pub allowed_crates: Vec<String>,
 }
 
@@ -317,6 +320,10 @@ impl SourceScans {
         {
             st_13.push(Constructor {
                 name: text(entry, "name", "an st_13 entry")?,
+                any_use: entry
+                    .get("any_use")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false),
                 allowed_crates: strings(entry, "allowed_crates", "an st_13 entry")?
                     .iter()
                     .map(|c| name(c))

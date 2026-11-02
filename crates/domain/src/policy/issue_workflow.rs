@@ -299,8 +299,14 @@ impl StatusLabel {
 
     /// For the negative tests of an adapter, and for nothing else: a value that skips the policy,
     /// so that an adapter's own check can be shown to refuse a name that the type is built to keep
-    /// out. The architecture check ST-13 lists the crates that may call it. The state is the
-    /// first one, because a forged label does not show a state.
+    /// out. The state is the first one, because a forged label does not show a state.
+    ///
+    /// **It does not exist in a production build** (finding STS-5). It is compiled only for this
+    /// crate's own unit tests and when the feature `forge-status-labels` is on, and only the test
+    /// kit turns that feature on; the test kit is a dev-dependency of every crate that uses it.
+    /// The architecture check ST-13 adds a second barrier: it refuses any mention of the function
+    /// outside the test kit, a call or a pointer to it alike.
+    #[cfg(any(test, feature = "forge-status-labels"))]
     #[doc(hidden)]
     #[must_use]
     pub fn forged_for_negative_tests(name: &str) -> Self {

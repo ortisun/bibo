@@ -8,6 +8,13 @@ publish.workspace = true
 [lints]
 workspace = true
 
+[features]
+# Makes `StatusLabel::forged_for_negative_tests` exist outside this crate's own unit tests. Only the
+# test kit enables it (`crates/testkit/Cargo.toml`), and the test kit is a dev-dependency everywhere,
+# so a production build of any crate of the workspace does not contain the function (finding STS-5).
+# The architecture check ST-13 also refuses any mention of the function outside the test kit.
+forge-status-labels = []
+
 # Every external crate below is on the `domain` allow list in
 # docs/architecture/crate-dependency-rules.json (rule DEP-04). Versions are pinned to the release
 # checked with `cargo info` on 2026-10-27. Features are cut down so that no dependency can read the
