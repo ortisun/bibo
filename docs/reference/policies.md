@@ -71,6 +71,8 @@ Three rules hold for every policy file.
 
 Four rows of `actions` cover the path of a repository: `register_repository` and `confirm_project_map` and `disable_repository` need the `operator` designation, and `enable_repository` needs the `approver`. Confirming a project map is an attestation by a person and not a check: the engine holds no GitHub credential and does not read the repository. These four rows are a default that is pending confirmation by the architect. See the architecture decision record (ADR) [0016](../adr/0016-design-phase-onboarding-and-issue-workflow.md).
 
+A fifth row, `accept_design_approval`, says who approves a design: a person who holds the `approver` designation and applies the label `design: approved`. The intake stage enforces it. The designation itself is read from `intake_requirements.design_approved_by` in `policies/issue-workflow.yaml`, and a test checks that the row and that key name the same designation. The row is a default that is pending confirmation by the architect, in the same ADR.
+
 Auto-merge and deployment are off. In Slice 1 the factory has no merge method. A person merges outside it.
 
 Two rows concern labels on an issue. Both are marked as pending confirmation by the architect, in the architecture decision record (ADR) [0017](../adr/0017-ports-v1-2-issue-status-writer.md).
@@ -92,6 +94,11 @@ The records of the step carry a hash that binds `policies/issue-workflow.yaml` t
 
 The file lists the fifteen labels of the issue workflow: the trigger label `factory`, four `design:` labels that people write, and ten `factory:` labels that the factory writes. It also holds the legal moves between design states.
 
+Two readers use the file in different ways. This difference is on purpose.
+
+- **The intake stage reads it for every attempt, and it is a control.** The stage refuses an issue on the design track whose design is not approved (the section `intake_requirements` below). A file that is missing, sits in a job workspace, does not parse, has a key the loader does not know, lacks `design_approved_by` or breaks a rule gives the stage no rule. The stage then refuses every issue, with or without a design label, and blocks the stage run with the cause `policy_unloadable`. There is no default and no copy of an earlier version. The worker prints `NOT READY: design gate` when it starts, and the health line of the rule is `fail`, never `degraded`. A repaired file takes effect on the next attempt.
+- **The worker reads it at start-up to write the status of jobs, and that is observability.** A problem there never stops a job. The next paragraph says what happens.
+
 The worker reads the file at start-up with the same strict loader as the other policies. A file that misses a job state, names a state the engine does not have, puts the trigger label in a namespace or breaks the label length limits is refused, and the worker starts without writing issue status. It reports a degraded health line, records the fact in the audit log, and writes nothing on any issue until a worker starts with a sound file. The trigger label of the file must also be the `intake.trigger_label` of the approval policy, or the step stays off.
 
 | Section | What it controls |
@@ -100,7 +107,9 @@ The worker reads the file at start-up with the same strict loader as the other p
 | `trigger` | The label that asks the factory to work. No automation applies it. |
 | `design_track` | The design states, the legal moves and what approval of a design needs. |
 | `factory_track` | One label for each job state of the engine. The status label of a job comes only from here. |
-| `intake_requirements` | The design state an issue needs before a job may start. The engine does not enforce it yet. |
+| `intake_requirements` | What intake checks when the trigger label is applied. `design_track_requires` is the design state an issue on the design track needs before a job may start (`approved`). `design_approved_by` is the designation that the person who applied that label must hold (`approver`; never `requester` or `operator`). The engine enforces both. |
+
+**What the intake stage enforces.** An issue that carries a label whose name starts with `design:` (in any letter case, with or without the space) needs the label `design: approved` as its only design label. The labels are read from GitHub at intake, never from the webhook. The person who applied `design: approved` must hold the designation named by `design_approved_by`, found by numeric user ID on the protected allowlist and not narrowed away from the repository. An issue with no such label is not touched. A refusal is the intake outcome `decline`, with the gate `intake-design-approved` reported as BLOCKED and the block code `design_not_approved`. The job shows as blocked. The security policy lists that block in `gate_integrity.non_overridable_blocks`, so no override passes it. The key `design_approved_by` is the engineer's default and is pending confirmation by the architect. See [ADR 0016](../adr/0016-design-phase-onboarding-and-issue-workflow.md).
 
 The Python tool `scripts/lib/issue_workflow.py` checks the same file and renders the JSON that the installer and the GitHub Action read. A test compares what the worker reads with that JSON, so the two cannot disagree about a label.
 
