@@ -1691,6 +1691,32 @@ pub trait RepositoryOps {
         expected: Version,
         passed: bool,
     ) -> Result<Version, StoreError>;
+    // Added on 2026-11-02 (ADR 0016, item 1), after this document was written. `Repository` also
+    // gained `project_map: Option<ProjectMapAttestation>`. The code in `crates/ports/src/store.rs`
+    // is the source for the details.
+    /// Registers a repository: disabled, level L0, no protection result, no project map.
+    /// Idempotent by id and content. A GitHub repository that is taken is `NotFound`.
+    async fn register_repository(
+        &mut self,
+        new: NewRepository,
+    ) -> Result<Inserted<Repository>, StoreError>;
+    /// Records that a person attested the commit that holds the project map. The attestor is an
+    /// active human principal of the tenant. The engine does not look at the repository.
+    async fn attest_project_map(
+        &mut self,
+        id: RepositoryId,
+        expected: Version,
+        commit: ProjectMapCommit,
+        attested_by: PrincipalId,
+    ) -> Result<Version, StoreError>;
+    /// Enables or disables a repository. Enabling needs a project map commit
+    /// (`Constraint(ProjectMapRule)` otherwise).
+    async fn set_repository_enabled(
+        &mut self,
+        id: RepositoryId,
+        expected: Version,
+        enabled: bool,
+    ) -> Result<Version, StoreError>;
 }
 
 /// Stage runs.
@@ -1925,6 +1951,9 @@ pub trait OutboxOps {
 pub trait AuditOps {
     /// Appends one record. The store assigns the sequence, time and hash.
     async fn record_audit(&mut self, event: NewAuditEvent) -> Result<AuditRecord, StoreError>;
+    /// The record with this event id, or `None`. Added on 2026-11-02 (ADR 0016, item 1): a retried
+    /// request finds the record it wrote the first time.
+    async fn find_audit(&mut self, id: AuditEventId) -> Result<Option<AuditRecord>, StoreError>;
     /// Records in the order they were written, from `after_sequence` (exclusive), at most `limit`.
     async fn read_audit(
         &mut self,
