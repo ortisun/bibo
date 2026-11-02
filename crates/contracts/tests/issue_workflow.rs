@@ -240,6 +240,36 @@ fn a_trigger_label_inside_a_namespace_is_refused() {
 }
 
 #[test]
+fn the_type_cannot_hold_the_trigger_label_a_design_label_or_a_label_with_no_name() {
+    let source = ProtectedPolicySource::protected_default_branch(&repo_root(), &[]).unwrap();
+    let policy = PolicyLoader::load_issue_workflow(&source)
+        .expect("loads")
+        .document;
+    let labels = policy.status_labels().expect("sound");
+    for label in labels.iter() {
+        assert_ne!(label.as_str(), policy.trigger.label, "the trigger label");
+        assert!(!label.as_str().starts_with("design: "), "{label}");
+        assert!(label.as_str().len() > STATUS_PREFIX.len(), "{label}");
+    }
+    // The ways to try to make one are refused when the policy loads.
+    let moved = replace_once(&real(), "prefix: \"factory: \"", "prefix: \"design: \"");
+    assert!(
+        format!("{}", refused(&moved)).contains("prefix"),
+        "a namespace moved onto design:"
+    );
+    let nameless = replace_once(&real(), "name: paused,", "name: '',");
+    assert!(
+        format!("{}", refused(&nameless)).contains("not a status label"),
+        "a state with no name"
+    );
+    let spaced = replace_once(&real(), "name: paused,", "name: ' paused',");
+    assert!(
+        refused(&spaced).message.len() > 10,
+        "a space at the edge of the name"
+    );
+}
+
+#[test]
 fn a_label_over_the_length_limit_is_refused() {
     // 50 characters is the limit: "factory: " is 9, so a 42 character name is one too many.
     let long = "a".repeat(42);
