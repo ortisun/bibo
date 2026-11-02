@@ -91,6 +91,34 @@ pub fn authorize(
     labelled_by: Option<(u64, &str)>,
     now: &Timestamp,
 ) -> Authorization {
+    authorize_designation(
+        Designation::Requester,
+        policy,
+        allowlist,
+        tenant,
+        repository,
+        labelled_by,
+        now,
+    )
+}
+
+/// Decides whether the person who applied a label holds `designation` on the allowlist: by numeric
+/// id, not narrowed away from `repository`, not expired, a human. The same rule as [`authorize`],
+/// which asks it for the `requester` designation; the design gate asks it for the designation
+/// that approves a design.
+///
+/// `labelled_by` is the numeric id and the login of that person, as the code host reports them
+/// now, or `None` when the label is not on the issue.
+#[must_use]
+pub fn authorize_designation(
+    designation: Designation,
+    policy: &AuthorityPolicy,
+    allowlist: &Allowlist,
+    tenant: TenantId,
+    repository: &str,
+    labelled_by: Option<(u64, &str)>,
+    now: &Timestamp,
+) -> Authorization {
     let version = allowlist.version_hash().to_owned();
     let Some((id, login)) = labelled_by else {
         return Authorization::Denied {
@@ -114,7 +142,7 @@ pub fn authorize(
         author_association: None,
     };
     match policy.designations(allowlist, &tenant, repository, &actor, now) {
-        Ok(held) if held.contains(&Designation::Requester) => Authorization::Authorized {
+        Ok(held) if held.contains(&designation) => Authorization::Authorized {
             actor: id,
             allowlist_version: version,
         },

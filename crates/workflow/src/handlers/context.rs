@@ -308,6 +308,13 @@ impl<'a> StageContext<'a> {
     pub fn note_audit(&mut self, action: AuditAction) {
         self.notes.lock().audit.push(action);
     }
+
+    /// Like [`note_audit`](Self::note_audit), with the reason to store on the record: fixed words,
+    /// numbers, the names of labels cleaned for display. The engine cuts a reason longer than 1000
+    /// bytes. A reason never holds the text of an issue or of a comment.
+    pub fn note_audit_because(&mut self, action: AuditAction, reason: String) {
+        self.notes.note_fact(action, reason);
+    }
 }
 
 /// Everything `evaluate` receives.

@@ -56,6 +56,7 @@ pub mod decision_signing;
 pub mod decisions;
 pub mod delivery;
 pub mod dependency_decisions;
+pub mod design_gate;
 pub mod drift;
 pub mod external;
 pub mod feedback;

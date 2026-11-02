@@ -12,6 +12,7 @@
 //! | Module | What it holds |
 //! |---|---|
 //! | `authorize` | Who may ask, found by numeric id, and the one refusal notice |
+//! | `design` | The design gate: an issue on the design track needs an approved design, approved by an approver |
 //! | `classify` | The classifier's answer read into a typed value, and the outcome rules |
 //! | `normalize` | The title and description, and the documents the stage returns |
 //! | `seams` | The small traits the stage needs and no port offers |
@@ -28,25 +29,31 @@
 //! * Nothing the issue says changes what the stage grants: the tools of the run are those of the
 //!   agent manifest, read before the text, and the contract is resolved without the text.
 //! * The classifier's answer is checked twice (its schema, then a typed read), and never repaired.
+//! * An issue with a design label starts work only when `design: approved` is the one design label
+//!   on it, read from the code host now, applied by a person who holds the approver designation.
+//!   A policy file that cannot be read refuses every issue; there is no default.
 //!
 //! # Decisions that the specification leaves open
 //!
 //! The classifier's schema has no field for "decline" or "split". The rules in
 //! [`classify::IntakeRules`] map a kind of request (`question` by default) to a decline and a
 //! number of domain tags to a split, and both are data a policy can change. A decline or a split
-//! blocks the stage run, which an operator can override and the override is audited.
+//! blocks the stage run, which an operator can override and the override is audited. The one
+//! decline that no override passes is a design that is not approved (see [`design`]).
 
 pub mod authorize;
 pub mod classify;
 pub mod common;
+pub mod design;
 pub mod handler;
 pub mod normalize;
 pub mod seams;
 
-pub use authorize::{Authorization, DenialReason, NOTICE, authorize};
+pub use authorize::{Authorization, DenialReason, NOTICE, authorize, authorize_designation};
 pub use classify::{Classification, IntakeRules, Outcome, RequestKind};
 pub use handler::{IntakeConfig, IntakeDeps, IntakeHandler, ORIGINAL_GATE, OUTCOME_GATE};
 pub use seams::{
-    AgentOutputCheck, AgentSandboxSpecs, AllowlistSource, CapabilityProbes, FetchedRequest,
-    RecordedRequest, RequestSnapshot, RequestSource, SeamError,
+    AgentOutputCheck, AgentSandboxSpecs, AllowlistSource, CapabilityProbes, DesignGatePolicy,
+    FetchedRequest, RecordedRequest, RefusalReplies, ReplyError, RequestSnapshot, RequestSource,
+    SeamError,
 };

@@ -577,6 +577,16 @@ pub fn assemble_pipeline(inputs: PipelineInputs) -> Result<Pipeline, PipelineErr
             requests: requests.clone(),
             issues: issues.clone(),
             allowlists: allowlist.clone(),
+            // The design rule is read from the protected checkout for every attempt, and the
+            // comment that answers a person goes out through the same change host as the other
+            // replies of the worker.
+            design: Arc::new(crate::design_gate::FileDesignGatePolicy::new(
+                policies.source.clone(),
+            )),
+            replies: Arc::new(crate::design_gate::IssueRefusalReplies::new(
+                Arc::clone(&host),
+                Arc::clone(&ids),
+            )),
             policy: Arc::clone(&policies.engine),
             redactor: Arc::clone(&redactor),
             schemas: checker.clone(),

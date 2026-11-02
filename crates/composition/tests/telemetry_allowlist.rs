@@ -279,6 +279,11 @@ const REVIEWED: &[(&str, &str, &str)] = &[
         "the code of a failed try to write a job's state on its issue, `FailureCode::word`: one of seven static strings, never a message from GitHub",
     ),
     (
+        "crates/composition/src/design_gate.rs",
+        "reason",
+        "why the design rule cannot be read: a sentence the code wrote about the policy file, which may carry the loader's message about it (the name of the file, a key path and a rule, from the protected checkout); no issue text, no model output and no secret",
+    ),
+    (
         "crates/composition/src/issue_status.rs",
         "reason",
         "why the status step is off: a sentence the code wrote about a policy file or an approval row, which may carry the loader's message about the file (a path and a rule, from the protected checkout), cut at 300 characters and stripped of control characters; no issue text, no model output and no secret",

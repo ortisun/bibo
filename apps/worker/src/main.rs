@@ -14,6 +14,8 @@ use std::process::ExitCode;
 use std::sync::Arc;
 
 use factory_composition::config::FactoryConfig;
+use factory_composition::design_gate::FileDesignGatePolicy;
+use factory_composition::health::CheckStatus;
 use factory_composition::issue_status::StatusStep;
 use factory_composition::system::{Shutdown, raise_on_termination};
 use factory_worker::boot::boot;
@@ -62,6 +64,16 @@ fn main() -> ExitCode {
                 return ExitCode::from(3);
             }
         };
+        // The design gate is a control, not a label: when its rule cannot be read, intake refuses
+        // every issue (it never guesses), so the worker says so now, and the stage says it again
+        // each time it refuses one. The worker still starts: jobs that are past intake go on.
+        let gate = FileDesignGatePolicy::new(config.protected_checkout.clone()).health_check();
+        if gate.status != CheckStatus::Pass {
+            eprintln!(
+                "factory-worker: NOT READY: {}: {}",
+                gate.name, gate.detail
+            );
+        }
         let shutdown = Shutdown::new();
         tokio::spawn(raise_on_termination(shutdown.clone()));
         let mut sweep: Vec<_> = token_sweep(&booted, &config, &world).into_iter().collect();

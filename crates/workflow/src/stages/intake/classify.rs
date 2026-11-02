@@ -331,6 +331,10 @@ impl Default for IntakeRules {
 pub enum DeclineReason {
     /// The kind of request is one the rules decline.
     KindNotSupported(RequestKind),
+    /// The issue is on the design track and its design is not approved. The design gate decides
+    /// this, never the classifier (see the `design` module). Unlike the other reasons, no
+    /// override passes it: the one way through is the label of the approved design on the issue.
+    DesignNotApproved,
 }
 
 /// What the stage does with a classified request.

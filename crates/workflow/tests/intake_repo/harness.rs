@@ -15,6 +15,7 @@ use factory_domain::ids::{JobId, TenantId};
 use factory_domain::policy::approval::ApprovalPolicy;
 use factory_domain::policy::authority::{Allowlist, AllowlistEntry};
 use factory_domain::policy::decision::{Designation, GithubUserId};
+use factory_domain::policy::issue_workflow::DesignGate;
 use factory_domain::policy::{PolicyEngine, SecurityPolicy};
 use factory_domain::redaction::{EntropySpec, PatternAction, PatternSpec, Redactor};
 use factory_domain::scope::TenantScope;
@@ -36,9 +37,9 @@ use factory_workflow::engine::{AttemptOutcome, Engine};
 use factory_workflow::handlers::HandlerRegistry;
 use factory_workflow::scheduler::ClaimedAttempt;
 use factory_workflow::stages::intake::{
-    AgentOutputCheck, AgentSandboxSpecs, AllowlistSource, CapabilityProbes, FetchedRequest,
-    IntakeConfig, IntakeDeps, IntakeHandler, IntakeRules, RecordedRequest, RequestSnapshot,
-    RequestSource, SeamError,
+    AgentOutputCheck, AgentSandboxSpecs, AllowlistSource, CapabilityProbes, DesignGatePolicy,
+    FetchedRequest, IntakeConfig, IntakeDeps, IntakeHandler, IntakeRules, RecordedRequest,
+    RefusalReplies, ReplyError, RequestSnapshot, RequestSource, SeamError,
 };
 use serde_json::{Value, json};
 
@@ -250,6 +251,8 @@ impl RequestSource for StoreRequests {
 pub struct FixedAllowlist {
     tenant: TenantId,
     people: Mutex<Vec<(u64, &'static str, Vec<Designation>)>>,
+    /// Entries narrowed to the repositories on the list (`owner/name`).
+    narrowed: Mutex<BTreeMap<u64, Vec<String>>>,
     unreadable: Mutex<bool>,
 }
 
@@ -262,8 +265,17 @@ impl FixedAllowlist {
                 "requester-one",
                 vec![Designation::Requester],
             )]),
+            narrowed: Mutex::new(BTreeMap::new()),
             unreadable: Mutex::new(false),
         }
+    }
+
+    /// Narrows the entry of a person to these repositories (`owner/name`) and no others.
+    pub fn narrow(&self, id: u64, repositories: &[&str]) {
+        self.narrowed.lock().expect("lock").insert(
+            id,
+            repositories.iter().map(|name| (*name).to_owned()).collect(),
+        );
     }
 
     /// Takes a person off the list.
@@ -303,12 +315,134 @@ impl AllowlistSource for FixedAllowlist {
                 github_user_id: GithubUserId::new(*id).expect("a numeric id"),
                 login: (*login).to_owned(),
                 designations: designations.iter().copied().collect(),
-                repositories: None,
+                repositories: self
+                    .narrowed
+                    .lock()
+                    .expect("lock")
+                    .get(id)
+                    .map(|list| list.iter().cloned().collect()),
                 expires_at: None,
             })
             .collect();
         let _ = self.tenant;
         Allowlist::new("allowlist-v1-test", entries).map_err(|_| SeamError::Unavailable)
+    }
+}
+
+/// The design rule of the policy as a value the test can break: a policy file that cannot be read
+/// is `break_it`, and `repair` puts the rule back.
+pub struct FixedDesignPolicy {
+    rule: Mutex<Option<DesignGate>>,
+}
+
+impl FixedDesignPolicy {
+    fn new() -> Self {
+        Self {
+            rule: Mutex::new(Some(factory_testkit::issue_status::design_gate())),
+        }
+    }
+
+    /// The file is missing or broken from now on.
+    pub fn break_it(&self) {
+        *self.rule.lock().expect("lock") = None;
+    }
+
+    /// The file is sound again.
+    pub fn repair(&self) {
+        *self.rule.lock().expect("lock") = Some(factory_testkit::issue_status::design_gate());
+    }
+}
+
+#[async_trait]
+impl DesignGatePolicy for FixedDesignPolicy {
+    fn fidelity(&self) -> Fidelity {
+        Fidelity::Fake
+    }
+
+    async fn current(&self) -> Result<DesignGate, SeamError> {
+        self.rule
+            .lock()
+            .expect("lock")
+            .clone()
+            .ok_or(SeamError::Unavailable)
+    }
+}
+
+/// One comment the stage asked to post.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Posted {
+    pub issue: IssueRef,
+    pub key: String,
+    pub text: String,
+}
+
+/// How the stand-in for the host answers a reply.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReplyMode {
+    Works,
+    HostDown,
+    HostRefuses,
+}
+
+/// Keeps the comments the stage asks for, one for each key, as the host does.
+pub struct RecordingReplies {
+    posted: Mutex<Vec<Posted>>,
+    asked: Mutex<usize>,
+    mode: Mutex<ReplyMode>,
+}
+
+impl RecordingReplies {
+    fn new() -> Self {
+        Self {
+            posted: Mutex::new(Vec::new()),
+            asked: Mutex::new(0),
+            mode: Mutex::new(ReplyMode::Works),
+        }
+    }
+
+    pub fn set(&self, mode: ReplyMode) {
+        *self.mode.lock().expect("lock") = mode;
+    }
+
+    /// The comments on the issue, oldest first.
+    pub fn posted(&self) -> Vec<Posted> {
+        self.posted.lock().expect("lock").clone()
+    }
+
+    /// How many times the stage asked, whatever came of it.
+    pub fn asked(&self) -> usize {
+        *self.asked.lock().expect("lock")
+    }
+}
+
+#[async_trait]
+impl RefusalReplies for RecordingReplies {
+    fn fidelity(&self) -> Fidelity {
+        Fidelity::Fake
+    }
+
+    async fn post(
+        &self,
+        _tenant: TenantId,
+        issue: &IssueRef,
+        key: &str,
+        text: &str,
+    ) -> Result<(), ReplyError> {
+        *self.asked.lock().expect("lock") += 1;
+        match *self.mode.lock().expect("lock") {
+            ReplyMode::HostDown => return Err(ReplyError::Later),
+            ReplyMode::HostRefuses => return Err(ReplyError::NotSent),
+            ReplyMode::Works => {}
+        }
+        let mut posted = self.posted.lock().expect("lock");
+        if !posted.iter().any(|held| held.key == key) {
+            posted.push(Posted {
+                issue: issue.clone(),
+                key: key.to_owned(),
+                text: text.to_owned(),
+            });
+        }
+        Ok(())
     }
 }
 
@@ -405,6 +539,10 @@ pub struct Rig {
     pub issues: Arc<FakeIssueSource>,
     pub requests: Arc<StoreRequests>,
     pub allowlist: Arc<FixedAllowlist>,
+    pub design: Arc<FixedDesignPolicy>,
+    pub replies: Arc<RecordingReplies>,
+    /// True once the test put the issue on the fake host itself.
+    pub host_issue_set: std::sync::atomic::AtomicBool,
     pub check: Arc<StandInCheck>,
     pub issue: IssueRef,
     pub remote: FakeRemote,
@@ -429,6 +567,10 @@ pub struct Options {
     pub cargo_fails_on: Option<&'static str>,
     /// The issue source, instead of a faithful fake. For the tests that break it on purpose.
     pub issue_source: Option<FakeIssueSource>,
+    /// The engine does not hold back an override of a design that is not approved, as if the
+    /// entry of `gate_integrity.non_overridable_blocks` were missing from the security policy.
+    /// The control of the tests that show the entry is what holds the override back.
+    pub without_design_block: bool,
 }
 
 impl Rig {
@@ -440,7 +582,22 @@ impl Rig {
         let scope = options
             .scope
             .unwrap_or_else(|| vec![StageKind::Intake, StageKind::RepositoryIntelligence]);
-        let world = World::with_config(|config| config.scope.clone_from(&scope)).await;
+        // A composition root adds the blocks the security policy lists to the engine's own floor
+        // (`pipeline::non_overridable_blocks`). The rig does the same with the same fixture.
+        let listed = !options.without_design_block;
+        let world = World::with_config(|config| {
+            config.scope.clone_from(&scope);
+            if listed {
+                config.non_overridable_blocks.extend(
+                    security_policy()
+                        .gate_integrity
+                        .non_overridable_blocks
+                        .iter()
+                        .map(|block| (block.gate.clone(), block.code.clone())),
+                );
+            }
+        })
+        .await;
         let runtime = FakeAgentRuntime::new(world.artifacts.clone());
         let mut registry = InMemoryAgentRegistry::new();
         registry.add(classifier_manifest(), Some(CLASSIFIER_PROMPT));
@@ -456,6 +613,8 @@ impl Rig {
         let issues = Arc::new(options.issue_source.unwrap_or_default());
         let requests = Arc::new(StoreRequests::new(world.memory_store(), world.ids.clone()));
         let allowlist = Arc::new(FixedAllowlist::new(world.tenant));
+        let design = Arc::new(FixedDesignPolicy::new());
+        let replies = Arc::new(RecordingReplies::new());
         let check = Arc::new(StandInCheck {
             mode: Mutex::new(CheckMode::Permissive),
             calls: Mutex::new(Vec::new()),
@@ -476,6 +635,8 @@ impl Rig {
                 requests: requests.clone(),
                 issues: issues.clone(),
                 allowlists: allowlist.clone(),
+                design: design.clone(),
+                replies: replies.clone(),
                 policy: policy_engine(),
                 redactor: redactor(),
                 schemas: check.clone(),
@@ -548,6 +709,9 @@ impl Rig {
             issues,
             requests,
             allowlist,
+            design,
+            replies,
+            host_issue_set: std::sync::atomic::AtomicBool::new(false),
             check,
             issue,
             remote,
@@ -635,6 +799,8 @@ impl Rig {
 
     /// Puts the issue of the rig on the fake host with this title and body, opened by `author`.
     pub fn host_has_issue(&self, title: &str, body: &str, author: u64) {
+        self.host_issue_set
+            .store(true, std::sync::atomic::Ordering::SeqCst);
         let now = factory_domain::values::Timestamp::parse("2026-10-28T10:00:00Z").expect("a time");
         self.issues.put_issue(factory_ports::githost::Issue {
             reference: self.issue.clone(),
@@ -647,8 +813,39 @@ impl Rig {
         });
     }
 
-    /// A job that is received and has its request stored, not yet labelled or admitted.
+    /// Sets the labels the fake host shows on the issue of the rig, as the host does now. The
+    /// design gate reads these and no others.
+    pub fn host_shows_labels(&self, labels: &[&str]) {
+        self.host_issue_set
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        let now = factory_domain::values::Timestamp::parse("2026-10-28T10:00:00Z").expect("a time");
+        self.issues.put_issue(factory_ports::githost::Issue {
+            reference: self.issue.clone(),
+            title: "Add a --json flag".to_owned(),
+            body: "Words the author wrote.".to_owned(),
+            author: Self::actor(REQUESTER_ID, "requester-one"),
+            labels: labels.iter().map(|label| (*label).to_owned()).collect(),
+            updated_at: now,
+            fetched_at: now,
+        });
+    }
+
+    /// Records that `actor` applied the label of the approved design.
+    pub async fn approval_applied_by(&self, actor: &GithubActor) {
+        self.issues
+            .seed_label(&self.issue, "design: approved", actor)
+            .await;
+    }
+
+    /// A job that is received and has its request stored, not yet labelled or admitted. The issue
+    /// is on the fake host with the factory label and no design label, unless the test put its own.
     pub async fn received_job(&self, text: &str) -> JobId {
+        if !self
+            .host_issue_set
+            .load(std::sync::atomic::Ordering::SeqCst)
+        {
+            self.host_shows_labels(&[LABEL]);
+        }
         let job = self
             .engine
             .receive_job(
