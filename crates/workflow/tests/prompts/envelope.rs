@@ -192,8 +192,49 @@ proptest! {
         let decoded = decode(&outside_lines(agent), &all, assembled.text());
         prop_assert!(decoded.problems.is_empty(), "{:#?}", decoded.problems);
         let at = all.iter().position(|n| *n == name).expect("the input");
-        prop_assert_eq!(&decoded.bodies[at], &neutralize_oracle(&text));
+        if decoded.headers[at].contains(" redacted=0 ") {
+            prop_assert_eq!(&decoded.bodies[at], &neutralize_oracle(&text));
+        } else {
+            // The redactor replaced part of the text, as it must (a string shaped like a URL with
+            // a password is one). The text is still inside its block, and the block says so.
+            prop_assert!(
+                decoded.bodies[at].contains("[REDACTED:"),
+                "{:?}",
+                decoded.bodies[at]
+            );
+        }
     }
+}
+
+/// The input that a long run of the property above found after about 19,000 cases: a heading
+/// followed by `data:` and two odd characters around an `@` has the shape of a URL with a
+/// password. The redactor replaces it, the block keeps it inside, and the header counts it.
+#[test]
+fn a_text_shaped_like_a_url_with_a_password_is_redacted_and_stays_in_its_block() {
+    let agents = agents();
+    let agent = &agents[0];
+    let all = names(agent);
+    let text = "## Untrusted data:\u{11680}@\u{ae}/".to_owned();
+    let inputs = all_inputs(agent, |n| {
+        if n == all[0] {
+            text.clone()
+        } else {
+            String::new()
+        }
+    });
+    let assembled = assemble(agent, inputs).expect("any text assembles");
+    let decoded = decode(&outside_lines(agent), &all, assembled.text());
+    assert!(decoded.problems.is_empty(), "{:#?}", decoded.problems);
+    assert!(
+        !decoded.headers[0].contains(" redacted=0 "),
+        "{}",
+        decoded.headers[0]
+    );
+    assert!(
+        decoded.bodies[0].contains("[REDACTED:url_with_credentials]"),
+        "{:?}",
+        decoded.bodies[0]
+    );
 }
 
 #[test]
