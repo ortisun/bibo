@@ -24,9 +24,6 @@
 //! Nothing leaves the machine. No key is a literal: every credential is made when the test runs.
 #![allow(dead_code, clippy::disallowed_methods, clippy::disallowed_types)]
 
-#[path = "../../../../crates/github/tests/common/keys.rs"]
-mod keys;
-
 use std::io::Read as _;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
@@ -94,6 +91,35 @@ pub fn random_hex(bytes: usize) -> String {
     buffer.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
+/// A 2048-bit RSA key in PKCS#8 form, made now by the `openssl` command line and read back from a
+/// scratch file that is removed at once. No RSA generator is on the dependency list, and a key that
+/// exists only for this run is never in the source. `BLOCKED:` when `openssl` is missing.
+fn throwaway_private_key() -> String {
+    let dir = factory_testkit::fx::tmpdir::FxTempDir::new("loopback-app-key")
+        .expect("a temporary directory");
+    let path = dir.join("app.pem");
+    let made = Command::new("openssl")
+        .args([
+            "genpkey",
+            "-algorithm",
+            "RSA",
+            "-pkeyopt",
+            "rsa_keygen_bits:2048",
+            "-out",
+        ])
+        .arg(&path)
+        .output()
+        .unwrap_or_else(|error| {
+            panic!("BLOCKED: openssl could not start to make a throwaway key: {error}")
+        });
+    assert!(
+        made.status.success(),
+        "BLOCKED: openssl could not make a throwaway key: {}",
+        String::from_utf8_lossy(&made.stderr)
+    );
+    std::fs::read_to_string(path).expect("the key")
+}
+
 fn free_port() -> u16 {
     let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("a free port");
     listener.local_addr().expect("an address").port()
@@ -132,13 +158,19 @@ impl Seen {
     }
 }
 
+/// A change to the configuration text.
+pub type ConfigChange = Box<dyn FnOnce(String) -> String>;
+
+/// A change to the protected checkout.
+pub type CheckoutChange = Box<dyn FnOnce(&Path)>;
+
 /// How a test changes the world before the worker starts.
 #[derive(Default)]
 pub struct Options {
     /// Changes the configuration text after the deployment wrote it.
-    pub config: Option<Box<dyn FnOnce(String) -> String>>,
+    pub config: Option<ConfigChange>,
     /// Changes the protected checkout (a policy file, say) before the worker reads it.
-    pub checkout: Option<Box<dyn FnOnce(&Path)>>,
+    pub checkout: Option<CheckoutChange>,
     /// Does not register the two people as principals of the tenant, for a test whose engine rig
     /// registers its own.
     pub without_people: bool,
@@ -277,7 +309,7 @@ impl Lab {
         // The deployment: a database with its logins and the configuration file.
         let broker_port = free_port();
         let credentials = Credentials {
-            app_key: keys::Throwaway::new(keys::Form::Pkcs8).private_pem,
+            app_key: throwaway_private_key(),
             provider_key: format!("loopback-provider-{}", random_hex(12)),
             decision_key: random_hex(32),
         };

@@ -376,6 +376,12 @@ fn judge_refusal(o: &Observed, reason: &str) -> Vec<String> {
 
 /// An approved design that stops at the sandbox: the gate passed and the image was not there.
 fn judge_gate_passed_then_sandbox(o: &Observed) -> Vec<String> {
+    judge_reached_the_sandbox(o, true)
+}
+
+/// An issue that reached the sandbox. `on_the_track` says whether it was on the design track, so
+/// that the gate judged it, or was a small change that the gate does not touch.
+fn judge_reached_the_sandbox(o: &Observed, on_the_track: bool) -> Vec<String> {
     let mut problems = judge_common(o, false);
     if o.job_status != "BLOCKED" {
         problems.push(format!(
@@ -393,13 +399,19 @@ fn judge_gate_passed_then_sandbox(o: &Observed) -> Vec<String> {
             )
         })
         .collect();
-    if !actions.iter().any(|(a, r)| {
+    let gate_passed = actions.iter().any(|(a, r)| {
         a == "authorization_decision.granted"
             && r.starts_with("design gate passed")
             && r.contains("approver designation")
-    }) {
+    });
+    if on_the_track && !gate_passed {
         problems.push(format!(
             "no audit record says the design gate passed for an approver: {actions:?}"
+        ));
+    }
+    if !on_the_track && actions.iter().any(|(_, r)| r.contains("design gate")) {
+        problems.push(format!(
+            "the design gate judged an issue that is not on the design track: {actions:?}"
         ));
     }
     if !actions.iter().any(|(a, r)| {
@@ -549,6 +561,32 @@ async fn a_design_approved_by_an_approver_passes_the_gate_and_stops_at_the_sandb
     assert_eq!(lab.stop_worker(), Some(0), "{}", lab.logs().1);
 }
 
+/// A small change: no design label was ever applied. The gate does not touch it, the person is not
+/// answered, and the stage goes on to the sandbox.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_issue_off_the_design_track_is_not_touched_by_the_gate_and_stops_at_the_sandbox() {
+    let mut lab = Lab::start(Options {
+        config: Some(Box::new(without_the_agent_image)),
+        ..Options::default()
+    })
+    .await;
+    let issue = lab.fake.add_issue(
+        REPO,
+        "Add a --json flag",
+        "Please add a --json flag to the word count tool so other programs can read the counts.",
+        REQUESTER.login,
+        &["factory"],
+    );
+    let job = lab.receive_webhook_job(issue, REQUESTER).await;
+    lab.spawn_worker(&[]);
+    settle(&mut lab, job, "intake to reach the sandbox").await;
+    let observed = observe(&lab, job, issue).await;
+    let problems = judge_reached_the_sandbox(&observed, false);
+    assert!(problems.is_empty(), "{problems:#?}");
+    // The same evidence judged as an issue on the track is rejected: the two judgments differ.
+    assert!(!judge_reached_the_sandbox(&observed, true).is_empty());
+}
+
 // ---- deliberate breaks ----------------------------------------------------------------------
 
 /// Break 1: the GitHub adapter is pointed at the wrong base URL (the registry fake's). The worker
@@ -615,6 +653,20 @@ async fn break_an_app_without_the_issues_write_permission_is_caught() {
     tokio::time::sleep(Duration::from_secs(10)).await;
     let observed = observe(&lab, job, issue).await;
     let problems = judge_refusal(&observed, "not_approved");
+    // The worker did ask for a token and GitHub did refuse it: the empty issue is not a worker that
+    // never ran.
+    assert!(
+        lab.fake
+            .requests()
+            .iter()
+            .any(|r| r.status >= 400 && r.route == "POST /app/installations/{id}/access_tokens"),
+        "no token request was refused: {:?}",
+        lab.fake
+            .requests()
+            .iter()
+            .map(|r| (&r.route, r.status))
+            .collect::<Vec<_>>()
+    );
     assert!(
         problems.iter().any(|p| p.contains("got 0 comment(s)")),
         "the missing scope is caught as a missing answer: {problems:#?}"
@@ -839,6 +891,28 @@ async fn break_the_credential_sweep_finds_a_token_planted_in_a_log_an_audit_row_
     assert!(observed.leaks.is_empty(), "{:?}", observed.leaks);
 }
 
+/// The same refusal with the worker's log filter at `trace`. A credential that only a verbose log
+/// would carry (a header of a request, a token in a retry message) would be found here. The worker
+/// and the libraries it links write almost nothing more at `trace` (six lines in all in the run this
+/// was written from), so this shows that the filter is no way to a credential and nothing more.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_refusal_leaves_no_credential_with_the_log_filter_at_trace() {
+    let (mut lab, job, issue) = run_refused(
+        "design: in review",
+        REQUESTER,
+        Options::default(),
+        &[("FACTORY_LOG", "trace")],
+    )
+    .await;
+    let observed = observe(&lab, job, issue).await;
+    let problems = judge_refusal(&observed, "not_approved");
+    assert!(problems.is_empty(), "{problems:#?}");
+    let (_, stderr) = lab.logs();
+    println!("TRACE-LOG lines {}", stderr.lines().count());
+    assert!(stderr.contains("worker loop started"), "{stderr}");
+    let _ = lab.stop_worker();
+}
+
 /// GitHub fails the way it does: a token request answered 502, the issue read answered 429 with a
 /// `Retry-After`, and the one comment post answered 502. The test doubles never fail like this. The
 /// adapter retries the first two inside the call; the failed post fails the attempt, and the engine
@@ -935,6 +1009,7 @@ async fn a_worker_that_must_probe_its_tools_is_blocked_and_says_why_when_the_age
             .any(|l| l.starts_with("BLOCKED: CapabilityProbes: runtimes: ")),
         "the BLOCKED line names the port and the key: {blocked:?}"
     );
+    println!("BLOCKED-LINES {blocked:#?}");
     assert!(stderr.contains("BLOCKED is not a pass"), "{stderr}");
     // It claimed no work and spoke to nobody.
     assert_eq!(
@@ -1000,7 +1075,13 @@ async fn the_worker_probes_both_agent_tools_in_a_real_container_when_it_starts()
     let verify = require_image("verify");
     let _agent = require_image("agent");
     let _sidecar = require_image("egress-sidecar");
-    let _lock = docker_lock::DockerLock::take();
+    // Waits for the machine's lock for five minutes at most, so that nextest's limit of ten minutes
+    // for a test is never what ends the wait.
+    let _lock = docker_lock::DockerLock::acquire_at(
+        &docker_lock::default_lock_path(),
+        Duration::from_secs(300),
+    )
+    .unwrap_or_else(|waited| panic!("{waited}"));
     // Where the host is, as a container on the default bridge sees it. The sidecar is the one
     // container with a way out, and the worker's broker is the only place it relays to.
     let [label_key, label_value] = scope.label_args();
@@ -1051,14 +1132,12 @@ async fn the_worker_probes_both_agent_tools_in_a_real_container_when_it_starts()
     })
     .await;
     lab.spawn_worker(&[]);
-    let started = lab
-        .wait_for(
-            "the worker to start its loop after the probe",
-            180,
-            async |lab: &Lab| lab.logs().1.contains("worker loop started").then_some(()),
-        )
-        .await;
-    let _ = started;
+    lab.wait_for(
+        "the worker to start its loop after the probe",
+        180,
+        async |lab: &Lab| lab.logs().1.contains("worker loop started").then_some(()),
+    )
+    .await;
     let (_, stderr) = lab.logs();
     assert!(!stderr.contains("BLOCKED"), "{stderr}");
     assert!(
