@@ -470,6 +470,13 @@ pub struct GithubConfig {
     /// labels and the comment are observability and no job depends on them.
     #[serde(default = "default_true")]
     pub write_issue_status: bool,
+    /// The address of GitHub's web pages, `scheme://host[:port]` with no path, from which the
+    /// factory builds the links it writes (the link to the draft pull request in the status
+    /// comment of a finished job). The default is `https://github.com`; a GitHub Enterprise server
+    /// has its own. The host must also be one `output_hygiene.allow_link_domains` of
+    /// `policies/security.yaml` lists, or the adapter would strip every link, and the start says so.
+    #[serde(default = "default_github_web")]
+    pub web_base_url: String,
 }
 
 fn default_true() -> bool {
@@ -478,6 +485,30 @@ fn default_true() -> bool {
 
 fn default_github_api() -> String {
     "https://api.github.com".to_owned()
+}
+
+fn default_github_web() -> String {
+    "https://github.com".to_owned()
+}
+
+impl GithubConfig {
+    /// Why `web_base_url` cannot be used, or `None`: the rules of every outside address, and no
+    /// path, because the links are built as `<base>/<owner>/<name>/...`.
+    fn web_base_problem(&self, profile: Profile) -> Option<&'static str> {
+        if let Some(problem) = endpoint_problem(profile, &self.web_base_url) {
+            return Some(problem);
+        }
+        let (_, rest) = self.web_base_url.split_once("://")?;
+        rest.trim_end_matches('/')
+            .contains('/')
+            .then_some("must be scheme://host[:port] with no path")
+    }
+
+    /// The web address without a trailing slash, ready to have `/<owner>/<name>/...` added.
+    #[must_use]
+    pub fn web_root(&self) -> &str {
+        self.web_base_url.trim_end_matches('/')
+    }
 }
 
 /// The package registry the dependency gate asks about a new package (the crates.io API).
@@ -1153,6 +1184,12 @@ impl FactoryConfig {
                     problem,
                 })
             })?;
+            if let Some(problem) = github.web_base_problem(self.profile) {
+                return Err(ConfigError::OutOfRange {
+                    field: "github.web_base_url",
+                    problem,
+                });
+            }
             for installation in &github.installations {
                 installation
                     .tenant
@@ -1299,6 +1336,39 @@ impl FactoryConfig {
             }
         }
         Ok(())
+    }
+
+    /// Checks that the host of the links the factory writes is one the output policy allows
+    /// (`output_hygiene.allow_link_domains`, a listed host or a subdomain of one). The GitHub
+    /// adapter strips a link to any other host, so a `github.web_base_url` that fails this would
+    /// give a comment with no link and no error. It is checked in every profile.
+    ///
+    /// # Errors
+    /// [`ConfigError::OutOfRange`] naming `github.web_base_url`.
+    pub fn check_link_host(
+        &self,
+        policy: &factory_domain::policy::SecurityPolicy,
+    ) -> Result<(), ConfigError> {
+        let Some(github) = &self.github else {
+            return Ok(());
+        };
+        let host = host_of(&github.web_base_url).map(str::to_ascii_lowercase);
+        let allowed = host.as_deref().is_some_and(|host| {
+            policy
+                .output_hygiene
+                .allow_link_domains
+                .iter()
+                .map(|domain| domain.to_ascii_lowercase())
+                .any(|domain| host == domain || host.ends_with(&format!(".{domain}")))
+        });
+        if allowed {
+            Ok(())
+        } else {
+            Err(ConfigError::OutOfRange {
+                field: "github.web_base_url",
+                problem: "the host is not one output_hygiene.allow_link_domains of the security policy lists, so every link to it would be stripped",
+            })
+        }
     }
 
     /// The environment variables the process reads, for the README and the usage text.
@@ -2003,6 +2073,95 @@ mod tests {
             let text = with_sandbox_keys(&local, &format!("docker_config: {bad}"));
             assert_eq!(refused_key(&text), "sandbox.docker_config", "{bad}");
         }
+    }
+
+    // ---- the host of the links the factory writes (LB-08) -------------------------------------------
+
+    fn web_world(web: &str) -> String {
+        LOOPBACK_WORLD.replace(
+            "  api_base_url: http://127.0.0.1:9\n",
+            &format!("  api_base_url: http://127.0.0.1:9\n  web_base_url: '{web}'\n"),
+        )
+    }
+
+    #[test]
+    fn the_web_base_defaults_to_github_dot_com() {
+        let config = FactoryConfig::from_yaml(&with_world("local", LOOPBACK_WORLD)).expect("loads");
+        assert_eq!(
+            config.github.expect("github").web_base_url,
+            "https://github.com"
+        );
+    }
+
+    #[test]
+    fn a_github_enterprise_style_web_base_is_accepted() {
+        for web in [
+            "https://ghe.example.org",
+            "https://ghe.example.org/",
+            "https://ghe.example.org:8443",
+            "https://git.corp.example.org",
+        ] {
+            let config = FactoryConfig::from_yaml(&with_world("local", &web_world(web)))
+                .unwrap_or_else(|e| panic!("{web}: {e}"));
+            assert_eq!(config.github.expect("github").web_base_url, web);
+        }
+        // The loopback interface may use plain http outside production, like every address here.
+        let local =
+            FactoryConfig::from_yaml(&with_world("local", &web_world("http://127.0.0.1:3000")));
+        assert!(local.is_ok(), "{local:?}");
+    }
+
+    #[test]
+    fn a_web_base_that_is_not_a_plain_host_url_is_refused_naming_the_key() {
+        for web in [
+            "http://ghe.example.org",
+            "ghe.example.org",
+            "ftp://ghe.example.org",
+            "https://ghe.example.org/some/path",
+            "https://ghe.example.org?x=1",
+            "https://user@ghe.example.org",
+            "https://ghe.example.org/#x",
+            "https://",
+        ] {
+            let text = with_world("local", &web_world(web));
+            assert_eq!(refused_key(&text), "github.web_base_url", "{web}");
+        }
+        // Production reaches the outside world over https only, the loopback interface included.
+        let production = production_file(
+            "github:\n  app_id: 7\n  key_file: /run/secrets/app\n  web_base_url: 'http://127.0.0.1:3000'\n",
+        );
+        assert_eq!(refused_key(&production), "github.web_base_url");
+    }
+
+    #[test]
+    fn the_link_host_must_be_one_the_output_policy_allows_or_the_start_stops() {
+        let mut policy = crate::startup::tests_support::repository_security_policy();
+        assert_eq!(
+            policy.output_hygiene.allow_link_domains,
+            ["github.com".to_owned()]
+        );
+        let stock = FactoryConfig::from_yaml(&with_world("local", LOOPBACK_WORLD)).expect("loads");
+        assert!(stock.check_link_host(&policy).is_ok());
+        let enterprise = FactoryConfig::from_yaml(&with_world(
+            "local",
+            &web_world("https://ghe.example.org:8443"),
+        ))
+        .expect("loads");
+        // The host is not on the list: the adapter would strip every link, and the start says so.
+        assert!(matches!(
+            enterprise.check_link_host(&policy),
+            Err(ConfigError::OutOfRange {
+                field: "github.web_base_url",
+                ..
+            })
+        ));
+        // A host that only ends like a listed one is not a subdomain of it.
+        policy.output_hygiene.allow_link_domains = vec!["example.org".to_owned()];
+        assert!(enterprise.check_link_host(&policy).is_ok(), "a subdomain");
+        policy.output_hygiene.allow_link_domains = vec!["xample.org".to_owned()];
+        assert!(enterprise.check_link_host(&policy).is_err());
+        policy.output_hygiene.allow_link_domains = vec!["GHE.example.org".to_owned()];
+        assert!(enterprise.check_link_host(&policy).is_ok(), "case");
     }
 
     #[test]

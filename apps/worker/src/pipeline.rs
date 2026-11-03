@@ -268,6 +268,10 @@ pub fn issue_status(
         base_policy_hash: booted.prepared.policies.hash.clone(),
         checkout: config.protected_checkout.clone(),
         untrusted_roots: vec![config.sandbox.workspace_root.clone()],
+        web_base_url: config.github.as_ref().map_or_else(
+            || "https://github.com".to_owned(),
+            |g| g.web_root().to_owned(),
+        ),
     })))
 }
 
