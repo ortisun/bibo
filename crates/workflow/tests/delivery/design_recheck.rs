@@ -14,7 +14,7 @@ use factory_domain::machines::guards::EnvironmentCause;
 use factory_workflow::gates::framework::Resolution;
 use factory_workflow::handlers::StageError;
 
-use crate::design_fakes::{APPROVED, APPROVER_ID, LABEL, REQUESTER_ID, person};
+use crate::design_fakes::{APPROVED, APPROVER_ID, LABEL, REGISTERED_ID, REQUESTER_ID, person};
 use crate::spy::Call;
 use crate::world::{World, canary};
 
@@ -237,6 +237,69 @@ async fn an_approver_taken_off_the_allowlist_after_intake_opens_no_pull_request(
         reason.contains("reason not_applied_by_an_approver"),
         "{reason}"
     );
+}
+
+// ---- the registered repository decides which approver counts (RH-3) ----------------------------------
+
+#[tokio::test]
+async fn an_approver_narrowed_by_id_still_approves_after_the_repository_was_renamed_or_transferred()
+{
+    // The entry was written when the repository was `example-org/old-name`. The registered row
+    // has the new name, or another owner, and the same id: the pull request opens.
+    for registered_as in ["example-org/word-count", "new-owner/moved"] {
+        let world = World::new();
+        world.issue_with_an_approved_design().await;
+        world
+            .design
+            .people
+            .narrow_the_approver_by_id("example-org/old-name", REGISTERED_ID);
+        world
+            .design
+            .repository
+            .register_as(registered_as, REGISTERED_ID);
+        let ran = world.run().await;
+        assert_eq!(ran.problem, None, "{registered_as}");
+        assert_eq!(ran.resolution, Resolution::Pass, "{registered_as}");
+        assert_eq!(world.host.opened().len(), 1, "{registered_as}");
+    }
+}
+
+#[tokio::test]
+async fn a_new_repository_under_the_old_name_opens_no_pull_request_for_an_approver_narrowed_by_id()
+{
+    // The same entry and the same name, another id: the repository was deleted and created again.
+    let world = World::new();
+    world.issue_with_an_approved_design().await;
+    world
+        .design
+        .people
+        .narrow_the_approver_by_id("example-org/word-count", REGISTERED_ID);
+    world
+        .design
+        .repository
+        .register_as("example-org/word-count", REGISTERED_ID + 1);
+    let reason = assert_stopped(&world).await;
+    assert!(
+        reason.contains("reason not_applied_by_an_approver: RepositoryNotListed"),
+        "{reason}"
+    );
+}
+
+#[tokio::test]
+async fn a_registered_row_that_cannot_be_read_opens_no_pull_request_and_is_tried_again() {
+    for gone in [false, true] {
+        let world = World::new();
+        world.issue_with_an_approved_design().await;
+        if gone {
+            world.design.repository.gone();
+        } else {
+            world.design.repository.down();
+        }
+        let result = execute_only(&world).await;
+        assert_eq!(result, Err(StageError::Tool), "gone: {gone}");
+        nothing_was_opened(&world);
+        assert!(world.design.replies.texts().is_empty(), "nobody is told");
+    }
 }
 
 // ---- the code host cannot be read ---------------------------------------------------------------------

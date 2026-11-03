@@ -871,6 +871,7 @@ impl World {
                 self.design.rule.clone(),
                 self.policy.clone(),
                 self.redactor.clone(),
+                self.design.repository.clone(),
             ),
             self.design.people.clone(),
             self.design.replies.clone(),

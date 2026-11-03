@@ -268,9 +268,52 @@ impl WorkspaceProvider for RecordingWorkspaces {
     }
 }
 
-/// The repository of every job: the fixture, on `main`.
+/// GitHub's numeric id of the registered fixture repository, unless a test registers another.
+pub const REGISTERED_ID: u64 = 4242;
+
+/// What the registered row of the repository answers.
+#[derive(Clone)]
+enum Row {
+    /// A row with this name and this GitHub id.
+    Registered(RepoRef, u64),
+    /// The job's repository has no row.
+    Gone,
+    /// The store cannot be read.
+    Down,
+}
+
+/// The repository of every job: the fixture, on `main`, registered with `REGISTERED_ID`. A test
+/// edits the row to show a repository that was renamed, transferred or re-created (finding RH-3),
+/// or that cannot be read.
 pub struct FixedRepository {
-    pub repo: RepoRef,
+    row: Mutex<Row>,
+}
+
+impl FixedRepository {
+    /// A row for `repo` with `REGISTERED_ID`.
+    pub fn new(repo: RepoRef) -> Self {
+        Self {
+            row: Mutex::new(Row::Registered(repo, REGISTERED_ID)),
+        }
+    }
+
+    /// The row holds this name and this GitHub id from now on.
+    pub fn register_as(&self, name: &str, github_repository_id: u64) {
+        *self.row.lock().expect("lock") = Row::Registered(
+            RepoRef::parse(name).expect("a repository name"),
+            github_repository_id,
+        );
+    }
+
+    /// The job's repository has no row from now on.
+    pub fn gone(&self) {
+        *self.row.lock().expect("lock") = Row::Gone;
+    }
+
+    /// The store cannot be read from now on.
+    pub fn down(&self) {
+        *self.row.lock().expect("lock") = Row::Down;
+    }
 }
 
 #[async_trait]
@@ -280,10 +323,16 @@ impl JobRepository for FixedRepository {
     }
 
     async fn of(&self, _tenant: TenantId, _job: JobId) -> Result<TargetRepository, SeamError> {
-        Ok(TargetRepository {
-            repo: self.repo.clone(),
-            branch: BranchName::new("main").map_err(|_| SeamError::Unavailable)?,
-        })
+        let row = self.row.lock().expect("lock").clone();
+        match row {
+            Row::Registered(repo, github_repository_id) => Ok(TargetRepository {
+                repo,
+                branch: BranchName::new("main").map_err(|_| SeamError::Unavailable)?,
+                github_repository_id,
+            }),
+            Row::Gone => Err(SeamError::NotFound),
+            Row::Down => Err(SeamError::Unavailable),
+        }
     }
 }
 

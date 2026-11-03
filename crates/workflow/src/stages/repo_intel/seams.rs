@@ -11,13 +11,18 @@ use factory_ports::workspace::WorkspaceMounts;
 
 pub use crate::stages::intake::seams::SeamError;
 
-/// The repository a job works on and the branch to read.
+/// The repository a job works on and the branch to read, as the registered row holds them.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TargetRepository {
-    /// The repository.
+    /// The repository, by the name the row was registered under.
     pub repo: RepoRef,
     /// The branch whose tip is the base of the job: the default branch of the repository.
     pub branch: BranchName,
+    /// GitHub's numeric id of the repository, as the registered row holds it. The design gate asks
+    /// who may approve a design with this id first, the way the claim hook and the API do (finding
+    /// RH-3), so that a repository that was renamed or transferred keeps its approvers and a new
+    /// repository under the old name does not.
+    pub github_repository_id: u64,
 }
 
 /// Finds the repository of a job. The tenant registered it, and the job names it.

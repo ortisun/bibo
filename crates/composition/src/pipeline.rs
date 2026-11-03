@@ -596,6 +596,9 @@ pub fn assemble_pipeline(inputs: PipelineInputs) -> Result<Pipeline, PipelineErr
             schemas: checker.clone(),
             sandboxes: specs.clone(),
             probes: probes.clone(),
+            // The registered row of the job's repository: the design gate judges the person who
+            // approved a design by its GitHub id (finding RH-3).
+            repositories: repositories.clone(),
         },
     )))?;
     register(Arc::new(RepoIntelHandler::new(
@@ -819,6 +822,7 @@ pub fn assemble_pipeline(inputs: PipelineInputs) -> Result<Pipeline, PipelineErr
                     )),
                     Arc::clone(&policies.engine),
                     Arc::clone(&redactor),
+                    repositories.clone(),
                 ),
                 allowlist.clone(),
                 Arc::new(crate::design_gate::IssueRefusalReplies::new(

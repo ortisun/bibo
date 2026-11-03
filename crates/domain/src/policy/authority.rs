@@ -229,9 +229,11 @@ impl<'a> RepositoryIdentity<'a> {
     }
 
     /// A repository known by its name alone. Only a layer that cannot have the id uses this (the
-    /// stages of the workflow crate, whose inputs carry a name). An entry that lists the id then
-    /// falls back to the name recorded next to it. A caller that has the registered row must use
-    /// [`RepositoryIdentity::registered`].
+    /// requester check of the intake stage and the apply-time re-check of the decisions of people,
+    /// whose inputs carry a name and which sit behind a gate that asked with the id). An entry that
+    /// lists the id then falls back to the name recorded next to it. A caller that has the
+    /// registered row must use [`RepositoryIdentity::registered`]; the design gate does (finding
+    /// RH-3).
     #[must_use]
     pub const fn by_name_only(name: &'a str) -> Self {
         Self {
@@ -1074,6 +1076,34 @@ impl AuthorityPolicy {
         actor: &Actor<'_>,
         now: &Timestamp,
     ) -> Result<BTreeSet<Designation>, AuthorityDenial> {
+        // The callers that pass a name hold no registered row: an entry that lists the id is
+        // judged by the name recorded next to it. A caller that holds the row uses
+        // [`AuthorityPolicy::designations_for`].
+        self.designations_for(
+            allowlist,
+            tenant,
+            &RepositoryIdentity::by_name_only(repository),
+            actor,
+            now,
+        )
+    }
+
+    /// Like [`AuthorityPolicy::designations`], for a repository that is known as
+    /// [`RepositoryIdentity::registered`]: an entry that lists GitHub's numeric id of the
+    /// repository is judged by the ids, so a renamed or transferred repository keeps its people and
+    /// a new repository under the old name does not (finding RH-3). An entry that lists a name only
+    /// is judged by the registered name, without regard to case.
+    ///
+    /// # Errors
+    /// The [`AuthorityDenial`] for the first failing check.
+    pub fn designations_for(
+        &self,
+        allowlist: &Allowlist,
+        tenant: &TenantId,
+        repository: &RepositoryIdentity<'_>,
+        actor: &Actor<'_>,
+        now: &Timestamp,
+    ) -> Result<BTreeSet<Designation>, AuthorityDenial> {
         if actor.kind != ActorKind::User {
             return Err(AuthorityDenial::NotHuman);
         }
@@ -1084,10 +1114,9 @@ impl AuthorityPolicy {
         if entry.expires_at.as_ref().is_some_and(|end| end <= now) {
             return Err(AuthorityDenial::EntryExpired);
         }
-        // The workflow stages know a name and not an id (RR-28): an entry that lists the id is
-        // judged by the name recorded next to it. The layers that hold the registered repository
-        // have asked with the id before a job or a decision reaches here.
-        if !entry.covers_repository(&RepositoryIdentity::by_name_only(repository)) {
+        // A question that carries only a name (`designations`) is judged by the name recorded next
+        // to an entry's id (RR-28). A question that carries the registered row asks with the id.
+        if !entry.covers_repository(repository) {
             return Err(AuthorityDenial::RepositoryNotListed);
         }
         if let Some(at_least) = self.permission_condition

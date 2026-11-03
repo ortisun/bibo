@@ -10,7 +10,7 @@
 //! | `ProjectManifestParser` | [`YamlManifests`] | `DefinitionLoader::project_manifest` (restricted YAML or JSON) |
 //! | `AllowlistSource` | [`FileAllowlist`] | `allowlist/allowlist.yaml` in the protected checkout, on every call |
 //! | `RequestSource` | [`StoreRequests`] | `RequestOps`, with a cache for the synchronous `recorded` |
-//! | `JobRepository` | [`StoreRepositories`] | `JobOps` and `RepositoryOps` |
+//! | `JobRepository` | [`StoreRepositories`] | `JobOps` and `RepositoryOps`: the registered name, default branch and GitHub id (the design gate judges its approver by the id, RH-3) |
 //! | `CapabilityProbes` | [`CachedProbes`] | the probes taken at start-up |
 //! | `Authority` | [`StoreAuthority`] | the allowlist and `PrincipalOps` |
 //! | `Ticker` | `system::TokioTicker` | the tokio timer |
@@ -746,6 +746,7 @@ impl JobRepository for StoreRepositories {
         Ok(TargetRepository {
             repo: RepoRef::parse(&repository.full_name).map_err(|_| SeamError::NotFound)?,
             branch: BranchName::new(&repository.default_branch).map_err(|_| SeamError::NotFound)?,
+            github_repository_id: repository.github_repository_id.0,
         })
     }
 }

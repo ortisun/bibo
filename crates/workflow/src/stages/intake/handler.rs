@@ -70,6 +70,7 @@ use crate::handlers::{
     StageHandler, StageOutput,
 };
 use crate::prompts::{Assembler, AssemblyRequest, ContentClass, Input, Limits, Scope, Source};
+use crate::stages::repo_intel::seams::JobRepository;
 
 /// The gate that reports whether the original request is still the one the stage read.
 pub const ORIGINAL_GATE: &str = "intake-original-preserved";
@@ -145,6 +146,9 @@ pub struct IntakeDeps {
     pub sandboxes: Arc<dyn AgentSandboxSpecs>,
     /// The runtime probes.
     pub probes: Arc<dyn CapabilityProbes>,
+    /// The registered row of the job's repository: its name and GitHub's numeric id. The design
+    /// gate judges the person who approved a design with it (finding RH-3).
+    pub repositories: Arc<dyn JobRepository>,
 }
 
 impl IntakeHandler {
@@ -156,6 +160,7 @@ impl IntakeHandler {
             Arc::clone(&deps.design),
             Arc::clone(&deps.policy),
             Arc::clone(&deps.redactor),
+            Arc::clone(&deps.repositories),
         );
         Self {
             config,
@@ -245,6 +250,7 @@ impl StageHandler for IntakeHandler {
             self.design.fidelity(),
             self.replies.fidelity(),
             self.schemas.fidelity(),
+            self.judge.fidelity(),
         ]
         .contains(&Fidelity::Fake)
         {
