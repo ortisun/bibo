@@ -40,6 +40,8 @@ use factory_ports::registry::VersionReq;
 use factory_ports::sandbox::TeardownReason;
 use serde_json::Value;
 
+use factory_domain::policy::issue_workflow::ReplyCap;
+
 use super::authorize::{Authorization, Labeller, authorize};
 use super::classify::{Classification, DeclineReason, IntakeRules, Outcome, ReadProblem, decide};
 use super::common::{
@@ -56,7 +58,7 @@ use super::normalize::{
 };
 use super::seams::{
     AgentOutputCheck, AgentSandboxSpecs, AllowlistSource, CapabilityProbes, DesignGatePolicy,
-    FetchedRequest, RefusalReplies, ReplyError, RequestSnapshot, RequestSource, SeamError,
+    FetchedRequest, RefusalReplies, RequestSnapshot, RequestSource, SeamError,
 };
 use crate::audit::{AuditAction, AuditDecision, AuditKind};
 use crate::gates::framework::GateDecision;
@@ -477,13 +479,20 @@ impl StageHandler for IntakeHandler {
         {
             Ok(judged) => judged,
             Err(DesignStop::Unjudgeable) => {
-                let status = self
-                    .reply(&identity, &snapshot.issue, Reply::CannotCheck, "")
-                    .await
-                    .ok();
+                // The record first, then the reply, then the record of the reply (DG-9). The rule
+                // cannot be read, so the cap cannot be either: the reply is asked with the least
+                // one, never without one.
                 ctx.note_audit_because(
                     AuditAction::new(AuditKind::AuthorizationDecision, AuditDecision::Denied),
-                    design::unjudgeable_reason(&issue_text, status),
+                    design::unjudgeable_reason(&issue_text, Some(ReplyStatus::ToFollow)),
+                );
+                let cap = ReplyCap::WHEN_THE_POLICY_CANNOT_BE_READ;
+                let status = self
+                    .reply(&identity, &snapshot.issue, Reply::CannotCheck, "", &cap)
+                    .await;
+                ctx.note_audit_because(
+                    AuditAction::new(AuditKind::AuthorizationDecision, AuditDecision::Denied),
+                    design::reply_reason(design::INTAKE_REPLY_LEAD, &issue_text, status, &cap),
                 );
                 // The audit record above names the issue; a log field would be text of outside
                 // origin, so the line says only what happened.
@@ -512,20 +521,13 @@ impl StageHandler for IntakeHandler {
 
         // A refused design ends the stage here: the person is answered, no sandbox is made and no
         // classifier runs. The decision is `decline`, and the gate reports BLOCKED.
-        let mut design_status = None;
-        if let DesignDecision::Refused { reason, .. } = &design_decision {
-            design_status = Some(
-                self.reply(
-                    &identity,
-                    &snapshot.issue,
-                    reason.reply(),
-                    design_rule.approved_label(),
-                )
-                .await?,
-            );
-        }
+        //
         // Every judgement is on the record, also for an issue off the design track, because the
-        // comparison of the text of the job with the issue is made for every job (DG-3).
+        // comparison of the text of the job with the issue is made for every job (DG-3). The record
+        // of a refusal is written **before** the reply is tried (DG-9): a comment endpoint that is
+        // down must not take the record of the block with it. It says the reply is still to follow,
+        // and a second record says what became of it.
+        let refused = matches!(design_decision, DesignDecision::Refused { .. });
         ctx.note_audit_because(
             AuditAction::new(
                 AuditKind::AuthorizationDecision,
@@ -538,10 +540,28 @@ impl StageHandler for IntakeHandler {
             self.redacted_reason(design::audit_reason(
                 &design_decision,
                 &issue_text,
-                design_status,
+                refused.then_some(ReplyStatus::ToFollow),
                 text_check,
             )),
         );
+        let mut design_status = None;
+        if let DesignDecision::Refused { reason, .. } = &design_decision {
+            let cap = design_rule.reply_cap();
+            let status = self
+                .reply(
+                    &identity,
+                    &snapshot.issue,
+                    reason.reply(),
+                    design_rule.approved_label(),
+                    &cap,
+                )
+                .await;
+            ctx.note_audit_because(
+                AuditAction::new(AuditKind::AuthorizationDecision, AuditDecision::Denied),
+                design::reply_reason(design::INTAKE_REPLY_LEAD, &issue_text, status, &cap),
+            );
+            design_status = Some(status);
+        }
         // The stored document, and the report that is made from it, show the labels with every
         // secret replaced. The audit line above is redacted as a whole, on its own.
         let design_document = design::document(
@@ -1036,14 +1056,17 @@ impl IntakeHandler {
         issue: &IssueRef,
         reply: Reply,
         approved_label: &str,
-    ) -> Result<ReplyStatus, StageError> {
+        cap: &ReplyCap,
+    ) -> ReplyStatus {
         let key = format!("design-gate-{}", identity.stage_run);
         let text = reply.text(&self.config.label, approved_label);
-        match self.replies.post(identity.tenant, issue, &key, &text).await {
-            Ok(()) => Ok(ReplyStatus::Posted),
-            Err(ReplyError::NotSent) => Ok(ReplyStatus::NotSent),
-            Err(ReplyError::Later) => Err(StageError::Tool),
-        }
+        // Whatever comes of the reply, the stage goes on: the refusal and its record do not wait
+        // for a comment, and a comment that cannot be posted now is not worth a failed job (DG-9).
+        ReplyStatus::of(
+            self.replies
+                .post(identity.tenant, issue, &key, &text, cap)
+                .await,
+        )
     }
 
     /// The output of a stage that refused the issue: the decision `decline`, a normalized request

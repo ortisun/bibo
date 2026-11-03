@@ -881,12 +881,55 @@ fn dispatch_repo(
                 .issues
                 .get(&parse_number(&params[2])?)
                 .ok_or_else(not_found)?;
-            let list: Vec<Value> = issue
+            // GitHub pages this list too (30 by default, 100 at most), says where the next page is
+            // in the `Link` header, and with `since` lists only the comments written or changed
+            // at that time or later.
+            let per_page = request
+                .query_param("per_page")
+                .and_then(|v| v.parse::<usize>().ok())
+                .map_or(30, |n| n.clamp(1, 100));
+            let page = request
+                .query_param("page")
+                .and_then(|v| v.parse::<usize>().ok())
+                .map_or(1, |n| n.max(1));
+            let since = request
+                .query_param("since")
+                .and_then(|v| factory_domain::values::Timestamp::parse(&v).ok())
+                .map(|at| at.unix_seconds());
+            let listed: Vec<&super::Comment> = issue
                 .comments
                 .iter()
+                .filter(|c| since.is_none_or(|since| c.created_at >= since))
+                .collect();
+            let last_page = listed.len().div_ceil(per_page).max(1);
+            let list: Vec<Value> = listed
+                .into_iter()
+                .skip((page - 1) * per_page)
+                .take(per_page)
                 .map(|c| comment_json(state, repo, issue, c))
                 .collect();
-            Ok(HttpResponse::json(200, &Value::Array(list)))
+            let mut response = HttpResponse::json(200, &Value::Array(list));
+            if page < last_page {
+                let host = request.header("host").unwrap_or("127.0.0.1");
+                let since_part = request
+                    .query_param("since")
+                    .map_or_else(String::new, |v| format!("&since={v}"));
+                let at = |n: usize| {
+                    format!(
+                        "<http://{host}{}?per_page={per_page}&page={n}{since_part}>",
+                        request.path()
+                    )
+                };
+                response = response.with_header(
+                    "Link",
+                    &format!(
+                        "{}; rel=\"next\", {}; rel=\"last\"",
+                        at(page + 1),
+                        at(last_page)
+                    ),
+                );
+            }
+            Ok(response)
         }
         Route::CreateComment => {
             let may_write = require(token, "issues", "write").is_ok()

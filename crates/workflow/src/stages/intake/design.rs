@@ -64,12 +64,13 @@
 
 use factory_domain::ids::TenantId;
 use factory_domain::policy::authority::{Allowlist, AuthorityPolicy};
-use factory_domain::policy::issue_workflow::{DesignGate, DesignLabels, printable_label};
+use factory_domain::policy::issue_workflow::{DesignGate, DesignLabels, ReplyCap, printable_label};
 use factory_domain::values::{GitSha, Timestamp};
 use serde_json::{Value, json};
 
 use super::authorize::{Authorization, DenialReason, Labeller, authorize_designation};
 use super::common::{Executor, GateDefinition, GateFacts};
+use super::seams::ReplyError;
 use crate::handlers::StageError;
 
 /// The gate that reports whether the design of the issue allows work to start.
@@ -390,19 +391,69 @@ impl Reply {
 /// How the reply went, for the record.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ReplyStatus {
+    /// The reply has not been tried yet. The audit record of the decision is written first and
+    /// says this, so that it never depends on the reply (DG-9).
+    ToFollow,
     /// The comment is on the issue.
     Posted,
     /// The host refused, or the issue is gone. It will not be tried again.
     NotSent,
+    /// The host could not be reached or asked to wait. The reply is not tried again: the block and
+    /// its record stand, and a comment is not worth a failed job.
+    Later,
+    /// The issue already holds as many replies in the window as the cap allows. Nothing was posted.
+    CapReached,
+    /// The thread is too long to count the replies in one page. Nothing was posted.
+    NotChecked,
 }
 
 impl ReplyStatus {
-    const fn word(self) -> &'static str {
-        match self {
-            Self::Posted => "posted",
-            Self::NotSent => "not_sent",
+    /// The status that a call of `RefusalReplies::post` came to.
+    #[must_use]
+    pub const fn of(result: Result<(), ReplyError>) -> Self {
+        match result {
+            Ok(()) => Self::Posted,
+            Err(ReplyError::NotSent) => Self::NotSent,
+            Err(ReplyError::Later) => Self::Later,
+            Err(ReplyError::CapReached) => Self::CapReached,
+            Err(ReplyError::NotChecked) => Self::NotChecked,
         }
     }
+
+    const fn word(self) -> &'static str {
+        match self {
+            Self::ToFollow => "to_follow",
+            Self::Posted => "posted",
+            Self::NotSent => "not_sent",
+            Self::Later => "later",
+            Self::CapReached => "capped",
+            Self::NotChecked => "thread_not_checked",
+        }
+    }
+}
+
+/// How the reply record starts for the refusal at intake.
+pub const INTAKE_REPLY_LEAD: &str = "design gate reply";
+
+/// How the reply record starts for the stop before the pull request is opened.
+pub const RECHECK_REPLY_LEAD: &str = "design re-check before the pull request is opened: reply";
+
+/// The audit record of what became of a reply (DG-9): fixed words and numbers, and the issue
+/// reference, which the stage validated. It is written after the record of the decision, and it
+/// is the record that says a cap was reached. A reply that was capped or not checked left no
+/// comment, so this line is what shows the person who reads the log that the factory held back.
+#[must_use]
+pub fn reply_reason(lead: &str, issue: &str, status: ReplyStatus, cap: &ReplyCap) -> String {
+    let detail = if status == ReplyStatus::CapReached {
+        format!(
+            " (at most {} in {} hours)",
+            cap.max(),
+            cap.window().as_secs() / 3600
+        )
+    } else {
+        String::new()
+    };
+    format!("{lead} for issue {issue}: {}{detail}", status.word())
 }
 
 /// The document the stage stores with its decision, which `evaluate` reads back to write the

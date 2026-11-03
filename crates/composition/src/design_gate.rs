@@ -31,10 +31,12 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use factory_contracts::policy::{PolicyLoader, ProtectedPolicySource};
 use factory_domain::ids::{JobId, TenantId};
-use factory_domain::policy::issue_workflow::DesignGate;
+use factory_domain::policy::issue_workflow::{DesignGate, ReplyCap};
 use factory_domain::vocabulary::{Fidelity, StageKind};
 use factory_ports::clock::IdGenerator;
-use factory_ports::githost::{ChangeHost, CommentTarget, GitHostError, GitScope, IssueRef};
+use factory_ports::githost::{
+    CappedPost, ChangeHost, CommentCap, CommentTarget, GitHostError, GitScope, IssueRef,
+};
 use factory_workflow::stages::intake::seams::{
     DesignGatePolicy, RefusalReplies, ReplyError, SeamError,
 };
@@ -43,6 +45,12 @@ use crate::health::CheckResult;
 
 /// The name of the check in the health line.
 pub const CHECK_NAME: &str = "design gate";
+
+/// The family of comments the cap counts (DG-9): every reply of the factory about a design on an
+/// issue, whether the gate at intake or the re-check before the pull request wrote it. The adapter
+/// puts a hidden marker of this family on each comment and counts the markers in one page of the
+/// thread.
+const REPLY_FAMILY: &str = "intake-design";
 
 /// The design rule, read from the protected checkout at every call.
 #[derive(Debug, Clone)]
@@ -135,12 +143,16 @@ impl IssueRefusalReplies {
     }
 }
 
-/// What became of a reply: delivered, to be tried again, or not to be delivered. A host that cannot
-/// be reached or that asks the caller to slow down is tried again; every other refusal (a revoked
-/// or narrow token, a gone issue, text the host will not take) is final.
-fn settle<T>(posted: Result<T, GitHostError>) -> Result<(), ReplyError> {
+/// What became of a reply: delivered, to be tried again, held back, or not to be delivered. A host
+/// that cannot be reached or that asks the caller to slow down is a reply for later; every other
+/// refusal (a revoked or narrow token, a gone issue, text the host will not take) is final. A reply
+/// the cap held back, and one on a thread too long to count, are not errors of the host: nothing was
+/// posted on purpose (DG-9).
+fn settle(posted: Result<CappedPost, GitHostError>) -> Result<(), ReplyError> {
     match posted {
-        Ok(_) => Ok(()),
+        Ok(CappedPost::Posted(_) | CappedPost::AlreadyThere(_)) => Ok(()),
+        Ok(CappedPost::CapReached) => Err(ReplyError::CapReached),
+        Ok(CappedPost::NotChecked) => Err(ReplyError::NotChecked),
         Err(GitHostError::Unavailable | GitHostError::RateLimited { .. }) => Err(ReplyError::Later),
         Err(_) => Err(ReplyError::NotSent),
     }
@@ -159,7 +171,13 @@ impl RefusalReplies for IssueRefusalReplies {
         issue: &IssueRef,
         key: &str,
         text: &str,
+        cap: &ReplyCap,
     ) -> Result<(), ReplyError> {
+        // A cap that cannot be made is a reply that is not sent: the policy type does not hold a
+        // zero, and this is the second place where none could pass.
+        let Some(cap) = CommentCap::new(REPLY_FAMILY, cap.max(), cap.window()) else {
+            return Err(ReplyError::NotSent);
+        };
         // The approval stage holds the narrowest token that may write `issues`: it reads, and
         // writes `issues` only. The identifier of the scope is not a job, so ending its tokens
         // does not touch any job's. The comment is found again by its key, not by this
@@ -173,12 +191,14 @@ impl RefusalReplies for IssueRefusalReplies {
         let target = CommentTarget::Issue(issue.clone());
         let posted = self
             .host
-            .post_comment(&scope, &target, text, &format!("intake-{key}"))
+            .post_capped_comment(&scope, &target, text, &format!("intake-{key}"), &cap)
             .await;
         let result = settle(posted);
-        if result != Err(ReplyError::Later) {
-            let _ = self.host.revoke_job_tokens(scope.job).await;
-        }
+        // The token goes on every outcome (DG-9, part c). A reply that is for later used to keep
+        // it, but a retry gets a scope of its own with a token of its own, so what was kept served
+        // nobody and stayed until GitHub expired it. A revocation that fails is kept by the
+        // adapter and tried again by the cleanup sweep, which finds this identifier open nowhere.
+        let _ = self.host.revoke_job_tokens(scope.job).await;
         result
     }
 }
@@ -187,15 +207,26 @@ impl RefusalReplies for IssueRefusalReplies {
 mod tests {
     use super::*;
 
+    fn comment() -> factory_ports::githost::CommentRef {
+        factory_ports::githost::CommentRef {
+            target: CommentTarget::Issue(IssueRef {
+                repo: factory_ports::paths::RepoRef::parse("org/repo").expect("a repository"),
+                number: 1,
+            }),
+            id: 1,
+        }
+    }
+
     #[test]
-    fn a_host_that_is_down_or_busy_is_tried_again_and_every_other_refusal_is_final() {
-        assert_eq!(settle(Ok(())), Ok(()));
+    fn a_host_that_is_down_or_busy_is_for_later_and_every_other_refusal_is_final() {
+        assert_eq!(settle(Ok(CappedPost::Posted(comment()))), Ok(()));
+        assert_eq!(settle(Ok(CappedPost::AlreadyThere(comment()))), Ok(()));
         assert_eq!(
-            settle::<()>(Err(GitHostError::Unavailable)),
+            settle(Err(GitHostError::Unavailable)),
             Err(ReplyError::Later)
         );
         assert_eq!(
-            settle::<()>(Err(GitHostError::RateLimited { retry_after: None })),
+            settle(Err(GitHostError::RateLimited { retry_after: None })),
             Err(ReplyError::Later)
         );
         for final_refusal in [
@@ -203,12 +234,25 @@ mod tests {
             GitHostError::Unauthorized,
             GitHostError::Forbidden,
             GitHostError::UnsafeText,
+            GitHostError::Rejected(factory_ports::githost::Rejection::Other),
         ] {
             assert_eq!(
-                settle::<()>(Err(final_refusal.clone())),
+                settle(Err(final_refusal.clone())),
                 Err(ReplyError::NotSent),
                 "{final_refusal:?}"
             );
         }
+    }
+
+    #[test]
+    fn a_cap_that_was_reached_and_a_thread_too_long_are_told_apart_from_a_host_that_failed() {
+        assert_eq!(
+            settle(Ok(CappedPost::CapReached)),
+            Err(ReplyError::CapReached)
+        );
+        assert_eq!(
+            settle(Ok(CappedPost::NotChecked)),
+            Err(ReplyError::NotChecked)
+        );
     }
 }

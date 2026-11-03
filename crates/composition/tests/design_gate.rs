@@ -5,6 +5,11 @@
 //! so; each case sits beside the sound file that loads, so a failure is about the damage and not the
 //! setup. The comment is posted through the fake change host of the test kit, labelled as a fake.
 
+#![allow(dead_code)]
+
+#[path = "../../github/tests/common/mod.rs"]
+mod gh;
+
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -12,10 +17,19 @@ use factory_composition::design_gate::{FileDesignGatePolicy, IssueRefusalReplies
 use factory_composition::health::CheckStatus;
 use factory_domain::ids::TenantId;
 use factory_domain::policy::decision::Designation;
+use factory_domain::policy::issue_workflow::ReplyCap;
 use factory_ports::githost::{CommentTarget, IssueRef};
 use factory_ports::paths::RepoRef;
 use factory_testkit::githost::FakeChangeHost;
-use factory_workflow::stages::intake::seams::{DesignGatePolicy, RefusalReplies, SeamError};
+use factory_workflow::stages::intake::seams::{
+    DesignGatePolicy, RefusalReplies, ReplyError, SeamError,
+};
+use gh::harness::{FIXTURE, World};
+
+/// Five replies in a day, as the real policy says.
+fn the_cap() -> ReplyCap {
+    ReplyCap::new(5, 24).expect("a cap")
+}
 
 const FILE: &str = "policies/issue-workflow.yaml";
 
@@ -190,6 +204,7 @@ async fn a_reply_is_one_comment_on_the_issue_for_each_key() {
             &issue,
             "design-gate-run-1",
             "The design is not approved yet.",
+            &the_cap(),
         )
         .await
         .expect("posted");
@@ -200,6 +215,7 @@ async fn a_reply_is_one_comment_on_the_issue_for_each_key() {
             &issue,
             "design-gate-run-1",
             "The design is not approved yet.",
+            &the_cap(),
         )
         .await
         .expect("posted");
@@ -211,8 +227,160 @@ async fn a_reply_is_one_comment_on_the_issue_for_each_key() {
             &issue,
             "design-gate-run-2",
             "The design is not approved yet.",
+            &the_cap(),
         )
         .await
         .expect("posted");
     assert_eq!(host.comments_on(&target).len(), 2);
+}
+
+// ---- DG-9: the cap, the bounded look, and the token of the reply ----------------------------------
+
+/// The replies of the worker over the real adapter and the fake GitHub server, for the tenant and
+/// the repository the harness binds. Returns the world, the replies and the issue.
+fn over_the_adapter() -> (World, IssueRefusalReplies, TenantId, IssueRef) {
+    let world = World::new();
+    let number = world.fake.add_issue(
+        FIXTURE,
+        "Add word count",
+        "Please.",
+        "octocat",
+        &["factory"],
+    );
+    let replies = IssueRefusalReplies::new(
+        Arc::new(world.adapter.change_host()),
+        Arc::new(factory_composition::system::RandomIds::new().expect("random")),
+    );
+    let tenant = factory_testkit::contracts::githost::scope(1, 1).tenant;
+    let issue = IssueRef {
+        repo: RepoRef::parse(FIXTURE).expect("a repository"),
+        number,
+    };
+    (world, replies, tenant, issue)
+}
+
+fn every_token_is_revoked(world: &World) {
+    let tokens = world.fake.tokens();
+    assert!(!tokens.is_empty(), "the reply minted a token");
+    assert!(
+        tokens.iter().all(|token| token.revoked_at.is_some()),
+        "a token of a reply was left live: {tokens:?}"
+    );
+}
+
+#[tokio::test]
+async fn the_sixth_reply_of_a_day_on_one_issue_is_not_posted() {
+    let (world, replies, tenant, issue) = over_the_adapter();
+    for n in 1..=5 {
+        replies
+            .post(
+                tenant,
+                &issue,
+                &format!("design-gate-{n}"),
+                "Not yet.",
+                &the_cap(),
+            )
+            .await
+            .unwrap_or_else(|error| panic!("{n}: {error:?}"));
+    }
+    assert_eq!(
+        replies
+            .post(tenant, &issue, "design-gate-6", "Not yet.", &the_cap())
+            .await,
+        Err(ReplyError::CapReached)
+    );
+    assert_eq!(world.fake.comments(FIXTURE, issue.number).len(), 5);
+    // The same stage run again is the same reply, found and not posted.
+    assert_eq!(
+        replies
+            .post(tenant, &issue, "design-gate-3", "Not yet.", &the_cap())
+            .await,
+        Ok(())
+    );
+    every_token_is_revoked(&world);
+}
+
+#[tokio::test]
+async fn a_thread_too_long_to_check_gets_no_reply() {
+    let (world, replies, tenant, issue) = over_the_adapter();
+    for n in 0..130 {
+        world
+            .fake
+            .add_comment(FIXTURE, issue.number, "octocat", &format!("comment {n}"));
+    }
+    assert_eq!(
+        replies
+            .post(tenant, &issue, "design-gate-1", "Not yet.", &the_cap())
+            .await,
+        Err(ReplyError::NotChecked)
+    );
+    assert_eq!(world.fake.comments(FIXTURE, issue.number).len(), 130);
+    every_token_is_revoked(&world);
+}
+
+#[tokio::test]
+async fn the_token_of_a_reply_is_revoked_whether_it_was_posted_capped_cut_or_will_be_retried() {
+    // DG-9 (c). A comment endpoint that is down leaves the reply to be retried (`Later`), and the
+    // token was kept for the retry until now. Every outcome ends it.
+    let (world, replies, tenant, issue) = over_the_adapter();
+    // Posted.
+    replies
+        .post(tenant, &issue, "design-gate-1", "Not yet.", &the_cap())
+        .await
+        .expect("posted");
+    every_token_is_revoked(&world);
+    // The comment endpoint is down: the listing fails, and the reply is for later.
+    world.fake.fail_always(
+        "GET /repos/{owner}/{repo}/issues/{number}/comments",
+        503,
+        "down",
+    );
+    let before = world.fake.tokens().len();
+    assert_eq!(
+        replies
+            .post(tenant, &issue, "design-gate-2", "Not yet.", &the_cap())
+            .await,
+        Err(ReplyError::Later)
+    );
+    assert!(world.fake.tokens().len() > before, "a token was minted");
+    every_token_is_revoked(&world);
+    // The endpoint takes the listing and fails the post.
+    world.fake.clear_faults();
+    world.fake.fail_always(
+        "POST /repos/{owner}/{repo}/issues/{number}/comments",
+        503,
+        "down",
+    );
+    assert_eq!(
+        replies
+            .post(tenant, &issue, "design-gate-3", "Not yet.", &the_cap())
+            .await,
+        Err(ReplyError::Later)
+    );
+    every_token_is_revoked(&world);
+    // The host refuses (the issue is gone): final, and revoked.
+    world.fake.clear_faults();
+    let gone = IssueRef {
+        repo: issue.repo.clone(),
+        number: 9_999,
+    };
+    assert_eq!(
+        replies
+            .post(tenant, &gone, "design-gate-4", "Not yet.", &the_cap())
+            .await,
+        Err(ReplyError::NotSent)
+    );
+    every_token_is_revoked(&world);
+}
+
+#[tokio::test]
+async fn a_cap_of_zero_cannot_be_made_and_so_cannot_be_asked_for() {
+    // DG-9 (a). The type that carries the cap is built only from a number that is in range.
+    assert!(ReplyCap::new(0, 24).is_none());
+    assert!(ReplyCap::new(5, 0).is_none());
+    assert!(ReplyCap::new(101, 24).is_none());
+    assert!(ReplyCap::new(5, 169).is_none());
+    assert!(ReplyCap::new(5, 24).is_some());
+    // And the closed value for a rule that cannot be read is one a day.
+    assert_eq!(ReplyCap::WHEN_THE_POLICY_CANNOT_BE_READ.max(), 1);
 }

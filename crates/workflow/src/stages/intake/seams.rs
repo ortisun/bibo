@@ -10,7 +10,7 @@ use async_trait::async_trait;
 use factory_domain::contracts::{SchemaRef, Violation};
 use factory_domain::ids::{AttemptId, JobId, TenantId};
 use factory_domain::policy::authority::Allowlist;
-use factory_domain::policy::issue_workflow::DesignGate;
+use factory_domain::policy::issue_workflow::{DesignGate, ReplyCap};
 use factory_domain::values::Sha256Digest;
 use factory_domain::vocabulary::Fidelity;
 use factory_ports::agent::{JobTokenRef, ProbedCapabilities};
@@ -157,6 +157,14 @@ pub enum ReplyError {
     /// The host refused, or the issue is gone. Trying again will not help.
     #[error("the reply cannot be delivered")]
     NotSent,
+    /// The issue already holds as many replies of the factory in the window as the cap allows
+    /// (DG-9). Nothing was posted, and trying again will not help until the window has passed.
+    #[error("the issue already holds as many replies as the cap allows")]
+    CapReached,
+    /// The comments of the window do not fit in the one page the host reads, so it cannot tell
+    /// whether the factory already answered (DG-9). Nothing was posted.
+    #[error("the thread is too long to tell whether the factory already replied")]
+    NotChecked,
 }
 
 /// Answers a person on the issue when the stage refuses it, with a comment.
@@ -174,12 +182,18 @@ pub trait RefusalReplies: Send + Sync {
     /// Posts `text` as a comment on `issue`, once for `key`: a second call with the same key
     /// leaves one comment. The text is plain English written by the stage, never text of the
     /// issue.
+    ///
+    /// At most `cap.max()` replies of the factory stay on one issue in `cap.window()`, counted by
+    /// the host in one bounded page of the thread (DG-9). When the cap is reached, or the thread is
+    /// too long to count, nothing is posted and the error says which. Every implementation
+    /// takes the cap; there is no call without one.
     async fn post(
         &self,
         tenant: TenantId,
         issue: &IssueRef,
         key: &str,
         text: &str,
+        cap: &ReplyCap,
     ) -> Result<(), ReplyError>;
 }
 

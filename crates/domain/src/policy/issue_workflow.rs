@@ -201,6 +201,64 @@ strict! {
         /// protected allowlist, such as `approver`. A designation by name, matched by numeric
         /// GitHub user id; never a GitHub role. Pending confirmation by the architect (ADR 0016).
         pub design_approved_by: String,
+        /// The most replies the factory posts on one issue about its design in the window (DG-9).
+        /// Whole, at least 1 and at most [`REPLY_CAP_MOST`]. A missing key is a load error, and
+        /// zero is a problem of the policy: neither can mean "no limit".
+        pub design_reply_cap_per_issue: u32,
+        /// The length of that window in hours, at least 1 and at most [`REPLY_WINDOW_HOURS_MOST`].
+        pub design_reply_window_hours: u32,
+    }
+}
+
+/// The most replies about a design that the policy may allow on one issue in a window: what the
+/// adapter can count in the one page of comments it reads.
+pub const REPLY_CAP_MOST: u32 = 100;
+
+/// The longest window of that cap in hours: a week.
+pub const REPLY_WINDOW_HOURS_MOST: u32 = 168;
+
+/// How many replies about a design the factory may post on one issue, and over how long (DG-9). It
+/// is built only from numbers that are in range, so a zero cannot be held.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ReplyCap {
+    max: u32,
+    window: std::time::Duration,
+}
+
+impl ReplyCap {
+    /// The cap for a rule that cannot be read: one reply on an issue in a day, the least that still
+    /// tells a person that the factory stopped. It is the closed value, not a default of the
+    /// policy: the policy has none.
+    pub const WHEN_THE_POLICY_CANNOT_BE_READ: Self = Self {
+        max: 1,
+        window: std::time::Duration::from_secs(24 * 3600),
+    };
+
+    /// A cap of `max` replies in `window_hours`, or `None` when either number is zero or above its
+    /// most.
+    #[must_use]
+    pub fn new(max: u32, window_hours: u32) -> Option<Self> {
+        if !(1..=REPLY_CAP_MOST).contains(&max)
+            || !(1..=REPLY_WINDOW_HOURS_MOST).contains(&window_hours)
+        {
+            return None;
+        }
+        Some(Self {
+            max,
+            window: std::time::Duration::from_secs(u64::from(window_hours) * 3600),
+        })
+    }
+
+    /// The most replies in the window.
+    #[must_use]
+    pub const fn max(&self) -> u32 {
+        self.max
+    }
+
+    /// The length of the window.
+    #[must_use]
+    pub const fn window(&self) -> std::time::Duration {
+        self.window
     }
 }
 
@@ -554,6 +612,7 @@ pub struct DesignGate {
     track_key: String,
     approved_label: String,
     approved_by: Designation,
+    reply_cap: ReplyCap,
 }
 
 impl DesignGate {
@@ -567,6 +626,12 @@ impl DesignGate {
     #[must_use]
     pub const fn approved_by(&self) -> Designation {
         self.approved_by
+    }
+
+    /// How many replies about a design the factory may post on one issue, and over how long (DG-9).
+    #[must_use]
+    pub const fn reply_cap(&self) -> ReplyCap {
+        self.reply_cap
     }
 
     /// True when the name is a design label in the wide sense described on the type. Used to put
@@ -825,6 +890,24 @@ impl IssueWorkflowPolicy {
             )),
             Some(_) => {}
         }
+        if ReplyCap::new(
+            self.intake_requirements.design_reply_cap_per_issue,
+            self.intake_requirements.design_reply_window_hours,
+        )
+        .is_none()
+        {
+            found.push(problem(
+                if (1..=REPLY_CAP_MOST).contains(&self.intake_requirements.design_reply_cap_per_issue) {
+                    "intake_requirements.design_reply_window_hours"
+                } else {
+                    "intake_requirements.design_reply_cap_per_issue"
+                },
+                ProblemKind::Constraint,
+                format!(
+                    "the replies about a design are capped by a number from 1 to {REPLY_CAP_MOST} and a window of 1 to {REPLY_WINDOW_HOURS_MOST} hours; zero is not a way to say there is no limit"
+                ),
+            ));
+        }
         let document = &design.approval_requires.design_document;
         if !glob_is_a_design_document(&document.path_glob) {
             found.push(problem(
@@ -909,6 +992,17 @@ impl IssueWorkflowPolicy {
                     "this is not a designation of the allowlist",
                 )]
             })?;
+        let reply_cap = ReplyCap::new(
+            self.intake_requirements.design_reply_cap_per_issue,
+            self.intake_requirements.design_reply_window_hours,
+        )
+        .ok_or_else(|| {
+            vec![problem(
+                "intake_requirements.design_reply_cap_per_issue",
+                ProblemKind::Constraint,
+                "the replies about a design have no usable cap",
+            )]
+        })?;
         let key = self.namespaces.design.prefix.trim().to_ascii_lowercase();
         Ok(DesignGate {
             track_key: key,
@@ -917,6 +1011,7 @@ impl IssueWorkflowPolicy {
                 self.namespaces.design.prefix, self.intake_requirements.design_track_requires
             ),
             approved_by,
+            reply_cap,
         })
     }
 
@@ -1008,6 +1103,7 @@ mod tests {
             track_key: "design:".to_owned(),
             approved_label: "design: approved".to_owned(),
             approved_by: Designation::Approver,
+            reply_cap: ReplyCap::new(5, 24).expect("a cap"),
         }
     }
 

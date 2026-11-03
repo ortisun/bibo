@@ -19,10 +19,11 @@ use factory_domain::ids::{JobId, TenantId};
 use factory_domain::values::Timestamp;
 use factory_domain::vocabulary::{Fidelity, StageKind};
 use factory_ports::githost::{
-    AccountType, ActorLogin, AppId, ChangeHost, CheckRef, CheckRequest, Comment, CommentRef,
-    CommentTarget, DraftPrRequest, GitHostError, GitScope, GithubActor, Issue, IssueRef,
-    IssueSource, LabelApplication, LabelTimeline, LabeledEvent, ProtectionReport, ProtectionSource,
-    PullRequestLifecycle, PullRequestRef, PullRequestState, Rejection, RequiredCheck,
+    AccountType, ActorLogin, AppId, CappedPost, ChangeHost, CheckRef, CheckRequest, Comment,
+    CommentCap, CommentRef, CommentTarget, DraftPrRequest, GitHostError, GitScope, GithubActor,
+    Issue, IssueRef, IssueSource, LabelApplication, LabelTimeline, LabeledEvent, ProtectionReport,
+    ProtectionSource, PullRequestLifecycle, PullRequestRef, PullRequestState, Rejection,
+    RequiredCheck,
 };
 use factory_ports::paths::{BranchName, CommitSha, RepoRef};
 use factory_ports::workspace::{FetchCredential, FetchTarget, PushCredential, PushTarget};
@@ -251,6 +252,9 @@ struct HostState {
     comments: BTreeMap<(CommentTarget, String), CommentRef>,
     /// The text of each comment, by the id of the comment.
     comment_text: BTreeMap<u64, String>,
+    /// The comments posted under a cap, by thread and family (DG-9). The fake keeps no time, so
+    /// every one of them is inside the window.
+    capped: BTreeMap<(CommentTarget, String), Vec<CommentRef>>,
     next_comment: u64,
     tokens: Vec<MintedToken>,
     requests: Vec<RecordedRequest>,
@@ -724,6 +728,45 @@ impl ChangeHost for FakeChangeHost {
         };
         state.comments.insert(stored_key, comment.clone());
         Ok(comment)
+    }
+
+    async fn post_capped_comment(
+        &self,
+        scope: &GitScope,
+        target: &CommentTarget,
+        body: &str,
+        idempotency_key: &str,
+        cap: &CommentCap,
+    ) -> Result<CappedPost, GitHostError> {
+        {
+            let state = self.state.lock().expect("the lock is never poisoned");
+            self.live(&state, scope)?;
+            // The same key finds the same comment, whatever the cap says.
+            let key = (target.clone(), marker(idempotency_key));
+            if !self.has(ChangeHostDefect::DuplicateComments)
+                && let Some(existing) = state.comments.get(&key)
+            {
+                return Ok(CappedPost::AlreadyThere(existing.clone()));
+            }
+            let held = state
+                .capped
+                .get(&(target.clone(), cap.family().to_owned()))
+                .map_or(0, Vec::len);
+            if u32::try_from(held).map_or(true, |held| held >= cap.max()) {
+                return Ok(CappedPost::CapReached);
+            }
+        }
+        let posted = self
+            .post_comment(scope, target, body, idempotency_key)
+            .await?;
+        self.state
+            .lock()
+            .expect("the lock is never poisoned")
+            .capped
+            .entry((target.clone(), cap.family().to_owned()))
+            .or_default()
+            .push(posted.clone());
+        Ok(CappedPost::Posted(posted))
     }
 
     async fn publish_check(

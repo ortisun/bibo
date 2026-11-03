@@ -15,7 +15,7 @@ use factory_domain::ids::{JobId, TenantId};
 use factory_domain::policy::approval::ApprovalPolicy;
 use factory_domain::policy::authority::{Allowlist, AllowlistEntry};
 use factory_domain::policy::decision::{Designation, GithubUserId};
-use factory_domain::policy::issue_workflow::DesignGate;
+use factory_domain::policy::issue_workflow::{DesignGate, ReplyCap};
 use factory_domain::policy::{PolicyEngine, SecurityPolicy};
 use factory_domain::redaction::{EntropySpec, PatternAction, PatternSpec, Redactor};
 use factory_domain::scope::TenantScope;
@@ -382,6 +382,10 @@ pub enum ReplyMode {
     Works,
     HostDown,
     HostRefuses,
+    /// The host already holds as many replies as the cap allows (DG-9).
+    CapReached,
+    /// The thread holds more comments than the one page the host reads (DG-9).
+    ThreadCut,
 }
 
 /// Keeps the comments the stage asks for, one for each key, as the host does.
@@ -389,6 +393,7 @@ pub struct RecordingReplies {
     posted: Mutex<Vec<Posted>>,
     asked: Mutex<usize>,
     mode: Mutex<ReplyMode>,
+    caps: Mutex<Vec<ReplyCap>>,
 }
 
 impl RecordingReplies {
@@ -397,7 +402,13 @@ impl RecordingReplies {
             posted: Mutex::new(Vec::new()),
             asked: Mutex::new(0),
             mode: Mutex::new(ReplyMode::Works),
+            caps: Mutex::new(Vec::new()),
         }
+    }
+
+    /// The cap the stage gave each time it asked, oldest first.
+    pub fn caps(&self) -> Vec<ReplyCap> {
+        self.caps.lock().expect("lock").clone()
     }
 
     pub fn set(&self, mode: ReplyMode) {
@@ -427,11 +438,15 @@ impl RefusalReplies for RecordingReplies {
         issue: &IssueRef,
         key: &str,
         text: &str,
+        cap: &ReplyCap,
     ) -> Result<(), ReplyError> {
         *self.asked.lock().expect("lock") += 1;
+        self.caps.lock().expect("lock").push(*cap);
         match *self.mode.lock().expect("lock") {
             ReplyMode::HostDown => return Err(ReplyError::Later),
             ReplyMode::HostRefuses => return Err(ReplyError::NotSent),
+            ReplyMode::CapReached => return Err(ReplyError::CapReached),
+            ReplyMode::ThreadCut => return Err(ReplyError::NotChecked),
             ReplyMode::Works => {}
         }
         let mut posted = self.posted.lock().expect("lock");

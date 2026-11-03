@@ -142,6 +142,7 @@ impl GithubAdapter {
             Arc::clone(&self.client),
             Arc::clone(&self.outbound),
             self.app_id,
+            Arc::clone(&self.clock),
         )
     }
 
