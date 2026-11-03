@@ -15,6 +15,43 @@ use factory_domain::policy::authority::{
 };
 use factory_domain::policy::decision::{Designation, GithubUserId};
 use factory_domain::values::Timestamp;
+use factory_ports::githost::{AccountType, LabelApplication};
+
+/// Who applied a label, as the code host reports it now: the numeric id, the login (display only)
+/// and the kind of account. Only a person's account can hold a designation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Labeller<'a> {
+    /// The immutable numeric id.
+    pub id: u64,
+    /// The login at the time of the call. Display only.
+    pub login: &'a str,
+    /// What kind of account the code host says it is.
+    pub account: AccountType,
+}
+
+impl<'a> Labeller<'a> {
+    /// The person named by an application of a label.
+    #[must_use]
+    pub fn of(application: &'a LabelApplication) -> Self {
+        Self {
+            id: application.actor.id,
+            login: application.actor.login.as_str(),
+            account: application.actor_type,
+        }
+    }
+
+    /// The kind the authority policy judges. A person's account is a user; every other kind of
+    /// account is not one, whatever its numeric id is and whether the allowlist lists it, and the
+    /// policy refuses it as not human.
+    #[must_use]
+    pub const fn kind(&self) -> ActorKind {
+        match self.account {
+            AccountType::User => ActorKind::User,
+            AccountType::Bot => ActorKind::Bot,
+            AccountType::Organization | AccountType::Other => ActorKind::App,
+        }
+    }
+}
 
 /// The one explanation a refused person gets, whatever the reason. It names no check, no list and
 /// no person, and it says what to do next.
@@ -80,15 +117,16 @@ impl Authorization {
 
 /// Decides whether the person who applied the label may ask the factory to work.
 ///
-/// `labelled_by` is the numeric id and the login of that person, as the code host reports them
-/// now, or `None` when the label is not on the issue. The login is carried for display only.
+/// `labelled_by` is who applied the label, as the code host reports it now, or `None` when the
+/// label is not on the issue. The login is carried for display only; an account that is not a
+/// person's is refused as not human.
 #[must_use]
 pub fn authorize(
     policy: &AuthorityPolicy,
     allowlist: &Allowlist,
     tenant: TenantId,
     repository: &str,
-    labelled_by: Option<(u64, &str)>,
+    labelled_by: Option<Labeller<'_>>,
     now: &Timestamp,
 ) -> Authorization {
     authorize_designation(
@@ -107,8 +145,8 @@ pub fn authorize(
 /// which asks it for the `requester` designation; the design gate asks it for the designation
 /// that approves a design.
 ///
-/// `labelled_by` is the numeric id and the login of that person, as the code host reports them
-/// now, or `None` when the label is not on the issue.
+/// `labelled_by` is who applied the label, as the code host reports it now, or `None` when the
+/// label is not on the issue.
 #[must_use]
 pub fn authorize_designation(
     designation: Designation,
@@ -116,11 +154,11 @@ pub fn authorize_designation(
     allowlist: &Allowlist,
     tenant: TenantId,
     repository: &str,
-    labelled_by: Option<(u64, &str)>,
+    labelled_by: Option<Labeller<'_>>,
     now: &Timestamp,
 ) -> Authorization {
     let version = allowlist.version_hash().to_owned();
-    let Some((id, login)) = labelled_by else {
+    let Some(Labeller { id, login, .. }) = labelled_by else {
         return Authorization::Denied {
             actor: None,
             allowlist_version: version,
@@ -137,7 +175,7 @@ pub fn authorize_designation(
     let actor = Actor {
         github_user_id: numeric,
         login,
-        kind: ActorKind::User,
+        kind: labelled_by.map_or(ActorKind::App, |who| who.kind()),
         github_permission: None,
         author_association: None,
     };

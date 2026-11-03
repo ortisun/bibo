@@ -19,10 +19,10 @@ use factory_domain::ids::{JobId, TenantId};
 use factory_domain::values::Timestamp;
 use factory_domain::vocabulary::{Fidelity, StageKind};
 use factory_ports::githost::{
-    ActorLogin, AppId, ChangeHost, CheckRef, CheckRequest, Comment, CommentRef, CommentTarget,
-    DraftPrRequest, GitHostError, GitScope, GithubActor, Issue, IssueRef, IssueSource,
-    LabelApplication, ProtectionReport, ProtectionSource, PullRequestLifecycle, PullRequestRef,
-    PullRequestState, Rejection, RequiredCheck,
+    AccountType, ActorLogin, AppId, ChangeHost, CheckRef, CheckRequest, Comment, CommentRef,
+    CommentTarget, DraftPrRequest, GitHostError, GitScope, GithubActor, Issue, IssueRef,
+    IssueSource, LabelApplication, LabelTimeline, LabeledEvent, ProtectionReport, ProtectionSource,
+    PullRequestLifecycle, PullRequestRef, PullRequestState, Rejection, RequiredCheck,
 };
 use factory_ports::paths::{BranchName, CommitSha, RepoRef};
 use factory_ports::workspace::{FetchCredential, FetchTarget, PushCredential, PushTarget};
@@ -903,10 +903,52 @@ struct IssueState {
     cache: BTreeMap<IssueRef, Issue>,
     labels: BTreeMap<(IssueRef, String), GithubActor>,
     label_times: BTreeMap<(IssueRef, String), Timestamp>,
+    timelines: BTreeMap<IssueRef, FakeTimeline>,
+    history_unreadable: bool,
     comments: BTreeMap<CommentRef, Comment>,
     protection: BTreeMap<RepoRef, ProtectionReport>,
     permissions_asked: Vec<String>,
 }
+
+/// One entry of the event list of a fake issue.
+#[derive(Debug, Clone)]
+enum FakeEvent {
+    /// A `labeled` event.
+    Labeled(LabeledEvent),
+    /// Any other event (the issue was closed, subscribed to, renamed). It takes a place in the
+    /// list and means nothing to the gates.
+    Other,
+}
+
+/// The event list of a fake issue, with the order and the pages the code host would give.
+///
+/// Every `seed_label` also adds a `labeled` event here, so that a test can add more events to an
+/// issue the rig has already labelled. The list answers the questions about labels only once a
+/// test has asked for it with `seed_event`, `seed_events_of_no_interest` or
+/// `list_events_newest_first`; until then the plain record of `seed_label` answers, as it always did.
+#[derive(Debug, Clone)]
+struct FakeTimeline {
+    events: Vec<FakeEvent>,
+    newest_first: bool,
+    asked_for: bool,
+    next_id: u64,
+}
+
+impl Default for FakeTimeline {
+    fn default() -> Self {
+        Self {
+            events: Vec::new(),
+            newest_first: false,
+            asked_for: false,
+            next_id: 1,
+        }
+    }
+}
+
+/// How many events one page holds and how many pages a reader of the fake reads, like the adapter
+/// (100 and 30). Events past the last page are not given, and the list is then incomplete.
+const FAKE_EVENTS_PER_PAGE: usize = 100;
+const FAKE_EVENT_PAGES: usize = 30;
 
 /// An in-memory issue source. Reports fidelity `fake`.
 pub struct FakeIssueSource {
@@ -946,6 +988,75 @@ impl FakeIssueSource {
         let key = (issue.clone(), label.to_owned());
         state.labels.insert(key.clone(), actor.clone());
         state.label_times.insert(key, at);
+        push_labeled(&mut state, issue, label, actor, AccountType::User, at);
+    }
+
+    /// Adds a `labeled` event to the event list of the issue, by an account of this type, and
+    /// makes the list the one that answers (see [`FakeTimeline`]). The events are listed in the
+    /// order they were added unless `list_events_newest_first` says otherwise; a later event does
+    /// not need a later time, and the ids keep the order.
+    pub fn seed_event(
+        &self,
+        issue: &IssueRef,
+        label: &str,
+        actor: &GithubActor,
+        actor_type: AccountType,
+        at: Timestamp,
+    ) {
+        let mut state = self.state.lock().expect("the lock is never poisoned");
+        push_labeled(&mut state, issue, label, actor, actor_type, at);
+        state.timelines.entry(issue.clone()).or_default().asked_for = true;
+    }
+
+    /// Adds `count` events that are not about labels, as a long thread has, so that the list runs
+    /// past the pages a reader is willing to read.
+    pub fn seed_events_of_no_interest(&self, issue: &IssueRef, count: usize) {
+        let mut state = self.state.lock().expect("the lock is never poisoned");
+        let timeline = state.timelines.entry(issue.clone()).or_default();
+        timeline.asked_for = true;
+        timeline
+            .events
+            .extend(std::iter::repeat_n(FakeEvent::Other, count));
+    }
+
+    /// Makes `labels_ever_applied` answer `Unavailable`, as a host does that cannot give the list
+    /// of events to the end, while `label_application` goes on answering. It lets a test show that
+    /// a caller that needs the history refuses when it has none.
+    pub fn make_the_history_unreadable(&self, unreadable: bool) {
+        self.state
+            .lock()
+            .expect("the lock is never poisoned")
+            .history_unreadable = unreadable;
+    }
+
+    /// Lists the events of the issue newest first, which GitHub may or may not do. The answers
+    /// must not change.
+    pub fn list_events_newest_first(&self, issue: &IssueRef, newest_first: bool) {
+        let mut state = self.state.lock().expect("the lock is never poisoned");
+        let timeline = state.timelines.entry(issue.clone()).or_default();
+        timeline.asked_for = true;
+        timeline.newest_first = newest_first;
+    }
+
+    /// The events a reader of the fake gets: in the order of the list, cut after the pages it
+    /// reads, with a flag that says whether it saw the end. `None` when no test asked for a list.
+    fn timeline_of(state: &IssueState, issue: &IssueRef) -> Option<LabelTimeline> {
+        let timeline = state.timelines.get(issue).filter(|t| t.asked_for)?;
+        let mut listed: Vec<&FakeEvent> = timeline.events.iter().collect();
+        if timeline.newest_first {
+            listed.reverse();
+        }
+        let reach = FAKE_EVENTS_PER_PAGE * FAKE_EVENT_PAGES;
+        let complete = listed.len() <= reach;
+        let labeled = listed
+            .into_iter()
+            .take(reach)
+            .filter_map(|event| match event {
+                FakeEvent::Labeled(labeled) => Some(labeled.clone()),
+                FakeEvent::Other => None,
+            })
+            .collect();
+        Some(LabelTimeline::new(labeled, complete))
     }
 
     fn has(&self, defect: IssueSourceDefect) -> bool {
@@ -959,6 +1070,32 @@ impl FakeIssueSource {
             Err(GitHostError::NotFound)
         }
     }
+}
+
+/// The time given to a label that a test seeded without one, where a time is needed to order the
+/// events. The events keep their order by id.
+fn seeded_at() -> Timestamp {
+    Timestamp::parse("2026-10-28T10:00:00Z").expect("a time")
+}
+
+/// Adds a `labeled` event to the list of the issue.
+fn push_labeled(
+    state: &mut IssueState,
+    issue: &IssueRef,
+    label: &str,
+    actor: &GithubActor,
+    actor_type: AccountType,
+    at: Timestamp,
+) {
+    let timeline = state.timelines.entry(issue.clone()).or_default();
+    let id = timeline.next_id;
+    timeline.next_id += 1;
+    timeline.events.push(FakeEvent::Labeled(LabeledEvent {
+        id: Some(id),
+        at,
+        label: label.to_owned(),
+        actor: Some((actor.clone(), actor_type)),
+    }));
 }
 
 impl Default for FakeIssueSource {
@@ -1037,6 +1174,11 @@ impl IssueSource for FakeIssueSource {
         if self.has(IssueSourceDefect::GuessesLabelActor) {
             return Ok(state.labels.values().next().cloned());
         }
+        if let Some(timeline) = Self::timeline_of(&state, issue) {
+            return Ok(timeline
+                .latest_application(label)?
+                .map(|application| application.actor));
+        }
         Ok(state
             .labels
             .get(&(issue.clone(), label.to_owned()))
@@ -1054,13 +1196,43 @@ impl IssueSource for FakeIssueSource {
         let key = (issue.clone(), label.to_owned());
         let found = if self.has(IssueSourceDefect::GuessesLabelActor) {
             state.labels.iter().next()
+        } else if let Some(timeline) = Self::timeline_of(&state, issue) {
+            return timeline.latest_application(label);
         } else {
             state.labels.get_key_value(&key)
         };
         Ok(found.map(|(held, actor)| LabelApplication {
             actor: actor.clone(),
             applied_at: state.label_times.get(held).copied(),
+            actor_type: AccountType::User,
         }))
+    }
+
+    async fn labels_ever_applied(
+        &self,
+        scope: &GitScope,
+        issue: &IssueRef,
+    ) -> Result<Vec<String>, GitHostError> {
+        self.in_scope(scope, &issue.repo)?;
+        let state = self.state.lock().expect("the lock is never poisoned");
+        if state.history_unreadable {
+            return Err(GitHostError::Unavailable);
+        }
+        if let Some(timeline) = Self::timeline_of(&state, issue) {
+            return timeline.labels_ever_applied();
+        }
+        // No list was asked for: every label the test recorded an application of, and the labels
+        // the issue shows now (each was applied by somebody).
+        let mut names: std::collections::BTreeSet<String> = state
+            .labels
+            .keys()
+            .filter(|(held, _)| held == issue)
+            .map(|(_, name)| name.clone())
+            .collect();
+        if let Some(live) = state.issues.get(issue) {
+            names.extend(live.labels.iter().cloned());
+        }
+        Ok(names.into_iter().collect())
     }
 
     async fn repository_protection(
@@ -1118,11 +1290,18 @@ impl IssueSourceSubject for FakeIssueSource {
     }
 
     async fn seed_label(&self, issue: &IssueRef, label: &str, actor: &GithubActor) {
-        self.state
-            .lock()
-            .expect("the lock is never poisoned")
+        let mut state = self.state.lock().expect("the lock is never poisoned");
+        state
             .labels
             .insert((issue.clone(), label.to_owned()), actor.clone());
+        push_labeled(
+            &mut state,
+            issue,
+            label,
+            actor,
+            AccountType::User,
+            seeded_at(),
+        );
     }
 
     async fn seed_comment(&self, comment: Comment) {

@@ -820,9 +820,25 @@ fn dispatch_repo(
                 .issues
                 .get(&parse_number(&params[2])?)
                 .ok_or_else(not_found)?;
-            let events: Vec<Value> = issue
-                .events
-                .iter()
+            // GitHub pages this list (30 by default, 100 at most) and says where the next page is
+            // in the `Link` header. The order is oldest first unless the test says otherwise.
+            let per_page = request
+                .query_param("per_page")
+                .and_then(|v| v.parse::<usize>().ok())
+                .map_or(30, |n| n.clamp(1, 100));
+            let page = request
+                .query_param("page")
+                .and_then(|v| v.parse::<usize>().ok())
+                .map_or(1, |n| n.max(1));
+            let mut listed: Vec<&super::IssueEvent> = issue.events.iter().collect();
+            if issue.events_newest_first {
+                listed.reverse();
+            }
+            let last_page = listed.len().div_ceil(per_page).max(1);
+            let events: Vec<Value> = listed
+                .into_iter()
+                .skip((page - 1) * per_page)
+                .take(per_page)
                 .map(|event| {
                     let actor = state.users.get(&event.actor);
                     let mut value = json!({
@@ -838,7 +854,25 @@ fn dispatch_repo(
                     value
                 })
                 .collect();
-            Ok(HttpResponse::json(200, &Value::Array(events)))
+            let mut response = HttpResponse::json(200, &Value::Array(events));
+            if page < last_page {
+                let host = request.header("host").unwrap_or("127.0.0.1");
+                let at = |n: usize| {
+                    format!(
+                        "<http://{host}{}?per_page={per_page}&page={n}>",
+                        request.path()
+                    )
+                };
+                response = response.with_header(
+                    "Link",
+                    &format!(
+                        "{}; rel=\"next\", {}; rel=\"last\"",
+                        at(page + 1),
+                        at(last_page)
+                    ),
+                );
+            }
+            Ok(response)
         }
         Route::IssueComments => {
             require(token, "issues", "read")?;
@@ -1488,6 +1522,7 @@ fn create_pull(
             updated_at: now,
             comments: Vec::new(),
             events: Vec::new(),
+            events_newest_first: false,
         },
     );
     let repo = &state.repos[full];

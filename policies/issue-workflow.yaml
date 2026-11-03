@@ -59,7 +59,10 @@ namespaces:
 # -----------------------------------------------------------------------------
 # The design track. A person and EGM work out a new solution here, before the
 # factory sees the issue. An issue that is a small, clear change does not enter
-# the track: it carries no `design:` label at all.
+# the track: it was never given a `design:` label. The track is sticky. Once an issue
+# has had a `design:` label, taking the label off does not leave the track: the
+# engine reads the events of the issue and still needs `design: approved`, applied
+# by an approver (section `intake_requirements`).
 # -----------------------------------------------------------------------------
 design_track:
   # An issue with no design label may take one of these first. A template applies
@@ -114,10 +117,13 @@ factory_track:
 # (ADR 0016). The labels are read from GitHub again at intake; the webhook payload is not used.
 # -----------------------------------------------------------------------------
 intake_requirements:
-  # An issue that carries any label whose name starts with `design:` (any letter case, with or
-  # without the space after the colon) is on the design track. It needs the label of this state,
-  # `design: approved`, and no other design label, before a job may start. An issue with no such
-  # label is a small, clear change and is not touched by this rule.
+  # An issue that carries any label that reads as `design:` at the start (any letter case, with
+  # or without the space after the colon, and with hidden or look-alike characters allowed in the
+  # first seven characters) is on the design track. So is an issue that ever carried one: the
+  # events of the issue are read, and a label that was applied and taken off keeps the issue on
+  # the track. It needs the label of this state, `design: approved`, and no other design label,
+  # before a job may start, and an approver must have applied it. An issue that was never given
+  # such a label is a small, clear change and is not touched by this rule.
   design_track_requires: approved
   # The factory designation that the person who applied the `design: approved` label must hold on
   # the protected allowlist (policies/approval.yaml, `roles`). It is matched by numeric GitHub user

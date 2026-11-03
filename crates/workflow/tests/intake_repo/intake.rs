@@ -6,6 +6,7 @@ use factory_domain::policy::decision::Designation;
 use factory_domain::state::{JobStatus, StageRunStatus};
 use factory_domain::vocabulary::{HumanRole, StageKind};
 use factory_ports::agent::AgentRunError;
+use factory_ports::githost::AccountType;
 use factory_testkit::agent::AdversarialScript;
 use factory_workflow::commands::{Decision, Subject};
 use factory_workflow::engine::AttemptOutcome;
@@ -13,7 +14,7 @@ use factory_workflow::gates::readability::{Artifact, Options, ReadabilityGate};
 use factory_workflow::stages::intake::classify::{Classification, decide};
 use factory_workflow::stages::intake::normalize::title_from;
 use factory_workflow::stages::intake::{
-    Authorization, DenialReason, IntakeRules, NOTICE, RequestKind, authorize,
+    Authorization, DenialReason, IntakeRules, Labeller, NOTICE, RequestKind, authorize,
 };
 use serde_json::{Value, json};
 
@@ -842,7 +843,11 @@ fn authorization_is_decided_by_numeric_id_and_by_nothing_else() {
             &list,
             tenant,
             "example-org/fixture",
-            who,
+            who.map(|(id, login)| Labeller {
+                id,
+                login,
+                account: AccountType::User,
+            }),
             &now,
         )
     };
@@ -866,6 +871,62 @@ fn authorization_is_decided_by_numeric_id_and_by_nothing_else() {
     }
     assert_eq!(by(Some((42, "x"))).notice(), None);
     let _ = LABEL;
+}
+
+#[test]
+fn an_account_that_is_not_a_person_is_refused_even_when_its_numeric_id_is_listed() {
+    // DG-5. The id 42 holds the requester designation. The same id applied by a bot, an
+    // organization or an account of unknown type is refused as not human, never as allowed.
+    use factory_domain::ids::TenantId;
+    use factory_domain::policy::authority::{Allowlist, AllowlistEntry};
+    use factory_domain::policy::decision::GithubUserId;
+    let tenant = TenantId::from_uuid(uuid::Uuid::from_u128(7));
+    let engine = crate::harness::policy_engine();
+    let list = Allowlist::new(
+        "v1",
+        vec![AllowlistEntry {
+            tenant,
+            github_user_id: GithubUserId::new(42).expect("an id"),
+            login: "listed-person".to_owned(),
+            designations: [Designation::Requester, Designation::Approver]
+                .into_iter()
+                .collect(),
+            repositories: None,
+            expires_at: None,
+        }],
+    )
+    .expect("a list");
+    let now = factory_domain::values::Timestamp::parse("2026-10-27T12:00:00Z").expect("a time");
+    let by = |account| {
+        authorize(
+            &engine.authority,
+            &list,
+            tenant,
+            "example-org/fixture",
+            Some(Labeller {
+                id: 42,
+                login: "listed-person",
+                account,
+            }),
+            &now,
+        )
+    };
+    assert!(by(AccountType::User).is_authorized());
+    for not_a_person in [
+        AccountType::Bot,
+        AccountType::Organization,
+        AccountType::Other,
+    ] {
+        assert_eq!(
+            by(not_a_person),
+            Authorization::Denied {
+                actor: Some(42),
+                allowlist_version: "v1".to_owned(),
+                reason: DenialReason::NotHuman
+            },
+            "{not_a_person:?}"
+        );
+    }
 }
 
 // ---- NT-AUTHZ-05 -------------------------------------------------------------------------------
