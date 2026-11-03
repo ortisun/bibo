@@ -215,10 +215,106 @@ pub struct SandboxConfig {
     /// real sidecar refuses, so a deployment that runs agents must set them.
     #[serde(default)]
     pub sidecar_command: Vec<String>,
+    /// Where the Docker daemon is, as `DOCKER_HOST` would say: `unix:///<absolute socket path>` or
+    /// `tcp://<host>:<port>`. None means the client's own default socket. The `docker` client of
+    /// the worker runs with an empty environment, so this key is the only way to name a daemon that
+    /// is not on the default socket (a rootless Docker, Colima, a remote host). A `tcp://` address
+    /// must be on the loopback interface unless `allow_remote_docker` is set.
+    #[serde(default)]
+    pub docker_host: Option<String>,
+    /// The directory of the Docker client's own configuration, as `DOCKER_CONFIG` would say. An
+    /// absolute path to a directory. None means the client's default.
+    #[serde(default)]
+    pub docker_config: Option<PathBuf>,
+    /// Allows `docker_host` to be a `tcp://` address that is not on the loopback interface. A
+    /// daemon that is reached over a network gives whoever sits on that network the control of
+    /// every container, so this is an explicit choice and the production profile refuses it.
+    #[serde(default)]
+    pub allow_remote_docker: bool,
 }
 
 fn default_owner() -> String {
     "factory-worker".to_owned()
+}
+
+impl SandboxConfig {
+    /// Checks the three Docker keys, which need no file other than the configuration. That
+    /// `docker_config` is a directory on this machine is checked when the providers are built.
+    ///
+    /// # Errors
+    /// [`ConfigError::OutOfRange`] naming the key.
+    pub fn validate_docker(&self, profile: Profile) -> Result<(), ConfigError> {
+        if self.allow_remote_docker && profile == Profile::Production {
+            return Err(ConfigError::OutOfRange {
+                field: "sandbox.allow_remote_docker",
+                problem: "the production profile does not reach a Docker daemon over a network",
+            });
+        }
+        if let Some(host) = &self.docker_host
+            && let Some(problem) = docker_host_problem(host, self.allow_remote_docker)
+        {
+            return Err(ConfigError::OutOfRange {
+                field: "sandbox.docker_host",
+                problem,
+            });
+        }
+        if let Some(directory) = &self.docker_config
+            && (!directory.is_absolute()
+                || directory
+                    .components()
+                    .any(|part| part == std::path::Component::ParentDir))
+        {
+            return Err(ConfigError::OutOfRange {
+                field: "sandbox.docker_config",
+                problem: "must be an absolute directory path with no .. part",
+            });
+        }
+        Ok(())
+    }
+}
+
+/// Why `host` may not be the address of the Docker daemon, or `None`.
+///
+/// Only two shapes are accepted: `unix://` and an absolute socket path, and `tcp://host:port`
+/// where the host is on the loopback interface, or any plain host name or address when
+/// `allow_remote` is set. Any other transport (`ssh://`, `npipe://`, `fd://`, `http://`) needs a
+/// helper program or a socket activation that the worker's container does not have.
+fn docker_host_problem(host: &str, allow_remote: bool) -> Option<&'static str> {
+    const SHAPE: &str = "must be unix:///<absolute socket path> or tcp://<host>:<port>";
+    if host.chars().any(|c| c.is_control() || c.is_whitespace()) || host.contains(['?', '#', '@']) {
+        return Some("must be a plain address with no white space, query, fragment or user part");
+    }
+    if let Some(path) = host.strip_prefix("unix://") {
+        let usable = path.starts_with('/')
+            && path.len() > 1
+            && !path.ends_with('/')
+            && path.split('/').all(|part| part != "..");
+        return (!usable).then_some("a unix address must name a socket by an absolute path with no .. part, such as unix:///var/run/docker.sock");
+    }
+    let Some(rest) = host.strip_prefix("tcp://") else {
+        return Some(SHAPE);
+    };
+    let (name, port) = match rest.strip_prefix('[') {
+        Some(inside) => match inside.split_once("]:") {
+            Some((name, port)) => (name, port),
+            None => return Some(SHAPE),
+        },
+        None => match rest.rsplit_once(':') {
+            Some((name, port)) if !name.contains(':') => (name, port),
+            _ => return Some(SHAPE),
+        },
+    };
+    let valid_port = port.parse::<u16>().is_ok_and(|p| p > 0);
+    let plain_name = !name.is_empty()
+        && name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '.' | ':'));
+    if !valid_port || !plain_name {
+        return Some(SHAPE);
+    }
+    (!allow_remote && !is_loopback_host(name)).then_some(
+        "a tcp address must be on the loopback interface unless allow_remote_docker is true",
+    )
 }
 
 /// Where the repositories live, and with that which transport the host-side version control may
@@ -980,6 +1076,7 @@ impl FactoryConfig {
                 });
             }
         }
+        self.sandbox.validate_docker(self.profile)?;
         // A conflict between the two fields is an error in every profile.
         self.sandbox.remote.remote()?;
         if self.profile == Profile::Production {
@@ -1763,6 +1860,149 @@ mod tests {
         // The other profiles are not held to the list.
         let local = FactoryConfig::from_yaml(&with_world("local", LOOPBACK_WORLD)).expect("loads");
         assert!(local.check_endpoints(&policy).is_ok());
+    }
+
+    /// `text` with `extra` added to the inline `sandbox` table of the files above.
+    fn with_sandbox_keys(text: &str, extra: &str) -> String {
+        let edited = text.replace(
+            "workspace_root: /var/ws }",
+            &format!("workspace_root: /var/ws, {extra} }}"),
+        );
+        assert_ne!(edited, text, "the edit applied");
+        edited
+    }
+
+    fn refused_key(text: &str) -> &'static str {
+        match FactoryConfig::from_yaml(text) {
+            Err(ConfigError::OutOfRange { field, .. }) => field,
+            other => panic!("expected a refusal that names a key: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn the_docker_keys_default_to_the_clients_own_defaults() {
+        let config = FactoryConfig::from_yaml(&minimal("local", "a", "b")).expect("loads");
+        assert_eq!(config.sandbox.docker_host, None);
+        assert_eq!(config.sandbox.docker_config, None);
+        assert!(!config.sandbox.allow_remote_docker);
+    }
+
+    #[test]
+    fn a_unix_socket_or_a_loopback_tcp_address_is_accepted_as_the_docker_host() {
+        for host in [
+            "unix:///var/run/docker.sock",
+            "unix:///run/user/1000/docker.sock",
+            "unix:///Users/someone/.colima/default/docker.sock",
+            "tcp://127.0.0.1:2375",
+            "tcp://localhost:2376",
+            "tcp://[::1]:2375",
+        ] {
+            let text = with_sandbox_keys(
+                &minimal("local", "a", "b"),
+                &format!("docker_host: '{host}'"),
+            );
+            let config = FactoryConfig::from_yaml(&text).unwrap_or_else(|e| panic!("{host}: {e}"));
+            assert_eq!(config.sandbox.docker_host.as_deref(), Some(host));
+        }
+    }
+
+    #[test]
+    fn a_docker_host_that_is_not_a_socket_or_a_loopback_address_is_refused_naming_the_key() {
+        for host in [
+            // A remote daemon without the explicit flag.
+            "tcp://10.0.0.5:2375",
+            "tcp://docker.example.org:2376",
+            // Hosts that only look like the loopback interface.
+            "tcp://127.0.0.1.example.org:2375",
+            "tcp://localhost.example.org:2375",
+            "tcp://127.0.0.1@example.org:2375",
+            "tcp://0.0.0.0:2375",
+            // A port is part of the address.
+            "tcp://127.0.0.1",
+            "tcp://127.0.0.1:0",
+            "tcp://127.0.0.1:70000",
+            "tcp://127.0.0.1:http",
+            // Other transports, and shapes that are not an address at all.
+            "ssh://user@127.0.0.1",
+            "http://127.0.0.1:2375",
+            "npipe:////./pipe/docker_engine",
+            "fd://",
+            "unix://docker.sock",
+            "unix://",
+            "unix:///",
+            "unix:///var/run/../docker.sock",
+            "/var/run/docker.sock",
+            "",
+            "unix:///var/run/docker .sock",
+        ] {
+            let text = with_sandbox_keys(
+                &minimal("local", "a", "b"),
+                &format!("docker_host: '{host}'"),
+            );
+            assert_eq!(refused_key(&text), "sandbox.docker_host", "{host:?}");
+        }
+    }
+
+    #[test]
+    fn a_remote_docker_host_needs_the_explicit_flag_and_the_production_profile_refuses_the_flag() {
+        let remote = "docker_host: 'tcp://10.0.0.5:2375'";
+        let local = minimal("local", "a", "b");
+        assert_eq!(
+            refused_key(&with_sandbox_keys(&local, remote)),
+            "sandbox.docker_host"
+        );
+        let allowed = with_sandbox_keys(&local, &format!("{remote}, allow_remote_docker: true"));
+        let config = FactoryConfig::from_yaml(&allowed).expect("the flag allows it");
+        assert_eq!(
+            config.sandbox.docker_host.as_deref(),
+            Some("tcp://10.0.0.5:2375")
+        );
+        // Production: the flag is refused, with or without a remote address behind it.
+        let baseline = production_file("github:\n  app_id: 7\n  key_file: /run/secrets/app\n");
+        assert!(FactoryConfig::from_yaml(&baseline).is_ok());
+        for extra in [
+            format!("{remote}, allow_remote_docker: true"),
+            "allow_remote_docker: true".to_owned(),
+        ] {
+            assert_eq!(
+                refused_key(&with_sandbox_keys(&baseline, &extra)),
+                "sandbox.allow_remote_docker",
+                "{extra}"
+            );
+        }
+        // Production still accepts the sockets and the loopback addresses.
+        for host in ["unix:///var/run/docker.sock", "tcp://127.0.0.1:2375"] {
+            let text = with_sandbox_keys(&baseline, &format!("docker_host: '{host}'"));
+            FactoryConfig::from_yaml(&text).unwrap_or_else(|e| panic!("{host}: {e}"));
+        }
+        assert_eq!(
+            refused_key(&with_sandbox_keys(
+                &baseline,
+                "docker_host: 'tcp://10.0.0.5:2375'"
+            )),
+            "sandbox.docker_host"
+        );
+    }
+
+    #[test]
+    fn the_docker_config_directory_must_be_an_absolute_path() {
+        let local = minimal("local", "a", "b");
+        let ok = with_sandbox_keys(&local, "docker_config: /home/factory/.docker");
+        let config = FactoryConfig::from_yaml(&ok).expect("loads");
+        assert_eq!(
+            config.sandbox.docker_config,
+            Some(PathBuf::from("/home/factory/.docker"))
+        );
+        for bad in [
+            "'.docker'",
+            "'~/.docker'",
+            "'../docker'",
+            "''",
+            "/home/../etc/docker",
+        ] {
+            let text = with_sandbox_keys(&local, &format!("docker_config: {bad}"));
+            assert_eq!(refused_key(&text), "sandbox.docker_config", "{bad}");
+        }
     }
 
     #[test]

@@ -1038,6 +1038,106 @@ async fn a_worker_that_must_probe_its_tools_is_blocked_and_says_why_when_the_age
     assert!(lab.provider_seen.all().is_empty() && lab.registry_seen.all().is_empty());
 }
 
+// ---- where the Docker daemon is (LB-01) ------------------------------------------------------------
+
+/// Adds keys to the `sandbox` table of the configuration the deployment wrote.
+fn with_sandbox_keys(text: String, keys: &str) -> String {
+    // The rig ends the table with the remote it adds: `remote: { directory: <dir>/remote } }`.
+    let marker = "/remote } }";
+    assert!(
+        text.contains(marker),
+        "the sandbox table of the rig changed"
+    );
+    text.replace(marker, &format!("/remote }}, {keys} }}"))
+}
+
+/// Waits for the worker to end and returns its exit code and the text it printed on standard error.
+async fn wait_for_the_end(lab: &mut Lab) -> (Option<i32>, String) {
+    let deadline = std::time::Instant::now() + Duration::from_secs(60);
+    let status = loop {
+        if let Some(status) = lab.worker_ended() {
+            break status;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the worker neither started nor stopped"
+        );
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    };
+    (status.code(), lab.logs().1)
+}
+
+/// The probe makes an agent sandbox, which is the first thing that asks the daemon anything. With
+/// `sandbox.docker_host` on a socket nobody listens on, the daemon does not answer and the worker
+/// says so; before the key existed the client ran with an empty environment and always used the
+/// default socket, whatever the operator had set. The worker's own environment names the real
+/// socket here, to show that it is the key that decides and not the environment.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_docker_host_of_the_configuration_decides_which_daemon_the_worker_asks() {
+    let mut lab = Lab::start(Options {
+        config: Some(Box::new(|text| {
+            with_sandbox_keys(
+                text.replace("runtimes: { declare_capabilities: true }\n", ""),
+                "docker_host: 'unix:///nonexistent/docker.sock'",
+            )
+        })),
+        ..Options::default()
+    })
+    .await;
+    lab.spawn_worker(&[("DOCKER_HOST", "unix:///var/run/docker.sock")]);
+    let (code, stderr) = wait_for_the_end(&mut lab).await;
+    assert_eq!(code, Some(3), "{stderr}");
+    assert!(
+        stderr.contains("BLOCKED: CapabilityProbes: runtimes: the Docker daemon does not answer"),
+        "the worker asked a daemon at the address of the key and found none: {stderr}"
+    );
+    assert_eq!(
+        lab.fake.requests().len(),
+        0,
+        "GitHub was not asked anything"
+    );
+}
+
+/// A value the parser refuses stops the worker at start with the code for a bad configuration, and
+/// the line names the key. Nothing else is started: no database connection is needed to say it.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_bad_docker_value_stops_the_worker_at_start_and_names_the_key() {
+    for (keys, key) in [
+        // A daemon on another machine, without the explicit flag.
+        ("docker_host: 'tcp://10.0.0.5:2375'", "sandbox.docker_host"),
+        // A transport the worker cannot use.
+        (
+            "docker_host: 'ssh://operator@127.0.0.1'",
+            "sandbox.docker_host",
+        ),
+        // A relative directory.
+        ("docker_config: .docker", "sandbox.docker_config"),
+        // A directory that is not there: found when the providers are built, before any claim.
+        (
+            "docker_config: /nonexistent/factory-docker-config",
+            "sandbox.docker_config",
+        ),
+    ] {
+        let mut lab = Lab::start(Options {
+            config: Some(Box::new(move |text| with_sandbox_keys(text, keys))),
+            ..Options::default()
+        })
+        .await;
+        lab.spawn_worker(&[]);
+        let (code, stderr) = wait_for_the_end(&mut lab).await;
+        assert!(
+            matches!(code, Some(1 | 2)),
+            "{keys}: a start-up refusal, not a start and not BLOCKED: {code:?} {stderr}"
+        );
+        assert!(
+            stderr.contains(key),
+            "{keys}: the line names {key}: {stderr}"
+        );
+        assert!(!stderr.contains("BLOCKED"), "{keys}: {stderr}");
+        assert_eq!(lab.fake.requests().len(), 0, "{keys}: GitHub was not asked");
+    }
+}
+
 // ---- what needs the Docker daemon and the pinned images -------------------------------------------
 
 /// The cross-process lock of the real-Docker tests that make a network, shared with the sandbox,

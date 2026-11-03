@@ -34,6 +34,10 @@ sandbox:
   # "Docker access, an open decision".
   token_root: /var/lib/factory/tokens
   workspace_root: /var/lib/factory/workspaces
+  # Where the Docker daemon is. The worker starts the docker client with an empty environment, so a DOCKER_HOST in
+  # the container's environment does NOT reach it; these two keys are the only way (docs/reference/configuration.md, "sandbox").
+  # docker_host: unix:///var/run/docker.sock   # or tcp://127.0.0.1:2375; a tcp host that is not loopback needs allow_remote_docker: true (never in production)
+  # docker_config: /home/factory/.docker       # an absolute path to a directory that exists where the worker runs
   # remote: { https_host: github.com }   # or { directory: /abs/path } outside production
   # sidecar_command: []                  # the egress sidecar's arguments; with none the real sidecar refuses to start
 
