@@ -995,9 +995,36 @@ fn the_volume_attacks_follow_the_options() {
 
 // ---- the hostility is real -------------------------------------------------------------------
 
+/// The image the hostile-repository test runs git in, by digest and not by tag.
+///
+/// `alpine/git:latest` was pulled once, on 2026-11-03, with `docker pull`, from the public Docker Hub
+/// repository `alpine/git`. The manifest list then had the digest below (the image was created on
+/// 2026-11-01 at 07:59 -03:00 and is 146 MB). The test uses that digest, so the content cannot change
+/// under it: a new `latest` is a different digest, and this test would say that the image is not on
+/// the machine. To move to a newer git, pull it again, read the new digest with
+/// `docker images --digests alpine/git`, change the constant and the date here and in
+/// `crates/testkit/README.md`, and run this test. The test itself never pulls.
+const GIT_IMAGE_DIGEST: &str =
+    "alpine/git@sha256:ac6c828f15d82775d204d3d75112e1d34af8945da80ccf922713c9891ba68e7a";
+
 /// The image to run git in. It must already be on the machine: the run never pulls.
+/// `FACTORY_TEST_GIT_IMAGE` replaces the default for a machine that holds another image with git.
 fn git_image() -> String {
-    std::env::var("FACTORY_TEST_GIT_IMAGE").unwrap_or_else(|_| "alpine/git:latest".to_owned())
+    std::env::var("FACTORY_TEST_GIT_IMAGE").unwrap_or_else(|_| GIT_IMAGE_DIGEST.to_owned())
+}
+
+#[test]
+fn the_default_git_image_is_pinned_by_digest_and_not_by_tag() {
+    // A tag moves; a digest does not. A default of `...:latest` would run whatever the machine holds.
+    let hex = GIT_IMAGE_DIGEST
+        .strip_prefix("alpine/git@sha256:")
+        .expect("the default is a digest reference to alpine/git");
+    assert_eq!(hex.len(), 64, "a SHA-256 digest has 64 hex characters");
+    assert!(
+        hex.bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)),
+        "lower-case hex"
+    );
 }
 
 #[test]
