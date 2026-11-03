@@ -3586,6 +3586,22 @@ async fn enabling_names_the_commit_attested_now(subject: &dyn StoreSubject) -> R
         Some(another_commit()),
         "for the commit on file"
     );
+
+    // Finding RH-7: a repository that is enabled stays as it is. A second enabling, by anyone, is
+    // not applied: it would move the version and put a second name where the row keeps the first.
+    let enabled_at = read.version;
+    ensure_err!(
+        tx.enable_repository(new.id, enabled_at, another_commit(), person)
+            .await,
+        StoreError::Conflict,
+        "enabling a repository that is enabled"
+    );
+    let unchanged = tx.get_repository(new.id).await.ctx("read it back again")?;
+    ensure_eq!(
+        unchanged.version,
+        enabled_at,
+        "and its version did not move"
+    );
     Ok(())
 }
 

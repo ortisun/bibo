@@ -172,6 +172,9 @@ pub enum StoreDefect {
     AllowsEnablerAttestor,
     /// A registration repeated with the other single-maintainer flag is taken for a repeat.
     IgnoresFlagOnReplay,
+    /// A repository that is enabled already can be enabled again, which moves its version and
+    /// names a second enabler (finding RH-7).
+    EnablesWhatIsEnabled,
 }
 
 /// Each defect and the checks of `contracts::store` that must fail when the fake has it.
@@ -182,6 +185,10 @@ pub const DEFECTS: &[(StoreDefect, &[&str])] = &[
     ),
     (
         StoreDefect::IgnoresEnableCommit,
+        &["enabling_names_the_commit_attested_now"],
+    ),
+    (
+        StoreDefect::EnablesWhatIsEnabled,
         &["enabling_names_the_commit_attested_now"],
     ),
     (
@@ -1760,6 +1767,11 @@ impl RepositoryOps for InMemoryTx {
                 .cloned()
                 .ok_or(StoreError::NotFound)?;
             self.check_version(row.version, expected)?;
+            // Finding RH-7: a repository that is enabled stays as it is. The row holds the first
+            // enabler, so a second enabling would only move the version.
+            if row.value.enabled && !self.has(StoreDefect::EnablesWhatIsEnabled) {
+                return Err(StoreError::Conflict);
+            }
             match &row.value.project_map {
                 None if !self.has(StoreDefect::EnablesWithoutMap) => {
                     return Err(StoreError::Constraint(ConstraintRule::ProjectMapRule));
