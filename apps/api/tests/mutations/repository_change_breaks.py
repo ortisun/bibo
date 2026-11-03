@@ -48,7 +48,7 @@ BREAKS = [
     ),
     (
         "REG-2 and RR-28: the worker asks the allowlist with the name alone for a repository that exists",
-        [(STEP, "                (_, Some(row), _) => row.value.identity(),\n", "                (_, Some(row), _) => RepositoryIdentity::by_name_only(&row.value.full_name),\n")],
+        [(STEP, "            (_, Some(row), _) => row.value.identity(),\n", "            (_, Some(row), _) => RepositoryIdentity::by_name_only(&row.value.full_name),\n")],
     ),
     (
         "REG-2: the worker writes no result, so the request stays open and is applied again",

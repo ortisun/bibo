@@ -562,8 +562,62 @@ suite_migrations() {
     return 1
   fi
   ok "the committed schema.rs equals diesel print-schema"
+  repair_check "$db" "$cfg" || { drop_db "$db"; return 1; }
   drop_db "$db"
   upgrade_check
+}
+
+# Migration 2026-11-03-002800 (finding RH-8) switches off a strict repository that is enabled with no recorded enabler, and
+# writes an audit record for each. No row like that can be made once the migration has run (the guard binds the logins of the
+# factory, and the owner who makes one here is not bound), so the check reverts that one migration, makes the rows the way a
+# privileged writer could have, runs the migration again and reads what it did to them. A strict repository with an enabler and
+# a single-maintainer repository with none are the siblings: they must be left alone.
+repair_check() {
+  local db="$1" cfg="$2" out="$WORK/repair.out" got
+  if ! diesel_run "$db" --config-file "$cfg" migration revert >"$out" 2>&1; then
+    not_ok "repair: reverting the newest migration failed"
+    cat "$out" >&2
+    return 1
+  fi
+  if ! psql_db "$db" -f "$TESTS/00_helpers.sql" \
+        -c "SELECT dbtest.mk_tenant(1)" \
+        -c "INSERT INTO principals (tenant_id, id, kind, github_user_id, login) VALUES (dbtest.u(1), dbtest.u(1004), 'human', 7104, 'person-two')" \
+        -c "INSERT INTO repositories (tenant_id, id, github_installation_id, github_repository_id, full_name, default_branch, single_maintainer) VALUES (dbtest.u(1), dbtest.u(1011), 9011, 8011, 'org1/single', 'main', true), (dbtest.u(1), dbtest.u(1012), 9012, 8012, 'org1/strict-with-enabler', 'main', false)" \
+        -c "UPDATE repositories SET project_map_commit = repeat('a', 40), project_map_attested_by_principal_id = dbtest.u(1002), enabled = true, version = version + 1 WHERE tenant_id = dbtest.u(1) AND id IN (dbtest.u(1001), dbtest.u(1011))" \
+        -c "UPDATE repositories SET project_map_commit = repeat('a', 40), project_map_attested_by_principal_id = dbtest.u(1002), enabled = true, enabled_by_principal_id = dbtest.u(1004), version = version + 1 WHERE tenant_id = dbtest.u(1) AND id = dbtest.u(1012)" \
+        >/dev/null 2>"$out"; then
+    not_ok "repair: making a strict repository that is enabled with no enabler failed"
+    cat "$out" >&2
+    return 1
+  fi
+  got="$(psql_scalar "$db" -c "SELECT string_agg(full_name || '=' || enabled::text, ' ' ORDER BY full_name) FROM repositories")"
+  if [ "$got" != "org1/repo=true org1/single=true org1/strict-with-enabler=true" ]; then
+    not_ok "repair: the rows before the migration are not what the check made: $got"
+    return 1
+  fi
+  if ! diesel_run "$db" --config-file "$cfg" migration run >"$out" 2>&1; then
+    not_ok "repair: running the migration again on those rows failed"
+    cat "$out" >&2
+    return 1
+  fi
+  got="$(psql_scalar "$db" -c "SELECT string_agg(full_name || '=' || enabled::text, ' ' ORDER BY full_name) FROM repositories")"
+  if [ "$got" != "org1/repo=false org1/single=true org1/strict-with-enabler=true" ]; then
+    not_ok "repair: the migration did not switch off exactly the strict repository with no enabler: $got"
+    return 1
+  fi
+  ok "repair: the migration switched off the strict repository that was enabled with no enabler, and left the other two enabled"
+  got="$(psql_scalar "$db" -c "SELECT count(*) FROM audit_events WHERE action = 'repository.disabled_by_migration' AND actor_type = 'system' AND subject = 'repository ' || dbtest.u(1001)::text || ' disabled'")"
+  if [ "$got" != "1" ]; then
+    not_ok "repair: expected one audit record of the switch-off, found $got"
+    return 1
+  fi
+  ok "repair: it wrote one audit record, as the system, naming the repository it switched off"
+  got="$(psql_scalar "$db" -c "SELECT version FROM repositories WHERE id = dbtest.u(1001)")"
+  if [ "$got" != "3" ]; then
+    not_ok "repair: expected the version of the switched-off repository to rise to 3, found $got"
+    return 1
+  fi
+  ok "repair: the version of the switched-off repository rose (an optimistic writer sees the change)"
 }
 
 # The last migration of the schema before ports v1.1. The upgrade test migrates to here, loads rows, runs the rest.
