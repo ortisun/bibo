@@ -161,7 +161,7 @@ Run on 2026-11-02 against the commit that carries this record. Counts are in the
 ## Decisions that need a person
 
 1. **Accept the port, the type and the adapter** (the architect), and order the independent security review that ADR 0016 asks for any port change.
-2. **Default of `github.write_issue_status`.** It is on, because the feature is the point and the App already holds `Issues: write`. The cautious alternative is off until the first real run has been watched. Reverse by changing one default and one row of the configuration reference.
+2. **Default of `github.write_issue_status`.** It is on, because the feature is the point and the App already holds `Issues: write`. The cautious alternative is off until the first real run has been watched. Reverse by changing one default and one row of the configuration reference. **Decided on 2026-11-02 by the product owner: on by default**, after the cautious alternative was offered and recommended. The writing has run only against fakes, so the first real run on a fixture repository is the check that this default is safe (decision 7 below).
 3. **The two policy rows are pending confirmation by the architect.** `write_status_label` at L0 and the narrowing of `close_or_label_issue`.
 4. **`metadata: read` in the status token.** Alternative: ask for `issues: write` alone and learn from the first real run whether GitHub accepts it and whether the minter's check would refuse the answer.
 5. **The numbers of the pacing**: one second between changes (from the reference), six updates a minute, six tries, 30 seconds doubling to 20 minutes, a fifteen minute window for a job that ended before the worker looked. They are guesses until a real run.
