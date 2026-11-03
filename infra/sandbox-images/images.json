@@ -44,9 +44,9 @@
           "architecture": "arm64",
           "base": "gcr.io/distroless/cc-debian13:nonroot@sha256:3ee00291cf386ec52a552e6a858d555debd74776eb4bfa53fa3df2cd6677515e",
           "binary_path": "/usr/local/bin/factory-egress-sidecar",
-          "binary_sha256": "1b0fa8fcae6812de69af40ff09a0008f95ca6beb45f7143a3ea13d645c381441",
+          "binary_sha256": "466cce2627d25d23a2e69798eaa73aaf462914647e767757c255ab49c0b4614c",
           "cmd": null,
-          "digest": "sha256:baa06e095934aa70f71625517f69e76c27d65bb57f4d4d58392438352de58ea9",
+          "digest": "sha256:9704d66dc8fda7992ae96c65348e7396e6f7256236eb0550def52f9bc27b1ce3",
           "entrypoint": [
             "/usr/local/bin/factory-egress-sidecar"
           ],
@@ -54,7 +54,7 @@
             "PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
             "SSL_CERT_FILE": "/etc/ssl/certs/ca-certificates.crt"
           },
-          "image_id": "sha256:baa06e095934aa70f71625517f69e76c27d65bb57f4d4d58392438352de58ea9",
+          "image_id": "sha256:9704d66dc8fda7992ae96c65348e7396e6f7256236eb0550def52f9bc27b1ce3",
           "labels": {
             "factory.sandbox-images": "1",
             "factory.sandbox.role": "egress-sidecar",
@@ -64,10 +64,10 @@
           "name": "factory-sandbox/egress-sidecar",
           "os": "linux",
           "profile": "egress_sidecar",
-          "reference": "factory-sandbox/egress-sidecar@sha256:baa06e095934aa70f71625517f69e76c27d65bb57f4d4d58392438352de58ea9",
-          "size_bytes": 54803811,
+          "reference": "factory-sandbox/egress-sidecar@sha256:9704d66dc8fda7992ae96c65348e7396e6f7256236eb0550def52f9bc27b1ce3",
+          "size_bytes": 54808802,
           "status": "ready",
-          "tag": "bin-1b0fa8fcae68",
+          "tag": "bin-466cce2627d2",
           "user": {
             "gid": 10003,
             "uid": 10003

@@ -460,12 +460,12 @@ rule_runtime_profile() {
     status=$OUT
     local want_uid problems=""
     want_uid=$(uid_of "$role")
-    printf '%s\n' "$status" | grep -q -E "^Uid:[[:space:]]+${want_uid}[[:space:]]+${want_uid}[[:space:]]+${want_uid}[[:space:]]+${want_uid}\$" || problems="$problems uid-is-not-$want_uid"
-    printf '%s\n' "$status" | grep -q -E '^CapEff:[[:space:]]+0000000000000000$' || problems="$problems CapEff-not-zero"
-    printf '%s\n' "$status" | grep -q -E '^CapPrm:[[:space:]]+0000000000000000$' || problems="$problems CapPrm-not-zero"
-    printf '%s\n' "$status" | grep -q -E '^CapBnd:[[:space:]]+0000000000000000$' || problems="$problems CapBnd-not-zero"
-    printf '%s\n' "$status" | grep -q -E '^NoNewPrivs:[[:space:]]+1$' || problems="$problems NoNewPrivs-not-1"
-    printf '%s\n' "$status" | grep -q -E '^Seccomp:[[:space:]]+2$' || problems="$problems Seccomp-not-2"
+    grep -q -E "^Uid:[[:space:]]+${want_uid}[[:space:]]+${want_uid}[[:space:]]+${want_uid}[[:space:]]+${want_uid}\$" <<<"$status" || problems="$problems uid-is-not-$want_uid"
+    grep -q -E '^CapEff:[[:space:]]+0000000000000000$' <<<"$status" || problems="$problems CapEff-not-zero"
+    grep -q -E '^CapPrm:[[:space:]]+0000000000000000$' <<<"$status" || problems="$problems CapPrm-not-zero"
+    grep -q -E '^CapBnd:[[:space:]]+0000000000000000$' <<<"$status" || problems="$problems CapBnd-not-zero"
+    grep -q -E '^NoNewPrivs:[[:space:]]+1$' <<<"$status" || problems="$problems NoNewPrivs-not-1"
+    grep -q -E '^Seccomp:[[:space:]]+2$' <<<"$status" || problems="$problems Seccomp-not-2"
     # --network none leaves loopback and a few unconfigured tunnel devices (sandbox-policy.md E1).
     # What matters is that the routing table is empty, so nothing outside the container is reachable.
     run_in "$role" -- cat /proc/net/route
@@ -740,11 +740,11 @@ EOF
   OUT=$(docker run --rm "${HARDENED[@]}" "$tag" 2>&1)
   RC=$?
   local problems=""
-  printf '%s\n' "$OUT" | grep -q "^Uid: $SIDECAR_UID $SIDECAR_UID $SIDECAR_UID $SIDECAR_UID\$" || problems="$problems uid"
-  printf '%s\n' "$OUT" | grep -q '^CapEff: 0000000000000000$' || problems="$problems CapEff"
-  printf '%s\n' "$OUT" | grep -q '^NoNewPrivs: 1$' || problems="$problems NoNewPrivs"
-  printf '%s\n' "$OUT" | grep -q '^Seccomp: 2$' || problems="$problems Seccomp"
-  printf '%s\n' "$OUT" | grep -q '^root-write: refused' || problems="$problems read-only-root"
+  grep -q "^Uid: $SIDECAR_UID $SIDECAR_UID $SIDECAR_UID $SIDECAR_UID\$" <<<"$OUT" || problems="$problems uid"
+  grep -q '^CapEff: 0000000000000000$' <<<"$OUT" || problems="$problems CapEff"
+  grep -q '^NoNewPrivs: 1$' <<<"$OUT" || problems="$problems NoNewPrivs"
+  grep -q '^Seccomp: 2$' <<<"$OUT" || problems="$problems Seccomp"
+  grep -q '^root-write: refused' <<<"$OUT" || problems="$problems read-only-root"
   if [ "$RC" -eq 0 ] && [ -z "$problems" ]; then
     t_pass SIDECAR-CONTRACT "a dynamically linked program in the sidecar image runs as $SIDECAR_UID, with no capabilities, on a read-only root"
   else

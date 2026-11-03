@@ -329,6 +329,6 @@ sbx_execute_only_problems() {
     fi
   done <<<"$seen"
   while IFS= read -r wanted; do
-    printf '%s\n' "$seen" | grep -q -F -e "$wanted|" || printf '%s missing\n' "$wanted"
+    grep -q -F -e "$wanted|" <<<"$seen" || printf '%s missing\n' "$wanted"
   done < <(sbx_execute_only_paths "$list")
 }

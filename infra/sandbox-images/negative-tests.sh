@@ -121,11 +121,11 @@ expect_failure() {
   out=$("$here/test.sh" --images-json "$WORK/$name/images.json" --platform "$PLATFORM" --only "$role" --rule "$rule" 2>&1)
   rc=$?
   base=$(baseline "$role" "$rule")
-  if [ "$rc" -ne 1 ] || ! printf '%s\n' "$out" | grep -q "^FAIL  $rule "; then
+  if [ "$rc" -ne 1 ] || ! grep -q "^FAIL  $rule " <<<"$out"; then
     echo "MISSED  $name: expected exit 1 with a FAIL $rule line; got exit $rc"
     printf '%s\n' "$out" | tail -n 8
     MISSED=$((MISSED + 1))
-  elif ! printf '%s\n' "$out" | grep "^FAIL  $rule " | grep -q -F -- "$marker"; then
+  elif ! { fail_lines=$(grep "^FAIL  $rule " <<<"$out"); grep -q -F -- "$marker" <<<"$fail_lines"; }; then
     echo "MISSED  $name: $rule failed, but its FAIL line does not name '$marker', so the failure may not be the mutation's"
     printf '%s\n' "$out" | grep "^FAIL  $rule " | head -n 1 | cut -c1-300
     MISSED=$((MISSED + 1))
@@ -216,7 +216,7 @@ RUN chmod -R go-w /opt/rust && /opt/rust/bin/rustc --version
 USER $AGENT_USER" && record_mutant world-writable-repaired agent; then
     out=$("$here/test.sh" --images-json "$WORK/world-writable-repaired/images.json" --platform "$PLATFORM" --only agent --rule NO-WORLD-WRITABLE 2>&1)
     rc=$?
-    if [ "$rc" -eq 0 ] && printf '%s\n' "$out" | grep -q "^PASS  NO-WORLD-WRITABLE "; then
+    if [ "$rc" -eq 0 ] && grep -q "^PASS  NO-WORLD-WRITABLE " <<<"$out"; then
       echo "OK      world-writable-repaired: $(printf '%s\n' "$out" | grep "^PASS  NO-WORLD-WRITABLE " | head -n 1 | cut -c1-160)"
     else
       echo "MISSED  world-writable-repaired: the repaired copy still fails the rule (exit $rc)"
