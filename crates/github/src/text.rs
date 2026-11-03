@@ -335,6 +335,15 @@ fn host_of(url: &str) -> Option<String> {
     (!host.is_empty()).then(|| host.to_owned())
 }
 
+/// True when the adapter would keep a link to `url` in a comment: the scheme is `https`, the host
+/// is read by the same parser the filter uses, and it is one of `domains` (lower case) or a
+/// subdomain of one. The start-up check of a configured address calls this, so that the check and
+/// the filter cannot read one address as two hosts (DR-9).
+#[must_use]
+pub fn keeps_link(url: &str, domains: &[String]) -> bool {
+    host_allowed(url, domains)
+}
+
 fn host_allowed(url: &str, domains: &[String]) -> bool {
     let secure = url.len() >= 8
         && url

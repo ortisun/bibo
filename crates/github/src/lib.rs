@@ -77,7 +77,7 @@ pub use jwt::{AppJwt, JwtError, JwtSigner, RingRs256Signer};
 pub use permissions::{AppAudit, AppPolicy, Level, PermissionSet, audit_app, may_write};
 pub use protection::protection_from_rules;
 pub use status::{GithubIssueStatus, MUTATION_PAUSE};
-pub use text::OutboundPolicy;
+pub use text::{OutboundPolicy, keeps_link};
 pub use token::{InstallationDirectory, StaticInstallations};
 pub use ureq_transport::{MAX_RESPONSE_BYTES, REQUEST_TIMEOUT, UreqTransport};
 pub use webhook::{

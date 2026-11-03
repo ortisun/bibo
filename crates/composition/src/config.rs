@@ -231,6 +231,14 @@ pub struct SandboxConfig {
     /// every container, so this is an explicit choice and the production profile refuses it.
     #[serde(default)]
     pub allow_remote_docker: bool,
+    /// Allows `docker_config` to be a directory that names a Docker daemon or a credential helper:
+    /// a `config.json` with a `currentContext` other than the default, a `contexts` directory
+    /// with an entry, or `credsStore` / `credHelpers` (DR-6). A context can point the client at a
+    /// daemon on another machine whatever `docker_host` says, and the production profile does
+    /// not reach one over a network, so without this flag such a directory stops the start, and
+    /// the production profile refuses the flag. Off by default.
+    #[serde(default)]
+    pub allow_docker_config_contexts: bool,
 }
 
 fn default_owner() -> String {
@@ -248,6 +256,12 @@ impl SandboxConfig {
             return Err(ConfigError::OutOfRange {
                 field: "sandbox.allow_remote_docker",
                 problem: "the production profile does not reach a Docker daemon over a network",
+            });
+        }
+        if self.allow_docker_config_contexts && profile == Profile::Production {
+            return Err(ConfigError::OutOfRange {
+                field: "sandbox.allow_docker_config_contexts",
+                problem: "the production profile does not accept a Docker configuration directory that names a daemon or a credential helper",
             });
         }
         if let Some(host) = &self.docker_host
@@ -501,9 +515,22 @@ impl GithubConfig {
             return Some(problem);
         }
         let (_, rest) = self.web_base_url.split_once("://")?;
-        rest.trim_end_matches('/')
-            .contains('/')
-            .then_some("must be scheme://host[:port] with no path")
+        if rest.trim_end_matches('/').contains('/') {
+            return Some("must be scheme://host[:port] with no path");
+        }
+        // A browser, and the filter of the GitHub adapter, end the host at a backslash like at a
+        // slash, and the filter knows no host with a character that is not part of a name, a port
+        // or an address. An address with such a character would pass for one host here and be read
+        // as another there, so the links would be stripped and nothing would say so (DR-9). The
+        // authority here ends at a slash, a query or a fragment only, so a backslash is inside it
+        // and is refused with every other character the filter does not read.
+        let authority = rest.split(['/', '?', '#']).next().unwrap_or_default();
+        (!authority
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-' | b':')))
+        .then_some(
+            "the host must be a name or an address and a port: no backslash, user information or other character",
+        )
     }
 
     /// The web address without a trailing slash, ready to have `/<owner>/<name>/...` added.
@@ -1354,15 +1381,17 @@ impl FactoryConfig {
         let Some(github) = &self.github else {
             return Ok(());
         };
-        let host = host_of(&github.web_base_url).map(str::to_ascii_lowercase);
-        let allowed = host.as_deref().is_some_and(|host| {
-            policy
-                .output_hygiene
-                .allow_link_domains
-                .iter()
-                .map(|domain| domain.to_ascii_lowercase())
-                .any(|domain| host == domain || host.ends_with(&format!(".{domain}")))
-        });
+        // The host is read by the adapter's own parser (`keeps_link`), so that this check and the
+        // filter that strips links cannot disagree about which host an address names. A backslash
+        // is refused whatever the host before it is (DR-9).
+        let domains: Vec<String> = policy
+            .output_hygiene
+            .allow_link_domains
+            .iter()
+            .map(|domain| domain.to_ascii_lowercase())
+            .collect();
+        let allowed = !github.web_base_url.contains('\\')
+            && factory_github::keeps_link(&github.web_base_url, &domains);
         if allowed {
             Ok(())
         } else {
@@ -2164,6 +2193,109 @@ mod tests {
         assert!(enterprise.check_link_host(&policy).is_err());
         policy.output_hygiene.allow_link_domains = vec!["GHE.example.org".to_owned()];
         assert!(enterprise.check_link_host(&policy).is_ok(), "case");
+    }
+
+    // ---- the host of a link is read the way the adapter reads it (DR-9) -----------------------------
+
+    #[test]
+    fn a_web_base_that_the_adapters_link_filter_would_strip_is_refused_naming_the_key() {
+        // The filter reads the host like a browser: a backslash ends it, user information and any
+        // character that is not part of a name, a port or an address make it unknown. A start that
+        // let such an address through would write comments with no link and say nothing (DR-9).
+        for web in [
+            "https://attacker.test\\.github.com",
+            "https://github.com\\@attacker.test",
+            "https://github.com\\.attacker.test:8443",
+            "https://github.com\\",
+            "https://attacker.test\\",
+            "https://git%68ub.com",
+            "https://github.com%2eattacker.test",
+            "https://[::1]:3000",
+            "https://gith\u{fb}b.com",
+            "https://github.com;attacker.test",
+            "https://github.com,attacker.test",
+        ] {
+            let text = with_world("local", &web_world(web));
+            assert_eq!(refused_key(&text), "github.web_base_url", "{web:?}");
+        }
+        // Production is held to the same rule, with or without the other checks of its profile.
+        let production = production_file(
+            "github:\n  app_id: 7\n  key_file: /run/secrets/app\n  web_base_url: 'https://attacker.test\\.github.com'\n",
+        );
+        assert_eq!(refused_key(&production), "github.web_base_url");
+    }
+
+    #[test]
+    fn the_link_host_check_uses_the_host_the_adapter_uses_so_a_backslash_cannot_hide_a_host() {
+        // The parser of the start-up check once ended the authority at a slash only, so
+        // `attacker.test\.github.com` looked like a subdomain of github.com. `check_link_host` is
+        // the second line: it must refuse the address even if the first check is bypassed.
+        let policy = crate::startup::tests_support::repository_security_policy();
+        for web in [
+            "https://attacker.test\\.github.com",
+            "https://github.com\\@attacker.test",
+            "https://attacker.test\\",
+            "http://github.com",
+            "https://git%68ub.com",
+        ] {
+            let mut config =
+                FactoryConfig::from_yaml(&with_world("local", LOOPBACK_WORLD)).expect("loads");
+            config.github.as_mut().expect("github").web_base_url = web.to_owned();
+            assert!(
+                matches!(
+                    config.check_link_host(&policy),
+                    Err(ConfigError::OutOfRange {
+                        field: "github.web_base_url",
+                        ..
+                    })
+                ),
+                "{web:?}"
+            );
+        }
+        // The stock address and a subdomain of a listed host still pass.
+        let mut config =
+            FactoryConfig::from_yaml(&with_world("local", LOOPBACK_WORLD)).expect("loads");
+        for web in ["https://github.com", "https://GitHub.com:443"] {
+            config.github.as_mut().expect("github").web_base_url = web.to_owned();
+            assert!(config.check_link_host(&policy).is_ok(), "{web}");
+        }
+    }
+
+    // ---- a Docker configuration directory that names a daemon (DR-6) ---------------------------------
+
+    #[test]
+    fn the_flag_that_allows_contexts_in_the_docker_config_defaults_to_off() {
+        let config = FactoryConfig::from_yaml(&minimal("local", "a", "b")).expect("loads");
+        assert!(!config.sandbox.allow_docker_config_contexts);
+    }
+
+    #[test]
+    fn the_flag_for_contexts_in_the_docker_config_is_refused_in_production_with_or_without_a_directory()
+     {
+        let baseline = production_file("github:\n  app_id: 7\n  key_file: /run/secrets/app\n");
+        for extra in [
+            "allow_docker_config_contexts: true",
+            "docker_config: /var/lib/factory/docker, allow_docker_config_contexts: true",
+        ] {
+            assert_eq!(
+                refused_key(&with_sandbox_keys(&baseline, extra)),
+                "sandbox.allow_docker_config_contexts",
+                "{extra}"
+            );
+        }
+        // Off, it is accepted, and so is a directory in production.
+        let off = with_sandbox_keys(
+            &baseline,
+            "docker_config: /var/lib/factory/docker, allow_docker_config_contexts: false",
+        );
+        FactoryConfig::from_yaml(&off).expect("loads");
+        // The other profiles may turn it on: it is an explicit choice.
+        let local = with_sandbox_keys(
+            &minimal("local", "a", "b"),
+            "docker_config: /home/factory/.docker, allow_docker_config_contexts: true",
+        );
+        let config = FactoryConfig::from_yaml(&local).expect("loads");
+        assert!(config.sandbox.allow_docker_config_contexts);
     }
 
     #[test]

@@ -1142,24 +1142,55 @@ async fn the_docker_host_of_the_configuration_decides_which_daemon_the_worker_as
 /// the line names the key. Nothing else is started: no database connection is needed to say it.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_bad_docker_value_stops_the_worker_at_start_and_names_the_key() {
-    for (keys, key) in [
+    // Directories with content (DR-6): a context that names a daemon, a `contexts` entry and a
+    // credential helper each stop the start, and the line names the key and the way through.
+    let directories: Vec<std::path::PathBuf> = [
+        ("context", "config.json", r#"{"currentContext":"remote"}"#),
+        ("entry", "contexts/meta/0a1b/meta.json", "{}"),
+        ("helper", "config.json", r#"{"credsStore":"desktop"}"#),
+    ]
+    .iter()
+    .map(|(label, name, content)| {
+        let directory = std::env::temp_dir().join(format!(
+            "loopback-docker-config-{label}-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&directory);
+        let file = directory.join(name);
+        std::fs::create_dir_all(file.parent().expect("a parent")).expect("a folder");
+        std::fs::write(&file, content).expect("a file");
+        directory
+    })
+    .collect();
+    let mut cases: Vec<(String, &str)> = vec![
         // A daemon on another machine, without the explicit flag.
-        ("docker_host: 'tcp://10.0.0.5:2375'", "sandbox.docker_host"),
+        (
+            "docker_host: 'tcp://10.0.0.5:2375'".to_owned(),
+            "sandbox.docker_host",
+        ),
         // A transport the worker cannot use.
         (
-            "docker_host: 'ssh://operator@127.0.0.1'",
+            "docker_host: 'ssh://operator@127.0.0.1'".to_owned(),
             "sandbox.docker_host",
         ),
         // A relative directory.
-        ("docker_config: .docker", "sandbox.docker_config"),
+        ("docker_config: .docker".to_owned(), "sandbox.docker_config"),
         // A directory that is not there: found when the providers are built, before any claim.
         (
-            "docker_config: /nonexistent/factory-docker-config",
+            "docker_config: /nonexistent/factory-docker-config".to_owned(),
             "sandbox.docker_config",
         ),
-    ] {
+    ];
+    for directory in &directories {
+        cases.push((
+            format!("docker_config: {}", directory.display()),
+            "sandbox.allow_docker_config_contexts",
+        ));
+    }
+    for (keys, key) in cases {
+        let for_config = keys.clone();
         let mut lab = Lab::start(Options {
-            config: Some(Box::new(move |text| with_sandbox_keys(text, keys))),
+            config: Some(Box::new(move |text| with_sandbox_keys(text, &for_config))),
             ..Options::default()
         })
         .await;
@@ -1175,6 +1206,9 @@ async fn a_bad_docker_value_stops_the_worker_at_start_and_names_the_key() {
         );
         assert!(!stderr.contains("BLOCKED"), "{keys}: {stderr}");
         assert_eq!(lab.fake.requests().len(), 0, "{keys}: GitHub was not asked");
+    }
+    for directory in &directories {
+        let _ = std::fs::remove_dir_all(directory);
     }
 }
 
