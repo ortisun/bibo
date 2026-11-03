@@ -11,7 +11,7 @@ You need a new key because the old one may have leaked, because a person who cou
 ## Before you begin
 
 - You can change the configuration and restart the API and the worker. Both read the key files when they start.
-- You know the approval window: 72 hours. A request older than that is rejected, so the old key must stay valid for no longer.
+- You know the two windows. A decision request (approve, reject, rework, unblock) counts for the approval window, 72 hours, and an older one is rejected. A request to register, confirm or enable a repository counts for fifteen minutes only (finding RH-1): the worker refuses an older one with the recorded code `expired`, and a person asks again. So the old key must stay valid for no longer than the longer window, 72 hours, and the repository requests never wait that long.
 - The key must be random: at least 32 bytes, written as 64 hexadecimal digits. A key of one repeated byte or one short repeated word is not a key.
 - In the production profile every directory above the key file must be closed to group and others (a sticky directory is allowed). The file belongs to the owner of its directory, or the directory belongs to root, **and to the user the process runs as** (RR-25): a key that another user owns is refused, whatever its mode says, because that user can replace it. The process finds its own user by making a file in the temporary directory and reading the owner of it, which is an approximation: on a file system that maps owners (a network mount that squashes root) the answer is the mapped owner. A process that can write no file in the temporary directory or in its working directory is refused, because a user that could not be found was not checked. The file mode is `0600` or `0400`.
 
@@ -37,7 +37,7 @@ decisions:
   previous_key_valid_until: 2026-11-02T12:00:00Z
 ```
 
-Write `previous_key_valid_until` as a UTC time, 72 hours after the moment you restart. Without it the production profile ignores the previous key. That is safe, and it rejects the requests that the old key signed and nobody has dealt with yet.
+Write `previous_key_valid_until` as a UTC time, 72 hours after the moment you restart. (A repository request signed by the old key is refused as `expired` after fifteen minutes whatever this time says, and the status of a request that was applied before the rotation still reads `applied`, because the status route looks for its result under both keys, finding RH-4.) Without it the production profile ignores the previous key. That is safe, and it rejects the requests that the old key signed and nobody has dealt with yet.
 
 ### 3. Restart the API and the worker
 
