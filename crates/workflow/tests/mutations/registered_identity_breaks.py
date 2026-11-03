@@ -98,7 +98,9 @@ def run_cargo(command):
     """
     process = subprocess.Popen(command, cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, start_new_session=True)
     lines = []
-    reader = threading.Thread(target=lambda: lines.extend(process.stdout), daemon=True)
+    assert process.stdout is not None
+    stream = process.stdout
+    reader = threading.Thread(target=lambda: lines.extend(stream), daemon=True)
     reader.start()
     seen_hung = None
     while process.poll() is None:

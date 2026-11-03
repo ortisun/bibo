@@ -17,10 +17,14 @@ set -uo pipefail
 cd "$(dirname "$0")"
 
 CJ_VERSION="0.39.0"
+# check-jsonschema pins itself and not the library that words its errors. Check 5 compares that
+# wording with the .expect sidecars, so the library is pinned here as well: an unpinned run took
+# jsonschema 4.26.0 on 2026-11-03 and four sidecars no longer matched, with no change in a schema.
+JSONSCHEMA_VERSION="4.25.1"
 if [ -n "${CHECK_JSONSCHEMA:-}" ]; then
   cj() { "$CHECK_JSONSCHEMA" "$@"; }
 else
-  cj() { uvx --from "check-jsonschema==${CJ_VERSION}" check-jsonschema "$@"; }
+  cj() { uvx --from "check-jsonschema==${CJ_VERSION}" --with "jsonschema==${JSONSCHEMA_VERSION}" check-jsonschema "$@"; }
 fi
 
 failures=0

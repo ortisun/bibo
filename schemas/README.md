@@ -57,14 +57,14 @@ These rules need code. The owner is named so they are not forgotten.
 schemas/validate.sh
 ```
 
-This needs `uv`. It runs [`check-jsonschema`](https://github.com/python-jsonschema/check-jsonschema) pinned to 0.39.0 through `uvx`. To use an installed binary, set `CHECK_JSONSCHEMA=/path/to/check-jsonschema`. The script exits non-zero if any check fails.
+This needs `uv`. It runs [`check-jsonschema`](https://github.com/python-jsonschema/check-jsonschema) pinned to 0.39.0 through `uvx`, together with the `jsonschema` library at 4.25.1: `check-jsonschema` does not pin the library that words its errors, and check 5 compares that wording with the `.expect` sidecars. To use an installed binary, set `CHECK_JSONSCHEMA=/path/to/check-jsonschema`. The script exits non-zero if any check fails.
 
 It checks that every schema passes the 2020-12 metaschema, that shared definitions are identical, that every schema has at least one valid and one invalid example, that valid examples validate, and that each invalid example is rejected with the message written in its `.expect` file. A schema that stops enforcing a rule makes the matching invalid example pass, and the script fails.
 
 To validate one document by hand:
 
 ```bash
-uvx --from check-jsonschema==0.39.0 check-jsonschema \
+uvx --from check-jsonschema==0.39.0 --with jsonschema==4.25.1 check-jsonschema \
   --schemafile schemas/gate-report.schema.json path/to/report.json
 ```
 

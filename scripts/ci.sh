@@ -657,11 +657,13 @@ int_schemas() {
   need_tool uvx python3
   [ -f schemas/validate.sh ] || int_blocked "schemas/validate.sh does not exist"
   if [ -z "${CHECK_JSONSCHEMA:-}" ]; then
-    local version
+    local version library
     version=$(sed -n 's/^CJ_VERSION="\(.*\)"$/\1/p' schemas/validate.sh | head -n 1)
+    library=$(sed -n 's/^JSONSCHEMA_VERSION="\(.*\)"$/\1/p' schemas/validate.sh | head -n 1)
     [ -n "$version" ] || int_blocked "could not read CJ_VERSION from schemas/validate.sh"
-    show_cmd uvx --from "check-jsonschema==$version" check-jsonschema --version
-    uvx --from "check-jsonschema==$version" check-jsonschema --version >/dev/null 2>&1 \
+    [ -n "$library" ] || int_blocked "could not read JSONSCHEMA_VERSION from schemas/validate.sh"
+    show_cmd uvx --from "check-jsonschema==$version" --with "jsonschema==$library" check-jsonschema --version
+    uvx --from "check-jsonschema==$version" --with "jsonschema==$library" check-jsonschema --version >/dev/null 2>&1 \
       || int_blocked "check-jsonschema $version could not be started through uvx (is the network reachable, or is it cached?)"
   fi
   show_cmd schemas/validate.sh
