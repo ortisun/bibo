@@ -109,7 +109,8 @@ api_privileges   the group of the API login (factory_api_app) holds only what th
                  a principal, an approval, a ledger or outbox row, and it works only on the tenant it names
 repository_map  a repository cannot be enabled without a project map commit, for any role; the commit is 40 lowercase hex
                  characters; the attestor is an active human of the tenant and the database stamps the time; the API login
-                 may register a repository and change four columns of it, in its own tenant only
+                 may only switch a repository off, in its own tenant only, and writes only a person's audit rows in the
+                 API's words; the logins of the factory cannot enable a strict repository with no enabler
 contracts        the rows can carry the fields the domain-event and evidence-ledger-entry schemas require
 store_model      the tables carry what the Store port of ports v1.1 needs and the rules it states are rules of the data:
                  gate record, attestation, task nodes and graph, ledger head; the recipes of the operations that

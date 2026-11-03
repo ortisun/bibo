@@ -1,0 +1,4 @@
+id       = migrations-frozen
+title    = Applied migrations are byte for byte what docs/database/applied-migrations.sha256 lists (scripts/db-test.sh check-migrations, no database needed)
+requires = bash
+run      = scripts/db-test.sh check-migrations

@@ -2576,13 +2576,16 @@ async fn the_status_route_does_not_believe_a_request_row_that_nobody_signed() {
     // A row with the shape of a request and a made-up word: what a holder of the database credentials of the API
     // could write (the trigger judges the shape, not the word).
     let forged = "11111111-1111-7111-8111-111111111111";
+    // The digest of the detail text is right, so that the only thing wrong with the row is the word.
+    let reason = "a made-up request";
+    let digest = factory_composition::repository_changes::payload_digest(reason);
     env.db
         .run(&format!(
             "SELECT set_config('factory.tenant_id', '{tenant}', true); \
              INSERT INTO audit_events (tenant_id, event_id, actor_type, actor_id, action, subject, decision, reason, policy_hash, correlation_id) \
              VALUES ('{tenant}', '{forged}', 'human', '{person}', 'repository.change_requested', \
-                     'change kind=attest repository={id} commit={COMMIT} payload=sha256:{zeros} at=2026-11-03T10:00:00Z mac={zeros64}', \
-                     'record', 'a made-up request', 'sha256:{zeros}', '{forged}')",
+                     'change kind=attest repository={id} commit={COMMIT} payload={digest} at=2026-11-03T10:00:00Z mac={zeros64}', \
+                     'record', '{reason}', 'sha256:{zeros}', '{forged}')",
             tenant = env.a.id.as_uuid(),
             person = env.a.operator.principal.as_text(),
             zeros = "0".repeat(64),
