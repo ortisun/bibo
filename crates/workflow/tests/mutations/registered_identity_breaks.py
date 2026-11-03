@@ -21,9 +21,13 @@ The tests that catch these are `intake_repo/registered_identity.rs` (the intake 
 a sibling that passes on the unbroken code.
 """
 
+import os
 import pathlib
+import signal
 import subprocess
 import sys
+import threading
+import time
 
 ROOT = pathlib.Path(__file__).resolve().parents[4]
 JUDGE = "crates/workflow/src/stages/intake/judge.rs"
@@ -83,10 +87,39 @@ def check():
     sys.exit(1 if bad else 0)
 
 
+def run_cargo(command):
+    """Runs the tests and returns (exit code, output).
+
+    A break can leave a test waiting for something that never happens (a reply that is never
+    posted, so the test that waits for it never starts). libtest says so after 60 seconds with
+    "has been running for over 60 seconds". The run is then given 20 seconds to finish the other
+    tests and is ended with SIGTERM, never SIGKILL, and the tests that finished and failed are the
+    catch. The hung tests are named in the verdict.
+    """
+    process = subprocess.Popen(command, cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, start_new_session=True)
+    lines = []
+    reader = threading.Thread(target=lambda: lines.extend(process.stdout), daemon=True)
+    reader.start()
+    seen_hung = None
+    while process.poll() is None:
+        time.sleep(2)
+        if seen_hung is None and any("has been running for over" in line for line in lines):
+            seen_hung = time.monotonic()
+        if seen_hung is not None and time.monotonic() - seen_hung > 20:
+            os.killpg(process.pid, signal.SIGTERM)
+            break
+    process.wait()
+    reader.join(timeout=10)
+    return process.returncode, "".join(lines)
+
+
+def hung_tests(output):
+    """The names of the tests that libtest reported as running for over 60 seconds."""
+    return sorted({line.split()[1] for line in output.splitlines() if line.startswith("test ") and "has been running for over" in line})
+
+
 def run():
-    command = ["cargo", "test", "-p", "factory-workflow", "--offline", "--no-fail-fast", *TARGETS]
-    done = subprocess.run(command, cwd=ROOT, capture_output=True, text=True)
-    return done.returncode, done.stdout + done.stderr
+    return run_cargo(["cargo", "test", "-p", "factory-workflow", "--offline", "--no-fail-fast", *TARGETS])
 
 
 def main():
@@ -120,6 +153,8 @@ def main():
                 failed = sorted({line.split()[1] for line in output.splitlines() if line.startswith("test ") and line.endswith("FAILED")})
                 shown = "; ".join(failed[:4]) + (f"; and {len(failed) - 4} more" if len(failed) > 4 else "")
                 verdict = "CAUGHT by " + shown
+                if hung_tests(output):
+                    verdict += " (the run also hung on " + "; ".join(hung_tests(output)) + " and was ended with SIGTERM)"
             outcomes.append((name, verdict))
             print(f"{name}: {verdict}", flush=True)
     finally:
