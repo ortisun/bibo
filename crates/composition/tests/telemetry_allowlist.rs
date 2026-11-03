@@ -309,6 +309,11 @@ const REVIEWED: &[(&str, &str, &str)] = &[
         "a count: how many installation tokens of ended jobs the pass revoked",
     ),
     (
+        "crates/composition/src/token_sweep.rs",
+        "released",
+        "a count: how many installation tokens of jobs that stayed blocked the pass revoked (LB-04)",
+    ),
+    (
         "apps/api/src/answers.rs",
         "error",
         "StoreError, a closed set",

@@ -99,14 +99,10 @@ async fn negative_nt_authz_06_a_token_is_minted_for_one_repository_and_nothing_e
         mints[0].requested_permissions,
         Some(as_map(&[("contents", "read"), ("metadata", "read")]))
     );
+    // The scope is the intake stage's: its token is the narrow one (LB-03).
     assert_eq!(
         mints[1].requested_permissions,
-        Some(as_map(&[
-            ("contents", "read"),
-            ("issues", "read"),
-            ("metadata", "read"),
-            ("pull_requests", "read"),
-        ]))
+        Some(as_map(&[("issues", "read"), ("metadata", "read")]))
     );
 
     // The credential works on A and answers 404 on B, which is in the same installation.
@@ -318,6 +314,97 @@ async fn negative_nt_authz_07_a_read_only_token_cannot_comment_or_open_a_pull_re
     );
     assert!(world.fake.comments(FIXTURE, issue.number).is_empty());
     assert!(world.fake.pull_numbers(FIXTURE).is_empty());
+}
+
+/// LB-03. The intake stage reads one issue and its events. Every token it holds, whatever call
+/// asks for it, is `issues: read` and `metadata: read`, and the code host grants no more. A caller
+/// cannot widen it: a comment, a push and a pull request are refused for it.
+#[tokio::test]
+async fn lb_03_the_intake_token_is_issues_read_and_metadata_read_whatever_the_call_asks() {
+    let world = World::new();
+    let host = world.adapter.change_host();
+    let source = world.adapter.issue_source();
+    let issue = issue(&world);
+    let scope = at(StageKind::Intake, 1);
+    source.fetch_issue(&scope, &issue).await.unwrap();
+    source
+        .label_application(&scope, &issue, "factory")
+        .await
+        .unwrap();
+    source.labels_ever_applied(&scope, &issue).await.unwrap();
+    // The preflight reads the protection of the default branch under the same scope. It needs the
+    // metadata only, so the narrow token must still serve it.
+    source
+        .repository_protection(&scope)
+        .await
+        .expect("the protection can be read with the narrow token");
+    // The ways a caller could try to get more out of the scope.
+    let target = CommentTarget::Issue(issue.clone());
+    assert_eq!(
+        host.post_comment(&scope, &target, "Hello.", "k").await,
+        Err(GitHostError::Forbidden)
+    );
+    assert_eq!(
+        host.push_target(&scope, &branch("factory/job-1"))
+            .await
+            .err(),
+        Some(GitHostError::Forbidden)
+    );
+    let request = DraftPrRequest {
+        head: branch("factory/job-1"),
+        base: branch("main"),
+        title: "Add a word count command".to_owned(),
+        body: "Evidence follows.".to_owned(),
+    };
+    assert_eq!(
+        host.open_draft_pull_request(&scope, request).await,
+        Err(GitHostError::Forbidden)
+    );
+    let mints = world.fake.mints();
+    assert!(!mints.is_empty());
+    let narrow = as_map(&[("issues", "read"), ("metadata", "read")]);
+    for minted in &mints {
+        assert_eq!(
+            minted.requested_permissions,
+            Some(narrow.clone()),
+            "{minted:?}"
+        );
+        assert_eq!(minted.granted_permissions, narrow, "{minted:?}");
+    }
+    // No write happened.
+    assert!(world.fake.comments(FIXTURE, issue.number).is_empty());
+    assert!(world.fake.pull_numbers(FIXTURE).is_empty());
+}
+
+/// LB-03. The other stages keep the classes they had: the narrow class is for intake alone, and a
+/// token of the narrow class is not handed to a stage that reads the repository.
+#[tokio::test]
+async fn lb_03_a_stage_that_reads_the_repository_does_not_get_the_narrow_token() {
+    let world = World::new();
+    let source = world.adapter.issue_source();
+    let issue = issue(&world);
+    for (index, stage) in [
+        StageKind::RepositoryIntelligence,
+        StageKind::Specification,
+        StageKind::Validation,
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let job = u128::try_from(index).unwrap() + 10;
+        source.fetch_issue(&at(stage, job), &issue).await.unwrap();
+        let minted = world.fake.mints().pop().expect("a mint");
+        assert_eq!(
+            minted.requested_permissions,
+            Some(as_map(&[
+                ("contents", "read"),
+                ("issues", "read"),
+                ("metadata", "read"),
+                ("pull_requests", "read"),
+            ])),
+            "{stage:?}"
+        );
+    }
 }
 
 // ---- NT-AUTHZ-09 and NT-MRG-07 ---------------------------------------------------------------
@@ -652,6 +739,107 @@ async fn negative_nt_sec_10_a_round_that_began_while_the_sweep_looked_keeps_its_
     assert_eq!(world.adapter.sweep_orphans(&open).await, 2);
 }
 
+/// LB-04. The tokens of a job that has been blocked for a long time are revoked, and the job is
+/// not over: it can still mint a new token, which an ended job cannot.
+#[tokio::test]
+async fn lb_04_an_idle_job_loses_its_tokens_and_can_still_mint_new_ones() {
+    let world = World::new();
+    let issue = issue(&world);
+    mint_two_tokens(&world, 1, &issue).await;
+    let idle: HashSet<JobId> = [job(1)].into_iter().collect();
+    let nothing_runs = HashSet::new;
+    assert_eq!(
+        world.adapter.release_idle_after(&idle, &nothing_runs).await,
+        2
+    );
+    assert_eq!(world.fake.revocations().len(), 2);
+    assert!(world.fake.tokens().iter().all(|t| t.revoked_at.is_some()));
+    // A second pass finds nothing left to revoke.
+    assert_eq!(
+        world.adapter.release_idle_after(&idle, &nothing_runs).await,
+        0
+    );
+    // The job is not ended: the next call mints a fresh token and works.
+    let before = world.fake.mints().len();
+    world
+        .adapter
+        .issue_source()
+        .fetch_issue(&at(StageKind::Intake, 1), &issue)
+        .await
+        .expect("an idle job that wakes up can read again");
+    assert_eq!(world.fake.mints().len(), before + 1);
+    // The control: ending the job is what refuses it.
+    world
+        .adapter
+        .change_host()
+        .revoke_job_tokens(job(1))
+        .await
+        .unwrap();
+    assert_eq!(
+        world
+            .adapter
+            .issue_source()
+            .fetch_issue(&at(StageKind::Intake, 1), &issue)
+            .await,
+        Err(GitHostError::Unauthorized)
+    );
+}
+
+#[tokio::test]
+async fn lb_04_only_the_jobs_named_as_idle_lose_their_tokens_and_a_running_one_is_spared() {
+    let world = World::new();
+    let issue = issue(&world);
+    mint_two_tokens(&world, 1, &issue).await;
+    mint_two_tokens(&world, 2, &issue).await;
+    mint_two_tokens(&world, 3, &issue).await;
+    // Jobs 1 and 2 are named as idle, and job 2 began to run again meanwhile.
+    let idle: HashSet<JobId> = [job(1), job(2)].into_iter().collect();
+    let running_now = || [job(2)].into_iter().collect::<HashSet<JobId>>();
+    assert_eq!(
+        world.adapter.release_idle_after(&idle, &running_now).await,
+        2
+    );
+    let revoked: Vec<bool> = world
+        .fake
+        .tokens()
+        .iter()
+        .map(|t| t.revoked_at.is_some())
+        .collect();
+    assert_eq!(revoked.iter().filter(|r| **r).count(), 2, "only job 1");
+    // A job that is not named is never touched, whatever its tokens look like.
+    let calls = world.fake.revocations().len();
+    assert_eq!(
+        world
+            .adapter
+            .release_idle_after(&HashSet::new(), &HashSet::new)
+            .await,
+        0
+    );
+    assert_eq!(world.fake.revocations().len(), calls);
+}
+
+#[tokio::test]
+async fn lb_04_a_revocation_that_fails_for_an_idle_job_is_kept_and_tried_again() {
+    let world = World::new();
+    let issue = issue(&world);
+    mint_two_tokens(&world, 1, &issue).await;
+    let idle: HashSet<JobId> = [job(1)].into_iter().collect();
+    world
+        .fake
+        .fail_always("DELETE /installation/token", 500, "boom");
+    assert_eq!(
+        world.adapter.release_idle_after(&idle, &HashSet::new).await,
+        0
+    );
+    assert!(world.fake.revocations().is_empty());
+    world.fake.clear_faults();
+    assert_eq!(
+        world.adapter.release_idle_after(&idle, &HashSet::new).await,
+        2
+    );
+    assert_eq!(world.fake.revocations().len(), 2);
+}
+
 #[tokio::test]
 async fn negative_nt_sec_10_a_revocation_that_fails_is_kept_and_retried() {
     let world = World::new();
@@ -836,6 +1024,7 @@ async fn a_token_the_server_calls_dead_is_replaced_once_and_the_call_is_tried_ag
 #[test]
 fn the_permission_sets_name_no_level_above_write_and_the_policy_lists_agree() {
     for set in [
+        PermissionSet::issue_reader(),
         PermissionSet::read_stage(),
         PermissionSet::delivery_stage(),
         PermissionSet::approval_stage(),

@@ -135,6 +135,30 @@ class PolicyCheck(unittest.TestCase):
         def approver_is_the_operator(p):
             p["intake_requirements"]["design_approved_by"] = "operator"
 
+        def reply_cap_missing(p):
+            del p["intake_requirements"]["design_reply_cap_per_issue"]
+
+        def reply_cap_zero(p):
+            p["intake_requirements"]["design_reply_cap_per_issue"] = 0
+
+        def reply_cap_too_high(p):
+            p["intake_requirements"]["design_reply_cap_per_issue"] = 101
+
+        def reply_cap_is_text(p):
+            p["intake_requirements"]["design_reply_cap_per_issue"] = "five"
+
+        def reply_cap_is_a_flag(p):
+            p["intake_requirements"]["design_reply_cap_per_issue"] = True
+
+        def reply_window_missing(p):
+            del p["intake_requirements"]["design_reply_window_hours"]
+
+        def reply_window_zero(p):
+            p["intake_requirements"]["design_reply_window_hours"] = 0
+
+        def reply_window_too_long(p):
+            p["intake_requirements"]["design_reply_window_hours"] = 169
+
         def prefix_changed(p):
             p["namespaces"]["factory"]["prefix"] = "bot: "
 
@@ -152,6 +176,10 @@ class PolicyCheck(unittest.TestCase):
             (requirement_unknown, "intake-requirement"), (prefix_changed, "namespaces"), (writer_changed, "namespaces"),
             (approver_missing, "design-approver"), (approver_unknown, "design-approver"),
             (approver_is_the_requester, "design-approver"), (approver_is_the_operator, "design-approver"),
+            (reply_cap_missing, "design-reply-cap"), (reply_cap_zero, "design-reply-cap"),
+            (reply_cap_too_high, "design-reply-cap"), (reply_cap_is_text, "design-reply-cap"),
+            (reply_cap_is_a_flag, "design-reply-cap"), (reply_window_missing, "design-reply-window"),
+            (reply_window_zero, "design-reply-window"), (reply_window_too_long, "design-reply-window"),
         ]
         for damage, expected in cases:
             with self.subTest(damage=damage.__name__):
@@ -175,6 +203,18 @@ class PolicyCheck(unittest.TestCase):
                 policy = copy.deepcopy(real_policy())
                 policy["intake_requirements"]["design_approved_by"] = refused
                 self.assertTrue(any("design-approver" in line for line in problems(policy)), refused)
+
+    def test_the_cap_on_design_replies_is_a_whole_number_in_range_and_the_real_values_are_accepted(self):
+        # DG-9. The real values load; zero, a missing value, text and a flag do not (they are the
+        # sibling that proves the check can fail). The engine reads the same two keys.
+        real = real_policy()["intake_requirements"]
+        self.assertEqual((real["design_reply_cap_per_issue"], real["design_reply_window_hours"]), (5, 24))
+        for cap, window in ((1, 1), (100, 168), (5, 24)):
+            with self.subTest(cap=cap, window=window):
+                policy = copy.deepcopy(real_policy())
+                policy["intake_requirements"]["design_reply_cap_per_issue"] = cap
+                policy["intake_requirements"]["design_reply_window_hours"] = window
+                self.assertEqual(problems(policy), [])
 
     def test_a_new_engine_job_state_without_a_label_is_caught(self):
         machine = copy.deepcopy(real_machine())

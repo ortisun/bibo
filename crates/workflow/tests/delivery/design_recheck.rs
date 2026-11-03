@@ -46,11 +46,20 @@ fn nothing_was_opened(world: &World) {
     assert!(world.host.checks().is_empty());
 }
 
-/// The one audit record the re-check wrote, as its reason reads.
+/// The one audit record the re-check wrote, as its reason reads. A re-check that passes, and one
+/// that cannot read the issue, write one record and no reply.
 fn recorded(world: &World) -> String {
     let noted = world.noted.lock().expect("lock").clone();
     assert_eq!(noted.len(), 1, "one record: {noted:?}");
     noted[0].clone()
+}
+
+/// The two records of a re-check that stops: the decision, written before the reply is tried, and
+/// what became of the reply (DG-9).
+fn recorded_pair(world: &World) -> (String, String) {
+    let noted = world.noted.lock().expect("lock").clone();
+    assert_eq!(noted.len(), 2, "the decision and the reply: {noted:?}");
+    (noted[0].clone(), noted[1].clone())
 }
 
 /// The stage is blocked with the block code of a design that is not approved, nothing was opened,
@@ -76,10 +85,16 @@ async fn assert_stopped(world: &World) -> String {
         "{:?}",
         world.design.replies.keys()
     );
-    let reason = recorded(world);
+    let (reason, reply) = recorded_pair(world);
     assert!(
         reason.starts_with("design re-check before the pull request is opened: design gate refused (DESIGN_NOT_APPROVED)"),
         "{reason}"
+    );
+    // The decision comes first and says the reply is still to follow; the reply has its own record.
+    assert!(reason.contains("reply to_follow"), "{reason}");
+    assert!(
+        reply.starts_with("design re-check before the pull request is opened: reply for issue example-org/word-count#12: posted"),
+        "{reply}"
     );
     reason
 }
@@ -289,8 +304,14 @@ async fn a_rule_that_cannot_be_read_blocks_the_run_and_says_the_factory_could_no
         "{}",
         comments[0]
     );
-    let reason = recorded(&world);
+    let (reason, reply) = recorded_pair(&world);
     assert!(reason.contains("degraded"), "{reason}");
+    assert!(reply.contains("reply for issue"), "{reply}");
+    // The rule is unreadable, so the cap is unknown: the reply is asked with the least one.
+    assert_eq!(
+        world.design.replies.caps(),
+        [factory_domain::policy::issue_workflow::ReplyCap::WHEN_THE_POLICY_CANNOT_BE_READ]
+    );
 }
 
 #[tokio::test]
@@ -319,8 +340,41 @@ async fn a_comment_that_cannot_be_posted_does_not_change_the_block_and_the_recor
         Err(StageError::Blocked(BlockedCode::DesignNotApproved))
     );
     nothing_was_opened(&world);
-    let reason = recorded(&world);
-    assert!(reason.contains("reply not_sent"), "{reason}");
+    let (reason, reply) = recorded_pair(&world);
+    assert!(reason.contains("reply to_follow"), "{reason}");
+    assert!(reply.contains(": later"), "{reply}");
+}
+
+#[tokio::test]
+async fn a_cap_that_is_reached_posts_nothing_and_the_block_stands_with_a_record_of_it() {
+    // DG-9 (a). The issue already holds as many replies as the cap allows.
+    let world = World::new();
+    world.issue_shows(&[LABEL, "design: in review"]);
+    world.design.replies.reach_the_cap();
+    let result = execute_only(&world).await;
+    assert_eq!(
+        result,
+        Err(StageError::Blocked(BlockedCode::DesignNotApproved))
+    );
+    nothing_was_opened(&world);
+    assert!(world.design.replies.texts().is_empty());
+    let (_, reply) = recorded_pair(&world);
+    assert!(
+        reply.contains(": capped (at most 5 in 24 hours)"),
+        "{reply}"
+    );
+}
+
+#[tokio::test]
+async fn the_recheck_asks_with_the_cap_of_the_policy_and_writes_the_record_first() {
+    // DG-9 (a) and (d).
+    let world = World::new();
+    world.issue_shows(&[LABEL, "design: in review"]);
+    let _ = assert_stopped(&world).await;
+    let caps = world.design.replies.caps();
+    assert_eq!(caps.len(), 1);
+    assert_eq!(caps[0].max(), 5);
+    assert_eq!(caps[0].window(), std::time::Duration::from_secs(24 * 3600));
 }
 
 #[tokio::test]
@@ -334,8 +388,9 @@ async fn a_secret_shaped_label_name_does_not_reach_the_record_of_the_recheck() {
         result,
         Err(StageError::Blocked(BlockedCode::DesignNotApproved))
     );
-    let reason = recorded(&world);
+    let (reason, reply) = recorded_pair(&world);
     assert!(!reason.contains(&secret), "{reason}");
+    assert!(!reply.contains(&secret), "{reply}");
     assert!(reason.contains("design re-check"), "{reason}");
 }
 

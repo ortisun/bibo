@@ -423,6 +423,80 @@ fn a_policy_without_the_approver_of_designs_or_with_a_wrong_one_is_refused() {
 }
 
 #[test]
+fn the_real_policy_caps_design_replies_at_five_an_issue_a_day() {
+    let source = ProtectedPolicySource::protected_default_branch(&repo_root(), &[]).unwrap();
+    let policy = PolicyLoader::load_issue_workflow(&source)
+        .expect("loads")
+        .document;
+    assert_eq!(policy.intake_requirements.design_reply_cap_per_issue, 5);
+    assert_eq!(policy.intake_requirements.design_reply_window_hours, 24);
+    let cap = policy.design_gate().expect("a sound rule").reply_cap();
+    assert_eq!(cap.max(), 5);
+    assert_eq!(cap.window(), std::time::Duration::from_secs(24 * 3600));
+}
+
+#[test]
+fn a_missing_or_zero_cap_on_design_replies_is_refused_and_never_read_as_no_limit() {
+    // DG-9. The sibling: the real values load.
+    load_text(&real()).expect("the real policy loads");
+    // Missing: there is no default in code. The file is refused, so the gate refuses every issue.
+    for line in [
+        "  design_reply_cap_per_issue: 5\n",
+        "  design_reply_window_hours: 24\n",
+    ] {
+        let text = replace_once(&real(), line, "");
+        assert_eq!(refused(&text).kind, PolicyErrorKind::Type, "{line}");
+    }
+    // Zero, and numbers outside the range, are refused with the key named.
+    for (from, to) in [
+        (
+            "design_reply_cap_per_issue: 5",
+            "design_reply_cap_per_issue: 0",
+        ),
+        (
+            "design_reply_cap_per_issue: 5",
+            "design_reply_cap_per_issue: 101",
+        ),
+        (
+            "design_reply_window_hours: 24",
+            "design_reply_window_hours: 0",
+        ),
+        (
+            "design_reply_window_hours: 24",
+            "design_reply_window_hours: 169",
+        ),
+    ] {
+        let text = replace_once(&real(), from, to);
+        let shown = format!("{}", refused(&text));
+        assert!(
+            shown.contains("intake_requirements.design_reply"),
+            "{to}: {shown}"
+        );
+    }
+    // The edges load, so the refusals above are about the range and not about the setup.
+    for (from, to) in [
+        (
+            "design_reply_cap_per_issue: 5",
+            "design_reply_cap_per_issue: 100",
+        ),
+        (
+            "design_reply_window_hours: 24",
+            "design_reply_window_hours: 168",
+        ),
+        (
+            "design_reply_cap_per_issue: 5",
+            "design_reply_cap_per_issue: 1",
+        ),
+        (
+            "design_reply_window_hours: 24",
+            "design_reply_window_hours: 1",
+        ),
+    ] {
+        load_text(&replace_once(&real(), from, to)).unwrap_or_else(|e| panic!("{to}: {e}"));
+    }
+}
+
+#[test]
 fn a_policy_with_a_problem_gives_no_design_rule() {
     // The rule is built only from a policy that passed every check: nothing is judged by a policy
     // the engine would not load.

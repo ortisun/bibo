@@ -59,7 +59,7 @@ probes, the crates.io registry client and the advisory database date. It never f
 
 The engine's job tokens go through `PolicyBroker`, which cuts each request to the stage's models, the stage's ceiling and
 what is left of the job's ceiling. A step before each claim (`RevokeEndedJobs`) revokes the GitHub installation tokens of jobs
-that are over.
+that are over, and the tokens of a job that has stayed `BLOCKED` longer than the bound of the security policy (LB-04).
 
 ### Configuration
 

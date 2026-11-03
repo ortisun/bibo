@@ -440,22 +440,32 @@ fn judge_reached_the_sandbox(o: &Observed, on_the_track: bool) -> Vec<String> {
             "the stop at the sandbox is not recorded with its cause: {actions:?}"
         ));
     }
-    if !o.comments.is_empty() {
+    // LB-02: the person is told once that the factory stopped, with the closed template of the
+    // environment notice. The text holds nothing of the error.
+    let notice = "The factory accepted this issue and checked its design, and then stopped before it could start the work.";
+    if o.comments.len() != 1 || !o.comments[0].starts_with(notice) {
         problems.push(format!(
-            "the issue got {} comment(s) although nothing was refused",
-            o.comments.len()
+            "the issue should have exactly the environment notice, and it has {:?}",
+            o.comments
         ));
     }
+    // The status step writes nothing before the intake stage has passed (ADR 0017, STS-1), so the
+    // label is not there, and the notice is the only post.
     if o.labels.iter().any(|l| l.starts_with("factory: ")) {
         problems.push(format!(
             "a status label was written before intake passed: {:?}",
             o.labels
         ));
     }
-    if o.routes
-        .contains_key("POST /repos/{owner}/{repo}/issues/{number}/comments")
-    {
-        problems.push("something was posted on the issue".to_owned());
+    let posts = o
+        .routes
+        .get("POST /repos/{owner}/{repo}/issues/{number}/comments")
+        .copied()
+        .unwrap_or(0);
+    if posts != 1 {
+        problems.push(format!(
+            "the notice should be posted once, not {posts} times"
+        ));
     }
     problems
 }

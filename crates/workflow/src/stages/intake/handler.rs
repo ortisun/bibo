@@ -40,6 +40,8 @@ use factory_ports::registry::VersionReq;
 use factory_ports::sandbox::TeardownReason;
 use serde_json::Value;
 
+use factory_domain::policy::issue_workflow::ReplyCap;
+
 use super::authorize::{Authorization, Labeller, authorize};
 use super::classify::{Classification, DeclineReason, IntakeRules, Outcome, ReadProblem, decide};
 use super::common::{
@@ -56,7 +58,7 @@ use super::normalize::{
 };
 use super::seams::{
     AgentOutputCheck, AgentSandboxSpecs, AllowlistSource, CapabilityProbes, DesignGatePolicy,
-    FetchedRequest, RefusalReplies, ReplyError, RequestSnapshot, RequestSource, SeamError,
+    FetchedRequest, RefusalReplies, RequestSnapshot, RequestSource, SeamError,
 };
 use crate::audit::{AuditAction, AuditDecision, AuditKind};
 use crate::gates::framework::GateDecision;
@@ -477,13 +479,20 @@ impl StageHandler for IntakeHandler {
         {
             Ok(judged) => judged,
             Err(DesignStop::Unjudgeable) => {
-                let status = self
-                    .reply(&identity, &snapshot.issue, Reply::CannotCheck, "")
-                    .await
-                    .ok();
+                // The record first, then the reply, then the record of the reply (DG-9). The rule
+                // cannot be read, so the cap cannot be either: the reply is asked with the least
+                // one, never without one.
                 ctx.note_audit_because(
                     AuditAction::new(AuditKind::AuthorizationDecision, AuditDecision::Denied),
-                    design::unjudgeable_reason(&issue_text, status),
+                    design::unjudgeable_reason(&issue_text, Some(ReplyStatus::ToFollow)),
+                );
+                let cap = ReplyCap::WHEN_THE_POLICY_CANNOT_BE_READ;
+                let status = self
+                    .reply(&identity, &snapshot.issue, Reply::CannotCheck, "", &cap)
+                    .await;
+                ctx.note_audit_because(
+                    AuditAction::new(AuditKind::AuthorizationDecision, AuditDecision::Denied),
+                    design::reply_reason(design::INTAKE_REPLY_LEAD, &issue_text, status, &cap),
                 );
                 // The audit record above names the issue; a log field would be text of outside
                 // origin, so the line says only what happened.
@@ -512,20 +521,13 @@ impl StageHandler for IntakeHandler {
 
         // A refused design ends the stage here: the person is answered, no sandbox is made and no
         // classifier runs. The decision is `decline`, and the gate reports BLOCKED.
-        let mut design_status = None;
-        if let DesignDecision::Refused { reason, .. } = &design_decision {
-            design_status = Some(
-                self.reply(
-                    &identity,
-                    &snapshot.issue,
-                    reason.reply(),
-                    design_rule.approved_label(),
-                )
-                .await?,
-            );
-        }
+        //
         // Every judgement is on the record, also for an issue off the design track, because the
-        // comparison of the text of the job with the issue is made for every job (DG-3).
+        // comparison of the text of the job with the issue is made for every job (DG-3). The record
+        // of a refusal is written **before** the reply is tried (DG-9): a comment endpoint that is
+        // down must not take the record of the block with it. It says the reply is still to follow,
+        // and a second record says what became of it.
+        let refused = matches!(design_decision, DesignDecision::Refused { .. });
         ctx.note_audit_because(
             AuditAction::new(
                 AuditKind::AuthorizationDecision,
@@ -538,10 +540,38 @@ impl StageHandler for IntakeHandler {
             self.redacted_reason(design::audit_reason(
                 &design_decision,
                 &issue_text,
-                design_status,
+                refused.then_some(ReplyStatus::ToFollow),
                 text_check,
             )),
         );
+        let mut design_status = None;
+        if let DesignDecision::Refused { reason, .. } = &design_decision {
+            let cap = design_rule.reply_cap();
+            let status = self
+                .reply(
+                    &identity,
+                    &snapshot.issue,
+                    reason.reply(),
+                    design_rule.approved_label(),
+                    &cap,
+                )
+                .await;
+            ctx.note_audit_because(
+                AuditAction::new(AuditKind::AuthorizationDecision, AuditDecision::Denied),
+                design::reply_reason(design::INTAKE_REPLY_LEAD, &issue_text, status, &cap),
+            );
+            // A comment that cannot be posted now is tried again by the next attempt, as a failed
+            // read of GitHub is, so that a blip does not lose the answer. Both records above are
+            // noted already and the engine writes them for the failed attempt too, so no attempt
+            // leaves the design without a record. On the **last** attempt the block stands and the
+            // comment is given up: a job that is blocked for a design that is not approved must
+            // not end as a failed job because a comment endpoint was down (DG-9, part d).
+            let attempts = ctx.contract.timeout_and_retries.max_attempts.get();
+            if status == ReplyStatus::Later && i64::from(ctx.attempt_number) < attempts {
+                return Err(StageError::Tool);
+            }
+            design_status = Some(status);
+        }
         // The stored document, and the report that is made from it, show the labels with every
         // secret replaced. The audit line above is redacted as a whole, on its own.
         let design_document = design::document(
@@ -613,26 +643,76 @@ impl StageHandler for IntakeHandler {
             probed: self.probes.probed(),
             author: None,
         };
-        let route = ports.router.route(&need).map_err(|_| {
-            StageError::Blocked(
-                factory_domain::contracts::gate_report::BlockedCode::ToolUnavailable,
-            )
-        })?;
-        let spec = self
-            .sandboxes
-            .agent_spec(identity.job, ctx.attempt, token)
-            .map_err(|_| {
-                StageError::Environment(
-                    factory_domain::machines::guards::EnvironmentCause::PolicyUnloadable,
-                )
-            })?;
-        let mut session = ports.sandbox.create_verified(spec, ctx.cancel).await?;
+        //
+        // From here on the issue has passed the authorization and the design gate, so a block by
+        // the environment is told to the person who asked, once, with a closed template (LB-02).
+        // Before this point the stage never says it: it has accepted nothing. The label of the
+        // status step is not written either: that step writes only after the intake stage has
+        // passed (ADR 0017, finding STS-1), and a run that is blocked here has not.
+        let route = match ports.router.route(&need) {
+            Ok(route) => route,
+            Err(_) => {
+                return Err(self
+                    .stopped_by_the_environment(
+                        ctx,
+                        &identity,
+                        &snapshot.issue,
+                        &issue_text,
+                        &design_rule,
+                        StageError::Blocked(
+                            factory_domain::contracts::gate_report::BlockedCode::ToolUnavailable,
+                        ),
+                    )
+                    .await);
+            }
+        };
+        let spec = match self.sandboxes.agent_spec(identity.job, ctx.attempt, token) {
+            Ok(spec) => spec,
+            Err(_) => {
+                return Err(self
+                    .stopped_by_the_environment(
+                        ctx,
+                        &identity,
+                        &snapshot.issue,
+                        &issue_text,
+                        &design_rule,
+                        StageError::Environment(
+                            factory_domain::machines::guards::EnvironmentCause::PolicyUnloadable,
+                        ),
+                    )
+                    .await);
+            }
+        };
+        let mut session = match ports.sandbox.create_verified(spec, ctx.cancel).await {
+            Ok(session) => session,
+            Err(error) => {
+                return Err(self
+                    .stopped_by_the_environment(
+                        ctx,
+                        &identity,
+                        &snapshot.issue,
+                        &issue_text,
+                        &design_rule,
+                        error.into(),
+                    )
+                    .await);
+            }
+        };
         let capabilities = ports.runtime.probe(&mut *session).await;
         match capabilities {
             Ok(_) => {}
             Err(error) => {
                 let _ = session.stop_and_remove(TeardownReason::Failed).await;
-                return Err(error.into());
+                return Err(self
+                    .stopped_by_the_environment(
+                        ctx,
+                        &identity,
+                        &snapshot.issue,
+                        &issue_text,
+                        &design_rule,
+                        error.into(),
+                    )
+                    .await);
             }
         };
         ctx.report_sandbox_ready(SandboxReady {
@@ -1036,14 +1116,57 @@ impl IntakeHandler {
         issue: &IssueRef,
         reply: Reply,
         approved_label: &str,
-    ) -> Result<ReplyStatus, StageError> {
-        let key = format!("design-gate-{}", identity.stage_run);
+        cap: &ReplyCap,
+    ) -> ReplyStatus {
+        let key = match reply {
+            Reply::EnvironmentBlocked => format!("environment-{}", identity.stage_run),
+            _ => format!("design-gate-{}", identity.stage_run),
+        };
         let text = reply.text(&self.config.label, approved_label);
-        match self.replies.post(identity.tenant, issue, &key, &text).await {
-            Ok(()) => Ok(ReplyStatus::Posted),
-            Err(ReplyError::NotSent) => Ok(ReplyStatus::NotSent),
-            Err(ReplyError::Later) => Err(StageError::Tool),
+        // Whatever comes of the reply, the stage goes on: the refusal and its record do not wait
+        // for a comment, and a comment that cannot be posted now is not worth a failed job (DG-9).
+        ReplyStatus::of(
+            self.replies
+                .post(identity.tenant, issue, &key, &text, cap)
+                .await,
+        )
+    }
+
+    /// The stage cannot go on because the place where it runs its tools is not available, after
+    /// the issue passed the authorization and the design gate (LB-02). When the error blocks the
+    /// run (an environment cause, or a tool that is missing), the person who asked gets one closed
+    /// template, under the same cap as every other reply, and the record says what became of it.
+    /// The error is returned unchanged: the comment never changes what the stage run becomes, and
+    /// a comment that cannot be posted is not tried again.
+    async fn stopped_by_the_environment(
+        &self,
+        ctx: &mut StageContext<'_>,
+        identity: &crate::handlers::RunIdentity,
+        issue: &IssueRef,
+        issue_text: &str,
+        rule: &factory_domain::policy::issue_workflow::DesignGate,
+        error: StageError,
+    ) -> StageError {
+        if matches!(error, StageError::Environment(_) | StageError::Blocked(_)) {
+            let cap = rule.reply_cap();
+            let status = self
+                .reply(
+                    identity,
+                    issue,
+                    Reply::EnvironmentBlocked,
+                    rule.approved_label(),
+                    &cap,
+                )
+                .await;
+            ctx.note_audit_because(
+                AuditAction::new(
+                    AuditKind::SandboxCreatedPostureResultDestroyed,
+                    AuditDecision::Denied,
+                ),
+                design::reply_reason(design::ENVIRONMENT_REPLY_LEAD, issue_text, status, &cap),
+            );
         }
+        error
     }
 
     /// The output of a stage that refused the issue: the decision `decline`, a normalized request

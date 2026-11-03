@@ -82,7 +82,9 @@ The configuration keys that point at the outside world are in [the reference](..
   `ModelRoutingPolicy::unconfirmed()` is not empty (every price and ceiling of the file waits for the project owner today).
 * Prices come from the policy. `broker.prices` may only raise one.
 * `RevokeEndedJobs` revokes the installation tokens of jobs that are over. It lists the open jobs of the tenants the worker
-  serves, and revokes nothing in a pass where it cannot list them.
+  serves, and revokes nothing in a pass where it cannot list them. Given a bound (`revoking_blocked_after`, from
+  `credentials.github_app.installation_token.revoke_when_blocked_after_s`) it also revokes, without ending the job, the
+  tokens of a job that has been `BLOCKED` for that long; a job that waits for a person keeps its token (LB-04).
 
 ## What a binary does with it
 

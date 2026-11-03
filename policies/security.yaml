@@ -1010,9 +1010,19 @@ credentials:
     installation_token:
       mint: per_job
       repositories: exactly_one        # narrowed with the `repositories` body parameter
-      permissions: narrowed_per_stage  # read-only for analysis stages
+      permissions: narrowed_per_stage  # read-only for analysis stages; the intake stage asks for `issues: read` and `metadata: read` only (LB-03, crates/github/src/permissions.rs)
       lifetime_s: 3600                 # fixed by GitHub (documented); factory revokes earlier
       revoke_on_job_end: true          # DELETE /installation/token
+      # LB-04. `revoke_on_job_end` is the end of the JOB (completed, failed, cancelled, rejected).
+      # A job that stays BLOCKED is not over, and it used to keep its read token until GitHub
+      # expired it. After this many seconds blocked, the worker revokes the tokens the job holds
+      # (`crates/composition/src/token_sweep.rs`). The job is not ended: if it is unblocked or
+      # overridden, its next call mints a new token. A job that waits for a person to answer or
+      # approve (WAITING_FOR_HUMAN) keeps its token, and so do paused and active jobs. The bound
+      # runs from the first pass of the worker that saw the job blocked. Between 60 and 86400; the
+      # file is refused otherwise. A token lives `lifetime_s` at most, so a bound at or above that
+      # only ever revokes a token that was minted after the block began.
+      revoke_when_blocked_after_s: 3600
       holders: [control_plane_only]
       persisted_to_disk: false
       visible_to_sandbox: false

@@ -136,6 +136,71 @@ pub struct CommentRef {
     pub id: u64,
 }
 
+/// How many comments of one family the factory may leave on one issue or pull request in a window
+/// of time (DG-9). The family is a short word that every comment of the kind carries as a hidden
+/// marker, so that the adapter can count them without reading text. A cap that allows nothing, a
+/// window of no length or a family with no name is not a cap: [`CommentCap::new`] gives `None` for
+/// each, so a missing or zero value from a policy cannot become "no limit".
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CommentCap {
+    family: Slug,
+    max: u32,
+    window: Duration,
+}
+
+impl CommentCap {
+    /// The most comments of a family that one request can count: the comments of a thread that one
+    /// page returns. A cap above this could not be checked, so it is refused.
+    pub const MOST: u32 = 100;
+
+    /// A cap of `max` comments of `family` in `window`. `None` when `max` is zero or above
+    /// [`MOST`](Self::MOST), when the window is zero, or when the family is not a slug.
+    #[must_use]
+    pub fn new(family: &str, max: u32, window: Duration) -> Option<Self> {
+        if max == 0 || max > Self::MOST || window.is_zero() {
+            return None;
+        }
+        Some(Self {
+            family: Slug::parse(family).ok()?,
+            max,
+            window,
+        })
+    }
+
+    /// The family word.
+    #[must_use]
+    pub fn family(&self) -> &str {
+        self.family.as_str()
+    }
+
+    /// The most comments of the family in the window.
+    #[must_use]
+    pub const fn max(&self) -> u32 {
+        self.max
+    }
+
+    /// The length of the window.
+    #[must_use]
+    pub const fn window(&self) -> Duration {
+        self.window
+    }
+}
+
+/// What became of a comment that was posted under a [`CommentCap`]. The set is closed. In the last
+/// two cases nothing was posted.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CappedPost {
+    /// The comment was posted now.
+    Posted(CommentRef),
+    /// A comment with the same key was already there, and nothing was posted.
+    AlreadyThere(CommentRef),
+    /// The thread already holds as many comments of the family in the window as the cap allows.
+    CapReached,
+    /// The comments of the window do not fit in the one page the adapter reads, so the adapter
+    /// cannot tell whether the factory already answered or how many times. It posts nothing.
+    NotChecked,
+}
+
 /// A person or service on the code host. Authority comes from the numeric id, never from the
 /// login: a login can be renamed or re-registered by someone else.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -779,6 +844,30 @@ pub trait ChangeHost: Send + Sync {
         idempotency_key: &str,
     ) -> Result<CommentRef, GitHostError>;
 
+    /// Like [`post_comment`](Self::post_comment), for a reply the factory must not repeat without
+    /// end on the same thread (DG-9). The adapter reads **one** page of the thread, only the
+    /// comments written or changed within `cap.window()`, and:
+    ///
+    /// * finds the comment of `idempotency_key` among them: [`CappedPost::AlreadyThere`];
+    /// * counts the factory's own comments of `cap.family()` and, when there are `cap.max()` or
+    ///   more: [`CappedPost::CapReached`];
+    /// * cannot read them all in the page: [`CappedPost::NotChecked`];
+    /// * otherwise posts, and the comment carries the family marker: [`CappedPost::Posted`].
+    ///
+    /// Only the App's own comments count, whoever pastes its marker. A host that cannot count
+    /// answers `Rejected(Other)` and posts nothing: this default is the closed one.
+    async fn post_capped_comment(
+        &self,
+        scope: &GitScope,
+        target: &CommentTarget,
+        body: &str,
+        idempotency_key: &str,
+        cap: &CommentCap,
+    ) -> Result<CappedPost, GitHostError> {
+        let _ = (scope, target, body, idempotency_key, cap);
+        Err(GitHostError::Rejected(Rejection::Other))
+    }
+
     /// Creates or updates the check run for a gate result.
     async fn publish_check(
         &self,
@@ -932,6 +1021,20 @@ pub trait WebhookVerifier: Send + Sync {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_cap_that_allows_nothing_or_has_no_window_or_no_family_is_not_a_cap() {
+        let day = Duration::from_secs(86_400);
+        assert!(CommentCap::new("replies", 5, day).is_some());
+        // Zero fails closed: it is refused, and cannot be read as "no limit".
+        assert_eq!(CommentCap::new("replies", 0, day), None);
+        assert_eq!(CommentCap::new("replies", 5, Duration::ZERO), None);
+        assert_eq!(CommentCap::new("", 5, day), None);
+        assert_eq!(CommentCap::new("not a slug!", 5, day), None);
+        // A cap the adapter could not check in one page is refused too.
+        assert!(CommentCap::new("replies", CommentCap::MOST, day).is_some());
+        assert_eq!(CommentCap::new("replies", CommentCap::MOST + 1, day), None);
+    }
 
     const APP: AppId = AppId(4242);
 

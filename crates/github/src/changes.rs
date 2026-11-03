@@ -25,12 +25,13 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use factory_domain::ids::JobId;
-use factory_domain::values::Sha256Digest;
+use factory_domain::values::{Sha256Digest, Timestamp};
 use factory_domain::vocabulary::{Fidelity, GateOutcome};
+use factory_ports::clock::Clock;
 use factory_ports::githost::{
-    AppId, ChangeHost, CheckConclusion, CheckRef, CheckRequest, CheckStatus, CommentRef,
-    CommentTarget, DraftPrRequest, GitHostError, GitScope, PullRequestLifecycle, PullRequestRef,
-    PullRequestState, Rejection,
+    AppId, CappedPost, ChangeHost, CheckConclusion, CheckRef, CheckRequest, CheckStatus,
+    CommentCap, CommentRef, CommentTarget, DraftPrRequest, GitHostError, GitScope,
+    PullRequestLifecycle, PullRequestRef, PullRequestState, Rejection,
 };
 use factory_ports::paths::{BranchName, CommitSha, RepoRef};
 use factory_ports::workspace::{FetchCredential, FetchTarget, PushCredential, PushTarget};
@@ -101,12 +102,35 @@ fn marker_for(key: &str) -> String {
     )
 }
 
+/// The hidden marker that every comment of a capped family carries besides the marker of its key
+/// (DG-9). The family name is hashed like the key, so the marker reveals nothing about it, and two
+/// families never share one.
+fn family_marker_for(family: &str) -> String {
+    let digest = Sha256Digest::of(format!("family:{family}").as_bytes());
+    format!(
+        "<!-- factory-family:{} -->",
+        digest.hex().get(..32).unwrap_or_default()
+    )
+}
+
+/// The time in the form the `since` parameter of GitHub takes, `YYYY-MM-DDTHH:MM:SSZ`. The
+/// fraction of a second is cut off, which moves the instant back by less than a second and makes
+/// the window a little larger, never smaller.
+fn whole_seconds(at: &Timestamp) -> String {
+    let text = at.to_string();
+    match text.split_once('.') {
+        Some((head, _)) => format!("{head}Z"),
+        None => text,
+    }
+}
+
 /// The change host of the GitHub adapter.
 #[derive(Clone)]
 pub struct GithubChangeHost {
     client: Arc<Client>,
     outbound: Arc<Outbound>,
     app: AppId,
+    clock: Arc<dyn Clock>,
 }
 
 impl std::fmt::Debug for GithubChangeHost {
@@ -116,11 +140,17 @@ impl std::fmt::Debug for GithubChangeHost {
 }
 
 impl GithubChangeHost {
-    pub(crate) fn new(client: Arc<Client>, outbound: Arc<Outbound>, app: AppId) -> Self {
+    pub(crate) fn new(
+        client: Arc<Client>,
+        outbound: Arc<Outbound>,
+        app: AppId,
+        clock: Arc<dyn Clock>,
+    ) -> Self {
         Self {
             client,
             outbound,
             app,
+            clock,
         }
     }
 
@@ -426,6 +456,96 @@ impl ChangeHost for GithubChangeHost {
             target: target.clone(),
             id,
         })
+    }
+
+    async fn post_capped_comment(
+        &self,
+        scope: &GitScope,
+        target: &CommentTarget,
+        body: &str,
+        idempotency_key: &str,
+        cap: &CommentCap,
+    ) -> Result<CappedPost, GitHostError> {
+        let number = match target {
+            CommentTarget::Issue(issue) => {
+                Self::own_repository(scope, &issue.repo)?;
+                issue.number
+            }
+            CommentTarget::PullRequest(pr) => {
+                Self::own_repository(scope, &pr.repo)?;
+                pr.number
+            }
+        };
+        let cleaned = self.outbound.prepare(TextKind::Markdown, body)?;
+        let marker = marker_for(idempotency_key);
+        let family = family_marker_for(cap.family());
+        // Only the comments written or changed within the window, and only one page of them. A
+        // window that cannot be worked out (a clock at the start of time) reads as no window at
+        // all, which is `since` the epoch: the page then holds more, never less.
+        let since = self.clock.now().checked_sub(cap.window()).map_or_else(
+            || "1970-01-01T00:00:00Z".to_owned(),
+            |at| whole_seconds(&at),
+        );
+        let path = format!(
+            "{}/issues/{number}/comments?since={since}",
+            repo_path(&scope.repo)
+        );
+        let bot = self.client.minter().app_identity().await?.bot_login;
+        let page = self
+            .client
+            .get_pages_up_to(scope, TokenClass::Comment, &path, 1)
+            .await?;
+        // A page that is not the whole of the window cannot say whether the factory answered, or
+        // how often. Posting then could repeat an answer without end, so nothing is posted.
+        if page.truncated {
+            return Ok(CappedPost::NotChecked);
+        }
+        // Only the App's own comments count: a marker pasted by someone else must not stop the
+        // factory from answering, and a pasted copy of a reply must not use up the cap.
+        let own: Vec<&Value> = page
+            .items
+            .iter()
+            .filter(|comment| comment["user"]["login"].as_str() == Some(bot.as_str()))
+            .collect();
+        let carries = |comment: &&Value, text: &str| {
+            comment["body"]
+                .as_str()
+                .is_some_and(|body| body.contains(text))
+        };
+        if let Some(id) = own
+            .iter()
+            .filter(|comment| carries(comment, &marker))
+            .find_map(|comment| comment["id"].as_u64())
+        {
+            return Ok(CappedPost::AlreadyThere(CommentRef {
+                target: target.clone(),
+                id,
+            }));
+        }
+        let held = own
+            .iter()
+            .filter(|comment| carries(comment, &family))
+            .count();
+        if u32::try_from(held).map_or(true, |held| held >= cap.max()) {
+            return Ok(CappedPost::CapReached);
+        }
+        let payload = json!({ "body": format!("{cleaned}\n\n{marker}\n{family}") });
+        let reply = self
+            .client
+            .call(
+                scope,
+                TokenClass::Comment,
+                Method::Post,
+                &format!("{}/issues/{number}/comments", repo_path(&scope.repo)),
+                Some(&payload),
+                false,
+            )
+            .await?;
+        let id = reply.json["id"].as_u64().ok_or(GitHostError::Unavailable)?;
+        Ok(CappedPost::Posted(CommentRef {
+            target: target.clone(),
+            id,
+        }))
     }
 
     async fn publish_check(

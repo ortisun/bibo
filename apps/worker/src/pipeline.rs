@@ -15,6 +15,7 @@
 //! `BLOCKED:` and exits with code 3. With a complete configuration the worker runs the pipeline.
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use factory_composition::config::FactoryConfig;
 use factory_composition::decision_signing::DecisionKeys;
@@ -210,12 +211,27 @@ pub fn token_sweep(
 ) -> Option<Arc<dyn BeforeClaim>> {
     let tenants = config.worker.served_tenants().ok()?;
     let store: Arc<dyn Store> = booted.prepared.store.clone();
-    Some(Arc::new(RevokeEndedJobs::new(
-        world.github.clone(),
-        store,
-        tenants,
-        Arc::clone(&booted.jobs),
-    )))
+    // LB-04: a job that stays BLOCKED gives up its tokens after the bound of the security policy.
+    // A job that waits for a person keeps its token.
+    let blocked_after = Duration::from_secs(
+        booted
+            .prepared
+            .policies
+            .security
+            .credentials
+            .github_app
+            .installation_token
+            .revoke_when_blocked_after_s,
+    );
+    Some(Arc::new(
+        RevokeEndedJobs::new(
+            world.github.clone(),
+            store,
+            tenants,
+            Arc::clone(&booted.jobs),
+        )
+        .revoking_blocked_after(blocked_after, Arc::new(SystemClock)),
+    ))
 }
 
 /// The step before each claim that writes the state of each job on its issue: one

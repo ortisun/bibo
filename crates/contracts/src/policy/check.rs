@@ -42,6 +42,10 @@ pub struct Problem {
 #[derive(Default)]
 struct Problems(Vec<Problem>);
 
+/// The least and the most seconds a blocked job may keep its installation tokens (LB-04).
+const MIN_BLOCKED_REVOKE_S: u64 = 60;
+const MAX_BLOCKED_REVOKE_S: u64 = 86_400;
+
 impl Problems {
     fn add(&mut self, path: impl Into<String>, kind: ProblemKind, message: impl Into<String>) {
         self.0.push(Problem {
@@ -132,6 +136,23 @@ pub fn security_problems(policy: &SecurityPolicy) -> Vec<Problem> {
             "policy.version",
             ProblemKind::Constraint,
             "the version starts at 1",
+        );
+    }
+
+    // LB-04: a blocked job gives up its installation tokens after this long. Zero would revoke at
+    // the first pass, which is not a wait, and a bound above a day is no bound.
+    let blocked_after = policy
+        .credentials
+        .github_app
+        .installation_token
+        .revoke_when_blocked_after_s;
+    if !(MIN_BLOCKED_REVOKE_S..=MAX_BLOCKED_REVOKE_S).contains(&blocked_after) {
+        found.add(
+            "credentials.github_app.installation_token.revoke_when_blocked_after_s",
+            ProblemKind::Constraint,
+            format!(
+                "the seconds a blocked job keeps its tokens must be between {MIN_BLOCKED_REVOKE_S} and {MAX_BLOCKED_REVOKE_S}"
+            ),
         );
     }
 

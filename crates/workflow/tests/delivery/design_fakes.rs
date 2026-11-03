@@ -12,7 +12,7 @@ use async_trait::async_trait;
 use factory_domain::ids::TenantId;
 use factory_domain::policy::authority::{Allowlist, AllowlistEntry};
 use factory_domain::policy::decision::{Designation, GithubUserId};
-use factory_domain::policy::issue_workflow::DesignGate;
+use factory_domain::policy::issue_workflow::{DesignGate, ReplyCap};
 use factory_domain::vocabulary::Fidelity;
 use factory_ports::githost::{
     ActorLogin, Comment, CommentRef, GitHostError, GitScope, GithubActor, Issue, IssueRef,
@@ -222,6 +222,8 @@ impl AllowlistSource for People {
 pub struct Replies {
     posted: Mutex<Vec<(String, String)>>,
     down: AtomicBool,
+    capped: AtomicBool,
+    caps: Mutex<Vec<ReplyCap>>,
 }
 
 impl Replies {
@@ -229,12 +231,24 @@ impl Replies {
         Self {
             posted: Mutex::new(Vec::new()),
             down: AtomicBool::new(false),
+            capped: AtomicBool::new(false),
+            caps: Mutex::new(Vec::new()),
         }
     }
 
     /// The host cannot take a comment now.
     pub fn go_down(&self) {
         self.down.store(true, Ordering::SeqCst);
+    }
+
+    /// The issue already holds as many replies as the cap allows (DG-9).
+    pub fn reach_the_cap(&self) {
+        self.capped.store(true, Ordering::SeqCst);
+    }
+
+    /// The cap the stage gave each time it asked, oldest first.
+    pub fn caps(&self) -> Vec<ReplyCap> {
+        self.caps.lock().expect("lock").clone()
     }
 
     /// The text of each comment on the issue, oldest first.
@@ -269,9 +283,14 @@ impl RefusalReplies for Replies {
         _issue: &IssueRef,
         key: &str,
         text: &str,
+        cap: &ReplyCap,
     ) -> Result<(), ReplyError> {
+        self.caps.lock().expect("lock").push(*cap);
         if self.down.load(Ordering::SeqCst) {
             return Err(ReplyError::Later);
+        }
+        if self.capped.load(Ordering::SeqCst) {
+            return Err(ReplyError::CapReached);
         }
         let mut posted = self.posted.lock().expect("lock");
         if !posted.iter().any(|(held, _)| held == key) {

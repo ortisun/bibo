@@ -33,6 +33,7 @@ use std::sync::Arc;
 
 use factory_domain::contracts::gate_report::BlockedCode;
 use factory_domain::machines::guards::EnvironmentCause;
+use factory_domain::policy::issue_workflow::ReplyCap;
 use factory_domain::vocabulary::Fidelity;
 use factory_ports::githost::{GitScope, IssueRef};
 
@@ -126,8 +127,18 @@ impl DesignRecheck {
         match judged {
             Ok(Judged { rule, decision, .. }) => {
                 if matches!(decision, DesignDecision::Refused { .. }) {
-                    // Every refusal gets the same comment: the design is not approved as the
-                    // issue shows it now. The record keeps the reason.
+                    // The record first, then the reply, then the record of the reply (DG-9). Every
+                    // refusal gets the same comment: the design is not approved as the issue shows
+                    // it now. The record keeps the reason.
+                    ctx.note_audit_because(
+                        AuditAction::new(AuditKind::AuthorizationDecision, AuditDecision::Denied),
+                        self.judge.redacted_reason(design::recheck_audit_reason(
+                            &decision,
+                            &issue_text,
+                            Some(ReplyStatus::ToFollow),
+                        )),
+                    );
+                    let cap = rule.reply_cap();
                     let status = self
                         .reply(
                             ctx,
@@ -135,15 +146,12 @@ impl DesignRecheck {
                             issue,
                             Reply::DesignWithdrawn,
                             rule.approved_label(),
+                            &cap,
                         )
                         .await;
                     ctx.note_audit_because(
                         AuditAction::new(AuditKind::AuthorizationDecision, AuditDecision::Denied),
-                        self.judge.redacted_reason(design::recheck_audit_reason(
-                            &decision,
-                            &issue_text,
-                            Some(status),
-                        )),
+                        design::reply_reason(design::RECHECK_REPLY_LEAD, &issue_text, status, &cap),
                     );
                     tracing::warn!(
                         "delivery stops before the pull request: the design of the issue is not approved now"
@@ -185,12 +193,18 @@ impl DesignRecheck {
         issue: &IssueRef,
         issue_text: &str,
     ) -> Result<(), StageError> {
+        ctx.note_audit_because(
+            AuditAction::new(AuditKind::AuthorizationDecision, AuditDecision::Denied),
+            design::recheck_unjudgeable_reason(issue_text, Some(ReplyStatus::ToFollow)),
+        );
+        // The rule cannot be read, so the cap cannot be either: the least one applies.
+        let cap = ReplyCap::WHEN_THE_POLICY_CANNOT_BE_READ;
         let status = self
-            .reply(ctx, scope, issue, Reply::CannotCheckAgain, "")
+            .reply(ctx, scope, issue, Reply::CannotCheckAgain, "", &cap)
             .await;
         ctx.note_audit_because(
             AuditAction::new(AuditKind::AuthorizationDecision, AuditDecision::Denied),
-            design::recheck_unjudgeable_reason(issue_text, Some(status)),
+            design::reply_reason(design::RECHECK_REPLY_LEAD, issue_text, status, &cap),
         );
         // The audit record names the issue; a log field would be text of outside origin, so the
         // line says only what happened.
@@ -209,12 +223,14 @@ impl DesignRecheck {
         issue: &IssueRef,
         reply: Reply,
         approved_label: &str,
+        cap: &ReplyCap,
     ) -> ReplyStatus {
         let key = format!("design-recheck-{}", ctx.identity.stage_run);
         let text = reply.text(&self.trigger_label, approved_label);
-        match self.replies.post(scope.tenant, issue, &key, &text).await {
-            Ok(()) => ReplyStatus::Posted,
-            Err(_) => ReplyStatus::NotSent,
-        }
+        ReplyStatus::of(
+            self.replies
+                .post(scope.tenant, issue, &key, &text, cap)
+                .await,
+        )
     }
 }
