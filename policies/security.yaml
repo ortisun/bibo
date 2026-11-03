@@ -1222,6 +1222,13 @@ gate_integrity:
     # the label `design: approved`, which GitHub shows on the issue for everyone. An override would
     # pass the stage with no such label and leave only an audit record, so the label is the one
     # way through: the person applies it and the requester applies the factory label again.
+    # The same gate and code also refuse a job whose text is not the title and body of its issue as
+    # the code host shows them now (reason `text_not_the_issue`, DG-3), so that the label that is
+    # read is the label of the issue the words came from. A taken-off label does not leave the
+    # track (DG-2). The delivery stage checks the design again right before it opens the pull
+    # request (DG-8) and stops with a block that names no gate, which no override can pass because
+    # an override needs a stored block to accept. What none of this checks: that the design
+    # document the label stands for is any good. That is the approver's act.
     - id: intake-design-approved-design-not-approved
       gate: intake-design-approved
       code: design_not_approved

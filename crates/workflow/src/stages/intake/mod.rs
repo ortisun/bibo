@@ -13,6 +13,7 @@
 //! |---|---|
 //! | `authorize` | Who may ask, found by numeric id, and the one refusal notice |
 //! | `design` | The design gate: an issue on the design track needs an approved design, approved by an approver |
+//! | `judge` | Reads the issue and judges its design: one code path for intake and for the re-check before the pull request opens |
 //! | `classify` | The classifier's answer read into a typed value, and the outcome rules |
 //! | `normalize` | The title and description, and the documents the stage returns |
 //! | `seams` | The small traits the stage needs and no port offers |
@@ -32,6 +33,9 @@
 //! * An issue with a design label starts work only when `design: approved` is the one design label
 //!   on it, read from the code host now, applied by a person who holds the approver designation.
 //!   A policy file that cannot be read refuses every issue; there is no default.
+//! * The text a job carries is the title and the body of its issue as the code host shows them
+//!   now, or the job is refused (DG-3). A webhook job takes its text from the issue; the words of
+//!   a job made through the API or the command line must be the issue's words.
 //!
 //! # Decisions that the specification leaves open
 //!
@@ -46,6 +50,7 @@ pub mod classify;
 pub mod common;
 pub mod design;
 pub mod handler;
+pub mod judge;
 pub mod normalize;
 pub mod seams;
 

@@ -335,6 +335,9 @@ pub enum DeclineReason {
     /// this, never the classifier (see the `design` module). Unlike the other reasons, no
     /// override passes it: the one way through is the label of the approved design on the issue.
     DesignNotApproved,
+    /// The text the job carries is not the text of its issue (DG-3). The design gate decides
+    /// this too, and no override passes it.
+    TextNotTheIssue,
 }
 
 /// What the stage does with a classified request.

@@ -17,7 +17,7 @@ use factory_domain::values::{GitSha, MediaType, Sha256Digest, Slug, Timestamp};
 use factory_domain::vocabulary::{AssuranceLevel, ExecutionMode, Fidelity, StageKind};
 use factory_ports::artifact::{ArtifactBackend, ArtifactError, ArtifactStore};
 use factory_ports::clock::Clock;
-use factory_ports::githost::IssueRef;
+use factory_ports::githost::{GithubActor, Issue, IssueRef};
 use factory_ports::paths::{BranchName, CommitSha, RepoPath, RepoRef};
 use factory_ports::registry::{ContractKind, OutputValidator, ValidatedOutput};
 use factory_ports::store::LeaseEpoch;
@@ -58,7 +58,11 @@ use factory_workflow::stages::intake::common::{
 };
 use factory_workflow::stages::validation::{Binding, GATES};
 
+use crate::design_fakes::{APPROVED, APPROVER_ID, DesignWorld, LABEL, REQUESTER_ID, person};
 use crate::spy::Spy;
+use factory_testkit::contracts::githost::IssueSourceSubject as _;
+use factory_workflow::stages::delivery::DesignRecheck;
+use factory_workflow::stages::intake::judge::DesignJudge;
 
 const SECURITY: &str = include_str!("../../../domain/tests/fixtures/policy/security.json");
 const APPROVAL: &str = include_str!("../../../domain/tests/fixtures/policy/approval.json");
@@ -313,6 +317,10 @@ pub struct World {
     pub host: Arc<Spy>,
     pub sources: Arc<Sources>,
     pub drift: Arc<Drift>,
+    /// What the design re-check reads (DG-8).
+    pub design: DesignWorld,
+    /// The reasons of the audit records that the last `execute` noted, also when it failed.
+    pub noted: Mutex<Vec<String>>,
     pub cancel: FakeCancel,
     pub tenant: TenantId,
     pub job: JobId,
@@ -433,7 +441,7 @@ impl World {
             trees_asked: Mutex::default(),
             fidelity: scenario.sources_fidelity,
         });
-        Self {
+        let world = Self {
             runtime: FakeAgentRuntime::new(artifacts.clone()),
             router: StaticModelRouter::new(Vec::new()),
             registry: InMemoryAgentRegistry::new(),
@@ -453,6 +461,8 @@ impl World {
             host,
             sources,
             drift: Arc::new(Drift::default()),
+            design: DesignWorld::new(),
+            noted: Mutex::default(),
             cancel: FakeCancel::new(),
             tenant,
             repo,
@@ -462,7 +472,11 @@ impl World {
             scenario,
             contract_policy: Mutex::default(),
             documented: Mutex::default(),
-        }
+        };
+        // The issue is a small change, as the factory accepted it: the factory label and no
+        // design label. A test that wants a design track says so (`issue_shows`).
+        world.issue_shows(&[LABEL]);
+        world
     }
 
     /// Puts the base commit on the remote and fetches it into the job's store, then makes one
@@ -835,8 +849,57 @@ impl World {
                 host: self.host.clone(),
                 sources: self.sources.clone(),
                 drift: self.drift.clone(),
+                recheck: self.recheck(),
             },
         )
+    }
+
+    /// The re-check of the design, over the stand-ins of the world and the judge that intake uses.
+    pub fn recheck(&self) -> DesignRecheck {
+        DesignRecheck::new(
+            DesignJudge::new(
+                self.design.issues.clone(),
+                self.design.rule.clone(),
+                self.policy.clone(),
+                self.redactor.clone(),
+            ),
+            self.design.people.clone(),
+            self.design.replies.clone(),
+            LABEL.to_owned(),
+        )
+    }
+
+    /// The issue of the job as the code host shows it now, with these labels.
+    pub fn issue_shows(&self, labels: &[&str]) {
+        let now = Timestamp::parse("2026-10-28T10:00:00Z").expect("a time");
+        let reference = self.sources.target.lock().expect("lock").issue.clone();
+        self.design.issues.fake().put_issue(Issue {
+            reference,
+            title: "Add a --json flag".to_owned(),
+            body: "Please let the word count tool print its counts as JSON.".to_owned(),
+            author: person(REQUESTER_ID, "requester-one"),
+            labels: labels.iter().map(|label| (*label).to_owned()).collect(),
+            updated_at: now,
+            fetched_at: now,
+        });
+    }
+
+    /// Records that `actor` applied `label` to the issue of the job.
+    pub async fn label_applied_by(&self, label: &str, actor: &GithubActor) {
+        let issue = self.sources.target.lock().expect("lock").issue.clone();
+        self.design
+            .issues
+            .fake()
+            .seed_label(&issue, label, actor)
+            .await;
+    }
+
+    /// The issue as it is when the job passed intake: the factory label and an approved design,
+    /// applied by the approver.
+    pub async fn issue_with_an_approved_design(&self) {
+        self.issue_shows(&[LABEL, APPROVED]);
+        self.label_applied_by(APPROVED, &person(APPROVER_ID, "approver-one"))
+            .await;
     }
 
     pub fn ports(&self) -> StagePorts<'_> {
@@ -910,7 +973,9 @@ impl World {
             &[],
             upstream,
         );
-        let output = handler.execute(&mut ctx).await?;
+        let executed = handler.execute(&mut ctx).await;
+        *self.noted.lock().expect("lock") = ctx.noted_reasons();
+        let output = executed?;
         let mut stored = Vec::new();
         for document in &output.documents {
             stored.push(NamedArtifact {

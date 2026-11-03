@@ -543,6 +543,15 @@ pub struct Rig {
     pub replies: Arc<RecordingReplies>,
     /// True once the test put the issue on the fake host itself.
     pub host_issue_set: std::sync::atomic::AtomicBool,
+    /// The title and the body the fake host shows now. Unless a test pinned them, they follow the
+    /// text of the job that the test stores, so that the text of a job is the text of its issue
+    /// by construction, as it is for a webhook job. A test that wants them to differ says so
+    /// (`host_says`).
+    pub live: Mutex<(String, String)>,
+    /// The labels the fake host shows now.
+    pub live_labels: Mutex<Vec<String>>,
+    /// True once a test fixed the title and the body of the issue itself.
+    pub live_text_pinned: std::sync::atomic::AtomicBool,
     pub check: Arc<StandInCheck>,
     pub issue: IssueRef,
     pub remote: FakeRemote,
@@ -712,6 +721,9 @@ impl Rig {
             design,
             replies,
             host_issue_set: std::sync::atomic::AtomicBool::new(false),
+            live: Mutex::new(split_request(USUAL_REQUEST)),
+            live_labels: Mutex::new(vec![LABEL.to_owned()]),
+            live_text_pinned: std::sync::atomic::AtomicBool::new(false),
             check,
             issue,
             remote,
@@ -732,6 +744,7 @@ impl Rig {
 
     /// Stores one revision of the original request, as the API does, and mirrors its hash.
     pub async fn record_request(&self, job: JobId, revision: u32, text: &str) {
+        self.follow_request(text);
         let mut tx = self
             .world
             .store
@@ -798,19 +811,15 @@ impl Rig {
     }
 
     /// Puts the issue of the rig on the fake host with this title and body, opened by `author`.
+    /// The text is fixed from now on: storing a request does not change it.
     pub fn host_has_issue(&self, title: &str, body: &str, author: u64) {
         self.host_issue_set
             .store(true, std::sync::atomic::Ordering::SeqCst);
-        let now = factory_domain::values::Timestamp::parse("2026-10-28T10:00:00Z").expect("a time");
-        self.issues.put_issue(factory_ports::githost::Issue {
-            reference: self.issue.clone(),
-            title: title.to_owned(),
-            body: body.to_owned(),
-            author: Self::actor(author, "requester-one"),
-            labels: vec![LABEL.to_owned()],
-            updated_at: now,
-            fetched_at: now,
-        });
+        self.live_text_pinned
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        *self.live.lock().expect("lock") = (title.to_owned(), body.to_owned());
+        *self.live_labels.lock().expect("lock") = vec![LABEL.to_owned()];
+        self.put_live(author);
     }
 
     /// Sets the labels the fake host shows on the issue of the rig, as the host does now. The
@@ -818,13 +827,41 @@ impl Rig {
     pub fn host_shows_labels(&self, labels: &[&str]) {
         self.host_issue_set
             .store(true, std::sync::atomic::Ordering::SeqCst);
+        *self.live_labels.lock().expect("lock") =
+            labels.iter().map(|label| (*label).to_owned()).collect();
+        self.put_live(REQUESTER_ID);
+    }
+
+    /// Makes the issue on the fake host say `text` (a title, a blank line and a body) from now on,
+    /// whatever request a job stores. This is how a test plays an issue that is not the text of
+    /// the job.
+    pub fn host_says(&self, text: &str) {
+        self.live_text_pinned
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        *self.live.lock().expect("lock") = split_request(text);
+        self.put_live(REQUESTER_ID);
+    }
+
+    /// The issue says what the request says, unless a test pinned its text.
+    fn follow_request(&self, text: &str) {
+        if !self
+            .live_text_pinned
+            .load(std::sync::atomic::Ordering::SeqCst)
+        {
+            *self.live.lock().expect("lock") = split_request(text);
+            self.put_live(REQUESTER_ID);
+        }
+    }
+
+    fn put_live(&self, author: u64) {
         let now = factory_domain::values::Timestamp::parse("2026-10-28T10:00:00Z").expect("a time");
+        let (title, body) = self.live.lock().expect("lock").clone();
         self.issues.put_issue(factory_ports::githost::Issue {
             reference: self.issue.clone(),
-            title: "Add a --json flag".to_owned(),
-            body: "Words the author wrote.".to_owned(),
-            author: Self::actor(REQUESTER_ID, "requester-one"),
-            labels: labels.iter().map(|label| (*label).to_owned()).collect(),
+            title,
+            body,
+            author: Self::actor(author, "requester-one"),
+            labels: self.live_labels.lock().expect("lock").clone(),
             updated_at: now,
             fetched_at: now,
         });
@@ -857,6 +894,12 @@ impl Rig {
             .expect("receive");
         self.record_request(job, 1, text).await;
         job
+    }
+
+    /// A job whose stored request is `stored` and whose issue says `live` on the host.
+    pub async fn job_whose_issue_says(&self, stored: &str, live: &str) -> JobId {
+        self.host_says(live);
+        self.job(stored).await
     }
 
     pub async fn admit(&self, job: JobId) {
@@ -982,6 +1025,14 @@ impl Rig {
             .await
             .expect("the attempt runs");
         (claimed, outcome)
+    }
+}
+
+/// The title and the body of a request text, the way `request_text` of the stage joins them.
+pub fn split_request(text: &str) -> (String, String) {
+    match text.split_once("\n\n") {
+        Some((title, body)) => (title.to_owned(), body.to_owned()),
+        None => (text.to_owned(), String::new()),
     }
 }
 

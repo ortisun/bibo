@@ -148,8 +148,10 @@ const fn environment_of(code: BlockedCode) -> EnvironmentCause {
         | BlockedCode::DependencyUnavailable
         | BlockedCode::EnvironmentUnsupported => EnvironmentCause::ToolMissing,
         BlockedCode::PolicyUnresolvable => EnvironmentCause::PolicyUnloadable,
-        // A design that is not approved is a finding of the intake gate, never an error a stage
-        // returns. If one did return it, the safe reading is a policy that stops the run.
+        // A design that is not approved is a finding of the intake gate. The delivery stage also
+        // returns it when it checks the design again before it opens the pull request (DG-8): a
+        // policy that stops the run. The stage run is blocked, and it names no gate, so no
+        // override passes it.
         BlockedCode::DesignNotApproved => EnvironmentCause::PolicyViolation,
     }
 }

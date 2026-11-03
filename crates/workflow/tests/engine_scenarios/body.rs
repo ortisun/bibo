@@ -872,6 +872,90 @@ async fn a_missing_tool_blocks_the_stage_run_and_is_never_retried() {
 }
 
 #[tokio::test]
+async fn a_stage_that_stops_for_a_design_that_is_not_approved_is_blocked_visibly_and_no_override_passes_it()
+ {
+    // The delivery stage ends this way when it checks the design again before it opens the pull
+    // request (DG-8). The stage run and the job are blocked as a policy violation, the event says
+    // so, and no override passes the block, because the run names no gate that a person could waive.
+    // An operator can run the stage again, once an approver has put the approval back.
+    use factory_domain::contracts::gate_report::BlockedCode;
+    use factory_domain::machines::guards::EnvironmentCause;
+    let world = World::new().await;
+    let job = world.admitted_job().await;
+    world
+        .script(StageKind::Intake)
+        .queue([Step::Fail(StageError::Blocked(
+            BlockedCode::DesignNotApproved,
+        ))]);
+    let (_, outcome) = world.run_next("worker-1").await;
+    assert_eq!(
+        outcome,
+        AttemptOutcome::Failed {
+            class: FailureClass::PolicyDenied,
+            then: AttemptDisposition::Block(EnvironmentCause::PolicyViolation),
+        }
+    );
+    let view = world.view(job).await;
+    assert_eq!(intake(&view).status, StageRunStatus::Blocked);
+    assert_eq!(view.status, JobStatus::Blocked);
+    let events = world.events(job).await;
+    let blocked = events
+        .iter()
+        .find(|event| event.event_type.as_str() == "stage_run.blocked")
+        .expect("the block is on the record");
+    assert_eq!(
+        blocked.payload.get("cause").and_then(|v| v.as_str()),
+        Some("policy_violation")
+    );
+
+    // Nobody can override it.
+    let run = intake(&view).id;
+    let security = world
+        .person("security-1", &[HumanRole::SecurityApprover])
+        .await;
+    let refused = world
+        .engine
+        .decide(
+            &world.actor(security),
+            Subject {
+                job,
+                stage_run: run,
+            },
+            Decision::Override {
+                justification: text("I would like the pull request to open anyway, please."),
+                facts: override_facts(true, false),
+            },
+        )
+        .await;
+    assert!(
+        matches!(refused, Err(EngineError::GuardUnmet(_))),
+        "{refused:?}"
+    );
+    assert_eq!(world.view(job).await.status, JobStatus::Blocked);
+
+    // An operator runs it again once the approval is back, and the work goes on as attempt 2.
+    let operator = world.person("operator-1", &[HumanRole::Operator]).await;
+    world
+        .engine
+        .decide(
+            &world.actor(operator),
+            Subject {
+                job,
+                stage_run: run,
+            },
+            Decision::UnblockRerun {
+                capability_reprobe_passed: true,
+                dependency_now_available: true,
+            },
+        )
+        .await
+        .expect("unblocks");
+    let (second, outcome) = world.run_next("worker-2").await;
+    assert_eq!(outcome, AttemptOutcome::Succeeded);
+    assert_eq!(second.attempt_number, 2);
+}
+
+#[tokio::test]
 async fn every_environment_cause_blocks_the_stage_run_and_a_provisioning_failure_does_not() {
     // New for S21. The sandbox and probe errors that mean the environment is missing or unsafe
     // block the stage run before any retry is considered; a provisioning failure, which another

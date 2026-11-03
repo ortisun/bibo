@@ -23,6 +23,20 @@
 //!   people, and the Action only checks that a design document exists, so the label alone proves
 //!   nothing about who decided.
 //!
+//! # The text must be the issue's text (DG-3)
+//!
+//! Besides the labels, the gate compares the text the job carries with the text the live issue
+//! gives now: the title, a blank line and the body, through the same secret redactor that stores
+//! the text of a webhook job. The product owner decided on 2026-11-02 that the text the factory
+//! acts on must be the issue's, or the job is refused. A webhook job takes its text from the issue,
+//! so the two are the same by construction. A job made through the API or the command line carries
+//! the words its caller typed; they must be the issue's words, and notes belong in the body of the
+//! issue. The comparison ignores nothing but the style of line ends and white space around the
+//! text ([`compare_text`]). A job whose text differs is refused with the reason
+//! `text_not_the_issue` and the same block code as every other refusal of this gate, whether or
+//! not the issue is on the design track: the issue that the labels are read from must be the issue
+//! that the words came from. The result of the comparison is written on the audit line.
+//!
 //! # What a refusal is
 //!
 //! The intake outcome is **decline**: the stage returns the decision `decline` with a fixed
@@ -70,7 +84,7 @@ pub const BLOCK_CODE: &str = "DESIGN_NOT_APPROVED";
 /// The same code in the form of the gate report schema (`blocked_reason.code`).
 pub const REPORT_BLOCK_CODE: &str = "design_not_approved";
 
-const GATE_TEXT: &str = "intake-design-approved 1.0.0: an issue with a design label starts work only when the label of the approved design is the one design label on the issue, read from the code host now, and a person who holds the approver designation on the allowlist applied it.";
+const GATE_TEXT: &str = "intake-design-approved 1.1.0: an issue with a design label starts work only when the label of the approved design is the one design label on the issue, read from the code host now, and a person who holds the approver designation on the allowlist applied it; and the text the job carries is the text of that issue as the code host shows it now.";
 
 /// Why an issue was refused. The set is closed. It is for the audit record and for choosing the
 /// reply; it carries no text from the issue.
@@ -89,6 +103,9 @@ pub enum RefusalReason {
     /// The person who applied the approved label does not hold the designation, for the reason
     /// the allowlist gives. The reason is for the audit record only.
     NotAnApprover(DenialReason),
+    /// The text the job carries is not the text of the live issue (DG-3). This is decided
+    /// whether or not the issue is on the design track.
+    TextNotTheIssue,
 }
 
 impl RefusalReason {
@@ -101,6 +118,7 @@ impl RefusalReason {
             Self::MoreThanOneDesignLabel => "more_than_one_design_label",
             Self::ApprovalLabelGone => "approval_label_gone",
             Self::NotAnApprover(_) => "not_applied_by_an_approver",
+            Self::TextNotTheIssue => "text_not_the_issue",
         }
     }
 
@@ -112,8 +130,56 @@ impl RefusalReason {
             Self::DesignDropped => Reply::DesignDropped,
             Self::MoreThanOneDesignLabel => Reply::MoreThanOneDesignLabel,
             Self::NotAnApprover(_) => Reply::NotByAnApprover,
+            Self::TextNotTheIssue => Reply::TextNotTheIssue,
         }
     }
+}
+
+/// What the comparison of the text of the job with the live issue found.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TextCheck {
+    /// The text the job carries is the text of the issue now.
+    Same,
+    /// It is not.
+    Different,
+    /// The caller has no text to compare. The re-check before the pull request is opened
+    /// (DG-8) asks about the design only: the text of the job was fixed at intake.
+    NotCompared,
+}
+
+impl TextCheck {
+    /// The word written on the audit line, the stored document and the report.
+    #[must_use]
+    pub const fn word(self) -> &'static str {
+        match self {
+            Self::Same => "same",
+            Self::Different => "different",
+            Self::NotCompared => "not_compared",
+        }
+    }
+}
+
+/// Compares the text a job carries with the text the live issue gives.
+///
+/// Both are brought to one form first, and nothing else is ignored: line ends are all `\n` (a text
+/// typed on Windows, or a body that the web form saved with `\r\n`) and white space around the
+/// whole text is dropped (a file ends with a newline). A different word, letter case, space inside
+/// a line or an added sentence is a different text. `live` is the title and body as one text with
+/// every secret replaced, and `stored` is the text of the job.
+#[must_use]
+pub fn compare_text(live: &str, stored: &str) -> TextCheck {
+    if canonical_text(live) == canonical_text(stored) {
+        TextCheck::Same
+    } else {
+        TextCheck::Different
+    }
+}
+
+fn canonical_text(text: &str) -> String {
+    text.replace("\r\n", "\n")
+        .replace('\r', "\n")
+        .trim()
+        .to_owned()
 }
 
 /// What the design gate decided.
@@ -170,11 +236,16 @@ pub struct Judging<'a> {
 /// `applied_by` is who applied the approved label (numeric id, login and kind of account), as the
 /// code host reports it now, or `None` when the label is not on the issue. It is consulted only
 /// when the approved label is the one design label.
+///
+/// `text` is what the comparison of the text of the job with the live issue found. A text that is
+/// different refuses a job that the labels would let through (DG-3); a refusal for the labels
+/// keeps its own reason, and the audit line still says that the text was different.
 #[must_use]
 pub fn judge(
     judging: &Judging<'_>,
     labels: DesignLabels,
     applied_by: Option<Labeller<'_>>,
+    text: TextCheck,
 ) -> DesignDecision {
     let allowlist_version = judging.allowlist.version_hash().to_owned();
     let refused = |reason, labels_seen, applied_by| DesignDecision::Refused {
@@ -183,7 +254,7 @@ pub fn judge(
         applied_by,
         allowlist_version: allowlist_version.clone(),
     };
-    match labels {
+    let by_the_labels = match labels {
         DesignLabels::NotOnTrack => DesignDecision::NotOnTrack,
         DesignLabels::NotApproved { seen } => refused(RefusalReason::NotApproved, seen, None),
         DesignLabels::Dropped { seen } => refused(RefusalReason::DesignDropped, seen, None),
@@ -217,6 +288,12 @@ pub fn judge(
                 }
             }
         }
+    };
+    match (by_the_labels, text) {
+        (DesignDecision::NotOnTrack | DesignDecision::Approved { .. }, TextCheck::Different) => {
+            refused(RefusalReason::TextNotTheIssue, Vec::new(), None)
+        }
+        (decided, _) => decided,
     }
 }
 
@@ -233,6 +310,14 @@ pub enum Reply {
     DesignDropped,
     /// The factory could not check, because its own policy cannot be used.
     CannotCheck,
+    /// The text of the job is not the text of the issue (DG-3).
+    TextNotTheIssue,
+    /// Work had started, and the factory stopped before it opened the pull request, because the
+    /// design is not approved as the issue shows it now (DG-8).
+    DesignWithdrawn,
+    /// Work had started, and the factory stopped before it opened the pull request, because it
+    /// could not check the design again: its own policy cannot be used (DG-8).
+    CannotCheckAgain,
 }
 
 impl Reply {
@@ -277,6 +362,27 @@ impl Reply {
                  Ask the person who runs the factory for this repository to look at it. \
                  Then apply the `{trigger}` label again."
             ),
+            Self::TextNotTheIssue => format!(
+                "The factory did not start work on this job because the text of this job is not the text of the issue as it is now. \
+                 The factory works only from the title and the body of the issue. \
+                 If you want to add a note or change a word, put it in the body of the issue, \
+                 or send the job again with the text of the issue as it is. \
+                 If somebody edited the issue after the job was made, apply the `{trigger}` label again so that the factory reads the new words."
+            ),
+            Self::DesignWithdrawn => format!(
+                "The factory stopped before it opened the pull request, because the design of this issue is not approved as the issue shows it now. \
+                 No pull request was opened. \
+                 The approval may have been taken off, the design may have been reopened, another design label may have been added, or the approval may have been applied again by someone the factory does not accept approvals from. \
+                 To go on, make sure `{approved}` is the one design label on the issue and that an approver of this repository applied it. \
+                 Then ask the person who runs the factory to unblock the job, or apply the `{trigger}` label again to start a new one."
+            ),
+            Self::CannotCheckAgain => format!(
+                "The factory stopped before it opened the pull request, because it could not check again whether the design is still approved. \
+                 The problem is on the factory's side, and nothing in the issue needs to change. \
+                 No pull request was opened. \
+                 Ask the person who runs the factory for this repository to look at it. \
+                 Then ask them to unblock the job, or apply the `{trigger}` label again to start a new one."
+            ),
         }
     }
 }
@@ -306,8 +412,13 @@ pub fn document(
     decision: &DesignDecision,
     approving_label: &str,
     reply: Option<ReplyStatus>,
+    text: TextCheck,
 ) -> Value {
-    let mut out = json!({ "schema_version": 1, "approving_label": approving_label });
+    let mut out = json!({
+        "schema_version": 1,
+        "approving_label": approving_label,
+        "text": text.word(),
+    });
     if let Some(map) = out.as_object_mut() {
         match decision {
             DesignDecision::NotOnTrack => {
@@ -349,21 +460,31 @@ pub fn is_refused(document: &Value) -> bool {
 }
 
 /// The reason line of the audit record, in fixed words and numbers and the labels cleaned for
-/// display and quoted as a list. It names the issue and the design labels seen. The caller passes
-/// the line through the secret redactor before it is stored.
+/// display and quoted as a list. It names the issue and the design labels seen, and ends with what
+/// the comparison of the text of the job with the live issue found. The caller passes the line
+/// through the secret redactor before it is stored.
 #[must_use]
-pub fn audit_reason(decision: &DesignDecision, issue: &str, reply: Option<ReplyStatus>) -> String {
+pub fn audit_reason(
+    decision: &DesignDecision,
+    issue: &str,
+    reply: Option<ReplyStatus>,
+    text: TextCheck,
+) -> String {
+    let compared = format!(
+        "text of the job compared with the live issue: {}",
+        text.word()
+    );
     match decision {
         DesignDecision::NotOnTrack => {
             format!(
-                "design gate: issue {issue} carries no design label, so the rule does not apply"
+                "design gate: issue {issue} carries no design label, so the rule does not apply; {compared}"
             )
         }
         DesignDecision::Approved {
             approver,
             allowlist_version,
         } => format!(
-            "design gate passed: issue {issue}; the approved label was applied by user id {approver}, who holds the approver designation; allowlist version {allowlist_version}"
+            "design gate passed: issue {issue}; the approved label was applied by user id {approver}, who holds the approver designation; allowlist version {allowlist_version}; {compared}"
         ),
         DesignDecision::Refused {
             reason,
@@ -378,7 +499,7 @@ pub fn audit_reason(decision: &DesignDecision, issue: &str, reply: Option<ReplyS
                 other => other.code().to_owned(),
             };
             format!(
-                "design gate refused ({BLOCK_CODE}): issue {issue}; reason {why}; design labels seen {}; approved label applied by user id {}; allowlist version {allowlist_version}; reply {}",
+                "design gate refused ({BLOCK_CODE}): issue {issue}; reason {why}; design labels seen {}; approved label applied by user id {}; allowlist version {allowlist_version}; reply {}; {compared}",
                 quoted(labels_seen),
                 applied_by.map_or_else(|| "none".to_owned(), |id| id.to_string()),
                 reply.map_or("not attempted", ReplyStatus::word),
@@ -392,6 +513,39 @@ pub fn audit_reason(decision: &DesignDecision, issue: &str, reply: Option<ReplyS
 /// list and can never be read as a field of the line, whatever the cleaning missed.
 fn quoted(labels: &[String]) -> String {
     serde_json::to_string(labels).unwrap_or_else(|_| "[]".to_owned())
+}
+
+/// The reason line of the audit record of the re-check before the pull request is opened (DG-8):
+/// the line of [`audit_reason`] with the moment in front.
+#[must_use]
+pub fn recheck_audit_reason(
+    decision: &DesignDecision,
+    issue: &str,
+    reply: Option<ReplyStatus>,
+) -> String {
+    format!(
+        "design re-check before the pull request is opened: {}",
+        audit_reason(decision, issue, reply, TextCheck::NotCompared)
+    )
+}
+
+/// The reason line when the re-check could not read the issue from the code host. The pull request
+/// is not opened: a re-check that cannot be made is never a pass, and the condition is reported
+/// as degraded on the record.
+#[must_use]
+pub fn recheck_unreadable_reason(issue: &str) -> String {
+    format!(
+        "design re-check before the pull request is opened: degraded, the code host could not be read for issue {issue}, so the design could not be checked again; the pull request was not opened and the attempt failed closed"
+    )
+}
+
+/// The reason line when the re-check could not judge the issue because its rule cannot be read.
+#[must_use]
+pub fn recheck_unjudgeable_reason(issue: &str, reply: Option<ReplyStatus>) -> String {
+    format!(
+        "design re-check before the pull request is opened: degraded, the issue workflow policy or the allowlist cannot be used, so the design of issue {issue} could not be checked again; the pull request was not opened; reply {}",
+        reply.map_or("not attempted", ReplyStatus::word)
+    )
 }
 
 /// The reason line for an issue the stage could not judge because its rule cannot be read.
@@ -416,7 +570,41 @@ fn explanation(reason: &str) -> &'static str {
         "not_applied_by_an_approver" => {
             "The approved label is on the issue, but the person who applied it does not hold the approver designation."
         }
+        "text_not_the_issue" => {
+            "The text the job carries is not the text of the issue as it is now. The factory acts only on the text of the issue."
+        }
         _ => "The issue is on the design track and its design is not approved yet.",
+    }
+}
+
+/// The title of the report, by reason.
+fn report_title(reason: &str) -> &'static str {
+    match reason {
+        "text_not_the_issue" => "The text of the job is not the text of the issue",
+        _ => "The design is not approved",
+    }
+}
+
+/// What the report asks for, by reason (`blocked_reason.requires`).
+fn report_requirement(reason: &str) -> &'static str {
+    match reason {
+        "text_not_the_issue" => {
+            "the text of the job to be the title and the body of the issue as it is now"
+        }
+        _ => {
+            "the label of the approved design, applied by a person who holds the approver designation"
+        }
+    }
+}
+
+/// The sentence of the failure of the outcome gate, by the stored document: why the request does
+/// not go on.
+#[must_use]
+pub fn stop_sentence(document: &Value) -> &'static str {
+    if document["reason"] == "text_not_the_issue" {
+        "The request does not go on until its text is the text of the issue."
+    } else {
+        "The request does not go on until the design is approved."
     }
 }
 
@@ -427,15 +615,16 @@ fn explanation(reason: &str) -> &'static str {
 pub fn gate_facts(document: &Value, commit: &GitSha) -> Result<GateFacts, StageError> {
     let definition = GateDefinition {
         id: GATE,
-        version: "1.0.0",
+        version: "1.1.0",
         text: GATE_TEXT,
         commit: commit.clone(),
     };
     let result = document["result"]
         .as_str()
         .ok_or(StageError::InvalidOutput)?;
+    let text = document["text"].as_str().unwrap_or("not_compared");
     let evidence_of = |lines: Vec<String>| {
-        let mut all = vec![format!("result={result}")];
+        let mut all = vec![format!("result={result}"), format!("text={text}")];
         all.extend(lines);
         all
     };
@@ -489,7 +678,7 @@ pub fn gate_facts(document: &Value, commit: &GitSha) -> Result<GateFacts, StageE
                 .collect();
             let mut facts = base(
                 "BLOCKED",
-                "The design is not approved",
+                report_title(reason),
                 explanation(reason),
                 evidence_of(vec![
                     format!("block_code={BLOCK_CODE}"),
@@ -507,11 +696,7 @@ pub fn gate_facts(document: &Value, commit: &GitSha) -> Result<GateFacts, StageE
                     ),
                 ]),
             );
-            facts.blocked = Some((
-                REPORT_BLOCK_CODE,
-                "the label of the approved design, applied by a person who holds the approver designation"
-                    .to_owned(),
-            ));
+            facts.blocked = Some((REPORT_BLOCK_CODE, report_requirement(reason).to_owned()));
             Ok(facts)
         }
         _ => Err(StageError::InvalidOutput),
@@ -530,6 +715,81 @@ mod tests {
     use super::*;
 
     #[test]
+    fn the_comparison_ignores_line_ends_and_outer_white_space_and_nothing_else() {
+        let issue = "Add a flag\n\nIt prints JSON.\nIt exits 0.";
+        for same in [
+            issue,
+            "Add a flag\r\n\r\nIt prints JSON.\r\nIt exits 0.",
+            "Add a flag\r\rIt prints JSON.\rIt exits 0.",
+            "\n  Add a flag\n\nIt prints JSON.\nIt exits 0.\n\n",
+            "\t\r\nAdd a flag\n\nIt prints JSON.\nIt exits 0. \t",
+        ] {
+            assert_eq!(compare_text(issue, same), TextCheck::Same, "{same:?}");
+            assert_eq!(compare_text(same, issue), TextCheck::Same, "{same:?}");
+        }
+        for different in [
+            "",
+            "Add a flag",
+            "add a flag\n\nIt prints JSON.\nIt exits 0.",
+            "Add a flag\n\nIt prints JSON.\nIt exits 1.",
+            "Add a flag\n\nIt prints  JSON.\nIt exits 0.",
+            "Add a flag\n\nIt prints JSON.\n\nIt exits 0.",
+            "Add a flag\n\nIt prints JSON.\nIt exits 0.\nAlso delete the logs.",
+            "Add a flag It prints JSON. It exits 0.",
+        ] {
+            assert_eq!(
+                compare_text(issue, different),
+                TextCheck::Different,
+                "{different:?}"
+            );
+        }
+        // Two empty texts are the same text, and the stage never gets here with an empty issue.
+        assert_eq!(compare_text("", " \n"), TextCheck::Same);
+    }
+
+    #[test]
+    fn the_words_of_the_comparison_are_the_ones_the_record_uses() {
+        assert_eq!(TextCheck::Same.word(), "same");
+        assert_eq!(TextCheck::Different.word(), "different");
+        assert_eq!(TextCheck::NotCompared.word(), "not_compared");
+        assert_eq!(RefusalReason::TextNotTheIssue.code(), "text_not_the_issue");
+        assert_eq!(
+            RefusalReason::TextNotTheIssue.reply(),
+            Reply::TextNotTheIssue
+        );
+    }
+
+    #[test]
+    fn the_replies_of_the_recheck_say_that_no_pull_request_was_opened_and_what_to_do() {
+        for reply in [Reply::DesignWithdrawn, Reply::CannotCheckAgain] {
+            let text = reply.text("factory", "design: approved");
+            assert!(
+                text.starts_with("The factory stopped before it opened the pull request"),
+                "{reply:?}"
+            );
+            assert!(text.contains("No pull request was opened."), "{reply:?}");
+            assert!(text.contains("unblock the job"), "{reply:?}");
+            assert!(text.contains("`factory`"), "{reply:?}");
+            for forbidden in [
+                "@",
+                "allowlist",
+                "numeric",
+                "user id",
+                "login",
+                "http",
+                "sha256",
+            ] {
+                assert!(!text.contains(forbidden), "{reply:?} says {forbidden}");
+            }
+        }
+        assert!(
+            Reply::DesignWithdrawn
+                .text("factory", "design: approved")
+                .contains("`design: approved`")
+        );
+    }
+
+    #[test]
     fn every_reply_names_the_labels_and_says_what_to_do_and_none_names_a_person() {
         for reply in [
             Reply::NotApproved,
@@ -537,6 +797,7 @@ mod tests {
             Reply::NotByAnApprover,
             Reply::DesignDropped,
             Reply::CannotCheck,
+            Reply::TextNotTheIssue,
         ] {
             let text = reply.text("factory", "design: approved");
             assert!(text.contains("`factory`"), "{reply:?}");
@@ -579,6 +840,9 @@ mod tests {
             Reply::NotByAnApprover,
             Reply::DesignDropped,
             Reply::CannotCheck,
+            Reply::TextNotTheIssue,
+            Reply::DesignWithdrawn,
+            Reply::CannotCheckAgain,
         ]
         .iter()
         .map(|reply| reply.text("factory", "design: approved"))

@@ -71,6 +71,11 @@ mod spec_rig;
 #[path = "../planning/rig.rs"]
 mod planning_rig;
 
+// The stand-ins the delivery stage reads to check the design again before it opens the pull request.
+#[path = "../delivery/design_fakes.rs"]
+#[allow(dead_code)]
+mod design_fakes;
+
 mod chain;
 mod deliver;
 

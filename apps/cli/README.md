@@ -29,6 +29,10 @@ factory-cli repository show         --api URL --token-file FILE REPOSITORY
 factory-cli probe    --protected-checkout DIR [--images-catalog FILE] [--profile production|local|test]
 ```
 
+`submit` sends the text of the file as the request. The factory acts only on the words of the issue that `--source-ref`
+names: the text must be the title of that issue, a blank line and its body, as GitHub shows them when intake runs, or
+intake refuses the job (`text_not_the_issue`, DG-3). Put a note in the body of the issue, not in the file.
+
 `repository confirm-map` records a statement by a person: the commit of the default branch that holds the project map. The
 engine holds no GitHub credential and does not read the repository, and the command prints that. A repository cannot be
 enabled until a map was confirmed. The [onboarding guide](../../docs/guides/onboarding.md) gives the order.

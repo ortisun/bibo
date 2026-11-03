@@ -31,6 +31,7 @@ use serde_json::{Value, json};
 use super::binding;
 use super::checks::{review_check, validation_check};
 use super::contract::{MANIFEST, RESULT, resolve};
+use super::design_recheck::DesignRecheck;
 use super::input::{self, DossierError, POLICY_INPUT, contract_input};
 use super::manifest::{self, AdapterReport, ChangeFacts, ManifestError, ManifestInputs};
 use super::pr::{self, PrFacts};
@@ -76,6 +77,8 @@ pub struct DeliveryDeps {
     pub sources: Arc<dyn DeliverySources>,
     /// Tells the engine that a bound value changed.
     pub drift: Arc<dyn EvidenceDrift>,
+    /// Checks the design of the issue again right before the pull request is opened (DG-8).
+    pub recheck: DesignRecheck,
 }
 
 /// The delivery stage.
@@ -159,7 +162,11 @@ pub(crate) fn fidelity_of(parts: &[Fidelity]) -> Fidelity {
 #[async_trait]
 impl StageHandler for DeliveryHandler {
     fn fidelity(&self) -> Fidelity {
-        fidelity_of(&[self.deps.host.fidelity(), self.deps.sources.fidelity()])
+        fidelity_of(&[
+            self.deps.host.fidelity(),
+            self.deps.sources.fidelity(),
+            self.deps.recheck.fidelity(),
+        ])
     }
 
     fn kind(&self) -> StageKind {
@@ -379,7 +386,12 @@ impl StageHandler for DeliveryHandler {
             return documents(result);
         }
 
-        // 5. Effects. Each is safe to repeat.
+        // 5. The design is checked again, right before the first effect (DG-8). An approval that
+        //    was taken back while the job ran, a second design label, or a code host that cannot
+        //    be read stops the stage here: nothing is pushed and no pull request is opened.
+        self.deps.recheck.check(ctx, &git, &target.issue).await?;
+
+        // 6. Effects. Each is safe to repeat.
         let published = publish::deliver(
             self.deps.host.as_ref(),
             &*repo,

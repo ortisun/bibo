@@ -17,11 +17,13 @@ mod schema_check;
 #[path = "../support/mod.rs"]
 mod support;
 
+mod design_fakes;
 mod spy;
 mod world;
 
 mod approval;
 mod approval_stage;
+mod design_recheck;
 mod documented;
 mod happy;
 mod judging;
