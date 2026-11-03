@@ -292,6 +292,11 @@ impl Lab {
             &root.join(".claude/skills"),
             &protected.join(".claude/skills"),
         );
+        // The installation lists the Codex integration too, and the worker pins those skills as well.
+        copy_dir(
+            &root.join(".agents/skills"),
+            &protected.join(".agents/skills"),
+        );
         std::fs::create_dir_all(protected.join("allowlist")).expect("a directory");
         let tenant_text = tenant.as_uuid().to_string();
         std::fs::write(
