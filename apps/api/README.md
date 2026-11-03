@@ -223,9 +223,16 @@ narrowed to other repositories) makes no job (FR-002, SC-002). Because the API h
 one signed request in the audit log, in the transaction that records the delivery, under the action
 `webhook_accepted_or_rejected.denied`, which its database trigger allows. The worker's hook answers it: one fixed
 reply on the issue and the record `intake.rejected`
-(`factory_composition::intake_rejections`). A repeated delivery leaves no second request, a bot is never answered,
-and a repository that is switched off is not answered either. The answer to the sender of the webhook is the same
-`202` in every case.
+(`factory_composition::intake_rejections`). A repeated delivery leaves no second request, and a bot is never answered.
+The worker answers one sender at most once in ten minutes and three times in 24 hours (SF-16); a request it does not
+answer is still recorded, with `reply=suppressed` and the bound that held it (`withheld=spacing` or `withheld=cap`).
+
+A repository that is switched off (registered, not enabled) answers nobody and starts nothing, whoever the sender is,
+and leaves no request for a reply. It does not leave only the accepted delivery (SF-19): one more record under
+`webhook_accepted_or_rejected.denied` (decision `deny`, no signed word, so the worker does not read it) names the
+reason, `repository_switched_off`, the registered repository and issue, the numeric id of the sender and the delivery
+id, and nothing from the payload. A repeat of the delivery leaves no second record. The answer to the sender of the
+webhook is the same `202` in every case.
 
 ## Configuration
 
