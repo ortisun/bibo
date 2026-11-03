@@ -127,7 +127,7 @@ The scenarios E3 to E9 and `full_run.rs` run the real engine, API, store and han
 
 ## Findings
 
-None of these was fixed. Each needs a decision about a configuration key, an ADR or a design that is not the engineer's, or it is a gap in what can be seen.
+When this report was first written none of these was fixed: each needed a decision about a configuration key, an ADR or a design that is not the engineer's, or it was a gap in what can be seen. The project owner then delegated the open decisions, and LB-01, LB-05, LB-07 and LB-08 are closed; see [Fix status](#fix-status). LB-02, LB-03, LB-04 and LB-06 are as described.
 
 ### LB-01: the worker cannot be told where the Docker daemon is
 
@@ -135,6 +135,7 @@ None of these was fixed. Each needs a decision about a configuration key, an ADR
 - **Evidence.** `DOCKER_HOST=unix:///nonexistent/docker.sock docker image inspect nothing` prints `failed to connect to the docker API at unix:///nonexistent/docker.sock; ...`. The same variable on `cargo nextest run -p factory-worker --test loopback_e2e -E 'test(a_design_approved_by_an_approver)'` passes: the worker still reached the daemon and said "the image is not on this host".
 - **Severity.** Medium for a deployment that is not on the default socket; none on this machine.
 - **Smallest fix.** A `sandbox` key (for example `docker_host`) passed into `DockerSettings.env`, with its row in `docs/reference/configuration.md`. A new key is the architect's call.
+- **Status.** Closed. See [Fix status](#fix-status).
 
 ### LB-02: an issue that passed the gate and was blocked by the environment gets no word
 
@@ -162,6 +163,7 @@ None of these was fixed. Each needs a decision about a configuration key, an ADR
 - **What was seen.** `{"level":"WARN","fields":{"message":"no secret of a kind the policy lists is registered","kind":"webhook_secret"}}` on every start. The API holds the webhook secret; the worker leaves it out.
 - **Severity.** Low. A warning that is always there is ignored when it matters.
 - **Smallest fix.** Skip the kinds a binary does not hold in `check_secret_kinds`.
+- **Status.** Closed. See [Fix status](#fix-status).
 
 ### LB-06: the live-adapters run did not include the status step or the design gate
 
@@ -173,11 +175,37 @@ None of these was fixed. Each needs a decision about a configuration key, an ADR
 
 - **What was seen.** `daemon_unreachable` in `crates/sandbox/src/container/docker.rs` looks for four phrases. Docker 29.9.2 prints `failed to connect to the docker API at ...`, which is none of them. The result is still right today because `daemon_error` turns every failure that is not a cancel into `DaemonUnavailable`.
 - **Severity.** Info.
+- **Status.** Closed. See [Fix status](#fix-status).
 
 ### LB-08: the status text for a finished job
 
 - **What was seen.** The text of a `COMPLETED` job says a draft pull request is ready and links to `https://github.com/<repository>/pulls?q=...`. The host is fixed. In the status run the job was completed by scripted stages, so no pull request exists; the text is true only for a real run.
 - **Severity.** Info for this work; the fixed host matters only for a GitHub Enterprise server.
+- **Status.** Closed. See [Fix status](#fix-status).
+
+## Fix status
+
+| Finding | Status | What was done | The test that holds it |
+|---|---|---|---|
+| LB-01 | Closed | `sandbox.docker_host`, `sandbox.docker_config` and `sandbox.allow_remote_docker` (see the [configuration reference](../reference/configuration.md#sandbox)). `docker_host` is a `unix://` socket path or a `tcp://` address on the loopback interface; a remote `tcp://` host needs `allow_remote_docker: true`, which the `production` profile refuses. `docker_config` is an absolute directory that must exist. Both reach the `docker` client's environment (`DOCKER_HOST`, `DOCKER_CONFIG`), and nothing else does. A bad value stops the worker at start with a line that begins with the key. | `config::tests` (`a_docker_host_that_is_not_a_socket...`, `a_remote_docker_host_needs_the_explicit_flag...`), `crates/composition/tests/providers.rs` (the keys reach every docker command through a recording runner), `loopback_e2e` (`the_docker_host_of_the_configuration_decides_which_daemon_the_worker_asks`, `a_bad_docker_value_stops_the_worker_at_start_and_names_the_key`) |
+| LB-05 | Closed | `check_secret_kinds` takes the kinds the binary does not hold and skips them. The worker passes the webhook secret (`WORKER_DOES_NOT_HOLD`). A kind the binary holds and lacks still stops the `production` profile and is logged in the others, once for each kind. | `crates/composition/tests/secret_kinds.rs`; `loopback_e2e::the_worker_does_not_warn_about_a_secret_kind_it_never_holds` |
+| LB-07 | Closed | `daemon_unreachable` also matches `failed to connect to the docker API at`. | `container::docker::tests`, one test for each phrase and one for a daemon that answers with an error |
+| LB-08 | Closed | The link in the text of a finished job is built from `github.web_base_url` (default `https://github.com`). The GitHub adapter's list of link hosts now comes from `output_hygiene.allow_link_domains` of the security policy, where before it was the adapter's own default; a web address whose host that list does not have stops the start with the name of the key, because the adapter would strip the link and say nothing. The text of the comment is still true only for a real run (the job in the status test is completed by scripted stages). | `issue_status::tests::the_pull_request_link_is_built_on_the_configured_web_address`, `crates/composition/tests/issue_status.rs::a_finished_job_links_to_the_pull_requests_on_the_configured_host`, `loopback_status` (`a_finished_job_links_to_an_enterprise_host_through_the_real_adapter` and its break) |
+| LB-02, LB-03, LB-04, LB-06 | Open | Not part of this change. | |
+
+Deliberate breaks, each shown caught by the tests named above:
+
+| Break | Caught by |
+|---|---|
+| `docker_settings_from` leaves `DOCKER_HOST` out | the providers tests and `the_docker_host_of_the_configuration_decides_which_daemon_the_worker_asks` (the worker then starts its loop instead of stopping at the probe) |
+| Any `tcp://` host accepted without the flag | the two `config::tests` for the host |
+| The `production` profile accepts `allow_remote_docker` | `a_remote_docker_host_needs_the_explicit_flag_and_the_production_profile_refuses_the_flag` |
+| The check on `docker_config` being a directory removed | `a_docker_config_that_is_not_a_directory_stops_the_assembly_and_names_the_key` |
+| The secret-kind check ignores the kinds the binary does not hold (the old behaviour) | `secret_kinds.rs` and the worker log test |
+| The secret-kind check passes everything (fail open) | `secret_kinds.rs` |
+| The new Docker client wording removed | the test for that phrase |
+| The link builder uses a fixed host again | the unit test and the composition test |
+| The adapter ignores the policy's list of link hosts | `a_finished_job_links_to_an_enterprise_host_through_the_real_adapter` |
 
 ## What this does not prove
 

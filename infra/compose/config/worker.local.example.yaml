@@ -59,6 +59,7 @@ decisions:
 #     app_id: 0
 #     key_file: /run/secrets/github_app_key
 #     api_base_url: https://api.github.com          # production accepts this value only
+#     web_base_url: https://github.com              # the host of the links the factory writes; a GitHub Enterprise host must also be in output_hygiene.allow_link_domains
 #     installations:                                # which installation covers which repository
 #       - { tenant: 00000000-0000-0000-0000-000000000000, repository: owner/name, installation_id: 0 }
 #     bypass_attestations:                          # an administrator's statement; without it the repository runs at L0
