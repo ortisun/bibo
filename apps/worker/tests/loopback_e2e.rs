@@ -18,9 +18,11 @@
 //! doctored, and requires a complaint that names the broken fact.
 //!
 //! What needs a sandbox is not here: the classifier of the intake stage runs in a Docker container
-//! of the pinned `agent` image. The scenarios that reach that point stop at it with a named cause,
-//! and `the_whole_job_...` is the test that needs the images; it is ignored in the default suite and
-//! panics with `BLOCKED:` where they are missing. It is never a pass.
+//! of the pinned `agent` image. The scenarios that reach that point stop at it with a named cause.
+//! `the_worker_probes_both_agent_tools_in_a_real_container_when_it_starts` is the one test here that
+//! needs the images; it is ignored in the default suite and panics with `BLOCKED:` where they are
+//! missing, which is never a pass. The whole job, to a draft pull request, is
+//! `apps/api/tests/live_run.rs`, and it is `BLOCKED` in the same way.
 
 mod support;
 

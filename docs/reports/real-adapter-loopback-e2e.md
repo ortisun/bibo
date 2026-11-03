@@ -25,13 +25,16 @@ cargo nextest run -p factory-api --run-ignored only --test live_run             
 
 ## What was run, and the result
 
-The first two commands above, on this machine. The third was run once to see the `BLOCKED:` lines. `FINAL-COUNTS` below is filled in from the last run.
+Run on this machine while other work kept its load average between 22 and 46 on 16 cores.
 
 | Command | Passed | Failed | Blocked | Ignored |
 |---|---|---|---|---|
-| `cargo nextest run -p factory-worker --test loopback_e2e --test loopback_status --no-fail-fast` | FINAL-PASSED | 0 | 0 | 1 |
+| `cargo nextest run -p factory-worker --test loopback_e2e --test loopback_status --no-fail-fast` | 17 | 0 | 0 | 1 |
 | `cargo nextest run -p factory-worker --run-ignored only --test loopback_e2e` | 0 | 0 | 1 (`BLOCKED: the image factory-sandbox/verify@sha256:5ec059bc... is not on this host`) | 0 |
 | `cargo nextest run -p factory-api --run-ignored only --test live_run --no-fail-fast` | 0 | 0 | 4 (each ends `BLOCKED: the image factory-sandbox/verify@sha256:5ec059bc... is not on this host (images are never pulled)`) | 0 |
+| `cargo nextest run -p factory-worker --no-fail-fast` (the whole crate) | 165 | 1 | 0 | 1 |
+
+The one failure of the whole crate is `composed_start ... stops_on_sigterm_with_code_zero` ("the worker did not stop on SIGTERM"), the test that is known to fail under load. It failed again when run alone at a load average of 23, and again with `apps/worker/tests/support/mod.rs` and `deployment.rs` put back to their state on `3f3f205`, so it does not come from this work.
 
 A `BLOCKED:` panic makes the test fail in nextest's count. It is shown here as blocked because that is what it says, and none of them is a pass.
 
