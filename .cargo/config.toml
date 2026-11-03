@@ -1,3 +1,8 @@
+[build]
+# Incremental compilation is off. It fills target/debug/incremental (hundreds of MB) and CI and the
+# sandbox images already build with CARGO_INCREMENTAL=0. The environment variable still overrides this.
+incremental = false
+
 [alias]
 # `cargo xtask check-architecture` runs the architecture checks. xtask is tooling, not product code.
 xtask = "run --quiet --package xtask --"
