@@ -1769,3 +1769,243 @@ async fn a_repository_whose_attestor_or_enabler_is_gone_is_not_open_for_new_jobs
         env.stop().await;
     }
 }
+
+// ---- RR-28: an allowlist entry that lists the GitHub id follows the repository, not the name ----------
+
+/// The operator's entry in the allowlist file, as the tests write it, and the same entry narrowed.
+fn the_operators_entry(env: &Env) -> String {
+    format!(
+        "  - tenant: {}\n    github_user_id: {}\n    login: {}\n    designations: [operator]\n",
+        env.a.id.as_uuid(),
+        env.a.operator.github_id,
+        env.a.operator.login
+    )
+}
+
+fn narrow_operator(env: &Env, repositories: &str) {
+    let plain = the_operators_entry(env);
+    let all = allowlist_text(&[&env.a, &env.b]);
+    assert!(all.contains(&plain), "the entry to narrow is in the file");
+    std::fs::write(
+        env.checkout.join("allowlist/allowlist.yaml"),
+        all.replacen(
+            &plain,
+            &format!("{plain}    repositories:\n{repositories}"),
+            1,
+        ),
+    )
+    .expect("the narrowed allowlist");
+}
+
+/// Registers a repository with the name `org/new-1` (the name of repository 1) and the GitHub id of
+/// repository `n`: a new repository created under the old name, as the finding describes.
+async fn register_under_the_old_name(env: &Env, n: u64) -> String {
+    let mut body = registration(n);
+    body["full_name"] = json!("org/new-1");
+    let made = post(
+        env,
+        &env.a.operator,
+        "/v1/repositories",
+        &format!("register-reuse-{n}"),
+        &body,
+    )
+    .await;
+    assert_eq!(made.status, 201, "{}", made.text());
+    made.json()["repository"]["repository_id"]
+        .as_str()
+        .expect("an id")
+        .to_owned()
+}
+
+/// RR-28 (the finding, the hypothesis of the re-review): an entry narrowed by name alone is inherited by a
+/// repository that is created under the old name. An entry that lists GitHub's id is not, and it still
+/// reaches the repository after a rename.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_operator_narrowed_by_the_github_id_follows_the_repository_through_a_rename_and_not_to_a_new_one_under_the_old_name()
+ {
+    let env = Env::start().await;
+    let one = register(&env, 1).await; // org/new-1, GitHub id 8001
+    narrow_operator(
+        &env,
+        "      - name: org/new-1\n        github_repository_id: 8001\n",
+    );
+
+    // The control that the entry works: it reaches the repository it lists.
+    let read = get(&env, &env.a.operator, &format!("/v1/repositories/{one}")).await;
+    assert_eq!(read.status, 200, "{}", read.text());
+    assert_eq!(attest(&env, &one, "attest-1").await.status, 200);
+
+    // A new repository is created under the old name and registered (the registration is the typed
+    // name and the typed id of the new repository, so it is refused to this operator before it is a row).
+    let mut body = registration(2);
+    body["full_name"] = json!("org/new-1");
+    let refused = post(
+        &env,
+        &env.a.operator,
+        "/v1/repositories",
+        "register-2",
+        &body,
+    )
+    .await;
+    assert_eq!(refused.status, 403, "{}", refused.text());
+    assert_eq!(
+        env.db
+            .number("SELECT count(*) FROM repositories WHERE github_repository_id = 8002")
+            .await,
+        0,
+        "nothing was registered"
+    );
+    // An operator who reaches every repository registers it. The narrowed operator cannot read it, attest
+    // it or disable it, although its name is the one the entry lists.
+    std::fs::write(
+        env.checkout.join("allowlist/allowlist.yaml"),
+        allowlist_text(&[&env.a, &env.b]),
+    )
+    .expect("the plain allowlist");
+    let two = register_under_the_old_name(&env, 2).await;
+    narrow_operator(
+        &env,
+        "      - name: org/new-1\n        github_repository_id: 8001\n",
+    );
+    let read = get(&env, &env.a.operator, &format!("/v1/repositories/{two}")).await;
+    assert_eq!(
+        read.status,
+        404,
+        "the name is the same, the repository is not: {}",
+        read.text()
+    );
+    assert_eq!(attest(&env, &two, "attest-2").await.status, 403);
+    assert_eq!(disable(&env, &two, "disable-2").await.status, 403);
+    assert_eq!(flag(&env, &two, "project_map_commit").await, None);
+
+    // Renamed: the registered name changes, the id does not, and the entry still reaches the repository.
+    env.db
+        .run(&format!(
+            "UPDATE repositories SET full_name = 'org/renamed', version = version + 1 WHERE id = '{one}'"
+        ))
+        .await;
+    let read = get(&env, &env.a.operator, &format!("/v1/repositories/{one}")).await;
+    assert_eq!(read.status, 200, "{}", read.text());
+    assert_eq!(read.json()["full_name"], "org/renamed");
+    assert_eq!(
+        attest_commit(&env, &one, "attest-3", OTHER_COMMIT)
+            .await
+            .status,
+        200
+    );
+    // Transferred to another owner: the same.
+    env.db
+        .run(&format!(
+            "UPDATE repositories SET full_name = 'elsewhere/new-1', version = version + 1 WHERE id = '{one}'"
+        ))
+        .await;
+    assert_eq!(
+        get(&env, &env.a.operator, &format!("/v1/repositories/{one}"))
+            .await
+            .status,
+        200
+    );
+
+    // The weaker form, kept and reported: an entry that lists the name alone is inherited by the new
+    // repository, and that is what the warning in the allowlist reader is about.
+    narrow_operator(&env, "      - org/new-1\n");
+    let read = get(&env, &env.a.operator, &format!("/v1/repositories/{two}")).await;
+    assert_eq!(
+        read.status,
+        200,
+        "the entry by name alone follows the name: {}",
+        read.text()
+    );
+    let weak = env
+        .state
+        .allowlist_file
+        .name_only_narrowing()
+        .expect("the file reads");
+    assert_eq!(weak.len(), 1);
+    assert_eq!(weak[0].repositories, vec!["org/new-1".to_owned()]);
+    env.stop().await;
+}
+
+/// RR-28 for the other people who start work: a requester narrowed by id submits jobs for the repository
+/// they were given, and a new repository under the same name takes nothing from them.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_requester_narrowed_by_the_github_id_starts_no_job_in_a_new_repository_under_the_old_name()
+ {
+    let env = Env::start().await;
+    let one = enabled_repository(&env, 1).await;
+    let two = register_under_the_old_name(&env, 2).await;
+    assert_eq!(attest(&env, &two, "attest-two").await.status, 200);
+    assert_eq!(enable(&env, &two, "enable-two").await.status, 200);
+
+    let requester = &env.a.requester;
+    let plain = format!(
+        "  - tenant: {}\n    github_user_id: {}\n    login: {}\n    designations: [requester]\n",
+        env.a.id.as_uuid(),
+        requester.github_id,
+        requester.login
+    );
+    let all = allowlist_text(&[&env.a, &env.b]);
+    assert!(all.contains(&plain));
+    let path = env.checkout.join("allowlist/allowlist.yaml");
+
+    // The control: narrowed by the id of repository one, the requester asks for work there, and a label
+    // there makes a job.
+    std::fs::write(
+        &path,
+        all.replacen(
+            &plain,
+            &format!("{plain}    repositories:\n      - name: org/new-1\n        github_repository_id: 8001\n"),
+            1,
+        ),
+    )
+    .expect("narrowed by id");
+    assert_eq!(submit(&env, &one, "job-1", 31).await.status, 201);
+    let label = env
+        .send(env.delivery(
+            "issues",
+            &delivery_id(1),
+            &label_payload(1, requester.github_id, 32),
+        ))
+        .await;
+    assert_eq!(label.status, 202);
+    assert_eq!(jobs_of(&env, &one).await, 2);
+
+    // The new repository has the same name and another id: no job by the API, none by a label.
+    let refused = submit(&env, &two, "job-2", 33).await;
+    assert_eq!(refused.status, 403, "{}", refused.text());
+    let mut payload: Value =
+        serde_json::from_slice(&label_payload(2, requester.github_id, 34)).expect("json");
+    payload["repository"]["full_name"] = json!("org/new-1");
+    let dropped = env
+        .send(env.delivery(
+            "issues",
+            &delivery_id(2),
+            &serde_json::to_vec(&payload).expect("json"),
+        ))
+        .await;
+    assert_eq!(dropped.status, 202);
+    assert_eq!(
+        jobs_of(&env, &two).await,
+        0,
+        "the name is not the repository"
+    );
+
+    // The weaker form is inherited, as the finding said, and is the reason for the warning.
+    std::fs::write(
+        &path,
+        all.replacen(
+            &plain,
+            &format!("{plain}    repositories: [org/new-1]\n"),
+            1,
+        ),
+    )
+    .expect("narrowed by name");
+    assert_eq!(submit(&env, &two, "job-3", 35).await.status, 201);
+    env.stop().await;
+}
+
+/// The requester asks for a job on an issue of `org/new-1`.
+async fn submit(env: &Env, repository: &str, key: &str, issue: u64) -> Reply {
+    let body = json!({"repository_id": repository, "text": "Add a word count command.", "source_ref": format!("org/new-1#{issue}")});
+    post(env, &env.a.requester, "/v1/jobs", key, &body).await
+}

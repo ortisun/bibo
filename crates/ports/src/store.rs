@@ -792,6 +792,18 @@ pub struct Repository {
 }
 
 impl Repository {
+    /// Which repository this is for a question about authority: its registered name and GitHub's
+    /// numeric id of it (finding RR-28). Every caller that holds the row asks with this and not with
+    /// the name alone, so an allowlist entry that lists the id follows the repository through a
+    /// rename or a transfer, and a new repository under the old name is another repository.
+    #[must_use]
+    pub fn identity(&self) -> factory_domain::policy::authority::RepositoryIdentity<'_> {
+        factory_domain::policy::authority::RepositoryIdentity::registered(
+            &self.full_name,
+            self.github_repository_id.0,
+        )
+    }
+
     /// True when the people behind the repository still stand: the attestor of its map and its
     /// enabler are active human principals of the tenant (finding REG-6).
     #[must_use]

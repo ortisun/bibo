@@ -315,12 +315,13 @@ impl AllowlistSource for FixedAllowlist {
                 github_user_id: GithubUserId::new(*id).expect("a numeric id"),
                 login: (*login).to_owned(),
                 designations: designations.iter().copied().collect(),
-                repositories: self
-                    .narrowed
-                    .lock()
-                    .expect("lock")
-                    .get(id)
-                    .map(|list| list.iter().cloned().collect()),
+                repositories: self.narrowed.lock().expect("lock").get(id).map(|list| {
+                    list.iter()
+                        .map(|name| {
+                            factory_domain::policy::authority::ListedRepository::named(name)
+                        })
+                        .collect()
+                }),
                 expires_at: None,
             })
             .collect();

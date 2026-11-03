@@ -136,7 +136,7 @@ pub async fn specification_draft(
         let head = tx.ledger_head(job_id).await?;
         Ok(Some((
             job.value,
-            repository.value.full_name,
+            repository.value,
             run,
             newest,
             saved_at,
@@ -256,13 +256,7 @@ pub async fn gate_reports(state: &ApiState, caller: &Caller, job_id: &str) -> An
         for held in &cited {
             references.push(tx.get_artifact_index(&held.sha256).await.ok());
         }
-        Ok::<_, StoreError>((
-            repository.value.full_name,
-            runs,
-            cited,
-            references,
-            truncated,
-        ))
+        Ok::<_, StoreError>((repository.value, runs, cited, references, truncated))
     }
     .await;
     let _ = tx.rollback().await;
@@ -395,7 +389,7 @@ pub async fn artifact(state: &ApiState, caller: &Caller, job_id: &str, sha256: &
             }
             None => None,
         };
-        Ok::<_, StoreError>((repository.value.full_name, entry))
+        Ok::<_, StoreError>((repository.value, entry))
     }
     .await;
     let _ = tx.rollback().await;

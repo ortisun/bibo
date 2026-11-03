@@ -23,6 +23,7 @@ use async_trait::async_trait;
 use factory_domain::ids::{JobId, PrincipalId, RepositoryId, TenantId};
 use factory_domain::machines::guards::AdmissionFacts;
 use factory_domain::policy::PolicyEngine;
+use factory_domain::policy::authority::RepositoryIdentity;
 use factory_domain::policy::decision::Designation;
 use factory_domain::scope::TenantScope;
 use factory_domain::state::Status;
@@ -87,7 +88,7 @@ impl StoreAuthority {
         &self,
         tenant: TenantId,
         github_user: u64,
-        repository: Option<&str>,
+        repository: Option<&RepositoryIdentity<'_>>,
     ) -> Result<BTreeSet<Designation>, AuthorityError> {
         self.allowlist
             .designations_on(tenant, github_user, repository, self.clock.now())
@@ -107,7 +108,7 @@ impl Authority for StoreAuthority {
         requester: PrincipalId,
         repository: RepositoryId,
     ) -> Result<AdmissionFacts, AuthorityError> {
-        let (active, enabled, preflight_passed, full_name) = {
+        let (active, enabled, preflight_passed, registered) = {
             let mut tx = self
                 .store
                 .begin(TenantScope::new(tenant))
@@ -140,7 +141,7 @@ impl Authority for StoreAuthority {
                     active,
                     found.value.open_for_new_jobs(),
                     found.value.protection_preflight_passed,
-                    Some(found.value.full_name),
+                    Some((found.value.full_name, found.value.github_repository_id.0)),
                 ),
                 Err(StoreError::NotFound) => (active, false, false, None),
                 Err(_) => return Err(AuthorityError::Unavailable),
@@ -150,9 +151,16 @@ impl Authority for StoreAuthority {
         // repositories does not make its person a requester here (API-1). A repository that does not
         // exist fails the registered fact below, so what the narrowing says about it does not matter.
         let requester_on_allowlist = match self.github_user(tenant, requester).await? {
-            Some(user) => self
-                .designations(tenant, user, full_name.as_deref())?
-                .contains(&Designation::Requester),
+            Some(user) => {
+                // The repository is asked about with GitHub's numeric id, so an entry that lists
+                // the id follows it through a rename and a new repository under the old name is
+                // another repository (RR-28).
+                let identity = registered
+                    .as_ref()
+                    .map(|(name, id)| RepositoryIdentity::registered(name, *id));
+                self.designations(tenant, user, identity.as_ref())?
+                    .contains(&Designation::Requester)
+            }
             None => false,
         };
         let cap = self.policy.budget.max_running_jobs_per_repo()

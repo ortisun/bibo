@@ -28,6 +28,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use factory_domain::ids::{JobId, TenantId};
+use factory_domain::policy::authority::RepositoryIdentity;
 use factory_domain::scope::TenantScope;
 use factory_domain::values::Timestamp;
 use factory_domain::vocabulary::Fidelity;
@@ -192,7 +193,7 @@ impl CurrentApprovals {
         if recorded.is_empty() {
             return recorded;
         }
-        let Some(repository) = self.repository_of(tenant, job).await else {
+        let Some((repository, github_repository)) = self.repository_of(tenant, job).await else {
             return Vec::new();
         };
         let now = self.clock.now();
@@ -201,18 +202,30 @@ impl CurrentApprovals {
             .filter(|approval| {
                 let (approver, designation) = who(approval);
                 self.allowlist
-                    .designations_on(tenant, approver, Some(&repository), now)
+                    .designations_on(
+                        tenant,
+                        approver,
+                        Some(&RepositoryIdentity::registered(
+                            &repository,
+                            github_repository,
+                        )),
+                        now,
+                    )
                     .is_ok_and(|held| held.contains(&designation))
             })
             .collect()
     }
 
-    async fn repository_of(&self, tenant: TenantId, job: JobId) -> Option<String> {
+    /// The registered name of the job's repository and GitHub's numeric id of it (RR-28).
+    async fn repository_of(&self, tenant: TenantId, job: JobId) -> Option<(String, u64)> {
         let mut tx = self.store.begin(TenantScope::new(tenant)).await.ok()?;
         let found = async {
             let stored = tx.get_job(job).await.ok()?;
             let repository = tx.get_repository(stored.value.repository).await.ok()?;
-            Some(repository.value.full_name)
+            Some((
+                repository.value.full_name,
+                repository.value.github_repository_id.0,
+            ))
         }
         .await;
         let _ = tx.rollback().await;

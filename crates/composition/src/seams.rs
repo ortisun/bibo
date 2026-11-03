@@ -25,7 +25,9 @@ use factory_contracts::loader::{DefinitionFormat, DefinitionLoader};
 use factory_contracts::yaml::{self, YamlLimits};
 use factory_domain::contracts::{ProjectManifest, SchemaRef, Violation};
 use factory_domain::ids::{JobId, TenantId};
-use factory_domain::policy::authority::{Allowlist, AllowlistEntry};
+use factory_domain::policy::authority::{
+    Allowlist, AllowlistEntry, ListedRepository, RepositoryIdentity,
+};
 use factory_domain::policy::decision::{Designation, GithubUserId};
 use factory_domain::scope::TenantScope;
 use factory_domain::state::Status as _;
@@ -161,9 +163,50 @@ struct EntryFile {
     login: String,
     designations: Vec<String>,
     #[serde(default)]
-    repositories: Option<Vec<String>>,
+    repositories: Option<Vec<ListedFile>>,
     #[serde(default)]
     expires_at: Option<String>,
+}
+
+/// One item of `repositories:` in the file. A bare `owner/name` narrows by name, the weaker form.
+/// A mapping with `name` and `github_repository_id` narrows by GitHub's numeric id of the repository
+/// and keeps the name for people to read (finding RR-28).
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+enum ListedFile {
+    Name(String),
+    WithId(ListedWithId),
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ListedWithId {
+    name: String,
+    github_repository_id: u64,
+}
+
+impl ListedFile {
+    /// The listing, or `None` for an id that is not a GitHub repository id (zero): the file is then
+    /// not read at all, and every caller fails closed.
+    fn listed(self) -> Option<ListedRepository> {
+        match self {
+            Self::Name(name) => Some(ListedRepository::named(&name)),
+            Self::WithId(item) => (item.github_repository_id > 0)
+                .then(|| ListedRepository::with_id(&item.name, item.github_repository_id)),
+        }
+    }
+}
+
+/// An allowlist entry that narrows a person to repositories by name alone: the weaker form of the
+/// narrowing, which a renamed, transferred or re-created repository defeats (finding RR-28).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NameOnlyNarrowing {
+    /// The tenant of the entry.
+    pub tenant: TenantId,
+    /// The numeric GitHub id of the person.
+    pub github_user_id: u64,
+    /// The repositories listed with a name and no id.
+    pub repositories: Vec<String>,
 }
 
 pub(crate) fn designation(name: &str) -> Option<Designation> {
@@ -183,6 +226,9 @@ pub(crate) fn designation(name: &str) -> Option<Designation> {
 /// here (no document defines one yet) and is listed for architect review in the README.
 pub struct FileAllowlist {
     path: PathBuf,
+    /// The version of the file the weaker narrowing was last warned about, so that a file read at
+    /// every call warns once for each version and not once for each call.
+    warned_for: std::sync::Mutex<Option<Sha256Digest>>,
 }
 
 impl FileAllowlist {
@@ -191,6 +237,7 @@ impl FileAllowlist {
     pub fn in_checkout(checkout: &Path) -> Self {
         Self {
             path: checkout.join(ALLOWLIST_PATH),
+            warned_for: std::sync::Mutex::new(None),
         }
     }
 
@@ -205,7 +252,7 @@ impl FileAllowlist {
         &self,
         tenant: TenantId,
         github_user_id: u64,
-        repository: Option<&str>,
+        repository: Option<&RepositoryIdentity<'_>>,
         now: Timestamp,
     ) -> Result<BTreeSet<Designation>, SeamError> {
         let (_, entries) = self.entries()?;
@@ -213,7 +260,7 @@ impl FileAllowlist {
             .into_iter()
             .filter(|entry| entry.tenant == tenant && entry.github_user_id.get() == github_user_id)
             .filter(|entry| entry.expires_at.as_ref().is_none_or(|end| *end > now))
-            .filter(|entry| repository.is_none_or(|name| entry.covers_repository(name)))
+            .filter(|entry| repository.is_none_or(|asked| entry.covers_repository(asked)))
             .flat_map(|entry| entry.designations)
             .collect())
     }
@@ -229,13 +276,23 @@ impl FileAllowlist {
         &self,
         tenant: TenantId,
         github_user_id: u64,
-        repository: &str,
+        repository: &RepositoryIdentity<'_>,
     ) -> Result<bool, SeamError> {
         let (_, entries) = self.entries()?;
         Ok(entries
             .iter()
             .filter(|entry| entry.tenant == tenant && entry.github_user_id.get() == github_user_id)
             .all(|entry| entry.covers_repository(repository)))
+    }
+
+    /// The entries that narrow a person to repositories by name alone (finding RR-28). The same
+    /// list is logged as a warning, once for each version of the file, whenever the file is read.
+    ///
+    /// # Errors
+    /// [`SeamError::Unavailable`] when the file cannot be read.
+    pub fn name_only_narrowing(&self) -> Result<Vec<NameOnlyNarrowing>, SeamError> {
+        let (_, entries) = self.entries()?;
+        Ok(name_only(&entries))
     }
 
     /// Reads the whole list.
@@ -260,6 +317,7 @@ impl FileAllowlist {
             return Err(SeamError::Unavailable);
         }
         let mut entries = Vec::new();
+        let version = Sha256Digest::of(text.as_bytes());
         for entry in file.entries {
             let tenant = entry
                 .tenant
@@ -276,7 +334,16 @@ impl FileAllowlist {
                     .ok_or(SeamError::Unavailable)?,
                 login: entry.login,
                 designations,
-                repositories: entry.repositories.map(|r| r.into_iter().collect()),
+                repositories: match entry.repositories {
+                    Some(listed) => Some(
+                        listed
+                            .into_iter()
+                            .map(ListedFile::listed)
+                            .collect::<Option<_>>()
+                            .ok_or(SeamError::Unavailable)?,
+                    ),
+                    None => None,
+                },
                 expires_at: match entry.expires_at {
                     Some(text) => {
                         Some(Timestamp::parse(&text).map_err(|_| SeamError::Unavailable)?)
@@ -285,8 +352,46 @@ impl FileAllowlist {
                 },
             });
         }
-        Ok((Sha256Digest::of(text.as_bytes()), entries))
+        self.warn_once(&version, &entries);
+        Ok((version, entries))
     }
+
+    /// Logs the entries that narrow by name alone, once for each version of the file.
+    fn warn_once(&self, version: &Sha256Digest, entries: &[AllowlistEntry]) {
+        let mut warned = self
+            .warned_for
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        if warned.as_ref() == Some(version) {
+            return;
+        }
+        *warned = Some(version.clone());
+        for weak in name_only(entries) {
+            tracing::warn!(
+                tenant = %weak.tenant.as_text(),
+                github_user_id = weak.github_user_id,
+                repositories = ?weak.repositories,
+                "an allowlist entry narrows a person to repositories by name alone: a repository that \
+                 is renamed, transferred or created again under the name keeps the grant (RR-28); list \
+                 github_repository_id next to the name"
+            );
+        }
+    }
+}
+
+/// The entries of a list that narrow by name alone.
+fn name_only(entries: &[AllowlistEntry]) -> Vec<NameOnlyNarrowing> {
+    entries
+        .iter()
+        .filter_map(|entry| {
+            let names = entry.name_only_listings();
+            (!names.is_empty()).then(|| NameOnlyNarrowing {
+                tenant: entry.tenant,
+                github_user_id: entry.github_user_id.get(),
+                repositories: names.into_iter().map(str::to_owned).collect(),
+            })
+        })
+        .collect()
 }
 
 #[async_trait]

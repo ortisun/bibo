@@ -171,7 +171,7 @@ pub(crate) async fn decide(
     if allowed {
         let job = tx.get_job(job_id).await?;
         let repository = tx.get_repository(job.value.repository).await?;
-        match require_repository(state, caller, &repository.value.full_name) {
+        match require_repository(state, caller, &repository.value) {
             Ok(()) => {}
             Err(ApiError::Forbidden) => allowed = false,
             Err(other) => return Err(other),

@@ -13,9 +13,10 @@
 
 use axum::http::HeaderMap;
 use factory_domain::ids::{PrincipalId, TenantId};
+use factory_domain::policy::authority::RepositoryIdentity;
 use factory_domain::scope::TenantScope;
 use factory_domain::vocabulary::HumanRole;
-use factory_ports::store::PrincipalKind;
+use factory_ports::store::{PrincipalKind, Repository};
 use factory_workflow::commands::AuthorityError;
 
 use crate::answers::ApiError;
@@ -79,7 +80,12 @@ impl Caller {
     }
 }
 
-/// Refuses unless the caller's allowlist entry reaches `repository` (`owner/name`).
+/// Refuses unless the caller's allowlist entry reaches the registered `repository`.
+///
+/// The question carries GitHub's numeric id of the repository (finding RR-28): an entry that lists
+/// the id follows the repository through a rename or a transfer, and a new repository created under
+/// the old name is another repository. An entry that lists the name alone still compares the name,
+/// which is the weaker form, and the allowlist reader warns about it.
 ///
 /// The roles of [`Caller`] are the tenant-wide answer: a person narrowed to some repositories is
 /// listed, and holds their designations, but only there (API-1). This is the second step, asked
@@ -92,7 +98,21 @@ impl Caller {
 pub fn require_repository(
     state: &ApiState,
     caller: &Caller,
-    repository: &str,
+    repository: &Repository,
+) -> Result<(), ApiError> {
+    require_identity(state, caller, &repository.identity())
+}
+
+/// The same, for a repository that is named by its identity and has no row yet (a registration:
+/// the name and the GitHub id are what the operator typed).
+///
+/// # Errors
+/// [`ApiError::Forbidden`] when the entry is narrowed to other repositories;
+/// [`ApiError::Unavailable`] when the allowlist cannot be read (the request is refused).
+pub fn require_identity(
+    state: &ApiState,
+    caller: &Caller,
+    repository: &RepositoryIdentity<'_>,
 ) -> Result<(), ApiError> {
     let Some(github_user_id) = caller.github_user_id else {
         return Err(ApiError::Forbidden);

@@ -50,6 +50,7 @@
 
 use axum::http::{HeaderMap, StatusCode};
 use factory_domain::ids::{AuditEventId, CorrelationId, RepositoryId};
+use factory_domain::policy::authority::RepositoryIdentity;
 use factory_domain::values::Sha256Digest;
 use factory_ports::store::{
     AuditActor, AuditDecision, ConstraintRule, GithubRepositoryId, IdempotencyKey, InstallationId,
@@ -60,7 +61,7 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 
 use crate::answers::{Answer, ApiError, Reply};
-use crate::auth::{Caller, require_repository};
+use crate::auth::{Caller, require_identity};
 use crate::decisions::{refuse, roles_of_action};
 use crate::jobs::{audit_action, clean_text, commit, decode, idempotency_key, parse_id};
 use crate::state::ApiState;
@@ -262,7 +263,7 @@ async fn open(
     caller: &Caller,
     action: &str,
     repository: Option<RepositoryId>,
-    named: Option<&str>,
+    named: Option<RepositoryIdentity<'_>>,
     refused_as: String,
 ) -> Result<(Box<dyn Tx>, Option<Versioned<Repository>>), ApiError> {
     let needed = roles_of_action(state, action);
@@ -272,12 +273,12 @@ async fn open(
     if allowed {
         if let Some(id) = repository {
             let row = tx.get_repository(id).await?;
-            if narrowed_away(state, caller, &row.value.full_name)? {
+            if narrowed_away(state, caller, &row.value.identity())? {
                 allowed = false;
             }
             found = Some(row);
         } else if let Some(name) = named
-            && narrowed_away(state, caller, name)?
+            && narrowed_away(state, caller, &name)?
         {
             allowed = false;
         }
@@ -292,9 +293,14 @@ async fn open(
     Ok((tx, found))
 }
 
-/// True when the caller's allowlist entry is narrowed to other repositories than `full_name`.
-fn narrowed_away(state: &ApiState, caller: &Caller, full_name: &str) -> Result<bool, ApiError> {
-    match require_repository(state, caller, full_name) {
+/// True when the caller's allowlist entry is narrowed to other repositories than this one. The
+/// question carries GitHub's numeric id (finding RR-28).
+fn narrowed_away(
+    state: &ApiState,
+    caller: &Caller,
+    identity: &RepositoryIdentity<'_>,
+) -> Result<bool, ApiError> {
+    match require_identity(state, caller, identity) {
         Ok(()) => Ok(false),
         Err(ApiError::Forbidden) => Ok(true),
         Err(other) => Err(other),
@@ -414,7 +420,11 @@ pub async fn register(
         caller,
         REGISTER,
         None,
-        Some(&parsed.full_name),
+        // What the operator typed: the name and the GitHub id of the registration.
+        Some(RepositoryIdentity::registered(
+            &parsed.full_name,
+            parsed.github_repository_id,
+        )),
         refused_as,
     )
     .await?;
@@ -486,7 +496,7 @@ pub async fn show(state: &ApiState, caller: &Caller, repository_id: &str) -> Ans
     let row = found?;
     // An allowlist entry narrowed to other repositories does not see this one, as it does not see
     // its jobs (API-1): the answer is the one for a repository that is not there (REG-4).
-    if narrowed_away(state, caller, &row.value.full_name)? {
+    if narrowed_away(state, caller, &row.value.identity())? {
         return Err(ApiError::NotFound);
     }
     Ok(Reply::ok(repository_json(&row)))

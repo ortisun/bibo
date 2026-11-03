@@ -71,7 +71,7 @@ use factory_domain::ids::{
     AuditEventId, CausationId, CorrelationId, JobId, PrincipalId, StageRunId, TenantId,
 };
 use factory_domain::policy::approval::ApprovalPolicy;
-use factory_domain::policy::authority::ActorKind;
+use factory_domain::policy::authority::{ActorKind, RepositoryIdentity};
 use factory_domain::policy::decision::Designation;
 use factory_domain::scope::TenantScope;
 use factory_domain::state::{JobStatus, Status as _};
@@ -436,8 +436,9 @@ pub enum Marked {
 #[async_trait(?Send)]
 pub trait DecisionAuthority: Send + Sync {
     /// True when the person with this GitHub id holds, for the tenant and now, a designation the
-    /// policy names for the verb, on `repository` (`owner/name`): an allowlist entry narrowed to
-    /// other repositories grants nothing here (API-1).
+    /// policy names for the verb, on `repository`: an allowlist entry narrowed to other repositories
+    /// grants nothing here (API-1), and an entry that lists GitHub's numeric id of the repository
+    /// compares the id and not the name (RR-28).
     ///
     /// # Errors
     /// [`Unreadable`] when the allowlist cannot be read. The decision then waits.
@@ -446,7 +447,7 @@ pub trait DecisionAuthority: Send + Sync {
         tenant: TenantId,
         github_user_id: u64,
         verb: Verb,
-        repository: &str,
+        repository: &RepositoryIdentity<'_>,
     ) -> Result<bool, Unreadable>;
 
     /// The version (a hash) of the allowlist the next answer will be read from, for the marker
@@ -486,10 +487,15 @@ impl AllowlistAuthority {
 
     /// The designations the table names for a verb. Empty when the table has no row, which refuses.
     fn needed(&self, verb: Verb) -> Vec<Designation> {
+        self.needed_for(verb.action())
+    }
+
+    /// The designations the table names for an action. Empty when the table has no row, which refuses.
+    fn needed_for(&self, action: &str) -> Vec<Designation> {
         self.approval
             .actions
             .iter()
-            .find(|row| row.id == verb.action())
+            .find(|row| row.id == action)
             .and_then(|row| row.approver_roles.as_ref())
             .map(|names| names.iter().filter_map(|name| designation(name)).collect())
             .unwrap_or_default()
@@ -503,7 +509,7 @@ impl DecisionAuthority for AllowlistAuthority {
         tenant: TenantId,
         github_user_id: u64,
         verb: Verb,
-        repository: &str,
+        repository: &RepositoryIdentity<'_>,
     ) -> Result<bool, Unreadable> {
         let needed = self.needed(verb);
         let held = self
@@ -1341,11 +1347,11 @@ impl ClaimWork {
         decision.actor_github_id = Some(sender.id);
 
         // 4. Is the job still open to a decision?
-        let repository = match self.job_facts(tenant, fields.job).await {
-            Ok(Some((status, _))) if status.is_terminal() => {
+        let (repository, github_repository) = match self.job_facts(tenant, fields.job).await {
+            Ok(Some((status, _, _))) if status.is_terminal() => {
                 return Verdict::Done(Reason::JobEnded.into());
             }
-            Ok(Some((_, repository))) => repository,
+            Ok(Some((_, repository, github_repository))) => (repository, github_repository),
             Ok(None) => return Verdict::Done(Reason::NoJob.into()),
             Err(Unreadable) => return Verdict::Later,
         };
@@ -1354,7 +1360,12 @@ impl ClaimWork {
         // is found by the numeric id of the principal, never by a login.
         match self
             .authority
-            .permits(tenant, sender.id, fields.verb, &repository)
+            .permits(
+                tenant,
+                sender.id,
+                fields.verb,
+                &RepositoryIdentity::registered(&repository, github_repository),
+            )
             .await
         {
             Ok(true) => {}
@@ -1674,12 +1685,13 @@ impl ClaimWork {
         }
     }
 
-    /// The status of the job and the full name (`owner/name`) of its repository, as they are now.
+    /// The status of the job, the full name (`owner/name`) of its repository and GitHub's numeric id of
+    /// it, as they are now.
     async fn job_facts(
         &self,
         tenant: TenantId,
         job: JobId,
-    ) -> Result<Option<(JobStatus, String)>, Unreadable> {
+    ) -> Result<Option<(JobStatus, String, u64)>, Unreadable> {
         let mut tx = self
             .store
             .begin(TenantScope::new(tenant))
@@ -1688,7 +1700,11 @@ impl ClaimWork {
         let found = async {
             let stored = tx.get_job(job).await?;
             let repository = tx.get_repository(stored.value.repository).await?;
-            Ok::<_, StoreError>((stored.value.status, repository.value.full_name))
+            Ok::<_, StoreError>((
+                stored.value.status,
+                repository.value.full_name,
+                repository.value.github_repository_id.0,
+            ))
         }
         .await;
         let _ = tx.rollback().await;

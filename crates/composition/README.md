@@ -163,9 +163,32 @@ entries:
     github_user_id: 1001
     login: requester-one
     designations: [requester, approver]   # requester operator approver security_approver repo_admin org_admin
-    repositories: [org/repo]              # optional
+    repositories: [org/repo]              # optional; the weaker form (see below)
     expires_at: 2027-01-01T00:00:00Z      # optional
+  - tenant: 2f0c7f64-0d1c-4c5e-9f0a-1b2c3d4e5f60
+    github_user_id: 1002
+    login: approver-one
+    designations: [approver]
+    repositories:                         # optional; the form to prefer
+      - name: org/repo                    # for people to read; it can be stale after a rename
+        github_repository_id: 7890123     # GitHub's numeric id of the repository; this decides
 ```
+
+**Narrowing to repositories (API-1, RR-28).** An entry with no `repositories` list covers every
+repository of the tenant. An entry with a list covers the repositories on it and no others, and an empty
+list covers none. Each item is written one of two ways. A bare `owner/name` is compared by name, without
+regard to case. That is the weaker form: a repository that is renamed or transferred leaves the grant
+behind, and a new repository created under the old name inherits it (RR-28). A mapping with `name` and
+`github_repository_id` is compared by the id when the repository that is asked about has one (every
+registered repository has), so the grant follows the repository through a rename and a transfer and does
+not pass to a new repository under the old name. `gh api repos/OWNER/NAME --jq .id` prints the id. An id
+of zero, a missing name or a key that nobody knows makes the whole file unreadable, and every reader fails
+closed. Reading a file with a list of bare names logs one warning for each version of the file, naming the
+person and the repositories (`FileAllowlist::name_only_narrowing` returns the same list). The API (job
+submission, decisions, reads, the webhook), the claim hook (`AllowlistAuthority`), the admission of a job
+(`StoreAuthority`) and the approvals of a dependency (`CurrentApprovals`) ask with the id. The stages of the
+workflow crate know a repository by its name (their inputs carry no id) and compare the name recorded next to
+the id; a job or a decision reaches them only through the gates that ask with the id.
 
 ## Profiles
 

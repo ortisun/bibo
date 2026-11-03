@@ -78,7 +78,7 @@ Four independent security reviews, two re-reviews, a database review and an arch
 3. **Profile check.** Give the dependency sources, the bypass attestations and the eight silent seams a fidelity before any adapter exists for them (RR-6, RR-7).
 4. **Override.** Wire no override verb until RR-18 is closed. None is wired.
 5. **Dependency decisions.** Pass the job's real requester into the proof and add the engine-side comparison (RR-24).
-6. **Repositories.** Do not onboard a repository that vendors its crates (RR-16). Do not let a narrowed allowlist entry outlive a rename or a transfer (RR-28).
+6. **Repositories.** Do not onboard a repository that vendors its crates (RR-16). Write every narrowed allowlist entry with the GitHub id of the repository, as a mapping with `name` and `github_repository_id`, and not as a bare name (RR-28, built on 2026-11-03). A bare name still works, follows the name through a rename and passes to a new repository under the old name, and the allowlist reader logs a warning for it. Nothing here ran against a real GitHub.
 7. **Secret patterns.** Port the new URL pattern to `.gitleaks.toml` (RR-22), and extend the runtime pattern for RR-1 to RR-4 before agent logs reach a person.
 8. **A throwaway repository.** Render the RR-19 and RR-20 vectors and look at them. Time an author's edit after a label (RR-23).
 9. **The first job.** See the settings above.
@@ -90,7 +90,7 @@ The reviewers found no way to approve, merge or mark a pull request ready withou
 ### What is open, and why
 
 - **Open findings.** The [findings of the end-to-end run](../reports/slice-1-findings.md) list SF-01 to SF-08. SF-01 is High: an unauthorized label leaves no audit record of the rejection and no explanation on the issue. A live run would show the same behaviour. Settle it first.
-- **Hypotheses.** RR-13, RR-23, RR-28 and the hypotheses H-1 to H-8 of the supply chain and authority reviews were not confirmed or refuted.
+- **Hypotheses.** RR-13, RR-23 and the hypotheses H-1 to H-8 of the supply chain and authority reviews were not confirmed or refuted.
 - **Not verified at all.** A real GitHub delivery, a deployment behind a proxy, the container images of the services, load above the rate limits, and everything that needs a real model.
 - **Shared symmetric key.** A compromised worker can forge a decision request, because it holds the key that verifies. An asymmetric signature would remove that and add a dependency.
 - **The API database login can change repositories.** Whoever holds its credentials can register, attest and enable repositories and write the matching audit records, with no signed request (finding REG-2 of the [registration review](../reviews/engine-registration-and-status-security-review.md)). Keep that credential in the builders' hands until the product owner decides between a signed request, a function owned by another role and acceptance.

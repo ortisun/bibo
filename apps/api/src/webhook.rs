@@ -199,7 +199,7 @@ pub async fn receive(state: &ApiState, headers: &HeaderMap, body: &[u8]) -> Answ
         let in_reach = match delivery.sender_github_user_id {
             Some(sender) => state
                 .allowlist_file
-                .covers(bound.tenant, sender, &registered.value.full_name)
+                .covers(bound.tenant, sender, &registered.value.identity())
                 .map_err(|_| ApiError::Unavailable)?,
             None => false,
         };
