@@ -357,7 +357,7 @@ def decide(config, *, action, label, sender_login, sender_type, current, factory
 
     # The design namespace.
     if action != "labeled":
-        return ops  # taking a design label away leaves the track, which is allowed
+        return ops  # allowed here; the engine keeps the issue on the track
     if label not in design_names:
         return [("remove_label", label),
                 ("comment", "That label is not a design state. The states are: %s." %

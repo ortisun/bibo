@@ -49,7 +49,9 @@ pub mod handler;
 pub mod normalize;
 pub mod seams;
 
-pub use authorize::{Authorization, DenialReason, NOTICE, authorize, authorize_designation};
+pub use authorize::{
+    Authorization, DenialReason, Labeller, NOTICE, authorize, authorize_designation,
+};
 pub use classify::{Classification, IntakeRules, Outcome, RequestKind};
 pub use handler::{IntakeConfig, IntakeDeps, IntakeHandler, ORIGINAL_GATE, OUTCOME_GATE};
 pub use seams::{

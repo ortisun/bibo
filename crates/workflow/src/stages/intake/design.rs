@@ -6,7 +6,11 @@
 //! Intake reads the labels of the issue from the code host now (the webhook payload is not used)
 //! and classifies them with [`DesignGate::classify`]:
 //!
-//! * **No design label.** A small, clear change. Nothing here touches it.
+//! * **No design label, and none ever applied.** A small, clear change. Nothing here touches it.
+//! * **No design label now, but one was applied and taken off.** The track is sticky: the issue is
+//!   on it, and is refused like any issue of the track until an approver applies `design: approved`.
+//!   Taking the label away is not a way off the track. The events of the issue say so, and if they
+//!   cannot be read to the end the attempt fails, which is a refusal and never a pass.
 //! * **Any design label and no `design: approved`.** Refused, with the block code
 //!   `DESIGN_NOT_APPROVED`.
 //! * **`design: approved` together with another design label.** Refused: a reopened design whose
@@ -14,7 +18,8 @@
 //! * **`design: approved` alone.** The person who applied it must hold the designation that the
 //!   policy names (`intake_requirements.design_approved_by`, `approver` by default), found by
 //!   numeric id on the protected allowlist, not narrowed away from this repository, not expired,
-//!   a human. A label applied by anybody else is refused. GitHub gives triage rights to many
+//!   and a person's account (not a bot or an organization, even if its id is listed). A label
+//!   applied by anybody else is refused. GitHub gives triage rights to many
 //!   people, and the Action only checks that a design document exists, so the label alone proves
 //!   nothing about who decided.
 //!
@@ -49,7 +54,7 @@ use factory_domain::policy::issue_workflow::{DesignGate, DesignLabels, printable
 use factory_domain::values::{GitSha, Timestamp};
 use serde_json::{Value, json};
 
-use super::authorize::{Authorization, DenialReason, authorize_designation};
+use super::authorize::{Authorization, DenialReason, Labeller, authorize_designation};
 use super::common::{Executor, GateDefinition, GateFacts};
 use crate::handlers::StageError;
 
@@ -73,6 +78,9 @@ const GATE_TEXT: &str = "intake-design-approved 1.0.0: an issue with a design la
 pub enum RefusalReason {
     /// The issue is on the design track and does not carry the approved label.
     NotApproved,
+    /// The issue carries no design label now, but one was applied to it and taken off. It is
+    /// still on the track and its design is not approved.
+    DesignDropped,
     /// The approved label is on the issue together with another design label.
     MoreThanOneDesignLabel,
     /// The approved label was in the list of labels but is not on the issue when its applier is
@@ -89,6 +97,7 @@ impl RefusalReason {
     pub const fn code(self) -> &'static str {
         match self {
             Self::NotApproved => "not_approved",
+            Self::DesignDropped => "design_dropped",
             Self::MoreThanOneDesignLabel => "more_than_one_design_label",
             Self::ApprovalLabelGone => "approval_label_gone",
             Self::NotAnApprover(_) => "not_applied_by_an_approver",
@@ -100,6 +109,7 @@ impl RefusalReason {
     pub const fn reply(self) -> Reply {
         match self {
             Self::NotApproved | Self::ApprovalLabelGone => Reply::NotApproved,
+            Self::DesignDropped => Reply::DesignDropped,
             Self::MoreThanOneDesignLabel => Reply::MoreThanOneDesignLabel,
             Self::NotAnApprover(_) => Reply::NotByAnApprover,
         }
@@ -157,14 +167,14 @@ pub struct Judging<'a> {
 
 /// Judges the labels of an issue. Pure.
 ///
-/// `applied_by` is the numeric id and the login of the person who applied the approved label, as
-/// the code host reports them now, or `None` when the label is not on the issue. It is consulted
-/// only when the approved label is the one design label.
+/// `applied_by` is who applied the approved label (numeric id, login and kind of account), as the
+/// code host reports it now, or `None` when the label is not on the issue. It is consulted only
+/// when the approved label is the one design label.
 #[must_use]
 pub fn judge(
     judging: &Judging<'_>,
     labels: DesignLabels,
-    applied_by: Option<(u64, &str)>,
+    applied_by: Option<Labeller<'_>>,
 ) -> DesignDecision {
     let allowlist_version = judging.allowlist.version_hash().to_owned();
     let refused = |reason, labels_seen, applied_by| DesignDecision::Refused {
@@ -176,6 +186,7 @@ pub fn judge(
     match labels {
         DesignLabels::NotOnTrack => DesignDecision::NotOnTrack,
         DesignLabels::NotApproved { seen } => refused(RefusalReason::NotApproved, seen, None),
+        DesignLabels::Dropped { seen } => refused(RefusalReason::DesignDropped, seen, None),
         DesignLabels::Ambiguous { seen } => {
             refused(RefusalReason::MoreThanOneDesignLabel, seen, None)
         }
@@ -218,6 +229,8 @@ pub enum Reply {
     MoreThanOneDesignLabel,
     /// The approved label was applied by somebody the factory does not accept approvals from.
     NotByAnApprover,
+    /// A design label was applied and taken off, and the design is not approved.
+    DesignDropped,
     /// The factory could not check, because its own policy cannot be used.
     CannotCheck,
 }
@@ -249,6 +262,13 @@ impl Reply {
                  The label `{approved}` is on it, but the person who applied it is not someone the factory accepts design approvals from. \
                  Ask an approver of this repository to apply `{approved}` themselves. \
                  Remove the label first, and let the approver add it again. \
+                 After that, apply the `{trigger}` label again."
+            ),
+            Self::DesignDropped => format!(
+                "The factory did not start work on this issue because it is on the design track and its design is not approved. \
+                 The issue once had a label that starts with `design:`, and that label was taken off. \
+                 Taking the label off does not leave the track. \
+                 To go on, ask an approver of this repository to apply `{approved}`. \
                  After that, apply the `{trigger}` label again."
             ),
             Self::CannotCheck => format!(
@@ -329,7 +349,8 @@ pub fn is_refused(document: &Value) -> bool {
 }
 
 /// The reason line of the audit record, in fixed words and numbers and the labels cleaned for
-/// display. It names the issue and the design labels seen.
+/// display and quoted as a list. It names the issue and the design labels seen. The caller passes
+/// the line through the secret redactor before it is stored.
 #[must_use]
 pub fn audit_reason(decision: &DesignDecision, issue: &str, reply: Option<ReplyStatus>) -> String {
     match decision {
@@ -357,13 +378,20 @@ pub fn audit_reason(decision: &DesignDecision, issue: &str, reply: Option<ReplyS
                 other => other.code().to_owned(),
             };
             format!(
-                "design gate refused ({BLOCK_CODE}): issue {issue}; reason {why}; design labels seen [{}]; approved label applied by user id {}; allowlist version {allowlist_version}; reply {}",
-                labels_seen.join(", "),
+                "design gate refused ({BLOCK_CODE}): issue {issue}; reason {why}; design labels seen {}; approved label applied by user id {}; allowlist version {allowlist_version}; reply {}",
+                quoted(labels_seen),
                 applied_by.map_or_else(|| "none".to_owned(), |id| id.to_string()),
                 reply.map_or("not attempted", ReplyStatus::word),
             )
         }
     }
+}
+
+/// The label names as a JSON array of strings. The names are already printable ASCII with no
+/// separator in them ([`printable_label`]); quoting them as well means a name is one item of the
+/// list and can never be read as a field of the line, whatever the cleaning missed.
+fn quoted(labels: &[String]) -> String {
+    serde_json::to_string(labels).unwrap_or_else(|_| "[]".to_owned())
 }
 
 /// The reason line for an issue the stage could not judge because its rule cannot be read.
@@ -379,6 +407,9 @@ pub fn unjudgeable_reason(issue: &str, reply: Option<ReplyStatus>) -> String {
 /// [`RefusalReason::code`]; an unknown word gets the general sentence.
 fn explanation(reason: &str) -> &'static str {
     match reason {
+        "design_dropped" => {
+            "The issue once carried a design label that was taken off. It is still on the design track and its design is not approved."
+        }
         "more_than_one_design_label" => {
             "The state of the design is not clear: the approved label is on the issue together with another design label."
         }
@@ -504,6 +535,7 @@ mod tests {
             Reply::NotApproved,
             Reply::MoreThanOneDesignLabel,
             Reply::NotByAnApprover,
+            Reply::DesignDropped,
             Reply::CannotCheck,
         ] {
             let text = reply.text("factory", "design: approved");
@@ -524,11 +556,12 @@ mod tests {
                 assert!(!text.contains(forbidden), "{reply:?} says {forbidden}");
             }
         }
-        // Three of them tell the person which label to look at.
+        // Four of them tell the person which label to look at.
         for reply in [
             Reply::NotApproved,
             Reply::MoreThanOneDesignLabel,
             Reply::NotByAnApprover,
+            Reply::DesignDropped,
         ] {
             assert!(
                 reply
@@ -544,6 +577,7 @@ mod tests {
             Reply::NotApproved,
             Reply::MoreThanOneDesignLabel,
             Reply::NotByAnApprover,
+            Reply::DesignDropped,
             Reply::CannotCheck,
         ]
         .iter()

@@ -22,6 +22,8 @@ ROOT = pathlib.Path(__file__).resolve().parents[4]
 HANDLER = "crates/workflow/src/stages/intake/handler.rs"
 DESIGN = "crates/workflow/src/stages/intake/design.rs"
 DOMAIN = "crates/domain/src/policy/issue_workflow.rs"
+AUTHORIZE = "crates/workflow/src/stages/intake/authorize.rs"
+PORTS = "crates/ports/src/githost.rs"
 
 # (name, [(file, old, new)])
 BREAKS = [
@@ -31,7 +33,7 @@ BREAKS = [
     ),
     (
         "read no design labels at all, as if the issue were a small change",
-        [(HANDLER, "        let labels = rule.classify(&fetched.labels);", "        let labels = rule.classify(&[]);")],
+        [(HANDLER, "        let mut labels = rule.classify(&fetched.labels);", "        let mut labels = rule.classify(&[]);")],
     ),
     (
         "take the person who applied the approval from the factory label instead of from the approved label",
@@ -63,7 +65,7 @@ BREAKS = [
     ),
     (
         "match the design prefix with the case of the letters",
-        [(DOMAIN, "head.eq_ignore_ascii_case(&self.track_key)", "head == self.track_key")],
+        [(DOMAIN, "Some(c) if c.is_ascii() => c.eq_ignore_ascii_case(&key),", "Some(c) if c.is_ascii() => c == key,")],
     ),
     (
         "the approved label beside another design label counts as approved",
@@ -75,6 +77,62 @@ BREAKS = [
             (DOMAIN, "            .any(|name| name.as_str() == self.approved_label);\n        let others", "            .any(|name| name.trim().eq_ignore_ascii_case(&self.approved_label));\n        let others"),
             (DOMAIN, "            .any(|name| name.as_str() != self.approved_label);", "            .any(|name| !name.trim().eq_ignore_ascii_case(&self.approved_label));"),
         ],
+    ),
+    # ---- the fixes of the security review of the design gate (DG-1 to DG-7) ----
+    (
+        "DG-2: the track is not sticky, a design label taken off leaves the track",
+        [(HANDLER, "            labels = rule.classify_past(&applied_before);", "            let _ = &applied_before;")],
+    ),
+    (
+        "DG-2: a history that cannot be read counts as nothing ever applied",
+        [(HANDLER, "                .labels_ever_applied(&scope, issue)\n                .await\n                .map_err(|_| DesignStop::Stage(StageError::Tool))?;", "                .labels_ever_applied(&scope, issue)\n                .await\n                .unwrap_or_default();")],
+    ),
+    (
+        "DG-1: a list of events that was cut still names the person who applied the label",
+        [(PORTS, "    ) -> Result<Option<LabelApplication>, GitHostError> {\n        if !self.complete {\n            return Err(GitHostError::Unavailable);\n        }\n        let mut latest", "    ) -> Result<Option<LabelApplication>, GitHostError> {\n        let mut latest")],
+    ),
+    (
+        "DG-1: the order of the list is trusted, the last event listed wins",
+        [(PORTS, "            match (event.at, event.id).cmp(&(best.at, best.id)) {", "            match std::cmp::Ordering::Greater {")],
+    ),
+    (
+        "DG-1: the oldest application wins instead of the latest",
+        [(PORTS, "            match (event.at, event.id).cmp(&(best.at, best.id)) {", "            match (best.at, best.id).cmp(&(event.at, event.id)) {")],
+    ),
+    (
+        "DG-4: hidden characters are not dropped before the track is read",
+        [(DOMAIN, "                .filter(|c| !is_invisible(*c))", "                .filter(|_| true)")],
+    ),
+    (
+        "DG-4: a non-ASCII look-alike does not stand for a letter of the prefix",
+        [(DOMAIN, "            Some(_) => true,\n            None => false,", "            Some(_) => false,\n            None => false,")],
+    ),
+    (
+        "DG-4: the approved label is compared after hidden characters are dropped",
+        [
+            (DOMAIN, "            .any(|name| name.as_str() == self.approved_label);\n        let others", "            .any(|name| name.chars().filter(|c| !is_invisible(*c)).collect::<String>() == self.approved_label);\n        let others"),
+            (DOMAIN, "            .any(|name| name.as_str() != self.approved_label);", "            .any(|name| name.chars().filter(|c| !is_invisible(*c)).collect::<String>() != self.approved_label);"),
+        ],
+    ),
+    (
+        "DG-5: every account that applied the label is taken for a person",
+        [(AUTHORIZE, "            account: application.actor_type,", "            account: factory_ports::githost::AccountType::User,")],
+    ),
+    (
+        "DG-7: a label name keeps the characters that separate fields",
+        [(DOMAIN, "            if (' '..='~').contains(&c) && !matches!(c, ';' | ',' | '[' | ']' | '|' | '\"' | '\\\\') {", "            if (' '..='~').contains(&c) {")],
+    ),
+    (
+        "DG-7: the labels of the audit line are joined, not quoted",
+        [(DESIGN, "                quoted(labels_seen),", "                labels_seen.join(\", \"),")],
+    ),
+    (
+        "DG-7: the audit line is stored without the secret redactor",
+        [(HANDLER, "        self.redacted(\n            &reason,\n            \"design gate: the reason was withheld because it could not be checked for secrets\",\n        )", "        reason")],
+    ),
+    (
+        "DG-7: the stored document and the report show the labels without the secret redactor",
+        [(HANDLER, "            &self.redact_labels(design_decision.clone()),", "            &design_decision,")],
     ),
 ]
 

@@ -41,7 +41,7 @@ use factory_ports::registry::VersionReq;
 use factory_ports::sandbox::TeardownReason;
 use serde_json::Value;
 
-use super::authorize::{Authorization, authorize};
+use super::authorize::{Authorization, Labeller, authorize};
 use super::classify::{Classification, DeclineReason, IntakeRules, Outcome, ReadProblem, decide};
 use super::common::{
     ContractBudget, ContractCriterion, ContractDeliverable, ContractInput, ContractSpec, Executor,
@@ -190,9 +190,7 @@ impl IntakeHandler {
             &allowlist,
             identity.tenant,
             &repository,
-            application
-                .as_ref()
-                .map(|found| (found.actor.id, found.actor.login.as_str())),
+            application.as_ref().map(Labeller::of),
             &now,
         );
         Ok((decision, application, allowlist))
@@ -522,11 +520,17 @@ impl StageHandler for IntakeHandler {
                         AuditDecision::Denied
                     },
                 ),
-                design::audit_reason(&design_decision, &issue_text, design_status),
+                self.redacted_reason(design::audit_reason(
+                    &design_decision,
+                    &issue_text,
+                    design_status,
+                )),
             );
         }
+        // The stored document, and the report that is made from it, show the labels with every
+        // secret replaced. The audit line above is redacted as a whole, on its own.
         let design_document = design::document(
-            &design_decision,
+            &self.redact_labels(design_decision.clone()),
             design_rule.approved_label(),
             design_status,
         );
@@ -987,7 +991,18 @@ impl IntakeHandler {
         if fetched.reference != *issue {
             return Err(DesignStop::Stage(StageError::Tool));
         }
-        let labels = rule.classify(&fetched.labels);
+        let mut labels = rule.classify(&fetched.labels);
+        if labels == DesignLabels::NotOnTrack {
+            // No design label now. The track is sticky: a design label that was applied and taken
+            // off keeps the issue on it. That is in the events of the issue, which must be read to
+            // the end: a list that is cut is an error here, and never "nothing was applied".
+            let applied_before = self
+                .issues
+                .labels_ever_applied(&scope, issue)
+                .await
+                .map_err(|_| DesignStop::Stage(StageError::Tool))?;
+            labels = rule.classify_past(&applied_before);
+        }
         let applied = if labels == DesignLabels::ApprovalLabelOnly {
             self.issues
                 .label_application(&scope, issue, rule.approved_label())
@@ -1007,11 +1022,49 @@ impl IntakeHandler {
                 now: &now,
             },
             labels,
-            applied
-                .as_ref()
-                .map(|found| (found.actor.id, found.actor.login.as_str())),
+            applied.as_ref().map(Labeller::of),
         );
         Ok((rule, decision))
+    }
+
+    /// The text with every secret replaced. A label name is text of outside origin and could be
+    /// shaped like a secret. A text the redactor cannot judge is not stored: `withheld` takes its
+    /// place.
+    fn redacted(&self, text: &str, withheld: &str) -> String {
+        match self.redactor.redact_str(text) {
+            Ok(redacted) => redacted.output.into_owned(),
+            Err(_) => withheld.to_owned(),
+        }
+    }
+
+    /// The reason line of an audit record, with every secret replaced.
+    fn redacted_reason(&self, reason: String) -> String {
+        self.redacted(
+            &reason,
+            "design gate: the reason was withheld because it could not be checked for secrets",
+        )
+    }
+
+    /// The design labels seen, which the stored document and the report show, with every secret
+    /// replaced.
+    fn redact_labels(&self, decision: DesignDecision) -> DesignDecision {
+        match decision {
+            DesignDecision::Refused {
+                reason,
+                labels_seen,
+                applied_by,
+                allowlist_version,
+            } => DesignDecision::Refused {
+                reason,
+                labels_seen: labels_seen
+                    .iter()
+                    .map(|label| self.redacted(label, "withheld"))
+                    .collect(),
+                applied_by,
+                allowlist_version,
+            },
+            other => other,
+        }
     }
 
     /// Answers the person on the issue, once for each stage run. A reply that cannot be delivered

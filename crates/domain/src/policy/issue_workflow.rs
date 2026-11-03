@@ -408,20 +408,78 @@ const MAX_LABELS_SEEN: usize = 10;
 /// The longest label name that is shown, in characters, after the cleaning.
 const MAX_SHOWN_CHARS: usize = 60;
 
-/// A label name as it is safe to show in an audit record: printable ASCII stays, every other
-/// character (a control character, a character outside ASCII) becomes `?`, and a long name is cut.
-/// A hostile name therefore shows that it is odd, and cannot change the line it is written in.
+/// A label name as it is safe to show in an audit record, a report or a document.
+///
+/// What it guarantees, and nothing more: every character is printable ASCII, no character is a
+/// control character, and none is one that separates fields in the places the name is written (the
+/// semicolon of the audit line, the comma and the square brackets of its list, the vertical bar of
+/// the report evidence, the quotation mark and the backslash that a quoted form would need
+/// escaped). Printable ASCII stays; every other character becomes `?`. The name is cut after
+/// [`MAX_SHOWN_CHARS`] characters and shown with `...`. A hostile name therefore shows that it is
+/// odd, cannot add a field, a line or an item, and is still not trusted: it is shown, not read.
 #[must_use]
 pub fn printable_label(name: &str) -> String {
     let mut shown: String = name
         .chars()
         .take(MAX_SHOWN_CHARS)
-        .map(|c| if (' '..='~').contains(&c) { c } else { '?' })
+        .map(|c| {
+            if (' '..='~').contains(&c) && !matches!(c, ';' | ',' | '[' | ']' | '|' | '"' | '\\') {
+                c
+            } else {
+                '?'
+            }
+        })
         .collect();
     if name.chars().count() > MAX_SHOWN_CHARS {
         shown.push_str("...");
     }
     shown
+}
+
+/// True for a character that is not shown, or that joins the letter before it so that it is not
+/// seen apart: the Unicode category Cf (format characters: the zero width characters, the
+/// bidirectional controls, the soft hyphen, the byte order mark and the others), the line and
+/// paragraph separators, the tag block, the fillers that render as nothing, the combining
+/// diacritical marks and the variation selectors.
+///
+/// The standard library has no category lookup, so the Cf ranges are listed, from Unicode 16. The
+/// list is a copy of `factory_ports::paths::hides_text` (this crate sits below `ports` and may not
+/// use it), with the combining and variation blocks added, because a track label with an accent
+/// on one letter reads as the same word. A character that a later Unicode version adds to Cf is
+/// not here, and is a non-ASCII character like any other: see [`DesignGate::is_design_label`].
+fn is_invisible(c: char) -> bool {
+    matches!(
+        c,
+        '\u{00AD}'
+            | '\u{0300}'..='\u{036F}'
+            | '\u{0600}'..='\u{0605}'
+            | '\u{061C}'
+            | '\u{06DD}'
+            | '\u{070F}'
+            | '\u{0890}'..='\u{0891}'
+            | '\u{08E2}'
+            | '\u{115F}'..='\u{1160}'
+            | '\u{17B4}'..='\u{17B5}'
+            | '\u{180E}'
+            | '\u{1AB0}'..='\u{1AFF}'
+            | '\u{1DC0}'..='\u{1DFF}'
+            | '\u{200B}'..='\u{200F}'
+            | '\u{2028}'..='\u{202E}'
+            | '\u{2060}'..='\u{206F}'
+            | '\u{20D0}'..='\u{20FF}'
+            | '\u{3164}'
+            | '\u{FE00}'..='\u{FE0F}'
+            | '\u{FE20}'..='\u{FE2F}'
+            | '\u{FEFF}'
+            | '\u{FFA0}'
+            | '\u{FFF9}'..='\u{FFFB}'
+            | '\u{110BD}'
+            | '\u{110CD}'
+            | '\u{13430}'..='\u{1343F}'
+            | '\u{1BCA0}'..='\u{1BCA3}'
+            | '\u{1D173}'..='\u{1D17A}'
+            | '\u{E0000}'..='\u{E0FFF}'
+    )
 }
 
 /// What the labels on an issue say about its design, before anybody checks who applied one.
@@ -444,6 +502,13 @@ pub enum DesignLabels {
         /// The design labels seen, cleaned for display.
         seen: Vec<String>,
     },
+    /// The issue carries no design label now, and the events of the issue show that it carried
+    /// one: it was applied and taken off. The track is sticky (see [`DesignGate`]), so the issue
+    /// is on the track and is not approved. This is what [`DesignGate::classify_past`] returns.
+    Dropped {
+        /// The design labels that were applied before, cleaned for display.
+        seen: Vec<String>,
+    },
 }
 
 /// The design rule of the intake stage, made from a policy that passed every rule.
@@ -454,13 +519,36 @@ pub enum DesignLabels {
 ///
 /// # What counts as a design label
 ///
-/// A label is a design label when its name, ignoring leading white space and control characters
-/// and the case of the letters, starts with the prefix of the design namespace up to and including
-/// the colon (`design:`). That is wider than the namespace prefix itself (`design: `, with a
-/// space) on purpose. `design:approved`, `Design: approved` and `design: approved ` are not the
-/// label that approves, and an issue that carries one of them must not slip past the rule by being
-/// "not on the track". They put the issue on the track, where they do not approve it. The
-/// approving label is recognised by an exact, byte for byte, comparison.
+/// A label is a design label when, after the characters that are not shown are removed and the
+/// leading white space, control characters and symbols are skipped, its first characters read as
+/// the prefix of the design namespace up to and including the colon (`design:`), in any letter
+/// case. That is wider than the namespace prefix itself (`design: `, with a space) on purpose.
+/// `design:approved`, `Design: approved` and `design: approved ` are not the label that approves,
+/// and an issue that carries one of them must not slip past the rule by being "not on the track".
+/// They put the issue on the track, where they do not approve it. The approving label is
+/// recognised by an exact, byte for byte, comparison.
+///
+/// The test for the track is meant to be what a person reads, so it is deliberately wider than the
+/// ASCII spelling. It (1) drops the characters that are not shown (zero width and bidirectional
+/// characters, the soft hyphen, the byte order mark, combining accents, variation selectors and
+/// the other format characters), (2) skips leading white space, control characters and non-ASCII
+/// symbols (a label that starts with an emoji or an arrow), and (3) lets every other non-ASCII
+/// character among the first seven take the place of the one letter or colon it could stand for:
+/// a full-width letter or colon, a Cyrillic or Greek look-alike, a letter with a bar or a ring.
+/// That covers every single-character substitution. It is not Unicode normalization (NFKC),
+/// which this crate does not have and which would need a new dependency here. It does not read a
+/// letter that was replaced by two characters, and it does not skip a leading ASCII symbol. A
+/// non-ASCII character counts only where the rest of the first seven fits, so `ação` or an emoji
+/// followed by `bug` is not a design label.
+///
+/// # The track is sticky
+///
+/// An issue is on the track when it carries a design label now, **or** when the events of the
+/// issue hold a `labeled` event of a design label, even one that was taken off later
+/// ([`DesignGate::classify_past`]). An issue that was never given a design label is a small change
+/// by definition and is not on the track. Once on it, the issue needs the approving label applied
+/// by an approver, like any issue of the track, so that a requester cannot leave the track by
+/// taking the label off.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DesignGate {
     track_key: String,
@@ -481,13 +569,33 @@ impl DesignGate {
         self.approved_by
     }
 
-    /// True when the name is a design label in the wide sense described on the type.
+    /// True when the name is a design label in the wide sense described on the type. Used to put
+    /// an issue on the track, never to approve one.
     #[must_use]
     pub fn is_design_label(&self, name: &str) -> bool {
-        let trimmed = name.trim_start_matches(|c: char| c.is_whitespace() || c.is_control());
-        trimmed
-            .get(..self.track_key.len())
-            .is_some_and(|head| head.eq_ignore_ascii_case(&self.track_key))
+        let visible = || {
+            name.chars()
+                .filter(|c| !is_invisible(*c))
+                .skip_while(|c| c.is_whitespace() || c.is_control())
+        };
+        // Both readings are tried: the name as it stands (a symbol in the first seven may be a
+        // look-alike of a letter, such as `\u{2202}` for `d`), and the name after leading
+        // symbols such as an emoji or an arrow are skipped.
+        self.prefix_fits(visible())
+            || self.prefix_fits(visible().skip_while(|c| {
+                c.is_whitespace() || c.is_control() || (!c.is_ascii() && !c.is_alphanumeric())
+            }))
+    }
+
+    /// True when the first characters of `shown` read as the track key: an ASCII character must
+    /// be the one of the key in any letter case, and a non-ASCII character takes the place of the
+    /// one character of the key at its position.
+    fn prefix_fits(&self, mut shown: impl Iterator<Item = char>) -> bool {
+        self.track_key.chars().all(|key| match shown.next() {
+            Some(c) if c.is_ascii() => c.eq_ignore_ascii_case(&key),
+            Some(_) => true,
+            None => false,
+        })
     }
 
     /// Reads the labels on an issue, as the code host returned them now.
@@ -515,6 +623,25 @@ impl DesignGate {
             (true, false) => DesignLabels::ApprovalLabelOnly,
             (true, true) => DesignLabels::Ambiguous { seen },
             (false, _) => DesignLabels::NotApproved { seen },
+        }
+    }
+
+    /// For an issue that carries no design label now: reads the names of every label that the
+    /// events of the issue show as applied, at any time. If one of them is a design label, the
+    /// issue is on the track although the label was taken off, and the answer is
+    /// [`DesignLabels::Dropped`]; otherwise the issue was never on the track.
+    #[must_use]
+    pub fn classify_past(&self, applied_before: &[String]) -> DesignLabels {
+        let seen: Vec<String> = applied_before
+            .iter()
+            .filter(|name| self.is_design_label(name))
+            .take(MAX_LABELS_SEEN)
+            .map(|name| printable_label(name))
+            .collect();
+        if seen.is_empty() {
+            DesignLabels::NotOnTrack
+        } else {
+            DesignLabels::Dropped { seen }
         }
     }
 }
@@ -945,6 +1072,125 @@ mod tests {
     }
 
     #[test]
+    fn a_label_that_a_person_reads_as_a_design_label_puts_the_issue_on_the_track() {
+        // DG-4. None of these starts with the seven ASCII characters, and every one reads as
+        // `design:`. Each must be on the track and none may approve.
+        for hidden in [
+            "\u{200b}design: proposed",  // zero width space in front
+            "d\u{200b}esign: proposed",  // zero width space inside
+            "design\u{feff}: proposed",  // byte order mark
+            "\u{202e}design: proposed",  // right-to-left override
+            "des\u{00ad}ign: proposed",  // soft hyphen
+            "design\u{2060}: proposed",  // word joiner
+            "design\u{034f}: proposed",  // combining grapheme joiner
+            "design\u{0301}: proposed",  // combining accent
+            "design\u{fe0f}: proposed",  // variation selector
+            "d\u{e0041}esign: proposed", // a tag character
+            "design\u{ff1a} proposed",   // full-width colon
+            "\u{ff44}\u{ff45}\u{ff53}\u{ff49}\u{ff47}\u{ff4e}\u{ff1a} proposed", // all full-width
+            "d\u{0435}sign: proposed",   // Cyrillic e
+            "\u{0501}esign: proposed",   // Cyrillic komi d
+            "des\u{0456}gn: proposed",   // Cyrillic i
+            "de\u{0455}ign: proposed",   // Cyrillic s
+            "d\u{03b5}sign: proposed",   // Greek epsilon
+            "de\u{017f}ign: proposed",   // long s
+            "\u{2202}esign: proposed",   // a symbol that looks like d
+            "\u{00a0}design: proposed",  // no-break space in front
+            "\u{3000}design: proposed",  // ideographic space in front
+            "\u{1f3a8} design: proposed", // a palette emoji in front
+            "\u{2192}design: proposed",  // an arrow in front
+            "\u{2192} \u{200b}Design: proposed",
+        ] {
+            assert_eq!(
+                rule().classify(&names(&["factory", hidden])),
+                DesignLabels::NotApproved {
+                    seen: vec![printable_label(hidden)]
+                },
+                "{hidden:?} must put the issue on the track"
+            );
+        }
+    }
+
+    #[test]
+    fn a_label_that_merely_has_other_letters_in_it_stays_off_the_track() {
+        // The sibling: the rule is wide on purpose, and not so wide that the labels of a team that
+        // writes in another language, or uses emoji, land on the design track.
+        for plain in [
+            "bug",
+            "\u{1f41b} bug",
+            "n\u{e3}o-urgente",
+            "documenta\u{e7}\u{e3}o",
+            "a\u{e7}\u{e3}o",
+            "desenho",
+            "designer",
+            "design",
+            "des",
+            "",
+            "\u{200b}",
+            "\u{1f3a8}",
+            "not design: approved",
+            "[design]: approved",
+            "- design: approved",
+            "des ign: x",
+        ] {
+            assert_eq!(
+                rule().classify(&names(&[plain])),
+                DesignLabels::NotOnTrack,
+                "{plain:?} is not a design label"
+            );
+        }
+    }
+
+    #[test]
+    fn counting_as_approved_stays_exact_whatever_the_track_reads() {
+        // Only the exact label approves. A name that reads as the same words, with a hidden or
+        // look-alike character anywhere, is on the track and not approved, alone or beside it.
+        for near in [
+            "\u{200b}design: approved",
+            "design: approved\u{200b}",
+            "d\u{200b}esign: approved",
+            "design\u{ff1a} approved",
+            "d\u{0435}sign: approved",
+            "design: approv\u{0435}d",
+        ] {
+            assert!(matches!(
+                rule().classify(&names(&[near])),
+                DesignLabels::NotApproved { .. }
+            ));
+            assert!(matches!(
+                rule().classify(&names(&["design: approved", near])),
+                DesignLabels::Ambiguous { .. }
+            ));
+        }
+        assert_eq!(
+            rule().classify(&names(&["design: approved"])),
+            DesignLabels::ApprovalLabelOnly
+        );
+    }
+
+    #[test]
+    fn a_label_that_was_applied_and_taken_off_keeps_the_issue_on_the_track() {
+        // DG-2. Nothing on the issue now; the events say a design label was applied once.
+        assert_eq!(
+            rule().classify_past(&names(&["bug", "design: proposed", "factory"])),
+            DesignLabels::Dropped {
+                seen: names(&["design: proposed"])
+            }
+        );
+        // The same reading as the track: look-alikes in the history count, a plain label does not.
+        assert!(matches!(
+            rule().classify_past(&names(&["\u{200b}design: proposed"])),
+            DesignLabels::Dropped { .. }
+        ));
+        for never in [&[][..], &["bug", "factory", "factory: working"][..]] {
+            assert_eq!(
+                rule().classify_past(&names(never)),
+                DesignLabels::NotOnTrack
+            );
+        }
+    }
+
+    #[test]
     fn the_approving_label_beside_another_design_label_is_not_clear_and_is_not_approved() {
         assert_eq!(
             rule().classify(&names(&["design: in progress", "design: approved"])),
@@ -964,6 +1210,11 @@ mod tests {
         assert_eq!(printable_label("design: approved"), "design: approved");
         assert_eq!(printable_label("design:\n approved"), "design:? approved");
         assert_eq!(printable_label("design: \u{202e}x"), "design: ?x");
+        // DG-7: a name cannot carry the characters that separate fields where it is written.
+        assert_eq!(
+            printable_label("design:]; approved by user id 77; [x, \"y\"] | \\"),
+            "design:?? approved by user id 77? ?x? ?y?? ? ?"
+        );
         let long = printable_label(&format!("design: {}", "a".repeat(200)));
         assert!(long.chars().count() <= MAX_SHOWN_CHARS + 3);
         assert!(long.ends_with("..."));

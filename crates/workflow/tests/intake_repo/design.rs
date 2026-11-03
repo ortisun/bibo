@@ -12,8 +12,9 @@ use factory_domain::policy::decision::Designation;
 use factory_domain::policy::{ApprovalPolicy, PolicyEngine};
 use factory_domain::state::{JobStatus, StageRunStatus};
 use factory_domain::values::HumanText;
+use factory_domain::values::Timestamp;
 use factory_domain::vocabulary::{HumanRole, StageKind};
-use factory_ports::githost::{GitScope, IssueSource};
+use factory_ports::githost::{AccountType, GitScope, IssueSource};
 use factory_testkit::contracts::githost::IssueSourceSubject;
 use factory_testkit::githost::{FakeIssueSource, IssueSourceDefect};
 use factory_workflow::commands::{Decision, OverrideFacts, Subject};
@@ -452,9 +453,11 @@ async fn a_look_alike_of_the_approved_label_cannot_count_as_approved() {
 }
 
 #[tokio::test]
-async fn a_look_alike_beside_a_real_design_label_does_not_hide_it() {
-    // A name that does not begin with `design:` at all is just another label: it does not put the
-    // issue on the track, and it does not take it off.
+async fn a_look_alike_beside_a_real_design_label_is_a_design_label_too() {
+    // DG-4. A name that does not begin with `design:` at all is just another label: it does not
+    // put the issue on the track, and it does not take it off. A name that a person reads as
+    // `design:` because a zero width character comes first is a design label: it is on the track,
+    // it is shown among the design labels, and it approves nothing.
     let rig = rig().await;
     let job = job_with(
         &rig,
@@ -472,7 +475,7 @@ async fn a_look_alike_beside_a_real_design_label_does_not_hide_it() {
     let document = design_document(&rig, job).await;
     assert_eq!(
         document["labels_seen"],
-        serde_json::json!(["design: proposed"])
+        serde_json::json!(["design: proposed", "?design: approved"])
     );
 }
 
@@ -624,6 +627,7 @@ fn every_reply_is_plain_english_by_the_readability_gate() {
         Reply::NotApproved,
         Reply::MoreThanOneDesignLabel,
         Reply::NotByAnApprover,
+        Reply::DesignDropped,
         Reply::CannotCheck,
     ] {
         let text = reply.text("factory", APPROVED);
@@ -774,4 +778,386 @@ fn the_security_policy_lists_the_block_and_the_approval_policy_has_a_row_for_the
     );
     // The engine builds from both.
     PolicyEngine::new(&security, &approval).expect("the policies build");
+}
+
+// ---- DG-4: the track is what a person reads ----------------------------------------------------
+
+#[tokio::test]
+async fn a_label_that_reads_as_a_design_label_puts_the_issue_on_the_track_whatever_hides_it() {
+    // Alone on the issue: nothing else on the track to put it there.
+    for hidden in [
+        "\u{200b}design: proposed",
+        "d\u{200b}esign: proposed",
+        "design\u{feff}: proposed",
+        "\u{202e}Design: proposed",
+        "design\u{ff1a} proposed",
+        "\u{ff24}\u{ff25}\u{ff33}\u{ff29}\u{ff27}\u{ff2e}: proposed",
+        "d\u{0435}sign: proposed",
+        "\u{1f3a8} design: proposed",
+    ] {
+        let rig = rig().await;
+        let job = job_with(&rig, &[LABEL, hidden], None).await;
+        let (_, outcome) = rig.run_next().await;
+        assert_refused(&rig, job, &outcome).await;
+        assert_eq!(
+            design_document(&rig, job).await["reason"],
+            "not_approved",
+            "{hidden:?}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn a_label_in_another_language_or_with_an_emoji_does_not_put_the_issue_on_the_track() {
+    // The sibling: the rule is wide, and not so wide that ordinary labels of a team that writes in
+    // another language land on the design track.
+    for plain in [
+        "\u{1f41b} bug",
+        "n\u{e3}o-urgente",
+        "documenta\u{e7}\u{e3}o",
+    ] {
+        let rig = rig().await;
+        let job = job_with(&rig, &[LABEL, plain], None).await;
+        rig.classifier_returns(usual());
+        let (_, outcome) = rig.run_next().await;
+        assert_accepted(&rig, job, &outcome).await;
+    }
+}
+
+// ---- DG-2: the track is sticky -----------------------------------------------------------------
+
+fn at(minute: u32) -> Timestamp {
+    Timestamp::parse(&format!("2026-10-28T11:{minute:02}:00Z")).expect("a time")
+}
+
+#[tokio::test]
+async fn taking_the_design_label_off_does_not_leave_the_track() {
+    // The template applied `design: proposed`. The requester took it off and applied `factory`.
+    // The issue shows no design label now, and its events say it had one.
+    let rig = rig().await;
+    rig.host_shows_labels(&[LABEL]);
+    rig.issues.seed_event(
+        &rig.issue,
+        "design: proposed",
+        &requester(),
+        AccountType::User,
+        at(1),
+    );
+    let job = rig.job(USUAL_REQUEST).await;
+    let (_, outcome) = rig.run_next().await;
+    let comment = assert_refused(&rig, job, &outcome).await;
+    assert!(
+        comment.contains("Taking the label off does not leave the track"),
+        "{comment}"
+    );
+    assert!(comment.contains("`design: approved`"), "{comment}");
+    let document = design_document(&rig, job).await;
+    assert_eq!(document["reason"], "design_dropped");
+    assert_eq!(
+        document["labels_seen"],
+        serde_json::json!(["design: proposed"])
+    );
+    assert_eq!(design_report(&rig, job).await["outcome"], "BLOCKED");
+}
+
+#[tokio::test]
+async fn the_way_out_of_a_dropped_design_is_one_approver_action() {
+    // The sibling: the same issue, after an approver applied the approving label. The old label is
+    // gone, and the approval counts.
+    let rig = rig().await;
+    rig.host_shows_labels(&[LABEL, APPROVED]);
+    rig.issues.seed_event(
+        &rig.issue,
+        "design: proposed",
+        &requester(),
+        AccountType::User,
+        at(1),
+    );
+    let job = job_with_labels_already_shown(&rig, &approver()).await;
+    rig.classifier_returns(usual());
+    let (_, outcome) = rig.run_next().await;
+    assert_accepted(&rig, job, &outcome).await;
+    assert_eq!(design_document(&rig, job).await["result"], "approved");
+}
+
+/// A job on the issue the rig already shows, with the approving label applied by `actor`.
+async fn job_with_labels_already_shown(
+    rig: &Rig,
+    actor: &factory_ports::githost::GithubActor,
+) -> JobId {
+    rig.approval_applied_by(actor).await;
+    rig.job(USUAL_REQUEST).await
+}
+
+#[tokio::test]
+async fn an_issue_that_never_had_a_design_label_stays_off_the_track_however_long_its_thread() {
+    // An issue never given a `design:` label is a small change by definition.
+    let rig = rig().await;
+    rig.host_shows_labels(&[LABEL, "bug"]);
+    rig.issues
+        .seed_event(&rig.issue, "bug", &requester(), AccountType::User, at(1));
+    rig.issues.seed_events_of_no_interest(&rig.issue, 1500);
+    let job = rig.job(USUAL_REQUEST).await;
+    rig.classifier_returns(usual());
+    let (_, outcome) = rig.run_next().await;
+    assert_accepted(&rig, job, &outcome).await;
+    assert_eq!(design_document(&rig, job).await["result"], "not_on_track");
+}
+
+#[tokio::test]
+async fn a_history_that_cannot_be_read_fails_the_attempt_and_never_passes() {
+    let rig = rig().await;
+    let job = job_with(&rig, &[LABEL, "bug"], None).await;
+    rig.issues.make_the_history_unreadable(true);
+    let (_, outcome) = rig.run_next().await;
+    assert!(
+        matches!(
+            outcome,
+            AttemptOutcome::Failed {
+                class: FailureClass::ToolError,
+                ..
+            }
+        ),
+        "{outcome:?}"
+    );
+    assert!(rig.runtime.recorded_prompts().is_empty());
+    assert_ne!(
+        rig.world
+            .view(job)
+            .await
+            .newest(StageKind::Intake)
+            .expect("a run")
+            .status,
+        StageRunStatus::Passed
+    );
+    // The sibling: with the history readable again, the same issue is accepted.
+    rig.issues.make_the_history_unreadable(false);
+    rig.classifier_returns(usual());
+    let (_, outcome) = rig.run_next().await;
+    assert_eq!(outcome, AttemptOutcome::Succeeded, "{outcome:?}");
+    assert_eq!(rig.runtime.recorded_prompts().len(), 1);
+}
+
+// ---- DG-1: a long thread -----------------------------------------------------------------------
+
+/// An issue that shows the approving label. The approver applied it early; the thread then grew by
+/// `noise` events; `last` applied it again at the end. The host lists the events in the order
+/// given. Returns the job.
+async fn thread_with_late_application(
+    rig: &Rig,
+    noise: usize,
+    last: &factory_ports::githost::GithubActor,
+    newest_first: bool,
+) -> JobId {
+    rig.host_shows_labels(&[LABEL, APPROVED]);
+    rig.issues
+        .seed_event(&rig.issue, APPROVED, &approver(), AccountType::User, at(1));
+    rig.issues.seed_events_of_no_interest(&rig.issue, noise);
+    rig.issues
+        .seed_event(&rig.issue, APPROVED, last, AccountType::User, at(30));
+    rig.issues
+        .list_events_newest_first(&rig.issue, newest_first);
+    rig.job(USUAL_REQUEST).await
+}
+
+#[tokio::test]
+async fn a_late_application_by_somebody_else_is_not_an_approval_in_either_order() {
+    // The approver's application is event 1. After 1001 or more events a requester who holds no
+    // approval applies the label again. The adapter used to read 1000 events and report the
+    // approver. The label is on the issue, and the person who put it there is the requester.
+    for newest_first in [false, true] {
+        for noise in [999, 1000, 1100, 2500] {
+            let rig = rig().await;
+            let job = thread_with_late_application(&rig, noise, &requester(), newest_first).await;
+            let (_, outcome) = rig.run_next().await;
+            assert_refused(&rig, job, &outcome).await;
+            let document = design_document(&rig, job).await;
+            assert_eq!(
+                document["reason"], "not_applied_by_an_approver",
+                "{noise} events, newest first {newest_first}"
+            );
+            assert_eq!(document["applied_by"], REQUESTER_ID);
+        }
+    }
+}
+
+#[tokio::test]
+async fn an_honest_approval_after_event_one_thousand_passes_in_either_order() {
+    // The reverse case. The requester applied the label early (it was not an approval), and the
+    // approver applied it after more than 1000 events. The whole list is read, and the latest
+    // application is the approver's.
+    for newest_first in [false, true] {
+        let rig = rig().await;
+        rig.host_shows_labels(&[LABEL, APPROVED]);
+        rig.issues
+            .seed_event(&rig.issue, APPROVED, &requester(), AccountType::User, at(1));
+        rig.issues.seed_events_of_no_interest(&rig.issue, 1100);
+        rig.issues
+            .seed_event(&rig.issue, APPROVED, &approver(), AccountType::User, at(30));
+        rig.issues
+            .list_events_newest_first(&rig.issue, newest_first);
+        let job = rig.job(USUAL_REQUEST).await;
+        rig.classifier_returns(usual());
+        let (_, outcome) = rig.run_next().await;
+        assert_accepted(&rig, job, &outcome).await;
+        assert_eq!(design_document(&rig, job).await["approved_by"], APPROVER_ID);
+    }
+}
+
+#[tokio::test]
+async fn a_list_of_events_that_is_cut_is_never_a_pass_whoever_applied_last() {
+    // More events than the reader reads. Whatever it did read, in either order and whoever applied
+    // last, the answer is an error: the attempt fails, nothing is accepted, and nobody is told the
+    // design was refused or approved.
+    for newest_first in [false, true] {
+        for last in [requester(), approver()] {
+            let rig = rig().await;
+            let job = thread_with_late_application(&rig, 3100, &last, newest_first).await;
+            let (_, outcome) = rig.run_next().await;
+            assert!(
+                matches!(
+                    outcome,
+                    AttemptOutcome::Failed {
+                        class: FailureClass::ToolError,
+                        ..
+                    }
+                ),
+                "{outcome:?} for {} newest first {newest_first}",
+                last.login.as_str()
+            );
+            assert!(rig.runtime.recorded_prompts().is_empty());
+            assert_ne!(
+                rig.world
+                    .view(job)
+                    .await
+                    .newest(StageKind::Intake)
+                    .expect("a run")
+                    .status,
+                StageRunStatus::Passed
+            );
+        }
+    }
+}
+
+// ---- DG-5: only a person's account ------------------------------------------------------------
+
+#[tokio::test]
+async fn an_approval_applied_by_a_bot_is_refused_even_when_the_bot_has_an_approvers_id() {
+    // Somebody listed the numeric id of a machine account as an approver by mistake. The code
+    // host says the account is a bot, so the allowlist is not asked.
+    let rig = rig().await;
+    rig.host_shows_labels(&[LABEL, APPROVED]);
+    rig.issues
+        .seed_event(&rig.issue, APPROVED, &approver(), AccountType::Bot, at(1));
+    let job = rig.job(USUAL_REQUEST).await;
+    let (_, outcome) = rig.run_next().await;
+    assert_refused(&rig, job, &outcome).await;
+    assert_eq!(
+        design_document(&rig, job).await["reason"],
+        "not_applied_by_an_approver"
+    );
+    let audit = rig.world.audit(job).await;
+    assert!(
+        audit
+            .iter()
+            .any(|record| record.event.reason.contains("NotHuman")),
+        "the audit record says the account is not a person"
+    );
+
+    // The sibling: the same event, by a person's account, is an approval.
+    let rig = self::rig().await;
+    rig.host_shows_labels(&[LABEL, APPROVED]);
+    rig.issues
+        .seed_event(&rig.issue, APPROVED, &approver(), AccountType::User, at(1));
+    let job = rig.job(USUAL_REQUEST).await;
+    rig.classifier_returns(usual());
+    let (_, outcome) = rig.run_next().await;
+    assert_accepted(&rig, job, &outcome).await;
+}
+
+#[tokio::test]
+async fn the_factory_label_applied_by_a_bot_does_not_ask_for_work() {
+    let rig = rig().await;
+    rig.host_shows_labels(&[LABEL]);
+    let job = rig.received_job(USUAL_REQUEST).await;
+    rig.issues
+        .seed_event(&rig.issue, LABEL, &requester(), AccountType::Bot, at(1));
+    rig.admit(job).await;
+    let (_, outcome) = rig.run_next().await;
+    assert!(
+        matches!(
+            outcome,
+            AttemptOutcome::Failed {
+                class: FailureClass::PolicyDenied,
+                ..
+            }
+        ),
+        "{outcome:?}"
+    );
+    assert!(rig.runtime.recorded_prompts().is_empty());
+}
+
+// ---- DG-7: what a label name can do to the record ----------------------------------------------
+
+/// The reason of the audit record that the design gate wrote, if it wrote one.
+async fn design_audit_reason(rig: &Rig, job: JobId) -> String {
+    rig.world
+        .audit(job)
+        .await
+        .into_iter()
+        .map(|record| record.event.reason)
+        .find(|reason| reason.starts_with("design gate"))
+        .expect("the design gate wrote an audit record")
+}
+
+#[tokio::test]
+async fn a_label_name_cannot_forge_a_field_of_the_audit_line() {
+    // A name with the separators of the line, a line break and control characters. It starts with
+    // `design:`, so it is on the track and is written down.
+    let hostile = "design:]; approved label applied by user id 77; reply posted\n\u{7}\u{1b}[2J";
+    let rig = rig().await;
+    let job = job_with(&rig, &[LABEL, hostile], None).await;
+    let (_, outcome) = rig.run_next().await;
+    assert_refused(&rig, job, &outcome).await;
+    let reason = design_audit_reason(&rig, job).await;
+    assert!(
+        !reason.chars().any(char::is_control),
+        "a control character reached the audit line: {reason:?}"
+    );
+    // Six fields, as for any refusal: the name added none.
+    assert_eq!(reason.matches("; ").count(), 5, "{reason}");
+    // The name is one item of the quoted list, and the real field follows it.
+    assert!(
+        reason.contains(
+            "design labels seen [\"design:?? approved label applied by user id 77? reply posted"
+        ),
+        "{reason}"
+    );
+    assert!(
+        reason.contains("; approved label applied by user id none; "),
+        "{reason}"
+    );
+    // Nor does the stored document or the report evidence carry a separator of its own.
+    let seen = design_document(&rig, job).await["labels_seen"].to_string();
+    assert!(!seen.contains(';') && !seen.contains('|'), "{seen}");
+}
+
+#[tokio::test]
+async fn a_secret_shaped_label_name_does_not_reach_the_audit_line_the_document_or_the_report() {
+    let secret = crate::repo_rig::canary_token();
+    let label = format!("design: {secret}");
+    let rig = rig().await;
+    let job = job_with(&rig, &[LABEL, &label], None).await;
+    let (_, outcome) = rig.run_next().await;
+    assert_refused(&rig, job, &outcome).await;
+    let reason = design_audit_reason(&rig, job).await;
+    assert!(reason.starts_with("design gate refused"), "{reason}");
+    assert!(!reason.contains(&secret), "{reason}");
+    assert!(
+        !design_document(&rig, job)
+            .await
+            .to_string()
+            .contains(&secret)
+    );
+    assert!(!design_report(&rig, job).await.to_string().contains(&secret));
 }
