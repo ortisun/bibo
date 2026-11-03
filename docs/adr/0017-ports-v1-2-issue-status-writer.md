@@ -181,3 +181,11 @@ Written on 2026-11-02, after the independent security review in [the review](../
 - **STS-7.** A policy that cannot be used turns the step off and degraded. The worker starts.
 - **STS-8.** The repository is compared without regard to case in one function, `RepoRef::same_repository`, used by the step, the adapter, the fake and the API.
 - **Not changed.** STS-9 and STS-10 are notes. The fake still stands in for GitHub; everything in "Not verified" below is still not verified.
+
+## Revision note (2026-11-03, LB-02, LB-03, LB-04 and STS-2)
+
+- **LB-02.** A job that is blocked by the environment at the sandbox, after the intake stage has checked the person and the design, gets one closed-template comment **from the intake stage**, not from the status step. The rule of STS-1 is kept: the status step writes only after the intake stage run has passed, so the label `factory: blocked` and the status comment do not appear for this case until the run passes. Letting the step accept a blocked run would need a fact that only the engine can write; the audit record of the gate can be written by the holder of the API database login.
+- **LB-03.** The status token is unchanged. The intake stage's own token asks for `issues: read` and `metadata: read` only, so the test that compares the token sets reads `issues: read` for intake.
+- **LB-04.** The sweep of tokens revokes the tokens of a job that has been `BLOCKED` for more than `revoke_when_blocked_after_s` (one hour) without ending the job. The status step's own token is a session token ended after each round and is not affected.
+- **STS-2.** The pause on a low `x-ratelimit-remaining` is still not built (see the review, which gives the reason).
+- **Not verified.** Everything above ran against the fake GitHub server only.

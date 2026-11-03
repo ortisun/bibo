@@ -585,30 +585,81 @@ async fn design_reasons(rig: &Rig, job: JobId) -> Vec<String> {
 }
 
 #[tokio::test]
-async fn a_comment_that_cannot_be_posted_now_does_not_turn_the_block_into_a_failure() {
-    // DG-9 (d). The host cannot take a comment. The refusal is still a block with its record, and
-    // the stage does not fail three times and leave a failed job with no design record.
+async fn a_comment_that_cannot_be_posted_now_is_tried_again_and_every_attempt_leaves_the_record() {
+    // DG-9 (d). The host cannot take a comment. The attempt fails as a failed read does and the
+    // engine runs it again, as before, but the record of the refusal is written first, so a failed
+    // attempt is no longer an attempt with no design record. The host comes back: one answer.
     let rig = rig().await;
     let job = job_with(&rig, &[LABEL, "design: proposed"], None).await;
     rig.replies.set(ReplyMode::HostDown);
     let (_, outcome) = rig.run_next().await;
+    assert!(
+        matches!(
+            outcome,
+            AttemptOutcome::Failed {
+                class: FailureClass::ToolError,
+                ..
+            }
+        ),
+        "{outcome:?}"
+    );
+    // Nothing was accepted and the run is not blocked yet; the comment was asked for once.
+    let status = rig
+        .world
+        .view(job)
+        .await
+        .newest(StageKind::Intake)
+        .expect("a run")
+        .status;
+    assert_ne!(status, StageRunStatus::Passed);
+    assert_eq!(rig.replies.asked(), 1);
+    assert!(rig.replies.posted().is_empty());
+    // The failed attempt left the design record: the decision first, then what became of the reply.
+    let reasons = design_reasons(&rig, job).await;
+    assert_eq!(reasons.len(), 2, "{reasons:?}");
+    assert!(reasons[0].contains("DESIGN_NOT_APPROVED"), "{reasons:?}");
+    assert!(reasons[0].contains("reply to_follow"), "{reasons:?}");
+    assert!(reasons[1].ends_with(": later"), "{reasons:?}");
+    // The host comes back, and the next attempt answers once and blocks.
+    rig.replies.set(ReplyMode::Works);
+    let (_, outcome) = rig.run_next().await;
     assert_eq!(outcome, AttemptOutcome::Succeeded, "{outcome:?}");
+    assert_eq!(rig.replies.posted().len(), 1);
+    assert_eq!(rig.world.view(job).await.status, JobStatus::Blocked);
+}
+
+#[tokio::test]
+async fn a_comment_endpoint_that_stays_down_does_not_turn_the_block_into_a_failed_job() {
+    // DG-9 (d). The old behaviour: three failed attempts, a FAILED job, and no design record. Now
+    // the attempts that remain are used, and the last one gives the comment up and blocks, with
+    // the record, as the refusal always did.
+    let rig = rig().await;
+    let job = job_with(&rig, &[LABEL, "design: proposed"], None).await;
+    rig.replies.set(ReplyMode::HostDown);
+    let mut failed = 0;
+    let outcome = loop {
+        let (_, outcome) = rig.run_next().await;
+        if !matches!(outcome, AttemptOutcome::Failed { .. }) {
+            break outcome;
+        }
+        failed += 1;
+        assert!(failed < 10, "the attempts never ended");
+    };
+    assert_eq!(outcome, AttemptOutcome::Succeeded, "{outcome:?}");
+    assert!(failed >= 1, "the first attempts were retries");
     let view = rig.world.view(job).await;
     assert_eq!(view.status, JobStatus::Blocked);
     assert_eq!(
         view.newest(StageKind::Intake).expect("a run").status,
         StageRunStatus::Blocked
     );
-    // One try, no retry of the stage, nothing posted.
-    assert_eq!(rig.replies.asked(), 1);
     assert!(rig.replies.posted().is_empty());
-    // The design record exists, and says that the reply is for later and was not delivered.
     assert_eq!(design_document(&rig, job).await["reason"], "not_approved");
     assert_eq!(design_document(&rig, job).await["reply"], "later");
+    // Every attempt, the failed ones and the last, wrote its decision and its reply record.
     let reasons = design_reasons(&rig, job).await;
-    assert_eq!(reasons.len(), 2, "{reasons:?}");
-    assert!(reasons[0].contains("DESIGN_NOT_APPROVED"), "{reasons:?}");
-    assert!(reasons[1].ends_with(": later"), "{reasons:?}");
+    assert_eq!(reasons.len(), 2 * (failed + 1), "{reasons:?}");
+    assert!(reasons.iter().all(|r| !r.is_empty()));
 }
 
 #[tokio::test]
@@ -707,6 +758,157 @@ async fn a_reply_about_a_policy_that_cannot_be_read_is_asked_with_the_least_cap(
     );
 }
 
+// ---- LB-02: the environment is missing after the gate has passed ----------------------------------
+
+async fn rig_without_a_sandbox() -> Rig {
+    let rig = Rig::build(Options {
+        sandbox_missing: true,
+        ..Options::default()
+    })
+    .await;
+    equip(&rig);
+    rig
+}
+
+#[tokio::test]
+async fn a_job_that_passed_the_gate_and_is_blocked_by_the_environment_leaves_one_fixed_comment() {
+    let rig = rig_without_a_sandbox().await;
+    let job = job_with(&rig, &[LABEL], None).await;
+    let (_, outcome) = rig.run_next().await;
+    // The stage is blocked by the environment, as before.
+    assert!(
+        matches!(outcome, AttemptOutcome::Failed { .. }),
+        "{outcome:?}"
+    );
+    assert_eq!(rig.world.view(job).await.status, JobStatus::Blocked);
+    // And the person who asked is told, once, with a closed template: the text is the template and
+    // nothing else, so nothing of the error and nothing of the issue is in it.
+    let comments = rig.replies.posted();
+    assert_eq!(comments.len(), 1, "{comments:?}");
+    assert_eq!(comments[0].text, Reply::EnvironmentBlocked.text(LABEL, ""));
+    assert!(
+        comments[0].key.starts_with("environment-"),
+        "{}",
+        comments[0].key
+    );
+    assert!(
+        comments[0].text.contains("the factory's side"),
+        "{}",
+        comments[0].text
+    );
+    // It is asked with the cap of the policy, and the record says what became of it.
+    let caps = rig.replies.caps();
+    assert_eq!(caps.len(), 1);
+    assert_eq!(caps[0].max(), 5);
+    let audit: Vec<String> = rig
+        .world
+        .audit(job)
+        .await
+        .into_iter()
+        .map(|record| record.event.reason)
+        .collect();
+    assert!(
+        audit.iter().any(|reason| reason.starts_with(
+            "intake environment block: reply for issue example-org/fixture#12: posted"
+        )),
+        "{audit:?}"
+    );
+    // The design gate passed before it: its record is there, and it is not a refusal.
+    assert!(
+        audit
+            .iter()
+            .any(|reason| reason.contains("carries no design label")),
+        "{audit:?}"
+    );
+}
+
+#[tokio::test]
+async fn nothing_is_said_about_the_environment_before_the_checks_of_the_stage_have_passed() {
+    // The sibling: the same missing environment, but the design is not approved. The stage stops at
+    // the gate and never reaches the sandbox, so the only comment is the refusal.
+    let rig = rig_without_a_sandbox().await;
+    let _ = job_with(&rig, &[LABEL, "design: proposed"], None).await;
+    let (_, outcome) = rig.run_next().await;
+    assert_eq!(outcome, AttemptOutcome::Succeeded, "{outcome:?}");
+    let comments = rig.replies.posted();
+    assert_eq!(comments.len(), 1, "{comments:?}");
+    assert!(comments[0].key.starts_with("design-gate-"));
+    assert_ne!(comments[0].text, Reply::EnvironmentBlocked.text(LABEL, ""));
+}
+
+#[tokio::test]
+async fn a_policy_that_cannot_be_read_is_not_told_as_an_accepted_issue_with_a_missing_environment()
+{
+    // The sibling: the rule of the gate is unreadable, which is also an environment block, but the
+    // issue has not passed the gate. The comment is the one that says the factory could not check.
+    let rig = rig_without_a_sandbox().await;
+    rig.design.break_it();
+    let _ = job_with(&rig, &[LABEL], None).await;
+    let _ = rig.run_next().await;
+    let comments = rig.replies.posted();
+    assert_eq!(comments.len(), 1, "{comments:?}");
+    assert!(comments[0].key.starts_with("design-gate-"));
+    assert!(
+        comments[0]
+            .text
+            .contains("could not check whether the design")
+    );
+}
+
+#[tokio::test]
+async fn a_comment_that_cannot_be_posted_does_not_change_the_environment_block() {
+    let rig = rig_without_a_sandbox().await;
+    let job = job_with(&rig, &[LABEL], None).await;
+    rig.replies.set(ReplyMode::HostDown);
+    let (_, outcome) = rig.run_next().await;
+    assert!(
+        matches!(outcome, AttemptOutcome::Failed { .. }),
+        "{outcome:?}"
+    );
+    assert_eq!(rig.world.view(job).await.status, JobStatus::Blocked);
+    assert!(rig.replies.posted().is_empty());
+    assert_eq!(rig.replies.asked(), 1, "asked once, not again");
+}
+
+#[tokio::test]
+async fn a_cap_that_is_reached_leaves_the_environment_block_without_a_comment() {
+    let rig = rig_without_a_sandbox().await;
+    let job = job_with(&rig, &[LABEL], None).await;
+    rig.replies.set(ReplyMode::CapReached);
+    let (_, outcome) = rig.run_next().await;
+    assert!(
+        matches!(outcome, AttemptOutcome::Failed { .. }),
+        "{outcome:?}"
+    );
+    assert_eq!(rig.world.view(job).await.status, JobStatus::Blocked);
+    assert!(rig.replies.posted().is_empty());
+    let audit: Vec<String> = rig
+        .world
+        .audit(job)
+        .await
+        .into_iter()
+        .map(|record| record.event.reason)
+        .collect();
+    assert!(
+        audit
+            .iter()
+            .any(|reason| reason.contains(": capped (at most 5 in 24 hours)")),
+        "{audit:?}"
+    );
+}
+
+#[tokio::test]
+async fn a_working_environment_leaves_no_environment_comment() {
+    // The control: the same issue with a sandbox that can be made reaches the classifier and posts
+    // no comment at all.
+    let rig = rig().await;
+    rig.classifier_returns(usual());
+    let _ = job_with(&rig, &[LABEL], None).await;
+    let (_, outcome) = rig.run_next().await;
+    assert_eq!(outcome, AttemptOutcome::Succeeded, "{outcome:?}");
+    assert!(rig.replies.posted().is_empty());
+}
+
 #[tokio::test]
 async fn a_comment_that_the_host_refuses_does_not_change_the_refusal() {
     let rig = rig().await;
@@ -729,6 +931,7 @@ fn every_reply_is_plain_english_by_the_readability_gate() {
         Reply::NotByAnApprover,
         Reply::DesignDropped,
         Reply::CannotCheck,
+        Reply::EnvironmentBlocked,
     ] {
         let text = reply.text("factory", APPROVED);
         let findings = gate

@@ -531,6 +531,21 @@ impl AgentSandboxSpecs for TestSpecs {
     }
 }
 
+/// A policy and an image catalog that cannot make the sandbox spec: the environment is missing,
+/// which the stage meets only after its own checks have passed (LB-02).
+pub struct NoSpecs;
+
+impl AgentSandboxSpecs for NoSpecs {
+    fn agent_spec(
+        &self,
+        _job: JobId,
+        _attempt: factory_domain::ids::AttemptId,
+        _token: JobTokenRef,
+    ) -> Result<SandboxSpec, SeamError> {
+        Err(SeamError::Unavailable)
+    }
+}
+
 /// One probed runtime, `fake`, that supports structured output.
 pub struct FixedProbes;
 
@@ -595,6 +610,9 @@ pub struct Options {
     /// entry of `gate_integrity.non_overridable_blocks` were missing from the security policy.
     /// The control of the tests that show the entry is what holds the override back.
     pub without_design_block: bool,
+    /// The sandbox cannot be made (no spec: the image or the policy for it is missing), which the
+    /// stage meets after the design gate has passed (LB-02).
+    pub sandbox_missing: bool,
 }
 
 impl Rig {
@@ -664,7 +682,11 @@ impl Rig {
                 policy: policy_engine(),
                 redactor: redactor(),
                 schemas: check.clone(),
-                sandboxes: Arc::new(TestSpecs),
+                sandboxes: if options.sandbox_missing {
+                    Arc::new(NoSpecs)
+                } else {
+                    Arc::new(TestSpecs)
+                },
                 probes: Arc::new(FixedProbes),
             },
         );

@@ -227,3 +227,16 @@ The product owner decided the two findings that the review left to them. The sta
 **Not changed.** DG-9 (the cap on replies, the de-duplication that reads 1000 comments, the token left after a retry and the audit record lost when the comment endpoint is down), REG-2 and REG-6 are still open and wait for the owner. The re-check posts its comment best effort and writes its audit record first, so it does not repeat the DG-9 ordering; the intake reply is unchanged.
 
 **Not verified.** Nothing ran on the real GitHub. The delivery stage's token (`issues: write`, from the delivery permission set) reading an issue and its events is assumed, not observed. The tests use a fake that can be made unreachable. The window between the re-check and the pull request is one push and one request, not zero: an approver who takes the label back inside it is not stopped.
+
+## Revision note (2026-11-03, DG-9 and the environment notice)
+
+The product owner delegated the open decisions on 2026-11-03. DG-9 is built, all four parts. The decisions that were taken, so that the architect can review them:
+
+- **A cap of 5 replies on one issue in 24 hours**, in `policies/issue-workflow.yaml` (`intake_requirements.design_reply_cap_per_issue` and `design_reply_window_hours`), both required. A missing key is a load error, and a zero or a number outside 1..100 and 1..168 is a problem of the policy: the gate then refuses every issue. When the cap is reached the factory posts nothing and writes an audit record. The re-check before the pull request and the environment notice share the cap.
+- **A bounded look instead of 1000 comments.** A new method of the port `ChangeHost`, `post_capped_comment`, reads one page of the thread, only the comments of the window, and counts the App's own comments by a hidden marker of the family. A page that is not the whole window posts nothing. This is an addition to the port, with a default that refuses; the architect should confirm it or ask for a different shape (ADR 0004 says a comment is at least once by key, and this call keeps that).
+- **The record before the reply, and a block that stays a block.** The stage notes the audit record of the decision first. A reply that cannot be posted now still fails the attempt, so the engine tries again and a blip does not lose the answer, but each attempt has written its records, and on the last attempt the comment is given up and the block stands. Before, three failed attempts left a failed job with no design record. Now the job is blocked and the audit log has the decision and what became of the reply. The re-check and the environment notice are best effort and are not retried.
+- **The token of the reply is revoked on every outcome.**
+- **When the rule cannot be read the cap is not known**, and the reply is asked with the closed value of one a day.
+- **An environment notice (LB-02).** A job that passed the authorization and the gate and is then blocked because the sandbox cannot be made gets one closed-template comment from the intake stage. The label `factory: blocked` is not written for it, because the status step writes only after intake has passed (ADR 0017, STS-1).
+
+**Not verified.** Nothing ran on the real GitHub. The `since` parameter and the size of a page of comments are as the fake serves them.

@@ -124,9 +124,14 @@ BREAKS = [
     ),
     # ---- (d) the record, and a block that stays a block ---------------------------------------
     (
-        "DG-9d: a reply for later fails the attempt again, as the old code did",
+        "DG-9d: the last attempt also fails for a comment that cannot be posted, so the block ends as a failed job",
         WORKFLOW_TESTS,
-        [(HANDLER, "            design_status = Some(status);\n        }", "            if status == ReplyStatus::Later {\n                return Err(StageError::Tool);\n            }\n            design_status = Some(status);\n        }")],
+        [(HANDLER, "            if status == ReplyStatus::Later && i64::from(ctx.attempt_number) < attempts {", "            let _ = attempts;\n            if status == ReplyStatus::Later {")],
+    ),
+    (
+        "DG-9d: a comment that cannot be posted is never tried again, so a blip loses the answer",
+        WORKFLOW_TESTS,
+        [(HANDLER, "            if status == ReplyStatus::Later && i64::from(ctx.attempt_number) < attempts {", "            if false && status == ReplyStatus::Later && i64::from(ctx.attempt_number) < attempts {")],
     ),
     (
         "DG-9d: the record of the refusal is not written before the reply",
@@ -136,7 +141,7 @@ BREAKS = [
     (
         "DG-9d: the reply has no record of its own, so a held-back reply leaves no trace",
         WORKFLOW_TESTS,
-        [(HANDLER, "            ctx.note_audit_because(\n                AuditAction::new(AuditKind::AuthorizationDecision, AuditDecision::Denied),\n                design::reply_reason(design::INTAKE_REPLY_LEAD, &issue_text, status, &cap),\n            );\n            design_status = Some(status);", "            design_status = Some(status);")],
+        [(HANDLER, "            ctx.note_audit_because(\n                AuditAction::new(AuditKind::AuthorizationDecision, AuditDecision::Denied),\n                design::reply_reason(design::INTAKE_REPLY_LEAD, &issue_text, status, &cap),\n            );\n            // A comment that cannot be posted now", "            let _ = (&cap, &issue_text);\n            // A comment that cannot be posted now")],
     ),
     (
         "DG-9d: the re-check writes no record of its reply",

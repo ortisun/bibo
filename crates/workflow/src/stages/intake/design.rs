@@ -319,6 +319,10 @@ pub enum Reply {
     /// Work had started, and the factory stopped before it opened the pull request, because it
     /// could not check the design again: its own policy cannot be used (DG-8).
     CannotCheckAgain,
+    /// The issue passed the checks of the stage, and the factory then found that the place where
+    /// it runs its tools is not available: the image, the container service or the policy for
+    /// them (LB-02). A closed template: it names no error, no image and no path.
+    EnvironmentBlocked,
 }
 
 impl Reply {
@@ -377,6 +381,13 @@ impl Reply {
                  To go on, make sure `{approved}` is the one design label on the issue and that an approver of this repository applied it. \
                  Then ask the person who runs the factory to unblock the job, or apply the `{trigger}` label again to start a new one."
             ),
+            Self::EnvironmentBlocked => format!(
+                "The factory accepted this issue and checked its design, and then stopped before it could start the work. \
+                 The place where the factory runs its tools is not available right now. \
+                 This is on the factory's side, and nothing in the issue needs to change. \
+                 Ask the person who runs the factory for this repository to look at it. \
+                 Then they can unblock the job, or you can apply the `{trigger}` label again."
+            ),
             Self::CannotCheckAgain => format!(
                 "The factory stopped before it opened the pull request, because it could not check again whether the design is still approved. \
                  The problem is on the factory's side, and nothing in the issue needs to change. \
@@ -434,6 +445,10 @@ impl ReplyStatus {
 
 /// How the reply record starts for the refusal at intake.
 pub const INTAKE_REPLY_LEAD: &str = "design gate reply";
+
+/// How the reply record starts for the stop of the stage for the environment, after the checks of
+/// the stage passed (LB-02).
+pub const ENVIRONMENT_REPLY_LEAD: &str = "intake environment block: reply";
 
 /// How the reply record starts for the stop before the pull request is opened.
 pub const RECHECK_REPLY_LEAD: &str = "design re-check before the pull request is opened: reply";
